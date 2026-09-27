@@ -6,8 +6,7 @@ and writes calendar/agent-activity.ics.
 
 Auth:
   GITHUB_TOKEN          — default Actions token (current repo + public repos)
-  FLEET_GITHUB_TOKEN    — optional PAT with repo scope for private fleet repos
-                          (e.g. Congress.Trade)
+  FLEET_GITHUB_TOKEN    — optional token for GitHub API rate limits
 
 Env:
   FLEET_OWNER           — GitHub owner (default: jaywedgeworth22)
@@ -30,22 +29,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ics_utils import fold_line, ics_escape, join_ics  # noqa: E402
+from public_activity_repos import PUBLIC_REPOS, select_public_repos  # noqa: E402
 
-DEFAULT_REPOS = [
-    "Socratic.Trade",
-    "Congress.Trade",
-    "Usage-Monitor",
-    "congress-trading-shared",
-    "DealDex",
-    "Personal-Site",
-    "Autorotate",
-    "ContactLogo",
-    "AI-Fleet-Coordinator",
-    "BotFleet",
-    "HogHunter",
-    "fleet-ops",
-    "Harness",
-]
+DEFAULT_REPOS = PUBLIC_REPOS
 
 
 def env_int(name: str, default: int) -> int:
@@ -156,7 +142,7 @@ def build_ics(events: list[dict[str, Any]], now: datetime) -> str:
 def main() -> int:
     owner = os.environ.get("FLEET_OWNER", "jaywedgeworth22").strip() or "jaywedgeworth22"
     repos_raw = os.environ.get("FLEET_REPOS", "").strip()
-    repos = [r.strip() for r in repos_raw.split(",") if r.strip()] or DEFAULT_REPOS
+    requested = [r.strip() for r in repos_raw.split(",") if r.strip()] or list(DEFAULT_REPOS)
     lookback = env_int("CALENDAR_LOOKBACK_DAYS", 14)
     per_repo = env_int("CALENDAR_PER_REPO", 40)
     out = Path(os.environ.get("CALENDAR_OUT", "calendar/agent-activity.ics"))
@@ -168,6 +154,7 @@ def main() -> int:
     if not token:
         print("error: set GITHUB_TOKEN or FLEET_GITHUB_TOKEN", file=sys.stderr)
         return 2
+    repos = select_public_repos(owner, requested, token)
 
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=lookback)
@@ -189,7 +176,7 @@ def main() -> int:
             start = datetime.fromisoformat(author_date.replace("Z", "+00:00"))
             mins = event_duration_minutes(msg)
             end = start + timedelta(minutes=mins)
-            url = c.get("html_url") or f"https://github.com/{owner}/{repo}/commit/{full_sha}"
+            url = f"https://github.com/{owner}/{repo}/commit/{full_sha}"
             subject = first_line(msg)
             events.append(
                 {
