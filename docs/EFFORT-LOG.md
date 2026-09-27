@@ -86,7 +86,7 @@ repo's board too. As of 2026-08-17. 2026-08-17 GROK board hygiene: one In Progre
 - (n/a — machine-side infra is "deployed" when running under pm2/hooks; see Completed)
 
 ## In Progress
-- **2026-09-27 — CODEX — IN PROGRESS — Register iOS signing file helpers (board `3935f5ec`, issue #299, branch `codex/ios-signing-helper-registry-20260927`).**  Master list identifies ST/CT/UM/DD staging and synthetic workflow tests as on-demand; no daemon created.
+- **2026-09-27 — CODEX — COMPLETED — Register iOS signing file helpers (board `3935f5ec`, issue #299, branch `codex/ios-signing-helper-registry-20260927`).**  Master list identifies ST/CT/UM/DD staging and synthetic workflow tests as on-demand; no daemon created.  Source merged in PR #300 as `d1030a108c1af283ae0e1a149785c8fdf0dc6950` after green checks.
 
 - **2026-09-02 — GROK — IN PROGRESS — Fleet RAG adoption: every platform searches and contributes.**  Board `03ee6d8b`.  Claimed Tue, Sep 2, 2026.  Worktree `~/apps/fleet-grok-rag-mine` @ `grok/rag-adopt`.  session-start 2b + closeout contribute; skills installed to all Mac seats.  Product AGENTS.md next wave.  Do not bulk-ingest chat dumps.  Ingest lock still held by pid 81666 (apple-note).
 - **2026-09-02 — GROK — IN PROGRESS — RAG write path: contribute lessons; chat scan is policy-only.**  Owner rejected DeepSeek read-only corpus.  Branch `grok/rag-memory-policy`.  `ingest --all` skips `chat-log`.  Do not bulk-ingest staged session JSONL.  Board `b24d3450` (ingest follow-on) retargeted.
