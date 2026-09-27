@@ -18,3 +18,9 @@ jobs:
     - name: Run unittests
       run: |
         cd scripts && python3 -m unittest discover fleet_rag/tests/ -v
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+    - name: Verify operator start routing
+      run: node --test scripts/safari-start/worker.test.mjs
