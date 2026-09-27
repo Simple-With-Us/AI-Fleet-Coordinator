@@ -34,7 +34,7 @@ Coding seats in that file: `CLAUDE`, `MONET`, `CODEX`, `AG`, `CURSOR`, `GROK`, `
 1. **Agent lanes:** dedicated persistent git worktrees.  They never overwrite each other's uncommitted work.
 2. **Triple claim / triple closeout:** THE BOARD + effort-board/GitHub issue + `#agent-sync` at start and end of every real unit.
 3. **Safe landings:** do not push directly to `main`.  Feature branch → verify → PR → merge when CI is green (`scripts/land.sh` where the app uses it).
-4. **Fleet daily digest + calendars:** day-by-day HTML/Markdown of merged PRs, issue churn, and effort-board rows, plus two ICS feeds.  Hosted on GitHub Pages (see below).
+4. **Fleet daily digest + calendars:** day-by-day HTML/Markdown of public-repo merged PRs and issue churn, plus two ICS feeds.  Hosted on GitHub Pages (see below).
 5. **Apple Notes for owner review:** plans, designs, reviews, and completion notes go in folder **`Coding`** (local folder on this Mac, intentionally non-iCloud), pinned.  Title `[APP, Agent] short topic`.  Helper: `scripts/apple-notes-coding.sh`.  Full rule in `AGENT-SYNC.md`.
 6. **Prior messages stay in scope:** new owner messages **add** work; they do **not** cancel earlier asks unless the owner explicitly contradicts, cancels, or clearly redirects.
 7. **Secrets:** Infisical is the sole source of truth for **app runtime** secrets.  `~/.secrets/global-api-keys` is handoff-only (names-only inspectable via `GET https://mac.jays.services/files/key-names` with Bearer `$MAC_COLLAB_TOKEN`).  Never mix `COOLIFY_AGENTS` into app Infisical as `COOLIFY_API_TOKEN`.  Never bare `infisical secrets`.
@@ -74,12 +74,10 @@ Standing procedure (policy + checklist + scripts).  Do not invent a one-off join
 
 ## Fleet daily digest (HTML + Markdown + ICS)
 
-Day-by-day outline of fleet work: **merged PRs**, **issues opened/closed**, and
-**effort-board** bullets (`docs/EFFORT-LOG.md` mirrors, or live boards under
-`EFFORT_LOG_DIR` when building locally).  Built by
+Day-by-day outline of public repository work: **merged PRs** and **issues opened/closed**.  Built by
 `scripts/build-fleet-daily-digest.py` and refreshed every 6 hours by
 `.github/workflows/fleet-activity-site.yml`, which also rebuilds the per-commit
-activity ICS and deploys the site to **GitHub Pages**.
+activity ICS and deploys the site to **GitHub Pages**.  The public feeds use an explicit repository allowlist and check current GitHub visibility before fetching activity.  Internal effort boards remain private inputs to separate operator workflows.
 
 ### Hosted URLs
 
@@ -102,7 +100,7 @@ https://raw.githubusercontent.com/jaywedgeworth22/AI-Fleet-Coordinator/main/site
 
 ### Subscribe (Apple / Google / Outlook)
 
-**Recommended:** daily outline ICS (one all-day event per day with PR/issue/effort summary).
+**Recommended:** daily outline ICS (one all-day event per day with public PR/issue summary).
 
 **Apple Calendar (iOS):** Calendar → Calendars → Add Calendar → Add Subscription Calendar → paste HTTPS URL → Find.
 
@@ -122,17 +120,10 @@ Repo **Settings → Pages → Build and deployment → Source: GitHub Actions**.
 The workflow uses `actions/deploy-pages`.  First successful run after that publishes
 the site URL above.
 
-### Optional: private repo coverage
-
-Default `GITHUB_TOKEN` sees public repos only.  To include private fleet repos
-(e.g. `Congress.Trade`, `DealDex`), add a fine-grained PAT (read-only Contents + Issues on
-those repos) as Actions secret **`FLEET_GITHUB_TOKEN`**.
-
 ### Local rebuild
 
 ```bash
-export GITHUB_TOKEN="$(gh auth token)"   # or FLEET_GITHUB_TOKEN
-export EFFORT_LOG_DIR=/Users/jay/apps    # optional: live effort boards
+export GITHUB_TOKEN="$(gh auth token)"
 python3 scripts/build-agent-calendar.py
 python3 scripts/build-fleet-daily-digest.py
 # outputs: site/index.html, site/digest.md, calendar/daily-digest.ics

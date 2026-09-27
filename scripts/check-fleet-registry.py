@@ -13,6 +13,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from public_activity_repos import PUBLIC_REPOS  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 APPS = Path.home() / "apps"
 REGISTRY = ROOT / "fleet-apps.json"
@@ -34,7 +37,7 @@ def main() -> int:
     errors: list[str] = []
 
     digest = (ROOT / "scripts" / "build-fleet-daily-digest.py").read_text()
-    calendar = (ROOT / "scripts" / "build-agent-calendar.py").read_text()
+    public_repos = set(PUBLIC_REPOS)
     protocol = (ROOT / "EFFORT-LOG-PROTOCOL.md").read_text()
     agent_sync = (ROOT / "AGENT-SYNC.md").read_text()
     live_protocol = APPS / "EFFORT-LOG-PROTOCOL.md"
@@ -47,21 +50,17 @@ def main() -> int:
         board = app["liveBoard"]
         slack = app.get("slackRepo") or repo
 
-        if f'"{repo}"' not in digest and f"'{repo}'" not in digest:
-            errors.append(f"digest DEFAULT_REPOS missing {repo}")
-        if f'"{repo}": (' not in digest:
+        if repo in public_repos and f'"{repo}": (' not in digest:
             errors.append(f"digest REPO_BADGE missing {repo}")
         color = app.get("digestColor") or ""
         badge = app.get("badgeClass") or ""
-        if color and badge.startswith("repo-"):
+        if repo in public_repos and color and badge.startswith("repo-"):
             css_var = badge[len("repo-"):]
             needle = f"--{css_var}: {color}"
             if needle not in digest:
                 errors.append(
                     f"digest CSS --{css_var} does not match digestColor {color} for {repo}"
                 )
-        if f'"{repo}"' not in calendar and f"'{repo}'" not in calendar:
-            errors.append(f"calendar DEFAULT_REPOS missing {repo}")
         if repo not in protocol and board not in protocol:
             errors.append(f"coordinator EFFORT-LOG-PROTOCOL.md missing {repo} / {board}")
         if slack not in agent_sync and repo not in agent_sync:
@@ -73,7 +72,7 @@ def main() -> int:
             errors.append(f"~/apps/EFFORT-LOG-PROTOCOL.md missing {repo} / {board}")
         if live_sync.is_file():
             live = live_sync.read_text()
-            if slack not in live and repo not in live:
+            if slack.casefold() not in live.casefold() and repo.casefold() not in live.casefold():
                 errors.append(f"~/apps/AGENT-SYNC.md missing {repo}")
             if acronym not in live:
                 errors.append(f"~/apps/AGENT-SYNC.md missing acronym {acronym}")
@@ -113,10 +112,9 @@ def main() -> int:
             errors.append(f"{wf_name} missing FLEET_REPOS")
             continue
         for lst in lists:
-            for app in apps:
-                repo = app["repo"]
-                if repo not in lst.split(","):
-                    errors.append(f"{wf_name} FLEET_REPOS missing {repo}")
+            configured = set(lst.split(","))
+            if configured != public_repos:
+                errors.append(f"{wf_name} FLEET_REPOS must match verified public allowlist")
 
     backup_py = ROOT / "scripts" / "backup-fleet-to-gdrive.py"
     if backup_py.is_file():

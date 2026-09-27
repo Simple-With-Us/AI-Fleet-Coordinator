@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Build a day-by-day fleet activity digest: Markdown, HTML, and all-day ICS.
+"""Build a public day-by-day activity digest: Markdown, HTML, and all-day ICS.
 
-Sources (GitHub API + effort-log files when present):
+Sources (verified-public GitHub repositories only):
   - Merged pull requests
   - Issues opened / closed / reopened
-  - Effort-board bullets from each repo's docs/EFFORT-LOG.md (and live-style
-    names when mirrored under docs/)
 
 Outputs (under site/ and calendar/):
   site/index.html          — browsable day outline
@@ -21,7 +19,6 @@ Env:
   SITE_OUT (default site)
   ICS_OUT (default calendar/daily-digest.ics)
   SITE_BASE_URL (optional, e.g. https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/)
-  EFFORT_LOG_DIR (optional local dir of live boards, e.g. /Users/jay/apps)
 """
 from __future__ import annotations
 
@@ -43,64 +40,9 @@ from zoneinfo import ZoneInfo
 # Allow `python3 scripts/build-fleet-daily-digest.py` from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ics_utils import ics_escape, join_ics  # noqa: E402
+from public_activity_repos import PUBLIC_REPOS, select_public_repos  # noqa: E402
 
-DEFAULT_REPOS = [
-    "Socratic.Trade",
-    "Congress.Trade",
-    "Usage-Monitor",
-    "congress-trading-shared",
-    "DealDex",
-    "Personal-Site",
-    "Autorotate",
-    "ContactLogo",
-    "AI-Fleet-Coordinator",
-    "BotFleet",
-    "HogHunter",
-    "fleet-ops",
-    "Harness",
-    "codecaps",
-    "MiniMax-ios",
-]
-
-# Live machine boards (optional local override via EFFORT_LOG_DIR)
-LIVE_EFFORT_FILES = {
-    "Usage-Monitor": "API-USAGE-MONITOR-EFFORT-LOG.md",
-    "Socratic.Trade": "SOCRATIC-TRADE-EFFORT-LOG.md",
-    "Congress.Trade": "CONGRESS-TRADE-EFFORT-LOG.md",
-    "congress-trading-shared": "CONGRESS-SHARED-EFFORT-LOG.md",
-    "DealDex": "DEALDEX-EFFORT-LOG.md",
-    "Personal-Site": "PERSONAL-SITE-EFFORT-LOG.md",
-    "Autorotate": "AUTOROTATE-EFFORT-LOG.md",
-    "ContactLogo": "CONTACTLOGO-EFFORT-LOG.md",
-    "AI-Fleet-Coordinator": "FLEET-INFRA-EFFORT-LOG.md",
-    "BotFleet": "BOTFLEET-EFFORT-LOG.md",
-    "HogHunter": "HOGHUNTER-EFFORT-LOG.md",
-    "fleet-ops": "FLEET-OPS-EFFORT-LOG.md",
-    "Harness": "HARNESS-EFFORT-LOG.md",
-    "codecaps": "CODECAPS-EFFORT-LOG.md",
-    "MiniMax-ios": "MiniMax-ios-EFFORT-LOG.md",
-}
-
-DONE_SECTIONS = frozenset(
-    {
-        "deployed",
-        "completed",
-        "done",
-        "shipped",
-        "closed",
-        "complete",
-    }
-)
-ACTIVE_SECTIONS = frozenset(
-    {
-        "in progress",
-        "progress",
-        "blocked",
-        "waiting",
-        "planned",
-    }
-)
-
+DEFAULT_REPOS = PUBLIC_REPOS
 
 @dataclass
 class DayBucket:
@@ -108,22 +50,19 @@ class DayBucket:
     merged_prs: list[dict[str, Any]] = field(default_factory=list)
     issues_opened: list[dict[str, Any]] = field(default_factory=list)
     issues_closed: list[dict[str, Any]] = field(default_factory=list)
-    effort_lines: list[dict[str, str]] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not (
             self.merged_prs
             or self.issues_opened
             or self.issues_closed
-            or self.effort_lines
         )
 
     def counts_line(self) -> str:
         return (
             f"{len(self.merged_prs)} PRs merged · "
             f"{len(self.issues_opened)} issues opened · "
-            f"{len(self.issues_closed)} issues closed · "
-            f"{len(self.effort_lines)} effort rows"
+            f"{len(self.issues_closed)} issues closed"
         )
 
 
@@ -154,30 +93,6 @@ def gh_get(url: str, tok: str) -> Any:
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
         return json.loads(resp.read().decode("utf-8"))
-
-
-def gh_get_text(url: str, tok: str) -> str | None:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github.raw",
-            "Authorization": f"Bearer {tok}",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "AI-Fleet-Coordinator-daily-digest",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            return resp.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None
-        body = e.read().decode("utf-8", errors="replace")[:200]
-        print(f"warn: GET {url} HTTP {e.code}: {body}", file=sys.stderr)
-        return None
-    except Exception as e:  # noqa: BLE001
-        print(f"warn: GET {url} failed: {e}", file=sys.stderr)
-        return None
 
 
 def gh_list(url: str, tok: str, max_pages: int = 8) -> list[dict[str, Any]]:
@@ -246,7 +161,7 @@ def fetch_merged_prs(
                         "repo": repo,
                         "number": it.get("number"),
                         "title": (it.get("title") or "").strip(),
-                        "url": it.get("html_url") or "",
+                        "url": f"https://github.com/{owner}/{repo}/pull/{it.get('number')}",
                         "user": ((it.get("user") or {}).get("login") or ""),
                         "when": merged,
                     },
@@ -278,7 +193,7 @@ def fetch_issue_churn(
                 "repo": repo,
                 "number": it.get("number"),
                 "title": (it.get("title") or "").strip(),
-                "url": it.get("html_url") or "",
+                "url": f"https://github.com/{owner}/{repo}/issues/{it.get('number')}",
                 "state": it.get("state") or "",
             }
             if created and to_local_day(created, tz) >= since:
@@ -292,147 +207,10 @@ def fetch_issue_churn(
     return opened, closed
 
 
-_DATE_IN_LINE = re.compile(
-    r"(20\d{2}-\d{2}-\d{2})|"
-    r"(20\d{2}/\d{2}/\d{2})|"
-    r"\b(20\d{2}-\d{2}-\d{2}T)"
-)
-_BULLET = re.compile(r"^\s*-\s+")
-_HEADING = re.compile(r"^#{1,3}\s+(.+?)\s*$")
-_STATUS_WORDS = (
-    "merged",
-    "complete",
-    "completed",
-    "deployed",
-    "done",
-    "shipped",
-    "live",
-    "closed",
-    "in pr",
-    "progress",
-    "host done",
-    "live verified",
-)
-
-
-def parse_effort_log(text: str, repo: str, since: date, tz: ZoneInfo) -> list[tuple[date, dict[str, str]]]:
-    """Heuristic: board bullets under Deployed/Completed (and active WIP with status words)."""
-    rows: list[tuple[date, dict[str, str]]] = []
-    today = datetime.now(tz).date()
-    section = ""
-    for line in text.splitlines():
-        hm = _HEADING.match(line)
-        if hm:
-            section = hm.group(1).strip().lower()
-            continue
-        if not _BULLET.match(line):
-            continue
-        if line.lstrip().startswith("- _") or "board closeout" in line.lower():
-            continue
-        low = line.lower()
-        in_done = any(s in section for s in DONE_SECTIONS)
-        in_active = any(s in section for s in ACTIVE_SECTIONS)
-        has_status = any(k in low for k in _STATUS_WORDS)
-        if in_done:
-            pass
-        elif in_active and has_status:
-            pass
-        elif not section and has_status:
-            pass
-        else:
-            continue
-        body = re.sub(r"^\s*-\s+", "", line).strip()
-        if len(body) < 20:
-            continue
-        day = today
-        # Search for date in line. Prefer completion/status date (e.g. COMPLETED ... 2026-08-22) or start-of-line date.
-        # Ensure we never pick a future date mentioned in prose.
-        status_date_m = re.search(
-            r"(?:COMPLETED|DEPLOYED|MERGED|IN PROGRESS|IN PR|CLAIMED|DONE)[^\n\r]*?\b(20\d{2}[-/]\d{2}[-/]\d{2})",
-            body,
-            re.IGNORECASE,
-        )
-        if status_date_m:
-            raw = status_date_m.group(1).replace("/", "-")
-            try:
-                d_cand = date.fromisoformat(raw)
-                if d_cand <= today:
-                    day = d_cand
-            except ValueError:
-                pass
-        else:
-            # Fallback: scan all dates in line, pick the first one that is <= today and >= since
-            for m in _DATE_IN_LINE.finditer(body):
-                raw = (m.group(1) or m.group(2) or "")[:10].replace("/", "-")
-                try:
-                    d_cand = date.fromisoformat(raw)
-                    if d_cand <= today:
-                        day = d_cand
-                        break
-                except ValueError:
-                    pass
-        if day < since or day > today:
-            continue
-        prefix = ""
-        if in_done:
-            prefix = "[done] "
-        elif in_active:
-            prefix = "[wip] "
-        rows.append(
-            (
-                day,
-                {
-                    "repo": repo,
-                    "text": (prefix + body)[:400],
-                    "section": section or "unknown",
-                },
-            )
-        )
-    if len(rows) > 120:
-        rows = sorted(rows, key=lambda r: r[0], reverse=True)[:120]
-    return rows
-
-
-def fetch_effort_rows(
-    owner: str, repos: list[str], since: date, tok: str, tz: ZoneInfo
-) -> list[tuple[date, dict[str, str]]]:
-    """Fetch live effort board markdown from each repo; parse bullets."""
-    out: list[tuple[date, dict[str, str]]] = []
-    for repo in repos:
-        text = None
-        source = repo
-        # Local workspace checkout first (for live/uncommitted effort boards during runs)
-        local_effort = Path.home() / "apps" / f"{repo.lower()}-effort.md"
-        if not local_effort.is_file():
-            # Try alternate local workspace paths
-            local_effort = Path.home() / "Code" / repo / "docs" / "EFFORT-LOG.md"
-        if local_effort.is_file():
-            try:
-                text = local_effort.read_text(encoding="utf-8")
-                source = str(local_effort)
-            except Exception:  # noqa: BLE001
-                text = None
-        if text is None:
-            for path in ("docs/EFFORT-LOG.md", "EFFORT-LOG.md"):
-                url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-                text = gh_get_text(url, tok)
-                if text:
-                    source = f"{repo}/{path}"
-                    break
-        if text:
-            rows = parse_effort_log(text, repo, since, tz)
-            print(f"  effort {source}: {len(rows)} bullets")
-            out.extend(rows)
-        else:
-            print(f"  effort {repo}: (none found)")
-    return out
-
-
 def bucket_all(
     prs: list[tuple[date, dict[str, Any]]],
     opened: list[tuple[date, dict[str, Any]]],
     closed: list[tuple[date, dict[str, Any]]],
-    effort: list[tuple[date, dict[str, str]]],
 ) -> dict[date, DayBucket]:
     buckets: dict[date, DayBucket] = {}
 
@@ -447,8 +225,6 @@ def bucket_all(
         b(d).issues_opened.append(item)
     for d, item in closed:
         b(d).issues_closed.append(item)
-    for d, item in effort:
-        b(d).effort_lines.append(item)
 
     for day in buckets.values():
         day.merged_prs.sort(key=lambda x: (x["repo"], x.get("number") or 0))
@@ -477,10 +253,8 @@ REPO_BADGE: dict[str, tuple[str, str]] = {
     "AI-Fleet-Coordinator": ("AFC", "repo-fleet"),
     "BotFleet": ("BF", "repo-bf"),
     "HogHunter": ("HH", "repo-hh"),
-    "fleet-ops": ("OPS", "repo-ops"),
     "Harness": ("HR", "repo-harness"),
     "codecaps": ("CC", "repo-cc"),
-    "MiniMax-ios": ("MM", "repo-mm"),
 }
 
 # Latest product app icons (copied into site/agent-logos/ with agent marks)
@@ -496,7 +270,6 @@ REPO_APP_ICON: dict[str, str] = {
     "HogHunter": "agent-logos/app-hh.png",
     "Harness": "agent-logos/app-harness.png",
     "codecaps": "agent-logos/app-cc.png",
-    "MiniMax-ios": "agent-logos/app-mm.png",
 }
 
 # Aliases used only to strip *redundant leading* labels that duplicate the badge.
@@ -580,11 +353,6 @@ REPO_STRIP_ALIASES: dict[str, tuple[str, ...]] = {
         "botfleet",
         "BF",
     ),
-    "fleet-ops": (
-        "Fleet Ops",
-        "fleet-ops",
-        "OPS",
-    ),
     "Harness": (
         "Harness",
         "harness",
@@ -594,12 +362,6 @@ REPO_STRIP_ALIASES: dict[str, tuple[str, ...]] = {
         "CodeCaps",
         "codecaps",
         "CC",
-    ),
-    "MiniMax-ios": (
-        "MiniMax Remote",
-        "MiniMax-ios",
-        "minimax-ios",
-        "MM",
     ),
 }
 
@@ -878,11 +640,6 @@ def display_title(title: str, repo: str) -> str:
     return clean or (title or "")
 
 
-def display_effort_text(text: str, repo: str) -> str:
-    _agents, clean = extract_agents_and_clean(text or "", repo)
-    return clean
-
-
 def _agent_label(slug: str) -> str:
     for s, lab in AGENT_LOGO.values():
         if s == slug:
@@ -962,12 +719,6 @@ def day_description(day: DayBucket) -> str:
             )
             lines.append(f"- [{p['repo']}#{p['number']}] {title}")
         lines.append("")
-    if day.effort_lines:
-        lines.append("Effort board:")
-        for e in day.effort_lines[:25]:
-            agents, t = extract_agents_and_clean(e["text"], e["repo"])
-            agent_bit = f" ({', '.join(agents)})" if agents else ""
-            lines.append(f"- [{e['repo']}]{agent_bit} {t[:200]}")
     return "\n".join(lines).strip()
 
 
@@ -977,7 +728,7 @@ def build_markdown(days: list[DayBucket], generated: datetime, tz: ZoneInfo, bas
         "",
         f"_Generated {generated.astimezone(tz).strftime('%Y-%m-%d %H:%M %Z')} · timezone {tz.key}_",
         "",
-        "Sources: merged PRs, issues opened/closed, effort-board bullets (`docs/EFFORT-LOG.md`).",
+        "Sources: merged PRs and issues opened/closed in verified public repositories.",
         "Agent names are stripped from titles; HTML site shows logos instead.",
         "",
     ]
@@ -1026,16 +777,6 @@ def build_markdown(days: list[DayBucket], generated: datetime, tz: ZoneInfo, bas
                 _a, title = extract_agents_and_clean(str(p.get("title") or ""), repo)
                 short, _cls = repo_badge(repo)
                 lines.append(f"- **{short}** [#{p['number']}]({p['url']}): {title}")
-            lines.append("")
-        if day.effort_lines:
-            lines.append("### Effort board")
-            lines.append("")
-            for e in day.effort_lines:
-                agents, t = extract_agents_and_clean(e["text"], e["repo"])
-                agent_md = agent_icons_md(agents)
-                short, _cls = repo_badge(e["repo"])
-                prefix = f"{agent_md} " if agent_md else ""
-                lines.append(f"- **{short}** {prefix}{t}")
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -1119,12 +860,6 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
         list_block("Merged PRs", day.merged_prs, "prs")
         list_block("Issues closed", day.issues_closed, "closed")
         list_block("Issues opened", day.issues_opened, "opened")
-        if day.effort_lines:
-            el = [
-                item_row(e["repo"], e["text"])
-                for e in day.effort_lines
-            ]
-            blocks.append('<h3>Effort board</h3><ul class="effort">' + "".join(el) + "</ul>")
 
         day_label = esc(_format_day_heading(day.day))
         sections.append(
@@ -1163,10 +898,8 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
       --fleet: #475569;
       --bf: #0284c7;
       --hh: #92400e;
-      --ops: #64748b;
       --harness: #0ea5e9;
       --cc: #0d9488;
-      --mm: #e11d48;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -1242,10 +975,8 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     .repo-fleet {{ background: var(--fleet); }}
     .repo-bf {{ background: var(--bf); }}
     .repo-hh {{ background: var(--hh); }}
-    .repo-ops {{ background: var(--ops); }}
     .repo-harness {{ background: var(--harness); }}
     .repo-cc {{ background: var(--cc); }}
-    .repo-mm {{ background: var(--mm); }}
     .repo.repo-with-icon {{
       gap: 0;
       padding: 0.1rem;
@@ -1351,10 +1082,8 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
         <span class="legend-item"><span class="repo repo-fleet">AFC</span><span class="legend-label">AI Fleet Coordinator</span></span>
         <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-bf" title="BotFleet.app"><img class="repo-app-icon" src="agent-logos/app-bf.png" alt="BotFleet.app" width="14" height="14" /></span><span class="legend-label">BotFleet.app</span></span>
         <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-hh" title="Hog Hunter"><img class="repo-app-icon" src="agent-logos/app-hh.png" alt="Hog Hunter" width="14" height="14" /></span><span class="legend-label">Hog Hunter</span></span>
-        <span class="legend-item"><span class="repo repo-ops">OPS</span><span class="legend-label">Fleet Ops</span></span>
         <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-harness" title="Harness"><img class="repo-app-icon" src="agent-logos/app-harness.png" alt="Harness" width="14" height="14" /></span><span class="legend-label">Harness</span></span>
         <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-cc" title="CodeCaps"><img class="repo-app-icon" src="agent-logos/app-cc.png" alt="CodeCaps" width="14" height="14" /></span><span class="legend-label">CodeCaps</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-mm" title="MiniMax Remote"><img class="repo-app-icon" src="agent-logos/app-mm.png" alt="MiniMax Remote" width="14" height="14" /></span><span class="legend-label">MiniMax Remote</span></span>
       </div>
     </div>
     <div class="legend-section" aria-label="Agents">
@@ -1402,7 +1131,7 @@ def build_daily_ics(days: list[DayBucket], now: datetime, base_url: str) -> str:
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
         "X-WR-CALNAME:Jay's Daily Coding-Related Activities",
-        "X-WR-CALDESC:One all-day entry per day: merged PRs, issues opened/closed, effort board. Hosted by AI-Fleet-Coordinator.",
+        "X-WR-CALDESC:One all-day entry per day: merged PRs and issues opened/closed in public repositories. Hosted by AI-Fleet-Coordinator.",
         "X-WR-TIMEZONE:America/Chicago",
         "REFRESH-INTERVAL;VALUE=DURATION:PT6H",
         "X-PUBLISHED-TTL:PT6H",
@@ -1443,7 +1172,7 @@ def build_daily_ics(days: list[DayBucket], now: datetime, base_url: str) -> str:
 def main() -> int:
     owner = os.environ.get("FLEET_OWNER", "jaywedgeworth22").strip() or "jaywedgeworth22"
     repos_raw = os.environ.get("FLEET_REPOS", "").strip()
-    repos = [r.strip() for r in repos_raw.split(",") if r.strip()] or DEFAULT_REPOS
+    requested = [r.strip() for r in repos_raw.split(",") if r.strip()] or list(DEFAULT_REPOS)
     lookback = env_int("DIGEST_LOOKBACK_DAYS", 21)
     tz_name = os.environ.get("DIGEST_TZ", "America/Chicago").strip() or "America/Chicago"
     tz = ZoneInfo(tz_name)
@@ -1455,6 +1184,7 @@ def main() -> int:
         base_url = f"https://{owner}.github.io/AI-Fleet-Coordinator"
 
     tok = token()
+    repos = select_public_repos(owner, requested, tok)
     now = datetime.now(timezone.utc)
     since = (now.astimezone(tz).date() - timedelta(days=lookback))
 
@@ -1465,11 +1195,7 @@ def main() -> int:
     print("fetching issue churn…")
     opened, closed = fetch_issue_churn(owner, repos, since, tok, tz)
     print(f"  {len(opened)} opened, {len(closed)} closed")
-    print("fetching effort boards…")
-    effort = fetch_effort_rows(owner, repos, since, tok, tz)
-    print(f"  {len(effort)} effort bullets")
-
-    buckets = bucket_all(prs, opened, closed, effort)
+    buckets = bucket_all(prs, opened, closed)
     days = sorted(buckets.values(), key=lambda d: d.day, reverse=True)
 
     site_out.mkdir(parents=True, exist_ok=True)
