@@ -4,8 +4,8 @@ Generated artifacts (do not hand-edit ICS; change the scripts/workflows):
 
 | File | What it is |
 |------|------------|
-| [`agent-activity.ics`](./agent-activity.ics) | Timed VEVENTs per **commit** across fleet repos |
-| [`daily-digest.ics`](./daily-digest.ics) | **All-day** VEVENT per day: merged PRs, issues opened/closed, effort-board rows |
+| [`agent-activity.ics`](./agent-activity.ics) | Timed VEVENTs per **commit** across verified public repos |
+| [`daily-digest.ics`](./daily-digest.ics) | **All-day** VEVENT per day: merged PRs and issues opened/closed in public repos |
 
 ## Hosted site (GitHub Pages)
 
@@ -37,9 +37,7 @@ or Google Calendar → From URL.
 ## Rebuild
 
 ```bash
-export GITHUB_TOKEN="$(gh auth token)"   # or FLEET_GITHUB_TOKEN
-# optional: live effort boards on this machine
-export EFFORT_LOG_DIR=/Users/jay/apps
+export GITHUB_TOKEN="$(gh auth token)"
 python3 scripts/build-agent-calendar.py
 python3 scripts/build-fleet-daily-digest.py
 ```

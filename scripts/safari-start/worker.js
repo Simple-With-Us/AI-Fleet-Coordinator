@@ -1,8 +1,8 @@
-// start.jays.services Worker: serve the static Safari start page and proxy search
+// start.jays.services Worker: forward operators to protected home and proxy search
 // autocomplete at /suggest.  The upstream (Google Suggest) sends no CORS headers, so
 // the browser cannot call it directly; this proxy adds permissive CORS so the page
 // works from the deployed site, the file:// Mac install, and the jays.services/start/
-// copy alike.  Everything else falls through to the static assets.
+// copy alike.  Operator page aliases redirect to the existing protected home.
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -42,6 +42,13 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
     const url = new URL(request.url);
     if (url.pathname === "/suggest") return suggest(url);
-    return env.ASSETS.fetch(request);
+    if (['/', '/index.html', '/start', '/start/'].includes(url.pathname)) {
+      return new Response(null, {
+        status: 302,
+        headers: { Location: 'https://home.jays.services/', 'Cache-Control': 'no-store' },
+      });
+    }
+    if (['/apple-touch-icon.png', '/robots.txt'].includes(url.pathname)) return env.ASSETS.fetch(request);
+    return new Response('Not found', { status: 404 });
   },
 };
