@@ -71,6 +71,7 @@ Standing procedure (policy + checklist + scripts).  Do not invent a one-off join
 | Binding protocol (board + Slack + model economics) | [`AGENT-SYNC.md`](AGENT-SYNC.md) § THE BOARD, § Delegation & model economics | — |
 | Cursor chats on desktop + iOS (Grok Bot / Shellular) | [`docs/CURSOR-CHAT-SURFACES.md`](docs/CURSOR-CHAT-SURFACES.md) | `scripts/cursor_chat_surfaces.py` |
 | Universal fleet-ops skills catalog | [`docs/fleet-skills/README-add-in-app.md`](docs/fleet-skills/README-add-in-app.md) | `scripts/install-fleet-skills.py` |
+| **Fresh cloud sandbox / lost CLI toolchain** | [`docs/CLOUD-AGENT-BOOTSTRAP.md`](docs/CLOUD-AGENT-BOOTSTRAP.md) ([GitHub](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/CLOUD-AGENT-BOOTSTRAP.md)) | `bash /workspace/.bootstrap.sh` |
 
 ## Fleet daily digest (HTML + Markdown + ICS)
 
