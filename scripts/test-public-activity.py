@@ -14,7 +14,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from public_activity_repos import PUBLIC_REPOS, select_public_repos  # noqa: E402
+from public_activity_repos import HISTORICAL_PUBLIC_REPO_ALIASES, PUBLIC_REPOS, select_public_repos  # noqa: E402
 
 spec = importlib.util.spec_from_file_location("digest", Path(__file__).resolve().parent / "build-fleet-daily-digest.py")
 assert spec and spec.loader
@@ -45,7 +45,7 @@ class PublicActivityTests(unittest.TestCase):
             "calendar/agent-activity.ics", "site/calendar/daily-digest.ics",
             "site/calendar/agent-activity.ics",
         )
-        allowed = {repo.casefold() for repo in PUBLIC_REPOS}
+        allowed = {repo.casefold() for repo in PUBLIC_REPOS} | set(HISTORICAL_PUBLIC_REPO_ALIASES.keys())
         for name in names:
             body = (root / name).read_text()
             # RFC 5545 line folding can split a URL across CRLF + space.

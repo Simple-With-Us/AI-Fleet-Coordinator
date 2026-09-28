@@ -27,6 +27,10 @@ PUBLIC_REPOS = (
     "codecaps",
 )
 
+HISTORICAL_PUBLIC_REPO_ALIASES = {
+    "socratic.trade": "Socratic-Trade",
+}
+
 
 def select_public_repos(owner: str, requested: list[str], token: str) -> list[str]:
     """Fail closed if a requested repo is unlisted, private, or unverified."""
