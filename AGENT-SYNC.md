@@ -1975,7 +1975,7 @@ HTTP 410.  Workflow `PUT` `projectIds` is 400.  Scope with `detector_ids`
 Slack `3930668` is org-wide production high-pri plus Seer RCA/PR.  Do not
 add a second org-wide PagerDuty workflow.
 
-Org `jays-services` (https://jays-services.sentry.io).  Eight Sentry projects:
+Org `simple-with-us` (https://simple-with-us.sentry.io).  Eight Sentry projects:
 `socratic-trade`, `congress-trade`, `usage-monitor`, `fleet-infra`, `dealdex`,
 `botfleet`, `autorotate`, `contactlogo`.
 

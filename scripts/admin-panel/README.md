@@ -20,7 +20,7 @@ Access is the only thing standing in front of it.
 | **Coolify Applications** | `GET /api/v1/applications` and `/api/v1/servers` on `host.jays.services` | Container status (`running:healthy`, `exited:unhealthy`, …) per application, then server reachability. |
 | **GitHub Repositories** | One Search API call for every open PR the owner has, then the Actions API for the latest run on `main`, per repo in `fleet-apps.json` | Open PR count and the conclusion of the most recent `main` run.  The row links to that run.  Past 100 open PRs the total stays exact but the per-repo split is capped, and the card says so. |
 | **Vercel Projects** | `GET /v9/projects?limit=50`, retried per team when the personal scope is empty | Newest READY deployment when present (else `latestDeployments[0].readyState`) — READY, ERROR, BUILDING, CANCELED. |
-| **Sentry Issues** | `GET /organizations/jays-services/issues/?query=is:unresolved&statsPeriod=24h` | Unresolved issue count grouped by project slug, with the newest title. |
+| **Sentry Issues** | `GET /organizations/simple-with-us/issues/?query=is:unresolved&statsPeriod=24h` | Unresolved issue count grouped by project slug, with the newest title. |
 | **PagerDuty Incidents** | `GET /incidents?statuses[]=triggered&statuses[]=acknowledged&limit=25&total=true` | Open incident titles and their service.  The headline uses `total`, not the page size, so a full page no longer reads as "exactly 25". |
 | **Datadog Monitors** | `GET /api/v1/monitor?page_size=100` on the `us5` site | Monitor counts by `overall_state`, then the alerting and warning monitors by name. |
 

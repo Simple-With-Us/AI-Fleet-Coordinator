@@ -770,7 +770,7 @@ function vercelState(readyState) {
 
 async function checkSentry(env) {
   if (!env.SENTRY_AUTH_TOKEN) return notConfigured('SENTRY_AUTH_TOKEN');
-  const org = env.SENTRY_ORG || 'jays-services';
+  const org = env.SENTRY_ORG || 'simple-with-us';
   const issues = await apiJson(
     `https://sentry.io/api/0/organizations/${org}/issues/?query=${encodeURIComponent('is:unresolved')}&statsPeriod=24h&limit=100`,
     { headers: { Authorization: `Bearer ${env.SENTRY_AUTH_TOKEN}` } },

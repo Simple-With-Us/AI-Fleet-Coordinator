@@ -54,7 +54,7 @@ const UM_BASE_URL =
   process.env.USAGE_MONITOR_BASE_URL || "https://usage.jays.services";
 const UM_MIX_URL = `${UM_BASE_URL}/api/agent-model-mix?days=7`;
 
-const SENTRY_ORG = "jays-services";
+const SENTRY_ORG = "simple-with-us";
 const SENTRY_PROJECT_ID = "4512139515592704";
 const SENTRY_EVENTS_URL =
   `https://us.sentry.io/api/0/organizations/${SENTRY_ORG}/events/` +
