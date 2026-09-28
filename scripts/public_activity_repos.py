@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 
 PUBLIC_REPOS = (
-    "Socratic.Trade",
+    "Socratic-Trade",
     "Congress.Trade",
     "Usage-Monitor",
     "congress-trading-shared",

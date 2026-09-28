@@ -26,7 +26,7 @@ BEFORE substantial work begins, so parallel agents can see reservations in the g
 
 | Acronym | Repo | Live effort board |
 |---------|------|-------------------|
-| `ST` | Socratic.Trade | `TRADING-EFFORT-LOG.md` |
+| `ST` | Socratic-Trade | `TRADING-EFFORT-LOG.md` |
 | `CT` | Congress.Trade | `CONGRESS-TRADE-EFFORT-LOG.md` |
 | `UM` | Usage-Monitor | `API-USAGE-MONITOR-EFFORT-LOG.md` |
 | `CTS` | congress-trading-shared | `CONGRESS-SHARED-EFFORT-LOG.md` |
