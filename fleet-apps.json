@@ -6,11 +6,11 @@
   "notes": "Canonical fleet app + coding-seat inventory. onboard-new-app.sh adds a row here, then patches the registries listed in docs/ONBOARDING-NEW-APP.md. check-fleet-registry.py verifies those files still mention every app. GROK-BOT is a fleet-wide identity that drives Cursor cloud agents; it is not an app-specific seat and is not listed in seats[].",
   "apps": [
     {
-      "repo": "Socratic.Trade",
+      "repo": "Socratic-Trade",
       "acronym": "ST",
       "displayName": "Socratic Trade",
-      "slackRepo": "Socratic.Trade",
-      "codeDir": "Socratic.Trade",
+      "slackRepo": "Socratic-Trade",
+      "codeDir": "Socratic-Trade",
       "liveBoard": "TRADING-EFFORT-LOG.md",
       "worktreePrefix": "trading",
       "badgeClass": "repo-st",

@@ -242,6 +242,7 @@ def day_summary_title(day: DayBucket) -> str:
 
 # Short badge label + CSS class for each fleet repo
 REPO_BADGE: dict[str, tuple[str, str]] = {
+    "Socratic-Trade": ("ST", "repo-st"),
     "Socratic.Trade": ("ST", "repo-st"),
     "Congress.Trade": ("CT", "repo-ct"),
     "Usage-Monitor": ("UM", "repo-um"),
@@ -259,6 +260,7 @@ REPO_BADGE: dict[str, tuple[str, str]] = {
 
 # Latest product app icons (copied into site/agent-logos/ with agent marks)
 REPO_APP_ICON: dict[str, str] = {
+    "Socratic-Trade": "agent-logos/app-st.svg",  # offset ST logo
     "Socratic.Trade": "agent-logos/app-st.svg",  # offset ST logo
     "Congress.Trade": "agent-logos/app-ct.png",  # latest CT iOS app icon
     "Usage-Monitor": "agent-logos/app-um.png",   # latest Usage Monitor client icon
@@ -275,6 +277,17 @@ REPO_APP_ICON: dict[str, str] = {
 # Aliases used only to strip *redundant leading* labels that duplicate the badge.
 # Mid-title mentions and other-repo names are left alone.
 REPO_STRIP_ALIASES: dict[str, tuple[str, ...]] = {
+    "Socratic-Trade": (
+        "Socratic-Trade",
+        "socratic-trade",
+        "Socratic Trade",
+        "SocraticTrade.com",
+        "Socratic.Trade",
+        "Socratic.Trade.com",
+        "socratic.trade",
+        "API-Socratic",  # rare
+        "ST",
+    ),
     "Socratic.Trade": (
         "Socratic.Trade",
         "Socratic.Trade.com",

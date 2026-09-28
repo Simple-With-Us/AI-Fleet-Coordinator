@@ -32,7 +32,7 @@ Cloud / no-Mac agents can **read** the live boards at `https://mac.jays.services
 
 | App | Live board | Repo mirror |
 |-----|-----------|-------------|
-| Socratic.Trade | `/Users/jay/apps/TRADING-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
+| Socratic-Trade | `/Users/jay/apps/TRADING-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
 | congress-trading-shared | `/Users/jay/apps/CONGRESS-SHARED-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
 | API-usage-monitor | `/Users/jay/apps/API-USAGE-MONITOR-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
 | Congress.Trade | `/Users/jay/apps/CONGRESS-TRADE-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |

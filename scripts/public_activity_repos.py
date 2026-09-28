@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 
 PUBLIC_REPOS = (
-    "Socratic.Trade",
+    "Socratic-Trade",
     "Congress.Trade",
     "Usage-Monitor",
     "congress-trading-shared",
@@ -26,6 +26,10 @@ PUBLIC_REPOS = (
     "Harness",
     "codecaps",
 )
+
+HISTORICAL_PUBLIC_REPO_ALIASES = {
+    "socratic.trade": "Socratic-Trade",
+}
 
 
 def select_public_repos(owner: str, requested: list[str], token: str) -> list[str]:

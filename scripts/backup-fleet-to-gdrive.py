@@ -107,7 +107,7 @@ def discover_code_git_dirs() -> list[str]:
     if not CODE_ROOT.is_dir():
         return extra
     for entry in sorted(CODE_ROOT.iterdir(), key=lambda p: p.name.lower()):
-        if not entry.is_dir():
+        if not entry.is_dir() or entry.is_symlink():
             continue
         if entry.name in SKIP_NAMES:
             continue
