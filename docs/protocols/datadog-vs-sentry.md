@@ -13,7 +13,7 @@
 
 Do **not** enable Datadog Session Replay and Sentry Session Replay on the same page.
 
-Fleet infrastructure telemetry goes to Sentry project **`fleet-infra`** (org `jays-services`);
+Fleet infrastructure telemetry goes to Sentry project **`fleet-infra`** (org `simple-with-us`);
 app-runtime errors stay in the app projects listed above. Conventions:
 
 - **Tag every event** with `agent:<YOUR-TAG>` and `app:<repo>`; fingerprint deliberately

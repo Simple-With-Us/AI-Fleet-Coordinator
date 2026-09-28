@@ -25,7 +25,7 @@
   },
   "vars": {
     "GITHUB_OWNER": "jaywedgeworth22",
-    "SENTRY_ORG": "jays-services",
+    "SENTRY_ORG": "simple-with-us",
     "DD_SITE": "us5.datadoghq.com",
     "RECALL_BASE": "https://recall.jays.services",
     "BOARD_BASE": "https://mac.jays.services",
