@@ -5,10 +5,17 @@ Exits 1 if any required file is missing a repo, acronym, live board, or
 DEFAULT_REPOS entry. Run from the AI-Fleet-Coordinator worktree:
 
     python3 scripts/check-fleet-registry.py
+
+Live-board checks compare against a real board checkout, which exists on
+operator seats but never on CI runners. With FLEET_BOARD_HOME set, the live
+checks run against that directory and a missing board fails the check. Without
+it, ~/apps is used when present; when neither exists the live checks are
+skipped and only the repository-portable assertions run.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -17,8 +24,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from public_activity_repos import PUBLIC_REPOS  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-APPS = Path.home() / "apps"
 REGISTRY = ROOT / "fleet-apps.json"
+
+# FLEET_BOARD_HOME opts the live-board checks into an explicit board checkout;
+# without it ~/apps is used when it exists (operator seats) and the live
+# checks are skipped when it does not (CI runners).
+_board_home_env = os.environ.get("FLEET_BOARD_HOME") or ""
+APPS = Path(_board_home_env) if _board_home_env else Path.home() / "apps"
 
 
 def load() -> dict:
@@ -43,6 +55,11 @@ def main() -> int:
     live_protocol = APPS / "EFFORT-LOG-PROTOCOL.md"
     live_sync = APPS / "AGENT-SYNC.md"
     live_quick = APPS / "AGENT-COORDINATION-QUICKSTART.md"
+    live_checks = APPS.is_dir()
+    if _board_home_env and not live_checks:
+        errors.append(f"FLEET_BOARD_HOME is not a directory: {APPS}")
+    elif not live_checks:
+        print(f"note: live board checks skipped (no FLEET_BOARD_HOME, {APPS} absent)")
 
     for app in apps:
         repo = app["repo"]
@@ -81,9 +98,10 @@ def main() -> int:
             if app.get("kind") != "infra":
                 errors.append(f"~/apps/AGENT-COORDINATION-QUICKSTART.md missing {repo} / {board}")
 
-        live_board = APPS / board
-        if not live_board.is_file():
-            errors.append(f"live board missing: {live_board}")
+        if live_checks:
+            live_board = APPS / board
+            if not live_board.is_file():
+                errors.append(f"live board missing: {live_board}")
 
         icon = app.get("iconFile")
         if app.get("hasAppIcon") and icon:
