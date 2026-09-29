@@ -20,6 +20,12 @@ jobs:
         cd scripts && python3 -m unittest discover fleet_rag/tests/ -v
     - name: Verify public activity boundary
       run: python3 scripts/test-public-activity.py
+    # The admin panel inlines its own copy of the app registry because the Worker
+    # has no filesystem.  Nothing compared the two, so a renamed repo silently
+    # turned its GitHub card row red (Socratic.Trade -> Socratic-Trade, a 301 the
+    # Worker will not follow).  This now fails the build instead.
+    - name: Verify fleet registry (incl. admin-panel APPS copy)
+      run: python3 scripts/check-fleet-registry.py
     - name: Set up Node
       uses: actions/setup-node@v4
       with:

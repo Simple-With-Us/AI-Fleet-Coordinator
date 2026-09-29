@@ -19,7 +19,7 @@ Access is the only thing standing in front of it.
 | **The Board** | `GET /findings/stats` and `GET /findings?status=open,in_progress` on `mac.jays.services` | Open and in-progress counts by severity, plus the P0 and P1 rows that need attention. |
 | **Coolify Applications** | `GET /api/v1/applications` and `/api/v1/servers` on `host.jays.services` | Container status (`running:healthy`, `exited:unhealthy`, …) per application, then server reachability. |
 | **GitHub Repositories** | One Search API call for every open PR the owner has, then the Actions API for the latest run on `main`, per repo in `fleet-apps.json` | Open PR count and the conclusion of the most recent `main` run.  The row links to that run.  Past 100 open PRs the total stays exact but the per-repo split is capped, and the card says so. |
-| **Vercel Projects** | `GET /v9/projects?limit=50`, retried per team when the personal scope is empty | Newest READY deployment when present (else `latestDeployments[0].readyState`) — READY, ERROR, BUILDING, CANCELED. |
+| **Vercel Projects** | `GET /v9/projects?limit=50`, retried per team when the personal scope is empty | Newest READY deployment when present (else `latestDeployments[0].readyState`) — READY is green, ERROR is red, everything else amber.  A **CANCELED** deployment is amber, not red: it is an abandoned or superseded build, and the production alias keeps serving the last READY one.  See "A canceled deploy is not a down service". |
 | **Sentry Issues** | `GET /organizations/simple-with-us/issues/?query=is:unresolved&statsPeriod=24h` | Unresolved issue count grouped by project slug, with the newest title. |
 | **PagerDuty Incidents** | `GET /incidents?statuses[]=triggered&statuses[]=acknowledged&limit=25&total=true` | Open incident titles and their service.  The headline uses `total`, not the page size, so a full page no longer reads as "exactly 25". |
 | **Datadog Monitors** | `GET /api/v1/monitor?page_size=100` on the `us5` site | Monitor counts by `overall_state`, then the alerting and warning monitors by name. |
@@ -61,7 +61,7 @@ seconds.  Worst case per section:
 | `recall` | 3 — health, stats, canary search |
 | `board` | 2 |
 | `coolify` | 2 |
-| `github` | 13 — one PR search plus one Actions call per repo (it was 24) |
+| `github` | 14 — one PR search plus one Actions call per repo (it was 24) |
 | `vercel` | 6 — projects, teams, and up to four team-scoped calls |
 | `sentry` | 1 |
 | `pagerduty` | 1 |
@@ -128,6 +128,21 @@ wrangler secret put MAC_COLLAB_TOKEN
 Values in `~/.secrets/global-api-keys` are quote-wrapped.  Strip the quotes before
 pasting, or the service answers 401 as if the token were revoked.
 
+Two of those values had drifted and were repaired on 2026-09-29, because the
+GitHub and Sentry cards were red for credential reasons rather than product
+reasons:
+
+| Worker secret | Was | Now | Symptom |
+|---|---|---|---|
+| `GITHUB_TOKEN` | the handoff `GITHUB_TOKEN` (HTTP 401) | handoff `GITHUB_ADMIN_PAT` | GitHub card `ok: false`, "PR search: HTTP 401 — Bad credentials" |
+| `SENTRY_AUTH_TOKEN` | the handoff `SENTRY_AUTH_TOKEN` (HTTP 403, no org scope) | handoff `SENTRY_AUTH_TOKEN_FULLSCOPE` | Sentry card `ok: false`, "You do not have permission to perform this action" |
+
+The handoff file's own `GITHUB_TOKEN` and `GITHUB_MCP_TOKEN` are both dead
+(`401`) as of this writing, and its `SENTRY_AUTH_TOKEN` lacks the `simple-with-us`
+org scope.  Do not re-paste those three into any app.  A credential that a card
+reports as 401/403 is a *credential* problem — fix the token, not the card.
+`SENTRY_ORG_TOKEN_MINIMAX` is also 403 on that org.
+
 The Fleet Recall card needs three of these together: `RECALL_API_TOKEN` for the
 service bearer, and `CF_ACCESS_CLIENT_ID` plus `CF_ACCESS_CLIENT_SECRET` for the
 Cloudflare Access service token in front of the host.  `GET /health` is public and
@@ -164,22 +179,67 @@ Local mode needs no Cloudflare login.  Without secrets, the Endpoints card retur
 real probe results and every secret-backed card reports "Not configured", which is
 the intended degraded state.
 
+To reproduce the *real* cards, put the secrets in `.dev.vars` (one `NAME="value"`
+per line).  **It is gitignored and must stay that way** — the Worker holds every
+fleet API token, so a committed `.dev.vars` leaks the whole fleet:
+
+```bash
+umask 077
+printf 'GITHUB_TOKEN="%s"\n' "$GITHUB_ADMIN_PAT" > .dev.vars
+```
+
+Check it is ignored before you ever run `git add -A` here:
+
+```bash
+git check-ignore -v scripts/admin-panel/.dev.vars
+```
+
+## A canceled deploy is not a down service
+
+`pickVercelDeployment` prefers the newest `READY` deployment, but Vercel only
+carries a short window in `latestDeployments`.  Once a project's recent production
+deploys are **all** canceled, no `READY` entry is left to find, the helper falls
+through to the newest canceled one, and the card used to paint the whole thing
+red.  That was a false alarm: `botfleet.app` and `contactlogo.com` both answer
+`200`, and the Endpoints card said so on the same page.
+
+Only a build that actually **failed** is a service failure.  `ERROR` is red.
+`CANCELED`, `BUILDING`, `QUEUED`, and `INITIALIZING` are amber, and the headline
+separates them — "5 projects, 0 failed, 2 without a ready deployment" — so an
+ambiguous row is never silently reported as an outage.
+
+## A renamed repo silently loses its CI status
+
+`apiJson` never follows redirects, and that is deliberate: a followed hop would
+hand `CF-Access-Client-Id` / `CF-Access-Client-Secret` to whatever host the
+`Location` header names, and each hop is an uncounted subrequest.
+
+The cost is that GitHub answers a renamed repo with a `301`, so a stale `repo:`
+in `APPS` produced a permanent `HTTP 301 … not followed` on that row and took
+`ok` to `false` for the whole card.  `Socratic-Trade` shipped here as
+`Socratic.Trade` and did exactly that.
+
+`scripts/check-fleet-registry.py` now compares the inlined `APPS` array against
+`fleet-apps.json` in both directions — a registry app missing from the panel, and
+a panel repo that is not in the registry — so this fails a check instead of
+quietly going red.  Run it after any repo rename.
+
 ## Keeping it in sync
 
 `APPS` in `src/index.js` mirrors `apps[]` from `fleet-apps.json` at the repo root.
-The Worker has no filesystem, so the registry is inlined, and
-`scripts/check-fleet-registry.py` does **not** check this copy — drift here is
-silent.  Add a row when an app is onboarded, and add its public URL to `ENDPOINTS`
-in the same file.
+The Worker has no filesystem, so the registry is inlined, and that copy is checked
+by `scripts/check-fleet-registry.py` (see above).  Add a row when an app is
+onboarded, and add its public URL to `ENDPOINTS` in the same file.
 
 Deliberate absences and retired probes:
 
 - **`admin.jays.services` is never probed.**  A Worker probing its own hostname
   spends a subrequest to learn what it already knows.
 - **Hog Hunter has no endpoint row.**  It is a local-only Mac app with no product
-  domain.  CodeCaps is probed at `github.io/codecaps/` (not the retired
-  `agent-bar/` path), and is not in `fleet-apps.json` yet, so it has no `APPS`
-  row either.
+  domain.  CodeCaps is probed at its custom domain `codecaps.simplewithus.com`
+  (the `gh-pages` branch carries that CNAME; the `github.io` path is
+  case-sensitive and the lower-case spelling 404s), and is not in
+  `fleet-apps.json` yet, so it has no `APPS` row either.
 - **Scout is retired (2026-09-09).**  Do not probe `scout.jays.services`.
 - **`autorotate.codes` is retired (NXDOMAIN).**  Probe `autorotate.vercel.app`
   instead; Autorotate remains in `APPS` for the GitHub card.

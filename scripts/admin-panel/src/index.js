@@ -74,7 +74,9 @@ const ENDPOINTS = [
   // autorotate.codes is NXDOMAIN (retired); live product is on Vercel.
   { name: 'Autorotate', url: 'https://autorotate.vercel.app' },
   { name: 'ContactLogo', url: 'https://contactlogo.com' },
-  { name: 'CodeCaps', url: 'https://jaywedgeworth22.github.io/codecaps/' },
+  // The gh-pages CNAME is codecaps.simplewithus.com; the github.io path is
+  // case-sensitive and the lower-case /codecaps/ spelling 404s.
+  { name: 'CodeCaps', url: 'https://codecaps.simplewithus.com/' },
   { name: 'Fleet Activity', url: 'https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/' },
   { name: 'Start Page', url: 'https://start.jays.services' },
   { name: 'The Board', url: 'https://mac.jays.services/board' },
@@ -96,7 +98,7 @@ const ENDPOINTS = [
 // retired agent-bar/ path).  Autorotate stays in APPS for GitHub; its public
 // probe is autorotate.vercel.app — autorotate.codes and Scout are retired.
 const APPS = [
-  { repo: 'Socratic.Trade', name: 'Socratic Trade', kind: 'product' },
+  { repo: 'Socratic-Trade', name: 'Socratic Trade', kind: 'product' },
   { repo: 'Congress.Trade', name: 'Congress.Trade', kind: 'product' },
   { repo: 'Usage-Monitor', name: 'Usage Monitor', kind: 'product' },
   { repo: 'congress-trading-shared', name: 'congress-trading-shared', kind: 'library' },
@@ -108,6 +110,7 @@ const APPS = [
   { repo: 'BotFleet', name: 'BotFleet.app', kind: 'product' },
   { repo: 'HogHunter', name: 'Hog Hunter', kind: 'product' },
   { repo: 'fleet-ops', name: 'Fleet Ops', kind: 'infra' },
+  { repo: 'Harness', name: 'Harness', kind: 'infra' },
 ];
 
 // Vercel personal projects come back on the first call; team-scoped ones need
@@ -718,8 +721,12 @@ async function checkVercel(env) {
   }
 
   const items = projects.map((p) => {
-    // latestDeployments[0] can be a fresh CANCELED while an older READY
-    // production deploy is still live (botfleet / personal-site false-warn).
+    // A project whose recent production deploys are ALL canceled has no READY
+    // entry left in `latestDeployments` — Vercel only carries a short window —
+    // so `pickVercelDeployment` falls through to the newest canceled one.  That
+    // says a build attempt was abandoned, NOT that the site is unreachable, and
+    // treating it as a failure contradicted the Endpoints card (botfleet.app and
+    // contactlogo.com both answer 200).  `vercelState` now owns that judgement.
     const dep = pickVercelDeployment(p.latestDeployments);
     const readyState = dep.readyState || dep.state || 'UNKNOWN';
     return {
@@ -732,11 +739,12 @@ async function checkVercel(env) {
   }).sort((a, b) => a.name.localeCompare(b.name));
 
   const bad = items.filter((i) => i.state === 'down').length;
+  const soft = items.filter((i) => i.state === 'warn').length;
   return {
     ok: scopeErrors.length === 0,
-    state: bad > 0 ? 'down' : (scopeErrors.length ? 'warn' : 'up'),
+    state: bad > 0 ? 'down' : (scopeErrors.length || soft ? 'warn' : 'up'),
     summary: items.length
-      ? `${items.length} projects, ${bad === 0 ? 'no failed deployments' : `${bad} failed`}${scopes.length ? ` (teams: ${scopes.join(', ')})` : ''}`
+      ? `${items.length} projects, ${bad} failed${soft ? `, ${soft} without a ready deployment` : ''}${scopes.length ? ` (teams: ${scopes.join(', ')})` : ''}`
       : 'No projects visible to this token',
     items,
     error: scopeErrors.length ? `Teams: ${scopeErrors.join(' · ')}` : undefined,
@@ -757,11 +765,16 @@ function pickVercelDeployment(deployments) {
   return ready || list[0] || {};
 }
 
+// Only a build that actually FAILED is a service failure.  CANCELED is an
+// abandoned or superseded attempt: the production alias keeps serving the last
+// READY build, so the project is not down and must not paint the card red.
+// Reporting it as `down` made a healthy project contradict its own Endpoints
+// row (botfleet 2026-09-29).
 function vercelState(readyState) {
   const s = String(readyState).toUpperCase();
   if (s === 'READY') return 'up';
-  if (s === 'ERROR' || s === 'CANCELED') return 'down';
-  if (s === 'BUILDING' || s === 'QUEUED' || s === 'INITIALIZING') return 'warn';
+  if (s === 'ERROR') return 'down';
+  if (s === 'CANCELED' || s === 'BUILDING' || s === 'QUEUED' || s === 'INITIALIZING') return 'warn';
   return 'warn';
 }
 

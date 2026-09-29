@@ -102,6 +102,28 @@ def main() -> int:
         else:
             colors[color] = repo
 
+    # The admin panel inlines its own copy of the registry because the Worker has
+    # no filesystem, and nothing else compared the two.  That drift is invisible
+    # until the panel goes red: a renamed repo answers GitHub with a 301, the
+    # Worker refuses to follow redirects (correctly — it must not leak auth
+    # headers cross-origin), and the row silently loses its CI status forever.
+    # Socratic-Trade shipped as `Socratic.Trade` and did exactly that.
+    panel = ROOT / "scripts" / "admin-panel" / "src" / "index.js"
+    if panel.is_file():
+        panel_src = panel.read_text(errors="replace")
+        block = re.search(r"const APPS = \[(.*?)\n\];", panel_src, re.S)
+        if not block:
+            errors.append("admin-panel src/index.js has no `const APPS = [ ... ];` block")
+        else:
+            panel_repos = set(re.findall(r"repo:\s*'([^']+)'", block.group(1)))
+            registry_repos = {a["repo"] for a in apps}
+            for repo in sorted(registry_repos - panel_repos):
+                errors.append(f"admin-panel APPS missing repo {repo}")
+            for repo in sorted(panel_repos - registry_repos):
+                errors.append(f"admin-panel APPS has repo {repo}, which is not in fleet-apps.json")
+    else:
+        errors.append("missing scripts/admin-panel/src/index.js")
+
     for wf_name in ("fleet-activity-site.yml", "agent-calendar.yml"):
         wf = ROOT / ".github" / "workflows" / wf_name
         if not wf.is_file():

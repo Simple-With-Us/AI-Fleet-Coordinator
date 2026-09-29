@@ -1,3 +1,9 @@
 # Local wrangler dev state (miniflare caches, bundles, observability traces).
 .wrangler/
 node_modules/
+
+# `wrangler dev` reads real fleet credentials from .dev.vars.  It is a secret
+# file: the panel holds every fleet API token, so a committed .dev.vars leaks the
+# whole fleet.  Never remove this line to make a dev run "work".
+.dev.vars
+.dev.vars.*
