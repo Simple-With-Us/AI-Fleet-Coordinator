@@ -100,7 +100,6 @@ urgent = ("OBJECTION", "HALT", "PROD DOWN", "URGENT", "HEADS-UP", "DEPLOY CLAIM"
 SEAT_ALIASES = {
     "MM": ["MINIMAX", "MAVIS"],
     "HARNESS": ["DEEPSEEK", "DSH"],
-    "MMR": [],
 }
 # This seat's tags, canonical first. Used for BOTH the self-filter and the
 # recipient match so a message is never simultaneously "mine" and "for me".
