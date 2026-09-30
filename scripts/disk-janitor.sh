@@ -30,6 +30,9 @@
 # `junk`) so any future `clean junk` call -- from this script, from
 # ~/apps/mac-auto-cleanup.sh's own unconditional `cleanmymac clean --force`, or
 # from CleanMyMac's own background Smart Care agent -- skips them too.
+# 2026-09-30 (Claude): memory/load pressure gate.  On a thrashing Mac (load1 > 40 or
+# swap >= 90%) the run logs PRESSURE-SKIP, does only the cheap truncations, and exits --
+# no git/gh/find-over-worktrees phase, no CleanMyMac.  See the gate below the lock.
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin:$HOME/.npm-global/bin"
 # git must never block on a credential prompt (no tty under launchd) or a network stall:
@@ -53,6 +56,8 @@ CRIT_FREE=${CRIT_FREE:-30}  # below this -> destructive `uv cache clean` allowed
 DROP_ALERT=6       # free dropped at least this much since last run -> flag it
 IDLE_HRS=4         # a worktree is "abandoned" (dep-reapable) after this many hours untouched
 PM2_LOG_CAP_MB=50  # truncate any single pm2 log larger than this (pure waste, always)
+JANITOR_MAX_LOAD=${JANITOR_MAX_LOAD:-40}          # load1 above this -> thrashing -> PRESSURE-SKIP (cheap truncations only)
+JANITOR_MAX_SWAP_PCT=${JANITOR_MAX_SWAP_PCT:-90}  # swap used% at/above this -> thrashing -> PRESSURE-SKIP
 
 # ---- old-worktree retirement (removes the whole checkout dir; branch+commits survive) ----
 REAP_WORKTREES=${REAP_WORKTREES:-1}   # master switch: 1 = retire old merged worktrees every run, 0 = off
@@ -152,6 +157,23 @@ if [ "${JANITOR_LIB_ONLY:-0}" = "1" ]; then
 fi
 
 mkdir -p "$DIR"
+# 2026-09-30 (Claude): kill a process AND its descendants.  Killing only a stuck holder's
+# pid (or a watchdog's direct child) re-parented its git/find/gh children to launchd, where
+# they kept running and kept hammering a thrashing Mac.  Freeze each node before listing its
+# children so a busy loop cannot spawn the next child mid-walk, then kill deepest first.
+# No `ps`: pgrep -P lists children by pid only.
+janitor_kill_tree() {
+  local p="$1" c
+  [ -n "$p" ] && [ "$p" != "$$" ] && [ "$p" != "1" ] || return 0
+  kill -STOP "$p" 2>/dev/null || return 0     # already gone (or not ours) -> nothing to do
+  for c in $(pgrep -P "$p" 2>/dev/null); do janitor_kill_tree "$c"; done
+  kill -9 "$p" 2>/dev/null || true
+}
+# True when <pid> is a live janitor process.  After a 2h-old lock the pid may have been
+# recycled; never tree-kill an unrelated process that merely inherited the number.
+janitor_is_holder() {
+  kill -0 "$1" 2>/dev/null && pgrep -f 'janitor\.sh' 2>/dev/null | grep -qx "$1"
+}
 # single-run lock with PID-aware + heartbeat self-heal (BF-HOUSEKEEPER 2026-09-25).
 # mtime-only steal left a wedged pid 42941 wedging every tick from 18:22 onward
 # (log silent since 15:39, ~0 CPU, lock held). Round 1 added kill -0 + 2h age.
@@ -185,7 +207,12 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     # Try a graceful kill of the wedged holder (round-1 evidence: even SIGTERM
     # to a stuck child doesn't always release the lock dir, but a final SIGKILL
     # on the holder is safe -- we own the next tick).
-    [ -n "$existing_pid" ] && kill -9 "$existing_pid" 2>/dev/null || true
+    # 2026-09-30 (Claude): kill the holder's whole process tree, not just its pid -- a bare
+    # kill of the holder orphans its git status/find/gh children to launchd, where they keep
+    # running.  Skipped when the pid is no longer a janitor process (recycled pid).
+    if [ -n "$existing_pid" ] && janitor_is_holder "$existing_pid"; then
+      janitor_kill_tree "$existing_pid"
+    fi
     rm -rf "$LOCK" 2>/dev/null || true
     mkdir "$LOCK" 2>/dev/null || exit 0
   else
@@ -232,7 +259,7 @@ janitor_watchdog() {
     fi
   done
   if kill -0 "$wd_pid" 2>/dev/null; then
-    kill -9 "$wd_pid" 2>/dev/null
+    janitor_kill_tree "$wd_pid"   # 2026-09-30 (Claude): was kill -9 of the direct child only; `sh -c find` left its find orphaned
     printf '%s  WATCHDOG killed phase=%s after %ss (pid=%s)\n' \
       "$(date '+%Y-%m-%d %H:%M')" "$label" "$secs" "$wd_pid" >> "$LOG"
     rm -f "$tmp_out"
@@ -244,6 +271,66 @@ janitor_watchdog() {
   rm -f "$tmp_out"
   return $rc
 }
+
+# Cheap, pure-waste, regenerable truncations: one bounded directory each, no fan-out over
+# repos or worktrees, no `du` of big trees, no network.  Shared by the normal run (below)
+# and by the PRESSURE-SKIP path, which runs nothing else.  Appends to the global $actions.
+janitor_cheap_truncations() {
+  # --- cap runaway pm2 logs ---
+  janitor_heartbeat "pmlogs"
+  local n_trunc n_tdb UT
+  n_trunc=$(find "$HOME_DIR/.pm2/logs" -type f -name '*.log' -size +${PM2_LOG_CAP_MB}M 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${n_trunc:-0}" -gt 0 ]; then
+    find "$HOME_DIR/.pm2/logs" -type f -name '*.log' -size +${PM2_LOG_CAP_MB}M -exec sh -c ': > "$1"' _ {} \; 2>/dev/null
+    actions="${actions}pm2logs "
+  fi
+  # --- reap leftover vitest temp SQLite DBs (pure waste; grew to 130 GB once) ---
+  # Every `npm test` run writes per-test-file temp DBs (agentic-*.db/-wal/-shm) into the
+  # user temp dir and never deletes them; the fleet runs the suite constantly. 6h age
+  # filter keeps any live/recent test run untouched. getconf resolves the per-login temp
+  # dir, so this works on both the CLAUDE and MONET macOS accounts.
+  janitor_heartbeat "tmptestdb"
+  UT="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null | sed 's:/*$::')"
+  if [ -n "$UT" ] && [ -d "$UT" ]; then
+    n_tdb=$(find "$UT" -maxdepth 1 -name 'agentic-*' -mmin +360 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${n_tdb:-0}" -gt 0 ]; then
+      find "$UT" -maxdepth 1 -name 'agentic-*' -mmin +360 -delete 2>/dev/null
+      actions="${actions}tmp-testdb(${n_tdb}) "
+    fi
+  fi
+}
+
+# 2026-09-30 (Claude): memory/load pressure gate, evaluated right after the lock is taken.
+# This 16 GiB Mac sat at load 200-990 with swap 90-98% full for days, and every 30-min tick
+# under LOW_FREE/PRESSURE_FREE ran the full git fetch x12 plus per-worktree git status,
+# find, merge-base and gh fan-out back to back (one tick ran 3h07m with repeated WATCHDOG
+# kills) -- the janitor was adding to the thrash it exists to relieve.  Same rule as the
+# housekeeper skill: load1 > JANITOR_MAX_LOAD or swap >= JANITOR_MAX_SWAP_PCT means
+# thrashing, so do the cheap truncations only and skip every git/gh/find-over-worktrees
+# phase, the du buckets, and all CleanMyMac calls.  The next tick re-evaluates, so full
+# runs resume on their own once the Mac settles.  Nothing here reads the repos.
+janitor_load1() { sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}'; }
+# vm.swapusage: "total = 10240.00M  used = 9401.44M  free = 838.56M  (encrypted)" -> used%
+# (units can be K/M/G; total=0 means no swap -> 0%).
+janitor_swap_pct() {
+  sysctl -n vm.swapusage 2>/dev/null | awk '
+    function mb(v,   u, n) { u = substr(v, length(v)); n = substr(v, 1, length(v) - 1) + 0
+      if (u == "G") n *= 1024; else if (u == "K") n /= 1024; return n }
+    { for (i = 1; i <= NF; i++) { if ($i == "total") t = mb($(i + 2)); if ($i == "used") u = mb($(i + 2)) } }
+    END { if (t > 0) printf "%d\n", (u * 100) / t + 0.5; else print 0 }'
+}
+load1=$(janitor_load1); load1=${load1:-0}
+swap_pct=$(janitor_swap_pct); swap_pct=${swap_pct:-0}
+if awk -v l="$load1" -v m="$JANITOR_MAX_LOAD" 'BEGIN { exit !(l + 0 > m + 0) }' \
+   || [ "$swap_pct" -ge "$JANITOR_MAX_SWAP_PCT" ] 2>/dev/null; then
+  printf '%s  PRESSURE-SKIP load=%s swap=%s%% (cheap truncations only)\n' \
+    "$(date '+%Y-%m-%d %H:%M')" "$load1" "$swap_pct" >> "$LOG"
+  actions=""
+  janitor_cheap_truncations
+  [ -n "$actions" ] && printf '%s  PRESSURE-SKIP action=%s\n' "$(date '+%Y-%m-%d %H:%M')" "$actions" >> "$LOG"
+  tail -n 500 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
+  exit 0   # EXIT trap releases the lock
+fi
 
 now="$(date '+%Y-%m-%d %H:%M')"
 freek() {
@@ -290,30 +377,11 @@ pm2_k=$(janitor_duk 10 "duk-pm2"    "$HOME_DIR/.pm2/logs")
 
 actions=""
 
-# --- ALWAYS (cheap, pure waste): cap runaway pm2 logs + tidy stale worktree registry ---
-janitor_heartbeat "pmlogs"
-n_trunc=$(find "$HOME_DIR/.pm2/logs" -type f -name '*.log' -size +${PM2_LOG_CAP_MB}M 2>/dev/null | wc -l | tr -d ' ')
-if [ "${n_trunc:-0}" -gt 0 ]; then
-  find "$HOME_DIR/.pm2/logs" -type f -name '*.log' -size +${PM2_LOG_CAP_MB}M -exec sh -c ': > "$1"' _ {} \; 2>/dev/null
-  actions="${actions}pm2logs "
-fi
+# --- ALWAYS (cheap, pure waste): cap runaway pm2 logs + reap leftover vitest temp DBs ---
+janitor_cheap_truncations
+# --- ALWAYS: tidy stale worktree registry ---
 janitor_heartbeat "wtprune"
 for r in "${REPOS[@]}"; do git -C "$r" worktree prune 2>/dev/null; done
-
-# --- ALWAYS: reap leftover vitest temp SQLite DBs (pure waste; grew to 130 GB once) ---
-# Every `npm test` run writes per-test-file temp DBs (agentic-*.db/-wal/-shm) into the
-# user temp dir and never deletes them; the fleet runs the suite constantly. 6h age
-# filter keeps any live/recent test run untouched. getconf resolves the per-login temp
-# dir, so this works on both the CLAUDE and MONET macOS accounts.
-janitor_heartbeat "tmptestdb"
-UT="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null | sed 's:/*$::')"
-if [ -n "$UT" ] && [ -d "$UT" ]; then
-  n_tdb=$(find "$UT" -maxdepth 1 -name 'agentic-*' -mmin +360 2>/dev/null | wc -l | tr -d ' ')
-  if [ "${n_tdb:-0}" -gt 0 ]; then
-    find "$UT" -maxdepth 1 -name 'agentic-*' -mmin +360 -delete 2>/dev/null
-    actions="${actions}tmp-testdb(${n_tdb}) "
-  fi
-fi
 
 # --- ALWAYS: retire OLD, fully-merged, CLEAN, idle worktrees (removes the checkout dir only) ---
 # `git worktree remove` deletes ONLY the working directory. The branch ref and every commit it
