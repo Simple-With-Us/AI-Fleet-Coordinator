@@ -300,6 +300,19 @@ as app `COOLIFY_API_TOKEN`. See `AGENT-SYNC.md`.
 
 ---
 
+## Offboarding An App
+
+The inverse of onboarding.  Do these in order, each through a `claude/*` lane and PR in its owning repo.  Leave historical records intact (dated effort-log rows, closed board rows, merged PR text, old notes).
+
+1. Land a "Retired" banner in the repo README that points at the successor, then close open issues and PRs with a one-line comment and archive the repo (`gh repo archive`).  Disable its workflows and remove its Actions secrets.
+2. Stop and unload any LaunchAgent or pm2 job, and mark its row **Retired** in `MAC-LOCAL-PROCESSES.md`, then refresh the Apple Note.
+3. Move local checkouts and worktrees to the Trash (never `rm -rf`), after pushing any unpushed work to an `archive/<name>` branch.
+4. Remove the row from `fleet-apps.json`, the `DEFAULT_REPOS` and `FLEET_REPOS` lists, the ios-fleet `apps.json`, and `ios-app-versions.json`, then run `check-fleet-registry.py`.
+5. Close open board rows with a resolution that names the successor, and add a final RETIRED row to the live effort board.
+6. List App Store Connect, Sentry, and Infisical cleanup as owner follow-ups.  ASC app records cannot be deleted once builds exist.
+
+---
+
 ## Definition of done
 
 - [ ] `~/Code/<App>` is a git checkout of `jaywedgeworth22/<repo>` on `main`

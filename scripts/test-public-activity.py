@@ -64,7 +64,7 @@ class PublicActivityTests(unittest.TestCase):
             return Reply({"private": True, "visibility": "private", "owner": {"login": "jaywedgeworth22"}})
 
         with patch("public_activity_repos.urllib.request.urlopen", side_effect=api):
-            selected = select_public_repos("jaywedgeworth22", ["BotFleet", "fleet-ops", "MiniMax-ios", "ContactLogo"], "fixture")
+            selected = select_public_repos("jaywedgeworth22", ["BotFleet", "fleet-ops", "Harness", "ContactLogo"], "fixture")
         self.assertEqual(selected, ["BotFleet"])
 
     def test_visibility_api_failure_is_fail_closed(self) -> None:
