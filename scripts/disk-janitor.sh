@@ -82,7 +82,7 @@ REPOS=(
 # Suffixed per-lane trees (trading-grok-litestream-cascade) remain reaped
 # when merged+idle.  Retired-KIMI seat trees reap when idle (not on a "kimi"
 # substring, and never by skipping the idle check).
-KEEP_RE="^(/Users/jay/Code/Socratic.Trade|/Users/jay/Code/Congress.Trade|/Users/jay/Code/Usage-Monitor|/Users/jay/Code/congress-trading-shared|/Users/jay/Code/DealDex|/Users/jay/Code/Personal-Site|/Users/jay/Code/Autorotate|/Users/jay/Code/ContactLogo|/Users/jay/Code/AI-Fleet-Coordinator|/Users/jay/Code/BotFleet|/Users/jay/Code/fleet-ops|/Users/jay/Code/botfleet-site|/Users/jay/apps/[a-z0-9]+-(claude|codex|live|antigravity|cursor|monet|grok|grok-build|deepseek)|/Users/jay/apps/(grok-acp-runtime|agy-acp-runtime|shellular-runtime|mac-collab|seat-mcp|KIMI-SALVAGE-2026-08-22|botfleet-server))$"
+KEEP_RE="^(/Users/jay/Code/Socratic.Trade|/Users/jay/Code/Congress.Trade|/Users/jay/Code/Usage-Monitor|/Users/jay/Code/congress-trading-shared|/Users/jay/Code/DealDex|/Users/jay/Code/Personal-Site|/Users/jay/Code/Autorotate|/Users/jay/Code/ContactLogo|/Users/jay/Code/AI-Fleet-Coordinator|/Users/jay/Code/BotFleet|/Users/jay/Code/fleet-ops|/Users/jay/Code/botfleet-site|/Users/jay/apps/[a-z0-9]+-(claude|codex|live|antigravity|cursor|monet|grok|grok-build|deepseek|minimax|mm)|/Users/jay/apps/(grok-acp-runtime|agy-acp-runtime|shellular-runtime|mac-collab|seat-mcp|KIMI-SALVAGE-2026-08-22|botfleet-server))$"
 
 # Retired-KIMI seat, nested agent scratch, or /tmp.  Not a substring:
 # branch cursor/kimi-audit-def (ST #3044, owner-kept) must not match.
@@ -98,7 +98,7 @@ janitor_is_retired_kimi_or_scratch() {
   case "$base" in
     *-kimi|*-kimi-*)
       case "$base" in
-        *-claude-*|*-codex-*|*-live-*|*-antigravity-*|*-cursor-*|*-monet-*|*-grok-*|*-grok-build-*|*-deepseek-*)
+        *-claude-*|*-codex-*|*-live-*|*-antigravity-*|*-cursor-*|*-monet-*|*-grok-*|*-grok-build-*|*-deepseek-*|*-minimax-*|*-mm-*)
           return 1 ;;
       esac
       return 0 ;;
@@ -152,22 +152,108 @@ if [ "${JANITOR_LIB_ONLY:-0}" = "1" ]; then
 fi
 
 mkdir -p "$DIR"
-# single-run lock (skip this tick if a previous run is still going).
-# Steal if the lock dir is older than 2h -- a crash leftover wedged this
-# job from 2026-08-11 until 2026-08-16 (every 30min tick exited 0).
+# single-run lock with PID-aware + heartbeat self-heal (BF-HOUSEKEEPER 2026-09-25).
+# mtime-only steal left a wedged pid 42941 wedging every tick from 18:22 onward
+# (log silent since 15:39, ~0 CPU, lock held). Round 1 added kill -0 + 2h age.
+# Round 2 (BF-FIXER 2026-09-25 follow-up): lead 78392 held the lock for 1h+
+# at 0.05s CPU with child 79875 → grandchild 80247 still alive -- PID alive
+# AND lock_age < 2h, so round 1 self-heal bowed out and let the wedge persist
+# for 5 hours (every 30-min tick exited 0 at the lock block, log silent).
+# Fix: $LOCK/heartbeat (epoch seconds, updated by janitor_heartbeat before each
+# major phase) detects live-but-stuck holders. If existing_pid is alive but
+# $LOCK/heartbeat is older than HEARTBEAT_STUCK_SECS, the holder is wedged --
+# steal and log it. 90s covers any healthy single run; the always-pmlogs +
+# always-wtprune + always-tmptestdb phases each heartbeat, so an early-phase
+# wedge is caught within ~90s by the next launchd tick instead of 2h.
 if ! mkdir "$LOCK" 2>/dev/null; then
+  existing_pid=""
+  [ -f "$LOCK/pid" ] && existing_pid=$(cat "$LOCK/pid" 2>/dev/null | tr -d '[:space:]')
   lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || echo 0) ))
-  if [ "$lock_age" -gt 7200 ]; then
-    rmdir "$LOCK" 2>/dev/null || true
+  hb_age=$lock_age
+  [ -f "$LOCK/heartbeat" ] && hb_age=$(( $(date +%s) - $(cat "$LOCK/heartbeat" 2>/dev/null | tr -d '[:space:]') ))
+  steal=0; steal_reason=""
+  if [ -n "$existing_pid" ] && ! kill -0 "$existing_pid" 2>/dev/null; then
+    steal=1; steal_reason="stale pid $existing_pid (dead), lock_age=${lock_age}s"
+  elif [ -n "$existing_pid" ] && [ "$hb_age" -gt 90 ]; then
+    steal=1; steal_reason="stuck live pid $existing_pid (heartbeat age ${hb_age}s > 90s), lock_age=${lock_age}s"
+  elif [ "$lock_age" -gt 7200 ]; then
+    steal=1; steal_reason="lock age ${lock_age}s > 7200s"
+  fi
+  if [ "$steal" = "1" ]; then
+    printf '%s  LOCK self-heal: %s, stealing lock\n' \
+      "$(date '+%Y-%m-%d %H:%M')" "$steal_reason" >> "$LOG"
+    # Try a graceful kill of the wedged holder (round-1 evidence: even SIGTERM
+    # to a stuck child doesn't always release the lock dir, but a final SIGKILL
+    # on the holder is safe -- we own the next tick).
+    [ -n "$existing_pid" ] && kill -9 "$existing_pid" 2>/dev/null || true
+    rm -rf "$LOCK" 2>/dev/null || true
     mkdir "$LOCK" 2>/dev/null || exit 0
   else
     exit 0
   fi
 fi
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+printf '%s\n' "$$" > "$LOCK/pid"
+printf '%s\n' "$(date +%s)" > "$LOCK/heartbeat"
+trap 'rm -rf "$LOCK" 2>/dev/null' EXIT
+# Phase heartbeat helper. Writes a marker line to janitor.log AND updates
+# $LOCK/heartbeat so the next launchd tick can detect a stuck live holder
+# (BF-FIXER 2026-09-25 follow-up to BF-HOUSEKEEPER's janitor hang report).
+janitor_heartbeat() {
+  printf '%s  PHASE %s pid=%s free=%sG\n' \
+    "$(date '+%Y-%m-%d %H:%M')" "$1" "$$" "$free" >> "$LOG"
+  printf '%s\n' "$(date +%s)" > "$LOCK/heartbeat" 2>/dev/null || true
+}
+
+# First heartbeat so a silent log between acquire and "pmlogs" provably means
+# a hang inside freek/duk (now bounded) -- not a missing heartbeat path.
+janitor_heartbeat "lock-acquired"
+
+# Phase watchdog: run the given command in the background and SIGKILL it after
+# N seconds (macOS has no GNU `timeout`, exit 127). Prints a timeout line to the
+# log and returns 124 so the caller can branch. Use only on phases where a hang
+# is the worst case (BF-HOUSEKEEPER 2026-09-25). Refreshes $LOCK/heartbeat
+# every 5s of waiting so the next launchd tick sees a live (not stuck) holder
+# (BF-FIXER 2026-09-25 follow-up).
+janitor_watchdog() {
+  # usage: janitor_watchdog <seconds> <label> -- <cmd...>
+  local secs="$1" label="$2"; shift 2
+  [ "$1" = "--" ] && shift
+  local tmp_out
+  tmp_out=$(mktemp -t jwd 2>/dev/null || echo "/tmp/jwd.$$.$RANDOM")
+  "$@" >"$tmp_out" 2>&1 &
+  local wd_pid=$!
+  local waited=0
+  while kill -0 "$wd_pid" 2>/dev/null && [ "$waited" -lt "$secs" ]; do
+    sleep 1; waited=$((waited + 1))
+    # Refresh lock heartbeat every 5s so the next launchd tick doesn't mistake
+    # this run for stuck (we're inside a bounded watchdog, NOT a hang).
+    if [ $((waited % 5)) -eq 0 ]; then
+      printf '%s\n' "$(date +%s)" > "$LOCK/heartbeat" 2>/dev/null || true
+    fi
+  done
+  if kill -0 "$wd_pid" 2>/dev/null; then
+    kill -9 "$wd_pid" 2>/dev/null
+    printf '%s  WATCHDOG killed phase=%s after %ss (pid=%s)\n' \
+      "$(date '+%Y-%m-%d %H:%M')" "$label" "$secs" "$wd_pid" >> "$LOG"
+    rm -f "$tmp_out"
+    return 124
+  fi
+  wait "$wd_pid" 2>/dev/null
+  local rc=$?
+  cat "$tmp_out"
+  rm -f "$tmp_out"
+  return $rc
+}
 
 now="$(date '+%Y-%m-%d %H:%M')"
-freek() { df -k "$DATA_VOL" | tail -1 | awk '{print $4}'; }   # KiB free
+freek() {
+  # BF-FIXER 2026-09-25 follow-up: bound df at 5s. A hung `df` (NFS / SMB
+  # timeout, dead APFS snapshot) used to be enough to wedge a tick; now
+  # returns 0 KiB on timeout so the rest of the run still completes.
+  local out
+  out=$(janitor_watchdog 5 "freek" -- bash -c "df -k '$DATA_VOL' 2>/dev/null | tail -1 | awk '{print \$4}'") || out=""
+  if [ -z "$out" ]; then echo 0; else echo "$out"; fi
+}
 gib() { echo $(( ${1:-0} / 1024 / 1024 )); }
 
 duk() { local k; k=$(du -sk "$1" 2>/dev/null | awk '{print $1}'); echo "${k:-0}"; }  # KiB, 0 if absent
@@ -185,20 +271,33 @@ prev_free=$(sed -n 's/^free=//p' "$STATE" 2>/dev/null); prev_free=${prev_free:-$
 delta=$(( free - prev_free ))
 # STALE_DAYS floor is 7 days even under low disk pressure.  See docs/HOUSEKEEPER.md.
 
-# cheap bucket sizes (bounded dirs only — keeps the run brief)
-npm_k=$(duk "$HOME_DIR/.npm"); uv_k=$(duk "$HOME_DIR/.cache/uv")
-livec_k=$(duk /Users/jay/apps/trading-live/.next/cache)
-codexc_k=$(duk /Users/jay/apps/trading-codex/.next/cache)
-pm2_k=$(duk "$HOME_DIR/.pm2/logs")
+# cheap bucket sizes (bounded dirs only — keeps the run brief).
+# BF-FIXER 2026-09-25 follow-up: each `du -sk` runs through `janitor_watchdog`
+# (10s budget) so a stuck filesystem or a giant symlink loop in ~/.npm /
+# ~/.cache/uv can't pin the tick before any phase heartbeat is written.
+# A timeout returns 0 KiB for that bucket and the rest of the tick continues.
+janitor_duk() {
+  # usage: janitor_duk <secs> <label> <path>
+  local secs="$1" label="$2" path="$3" out
+  out=$(janitor_watchdog "$secs" "$label" -- du -sk "$path" 2>/dev/null) || out=""
+  if [ -z "$out" ]; then echo 0; else echo "$out" | awk '{print $1}'; fi
+}
+npm_k=$(janitor_duk 10 "duk-npm"    "$HOME_DIR/.npm")
+uv_k=$(janitor_duk 10 "duk-uv"     "$HOME_DIR/.cache/uv")
+livec_k=$(janitor_duk 10 "duk-livec" /Users/jay/apps/trading-live/.next/cache)
+codexc_k=$(janitor_duk 10 "duk-codexc" /Users/jay/apps/trading-codex/.next/cache)
+pm2_k=$(janitor_duk 10 "duk-pm2"    "$HOME_DIR/.pm2/logs")
 
 actions=""
 
 # --- ALWAYS (cheap, pure waste): cap runaway pm2 logs + tidy stale worktree registry ---
+janitor_heartbeat "pmlogs"
 n_trunc=$(find "$HOME_DIR/.pm2/logs" -type f -name '*.log' -size +${PM2_LOG_CAP_MB}M 2>/dev/null | wc -l | tr -d ' ')
 if [ "${n_trunc:-0}" -gt 0 ]; then
   find "$HOME_DIR/.pm2/logs" -type f -name '*.log' -size +${PM2_LOG_CAP_MB}M -exec sh -c ': > "$1"' _ {} \; 2>/dev/null
   actions="${actions}pm2logs "
 fi
+janitor_heartbeat "wtprune"
 for r in "${REPOS[@]}"; do git -C "$r" worktree prune 2>/dev/null; done
 
 # --- ALWAYS: reap leftover vitest temp SQLite DBs (pure waste; grew to 130 GB once) ---
@@ -206,6 +305,7 @@ for r in "${REPOS[@]}"; do git -C "$r" worktree prune 2>/dev/null; done
 # user temp dir and never deletes them; the fleet runs the suite constantly. 6h age
 # filter keeps any live/recent test run untouched. getconf resolves the per-login temp
 # dir, so this works on both the CLAUDE and MONET macOS accounts.
+janitor_heartbeat "tmptestdb"
 UT="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null | sed 's:/*$::')"
 if [ -n "$UT" ] && [ -d "$UT" ]; then
   n_tdb=$(find "$UT" -maxdepth 1 -name 'agentic-*' -mmin +360 2>/dev/null | wc -l | tr -d ' ')
@@ -228,13 +328,22 @@ fi
 #     GitHub has a MERGED PR for this head (squash-safe; ancestry lies after squash), OR
 #     its upstream is [gone] (branch pushed then deleted on origin — the squash-merge signature)
 if [ "${REAP_WORKTREES:-0}" = "1" ]; then
+  janitor_heartbeat "wt-retire-start"
   stale_min=$(( STALE_DAYS * 1440 ))
   # Light refresh: fetch ONLY origin/main (keeps merge-base accurate) + prune stale
   # remote-tracking refs (marks squash-merged branches' upstreams [gone]). Avoids the
   # heavy all-branch `fetch --prune` that made ticks crawl on the big repo.
+  # BF-FIXER 2026-09-25 follow-up: bound each fetch at 30s through the same
+  # watchdog. Round-1 evidence: lead 78392 sat at 1h+ 0.05s CPU hung in a git
+  # fetch on a slow network -- GIT_HTTP_LOW_SPEED_LIMIT fires on slow TRICKLE
+  # but not on a stalled TCP socket. Total fetch budget: 12 repos x 30s = 6
+  # min worst case (we still get merges from the repos that DID succeed).
   for r in "${REPOS[@]}"; do
-    git -C "$r" fetch origin main -q 2>/dev/null
-    git -C "$r" remote prune origin 2>/dev/null
+    # Two separate watchdogs so each git is the direct child of the watchdog
+    # (no bash-subshell-pid mismatch on SIGKILL). Prune is local + fast, so
+    # a single 5s budget is plenty.
+    janitor_watchdog 30 "wt-fetch"  -- git -C "$r" fetch origin main -q
+    janitor_watchdog  5 "wt-prune"  -- git -C "$r" remote prune origin
   done
   n_reap=0
   while IFS=$'\t' read -r wt sha br locked; do
@@ -273,9 +382,17 @@ if [ "${REAP_WORKTREES:-0}" = "1" ]; then
       n_reap=$(( n_reap + 1 )); continue
     fi
     for r in "${REPOS[@]}"; do
-      if git -C "$r" worktree remove "$wt" 2>/dev/null; then
+      # Bound git worktree remove at 30s per worktree (BF-HOUSEKEEPER 2026-09-25).
+      # A hung `rm -rf` inside a worktree's checkout dir can pin the tick forever;
+      # the watchdog kills the git and logs a timeout, leaving the next tick to retry.
+      janitor_watchdog 30 "wt-retire-rm" -- git -C "$r" worktree remove "$wt" 2>/dev/null
+      rc=$?
+      if [ "$rc" = "0" ]; then
         n_reap=$(( n_reap + 1 ))
         printf '%s  RETIRED worktree %s (branch=%s, merged/gone)\n' "$now" "$wt" "${brn:-detached}" >> "$LOG"
+        break
+      elif [ "$rc" = "124" ]; then
+        printf '%s  RETIRE-SKIP worktree %s (watchdog timeout)\n' "$now" "$wt" >> "$LOG"
         break
       fi
     done
@@ -291,10 +408,12 @@ if [ "${REAP_WORKTREES:-0}" = "1" ]; then
     done | sort -u
   )
   [ "$n_reap" -gt 0 ] && actions="${actions}wt-retire(${n_reap}) "
+  janitor_heartbeat "wt-retire-done n_reap=${n_reap}"
 fi
 
 # --- LOW FREE: clear regenerable caches + prod/dev build caches ---
 if [ "$free" -lt "$LOW_FREE" ]; then
+  janitor_heartbeat "lowfree-start"
   if command -v cleanmymac &>/dev/null; then
     # 2026-09-13: never run bare `cleanmymac clean --force` (or its `junk`
     # module) here -- system junk includes ~/Library/Logs, which a launchd
@@ -305,12 +424,19 @@ if [ "$free" -lt "$LOW_FREE" ]; then
     # so those three stay and `junk` is dropped outright rather than gated on
     # free-space, since a threshold gate would still hit `junk` at the exact
     # moment disk pressure is worst and a launchd log is most likely mid-write.
-    cleanmymac clean dev --force 2>/dev/null || true
-    cleanmymac clean ai --force 2>/dev/null || true
-    cleanmymac clean trash --force 2>/dev/null || true
-    # No `cleanmymac optimize ram` here — it writes dirty memory pages to
+    # Bound each module at 60s (BF-HOUSEKEEPER 2026-09-25) -- a hung cleanmymac
+    # child used to pin the tick silently; now we kill it and skip that module.
+    janitor_watchdog 60 "cleanmymac-dev"   -- cleanmymac clean dev --force
+    janitor_watchdog 60 "cleanmymac-ai"    -- cleanmymac clean ai --force
+    janitor_watchdog 60 "cleanmymac-trash" -- cleanmymac clean trash --force
+    # No `cleanmymac optimize ram` by default — it writes dirty memory pages to
     # swap on disk, which makes the very disk pressure we are trying to
-    # relieve strictly worse.  See docs/HOUSEKEEPER.md.
+    # relieve strictly worse (+3.6-7.3G swap per run, measured 2026-09-01).
+    # Opt in with RESOURCE_ALLOW_RAM_OPTIMIZE=1 if ever needed; same gate as
+    # mac-auto-cleanup.sh and mac-resource-watch.py.  See docs/HOUSEKEEPER.md.
+    if [ "${RESOURCE_ALLOW_RAM_OPTIMIZE:-0}" = "1" ]; then
+      janitor_watchdog 30 "cleanmymac-ram" -- cleanmymac optimize ram
+    fi
     actions="${actions}cleanmymac "
   fi
   rm -rf "$HOME_DIR/.npm/_cacache" 2>/dev/null
@@ -326,25 +452,34 @@ if [ "$free" -lt "$LOW_FREE" ]; then
   uv_cache="$HOME_DIR/.cache/uv"
   if [ -d "$uv_cache" ]; then
     uv_branch=none
-    # Bound the lsof scan: stock macOS has no `timeout` binary, and lsof is known to
-    # hang scanning a large/busy tree -- exactly the moment this runs (low free space).
-    # Run it in the background and kill it after 8s; a timeout counts as "busy" so a
-    # slow scan fails safe (skip) instead of racing a process it could not see in time.
-    lsof_tmp="$(mktemp -t uvlsof 2>/dev/null || echo "/tmp/uvlsof.$$")"
-    ( lsof +D "$uv_cache" -t > "$lsof_tmp" 2>/dev/null ) &
-    lsof_pid=$!
-    lsof_waited=0
-    while kill -0 "$lsof_pid" 2>/dev/null && [ "$lsof_waited" -lt 8 ]; do
-      sleep 1; lsof_waited=$((lsof_waited + 1))
-    done
-    if kill -0 "$lsof_pid" 2>/dev/null; then
-      kill -9 "$lsof_pid" 2>/dev/null
-      lsof_n=1
-      printf '%s  uv cache lsof timed out after 8s, assuming busy\n' "$now" >> "$LOG"
-    else
-      lsof_n=$(wc -l < "$lsof_tmp" 2>/dev/null | tr -d ' ')
+    # BF-HOUSEKEEPER 2026-09-25: replace `lsof +D "$uv_cache"` (recursive; known
+    # to hang >60s on big trees like node_modules) with per-entry `lsof <exact
+    # path>` against each archive-v0 entry. The live MCP venvs Housekeeper listed
+    # (Hetzner, alpaca, fmp, sentry, pinecone, uptimerobot, coolify) live there.
+    # Bound each lsof at 4s; a hung scan counts as "busy" so we skip safely.
+    lsof_n=0
+    if [ -d "$uv_cache/archive-v0" ]; then
+      while IFS= read -r entry; do
+        [ -e "$entry" ] || continue
+        lsof_one="$(mktemp -t uvlsof1 2>/dev/null || echo "/tmp/uvlsof1.$$")"
+        ( lsof "$entry" -t > "$lsof_one" 2>/dev/null ) &
+        lsof_pid=$!
+        lsof_waited=0
+        while kill -0 "$lsof_pid" 2>/dev/null && [ "$lsof_waited" -lt 4 ]; do
+          sleep 1; lsof_waited=$((lsof_waited + 1))
+        done
+        if kill -0 "$lsof_pid" 2>/dev/null; then
+          kill -9 "$lsof_pid" 2>/dev/null
+          printf '%s  uv cache lsof entry timed out after 4s, assuming busy: %s\n' "$now" "$entry" >> "$LOG"
+          rm -f "$lsof_one"
+          lsof_n=$((lsof_n + 1))   # treat as busy
+          continue
+        fi
+        n=$(wc -l < "$lsof_one" 2>/dev/null | tr -d ' ')
+        rm -f "$lsof_one"
+        lsof_n=$((lsof_n + ${n:-0}))
+      done < <(find "$uv_cache/archive-v0" -maxdepth 1 -mindepth 1 2>/dev/null)
     fi
-    rm -f "$lsof_tmp"
     uv_busy=$(( $(pgrep -f 'cache/uv/archive-v0' 2>/dev/null | wc -l | tr -d ' ') + ${lsof_n:-0} ))
     if [ "${uv_busy:-0}" -gt 0 ]; then
       printf '%s  uv cache in use by %s processes, skipped\n' "$now" "$uv_busy" >> "$LOG"
@@ -365,17 +500,30 @@ if [ "$free" -lt "$LOW_FREE" ]; then
   rm -rf /Users/jay/apps/trading-live/.next/cache 2>/dev/null
   rm -rf /Users/jay/apps/trading-codex/.next/cache 2>/dev/null
   actions="${actions}caches "
+  janitor_heartbeat "lowfree-done"
 fi
 
 # --- PRESSURE: reap deps on long-idle CLEAN worktrees (reversible; keeps source+branch) ---
 if [ "$free" -lt "$PRESSURE_FREE" ]; then
+  janitor_heartbeat "pressure-start"
   idle_min=$(( IDLE_HRS * 60 ))
-  for r in "${REPOS[@]}"; do git -C "$r" fetch origin main -q 2>/dev/null; done
+  # BF-FIXER 2026-09-25 follow-up: bound the fetch loop at 30s/repo (same
+  # rationale as wt-retire-start). Without this a single stalled network
+  # fetch pinned the launchd tick for an hour+.
+  for r in "${REPOS[@]}"; do
+    janitor_watchdog 30 "pressure-fetch" -- git -C "$r" fetch origin main -q
+  done
   { for r in "${REPOS[@]}"; do git -C "$r" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}'; done; } | sort -u | while read -r wt; do
     [ -d "$wt" ] || continue
     echo "$wt" | grep -qE "$KEEP_RE" && continue
     [ -n "$(wt_blocking_dirt "$wt")" ] && continue                                                                         # real dirt -> skip (generated junk ignored)
-    [ -n "$(find "$wt" -type f -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/.next/*' -mmin -$idle_min -print -quit 2>/dev/null)" ] && continue  # active -> skip
+    # Skip if any process has open files or working directory in this worktree
+    pgrep -f "$wt" >/dev/null 2>&1 && continue
+    # BF-HOUSEKEEPER 2026-09-25: bound the per-worktree activity scan at 15s.
+    # A huge worktree (especially one with deep node_modules trees excluded via
+    # -not -path) used to pin the tick here for minutes with 0 CPU.
+    activity=$(janitor_watchdog 15 "wt-activity-scan" -- sh -c "find \"$wt\" -type f -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/.next/*' -mmin -$idle_min -print -quit 2>/dev/null")
+    if [ -n "$activity" ]; then continue; fi  # active -> skip
     while IFS= read -r d; do
       rel="${d#"$wt"/}"
       # A dir literally named node_modules/.next/.turbo can still hold TRACKED files
@@ -384,10 +532,14 @@ if [ "$free" -lt "$PRESSURE_FREE" ]; then
       # rm -rf here once deleted a tracked vendored tree in a Congress.Trade worktree
       # (2026-09-08). Refuse anything git still tracks under this path.
       git -C "$wt" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 && continue
-      rm -rf "$d"
+      # Bound the rm at 60s per dep-dir (BF-HOUSEKEEPER 2026-09-25). A large
+      # node_modules tree can be many GB; if rm itself wedges on a slow disk
+      # we kill it and leave the dir for the next tick.
+      janitor_watchdog 60 "wt-dep-rm" -- rm -rf -- "$d"
     done < <(find "$wt" -type d \( -name node_modules -o -name .next -o -name .turbo \) -prune 2>/dev/null)
   done
   actions="${actions}idle-dep-reap "
+  janitor_heartbeat "pressure-done"
 fi
 
 [ -z "$actions" ] && actions="none"
@@ -402,3 +554,8 @@ printf '%s  free=%sG(Δ%+dG) npm=%sG uv=%sG live$=%sG codex$=%sG pm2=%sM  action
 # persist state + cap log to last 500 lines
 printf 'free=%s\nts=%s\n' "$after" "$now" > "$STATE"
 tail -n 500 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
+
+# BF-HOUSEKEEPER 2026-09-25: terminal heartbeat so a silent log between PHASE
+# markers is provably a hang, not a quiet run.
+printf '%s  PHASE done pid=%s free=%sG(Δ%+dG) action=%s reclaimed=%sG%s\n' \
+  "$(date '+%Y-%m-%d %H:%M')" "$$" "$after" "$delta" "$actions" "$reclaimed" "$note" >> "$LOG"
