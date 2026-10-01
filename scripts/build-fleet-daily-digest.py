@@ -370,8 +370,8 @@ REPO_STRIP_ALIASES: dict[str, tuple[str, ...]] = {
         "Clutch",
         "clutch",
         "CK",
-    ),
-    "Harness": (  # retired name, kept so old digest titles still strip
+        # Retired name.  Every fetched item is now assigned repo "Clutch", so the
+        # old Harness prefixes on historical titles must strip under this key.
         "Harness",
         "harness",
         "HR",

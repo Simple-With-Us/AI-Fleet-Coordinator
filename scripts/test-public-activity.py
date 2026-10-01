@@ -92,6 +92,11 @@ class PublicActivityTests(unittest.TestCase):
         self.assertIn(pr["url"], rendered[0])
         self.assertIn(pr["url"], rendered[1])
 
+    def test_retired_harness_prefixes_strip_under_clutch(self) -> None:
+        for title in ("Harness: fix startup", "[Harness] fix startup", "HR \u2014 fix startup", "[Clutch] fix startup", "CK: fix startup"):
+            with self.subTest(title=title):
+                self.assertEqual(digest.strip_redundant_repo_label(title, "Clutch"), "fix startup")
+
 
 if __name__ == "__main__":
     unittest.main()
