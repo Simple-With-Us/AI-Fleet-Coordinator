@@ -254,7 +254,7 @@ REPO_BADGE: dict[str, tuple[str, str]] = {
     "AI-Fleet-Coordinator": ("AFC", "repo-fleet"),
     "BotFleet": ("BF", "repo-bf"),
     "HogHunter": ("HH", "repo-hh"),
-    "Harness": ("HR", "repo-harness"),
+    "Clutch": ("CK", "repo-clutch"),
     "codecaps": ("CC", "repo-cc"),
 }
 
@@ -270,7 +270,7 @@ REPO_APP_ICON: dict[str, str] = {
     "Personal-Site": "agent-logos/app-ps.png",   # Jay's headshot for jays.services
     "BotFleet": "agent-logos/app-bf.png",        # BotFleet app icon
     "HogHunter": "agent-logos/app-hh.png",
-    "Harness": "agent-logos/app-harness.png",
+    "Clutch": "agent-logos/app-clutch.png",
     "codecaps": "agent-logos/app-cc.png",
 }
 
@@ -366,7 +366,12 @@ REPO_STRIP_ALIASES: dict[str, tuple[str, ...]] = {
         "botfleet",
         "BF",
     ),
-    "Harness": (
+    "Clutch": (
+        "Clutch",
+        "clutch",
+        "CK",
+        # Retired name.  Every fetched item is now assigned repo "Clutch", so the
+        # old Harness prefixes on historical titles must strip under this key.
         "Harness",
         "harness",
         "HR",
@@ -911,7 +916,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
       --fleet: #475569;
       --bf: #0284c7;
       --hh: #92400e;
-      --harness: #0ea5e9;
+      --clutch: #0ea5e9;
       --cc: #0d9488;
     }}
     * {{ box-sizing: border-box; }}
@@ -988,7 +993,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     .repo-fleet {{ background: var(--fleet); }}
     .repo-bf {{ background: var(--bf); }}
     .repo-hh {{ background: var(--hh); }}
-    .repo-harness {{ background: var(--harness); }}
+    .repo-clutch {{ background: var(--clutch); }}
     .repo-cc {{ background: var(--cc); }}
     .repo.repo-with-icon {{
       gap: 0;
@@ -1095,7 +1100,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
         <span class="legend-item"><span class="repo repo-fleet">AFC</span><span class="legend-label">AI Fleet Coordinator</span></span>
         <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-bf" title="BotFleet.app"><img class="repo-app-icon" src="agent-logos/app-bf.png" alt="BotFleet.app" width="14" height="14" /></span><span class="legend-label">BotFleet.app</span></span>
         <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-hh" title="Hog Hunter"><img class="repo-app-icon" src="agent-logos/app-hh.png" alt="Hog Hunter" width="14" height="14" /></span><span class="legend-label">Hog Hunter</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-harness" title="Harness"><img class="repo-app-icon" src="agent-logos/app-harness.png" alt="Harness" width="14" height="14" /></span><span class="legend-label">Harness</span></span>
+        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-clutch" title="Clutch"><img class="repo-app-icon" src="agent-logos/app-clutch.png" alt="Clutch" width="14" height="14" /></span><span class="legend-label">Clutch</span></span>
         <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-cc" title="CodeCaps"><img class="repo-app-icon" src="agent-logos/app-cc.png" alt="CodeCaps" width="14" height="14" /></span><span class="legend-label">CodeCaps</span></span>
       </div>
     </div>

@@ -170,19 +170,19 @@
       "kind": "infra"
     },
     {
-      "repo": "Harness",
-      "acronym": "HR",
-      "displayName": "Harness",
-      "slackRepo": "harness",
-      "codeDir": "Harness",
-      "liveBoard": "HARNESS-EFFORT-LOG.md",
-      "worktreePrefix": "harness",
-      "badgeClass": "repo-harness",
+      "repo": "Clutch",
+      "acronym": "CK",
+      "displayName": "Clutch",
+      "slackRepo": "clutch",
+      "codeDir": "Clutch",
+      "liveBoard": "CLUTCH-EFFORT-LOG.md",
+      "worktreePrefix": "clutch",
+      "badgeClass": "repo-clutch",
       "digestColor": "#0ea5e9",
       "hasAppIcon": true,
-      "iconFile": "agent-logos/app-harness.png",
+      "iconFile": "agent-logos/app-clutch.png",
       "kind": "infra",
-      "notes": "Friendly adaptation of @deepseek-ai/dsh for DSH and MiniMax harness parity.  Always-on pm2 harness-web on 127.0.0.1:3080.  Live install ~/apps/harness-runtime (symlink to ~/Code/Harness/).  Canonical npm package for BotFleet's DSH driver."
+      "notes": "Friendly adaptation of @deepseek-ai/dsh for DSH and MiniMax parity (formerly named Harness; renamed to Clutch 2026-09-30).  Always-on pm2 clutch-web on 127.0.0.1:3180.  Live install ~/apps/clutch-runtime (a real standalone clone of origin/main, updated by scripts/update-mac-app.sh), state in ~/.clutch.  Canonical npm package (clutch) for BotFleet's DSH driver."
     }
   ],
   "seats": [

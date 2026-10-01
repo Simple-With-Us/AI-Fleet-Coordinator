@@ -23,12 +23,13 @@ PUBLIC_REPOS = (
     "AI-Fleet-Coordinator",
     "BotFleet",
     "HogHunter",
-    "Harness",
+    "Clutch",
     "codecaps",
 )
 
 HISTORICAL_PUBLIC_REPO_ALIASES = {
     "socratic.trade": "Socratic-Trade",
+    "harness": "Clutch",  # repo renamed 2026-09-30; generated history still links the old name
 }
 
 

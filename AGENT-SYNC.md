@@ -36,7 +36,7 @@ BEFORE substantial work begins, so parallel agents can see reservations in the g
 | `AR` | Autorotate | `AUTOROTATE-EFFORT-LOG.md` |
 | `CL` | ContactLogo | `CONTACTLOGO-EFFORT-LOG.md` |
 | `BF` | BotFleet | `BOTFLEET-EFFORT-LOG.md` |
-| `HR` | Harness | `EFFORT-LOG.md` |
+| `CK` | Clutch | `CLUTCH-EFFORT-LOG.md` |
 | `HH` | HogHunter | `HOGHUNTER-EFFORT-LOG.md` |
 | `OPS` | fleet-ops | `FLEET-OPS-EFFORT-LOG.md` |
 
@@ -836,8 +836,8 @@ Every agent seat in the fleet adheres to the universal coordination protocol abo
 | **BotFleet bots (`BF-<ROLE>`)** | Role bots run by the owner's BotFleet app on the `claude`, `codex`, and `grok` CLIs plus ACP engines (Cursor, OpenCode, DeepSeek, DeepSeek Harness, Droid, Hermes, Kimi, Qwen).  Carry most former Grok Bot duty (owner 2026-09-13). | `[BF-<ROLE>]` | role Title Case (e.g. `Compiler`) | Tags `BF-FIXER`, `BF-DESIGNER`, `BF-COMPILER`, `BF-PLUMBER`, `BF-PUBLISHER`, `BF-DEPLOYER`, `BF-DIRECTOR` (observed; tag scheme pending owner confirmation).  Same board/effort-log/Slack loop as every seat; a `[SENDER->FLEET]` wake reaches them like any other listener.  Tag is distinct from `[GB-<NAME>]` (Grok Bot) and from `[GROK]` (Mac Grok). |
 | **Renoir (`RENOIR`)** | Future third Claude-family seat. | `[RENOIR]` | `Renoir` | Prefix `renoir/`; lane `~/apps/<prefix>-renoir`. Not yet active — do not assign work until the owner opens the seat. |
 | **Kimi (`KIMI`)** | Retired. | `[KIMI]` | `Kimi` | **Do not assign or accept work.** Owner 2026-08-21. |
-| **DeepSeek Harness (`DSH`)** | Retired 2026-09-19.  Historical posts still mean this seat. | `[DSH]` | `DeepSeek Harness` | **Do not assign new work.**  Use `[HARNESS]` for `jaywedgeworth22/Harness` (DSH + MMH).  A DeepSeek *model* inside Cursor is still `[CURSOR]`. |
-| **Harness (`HARNESS`)** | Owner of `jaywedgeworth22/Harness`: DSH and MMH drivers, Python ACP bridges, cordis profiles, web scripts, the npm package BotFleet imports. | `[HARNESS]` | `Harness` | Prefix `harness/`; lane `~/apps/harness-<seat>`.  Pin `AGENT_SEAT=HARNESS` / `AGENT_TAG=HARNESS`.  Slack `repo: harness`.  Do not edit DSH engine shape in BotFleet — import `harness/dsh/acp`. |
+| **DeepSeek Harness (`DSH`)** | Retired 2026-09-19.  Historical posts still mean this seat. | `[DSH]` | `DeepSeek Harness` | **Do not assign new work.**  Use `[HARNESS]` for `jaywedgeworth22/Clutch` (DSH + MiniMax; formerly Harness).  A DeepSeek *model* inside Cursor is still `[CURSOR]`. |
+| **Harness (`HARNESS`)** | Owner of `jaywedgeworth22/Clutch` (renamed from Harness 2026-09-30): DSH and MiniMax drivers, Python ACP bridges, cordis profiles, web scripts, the npm package BotFleet imports. | `[HARNESS]` | `Harness` | Prefix `harness/`; lane `~/apps/clutch-<seat>`.  Pin `AGENT_SEAT=HARNESS` / `AGENT_TAG=HARNESS`.  Slack `repo: clutch`.  Do not edit DSH engine shape in BotFleet — import `clutch/dsh/acp`. |
 | **MiniMax (`MM`)** | MiniMax Code desktop app on the Mavis local runtime (`~/.minimax`).  Bounded implementation and code review, sourced deep research with citations, document generation (docx / pdf / pptx / xlsx), static-site deploy, Computer Use desktop control and in-app browser driving, plus text / image / video / speech generation and web search through the `mmx` CLI. | `[MM]` | `MiniMax` | Prefix `minimax/`; lane `~/apps/<prefix>-minimax`.  Pin `AGENT_SEAT=MM` / `AGENT_TAG=MM`.  Former Slack tag `MINIMAX` is retired — historical posts still mean this seat.  No global rules file exists on this platform — the fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt).  Fleet skills install to `~/.minimax/skills`.  Built-in sub-agents `explore` / `worker` / `verifier` inherit the `MM` tag; they do not get their own Slack identity.  `config.yaml` ships `permissionMode: bypassPermissions` — nothing prompts, so hold the destructive-op pause yourself. |
 | **Fx (`FX`)** | fx by Vercel Labs, a terminal coding agent whose model is whatever provider it is logged into (Grok subscription today; the Codex provider or a MiniMax endpoint later).  Implementation, repo audits, PR drafting, ACP engine for BotFleet-style hosts. | `[FX]` | `Fx` | Prefix `fx/`; lane `~/apps/<prefix>-fx`.  Pin `AGENT_SEAT=FX` / `AGENT_TAG=FX`.  Global rules file `~/.fx/AGENTS.md`; skills in `~/.fx/skills` only (fx also scans the Claude and Codex packs — never inherit their tags).  The model never changes the seat: Grok inside fx is `[FX]`, never `[GROK]` or `[GROK-BUILD]`; the Codex provider inside fx is `[FX]`, never `[CODEX]`; MiniMax inside fx is `[FX]`, never `[MM]`.  Subagents inherit the parent model, so the 30% sister-model rule is waived as for Grok; the rest of Delegation binds.  Runs full-access with no sandbox — the destructive-ops pause is on the seat. |
 | **Universal Seat (`ANY`)** | Any new or custom agent engine joining the fleet (e.g. Kimi, Buzz, custom SDK agents). | `[SEAT_TAG]` | `SeatName` | Must adopt all 3-way claim/closeout rules, Slack header formats, Apple Notes standards, and safe PR landing discipline. |
@@ -2167,7 +2167,7 @@ Do not attempt to "fix" or complain about the symlink.
 
 ## Fleet-wide operating rules
 
-These rules apply to every fleet repo, not just AI-Fleet-Coordinator.  Canonical decision record: Harness `docs/decisions/0003-no-external-contact-and-no-forks.md`.
+These rules apply to every fleet repo, not just AI-Fleet-Coordinator.  Canonical decision record: Clutch `docs/decisions/0003-no-external-contact-and-no-forks.md`.
 
 ### No external contact without owner approval
 
@@ -2175,4 +2175,4 @@ Never submit, post, comment, file an issue, open a PR, create a fork, or otherwi
 
 ### No forks of other repositories
 
-Never create a fork of another person's repository on the owner's GitHub account.  New repos are independent and consume the upstream via the package manager.  Harness follows that pattern with `@deepseek-ai/dsh`.
+Never create a fork of another person's repository on the owner's GitHub account.  New repos are independent and consume the upstream via the package manager.  Clutch follows that pattern with `@deepseek-ai/dsh`.
