@@ -149,23 +149,25 @@ module.exports = {
       error_file: `${logs}/grok-acp-error.log`,
     }),
     app({
-      // Harness web UI on :3080.  Renamed from dsh-web 2026-09-19.
-      // Canonical scripts live in jaywedgeworth22/Harness; this Mac runs
-      // them via ~/apps/harness-runtime (symlink to ~/Code/Harness).
-      name: "harness-web",
-      script: `${home}/apps/harness-runtime/scripts/start-web.sh`,
+      // Clutch web UI on :3180.  Renamed from harness-web (Harness -> Clutch).
+      // Canonical scripts live in jaywedgeworth22/Clutch; this Mac runs them
+      // from ~/apps/clutch-runtime, a real clone updated by update-mac-app.sh.
+      // DSH_HOME is not set here: start-web.sh sources scripts/lib/clutch-env.sh,
+      // which forces DSH_HOME to $CLUTCH_HOME/dsh.
+      name: "clutch-web",
+      script: `${home}/apps/clutch-runtime/scripts/start-web.sh`,
       interpreter: "bash",
-      cwd: `${home}/apps/harness-runtime`,
-      // 3 = :3080 held by a non-harness process.  Do not storm.
+      cwd: `${home}/apps/clutch-runtime`,
+      // 3 = port held by a non-clutch process.  Do not storm.
       stop_exit_codes: [3],
       env: {
-        HARNESS_RUNTIME_ROOT: `${home}/apps/harness-runtime`,
-        DSH_HOME: `${home}/.dsh`,
-        DSH_WEB_HOST: "127.0.0.1",
-        DSH_WEB_PORT: "3080",
+        CLUTCH_RUNTIME_ROOT: `${home}/apps/clutch-runtime`,
+        CLUTCH_HOME: `${home}/.clutch`,
+        CLUTCH_WEB_HOST: "127.0.0.1",
+        CLUTCH_WEB_PORT: "3180",
       },
-      out_file: `${logs}/harness-web-out.log`,
-      error_file: `${logs}/harness-web-error.log`,
+      out_file: `${logs}/clutch-web-out.log`,
+      error_file: `${logs}/clutch-web-error.log`,
     }),
     app({
       name: "seat-mcp",
@@ -182,6 +184,18 @@ module.exports = {
       cwd: `${home}/apps/mac-collab`,
       out_file: `${logs}/mac-collab-litestream-out.log`,
       error_file: `${logs}/mac-collab-litestream-error.log`,
+    }),
+    app({
+      name: "botfleet-mcp",
+      script: `${home}/apps/botfleet-server/scripts/start-mcp-sse.sh`,
+      interpreter: "bash",
+      cwd: `${home}/apps/botfleet-server`,
+      env: {
+        BOTFLEET_MCP_PORT: "8794",
+        BOTFLEET_URL: "http://127.0.0.1:8799",
+      },
+      out_file: `${logs}/botfleet-mcp-out.log`,
+      error_file: `${logs}/botfleet-mcp-error.log`,
     }),
   ],
 };
