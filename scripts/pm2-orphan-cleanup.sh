@@ -15,7 +15,7 @@
 # Safety: only kills orphan processes when the orphan is functionally
 # equivalent to what pm2 would start (same port + same canonical script path).
 # Logs every action with timestamp.  Never touches mac-collab / agent-sync-push
-# / harness-web / shellular (those are healthy and we don't want to touch).
+# / clutch-web / shellular (those are healthy and we don't want to touch).
 #
 # Last touched: 2026-09-20 (MM, top-to-bottom fleet audit)
 
