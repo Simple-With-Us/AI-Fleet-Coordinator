@@ -228,7 +228,7 @@ import os, glob, shutil, re, subprocess, time
 
 KEEP_RE = re.compile(
     r"^/Users/jay/apps/[a-z0-9]+-(claude|codex|live|antigravity|cursor|monet|grok|grok-build|deepseek)$|"
-    r"^/Users/jay/apps/(agent-sync|agent-sync-push|grok-acp-runtime|agy-acp-runtime|shellular-runtime|mac-collab|senate-relay-runtime|scout-runtime|dsh-runtime|clutch-runtime|seat-mcp|KIMI-SALVAGE-.*)$|"
+    r"^/Users/jay/apps/(agent-sync|agent-sync-push|grok-acp-runtime|agy-acp-runtime|shellular-runtime|mac-collab|senate-relay-runtime|scout-runtime|dsh-runtime|harness-runtime|clutch-runtime|seat-mcp|KIMI-SALVAGE-.*)$|"
     r"^/Users/jay/Code/.*$"
 )
 

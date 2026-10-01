@@ -97,6 +97,7 @@ expect_pm2=(
   mac-collab-litestream
   clutch-web
   seat-mcp
+  botfleet-mcp
 )
 
 # "label plist-basename"  (plists live in ~/Library/LaunchAgents)
