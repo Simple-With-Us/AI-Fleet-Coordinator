@@ -95,8 +95,9 @@ expect_pm2=(
   mac-collab-sync
   mac-collab-writeback
   mac-collab-litestream
-  harness-web
+  clutch-web
   seat-mcp
+  botfleet-mcp
 )
 
 # "label plist-basename"  (plists live in ~/Library/LaunchAgents)
@@ -143,8 +144,8 @@ expect_files=(
   "${HOME}/apps/slack-agent-listen-start.sh"
   "${HOME}/apps/grok-acp-runtime/start.sh"
   "${HOME}/apps/grok-acp-runtime/grok-idle-unload.py"
-  "${HOME}/apps/harness-runtime/scripts/start-web.sh"
-  "${HOME}/apps/harness-runtime/scripts/serve-tailscale.sh"
+  "${HOME}/apps/clutch-runtime/scripts/start-web.sh"
+  "${HOME}/apps/clutch-runtime/scripts/serve-tailscale.sh"
   "${HOME}/apps/fleet-gdrive-backup/run.sh"
   "${HOME}/apps/fleet-gdrive-backup/backup-fleet-to-gdrive.py"
   "${HOME}/apps/fleet-gdrive-backup/sync-fleet-agent-config-to-gdrive.py"
