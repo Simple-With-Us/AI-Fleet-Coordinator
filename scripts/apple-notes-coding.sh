@@ -8,13 +8,10 @@
 #   Row 2:  "Sun, Aug 9, 3:52pm"         local create/update stamp (auto-injected)
 #
 # Usage:
-#   apple-notes-coding.sh "Title" "Plain body text"
+#   apple-notes-coding.sh "Title" "Plain body text or Markdown"
 #   apple-notes-coding.sh "Title" --html /path/to/body.html
-#   Prefer --html for owner-readable notes.  MD path emits <div><br></div>
-#   spacers for blank lines, headings, and consecutive list items
-#   (owner 2026-08-21: space sections apart; Notes collapses adjacent blocks).
-#   apple-notes-coding.sh --update "Title" "Plain body text"   # refreshes timestamp
-#   apple-notes-coding.sh --update "Title" --html /path/to/body.html
+#   apple-notes-coding.sh --update "Title" "Body text"
+#   apple-notes-coding.sh --update --pin --pr "46" "Title" "Body text"
 #   echo "body" | apple-notes-coding.sh "Title"
 #   apple-notes-coding.sh --pin-only "Exact Note Title"
 #   apple-notes-coding.sh --unpin-only "Exact Note Title"
@@ -44,6 +41,8 @@ WANT_NOTIFY=0
 NEEDS_OWNER=0
 SUMMARY_TEXT=""
 PR_NUMBERS="${PR_NUMBERS:-${APPLE_NOTES_PR:-}}"
+HTML_PATH=""
+TITLE=""
 
 # Env overrides (agents may set these explicitly).
 [[ "${APPLE_NOTES_PIN:-0}" == "1" || "${APPLE_NOTES_PIN:-}" == "true" ]] && WANT_PIN=1
@@ -51,30 +50,33 @@ PR_NUMBERS="${PR_NUMBERS:-${APPLE_NOTES_PR:-}}"
 [[ "${APPLE_NOTES_NOTIFY:-0}" == "1" || "${APPLE_NOTES_NOTIFY:-}" == "true" ]] && WANT_NOTIFY=1
 [[ "${APPLE_NOTES_NEEDS_OWNER:-0}" == "1" || "${APPLE_NOTES_NEEDS_OWNER:-}" == "true" ]] && NEEDS_OWNER=1
 
-TITLE=""
+# Robust argument parsing supporting flags in any order
 while [[ $# -gt 0 ]]; do
   case "${1:-}" in
     --pin-only)
       MODE=pin
       WANT_PIN=1
       shift || true
-      TITLE="${1:-}"
-      shift || true
-      break
+      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
+        TITLE="$1"
+        shift || true
+      fi
       ;;
     --unpin-only)
       MODE=unpin
       shift || true
-      TITLE="${1:-}"
-      shift || true
-      break
+      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
+        TITLE="$1"
+        shift || true
+      fi
       ;;
     --update)
       MODE=update
       shift || true
-      TITLE="${1:-}"
-      shift || true
-      break
+      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
+        TITLE="$1"
+        shift || true
+      fi
       ;;
     --pin)
       WANT_PIN=1
@@ -102,27 +104,43 @@ while [[ $# -gt 0 ]]; do
       PR_NUMBERS="${1:-}"
       shift || true
       ;;
+    --html)
+      shift || true
+      HTML_PATH="${1:-}"
+      shift || true
+      ;;
+    --title)
+      shift || true
+      TITLE="${1:-}"
+      shift || true
+      ;;
     --)
       shift || true
       break
       ;;
     -*)
       echo "unknown flag: $1" >&2
-      echo "usage: $0 [--update|--pin-only|--unpin-only|--pin|--activate|--notify|--needs-owner|--summary text|--pr \"18\"] \"Title\" [body | --html path]" >&2
+      echo "usage: $0 [--update] [--pin-only|--unpin-only|--pin|--activate|--notify|--needs-owner|--summary text|--pr \"18\"|--html path] \"Title\" [body]" >&2
       exit 2
       ;;
     *)
-      TITLE="${1:-}"
-      shift || true
-      break
+      if [[ -z "$TITLE" ]]; then
+        TITLE="$1"
+        shift || true
+      else
+        break
+      fi
       ;;
   esac
 done
 
 if [[ -z "$TITLE" ]]; then
-  echo "usage: $0 [--update|--pin-only|--unpin-only|--pin|--activate|--notify|--needs-owner|--summary text|--pr \"18\"] \"Title\" [body | --html path]" >&2
+  echo "usage: $0 [--update] [--pin-only|--unpin-only|--pin|--activate|--notify|--needs-owner|--summary text|--pr \"18\"|--html path] \"Title\" [body]" >&2
   exit 2
 fi
+
+# Strip accidental backslash escaping on title brackets e.g. \[APP, Agent\]
+TITLE=$(printf '%s' "$TITLE" | sed -e 's/^\\\[/[/' -e 's/\\\]$/]/' -e 's/\\\[/[/g' -e 's/\\\]/]/g')
 
 if [[ "$MODE" == "pin" || "$MODE" == "unpin" ]]; then
   NOTE_ID=$(osascript -e "tell application \"Notes\" to get id of note \"$TITLE\" of folder \"Coding\" of account \"iCloud\"" 2>/dev/null || true)
@@ -161,29 +179,60 @@ if [[ "$MODE" == "unpin" ]]; then
   fi
 fi
 
-# Markdown → HTML for Notes.app (no external deps). Notes does not render MD.
-# Supports: #/##/### headings, **bold**, *italic*, `code`, [text](url),
-# -/* bullets, 1. numbered lists, blank-line paragraphs, --- hr.
-_md_to_html() {
-  # Markdown on stdin → HTML on stdout.
-  # IMPORTANT: do NOT use `python3 - <<'PY'` here. That feeds the program on
-  # stdin, so `sys.stdin.read()` always sees an empty body (notes with only a
-  # title + timestamp). Write the converter to a temp file so stdin stays free
-  # for the markdown pipe (owner: empty Grok/agent Notes bodies, 2026-08-10).
+# Markdown & HTML converter for Notes.app.
+# Notes does not render MD natively.
+# Fixes:
+# - Auto-detects if input is already HTML (prevents double-escaping raw HTML tags).
+# - Strips invalid <div><br></div> spacers inside <ul>/<ol> (eliminates ghost bullets and number skips).
+# - Recovers newlines from unescaped literal \n or single-line collapsed blocks.
+# - Formats code blocks with SF Mono font and light styling.
+# - Formats tables with clean border-collapse.
+_convert_body_to_html() {
   local _md_py
   _md_py=$(mktemp /tmp/apple-notes-md.XXXXXX.py)
   cat >"${_md_py}" <<'PY'
 import html, re, sys
 
-# Owner 2026-08-21: Notes.app collapses adjacent blocks.  Blank markdown
-# lines used to be dropped, so sections and bullets sat on top of each
-# other.  Emit <div><br></div> spacers (same token as --html notes).
 SPACER = "<div><br></div>"
+
+def is_html_content(text: str) -> bool:
+    s = text.strip()
+    if not s:
+        return False
+    if re.match(r"^<(?:!DOCTYPE|html|div|p|h[1-6]|ul|ol|table|section|article)\b", s, re.I):
+        return True
+    block_tags = ["div", "p", "h1", "h2", "h3", "h4", "ul", "ol", "li", "table", "pre"]
+    open_c = sum(len(re.findall(rf"<{t}\b[^>]*>", s, re.I)) for t in block_tags)
+    close_c = sum(len(re.findall(rf"</{t}>", s, re.I)) for t in block_tags)
+    return open_c >= 2 and close_c >= 2
+
+def clean_existing_html(text: str) -> str:
+    s = text.strip()
+    # Remove invalid spacers inside lists that turn into ghost bullets
+    s = re.sub(r"(<[uo]l\b[^>]*>)\s*(?:<div><br\s*/?></div>|<br\s*/?>)+", r"\1", s, flags=re.I)
+    s = re.sub(r"(?:<div><br\s*/?></div>|<br\s*/?>)+\s*(</[uo]l>)", r"\1", s, flags=re.I)
+    s = re.sub(r"(</li>)\s*(?:<div><br\s*/?></div>|<br\s*/?>)+\s*(<li\b)", r"\1\2", s, flags=re.I)
+
+    # Parse stray markdown bold/code/links in text nodes outside tags
+    def fix_stray_md(match):
+        chunk = match.group(0)
+        chunk = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", chunk)
+        chunk = re.sub(r"`([^`]+)`", r"<code style=\"background-color: #f0f2f5; padding: 2px 5px; border-radius: 4px; font-family: ui-monospace, Menlo, Monaco, Courier, monospace; font-size: 12px;\">\1</code>", chunk)
+        chunk = re.sub(
+            r"\[([^\]]+)\]\(([^)]+)\)",
+            lambda m: f'<a href="{html.escape(m.group(2), quote=True)}">{m.group(1)}</a>',
+            chunk,
+        )
+        return chunk
+    s = re.sub(r">([^<]+)<", fix_stray_md, s)
+    if not s.startswith("<div>"):
+        s = "<div>" + s + "</div>"
+    return s
 
 def inline(s: str) -> str:
     s = html.escape(s)
     # Notes.app is an HTML renderer — two ASCII spaces collapse.
-    # Owner 2026-08-21: sentence gap in HTML is &nbsp; + space.
+    # Sentence gap in HTML is &nbsp; + space.
     s = re.sub(r"([.!?]) {2,}", r"\1&nbsp; ", s)
     # links [text](url) — after escape brackets still match
     s = re.sub(
@@ -191,16 +240,30 @@ def inline(s: str) -> str:
         lambda m: f'<a href="{html.escape(m.group(2), quote=True)}">{m.group(1)}</a>',
         s,
     )
-    s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+    s = re.sub(r"`([^`]+)`", r"<code style=\"background-color: #f0f2f5; padding: 2px 5px; border-radius: 4px; font-family: ui-monospace, Menlo, Monaco, Courier, monospace; font-size: 12px;\">\1</code>", s)
     s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
     s = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", s)
-    # Underscore italics only at word edges.  Identifiers like
-    # merge_commit_sha / prompt_too_large must not become mashed words.
-    # Do not match the inner pair of __bold__ (would render _<i>bold</i>_).
+    # Underscore italics only at word edges.
     s = re.sub(r"(?<![A-Za-z0-9_])_([^_]+)_(?![A-Za-z0-9_])", r"<i>\1</i>", s)
     return s
 
-text = sys.stdin.read()
+raw_input = sys.stdin.read()
+
+if is_html_content(raw_input):
+    sys.stdout.write(clean_existing_html(raw_input))
+    sys.exit(0)
+
+text = raw_input
+
+# Check if literal \n exists without actual newlines
+if "\n" not in text and r"\n" in text:
+    text = text.replace(r"\n", "\n")
+
+# Check if collapsed single line with inline headings/bullets
+if text.count("\n") < 3:
+    text = re.sub(r"(?<=\S)\s+(#{1,4}\s+)", r"\n\n\1", text)
+    text = re.sub(r"(?<=\S)\s+([-\*]\s+)", r"\n\1", text)
+
 # normalize newlines
 text = text.replace("\r\n", "\n").replace("\r", "\n")
 lines = text.split("\n")
@@ -242,8 +305,13 @@ while i < len(lines):
     line = lines[i]
     stripped = line.strip()
 
-    # blank → section/bullet air (deduped)
+    # blank → section air
     if stripped == "":
+        nxt = peek_stripped(i + 1)
+        # If loose list (blank line between items in the same list), keep list open without spacer inside
+        if (in_ul and re.match(r"^[-*+]\s+", nxt)) or (in_ol and re.match(r"^\d+[.)]\s+", nxt)):
+            i += 1
+            continue
         close_lists()
         add_spacer()
         i += 1
@@ -252,6 +320,7 @@ while i < len(lines):
     # fenced code block
     if stripped.startswith("```"):
         close_lists()
+        add_spacer()
         i += 1
         code_lines = []
         while i < len(lines) and not lines[i].strip().startswith("```"):
@@ -259,7 +328,7 @@ while i < len(lines):
             i += 1
         if i < len(lines):
             i += 1  # closing fence
-        out.append("<pre><code>" + html.escape("\n".join(code_lines)) + "</code></pre>")
+        out.append("<pre style=\"background-color: #f6f8fa; padding: 10px 12px; border-radius: 6px; font-family: ui-monospace, Menlo, Monaco, Courier, monospace; font-size: 12px; border: 1px solid #e1e4e8; overflow-x: auto;\"><code>" + html.escape("\n".join(code_lines)) + "</code></pre>")
         add_spacer()
         continue
 
@@ -272,12 +341,13 @@ while i < len(lines):
         i += 1
         continue
 
-    # headings
+    # headings: map # and ## to h2, ### to h3, #### to h4 (prevents h1 clash with note title)
     m = re.match(r"^(#{1,6})\s+(.*)$", stripped)
     if m:
         close_lists()
         add_spacer()
-        level = min(len(m.group(1)), 4)  # Notes-friendly h1–h4
+        h_len = len(m.group(1))
+        level = 2 if h_len <= 2 else min(h_len, 4)
         out.append(f"<h{level}>{inline(m.group(2))}</h{level}>")
         add_spacer()
         i += 1
@@ -289,9 +359,6 @@ while i < len(lines):
         item = m.group(1).strip()
         if not item:
             i += 1
-            nxt = peek_stripped(i)
-            if in_ul and nxt and re.match(r"^[-*+]\s+", nxt):
-                add_spacer()
             continue
         if in_ol:
             out.append("</ol>")
@@ -302,9 +369,6 @@ while i < len(lines):
             in_ul = True
         out.append(f"<li>{inline(item)}</li>")
         i += 1
-        nxt = peek_stripped(i)
-        if nxt and re.match(r"^[-*+]\s+", nxt):
-            add_spacer()
         continue
 
     # ordered list
@@ -319,10 +383,41 @@ while i < len(lines):
             in_ol = True
         out.append(f"<li>{inline(m.group(1))}</li>")
         i += 1
-        nxt = peek_stripped(i)
-        if nxt and re.match(r"^\d+[.)]\s+", nxt):
-            add_spacer()
         continue
+
+    # table
+    if stripped.startswith("|") and i + 1 < len(lines) and re.match(r"^\|(?:\s*:?-+:?\s*\|)+\s*$", lines[i+1].strip()):
+        close_lists()
+        table_rows = []
+        while i < len(lines) and lines[i].strip().startswith("|"):
+            table_rows.append(lines[i].strip())
+            i += 1
+
+        def split_cols(row_str):
+            parts = row_str.split("|")
+            if parts and parts[0] == "":
+                parts = parts[1:]
+            if parts and parts[-1] == "":
+                parts = parts[:-1]
+            return [p.strip() for p in parts]
+
+        if len(table_rows) >= 2:
+            th_cells = split_cols(table_rows[0])
+            t_html = ["<table border=\"1\" cellpadding=\"4\" style=\"border-collapse: collapse; min-width: 100%; border: 1px solid #ccc;\">"]
+            t_html.append("<thead><tr style=\"background-color: #f2f2f2;\">")
+            for h in th_cells:
+                t_html.append(f"<th style=\"border: 1px solid #ccc; padding: 6px 8px; text-align: left;\"><b>{inline(h)}</b></th>")
+            t_html.append("</tr></thead><tbody>")
+            for r in table_rows[2:]:
+                cells = split_cols(r)
+                t_html.append("<tr>")
+                for c in cells:
+                    t_html.append(f"<td style=\"border: 1px solid #ccc; padding: 5px 8px; vertical-align: top;\">{inline(c)}</td>")
+                t_html.append("</tr>")
+            t_html.append("</tbody></table>")
+            out.append("".join(t_html))
+            add_spacer()
+            continue
 
     # paragraph (merge consecutive non-blank non-special lines)
     close_lists()
@@ -330,14 +425,15 @@ while i < len(lines):
     i += 1
     while i < len(lines):
         s2 = lines[i].strip()
-        if s2 == "" or s2.startswith("#") or s2.startswith("```") or re.match(r"^[-*+]\s+", s2) or re.match(r"^\d+[.)]\s+", s2) or re.fullmatch(r"(-{3,}|\*{3,}|_{3,})", s2):
+        if s2 == "" or s2.startswith("#") or s2.startswith("```") or s2.startswith("|") or re.match(r"^[-*+]\s+", s2) or re.match(r"^\d+[.)]\s+", s2) or re.fullmatch(r"(-{3,}|\*{3,}|_{3,})", s2):
             break
         para.append(s2)
         i += 1
     out.append("<p>" + inline(" ".join(para)) + "</p>")
+    add_spacer()
 
 close_lists()
-print("<div>" + "".join(out) + "</div>")
+sys.stdout.write("<div>" + "".join(out) + "</div>")
 PY
   /usr/bin/python3 "${_md_py}"
   local _rc=$?
@@ -346,12 +442,12 @@ PY
 }
 
 # Notes.app collapses ASCII double spaces.  Turn leftover `.  ` / `!  ` / `?  `
-# into `&nbsp; ` so sentence gaps survive.  Skip <pre> / <code>.
+# into `&nbsp; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
 _html_sentence_gaps() {
   /usr/bin/python3 -c '
 import re, sys
 s = sys.stdin.read()
-parts = re.split(r"(<pre[\s\S]*?</pre>|<code[\s\S]*?</code>)", s, flags=re.I)
+parts = re.split(r"(<pre[\s\S]*?</pre>|<code[\s\S]*?</code>|<style[\s\S]*?</style>|<script[\s\S]*?</script>)", s, flags=re.I)
 out = []
 for i, part in enumerate(parts):
     if i % 2 == 1:
@@ -364,22 +460,22 @@ sys.stdout.write("".join(out))
 
 BODY_HTML=""
 if [[ "$SKIP_BODY" == "0" ]]; then
-if [[ "${1:-}" == "--html" ]]; then
-  HTML_PATH="${2:-}"
-  [[ -n "$HTML_PATH" && -f "$HTML_PATH" ]] || { echo "missing --html file" >&2; exit 2; }
-  BODY_HTML=$(cat "$HTML_PATH")
-elif [[ -n "${1:-}" ]]; then
-  BODY_TEXT="$1"
-  BODY_HTML=$(printf '%s' "$BODY_TEXT" | _md_to_html)
-elif [[ ! -t 0 ]]; then
-  # Wait up to 0.5s for data to avoid hanging forever if called in an environment
-  # with an open pipe but no data (e.g. task runners, cron).
-  BODY_TEXT=$(/usr/bin/python3 -c 'import sys, select; r, _, _ = select.select([sys.stdin], [], [], 0.5); sys.stdout.write(sys.stdin.read()) if r else None' 2>/dev/null)
-  BODY_HTML=$(printf '%s' "$BODY_TEXT" | _md_to_html)
-else
-  BODY_HTML="<div></div>"
+  if [[ -n "$HTML_PATH" ]]; then
+    [[ -f "$HTML_PATH" ]] || { echo "missing --html file: $HTML_PATH" >&2; exit 2; }
+    BODY_HTML=$(cat "$HTML_PATH" | _convert_body_to_html)
+  elif [[ -n "${1:-}" ]]; then
+    BODY_TEXT="$1"
+    BODY_HTML=$(printf '%s' "$BODY_TEXT" | _convert_body_to_html)
+  elif [[ ! -t 0 ]]; then
+    # Wait up to 0.5s for data to avoid hanging forever if called in an environment
+    # with an open pipe but no data (e.g. task runners, cron).
+    BODY_TEXT=$(/usr/bin/python3 -c 'import sys, select; r, _, _ = select.select([sys.stdin], [], [], 0.5); sys.stdout.write(sys.stdin.read()) if r else None' 2>/dev/null)
+    BODY_HTML=$(printf '%s' "$BODY_TEXT" | _convert_body_to_html)
+  else
+    BODY_HTML="<div></div>"
+  fi
+  BODY_HTML=$(printf '%s' "$BODY_HTML" | _html_sentence_gaps)
 fi
-BODY_HTML=$(printf '%s' "$BODY_HTML" | _html_sentence_gaps)
 
 # Title shape check + ensure second-row timestamp (owner 2026-08-09).
 # Title: "[APP, Agent] topic" — multi-app OK. Body first line: "Sun, Aug 9, 3:52pm".
@@ -421,10 +517,12 @@ _send_pushover_notification() {
   fi
 }
 
-BODY_HTML=$(printf '%s' "$BODY_HTML" | NEEDS_OWNER="$NEEDS_OWNER" SUMMARY_TEXT="$SUMMARY_TEXT" PR_NUMBERS="$PR_NUMBERS" /usr/bin/python3 -c "
+if [[ "$SKIP_BODY" == "0" ]]; then
+BODY_HTML=$(printf '%s' "$BODY_HTML" | NOTE_TITLE="$TITLE" NEEDS_OWNER="$NEEDS_OWNER" SUMMARY_TEXT="$SUMMARY_TEXT" PR_NUMBERS="$PR_NUMBERS" /usr/bin/python3 -c "
 import sys, re, html, os
 from datetime import datetime
 body = sys.stdin.read()
+title = os.environ.get('NOTE_TITLE', '').strip()
 needs_owner = os.environ.get('NEEDS_OWNER') == '1'
 summary_text = os.environ.get('SUMMARY_TEXT', '').strip()
 pr_numbers = os.environ.get('PR_NUMBERS', '').strip()
@@ -448,6 +546,14 @@ def strip_outer_div(s):
     return s
 
 inner = strip_outer_div(body).lstrip()
+
+# Deduplicate title if body begins with matching heading
+if title:
+    clean_title = re.sub(r'^[\[\(][^\]\)]+[\]\)]\s*', '', title).strip()
+    escaped_titles = [re.escape(title), re.escape(clean_title), re.escape(html.escape(title)), re.escape(html.escape(clean_title))]
+    pattern = r'^(?:<h[12][^>]*>\s*(?:' + '|'.join(escaped_titles) + r')\s*</h[12]>\s*(?:<div><br\s*/?></div>)?)\s*'
+    inner = re.sub(pattern, '', inner, flags=re.I).lstrip()
+
 m = re.match(
     r'^(?:<p>)?\s*'
     r'(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), '
@@ -500,12 +606,6 @@ print("<h1>" + html.escape(title) + "</h1>" + body)
 
 TMP=$(mktemp /tmp/apple-note.XXXXXX)
 printf '%s' "$FULL_HTML" >"$TMP"
-# AppleScript's `system attribute` decodes environment variables as MacRoman, not
-# UTF-8 (owner 2026-09-17: a title like "⭐️ Background Jobs Master List" came back
-# as "‚≠êÔ∏è Background Jobs Master List", so `note noteTitle of codingFolder` never
-# matched the existing note and --update silently created a new one every run — 96
-# duplicates piled up this way). Route the title through a UTF-8 temp file and
-# `read ... as «class utf8»`, same pattern already used for the HTML body below.
 TITLE_FILE=$(mktemp /tmp/apple-note-title.XXXXXX)
 printf '%s' "$TITLE" >"$TITLE_FILE"
 trap 'rm -f "$TMP" "$TITLE_FILE"' EXIT

@@ -62,20 +62,17 @@ Order: `Needs owner` first when applicable, then Problem → What was done → D
 
 Two ASCII spaces between sentences in the body file you pass the helper.
 
-## Layout (owner 2026-08-21 — binding)
+## Layout (owner 2026-08-21; updated 2026-10-01 — binding)
 
-Notes.app collapses adjacent blocks.  A wall of text with no air is a bug.  The owner reads these on iPhone.
+Notes.app collapses adjacent top-level blocks.  A wall of text with no air is a bug.  The owner reads these on iPhone.
 
-Prefer `--html` for anything longer than a few lines.  In that HTML:
+Both Markdown and HTML are supported natively by `apple-notes-coding.sh` (as an argument, piped via stdin, or via `--html /path/to/file.html`).
 
 - `<h2>` never `<h1>` (the helper already wraps the title as `h1`)
-- After the type line: `<div><br></div>`
-- After every heading: `<div><br></div>`
-- After every paragraph: `<div><br></div>`
-- Between every bullet in the same list: `<div><br></div>`
-- After a list, before the next heading: `<div><br></div>`
-
-Do not pass a packed markdown blob.  If you use the plain-body MD path, put a blank line between every section and every bullet — the helper turns those blanks (and consecutive list items) into spacers.  `--html` with explicit spacers is still the owner-readable path.
+- Spacers (`<div><br></div>`) belong ONLY *between* top-level sections (after headings, after paragraphs, after lists/tables, before the next section).
+- **NEVER put `<div><br></div>` inside `<ul>` or `<ol>` lists**: WebKit converts block `<div>` inside lists into empty bullet points (`<li><br></li>`) and breaks numbered list sequences.  Keep list items as clean `<li>` elements.
+- When generating Markdown lists, write standard bullets (`* Item`) and numbered steps (`1. Step`).  The helper automatically formats them with clean, tight typography without ghost bullet dots.
+- In shell commands, ALWAYS quote your body variable (`"$BODY"`): unquoted `$BODY` causes bash to collapse all newlines into single spaces, creating unformatted single-line walls of text.
 
 Never pass empty `- ` bullets (they render as blank dots).  Put identifiers with underscores in backticks (`merge_commit_sha`) so Markdown italic does not eat the underscores and mash the word (`mergecommitsha`).
 
