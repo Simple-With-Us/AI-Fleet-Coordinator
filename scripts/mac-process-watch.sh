@@ -32,10 +32,20 @@
 #     -> pm2 restart that job
 #   - shellular ioreg-missing / retry-without-Connected -> bounce pid
 #   - shellular process up but relay 1006/handshake-fail -> kill pid (God autorestarts)
-#   - launchd always-on not-loaded -> bootstrap plist (if not disabled)
+#   - launchd always-on not-loaded -> bootstrap plist (if not disabled).
+#     "Loaded" is probed by the Label the plist declares, and a bootstrap
+#     launchd refuses because that label is already loaded (EIO 5 /
+#     same-label import) is logged OK already-loaded, not FAIL.
 #   - launchd always-on loaded, no pid -> kickstart (not -k)
-#   - com.jay.botfleet-server is UP when 127.0.0.1:8799 /health is 200
-#     (BotFleet.app often owns the harness; launchd must not steal the port)
+#   - app.botfleet.server (renamed from com.jay.botfleet-server on
+#     2026-09-22; the legacy label is an alias) is UP when
+#     127.0.0.1:8799 /health is 200 (BotFleet.app often owns the harness;
+#     launchd must not steal the port)
+#   - app.botfleet.server is NEVER bootstrapped or kickstarted while a
+#     BotFleet update holds ~/Library/Caches/BotFleet/update.lock (live
+#     owner pid).  The updater boots the harness out on purpose and
+#     restarts it itself; a watch bootstrap mid-apply made launchd refuse
+#     the updater's rollback bootstrap on 2026-10-01.
 # Scheduled / on-trigger (must stay loaded, must NOT stay running):
 #   - if not-loaded and not disabled -> bootstrap so the timer can fire
 #   - idle (no pid) is correct -- do not kickstart
@@ -100,13 +110,29 @@ expect_pm2=(
   botfleet-mcp
 )
 
-# "label plist-basename"  (plists live in ~/Library/LaunchAgents)
+# "label plist-basename [alias-label...]"  (plists live in ~/Library/LaunchAgents)
+# An alias is a former label of the same job: loaded or disabled under the
+# alias counts as the job, and <alias>.plist is the bootstrap fallback when
+# the primary plist is missing (mirrors the BotFleet updater's
+# harnessBootstrapPlist for Macs that only have the legacy-named plist).
 expect_launchd=(
   "com.jay.claude-remote-control com.jay.claude-remote-control.plist"
   "com.jay.slack-agent-inbox com.jay.slack-agent-inbox.plist"
   "homebrew.mxcl.moshi-hook homebrew.mxcl.moshi-hook.plist"
-  "com.jay.botfleet-server com.jay.botfleet-server.plist"
+  "app.botfleet.server app.botfleet.server.plist com.jay.botfleet-server"
 )
+BOTFLEET_LABEL="app.botfleet.server"
+
+# The BotFleet updater's run lock (scripts/update-botfleet-mac.mjs
+# acquireDirectoryLock): a directory holding owner.json {pid, mode,
+# startedAt}.  Same env override the updater honors.  Exact path only --
+# the updater renames dead locks to update.lock.stale-*.
+BOTFLEET_UPDATE_LOCK="${BOTFLEET_UPDATE_LOCK:-${HOME}/Library/Caches/BotFleet/update.lock}"
+# A lock older than this is ignored (pid reuse after a crashed updater
+# must not silence the harness watch forever).  Per phase; prepare and
+# apply each take their own lock.
+BOTFLEET_UPDATE_LOCK_MAX_AGE="${MAC_PROCESS_WATCH_UPDATE_LOCK_MAX_AGE:-7200}"
+BOTFLEET_HEALTH_URL="${MAC_PROCESS_WATCH_BOTFLEET_HEALTH_URL:-http://127.0.0.1:8799/health}"
 
 # Timers / calendar / interval jobs.  Must be loaded so they can fire.
 # Idle (no pid) is expected.  Do not add ios-ship-now or com.PM2.
@@ -255,9 +281,10 @@ allow_restart() {
   return 0
 }
 
-try_restart() {
-  key="$1"
-  shift
+# Return 0 if a restart of this key may run now (restart on, not in
+# backoff); logs the SKIP otherwise.
+restart_gate() {
+  local key="$1"
   if [ "$RESTART" != "1" ]; then
     log "SKIP  $key  restart=off"
     return 1
@@ -266,6 +293,13 @@ try_restart() {
     log "SKIP  $key  backoff=${MAX_RESTARTS}/${WINDOW_SEC}s"
     return 1
   fi
+  return 0
+}
+
+try_restart() {
+  key="$1"
+  shift
+  restart_gate "$key" || return 1
   {
     echo "----- ${STAMP} ${key} -----"
     "$@"
@@ -406,9 +440,95 @@ print("missing")
 }
 
 launchd_disabled() {
-  label="$1"
-  uid="$2"
+  # local: callers loop over a job's label and its aliases.
+  local label="$1"
+  local uid="$2"
   launchctl print-disabled "gui/${uid}" 2>/dev/null | grep -F "\"${label}\"" | grep -q '=> disabled'
+}
+
+launchd_loaded() {
+  launchctl print "gui/${uid}/$1" >/dev/null 2>&1
+}
+
+# The Label a plist declares, or nothing when unreadable.  Reads only that
+# one key (never the EnvironmentVariables block).
+plist_label_of() {
+  [ -f "$1" ] || return 0
+  plutil -extract Label raw -o - "$1" 2>/dev/null || true
+}
+
+# Bootstrap a plist whose declared label is $2.  launchd refuses to import
+# a label that is already loaded ("Bootstrap failed: 5: Input/output
+# error" / "service already loaded") -- that job is healthy, so re-probe
+# the declared label before calling the bootstrap a failure.
+try_bootstrap() {
+  local key="$1"
+  local probe_label="$2"
+  local plist="$3"
+  local rc
+  restart_gate "$key" || return 1
+  {
+    echo "----- ${STAMP} ${key} -----"
+    launchctl bootstrap "gui/${uid}" "$plist"
+  } >>"$CMDLOG" 2>&1
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    log "RESTART  $key  ok"
+    return 0
+  fi
+  if launchd_loaded "$probe_label"; then
+    log "OK    $key  already-loaded label=$probe_label bootstrap-rc=$rc"
+    return 0
+  fi
+  log "FAIL  $key  cmd-failed"
+  return 1
+}
+
+# Is a BotFleet update running right now?  The updater holds
+# $BOTFLEET_UPDATE_LOCK for the whole prepare and the whole apply
+# (quiesce, install, harness restart, rollback) and releases it in a
+# finally.  Prints "pid=N phase=X age=Ns" (never the lock token).
+#   0 = in progress (live owner pid, or owner.json not yet readable on a
+#       young lock dir)
+#   1 = no update (no lock dir, or the owner pid is dead)
+#   2 = lock ignored as stale (older than BOTFLEET_UPDATE_LOCK_MAX_AGE)
+botfleet_update_in_progress() {
+  [ -d "$BOTFLEET_UPDATE_LOCK" ] || return 1
+  lock_mtime="$(stat -f %m "$BOTFLEET_UPDATE_LOCK" 2>/dev/null || echo 0)"
+  python3 - "$BOTFLEET_UPDATE_LOCK/owner.json" "$NOW" "$BOTFLEET_UPDATE_LOCK_MAX_AGE" "$lock_mtime" <<'PY'
+import json, os, sys
+path, now, max_age, dir_mtime = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+try:
+    with open(path, encoding="utf-8") as f:
+        owner = json.load(f)
+    if not isinstance(owner, dict):
+        raise ValueError
+except Exception:
+    # mkdir happens before owner.json is written; the updater itself
+    # refuses to run past an unreadable owner.  Trust the dir mtime.
+    age = now - dir_mtime
+    print(f"pid=unknown phase=unknown age={age}s")
+    raise SystemExit(2 if age > max_age else 0)
+pid = owner.get("pid")
+mode = str(owner.get("mode") or "unknown")
+started = owner.get("startedAt")
+age = now - int(started / 1000) if isinstance(started, (int, float)) else now - dir_mtime
+if not isinstance(pid, int) or pid <= 0:
+    print(f"pid=invalid phase={mode} age={age}s")
+    raise SystemExit(2 if age > max_age else 0)
+try:
+    os.kill(pid, 0)
+except ProcessLookupError:
+    print(f"pid={pid} phase={mode} age={age}s dead")
+    raise SystemExit(1)
+except PermissionError:
+    pass
+if age > max_age:
+    print(f"pid={pid} phase={mode} age={age}s")
+    raise SystemExit(2)
+print(f"pid={pid} phase={mode} age={age}s")
+raise SystemExit(0)
+PY
 }
 
 down=0
@@ -498,43 +618,94 @@ else
 fi
 
 botfleet_harness_healthy() {
-  /usr/bin/curl -sf -m 2 "http://127.0.0.1:8799/health" >/dev/null 2>&1
+  /usr/bin/curl -sf -m 2 "$BOTFLEET_HEALTH_URL" >/dev/null 2>&1
 }
 
 # --- launchd always-on ---
 for spec in "${expect_launchd[@]}"; do
-  label="${spec%% *}"
-  plist_name="${spec#* }"
+  read -r label plist_name aliases <<<"$spec"
   plist="${HOME}/Library/LaunchAgents/${plist_name}"
 
-  if launchd_disabled "$label" "$uid"; then
-    log "SKIP  launchd:$label  disabled"
-    continue
-  fi
-
-  # Packaged BotFleet.app often owns :8799.  Do not bootstrap a second
-  # node server on top of a healthy harness.
-  if [ "$label" = "com.jay.botfleet-server" ] && botfleet_harness_healthy; then
-    log "OK    launchd:$label  8799-healthy"
-    continue
-  fi
-
-  if ! launchctl print "gui/${uid}/${label}" >/dev/null 2>&1; then
-    down=1
-    log "DOWN  launchd:$label  status=not-loaded"
-    if [ -f "$plist" ]; then
-      try_restart "launchd:$label" launchctl bootstrap "gui/${uid}" "$plist"
+  disabled_as=""
+  for l in "$label" ${aliases:-}; do
+    if launchd_disabled "$l" "$uid"; then
+      disabled_as="$l"
+      break
+    fi
+  done
+  if [ -n "$disabled_as" ]; then
+    if [ "$disabled_as" = "$label" ]; then
+      log "SKIP  launchd:$label  disabled"
     else
-      log "FAIL  launchd:$label  no-plist"
+      log "SKIP  launchd:$label  disabled-as=$disabled_as"
     fi
     continue
   fi
 
-  pid="$(launchctl print "gui/${uid}/${label}" 2>/dev/null | awk '/^[[:space:]]*pid = / {print $3; exit}')"
+  if [ "$label" = "$BOTFLEET_LABEL" ]; then
+    # An update in progress owns the harness lifecycle.  Checked before
+    # the :8799 probe: mid-apply the port is down on purpose.
+    upd="$(botfleet_update_in_progress)"
+    upd_rc=$?
+    if [ "$upd_rc" -eq 0 ]; then
+      log "SKIP  launchd:$label  update-in-progress $upd"
+      continue
+    elif [ "$upd_rc" -eq 2 ]; then
+      log "WARN  launchd:$label  update-lock-stale-ignored $upd"
+    fi
+    # Packaged BotFleet.app often owns :8799.  Do not bootstrap a second
+    # node server on top of a healthy harness.
+    if botfleet_harness_healthy; then
+      log "OK    launchd:$label  8799-healthy"
+      continue
+    fi
+  fi
+
+  # Which label is actually loaded: the primary, or a former label.
+  loaded_as=""
+  for l in "$label" ${aliases:-}; do
+    if launchd_loaded "$l"; then
+      loaded_as="$l"
+      break
+    fi
+  done
+
+  if [ -z "$loaded_as" ]; then
+    # Bootstrap source: the primary plist, else a former label's plist.
+    if [ ! -f "$plist" ]; then
+      for l in ${aliases:-}; do
+        if [ -f "${HOME}/Library/LaunchAgents/${l}.plist" ]; then
+          plist="${HOME}/Library/LaunchAgents/${l}.plist"
+          break
+        fi
+      done
+    fi
+    if [ ! -f "$plist" ]; then
+      down=1
+      log "DOWN  launchd:$label  status=not-loaded"
+      log "FAIL  launchd:$label  no-plist"
+      continue
+    fi
+    # Probe the label the plist declares.  Probing one label and then
+    # bootstrapping a plist that declares another is how a loaded job got
+    # reported not-loaded and re-bootstrapped (2026-10-01).
+    declared="$(plist_label_of "$plist")"
+    declared="${declared:-$label}"
+    if [ "$declared" != "$label" ] && launchd_loaded "$declared"; then
+      log "OK    launchd:$label  loaded-as=$declared"
+      continue
+    fi
+    down=1
+    log "DOWN  launchd:$label  status=not-loaded"
+    try_bootstrap "launchd:$label" "$declared" "$plist"
+    continue
+  fi
+
+  pid="$(launchctl print "gui/${uid}/${loaded_as}" 2>/dev/null | awk '/^[[:space:]]*pid = / {print $3; exit}')"
   if [ -z "${pid:-}" ] || [ "$pid" = "0" ]; then
     down=1
     log "DOWN  launchd:$label  status=no-pid"
-    try_restart "launchd:$label" launchctl kickstart "gui/${uid}/${label}"
+    try_restart "launchd:$label" launchctl kickstart "gui/${uid}/${loaded_as}"
   fi
 done
 
@@ -553,7 +724,8 @@ for spec in "${expect_scheduled[@]}"; do
     down=1
     log "DOWN  scheduled:$label  status=not-loaded"
     if [ -f "$plist" ]; then
-      try_restart "scheduled:$label" launchctl bootstrap "gui/${uid}" "$plist"
+      declared="$(plist_label_of "$plist")"
+      try_bootstrap "scheduled:$label" "${declared:-$label}" "$plist"
     else
       log "FAIL  scheduled:$label  no-plist"
     fi
