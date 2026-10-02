@@ -57,26 +57,14 @@ while [[ $# -gt 0 ]]; do
       MODE=pin
       WANT_PIN=1
       shift || true
-      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
-        TITLE="$1"
-        shift || true
-      fi
       ;;
     --unpin-only)
       MODE=unpin
       shift || true
-      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
-        TITLE="$1"
-        shift || true
-      fi
       ;;
     --update)
       MODE=update
       shift || true
-      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
-        TITLE="$1"
-        shift || true
-      fi
       ;;
     --pin)
       WANT_PIN=1
@@ -191,7 +179,7 @@ _convert_body_to_html() {
   local _md_py
   _md_py=$(mktemp /tmp/apple-notes-md.XXXXXX.py)
   cat >"${_md_py}" <<'PY'
-import html, re, sys
+import html, os, re, sys
 
 SPACER = "<div><br></div>"
 
@@ -199,12 +187,12 @@ def is_html_content(text: str) -> bool:
     s = text.strip()
     if not s:
         return False
-    if re.match(r"^<(?:!DOCTYPE|html|div|p|h[1-6]|ul|ol|table|section|article)\b", s, re.I):
+    if re.match(r"^<(?:!DOCTYPE|!--|html|div|p|h[1-6]|ul|ol|table|section|article)\b", s, re.I):
         return True
     block_tags = ["div", "p", "h1", "h2", "h3", "h4", "ul", "ol", "li", "table", "pre"]
     open_c = sum(len(re.findall(rf"<{t}\b[^>]*>", s, re.I)) for t in block_tags)
     close_c = sum(len(re.findall(rf"</{t}>", s, re.I)) for t in block_tags)
-    return open_c >= 2 and close_c >= 2
+    return open_c >= 1 and close_c >= 1
 
 def clean_existing_html(text: str) -> str:
     s = text.strip()
@@ -248,8 +236,9 @@ def inline(s: str) -> str:
     return s
 
 raw_input = sys.stdin.read()
+is_explicit_html = os.environ.get("IS_EXPLICIT_HTML") == "1"
 
-if is_html_content(raw_input):
+if is_explicit_html or is_html_content(raw_input):
     sys.stdout.write(clean_existing_html(raw_input))
     sys.exit(0)
 
@@ -462,7 +451,7 @@ BODY_HTML=""
 if [[ "$SKIP_BODY" == "0" ]]; then
   if [[ -n "$HTML_PATH" ]]; then
     [[ -f "$HTML_PATH" ]] || { echo "missing --html file: $HTML_PATH" >&2; exit 2; }
-    BODY_HTML=$(cat "$HTML_PATH" | _convert_body_to_html)
+    BODY_HTML=$(cat "$HTML_PATH" | IS_EXPLICIT_HTML=1 _convert_body_to_html)
   elif [[ -n "${1:-}" ]]; then
     BODY_TEXT="$1"
     BODY_HTML=$(printf '%s' "$BODY_TEXT" | _convert_body_to_html)
