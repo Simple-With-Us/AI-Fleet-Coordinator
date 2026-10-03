@@ -391,7 +391,11 @@
         sub: bits.join(' · '),
         state: i.state,
         status: String(status).replace(/_/g, ' '),
-        url: run && run.url ? run.url : 'https://github.com/jaywedgeworth22/' + i.repo
+        // Repo link comes from the Worker, which knows the real org.  It used
+        // to be hardcoded to jaywedgeworth22/ here, which 404s after the
+        // Simple-With-Us move -- and GitHub 404s a PRIVATE repo for anyone not
+        // signed in, so the link is only as good as the viewer's session.
+        url: run && run.url ? run.url : (i.repoUrl || ('https://github.com/' + i.repo))
       };
     });
   }

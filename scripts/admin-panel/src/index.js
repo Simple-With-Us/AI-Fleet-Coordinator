@@ -109,7 +109,7 @@ const APPS = [
   { repo: 'ContactLogo', name: 'ContactLogo', kind: 'product' },
   { repo: 'BotFleet', name: 'BotFleet.app', kind: 'product' },
   { repo: 'HogHunter', name: 'Hog Hunter', kind: 'product' },
-  { repo: 'fleet-ops', name: 'Fleet Ops', kind: 'infra' },
+  { repo: 'Fleet-OPS', name: 'Fleet Ops', kind: 'infra' },
   { repo: 'Clutch', name: 'Clutch', kind: 'infra' },
 ];
 
@@ -582,7 +582,14 @@ function coolifyState(status) {
 
 async function checkGitHub(env) {
   if (!env.GITHUB_TOKEN) return notConfigured('GITHUB_TOKEN');
-  const owner = env.GITHUB_OWNER || 'jaywedgeworth22';
+  // Owner moved from the personal account to the Simple-With-Us org.  The
+  // search qualifier is `org:` because GitHub 422s the whole search on
+  // `user:` for an org (verified 2026-10-03: user:jaywedgeworth22 -> HTTP 422,
+  // user:Simple-With-Us -> 16 open PRs), which silently killed the PR half of
+  // this card.  `org:` is the correct qualifier for an organisation and works
+  // for the org only, so keep this an org check rather than a generic owner.
+  const owner = env.GITHUB_OWNER || 'Simple-With-Us';
+  const qualifier = env.GITHUB_OWNER_IS_ORG === 'false' ? 'user' : 'org';
   const headers = {
     Authorization: `Bearer ${env.GITHUB_TOKEN}`,
     Accept: 'application/vnd.github+json',
@@ -591,7 +598,7 @@ async function checkGitHub(env) {
 
   // One search for every open PR the owner has, grouped by repo afterwards.
   const search = await apiJson(
-    `https://api.github.com/search/issues?q=${encodeURIComponent(`is:pr is:open user:${owner}`)}&per_page=100`,
+    `https://api.github.com/search/issues?q=${encodeURIComponent(`is:pr is:open ${qualifier}:${owner}`)}&per_page=100`,
     { headers },
   ).catch((err) => ({ __error: errText(err) }));
 
@@ -618,6 +625,9 @@ async function checkGitHub(env) {
     const row = {
       name: app.name,
       repo: app.repo,
+      // The Worker owns the link so the owner never drifts from GITHUB_OWNER
+      // again.  The front-end used to hardcode jaywedgeworth22/ here.
+      repoUrl: `https://github.com/${owner}/${app.repo}`,
       kind: app.kind,
       prs: prError ? null : (prCounts.get(app.repo) || 0),
       run: null,
