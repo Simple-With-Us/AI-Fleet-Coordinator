@@ -56,8 +56,24 @@ CRIT_FREE=${CRIT_FREE:-30}  # below this -> destructive `uv cache clean` allowed
 DROP_ALERT=6       # free dropped at least this much since last run -> flag it
 IDLE_HRS=4         # a worktree is "abandoned" (dep-reapable) after this many hours untouched
 PM2_LOG_CAP_MB=50  # truncate any single pm2 log larger than this (pure waste, always)
-JANITOR_MAX_LOAD=${JANITOR_MAX_LOAD:-40}          # load1 above this -> thrashing -> PRESSURE-SKIP (cheap truncations only)
-JANITOR_MAX_SWAP_PCT=${JANITOR_MAX_SWAP_PCT:-90}  # swap used% at/above this -> thrashing -> PRESSURE-SKIP
+JANITOR_MAX_LOAD=${JANITOR_MAX_LOAD:-250}         # HARD stop: load1 above this -> skip everything but cheap truncations
+JANITOR_MAX_SWAP_PCT=${JANITOR_MAX_SWAP_PCT:-98}  # HARD stop: swap used% at/above this -> skip everything but cheap truncations
+# 2026-10-02 (MINIMAX), board ce1b42b1.  The gate used to be binary, and that was a
+# catch-22: refusing to clean is exactly what let the machine get too loaded to clean.
+# The old load arm (40) and old swap arm (90) both sat AT this Mac's normal operating
+# level, so every tick skipped and nothing was ever retired -- the pile-up the janitor
+# exists to prevent was caused by the janitor standing down.  It is now GRADED:
+#
+#   hard  (load1 > 250 or swap >= 98): cheap truncations only.  Real crisis, the box
+#         is thrashing and even bounded git work is counter-productive.
+#   lean  (load1 >= 150 or swap >= 90): skip the read-only du probes, but STILL prune
+#         and retire old merged worktrees, and still run the disk-pressure cache
+#         sweeps.  Retirement is watchdog-bounded (30s fetch per repo, 30s per
+#         remove), gated on clean + STALE_DAYS idle + actually merged, and cannot
+#         lose a branch or a commit -- so it is the one phase worth running precisely
+#         when the host is loaded.  This is the arm that broke the catch-22.
+JANITOR_SOFT_LOAD=${JANITOR_SOFT_LOAD:-150}         # lean mode at/above this load1
+JANITOR_SOFT_SWAP_PCT=${JANITOR_SOFT_SWAP_PCT:-90}  # lean mode at/above this swap used%
 
 # ---- old-worktree retirement (removes the whole checkout dir; branch+commits survive) ----
 REAP_WORKTREES=${REAP_WORKTREES:-1}   # master switch: 1 = retire old merged worktrees every run, 0 = off
@@ -321,6 +337,7 @@ janitor_swap_pct() {
 }
 load1=$(janitor_load1); load1=${load1:-0}
 swap_pct=$(janitor_swap_pct); swap_pct=${swap_pct:-0}
+# Hard stop: genuine crisis, cheap truncations only, exit (EXIT trap releases the lock).
 if awk -v l="$load1" -v m="$JANITOR_MAX_LOAD" 'BEGIN { exit !(l + 0 > m + 0) }' \
    || [ "$swap_pct" -ge "$JANITOR_MAX_SWAP_PCT" ] 2>/dev/null; then
   printf '%s  PRESSURE-SKIP load=%s swap=%s%% (cheap truncations only)\n' \
@@ -330,6 +347,19 @@ if awk -v l="$load1" -v m="$JANITOR_MAX_LOAD" 'BEGIN { exit !(l + 0 > m + 0) }' 
   [ -n "$actions" ] && printf '%s  PRESSURE-SKIP action=%s\n' "$(date '+%Y-%m-%d %H:%M')" "$actions" >> "$LOG"
   tail -n 500 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
   exit 0   # EXIT trap releases the lock
+fi
+
+# Lean mode (2026-10-02, MINIMAX): elevated but not critical.  Do NOT stand down --
+# that is the catch-22.  Keep the reclaiming phases (worktree prune + retirement) and
+# drop only the read-heavy du buckets and the cache sweeps, which add I/O to a host
+# that is already loaded without freeing anything themselves.  See the thresholds
+# block above for the full rationale.
+lean=0
+if awk -v l="$load1" -v m="$JANITOR_SOFT_LOAD" 'BEGIN { exit !(l + 0 >= m + 0) }' \
+   || [ "$swap_pct" -ge "$JANITOR_SOFT_SWAP_PCT" ] 2>/dev/null; then
+  lean=1
+  printf '%s  LEAN-MODE load=%s swap=%s%% (du probes skipped; all reclaim phases still run)\n' \
+    "$(date '+%Y-%m-%d %H:%M')" "$load1" "$swap_pct" >> "$LOG"
 fi
 
 now="$(date '+%Y-%m-%d %H:%M')"
@@ -369,11 +399,21 @@ janitor_duk() {
   out=$(janitor_watchdog "$secs" "$label" -- du -sk "$path" 2>/dev/null) || out=""
   if [ -z "$out" ]; then echo 0; else echo "$out" | awk '{print $1}'; fi
 }
-npm_k=$(janitor_duk 10 "duk-npm"    "$HOME_DIR/.npm")
-uv_k=$(janitor_duk 10 "duk-uv"     "$HOME_DIR/.cache/uv")
-livec_k=$(janitor_duk 10 "duk-livec" /Users/jay/apps/trading-live/.next/cache)
-codexc_k=$(janitor_duk 10 "duk-codexc" /Users/jay/apps/trading-codex/.next/cache)
-pm2_k=$(janitor_duk 10 "duk-pm2"    "$HOME_DIR/.pm2/logs")
+# 2026-10-02 (MINIMAX): in lean mode these five `du` probes are skipped and reported
+# as 0.  They are read-only size probes -- they free nothing themselves, and on a
+# loaded host five 10s sweeps are exactly the I/O the lean arm exists to avoid.
+# Every phase that actually reclaims still runs, including lowfree/pressure, because
+# those are gated on free disk rather than on load or swap -- under real disk
+# pressure we WANT them to run, loaded or not.  See the LEAN-MODE note at the gate.
+if [ "$lean" = "1" ]; then
+  npm_k=0; uv_k=0; livec_k=0; codexc_k=0; pm2_k=0
+else
+  npm_k=$(janitor_duk 10 "duk-npm"    "$HOME_DIR/.npm")
+  uv_k=$(janitor_duk 10 "duk-uv"     "$HOME_DIR/.cache/uv")
+  livec_k=$(janitor_duk 10 "duk-livec" /Users/jay/apps/trading-live/.next/cache)
+  codexc_k=$(janitor_duk 10 "duk-codexc" /Users/jay/apps/trading-codex/.next/cache)
+  pm2_k=$(janitor_duk 10 "duk-pm2"    "$HOME_DIR/.pm2/logs")
+fi
 
 actions=""
 
@@ -482,30 +522,28 @@ fi
 # --- LOW FREE: clear regenerable caches + prod/dev build caches ---
 if [ "$free" -lt "$LOW_FREE" ]; then
   janitor_heartbeat "lowfree-start"
-  if command -v cleanmymac &>/dev/null; then
-    # 2026-09-13: never run bare `cleanmymac clean --force` (or its `junk`
-    # module) here -- system junk includes ~/Library/Logs, which a launchd
-    # LaunchAgent can hold open for the life of the machine (com.jay.botfleet-
-    # server's server.log was deleted mid-write this way). `dev`/`ai`/`trash`
-    # only ever touch regenerable build caches, AI-tool scratch, and already-
-    # deleted trash items -- never a file a running process still has open --
-    # so those three stay and `junk` is dropped outright rather than gated on
-    # free-space, since a threshold gate would still hit `junk` at the exact
-    # moment disk pressure is worst and a launchd log is most likely mid-write.
-    # Bound each module at 60s (BF-HOUSEKEEPER 2026-09-25) -- a hung cleanmymac
-    # child used to pin the tick silently; now we kill it and skip that module.
-    janitor_watchdog 60 "cleanmymac-dev"   -- cleanmymac clean dev --force
-    janitor_watchdog 60 "cleanmymac-ai"    -- cleanmymac clean ai --force
-    janitor_watchdog 60 "cleanmymac-trash" -- cleanmymac clean trash --force
-    # No `cleanmymac optimize ram` by default — it writes dirty memory pages to
-    # swap on disk, which makes the very disk pressure we are trying to
-    # relieve strictly worse (+3.6-7.3G swap per run, measured 2026-09-01).
-    # Opt in with RESOURCE_ALLOW_RAM_OPTIMIZE=1 if ever needed; same gate as
-    # mac-auto-cleanup.sh and mac-resource-watch.py.  See docs/HOUSEKEEPER.md.
-    if [ "${RESOURCE_ALLOW_RAM_OPTIMIZE:-0}" = "1" ]; then
-      janitor_watchdog 30 "cleanmymac-ram" -- cleanmymac optimize ram
-    fi
-    actions="${actions}cleanmymac "
+  HOGHUNTER_CLEAN="/Users/jay/Code/HogHunter/scripts/hoghunter-clean"
+  if [ -x "$HOGHUNTER_CLEAN" ]; then
+    # 2026-09-30 (BF-HOUSEKEEPER): this ran the CleanMyMac CLI's dev/ai/trash
+    # modules.  CleanMyMac is uninstalled -- a stale `cleanmymac-cli` row still
+    # sits in `brew list`, but there is no Cellar dir and `command -v` exits 1,
+    # so `command -v cleanmymac` was false and this whole block was a no-op
+    # that still logged as if it had cleaned something.
+    #
+    # The Hog Hunter engine subsumes those three modules and adds the ones the
+    # CLI never had.  Two of its rules matter most here:
+    #   * `logs` TRUNCATES IN PLACE rather than unlinking.  The 2026-09-13 bug
+    #     below (a live launchd log deleted mid-write) is structurally
+    #     impossible now: truncating preserves the inode and the fd.
+    #   * `snapshots` prunes stale APFS local snapshots, which on this Mac have
+    #     been the single largest reclaim available.
+    #
+    # Tier gating is the engine's own: it reads swap/load/disk and drops to
+    # safe-only when the band is tight.  `--band=full` here because this branch
+    # only runs below LOW_FREE; the engine still refuses the semi-safe tier
+    # itself if swap or load is elevated.  Bounded at 300s via the watchdog.
+    janitor_watchdog 300 "hoghunter-clean" -- "$HOGHUNTER_CLEAN" --clean --band=full
+    actions="${actions}hoghunter "
   fi
   rm -rf "$HOME_DIR/.npm/_cacache" 2>/dev/null
   # uv cache: never rm -rf the whole tree. Several MCP servers (Hetzner, alpaca, fmp,
