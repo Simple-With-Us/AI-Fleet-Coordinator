@@ -23,9 +23,9 @@ names like `[GROK]` / `[CODEX]` / `[CLAUDE]`.
 | `app-st.svg` / `app-st.png` | Socratic Trade — the offset-candlestick mark.  The SVG is transparent; the PNG is the App Store icon (`Socratic.Trade/graphics/asc-app-icon-1024.png`, black plate) for surfaces that need a solid tile. |
 | `app-ct.png` / `app-um.png` / `app-dd.png` / `app-ps.png` / `app-ar.png` / `app-cl.png` / `app-bf.png` | Product app icons (CT, UM, DealDex, Personal Site, Autorotate, ContactLogo, BotFleet) |
 | `app-hh.png` | Hog Hunter — the Mac app icon from `HogHunter/Assets.xcassets/AppIcon.appiconset` |
-| `app-harness.png` | Harness — the app icon from `Harness` |
+| `app-clutch.png` | Clutch — placeholder C-monogram icon from `Clutch/assets/clutch-icon-1024.png` (formerly `app-harness.png`) |
 | `app-cc.png` | CodeCaps — teal "C-with-cap" mark from `codecaps/assets/icon-1024.png` |
-| `app-mm.png` | MiniMax Remote — app icon from `MiniMax-ios` |
+| `app-mm.png` | Retired 2026-09-30: MiniMax Remote app icon (app superseded by the Harness iOS app); historical only |
 
 Most vendor marks came from `Socratic.Trade/public/model-logos/`; Grok, Grok Bot,
 and Cursor are owner-supplied from `~/Code/Icons - Logos/`.

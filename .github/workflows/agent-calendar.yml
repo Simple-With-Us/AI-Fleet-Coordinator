@@ -27,7 +27,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FLEET_OWNER: jaywedgeworth22
-          FLEET_REPOS: Socratic-Trade,Congress.Trade,Usage-Monitor,congress-trading-shared,AI-Fleet-Coordinator,DealDex,Autorotate,ContactLogo,Personal-Site,BotFleet,HogHunter,Harness,codecaps
+          FLEET_REPOS: Socratic-Trade,Congress.Trade,Usage-Monitor,congress-trading-shared,AI-Fleet-Coordinator,DealDex,Autorotate,ContactLogo,Personal-Site,BotFleet,HogHunter,Clutch,codecaps
           CALENDAR_LOOKBACK_DAYS: "21"
           CALENDAR_PER_REPO: "50"
           CALENDAR_OUT: calendar/agent-activity.ics

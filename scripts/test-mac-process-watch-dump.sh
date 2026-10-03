@@ -9,7 +9,7 @@ WATCH="${ROOT}/mac-process-watch.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-grep -q 'com.jay.botfleet-server' "$WATCH" || { echo "FAIL watch must list com.jay.botfleet-server" >&2; exit 1; }
+grep -q '"app.botfleet.server app.botfleet.server.plist com.jay.botfleet-server"' "$WATCH" || { echo "FAIL watch must list app.botfleet.server (legacy com.jay.botfleet-server alias)" >&2; exit 1; }
 grep -q '8799-healthy' "$WATCH" || { echo "FAIL watch must treat :8799 health as botfleet UP" >&2; exit 1; }
 
 covers() {

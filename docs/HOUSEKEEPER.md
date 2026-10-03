@@ -61,6 +61,6 @@ Live Mac jobs:
 
 - `com.jay.mac-resource-watch` — every 5 min; samples disk/RAM/CPU; runs safe cleanup on a disk hit (own cooldown, `--force` is the only bypass); POSTs BotFleet Housekeeper webhook and, if configured, Grok Bot Housekeeper (45 min webhook cooldown)
 - `com.jay.mac-cleanup` — every 4 h (`mac-auto-cleanup.sh`)
-- `com.jay.disk-janitor` — every 30 min; cache + idle worktree retirement (warn at 80G free, pressure at 65G; worktrees age≥7d + merged + no `.janitor-keep`)
+- `com.jay.disk-janitor` — every 30 min; cache + idle worktree retirement (warn at 80G free, pressure at 65G; worktrees age≥7d + merged + no `.janitor-keep`)  **2026-09-30 (Claude):** a memory/load gate runs first — load1 above `JANITOR_MAX_LOAD` (40) or swap at or above `JANITOR_MAX_SWAP_PCT` (90) logs `PRESSURE-SKIP`, does only the pm2-log and leftover test-DB truncations, and skips every git/gh/worktree phase and all CleanMyMac calls until the Mac settles.
 
 Webhook secrets (chmod 600, never print): `~/.secrets/botfleet-housekeeper-webhook.env` (required) and optional `~/.secrets/grok-bot-housekeeper-webhook.env`.

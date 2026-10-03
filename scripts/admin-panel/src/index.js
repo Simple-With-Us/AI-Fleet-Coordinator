@@ -110,7 +110,7 @@ const APPS = [
   { repo: 'BotFleet', name: 'BotFleet.app', kind: 'product' },
   { repo: 'HogHunter', name: 'Hog Hunter', kind: 'product' },
   { repo: 'fleet-ops', name: 'Fleet Ops', kind: 'infra' },
-  { repo: 'Harness', name: 'Harness', kind: 'infra' },
+  { repo: 'Clutch', name: 'Clutch', kind: 'infra' },
 ];
 
 // Vercel personal projects come back on the first call; team-scoped ones need

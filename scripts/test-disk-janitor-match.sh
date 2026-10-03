@@ -85,4 +85,33 @@ assert_origin "git@github.com:jaywedgeworth22/Socratic.Trade.git" "jaywedgeworth
 assert_origin "https://github.com/jaywedgeworth22/AI-Fleet-Coordinator.git" "jaywedgeworth22/AI-Fleet-Coordinator"
 assert_origin "ssh://git@github.com/jaywedgeworth22/BotFleet.git" "jaywedgeworth22/BotFleet"
 
+# 2026-09-30: memory/load pressure gate.  Above JANITOR_MAX_LOAD (40) or at/above
+# JANITOR_MAX_SWAP_PCT (90) the janitor logs PRESSURE-SKIP, runs only the cheap
+# truncations, and exits before any git/gh/find-over-worktrees phase or CleanMyMac call.
+grep -qE '^JANITOR_MAX_LOAD=\$\{JANITOR_MAX_LOAD:-40\}' "$JANITOR" || fail "JANITOR_MAX_LOAD default 40 missing"
+grep -qE '^JANITOR_MAX_SWAP_PCT=\$\{JANITOR_MAX_SWAP_PCT:-90\}' "$JANITOR" || fail "JANITOR_MAX_SWAP_PCT default 90 missing"
+gate_line=$(grep -n "PRESSURE-SKIP load=" "$JANITOR" | head -1 | cut -d: -f1)
+[ -n "$gate_line" ] || fail "PRESSURE-SKIP log line missing"
+for fan in 'janitor_watchdog 30 "wt-fetch"' 'git -C "$r" worktree prune' 'cleanmymac clean dev' 'janitor_duk 10'; do
+  fan_line=$(grep -nF "$fan" "$JANITOR" | head -1 | cut -d: -f1)
+  [ -n "$fan_line" ] && [ "$gate_line" -lt "$fan_line" ] || fail "pressure gate must precede: $fan"
+done
+# `cleanmymac optimize ram` (RAM pressure -> swap) only ever behind the explicit opt-in.
+if ! grep -B1 -F -- '-- cleanmymac optimize ram' "$JANITOR" | grep -q 'RESOURCE_ALLOW_RAM_OPTIMIZE'; then
+  fail "cleanmymac optimize ram must be gated behind RESOURCE_ALLOW_RAM_OPTIMIZE=1"
+fi
+# Parsers, against synthetic sysctl output (no real sysctl, no real work).
+(
+  eval "$(sed -n '/^janitor_load1()/,/^load1=/p' "$JANITOR" | sed '$d')"
+  sysctl() { case "$2" in vm.swapusage) printf '%s\n' "$SYN_SWAP" ;; vm.loadavg) printf '%s\n' "$SYN_LOAD" ;; esac; }
+  assert_gate() {
+    SYN_SWAP="$1"; SYN_LOAD="$2"
+    [ "$(janitor_swap_pct)" = "$3" ] || fail "swap pct for [$1]: got $(janitor_swap_pct) want $3"
+    [ "$(janitor_load1)" = "$4" ] || fail "load1 for [$2]: got $(janitor_load1) want $4"
+  }
+  assert_gate "total = 10240.00M  used = 9401.44M  free = 838.56M  (encrypted)" "{ 166.12 163.87 182.51 }" 92 166.12
+  assert_gate "total = 4.00G  used = 3.60G  free = 0.40G" "{ 0.50 0.40 0.30 }" 90 0.50
+  assert_gate "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)" "{ 0.50 0.40 0.30 }" 0 0.50
+)
+
 echo OK
