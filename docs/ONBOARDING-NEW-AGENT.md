@@ -3,9 +3,9 @@
 Policy + steps for adding a coding agent (Claude, Codex, Grok, Cursor,
 Antigravity, Monet, Kimi, Copilot, or a future seat) to this fleet.
 
-**GitHub:** https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md  
-**Sibling (new app):** [ONBOARDING-NEW-APP.md](ONBOARDING-NEW-APP.md) · https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md  
-**Protocol:** `/Users/jay/apps/AGENT-SYNC.md` · https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md
+**GitHub:** https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md  
+**Sibling (new app):** [ONBOARDING-NEW-APP.md](ONBOARDING-NEW-APP.md) · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md  
+**Protocol:** `/Users/jay/apps/AGENT-SYNC.md` · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md
 
 **Run the script for the mechanical worktrees, then finish the checklist.**
 
@@ -73,8 +73,12 @@ is **not** a per-app seat.  Do not run this script to create
    2026 at 7:00 PM CT`).  Never UTC-only in chat.  UTC may follow in
    parentheses.  `00:00 UTC` is 7:00 PM CT the previous calendar day in CDT
    (6:00 PM CT in CST).  Canonical: `AGENT-SYNC.md` § Timestamps.
-9. **Fleet recall.**  Search `fleet-agents` before re-deriving (`recall` / MCP
-   `recall_search`).  Contribute every reusable lesson (`recall_contribute`).
+9. **Fleet recall — first, not last.**  Search `fleet-agents` at the **start** of the turn
+   (`recall` / MCP `recall_search`), before diagnosing anything that smells familiar, before
+   asking the owner something a past ruling probably answers, and before opening a lane for an
+   issue you have seen before.  One search costs seconds; re-deriving costs the investigation.
+   A hit is a lead to verify, not a verdict.  Contribute every reusable lesson
+   (`recall_contribute`) — the seat that just burned tokens is the only one that knows.
    Cloud seats use `https://agents.jays.services/mcp`.  Do not bulk-ingest
    chat logs as lessons.  Canonical: `docs/RAG-FLEET-INFRA.md`.
 10. **Use sub-agents whenever they help.** Pick the most economical effective
