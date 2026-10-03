@@ -172,7 +172,7 @@ The old preview-provisioning scripts (`setup-agent-previews.sh`, `sync-preview-l
 dead after the preview retirement; the pre-push hook they used to install is now installed
 by `scripts/land.sh`). The "Preview freshness policy" section below is historical.
 
-Hosting is Coolify (see private `jaywedgeworth22/fleet-ops:ATTACK-MAP.md`,
+Hosting is Coolify (see private `Simple-With-Us/fleet-ops:ATTACK-MAP.md`,
 dashboard + API `https://host.jays.services` — direct DNS, no Mac dependency; DB rollback path is the litestream R2 replica).
 **The dashboard moved off the apex (owner-directed): `jays.services`
 (apex) now CNAMEs to the Mac Cloudflare tunnel and does NOT reach Coolify — any tool or
@@ -473,7 +473,7 @@ literal two ASCII spaces stays correct — do not switch file content to NBSP or
 
 - **Private Infrastructure Hub & Secrets Inventory (LOUD NOTICE):**
   This repository and all public fleet repositories MUST NOT contain real host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, or secret values.
-  - **Canonical private infrastructure inventory:** [`jaywedgeworth22/fleet-ops:ATTACK-MAP.md`](https://github.com/jaywedgeworth22/fleet-ops/blob/main/ATTACK-MAP.md) (local clone at `/Users/jay/Code/fleet-ops/ATTACK-MAP.md`).
+  - **Canonical private infrastructure inventory:** [`Simple-With-Us/fleet-ops:ATTACK-MAP.md`](https://github.com/Simple-With-Us/fleet-ops/blob/main/ATTACK-MAP.md) (local clone at `/Users/jay/Code/fleet-ops/ATTACK-MAP.md`).
   - **Cloud agents without repo access:** Fetch securely via `GET https://mac.jays.services/files/ATTACK-MAP.md` using `MAC_COLLAB_TOKEN`.
   - **Secret handoff:** Read secrets from `~/.secrets/global-api-keys` or Infisical. Never log, grep, or print raw `KEY=value` lines. Never commit or refer to cloud storage / Google Drive backups of secrets.
 - **App runtime secrets** live in **Infisical** (the app's own project, prod).  
@@ -512,29 +512,29 @@ canonical tags: `Socratic.Trade`, `Congress.Trade`, `API-Usage-Monitor`,
 
 | Acronym | App / Scope | Repository |
 | :--- | :--- | :--- |
-| **`ST`** | Socratic.Trade | `jaywedgeworth22/Socratic.Trade` |
-| **`CT`** | Congress.Trade | `jaywedgeworth22/Congress.Trade` |
-| **`UM`** | Usage-Monitor | `jaywedgeworth22/Usage-Monitor` |
-| **`DD`** | DealDex | `jaywedgeworth22/DealDex` |
-| **`CL`** | ContactLogo | `jaywedgeworth22/ContactLogo` |
-| **`AR`** | Autorotate | `jaywedgeworth22/Autorotate` |
-| **`AFC`** | AI-Fleet-Coordinator (this repo / Mac collab / skill pack) | `jaywedgeworth22/AI-Fleet-Coordinator` |
-| **`OPS`** | fleet-ops (sibling identity; do not invent a checkout here) | `jaywedgeworth22/fleet-ops` |
-| **`PS`** | Personal-Site | `jaywedgeworth22/Personal-Site` |
-| **`CTS`** | congress-trading-shared | `jaywedgeworth22/congress-trading-shared` |
+| **`ST`** | Socratic.Trade | `Simple-With-Us/Socratic.Trade` |
+| **`CT`** | Congress.Trade | `Simple-With-Us/Congress.Trade` |
+| **`UM`** | Usage-Monitor | `Simple-With-Us/Usage-Monitor` |
+| **`DD`** | DealDex | `Simple-With-Us/DealDex` |
+| **`CL`** | ContactLogo | `Simple-With-Us/ContactLogo` |
+| **`AR`** | Autorotate | `Simple-With-Us/Autorotate` |
+| **`AFC`** | AI-Fleet-Coordinator (this repo / Mac collab / skill pack) | `Simple-With-Us/AI-Fleet-Coordinator` |
+| **`OPS`** | fleet-ops (sibling identity; do not invent a checkout here) | `Simple-With-Us/fleet-ops` |
+| **`PS`** | Personal-Site | `Simple-With-Us/Personal-Site` |
+| **`CTS`** | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |
 | **`FLEET`** | Slack wake: every Grok Bot seat | Not a repo.  Not the coordinator.  `[SENDER->FLEET]` only. |
 
 ## Fleet docs (start here)
 
 | What | Live / repo path | GitHub |
 |------|------------------|--------|
-| Protocol | `/Users/jay/apps/AGENT-SYNC.md` | https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md |
-| Effort boards | `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` | https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/EFFORT-LOG-PROTOCOL.md |
-| New app | `/Users/jay/Code/AI-Fleet-Coordinator/docs/ONBOARDING-NEW-APP.md` | https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md |
-| DNS / registrars | `/Users/jay/Code/AI-Fleet-Coordinator/docs/DNS-AND-REGISTRARS.md` (new app zone on **account** Usage.Jays.Services, not hostname `usage.jays.services`) | https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/DNS-AND-REGISTRARS.md |
-| New seat | `/Users/jay/Code/AI-Fleet-Coordinator/docs/ONBOARDING-NEW-AGENT.md` | https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md |
-| This template | coordinator `TEMPLATE-AGENTS.md` | https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/TEMPLATE-AGENTS.md |
-| UI copy | `/Users/jay/apps/FLEET-UI-COPY.md` | https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/FLEET-UI-COPY.md |
+| Protocol | `/Users/jay/apps/AGENT-SYNC.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md |
+| Effort boards | `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/EFFORT-LOG-PROTOCOL.md |
+| New app | `/Users/jay/Code/AI-Fleet-Coordinator/docs/ONBOARDING-NEW-APP.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md |
+| DNS / registrars | `/Users/jay/Code/AI-Fleet-Coordinator/docs/DNS-AND-REGISTRARS.md` (new app zone on **account** Usage.Jays.Services, not hostname `usage.jays.services`) | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/DNS-AND-REGISTRARS.md |
+| New seat | `/Users/jay/Code/AI-Fleet-Coordinator/docs/ONBOARDING-NEW-AGENT.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md |
+| This template | coordinator `TEMPLATE-AGENTS.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/TEMPLATE-AGENTS.md |
+| UI copy | `/Users/jay/apps/FLEET-UI-COPY.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/FLEET-UI-COPY.md |
 
 ## Delegation & model economics (fleet rule — binding for every agent)
 

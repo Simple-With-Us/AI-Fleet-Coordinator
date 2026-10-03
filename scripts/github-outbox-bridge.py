@@ -20,7 +20,7 @@ bridge runs on the Mac, where the tokens already live, and every tick:
 Tokens come from ~/.secrets/agent-sync.env and are never printed.  State (last
 comment id, Slack cursor) lives in ~/.agent-sync/outbox-bridge-<SEAT>.json.
 Config: ~/apps/github-outbox-bridge.json
-    {"seats": [{"seat": "INSTINCT", "repo": "jaywedgeworth22/fleet-ops", "issue": 12}]}
+    {"seats": [{"seat": "INSTINCT", "repo": "Simple-With-Us/fleet-ops", "issue": 12}]}
 or one seat from the CLI (--seat --repo --issue).  --once for a launchd
 StartInterval job (the default); --loop for a foreground loop.  --dry-run reads
 everything and writes nothing.

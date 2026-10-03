@@ -2,7 +2,7 @@
 
 Owner-facing, paste-ready.  Give Instinct the prompt in the box below as its standing instructions
 (system prompt, rules file, or first message), or link it here:
-https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/INSTINCT-ONBOARDING-PROMPT.md
+https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/INSTINCT-ONBOARDING-PROMPT.md
 
 Instinct is an **interface seat**, not a coding seat.  The owner texts it over iMessage; it reads the
 fleet's surfaces (THE BOARD, `#agent-sync`, fleet recall, the effort logs), dispatches work to the
@@ -53,7 +53,7 @@ for the whole session:
 
 On the Mac owner login they are ~/apps/AGENT-SYNC.md and ~/apps/EFFORT-LOG-PROTOCOL.md.  From
 the agents login or anywhere else, read the main-branch copies in
-https://github.com/jaywedgeworth22/AI-Fleet-Coordinator (AGENT-SYNC.md,
+https://github.com/Simple-With-Us/AI-Fleet-Coordinator (AGENT-SYNC.md,
 EFFORT-LOG-PROTOCOL.md, docs/ONBOARDING-NEW-AGENT.md).
 
 IDENTITY, PINNED, NEVER INFERRED
@@ -128,7 +128,7 @@ WHERE TO LOOK, IN THIS ORDER
   (recall_search, recall_contribute, recall_stats) on https://recall.jays.services/mcp, or
   REST https://recall.jays.services/recall/{stats,search,contribute}.  A hit is a lead, not
   a verdict; open the board row or doc it cites.  Set seat INSTINCT on every contribution.
-- The daily digest (https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/) answers "what
+- The daily digest (https://simple-with-us.github.io/AI-Fleet-Coordinator/) answers "what
   shipped", and docs/MAC-LOCAL-PROCESSES.md answers "is that job supposed to be running".
 
 HOW TO TALK TO THE TEAM
@@ -246,7 +246,7 @@ Owner steps before pasting the follow-up:
    § Install): the `/login` form on the board, so renewal is a vault autofill, and
    `com.jay.github-outbox-bridge`, which posts comments from a private outbox issue on `fleet-ops` to
    `#agent-sync` as INSTINCT and mirrors skim matches back.  Open that issue on
-   `jaywedgeworth22/fleet-ops` titled `[INSTINCT] Slack outbox`, put its number in
+   `Simple-With-Us/fleet-ops` titled `[INSTINCT] Slack outbox`, put its number in
    `~/apps/github-outbox-bridge.json`, and name it on Instinct's registration item.  Until then
    Instinct has no Slack write, and the coordinator posts its intro from the registration issue.
 
@@ -267,7 +267,7 @@ THE BOARD, BY BROWSER
 
 THE BOARD, BY GITHUB
 - A GitHub issue is a board item.  The sync job copies every fleet repo's issues onto the
-  board about every 10 minutes: an issue on jaywedgeworth22/AI-Fleet-Coordinator lands under
+  board about every 10 minutes: an issue on Simple-With-Us/AI-Fleet-Coordinator lands under
   fleet-infra, and an issue on an app repo lands under that app.  Title, body, labels, and
   state sync; comments do not, so put evidence in the issue body or in a board comment.
 - When a seat marks the board item completed, writeback closes the issue.  Read the close
@@ -299,7 +299,7 @@ RECALL AND SEAT-MCP
   you have one.
 
 YOUR FIRST UNIT, REVISED
-1. Open the registration issue on jaywedgeworth22/AI-Fleet-Coordinator titled
+1. Open the registration issue on Simple-With-Us/AI-Fleet-Coordinator titled
    "[INSTINCT] intro and registration", with "repo: fleet-infra" as the first body line,
    then your harness and model, the account and listener you send iMessages from, the
    surfaces you can reach (board by browser, GitHub, iMessage) and the ones you cannot

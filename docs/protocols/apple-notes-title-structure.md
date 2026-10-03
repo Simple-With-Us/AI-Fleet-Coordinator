@@ -29,17 +29,17 @@ Rules:
 
 | Acronym | App / Scope | Repo / Details |
 |---------|-------------|----------------|
-| `ST` | Socratic.Trade | `jaywedgeworth22/Socratic.Trade` |
-| `CT` | Congress.Trade | `jaywedgeworth22/Congress.Trade` |
-| `UM` | Usage-Monitor | `jaywedgeworth22/Usage-Monitor` |
-| `DD` | DealDex | `jaywedgeworth22/DealDex` |
-| `CL` | ContactLogo | `jaywedgeworth22/ContactLogo` |
-| `BF` | BotFleet | `jaywedgeworth22/BotFleet` |
-| `AR` | Autorotate (formerly TopSpin) | `jaywedgeworth22/Autorotate` |
-| `AFC` | AI-Fleet-Coordinator (this repo / Mac collab / skill pack talking as the coordinator).  Former aliases `AFL` / `FLEET` / `AIFC` / `FC` are retired — `FLEET` especially, because `[SEAT->FLEET]` is a broadcast wake that costs every seat time. | `jaywedgeworth22/AI-Fleet-Coordinator` |
-| `OPS` | fleet-ops (sibling identity; do not invent a checkout here) | `jaywedgeworth22/fleet-ops` |
-| `PS` | Personal-Site | `jaywedgeworth22/Personal-Site` |
-| `CTS` | congress-trading-shared | `jaywedgeworth22/congress-trading-shared` |
+| `ST` | Socratic.Trade | `Simple-With-Us/Socratic.Trade` |
+| `CT` | Congress.Trade | `Simple-With-Us/Congress.Trade` |
+| `UM` | Usage-Monitor | `Simple-With-Us/Usage-Monitor` |
+| `DD` | DealDex | `Simple-With-Us/DealDex` |
+| `CL` | ContactLogo | `Simple-With-Us/ContactLogo` |
+| `BF` | BotFleet | `Simple-With-Us/BotFleet` |
+| `AR` | Autorotate (formerly TopSpin) | `Simple-With-Us/Autorotate` |
+| `AFC` | AI-Fleet-Coordinator (this repo / Mac collab / skill pack talking as the coordinator).  Former aliases `AFL` / `FLEET` / `AIFC` / `FC` are retired — `FLEET` especially, because `[SEAT->FLEET]` is a broadcast wake that costs every seat time. | `Simple-With-Us/AI-Fleet-Coordinator` |
+| `OPS` | fleet-ops (sibling identity; do not invent a checkout here) | `Simple-With-Us/fleet-ops` |
+| `PS` | Personal-Site | `Simple-With-Us/Personal-Site` |
+| `CTS` | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |
 | `FLEET` | Slack wake: every listening seat on every platform must spend time (Grok Bot included, largely superseded by BotFleet — owner 2026-09-13).  Not the coordinator.  Not OPS. | `[SENDER->FLEET]` only.  Never a SENDER tag. |
 
 **Second row of the note (first body line) — ALWAYS the local create/update stamp + optional PR numbers:**

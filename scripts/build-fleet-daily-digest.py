@@ -12,13 +12,13 @@ Outputs (under site/ and calendar/):
 
 Env:
   GITHUB_TOKEN / FLEET_GITHUB_TOKEN
-  FLEET_OWNER (default jaywedgeworth22)
+  FLEET_OWNER (default Simple-With-Us)
   FLEET_REPOS (comma list)
   DIGEST_LOOKBACK_DAYS (default 21)
   DIGEST_TZ (default America/Chicago)  — day bucketing only
   SITE_OUT (default site)
   ICS_OUT (default calendar/daily-digest.ics)
-  SITE_BASE_URL (optional, e.g. https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/)
+  SITE_BASE_URL (optional, e.g. https://simple-with-us.github.io/AI-Fleet-Coordinator/)
 """
 from __future__ import annotations
 
@@ -1188,7 +1188,7 @@ def build_daily_ics(days: list[DayBucket], now: datetime, base_url: str) -> str:
 
 
 def main() -> int:
-    owner = os.environ.get("FLEET_OWNER", "jaywedgeworth22").strip() or "jaywedgeworth22"
+    owner = os.environ.get("FLEET_OWNER", "Simple-With-Us").strip() or "jaywedgeworth22"
     repos_raw = os.environ.get("FLEET_REPOS", "").strip()
     requested = [r.strip() for r in repos_raw.split(",") if r.strip()] or list(DEFAULT_REPOS)
     lookback = env_int("DIGEST_LOOKBACK_DAYS", 21)

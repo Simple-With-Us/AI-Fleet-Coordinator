@@ -140,7 +140,7 @@ def build_ics(events: list[dict[str, Any]], now: datetime) -> str:
 
 
 def main() -> int:
-    owner = os.environ.get("FLEET_OWNER", "jaywedgeworth22").strip() or "jaywedgeworth22"
+    owner = os.environ.get("FLEET_OWNER", "Simple-With-Us").strip() or "jaywedgeworth22"
     repos_raw = os.environ.get("FLEET_REPOS", "").strip()
     requested = [r.strip() for r in repos_raw.split(",") if r.strip()] or list(DEFAULT_REPOS)
     lookback = env_int("CALENDAR_LOOKBACK_DAYS", 14)

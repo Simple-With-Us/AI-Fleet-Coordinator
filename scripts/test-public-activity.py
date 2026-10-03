@@ -74,7 +74,7 @@ class PublicActivityTests(unittest.TestCase):
 
     def test_public_pr_survives_without_effort_board_material(self) -> None:
         day = date(2026, 9, 26)
-        pr = {"repo": "BotFleet", "number": 123, "title": "Fix onboarding", "url": "https://github.com/jaywedgeworth22/BotFleet/pull/123", "user": "jay"}
+        pr = {"repo": "BotFleet", "number": 123, "title": "Fix onboarding", "url": "https://github.com/Simple-With-Us/BotFleet/pull/123", "user": "jay"}
         buckets = digest.bucket_all([(day, pr)], [], [])
         days = list(buckets.values())
         now = datetime(2026, 9, 26, tzinfo=timezone.utc)

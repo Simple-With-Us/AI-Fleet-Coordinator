@@ -1,7 +1,7 @@
 # Codex: how fleet RAG works, and how to prove you are using it
 
 Owner-facing, paste-ready.  Give Codex (CLI, IDE, or cloud) the prompt in the box below, or link
-it here: https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/CODEX-FLEET-RAG-PROMPT.md
+it here: https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/CODEX-FLEET-RAG-PROMPT.md
 
 ## What Codex already has on the Mac
 

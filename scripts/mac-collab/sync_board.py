@@ -46,17 +46,17 @@ BACKUP_KEEP_DAYS = 14
 
 # app slug -> (live board path, github "owner/repo" or None)
 APP_REGISTRY = {
-    "socratic-trade": (APPS / "TRADING-EFFORT-LOG.md", "jaywedgeworth22/Socratic.Trade"),
-    "congress-trade": (APPS / "CONGRESS-TRADE-EFFORT-LOG.md", "jaywedgeworth22/Congress.Trade"),
-    "usage-monitor": (APPS / "API-USAGE-MONITOR-EFFORT-LOG.md", "jaywedgeworth22/Usage-Monitor"),
-    "congress-trading-shared": (APPS / "CONGRESS-SHARED-EFFORT-LOG.md", "jaywedgeworth22/congress-trading-shared"),
-    "dealdex": (APPS / "DEALDEX-EFFORT-LOG.md", "jaywedgeworth22/DealDex"),
-    "personal-site": (APPS / "PERSONAL-SITE-EFFORT-LOG.md", "jaywedgeworth22/Personal-Site"),
-    "autorotate": (APPS / "AUTOROTATE-EFFORT-LOG.md", "jaywedgeworth22/Autorotate"),
-    "contactlogo": (APPS / "CONTACTLOGO-EFFORT-LOG.md", "jaywedgeworth22/ContactLogo"),
-    "fleet-infra": (APPS / "FLEET-INFRA-EFFORT-LOG.md", "jaywedgeworth22/AI-Fleet-Coordinator"),
-    "botfleet": (APPS / "BOTFLEET-EFFORT-LOG.md", "jaywedgeworth22/BotFleet"),
-    "fleet-ops": (APPS / "FLEET-OPS-EFFORT-LOG.md", "jaywedgeworth22/fleet-ops"),
+    "socratic-trade": (APPS / "TRADING-EFFORT-LOG.md", "Simple-With-Us/Socratic.Trade"),
+    "congress-trade": (APPS / "CONGRESS-TRADE-EFFORT-LOG.md", "Simple-With-Us/Congress.Trade"),
+    "usage-monitor": (APPS / "API-USAGE-MONITOR-EFFORT-LOG.md", "Simple-With-Us/Usage-Monitor"),
+    "congress-trading-shared": (APPS / "CONGRESS-SHARED-EFFORT-LOG.md", "Simple-With-Us/congress-trading-shared"),
+    "dealdex": (APPS / "DEALDEX-EFFORT-LOG.md", "Simple-With-Us/DealDex"),
+    "personal-site": (APPS / "PERSONAL-SITE-EFFORT-LOG.md", "Simple-With-Us/Personal-Site"),
+    "autorotate": (APPS / "AUTOROTATE-EFFORT-LOG.md", "Simple-With-Us/Autorotate"),
+    "contactlogo": (APPS / "CONTACTLOGO-EFFORT-LOG.md", "Simple-With-Us/ContactLogo"),
+    "fleet-infra": (APPS / "FLEET-INFRA-EFFORT-LOG.md", "Simple-With-Us/AI-Fleet-Coordinator"),
+    "botfleet": (APPS / "BOTFLEET-EFFORT-LOG.md", "Simple-With-Us/BotFleet"),
+    "fleet-ops": (APPS / "FLEET-OPS-EFFORT-LOG.md", "Simple-With-Us/fleet-ops"),
 }
 
 # --- effort-board parsing (mirrors each repo's scripts/sync-effort-issues.py) ---

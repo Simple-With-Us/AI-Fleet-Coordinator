@@ -1,6 +1,6 @@
 # 2026-09-03 — iOS version manifest moves to AI-Fleet-Coordinator
 
-Owner is deleting `jaywedgeworth22/ios-app-versions`.  That repo existed as a
+Owner is deleting `Simple-With-Us/ios-app-versions`.  That repo existed as a
 one-file public JSON feed for the in-app update prompt (`AppUpdatePrompt.swift`)
 and for `publish-ios-versions.sh` after a TestFlight ship.  It was never a
 product, and it should not be a public GitHub profile row.
@@ -22,14 +22,14 @@ not host this JSON on Personal-Site.
 
 Canonical public file:
 
-`site/ios-versions.json` in `jaywedgeworth22/AI-Fleet-Coordinator`
+`site/ios-versions.json` in `Simple-With-Us/AI-Fleet-Coordinator`
 
 Runtime URL used by iOS / macOS clients:
 
-https://raw.githubusercontent.com/jaywedgeworth22/AI-Fleet-Coordinator/main/site/ios-versions.json
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/site/ios-versions.json
 
 GitHub Pages will also serve it at
-https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/ios-versions.json
+https://simple-with-us.github.io/AI-Fleet-Coordinator/ios-versions.json
 after the next digest/Pages deploy.  Clients use the raw URL so a Contents-API
 PUT is visible immediately.
 
@@ -55,5 +55,5 @@ prompting until they update.
 ## Verification
 
 ```bash
-curl -fsS https://raw.githubusercontent.com/jaywedgeworth22/AI-Fleet-Coordinator/main/site/ios-versions.json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["schemaVersion"]==1 and d["apps"]'
+curl -fsS https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/site/ios-versions.json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["schemaVersion"]==1 and d["apps"]'
 ```

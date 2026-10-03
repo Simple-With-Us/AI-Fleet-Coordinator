@@ -1,7 +1,7 @@
 # Cloud agent bootstrap — sandbox toolchain restore
 
-**GitHub:** https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/CLOUD-AGENT-BOOTSTRAP.md
-**Sibling (private ops):** [fleet-ops/docs/CLOUD-AGENT-BOOTSTRAP.md](https://github.com/jaywedgeworth22/fleet-ops/blob/main/docs/CLOUD-AGENT-BOOTSTRAP.md) — short pointer
+**GitHub:** https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/CLOUD-AGENT-BOOTSTRAP.md
+**Sibling (private ops):** [fleet-ops/docs/CLOUD-AGENT-BOOTSTRAP.md](https://github.com/Simple-With-Us/fleet-ops/blob/main/docs/CLOUD-AGENT-BOOTSTRAP.md) — short pointer
 **Live script:** `/workspace/.bootstrap.sh` (persists in the sandbox)
 **When to read this:** every fresh sandbox session. The container's
 `/usr/local/bin` is wiped between sessions; `/workspace/**` is the

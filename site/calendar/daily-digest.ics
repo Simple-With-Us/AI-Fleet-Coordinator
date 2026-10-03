@@ -90,7 +90,7 @@ DESCRIPTION:57 PRs merged · 46 issues opened · 6 issues closed\n\nMerged
  [Socratic.Trade#3827] Merge shepherd status\n- [Socratic.Trade#3828] Merge
   shepherd status\n- [Socratic.Trade#3829] Merge shepherd status\n- [Socrat
  ic.Trade#3830] Merge shepherd status
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-26
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-26
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -173,7 +173,7 @@ DESCRIPTION:78 PRs merged · 36 issues opened · 2 issues closed\n\nMerged
  [Socratic.Trade#3788] Merge shepherd status\n- [Socratic.Trade#3796] Warni
  ngs crash\, rotation failover\, exit de-risk\n- [Socratic.Trade#3797] C re
  view fixes\, follow-up to #3761 (lane C review
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-25
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-25
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -277,7 +277,7 @@ DESCRIPTION:91 PRs merged · 64 issues opened · 11 issues closed\n\nMerged
   [P0] Reclaim stale per-thread transcripts without touching active work\n-
   [Socratic.Trade#3706] Merge shepherd status\n- [Socratic.Trade#3707] Merg
  e shepherd status
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-24
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-24
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -380,7 +380,7 @@ DESCRIPTION:22 PRs merged · 248 issues opened · 232 issues closed\n\nMerg
  Trade#3484] PR #1760/#1761 review/comment/conflict closeout\n- [Socratic.T
  rade#3485] Suppress earningscalls 401/403 alert spam\, SQLite\n- [Socratic
  .Trade#3486] Fix candidate ATR stops and Alpaca short cover-buy
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-23
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-23
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -428,7 +428,7 @@ DESCRIPTION:22 PRs merged · 5 issues opened · 2 issues closed\n\nMerged P
  de design audit 2026-09-22 — ship remaining findings F-02..F-10\n- [code
  caps#42] Cross-device push notifications for reset alarms (fanout via flee
  t server / APNs)
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-22
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-22
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -490,7 +490,7 @@ DESCRIPTION:62 PRs merged · 2 issues opened · 0 issues closed\n\nMerged P
  e\n\nIssues opened:\n- [Autorotate#244] 2026-09-16 — INPROGRESS - Establ
  ish real release process: keystore +\n- [ContactLogo#103] [P0] iOS app: on
  ly ~25 of 15k contacts surface as business candidates
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-21
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-21
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -593,7 +593,7 @@ DESCRIPTION:38 PRs merged · 19 issues opened · 8 issues closed\n\nMerged
   Comprehensive top-to-bottom review — 22 findings + tier-1 plan\n- [code
  caps#25] [audit-10] UI redesign scope — tier-0 shipped\, tier-1 queued p
  ending design doc
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-20
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-20
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -674,7 +674,7 @@ DESCRIPTION:36 PRs merged · 4 issues opened · 11 issues closed\n\nMerged
  — INPROGRESS - UM Platforms Slack probe unavailable +\n- [Usage-Monitor#
  1505] 2026-09-17 — COMPLETED/DEPLOYED — Skip unconfigured Namecheap in
   scheduler
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-19
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-19
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -790,7 +790,7 @@ DESCRIPTION:117 PRs merged · 15 issues opened · 26 issues closed\n\nMerge
  ng-shared#306] 2026-09-18 — IN PROGRESS - Shared package hygiene for v2.
  7.0\n- [congress-trading-shared#308] 2026-09-18 — Shared package hygiene
   for v2.7.0 (cross-app\, P3/S)
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-18
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-18
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -872,7 +872,7 @@ DESCRIPTION:50 PRs merged · 8 issues opened · 5 issues closed\n\nMerged P
  curity CLI read can still raise a Keychain panel during a background refre
  sh\n- [congress-trading-shared#304] 2026-09-16 — PLANNED - congress-trad
  ing-shared v2.7.0: CT vendor
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-17
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-17
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -966,7 +966,7 @@ DESCRIPTION:45 PRs merged · 17 issues opened · 6 issues closed\n\nMerged
  ] iOS shows the previous account's\n- [Usage-Monitor#1486] 2026-09-16 — 
  IN PR — iOS ship — Crons margin 40 -> 480 for\n- [Usage-Monitor#1488] 
  2026-09-16 — IN PR #1485 — iOS ship — Crons margin 40 -> 480 for
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-16
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-16
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -1095,7 +1095,7 @@ DESCRIPTION:104 PRs merged · 145 issues opened · 217 issues closed\n\nMer
  rade#2405] 2026-08-26 — INPROGRESS - Land past-week — review-debt left
  overs\n- [Congress.Trade#2406] 2026-09-13 — INPROGRESS - Make — bug re
  porter subtle (autoInject
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-15
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-15
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -1127,7 +1127,7 @@ DESCRIPTION:17 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  esult\n- [Usage-Monitor#1463] (claude) Fix — macOS keychain reading and 
  add All-at-Once quota view\n- [Usage-Monitor#1465] docs: Note that macos a
  pp was extracted to AgentBar
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-14
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-14
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -1242,7 +1242,7 @@ DESCRIPTION:58 PRs merged · 18 issues opened · 25 issues closed\n\nMerged
  ain prompts in macOS monitor\n- [Usage-Monitor#1461] 2026-09-08 — IN PR 
  #1460 — Crons in-progress check-in at\n- [congress-trading-shared#297] 2
  026-09-13 — FX — IN PROGRESS — Stop auto-merge on public-fork PRs
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-13
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-13
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -1378,7 +1378,7 @@ DESCRIPTION:65 PRs merged · 86 issues opened · 97 issues closed\n\nMerged
  mails and URLs in vCard\, CSV\, and Google imports\n- [ContactLogo#76] fea
  t(ui): display address book scan breakdown and allow manual logo override 
  for any contact
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-12
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-12
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -1429,7 +1429,7 @@ DESCRIPTION:15 PRs merged · 7 issues opened · 12 issues closed\n\nMerged
  . a compiled binary)\n- [BotFleet#321] Preserve VPS lease ownership across
   delayed final screenshots\n- [DealDex#292] 2026-09-12 — IN PR — Fix T
  estFlight ship spam: persist ship-state
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-11
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-11
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -1467,7 +1467,7 @@ DESCRIPTION:20 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  tor#1434] iOS local app: add Learn More tab (server + client overview\, fe
  atures\, links)\n- [Usage-Monitor#1436] fix(ios): product copy on the loca
  l Learn More tab
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-10
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-10
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -1560,7 +1560,7 @@ DESCRIPTION:34 PRs merged · 34 issues opened · 1 issues closed\n\nMerged
  otency keys to iOS message sends\n- [BotFleet#291] [P2] Align companion im
  age upload and read formats\n- [BotFleet#292] [P2] Preserve reasoning effo
  rt in iOS model settings
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-09
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-09
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -1632,7 +1632,7 @@ DESCRIPTION:43 PRs merged · 3 issues opened · 1 issues closed\n\nMerged P
  f479c056\n- [Usage-Monitor#1431] 2026-09-08 — IN PROGRESS — Crons ci-u
  sage-monitor-ci\n- [Usage-Monitor#1432] 2026-09-08 — IN PR #1430 — Cro
  ns
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-08
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-08
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -1707,7 +1707,7 @@ DESCRIPTION:45 PRs merged · 5 issues opened · 4 issues closed\n\nMerged P
  09-07 — COMPLETED/DEPLOYED — Fix Vercel auto-deploy rate-limit query\n
  - [Personal-Site#69] 2026-09-07 — COMPLETED/DEPLOYED — Update BotFleet
   app logo (bf.png)
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-07
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-07
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -1742,7 +1742,7 @@ DESCRIPTION:18 PRs merged · 1 issues opened · 0 issues closed\n\nMerged P
  override on Client archive\n- [Usage-Monitor#1423] fix(ios): clear CODE_SI
  GN_IDENTITY for usage Client archive\n\nIssues opened:\n- [BotFleet#226] S
  ettings: Remote Access for named tunnel botfleet.jays.services
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-06
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-06
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
@@ -1793,7 +1793,7 @@ DESCRIPTION:30 PRs merged · 1 issues opened · 0 issues closed\n\nMerged P
  iOS time-period progress + Local Import button + ST Infrastructure cleanup
  \n\nIssues opened:\n- [AI-Fleet-Coordinator#195] Later: Google Analytics o
  n all sites (no meaningful perf hit)
-URL:https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/#2026-09-05
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-09-05
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT

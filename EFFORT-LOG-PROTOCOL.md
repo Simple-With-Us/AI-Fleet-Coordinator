@@ -142,9 +142,9 @@ updates, and claim/close numbered issues you execute so nothing looks abandoned.
 
 Full procedure: `/Users/jay/Code/AI-Fleet-Coordinator/docs/ONBOARDING-NEW-APP.md` +
 `scripts/onboard-new-app.sh`
-(https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md).
+(https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md).
 New seats: `/Users/jay/Code/AI-Fleet-Coordinator/docs/ONBOARDING-NEW-AGENT.md`
-(https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md).
+(https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md).
 Minimum first-commit set:
 
 1. Create `/Users/jay/apps/<APP>-EFFORT-LOG.md` (if you have Mac filesystem access) from the
