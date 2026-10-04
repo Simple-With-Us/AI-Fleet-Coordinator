@@ -66,6 +66,47 @@
   h1 { margin: 0; font-size: 30px; font-weight: 700; letter-spacing: -.02em; }
   .lede { margin: 6px 0 0; color: var(--muted); font-size: 15px; max-width: 62ch; }
   .hdr-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+  .portal-nav {
+    display: inline-flex;
+    align-items: center;
+    background: rgba(0, 0, 0, .05);
+    border: 1px solid var(--line);
+    border-radius: 980px;
+    padding: 3px;
+    gap: 2px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .portal-nav {
+      background: rgba(255, 255, 255, .08);
+    }
+  }
+  .portal-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 14px;
+    border-radius: 980px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--muted);
+    text-decoration: none;
+    transition: all .15s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .portal-pill:hover {
+    color: var(--text);
+    background: var(--hover);
+  }
+  .portal-pill:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  .portal-pill.active {
+    background: var(--card);
+    color: var(--text);
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .08), var(--shadow);
+    cursor: default;
+  }
   .checked { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; }
   .checked b { display: block; color: var(--text); font-size: 14px; font-weight: 600; }
 
@@ -186,6 +227,10 @@
       <p class="lede">Live status for every fleet app, platform, and service.  The page refreshes on its own every minute.</p>
     </div>
     <div class="hdr-right">
+      <nav class="portal-nav" aria-label="Portals">
+        <a href="https://home.jays.services/" class="portal-pill">Home</a>
+        <a href="https://admin.jays.services/" class="portal-pill active" aria-current="page">Admin</a>
+      </nav>
       <span class="pill off lg" id="overall">Checking</span>
       <div class="checked">
         <b id="checked-at">—</b>
@@ -216,7 +261,8 @@
     { key: 'vercel', title: 'Vercel Projects', render: renderSimple, skeleton: 5 },
     { key: 'sentry', title: 'Sentry Issues', render: renderSentry, skeleton: 4 },
     { key: 'pagerduty', title: 'PagerDuty Incidents', render: renderSimple, skeleton: 3 },
-    { key: 'datadog', title: 'Datadog Monitors', render: renderDatadog, skeleton: 4 }
+    { key: 'datadog', title: 'Datadog Monitors', render: renderDatadog, skeleton: 4 },
+    { key: 'opsSheet', title: 'Ops Reference Sheet', render: renderSimple, skeleton: 7 }
   ];
 
   var grid = document.getElementById('grid');
@@ -390,7 +436,11 @@
         sub: bits.join(' · '),
         state: i.state,
         status: String(status).replace(/_/g, ' '),
-        url: run && run.url ? run.url : 'https://github.com/jaywedgeworth22/' + i.repo
+        // Repo link comes from the Worker, which knows the real org.  It used
+        // to be hardcoded to jaywedgeworth22/ here, which 404s after the
+        // Simple-With-Us move -- and GitHub 404s a PRIVATE repo for anyone not
+        // signed in, so the link is only as good as the viewer's session.
+        url: run && run.url ? run.url : (i.repoUrl || ('https://github.com/' + i.repo))
       };
     });
   }
