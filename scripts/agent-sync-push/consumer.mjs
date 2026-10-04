@@ -45,6 +45,7 @@ const ownPrefixes = [`[${MY_TAG}`, `⟦${MY_TAG}`];
 const FILTER_PY = [
   path.join(os.homedir(), 'apps', 'slack_context_filter.py'),
   path.join(os.homedir(), '.claude', 'slack_context_filter.py'),
+  path.join(os.homedir(), 'Code', 'ai-fleet-coordinator', 'scripts', 'slack_context_filter.py'),
   path.join(os.homedir(), 'Code', 'AI-Fleet-Coordinator', 'scripts', 'slack_context_filter.py'),
 ].find((p) => fs.existsSync(p));
 
@@ -79,6 +80,41 @@ function appendInbox(rec) {
   }) + '\n');
 }
 
+const CHANNEL_NAMES = {
+  'C0BEZDJDNKV': 'agent-sync',
+  'C0C6CJEQXV1': 'botfleet',
+  'C0C6NFR5QRJ': 'codecaps',
+  'C0C6LPC8JPK': 'hoghunter',
+  'C0C6NFSCRBN': 'sync-congress-trade',
+  'C0C7D6KFA56': 'sync-dealdex',
+  'C0C63E2MCHM': 'sync-socratic-trade',
+  'C0C6JLNV0UA': 'sync-usage-monitor',
+  'C0C6JNBRZNE': 'ai-fleet-coordinator',
+  'C0C6DHY8D0D': 'fleet-ops',
+};
+
+const SEAT_ALIASES = {
+  'AG': ['AG', 'AGY', 'ANTIGRAVITY', 'GEMINI'],
+  'AGY': ['AG', 'AGY', 'ANTIGRAVITY', 'GEMINI'],
+  'MM': ['MM', 'MINIMAX', 'MCODE'],
+  'DSH': ['DSH', 'DEEPSEEK', 'DEEPSEEK-HARNESS'],
+  'HARNESS': ['HARNESS', 'CLUTCH', 'DSH'],
+  'FX': ['FX'],
+  'CODEX': ['CODEX'],
+  'CURSOR': ['CURSOR', 'CURSOR-AGENT', 'RENOIR'],
+  'CLAUDE': ['CLAUDE', 'MONET', 'FABLE'],
+  'GROK': ['GROK', 'GROK-BUILD'],
+  'GROK-BUILD': ['GROK-BUILD', 'GROK'],
+  'GROK-BOT': ['GROK-BOT', 'GB', 'GB-FIXER', 'GB-COMPILER', 'GB-DEPLOYER', 'GB-MONITOR', 'GB-HOUSEKEEPER', 'GB-CONDUCTOR', 'GB-NURSE', 'GB-ACCOUNTANT', 'GB-ORACLE'],
+  'GB': ['GROK-BOT', 'GB', 'GB-FIXER', 'GB-COMPILER', 'GB-DEPLOYER', 'GB-MONITOR', 'GB-HOUSEKEEPER', 'GB-CONDUCTOR', 'GB-NURSE', 'GB-ACCOUNTANT', 'GB-ORACLE'],
+  'BF': ['BF', 'BOTFLEET', 'BF-FIXER', 'BF-DESIGNER', 'BF-COMPILER', 'BF-PLUMBER', 'BF-PUBLISHER', 'BF-DEPLOYER', 'BF-DIRECTOR'],
+  'RENOIR': ['RENOIR'],
+  'MUSE': ['MUSE'],
+  'MAVIS': ['MAVIS'],
+  'VACUUM': ['VACUUM'],
+  'KIMI': ['KIMI'],
+};
+
 function printRecord(rec) {
   if (!rec || !isNewer(rec.ts)) return;
 
@@ -105,11 +141,30 @@ function printRecord(rec) {
     return;
   }
 
+  const chName = CHANNEL_NAMES[rec.channel] || rec.channel || 'agent-sync';
+  const isAppChannel = rec.channel && rec.channel !== 'C0BEZDJDNKV';
+  const chPrefix = isAppChannel ? `[#${chName}] ` : '';
+
   // Relevance filtering per Watcher noise discipline (owner ruling 2026-07-10)
   // plus 2026-08-21: keep current app OR this seat OR FLEET when the Python
   // filter is installed. Fallback below only runs if the filter is missing.
-  const isTargeted = new RegExp(`\\b(${MY_TAG}|AGY|ANTIGRAVITY)\\b`, 'i').test(text);
+  const myAliases = SEAT_ALIASES[MY_TAG] || [MY_TAG];
+  const isTargeted = new RegExp(`\\b(${myAliases.join('|')})\\b`, 'i').test(text);
   const isUrgent = /\b(OBJECTION|HALT|PROD DOWN|URGENT|OWNER|DEPLOY CLAIM|HEADS-UP)\b|\[FLEET\]|->\s*FLEET\b/i.test(text);
+
+  // If in an app-specific sync channel matching current working repo, treat as relevant
+  const cwd = process.cwd().toLowerCase();
+  const isCwdAppSync = isAppChannel && (
+    (chName.includes('botfleet') && cwd.includes('botfleet')) ||
+    (chName.includes('codecaps') && cwd.includes('codecaps')) ||
+    (chName.includes('congress') && (cwd.includes('congress') || cwd.includes('cts'))) ||
+    (chName.includes('dealdex') && cwd.includes('dealdex')) ||
+    (chName.includes('hoghunter') && cwd.includes('hoghunter')) ||
+    (chName.includes('socratic') && (cwd.includes('socratic') || cwd.includes('trading'))) ||
+    (chName.includes('usage') && cwd.includes('usage')) ||
+    (chName.includes('coordinator') && cwd.includes('coordinator')) ||
+    (chName.includes('fleet-ops') && cwd.includes('fleet-ops'))
+  );
 
   // Load dynamic active claims/PR terms for this agent
   let activeClaims = [];
@@ -131,7 +186,7 @@ function printRecord(rec) {
     return new RegExp(escaped, 'i').test(text);
   });
 
-  if (filtered !== true && !isTargeted && !isUrgent && !isClaimRelated) {
+  if (filtered !== true && !isTargeted && !isUrgent && !isClaimRelated && !isCwdAppSync) {
     saveCursor(rec.ts);
     return;
   }
@@ -145,7 +200,7 @@ function printRecord(rec) {
   }
   const display = text.replace(/\n/g, ' ¶ ');
   const user = rec.username || rec.user || rec.bot_id || '?';
-  console.log(`SYNC[${rec.ts}] [${user}] ${display.slice(0, 600)}`);
+  console.log(`SYNC[${rec.ts}] ${chPrefix}[${user}] ${display.slice(0, 600)}`);
 }
 
 function replayLocalEvents() {
