@@ -12,11 +12,25 @@ resolution, the Apple Notes archive, every effort log, the fleet protocol docs, 
 each seat's memory files, refreshed nightly by the BotFleet bot Oracle.  Canonical doc:
 `docs/RAG-FLEET-INFRA.md` in AI-Fleet-Coordinator.
 
-## When to use it
+## Pre-Flight Retrieval Triage (PFRT) — Search Before Diagnosing
 
-- **Before** diagnosing anything that looks like it has happened before (pm2 orphan ports,
-  Coolify deploy stalls, Pinecone/Qdrant quirks, TestFlight rejections, owner formatting rules).
-- **Before** asking the owner a question that a past ruling probably answers.
+**Owner strengthening 2026-10-03: Search recall at the START of the turn/task, not only when stuck.**
+One targeted `recall_search` before you act costs seconds; re-deriving a lesson another seat already solved costs an entire investigation, burns dozens of turns across BotFleet and interactive chats, and risks creating duplicate lanes.
+
+### The 4 Mandatory Search Triggers:
+At the start of every turn or task kickoff, evaluate these 4 triggers.  If ANY trigger matches, running `recall_search` is **mandatory** before inspecting code or executing trial-and-error diagnostic commands:
+1. **Error / Blocker Encounter**: Any 4xx/5xx HTTP error, test/build failure, timeout, crash trace, or Sentry issue.
+2. **Infrastructure & Platform**: Touching Coolify, LaunchAgents, pm2, Cloudflare Access/tunnels, Tailscale, Sentry, Qdrant, TEI, Redis, or secrets/auth.
+3. **Cross-Repo & Architectural Patterns**: Modifying shared protocols (AGENT-SYNC, effort logs, board sync) or touching unfamiliar sibling repositories.
+4. **Pre-Owner Query**: Before asking the owner a question regarding preferred conventions, architectural decisions, or environment history.
+
+### Permitted Bypass:
+You may bypass `recall_search` ONLY for:
+- Deterministic, local mechanical edits (fixing a specific typo, committing staged files, running a linter fix).
+- Continuing an already-planned step of an active, verified multi-step plan.
+
+## When to Contribute
+
 - **After** you learn something reusable: a gotcha, a measured number, an owner preference, a
   runbook step.  Contribute it once, in one paragraph, with the app and category set.
 

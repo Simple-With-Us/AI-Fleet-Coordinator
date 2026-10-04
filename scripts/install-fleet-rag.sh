@@ -86,6 +86,7 @@ HOOKS_DIR="$HOME_DIR/.claude/hooks"
 SETTINGS_JSON="$HOME_DIR/.claude/settings.json"
 HOOK_START="fleet-recall-session-start.sh"
 HOOK_STOP="fleet-recall-stop.py"
+HOOK_PROMPT_GATE="fleet-recall-prompt-gate.py"
 
 PY="$(command -v python3)"
 SUMMARY=()
@@ -426,17 +427,18 @@ install_seat_mcp() {
 # planned-add | planned-remove, optionally followed by " (skipped-foreign <event> ...)".
 settings_hooks() {
   local action="$1"
-  "$PY" - "$SETTINGS_JSON" "$action" "$DRY" "$HOOKS_DIR" "$HOOK_START" "$HOOK_STOP" "$TS" <<'PY'
+  "$PY" - "$SETTINGS_JSON" "$action" "$DRY" "$HOOKS_DIR" "$HOOK_START" "$HOOK_STOP" "$HOOK_PROMPT_GATE" "$TS" <<'PY'
 import json, os, shutil, sys, tempfile
-path, action, dry, hooks_dir, start, stop, ts = sys.argv[1:8]
+path, action, dry, hooks_dir, start, stop, prompt_gate, ts = sys.argv[1:9]
 dry = dry == "1"
 ours = {
     "SessionStart": {"matcher": "startup|resume",
                      "hooks": [{"type": "command", "command": f"{hooks_dir}/{start}",
                                 "timeout": 5, "statusMessage": "Fleet recall corpus"}]},
     "Stop": {"hooks": [{"type": "command", "command": f"python3 {hooks_dir}/{stop}", "timeout": 10}]},
+    "UserPromptSubmit": {"hooks": [{"type": "command", "command": f"python3 {hooks_dir}/{prompt_gate}", "timeout": 3}]},
 }
-names = {"SessionStart": start, "Stop": stop}
+names = {"SessionStart": start, "Stop": stop, "UserPromptSubmit": prompt_gate}
 # The one command string this script writes per event.  Ownership is exact equality on it: a
 # wrapper that merely mentions the hook file ("bash -lc '.../fleet-recall-stop.py'", a different
 # hooks dir, an extra flag) is somebody else's entry and is never added to, removed, or counted.
@@ -537,22 +539,22 @@ PY
 
 install_hooks() {
   local f r
-  for f in "$HOOK_START" "$HOOK_STOP"; do
+  for f in "$HOOK_START" "$HOOK_STOP" "$HOOK_PROMPT_GATE"; do
     if [[ ! -f "$SRC/hooks/$f" ]]; then
       say "MISSING $SRC/hooks/$f" >&2
       [[ "$DRY" -eq 1 ]] || exit 1
     fi
   done
   if [[ "$DRY" -eq 1 ]]; then
-    say "plan: copy hooks/{$HOOK_START,$HOOK_STOP} -> $HOOKS_DIR/ (chmod +x)"
+    say "plan: copy hooks/{$HOOK_START,$HOOK_STOP,$HOOK_PROMPT_GATE} -> $HOOKS_DIR/ (chmod +x)"
     note "$HOOKS_DIR" "planned"
   else
     mkdir -p "$HOOKS_DIR"
-    for f in "$HOOK_START" "$HOOK_STOP"; do
+    for f in "$HOOK_START" "$HOOK_STOP" "$HOOK_PROMPT_GATE"; do
       cp -p "$SRC/hooks/$f" "$HOOKS_DIR/$f"
       chmod +x "$HOOKS_DIR/$f"
     done
-    say "installed $HOOKS_DIR/{$HOOK_START,$HOOK_STOP}"
+    say "installed $HOOKS_DIR/{$HOOK_START,$HOOK_STOP,$HOOK_PROMPT_GATE}"
     note "$HOOKS_DIR" "installed"
   fi
   r="$(settings_hooks add)"; say "$SETTINGS_JSON: $r"; note "$SETTINGS_JSON" "$r"
@@ -564,10 +566,14 @@ install_hooks() {
 # the file under it would leave that entry failing on every session.  Unparseable or oddly
 # shaped settings.json yields nothing (the files are removed as before).
 foreign_hook_files() {
-  "$PY" - "$SETTINGS_JSON" "$HOOKS_DIR" "$HOOK_START" "$HOOK_STOP" <<'PY'
+  "$PY" - "$SETTINGS_JSON" "$HOOKS_DIR" "$HOOK_START" "$HOOK_STOP" "$HOOK_PROMPT_GATE" <<'PY'
 import json, sys
-path, hooks_dir, start, stop = sys.argv[1:5]
-exact = {start: f"{hooks_dir}/{start}", stop: f"python3 {hooks_dir}/{stop}"}
+path, hooks_dir, start, stop, prompt_gate = sys.argv[1:6]
+exact = {
+    start: f"{hooks_dir}/{start}",
+    stop: f"python3 {hooks_dir}/{stop}",
+    prompt_gate: f"python3 {hooks_dir}/{prompt_gate}",
+}
 try:
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
@@ -595,7 +601,7 @@ uninstall_hooks() {
   local foreign
   foreign="$(foreign_hook_files)"
   local any=0 removed=0
-  for f in "$HOOK_START" "$HOOK_STOP"; do
+  for f in "$HOOK_START" "$HOOK_STOP" "$HOOK_PROMPT_GATE"; do
     if [[ -f "$HOOKS_DIR/$f" ]]; then
       any=1
       if grep -qxF "$f" <<<"$foreign"; then

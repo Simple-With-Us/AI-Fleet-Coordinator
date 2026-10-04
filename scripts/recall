@@ -142,6 +142,9 @@ def cmd_stats(a: argparse.Namespace) -> int:
     print(f"status     : {res['status']}")
     print(f"points     : {res['points']}")
     print(f"embedder   : {'healthy' if res['embedder_healthy'] else 'UNREACHABLE'}")
+    if "searches_7d" in res:
+        seat_summary = ", ".join(f"{s}: {c}" for s, c in list(res.get("searches_by_seat_7d", {}).items())[:4]) or "none"
+        print(f"searches 7d: {res['searches_7d']} ({seat_summary})")
     print("by source  :")
     for k, v in res["by_source"].items():
         print(f"  {k:<20} {v:>7}")
@@ -221,7 +224,9 @@ def cmd_contribute(a: argparse.Namespace) -> int:
 
 def cmd_digest(a: argparse.Namespace) -> int:
     cfg = recall_api.get_config(need_write=False)
-    d = doctor.contribution_digest(recall_api.Qdrant(cfg), days=a.days, app=a.app)
+    include_searches = getattr(a, "searches", False)
+    d = doctor.contribution_digest(recall_api.Qdrant(cfg), days=a.days, app=a.app,
+                                  include_searches=include_searches)
     if a.json:
         print(json.dumps(d, indent=2))
     else:
@@ -377,6 +382,8 @@ def build_parser() -> argparse.ArgumentParser:
     dg = sub.add_parser("digest", help="agent contributions of the last N days, by app then category")
     dg.add_argument("--days", type=int, default=7)
     dg.add_argument("--app")
+    dg.add_argument("--searches", action="store_true",
+                    help="include search telemetry and search-to-contribute ratios")
     dg.add_argument("--json", action="store_true")
 
     e = sub.add_parser("eval", help="score golden.jsonl: Recall@1, Recall@k, MRR")

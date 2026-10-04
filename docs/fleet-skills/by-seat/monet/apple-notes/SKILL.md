@@ -6,6 +6,9 @@ description: >-
 
 # Apple Notes (Universal)
 
+> **This install is for `MONET`.** Slack `[MONET]`.  Notes `Monet`.  Branches `monet/`.  Worktrees `~/apps/<app>-monet`.  Do not inherit another seat's tag from another seat's upload pack.
+
+
 Mac only.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
 
 Notes.app does not render raw Markdown.  The helper converts MD → HTML.  Pass `--html` only when you already have Notes-safe HTML.

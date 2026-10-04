@@ -123,6 +123,7 @@ APP_ALIASES = {
     "autorotate": "autorotate", "ar": "autorotate",
     "personal-site": "personal-site", "ps": "personal-site",
     "trading": "trading", "agentic-trading": "trading", "trading-live": "trading",
+    "clutch": "clutch", "ck": "clutch", "minimax-remote": "clutch", "harness": "clutch",
 }
 
 SEAT_ALIASES = {

@@ -15,11 +15,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 from fleet_rag import __version__  # noqa: E402
-from fleet_rag import contribute_guard, public_fallback, recall_api  # noqa: E402
+from fleet_rag import contribute_guard, public_fallback, recall_api, search_log  # noqa: E402
 from fleet_rag.core import FleetRagError  # noqa: E402
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -129,12 +130,19 @@ def call_tool(name: str, args: dict) -> dict:
         _int(args, "per_doc")
         _bool(args, "rerank")
         _bool(args, "prefer_lessons")
+        caller_seat = args.get("seat") or os.environ.get("AGENT_SEAT") or os.environ.get("AGENT_TAG")
         # A null for an optional flag means "default", not False.
         for key in ("per_doc", "rerank", "prefer_lessons"):
             if key in args and args[key] is None:
                 del args[key]
-        return public_fallback.call_with_fallback(
+        t0 = time.time()
+        res = public_fallback.call_with_fallback(
             "recall_search", args, lambda: recall_api.recall_search(**args))
+        latency_ms = int((time.time() - t0) * 1000)
+        search_log.log_search(query=args.get("query", ""), seat=caller_seat,
+                              app=args.get("app"), hits_count=len(res.get("hits", [])),
+                              latency_ms=latency_ms, mode=res.get("mode", "mcp"))
+        return res
     if name == "recall_stats":
         return public_fallback.call_with_fallback("recall_stats", {}, recall_api.recall_stats)
     return public_fallback.call_with_fallback(

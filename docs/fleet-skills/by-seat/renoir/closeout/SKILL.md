@@ -14,7 +14,16 @@ Start-of-work is a triple claim.  End-of-work is the same three surfaces plus No
 
 ## 1. Truth check
 
-- Merged to `main`?  (`gh pr view` / `git merge-base --is-ancestor`)
+- Merged to `main`?  Do **not** use commit ancestry after a squash-merge (`git merge-base --is-ancestor` lies because squash rewrites SHAs and `delete_branch_on_merge` removes the remote).  Use PR state, then a three-dot diff:
+
+```bash
+gh pr list --head "$BRANCH" --state all --json number,state,mergedAt,url
+git fetch origin
+git diff origin/main...HEAD    # three-dot: remaining unique work vs merge-base
+# helper: scripts/branch-landed.sh [repo] [branch]
+```
+
+A two-dot `git diff origin/main HEAD` on a stale lane is actively misleading.  Ancestry is still correct for "does this exact SHA exist on live/main" (deploy-verify).
 - Production verified?  (`deploy-verify`)  Completed ≠ Deployed.
 - Uncommitted files?  Commit or explicitly report why not (failing tests, secrets, owner hold).
 

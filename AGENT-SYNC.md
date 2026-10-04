@@ -1804,12 +1804,29 @@ those edits back onto the board.
 
 ## Fleet recall — search shared memory before re-deriving (owner-directed 2026-09-01, ALL agents, ALL platforms)
 
+**Owner strengthening 2026-10-03: search recall at the START of the turn, not only when stuck.**
+One `recall_search` before you act costs seconds; re-deriving a lesson another seat already wrote
+costs a whole investigation and can file a duplicate lane for work that is already decided.  Make
+it the first tool call of any turn where the task involves a product, an alert, an API, or
+infrastructure — and specifically **before** you: diagnose something that smells familiar, ask
+the owner something a past ruling probably answers, open a lane for an issue you have seen before,
+or trust a shape that "looks like" one you know.  A hit is a lead to verify, not a verdict.
+
+**The 4 Mandatory Search Triggers:**
+At the start of every turn or task kickoff, evaluate these 4 triggers.  If ANY trigger matches, running `recall_search` is **mandatory** before inspecting code or executing diagnostic trial-and-error commands:
+1. **Error / Blocker Encounter**: Any 4xx/5xx HTTP error, test/build failure, timeout, crash trace, or Sentry issue.
+2. **Infrastructure & Platform**: Touching Coolify, LaunchAgents, pm2, Cloudflare Access/tunnels, Tailscale, Sentry, Qdrant, TEI, Redis, or secrets/auth.
+3. **Cross-Repo & Architectural Patterns**: Modifying shared protocols (AGENT-SYNC, effort logs, board sync) or touching unfamiliar sibling repositories.
+4. **Pre-Owner Query**: Before asking the owner a question regarding preferred conventions, architectural decisions, or environment history.
+
+**Permitted Bypass:**
+You may bypass `recall_search` ONLY for deterministic, local mechanical edits (fixing a specific typo, committing staged files, running a linter fix) or continuing an already-planned step of an active, verified multi-step plan.
+
 The fleet has one shared memory: the `fleet-agents` collection in the self-hosted Qdrant on the
 Hetzner box (mesh-only), refreshed nightly by the BotFleet bot **Oracle** from THE BOARD
 (every row + resolution), the Apple Notes archive, every effort log, the protocol docs, the
-skills, and each seat's memory files.  Use it **before** diagnosing anything that smells
-familiar and **before** asking the owner something a past ruling probably answers; **contribute**
-a one-paragraph lesson after you learn something reusable.
+skills, and each seat's memory files.  **Contribute** a one-paragraph lesson after you learn
+something reusable.
 
 - Mac seats (Claude, Codex, Cursor, Grok, Antigravity, Monet) and every BotFleet bot have the
   `fleet-recall` MCP server registered: `recall_search`, `recall_contribute`, `recall_stats`.

@@ -18,9 +18,10 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from typing import Any
 
-from . import core, telemetry
+from . import core, search_log, telemetry
 from .core import (FleetRagError, LESSON_CATEGORIES, LESSON_SOURCE, build_point, content_hash,
                    match_filter, now_ms, query_terms, rerank_configured)
 from .scrub import gitleaks_flagged as _real_gitleaks_flagged
@@ -47,7 +48,7 @@ SOURCES = ("board", "effort-log", "apple-note", "doc", "skill", "memory", "chat-
 CATEGORIES = ("lesson", "preference", "infrastructure", "decision", "runbook", "finding", "note", "doc")
 CONTRIB_CATEGORIES = ("lesson", "preference", "infrastructure", "decision", "runbook")
 KNOWN_APPS = ("fleet", "socratic-trade", "congress-trade", "congress-trading-shared", "usage-monitor",
-              "dealdex", "botfleet", "personal-site", "fleet-ops", "autorotate", "contactlogo")
+              "dealdex", "botfleet", "personal-site", "fleet-ops", "autorotate", "contactlogo", "clutch")
 HIT_FIELDS = ("source", "app", "category", "seat", "doc_id", "chunk_index", "heading", "title",
               "url", "path", "created_at")
 
@@ -291,6 +292,7 @@ def recall_search(query: str, limit: int = 5, category: str | None = None, app: 
         seat = seat.upper()
     if app:
         app = app.lower()
+    t0 = time.time()
     flt = build_filter(category, app, source, seat, since_days)
     cfg = get_config(need_write=False)
     query = query.strip()
@@ -316,7 +318,11 @@ def recall_search(query: str, limit: int = 5, category: str | None = None, app: 
     mode = "hybrid" if terms else "dense"
     if will_rerank and _apply_rerank(cfg, query, hits):
         mode += "+rerank"
-    return {"hits": hits[:limit], "mode": mode}
+    hits_out = hits[:limit]
+    latency_ms = int((time.time() - t0) * 1000)
+    search_log.log_search(query=query, seat=seat, app=app, hits_count=len(hits_out),
+                          latency_ms=latency_ms, mode=mode)
+    return {"hits": hits_out, "mode": mode}
 
 
 # --------------------------------------------------------------------------- stats
@@ -337,6 +343,7 @@ def recall_stats() -> dict:
         if n:
             by_app[a] = n
     by_app["other"] = q.count({"must_not": [{"key": "app", "match": {"any": list(KNOWN_APPS)}}]})
+    searches = search_log.search_summary(days=7)
     return {
         "collection": q.collection,
         "status": info.get("status", "?"),
@@ -345,6 +352,8 @@ def recall_stats() -> dict:
         "rerank_healthy": bool(rerank_healthy(cfg)) if rerank_configured(cfg) else None,
         "by_source": by_source,
         "by_app": by_app,
+        "searches_7d": searches["total_searches"],
+        "searches_by_seat_7d": searches["by_seat"],
     }
 
 

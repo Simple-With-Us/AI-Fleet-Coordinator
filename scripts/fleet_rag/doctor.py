@@ -24,7 +24,7 @@ import urllib.request
 import zoneinfo
 from typing import Any, Callable
 
-from . import core, health, recall_api
+from . import core, health, recall_api, search_log
 from .core import FleetRagError, now_ms
 
 SERVER_NAME = "fleet-recall"
@@ -406,11 +406,13 @@ def _day(ms: int) -> str:
 
 
 def contribution_digest(qdrant: Any, days: int = 7, app: str | None = None,
-                        now: int | None = None) -> dict:
+                        now: int | None = None, include_searches: bool = False,
+                        state_dir: str | None = None) -> dict:
     """Agent contributions from the last `days` days grouped app -> category -> [entries].
 
     Each entry: seat, date (Central), doc_id, title (or the first line of the text), url.
     Entries are newest first inside a category; apps and categories are sorted by name.
+    When include_searches is True, includes search volume and search-to-contribute ratios.
     """
     if isinstance(days, bool) or not isinstance(days, int) or days <= 0:
         raise FleetRagError("days must be a positive integer")
@@ -420,12 +422,15 @@ def contribution_digest(qdrant: Any, days: int = 7, app: str | None = None,
     now = now if now is not None else now_ms()
     flt = recall_api.build_filter(source="agent-contribution", app=app, since_days=days, now=now)
     entries = []
+    seat_contribs: dict[str, int] = {}
     for p in qdrant.scroll(flt, limit=256):
         pl = p.get("payload") or {}
+        seat_name = pl.get("seat") or "-"
+        seat_contribs[seat_name] = seat_contribs.get(seat_name, 0) + 1
         entries.append({
             "app": pl.get("app") or "fleet",
             "category": pl.get("category") or "lesson",
-            "seat": pl.get("seat") or "-",
+            "seat": seat_name,
             "created_at": int(pl.get("created_at") or 0),
             "date": _day(int(pl.get("created_at") or 0)),
             "doc_id": pl.get("doc_id") or str(p.get("id", "")),
@@ -436,16 +441,30 @@ def contribution_digest(qdrant: Any, days: int = 7, app: str | None = None,
     apps: dict[str, dict[str, list[dict]]] = {}
     for e in entries:
         apps.setdefault(e["app"], {}).setdefault(e["category"], []).append(e)
-    return {"days": days, "app": app, "since": now - days * recall_api.DAY_MS, "total": len(entries),
-            "apps": apps}
+
+    res: dict[str, Any] = {
+        "days": days,
+        "app": app,
+        "since": now - days * recall_api.DAY_MS,
+        "total": len(entries),
+        "apps": apps,
+    }
+
+    if include_searches:
+        searches = search_log.search_summary(state_dir=state_dir, days=days, app=app, now_ms=now)
+        ratios = search_log.compute_ratios(seat_contribs, searches.get("by_seat", {}))
+        res["searches"] = searches
+        res["ratios"] = ratios
+
+    return res
 
 
 def format_digest(d: dict) -> str:
     scope = f" for app {d['app']}" if d.get("app") else ""
     lines = [f"{d['total']} agent contribution(s) in the last {d['days']} day(s){scope}"]
-    if not d["total"]:
+    if not d["total"] and not d.get("searches"):
         return lines[0]
-    for app, cats in d["apps"].items():
+    for app, cats in d.get("apps", {}).items():
         n = sum(len(v) for v in cats.values())
         lines.append("")
         lines.append(f"{app}  ({n})")
@@ -454,4 +473,17 @@ def format_digest(d: dict) -> str:
             for e in items:
                 lines.append(f"    {e['date']}  {e['seat']:<10} {e['title'] or e['doc_id']}")
                 lines.append(f"    {'':<22}{e['doc_id']}" + (f"  {e['url']}" if e["url"] else ""))
+
+    if d.get("searches"):
+        s = d["searches"]
+        lines.append("")
+        lines.append(f"=== Fleet Retrieval Telemetry ({d['days']}d) ===")
+        lines.append(f"Total searches: {s.get('total_searches', 0)} across {len(s.get('by_seat', {}))} seat(s) (avg latency: {s.get('avg_latency_ms', 0)} ms)")
+        if d.get("ratios"):
+            lines.append("Search-to-Contribute Ratios (target >= 3.0x; search before diagnosing):")
+            for r in d["ratios"]:
+                ratio_str = f"{r['ratio']:.2f}x" if r["ratio"] is not None else "N/A"
+                warn = "  [WARN: low retrieval ratio - search before diagnosing]" if r.get("warning") else ""
+                lines.append(f"  {r['seat']:<10} {r['searches']:>3} search(es) / {r['contributions']:>3} contrib(s) = {ratio_str}{warn}")
+
     return "\n".join(lines)
