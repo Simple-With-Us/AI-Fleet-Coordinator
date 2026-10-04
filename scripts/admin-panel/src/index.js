@@ -77,7 +77,7 @@ const ENDPOINTS = [
   // The gh-pages CNAME is codecaps.simplewithus.com; the github.io path is
   // case-sensitive and the lower-case /codecaps/ spelling 404s.
   { name: 'CodeCaps', url: 'https://codecaps.simplewithus.com/' },
-  { name: 'Fleet Activity', url: 'https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/' },
+  { name: 'Fleet Activity', url: 'https://simple-with-us.github.io/AI-Fleet-Coordinator/' },
   { name: 'Start Page', url: 'https://start.jays.services' },
   { name: 'The Board', url: 'https://mac.jays.services/board' },
   { name: 'Coolify', url: 'https://host.jays.services' },
@@ -582,7 +582,7 @@ function coolifyState(status) {
 
 async function checkGitHub(env) {
   if (!env.GITHUB_TOKEN) return notConfigured('GITHUB_TOKEN');
-  const owner = env.GITHUB_OWNER || 'jaywedgeworth22';
+  const owner = env.GITHUB_OWNER || 'Simple-With-Us';
   const headers = {
     Authorization: `Bearer ${env.GITHUB_TOKEN}`,
     Accept: 'application/vnd.github+json',

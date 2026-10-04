@@ -99,7 +99,7 @@ PUBLIC_RETRIES = 1
 # in front of recall.jays.services (403, "error code: 1010" -- documented in
 # docs/RECALL-ACCESS-CHECK.md's troubleshooting table).  curl and browsers are unaffected
 # because they send their own real UA; core.http_json sends none, so this module must.
-USER_AGENT = f"fleet-recall-fallback/{__version__} (+https://github.com/jaywedgeworth22/AI-Fleet-Coordinator)"
+USER_AGENT = f"fleet-recall-fallback/{__version__} (+https://github.com/Simple-With-Us/AI-Fleet-Coordinator)"
 
 # Every MCP client on this Mac registers `fleet-recall` as a plain `python3 fleet-recall-mcp.py`
 # (no shell wrapper, no env sourcing -- see install-fleet-rag.sh), so these three names are

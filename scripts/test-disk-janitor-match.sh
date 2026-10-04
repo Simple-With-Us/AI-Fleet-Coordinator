@@ -81,9 +81,9 @@ assert_origin() {
   got=$(janitor_github_repo "$origin_repo_tmp")
   [ "$got" = "$want" ] || fail "origin $remote -> '$got' want '$want'"
 }
-assert_origin "git@github.com:jaywedgeworth22/Socratic.Trade.git" "jaywedgeworth22/Socratic.Trade"
-assert_origin "https://github.com/jaywedgeworth22/AI-Fleet-Coordinator.git" "jaywedgeworth22/AI-Fleet-Coordinator"
-assert_origin "ssh://git@github.com/jaywedgeworth22/BotFleet.git" "jaywedgeworth22/BotFleet"
+assert_origin "git@github.com:Simple-With-Us/Socratic-Trade.git" "Simple-With-Us/Socratic-Trade"
+assert_origin "https://github.com/Simple-With-Us/AI-Fleet-Coordinator.git" "Simple-With-Us/AI-Fleet-Coordinator"
+assert_origin "ssh://git@github.com/Simple-With-Us/BotFleet.git" "Simple-With-Us/BotFleet"
 
 # 2026-09-30: memory/load pressure gate.  Above JANITOR_MAX_LOAD (40) or at/above
 # JANITOR_MAX_SWAP_PCT (90) the janitor logs PRESSURE-SKIP, runs only the cheap

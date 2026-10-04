@@ -36,8 +36,8 @@ jobs:
           while IFS= read -r repo; do
             [ -z "$repo" ] && continue
             echo "=========================================="
-            echo "Cloning jaywedgeworth22/${repo}"
-            if git clone --depth=1 "https://github.com/jaywedgeworth22/${repo}.git" "backups/${repo}"; then
+            echo "Cloning Simple-With-Us/${repo}"
+            if git clone --depth=1 "https://github.com/Simple-With-Us/${repo}.git" "backups/${repo}"; then
               (
                 cd "backups/${repo}"
                 zip -rq "../${repo}-backup-${DATE_STR}.zip" . \

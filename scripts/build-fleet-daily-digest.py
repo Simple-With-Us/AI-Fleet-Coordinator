@@ -18,7 +18,7 @@ Env:
   DIGEST_TZ (default America/Chicago)  — day bucketing only
   SITE_OUT (default site)
   ICS_OUT (default calendar/daily-digest.ics)
-  SITE_BASE_URL (optional, e.g. https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/)
+  SITE_BASE_URL (optional, e.g. https://simple-with-us.github.io/AI-Fleet-Coordinator/)
 """
 from __future__ import annotations
 

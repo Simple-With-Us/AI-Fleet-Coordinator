@@ -66,7 +66,7 @@ page.
 - STATUS + effort logs.
 
 Personal-Site Datadog-only README/AGENTS copy lands in
-`jaywedgeworth22/Personal-Site` on `grok/sentry-datadog-only` (board
+`Simple-With-Us/Personal-Site` on `grok/sentry-datadog-only` (board
 `ca3e27f0`).
 
 ## What this unit does not land

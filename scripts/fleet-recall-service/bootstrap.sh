@@ -8,7 +8,7 @@
 # 4. exec python3 RECALL_APP_DIR/fleet-recall-service/server.py
 #
 # Env:
-#   RECALL_REF               git ref / branch / tag / sha of jaywedgeworth22/AI-Fleet-Coordinator (default main)
+#   RECALL_REF               git ref / branch / tag / sha of Simple-With-Us/AI-Fleet-Coordinator (default main)
 #   RECALL_APP_DIR           install root (default /app)
 #   RECALL_TARBALL           tarball path; reused when present, downloaded there otherwise (default /tmp/fleet-src.tgz)
 #   RECALL_TARBALL_URL       override the download URL (tests / mirrors); default is the codeload URL for RECALL_REF
@@ -28,7 +28,7 @@ set -euo pipefail
 REF="${RECALL_REF:-main}"
 APP="${RECALL_APP_DIR:-/app}"
 TARBALL="${RECALL_TARBALL:-/tmp/fleet-src.tgz}"
-REPO_URL="${RECALL_TARBALL_URL:-https://codeload.github.com/jaywedgeworth22/AI-Fleet-Coordinator/tar.gz/${REF}}"
+REPO_URL="${RECALL_TARBALL_URL:-https://codeload.github.com/Simple-With-Us/AI-Fleet-Coordinator/tar.gz/${REF}}"
 
 export REF APP TARBALL REPO_URL
 

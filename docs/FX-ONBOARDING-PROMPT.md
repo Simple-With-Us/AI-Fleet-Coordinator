@@ -1,7 +1,7 @@
 # fx (Vercel Labs) as the FX seat: paste-ready onboarding prompt
 
 Owner-facing, paste-ready.  Give fx the prompt in the box below at the start of a session, or link
-it here: https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/FX-ONBOARDING-PROMPT.md
+it here: https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/FX-ONBOARDING-PROMPT.md
 
 The seat is **FX** no matter which model provider fx is logged into.  Grok today, the Codex
 provider or a MiniMax endpoint later — the harness is the seat, the model is a detail the seat

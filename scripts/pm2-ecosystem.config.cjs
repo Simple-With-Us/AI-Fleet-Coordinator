@@ -150,7 +150,7 @@ module.exports = {
     }),
     app({
       // Clutch web UI on :3180.  Renamed from harness-web (Harness -> Clutch).
-      // Canonical scripts live in jaywedgeworth22/Clutch; this Mac runs them
+      // Canonical scripts live in Simple-With-Us/Clutch; this Mac runs them
       // from ~/apps/clutch-runtime, a real clone updated by update-mac-app.sh.
       // DSH_HOME is not set here: start-web.sh sources scripts/lib/clutch-env.sh,
       // which forces DSH_HOME to $CLUTCH_HOME/dsh.

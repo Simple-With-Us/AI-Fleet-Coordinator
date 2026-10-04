@@ -500,7 +500,7 @@ class CoordinatorSelfIdTests(unittest.TestCase):
     def test_agent_sync_self_id_is_afc_not_fleet(self) -> None:
         text = Path(os.path.join(ROOT, "AGENT-SYNC.md")).read_text(encoding="utf-8")
         self.assertIn("| `AFC` |", text)
-        self.assertIn("jaywedgeworth22/AI-Fleet-Coordinator", text)
+        self.assertIn("Simple-With-Us/AI-Fleet-Coordinator", text)
         self.assertIn("[AFC] sync-N", text)
         self.assertIn("every Grok Bot seat", text)
         self.assertNotIn("| `AFL` |", text)

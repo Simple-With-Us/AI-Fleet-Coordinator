@@ -6,27 +6,27 @@ This document details how Cursor binds local filesystem folders to remote GitHub
 
 ## 1. Root Cause Analysis: The Stale Organization Cache
 
-When fleet repositories were migrated from `jaywedgeworth22/<repo>` to `Simple-With-Us/<repo>`, all local git checkouts in `/Users/jay/Code/*` had their remote origins correctly updated to `https://github.com/Simple-With-Us/<repo>.git`.
+When fleet repositories were migrated from `Simple-With-Us/<repo>` to `Simple-With-Us/<repo>`, all local git checkouts in `/Users/jay/Code/*` had their remote origins correctly updated to `https://github.com/Simple-With-Us/<repo>.git`.
 
 However, Cursor retains internal SQLite state databases that cache the initial repository URL bound to each folder:
 
 1. **`workspaceMetadata.entries`** (`~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`):
-   Contains an array of all workspace directories opened in Cursor.  For each folder, it maintains `trackedGitRepos` with `repoPath` and `repoUrl` (e.g. `github.com/jaywedgeworth22/socratic.trade`).
+   Contains an array of all workspace directories opened in Cursor.  For each folder, it maintains `trackedGitRepos` with `repoPath` and `repoUrl` (e.g. `github.com/Simple-With-Us/socratic.trade`).
 2. **`repositoryTracker.paths`** (`state.vscdb`):
-   Maps canonical GitHub repository keys (e.g. `github.com/jaywedgeworth22/congress.trade`) to local filesystem URIs (`file:///Users/jay/Code`).
+   Maps canonical GitHub repository keys (e.g. `github.com/Simple-With-Us/congress.trade`) to local filesystem URIs (`file:///Users/jay/Code`).
 3. **`cursor/glass.projectSelector.recentCloudTargets` & `recentPrivateWorkers`** (`state.vscdb`):
-   Caches recent target repositories and worker repo labels (e.g. `repoLabel: "jaywedgeworth22/congress-trading-shared"`).
+   Caches recent target repositories and worker repo labels (e.g. `repoLabel: "Simple-With-Us/congress-trading-shared"`).
 4. **`workbench.backgroundComposer.workspacePersistentData`** (`~/Library/Application Support/Cursor/User/workspaceStorage/<workspace-id>/state.vscdb`):
    Caches `cachedSelectedRemote.url` per workspace.
 5. **Background Worker Daemon (`cursor-agent-worker`)**:
    Cursor spawns a persistent daemon (`cursor-agent worker start --worker-dir <path>`) for Background Composer / Cloud Agent tasks.  Upon startup, it logs:
    ```text
-   INFO Derived repo label from git origin ctx=worker-mode meta={repo: "jaywedgeworth22/ai-fleet-coordinator"}
+   INFO Derived repo label from git origin ctx=worker-mode meta={repo: "Simple-With-Us/ai-fleet-coordinator"}
    ```
-   If Cursor was left running across the GitHub org rename, or if the daemon reparented to `launchd`, the daemon stayed connected to `api2.cursor.sh` advertising the stale `jaywedgeworth22/<repo>` label.
+   If Cursor was left running across the GitHub org rename, or if the daemon reparented to `launchd`, the daemon stayed connected to `api2.cursor.sh` advertising the stale `Simple-With-Us/<repo>` label.
 
 ### The Breakdown with Grok Bot
-When Grok Bot (`[GB-*]`) dispatched a task to Cursor Cloud Agents targeting `Simple-With-Us/<repo>`, the Cursor backend attempted to route the job to a private worker advertising that repository.  Because the daemon held the stale `jaywedgeworth22/<repo>` label and `state.vscdb` cached the old repo URL, routing failed with "no worker found for repo" or could not associate the workspace folder.
+When Grok Bot (`[GB-*]`) dispatched a task to Cursor Cloud Agents targeting `Simple-With-Us/<repo>`, the Cursor backend attempted to route the job to a private worker advertising that repository.  Because the daemon held the stale `Simple-With-Us/<repo>` label and `state.vscdb` cached the old repo URL, routing failed with "no worker found for repo" or could not associate the workspace folder.
 
 ---
 

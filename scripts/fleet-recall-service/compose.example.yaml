@@ -28,7 +28,7 @@ services:
       - |
         import os, sys, tarfile, urllib.request
         ref = os.environ.get("RECALL_REF", "main")
-        url = os.environ.get("RECALL_TARBALL_URL") or "https://codeload.github.com/jaywedgeworth22/AI-Fleet-Coordinator/tar.gz/" + ref
+        url = os.environ.get("RECALL_TARBALL_URL") or "https://codeload.github.com/Simple-With-Us/AI-Fleet-Coordinator/tar.gz/" + ref
         tarball = "/tmp/fleet-src.tgz"
         print("compose: fetching " + url, flush=True)
         with urllib.request.urlopen(url, timeout=180) as r, open(tarball + ".part", "wb") as fh:

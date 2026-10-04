@@ -114,7 +114,7 @@ WAL_GLOBS = [
 ]
 
 MONITOR_SLUG = "fleet-host-monitor"
-GH_REPO = "jaywedgeworth22/agentic-trading"
+GH_REPO = "Simple-With-Us/Socratic-Trade"
 DEFAULT_TAGS = {"agent": "FLEET", "app": "fleet-infra"}
 PM2_TAGS = {
     "trading-codex": {"agent": "CODEX", "app": "socratic-trade"},

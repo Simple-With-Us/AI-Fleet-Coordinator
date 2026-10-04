@@ -31,7 +31,7 @@ Docs and repo metadata only.  No product code.
 ## Verification State
 
 - `python3 scripts/check-fleet-registry.py` (must exit 0).
-- `gh repo view jaywedgeworth22/AI-Fleet-Coordinator --json description,homepageUrl`
+- `gh repo view Simple-With-Us/AI-Fleet-Coordinator --json description,homepageUrl`
 
 ## Next Steps & Blockers
 

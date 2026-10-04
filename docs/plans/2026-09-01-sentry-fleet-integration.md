@@ -175,7 +175,7 @@ Do **not** add a second Mac host monitor.  Extend `fleet-sentry-monitor`.
 Owner clicks (cannot be done by an agent):
 
 1. Confirm sponsored plan includes Seer and raise error/span/replay quotas so we stop sampling like a free tier.
-2. GitHub integration OAuth for `jaywedgeworth22/*` (suspect commits + Seer code).
+2. GitHub integration OAuth for `Simple-With-Us/*` (suspect commits + Seer code).
 3. Slack + PagerDuty integrations in the Sentry org.
 
 Agent work:
