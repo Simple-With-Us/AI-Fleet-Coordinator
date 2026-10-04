@@ -358,11 +358,16 @@ for (const [key, conf] of Object.entries(appsData.apps)) {
     // icons are REQUIRED to carry alpha (rounded rect + vibrancy).
     if (platform === "ios") {
       if (genuinelyTransparent) {
-        add("error", key, "ICON_TRANSPARENT", `${rel} iOS 1024 marketing icon is ${alpha.transparentPct}% transparent`, "Apple rejects this as ITMS-90717 — the app ships with no valid App Store icon. Fix: python3 ios-fleet/fleet_icon_fix_alpha.py");
+        // Report only.  Do NOT recommend a mechanical flatten: see rules ICO-6/ICO-7/ICO-8.
+        // The correct fix is the correct ART in the slot, supplied by the owner or the
+        // seat the owner assigned — and menu bar art must never be flattened into an
+        // app icon slot.  An audit that tells a seat to synthesise art is how icons
+        // drift, which is the exact problem this audit exists to stop.
+        add("error", key, "ICON_TRANSPARENT", `${rel} iOS 1024 marketing icon is ${alpha.transparentPct}% transparent`, "Apple rejects this as ITMS-90717. REPORT ONLY — do not auto-flatten and do not substitute other art. See rules ICO-6 (menu bar art is not app art) and ICO-7 (owner or assigned seat supplies art).");
       } else if (unverified) {
         add("warn", key, "ICON_ALPHA_UNVERIFIED", `${rel} carries an alpha channel but Pillow was unavailable to measure it`, "Install Pillow to make this check conclusive");
       } else if (alpha && alpha.hasChannel) {
-        add("warn", key, "ICON_ALPHA_CHANNEL", `${rel} iOS icon has an alpha channel that is fully opaque (0% transparent)`, "Harmless today; strip the channel anyway so no validator flags it. Fix: python3 ios-fleet/fleet_icon_fix_alpha.py");
+        add("warn", key, "ICON_ALPHA_CHANNEL", `${rel} iOS icon has an alpha channel that is fully opaque (0% transparent)`, "Harmless today; it is still a valid app icon. No action needed unless the owner asks.");
       }
     }
   }

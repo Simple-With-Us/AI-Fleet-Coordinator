@@ -55,11 +55,12 @@ install the pinned gitleaks release (`GITLEAKS_VERSION`, default `8.30.1`) for t
 the download fails the service still starts, the log says so, and every contribution's
 `scrubbed` list carries `gitleaks-unavailable` so callers can see the gate was regex-only.
 
-Configuration is **environment only** — the container never reads `~/.secrets`:
+Configuration is **Infisical-first** (see `INFISICAL.md` at the repo root): on startup the service loads every key below from the **AI Fleet Coordinator** Infisical project into an in-memory cache, refreshed in the background; the container never reads `~/.secrets`.  The machine identity (`INFISICAL_AUTOMATION_CLIENT_ID` / `INFISICAL_AUTOMATION_CLIENT_SECRET`) reaches the container through the environment.  When no identity is configured, the keys below fall back to the process environment exactly as before.  Admin changes go through `POST /admin/settings` (write-through to Infisical) with the admin bearer, or the Infisical UI/API plus `POST /admin/reload-settings` / `SIGHUP`.
 
 | Variable | Required | Notes |
 |---|---|---|
 | `RECALL_API_TOKEN` | yes | bearer for every non-health route; the process refuses to start without it |
+| `RECALL_ADMIN_TOKEN` | for admin routes | bearer for `GET`/`POST` `/admin/settings` and `POST` `/admin/reload-settings`; the admin surface answers 403 until it is set |
 | `QDRANT_URL` | yes | `http://100.69.77.26:6333` from a container on the box (see *Network*) |
 | `QDRANT_API_KEY` | yes | write key, used only by `recall_contribute` |
 | `QDRANT_READONLY_API_KEY` | no | used for every read when present |
@@ -69,6 +70,8 @@ Configuration is **environment only** — the container never reads `~/.secrets`
 | `TEI_EMBED_MODEL` | no | informational |
 | `PORT` / `HOST` | no | default `8080` / `0.0.0.0` |
 | `RECALL_SOCKET_TIMEOUT` | no | per-connection socket timeout in seconds (default `15`); a stalled body is answered and closed instead of parking a thread.  Empty / unparsable / non-positive values fall back to the default |
+| `SETTINGS_REFRESH_SECONDS` | no | background settings-refresh interval in seconds (default `300`); itself tunable in Infisical |
+| `INFISICAL_ENVIRONMENT` | no | which Infisical env the service reads: `dev` / `staging` / `prod` (default `dev`) |
 | `RECALL_REF` | no | git ref the bootstrap fetches (default `main`) |
 | `RECALL_FAKE` | no | `1` serves the in-process fake corpus (tests, smoke) |
 | `GITLEAKS_VERSION` | no | gitleaks release the bootstrap / image installs (default `8.30.1`) |

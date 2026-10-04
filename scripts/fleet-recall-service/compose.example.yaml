@@ -6,9 +6,13 @@
 # FQDN https://recall.jays.services -> service recall-api port 8080.  See README.md for the steps.
 #
 # ${SERVICE_PASSWORD_RECALLTOKEN} is Coolify's magic variable: it generates the bearer token and
-# shows it under the resource's environment variables.  The QDRANT_* / TEI_* values are plain
-# ${VAR} references Coolify prompts for; set them from Infisical shared/prod (Coolify holds
-# synced copies only).  No token value lives in this file.
+# shows it under the resource's environment variables.  Infisical is the source of truth
+# for the service's settings (see INFISICAL.md at the repo root): the server loads
+# QDRANT_* / TEI_* / RECALL_* from the "AI Fleet Coordinator" project at startup, so the
+# ${VAR} references below are bootstrap fallbacks only (used when no Infisical identity is
+# configured).  Set INFISICAL_ENVIRONMENT=prod here, and inject the Infisical machine
+# identity (INFISICAL_AUTOMATION_CLIENT_ID / INFISICAL_AUTOMATION_CLIENT_SECRET) so the
+# service reads prod.  No token value lives in this file.
 #
 # Network reality check (2026-09-02, from a python:3.12-slim container on the `coolify` network):
 # http://100.69.77.26:6333/healthz -> 200 and http://100.69.77.26:8081/health -> 200.  The docker0

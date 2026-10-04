@@ -912,7 +912,10 @@ class ProcessTests(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k != "RECALL_API_TOKEN"}
         proc = subprocess.run([sys.executable, str(SERVER_PY)], env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(proc.returncode, 2)
-        self.assertIn("RECALL_API_TOKEN is not set", proc.stdout)
+        # Fail-fast comes from the Infisical settings init: the required key is named,
+        # and INFISICAL.md is pointed at.  The exit code (2) is unchanged.
+        self.assertIn("RECALL_API_TOKEN", proc.stdout)
+        self.assertIn("INFISICAL.md", proc.stdout)
 
     def test_fake_mode_serves_health_and_logs_no_token(self):
         import socket

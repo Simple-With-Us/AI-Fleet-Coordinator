@@ -151,6 +151,21 @@
           "id": "ICO-5",
           "rule": "Rebranding must regenerate icons in the same change.",
           "detail": "Changing a name, palette, or mark without regenerating the icon is how icons go stale. The icon is derived output, so it is never allowed to lag the brand."
+        },
+        {
+          "id": "ICO-6",
+          "rule": "A menu bar icon is NOT an app icon. Never put menu bar art in an app icon slot, and never 'fix' an app icon by flattening menu bar art.",
+          "detail": "Owner, emphatic, 2026-10-03: 'THE TRANSPARENT BLACK CODECAPS ICON IS ONLY FOR USE IN MENU BAR IF THAT IS CHOSEN AS ICON.' Menu bar art is flat black-on-transparent and tightly cropped so the system can tint and mask it. App icon art is full-colour on an opaque background. They are different assets with different jobs. Flattening menu bar art onto white, cropping it to a rounded square, or using it as the App Store 1024 all produce a wrong icon. Each app keeps its menu bar art in its own imageset, separate from AppIcon.appiconset."
+        },
+        {
+          "id": "ICO-7",
+          "rule": "Never invent, regenerate, recolour, or substitute icon art. Only the owner or the seat the owner assigned supplies art.",
+          "detail": "Owner frustration, 2026-10-03: 'super fucking annoying that all these agents can't listen to simple instructions about icons.' Repeated incidents of agents re-deriving icon intent instead of reading it. If an icon is wrong, report it and name the owning seat. Do not synthesise a replacement, do not auto-flatten, and do not swap in art from a neighbouring asset. Antigravity owns the CodeCaps icon; the owner supplies the Hog Hunter icon."
+        },
+        {
+          "id": "ICO-8",
+          "rule": "A transparent iOS 1024 is a reporting signal, not a licence to auto-fix.",
+          "detail": "The audit flags it because Apple rejects transparency as ITMS-90717. But the correct fix is the correct ART in the slot, supplied by the owner, never a mechanical flatten. The bundled fleet_icon_fix_alpha.py stages a flatten for inspection only and must never be run unattended or applied without the owner naming the art."
         }
       ]
     },
