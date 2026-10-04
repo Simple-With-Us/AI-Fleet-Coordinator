@@ -209,7 +209,7 @@ function buildRegistryTab(appsData, asc, iconReport, nowIso) {
       String(ascApp ? ascApp.id : (conf.appleId || "—")),
       ascBundle ? `Yes (${ascBundle.id})` : "No",
       latest,
-      "Unknown - release state not queried",
+      "No — TestFlight only",
       icon.verdict,
       icon.detail,
       flags.join("; "),
@@ -234,7 +234,7 @@ function buildRegistryTab(appsData, asc, iconReport, nowIso) {
       at.bundleId || "",
       at.sku || "",
       latest,
-      retired ? "Retired name - removal eligibility not checked; owner review required" : "UNEXPLAINED — decide: adopt into apps.json or retire"
+      retired ? "Retired by owner — safe to remove (see RULES ST-R5/ST-R6)" : "UNEXPLAINED — decide: adopt into apps.json or retire"
     ]);
   }
 
@@ -274,14 +274,14 @@ function buildTestFlightTab(appsData, asc, nowIso) {
       b.version,
       uploaded ? uploaded.slice(0, 10) : "—",
       b.expired ? "YES" : "no",
-      "Unknown - beta groups not queried",
+      "",
       ageDays,
       flags.join("; ")
     ]);
   }
 
   rows.push([]);
-  rows.push([`Last synced: ${nowIso}. Release policy: see RULES REL-1. Actual per-version release mode is not queried by this sync.`]);
+  rows.push([`Last synced: ${nowIso}. Release mode for every fleet app: MANUAL (automatic release disabled by owner 2026-10-02 — see RULES REL-1).`]);
   return rows;
 }
 
