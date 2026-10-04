@@ -37,9 +37,11 @@ e. Post one comment on board item 02512901 in this exact shape:
    board comment 02512901 --by CODEX --env Mac --text "surface: stdio-mcp | search: ok|FAIL <detail> | contribute: ok|FAIL <detail> | stats points: <n>"
 
 From now on in every session:
-- Search recall before re-deriving a lesson, before debugging anything that smells familiar, and
-  before asking the owner a question a past ruling probably answers.  A hit is a lead, not a
-  verdict; open the board row, note, or doc it cites.
+- **Search recall at the START of turns and tasks, before re-deriving.**  Evaluate the 4 Search
+  Triggers (error/blocker, infra/deployment/secrets, cross-repo/unfamiliar domain, pre-owner query).
+  If any trigger matches, run `recall_search` BEFORE inspecting files or running diagnostic loops.
+  Bypass only for deterministic mechanical edits or an already-researched active plan step.
+  A hit is a lead, not a verdict; open the board row, note, or doc it cites.
 - At closeout, contribute every reusable lesson with recall_contribute: one idea, 40 to 4,000
   characters, category lesson | preference | infrastructure | decision | runbook, app slug set,
   two spaces between sentences.  Search first so you corroborate rather than duplicate; the

@@ -10,10 +10,22 @@ the Apple Notes archive, every effort log, the protocol docs, the skills, and ea
 files, refreshed nightly.  Cursor has the `fleet-recall` MCP server registered and the `recall`
 CLI on PATH.
 
-## Search first
+## Search first (start of turn triage)
 
-Before re-deriving a lesson, debugging something that smells familiar, or asking the owner a
-question a past decision probably answered, search the corpus:
+At the start of **every** turn, evaluate whether the request, error, or next planned action
+matches any of the **4 Mandatory Search Triggers**:
+1. **Error / Stack Trace**: An error message, build failure, test failure, crash, exception, or non-zero exit code.
+2. **Infrastructure / Deployment**: Coolify, Hetzner, Docker, Caddy, Cloudflare, Infisical, Tailscale, pm2, ports, domains, or certificates.
+3. **Cross-App / Protocol Decisions**: Inter-agent sync conventions, effort log format, board protocol, seat tag policies, or owner preferences.
+4. **Smells Familiar**: A problem, warning, or task that feels like it has been solved before or might have an established fleet pattern.
+
+**Action**: If ANY trigger fires, you MUST execute `recall "<query>"` or call MCP `recall_search(query=...)`
+BEFORE diagnosing, proposing code, or writing a fix.  Do not guess or re-derive from first principles
+what the fleet has already solved.
+
+**Permitted Bypass**: You may skip retrieval ONLY when:
+- The task is purely local boilerplate (e.g. formatting, renaming a local variable, adding an import in a known file).
+- The exact query was already searched earlier in the current turn/conversation and the results are still in context.
 
 ```bash
 recall "pm2 orphan holds port"

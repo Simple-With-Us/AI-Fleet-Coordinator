@@ -55,11 +55,11 @@ def main() -> int:
     live_protocol = APPS / "EFFORT-LOG-PROTOCOL.md"
     live_sync = APPS / "AGENT-SYNC.md"
     live_quick = APPS / "AGENT-COORDINATION-QUICKSTART.md"
-    live_checks = APPS.is_dir()
+    live_checks = APPS.is_dir() if _board_home_env else (APPS / "EFFORT-LOG-PROTOCOL.md").is_file()
     if _board_home_env and not live_checks:
         errors.append(f"FLEET_BOARD_HOME is not a directory: {APPS}")
     elif not live_checks:
-        print(f"note: live board checks skipped (no FLEET_BOARD_HOME, {APPS} absent)")
+        print(f"note: live board checks skipped (no FLEET_BOARD_HOME, {APPS} absent or not a board checkout)")
 
     for app in apps:
         repo = app["repo"]

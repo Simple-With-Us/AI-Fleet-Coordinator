@@ -105,8 +105,9 @@ try:
             sys.exit(0)
         day = datetime.datetime.fromtimestamp(int(last["finished_at"]) / 1000).strftime("%Y-%m-%d")
         corpus = f"fleet recall corpus available (last ingest {day})"
-    line = (f"{corpus}; search before re-deriving (recall_search), "
-            "contribute a lesson at closeout (recall_contribute)")
+    line = (f"{corpus}; PRE-FLIGHT RETRIEVAL: search recall at the start of turns/tasks before diagnosing "
+            "(triggers: error/fail, infra/deploy, cross-repo/domain, pre-owner query). "
+            "Contribute a lesson at closeout (recall_contribute)")
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
                                              "additionalContext": line}}))
 except Exception:

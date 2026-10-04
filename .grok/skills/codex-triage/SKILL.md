@@ -60,14 +60,17 @@ Never blind-resolve to force a merge.  The gate exists because some findings are
 The instant the last thread resolves and CI is green, auto-merge fires.  Bots re-review every push and often never converge.
 
 - Resolving the last thread **is** merging the PR.  Triple-check first.
-- Round-2 comments often land on an already-merged PR.  Before resolving as "fixed," confirm the fix reached main:
+- Round-2 comments often land on an already-merged PR.  Before resolving as "fixed," confirm the fix reached main.  Fleet repos squash-merge, so the original fix SHA is **not** an ancestor of `origin/main`:
 
 ```bash
 git fetch origin
-git merge-base --is-ancestor <fix-sha> origin/main && echo "on main" || echo "NOT on main"
+# WRONG after squash: git merge-base --is-ancestor <fix-sha> origin/main
+gh pr list --head "$BRANCH" --state all --json number,state,mergedAt,url
+git diff origin/main...HEAD    # three-dot remaining unique work
+# helper: scripts/branch-landed.sh
 ```
 
-If NOT on main, open a follow-up PR from the same branch.  Expect squash-merge conflicts — merge main in; this branch's newer rounds win in its own files.
+If the PR is not MERGED, open a follow-up from the same branch.  Expect squash-merge conflicts — merge main in; this branch's newer rounds win in its own files.
 
 ## 6. Stop at round 2–3
 

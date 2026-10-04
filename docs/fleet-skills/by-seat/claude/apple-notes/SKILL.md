@@ -6,6 +6,9 @@ description: >-
 
 # Apple Notes (Universal)
 
+> **This install is for `CLAUDE`.** Slack `[CLAUDE]`.  Notes `Claude`.  Branches `claude/`.  Worktrees `~/apps/<app>-claude`.  Do not inherit another seat's tag from a shared template.
+
+
 Mac only.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
 
 Notes.app does not render raw Markdown.  The helper converts MD → HTML.  Pass `--html` only when you already have Notes-safe HTML.
