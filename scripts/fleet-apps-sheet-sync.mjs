@@ -29,6 +29,8 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const SPREADSHEET_ID = "1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY";
 const IOS_FLEET = "/Users/jay/apps/ios-fleet";
@@ -341,7 +343,29 @@ async function writeTab(title, rows) {
   });
 }
 
-async function formatTab(sheetId, headerRows, colCount) {
+const DEFAULT_COL_WIDTH_PX = 132;
+const MAX_COL_WIDTH_PX = 320;
+const FORMAT_ROW_COUNT = 1000;
+
+/** Pixel widths per generated tab (long-text columns get more room; all capped at MAX_COL_WIDTH_PX). */
+const TAB_COLUMN_WIDTHS = {
+  [TAB_RULES]: [88, 220, 420],
+  [TAB_REGISTRY]: [100, 140, 150, 72, 200, 96, 108, 100, 148, 96, 180, 200, 140, 240],
+  [TAB_TESTFLIGHT]: [100, 200, 108, 100, 108, 72, 120, 108, 220],
+  [TAB_ICONS]: [100, 88, 200, 88, 140, 120, 120, 88, 300]
+};
+
+function columnWidthPx(columnWidths, index) {
+  const w = columnWidths?.[index];
+  const px = typeof w === "number" && w > 0 ? w : DEFAULT_COL_WIDTH_PX;
+  return Math.min(px, MAX_COL_WIDTH_PX);
+}
+
+/**
+ * Build Sheets batchUpdate requests for tab chrome (headers, wrap, column widths, freeze).
+ * Exported for unit tests — does not call the API.
+ */
+export function buildFormatTabRequests(sheetId, headerRows, colCount, columnWidths) {
   const requests = [];
   for (const hr of headerRows) {
     requests.push({
@@ -353,16 +377,50 @@ async function formatTab(sheetId, headerRows, colCount) {
     });
   }
   requests.push({
+    repeatCell: {
+      range: {
+        sheetId,
+        startRowIndex: 0,
+        endRowIndex: FORMAT_ROW_COUNT,
+        startColumnIndex: 0,
+        endColumnIndex: colCount
+      },
+      cell: {
+        userEnteredFormat: {
+          wrapStrategy: "WRAP",
+          verticalAlignment: "TOP"
+        }
+      },
+      fields: "userEnteredFormat.wrapStrategy,userEnteredFormat.verticalAlignment"
+    }
+  });
+  for (let i = 0; i < colCount; i++) {
+    requests.push({
+      updateDimensionProperties: {
+        range: { sheetId, dimension: "COLUMNS", startIndex: i, endIndex: i + 1 },
+        properties: { pixelSize: columnWidthPx(columnWidths, i) },
+        fields: "pixelSize"
+      }
+    });
+  }
+  requests.push({
     updateSheetProperties: {
       properties: { sheetId, gridProperties: { frozenRowCount: headerRows.length ? Math.max(...headerRows) + 1 : 0 } },
       fields: "gridProperties.frozenRowCount"
     }
   });
-  requests.push({
-    autoResizeDimensions: { dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: colCount } }
-  });
   // Clear the old tail so a shrunken table doesn't leave orphan rows behind.
-  requests.push({ updateSheetProperties: { properties: { sheetId, gridProperties: { rowCount: 1000 } }, fields: "gridProperties.rowCount" } });
+  requests.push({
+    updateSheetProperties: {
+      properties: { sheetId, gridProperties: { rowCount: FORMAT_ROW_COUNT } },
+      fields: "gridProperties.rowCount"
+    }
+  });
+  return requests;
+}
+
+async function formatTab(sheetId, headerRows, colCount, columnWidths) {
+  const requests = buildFormatTabRequests(sheetId, headerRows, colCount, columnWidths);
   await sheetsApi(":batchUpdate", { method: "POST", body: JSON.stringify({ requests }) });
 }
 
@@ -411,10 +469,10 @@ async function main() {
   await writeTab(TAB_ICONS, buildIconTab(iconReport, nowIso));
 
   console.log("7. Formatting...");
-  await formatTab(tabRules.sheetId, [0], 3);
-  await formatTab(tabRegistry.sheetId, [0], 14);
-  await formatTab(tabTestflight.sheetId, [0], 9);
-  await formatTab(tabIcons.sheetId, [3], 9);
+  await formatTab(tabRules.sheetId, [0], 3, TAB_COLUMN_WIDTHS[TAB_RULES]);
+  await formatTab(tabRegistry.sheetId, [0], 14, TAB_COLUMN_WIDTHS[TAB_REGISTRY]);
+  await formatTab(tabTestflight.sheetId, [0], 9, TAB_COLUMN_WIDTHS[TAB_TESTFLIGHT]);
+  await formatTab(tabIcons.sheetId, [3], 9, TAB_COLUMN_WIDTHS[TAB_ICONS]);
 
   console.log(`\n✅ Sheet regenerated: https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit`);
   console.log(`   Tabs: ${TAB_RULES} | ${TAB_REGISTRY} | ${TAB_TESTFLIGHT} | ${TAB_ICONS} | ${LEGACY_TAB}`);
@@ -422,7 +480,12 @@ async function main() {
   if (errCount) console.log(`   ⚠️  Icon audit reports ${errCount} error(s) — see the ${TAB_ICONS} tab.`);
 }
 
-main().catch(err => {
-  console.error("Sheet sync failed:", err.message);
-  process.exit(1);
-});
+const __filename = fileURLToPath(import.meta.url);
+const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === __filename;
+
+if (isDirectRun) {
+  main().catch(err => {
+    console.error("Sheet sync failed:", err.message);
+    process.exit(1);
+  });
+}
