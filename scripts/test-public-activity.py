@@ -51,7 +51,7 @@ class PublicActivityTests(unittest.TestCase):
             # RFC 5545 line folding can split a URL across CRLF + space.
             body = re.sub(r"\r?\n[ \t]", "", body)
             with self.subTest(name=name):
-                linked_repos = re.findall(r"https://github\.com/jaywedgeworth22/([^/\s?#)\"<>]+)", body, re.I)
+                linked_repos = re.findall(r"https://github\.com/Simple-With-Us/([^/\s?#)\"<>]+)", body, re.I)
                 self.assertTrue(all(repo.casefold() in allowed for repo in linked_repos), f"disallowed repository link in {name}")
                 self.assertFalse("### Effort board" in body, f"effort section in {name}")
                 self.assertFalse("<h3>Effort board</h3>" in body, f"effort section in {name}")
@@ -60,21 +60,21 @@ class PublicActivityTests(unittest.TestCase):
         def api(request: object, timeout: int) -> Reply:
             url = request.full_url  # type: ignore[attr-defined]
             if url.endswith("/BotFleet"):
-                return Reply({"private": False, "visibility": "public", "owner": {"login": "jaywedgeworth22"}})
-            return Reply({"private": True, "visibility": "private", "owner": {"login": "jaywedgeworth22"}})
+                return Reply({"private": False, "visibility": "public", "owner": {"login": "Simple-With-Us"}})
+            return Reply({"private": True, "visibility": "private", "owner": {"login": "Simple-With-Us"}})
 
         with patch("public_activity_repos.urllib.request.urlopen", side_effect=api):
-            selected = select_public_repos("jaywedgeworth22", ["BotFleet", "fleet-ops", "Clutch", "ContactLogo"], "fixture")
+            selected = select_public_repos("Simple-With-Us", ["BotFleet", "fleet-ops", "Clutch", "ContactLogo"], "fixture")
         self.assertEqual(selected, ["BotFleet"])
 
     def test_visibility_api_failure_is_fail_closed(self) -> None:
         with patch("public_activity_repos.urllib.request.urlopen", side_effect=urllib.error.URLError("fixture")):
             with self.assertRaises(RuntimeError):
-                select_public_repos("jaywedgeworth22", ["BotFleet"], "fixture")
+                select_public_repos("Simple-With-Us", ["BotFleet"], "fixture")
 
     def test_public_pr_survives_without_effort_board_material(self) -> None:
         day = date(2026, 9, 26)
-        pr = {"repo": "BotFleet", "number": 123, "title": "Fix onboarding", "url": "https://github.com/jaywedgeworth22/BotFleet/pull/123", "user": "jay"}
+        pr = {"repo": "BotFleet", "number": 123, "title": "Fix onboarding", "url": "https://github.com/Simple-With-Us/BotFleet/pull/123", "user": "jay"}
         buckets = digest.bucket_all([(day, pr)], [], [])
         days = list(buckets.values())
         now = datetime(2026, 9, 26, tzinfo=timezone.utc)

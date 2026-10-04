@@ -97,16 +97,16 @@ cloud environment. Suggested environment name = repo name.
 
 | Repo | `~/Code` | Setup does |
 |------|----------|------------|
-| `jaywedgeworth22/Socratic.Trade` | Socratic.Trade | `npm ci` at repo root |
-| `jaywedgeworth22/Congress.Trade` | Congress.Trade | `npm ci --include=dev` in `app/` |
-| `jaywedgeworth22/Usage-Monitor` | Usage-Monitor | `npm ci --include=dev` |
-| `jaywedgeworth22/DealDex` | DealDex | `npm ci --include=dev` |
-| `jaywedgeworth22/Personal-Site` | Personal-Site | `npm ci --include=dev` in `site/` |
-| `jaywedgeworth22/Autorotate` | Autorotate | `npm ci --include=dev` in `apps/web/` |
-| `jaywedgeworth22/ContactLogo` | ContactLogo | `npm ci --include=dev` in `web/` |
-| `jaywedgeworth22/AI-Fleet-Coordinator` | AI-Fleet-Coordinator | registry check, then fleet-recall credentials + remote MCP (see below) |
-| `jaywedgeworth22/congress-trading-shared` | congress-trading-shared | `npm ci --include=dev` + build |
-| `jaywedgeworth22/fleet-ops` | fleet-ops | docs-only no-op |
+| `Simple-With-Us/Socratic-Trade` | Socratic.Trade | `npm ci` at repo root |
+| `Simple-With-Us/Congress.Trade` | Congress.Trade | `npm ci --include=dev` in `app/` |
+| `Simple-With-Us/Usage-Monitor` | Usage-Monitor | `npm ci --include=dev` |
+| `Simple-With-Us/DealDex` | DealDex | `npm ci --include=dev` |
+| `Simple-With-Us/Personal-Site` | Personal-Site | `npm ci --include=dev` in `site/` |
+| `Simple-With-Us/Autorotate` | Autorotate | `npm ci --include=dev` in `apps/web/` |
+| `Simple-With-Us/ContactLogo` | ContactLogo | `npm ci --include=dev` in `web/` |
+| `Simple-With-Us/AI-Fleet-Coordinator` | AI-Fleet-Coordinator | registry check, then fleet-recall credentials + remote MCP (see below) |
+| `Simple-With-Us/congress-trading-shared` | congress-trading-shared | `npm ci --include=dev` + build |
+| `Simple-With-Us/fleet-ops` | fleet-ops | docs-only no-op |
 
 `Pionex` under `~/Code` is not a git repo. Skip it.
 

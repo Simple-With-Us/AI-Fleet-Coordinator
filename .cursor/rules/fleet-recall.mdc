@@ -61,7 +61,7 @@ natural home.
 ## If it is not available
 
 Say so once at the start instead of guessing.  Setup and the per-platform access check:
-<https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/RECALL-ACCESS-CHECK.md>
+<https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/RECALL-ACCESS-CHECK.md>
 
 Do **not** point Socratic.Trade's embedding provider at the fleet endpoint — the embedding spaces
 are not compatible (measured 2026-08-31).

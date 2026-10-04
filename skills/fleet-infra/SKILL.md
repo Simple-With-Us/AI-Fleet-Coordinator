@@ -1,6 +1,6 @@
 ---
 name: fleet-infra
-description: Access private fleet infrastructure inventory (host IPs, Tailscale mesh IPs, Coolify container UUIDs, Infisical project IDs, and SSH keys) maintained in jaywedgeworth22/fleet-ops:ATTACK-MAP.md. Use when locating production servers, configuring environment variables, verifying edge routing, or handling infrastructure secrets without leaking them into public repos.
+description: Access private fleet infrastructure inventory (host IPs, Tailscale mesh IPs, Coolify container UUIDs, Infisical project IDs, and SSH keys) maintained in Simple-With-Us/fleet-ops:ATTACK-MAP.md. Use when locating production servers, configuring environment variables, verifying edge routing, or handling infrastructure secrets without leaking them into public repos.
 ---
 
 # Fleet Infrastructure & Private Inventory Access (ALL AGENTS)
@@ -11,7 +11,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin inf
 
 - **Local Workstation Agents (Mac/Terminal):**
   Read directly from `/Users/jay/Code/fleet-ops/ATTACK-MAP.md`.
-  GitHub repo: [`jaywedgeworth22/fleet-ops:ATTACK-MAP.md`](https://github.com/jaywedgeworth22/fleet-ops/blob/main/ATTACK-MAP.md) (private).
+  GitHub repo: [`Simple-With-Us/fleet-ops:ATTACK-MAP.md`](https://github.com/Simple-With-Us/fleet-ops/blob/main/ATTACK-MAP.md) (private).
 
 - **Cloud / Remote Agents (without direct repo access):**
   Fetch securely from the Mac agent relay using `MAC_COLLAB_TOKEN`:

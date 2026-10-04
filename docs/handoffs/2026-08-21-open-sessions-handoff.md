@@ -94,7 +94,7 @@ Account for a clean slate.
 ## Lane 2 — Socratic.Trade sign-in button unification ⚠️ STOPPED MID-WORK
 
 **Session:** `local_7a60bb21-441f-4006-bb07-2e5a97610c4a` · last activity 14:29 CT ·
-successor PR **[#3008](https://github.com/jaywedgeworth22/Socratic.Trade/pull/3008)**
+successor PR **[#3008](https://github.com/Simple-With-Us/Socratic-Trade/pull/3008)**
 (`claude/login-wordmark-catalyst`, OPEN, **BLOCKED**)
 
 This is the most at-risk lane — the session ends on a bare tool call with no closing summary,

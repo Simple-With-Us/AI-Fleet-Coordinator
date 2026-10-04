@@ -12,18 +12,18 @@ Generated artifacts (do not hand-edit ICS; change the scripts/workflows):
 After the `Fleet daily digest + calendars` workflow runs:
 
 ```text
-https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/
-https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/digest.md
-https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/calendar/daily-digest.ics
-https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/calendar/agent-activity.ics
+https://simple-with-us.github.io/AI-Fleet-Coordinator/
+https://simple-with-us.github.io/AI-Fleet-Coordinator/digest.md
+https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/daily-digest.ics
+https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/agent-activity.ics
 ```
 
 Raw-from-main mirrors (always available even before Pages is enabled):
 
 ```text
-https://raw.githubusercontent.com/jaywedgeworth22/AI-Fleet-Coordinator/main/calendar/agent-activity.ics
-https://raw.githubusercontent.com/jaywedgeworth22/AI-Fleet-Coordinator/main/calendar/daily-digest.ics
-https://raw.githubusercontent.com/jaywedgeworth22/AI-Fleet-Coordinator/main/site/digest.md
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/calendar/agent-activity.ics
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/calendar/daily-digest.ics
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/site/digest.md
 ```
 
 ## Subscribe

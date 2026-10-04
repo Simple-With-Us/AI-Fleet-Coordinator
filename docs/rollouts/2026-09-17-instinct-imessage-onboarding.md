@@ -82,9 +82,9 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://mac.jays.services/login   # ex
 # append: MAC_COLLAB_TOKEN_INSTINCT="<new value>"   to ~/.secrets/mac-collab.env
 
 # bridge: outbox issue first, then config, dry-run, then the LaunchAgent
-# open jaywedgeworth22/fleet-ops issue "[INSTINCT] Slack outbox"; note its number N
+# open Simple-With-Us/fleet-ops issue "[INSTINCT] Slack outbox"; note its number N
 cp ~/Code/AI-Fleet-Coordinator/scripts/github-outbox-bridge.py ~/apps/github-outbox-bridge.py
-printf '{"seats":[{"seat":"INSTINCT","repo":"jaywedgeworth22/fleet-ops","issue":N}]}\n' > ~/apps/github-outbox-bridge.json
+printf '{"seats":[{"seat":"INSTINCT","repo":"Simple-With-Us/fleet-ops","issue":N}]}\n' > ~/apps/github-outbox-bridge.json
 python3 ~/apps/github-outbox-bridge.py --once --dry-run
 cp ~/Code/AI-Fleet-Coordinator/scripts/launchd/com.jay.github-outbox-bridge.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.github-outbox-bridge.plist

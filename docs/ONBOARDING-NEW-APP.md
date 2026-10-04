@@ -4,9 +4,9 @@ Policy + steps for joining an existing or brand-new GitHub repo to this fleet
 so agents can work the way we already work on Socratic.Trade, Congress.Trade,
 Usage-Monitor, and DealDex.
 
-**GitHub:** https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md  
-**Sibling (new seat):** [ONBOARDING-NEW-AGENT.md](ONBOARDING-NEW-AGENT.md) · https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md  
-**Protocol:** `/Users/jay/apps/AGENT-SYNC.md` · https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md  
+**GitHub:** https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md  
+**Sibling (new seat):** [ONBOARDING-NEW-AGENT.md](ONBOARDING-NEW-AGENT.md) · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md  
+**Protocol:** `/Users/jay/apps/AGENT-SYNC.md` · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md  
 Copy `TEMPLATE-AGENTS.md` into the new repo (includes Delegation & model economics + this start-here table).
 
 **Run the script first, then finish the checklist.** The script does the
@@ -94,7 +94,7 @@ Pick and write these down. They never change casually.
 
 | Field | Example | Notes |
 |-------|---------|--------|
-| GitHub repo | `DealDex` | `jaywedgeworth22/<repo>` |
+| GitHub repo | `DealDex` | `Simple-With-Us/<repo>` |
 | `~/Code` folder | `DealDex` | Same spelling as the repo when possible |
 | Slack `repo:` | `DealDex` | First body field in every #agent-sync post |
 | Acronym | `DD` | Apple Notes `[DD, Grok] …` |
@@ -118,16 +118,16 @@ job, add it as a required check:
 
 ```bash
 python3 scripts/apply-github-ruleset.py \
-  --repo jaywedgeworth22/<repo> --kind product --checks verify
+  --repo Simple-With-Us/<repo> --kind product --checks verify
 ```
 
 Kinds: `product` / `site` / `library` (same PR gate; pass `--checks` when CI
 exists) · `infra` (PR gate only — do not require digest/publish jobs).
 
 1. If the GitHub repo does not exist:
-   `gh repo create jaywedgeworth22/<repo> --private --description "…"`.
+   `gh repo create Simple-With-Us/<repo> --private --description "…"`.
 2. If `~/Code/<App>` is empty or missing:
-   `git clone https://github.com/jaywedgeworth22/<repo>.git ~/Code/<App>`.
+   `git clone https://github.com/Simple-With-Us/<repo>.git ~/Code/<App>`.
 3. If `~/Code/<App>` already has uncommitted product work, **do not**
    `git init` on top of it. Commit or move that work first.
 4. `code-main-keeper` auto-discovers new `~/Code/*` git repos. No edit needed
@@ -315,7 +315,7 @@ The inverse of onboarding.  Do these in order, each through a `claude/*` lane an
 
 ## Definition of done
 
-- [ ] `~/Code/<App>` is a git checkout of `jaywedgeworth22/<repo>` on `main`
+- [ ] `~/Code/<App>` is a git checkout of `Simple-With-Us/<repo>` on `main`
 - [ ] At least one seat worktree exists under `~/apps/`
 - [ ] `AGENTS.md` is tracked and forbids working in `~/Code/<App>`
 - [ ] Live board + `docs/EFFORT-LOG.md` exist and are in the Board registry

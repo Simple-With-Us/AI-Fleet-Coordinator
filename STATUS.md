@@ -97,9 +97,9 @@ Updated: 2026-09-03 (GROK — iOS version manifest home)
 
 ## 2026-09-03 GROK — iOS versions.json lives here, not ios-app-versions
 
-Owner is deleting `jaywedgeworth22/ios-app-versions`.  Personal-Site does not
+Owner is deleting `Simple-With-Us/ios-app-versions`.  Personal-Site does not
 link it.  Canonical public file is `site/ios-versions.json`.  iOS clients fetch
-https://raw.githubusercontent.com/jaywedgeworth22/AI-Fleet-Coordinator/main/site/ios-versions.json
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/site/ios-versions.json
 Board `ca104839`.  Branch `grok/ios-versions-home`.  Rollout:
 `docs/rollouts/2026-09-03-ios-versions-home.md`.
 

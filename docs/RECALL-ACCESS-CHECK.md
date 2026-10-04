@@ -152,7 +152,7 @@ preference of mine, a runbook step — store one paragraph with recall_contribut
 one idea, 40-4000 chars, category lesson|preference|infrastructure|decision|runbook.
 Never put secrets, tokens, or transcripts in it.  If you have no recall tool
 available, say so once at the start instead of guessing; setup is at
-github.com/jaywedgeworth22/AI-Fleet-Coordinator/blob/main/docs/RECALL-ACCESS-CHECK.md
+github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/RECALL-ACCESS-CHECK.md
 ```
 
 Where it goes, and what already carries it (checked 2026-09-03):
