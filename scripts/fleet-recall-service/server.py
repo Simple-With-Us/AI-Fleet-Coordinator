@@ -13,8 +13,17 @@ Stdlib only.  One ThreadingHTTPServer that imports fleet_rag.recall_api and expo
 
 Auth is `Authorization: Bearer <RECALL_API_TOKEN>` on everything except /health, compared in
 constant time over bytes (a non-ASCII bearer is just wrong, never a traceback).  Configuration
-comes from the environment only (see REQUIRED_ENV); the process never reads ~/.secrets.  Logs go
+Logs go
 to stdout and never include bodies, tokens, or query strings.
+
+Configuration is Infisical-first: on startup the service loads its managed settings
+(QDRANT_*, TEI_*, RECALL_*) from the "AI Fleet Coordinator" Infisical project into an
+in-memory cache (see INFISICAL.md at the repo root), exports the backend keys into the
+process environment for the fleet_rag library, and refreshes the cache in the background
+(daemon thread, SIGHUP, or POST /admin/reload-settings).  All runtime reads come from the
+cache -- no per-request Infisical fetch exists anywhere in the request path.  When no
+Infisical machine identity is configured (local dev), the managed keys are read from the
+process environment exactly as before.
 
 Keep-alive discipline: the server speaks HTTP/1.1 and sits behind Traefik, which pools
 connections.  Any reply sent BEFORE the request body was consumed (401, 413, 404/405 on a POST,
@@ -58,12 +67,16 @@ if _ROOT not in sys.path:
 
 from fleet_rag import __version__ as _RAG_VERSION  # noqa: E402
 from fleet_rag import recall_api  # noqa: E402
+from fleet_rag import infisical_settings  # noqa: E402
+from fleet_rag.infisical_settings import SettingsError as _SettingsError  # noqa: E402
 from fleet_rag.core import FleetRagError  # noqa: E402
 
 SERVICE_VERSION = "1.0.0"
 SERVER_NAME = "fleet-recall-service"
 MCP_PATH = "/mcp"
 RECALL_PATHS = ("/recall/stats", "/recall/search", "/recall/contribute")
+ADMIN_SETTINGS_PATH = "/admin/settings"
+ADMIN_RELOAD_PATH = "/admin/reload-settings"
 PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28")
 DEFAULT_PROTOCOL = "2025-11-25"
 MAX_BODY = 2_000_000
@@ -72,6 +85,24 @@ DEFAULT_SOCKET_TIMEOUT = 15.0
 
 REQUIRED_ENV = ("QDRANT_URL", "QDRANT_API_KEY", "QDRANT_FLEET_COLLECTION", "TEI_URL", "TEI_API_KEY")
 OPTIONAL_ENV = ("QDRANT_READONLY_API_KEY", "TEI_EMBED_MODEL")
+
+# Every key the service owns.  Values live in Infisical (project below); the process
+# environment is only the bootstrap fallback when no Infisical identity is configured.
+MANAGED_KEYS = REQUIRED_ENV + OPTIONAL_ENV + (
+    "RECALL_API_TOKEN", "RECALL_ADMIN_TOKEN", "RECALL_SOCKET_TIMEOUT",
+    "SETTINGS_REFRESH_SECONDS", "HOST", "PORT",
+)
+# Secret keys are never returned by value from the admin surface (INFISICAL.md).
+SECRET_KEYS = frozenset({
+    "QDRANT_API_KEY", "QDRANT_READONLY_API_KEY", "TEI_API_KEY",
+    "RECALL_API_TOKEN", "RECALL_ADMIN_TOKEN",
+})
+# Backend keys the fleet_rag library reads from the environment; server.py mirrors the
+# Infisical cache into os.environ for them at startup and on every refresh.
+BACKEND_ENV_KEYS = REQUIRED_ENV + OPTIONAL_ENV
+# The "AI Fleet Coordinator" Infisical project.  FLEET_RAG_INFISICAL_PROJECT overrides it
+# (fleet convention, see fleet_rag/core.py); INFISICAL_ENVIRONMENT picks dev/staging/prod.
+AFC_INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
 
 JsonDict = dict[str, Any]
 
@@ -210,7 +241,7 @@ def _backend_snapshot() -> JsonDict:
     with _health_lock:
         if _health_cache["value"] is not None and now - _health_cache["at"] < HEALTH_CACHE_S:
             return dict(_health_cache["value"])
-    snap: JsonDict = {"collection": os.environ.get("QDRANT_FLEET_COLLECTION") or None,
+    snap: JsonDict = {"collection": infisical_settings.get("QDRANT_FLEET_COLLECTION") or None,
                       "points": None, "backend_ok": False}
     try:
         cfg = recall_api.get_config(need_write=False)
@@ -345,10 +376,17 @@ def log(msg: str) -> None:
 def socket_timeout(env: dict[str, str] | None = None) -> float:
     """Per-connection socket timeout in seconds: RECALL_SOCKET_TIMEOUT, else DEFAULT_SOCKET_TIMEOUT.
 
-    A missing, empty, unparsable, or non-positive value falls back to the default so a typo in
-    the environment can never disable the timeout (None would mean "block forever").
+    Reads the Infisical-backed settings cache first (which already includes the process
+    environment when no Infisical identity is configured), then the environment directly
+    when settings are not initialized (tests).  An explicit `env` dict keeps its old
+    meaning for callers that pin a mapping.  A missing, empty, unparsable, or
+    non-positive value falls back to the default so a typo can never disable the
+    timeout (None would mean "block forever").
     """
-    raw = (os.environ if env is None else env).get("RECALL_SOCKET_TIMEOUT", "")
+    if env is not None:
+        raw = env.get("RECALL_SOCKET_TIMEOUT", "")
+    else:
+        raw = infisical_settings.get("RECALL_SOCKET_TIMEOUT") or os.environ.get("RECALL_SOCKET_TIMEOUT", "")
     try:
         val = float(raw)
     except (TypeError, ValueError):
@@ -446,6 +484,59 @@ class RecallHandler(BaseHTTPRequestHandler):
     def _auth_ok(self) -> bool:
         return bearer_ok(self.headers.get("Authorization"), self.token)
 
+    # -- admin (Infisical write-through surface; admin token only, never the seat token)
+    def _admin_auth_ok(self) -> bool:
+        admin = (infisical_settings.get("RECALL_ADMIN_TOKEN") or "").strip()
+        return bool(admin) and bearer_ok(self.headers.get("Authorization"), admin)
+
+    def _admin_auth(self) -> bool:
+        """False when the request is already answered (403 unconfigured / 401)."""
+        if not infisical_settings.present("RECALL_ADMIN_TOKEN"):
+            self._discard_unread_body()
+            self.close_connection = True
+            self._send(403, _json_bytes({"ok": False,
+                                         "error": "admin token not configured; set RECALL_ADMIN_TOKEN "
+                                                  "in Infisical (see INFISICAL.md)"}))
+            return False
+        if not self._admin_auth_ok():
+            self._unauthorized()
+            return False
+        return True
+
+    def _admin_settings(self) -> None:
+        if not self._admin_auth():
+            return
+        self._send(200, _json_bytes({"ok": True, "settings": infisical_settings.admin_listing()}))
+
+    def _admin_set_setting(self) -> None:
+        if not self._admin_auth():
+            return
+        msg = self._read_json_object()
+        if msg is None:
+            return
+        key, value = msg.get("key"), msg.get("value")
+        if not isinstance(key, str) or key not in MANAGED_KEYS:
+            self._send(400, _json_bytes({"ok": False, "error": "unknown or unmanaged setting"}))
+            return
+        if not isinstance(value, str):
+            self._send(400, _json_bytes({"ok": False, "error": "value must be a string"}))
+            return
+        try:
+            infisical_settings.set(key, value)
+        except _SettingsError as e:
+            # Write-through failed: the Infisical write did not land, so the save fails
+            # here and the cache was NOT updated.
+            self._send(502, _json_bytes({"ok": False, "error": str(e)}))
+            return
+        self._send(200, _json_bytes({"ok": True, "key": key}))
+
+    def _admin_reload(self) -> None:
+        if not self._admin_auth():
+            return
+        self._discard_unread_body()
+        refreshed = infisical_settings.refresh_now()
+        self._send(200, _json_bytes({"ok": True, "refreshed": refreshed}))
+
     def _read_body(self) -> bytes | None:
         if self.headers.get("Transfer-Encoding"):
             # Chunked bodies are not framed here; refusing without reading means close.
@@ -525,6 +616,9 @@ class RecallHandler(BaseHTTPRequestHandler):
         if path in ("/health", "/"):
             self._send(200, _json_bytes(health_payload()))
             return
+        if path == ADMIN_SETTINGS_PATH:
+            self._admin_settings()
+            return
         if path == "/recall/stats":
             if not self._auth_ok():
                 self._unauthorized()
@@ -558,6 +652,12 @@ class RecallHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path == ADMIN_SETTINGS_PATH:
+            self._admin_set_setting()
+            return
+        if path == ADMIN_RELOAD_PATH:
+            self._admin_reload()
+            return
         if path in RECALL_PATHS:
             if not self._auth_ok():
                 self._unauthorized()
@@ -621,14 +721,44 @@ def make_server(host: str, port: int, token: str,
 
 
 def env_report() -> tuple[list[str], list[str]]:
-    """(present, missing) required env NAMES.  Values are never returned."""
-    present = [k for k in REQUIRED_ENV if os.environ.get(k)]
-    missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
+    """(present, missing) required setting NAMES, read from the Infisical-backed cache.
+    Values are never returned."""
+    present = [k for k in REQUIRED_ENV if infisical_settings.get(k)]
+    missing = [k for k in REQUIRED_ENV if not infisical_settings.get(k)]
     return present, missing
 
 
 def main(argv: list[str] | None = None) -> int:
-    token = os.environ.get("RECALL_API_TOKEN", "").strip()
+    # Infisical is the source of truth for every managed key (INFISICAL.md).  The settings
+    # module needs the project + environment before anything else; the machine identity
+    # (INFISICAL_AUTOMATION_CLIENT_ID/SECRET in the environment, or the handoff file)
+    # authorizes the fetch.  With no identity, managed keys fall back to the process
+    # environment and the old env-only behavior is preserved.
+    infisical_settings.configure(
+        project_id=os.environ.get("FLEET_RAG_INFISICAL_PROJECT") or AFC_INFISICAL_PROJECT,
+        environment=os.environ.get("INFISICAL_ENVIRONMENT", "dev"),
+        managed_keys=MANAGED_KEYS, required_keys=("RECALL_API_TOKEN",),
+        secret_keys=tuple(SECRET_KEYS))
+    try:
+        infisical_settings.init_settings()
+    except _SettingsError as e:
+        log(f"settings init failed: {e}")
+        return 2
+    # The fleet_rag backend reads its QDRANT_*/TEI_* config from the environment; mirror
+    # the cache into os.environ now and again on every refresh so the two never diverge.
+    infisical_settings.export_env(BACKEND_ENV_KEYS)
+    infisical_settings.add_refresh_listener(
+        lambda: infisical_settings.export_env(BACKEND_ENV_KEYS))
+    infisical_settings.start_refresh()
+    try:
+        import signal as _signal
+        _signal.signal(_signal.SIGHUP,
+                       lambda _s, _f: (log("SIGHUP: reloading settings from Infisical"),
+                                      infisical_settings.refresh_now()))
+    except (AttributeError, OSError, ValueError):
+        pass                                       # no SIGHUP on this platform; admin reload only
+
+    token = (infisical_settings.get("RECALL_API_TOKEN") or "").strip()
     if not token:
         log("RECALL_API_TOKEN is not set; refusing to start")
         return 2
@@ -637,13 +767,16 @@ def main(argv: list[str] | None = None) -> int:
         log("serving the FAKE in-process corpus (RECALL_FAKE=1)")
     else:
         present, missing = env_report()
-        optional = [k for k in OPTIONAL_ENV if os.environ.get(k)]
-        log("env present: " + ", ".join(present + optional))
+        optional = [k for k in OPTIONAL_ENV if infisical_settings.get(k)]
+        log("settings present: " + ", ".join(present + optional))
         if missing:
-            log("env MISSING: " + ", ".join(missing) + " (tools will fail until set)")
-    host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", "8080"))
-    httpd = make_server(host, port, token)
+            log("settings MISSING: " + ", ".join(missing) + " (tools will fail until set)")
+    host = infisical_settings.get("HOST") or os.environ.get("HOST", "0.0.0.0")
+    try:
+        port = int(infisical_settings.get("PORT") or os.environ.get("PORT", "8080"))
+    except ValueError:
+        port = 8080
+    httpd = make_server(host, port, token, timeout=socket_timeout())
     log(f"listening on {host}:{port}  mcp={MCP_PATH}  recall={','.join(RECALL_PATHS)}  "
         f"service={SERVICE_VERSION} fleet_rag={_RAG_VERSION} socket_timeout={httpd.RequestHandlerClass.timeout}s")
     try:
@@ -651,6 +784,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        infisical_settings.stop_refresh()
         httpd.server_close()
     return 0
 
