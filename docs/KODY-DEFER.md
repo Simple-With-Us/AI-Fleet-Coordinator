@@ -97,3 +97,19 @@ Pull requests opened from forks get a read-only token.  The flow cannot create t
 A thread that already has a `Deferred to #<n>` reply is left alone.  If that reply is missing but an open or closed `kody-deferred` issue already contains the thread marker, the workflow replies and resolves using that issue number instead of opening a second issue.  A repeated refusal is not posted again when the same refusal text already appears after the `/defer` comment.
 
 Concurrency is one run at a time per pull request and root comment, so two deliveries of the same comment serialize.
+
+## Sweeping deferred issues
+
+`scripts/kody-deferred-sweep.mjs` lists open `kody-deferred` issues and ranks the ones whose file has changed on the default branch since the issue was opened.  There is no cron.  Run it when you want a fresh list.
+
+```bash
+node scripts/kody-deferred-sweep.mjs
+node scripts/kody-deferred-sweep.mjs --repos AI-Fleet-Coordinator,Clutch --json
+node scripts/kody-deferred-sweep.mjs --stale-days 30 --owner Simple-With-Us
+```
+
+The default repos are Socratic-Trade, Congress.Trade, Usage-Monitor, CodeCaps, BotFleet, HogHunter, AI-Fleet-Coordinator, and Clutch.  `KODY_SWEEP_REPOS` overrides that list.  A bare name is prefixed with `--owner` (default `Simple-With-Us`).
+
+The token is `GITHUB_TOKEN`, else `GH_TOKEN`, else `gh auth token`.  The command fails if none of those is available.
+
+Touched files sort first, then severity (critical, high, medium, low), then the oldest defer.  An issue older than `--stale-days` (default 30) is marked `STALE >30d`.  The file path comes from the hidden marker, or from a `**File:**` line when the marker is missing.  A repository that 404s, or that has no `kody-deferred` label, is listed as skipped and does not fail the run.

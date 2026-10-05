@@ -34,5 +34,5 @@ jobs:
       run: node --test scripts/safari-start/worker.test.mjs
     - name: Verify operator dashboard deployment boundary
       run: node --test tests/deployment-boundary.test.cjs
-    - name: Kody defer tests
-      run: node --test scripts/kody-defer/*.test.mjs
+    - name: Kody defer and deferred sweep tests
+      run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
