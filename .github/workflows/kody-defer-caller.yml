@@ -18,3 +18,5 @@ jobs:
     uses: ./.github/workflows/kody-defer.yml
     with:
       blocked-severities: critical
+      # Use this PR head so dogfood works before the scripts land on main.
+      tooling-ref: ${{ github.event.pull_request.head.sha }}
