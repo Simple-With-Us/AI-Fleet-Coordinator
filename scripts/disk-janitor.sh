@@ -525,10 +525,12 @@ if [ "$free" -lt "$LOW_FREE" ]; then
   HOGHUNTER_CLEAN="/Users/jay/Code/HogHunter/scripts/hoghunter-clean"
   if [ -x "$HOGHUNTER_CLEAN" ]; then
     # 2026-09-30 (BF-HOUSEKEEPER): this ran the CleanMyMac CLI's dev/ai/trash
-    # modules.  CleanMyMac is uninstalled -- a stale `cleanmymac-cli` row still
-    # sits in `brew list`, but there is no Cellar dir and `command -v` exits 1,
-    # so `command -v cleanmymac` was false and this whole block was a no-op
-    # that still logged as if it had cleaned something.
+    # modules.  At the time CleanMyMac was uninstalled -- a stale `cleanmymac-cli`
+    # row still sat in `brew list`, but there was no Cellar dir and `command -v`
+    # exited 1, so `command -v cleanmymac` was false and the whole block was a
+    # no-op that still logged as if it had cleaned something.  (That receipt was
+    # 0 bytes: the cask's app bundle was gone but brew kept the row.  Reinstalling
+    # is a `brew reinstall --cask`, not an `install`.)
     #
     # The Hog Hunter engine subsumes those three modules and adds the ones the
     # CLI never had.  Two of its rules matter most here:
@@ -544,6 +546,43 @@ if [ "$free" -lt "$LOW_FREE" ]; then
     # itself if swap or load is elevated.  Bounded at 300s via the watchdog.
     janitor_watchdog 300 "hoghunter-clean" -- "$HOGHUNTER_CLEAN" --clean --band=full
     actions="${actions}hoghunter "
+
+    # 2026-10-04 (MINIMAX, board e30a863e): CleanMyMac CLI is a FREE PUBLIC BETA
+    # (MacPaw, v1.0.0) and is installed again, so the dev/ai/trash sweep is
+    # restored next to the Hog Hunter engine rather than instead of it.  They
+    # are complementary: Hog Hunter owns log truncation, APFS snapshot pruning
+    # and the graded band; the CLI walks 21 dev cache trees (Homebrew, npm,
+    # Yarn, pnpm, pip, Cargo, Go, CocoaPods, Docker, VS Code, JetBrains, Maven,
+    # Gradle, Poetry, uv, Bun, Deno, mise) plus AI-tool junk.
+    #
+    # `--force` is REQUIRED here and is not a shortcut.  The review step is not
+    # a safety gate in a non-interactive context: run without `--force` and with
+    # stdin closed, the CLI scans, renders its review screen, reads EOF and
+    # proceeds to delete anyway.  Verified directly on this Mac 2026-10-04
+    # (3 items, 37 KB) with no TTY.  So the "review then confirm" model does not
+    # exist for launchd, and `--force` is what makes the behaviour explicit
+    # rather than accidentally interactive.  If that ever changes, this comment
+    # is the thing to re-check.
+    #
+    # `junk` stays excluded on purpose: the 2026-09-13 bug was `junk` unlinking
+    # a log that launchd still held open, after which the daemon wrote to an
+    # unlinked inode and freed nothing.  The CLI has no in-place log truncation
+    # rule, so Hog Hunter's `logs` rule remains the only safe path for logs.
+    #
+    # `optimize ram` stays structurally banned and is not even offered here.
+    # It purges resident pages into swapfiles on the same APFS container as user
+    # data, converting RAM pressure into disk consumption.  Measured on this Mac
+    # during this change: swap was already at 94% used (13.4 of 14 GB) with the
+    # data volume at 97%.  Running it under those conditions makes the disk
+    # problem worse, not better.
+    if command -v cleanmymac >/dev/null 2>&1; then
+      for cmm_mod in dev ai trash; do
+        janitor_watchdog 120 "cleanmymac-$cmm_mod" -- cleanmymac clean "$cmm_mod" --force
+      done
+      actions="${actions}cleanmymac "
+    else
+      printf '%s  CMM-SKIP cleanmymac not on PATH\n' "$(date '+%Y-%m-%d %H:%M')" >> "$LOG"
+    fi
   fi
   rm -rf "$HOME_DIR/.npm/_cacache" 2>/dev/null
   # uv cache: never rm -rf the whole tree. Several MCP servers (Hetzner, alpaca, fmp,
