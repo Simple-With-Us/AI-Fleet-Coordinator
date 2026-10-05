@@ -24,12 +24,22 @@ const APP_ICONS = [
   'app-st.svg', 'app-ct.png', 'app-um.png', 'app-bf.png', 'app-dd.png',
   'app-cl.png', 'app-ar.png', 'app-ps.png',
 ];
-const LOGO_FILES = [...SEAT_MARKS, ...APP_ICONS].map((f) => `logos/${f}`).sort();
+const SEAT_BADGES = [
+  'badges/badge-claude.png',
+  'badges/badge-codex.png',
+  'badges/badge-deepseek.png',
+  'badges/badge-grok.png',
+  'badges/badge-grokbot.png',
+  'badges/badge-mcode.png',
+  'badges/badge-muse-code.png',
+];
+const LOGO_FILES = [...SEAT_MARKS, ...APP_ICONS, ...SEAT_BADGES].map((f) => `logos/${f}`).sort();
 
 test('static output contains only intended web assets and no repository data', () => {
   assert.equal(config.outputDirectory, 'public');
   const files = fs.readdirSync(path.join(root, 'public'), { recursive: true }).sort();
-  assert.deepEqual(files, ['index.html', 'logos', ...LOGO_FILES, 'robots.txt']);
+  const expectedLogos = ['logos/badges', ...LOGO_FILES].sort();
+  assert.deepEqual(files, ['index.html', 'logos', ...expectedLogos, 'robots.txt']);
   // Every declared logo must actually exist, so deleting one fails here rather
   // than shipping a 404 the page silently falls back from.
   for (const rel of LOGO_FILES) {

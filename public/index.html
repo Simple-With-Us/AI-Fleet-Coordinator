@@ -299,13 +299,19 @@
   .changes-list { list-style: none; padding: 0; margin: 0; }
   /* max-content on the date column so "2026-10-04" can never wrap to
      "2026-10-" / "04" regardless of font metrics or locale. */
-  .changes-list li { padding: 8px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: max-content 74px 1fr; gap: 8px; align-items: baseline; }
+  .changes-list li { padding: 8px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: max-content 78px 1fr; gap: 8px; align-items: center; }
   .changes-list li:first-child { border-top: none; }
   .changes-list .d { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
   .changes-list .seat { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; padding: 2px 6px; border-radius: 4px; color: #fff; text-align: center; }
+  .changes-list .seat.seat-has-badge { background: transparent !important; padding: 0; border-radius: 0; }
+  .changes-list .seat .seat-badge-img { height: 20px; width: auto; max-width: 78px; object-fit: contain; display: block; margin: 0 auto; }
   .changes-list .t { font-size: 13px; line-height: 1.3; color: var(--text); }
   .seat-bar { display: grid; grid-template-columns: 78px 1fr 36px; gap: 8px; align-items: center; padding: 4px 0; }
   .seat-bar .lbl { font-size: 12px; font-weight: 600; letter-spacing: .03em; display: flex; align-items: center; gap: 6px; }
+  .seat-bar .lbl.seat-has-badge { display: flex; align-items: center; }
+  .seat-bar .lbl .seat-bar-badge-img { height: 18px; width: auto; max-width: 76px; object-fit: contain; display: block; }
+  :root[data-theme="dark"] .seat-badge-img,
+  :root[data-theme="dark"] .seat-bar-badge-img { filter: drop-shadow(0 0 1px rgba(255,255,255,.45)); }
   .seat-bar .trk { height: 8px; background: rgba(0,0,0,.05); border-radius: 4px; overflow: hidden; }
   :root[data-theme="dark"] .seat-bar .trk { background: rgba(255,255,255,.08); }
   .seat-bar .fl { height: 100%; border-radius: 4px; }
@@ -1059,6 +1065,29 @@
     "BF-PLUMBER": "grok-bot.svg",
   };
 
+  // Graphic lockup badges that replace both mark and wordmark text
+  const SEAT_BADGES = {
+    CLAUDE: "badges/badge-claude.png",
+    MONET: "badges/badge-claude.png",
+    RENOIR: "badges/badge-claude.png",
+    CODEX: "badges/badge-codex.png",
+    GROK: "badges/badge-grok.png",
+    "GROK-BOT": "badges/badge-grokbot.png",
+    MM: "badges/badge-mcode.png",
+    MINIMAX: "badges/badge-mcode.png",
+    MCODE: "badges/badge-mcode.png",
+    DEEPSEEK: "badges/badge-deepseek.png",
+    DSH: "badges/badge-deepseek.png",
+    MC: "badges/badge-muse-code.png",
+    "MUSE-CODE": "badges/badge-muse-code.png",
+    MUSE: "badges/badge-muse-code.png",
+  };
+
+  function seatBadgeFile(tag) {
+    const key = String(tag == null ? "" : tag).trim().toUpperCase();
+    return SEAT_BADGES[key] || SEAT_BADGES[key.replace(/-/g, "")] || null;
+  }
+
   function seatLogoFile(tag) {
     const key = String(tag == null ? "" : tag).trim().toUpperCase();
     return SEAT_LOGOS[key] || SEAT_LOGOS[key.replace(/-/g, "")] || null;
@@ -1137,11 +1166,24 @@
     for (const ch of (snap.recentChanges || []).slice(0, 9)) {
       const li = document.createElement("li");
       const d = el("span", "d"); d.textContent = ch.date || "";
-      const seat = el("span", "seat"); seat.style.background = colorFor(ch.seat);
-      // Mark first, then the tag text — a seat with no mark still reads.
-      const mark = seatMarkImg(ch.seat);
-      if (mark) seat.appendChild(mark);
-      seat.appendChild(document.createTextNode(ch.seat || ""));
+      const seat = el("span", "seat");
+      const badgeFile = seatBadgeFile(ch.seat);
+      if (badgeFile) {
+        seat.classList.add("seat-has-badge");
+        const bImg = document.createElement("img");
+        bImg.className = "seat-badge-img";
+        bImg.src = LOGO_BASE + badgeFile;
+        bImg.alt = ch.seat || "";
+        bImg.loading = "lazy";
+        bImg.decoding = "async";
+        seat.appendChild(bImg);
+      } else {
+        seat.style.background = colorFor(ch.seat);
+        // Mark first, then the tag text — a seat with no mark still reads.
+        const mark = seatMarkImg(ch.seat);
+        if (mark) seat.appendChild(mark);
+        seat.appendChild(document.createTextNode(ch.seat || ""));
+      }
       const t = el("span", "t"); t.textContent = ch.title || "";
       li.append(d, seat, t);
       chgEl.appendChild(li);
@@ -1152,9 +1194,21 @@
     for (const s of (snap.seats || []).slice(0, 8)) {
       const row = el("div", "seat-bar");
       const lbl = el("span", "lbl");
-      const mark = seatMarkImg(s.tag);
-      if (mark) lbl.appendChild(mark);
-      lbl.appendChild(document.createTextNode(s.tag));
+      const badgeFile = seatBadgeFile(s.tag);
+      if (badgeFile) {
+        lbl.classList.add("seat-has-badge");
+        const bImg = document.createElement("img");
+        bImg.className = "seat-bar-badge-img";
+        bImg.src = LOGO_BASE + badgeFile;
+        bImg.alt = s.tag;
+        bImg.loading = "lazy";
+        bImg.decoding = "async";
+        lbl.appendChild(bImg);
+      } else {
+        const mark = seatMarkImg(s.tag);
+        if (mark) lbl.appendChild(mark);
+        lbl.appendChild(document.createTextNode(s.tag));
+      }
       const trk = el("div", "trk");
       const fl = el("div", "fl");
       fl.style.background = s.color || colorFor(s.tag);
