@@ -32,3 +32,5 @@ jobs:
         node-version: '24'
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
+    - name: Verify operator dashboard deployment boundary
+      run: node --test tests/deployment-boundary.test.cjs

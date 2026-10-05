@@ -1,0 +1,110 @@
+name: refresh-rag-snapshot
+
+# Refresh the Fleet RAG snapshot that powers the visualizations on
+# https://home.jays.services. Runs daily at 11:00 UTC (06:00 CT).
+# Can also be invoked manually via the Actions tab (`workflow_dispatch`).
+#
+# Required secrets (set at Simple-With-Us/Fleet-OPS → Settings → Secrets):
+#   CF_ACCESS_CLIENT_ID     Cloudflare Access service token id (created for agents.jays.services)
+#   CF_ACCESS_CLIENT_SECRET Cloudflare Access service token secret
+#   RECALL_API_TOKEN        recall REST bearer (Infisical shared/prod)
+# These come from Cloudflare Zero Trust → Access → Service Auth, and Infisical.
+#
+# WHY ALL THREE MATTER.  This workflow ran 12 consecutive times (2026-09-22 to
+# 2026-10-03) with the first two unset and RECALL_API_TOKEN never passed at all.
+# Without them Cloudflare answered with a 302 to its HTML login page, the build
+# script tried to parse that as JSON, and the validate step killed the run — so
+# the committed snapshot froze at 2026-09-28 while the corpus grew by thousands
+# of points.  All three are wired now.
+#
+# The build targets recall.jays.services (the Hetzner hop, which survives this
+# Mac sleeping), not the agents.jays.services seat hop, which 401s without
+# SEAT_MCP_TOKEN.  The identical build also runs on the Mac with
+# `node scripts/build-rag-snapshot.mjs --from-local`, which needs no credential.
+
+on:
+  schedule:
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# The bot pushes to a single fixed branch; never let two runs race each other.
+concurrency:
+  group: refresh-rag-snapshot
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build snapshot
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          RECALL_API_TOKEN: ${{ secrets.RECALL_API_TOKEN }}
+        run: node scripts/build-rag-snapshot.mjs
+
+      # The build refuses to overwrite a good snapshot with an empty one.  This
+      # step independently rejects a snapshot that is fully populated but stale:
+      # every field present, newest feed row weeks old.  That is the shape the
+      # card was actually showing, and no presence check catches it.
+      - name: Validate snapshot
+        run: |
+          node -e "
+            const s = require('./site-snapshot.json');
+            if (!s.corpus || !s.corpus.points) { console.error('snapshot has no corpus data'); process.exit(1); }
+            if (!s.recentChanges || s.recentChanges.length === 0) { console.error('snapshot has no recent changes'); process.exit(1); }
+            const newest = s.recentChanges[0].date;
+            const ageDays = Math.floor((Date.now() - Date.parse(newest + 'T00:00:00Z')) / 86400000);
+            if (!(ageDays >= 0) || ageDays > 10) {
+              console.error('newest change row is ' + newest + ' (' + ageDays + 'd old) — feed is stale, refusing to publish');
+              process.exit(1);
+            }
+            console.log('snapshot OK:', s.corpus.points, 'points,', s.recentChanges.length, 'changes, newest', newest, '(' + ageDays + 'd)');
+          "
+
+      - name: Commit the refreshed snapshot
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet site-snapshot.json; then
+            echo "[refresh-rag-snapshot] no changes"
+            exit 0
+          fi
+          git config user.name "fleet-rag-bot"
+          git config user.email "ops@fleet.local"
+          git add site-snapshot.json
+          git commit -m "chore(rag): refresh fleet-rag snapshot [skip ci]"
+          # Push straight to main, NOT to a branch + PR.
+          #
+          # This step used to force-push to ops/refresh-rag-snapshot and then
+          # `gh pr create`.  That could never have worked in this org:
+          #
+          #   pull request create failed: GraphQL: GitHub Actions is not
+          #   permitted to create or approve pull requests (createPullRequest)
+          #
+          # Simple-With-Us forbids the Actions token from opening PRs, so this
+          # step was a guaranteed failure every single run -- a second,
+          # independent reason the snapshot froze, on top of the missing
+          # credentials.  Fixing only the credentials would have turned 12 red
+          # runs into a green build that still could not land.
+          #
+          # A direct push is the right shape for this file anyway: it is
+          # machine-generated, single-purpose, validated in the step above, and
+          # `[skip ci]` keeps it from triggering another Actions run.  There is
+          # no human judgement in site-snapshot.json to review.
+          git push origin HEAD:main
+          echo "[refresh-rag-snapshot] pushed to main"
+

@@ -16,4 +16,8 @@ Search fleet recall before re-deriving lessons.  Record reusable findings at clo
 
 UI changes must be covered by automated visual verification where feasible: Playwright screenshot assertions for web surfaces, `xcrun simctl io booted screenshot` for iOS simulator. The owner never takes manual screenshots and does not run local UI preview sessions. Native Mac app UI is verified through code review and CI.
 
-Web surfaces in this repo live under `site/` (fleet daily digest GitHub Pages site) and `scripts/safari-start/public/` (operator start redirect page).  Their Playwright smoke + screenshot specs are in `visual-tests/` (run: `cd visual-tests && npm ci && npx playwright test`; baselines in `tests/visual.spec-snapshots/`).
+Web surfaces in this repo live under `site/` (fleet daily digest GitHub Pages site), `scripts/safari-start/public/` (operator start redirect page), and `public/` (home.jays.services operator dashboard).  Their Playwright smoke + screenshot specs are in `visual-tests/` (run: `cd visual-tests && npm ci && npx playwright test`; baselines in `tests/visual.spec-snapshots/`).
+
+## Web deployment boundary (home.jays.services)
+
+`public/` is the static output for `home.jays.services`.  Root `api/quota.js` and `api/rag-snapshot.js` are Vercel server functions; only the RAG handler bundles `site-snapshot.json`.  `.vercelignore` allowlists deployment inputs so repository documentation, scripts, and internal assets are never deployed.  Run `node --test tests/deployment-boundary.test.cjs` before changing this boundary.

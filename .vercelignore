@@ -1,0 +1,10 @@
+# Upload only web inputs; static serving is restricted separately by outputDirectory.
+/*
+!/public
+!/api
+/api/*
+!/api/quota.js
+!/api/rag-snapshot.js
+!/site-snapshot.json
+!/vercel.json
+!/vercel-ignore.sh
