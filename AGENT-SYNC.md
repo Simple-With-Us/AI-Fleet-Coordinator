@@ -588,7 +588,7 @@ To ensure clear upgrade paths, deterministic build tracking, and instant visibil
 ### 2. TestFlight & App Store Release Metadata (No Internal Agent Names)
 Every TestFlight build submitted or updated by an agent **MUST** include structured release notes (`What to Test` / release summary) containing:
 1. **Build Header:** `[1.0.N] <Short Build Title>`
-2. **Release Date & Time (Central Time) & PR #:** Release timestamp explicitly converted to **America/Chicago (Central Time / CT)**, followed by PR numbers if applicable, e.g., `Released: Mon, Aug 12, 2026 at 1:15 AM CT · PR #1065`.
+2. **Release Date & Time (Central Time) & PR #:** Release timestamp on the owner's clock, 12-hour, with am or pm, and no timezone abbreviation, followed by PR numbers if applicable, e.g., `Released: Mon, Aug 12, 2026 at 1:15am · PR #1065`.
 3. **STRICT RULE — NO INTERNAL AGENT NAMES:** Public / TestFlight / App Store release notes **MUST NOT** contain internal agent names (e.g. `Agent: Grok`, `Claude`, `Monet`, `Codex`, `AG`). Keep release notes clean, professional, and owner/user-facing.
 4. **Summary of Changes:** Bulleted summary of what changed, what features were added, or what bugs were resolved in this build.
 
@@ -597,7 +597,7 @@ Every TestFlight build submitted or updated by an agent **MUST** include structu
 **Standard TestFlight Release Notes Template:**
 ```text
 [1.0.5] Usage-Monitor Update
-Released: Mon, Aug 12, 2026 at 1:15 AM CT · PR #1065
+Released: Mon, Aug 12, 2026 at 1:15am · PR #1065
 
 What's New:
 - Added live server status widget to Settings tab
@@ -701,28 +701,35 @@ iOS agent build loop (owner ruling 2026-08-13): no Xcode MCP narration, `xcodebu
 
 The owner is tired of finding two to five copies of a Mac app and not knowing which one is live.  For every Mac app the fleet builds (AgentBar, the Usage Monitor menu app, and any future one): the only installed copy lives at `~/Applications/<App>.app`; `dist/` in a checkout is a staging area that the install step deletes after copying; development builds that must run beside the installed copy use a distinct bundle identifier (AgentBar: `AGENTBAR_BUNDLE_ID=com.jays.agent-bar.mac.dev`) and are killed and deleted when the task ends; the install step prunes every other bundle with the app's bundle identifier under `/Applications`, `~/Applications`, `~/Desktop`, `~/Downloads` and the checkout's `dist/` (moving them to the Trash and printing each path), never touching other checkouts' lanes.  Automation must never quit, kill or activate the owner's installed copy except inside the install step, and must target its own dev process by unix id, never by app name.  A build that leaves a second copy behind is unfinished work.
 
-## Timestamps: Central Time (owner ruling 2026-08-09, broadened 2026-08-11, amended 2026-08-12, strengthened 2026-08-22)
+## Timestamps: Central Time (owner ruling 2026-08-09, broadened 2026-08-11, amended 2026-08-12, strengthened 2026-08-22, amended 2026-10-05)
 
-**When you tell the owner a time, say it in Central Time.**  Binding for every agent, every
-platform, every app, including chat replies.  Do not lead with UTC, Unix epoch, or
-`00:00 UTC` and leave the owner to convert.  That conversion is the agent's job.
+**Say every time on the owner's clock: 12-hour, with am or pm.**  That clock is Central
+(`America/Chicago`).  Binding for every agent, every bot, and every platform, in every
+sentence the owner reads: chat, Slack, boards, PRs, Notes, commits, release notes, and
+bot-to-bot.  Do not lead with Zulu, a 24-hour UTC stamp, or a Unix epoch.  Converting
+is the writer's job.
 
-**Default: America/Chicago (Central Time), labeled.**  Write `Sat, Aug 22, 2026 at 7:00 PM CT`.
-Always carry the `CT` (or `CDT`/`CST`) label — an unlabeled local time is the failure this rule
-exists to prevent.  This covers **chat with the owner**, effort boards, `STATUS.md`, rollout
-notes, Slack `#agent-sync` messages, GitHub issue/PR bodies, Apple Notes, release notes, and
-owner-facing reports.
+**Do not type CDT, CST, or CT.**  The owner assumes am/pm is their time.  Write
+`3:15am`, not `3:15am CDT`, not `3:15 CT`, and not `08:15Z`.  When the calendar day
+matters, write `Sun, Oct 5, 2026 at 3:15am`.  This covers chat, effort boards,
+`STATUS.md`, rollout notes, Slack `#agent-sync`, GitHub issue and PR bodies, Apple
+Notes, and release notes.
 
-**UTC is allowed only as a parenthetical after the Central time**, when the machine instant
-matters: `Sat, Aug 22, 2026 at 7:00 PM CT` (`2026-08-23T00:00:00Z`).  Never UTC-only in
-owner-facing prose.  Do not guess.  Convert with `TZ=America/Chicago date` or Python
-`ZoneInfo("America/Chicago")`.
+**Name a zone only when the time is not that clock.**  The usual case is UTC, and it
+follows the local time: `Sun, Oct 5, 2026 at 3:15am` (`2026-10-05T08:15:00Z`).  Never
+lead with the UTC stamp, and never leave a human to convert it.  Market bells stay
+`9:30 AM ET` because that zone is not the owner's.  Do not guess the conversion.  Use
+`TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.
 
-**Offset cheat sheet (do not skip the conversion when you have tools):**
-- CDT (2nd Sunday in March through 1st Sunday in November) is UTC−5.
-- CST the rest of the year is UTC−6.
-- **`00:00 UTC` = 7:00 PM CT the previous calendar day in CDT, 6:00 PM CT the previous
-  calendar day in CST.**  Example: `2026-08-23T00:00:00Z` is Sat, Aug 22, 2026 at 7:00 PM CT.
+**Offset cheat sheet (for the conversion, not for the sentence):**
+- Daylight saving (2nd Sunday in March through 1st Sunday in November) is UTC−5.
+- Standard time the rest of the year is UTC−6.
+- **`00:00 UTC` is 7:00pm the previous calendar day during daylight saving, and
+  6:00pm the previous calendar day during standard time.**  Example:
+  `2026-08-23T00:00:00Z` is Sat, Aug 22, 2026 at 7:00pm.
+
+Those zone abbreviations stay out of owner-facing prose.  They exist so the writer
+can do the conversion.  They are not part of the sentence.
 
 Machine-readable fields that are ISO-8601 by contract (API responses, JSON payloads, log
 lines, DB columns) stay UTC — the rule is about prose a human reads, not about wire formats.

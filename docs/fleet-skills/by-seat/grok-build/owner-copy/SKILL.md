@@ -1,6 +1,6 @@
 ---
 name: owner-copy
-description: Fleet human-facing prose — two spaces between sentences, light theme default, Title Case headings, no agent names in App Store/TestFlight notes, Central Time labels. Use when writing UI strings, ASC listing fields, PR/commit/Slack/Notes prose, release notes, or any paragraph a human will read. Also when changing theme defaults or taking screenshots.
+description: Fleet human-facing prose — two spaces between sentences, light theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation. Use when writing UI strings, ASC listing fields, PR/commit/Slack/Notes prose, release notes, or any paragraph a human will read. Also when changing theme defaults or taking screenshots.
 ---
 
 # Owner-facing copy (GROK-BUILD)
@@ -67,7 +67,7 @@ baseline; a real tooltip component is better where the app already has one.
 
 ## Timestamps (owner-facing agent writing)
 
-When you tell the owner a time, say it in Central Time.  Write `Sat, Aug 22, 2026 at 7:00 PM CT`.  Always label `CT` / `CDT` / `CST`.  Never UTC-only in chat, Notes, Slack, boards, or PRs.  UTC may follow in parentheses after the Central stamp.  `00:00 UTC` is 7:00 PM CT the previous calendar day in CDT (6:00 PM CT in CST).  Convert with `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Unlabeled local time is the failure mode.
+Say every time on the owner's clock: 12-hour, with am or pm.  That clock is Central.  Do not type CDT, CST, or CT.  The owner assumes am/pm is their time.  Write `3:15am`, not `3:15am CDT` and not `08:15Z`.  When the day matters, write `Sun, Oct 5, 2026 at 3:15am`.  Name a zone only when the time is not that clock.  The usual case is UTC, in parentheses after the local time: `3:15am (2026-10-05T08:15:00Z)`.  Never lead with Zulu or a 24-hour UTC stamp in chat, Notes, Slack, boards, or PRs.  `00:00 UTC` is 7:00pm the previous calendar day during daylight saving, and 6:00pm the previous calendar day after the fall-back.  Convert with `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Printing a zone abbreviation on a local time is the failure mode.  Binding for every agent, bot, and platform.
 
 Product UI times are the **viewer's** timezone except market-day accounting (Chicago) and session bells (`9:30 AM ET`).
 

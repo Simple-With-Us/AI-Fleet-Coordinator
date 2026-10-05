@@ -368,7 +368,7 @@ Skip Notes on headless/cloud agents without Notes.app. Full rule (canonical):
 **Owner binding 2026-09-08 (Jay):** ASC What to Test is mandatory on every TestFlight upload — briefly name 1–2 change/fix/upgrade types, or the other reason for the build if not a product change.  Publish with `IOS_TF_RELEASE_NOTES=1`.  Canonical detail: `AGENT-SYNC.md`.  No `--force-ship`.
 
   1. Title header: `[1.0.N] <Build Title>`
-  2. Release timestamp in **America/Chicago (Central Time / CT)** & PR #: `Released: Mon, Aug 12, 2026 at 1:15 AM CT · PR #1065`
+  2. Release timestamp on the owner's clock, 12-hour, am or pm, with no timezone abbreviation, and the PR #: `Released: Mon, Aug 12, 2026 at 1:15am · PR #1065`
   3. **STRICT RULE — NO AGENT NAMES:** Public / TestFlight release notes **MUST NOT** include internal agent names (`Agent: Grok`, etc.).
   4. Change summary: Concise bulleted list of what changed/fixed in this build.
 
@@ -448,13 +448,15 @@ Canonical: `~/apps/AGENT-SYNC.md` § Two spaces and `~/apps/FLEET-UI-COPY.md`.
 Portable skill (verbatim protocol, do not weaken): `docs/SENTENCE-GAP-PORTABLE-SKILL.md`
 and `docs/fleet-skills/sentence-gap/SKILL.md`.
 
-## Times: Central Time when telling the owner (owner 2026-08-22)
+## Times: owner's clock, 12-hour, am or pm (owner 2026-08-22, amended 2026-10-05)
 
-When you tell the owner a time, say it in **America/Chicago**, labeled
-`CT` / `CDT` / `CST` (`Sat, Aug 22, 2026 at 7:00 PM CT`).  Never UTC-only in
-chat, Notes, Slack, boards, or PRs.  UTC may follow in parentheses after the
-Central stamp.  `00:00 UTC` is 7:00 PM CT the previous calendar day in CDT
-(6:00 PM CT in CST).  Product UI stays the viewer's timezone.  Canonical:
+Say every time on the owner's clock, 12-hour, with am or pm.  That clock is
+**America/Chicago**.  Do not type **CDT**, **CST**, or **CT** (`3:15am`, or
+`Sun, Oct 5, 2026 at 3:15am` when the day matters).  Never lead with Zulu
+in chat, Notes, Slack, boards, or PRs.  Name a zone only when citing UTC,
+after the local time.  `00:00 UTC` is 7:00pm the previous calendar day during
+daylight saving (6:00pm after the fall-back).  Binding for every agent, bot,
+and platform.  Product UI stays the viewer's timezone.  Canonical:
 `~/apps/AGENT-SYNC.md` § Timestamps: Central Time.
 
 **HOW to emit it so it's actually visible (verified 2026-08-19, Socratic.Trade
