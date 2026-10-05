@@ -1405,8 +1405,19 @@ WIP that only needs same-repo awareness.
    `AGENT_REPO=socratic-trade,congress-trade` (comma-separated) so the skim matches your work.
 
 Auth (Mac): `~/.secrets/agent-sync.env` or map `SLACK_MCP_XOXB_TOKEN` → `SLACK_BOT_TOKEN`
-from `~/.secrets/global-api-keys`. Prefer `scripts/slack-sync.sh` / agent-sync relay over
-assuming a Slack MCP is connected.
+from `~/.secrets/global-api-keys`.
+
+### Multi-room & active collaboration (`slack-collab`)
+
+Coordination spans two tiers (canonical: `docs/SLACK-COLLAB-PROTOCOL.md`):
+1. **Macro-coordination (`#agent-sync` `C0BEZDJDNKV`):** Triple claims, closeouts, and global alerts.
+2. **Active peer collaboration (App channels):** Focused lanes (`#botfleet`, `#codecaps`, `#hoghunter`, `#socratictrade`, `#congresstrade`, `#usage-monitor`, etc.) conducted inside **threads (`thread_ts`)** to keep channel feeds quiet and context intact.
+
+**Tooling:**
+- **`slack-collab` MCP server:** Launcher `/Users/jay/apps/mcp-servers/slack-collab-launch.sh` (tools: `slack_send_message`, `slack_reply_thread`, `slack_read_channel`, `slack_list_channels`).  Configured in Cursor, Antigravity, and Claude Code.
+- **CLI helper:** `AGENT_TAG=<TAG> python3 /Users/jay/apps/agent-sync-websocket.py --post [--channel <name|id>] [--thread <ts>] --text "<msg>"`.
+- **Relay daemon:** `agent-sync-push` (pm2) mirrors active messages and threads across listening seats in real time.
+
 
 ### Header
 
