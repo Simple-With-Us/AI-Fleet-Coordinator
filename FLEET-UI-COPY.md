@@ -75,13 +75,16 @@ when the string is not a full sentence — not Title Case:
     accounting itself uses (`startOfDayInTimeZone`, `src/lib/db-execution.ts`).  A "today"
     that means a different day than the numbers under it is wrong.
   - **Market-session times** are the market's, not the viewer's: say `9:30 AM ET`, labeled.
-- **Always label the zone** when a time could be read in more than one (`2:41 PM CT`,
-  `9:30 AM ET`).  Relative times (`3m ago`) need no label.
-- Owner-facing agent writing (chat, boards, rollouts, Slack, Notes, release notes) is
-  **Central Time, labeled**.  Never UTC-only when telling the owner a time.  UTC may follow
-  in parentheses after the Central stamp.  `00:00 UTC` is 7:00 PM CT the previous calendar
-  day in CDT (6:00 PM CT in CST).  That is a coordination rule, not a UI one.  See
-  `/Users/jay/apps/AGENT-SYNC.md` § Timestamps: Central Time.
+- Label a zone in product UI only when the time is not the viewer's clock
+  (`9:30 AM ET` for a market bell).  Relative times (`3m ago`) need no label.
+- Owner-facing agent writing (chat, boards, rollouts, Slack, Notes, release notes,
+  bot-to-bot) is the owner's clock: **12-hour, with am or pm**, on every agent, bot,
+  and platform.  That clock is Central.  Do not type CDT, CST, or CT.  Write `3:15am`,
+  not `3:15am CDT` and not `08:15Z`.  When the day matters, write
+  `Sun, Oct 5, 2026 at 3:15am`.  Name a zone only when the time is not that clock.
+  The usual case is UTC, after the local time.  `00:00 UTC` is 7:00pm the previous
+  calendar day during daylight saving, and 6:00pm the previous calendar day after
+  the fall-back.  See `/Users/jay/apps/AGENT-SYNC.md` § Timestamps: Central Time.
 
 ## Money
 - Compact suffixes **lowercase**: `$99.8k`, `$1.2m`, `$3.4b`.

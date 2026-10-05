@@ -69,10 +69,12 @@ is **not** a per-app seat.  Do not run this script to create
 7. **Light theme default.  Two spaces between sentences everywhere**,
    including App Store listing and review notes.  See `AGENT-SYNC.md`
    § Two spaces and `FLEET-UI-COPY.md`.
-8. **When you tell the owner a time, say it in Central Time** (`Sat, Aug 22,
-   2026 at 7:00 PM CT`).  Never UTC-only in chat.  UTC may follow in
-   parentheses.  `00:00 UTC` is 7:00 PM CT the previous calendar day in CDT
-   (6:00 PM CT in CST).  Canonical: `AGENT-SYNC.md` § Timestamps.
+8. **Say every time on the owner's clock, 12-hour, with am or pm.**  That
+   clock is Central.  Do not type CDT, CST, or CT (`3:15am`, not `08:15Z`).
+   Name a zone only when citing UTC, after the local time.  `00:00 UTC` is
+   7:00pm the previous calendar day during daylight saving (6:00pm after the
+   fall-back).  Binding for every agent, bot, and platform.  Canonical:
+   `AGENT-SYNC.md` § Timestamps.
 9. **Fleet recall.**  Search `fleet-agents` before re-deriving (`recall` / MCP
    `recall_search`).  Contribute every reusable lesson (`recall_contribute`).
    Cloud seats use `https://agents.jays.services/mcp`.  Do not bulk-ingest
