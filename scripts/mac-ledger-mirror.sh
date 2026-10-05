@@ -108,12 +108,17 @@ PY
 
 if [[ -z "${MLM_REPO:-}" ]]; then
   if command -v gh >/dev/null 2>&1; then
-    MLM_REPO=$(cd "$checkout" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+    if ! MLM_REPO=$(cd "$checkout" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null); then
+      MLM_REPO=""
+    fi
   fi
   if [[ -z "${MLM_REPO:-}" ]]; then
-    origin=$(git -C "$checkout" remote get-url origin 2>/dev/null || true)
-    if [[ -n "$origin" ]]; then
-      MLM_REPO=$(repo_from_url "$origin" || true)
+    if origin=$(git -C "$checkout" remote get-url origin 2>/dev/null); then
+      if ! MLM_REPO=$(repo_from_url "$origin"); then
+        MLM_REPO=""
+      fi
+    else
+      origin=""
     fi
   fi
 fi
