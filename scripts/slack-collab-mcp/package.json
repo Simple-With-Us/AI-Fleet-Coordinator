@@ -1,0 +1,14 @@
+{
+  "name": "slack-collab-mcp",
+  "version": "1.0.0",
+  "description": "Slack collaboration MCP server for multi-agent real-time communication across channels and threads",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "ws": "^8.18.0"
+  }
+}
