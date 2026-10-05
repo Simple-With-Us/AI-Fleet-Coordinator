@@ -36,3 +36,5 @@ jobs:
       run: node --test tests/deployment-boundary.test.cjs
     - name: Kody defer and deferred sweep tests
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
+    - name: Mac ledger mirror tests
+      run: bash scripts/test-mac-ledger-mirror.sh
