@@ -168,6 +168,24 @@ RENOIR_INACTIVE_BANNER = (
     "seat.\n\n"
 )
 
+MUSE_CODE_EXTRA = (
+    "> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive "
+    "terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches "
+    "`muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Distinct from **Muse Assistant** "
+    "(`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative "
+    "assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load "
+    "automatically when the workspace is trusted in `~/.config/muse/trust.json`.  "
+    "Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.\n\n"
+)
+
+MUSE_ASSIST_BANNER = (
+    "> **Cloud VM batch agent.** Muse Assistant (`[MA]`, former tag `[MUSE]`) is the "
+    "Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  "
+    "Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  "
+    "Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  "
+    "This catalog copy is reference-only — do not install to `~/.muse`.\n\n"
+)
+
 SEATS: dict[str, Seat] = {
     "cursor": Seat(
         "CURSOR", "Cursor", "cursor", "cursor",
@@ -308,6 +326,29 @@ SEATS: dict[str, Seat] = {
         write_home=False,
         seat_key="kimi",
     ),
+    "muse-code": Seat(
+        "MC", "Muse Code", "muse-code", "muse-code",
+        "~/.config/muse/skills", "exclusive",
+        "This pack is for **MC** (Muse Code interactive terminal coding agent).  "
+        "Tag `[MC]`.  Notes name `Muse Code`.  Branches `muse-code/<slug>` only.  "
+        "Worktrees `~/apps/<prefix>-muse-code`.  Distinct from Muse Assistant "
+        "(`[MA]`, branches `muse-assist/`).  Never sign as Monet, Claude, or Codex.  "
+        "Pin `AGENT_SEAT=MC` / `AGENT_TAG=MC`.",
+        extra_banner=MUSE_CODE_EXTRA,
+        seat_key="muse-code",
+    ),
+    "muse-assist": Seat(
+        "MA", "Muse Assistant", "muse-assist", "muse-assist",
+        "docs/fleet-skills/by-seat/muse-assist", "exclusive",
+        "This pack is for **MA** (Muse Assistant cloud VM batch compute & creative agent).  "
+        "Tag `[MA]`.  Notes name `Muse Assistant`.  Branches `muse-assist/<slug>` "
+        "(historical `muse/<slug>`).  Worktrees `~/apps/<prefix>-muse-assist`.  "
+        "Former Slack tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly "
+        "distinguish from Muse Code (`[MC]`).  Pin `AGENT_SEAT=MA` / `AGENT_TAG=MA`.",
+        extra_banner=MUSE_ASSIST_BANNER,
+        write_home=False,
+        seat_key="muse-assist",
+    ),
     "claude_shared": Seat(
         "MONET", "Monet", "monet", "monet",
         "~/.claude/skills", "claude_shared",
@@ -377,6 +418,7 @@ SKILL_SEAT_ALLOWLIST: dict[str, frozenset[str]] = {
         "deepseek",
         "kimi",
         "minimax",
+        "muse-code",
         "claude_shared",
     }),
 }

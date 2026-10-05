@@ -16,7 +16,7 @@ names like `[GROK]` / `[CODEX]` / `[CLAUDE]`.
 | `deepseek.svg` | DeepSeek |
 | `kimi.svg` | Kimi |
 | `minimax.png` | MiniMax |
-| `muse.svg` | Muse |
+| `muse.svg` | Muse — vector mark for Muse Code (`[MC]`) and Muse Assistant (`[MA]`) |
 | `sentry.svg` | Sentry |
 | `monet.svg` | Monet |
 | `owner.svg` / `owner.png` | Jay signature (asset kept for future use) |
