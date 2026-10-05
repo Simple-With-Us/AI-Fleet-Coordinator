@@ -5,7 +5,9 @@
  *   SLACK_SYNC_WEBSOCKET  app-level xapp- token (connections:write) - REQUIRED
  *   SLACK_BOT_TOKEN       bot token with chat:write, used only by local /post
  *   AGENT_SYNC_POST_TOKEN shared bearer token for authenticated /post callers
- *   SLACK_CHANNEL_ID      channel to mirror (default C0BEZDJDNKV, #agent-sync)
+ *   SLACK_CHANNEL_ID      channel /post writes to (default C0BEZDJDNKV, #agent-sync)
+ *                         The socket also mirrors #codecaps (C0C6NFR5QRJ),
+ *                         #botfleet (C0C6CJEQXV1), and #hoghunter (C0C6LPC8JPK).
  *   RELAY_PORT            local WS relay port (default 8787, loopback only)
  *   EVENTS_FILE           append-only JSONL (default /Users/jay/apps/agent-sync/events.jsonl)
  *
@@ -31,6 +33,93 @@ const APP_TOKEN = process.env.SLACK_SYNC_WEBSOCKET;
 const BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const POST_TOKEN = process.env.AGENT_SYNC_POST_TOKEN;
 const CHANNEL = process.env.SLACK_CHANNEL_ID || 'C0BEZDJDNKV';
+
+const CHANNEL_MAP = {
+  'agent-sync': 'C0BEZDJDNKV',
+  'socratictrade': 'C0BBPSEBNAW',
+  'congresstrade': 'C0BDJ7A74KZ',
+  'usage-monitor': 'C0C6LR70TLZ',
+  'dealdex': 'C0C63FVB3AT',
+  'codecaps': 'C0C6NFR5QRJ',
+  'botfleet': 'C0C6CJEQXV1',
+  'hoghunter': 'C0C6LPC8JPK',
+  'ai-fleet-coordinator': 'C0C6JNBRZNE',
+  'fleet-ops': 'C0C6DHY8D0D',
+  'autorotate': 'C0C63FTKWNB',
+  'clutch': 'C0C6NH6A17W',
+  'contactlogo': 'C0C6JNDDX9Q',
+  'cts': 'C0C63FY812T',
+  'congress-trading-shared': 'C0C63FY812T',
+  'fleetlink': 'C0C6DJ05ZPX',
+  'personal-site': 'C0C6GU8B222',
+  'simple-with-us': 'C0C7D8CT9EU',
+  'random': 'C0BB8C4D8DD',
+  'general': 'C0BBRMR439P',
+  'coding': 'C0BDH8UKS1L',
+  // Backward compatibility with sync-* names:
+  'sync-socratic-trade': 'C0BBPSEBNAW',
+  'sync-congress-trade': 'C0BDJ7A74KZ',
+  'sync-usage-monitor': 'C0C6LR70TLZ',
+  'sync-dealdex': 'C0C63FVB3AT',
+  'sync-codecaps': 'C0C6NFR5QRJ',
+  'sync-botfleet': 'C0C6CJEQXV1',
+  'sync-hoghunter': 'C0C6LPC8JPK',
+};
+
+const CHANNEL_ALIASES = {
+  ...CHANNEL_MAP,
+  'st': 'C0BBPSEBNAW',
+  'st-sync': 'C0BBPSEBNAW',
+  'socratic-trade': 'C0BBPSEBNAW',
+  'ct': 'C0BDJ7A74KZ',
+  'ct-sync': 'C0BDJ7A74KZ',
+  'congress-trade': 'C0BDJ7A74KZ',
+  'um': 'C0C6LR70TLZ',
+  'um-sync': 'C0C6LR70TLZ',
+  'hh': 'C0C6LPC8JPK',
+  'hh-sync': 'C0C6LPC8JPK',
+  'bf': 'C0C6CJEQXV1',
+  'botfleet-sync': 'C0C6CJEQXV1',
+  'codecaps-sync': 'C0C6NFR5QRJ',
+  'dealdex-sync': 'C0C63FVB3AT',
+  'afc': 'C0C6JNBRZNE',
+  'ops': 'C0C6DHY8D0D',
+};
+
+// Channels whose events get fanned out.  Env-configurable so adding a channel
+// is a config change, not a code edit plus a daemon restart.
+const MIRROR_EXTRA = (process.env.SLACK_MIRROR_CHANNELS || '')
+  .split(/[,\s]+/)
+  .map((c) => c.trim())
+  .filter(Boolean)
+  .map((c) => resolveChannelName(c))
+  .filter(Boolean);
+
+const MIRROR_CHANNELS = new Set([
+  CHANNEL,
+  ...Object.values(CHANNEL_MAP),
+  ...MIRROR_EXTRA,
+]);
+
+// Resolves a name/alias WITHOUT falling back to the default channel, so a typo
+// in SLACK_MIRROR_CHANNELS cannot silently widen the mirror to #agent-sync.
+function resolveChannelName(val) {
+  if (!val || typeof val !== 'string') return null;
+  const clean = val.trim().toLowerCase().replace(/^#/, '');
+  if (CHANNEL_ALIASES[clean]) return CHANNEL_ALIASES[clean];
+  const raw = val.trim();
+  if (/^C[A-Z0-9]{8,12}$/i.test(raw)) return raw.toUpperCase();
+  console.warn(`mirror: ignoring unknown channel "${val}" (not a known name, alias, or id)`);
+  return null;
+}
+
+function resolveChannel(val) {
+  if (!val || typeof val !== 'string') return CHANNEL;
+  const clean = val.trim().toLowerCase().replace(/^#/, '');
+  if (CHANNEL_ALIASES[clean]) return CHANNEL_ALIASES[clean];
+  if (/^C[A-Z0-9]{8,12}$/i.test(val.trim())) return val.trim();
+  return CHANNEL;
+}
 const RELAY_PORT = parseInt(process.env.RELAY_PORT || '8787', 10);
 const EVENTS_FILE = process.env.EVENTS_FILE || '/Users/jay/apps/agent-sync/events.jsonl';
 const MAX_POST_BYTES = parseInt(process.env.AGENT_SYNC_POST_MAX_BYTES || '16384', 10);
@@ -119,7 +208,8 @@ function cleanUsername(value) {
   return /^[A-Z][A-Z0-9_-]{1,20}$/.test(name) ? name : undefined;
 }
 
-async function postToSlack({ text, username }) {
+async function postToSlack({ text, username, channel, thread_ts, reply_broadcast }) {
+  const targetChannel = resolveChannel(channel);
   const resp = await fetch('https://slack.com/api/chat.postMessage', {
     method: 'POST',
     headers: {
@@ -127,9 +217,11 @@ async function postToSlack({ text, username }) {
       'content-type': 'application/json; charset=utf-8',
     },
     body: JSON.stringify({
-      channel: CHANNEL,
+      channel: targetChannel,
       text,
       ...(username ? { username } : {}),
+      ...(thread_ts ? { thread_ts } : {}),
+      ...(reply_broadcast ? { reply_broadcast: true } : {}),
       unfurl_links: false,
       unfurl_media: false,
     }),
@@ -165,9 +257,24 @@ async function handlePost(req, res) {
     return;
   }
 
+  const channel = typeof body.channel === 'string' ? body.channel.trim() : undefined;
+  const thread_ts = typeof body.thread_ts === 'string' ? body.thread_ts.trim() : undefined;
+  const reply_broadcast = Boolean(body.reply_broadcast);
+
   try {
-    const slack = await postToSlack({ text, username: cleanUsername(body.username) });
-    json(res, 200, { ok: true, channel: slack.channel, ts: slack.ts });
+    const slack = await postToSlack({
+      text,
+      username: cleanUsername(body.username),
+      channel,
+      thread_ts,
+      reply_broadcast,
+    });
+    json(res, 200, {
+      ok: true,
+      channel: slack.channel,
+      ts: slack.ts,
+      thread_ts: slack.message?.thread_ts || thread_ts || null,
+    });
   } catch (err) {
     console.error('post failed:', err.message);
     json(res, 502, { ok: false, error: 'slack post failed' });
@@ -176,7 +283,7 @@ async function handlePost(req, res) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || '/', 'http://127.0.0.1');
-  if (req.method === 'GET' && url.pathname === '/health') {
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/health') {
     json(res, 200, {
       ok: true,
       service: 'agent-sync-push',
@@ -273,8 +380,12 @@ function handleEnvelope(ws, raw) {
 
   if (env.type !== 'events_api') { console.log(`envelope: ${env.type}`); return; }
   const ev = env.payload && env.payload.event;
-  console.log(`event: ${ev && ev.type}/${(ev && ev.subtype) || '-'} ch=${ev && ev.channel}`);
-  if (!ev || ev.type !== 'message' || ev.channel !== CHANNEL) return;
+  if (!ev || ev.type !== 'message') return;
+  // Slack Socket Mode only delivers message events for channels the bot is actually in.
+  // Auto-mirror any channel we receive events for, ensuring no joined rooms are silently dropped.
+  if (MIRROR_CHANNELS.size > 0 && !MIRROR_CHANNELS.has(ev.channel)) {
+    MIRROR_CHANNELS.add(ev.channel);
+  }
   // skip edits/deletes/joins; keep plain + bot_message (fleet posts via the shared bot)
   if (ev.subtype && ev.subtype !== 'bot_message' && ev.subtype !== 'thread_broadcast') return;
 

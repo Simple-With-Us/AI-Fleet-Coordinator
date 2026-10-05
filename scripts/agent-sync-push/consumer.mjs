@@ -82,15 +82,33 @@ function appendInbox(rec) {
 
 const CHANNEL_NAMES = {
   'C0BEZDJDNKV': 'agent-sync',
+  'C0BBPSEBNAW': 'socratictrade',
+  'C0BDJ7A74KZ': 'congresstrade',
+  'C0C6LR70TLZ': 'usage-monitor',
+  'C0C63FVB3AT': 'dealdex',
   'C0C6CJEQXV1': 'botfleet',
   'C0C6NFR5QRJ': 'codecaps',
   'C0C6LPC8JPK': 'hoghunter',
+  'C0C6JNBRZNE': 'ai-fleet-coordinator',
+  'C0C6DHY8D0D': 'fleet-ops',
+  'C0C63FTKWNB': 'autorotate',
+  'C0C6NH6A17W': 'clutch',
+  'C0C6JNDDX9Q': 'contactlogo',
+  'C0C63FY812T': 'cts',
+  'C0C6DJ05ZPX': 'fleetlink',
+  'C0C6GU8B222': 'personal-site',
+  'C0C7D8CT9EU': 'simple-with-us',
+  'C0BB8C4D8DD': 'random',
+  'C0BBRMR439P': 'general',
+  'C0BDH8UKS1L': 'coding',
+  // Backward compatibility with sync-* rooms:
   'C0C6NFSCRBN': 'sync-congress-trade',
   'C0C7D6KFA56': 'sync-dealdex',
   'C0C63E2MCHM': 'sync-socratic-trade',
   'C0C6JLNV0UA': 'sync-usage-monitor',
-  'C0C6JNBRZNE': 'ai-fleet-coordinator',
-  'C0C6DHY8D0D': 'fleet-ops',
+  'C0C63DVJBNK': 'sync-botfleet',
+  'C0C7D6JQ10Q': 'sync-codecaps',
+  'C0C63E2K0TH': 'sync-hoghunter',
 };
 
 const SEAT_ALIASES = {
@@ -186,7 +204,15 @@ function printRecord(rec) {
     return new RegExp(escaped, 'i').test(text);
   });
 
-  if (filtered !== true && !isTargeted && !isUrgent && !isClaimRelated && !isCwdAppSync) {
+  // Active collaboration mode: bypass filters if watching this thread or channel
+  const collabThread = (process.env.AGENT_SYNC_COLLAB_THREAD || '').trim();
+  const collabChannel = (process.env.AGENT_SYNC_COLLAB_CHANNEL || '').trim().toLowerCase().replace(/^#/, '');
+  const isCollab = Boolean(
+    (collabThread && (rec.thread_ts === collabThread || rec.ts === collabThread)) ||
+    (collabChannel && (rec.channel.toLowerCase() === collabChannel || chName.toLowerCase() === collabChannel))
+  );
+
+  if (filtered !== true && !isTargeted && !isUrgent && !isClaimRelated && !isCwdAppSync && !isCollab) {
     saveCursor(rec.ts);
     return;
   }
@@ -200,7 +226,8 @@ function printRecord(rec) {
   }
   const display = text.replace(/\n/g, ' ¶ ');
   const user = rec.username || rec.user || rec.bot_id || '?';
-  console.log(`SYNC[${rec.ts}] ${chPrefix}[${user}] ${display.slice(0, 600)}`);
+  const threadPrefix = rec.thread_ts ? `[thread:${rec.thread_ts}] ` : '';
+  console.log(`SYNC[${rec.ts}] ${chPrefix}${threadPrefix}[${user}] ${display.slice(0, 600)}`);
 }
 
 function replayLocalEvents() {
