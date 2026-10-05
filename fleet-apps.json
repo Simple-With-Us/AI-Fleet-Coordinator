@@ -305,12 +305,23 @@
       ]
     },
     {
-      "tag": "MUSE",
-      "notesName": "Muse",
-      "worktreeSuffix": "muse",
+      "tag": "MA",
+      "notesName": "Muse Assistant",
+      "worktreeSuffix": "muse-assist",
       "branchPrefixes": [
+        "muse-assist/",
         "muse/"
-      ]
+      ],
+      "notes": "Meta Muse cloud VM batch compute & creative assistant (dispatched via Mac/iOS apps; unmetered VM compute for multi-day transcoding/batch tasks). Formerly tagged MUSE."
+    },
+    {
+      "tag": "MC",
+      "notesName": "Muse Code",
+      "worktreeSuffix": "muse-code",
+      "branchPrefixes": [
+        "muse-code/"
+      ],
+      "notes": "Meta AI interactive terminal coding agent (muse CLI / Muse Code). Distinct from Muse Assistant ([MA])."
     }
   ]
 }

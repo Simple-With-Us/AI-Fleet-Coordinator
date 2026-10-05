@@ -476,6 +476,10 @@ AGENT_LOGO: dict[str, tuple[str, str]] = {
     "dsh": ("deepseek", "DeepSeek"),
     "kimi": ("kimi", "Kimi"),
     "muse": ("muse", "Muse"),
+    "mc": ("muse", "Muse Code"),
+    "muse-code": ("muse", "Muse Code"),
+    "ma": ("muse", "Muse Assistant"),
+    "muse-assist": ("muse", "Muse Assistant"),
     "sentry": ("sentry", "Sentry"),
     # Monet / Renoir / Fable seats collapse to Claude logo + label
     "monet": ("claude", "Claude"),
@@ -496,7 +500,7 @@ _AGENT_ALT = (
     r"|CURSOR"
     r"|MINIMAX|MM"
     r"|DEEPSEEK|DSH"
-    r"|KIMI|MUSE"
+    r"|KIMI|MUSE|MC|MA"
     r"|SENTRY"
     r"|AG|ANTIGRAVITY|GEMINI|MONET|RENOIR|FABLE"
 )
@@ -563,8 +567,12 @@ def _normalize_agent_token(raw: str) -> str:
         return "deepseek"
     if t.startswith("kimi"):
         return "kimi"
+    if t in ("mc", "muse-code") or t.startswith("muse-code"):
+        return "mc"
+    if t in ("ma", "muse-assist") or t.startswith("muse-assist"):
+        return "ma"
     if t.startswith("muse"):
-        return "muse"
+        return "ma"
     if t.startswith("sentry"):
         return "sentry"
     return t
@@ -1117,7 +1125,8 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
         <span class="legend-item"><span class="agent" title="Kimi"><img src="agent-logos/kimi.svg" alt="" width="12" height="12" /></span><span class="legend-label">Kimi</span></span>
         <span class="legend-item"><span class="agent" title="DeepSeek"><img src="agent-logos/deepseek.svg" alt="" width="12" height="12" /></span><span class="legend-label">DeepSeek</span></span>
         <span class="legend-item"><span class="agent" title="MiniMax"><img src="agent-logos/minimax.png" alt="" width="12" height="12" /></span><span class="legend-label">MiniMax</span></span>
-        <span class="legend-item"><span class="agent" title="Muse"><img src="agent-logos/muse.svg" alt="" width="12" height="12" /></span><span class="legend-label">Muse</span></span>
+        <span class="legend-item"><span class="agent" title="Muse Code"><img src="agent-logos/muse.svg" alt="" width="12" height="12" /></span><span class="legend-label">Muse Code</span></span>
+        <span class="legend-item"><span class="agent" title="Muse Assistant"><img src="agent-logos/muse.svg" alt="" width="12" height="12" /></span><span class="legend-label">Muse Assistant</span></span>
         <span class="legend-item"><span class="agent" title="Sentry"><img src="agent-logos/sentry.svg" alt="" width="12" height="12" /></span><span class="legend-label">Sentry</span></span>
       </div>
     </div>
