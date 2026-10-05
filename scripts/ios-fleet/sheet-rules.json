@@ -166,6 +166,11 @@
           "id": "ICO-8",
           "rule": "A transparent iOS 1024 is a reporting signal, not a licence to auto-fix.",
           "detail": "The audit flags it because Apple rejects transparency as ITMS-90717. But the correct fix is the correct ART in the slot, supplied by the owner, never a mechanical flatten. The bundled fleet_icon_fix_alpha.py stages a flatten for inspection only and must never be run unattended or applied without the owner naming the art."
+        },
+        {
+          "id": "ICO-9",
+          "rule": "Defined app icon place in reference sheet and editability boundary.",
+          "detail": "The 'Icon Audit' tab in the Google Sheet (and Section 3 of FLEET-APPS-REGISTRY.md) is the designated inventory place for fleet app icons. Generated tabs cannot be edited in the sheet — any direct cell edits are wiped on sync. Icon assets can only be edited in the repo asset catalog (AppIcon.appiconset) by the owner or assigned seat, approved with 'node fleet-icon-audit.mjs --approve', and then re-synced."
         }
       ]
     },
@@ -241,6 +246,11 @@
           "id": "SHEET-4",
           "rule": "Tabs are generated. Only the Legacy tab holds historical hand-written notes.",
           "detail": "The Legacy tab is preserved for reference and is not updated by the sync."
+        },
+        {
+          "id": "SHEET-5",
+          "rule": "Editability map: generated tabs are read-only; custom tabs are editable.",
+          "detail": "Generated tabs ('RULES & STANDARDS', 'App Store Registry', 'TestFlight Builds', 'Icon Audit') are completely rewritten by fleet-apps-sheet-sync.mjs. Do not edit them in Google Sheets. Hand-written operator notes and manual overrides must go into custom tabs (such as 'Legacy pre-2026-10-02' or an owner-created tab like 'Manual Notes'), which the sync script preserves completely untouched."
         }
       ]
     }
