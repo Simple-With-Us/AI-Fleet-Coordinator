@@ -26,11 +26,10 @@
  * Neither prints credentials.
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { pathToFileURL } from "node:url";
 
 const SPREADSHEET_ID = "1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY";
 const IOS_FLEET = "/Users/jay/apps/ios-fleet";
@@ -349,7 +348,8 @@ const FORMAT_ROW_COUNT = 1000;
 
 /** Pixel widths per generated tab (long-text columns get more room; all capped at MAX_COL_WIDTH_PX). */
 const TAB_COLUMN_WIDTHS = {
-  [TAB_RULES]: [88, 220, 420],
+  // Column A carries title, subtitle, section headings, and other single-cell rows.
+  [TAB_RULES]: [320, 220, 320],
   [TAB_REGISTRY]: [100, 140, 150, 72, 200, 96, 108, 100, 148, 96, 180, 200, 140, 240],
   [TAB_TESTFLIGHT]: [100, 200, 108, 100, 108, 72, 120, 108, 220],
   [TAB_ICONS]: [100, 88, 200, 88, 140, 120, 120, 88, 300]
@@ -365,7 +365,8 @@ function columnWidthPx(columnWidths, index) {
  * Build Sheets batchUpdate requests for tab chrome (headers, wrap, column widths, freeze).
  * Exported for unit tests — does not call the API.
  */
-export function buildFormatTabRequests(sheetId, headerRows, colCount, columnWidths) {
+export function buildFormatTabRequests(sheetId, headerRows, colCount, columnWidths, rowCount) {
+  const wrapEndRow = Math.min(FORMAT_ROW_COUNT, Math.max(1, rowCount));
   const requests = [];
   for (const hr of headerRows) {
     requests.push({
@@ -381,7 +382,7 @@ export function buildFormatTabRequests(sheetId, headerRows, colCount, columnWidt
       range: {
         sheetId,
         startRowIndex: 0,
-        endRowIndex: FORMAT_ROW_COUNT,
+        endRowIndex: wrapEndRow,
         startColumnIndex: 0,
         endColumnIndex: colCount
       },
@@ -419,9 +420,20 @@ export function buildFormatTabRequests(sheetId, headerRows, colCount, columnWidt
   return requests;
 }
 
-async function formatTab(sheetId, headerRows, colCount, columnWidths) {
-  const requests = buildFormatTabRequests(sheetId, headerRows, colCount, columnWidths);
+async function formatTab(sheetId, headerRows, colCount, columnWidths, rowCount) {
+  const requests = buildFormatTabRequests(sheetId, headerRows, colCount, columnWidths, rowCount);
   await sheetsApi(":batchUpdate", { method: "POST", body: JSON.stringify({ requests }) });
+}
+
+/** True when this module is the process entry (direct node invocation or import.meta.main). */
+export function isScriptEntryPoint(entryPath = process.argv[1]) {
+  if (import.meta.main) return true;
+  if (!entryPath) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(entryPath)).href;
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------- main
@@ -462,17 +474,20 @@ async function main() {
   console.log(`   rules=${tabRules.created ? "created" : "exists"} registry=${tabRegistry.created ? "created" : "exists"} testflight=${tabTestflight.created ? "created" : "exists"} icons=${tabIcons.created ? "created" : "exists"}`);
 
   console.log("6. Writing tabs...");
-  await writeTab(TAB_RULES, buildRulesTab(rules));
+  const rulesRows = buildRulesTab(rules);
+  await writeTab(TAB_RULES, rulesRows);
   const registryRows = buildRegistryTab(appsData, asc, iconReport, nowIso);
   await writeTab(TAB_REGISTRY, registryRows);
-  await writeTab(TAB_TESTFLIGHT, buildTestFlightTab(appsData, asc, nowIso));
-  await writeTab(TAB_ICONS, buildIconTab(iconReport, nowIso));
+  const testFlightRows = buildTestFlightTab(appsData, asc, nowIso);
+  await writeTab(TAB_TESTFLIGHT, testFlightRows);
+  const iconRows = buildIconTab(iconReport, nowIso);
+  await writeTab(TAB_ICONS, iconRows);
 
   console.log("7. Formatting...");
-  await formatTab(tabRules.sheetId, [0], 3, TAB_COLUMN_WIDTHS[TAB_RULES]);
-  await formatTab(tabRegistry.sheetId, [0], 14, TAB_COLUMN_WIDTHS[TAB_REGISTRY]);
-  await formatTab(tabTestflight.sheetId, [0], 9, TAB_COLUMN_WIDTHS[TAB_TESTFLIGHT]);
-  await formatTab(tabIcons.sheetId, [3], 9, TAB_COLUMN_WIDTHS[TAB_ICONS]);
+  await formatTab(tabRules.sheetId, [0], 3, TAB_COLUMN_WIDTHS[TAB_RULES], rulesRows.length);
+  await formatTab(tabRegistry.sheetId, [0], 14, TAB_COLUMN_WIDTHS[TAB_REGISTRY], registryRows.length);
+  await formatTab(tabTestflight.sheetId, [0], 9, TAB_COLUMN_WIDTHS[TAB_TESTFLIGHT], testFlightRows.length);
+  await formatTab(tabIcons.sheetId, [3], 9, TAB_COLUMN_WIDTHS[TAB_ICONS], iconRows.length);
 
   console.log(`\n✅ Sheet regenerated: https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit`);
   console.log(`   Tabs: ${TAB_RULES} | ${TAB_REGISTRY} | ${TAB_TESTFLIGHT} | ${TAB_ICONS} | ${LEGACY_TAB}`);
@@ -480,10 +495,7 @@ async function main() {
   if (errCount) console.log(`   ⚠️  Icon audit reports ${errCount} error(s) — see the ${TAB_ICONS} tab.`);
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === __filename;
-
-if (isDirectRun) {
+if (isScriptEntryPoint()) {
   main().catch(err => {
     console.error("Sheet sync failed:", err.message);
     process.exit(1);
