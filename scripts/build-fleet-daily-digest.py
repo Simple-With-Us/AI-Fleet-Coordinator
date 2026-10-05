@@ -475,11 +475,11 @@ AGENT_LOGO: dict[str, tuple[str, str]] = {
     "deepseek": ("deepseek", "DeepSeek"),
     "dsh": ("deepseek", "DeepSeek"),
     "kimi": ("kimi", "Kimi"),
-    "muse": ("muse", "Muse"),
+    "muse": ("muse-assist", "Muse Assistant"),
     "mc": ("muse", "Muse Code"),
     "muse-code": ("muse", "Muse Code"),
-    "ma": ("muse", "Muse Assistant"),
-    "muse-assist": ("muse", "Muse Assistant"),
+    "ma": ("muse-assist", "Muse Assistant"),
+    "muse-assist": ("muse-assist", "Muse Assistant"),
     "sentry": ("sentry", "Sentry"),
     # Monet / Renoir / Fable seats collapse to Claude logo + label
     "monet": ("claude", "Claude"),
@@ -1126,7 +1126,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
         <span class="legend-item"><span class="agent" title="DeepSeek"><img src="agent-logos/deepseek.svg" alt="" width="12" height="12" /></span><span class="legend-label">DeepSeek</span></span>
         <span class="legend-item"><span class="agent" title="MiniMax"><img src="agent-logos/minimax.png" alt="" width="12" height="12" /></span><span class="legend-label">MiniMax</span></span>
         <span class="legend-item"><span class="agent" title="Muse Code"><img src="agent-logos/muse.svg" alt="" width="12" height="12" /></span><span class="legend-label">Muse Code</span></span>
-        <span class="legend-item"><span class="agent" title="Muse Assistant"><img src="agent-logos/muse.svg" alt="" width="12" height="12" /></span><span class="legend-label">Muse Assistant</span></span>
+        <span class="legend-item"><span class="agent" title="Muse Assistant"><img src="agent-logos/muse-assist.png" alt="" width="12" height="12" /></span><span class="legend-label">Muse Assistant</span></span>
         <span class="legend-item"><span class="agent" title="Sentry"><img src="agent-logos/sentry.svg" alt="" width="12" height="12" /></span><span class="legend-label">Sentry</span></span>
       </div>
     </div>
