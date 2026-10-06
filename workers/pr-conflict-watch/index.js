@@ -52,7 +52,7 @@ async function getMergeState(owner, repo, number, token) {
 }
 
 async function postSlack(token, text) {
-  await fetch("https://slack.com/api/chat.postMessage", {
+  const res = await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -60,6 +60,10 @@ async function postSlack(token, text) {
     },
     body: JSON.stringify({ channel: SLACK_CHANNEL, text }),
   });
+  if (!res.ok) throw new Error(`Slack delivery failed (HTTP ${res.status})`);
+  // Slack can reject a message with HTTP 200.  Invalid JSON also fails closed.
+  const body = await res.json();
+  if (body?.ok !== true) throw new Error("Slack delivery failed (API did not confirm success)");
 }
 
 async function handlePr(owner, repo, number, env) {
@@ -75,17 +79,18 @@ async function handlePr(owner, repo, number, env) {
 
   if (BAD_STATES.has(result.state)) {
     if (prev !== result.state) {
-      await env.PR_STATE.put(kvKey, result.state, { expirationTtl: 60 * 60 * 24 * 14 });
       const pr = result.pr;
       await postSlack(
         env.SLACK_BOT_TOKEN,
         `[PR-WATCH] repo: ${repo} -- PR #${number} "${pr.title}" -- ${result.state} (${pr.html_url})`
       );
+      // Persist only confirmed delivery; a failure must leave the next event retryable.
+      await env.PR_STATE.put(kvKey, result.state, { expirationTtl: 60 * 60 * 24 * 14 });
     }
   } else if (prev && BAD_STATES.has(prev)) {
     // recovered
-    await env.PR_STATE.delete(kvKey);
     await postSlack(env.SLACK_BOT_TOKEN, `[PR-WATCH] repo: ${repo} -- PR #${number} recovered -> ${result.state}`);
+    await env.PR_STATE.delete(kvKey);
   }
 }
 

@@ -2,6 +2,26 @@
 
 Cloudflare Worker that receives GitHub `pull_request` and `check_suite`/`check_run` webhooks across all of jaywedgeworth22's active repos, and posts to #agent-sync Slack the moment a PR's `mergeable_state` turns `dirty` (real conflict), `blocked`, or `unstable`. Posts again when a flagged PR recovers. Dedupes via a KV namespace so it only alerts on state *changes*, not every webhook delivery.
 
+## Delivery and retries
+
+KV records the last successfully notified bad state.  Alerts update that marker,
+and recovery notices remove it, only after Slack returns both a successful HTTP
+status and JSON `ok: true`.  HTTP/API errors, invalid responses, and network
+failures reject the background task without advancing the marker.  A subsequent
+webhook event or manual redelivery can retry against the PR's current state.
+
+The webhook still returns HTTP 200 before background processing finishes; there
+is no automatic retry queue in this Worker.  KV deduplication is best-effort,
+not exactly-once: concurrent deliveries, stale KV reads, or a KV failure after
+Slack accepts a message can produce duplicates.  Closed PRs clear their marker
+without a recovery notice, as before.
+
+## Tests
+
+Run `node --test workers/pr-conflict-watch/index.test.mjs` from the repository
+root with Node 24.  Tests use signed synthetic webhooks and mocked GitHub,
+Slack, and KV; no live messages or credentials are needed.  CI runs this suite.
+
 ## Deployed
 
 Worker: `pr-conflict-watch` on the Usage.Jays.Services Cloudflare account (`3a9368057468d0909cafaa85df12d1b7`).
