@@ -30,6 +30,8 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '24'
+    - name: Verify board new-item composer
+      run: node --test scripts/mac-collab/test_board_composer.cjs
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
     - name: Verify operator dashboard deployment boundary
