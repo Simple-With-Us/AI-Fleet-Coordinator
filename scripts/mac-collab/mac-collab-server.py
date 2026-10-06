@@ -1666,6 +1666,7 @@ const APP_DISPLAY_NAMES = {
   'AI-Fleet-Coordinator': 'AI Fleet Coordinator',
   'botfleet': 'BotFleet.app',
   'fleet-ops': 'Fleet Ops',
+  'fleetlink': 'FleetLink',
 };
 function appLabel(a){ return APP_DISPLAY_NAMES[a] || a; }
 
@@ -1682,6 +1683,7 @@ const KNOWN_APPS = [
   'fleet-infra',
   'botfleet',
   'fleet-ops',
+  'fleetlink',
 ];
 
 const TAPE_TILES = [
