@@ -52,6 +52,10 @@ test('extractPath prefers the marker and falls back to the File line', () => {
   assert.equal(extractPath('## File\n\n**File:** `scripts/pm2-ecosystem.config.cjs`\n'), 'scripts/pm2-ecosystem.config.cjs');
   assert.equal(extractPath('no path here'), null);
   assert.equal(extractPath(''), null);
+  assert.equal(
+    extractPath('<!-- kody-defer thread=PRRT_x root=5 path=docs/My Notes.md -->'),
+    'docs/My Notes.md',
+  );
 });
 
 test('renderMarkdown has the summary, table, links, and stale marker', () => {

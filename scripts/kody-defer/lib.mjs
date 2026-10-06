@@ -6,6 +6,13 @@ export const REFUSAL_MESSAGE =
 export const MANUAL_RESOLVE_MESSAGE =
   'Deferred to #N.  This thread needs a manual resolve (the workflow token could not resolve it).';
 
+/** Hidden marker on workflow `Deferred to #N` replies so idempotency ignores spoof comments. */
+export const DEFERRED_REPLY_MARKER = '<!-- kody-defer-reply -->';
+
+export function deferredReplyBody(issueNumber) {
+  return `Deferred to #${issueNumber}.  ${DEFERRED_REPLY_MARKER}`;
+}
+
 export const LABELS = {
   deferred: {
     name: 'kody-deferred',
@@ -135,7 +142,8 @@ export function cleanFindingText(body) {
   let s = String(body ?? '');
   s = s.replace(/<details\b[^>]*>[\s\S]*?<\/details>/gi, '');
   s = s.replace(/<!--[\s\S]*?-->/g, '');
-  s = s.replace(/<\/?[a-zA-Z][^>]*>/g, '');
+  const TAGS = 'details|summary|sub|sup|p|br|div|span|b|i|u|em|strong|a|code|pre';
+  s = s.replace(new RegExp(`</?(?:${TAGS})\\b[^>]*>`, 'gi'), '');
   s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
   s = s.replace(/&#8203;|&#x200[Bb];|&ZeroWidthSpace;/gi, '');
   s = s.replace(/&nbsp;/gi, ' ');
@@ -306,6 +314,7 @@ export function hasDeferredReply(comments) {
   for (const comment of comments || []) {
     const body = typeof comment === 'string' ? comment : comment?.body;
     if (!body) continue;
+    if (!String(body).includes(DEFERRED_REPLY_MARKER)) continue;
     const m = String(body).match(/^Deferred to #(\d+)/m);
     if (m) return Number(m[1]);
   }

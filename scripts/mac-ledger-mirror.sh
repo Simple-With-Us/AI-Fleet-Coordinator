@@ -232,8 +232,15 @@ publish() {
   local dir tmp
   dir=$(dirname "$orig")
   tmp=$(mktemp "$dir/.mlm.XXXXXX")
+  trap 'rm -f "$tmp"' EXIT
   cat "$neu" > "$tmp"
+  if chmod --reference="$orig" "$tmp" 2>/dev/null; then
+    :
+  else
+    chmod "$(stat -c '%a' "$orig" 2>/dev/null || stat -f '%Lp' "$orig")" "$tmp"
+  fi
   mv "$tmp" "$orig"
+  trap - EXIT
   publish_state=updated
 }
 
@@ -344,6 +351,13 @@ function is_candidate(text) {
   if (short != "" && index(text, short) > 0 && matches_pr(text, pr)) return 1
   return 0
 }
+function row_state_matches(text, class) {
+  if (class == "inprogress") return text ~ /IN PR/
+  if (class == "deployed") return text ~ /DEPLOYED/
+  if (class == "completed") return text ~ /MERGED/
+  if (class == "planned") return text ~ /(PLANNED|RESERVED)/
+  return 0
+}
 function canon(class) {
   if (class == "inprogress") return "## In Progress"
   if (class == "deployed") return "## Deployed"
@@ -442,9 +456,11 @@ END {
   for (p = 1; p <= pc; p++) {
     if (action[p] != "") continue
     paired = 0
+    src = norm_text(pbody[p])
     for (r = 1; r <= nrows; r++) {
       if (consumed[r]) continue
       if (!is_candidate(row_text[r])) continue
+      if (!has_marker(row_text[r]) && norm_text(row_text[r]) != src && !row_state_matches(row_text[r], pclass[p])) continue
       consumed[r] = 1
       deleted[r] = 1
       action[p] = "insert"
@@ -528,7 +544,7 @@ function find_what(header,    n, i, low, cells) {
     low = tolower(cells[i])
     if (index(low, "what it is") > 0) return i
   }
-  return n
+  return 0
 }
 function path_after_ok(c) {
   if (c == "") return 1
@@ -562,8 +578,9 @@ function path_hit(line,    p, path, start, pos, before, after, rest) {
 function annotate(line, what,    n, i, cells, out) {
   if (token != "" && index(line, token) > 0) return line
   if (!path_hit(line)) return line
+  if (what < 1) return line
   n = split_cells(line, cells)
-  if (what < 1 || what > n) what = n
+  if (what > n) return line
   cells[what] = cells[what] note
   out = "|"
   for (i = 1; i <= n; i++) out = out cells[i] "|"

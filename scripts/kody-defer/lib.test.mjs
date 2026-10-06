@@ -15,6 +15,8 @@ import {
   isBlockedSeverity,
   parseDeferCommand,
   parseSeverity,
+  DEFERRED_REPLY_MARKER,
+  deferredReplyBody,
   refusalMessage,
   summarizeFinding,
 } from './lib.mjs';
@@ -159,11 +161,19 @@ test('buildIssueBody contains the finding, links, and the sweep marker', () => {
 });
 
 test('hasDeferredReply returns the issue number or null', () => {
-  assert.equal(hasDeferredReply([{ body: 'hello' }, { body: 'Deferred to #12. done' }]), 12);
+  assert.equal(hasDeferredReply([{ body: 'hello' }, { body: deferredReplyBody(12) }]), 12);
   assert.equal(hasDeferredReply([{ body: 'not deferred' }]), null);
   assert.equal(hasDeferredReply([{ body: 'see Deferred to #3 later' }]), null);
-  assert.equal(hasDeferredReply(['Deferred to #7.']), 7);
+  assert.equal(hasDeferredReply([{ body: 'Deferred to #7.' }]), null);
+  assert.equal(hasDeferredReply([deferredReplyBody(7)]), 7);
   assert.equal(hasDeferredReply([]), null);
+});
+
+test('cleanFindingText keeps angle-bracket generics and comparisons', () => {
+  const cleaned = cleanFindingText('Use Array<string> and Promise<T> ok.\ncount <n and age > 5');
+  assert.match(cleaned, /Array<string>/);
+  assert.match(cleaned, /Promise<T>/);
+  assert.match(cleaned, /<n and age > 5/);
 });
 
 test('isBlockedSeverity defaults to critical and honors a csv list', () => {
@@ -222,7 +232,7 @@ function jsonResponse(status, data, headers = {}) {
 
 function baseEnv(extra = {}) {
   return {
-    GITHUB_TOKEN: 'test-token',
+    GITHUB_TOKEN: extra.GITHUB_TOKEN ?? 'injected-suite-credential-not-a-secret',
     GITHUB_REPOSITORY: 'Simple-With-Us/AI-Fleet-Coordinator',
     GITHUB_API_URL: 'https://api.github.com',
     GITHUB_GRAPHQL_URL: 'https://api.github.com/graphql',
@@ -423,7 +433,7 @@ test('high severity ensures labels, opens an issue, replies, and resolves', asyn
   assert.match(issue.body.body, /after the cutover/);
   const replies = created.filter((c) => c.url.endsWith('/replies'));
   assert.equal(replies.length, 1);
-  assert.equal(replies[0].body.body, 'Deferred to #42.');
+  assert.equal(replies[0].body.body, deferredReplyBody(42));
   assert.ok(created.some((c) => /resolveReviewThread/.test(c.body?.query || '')));
 });
 
@@ -439,7 +449,7 @@ test('resolve failure posts a manual-resolve reply and exits ok', async () => {
   assert.equal(result.action, 'deferred');
   const replies = writes(fake.calls).filter((c) => c.url.endsWith('/replies'));
   assert.equal(replies.length, 2);
-  assert.equal(replies[0].body.body, 'Deferred to #42.');
+  assert.equal(replies[0].body.body, deferredReplyBody(42));
   assert.match(replies[1].body.body, /manual resolve/);
   assert.match(replies[1].body.body, /could not resolve it/);
   assert.match(replies[1].body.body, /Resource not accessible by integration/);
@@ -463,7 +473,7 @@ test('an existing Deferred to reply performs no writes', async () => {
       },
       {
         databaseId: 201,
-        body: 'Deferred to #7.',
+        body: deferredReplyBody(7),
         url: 'https://example.test/c201',
         createdAt: '2026-10-05T00:01:00Z',
       },
@@ -529,7 +539,7 @@ test('an existing marker issue is reused instead of creating another', async () 
   const linked = writes(fake.calls);
   assert.equal(linked.some((c) => c.url.endsWith('/issues')), false);
   const replies = linked.filter((c) => c.url.endsWith('/replies'));
-  assert.equal(replies[0].body.body, 'Deferred to #9.');
+  assert.equal(replies[0].body.body, deferredReplyBody(9));
   assert.ok(linked.some((c) => /resolveReviewThread/.test(c.body?.query || '')));
 });
 

@@ -47,8 +47,8 @@ export function extractPath(body) {
   const text = String(body || '');
   const marker = text.match(/<!--\s*kody-defer\b([\s\S]*?)-->/);
   if (marker) {
-    const found = marker[1].match(/(?:^|\s)path=(\S+)/);
-    if (found) return found[1];
+    const found = marker[1].match(/(?:^|\s)path=([\s\S]*?)\s*$/);
+    if (found) return found[1].trim();
   }
   const file = text.match(/\*\*File:\*\*\s*`([^`]+)`/);
   return file ? file[1] : null;
@@ -99,7 +99,8 @@ function sha7(sha) {
 function touchedCell(item) {
   if (!item.touchedSince) return 'no';
   const count = item.touchCount || 0;
-  return `yes (${count} commits, last ${sha7(item.lastSha)})`;
+  const capped = item.touchCountCapped ? '>=' : '';
+  return `yes (${capped}${count} commits, last ${sha7(item.lastSha)})`;
 }
 
 function issueLink(item) {
@@ -174,6 +175,11 @@ export function createGitHubApi({ token, fetchImpl = globalThis.fetch, apiBase =
   const base = String(apiBase || 'https://api.github.com').replace(/\/$/, '');
   async function getRaw(urlOrPath) {
     const url = urlOrPath.startsWith('http') ? urlOrPath : `${base}${urlOrPath.startsWith('/') ? '' : '/'}${urlOrPath}`;
+    const requestUrl = new URL(url);
+    const apiUrl = new URL(base.endsWith('/') ? base : `${base}/`);
+    if (requestUrl.origin !== apiUrl.origin) {
+      throw new HttpError('refusing cross-origin GitHub API request', 400, null);
+    }
     const headers = {
       Accept: 'application/vnd.github+json',
       'User-Agent': 'kody-deferred-sweep',
@@ -225,14 +231,15 @@ function apiBaseFrom(api) {
 
 async function commitsSince(api, repo, branch, path, since) {
   const base = apiBaseFrom(api);
-  const url = `${base}/repos/${repo}/commits?sha=${encodeURIComponent(branch)}&path=${encodeURIComponent(path)}&since=${encodeURIComponent(since)}&per_page=100`;
+  const first = `${base}/repos/${repo}/commits?sha=${encodeURIComponent(branch)}&path=${encodeURIComponent(path)}&since=${encodeURIComponent(since)}&per_page=100`;
   try {
-    const data = await api.get(url);
-    const commits = Array.isArray(data) ? data : [];
+    const commits = await listPages(api, first);
     const latest = commits[0];
+    const capped = commits.length >= 100;
     return {
       touchedSince: commits.length > 0,
       touchCount: commits.length,
+      touchCountCapped: capped,
       lastSha: latest?.sha || null,
       lastDate: latest?.commit?.committer?.date || latest?.commit?.author?.date || null,
     };
@@ -242,6 +249,23 @@ async function commitsSince(api, repo, branch, path, since) {
     }
     throw err;
   }
+}
+
+const TOUCH_CONCURRENCY = 8;
+
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await fn(items[index], index);
+    }
+  }
+  const workers = Math.min(limit, items.length);
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  return results;
 }
 
 async function sweepRepo(repo, api) {
@@ -264,16 +288,22 @@ async function sweepRepo(repo, api) {
     api,
     `${base}/repos/${repo}/issues?state=open&labels=${encodeURIComponent('kody-deferred')}&per_page=100`,
   );
-  const items = [];
-  for (const issue of issues) {
-    if (issue.pull_request) continue;
+  const openIssues = issues.filter((issue) => !issue.pull_request);
+  const touchCache = new Map();
+  const rows = await mapWithConcurrency(openIssues, TOUCH_CONCURRENCY, async (issue) => {
     const path = extractPath(issue.body || '');
     const severity = severityFromLabels(issue.labels);
-    let touch = { touchedSince: false, touchCount: 0, lastSha: null, lastDate: null };
+    let touch = { touchedSince: false, touchCount: 0, touchCountCapped: false, lastSha: null, lastDate: null };
     if (path) {
-      touch = await commitsSince(api, repo, branch, path, issue.created_at);
+      const key = `${repo}|${branch}|${path}|${issue.created_at}`;
+      if (touchCache.has(key)) {
+        touch = touchCache.get(key);
+      } else {
+        touch = await commitsSince(api, repo, branch, path, issue.created_at);
+        touchCache.set(key, touch);
+      }
     }
-    items.push({
+    return {
       repo,
       number: issue.number,
       title: issue.title || '',
@@ -282,9 +312,9 @@ async function sweepRepo(repo, api) {
       createdAt: issue.created_at,
       path,
       ...touch,
-    });
-  }
-  return { skipped: false, issues: items };
+    };
+  });
+  return { skipped: false, issues: rows };
 }
 
 /**
@@ -355,7 +385,10 @@ export async function main(argv = process.argv.slice(2), env = process.env, stdo
     strict: true,
   });
   const owner = values.owner || 'Simple-With-Us';
-  const raw = values.repos || env.KODY_SWEEP_REPOS || DEFAULT_REPOS.join(',');
+  const raw = values.repos || env.KODY_SWEEP_REPOS;
+  if (!raw) {
+    throw new Error('Pass --repos or set KODY_SWEEP_REPOS (no committed fleet inventory).');
+  }
   const repos = resolveRepoList(raw, owner);
   const staleDays = Number(values['stale-days'] || '30');
   const token = tokenFromEnv(env);
@@ -373,7 +406,8 @@ export async function main(argv = process.argv.slice(2), env = process.env, stdo
 
 if (invokedAsMain()) {
   main().catch((err) => {
-    console.error(err && err.message ? err.message : String(err));
+    const status = Number.isInteger(err?.status) ? err.status : null;
+    process.stderr.write(`${JSON.stringify({ event: 'kody_deferred_sweep_failed', status })}\n`);
     process.exit(1);
   });
 }

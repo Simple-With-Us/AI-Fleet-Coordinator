@@ -11,11 +11,11 @@ import {
   hasDeferredReply,
   isAllowedActor,
   isBlockedSeverity,
+  deferredReplyBody,
   manualResolveReply,
   parseDeferCommand,
   parseSeverity,
   refusalMessage,
-  stripDeferCommand,
 } from './lib.mjs';
 
 export class GitHubError extends Error {
@@ -158,10 +158,38 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   }
 }`.trim();
 
+const THREAD_COMMENTS_QUERY = `
+query($id: ID!, $cursor: String) {
+  node(id: $id) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { databaseId body url createdAt }
+      }
+    }
+  }
+}`.trim();
+
 function nextLink(headers) {
   const link = headers?.get?.('link') || headers?.get?.('Link') || '';
   const m = String(link).match(/<([^>]+)>;\s*rel="next"/);
   return m ? m[1] : null;
+}
+
+async function loadThreadComments(client, threadId) {
+  const all = [];
+  let commentCursor = null;
+  do {
+    const data = await client.graphql(THREAD_COMMENTS_QUERY, {
+      id: threadId,
+      cursor: commentCursor,
+    });
+    const conn = data?.node?.comments;
+    all.push(...(conn?.nodes || []));
+    if (!conn?.pageInfo?.hasNextPage) break;
+    commentCursor = conn.pageInfo.endCursor;
+  } while (commentCursor);
+  return all;
 }
 
 async function findThread(client, owner, repo, prNumber, rootId) {
@@ -177,8 +205,19 @@ async function findThread(client, owner, repo, prNumber, rootId) {
     const conn = data?.repository?.pullRequest?.reviewThreads;
     const nodes = conn?.nodes || [];
     for (const node of nodes) {
-      const comments = node?.comments?.nodes || [];
-      if (comments.some((c) => Number(c.databaseId) === want)) return node;
+      const firstPage = node?.comments?.nodes || [];
+      if (firstPage.some((c) => Number(c.databaseId) === want)) {
+        const comments = firstPage.length >= 100
+          ? await loadThreadComments(client, node.id)
+          : firstPage;
+        return { ...node, comments: { nodes: comments } };
+      }
+      if (firstPage.length >= 100) {
+        const comments = await loadThreadComments(client, node.id);
+        if (comments.some((c) => Number(c.databaseId) === want)) {
+          return { ...node, comments: { nodes: comments } };
+        }
+      }
     }
     if (!conn?.pageInfo?.hasNextPage) break;
     cursor = conn.pageInfo.endCursor;
@@ -317,6 +356,9 @@ export async function run({ event, api, env = process.env, log = console.log } =
   const prUrl = event.pull_request.html_url
     || `https://github.com/${owner}/${repo}/pull/${prNumber}`;
   const client = createClient({ env, api, log: write });
+  if (!client.dry && !(env.GITHUB_TOKEN || env.GH_TOKEN)) {
+    throw new GitHubError('GITHUB_TOKEN is required when KODY_DEFER_DRY_RUN is not enabled', 0, null);
+  }
 
   let permission = '';
   try {
@@ -339,9 +381,15 @@ export async function run({ event, api, env = process.env, log = console.log } =
   const triggerId = event.comment.id;
   const root = await loadRoot(client, owner, repo, event.comment);
   const rootIsTrigger = Number(root.id) === Number(triggerId);
-  const rawFinding = rootIsTrigger ? stripDeferCommand(root.body || '') : (root.body || '');
+  if (rootIsTrigger) {
+    const msg = 'Reply `/defer` on the Kody finding thread instead of opening a new review comment.';
+    await reply(client, owner, repo, prNumber, root.id, msg);
+    write('refused: /defer was posted as a new review comment, not on a finding thread');
+    return { code: 0, action: 'refused-root', logs };
+  }
+  const rawFinding = root.body || '';
   const finding = cleanFindingText(rawFinding);
-  const severity = parseSeverity(root.body || '');
+  const severity = parseSeverity(rawFinding);
 
   const thread = await findThread(client, owner, repo, prNumber, root.id);
   if (!thread) {
@@ -368,7 +416,7 @@ export async function run({ event, api, env = process.env, log = console.log } =
   const prior = await findIssueByThread(client, owner, repo, thread.id);
   if (prior) {
     write(`found existing issue #${prior} for this thread; linking instead of creating`);
-    await reply(client, owner, repo, prNumber, root.id, `Deferred to #${prior}.`);
+    await reply(client, owner, repo, prNumber, root.id, deferredReplyBody(prior));
     await resolveOrManual(client, owner, repo, prNumber, root.id, thread.id, prior, write);
     return { code: 0, action: 'relinked', issue: prior, logs };
   }
@@ -426,7 +474,7 @@ export async function run({ event, api, env = process.env, log = console.log } =
   });
   const number = issue.number;
   write(`opened issue #${number}`);
-  await reply(client, owner, repo, prNumber, root.id, `Deferred to #${number}.`);
+  await reply(client, owner, repo, prNumber, root.id, deferredReplyBody(number));
   await resolveOrManual(client, owner, repo, prNumber, root.id, thread.id, number, write);
   return { code: 0, action: 'deferred', issue: number, logs };
 }
@@ -452,7 +500,8 @@ if (invokedAsMain()) {
     const result = await run({ event, env: process.env });
     process.exit(result.code ?? 0);
   } catch (err) {
-    console.error(err && err.stack ? err.stack : String(err));
+    const status = err instanceof GitHubError ? err.status : 'unknown';
+    console.error(`Kody defer failed (status: ${status})`);
     process.exit(1);
   }
 }

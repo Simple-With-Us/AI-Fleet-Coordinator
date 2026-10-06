@@ -108,7 +108,7 @@ node scripts/kody-deferred-sweep.mjs --repos AI-Fleet-Coordinator,Clutch --json
 node scripts/kody-deferred-sweep.mjs --stale-days 30 --owner Simple-With-Us
 ```
 
-The default repos are Socratic-Trade, Congress.Trade, Usage-Monitor, CodeCaps, BotFleet, HogHunter, AI-Fleet-Coordinator, and Clutch.  `KODY_SWEEP_REPOS` overrides that list.  A bare name is prefixed with `--owner` (default `Simple-With-Us`).
+The repository list is supplied at runtime through `--repos` or `KODY_SWEEP_REPOS`; do not commit fleet repository inventory.  Bare names are resolved with the configured `--owner` (default `Simple-With-Us`).  `DEFAULT_REPOS` in the script source is a documented example for tests only and is not used when the CLI runs without `--repos` or `KODY_SWEEP_REPOS`.
 
 The token is `GITHUB_TOKEN`, else `GH_TOKEN`, else `gh auth token`.  The command fails if none of those is available.
 
