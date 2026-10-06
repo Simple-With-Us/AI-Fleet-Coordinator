@@ -116,6 +116,10 @@ APP_CANONICAL: dict[str, str] = {
     "fleet-ops": "fleet-ops",
     "fleet ops": "fleet-ops",
     "ops": "fleet-ops",
+    "fleetlink": "fleetlink",
+    "fleetlink.online": "fleetlink",
+    "fleet link": "fleetlink",
+    "fl": "fleetlink",
 }
 
 
