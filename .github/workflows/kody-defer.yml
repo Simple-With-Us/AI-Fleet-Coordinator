@@ -46,7 +46,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout Kody defer tooling
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Simple-With-Us/AI-Fleet-Coordinator
           ref: ${{ inputs.tooling-ref }}
