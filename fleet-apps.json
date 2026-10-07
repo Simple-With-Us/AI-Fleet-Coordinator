@@ -201,7 +201,10 @@
       "worktreeSuffix": "monet",
       "branchPrefixes": [
         "monet/"
-      ]
+      ],
+      "retired": true,
+      "retiredDate": "2026-10-07",
+      "retiredReason": "Owner no longer uses the Monet Claude account or app.  Existing monet/ branches and lanes stay readable."
     },
     {
       "tag": "CODEX",
@@ -261,7 +264,19 @@
       "worktreeSuffix": "harness",
       "branchPrefixes": [
         "harness/"
-      ]
+      ],
+      "retired": true,
+      "retiredDate": "2026-10-07",
+      "retiredReason": "Replaced by the Clutch seat.  Existing harness/ branches and lanes stay readable."
+    },
+    {
+      "tag": "CLUTCH",
+      "notesName": "Clutch",
+      "worktreeSuffix": "clutch",
+      "branchPrefixes": [
+        "clutch/"
+      ],
+      "notes": "Owner of Simple-With-Us/Clutch (DeepSeek and MiniMax drivers, ACP bridges, cordis profiles).  Replaces the HARNESS seat, owner 2026-10-07.  One seat for all models run through Clutch (owner 2026-10-07: no per-model split)."
     },
     {
       "tag": "GROK-BOT",
@@ -277,7 +292,10 @@
       "worktreeSuffix": "renoir",
       "branchPrefixes": [
         "renoir/"
-      ]
+      ],
+      "retired": true,
+      "retiredDate": "2026-10-07",
+      "retiredReason": "Owner no longer uses the Renoir Claude account or app.  Existing renoir/ branches and lanes stay readable."
     },
     {
       "tag": "FX",
