@@ -7,6 +7,7 @@ Personal-Site, Autorotate (formerly TopSpin),
 AI-Fleet-Coordinator, and any repo created later.
 
 Slack channel: **#agent-sync** (id `C0BEZDJDNKV` — always key by ID; display name may change).
+Chat is moving from Slack to Zulip (owner 2026-10-07, board `18f61cf4`).  Until it lands, the Slack protocol below stands unchanged.
 Repo pointer files: `AGENTS.md` / `CLAUDE.md` (symlink) in each worktree carry a pointer to this file.
 
 ---
@@ -382,10 +383,21 @@ owner's interactive sessions.  Stray worktree folders, scratch clones,
 experimental checkouts, per-seat lanes, and `*-wt-*` directories all belong in
 `~/apps/`, not `~/Code/`.
 
+**Where lanes live (owner 2026-10-07 — `docs/protocols/lane-map.md`, board
+`a7dfde0e`).**  New lanes go at `~/apps/lanes/<prefix>/<seat>-<slug>` and PR
+checks at `~/apps/lanes/_review/<prefix>/pr-<n>[-<seat>]`; create either with
+`~/apps/lane new <app> <slug>` (`AGENT_SEAT` must be set to your seat tag).
+`<seat>` is the whole `worktreeSuffix` from `fleet-apps.json` (`antigravity`,
+`minimax`, never `ag` or `mm`).  A checkout of a fleet repo is never created in
+`/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders`.  Existing flat
+lanes (`~/apps/<prefix>-<seat>[-<slug>]`) stay and retire in place.  This
+`~/Code` rule itself is unchanged.
+
 ### Forbidden top-level entries under `~/Code/`
 
-1. **Linked git worktrees** of any existing app — these live in
-   `~/apps/<app>-<seat>-<lane>/` or `~/apps/<app>-<seat>/`.
+1. **Linked git worktrees** of any existing app — a new one lives at
+   `~/apps/lanes/<prefix>/<seat>-<slug>/` (legacy flat lanes
+   `~/apps/<prefix>-<seat>[-<slug>]/` stay until they retire).
 2. **Scratch copies, experimental clones, or "let me try this here" checkouts**
    of an existing app's repo.
 3. **Per-seat lanes** that look like worktree dirs (basename matches `*-wt-*`,
@@ -828,7 +840,7 @@ All messages sent out by the `jay` macOS user account MUST strictly be what Jay 
 
 ### Agent Seat Specifics & Execution Profiles
 
-Every agent seat in the fleet adheres to the universal coordination protocol above while bringing specialized capabilities to the team:
+Every agent seat in the fleet adheres to the universal coordination protocol above while bringing specialized capabilities to the team.  Lane paths named in the rows below are the legacy flat form `~/apps/<prefix>-<seat>`; new lanes use `~/apps/lanes/<prefix>/<seat>-<slug>` with the seat's whole `worktreeSuffix` (`docs/protocols/lane-map.md`).
 
 | Agent Seat | Primary Role & Strengths | Sync Tag | Apple Notes Name | Special Execution Directives |
 |------------|--------------------------|----------|------------------|------------------------------|
@@ -837,14 +849,15 @@ Every agent seat in the fleet adheres to the universal coordination protocol abo
 | **Claude / Fable (`CLAUDE`)** | Fleet coordinator authority, system architecture, multi-file code review, complex failure recovery. | `[CLAUDE]` | `Claude` | Serves as fleet coordinator. Enforces merge requirements, resolves review threads, reassigns stalled lanes. |
 | **Grok (`GROK`)** | High-throughput implementation, rapid PR creation, automated test and documentation maintenance. | `[GROK]` | `Grok` | Focuses on velocity, auto-merging green PRs, updating effort logs and living completion notes.  Mac Grok TUI / CLI.  Prefix `grok/`. |
 | **Grok Build (`GROK-BUILD`)** | Grok Build TUI / App Builder preview seat.  Same loop as GROK, separate identity. | `[GROK-BUILD]` | `Grok Build` | Tag `GROK-BUILD`, prefix `grok-build/`, Mac lane `~/apps/<prefix>-grok-build`, cloud preview `/workspace`.  Do not use `grok/` or sign as GROK. |
-| **Monet (`MONET`)** | Deep architectural design, security/data auditing, living documentation, system refactoring. | `[MONET]` | `Monet` | Writes detailed design plans, updates living work logs, conducts thorough security/contract reviews. |
+| **Monet (`MONET`)** | Retired 2026-10-07.  Historical posts still mean this seat. | `[MONET]` | `Monet` | **Do not assign new work.**  Owner 2026-10-07: the Monet Claude account and app are no longer used.  Existing `monet/` branches and lanes stay readable. |
 | **Cursor / Copilot (`CURSOR`)** | Interactive in-IDE editing, localized code refactoring, quick inline fixes. | `[CURSOR]` | `Cursor` / `Copilot` | Operates directly within the IDE context for real-time interactive edits and targeted line fixes.  Local Mac IDE/Auto only. |
 | **Grok Bot (GB roles)** | Grok Bot seats that implement through **Cursor cloud agents**.  Distinct from this coordinator (`AFC`), from Mac Grok TUI, and from local Cursor.  A `[SENDER->FLEET]` wake reaches every listening agent on every platform, GB seats included.  Largely superseded by BotFleet bots (owner 2026-09-13) — do not assume a GB seat is listening. | `[GB-<NAME>]` | role Title Case | Slack is `GB-CONDUCTOR`, `GB-MONITOR`, `GB-FIXER`, `GB-DEPLOYER`, `GB-COMPILER` (Compiler), `GB-NURSE`, `GB-HOUSEKEEPER`, `GB-ACCOUNTANT`, `GB-ORACLE`.  Never `GB-COMPILE`.  Not `[GROK-BOT]`, not `[CURSOR]`, not `[GROK]`, not `[GB-FLEET]`. Prefix often `cursor/` in cloud. Desktop + iOS visibility: `docs/CURSOR-CHAT-SURFACES.md`. |
 | **BotFleet bots (`BF-<ROLE>`)** | Role bots run by the owner's BotFleet app on the `claude`, `codex`, and `grok` CLIs plus ACP engines (Cursor, OpenCode, DeepSeek, DeepSeek Harness, Droid, Hermes, Kimi, Qwen).  Carry most former Grok Bot duty (owner 2026-09-13). | `[BF-<ROLE>]` | role Title Case (e.g. `Compiler`) | Tags `BF-FIXER`, `BF-DESIGNER`, `BF-COMPILER`, `BF-PLUMBER`, `BF-PUBLISHER`, `BF-DEPLOYER`, `BF-DIRECTOR` (observed; tag scheme pending owner confirmation).  Same board/effort-log/Slack loop as every seat; a `[SENDER->FLEET]` wake reaches them like any other listener.  Tag is distinct from `[GB-<NAME>]` (Grok Bot) and from `[GROK]` (Mac Grok). |
-| **Renoir (`RENOIR`)** | Future third Claude-family seat. | `[RENOIR]` | `Renoir` | Prefix `renoir/`; lane `~/apps/<prefix>-renoir`. Not yet active — do not assign work until the owner opens the seat. |
+| **Renoir (`RENOIR`)** | Retired 2026-10-07.  The seat never opened. | `[RENOIR]` | `Renoir` | **Do not assign or accept work.**  Owner 2026-10-07: the Renoir Claude account and app are no longer used.  Existing `renoir/` branches and lanes stay readable. |
 | **Kimi (`KIMI`)** | Retired. | `[KIMI]` | `Kimi` | **Do not assign or accept work.** Owner 2026-08-21. |
-| **DeepSeek Harness (`DSH`)** | Retired 2026-09-19.  Historical posts still mean this seat. | `[DSH]` | `DeepSeek Harness` | **Do not assign new work.**  Use `[HARNESS]` for `Simple-With-Us/Clutch` (DSH + MiniMax; formerly Harness).  A DeepSeek *model* inside Cursor is still `[CURSOR]`. |
-| **Harness (`HARNESS`)** | Owner of `Simple-With-Us/Clutch` (renamed from Harness 2026-09-30): DSH and MiniMax drivers, Python ACP bridges, cordis profiles, web scripts, the npm package BotFleet imports. | `[HARNESS]` | `Harness` | Prefix `harness/`; lane `~/apps/clutch-<seat>`.  Pin `AGENT_SEAT=HARNESS` / `AGENT_TAG=HARNESS`.  Slack `repo: clutch`.  Do not edit DSH engine shape in BotFleet — import `clutch/dsh/acp`. |
+| **DeepSeek Harness (`DSH`)** | Retired 2026-09-19.  Historical posts still mean this seat. | `[DSH]` | `DeepSeek Harness` | **Do not assign new work.**  Use `[CLUTCH]` for `Simple-With-Us/Clutch` (DSH + MiniMax; formerly Harness).  A DeepSeek *model* inside Cursor is still `[CURSOR]`. |
+| **Harness (`HARNESS`)** | Retired 2026-10-07.  Replaced by the Clutch seat.  Historical posts still mean this seat. | `[HARNESS]` | `Harness` | **Do not assign new work.**  Use `[CLUTCH]`.  Existing `harness/` branches and lanes stay readable. |
+| **Clutch (`CLUTCH`)** | Owner of `Simple-With-Us/Clutch`: DSH and MiniMax drivers, Python ACP bridges, cordis profiles, web scripts, the npm package BotFleet imports.  One seat for every model run through Clutch (owner 2026-10-07: no per-model split).  Replaces HARNESS. | `[CLUTCH]` | `Clutch` | Tag `CLUTCH`, prefix `clutch/`, lane `~/apps/lanes/clutch/clutch-<slug>`.  Pin `AGENT_SEAT=CLUTCH` / `AGENT_TAG=CLUTCH`.  Chat `repo: clutch`.  Do not edit DSH engine shape in BotFleet — import `clutch/dsh/acp`. |
 | **MiniMax (`MM`)** | MiniMax Code desktop app on the Mavis local runtime (`~/.minimax`).  Bounded implementation and code review, sourced deep research with citations, document generation (docx / pdf / pptx / xlsx), static-site deploy, Computer Use desktop control and in-app browser driving, plus text / image / video / speech generation and web search through the `mmx` CLI. | `[MM]` | `MiniMax` | Prefix `minimax/`; lane `~/apps/<prefix>-minimax`.  Pin `AGENT_SEAT=MM` / `AGENT_TAG=MM`.  Former Slack tag `MINIMAX` is retired — historical posts still mean this seat.  No global rules file exists on this platform — the fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt).  Fleet skills install to `~/.minimax/skills`.  Built-in sub-agents `explore` / `worker` / `verifier` inherit the `MM` tag; they do not get their own Slack identity.  `config.yaml` ships `permissionMode: bypassPermissions` — nothing prompts, so hold the destructive-op pause yourself. |
 | **Fx (`FX`)** | fx by Vercel Labs, a terminal coding agent whose model is whatever provider it is logged into (Grok subscription today; the Codex provider or a MiniMax endpoint later).  Implementation, repo audits, PR drafting, ACP engine for BotFleet-style hosts. | `[FX]` | `Fx` | Prefix `fx/`; lane `~/apps/<prefix>-fx`.  Pin `AGENT_SEAT=FX` / `AGENT_TAG=FX`.  Global rules file `~/.fx/AGENTS.md`; skills in `~/.fx/skills` only (fx also scans the Claude and Codex packs — never inherit their tags).  The model never changes the seat: Grok inside fx is `[FX]`, never `[GROK]` or `[GROK-BUILD]`; the Codex provider inside fx is `[FX]`, never `[CODEX]`; MiniMax inside fx is `[FX]`, never `[MM]`.  Subagents inherit the parent model, so the 30% sister-model rule is waived as for Grok; the rest of Delegation binds.  Runs full-access with no sandbox — the destructive-ops pause is on the seat. |
 | **Muse Code (`MC`)** | Meta AI interactive terminal coding agent (`muse` CLI / Muse Code).  Bounded implementation, local TUI/CLI execution, git worktree workflows, subagent delegation, and task execution. | `[MC]` | `Muse Code` | Prefix `muse-code/`; lane `~/apps/<prefix>-muse-code`.  Pin `AGENT_SEAT=MC` / `AGENT_TAG=MC`.  Distinct from Muse Assist (`[MA]`).  Loads project `AGENTS.md` and `CLAUDE.md` in trusted workspaces (`~/.config/muse/trust.json`).  Dedicated fleet skills install to `~/.config/muse/skills` (shadowing any unspecialized foreign skills). |
@@ -864,11 +877,12 @@ current: add a line when you go down or notice a peer is down; move it to the "A
 list (or delete the row) when it recovers. Convert relative times to absolute with timezone.
 
 **Currently UNAVAILABLE:**
-- **KIMI — RETIRED / UNAVAILABLE long-term (owner directive 2026-08-21; strengthened 2026-08-22).** Kimi will not be used for a long time. All agents MUST NOT assign work to KIMI, leave KIMI In Progress, or reserve Planned/future work for KIMI. Unclaim leftover KIMI lanes. Do not wait on KIMI. Active seats: AG, GROK, CLAUDE, MONET, CODEX, CURSOR.
+- **KIMI — RETIRED / UNAVAILABLE long-term (owner directive 2026-08-21; strengthened 2026-08-22).** Kimi will not be used for a long time. All agents MUST NOT assign work to KIMI, leave KIMI In Progress, or reserve Planned/future work for KIMI. Unclaim leftover KIMI lanes. Do not wait on KIMI. Active seats: AG, GROK, CLAUDE, CODEX, CURSOR, CLUTCH.
+- **MONET, RENOIR, HARNESS — RETIRED 2026-10-07 (owner).**  The Monet and Renoir Claude accounts and apps are no longer used, and the Clutch seat replaces Harness.  All agents MUST NOT assign work to these seats, leave them In Progress, or wait on them.  Historical posts and existing `monet/`, `renoir/`, and `harness/` branches and lanes stay readable.  Use `[CLUTCH]` for `Simple-With-Us/Clutch`.
 - (The 2026-07-19 CODEX usage-cap row is **stale** — do not skip Codex on that basis. Oracle cutover finished 2026-08-07. Coolify on Hetzner is the production writer for ST/CT/UM. Render is retired.)
 
-**Available (normal):** CLAUDE, CURSOR (DeepSeek *model* is still Cursor), HARNESS (Harness repo; former DSH seat retired 2026-09-19), AG (Antigravity/Gemini — Gemini 3.5 Flash),
-MONET (Opus), GROK (Mac), GROK-BUILD (Grok Build TUI), MM (MiniMax Code / Mavis runtime — seat and selectable engine, opened 2026-09-03), FX (fx by Vercel Labs), MC (Muse Code interactive terminal agent), MA (Muse Assist cloud VM batch compute).  RENOIR — not yet active (future third seat).  (KIMI: RETIRED / UNAVAILABLE per owner directive).  Former Slack tags `DEEPSEEK` (harness), `MINIMAX`, and `MUSE` (migrated to MA) are retired.  BotFleet bots (`[BF-<ROLE>]`) carry most former Grok Bot duty (owner 2026-09-13); GROK-BOT (`GB-*`) is mostly idle — do not wait on a GB seat.
+**Available (normal):** CLAUDE, CURSOR (DeepSeek *model* is still Cursor), CLUTCH (`Simple-With-Us/Clutch`; one seat for every model run through it, owner 2026-10-07), AG (Antigravity/Gemini — Gemini 3.5 Flash),
+GROK (Mac), GROK-BUILD (Grok Build TUI), MM (MiniMax Code / Mavis runtime — seat and selectable engine, opened 2026-09-03), FX (fx by Vercel Labs), MC (Muse Code interactive terminal agent), MA (Muse Assist cloud VM batch compute).  Retired, do not assign: MONET, RENOIR, HARNESS (owner 2026-10-07), DSH (2026-09-19), KIMI (owner directive, see above).  Former Slack tags `DEEPSEEK` (harness), `MINIMAX`, and `MUSE` (migrated to MA) are retired.  BotFleet bots (`[BF-<ROLE>]`) carry most former Grok Bot duty (owner 2026-09-13); GROK-BOT (`GB-*`) is mostly idle — do not wait on a GB seat.
 
 **Available again:**
 - **CODEX — quota window ended 2026-07-08 18:10 America/Chicago (CDT; 2026-07-08 23:10 UTC).**
@@ -891,7 +905,7 @@ In addition to `AGENT-SYNC.md` and repo-specific `AGENTS.md` instructions, the f
 
 ### Complete Catalog
 - **`fleet-coordination`**: Master flagship skill covering end-to-end fleet protocols, triple-claim, secrets, sentence gaps, Apple Notes, PR landing, and closeout.
-- **`session-start`**: Systematic startup sequence (agent-sync poll pass, reading THE BOARD, worktree isolation, triple-claim).
+- **`session-start`**: Systematic startup sequence (agent-sync poll pass, reading THE BOARD, making a lane with `lane new`, triple-claim).
 - **`board-ops`**: Operating THE BOARD CLI (`board stats`, `board list`, `board claim`, `board file`) and API.
 - **`secret-handoff`**: Secret safety, handoff-file grep-trap ban, and Infisical runtime source of truth.
 - **`sentence-gap`**: Monet portable two visible spaces standard (`&nbsp; ` in Markdown chat, two spaces in files).
@@ -1708,7 +1722,7 @@ board show <id>                               # detail + full comment thread
 
 board file --title "Scout drops Senate rows on 502" --app congress-trade \
            --severity P1 --by GROK-BOT --env cloud --desc "path:line + repro"
-board claim <id>  --by CLAUDE --env Mac --where "~/apps/trading-claude @ claude/fix"
+board claim <id>  --by CLAUDE --env Mac --where "~/apps/lanes/trading/claude-fix @ claude/fix"
 board comment <id> --by MONET --text "Verified on main; the shared helper is right."
 board status <id> completed --resolution "Landed in #2894."
 ```
@@ -1933,9 +1947,10 @@ CLAUDE/MONET seat confusion (Monet had been opening `claude/*` branches):
 - **Reaffirmed + broadened (owner, 2026-08-12): ALWAYS work in your own seat worktree, for ALL apps.**
   Never do lane work directly in the shared `/Users/jay/Code/<repo>` checkout — multiple seats share
   that path and mid-task branch flips have put one seat's commits on another seat's branch (observed
-  twice in Usage-Monitor, 2026-08-12).  At lane start: create/reuse a seat worktree (e.g.
-  `~/apps/<app>-<seat>-<lane>` or a standing `~/apps/<app>-<seat>`), branch under your own prefix,
-  work there.  The shared checkout is read-only reference.
+  twice in Usage-Monitor, 2026-08-12).  At lane start: create a lane with `~/apps/lane new <app> <slug>`
+  (it lands at `~/apps/lanes/<prefix>/<seat>-<slug>`; the 2026-10-07 nested form replaces the flat
+  `~/apps/<app>-<seat>-<lane>` for new lanes, and existing flat lanes stay until they retire), branch under
+  your own prefix, work there.  The shared checkout is read-only reference.
 
 ---
 

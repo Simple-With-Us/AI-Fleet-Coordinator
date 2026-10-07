@@ -52,7 +52,7 @@ Use these canonical acronyms in Apple Notes titles (`[APP, Agent] topic`), commi
 Every agent session must start with systematic orientation before touching code:
 
 1. **Establish Seat Identity:**
-   - Antigravity / Gemini: `[AG]` (display `AG` or `Antigravity`, branch prefix `agent/` or `ag/`)
+   - Antigravity / Gemini: `[AG]` (display `AG` or `Antigravity`, branch prefix `ag/`; the older standing flat lane may still be on `agent/antigravity`)
    - Monet: `[$AGENT_SEAT]` (display `Monet`, branch prefix `monet/`)
    - Claude: `[CLAUDE]` (display `Claude`, branch prefix `claude/`)
    - Grok / Grok Build: `[GROK]` / `[GROK-BUILD]` (display `Grok` / `Grok Build`, branch prefix `grok/` / `grok-build/`)
@@ -82,14 +82,17 @@ Every agent session must start with systematic orientation before touching code:
 
 ---
 
-## 2. Worktree & Lane Isolation
+## 2. Lanes (Where You Work)
 
 **Strict Rule:** NEVER work directly in `/Users/jay/Code/<Repo>` root checkouts.  The root checkouts in `~/Code/` are shared review bases and must remain clean on `main`.
 
-Always work in an isolated worktree under `~/apps/`:
+Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders`.
+
+Always work in your own lane.  Make it with `lane new` (owner 2026-10-07, `docs/protocols/lane-map.md`; `AGENT_SEAT` must be set to your seat tag):
 ```bash
-git -C /Users/jay/Code/<Repo> worktree add -b <seat>/<feature-slug> ~/apps/<app>-<seat>-<feature-slug>
+~/apps/lane new <app> <feature-slug>   # ~/apps/lanes/<prefix>/<seat>-<feature-slug>, branch <your prefix>/<feature-slug>
 ```
+Flat lanes that already exist (`~/apps/<app>-<seat>-<lane>`) stay until they retire; do not create new ones.
 
 ---
 

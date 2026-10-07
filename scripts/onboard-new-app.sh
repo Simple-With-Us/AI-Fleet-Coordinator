@@ -9,7 +9,9 @@
 #       --code-dir DealDex --worktree-prefix dealdex \
 #       --board DEALDEX-EFFORT-LOG.md --slack-repo DealDex
 #
-# Safe to re-run: skips existing clone / board / worktree / JSON row.
+# Safe to re-run: skips existing clone / board / JSON row.  Creates no lane and no
+# folder under ~/Code other than the integration tree; make a lane per task with
+# ~/apps/lane new (docs/protocols/lane-map.md).
 
 set -euo pipefail
 
@@ -30,7 +32,7 @@ CREATE_REPO=0
 here="$(cd "$(dirname "$0")/.." && pwd)"
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -63,7 +65,6 @@ SLACK_REPO="${SLACK_REPO:-$REPO}"
 
 CODE_PATH="$CODE_ROOT/$CODE_DIR"
 LIVE_BOARD="$APPS_ROOT/$BOARD"
-LANE="$APPS_ROOT/${WORKTREE_PREFIX}-grok"
 TODAY="$(date '+%Y-%m-%d')"
 
 run() {
@@ -114,16 +115,6 @@ fi
 if [ ! -f "$CODE_PATH/LICENSE" ] && [ "$REPO" != "Fleet-OPS" ]; then
   echo "copying canonical Apache-2.0 LICENSE to $CODE_PATH"
   run cp "$here/LICENSE" "$CODE_PATH/LICENSE"
-fi
-
-run mkdir -p "$CODE_ROOT/copilot-worktrees/$CODE_DIR"
-
-# --- grok worktree ---
-if [ -d "$LANE" ]; then
-  echo "lane exists: $LANE"
-else
-  echo "creating grok lane $LANE"
-  run git -C "$CODE_PATH" worktree add -b "grok/fleet-onboard" "$LANE"
 fi
 
 # --- live board ---
@@ -188,7 +179,13 @@ fi
 
 echo
 echo "Next (this script does not finish these):"
-echo "  1. In the lane ($LANE): add AGENTS.md, docs/EFFORT-LOG.md, CI, effort-issues-sync"
+echo "  1. Make a lane for the onboarding PR (this script creates none; $CODE_PATH stays on main)."
+echo "     The new registry row is only in this checkout until it merges and 'install_tools apply tools'"
+echo "     refreshes ~/apps/lane-tools, so the first lane comes from here:"
+echo "       cd $here/scripts && AGENT_SEAT=<TAG> FLEET_APPS_JSON=$here/fleet-apps.json \\"
+echo "         python3 -m fleet_lanes.lane new $REPO fleet-onboard"
+echo "     Afterwards: AGENT_SEAT=<TAG> ~/apps/lane new $REPO <slug>  (lands in ~/apps/lanes/$WORKTREE_PREFIX/)."
+echo "     In that lane add AGENTS.md, docs/EFFORT-LOG.md, CI, effort-issues-sync"
 echo "     (copy from DealDex or Usage-Monitor; see docs/ONBOARDING-NEW-APP.md Phase 3)."
 echo "     After CI job \`verify\` exists: python3 $here/scripts/apply-github-ruleset.py --repo $OWNER/$REPO --kind product --checks verify"
 echo "  2. Patch registries listed in docs/ONBOARDING-NEW-APP.md Phase 4."

@@ -72,7 +72,7 @@ __all__ = [
     "ALLOW", "DENY", "Decision", "GuardContext", "make_context", "evaluate", "redact_url",
     "RULE_CLONE", "RULE_GH_CLONE", "RULE_WORKTREE_ADD", "RULE_WORKTREE_MOVE", "RULE_ARCHIVE",
     "RULE_TARBALL", "RULE_INIT_FETCH", "RULE_EXPORT", "DENY_RULES", "FLEET_OWNERS",
-    "ENV_GUARD", "MAX_COMMAND_CHARS",
+    "ENV_GUARD", "MAX_COMMAND_CHARS", "seat_owns_folder", "lane_name_reads_back",
 ]
 
 ALLOW = "allow"
@@ -272,6 +272,44 @@ class GuardContext:
                     continue
                 return "/".join(comps[k:])
         return None
+
+
+# --------------------------------------------------------------------------- lane naming, shared with `lane`
+#
+# `lane` (lane.py) calls these two as well, so the deny reason can never name a lane that `lane new`
+# refuses.  They would sit best in layout.py; they live here because the hook import path must stay
+# layout, guard, hook (no doctor, no lane), and lane can import guard cheaply.
+
+def seat_owns_folder(seat: L.Seat, registry: L.Registry) -> bool:
+    """True when the folder name `seat.suffix` belongs to `seat`.
+
+    Two registry rows can share a worktreeSuffix: CURSOR and GROK-BOT both use `cursor`, and both
+    use the cursor/ branch prefix.  The name belongs to the seat `Registry.seat_by_suffix` picks
+    (the first live row), and no other seat gets a lane under it, because that folder and branch
+    would be the owner's.  `lane` refuses such a seat, and the deny reason shows a placeholder.
+    """
+    owner = registry.seat_by_suffix(seat.suffix)
+    return owner is not None and owner.name.lower() == seat.name.lower()
+
+
+def lane_name_reads_back(prefix: str, seat: str, slug: str, registry: L.Registry, *, flat: bool = False) -> bool:
+    """True when the folder `lane new` makes for (prefix, seat, slug) reads back as that very app
+    prefix, seat and slug.
+
+    It does not when the slug's first word joins the seat into another seat's name: seat grok with
+    slug build makes grok-build, which is GROK-BUILD's, and grok-bot reads as the cursor seat.  The
+    folder is <seat>-<slug> under lanes/<prefix>/ (nested) or <prefix>-<seat>-<slug> under ~/apps
+    (flat).  It is judged the way `layout.explain_lane_name` judges a lane path, but on the bare
+    name, so nothing touches the filesystem (`evaluate` must stay pure).  `seat` is the canonical
+    folder token (worktreeSuffix) and `prefix` a registry app prefix; an unknown prefix fails.
+    """
+    try:
+        name = L.lane_dir_name(prefix, seat, slug) if flat else L.nested_dir_name(seat, slug)
+    except L.LayoutError:
+        return False
+    verdict, _reasons, app, hit, got = L._eval_name(name, registry, nested_prefix_dir=None if flat else prefix)
+    return (verdict == L.NameVerdict.CONFORMING and app is not None and app.prefix == prefix
+            and hit is not None and hit.seat == seat and got == slug)
 
 
 def make_context(env: Mapping[str, str] | None = None, *, home: str | os.PathLike[str] | None = None,
@@ -2039,10 +2077,17 @@ class _Evaluator:
         if not raw:
             return None
         seat = self.ctx.registry.seat_by_name(raw)
+        if seat is not None and not seat_owns_folder(seat, self.ctx.registry):
+            return None        # GROK-BOT: the folder name and branch prefix are CURSOR's
         token = seat.suffix if seat is not None else L.normalize_seat(raw, self.ctx.registry)
         return token if L.is_valid_slug(token) else None
 
-    def _slug(self, target: str, app: L.App | None, prefix: str | None) -> str:
+    def _slug(self, target: str, app: L.App | None, prefix: str | None, seat: str | None) -> str:
+        """The slug for the suggested lane: the target's own name with the app's prefix taken off,
+        or `work`.  A slug whose folder would read as another seat's (grok plus build is
+        grok-build) is replaced by `work`, because `lane new` refuses it.  `seat` is the folder
+        token shown in the reason; with no seat shown (a placeholder), the slug must read back for
+        every seat `lane new` accepts, so the command works once AGENT_SEAT is set."""
         base = target.rstrip("/").rsplit("/", 1)[-1].replace(_UNK, "")
         base = _ARCHIVE_EXT_RE.sub("", base)
         base = re.sub(r"X{3,}", "", base)
@@ -2058,7 +2103,16 @@ class _Evaluator:
                 slug = slug[len(name) + 1:]
                 break
         slug = slug[:L.SLUG_MAX].strip("-")
-        return slug if slug and slug not in ("tmp", "temp") and L.is_valid_slug(slug) else "work"
+        if not slug or slug in ("tmp", "temp") or not L.is_valid_slug(slug):
+            return "work"
+        registry = self.ctx.registry
+        if not prefix or registry.app_by_prefix(prefix) is None:
+            return slug        # an unknown app: no folder rule to check against
+        flat = self.ctx.roots.layout_mode == L.LAYOUT_FLAT
+        seats = [seat] if seat else [s.suffix for s in registry.seats if self._lane_new_accepts(s)]
+        if all(lane_name_reads_back(prefix, s, slug, registry, flat=flat) for s in seats):
+            return slug
+        return "work"
 
     def _lane(self, app: L.App | None, prefix: str | None, seat: str | None, slug: str) -> str:
         roots = self.ctx.roots
@@ -2074,32 +2128,74 @@ class _Evaluator:
             return self.display(f"{roots.apps_root}/{p}-{s}-{slug}")
         return self.display(f"{roots.lanes_root}/{p}/{s}-{slug}")
 
+    def _lane_new_accepts(self, seat: L.Seat) -> bool:
+        """The same seat checks `lane.resolve_seat` makes: live, a usable folder name it owns, and
+        a branch prefix."""
+        return bool(not seat.retired and seat.primary_branch_prefix() and L.is_valid_slug(seat.suffix)
+                    and seat_owns_folder(seat, self.ctx.registry))
+
+    def _seat_usable_for_lane_new(self) -> bool:
+        """True when AGENT_SEAT names a live seat that `lane new` would accept: a registry tag that is
+        not retired, has a branch prefix and owns its folder name.  A whole name (antigravity), an
+        unknown value, a retired tag or a tag that shares another seat's folder name (GROK-BOT) is
+        refused by the CLI, so the reason must not promise a lane for it."""
+        raw = (self.ctx.env.get("AGENT_SEAT") or "").strip()
+        seat = self.ctx.registry.seat_by_name(raw) if raw else None
+        return seat is not None and self._lane_new_accepts(seat)
+
     def reason(self, hit: _Hit) -> str:
         src = hit.src
         app = src.app
         prefix = app.prefix if app is not None else src.prefix
         seat = self._seat_token()
-        slug = self._slug(hit.target, app, prefix)
+        lane_new_works = bool(app is not None and app.registered and app.integration_dir_name)
+        usable = self._seat_usable_for_lane_new()
+        shown_seat = (seat if usable else None) if lane_new_works else seat
+        slug = self._slug(hit.target, app, prefix, shown_seat)
+        review = self.display(str(self.ctx.roots.review_root))
+        blocked = (f"Blocked: fleet-repo checkouts are not allowed in temp directories, and this command "
+                   f"would put {hit.what} of {src.label} at {self.display(hit.target)}.")
+
+        def branch_for(token: str | None) -> str:
+            if token:
+                try:
+                    return L.branch_name(token, slug, self.ctx.registry)
+                except L.LayoutError:
+                    pass
+            return f"<seat>/{slug}"
+
+        if lane_new_works:
+            # `lane new` works for this app, so it is the way: it makes the branch and the lane at the
+            # path below in one step.  The CLI takes the seat only from AGENT_SEAT and refuses an unset,
+            # unknown, retired or folder-sharing one, so in those cases say so up front and show a
+            # placeholder.
+            token = shown_seat
+            tree = self.display(f"{self.ctx.roots.code_root}/{app.integration_dir_name}")
+            shim = self.display(f"{self.ctx.roots.apps_root}/lane")
+            run = f"run `{shim} new {app.name} {slug}` instead"
+            run = (run[0].upper() + run[1:]) if usable else f"Set AGENT_SEAT to your seat tag, then {run}"
+            return "  ".join((
+                blocked,
+                f"{run}; it creates branch {branch_for(token)} off origin/main and the lane at "
+                f"{self._lane(app, prefix, token, slug)}.",
+                f"For a read-only PR check, run `{shim} new {app.name} --review --pr <n>` instead; it makes "
+                f"a detached checkout under the review root {review}/.",
+                f"Do not do this work in the main integration tree {tree}; that tree is for the human.",
+            ))
+        # No registered integration tree to hang a worktree on (or an unknown repo): `lane new` would
+        # refuse, so keep pointing at the lane path itself.
         lane = self._lane(app, prefix, seat, slug)
-        branch = f"<seat>/{slug}"
-        if seat:
-            try:
-                branch = L.branch_name(seat, slug, self.ctx.registry)
-            except L.LayoutError:
-                pass
         if app is not None and app.integration_dir_name:
             tree = self.display(f"{self.ctx.roots.code_root}/{app.integration_dir_name}")
-            example = f"git -C {tree} worktree add -b {branch} {lane} origin/main"
+            example = f"git -C {tree} worktree add -b {branch_for(seat)} {lane} origin/main"
         else:
             tree = "~/Code/<App>"
             example = f"gh repo clone {src.owner_repo} {lane}" if src.owner_repo else ""
-        review = self.display(str(self.ctx.roots.review_root))
         where = f"Create it under the lanes root instead, at {lane}"
         if example:
             where += f" (for example `{example}`)"
         return "  ".join((
-            f"Blocked: fleet-repo checkouts are not allowed in temp directories, and this command "
-            f"would put {hit.what} of {src.label} at {self.display(hit.target)}.",
+            blocked,
             where + ".",
             f"For a read-only PR check, use the review root {review}/ instead.",
             f"Do not do this work in the main integration tree {tree}; that tree is for the human.",

@@ -28,10 +28,10 @@ Some agent CLIs only allowlist a stable command prefix.  `board stats` allowlist
 
 ```bash
 board file --title "Scout drops Senate rows on 502" --app congress-trade \
-  --severity P1 --by <YOUR_TAG> --env Mac --where "~/apps/congress-<seat> @ <seat>/fix" \
+  --severity P1 --by <YOUR_TAG> --env Mac --where "~/apps/lanes/congress/<seat>-fix @ <branch>" \
   --desc "path:line + repro"
 
-board claim <id> --by <YOUR_TAG> --env Mac --where "~/apps/congress-<seat> @ <seat>/fix"
+board claim <id> --by <YOUR_TAG> --env Mac --where "~/apps/lanes/congress/<seat>-fix @ <branch>"
 
 board comment <id> --by <YOUR_TAG> --text "Verified on main; the shared helper is right."
 
@@ -45,7 +45,7 @@ Status values: `open`, `in_progress`, `completed`, `deployed`, `addressed`, `won
 ## What you owe the board
 
 1. **Before substantial work:** list the app.  Claim the existing item or file then claim.
-2. **While working:** keep `--by <YOUR_TAG>`, `--env Mac`, and `--where "worktree @ branch"` accurate.
+2. **While working:** keep `--by <YOUR_TAG>`, `--env Mac`, and `--where "lane path @ branch"` accurate.
 3. **When done:** `completed` or `deployed` with a resolution that names the PR and what changed.  Do not leave `in_progress` after you stopped.
 4. **On a peer's item:** comment with evidence.  Reviewing fixes here is expected.
 

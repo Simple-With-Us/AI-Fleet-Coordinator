@@ -3,10 +3,16 @@
 
 from __future__ import annotations
 
+import contextlib
+import importlib.util
+import io
 import os
 import re
+import shutil
 import sys
+import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -22,6 +28,7 @@ from fleet_skill_identity import (  # noqa: E402
     head_has_fleet_wake,
     is_grok_bot_tag,
     platform_installs,
+    repo_platform_copies,
     skill_allowed_for_seat,
     specialize_from_monet,
     specialize_universal,
@@ -584,6 +591,264 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("| AFC |", cursor_ss)
         self.assertNotIn("This install is for `FLEET`", cursor_ss)
+
+
+class RepoPlatformCopiesTests(unittest.TestCase):
+    """The repo-tracked platform trees must equal a fresh render of the pack.
+
+    Sessions opened in this repo load .claude/skills, .cursor/skills and
+    .grok/skills directly, so a stale copy teaches the old lane commands.
+    """
+
+    FIX = "python3 scripts/install-fleet-skills.py --repo-only"
+
+    def test_tracked_platform_copies_match_fresh_render(self) -> None:
+        stale: list[str] = []
+        for dest, seat in repo_platform_copies(ROOT):
+            for name in catalog_skill_names(DOCS):
+                if not skill_allowed_for_seat(name, seat):
+                    continue
+                path = Path(dest, name, "SKILL.md")
+                want = specialize_from_monet(
+                    _load_skill(name), seat, skill_name=name
+                )
+                have = path.read_text(encoding="utf-8") if path.is_file() else None
+                if have != want:
+                    stale.append(os.path.relpath(str(path), ROOT))
+        self.assertEqual(
+            stale, [], f"stale platform copies; re-render with: {self.FIX}"
+        )
+
+    def test_platform_copies_carry_no_never_install_skill(self) -> None:
+        for dest, _seat in repo_platform_copies(ROOT):
+            for name in NEVER_INSTALL:
+                self.assertFalse(
+                    Path(dest, name).exists(), f"{dest}/{name} must not exist"
+                )
+
+    def test_platform_copies_do_not_teach_retired_seat_flat_lane(self) -> None:
+        """The old session-start text told readers to add a flat monet lane."""
+        for dest, _seat in repo_platform_copies(ROOT):
+            text = Path(dest, "session-start", "SKILL.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertNotRegex(
+                text, r"worktree add -b \S+ ~/apps/<prefix>-monet", dest
+            )
+            self.assertIn("lane new", text, dest)
+
+
+def _load_installer():
+    path = os.path.join(ROOT, "scripts", "install-fleet-skills.py")
+    spec = importlib.util.spec_from_file_location("install_fleet_skills", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class InstallerRepoOnlyTests(unittest.TestCase):
+    """install-fleet-skills.py --repo-only touches the repo and never HOME."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.repo = base / "repo"
+        self.home = base / "home"
+        docs = self.repo / "docs" / "fleet-skills"
+        docs.mkdir(parents=True)
+        for name in ("session-start", "board-ops"):
+            shutil.copytree(Path(DOCS, name), docs / name)
+        # Tool homes exist, so a full install would write into them.
+        for tool in (".claude", ".cursor", ".grok", ".fx"):
+            (self.home / tool).mkdir(parents=True)
+        self._old_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(self.home)
+        self.addCleanup(self._restore_home)
+        self.installer = _load_installer()
+        self.installer.REPO_ROOT = str(self.repo)
+        self.installer.DOCS_SKILLS = str(docs)
+        self.installer.ROOT_SKILLS = str(self.repo / "skills")
+        self.installer.BY_SEAT = str(docs / "by-seat")
+
+    def _restore_home(self) -> None:
+        if self._old_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self._old_home
+
+    def _run(self, argv: list[str]) -> str:
+        # Refuse to run against anything but the fake home.
+        self.assertEqual(os.path.expanduser("~"), str(self.home))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.installer.main(argv)
+        return out.getvalue()
+
+    def _home_files(self) -> list[str]:
+        return sorted(
+            os.path.relpath(os.path.join(d, f), self.home)
+            for d, _dirs, files in os.walk(self.home)
+            for f in files
+        )
+
+    def test_repo_only_renders_platform_copies_and_skips_home(self) -> None:
+        out = self._run(["--repo-only"])
+        for tree in (".claude", ".cursor", ".grok"):
+            self.assertTrue(
+                (self.repo / tree / "skills" / "session-start" / "SKILL.md").is_file(),
+                tree,
+            )
+        self.assertTrue((self.repo / "skills" / "session-start" / "SKILL.md").is_file())
+        self.assertEqual(self._home_files(), [])
+        self.assertIn("Home-dir installs: skipped (--repo-only)", out)
+        self.assertNotIn("fx-scanned", out)
+
+    def test_repo_only_copies_equal_a_fresh_render(self) -> None:
+        self._run(["--repo-only"])
+        for dest, seat in repo_platform_copies(str(self.repo)):
+            for name in ("session-start", "board-ops"):
+                want = specialize_from_monet(
+                    _load_skill(name), seat, skill_name=name
+                )
+                got = Path(dest, name, "SKILL.md").read_text(encoding="utf-8")
+                self.assertEqual(got, want, f"{dest}/{name}")
+
+    def test_default_mode_still_installs_into_home(self) -> None:
+        # Every write target must resolve inside the fake home, so this test
+        # can never reach the real one (an absolute dest would escape it).
+        home = str(self.home) + os.sep
+        for dest, _seat in platform_installs():
+            self.assertTrue(dest.startswith(home), dest)
+        for raw in self.installer.FX_SCAN_ROOTS:
+            self.assertTrue(os.path.expanduser(raw).startswith(home), raw)
+        out = self._run([])
+        self.assertIn("Home-dir installs:\n", out)
+        self.assertNotIn("--repo-only", out)
+        self.assertTrue(self._home_files(), "default mode must write tool homes")
+
+    def test_unchanged_pack_zip_is_not_rewritten(self) -> None:
+        self._run(["--repo-only"])
+        zpath = Path(self.installer.DOCS_SKILLS, "session-start.zip")
+        self.assertTrue(zpath.is_file())
+        os.utime(zpath, (1, 1))
+        before = zpath.read_bytes()
+        self._run(["--repo-only"])
+        self.assertEqual(zpath.read_bytes(), before)
+        self.assertEqual(int(zpath.stat().st_mtime), 1)
+        with zipfile.ZipFile(zpath) as zf:
+            self.assertEqual(zf.namelist(), ["session-start/SKILL.md"])
+
+    def test_changed_pack_zip_is_rewritten(self) -> None:
+        self._run(["--repo-only"])
+        md = Path(self.installer.DOCS_SKILLS, "session-start", "SKILL.md")
+        md.write_text(md.read_text(encoding="utf-8") + "\nextra line\n", encoding="utf-8")
+        self._run(["--repo-only"])
+        with zipfile.ZipFile(Path(self.installer.DOCS_SKILLS, "session-start.zip")) as zf:
+            self.assertIn(b"extra line", zf.read("session-start/SKILL.md"))
+
+
+class BranchPrefixMatchesLaneNewTests(unittest.TestCase):
+    """`lane new` names the branch <first registry branchPrefix><slug>.
+
+    A skill that lists another prefix for a seat sends readers to a branch
+    that does not match the lane they just created.
+    """
+
+    def _registry_first_prefix(self, tag: str) -> str:
+        import json
+
+        data = json.loads(
+            Path(os.path.join(ROOT, "fleet-apps.json")).read_text(encoding="utf-8")
+        )
+        row = next(r for r in data["seats"] if r["tag"] == tag)
+        return row["branchPrefixes"][0]
+
+    def test_coordination_skill_leads_with_registry_prefix_for_ag(self) -> None:
+        prefix = self._registry_first_prefix("AG")
+        self.assertEqual(prefix, "ag/")
+        text = _load_skill("fleet-coordination")
+        line = next(
+            l for l in text.splitlines() if l.strip().startswith("- Antigravity / Gemini:")
+        )
+        self.assertIn(f"branch prefix `{prefix}`", line)
+        # The bare "`agent/` or `ag/`" pairing offered two valid prefixes.
+        self.assertNotIn("`agent/` or `ag/`", line)
+
+    def test_template_agents_pairs_lane_new_with_seat_prefix_branch(self) -> None:
+        text = Path(ROOT, "TEMPLATE-AGENTS.md").read_text(encoding="utf-8")
+        paragraphs = text.split("\n\n")
+
+        def para(marker: str) -> str:
+            hits = [p for p in paragraphs if marker in p]
+            self.assertEqual(len(hits), 1, marker)
+            return hits[0]
+
+        launch_block = para("Launch yourself in your own lane")
+        start = launch_block.index("- **Launch yourself in your own lane")
+        launch = launch_block[start : launch_block.index("\n- **", start + 1)]
+        self.assertNotIn("`agent/<name>`", launch)
+        self.assertIn("<seat prefix>/<slug>", launch)
+
+        cursor = para("lanes/trading/cursor-<slug>")
+        self.assertIn("`cursor/<slug>`", cursor)
+        # The new lane's branch is not the legacy standing lane's branch.
+        self.assertNotIn("cursor-<slug>`), on its own branch (`agent/cursor`)", cursor)
+
+
+class AgentSyncRosterTests(unittest.TestCase):
+    """The availability roster must agree with the seat table and registry."""
+
+    MARKER = "Retired, do not assign:"
+
+    def _registry(self) -> list[dict]:
+        import json
+
+        data = json.loads(
+            Path(os.path.join(ROOT, "fleet-apps.json")).read_text(encoding="utf-8")
+        )
+        return data["seats"]
+
+    def _roster(self) -> str:
+        text = Path(ROOT, "AGENT-SYNC.md").read_text(encoding="utf-8")
+        start = text.index("## Agent availability")
+        end = text.index("## CI Runner Infrastructure Policy")
+        return text[start:end]
+
+    def _available_paragraph(self) -> str:
+        roster = self._roster()
+        start = roster.index("**Available (normal):**")
+        return roster[start : roster.index("\n\n", start)]
+
+    def test_active_seats_sentence_lists_no_retired_seat(self) -> None:
+        match = re.search(r"Active seats: ([A-Z, -]+)\.", self._roster())
+        self.assertIsNotNone(match)
+        active = {t.strip() for t in match.group(1).split(",")}
+        retired = {r["tag"] for r in self._registry() if r.get("retired")}
+        self.assertEqual(active & retired, set(), active)
+        self.assertIn("CLUTCH", active)
+
+    def test_available_list_has_no_retired_seat_and_names_clutch(self) -> None:
+        para = self._available_paragraph()
+        self.assertIn(self.MARKER, para)
+        before, after = para.split(self.MARKER, 1)
+        retired = [r["tag"] for r in self._registry() if r.get("retired")]
+        for tag in retired:
+            self.assertNotRegex(before, rf"\b{re.escape(tag)}\b", tag)
+        self.assertRegex(before, r"\bCLUTCH\b")
+        for tag in ("MONET", "RENOIR", "HARNESS"):
+            self.assertRegex(after, rf"\b{tag}\b", tag)
+
+    def test_roster_never_says_renoir_is_a_future_seat(self) -> None:
+        self.assertNotIn("future third seat", self._roster())
+
+    def test_seat_table_marks_the_same_seats_retired(self) -> None:
+        text = Path(ROOT, "AGENT-SYNC.md").read_text(encoding="utf-8")
+        for tag in ("MONET", "RENOIR", "HARNESS"):
+            row = next(
+                l for l in text.splitlines() if l.startswith(f"| **") and f"(`{tag}`)" in l
+            )
+            self.assertIn("Retired 2026-10-07", row, tag)
 
 
 if __name__ == "__main__":

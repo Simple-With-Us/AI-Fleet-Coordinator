@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# onboard-new-agent.sh — create per-app worktrees for a new seat.
+# onboard-new-agent.sh — register a new seat in fleet-apps.json and print the manual steps.
 #
-# Mechanical half of docs/ONBOARDING-NEW-AGENT.md. Does not configure
-# Slack tokens, MCP, or platform global rules files.
+# Mechanical half of docs/ONBOARDING-NEW-AGENT.md.  Does not create lanes (a lane is
+# made per task with `~/apps/lane new`), and does not configure chat tokens, MCP, or
+# platform rules files and hooks.
 #
 # Usage:
 #   ./scripts/onboard-new-agent.sh --tag GROK --notes-name Grok \
 #       --worktree-suffix grok --branch-prefix grok/
-#   ./scripts/onboard-new-agent.sh --tag KIMI --apps DealDex,Socratic.Trade
+#   ./scripts/onboard-new-agent.sh --tag NEWSEAT --dry-run
 
 set -euo pipefail
 
@@ -15,15 +16,12 @@ TAG=""
 NOTES_NAME=""
 SUFFIX=""
 PREFIX=""
-APPS_FILTER=""
-INCLUDE_FLEET=0
 DRY_RUN=0
-CODE_ROOT="${CODE_ROOT:-$HOME/Code}"
 APPS_ROOT="${APPS_ROOT:-$HOME/apps}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 
 usage() {
-  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -33,8 +31,11 @@ while [ $# -gt 0 ]; do
     --notes-name) NOTES_NAME="${2:-}"; shift 2 ;;
     --worktree-suffix) SUFFIX="${2:-}"; shift 2 ;;
     --branch-prefix) PREFIX="${2:-}"; shift 2 ;;
-    --apps) APPS_FILTER="${2:-}"; shift 2 ;;
-    --include-fleet) INCLUDE_FLEET=1; shift ;;
+    --apps|--include-fleet)
+      # Accepted so older command lines keep working.  These used to pick which
+      # integration trees got a lane; no lane is created here any more.
+      echo "note: $1 is ignored; lanes are created per task with 'lane new'" >&2
+      if [ "$1" = "--apps" ]; then shift 2; else shift; fi ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage 0 ;;
     *) echo "unknown arg: $1" >&2; usage 1 ;;
@@ -48,14 +49,6 @@ fi
 NOTES_NAME="${NOTES_NAME:-$TAG}"
 SUFFIX="${SUFFIX:-$(echo "$TAG" | tr '[:upper:]' '[:lower:]')}"
 PREFIX="${PREFIX:-$SUFFIX/}"
-
-run() {
-  if [ "$DRY_RUN" -eq 1 ]; then
-    printf 'DRY:'; printf ' %q' "$@"; printf '\n'
-  else
-    "$@"
-  fi
-}
 
 echo "== seat onboard: tag=$TAG notes=$NOTES_NAME suffix=$SUFFIX prefix=$PREFIX"
 
@@ -84,62 +77,36 @@ else
   echo "DRY: would record seat $TAG in fleet-apps.json"
 fi
 
-# Create worktrees.
-python3 - "$here/fleet-apps.json" "$SUFFIX" "$PREFIX" "$CODE_ROOT" "$APPS_ROOT" "$APPS_FILTER" "$INCLUDE_FLEET" "$DRY_RUN" <<'PY'
-import json, os, subprocess, sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-suffix, prefix, code_root, apps_root, apps_filter, include_fleet, dry = sys.argv[2:9]
-include_fleet = include_fleet == "1"
-dry = dry == "1"
-wanted = {x.strip() for x in apps_filter.split(",") if x.strip()}
-data = json.loads(path.read_text())
-
-def sh(args):
-    print("  $", " ".join(args))
-    if not dry:
-        subprocess.check_call(args)
-
-for app in data.get("apps", []):
-    repo = app["repo"]
-    kind = app.get("kind", "product")
-    if kind == "infra" and not include_fleet:
-        continue
-    if wanted and repo not in wanted and app.get("codeDir") not in wanted:
-        continue
-    code = Path(code_root) / app["codeDir"]
-    lane = Path(apps_root) / f"{app['worktreePrefix']}-{suffix}"
-    if not (code / ".git").exists() and not (code / ".git").is_file():
-        # worktree gitdir is a file; integration tree is a dir
-        if not code.exists():
-            print(f"SKIP {repo}: no integration tree at {code}")
-            continue
-    if lane.exists():
-        print(f"EXISTS {lane}")
-        continue
-    if not code.exists():
-        print(f"SKIP {repo}: {code} missing")
-        continue
-    branch = f"{prefix.rstrip('/')}/lane"
-    print(f"CREATE {lane} from {code} branch {branch}")
-    # Prefer a dedicated lane branch; fall back if it already exists.
-    try:
-        sh(["git", "-C", str(code), "worktree", "add", "-b", branch, str(lane)])
-    except subprocess.CalledProcessError:
-        try:
-            sh(["git", "-C", str(code), "worktree", "add", str(lane), branch])
-        except subprocess.CalledProcessError:
-            sh(["git", "-C", str(code), "worktree", "add", str(lane), "main"])
-PY
-
 echo
-echo "Seat $TAG worktrees considered. Still do by hand:"
-echo "  - Global rules file for this platform -> ~/apps/AGENT-SYNC.md"
-echo "  - AGENT_SEAT=$TAG if the platform shares an account"
-echo "  - Intro + first claim on #agent-sync"
-echo "  - Add a row to AGENT-SYNC.md Agent Seat table if this is a standing seat"
-echo "  - See docs/ONBOARDING-NEW-AGENT.md"
+if [ "$DRY_RUN" -eq 1 ]; then recorded="would be recorded"; else recorded="is recorded"; fi
+echo "Seat $TAG $recorded.  This script creates NO lanes: a lane is made per task, with"
+echo "  AGENT_SEAT=$TAG ~/apps/lane new <app> <slug>"
+echo "which lands at ~/apps/lanes/<prefix>/$SUFFIX-<slug> on branch ${PREFIX}<slug>."
+echo "(Layout and rules: docs/protocols/lane-map.md.  Folder names use the whole suffix.)"
+echo
+echo "Still do by hand (the owner approves each live install; read every plan first):"
+echo "  1. PR the new fleet-apps.json row.  'lane' refuses an unknown seat until the row has"
+echo "     merged and the stable copy is refreshed:"
+echo "       cd scripts && python3 -m fleet_lanes.install_tools plan tools"
+echo "       cd scripts && python3 -m fleet_lanes.install_tools apply tools"
+echo "  2. Rules file and deny hook are installed per PLATFORM, not per seat.  If this seat runs"
+echo "     on a covered platform (rules: claude codex fx grok antigravity minimax cursor;"
+echo "     hook: claude codex grok antigravity cursor), confirm with:"
+echo "       cd scripts && python3 -m fleet_lanes.install_rules verify <platform>"
+echo "       cd scripts && python3 -m fleet_lanes.install_tools verify <platform>"
+echo "     and, if either is missing, plan then apply it:"
+echo "       python3 -m fleet_lanes.install_rules plan <platform>"
+echo "       python3 -m fleet_lanes.install_rules apply <platform>   (add --create for a new file;"
+echo "         --i-own-this-file for claude)"
+echo "       python3 -m fleet_lanes.install_tools plan <platform>"
+echo "       python3 -m fleet_lanes.install_tools apply <platform>"
+echo "     A new platform needs an entry in scripts/fleet_lanes/install_rules.py and install_tools.py"
+echo "     first; this script does not add one."
+echo "  3. AGENT_SEAT=$TAG if the platform shares an account"
+echo "  4. Intro + first claim on the chat channel (#agent-sync)"
+echo "  5. Add a row to the AGENT-SYNC.md Agent Seat table if this is a standing seat"
+echo "  6. See docs/ONBOARDING-NEW-AGENT.md"
 echo
 echo "Poll:  AGENT_TAG=$TAG /usr/bin/python3 $APPS_ROOT/agent-sync-poll.py"
-echo "Post:  AGENT_TAG=$TAG $APPS_ROOT/agent-sync-websocket.py --post \"[$TAG] intro\\nrepo: fleet-infra\\nseat: $TAG\""
+printf 'Post:  AGENT_TAG=%s %s/agent-sync-websocket.py --post "[%s] intro\\nrepo: fleet-infra\\nseat: %s"\n' \
+  "$TAG" "$APPS_ROOT" "$TAG" "$TAG"
