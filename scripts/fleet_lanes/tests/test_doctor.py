@@ -844,7 +844,7 @@ class DiscoveryTests(GitCase):
         self.parent = self.integration()
 
     def test_registered_worktrees_outside_every_scan_root_are_found(self) -> None:
-        elsewhere = self.add_worktree(self.parent, self.base / "elsewhere" / "wt", "claude/elsewhere")
+        elsewhere = self.add_worktree(self.parent, self.home / "elsewhere" / "deep" / "er" / "wt", "claude/elsewhere")
         co = self.one(self.report(), elsewhere)
         self.assertTrue(any(s.startswith("worktree-list:") for s in co["found_by"]), co["found_by"])
         self.assertEqual(co["location_class"], "UNSANCTIONED")
@@ -1881,7 +1881,7 @@ class CleanerContractTests(GitCase):
         self.assertNotEqual(self.one(rep, other)["pr_state"], "MERGED")
 
     def test_only_checkouts_in_the_lane_map_that_git_can_remove_qualify(self) -> None:
-        elsewhere = self.add_worktree(self.parent, self.base / "elsewhere" / "wt", "claude/elsewhere", pushed=False)
+        elsewhere = self.add_worktree(self.parent, self.home / "elsewhere" / "wt", "claude/elsewhere", pushed=False)
         tmp = self.add_worktree(self.parent, self.faketmp / "bf-x" / "wt", "claude/tmpwork", pushed=False)
         clone = self.make_repo(self.home / "apps" / "dealdex-claude-clone", branch="claude/clone")
         cache = self.make_repo(self.home / ".grok" / "installed-plugins" / "x-1234", branch="claude/cache")

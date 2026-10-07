@@ -233,12 +233,15 @@ class GuardContext:
             rf = fold(str(root))
             if rf in roots_f:
                 continue
-            if home_f == rf or home_f.startswith(rf + "/"):
-                continue          # a home inside temp (a test home): that root is skipped
             roots_f.append(rf)
         self.tmp_roots_f = tuple(roots_f)
         self.tmp_globs_f = tuple(tuple(fold(g).split("/")) for g in roots.tmp_globs)
         self.home_parts_f = tuple(home_f.split("/"))
+        # A real home is never inside temp.  A test home made with tempfile is, and then only the
+        # home's own subtree is exempt: its siblings (on Linux /tmp/<repo> beside /tmp/tmpAbC123)
+        # stay temp, so a temp-dir home cannot switch a whole temp root off.
+        self.home_f = home_f
+        self.home_in_temp = self._raw_remainder(home_f) is not None
         self.fleet_roots_f = tuple(dict.fromkeys(
             fold(str(p)) for p in (roots.lanes_root, roots.code_root, roots.apps_root)))
         self.code_root_f = fold(str(roots.code_root))
@@ -254,9 +257,7 @@ class GuardContext:
         names.sort(key=lambda t: -len(t[0]))
         self.app_names = tuple(names)
 
-    def tmp_remainder(self, fk: str) -> str | None:
-        """For a folded absolute path inside a temp root, the part after that root ("" for the
-        root itself); None when the path is not in temp."""
+    def _raw_remainder(self, fk: str) -> str | None:
         for root in self.tmp_roots_f:
             if fk == root:
                 return ""
@@ -268,10 +269,17 @@ class GuardContext:
             if len(comps) < k:
                 continue
             if all(fnmatch.fnmatchcase(c, p) for c, p in zip(comps, pat)):
-                if tuple(self.home_parts_f[:k]) == tuple(comps[:k]):
-                    continue
                 return "/".join(comps[k:])
         return None
+
+    def tmp_remainder(self, fk: str) -> str | None:
+        """For a folded absolute path inside a temp root, the part after that root ("" for the
+        root itself); None when the path is not in temp.  When the home itself sits in temp (a
+        test home), paths inside the home are not temp."""
+        rem = self._raw_remainder(fk)
+        if rem is not None and self.home_in_temp and (fk == self.home_f or fk.startswith(self.home_f + "/")):
+            return None
+        return rem
 
 
 # --------------------------------------------------------------------------- lane naming, shared with `lane`

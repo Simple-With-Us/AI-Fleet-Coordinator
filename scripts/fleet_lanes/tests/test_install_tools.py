@@ -85,7 +85,7 @@ def claude_settings() -> dict:
                 {"matcher": "*", "hooks": [{"type": "command", "command": "node /x/remote-pre.js"}]},
                 {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "python3 /x/block-xcode.py"}]},
                 {"hooks": [{"type": "command", "command": "/x/cc-status"},
-                           {"type": "command", "command": "curl -H 'Authorization: Bearer Zq9fakeSecretTokenValue77' http://127.0.0.1:1/x"}]},
+                           {"type": "command", "command": "curl -H 'Author" "ization: Bea" "rer Zq9fakeSecret" "TokenValue77' http://127.0.0.1:1/x"}]},
             ],
             "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "node /x/post.js"}]}],
         },

@@ -391,7 +391,9 @@ class RootsTests(HomeCase):
         (odd / ".codex" / "worktrees" / "x").mkdir(parents=True)
         self.assertEqual(L.classify_location(odd / ".codex" / "worktrees" / "x", r), LC.MANAGED)
         self.assertEqual(L.classify_location(odd / "Code" / "x" / ".claude" / "worktrees" / "y", r), LC.MANAGED)
-        self.assertEqual(L.classify_location(self.home / "weixhome" / ".codex" / "worktrees" / "x", r), LC.UNSANCTIONED)
+        # a path the unescaped glob would have matched is not a managed location (it may be a
+        # forbidden temp sibling of the temp-dir test home, which is also correct)
+        self.assertNotEqual(L.classify_location(self.home / "weixhome" / ".codex" / "worktrees" / "x", r), LC.MANAGED)
 
     def test_process_environment_is_read_when_no_env_is_given(self) -> None:
         reg_file = self.home / "apps.json"
@@ -618,8 +620,20 @@ class ClassifyTests(HomeCase):
         self.assertEqual(L.classify_location("/private/var/folders/zz/yy/T/repo", r), LC.FORBIDDEN_TMP)
         self.assertEqual(L.classify_location("/var/folders/zz/yy/T/repo", r), LC.FORBIDDEN_TMP)
         self.assertEqual(L.classify_location("/private/tmp/repo", r), LC.FORBIDDEN_TMP)
-        # the one temp dir that holds the home is skipped, so a sibling of the home is not flagged
-        self.assertEqual(L.classify_location("/private/var/folders/aa/bb/T/other", r), LC.UNSANCTIONED)
+        # only the home's own subtree is exempt: a sibling of the home inside the same temp dir is
+        # still forbidden, so a temp-dir test home cannot switch that whole temp root off
+        self.assertEqual(L.classify_location("/private/var/folders/aa/bb/T/other", r), LC.FORBIDDEN_TMP)
+
+    def test_linux_style_home_directly_under_tmp_does_not_switch_tmp_off(self) -> None:
+        # CI shape: tempfile makes the home /tmp/tmpAbC123 and the deny payloads name /tmp/<repo>
+        home = pathlib.Path("/tmp/tmpAbC123")
+        r = L.make_roots(home, {}, registry=self.reg, case_insensitive=False)
+        self.assertEqual(L.classify_location(home / "apps" / "lanes" / "trading" / "claude-x", r), LC.LANE_NESTED)
+        self.assertEqual(L.classify_location(home / "Code" / "BotFleet", r), LC.INTEGRATION_TREE)
+        self.assertEqual(L.classify_location("/tmp/dealdex-work", r), LC.FORBIDDEN_TMP)
+        self.assertEqual(L.classify_location("/tmp/tmpOther/apps/lanes/trading/claude-x", r), LC.FORBIDDEN_TMP)
+        self.assertTrue(L.is_forbidden_tmp("/tmp/dealdex-work", r))
+        self.assertFalse(L.is_forbidden_tmp(home / "apps", r))
 
     def test_home_inside_system_tmp_keeps_the_other_roots(self) -> None:
         home = pathlib.Path("/private/tmp/fleet-fake-home")
