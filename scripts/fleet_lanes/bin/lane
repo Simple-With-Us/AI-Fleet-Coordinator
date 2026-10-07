@@ -1,0 +1,54 @@
+#!/bin/sh
+# lane: shim for fleet_lanes.lane (create a lane or a PR review checkout in the right place).
+#
+#   lane new <app> <slug>              a lane for your seat (AGENT_SEAT must be set)
+#   lane new <app> --review --pr N     a read-only PR checkout
+#   lane path <app> <slug>             print the path a lane would get
+#   lane ls | lane doctor [options]    every checkout on this Mac, with status
+#
+# The shim finds its own real location (following symlinks, so a link to it from a bin folder of
+# your own works) and runs fleet_lanes.lane from that checkout's scripts/ directory with
+# `python3 -I`.  -I keeps the working directory and every PYTHON* variable off the import path,
+# so a fleet_lanes folder in the caller's cwd (every AFC lane has one under scripts/) can never
+# stand in for this checkout's copy; the boot line puts scripts/ first on sys.path itself.  Do
+# not point ~/apps/lane at this file: that path belongs to `install_tools apply tools`, which
+# writes a shim for the stable copy there.  FLEET_APPS_JSON, FLEET_LAYOUT, FLEET_LANES_ROOT and
+# AGENT_SEAT are read from the environment as they are (-I drops only PYTHON* variables).
+# FLEET_SCRIPTS_DIR overrides the scripts/ directory (for a shim that was copied instead of
+# linked).  FLEET_PYTHON overrides the interpreter.
+
+self=$0
+hops=0
+while [ -L "$self" ] && [ "$hops" -lt 40 ]; do
+    target=$(readlink "$self") || break
+    case $target in
+        /*) self=$target ;;
+        *) self=$(dirname "$self")/$target ;;
+    esac
+    hops=$((hops + 1))
+done
+
+if [ -n "${FLEET_SCRIPTS_DIR:-}" ]; then
+    scripts=$FLEET_SCRIPTS_DIR
+else
+    here=$(cd "$(dirname "$self")" 2>/dev/null && pwd -P) || {
+        echo "lane: cannot locate the shim directory for $0" >&2
+        exit 69
+    }
+    scripts=$(cd "$here/../.." 2>/dev/null && pwd -P) || {
+        echo "lane: cannot locate scripts/ above $here" >&2
+        exit 69
+    }
+fi
+
+if [ ! -f "$scripts/fleet_lanes/lane.py" ]; then
+    echo "lane: $scripts/fleet_lanes/lane.py not found; set FLEET_SCRIPTS_DIR to the scripts/ directory of an AI-Fleet-Coordinator checkout" >&2
+    exit 69
+fi
+
+if [ -n "${FLEET_APPS_JSON:-}" ]; then
+    export FLEET_APPS_JSON
+fi
+
+# The same boot line install_tools writes into ~/apps/lane (install_tools._PY_BOOT).
+exec "${FLEET_PYTHON:-python3}" -I -c 'import sys, runpy; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module("fleet_lanes.lane", run_name="__main__", alter_sys=True)' "$scripts" "$@"

@@ -40,7 +40,8 @@ appear as `claude`).
 > [!CAUTION]
 > **CRITICAL RULE: DO NOT WORK IN `<YOUR_PROJECT_DIR>` (OR WHATEVER THE MAIN WORKTREE IS).**
 > That is the human owner's integration tree and the fleet's review base. If you check out your branch in the main folder, you will corrupt the review base for other agents (causing it to be drastically out-of-sync with production).
-> **You MUST `cd` into your designated agent lane (e.g., `~/apps/trading-antigravity`) BEFORE doing any work.** A `pre-commit` hook is installed to block agent commits in the main folder.
+> **You MUST `cd` into your own agent lane BEFORE doing any work.**  Create one with `~/apps/lane new <app> <slug>` (`AGENT_SEAT` must be set); it lands at `~/apps/lanes/<prefix>/<seat>-<slug>`, for example `~/apps/lanes/trading/antigravity-fix-login`.  A `pre-commit` hook is installed to block agent commits in the main folder.
+> **Never clone this repo, or add a worktree of it, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders`** (Lane Map, owner 2026-10-07: `docs/protocols/lane-map.md` in AI-Fleet-Coordinator).
 
 - `git status` and `git log -3` first. Another tool may have left uncommitted
   work in the tree — read it before editing on top of it, don't assume a clean
@@ -143,10 +144,12 @@ that file directly.
 ## Hosting & dev servers (multi-agent coordination)
 
 This repo is touched by several AI tools (Claude Code, Codex, Antigravity/Gemini, Cursor).
-**Each agent works in its OWN git worktree, on its OWN branch** (Claude →
+**Each agent works in its OWN git worktree, on its OWN branch.**  New lanes are created with
+`~/apps/lane new <app> <slug>` and live at `~/apps/lanes/<prefix>/<seat>-<slug>` (for this app,
+`~/apps/lanes/trading/claude-fix-login`).  The standing flat lanes (Claude →
 `~/apps/trading-claude`, Codex → `~/apps/trading-codex`, Antigravity →
-`~/apps/trading-antigravity`, Cursor → `~/apps/trading-cursor`, Monet →
-`~/apps/trading-monet`; `~/Code/Agentic Trading` is the human/integration tree). Every
+`~/apps/trading-antigravity`, Cursor → `~/apps/trading-cursor`, Monet, retired 2026-10-07 →
+`~/apps/trading-monet`) stay until they retire; `~/Code/Agentic Trading` is the human/integration tree.  Every
 worktree has its own `node_modules`, `.next`, `data/app.db`, and `.env.local` — never
 assume any are shared, and never point one worktree's process at another's files.
 
@@ -235,10 +238,13 @@ must not silently drift behind beta after work lands.
   output between worktrees.
 
 ### How each agent works
-- **Launch yourself in your own worktree dir** (Claude → `~/apps/trading-claude`, Codex →
-  `~/apps/trading-codex`, Antigravity → `~/apps/trading-antigravity`, Monet →
-  `~/apps/trading-monet`, Cursor (background/agent mode) → `~/apps/trading-cursor`). Edit
-  only there, on your `agent/<name>` branch. To see your edits live, run `npm run dev` in
+- **Launch yourself in your own lane** (`~/apps/lane new <app> <slug>`, at
+  `~/apps/lanes/<prefix>/<seat>-<slug>`; the standing flat lanes `~/apps/trading-claude`,
+  `~/apps/trading-codex`, `~/apps/trading-antigravity`, `~/apps/trading-monet` (retired) and
+  `~/apps/trading-cursor` (background/agent mode) still exist until they retire).  Edit
+  only there, on the lane's own branch: `lane new` names it `<seat prefix>/<slug>` from the
+  registry (for example `claude/fix-login` or `cursor/fix-login`), and the standing flat lanes
+  keep the branches they already have.  To see your edits live, run `npm run dev` in
   your own worktree (localhost; the old always-on PM2/HMR previews are retired).
 - **Do not edit in another agent's worktree, nor in the `main` integration worktree.**
 - **Land work via the landing script — never push directly to main:**
@@ -278,7 +284,8 @@ called Cursor "not a 4th agent lane" — that's outdated; corrected 2026-07-06, 
 
 1. **A full peer autonomous lane**, on par with Claude Code, Codex, and Antigravity/Gemini.
    The owner runs Cursor's background/agent mode on **DeepSeek**, producing work in its own
-   worktree (`~/apps/trading-cursor`), on its own branch (`agent/cursor`), with its own
+   lane (the standing `~/apps/trading-cursor` on `agent/cursor`, or a new
+   `~/apps/lanes/trading/cursor-<slug>` on `cursor/<slug>`), with its own
    PM2-hosted preview (`cursor.jays.services`, port **4103`) — see the hosting table above.
    That spawn is still `[CURSOR]`.  The separate DeepSeek Harness platform is `[DSH]`
    (former Slack tag `DEEPSEEK` retired).  MiniMax Code is `[MM]` (former `MINIMAX` retired).
@@ -411,13 +418,13 @@ Identify issues here, claim them here, resolve them here, comment on each other'
 fixes here.  It spans review findings + every app's effort-board rows + every
 repo's GitHub issues, always synchronized (~10 min).
 `GROK-BOT` is one fleet-wide identity that drives Cursor cloud agents — **not** a
-per-app coding seat.  Do not add `~/apps/<app>-grok-bot` lanes.
+per-app coding seat.  Do not add per-app Grok Bot lanes (flat or under `~/apps/lanes/`).
 
 ```bash
 board stats
 board list --app <this-app> --status open,in_progress
 board file  --title "..." --app <this-app> --severity P1 --by <SEAT> --env Mac|cloud
-board claim <id> --by <SEAT> --env Mac|cloud --where "~/apps/<lane> @ <branch>"
+board claim <id> --by <SEAT> --env Mac|cloud --where "~/apps/lanes/<prefix>/<seat>-<slug> @ <branch>"
 board comment <id> --by <SEAT> --text "..."
 board status <id> completed --resolution "Landed in #123."
 ```
@@ -636,7 +643,7 @@ address:
 - **This repo** overrides that with a repo-local `user.email` set to the noreply address. Because
   `extensions.worktreeConfig` is **off**, a repo-local `git config user.email` lives in the shared
   `.git/config` and applies to **all** linked worktrees (`~/apps/trading-claude`, `-codex`,
-  `-antigravity`, `-live`, the `main` integration tree, and any temporary `git worktree add` dirs).
+  `-antigravity`, `-live`, every lane under `~/apps/lanes/trading/`, the `main` integration tree, and any temporary `git worktree add` dirs).
 
 **Rules for every agent (Claude, Codex, Antigravity, Cursor):**
 

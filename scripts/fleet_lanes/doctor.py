@@ -1,7 +1,8 @@
 """Lane doctor: find every git checkout on this Mac and say whether removing it could lose work.
 
     cd scripts && python3 -m fleet_lanes.doctor [--json] [--write PATH] [--sizes] [--deep]
-                                               [--no-gh] [--strict] [--only-class CLASS]
+                                               [--no-gh] [--gh-limit N] [--strict] [--only-class CLASS]
+                                               [--fresh-days N] [--cleaner-list]
 
 REPORT ONLY.  The doctor never deletes, moves, fetches or modifies anything.  Every subprocess goes
 through `run_cmd`, which refuses any command that is not on an explicit read-only allowlist (git
@@ -18,19 +19,44 @@ scan (`scan_plan`) of the places checkouts hide.  Results are deduplicated by re
 depth 0, its children depth 1, and a checkout is found when its own depth is at most the limit.
 
 Safety classes, in precedence order:
+  TOOL-CACHE      a plugin or marketplace clone a tool manages (checkout.tool_cache).  It wins over
+                  everything, is never a dropped ball and never in the attention lists; the class it
+                  would have had is the first reason.  Still in `checkouts` and every count.
   ACTIVE          a live process has it as cwd, or it is CLAUDE_PROJECT_DIR or the doctor's cwd
   NEEDS-REVIEW    any positive reason removal could lose work (every reason is listed): dirty files,
                   ignored local state (a database, a .env; build output does not count), a
-                  .janitor-keep marker, unpushed commits, an open PR, and so on
+                  .janitor-keep marker, unpushed commits, an open PR, a fresh lane, and so on
   UNKNOWN         no known risk, but a needed fact could not be read (a failed git probe, a failed
-                  gh lookup, a failed worktree list, git resolving the directory to another repo)
+                  gh lookup, a failed worktree list, git resolving the directory to another repo, a
+                  lane whose age could not be read)
   SAFE-TO-REMOVE  clean, nothing unpushed, no open PR, nothing running (the evidence is listed)
 A failed `gh` lookup or `lsof` never hides a dirty tree: known risks win over unknowns.
+
+Fresh lanes.  A lane (nested, flat legacy, flat), review or harness-managed checkout whose
+lane_age_days or idle_days is below FRESH_DAYS (7, `--fresh-days N`), and whose HEAD has no merged-PR
+evidence (pr_state MERGED, or CLOSED with HEAD equal to the PR head), is NEEDS-REVIEW with the reason
+"fresh lane: age Nd, idle Nd, not merged" and can never be SAFE-TO-REMOVE: a lane that young has had no
+time to merge, and the disk janitor retires idle lanes by file mtime.  Merged evidence overrides.
+Integration trees and places outside the map ignore age; an unreadable age on a lane gives UNKNOWN.
+
+Cleaner contract.  SAFE-TO-REMOVE alone must never decide a deletion, because a fresh, clean, pushed
+lane reads SAFE.  `cleaner_candidates` (JSON top level; `--cleaner-list` prints it) holds the real paths
+of checkouts that satisfy ALL of: SAFE-TO-REMOVE, merged-PR evidence, lane_age_days and idle_days both
+known and at least the floor max(--fresh-days, FRESH_DAYS), no .janitor-keep, lsof worked and no process
+cwd, a lane/review/managed location, not a tool cache, no read errors, a successful gh lookup for its
+repo (`gh_repos`), a linked worktree its parent registers (removal is `git worktree remove`), and no
+other checkout inside it.  A saved report carries generated_at, gh and lsof so a consumer can refuse
+a stale or partial one.  The doctor never creates a .janitor-keep marker: one makes the checkout
+NEEDS-REVIEW for good.
 
 Fleet repos squash-merge and delete the branch, so ancestry says nothing.  Merged state comes from
 one bulk `gh pr list` call per repo, matched by headRefName and headRefOid.  A merged PR whose head
 equals local HEAD covers the checkout, and that evidence is applied before any unpushed or
 detached-HEAD reason is recorded.  When gh is missing or fails the PR state is UNKNOWN, never NONE.
+
+JSON schema 2 = schema 1 plus the top-level fresh_days, cleaner_min_days, gh_repos and
+cleaner_candidates, summary.cleaner_candidates, and the TOOL-CACHE safety class.  Exit codes: 0, 2 for
+`--strict` hits, 64 for a usage error.
 
 Tests: fleet_lanes/tests/test_doctor.py (real temp git repos; no network).
 """
@@ -60,10 +86,17 @@ __all__ = [
     "WorktreeRecord", "parse_worktree_porcelain", "count_status", "split_ignored", "IGNORED_LIST_CAP",
     "PrMatch", "match_pr", "make_gh_fetcher", "make_lsof_reader", "parse_lsof",
     "ScanSpec", "scan_plan", "find_git_dirs",
-    "Checkout", "build_report", "render_text", "main",
+    "Checkout", "assess", "FRESH_DAYS", "TOOL_CACHE_SAFETY", "has_merged_evidence", "cleaner_age_floor",
+    "is_cleaner_candidate", "cleaner_candidates", "build_report", "render_text", "main",
 ]
 
-SCHEMA = 1
+SCHEMA = 2
+
+# A lane younger than this (by creation or by last activity) that has not merged is never
+# SAFE-TO-REMOVE.  The same number is the floor of the cleaner contract.  `--fresh-days N` changes the
+# label rule; the cleaner floor is max(N, FRESH_DAYS), so no option makes a younger lane removable.
+FRESH_DAYS = 7
+TOOL_CACHE_SAFETY = "TOOL-CACHE"
 
 # --------------------------------------------------------------------------- safe subprocess runner
 
@@ -666,6 +699,9 @@ def find_git_dirs(root: str, max_depth: int, *, check_root: bool = True,
 
 KINDS = ("LINKED-WORKTREE", "FULL-CLONE", "ORPHAN")
 _LANE_CLASSES = (L.LocationClass.LANE_NESTED, L.LocationClass.LANE_FLAT, L.LocationClass.LANE_FLAT_LEGACY)
+# Where the fresh-lane rule and the cleaner contract apply: every lane, review checkout and
+# harness-managed worktree.  LANE_FLAT is a lane too (it only appears under FLEET_LAYOUT=flat).
+_LANE_LIKE = frozenset(str(c) for c in (*_LANE_CLASSES, L.LocationClass.REVIEW, L.LocationClass.MANAGED))
 
 # Plugin and marketplace caches that tools keep as git clones.  They are not working copies.
 _TOOL_CACHE = re.compile(
@@ -1127,14 +1163,30 @@ def _ignored_reason(co: Checkout) -> str:
     return "ignored local state: " + ", ".join(shown) + (f" (+{more} more)" if more > 0 else "")
 
 
-def assess(co: Checkout, pr: PrMatch, active_reasons: Sequence[str]) -> None:
+def _fmt_days(value: float | None) -> str:
+    return "?" if value is None else f"{value:g}d"
+
+
+def has_merged_evidence(pr_state: str) -> bool:
+    """True when GitHub holds the checkout's commits through a merged PR (MERGED), or through a
+    closed one whose head equals local HEAD (CLOSED; `match_pr` returns CLOSED only on an exact
+    head match).  BEYOND-MERGED is not evidence: HEAD has commits the PR never saw."""
+    return pr_state in ("MERGED", "CLOSED")
+
+
+def assess(co: Checkout, pr: PrMatch, active_reasons: Sequence[str], *, fresh_days: float = FRESH_DAYS) -> None:
     """Fill safety, safety_reasons and dropped_ball.  Order matters: the PR coverage test runs
     first, because a squash-merged lane reports every commit as unpushed and its branch as gone
-    from the remote, and those reasons must be suppressed when GitHub holds the commits."""
+    from the remote, and those reasons must be suppressed when GitHub holds the commits.
+
+    Fresh-lane rule: a lane, review or managed checkout younger than `fresh_days` by creation or by
+    last activity, without merged-PR evidence, is NEEDS-REVIEW and so never SAFE-TO-REMOVE.  An age
+    that could not be read gives UNKNOWN.  A tool cache (plugin or marketplace clone) is relabelled
+    TOOL-CACHE last, whatever else was found, and is never a dropped ball."""
     risk: list[str] = []
     unknown: list[str] = []
     evidence: list[str] = []
-    covered = pr.state in ("MERGED", "CLOSED")
+    covered = has_merged_evidence(pr.state)
     co.pr_state, co.pr_number, co.pr_basis = pr.state, pr.number, pr.basis
 
     if co.kind == "ORPHAN":
@@ -1173,6 +1225,16 @@ def assess(co: Checkout, pr: PrMatch, active_reasons: Sequence[str]) -> None:
         # An UNKNOWN state is only ever set for a fleet checkout off the default branch, which
         # needed a lookup.  Without it an open PR looks like a clean pushed lane.
         unknown.append("PR state unknown: " + pr.basis)
+
+    # A new lane has not had time to merge, and the janitor retires idle lanes by file mtime, so
+    # "clean and pushed" proves nothing about a lane this young.  Merged evidence overrides.
+    if co.location_class in _LANE_LIKE and co.kind != "ORPHAN" and not co.tool_cache:
+        if not covered and any(d is not None and d < fresh_days for d in (co.lane_age_days, co.idle_days)):
+            risk.append(f"fresh lane: age {_fmt_days(co.lane_age_days)}, idle {_fmt_days(co.idle_days)}, not merged")
+        missing = [name for name, d in (("creation time", co.lane_age_days), ("last activity", co.idle_days)) if d is None]
+        if missing:
+            unknown.append("lane age unknown: " + " and ".join(missing) +
+                           " could not be read, so a fresh lane cannot be ruled out")
 
     if co.unpushed is not None and co.unpushed > 0 and not covered:
         note = " (PR state unknown; may already be merged)" if pr.state == "UNKNOWN" else ""
@@ -1226,6 +1288,76 @@ def assess(co: Checkout, pr: PrMatch, active_reasons: Sequence[str]) -> None:
         co.dropped_ball = None  # cannot assert "no open PR"
     else:
         co.dropped_ball = True
+
+    # A tool cache is a clone its tool manages, not a working copy anyone owes a push.  It keeps its
+    # facts and its underlying reasons, but it has its own label and can never be a dropped ball.
+    if co.tool_cache:
+        underlying = co.safety
+        co.safety = TOOL_CACHE_SAFETY
+        co.safety_reasons = [
+            f"tool cache: a clone its tool manages, not a working copy (it would read {underlying})",
+            *co.safety_reasons]
+        co.dropped_ball = False
+
+
+# --------------------------------------------------------------------------- the cleaner contract
+
+def cleaner_age_floor(fresh_days: float = FRESH_DAYS) -> float:
+    """The age both lane_age_days and idle_days must reach before a lane may be cleaned.  Raising
+    `--fresh-days` raises it; lowering it never goes under FRESH_DAYS."""
+    return max(float(fresh_days), float(FRESH_DAYS))
+
+
+def _listable(path: str) -> bool:
+    """A path that survives `one path per line`: absolute, with no line break or NUL in it."""
+    return bool(path) and path.startswith("/") and not any(ch in path for ch in "\n\r\x00")
+
+
+def is_cleaner_candidate(co: Checkout, *, fresh_days: float = FRESH_DAYS,
+                         gh_ok_repos: Iterable[str] = ()) -> bool:
+    """True when a cleaner may remove this checkout with `git worktree remove`.
+
+    SAFE-TO-REMOVE alone is never enough (a fresh, clean, pushed lane reads SAFE).  Every one of
+    these must hold: safety SAFE-TO-REMOVE; merged-PR evidence; lane_age_days and idle_days both known
+    and at least the age floor; no .janitor-keep marker; lsof worked and no process has it as cwd;
+    a lane, review or managed location; not a tool cache; no read errors; a successful gh lookup for
+    its repo; and, because removal is `git worktree remove`, a linked worktree that its parent
+    repository's list registers.  A path with a line break is left out so the list stays parseable."""
+    floor = cleaner_age_floor(fresh_days)
+    return bool(
+        co.safety == "SAFE-TO-REMOVE"
+        and has_merged_evidence(co.pr_state)
+        and co.lane_age_days is not None and co.lane_age_days >= floor
+        and co.idle_days is not None and co.idle_days >= floor
+        and not co.janitor_keep
+        and co.cwd_procs == [] and co.active is False
+        and co.location_class in _LANE_LIKE
+        and not co.tool_cache
+        and not co.read_errors
+        and co.owner_repo and co.owner_repo in set(gh_ok_repos)
+        and co.kind == "LINKED-WORKTREE" and co.registered is True
+        and _listable(co.realpath))
+
+
+def cleaner_candidates(checkouts: Iterable[Checkout], *, fresh_days: float = FRESH_DAYS,
+                       gh_ok_repos: Iterable[str] = (), everything: Iterable[Checkout] | None = None) -> list[str]:
+    """Sorted real paths of the checkouts that satisfy `is_cleaner_candidate`.  A checkout that
+    holds another discovered checkout is left out (removing it would take the inner one along);
+    `everything` is the full set to test that against and defaults to `checkouts`."""
+    items = list(checkouts)
+    universe = items if everything is None else list(everything)
+    gh_ok = frozenset(gh_ok_repos)
+    folded = [other.realpath.casefold() for other in universe]
+    out: set[str] = set()
+    for co in items:
+        if not is_cleaner_candidate(co, fresh_days=fresh_days, gh_ok_repos=gh_ok):
+            continue
+        mine = co.realpath.casefold()
+        prefix = mine.rstrip(os.sep) + os.sep
+        if any(other != mine and other.startswith(prefix) for other in folded):
+            continue
+        out.add(co.realpath)
+    return sorted(out)
 
 
 # --------------------------------------------------------------------------- build the report
@@ -1295,13 +1427,14 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
                  lsof_cwds: Callable[[], list[tuple[int, str, str]] | None] | None = None,
                  clock: Callable[[], _dt.datetime] | None = None, workers: int = 8,
                  case_insensitive: bool | None = None, only_class: str | None = None,
-                 gh_limit: int = GH_LIMIT) -> dict:
+                 gh_limit: int = GH_LIMIT, fresh_days: float = FRESH_DAYS) -> dict:
     """Run the whole sweep and return the JSON-ready report.
 
     Everything that touches the machine is injectable: `run` (every subprocess), `gh_prs`
     (repo -> PR list or None), `lsof_cwds` (-> rows or None), `clock`, `tmp_scan_roots` (default:
     the real temp dirs) and `cwd` (None skips the current-directory check).  `only_class` filters
-    the output but `summary.strict_violations` always counts the whole machine.
+    the output but `summary.strict_violations` always counts the whole machine.  `fresh_days` is the
+    fresh-lane threshold (see `assess`); `cleaner_candidates` is computed over the checkouts shown.
     """
     env = os.environ if env is None else env
     clock = clock or _utc_now
@@ -1488,7 +1621,7 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
                 res = _call(ctx, ["git", "rev-list", "--count", "HEAD", "--not", oid], _co.path)
                 return int(res.out.strip()) if res.ok and res.out.strip().isdigit() else None
             pr = match_pr(co.branch, co.head_sha, prs, truncated=truncated, beyond=beyond, limit=gh_limit)
-        assess(co, pr, active_reasons)
+        assess(co, pr, active_reasons, fresh_days=fresh_days)
 
     # ---- anomalies and summary
     ordered = sorted(checkouts.values(), key=lambda c: c.path)
@@ -1506,6 +1639,11 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
     summary = _summarize(shown, anomalies)
     summary["total_found"] = total_found
     summary["strict_violations"] = strict_violations
+    # A repo counts as gh-ok only when its bulk lookup returned a list.  A MERGED or CLOSED match can
+    # only come from such a list, so this is the same fact stated per repo for a consumer to audit.
+    gh_ok_repos = {repo for repo, data in prs_by_repo.items() if data is not None}
+    candidates = cleaner_candidates(shown, fresh_days=fresh_days, gh_ok_repos=gh_ok_repos, everything=ordered)
+    summary["cleaner_candidates"] = len(candidates)
     return {
         "schema": SCHEMA,
         "generated_at": started.isoformat(timespec="seconds"),
@@ -1513,14 +1651,23 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
         "layout_mode": roots.layout_mode,
         "home": os.fspath(roots.home),
         "only_class": only_class.upper() if only_class else None,
+        "fresh_days": _plain_number(fresh_days),
+        "cleaner_min_days": _plain_number(cleaner_age_floor(fresh_days)),
         "lsof": "ok" if lsof_rows is not None else "unavailable",
         "gh": gh_status,
+        "gh_repos": {repo: ("ok" if repo in gh_ok_repos else "failed") for repo in sorted(prs_by_repo)},
         "warnings": warnings,
         "scan": scan_info,
         "checkouts": [c.to_dict() for c in shown],
         "anomalies": anomalies,
+        "cleaner_candidates": candidates,
         "summary": summary,
     }
+
+
+def _plain_number(value: float) -> int | float:
+    """7.0 reads as 7 in the JSON."""
+    return int(value) if float(value).is_integer() else value
 
 
 def _count(values: Iterable[object]) -> dict[str, int]:
@@ -1608,7 +1755,12 @@ def render_text(report: Mapping) -> str:
     out += _table("Repo", s["by_repo"], limit=15)
     out += [f"Dropped ball {s['dropped_ball']} (PR state unknown for {s['dropped_ball_unknown']})   "
             f"Forbidden tmp {s['forbidden_tmp']}   Tool caches {s['tool_cache']}   "
-            f"Strict violations {s['strict_violations']}", ""]
+            f"Strict violations {s['strict_violations']}"]
+    if "cleaner_candidates" in report:
+        floor = report.get("cleaner_min_days", FRESH_DAYS)
+        out.append(f"Cleaner candidates {len(report['cleaner_candidates'])} (merged PR, clean, idle {floor:g}+ days; "
+                   "--cleaner-list prints the paths)")
+    out.append("")
     cos = report["checkouts"]
     dropped = [c for c in cos if c["dropped_ball"] is True]
     tmp = [c for c in cos if c["location_class"] == "FORBIDDEN_TMP" and c not in dropped]
@@ -1653,16 +1805,38 @@ def _write_atomic(path: str, text: str) -> None:
             tmp.unlink()
 
 
+_EPILOG = f"""\
+safety classes: ACTIVE, NEEDS-REVIEW, UNKNOWN, SAFE-TO-REMOVE, TOOL-CACHE (plugin and marketplace
+clones; never a dropped ball, never in the attention lists).
+
+fresh lanes: a lane, review or managed checkout younger than --fresh-days (default {FRESH_DAYS}) by
+age or by idle time, with no merged PR for its HEAD, is NEEDS-REVIEW ("fresh lane: age Nd, idle Nd, not
+merged") and never SAFE-TO-REMOVE.  A merged PR overrides it.  An unreadable age is UNKNOWN.
+
+cleaners: SAFE-TO-REMOVE alone is not enough to delete anything.  cleaner_candidates in the JSON (and
+--cleaner-list) names only checkouts that are SAFE-TO-REMOVE with merged-PR evidence, a lane location,
+age and idle time of at least max(--fresh-days, {FRESH_DAYS}) days, no .janitor-keep, no process cwd, no read
+errors, a successful gh lookup for the repo, and that are registered linked worktrees.  Check
+generated_at, gh and lsof in the JSON before acting on a saved report.
+
+exit codes: 0 normally, 2 with --strict when a forbidden or unsanctioned checkout exists, 64 for a
+usage error."""
+
+
 def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = None,
          clock: Callable[[], _dt.datetime] | None = None, run: Callable[..., CmdResult] = run_cmd,
          gh_prs: Callable[[str], list[dict] | None] | None = None,
          lsof_cwds: Callable[[], list[tuple[int, str, str]] | None] | None = None,
-         cwd: str | None = None, stdout=None) -> int:
+         cwd: str | None = None, stdout=None, stderr=None) -> int:
     """CLI entry.  Exit 0 normally, 2 with --strict when a FORBIDDEN_TMP, FORBIDDEN_CODE_TOPLEVEL
-    or UNSANCTIONED checkout exists, 64 for a usage error."""
+    or UNSANCTIONED checkout exists, 64 for a usage error (a bad flag, a bad --fresh-days, or
+    --cleaner-list together with --json).  With --cleaner-list stdout holds only the candidate real
+    paths, one per line; anything the reader should know about a missing fact goes to stderr."""
     env = os.environ if env is None else env
     stdout = sys.stdout if stdout is None else stdout
-    p = _Parser(prog="fleet_lanes.doctor", description="Find every git checkout on this Mac.  Report only.")
+    stderr = sys.stderr if stderr is None else stderr
+    p = _Parser(prog="fleet_lanes.doctor", description="Find every git checkout on this Mac.  Report only.",
+                epilog=_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--json", action="store_true", help="print the JSON report instead of text")
     p.add_argument("--write", metavar="PATH", help="also write the JSON report here (atomic)")
     p.add_argument("--sizes", action="store_true", help="measure size with du (slow)")
@@ -1671,6 +1845,13 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
     p.add_argument("--gh-limit", metavar="N", type=int, default=GH_LIMIT,
                    help=f"PRs fetched per repo (default {GH_LIMIT}, max 1000); a list that fills the limit "
                         "cannot prove a branch has no PR, so unmatched checkouts report UNKNOWN")
+    p.add_argument("--fresh-days", metavar="N", type=float, default=FRESH_DAYS,
+                   help=f"a lane younger than N days (age or idle) that has not merged is NEEDS-REVIEW, never "
+                        f"SAFE-TO-REMOVE (default {FRESH_DAYS}, 0 to 3650).  The cleaner floor stays at "
+                        f"max(N, {FRESH_DAYS}) days")
+    p.add_argument("--cleaner-list", action="store_true",
+                   help="print only the cleaner candidates (real paths, one per line) and nothing else on "
+                        "stdout; an empty list prints nothing; cannot be combined with --json (use --write)")
     p.add_argument("--home", metavar="PATH", help="treat PATH as the home directory (tests)")
     p.add_argument("--tmp-root", metavar="PATH", action="append",
                    help="scan this temp root instead of the real ones (repeatable; tests)")
@@ -1680,16 +1861,36 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
     args = p.parse_args(argv)
     if not 1 <= args.gh_limit <= 1000:
         p.error("--gh-limit must be between 1 and 1000")
+    if not 0 <= args.fresh_days <= 3650:  # also rejects nan
+        p.error("--fresh-days must be a number between 0 and 3650")
+    if args.cleaner_list and args.json:
+        p.error("--cleaner-list and --json both write stdout; use --write PATH to keep the JSON")
     home = args.home or env.get("HOME") or os.path.expanduser("~")
     report = build_report(
         home, env, cwd=cwd if cwd is not None else os.getcwd(), tmp_scan_roots=args.tmp_root,
         deep=args.deep, sizes=args.sizes, use_gh=not args.no_gh, run=run, gh_prs=gh_prs,
-        lsof_cwds=lsof_cwds, clock=clock, only_class=args.only_class, gh_limit=args.gh_limit)
+        lsof_cwds=lsof_cwds, clock=clock, only_class=args.only_class, gh_limit=args.gh_limit,
+        fresh_days=args.fresh_days)
     text = json.dumps(report, indent=2, sort_keys=False) + "\n"
     if args.write:
         _write_atomic(args.write, text)
-    stdout.write(text if args.json else render_text(report))
+    if args.cleaner_list:
+        stdout.write("".join(path + "\n" for path in report["cleaner_candidates"]))
+        for note in _cleaner_notes(report):
+            stderr.write(f"fleet_lanes.doctor: {note}\n")
+    else:
+        stdout.write(text if args.json else render_text(report))
     return 2 if args.strict and report["summary"]["strict_violations"] else 0
+
+
+def _cleaner_notes(report: Mapping) -> list[str]:
+    """Why the cleaner list may be shorter than the machine suggests.  Stderr only."""
+    notes: list[str] = []
+    if report["gh"] != "ok":
+        notes.append(f"gh lookups are {report['gh']}: lanes in a repo without a PR list cannot be candidates")
+    if report["lsof"] != "ok":
+        notes.append("lsof unavailable: no lane can be shown idle, so none is a candidate")
+    return notes
 
 
 if __name__ == "__main__":

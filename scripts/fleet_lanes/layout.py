@@ -667,18 +667,21 @@ def dedupe_paths(paths: Iterable[str | os.PathLike[str]], roots: Roots) -> list[
 def _tmp_hit(parts: tuple[str, ...], roots: Roots) -> bool:
     """True when `parts` is inside a forbidden temp location.
 
-    A temp location that itself contains the home is skipped, but only that one concrete
-    directory.  A real home is never inside a temp dir; a test home made with tempfile is, and
-    without this skip every sanctioned path in that test would read as forbidden.
+    A temp location that contains the home exempts only the home's own subtree, never its
+    siblings.  A real home is never inside a temp dir; a test home made with tempfile is, and
+    without the exemption every sanctioned path under that home would read as forbidden.  Paths
+    next to the home (on Linux, /tmp/dealdex-work beside /tmp/tmpAbC123) stay forbidden, so a
+    temp-dir test home cannot switch the whole /tmp root off.
     """
     home_parts = _parts(roots.home, roots)
+    in_home = _under(parts, home_parts)
     for root in roots.tmp_roots:
         rp = _parts(root, roots)
-        if _under(parts, rp) and not _under(home_parts, rp):
+        if _under(parts, rp) and not (in_home and _under(home_parts, rp)):
             return True
     for pattern in roots.tmp_globs:
         n = _glob_match(parts, pattern, roots)
-        if n and home_parts[:n] != parts[:n]:
+        if n and not (in_home and home_parts[:n] == parts[:n]):
             return True
     return False
 

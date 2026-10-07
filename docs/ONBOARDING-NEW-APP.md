@@ -10,9 +10,9 @@ Usage-Monitor, and DealDex.
 Copy `TEMPLATE-AGENTS.md` into the new repo (includes Delegation & model economics + this start-here table).
 
 **Run the script first, then finish the checklist.** The script does the
-mechanical clone, worktree setup, live board bootstrap, and `fleet-apps.json`
-registration. The checklist guides adding AGENTS.md, repo effort log mirror, CI,
-and owner-only dashboard steps.
+mechanical clone, live board bootstrap, and `fleet-apps.json` registration.  It
+creates no lane (Phase 2).  The checklist guides adding AGENTS.md, repo effort log
+mirror, CI, and owner-only dashboard steps.
 
 ```bash
 # from an AI-Fleet-Coordinator worktree (never ~/Code/AI-Fleet-Coordinator)
@@ -53,7 +53,10 @@ for integration trees only"* (owner ruling 2026-09-25).
 ## Hard rules
 
 1. **`~/Code/<App>` is the human integration tree.**  It stays on `origin/main`.
-   Agents work in `~/apps/<worktreePrefix>-<seat>`.  **No new top-level folder
+   Agents work in a lane at `~/apps/lanes/<worktreePrefix>/<seat>-<slug>`, made
+   with `~/apps/lane new <app> <slug>` (`docs/protocols/lane-map.md`; flat
+   `~/apps/<worktreePrefix>-<seat>` lanes already on disk retire in place).
+   **No new top-level folder
    may be added to `~/Code/`** unless it is the integration tree for another
    brand-new fleet app being onboarded via this procedure — strays are
    detected and logged by `code-main-keeper.sh` and pruned by the owner.
@@ -99,7 +102,7 @@ Pick and write these down. They never change casually.
 | Slack `repo:` | `DealDex` | First body field in every #agent-sync post |
 | Acronym | `DD` | Apple Notes `[DD, Grok] …` |
 | Live board file | `DEALDEX-EFFORT-LOG.md` | Lives in `/Users/jay/apps/` |
-| Worktree prefix | `dealdex` | `~/apps/dealdex-grok` |
+| Worktree prefix | `dealdex` | Lanes at `~/apps/lanes/dealdex/grok-<slug>` |
 | Visibility | private / public | Match the product |
 
 Post a Planned row on **fleet-infra** (`FLEET-INFRA-EFFORT-LOG.md`) *and* on
@@ -132,25 +135,39 @@ exists) · `infra` (PR gate only — do not require digest/publish jobs).
    `git init` on top of it. Commit or move that work first.
 4. `code-main-keeper` auto-discovers new `~/Code/*` git repos. No edit needed
    unless the folder should be denylisted (`code-main-keeper.sh` `SKIP_NAMES`).
-5. Create `~/Code/copilot-worktrees/<App>/` so Copilot has a parent for its
-   isolated worktrees.
+5. Do **not** create `~/Code/copilot-worktrees/<App>/` or any other new folder under
+   `~/Code`.  Lanes are per task and live under `~/apps/lanes` (Phase 2).
 
 ---
 
 ## Phase 2 — agent lane + first branch
 
-Never edit in `~/Code/<App>` after the clone.
+Never edit in `~/Code/<App>` after the clone.  A lane is made per task, by the
+seat that is doing the task (`docs/protocols/lane-map.md`):
 
 ```bash
-git -C ~/Code/<App> worktree add -b grok/<slug> ~/apps/<prefix>-grok
-cd ~/apps/<prefix>-grok
+export AGENT_SEAT=<your seat tag>         # for example GROK; lane refuses if it is unset
+~/apps/lane new <App> fleet-onboard       # lands at ~/apps/lanes/<prefix>/<seat>-fleet-onboard
+cd "$(~/apps/lane path <App> fleet-onboard)"
 ```
 
-Other seats: `claude`, `codex`, `antigravity`, `cursor`, `monet`. Create a
-lane when that seat starts — do not pre-create six `node_modules` trees.
+The branch is your seat's registry branch prefix plus the slug (`grok/fleet-onboard`).
+Do not pre-create lanes for seats that are not working yet, and do not pre-create six
+`node_modules` trees.
 
-`scripts/setup-agent-lanes.sh` from the app checkout creates the four classic
-lanes (claude/codex/antigravity/cursor).
+`~/apps/lane` reads the registry copy in `~/apps/lane-tools`, so it does not know a
+brand-new app until its `fleet-apps.json` row has merged and `install_tools apply
+tools` has refreshed that copy.  For the onboarding PR itself, make the first lane from
+your AI-Fleet-Coordinator checkout, which already holds the new row:
+
+```bash
+cd <AFC checkout>/scripts
+AGENT_SEAT=<your seat tag> FLEET_APPS_JSON="$PWD/../fleet-apps.json" \
+  python3 -m fleet_lanes.lane new <App> fleet-onboard
+```
+
+`scripts/setup-agent-lanes.sh` is retired (it prints a pointer here and exits 2); it
+made idle lanes for every agent, which the Lane Map does not allow.
 
 ---
 
@@ -316,7 +333,7 @@ The inverse of onboarding.  Do these in order, each through a `claude/*` lane an
 ## Definition of done
 
 - [ ] `~/Code/<App>` is a git checkout of `Simple-With-Us/<repo>` on `main`
-- [ ] At least one seat worktree exists under `~/apps/`
+- [ ] The onboarding PR was made from a lane under `~/apps/lanes/<prefix>/`, not from `~/Code/<App>`
 - [ ] `AGENTS.md` is tracked and forbids working in `~/Code/<App>`
 - [ ] Live board + `docs/EFFORT-LOG.md` exist and are in the Board registry
 - [ ] Effort Issues Sync workflow is on `main`

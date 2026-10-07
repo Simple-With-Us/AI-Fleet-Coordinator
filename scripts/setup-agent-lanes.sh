@@ -1,38 +1,23 @@
 #!/bin/bash
 set -euo pipefail
 
-# setup-agent-lanes.sh
-# Creates separate git worktrees for different AI agents to work in parallel
-# Usage: ./setup-agent-lanes.sh <base_path> (defaults to ~/apps)
+# setup-agent-lanes.sh — RETIRED (owner ruling 2026-10-07, docs/protocols/lane-map.md).
+#
+# The old script made one lane per agent in every repo (named after the repo folder, on an
+# agent/<name> branch), which put idle checkouts where the Lane Map does not allow them.
+# Lanes are now created per task.  This stub only prints that and exits 2, so an old link
+# or habit fails loudly instead of creating anything.
 
-BASE_PATH="${1:-$HOME/apps}"
-REPO_NAME=$(basename "$(pwd)")
-MAIN_BRANCH=$(git branch --show-current)
+cat >&2 <<'EOF'
+setup-agent-lanes.sh is retired and does nothing.
 
-echo "Setting up agent lanes for $REPO_NAME in $BASE_PATH"
-mkdir -p "$BASE_PATH"
+Create a lane per task instead:
 
-AGENTS=("claude" "codex" "antigravity" "cursor" "grok" "monet")
+  export AGENT_SEAT=<your seat tag>          # for example CLAUDE, CODEX, AG, MM, CLUTCH
+  ~/apps/lane new <app> <slug>               # lands at ~/apps/lanes/<prefix>/<seat>-<slug>
+  ~/apps/lane new <app> --review --pr <n>    # read-only check of someone else's PR
 
-for agent in "${AGENTS[@]}"; do
-  LANE_PATH="$BASE_PATH/${REPO_NAME}-${agent}"
-  BRANCH_NAME="agent/${agent}"
-  
-  if [ -d "$LANE_PATH" ]; then
-    echo "Lane already exists: $LANE_PATH"
-    continue
-  fi
-
-  echo "Creating lane for $agent at $LANE_PATH..."
-  
-  # Check if branch exists
-  if git rev-parse --verify "$BRANCH_NAME" >/dev/null 2>&1; then
-    git worktree add "$LANE_PATH" "$BRANCH_NAME"
-  else
-    git worktree add -b "$BRANCH_NAME" "$LANE_PATH" "$MAIN_BRANCH"
-  fi
-  
-  echo "Lane $agent created."
-done
-
-echo "All agent lanes set up successfully!"
+Layout, rules and platform details: docs/protocols/lane-map.md
+Every command and option:           scripts/fleet_lanes/README.md
+EOF
+exit 2

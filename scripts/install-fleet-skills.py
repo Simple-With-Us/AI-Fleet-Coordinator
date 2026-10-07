@@ -6,10 +6,21 @@ Home dirs, repo-tracked copies, and docs/fleet-skills/by-seat/<seat>/ get
 rewritten identity.  Skills in NEVER_INSTALL (ios-ship) are omitted, not
 copied as a Monet-voiced leftover.  Kimi and Renoir have write_home=False
 (catalog/by-seat only; do not install to ~/.kimi or ~/.renoir).
+
+Usage:
+    python3 scripts/install-fleet-skills.py              # repo trees AND tool homes
+    python3 scripts/install-fleet-skills.py --repo-only  # repo trees only
+
+--repo-only re-renders everything tracked or catalogued inside this checkout
+(skills/, docs/fleet-skills zips, .claude/.cursor/.grok skills, by-seat) and
+writes nothing under the home directory: no tool-home skill dirs and no fx
+scan-tree description folding.  Use it from a lane after editing the canonical
+pack, so a session started in this repo loads the same text the pack says.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import zipfile
@@ -48,9 +59,29 @@ def _write_skill(path: str, body: str) -> None:
         f.write(body)
 
 
-def _zip_skill(zip_path: str, skill_name: str, md_path: str) -> None:
+def _zip_matches(zip_path: str, arcname: str, md_path: str) -> bool:
+    """True when zip_path already holds exactly arcname with md_path's bytes."""
+    if not os.path.isfile(zip_path):
+        return False
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            if zf.namelist() != [arcname]:
+                return False
+            with open(md_path, "rb") as f:
+                return zf.read(arcname) == f.read()
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
+def _zip_skill(zip_path: str, skill_name: str, md_path: str) -> bool:
+    """Write the pack zip.  Skip an identical one: a rewrite only changes the
+    stored mtime, which churns tracked binaries for no content change."""
+    arcname = os.path.join(skill_name, "SKILL.md")
+    if _zip_matches(zip_path, arcname, md_path):
+        return False
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.write(md_path, arcname=os.path.join(skill_name, "SKILL.md"))
+        zf.write(md_path, arcname=arcname)
+    return True
 
 
 def _purge_retired(dest_base: str) -> None:
@@ -89,7 +120,15 @@ def _install_skill_set(
     return written
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--repo-only",
+        action="store_true",
+        help="re-render only trees inside this checkout; never write the home directory",
+    )
+    args = parser.parse_args(argv)
+
     skill_names = catalog_skill_names(DOCS_SKILLS)
     print(f"Found {len(skill_names)} installable fleet skills in {DOCS_SKILLS}:")
     for name in skill_names:
@@ -118,13 +157,16 @@ def main() -> None:
         _write_skill(os.path.join(root_dest, "SKILL.md"), universal)
         _zip_skill(os.path.join(DOCS_SKILLS, f"{name}.zip"), name, src_md)
 
-    print("\nHome-dir installs:")
-    for dest, seat in platform_installs():
-        if not tool_home_exists(dest):
-            print(f"  {seat.tag:12}  skip (no tool home)  {dest}")
-            continue
-        written = _install_skill_set(dest, sources, seat)
-        print(f"  {seat.tag:12}  {dest}  ({len(written)} skills)")
+    if args.repo_only:
+        print("\nHome-dir installs: skipped (--repo-only)")
+    else:
+        print("\nHome-dir installs:")
+        for dest, seat in platform_installs():
+            if not tool_home_exists(dest):
+                print(f"  {seat.tag:12}  skip (no tool home)  {dest}")
+                continue
+            written = _install_skill_set(dest, sources, seat)
+            print(f"  {seat.tag:12}  {dest}  ({len(written)} skills)")
 
     print("\nRepo-tracked platform copies:")
     for dest, seat in repo_platform_copies(REPO_ROOT):
@@ -137,6 +179,9 @@ def main() -> None:
         seat_root = os.path.join(BY_SEAT, key)
         written = _install_skill_set(seat_root, sources, seat, zip_each=True)
         print(f"  {seat.tag:12}  {seat.seat_key}  ({len(written)} skills)")
+
+    if args.repo_only:
+        return
 
     print("\nFolded quoted descriptions in fx-scanned trees:")
     for raw in FX_SCAN_ROOTS:

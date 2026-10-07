@@ -1,0 +1,3 @@
+Lane Map (owner 2026-10-07; docs/protocols/lane-map.md in AI-Fleet-Coordinator): a git checkout lives only in ~/apps/lanes/<prefix>/minimax-<slug> (your task lane, branch minimax/<slug>; create it with `~/apps/lane new <app> <slug>`, which needs AGENT_SEAT=MM, never guess your seat), in ~/apps/lanes/_review/... (read-only PR checks), or in ~/Code/<App> (the human's integration tree, never edit it).
+Never clone a fleet repo, or add a worktree of one, in /tmp, /private/tmp, /var/tmp, $TMPDIR or /var/folders; scratch files and throwaway test repos there are fine.
+Folder names use the whole seat name (minimax, never mm).  Old flat lanes ~/apps/<prefix>-<seat> stay until they retire; do not create new ones.

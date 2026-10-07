@@ -46,31 +46,33 @@ or MCP `recall_search`.  A hit is a lead, not a verdict — open the board row /
 
 ## 3. Pick the lane — never `~/Code/<repo>`
 
-The shared checkout is the human/fleet review base.  Mid-task branch flips there have landed one seat's commits on another seat's branch.
+The shared checkout is the human/fleet review base.  Mid-task branch flips there have landed one seat's commits on another seat's branch.  Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders` (Lane Map, owner 2026-10-07: `docs/protocols/lane-map.md` in AI-Fleet-Coordinator).
 
-| App | Slack `repo:` | Acronym | Cursor worktree | Live board |
-|-----|---------------|---------|----------------|------------|
-| Socratic.Trade | `Socratic.Trade` | ST | `~/apps/trading-cursor` | `~/apps/TRADING-EFFORT-LOG.md` |
-| Congress.Trade | `Congress.Trade` | CT | `~/apps/congress-cursor` | `~/apps/CONGRESS-TRADE-EFFORT-LOG.md` |
-| Usage Monitor | `API-usage-monitor` | UM | `~/apps/usage-cursor` | `~/apps/API-USAGE-MONITOR-EFFORT-LOG.md` |
-| congress-trading-shared | `congress-trading-shared` | CTS | `~/apps/cts-cursor` | `~/apps/CONGRESS-SHARED-EFFORT-LOG.md` |
-| DealDex | `DealDex` | DD | `~/apps/dealdex-cursor` | `~/apps/DEALDEX-EFFORT-LOG.md` |
-| Personal-Site | `Personal-Site` | PS | `~/apps/personal-cursor` | `~/apps/PERSONAL-SITE-EFFORT-LOG.md` |
-| AI-Fleet-Coordinator / machine infra | `AI-Fleet-Coordinator` or `fleet-infra` | AFC | `~/apps/fleet-cursor` (or a `~/apps/fleet-cursor-<lane>` worktree) | `~/apps/FLEET-INFRA-EFFORT-LOG.md` |
-
-As of 2026-08-20 only `~/apps/trading-cursor` is guaranteed to exist.  Create a missing standing lane before editing:
+Make one lane per task with `lane new`.  It needs `AGENT_SEAT` set to your seat tag (if it is unset or unknown, ask; never guess) and prints the path:
 
 ```bash
-git -C /Users/jay/Code/<Repo> worktree add -b cursor/<slug> ~/apps/<prefix>-cursor
+~/apps/lane new <app> <slug>                # ~/apps/lanes/<prefix>/<seat>-<slug>, on a branch named <your prefix>/<slug>
+~/apps/lane new <app> --review --pr <n>     # a read-only check of someone else's PR
+cd "$(~/apps/lane path <app> <slug>)"
 ```
 
-Per-lane isolation is also fine: `~/apps/<prefix>-cursor-<lane>`.  Inventory is `~/Code/AI-Fleet-Coordinator/fleet-apps.json`.  `scripts/setup-agent-lanes.sh` uses a different naming scheme (`Socratic.Trade-monet` / `agent/monet`) — do not run it for this seat.
+| App | Slack `repo:` | Acronym | Lane folder | Live board |
+|-----|---------------|---------|-------------|------------|
+| Socratic.Trade | `Socratic.Trade` | ST | `~/apps/lanes/trading/<seat>-<slug>` | `~/apps/TRADING-EFFORT-LOG.md` |
+| Congress.Trade | `Congress.Trade` | CT | `~/apps/lanes/congress/<seat>-<slug>` | `~/apps/CONGRESS-TRADE-EFFORT-LOG.md` |
+| Usage Monitor | `API-usage-monitor` | UM | `~/apps/lanes/usage/<seat>-<slug>` | `~/apps/API-USAGE-MONITOR-EFFORT-LOG.md` |
+| congress-trading-shared | `congress-trading-shared` | CTS | `~/apps/lanes/cts/<seat>-<slug>` | `~/apps/CONGRESS-SHARED-EFFORT-LOG.md` |
+| DealDex | `DealDex` | DD | `~/apps/lanes/dealdex/<seat>-<slug>` | `~/apps/DEALDEX-EFFORT-LOG.md` |
+| Personal-Site | `Personal-Site` | PS | `~/apps/lanes/personal/<seat>-<slug>` | `~/apps/PERSONAL-SITE-EFFORT-LOG.md` |
+| AI-Fleet-Coordinator / machine infra | `AI-Fleet-Coordinator` or `fleet-infra` | AFC | `~/apps/lanes/fleet/<seat>-<slug>` | `~/apps/FLEET-INFRA-EFFORT-LOG.md` |
+
+`<seat>` is your seat's whole folder name from `fleet-apps.json` (`worktreeSuffix`), never a short tag.  Flat lanes that already exist (for example `~/apps/trading-cursor`) stay until they retire; do not create new ones.  Inventory is `~/Code/AI-Fleet-Coordinator/fleet-apps.json`.  `scripts/setup-agent-lanes.sh` is retired (it exits 2); do not run it.  If `~/apps/lane` is missing, the owner has not installed it yet: run `python3 -m fleet_lanes.lane new <app> <slug>` from the `scripts/` folder of an AI-Fleet-Coordinator checkout, or create the lane by hand to match the table in `docs/protocols/lane-map.md`.
 
 Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and `docs/EFFORT-LOG.md`.  Personal-Site `AGENTS.md` can lag `README.md` (the live source is `site/`); believe README + current tree over a stale "static snapshot" paragraph.
 
 ## 4. Triple-claim before substantial edits
 
-1. **THE BOARD** — `board list --app <app>` then `board claim <id> --by CURSOR --env Mac --where "~/apps/<lane> @ cursor/<slug>"`.  If nothing exists: `board file --title "..." --app <app> --severity P1 --by CURSOR --env Mac --where "..." --desc "..."`.
+1. **THE BOARD** — `board list --app <app>` then `board claim <id> --by CURSOR --env Mac --where "~/apps/lanes/<prefix>/<seat>-<slug> @ <branch>"`.  If nothing exists: `board file --title "..." --app <app> --severity P1 --by CURSOR --env Mac --where "..." --desc "..."`.
 2. **Effort board** — In Progress on the live file **and** `docs/EFFORT-LOG.md` (fleet-infra has no repo mirror).  Never delete another seat's row.
 3. **Slack** — then GitHub issue if you are executing a numbered one.
 

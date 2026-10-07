@@ -16,7 +16,7 @@ Seat: **CURSOR**.  Branch: `cursor/<slug>`.  Never `claude/`.  Never `monet/`.  
 
 ## Preconditions
 
-1. You are in your Cursor worktree (`~/apps/<prefix>-cursor` or `~/apps/<prefix>-cursor-<lane>`).  See `session-start`.
+1. You are in your lane (`~/apps/lanes/<prefix>/<seat>-<slug>`, made with `~/apps/lane new`; a flat `~/apps/<prefix>-<seat>[-<lane>]` lane that already exists is fine).  See `session-start`.
 2. `git status` is clean except `.env.local` / `.dev.vars` (never commit those).
 3. `git config user.email` is `12656028+jaywedgeworth22@users.noreply.github.com`.
 
