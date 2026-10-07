@@ -243,7 +243,7 @@ Install the universal fleet skills catalog to ensure full procedural compliance 
 python3 ./scripts/install-fleet-skills.py
 ```
 
-This specializes the catalog per seat: Cursor `[CURSOR]` (cloud Grok Bot fork `[GROK-BOT]`), Antigravity `[AG]`, Codex `[CODEX]`, Grok `[GROK]` / Grok Build `[GROK-BUILD]`, Claude Code shared Monet/Claude/Renoir (pin `AGENT_SEAT`), Renoir, DeepSeek Harness `[DSH]` (`~/.deepseek/skills`; former tag `DEEPSEEK` retired), MiniMax `[MM]` (`~/.minimax/skills`; former tag `MINIMAX` retired), Muse Code `[MC]` (`~/.config/muse/skills`), Muse Assistant `[MA]` (reference catalog), Kimi (retired banner), and Desktop Monet upload.  Per-seat zips land in `docs/fleet-skills/by-seat/<seat>/`.  Never copy the Monet pack into another seat unchanged.
+This specializes the catalog per seat: Cursor `[CURSOR]` (cloud Grok Bot fork `[GROK-BOT]`), Antigravity `[AG]`, Codex `[CODEX]`, Grok `[GROK]` / Grok Build `[GROK-BUILD]`, Claude Code shared Monet/Claude/Renoir (pin `AGENT_SEAT`), Renoir, DeepSeek Harness `[DSH]` (`~/.deepseek/skills`; former tag `DEEPSEEK` retired), MiniMax `[MM]` (`~/.minimax/skills`; former tag `MINIMAX` retired), Muse Code `[MC]` (`~/.config/muse/skills`), Muse Assist `[MA]` (reference catalog), Kimi (retired banner), and Desktop Monet upload.  Per-seat zips land in `docs/fleet-skills/by-seat/<seat>/`.  Never copy the Monet pack into another seat unchanged.
 
 
 ---

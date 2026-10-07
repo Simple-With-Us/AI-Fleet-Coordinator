@@ -8,10 +8,10 @@ description: >-
 
 > **This install is for `MC`.** Slack `[MC]`.  Notes `Muse Code`.  Branches `muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Do not inherit another seat's tag from a shared template.
 
-> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Distinct from **Muse Assistant** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.
+> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.
 
 
-This pack is for **MC** (Muse Code interactive terminal coding agent).  Tag `[MC]`.  Notes name `Muse Code`.  Branches `muse-code/<slug>` only.  Worktrees `~/apps/<prefix>-muse-code`.  Distinct from Muse Assistant (`[MA]`, branches `muse-assist/`).  Never sign as Monet, Claude, or Codex.  Pin `AGENT_SEAT=MC` / `AGENT_TAG=MC`.
+This pack is for **MC** (Muse Code interactive terminal coding agent).  Tag `[MC]`.  Notes name `Muse Code`.  Branches `muse-code/<slug>` only.  Worktrees `~/apps/<prefix>-muse-code`.  Distinct from Muse Assist (`[MA]`, branches `muse-assist/`).  Never sign as Monet, Claude, or Codex.  Pin `AGENT_SEAT=MC` / `AGENT_TAG=MC`.
 
 ## 1. Identity
 

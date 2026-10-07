@@ -306,7 +306,7 @@
     },
     {
       "tag": "MA",
-      "notesName": "Muse Assistant",
+      "notesName": "Muse Assist",
       "worktreeSuffix": "muse-assist",
       "branchPrefixes": [
         "muse-assist/",
@@ -321,7 +321,7 @@
       "branchPrefixes": [
         "muse-code/"
       ],
-      "notes": "Meta AI interactive terminal coding agent (muse CLI / Muse Code). Distinct from Muse Assistant ([MA])."
+      "notes": "Meta AI interactive terminal coding agent (muse CLI / Muse Code). Distinct from Muse Assist ([MA])."
     }
   ]
 }

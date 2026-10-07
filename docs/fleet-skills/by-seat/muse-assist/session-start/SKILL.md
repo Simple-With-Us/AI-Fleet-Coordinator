@@ -1,17 +1,17 @@
 ---
 name: session-start
 description: >-
-  Start every Muse Assistant session on this Mac — poll Slack, read THE BOARD, pin AGENT_SEAT=MA, pick the seat worktree, then triple-claim before editing. Use at session start, after a resume, when switching apps, or whenever you are about to begin substantial work. Muse Assistant (not another seat) — never skip this for "just a small fix."
+  Start every Muse Assist session on this Mac — poll Slack, read THE BOARD, pin AGENT_SEAT=MA, pick the seat worktree, then triple-claim before editing. Use at session start, after a resume, when switching apps, or whenever you are about to begin substantial work. Muse Assist (not another seat) — never skip this for "just a small fix."
 ---
 
 # Session start (MA)
 
-> **This install is for `MA`.** Slack `[MA]`.  Notes `Muse Assistant`.  Branches `muse-assist/`.  Worktrees `~/apps/<app>-muse-assist`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `MA`.** Slack `[MA]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  Worktrees `~/apps/<app>-muse-assist`.  Do not inherit another seat's tag from a shared template.
 
-> **Cloud VM batch agent.** Muse Assistant (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
+> **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
 
-This pack is for **MA** (Muse Assistant cloud VM batch compute & creative agent).  Tag `[MA]`.  Notes name `Muse Assistant`.  Branches `muse-assist/<slug>` (historical `muse/<slug>`).  Worktrees `~/apps/<prefix>-muse-assist`.  Former Slack tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly distinguish from Muse Code (`[MC]`).  Pin `AGENT_SEAT=MA` / `AGENT_TAG=MA`.
+This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  Tag `[MA]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` (historical `muse/<slug>`).  Worktrees `~/apps/<prefix>-muse-assist`.  Former Slack tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly distinguish from Muse Code (`[MC]`).  Pin `AGENT_SEAT=MA` / `AGENT_TAG=MA`.
 
 ## 1. Identity
 
@@ -20,7 +20,7 @@ export AGENT_SEAT=MA
 export AGENT_TAG=MA
 ```
 
-Never open or push another seat's prefix from a Muse Assistant session.  Only `muse-assist/`.
+Never open or push another seat's prefix from a Muse Assist session.  Only `muse-assist/`.
 
 ## 2. Read live coordination
 
@@ -48,7 +48,7 @@ or MCP `recall_search`.  A hit is a lead, not a verdict — open the board row /
 
 The shared checkout is the human/fleet review base.  Mid-task branch flips there have landed one seat's commits on another seat's branch.
 
-| App | Slack `repo:` | Acronym | Muse Assistant worktree | Live board |
+| App | Slack `repo:` | Acronym | Muse Assist worktree | Live board |
 |-----|---------------|---------|----------------|------------|
 | Socratic.Trade | `Socratic.Trade` | ST | `~/apps/trading-muse-assist` | `~/apps/TRADING-EFFORT-LOG.md` |
 | Congress.Trade | `Congress.Trade` | CT | `~/apps/congress-muse-assist` | `~/apps/CONGRESS-TRADE-EFFORT-LOG.md` |
@@ -96,7 +96,7 @@ A new owner message **adds** work unless they explicitly cancel or replace the o
 ## 6. Do not
 
 - Kill `com.jay.claude-remote-control` because `ps` shows `claude` with no TTY.  Monet, Renoir, and Claude Code all look like `claude`.  That job is KeepAlive phone / claude.ai steering.
-- Self-filter Slack on `[MA` when you run parallel Muse Assistant lanes — sibling posts are for you too.
+- Self-filter Slack on `[MA` when you run parallel Muse Assist lanes — sibling posts are for you too.
 - Start in `~/Code/Personal-Site` or any other integration tree.
 - Skip THE BOARD.  It is the write surface; `mac-collab-writeback` copies status to live effort logs and GitHub Issues.  Still land `docs/EFFORT-LOG.md` in the app PR when you touch that repo.
 
