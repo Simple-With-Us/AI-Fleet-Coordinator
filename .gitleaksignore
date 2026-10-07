@@ -6,3 +6,5 @@
 94de3f0fded4396bccc64b67b37dfc9bf260eeff:scripts/fleet_lanes/tests/test_install_tools.py:curl-auth-header:88
 # Same fixture file, second commit: the first split still left one fixture line matching.
 72b399bed9b3df142f59d6cb1f6386998adfe6f8:scripts/fleet_lanes/tests/test_install_rules.py:generic-api-key:334
+# Third commit of the PR: the same fixture line, before the lines were stored reversed.
+24f41fe2df1660ce6b3fe36f3098f58f7dbbe63c:scripts/fleet_lanes/tests/test_install_rules.py:generic-api-key:334
