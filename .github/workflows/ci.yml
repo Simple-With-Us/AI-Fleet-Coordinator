@@ -30,7 +30,7 @@ jobs:
     - name: Verify fleet registry (incl. admin-panel APPS copy)
       run: python3 scripts/check-fleet-registry.py
     - name: Set up Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: '24'
     - name: Verify operator start routing
