@@ -171,7 +171,7 @@ RENOIR_INACTIVE_BANNER = (
 MUSE_CODE_EXTRA = (
     "> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive "
     "terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches "
-    "`muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Distinct from **Muse Assistant** "
+    "`muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Distinct from **Muse Assist** "
     "(`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative "
     "assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load "
     "automatically when the workspace is trusted in `~/.config/muse/trust.json`.  "
@@ -179,7 +179,7 @@ MUSE_CODE_EXTRA = (
 )
 
 MUSE_ASSIST_BANNER = (
-    "> **Cloud VM batch agent.** Muse Assistant (`[MA]`, former tag `[MUSE]`) is the "
+    "> **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the "
     "Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  "
     "Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  "
     "Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  "
@@ -331,17 +331,17 @@ SEATS: dict[str, Seat] = {
         "~/.config/muse/skills", "exclusive",
         "This pack is for **MC** (Muse Code interactive terminal coding agent).  "
         "Tag `[MC]`.  Notes name `Muse Code`.  Branches `muse-code/<slug>` only.  "
-        "Worktrees `~/apps/<prefix>-muse-code`.  Distinct from Muse Assistant "
+        "Worktrees `~/apps/<prefix>-muse-code`.  Distinct from Muse Assist "
         "(`[MA]`, branches `muse-assist/`).  Never sign as Monet, Claude, or Codex.  "
         "Pin `AGENT_SEAT=MC` / `AGENT_TAG=MC`.",
         extra_banner=MUSE_CODE_EXTRA,
         seat_key="muse-code",
     ),
     "muse-assist": Seat(
-        "MA", "Muse Assistant", "muse-assist", "muse-assist",
+        "MA", "Muse Assist", "muse-assist", "muse-assist",
         "docs/fleet-skills/by-seat/muse-assist", "exclusive",
-        "This pack is for **MA** (Muse Assistant cloud VM batch compute & creative agent).  "
-        "Tag `[MA]`.  Notes name `Muse Assistant`.  Branches `muse-assist/<slug>` "
+        "This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  "
+        "Tag `[MA]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` "
         "(historical `muse/<slug>`).  Worktrees `~/apps/<prefix>-muse-assist`.  "
         "Former Slack tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly "
         "distinguish from Muse Code (`[MC]`).  Pin `AGENT_SEAT=MA` / `AGENT_TAG=MA`.",

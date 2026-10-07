@@ -16,7 +16,7 @@ names like `[GROK]` / `[CODEX]` / `[CLAUDE]`.
 | `deepseek.svg` | DeepSeek |
 | `kimi.svg` | Kimi |
 | `minimax.png` | MiniMax |
-| `muse-assist.png` / `muse-assist.svg` | Muse Assistant (`[MA]`) — transparent-background blue "M" mark from `~/Code/Icons-Logos/AI Platforms : Models/Muse_BlueM_TransparentBG.png` |
+| `muse-assist.png` / `muse-assist.svg` | Muse Assist (`[MA]`) — transparent-background blue "M" mark from `~/Code/Icons-Logos/AI Platforms : Models/Muse_BlueM_TransparentBG.png` |
 | `muse.svg` | Muse Code (`[MC]`) — vector mark for terminal coding agent |
 | `sentry.svg` | Sentry |
 | `monet.svg` | Monet |
