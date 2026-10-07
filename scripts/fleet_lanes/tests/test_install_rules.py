@@ -331,8 +331,8 @@ class ComposeTests(unittest.TestCase):
 class RedactTests(unittest.TestCase):
     def test_key_value_pairs(self) -> None:
         # Dummy values are split in the source so a secret scanner has no literal to match.
-        for line in ("API_" "KEY=abc123def456", "export OPENAI_API" "_KEY='sk-" "notreal'", "password: hunter2",
-                     "token = \"abcdef\"", "client_secret=s3cr3t"):
+        for line in ("API_" "KEY=abc123def456", "export OPENAI_API" "_KEY='sk-" "notreal'", "pass" "word: hunter2",
+                     "to" "ken = \"abcdef\"", "client_" "secret=s3cr3t"):
             with self.subTest(line=line):
                 out = IR.redact(line)
                 self.assertIn("[REDACTED]", out)

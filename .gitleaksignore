@@ -1,0 +1,8 @@
+# Dummy credentials in redaction-test fixtures, first commit of the Lane Map tooling PR (#359).
+# The values are made-up strings used to prove the installer redacts them; the fixtures are
+# split in the source from the next commit on.  Fingerprints are per commit, so these two lines
+# only silence that one historical commit.
+94de3f0fded4396bccc64b67b37dfc9bf260eeff:scripts/fleet_lanes/tests/test_install_rules.py:generic-api-key:333
+94de3f0fded4396bccc64b67b37dfc9bf260eeff:scripts/fleet_lanes/tests/test_install_tools.py:curl-auth-header:88
+# Same fixture file, second commit: the first split still left one fixture line matching.
+72b399bed9b3df142f59d6cb1f6386998adfe6f8:scripts/fleet_lanes/tests/test_install_rules.py:generic-api-key:334
