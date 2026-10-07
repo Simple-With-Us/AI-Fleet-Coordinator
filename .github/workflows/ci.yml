@@ -18,6 +18,9 @@ jobs:
     - name: Run unittests
       run: |
         cd scripts && python3 -m unittest discover fleet_rag/tests/ -v
+    - name: Lane doctor and tmp guard tests
+      run: |
+        cd scripts && python3 -m unittest discover -s fleet_lanes/tests -t . -v
     - name: Verify public activity boundary
       run: python3 scripts/test-public-activity.py
     # The admin panel inlines its own copy of the app registry because the Worker
