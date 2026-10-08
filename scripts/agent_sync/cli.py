@@ -705,6 +705,7 @@ EMAIL_TAG_OVERRIDES = {
     "openai-dot": "JET",
     "instinct-bat": "ECHO",
     "instinct-owl": "INSTINCT",
+    "grok-build": "GROK",  # terminal Grok and Grok Build are one seat (owner 2026-10-08)
 }
 
 

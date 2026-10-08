@@ -139,7 +139,8 @@ class PostTests(Harness):
             ("compiler-grok-bot@simplewithus.zulipchat.com", "GB-Compiler"): "GB-COMPILER",
             ("openai-dot-bot@simplewithus.zulipchat.com", "Jet (OpenAI dot)"): "JET",
             ("instinct-bat-bot@simplewithus.zulipchat.com", "Echo"): "ECHO",
-            ("grok-build-bot@simplewithus.zulipchat.com", "GROK-BUILD"): "GROK-BUILD",
+            ("grok-build-bot@simplewithus.zulipchat.com", "GROK-BUILD"): "GROK",
+            ("grok-web-bot@simplewithus.zulipchat.com", "Grok (Web/iOS)"): "GROK-WEB",
         }
         for (email, name), tag in cases.items():
             with self.subTest(email=email):

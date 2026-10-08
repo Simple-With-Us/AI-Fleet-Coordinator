@@ -54,7 +54,9 @@ USER_AGENT = "agent-sync/1 (fleet)"
 # fewer stay upper case, longer parts are Title Case.  CLAUDE -> Claude, GROK-BUILD -> Grok-Build,
 # BF-BUILDER -> BF-Builder, AG/FX/MM/MC/MA stay as they are.  Add an override only for a file that
 # breaks the rule.
-SEAT_FILE_OVERRIDES: dict[str, str] = {}
+SEAT_FILE_OVERRIDES: dict[str, str] = {
+    "GROK": "Grok-Build",  # GROK posts as grok-build-bot@ (owner 2026-10-08)
+}
 SHORT_PART_MAX = 2
 
 MAX_RATE_LIMIT_RETRIES = 3
