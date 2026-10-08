@@ -20,7 +20,7 @@ Sources: Linear docs and schema copies in `scratchpad/lin/`, plus `/Users/jay/ap
 
 ## 2. Identity: one Linear agent app per seat
 
-**Interim shared agent (owner 2026-10-08).**  To start sooner, phase 1 may use ONE shared `Fleet` Linear agent app for every seat instead of waiting for the full roster.  Each issue and comment it writes carries the seat tag on its first line (`[CLAUDE·6db9ee77]`) and, where the API allows, `createAsUser` set to the seat name for display.  This matches THE BOARD's current attribution, which is self-reported (`--by SEAT`).  It must never be Jay's account or a connector bound to Jay (that breaks owner verification), and it never replaces per-seat apps permanently:  each seat moves to its own app as Jay creates them, and the CLI switches per seat by config with no data migration.  Under this option the pilot needs two apps (`Fleet`, `Board Import`) plus `Fleet Reader`.
+**Shared agent first (DECIDED by the owner 2026-10-08).**  Phase 1 uses ONE shared `Fleet` Linear agent app for every seat instead of waiting for the full roster.  Each issue and comment it writes carries the seat tag on its first line (`[CLAUDE·6db9ee77]`) and, where the API allows, `createAsUser` set to the seat name for display.  This matches THE BOARD's current attribution, which is self-reported (`--by SEAT`).  It must never be Jay's account or a connector bound to Jay (that breaks owner verification), and per-seat apps come later only if attribution becomes a problem (owner:  "until I have agents blaming each other and lying"):  each seat can then move to its own app, and the CLI switches per seat by config with no data migration.  Under this option the pilot needs two apps (`Fleet`, `Board Import`) plus `Fleet Reader`.
 
 **Rules**
 - One OAuth app per active identity.  Never a shared app, Jay's account, Jay's personal API key, the claude.ai Linear connector or Composio.
@@ -71,6 +71,8 @@ Sources: Linear docs and schema copies in `scratchpad/lin/`, plus `/Users/jay/ap
 - **Mac caveat.**  All Mac seat files sit under one Unix user, so per-seat identity on the Mac is enforced by policy, not isolation.  The CLI refuses to run without `AGENT_SEAT`, loads only that seat's file, and checks `--by` against the credential's seat; `--by` is never the source of identity.
 
 ## 3. Workspace model
+
+**Live workspace facts (read 2026-10-08 through Jay's connector, read-only).**  Workspace `Simple With Us`, URL slug `simple-with-us` (not `simplewithus`).  One team so far:  key `SWU`, so issue ids look like `SWU-123`, not `LIN-123`.  Members:  Jay (admin, the only human), plus integration users Cursor (an OAuth agent app), Slack (installed Thu, Oct 8, 5:27am Central on the way out of Slack) and Linear.  The Zulip linkifier `LIN-n` → `linear.app/simplewithus/issue/LIN-n` therefore points at the wrong slug and prefix; it needs an admin to change it to the `SWU-n` form under `simple-with-us`.  The plan tier is not visible through the connector.
 
 - **Teams: one public team per app**, key = the fleet-apps.json acronym: ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK.
   - Issue ids carry the app (`AFC-123`), replacing `<APP>` and `board8` in Zulip topics and branch names.
