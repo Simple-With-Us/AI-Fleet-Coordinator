@@ -104,37 +104,39 @@ if command -v brew &>/dev/null; then
     brew cleanup -s 2>/dev/null || true
 fi
 
-# 2c. CleanMyMac CLI (development junk, AI cache, trash, and RAM optimization)
-# 2026-09-13 (Claude): this ran bare `cleanmymac clean --force` unconditionally
-# every 4h (RunAtLoad too, no free-space gate at all), which runs EVERY clean
-# module including `junk` (system junk). `junk` classes files under
-# ~/Library/Logs as junk with no regard for whether launchd still holds one
-# open for append, and deleted the always-on com.jay.botfleet-server
-# LaunchAgent's live server.log out from under it on 2026-09-12 ~12:31 (see
-# scripts/disk-janitor.sh's matching 2026-09-13 fix, PR #207, which hit the
-# same bug gated on low free space). Scoped to `dev`/`ai`/`trash` -- regenerable
-# build caches, AI-tool scratch, and already-deleted trash, never a file a
-# running process still has open -- and dropped `junk` outright. Belt-and-
-# suspenders: ~/Library/Logs, ~/Library/Logs/botfleet, and ~/.botfleet are also
-# on CleanMyMac's own ignore list now (added in PR #207; shared across every
-# caller of the CLI on this Mac, this script included).
-if command -v cleanmymac &>/dev/null; then
-    echo "Running CleanMyMac automated cleanup..."
-    cleanmymac clean dev --force 2>/dev/null || true
-    cleanmymac clean ai --force 2>/dev/null || true
-    cleanmymac clean trash --force 2>/dev/null || true
-    if [ "$PRESSURE" = "1" ]; then
-        echo "Running CleanMyMac purge (dev artifacts)..."
-        cleanmymac purge --force 2>/dev/null || true
-    fi
-    # 2026-09-01 (Claude): `optimize ram` purges resident pages.  On this 16G host that
-    # pushes them into swapfiles on /System/Volumes/VM -- i.e. it converts RAM pressure
-    # directly into DISK consumption, the opposite of what this script is for.  Measured
-    # +3.6-7.3G swap per run.  Opt in with RESOURCE_ALLOW_RAM_OPTIMIZE=1 if ever needed.
-    if [ "${RESOURCE_ALLOW_RAM_OPTIMIZE:-0}" = "1" ]; then
-        echo "Running CleanMyMac RAM optimization (explicitly enabled)..."
-        cleanmymac optimize ram 2>/dev/null || true
-    fi
+# 2c. Hog Hunter reclaim engine.
+#
+# 2026-09-30 (BF-HOUSEKEEPER): this block ran the CleanMyMac CLI.  CleanMyMac is
+# uninstalled -- `brew list` still shows a `cleanmymac-cli` entry but there is no
+# Cellar dir and `command -v cleanmymac` exits 1, so every one of those calls was
+# a silent no-op.  The four rules below that actually fired (junk, dev, ai,
+# trash) had no local replacement, which is why disk drifted for months.
+#
+# The engine does strictly more than the CLI did, and the history above still
+# applies: it NEVER deletes a log file that a running process holds open -- the
+# `logs` rule TRUNCATES IN PLACE instead, which is the thing the CLI got wrong
+# (deleting a live log leaves the daemon writing to an unlinked inode, so the
+# space is not actually freed until that daemon restarts).  It also adds the
+# SHRINK operations the CLI never had: APFS local snapshot pruning, SQLite WAL
+# checkpointing, and tail-truncation.
+#
+# There is no RAM optimization and there never should be.  `optimize ram` purges
+# resident pages into swapfiles on the same APFS container as user data, which
+# converts RAM pressure into disk consumption -- measured +3.6 to +7.3G swap per
+# run.  The engine has no such command; the ban is structural, not a flag.
+#
+# Tier gating lives in the engine, not here: it reads swap/load/disk itself and
+# drops to the safe-only tier when the band is tight.  `--band=full` on a
+# --pressure run lets it take the semi-safe tier (snapshots, device support,
+# simulator runtimes) when -- and only when -- the band is calm.
+HOGHUNTER_CLEAN="/Users/jay/Code/HogHunter/scripts/hoghunter-clean"
+if [ -x "$HOGHUNTER_CLEAN" ]; then
+    HH_BAND="cheap"
+    [ "$PRESSURE" = "1" ] && HH_BAND="full"
+    echo "Running Hog Hunter reclaim engine (band=$HH_BAND)..."
+    "$HOGHUNTER_CLEAN" --clean --band="$HH_BAND" 2>&1 | sed 's/^/  /' || true
+else
+    echo "Hog Hunter reclaim engine not found at $HOGHUNTER_CLEAN -- skipping."
 fi
 
 # Cap runaway pm2 logs (always cheap).
@@ -222,13 +224,14 @@ fi
 # 3b. Reap node_modules and .next from suffixed/inactive feature worktrees in ~/apps/
 # Only reap from verified git worktrees that are clean (ignoring build junk) and idle (>4h).
 # Explicitly preserve standing runtimes like agent-sync-push, agy-acp-runtime, etc.
-echo "Pruning duplicate build caches on suffixed feature worktrees..."
+if [ "$PRESSURE" = "1" ]; then
+echo "Pruning duplicate build caches on suffixed feature worktrees (pressure mode)..."
 python3 <<'PY'
 import os, glob, shutil, re, subprocess, time
 
 KEEP_RE = re.compile(
-    r"^/Users/jay/apps/[a-z0-9]+-(claude|codex|live|antigravity|cursor|monet|grok|grok-build|deepseek)$|"
-    r"^/Users/jay/apps/(agent-sync|agent-sync-push|grok-acp-runtime|agy-acp-runtime|shellular-runtime|mac-collab|senate-relay-runtime|scout-runtime|dsh-runtime|harness-runtime|clutch-runtime|seat-mcp|KIMI-SALVAGE-.*)$|"
+    r"^/Users/jay/apps/[a-z0-9]+-(claude|codex|live|antigravity|cursor|monet|grok|grok-build|deepseek|minimax|mm)$|"
+    r"^/Users/jay/apps/(botfleet-server|agent-sync|agent-sync-push|grok-acp-runtime|agy-acp-runtime|shellular-runtime|mac-collab|senate-relay-runtime|scout-runtime|dsh-runtime|clutch-runtime|seat-mcp|KIMI-SALVAGE-.*)$|"
     r"^/Users/jay/Code/.*$"
 )
 
@@ -294,6 +297,13 @@ for wt in glob.glob('/Users/jay/apps/*'):
         continue
     if wt_is_active(wt):
         continue
+    # Skip if any process is actively running inside this worktree
+    try:
+        pids = subprocess.run(["pgrep", "-f", wt], capture_output=True, timeout=3).stdout.strip()
+        if pids:
+            continue
+    except Exception:
+        pass
     for sub in ['node_modules', '.next', '.turbo']:
         target = os.path.join(wt, sub)
         if not os.path.isdir(target):
@@ -315,6 +325,7 @@ for wt in glob.glob('/Users/jay/apps/*'):
             continue
         shutil.rmtree(target, ignore_errors=True)
 PY
+fi
 
 # 4. Worktrees are owned by com.jay.disk-janitor (clean + idle, never forced).
 # The #95 reaper treated detached HEAD as merged (empty-string word match
