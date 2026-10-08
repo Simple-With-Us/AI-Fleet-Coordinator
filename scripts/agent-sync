@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""agent-sync: the fleet's Zulip coordination CLI.  See scripts/agent_sync/README.md.
+
+This file is symlinked as ~/.local/bin/agent-sync, so it resolves its own real path before it
+puts the scripts directory on sys.path."""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+from agent_sync.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
