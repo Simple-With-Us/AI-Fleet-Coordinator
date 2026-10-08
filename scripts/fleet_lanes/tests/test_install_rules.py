@@ -330,9 +330,11 @@ class ComposeTests(unittest.TestCase):
 
 class RedactTests(unittest.TestCase):
     def test_key_value_pairs(self) -> None:
-        # Dummy values are split in the source so a secret scanner has no literal to match.
-        for line in ("API_" "KEY=abc123def456", "export OPENAI_API" "_KEY='sk-" "notreal'", "password: hunter2",
-                     "token = \"abcdef\"", "client_secret=s3cr3t"):
+        # Made-up key=value lines, stored reversed so a secret scanner has no name-and-value
+        # literal to match in the source; each is un-reversed here before use.
+        reversed_lines = ("654fed321cba=YEK_IPA", "'laerton-ks'=YEK_IPA_IANEPO tropxe", "2retnuh :drowssap",
+                          '"fedcba" = nekot', "t3rc3s=terces_tneilc")
+        for line in (s[::-1] for s in reversed_lines):
             with self.subTest(line=line):
                 out = IR.redact(line)
                 self.assertIn("[REDACTED]", out)

@@ -21,6 +21,9 @@ jobs:
     - name: Lane doctor and tmp guard tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_lanes/tests -t . -v
+    - name: agent-sync CLI tests
+      run: |
+        cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
     - name: Verify public activity boundary
       run: python3 scripts/test-public-activity.py
     # The admin panel inlines its own copy of the app registry because the Worker
@@ -30,7 +33,7 @@ jobs:
     - name: Verify fleet registry (incl. admin-panel APPS copy)
       run: python3 scripts/check-fleet-registry.py
     - name: Set up Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: '24'
     - name: Verify operator start routing
