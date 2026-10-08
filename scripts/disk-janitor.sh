@@ -103,7 +103,7 @@ REPOS=(
 # Suffixed per-lane trees (trading-grok-litestream-cascade) remain reaped
 # when merged+idle.  Retired-KIMI seat trees reap when idle (not on a "kimi"
 # substring, and never by skipping the idle check).
-KEEP_RE="^(/Users/jay/Code/Socratic.Trade|/Users/jay/Code/Congress.Trade|/Users/jay/Code/Usage-Monitor|/Users/jay/Code/congress-trading-shared|/Users/jay/Code/DealDex|/Users/jay/Code/Personal-Site|/Users/jay/Code/Autorotate|/Users/jay/Code/ContactLogo|/Users/jay/Code/AI-Fleet-Coordinator|/Users/jay/Code/BotFleet|/Users/jay/Code/fleet-ops|/Users/jay/Code/botfleet-site|/Users/jay/apps/[a-z0-9]+-(claude|codex|live|antigravity|cursor|monet|grok|grok-build|deepseek|minimax|mm)|/Users/jay/apps/(grok-acp-runtime|agy-acp-runtime|shellular-runtime|mac-collab|seat-mcp|KIMI-SALVAGE-2026-08-22|botfleet-server|agent-sync|agent-sync-push|clutch-runtime))$"
+KEEP_RE="^(/Users/jay/Code/Socratic.Trade|/Users/jay/Code/Congress.Trade|/Users/jay/Code/Usage-Monitor|/Users/jay/Code/congress-trading-shared|/Users/jay/Code/DealDex|/Users/jay/Code/Personal-Site|/Users/jay/Code/Autorotate|/Users/jay/Code/ContactLogo|/Users/jay/Code/AI-Fleet-Coordinator|/Users/jay/Code/BotFleet|/Users/jay/Code/fleet-ops|/Users/jay/Code/botfleet-site|/Users/jay/apps/[a-z0-9]+-(claude|codex|live|antigravity|cursor|monet|grok|grok-build|deepseek|minimax|mm)|/Users/jay/apps/(grok-acp-runtime|agy-acp-runtime|shellular-runtime|mac-collab|seat-mcp|KIMI-SALVAGE-2026-08-22|botfleet-server|agent-sync|agent-sync-push|clutch-runtime|xcode-health))$"
 
 # Retired-KIMI seat, nested agent scratch, or /tmp.  Not a substring:
 # branch cursor/kimi-audit-def (ST #3044, owner-kept) must not match.
@@ -242,8 +242,14 @@ trap 'rm -rf "$LOCK" 2>/dev/null' EXIT
 # $LOCK/heartbeat so the next launchd tick can detect a stuck live holder
 # (BF-FIXER 2026-09-25 follow-up to BF-HOUSEKEEPER's janitor hang report).
 janitor_heartbeat() {
+  # BF-HOUSEKEEPER 2026-10-07: the PRESSURE-SKIP path runs the cheap truncations
+  # (~line 343) BEFORE `free` is assigned (~line 413), so $free was unset here and
+  # every phase line logged a useless `free=G` — which reads exactly like the sensor
+  # bug fixed above and costs real diagnostic time. Resolve on demand, then cache.
+  local _f="${free:-}"
+  if [ -z "$_f" ]; then _f=$(gib "$(freek)"); free=$_f; fi
   printf '%s  PHASE %s pid=%s free=%sG\n' \
-    "$(date '+%Y-%m-%d %H:%M')" "$1" "$$" "$free" >> "$LOG"
+    "$(date '+%Y-%m-%d %H:%M')" "$1" "$$" "$_f" >> "$LOG"
   printf '%s\n' "$(date +%s)" > "$LOCK/heartbeat" 2>/dev/null || true
 }
 
@@ -364,14 +370,41 @@ fi
 
 now="$(date '+%Y-%m-%d %H:%M')"
 freek() {
-  # BF-FIXER 2026-09-25 follow-up: bound df at 5s. A hung `df` (NFS / SMB
-  # timeout, dead APFS snapshot) used to be enough to wedge a tick; now
-  # returns 0 KiB on timeout so the rest of the run still completes.
-  local out
-  out=$(janitor_watchdog 5 "freek" -- bash -c "df -k '$DATA_VOL' 2>/dev/null | tail -1 | awk '{print \$4}'") || out=""
-  if [ -z "$out" ]; then echo 0; else echo "$out"; fi
+  # BF-FIXER 2026-09-25 follow-up: bound df so a hung `df` (NFS / SMB timeout, dead
+  # APFS snapshot) can't wedge a tick.
+  # BF-HOUSEKEEPER 2026-10-05: the bound was 5s and the timeout returned 0 KiB.
+  # Under load `df | tail | awk` can exceed 5s, so ONE timeout made freek() report
+  # "0G free" for the rest of the run — below CRIT_FREE, which opened the destructive
+  # lowfree branches on a disk that actually had 76G free, and wrote 0 into $STATE so
+  # `reclaimed` reported phantom wins. Now: 30s bound, and a failed probe falls back
+  # to the last known-good value in $STATE instead of 0. Wedge protection is kept.
+  local out prior
+  out=$(janitor_watchdog 30 "freek" -- bash -c "df -k '$DATA_VOL' 2>/dev/null | tail -1 | awk '{print \$4}'") || out=""
+  # janitor_watchdog `cat`s the child's captured stdout, so a df/awk error string
+  # (or a multiline capture) can land in $out. Sanitise to bare digits FIRST: an
+  # empty or non-numeric $out used to reach gib(), which emitted nothing at all and
+  # produced `free=G` in every log line plus a broken `[ "$free" -lt "$CRIT_FREE" ]`.
+  out=$(printf '%s' "$out" | tr -dc '0-9')
+  if [ -z "$out" ] || [ "$out" -eq 0 ] 2>/dev/null; then
+    # Probe failed or returned nothing usable. Reuse the last real reading
+    # rather than 0: a stale-but-true number never crosses CRIT_FREE on its own.
+    prior=$(sed -n 's/^free=\([0-9][0-9]*\)G*$/\1/p' "$STATE" 2>/dev/null | tail -1)
+    prior=$(printf '%s' "$prior" | tr -dc '0-9')
+    if [ -n "$prior" ] && [ "$prior" -gt 0 ] 2>/dev/null; then
+      printf '%s\n' "$((prior * 1024 * 1024))"   # GiB -> KiB, freek's contract
+      return 0
+    fi
+    echo 0
+  else
+    echo "$out"
+  fi
 }
-gib() { echo $(( ${1:-0} / 1024 / 1024 )); }
+# BF-HOUSEKEEPER 2026-10-07: gib() was unguarded. Any non-numeric argument (a df/awk
+# error string that janitor_watchdog `cat`s through) made $(( )) raise a syntax error
+# and print NOTHING, so callers got an empty string -- which logged as `free=G` and broke
+# every `[ "$free" -lt "$CRIT_FREE" ]` compare. Coerce to digits, then to 0, so this
+# function can never emit an empty or non-numeric value.
+gib() { local n; n=$(printf '%s' "${1:-}" | tr -dc '0-9'); echo $(( ${n:-0} / 1024 / 1024 )); }
 
 duk() { local k; k=$(du -sk "$1" 2>/dev/null | awk '{print $1}'); echo "${k:-0}"; }  # KiB, 0 if absent
 # Porcelain output minus UNTRACKED generated build junk (node_modules/.next/build receipts/logs).
@@ -451,7 +484,11 @@ if [ "${REAP_WORKTREES:-0}" = "1" ]; then
     # (no bash-subshell-pid mismatch on SIGKILL). Prune is local + fast, so
     # a single 5s budget is plenty.
     janitor_watchdog 30 "wt-fetch"  -- git -C "$r" fetch origin main -q
-    janitor_watchdog  5 "wt-prune"  -- git -C "$r" remote prune origin
+    # BF-HOUSEKEEPER 2026-10-05: was 5s while the sibling `wt-fetch` above gets
+    # 30s. `git remote prune` walks every remote ref, so on a big repo it
+    # routinely exceeded 5s and the watchdog killed+retried it every launchd tick
+    # (~6min) forever — pure I/O burn during swap episodes. Match wt-fetch.
+    janitor_watchdog 30 "wt-prune"  -- git -C "$r" remote prune origin
   done
   n_reap=0
   while IFS=$'\t' read -r wt sha br locked; do
@@ -525,12 +562,10 @@ if [ "$free" -lt "$LOW_FREE" ]; then
   HOGHUNTER_CLEAN="/Users/jay/Code/HogHunter/scripts/hoghunter-clean"
   if [ -x "$HOGHUNTER_CLEAN" ]; then
     # 2026-09-30 (BF-HOUSEKEEPER): this ran the CleanMyMac CLI's dev/ai/trash
-    # modules.  At the time CleanMyMac was uninstalled -- a stale `cleanmymac-cli`
-    # row still sat in `brew list`, but there was no Cellar dir and `command -v`
-    # exited 1, so `command -v cleanmymac` was false and the whole block was a
-    # no-op that still logged as if it had cleaned something.  (That receipt was
-    # 0 bytes: the cask's app bundle was gone but brew kept the row.  Reinstalling
-    # is a `brew reinstall --cask`, not an `install`.)
+    # modules.  CleanMyMac is uninstalled -- a stale `cleanmymac-cli` row still
+    # sits in `brew list`, but there is no Cellar dir and `command -v` exits 1,
+    # so `command -v cleanmymac` was false and this whole block was a no-op
+    # that still logged as if it had cleaned something.
     #
     # The Hog Hunter engine subsumes those three modules and adds the ones the
     # CLI never had.  Two of its rules matter most here:
