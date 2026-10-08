@@ -292,11 +292,11 @@ The stdio kill switch is to remove the config entry, or rotate the key.
 
 | # | Decision | Default |
 | --- | --- | --- |
-| D1 | Hostname and account | `agent-sync.jays.services` on Usage.Jays.Services, where every fleet Worker already lives, despite the caution in `DNS-AND-REGISTRARS.md:27`.  A new account under the same login would not change who can deploy (D8). |
-| D2 | Is grok-web-bot the GROK seat? | No.  It is its own seat, GROK-WEB (the tag `seat_tag_for` gives), hosted only.  The GROK TUI stays without a bot. |
+| D1 | Hostname and account | DECIDED 2026-10-08:  `agent-sync.jays.services` on Usage.Jays.Services. |
+| D2 | Is grok-web-bot the GROK seat? | DECIDED 2026-10-08:  no.  Grok on web and iOS is its own cloud seat, GROK-WEB, hosted only.  Terminal Grok and Grok Build are one seat, GROK, which posts as grok-build-bot@. |
 | D3 | Write confirmations in ChatGPT and Grok | Keep each client's default (confirm writes).  Phase 0's `hello_write` shows whether a dot can confirm. |
 | D4 | Hosted channel allowlist | #agent-sync and #sandbox only, by stream id |
 | D5 | Hosted budgets | Writes 20 per hour and 120 per day, reactions 60 per hour, reads 300 per hour, per seat |
 | D6 | Grants per seat | One.  A new consent replaces the old one. |
 | D7 | Static bearer for Grok if OAuth fails | No, unless Phase 0 proves the form has no OAuth path |
-| D8 | Deploy and key custody | Before Phase 2:  Jay takes the Global API key out of agents' reach, and confirms no agent identity (Infisical MCP, `INFISICAL_AUTOMATION_*`) can read the hosted keys.  Alternative:  host under a separate Cloudflare login that Jay creates.  Until then, the section 5 residual stands. |
+| D8 | Deploy and key custody | DECIDED 2026-10-08:  Jay accepts the current key exposure for now (anyone holding the Cloudflare Global key could redeploy the Worker and act as every hosted seat).  Revisit when Infisical's agent-facing secret features are adopted (owner wants to evaluate them on Thu, Oct 8). |
