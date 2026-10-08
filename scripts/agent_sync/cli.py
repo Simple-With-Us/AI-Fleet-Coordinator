@@ -232,7 +232,8 @@ class Agent:
             # The prefix has no closing bracket, so a bare startswith would take a sibling whose tag
             # merely begins with ours (session ids shorter than 8 characters) for this session.
             content = str(message.get("content") or "")
-            return content.startswith(self.tag_prefix + "]") or content.startswith(self.tag_prefix + "->")
+            return content.startswith(self.tag_prefix + "]") or content.startswith(self.tag_prefix + "->") \
+                or content.startswith(self.tag_prefix + "\u2192")
         return False
 
     def is_sibling(self, message: Mapping[str, Any]) -> bool:
@@ -687,11 +688,30 @@ def _read_text(agent: Agent, parts: Sequence[str]) -> str:
     return text
 
 
-def _peer_label(raw: str, full_name: str) -> str:
-    raw = raw.strip()
-    if "@" not in raw and not any(ch.isspace() for ch in raw):
-        return raw.upper()
-    return "-".join(full_name.upper().split())
+# Bot email local parts (minus the "-bot" Zulip appends) whose seat tag is not just the upper-cased
+# local part.  Display names are cosmetic (owner 2026-10-07), so labels come from emails, never names.
+EMAIL_TAG_OVERRIDES = {
+    "muse-assist": "MA",
+    "openai-dot": "JET",
+    "instinct-bat": "ECHO",
+    "instinct-owl": "INSTINCT",
+}
+
+
+def seat_tag_for(user: dict) -> str:
+    """The seat tag a user or bot signs as: mm-bot@ -> MM, bf-builder-bot@ -> BF-BUILDER,
+    compiler-grok-bot@ -> GB-COMPILER, muse-assist-bot@ -> MA.  Humans get their first name."""
+    if not user.get("is_bot"):
+        first = (str(user.get("full_name") or "").split() or ["USER"])[0]
+        return first.upper()
+    local = str(user.get("email") or "").split("@", 1)[0].lower()
+    if local.endswith("-bot"):
+        local = local[: -len("-bot")]
+    if local in EMAIL_TAG_OVERRIDES:
+        return EMAIL_TAG_OVERRIDES[local]
+    if local.endswith("-grok"):
+        return "GB-" + local[: -len("-grok")].upper()
+    return local.upper() or "-".join(str(user.get("full_name") or "").upper().split())
 
 
 def _resolve_peers(agent: Agent, names: Sequence[str]) -> tuple[list[str], list[str]]:
@@ -706,6 +726,9 @@ def _resolve_peers(agent: Agent, names: Sequence[str]) -> tuple[list[str], list[
         found = [u for u in active if str(u["full_name"]).casefold() == needle
                  or needle in (str(u.get("email") or "").casefold(), str(u.get("delivery_email") or "").casefold())]
         if not found:
+            # A seat tag works too: --to MA finds muse-assist-bot@, --to GB-Compiler finds compiler-grok-bot@.
+            found = [u for u in active if u.get("is_bot") and seat_tag_for(u).casefold() == needle]
+        if not found:
             close = difflib.get_close_matches(needle, [str(u["full_name"]).casefold() for u in active], n=5, cutoff=0.0)
             by_fold = {str(u["full_name"]).casefold(): str(u["full_name"]) for u in active}
             names_hint = ", ".join(by_fold[c] for c in close) or "(no users visible)"
@@ -717,14 +740,14 @@ def _resolve_peers(agent: Agent, names: Sequence[str]) -> tuple[list[str], list[
         same_name = sum(1 for u in active if str(u["full_name"]).casefold() == str(user["full_name"]).casefold())
         mention = "@**%s**" % user["full_name"] if same_name == 1 else "@**%s|%s**" % (user["full_name"], user["user_id"])
         mentions.append(mention)
-        labels.append(_peer_label(raw, str(user["full_name"])))
+        labels.append(seat_tag_for(user))
     return mentions, labels
 
 
 def _compose(agent: Agent, text: str, *, labels: Sequence[str], mentions: Sequence[str], no_tag: bool) -> str:
     parts: list[str] = []
     if not no_tag:
-        parts.append(agent.tag_prefix + ("->" + ",".join(labels) if labels else "") + "]")
+        parts.append(agent.tag_prefix + ("\u2192" + ",".join(labels) if labels else "") + "]")  # → canonical, -> accepted
     parts.extend(mentions)
     parts.append(text)
     body = " ".join(parts)

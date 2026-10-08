@@ -122,16 +122,34 @@ class PostTests(Harness):
     def test_to_adds_the_peer_to_the_tag_and_the_mention(self) -> None:
         result = self.run_cli("post", "--topic", "t", "--to", "codex", "please look")
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s->CODEX] @**Codex** please look" % TAG)
+        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192CODEX] @**Codex** please look" % TAG)
 
     def test_to_resolves_by_email_and_for_names_with_spaces(self) -> None:
         self.run_cli("post", "--topic", "t", "--to", "jay@zulip.test", "hi")
-        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s->JAY-WEDGEWORTH] @**Jay Wedgeworth** hi" % TAG)
+        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192JAY] @**Jay Wedgeworth** hi" % TAG)
+
+    def test_peer_labels_come_from_the_bot_email_not_the_display_name(self) -> None:
+        from agent_sync.cli import seat_tag_for
+        bot = lambda email, name: {"email": email, "full_name": name, "is_bot": True}
+        cases = {
+            ("mm-bot@simplewithus.zulipchat.com", "MiniMax"): "MM",
+            ("muse-assist-bot@simplewithus.zulipchat.com", "Rob (Muse)"): "MA",
+            ("ag-bot@simplewithus.zulipchat.com", "Antigravity"): "AG",
+            ("bf-builder-bot@simplewithus.zulipchat.com", "BF-Builder"): "BF-BUILDER",
+            ("compiler-grok-bot@simplewithus.zulipchat.com", "GB-Compiler"): "GB-COMPILER",
+            ("openai-dot-bot@simplewithus.zulipchat.com", "Jet (OpenAI dot)"): "JET",
+            ("instinct-bat-bot@simplewithus.zulipchat.com", "Echo"): "ECHO",
+            ("grok-build-bot@simplewithus.zulipchat.com", "GROK-BUILD"): "GROK-BUILD",
+        }
+        for (email, name), tag in cases.items():
+            with self.subTest(email=email):
+                self.assertEqual(seat_tag_for(bot(email, name)), tag)
+        self.assertEqual(seat_tag_for({"email": "jay@x", "full_name": "Jay Wedgeworth", "is_bot": False}), "JAY")
 
     def test_two_recipients(self) -> None:
         self.run_cli("post", "--topic", "t", "--to", "Codex", "--to", "Cursor", "both")
         self.assertEqual(self.last_post().form["content"],
-                         "[CLAUDE·%s->CODEX,CURSOR] @**Codex** @**Cursor** both" % TAG)
+                         "[CLAUDE·%s\u2192CODEX,CURSOR] @**Codex** @**Cursor** both" % TAG)
 
     def test_unknown_recipient_lists_the_five_closest_names(self) -> None:
         result = self.run_cli("post", "--topic", "t", "--to", "Codx", "hi")
@@ -187,7 +205,7 @@ class ReplyTests(Harness):
         original = self.fake.add_message("Codex", "agent-sync", "t", "q")
         self.run_cli("reply", "--id", str(original), "--to", "Codex", "a")
         self.assertEqual(self.fake.requests_to("POST", "messages")[-1].form["content"],
-                         "[CLAUDE·%s->CODEX] @**Codex** a" % TAG)
+                         "[CLAUDE·%s\u2192CODEX] @**Codex** a" % TAG)
 
     def test_the_check_hint_after_a_timeout_cannot_smuggle_a_command_in_through_a_topic(self) -> None:
         topic = "x' ; touch /tmp/agent-sync-pwned ; echo '"  # a topic any member of the realm can set
