@@ -506,8 +506,10 @@ class ScanTests(unittest.TestCase):
     def test_the_plan_covers_the_places_checkouts_hide(self) -> None:
         roots = L.make_roots(self.root, {}, registry=self.registry(), case_insensitive=False)
         (self.root / "Code" / "DealDex" / ".claude" / "worktrees").mkdir(parents=True)
+        (self.root / "Code" / "DealDex" / ".muse" / "worktrees").mkdir(parents=True)
         plan = {(s.label, s.depth) for s in doctor.scan_plan(roots, [self.root / "t"], deep=False)}
         for want in (("tmp", 4), ("apps", 2), ("lanes", 4), ("code", 1), ("code-claude-worktrees", 1),
+                     ("code-muse-worktrees", 1),
                      (".codex/worktrees", 3), (".cursor/worktrees", 3), (".grok", 4), (".fx", 4),
                      (".botfleet", 5), (".gemini/antigravity", 5), (".buzz", 3), ("home", 3)):
             self.assertIn(want, plan)
@@ -857,6 +859,22 @@ class DiscoveryTests(GitCase):
         co = self.one(rep, hidden_parent)
         self.assertEqual(co["registered_worktrees"], 1)
 
+    def test_orphaned_muse_and_claude_worktrees_are_found_by_the_folder_scan(self) -> None:
+        # Git no longer lists either worktree (admin dir removed), so only the folder scan can find them.
+        muse = self.add_worktree(self.parent, self.parent / ".muse" / "worktrees" / "x", "muse-code/x")
+        claude = self.add_worktree(self.parent, self.parent / ".claude" / "worktrees" / "y", "claude/y")
+        live = self.add_worktree(self.parent, self.parent / ".muse" / "worktrees" / "z2", "muse-code/z2")
+        for name in ("x", "y"):
+            shutil.rmtree(self.parent / ".git" / "worktrees" / name)
+        rep = self.report()
+        for path, tool in ((muse, "muse-code"), (claude, "claude-cli")):
+            with self.subTest(path=path.name):
+                co = self.one(rep, path)
+                self.assertEqual(co["kind"], "ORPHAN")
+                self.assertEqual(co["location_class"], "MANAGED")
+                self.assertEqual(co["creating_tool"], tool)
+        self.assertEqual(self.one(rep, live)["kind"], "LINKED-WORKTREE")
+
     def test_symlinked_integration_tree_is_one_checkout_and_listed_once(self) -> None:
         wt = self.add_worktree(self.parent, self.parent / ".claude" / "worktrees" / "foo-1a2b3c", "claude/foo-1a2b3c")
         (self.home / "Code" / "Deal.Dex").symlink_to(self.parent)
@@ -1000,6 +1018,8 @@ class DiscoveryTests(GitCase):
             (home / "Code" / "DealDex" / ".claude" / "worktrees" / "fix-bug-a1b2c3", "claude/fix-bug-a1b2c3", None, None, "claude-desktop"),
             (home / "Code" / "DealDex" / ".claude" / "worktrees" / "agent-a1b2c3d4e5f6a7b8", None, None, None, "claude-cli"),
             (home / "Code" / "DealDex" / ".claude" / "worktrees" / "myname", "worktree-myname", None, None, "claude-cli"),
+            (home / "Code" / "DealDex" / ".muse" / "worktrees" / "fix-login", None, None, None, "muse-code"),
+            (home / "Code" / "DealDex" / ".muse" / "worktrees" / "fix-login", "claude/x", None, "claude", "muse-code"),
             (home / "Code" / "DealDex", "main", None, None, "human"),
             (home / "apps" / "dealdex-codex-x", None, "codex", None, "codex"),
             (home / "apps" / "dealdex-monet-x", None, "monet", None, "claude-cli"),
@@ -1014,6 +1034,14 @@ class DiscoveryTests(GitCase):
                 tool, basis = doctor.infer_tool(str(path), roots, branch, seat, bseat)
                 self.assertEqual(tool, want)
                 self.assertTrue(basis)
+        # the path evidence for a Muse worktree is named as such
+        self.assertEqual(
+            doctor.infer_tool(str(home / "Code" / "DealDex" / ".muse" / "worktrees" / "x"), roots, None, None, None),
+            ("muse-code", "path:.muse/worktrees"))
+        # a folder that merely contains the word is not a Muse worktree
+        self.assertEqual(
+            doctor.infer_tool(str(home / "Code" / "DealDex" / ".muse" / "worktrees-old" / "x"), roots, None, None, None)[0],
+            "human")
 
 
 class ToleranceTests(GitCase):
