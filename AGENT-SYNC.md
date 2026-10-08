@@ -55,6 +55,7 @@ The owner rulings and defaults that shaped this rewrite, in one place so Jay can
 
 ### Owner Rulings
 
+- **Grok seats** (owner 2026-10-08):  terminal Grok, GROK and GROK-BUILD are one seat that signs `GROK` (GROK-BUILD is a retired alias).  Grok on the web and iOS is a separate cloud seat, `GROK-WEB`.  The hosted agent-sync MCP endpoint will live at `agent-sync.jays.services`.
 - **Linear replaces THE BOARD** (owner 2026-10-08).  Linear becomes the system of record for claims, status and closeouts, and each seat acts in Linear as its own Linear agent (one per seat, never a shared account and never Jay's).  The migration plan is pending.  Until the cutover is announced in #agent-sync › fleet and this document is updated, THE BOARD stays the system of record and every board rule below still binds.
 - Full rewrite of this document, chosen over patching it.
 - Slack is retired with a hard cut.  Zulip (`https://simplewithus.zulipchat.com`) is the only agent chat.
@@ -62,7 +63,7 @@ The owner rulings and defaults that shaped this rewrite, in one place so Jay can
 - The `agent-sync` CLI (`scripts/agent_sync`, on PATH as `~/.local/bin/agent-sync`) replaces `agent-sync-websocket.py`, `agent-sync-poll.py`, pm2 `agent-sync-push`, `consumer.mjs`, `slack-sync.sh`, and the `slack-collab` MCP.  The always-on listener is specified in [agent-sync-listener.md](docs/protocols/agent-sync-listener.md) (being built).
 - One Zulip bot per seat, never per session.  Sessions are tagged `[SEAT·session8]`, with one topic per unit of work.  Only Jay creates bot users; agents never create accounts.
 - No agent posts, DMs, or reacts through Jay's Zulip account (confirmed), in the same spirit as the [Outbound iMessage Boundary](#outbound-imessage-boundary).  Composio, or any connector bound to Jay's account, is never used for agent identity or chat.
-- CLAUDE is the only Claude seat.  MONET, RENOIR, HARNESS (replaced by CLUTCH), DSH, and KIMI are retired.  Active:  CLAUDE, CODEX, AG, CURSOR, GROK, GROK-BUILD, CLUTCH, GROK-BOT (GB personas, owner-managed), FX, MM, MA, MC, plus the BotFleet `BF-<ROLE>` bots ([Seats and Identity](#seats-and-identity)).
+- CLAUDE is the only Claude seat.  MONET, RENOIR, HARNESS (replaced by CLUTCH), DSH, and KIMI are retired.  Active:  CLAUDE, CODEX, AG, CURSOR, GROK, GROK-WEB, CLUTCH, GROK-BOT (GB personas, owner-managed), FX, MM, MA, MC, plus the BotFleet `BF-<ROLE>` bots ([Seats and Identity](#seats-and-identity)).
 - Folders and anything else on disk use whole seat names (lane-map ruling).  Branch prefixes stay as the registry has them ([Seat Lanes and Branches](#seat-lanes-and-branches); see [Open for Jay](#open-for-jay)).
 - Two literal ASCII spaces render as the sentence gap in Zulip (owner-verified).
 - The CLAUDE bot is a Zulip moderator, not an admin.  The always-on listener refuses admin keys.
@@ -156,7 +157,7 @@ Never leave a discovered problem as a throwaway comment in chat or prose.
 - **Never infer it.**  No observed state is a seat signal:  not a worktree path, a folder or branch name, `~/.claude.json` session values, the CLI login, or the model.  Local `~/.claude` hooks and memory load for every local session, so they cannot tell seats apart either.  The old derivations (a cloud seat equals the account's Claude app branch-prefix setting; the shared Mac login switching between accounts) existed to tell CLAUDE from MONET and are void now that MONET is retired.
 - **Never flip on inference.**  Do not rewrite seat hooks, rename branches, or re-attribute board rows by deduction.  Change a seat only on an explicit owner statement or `AGENT_SEAT`.  Local hooks never rebrand another seat's prefix onto a worktree.
 - **Undetermined means ask.**  If a throwaway or anonymous worktree leaves your seat UNDETERMINED, ask the owner.  A SessionStart hook may flag the seat, but only `AGENT_SEAT` pins it; a hook that defaults to CLAUDE or reads the seat off a worktree name is stale, and this rule wins.
-- **Identity, not model or location.**  A seat may run locally or in the cloud, on any session, with any underlying model.  The model never changes the seat:  Grok inside fx is FX, never GROK or GROK-BUILD; the Codex provider inside fx is FX, never CODEX; MiniMax inside fx is FX, never MM; a DeepSeek model inside Cursor is CURSOR.
+- **Identity, not model or location.**  A seat may run locally or in the cloud, on any session, with any underlying model.  The model never changes the seat:  Grok inside fx is FX, never GROK or GROK-WEB; the Codex provider inside fx is FX, never CODEX; MiniMax inside fx is FX, never MM; a DeepSeek model inside Cursor is CURSOR.
 - **One identity everywhere.**  Your Zulip bot, your `[SEAT·session8]` tag, and your branch prefix must all name your assigned seat.  Never sign or post as another seat.
 - **Sub-agents inherit.**  A sub-agent takes its parent's seat and posts, if at all, through the parent's bot.  It never gets its own bot or identity.
 - **No sandbox, own pause.**  MM ships `permissionMode: bypassPermissions` in `config.yaml`, so nothing prompts, and FX runs full-access with no sandbox.  On those seats the destructive-op pause is yours to hold.
@@ -169,8 +170,8 @@ Never leave a discovered problem as a throwaway comment in chat or prose.
 | CODEX | `Codex` | `codex/` | `codex` | codex-bot@ |
 | AG | `AG` / `Gemini` | `ag/`, `agent/antigravity` | `antigravity` | ag-bot@ |
 | CURSOR | `Cursor` / `Copilot` | `cursor/` | `cursor` | cursor-bot@ |
-| GROK | `Grok` | `grok/` | `grok` | None yet (OPEN) |
-| GROK-BUILD | `Grok Build` | `grok-build/` | `grok-build` | grok-build-bot@ |
+| GROK | `Grok` | `grok/` (old `grok-build/` branches stay readable) | `grok` | grok-build-bot@ (display name GROK-BUILD) |
+| GROK-WEB | `Grok Web` | none (cloud seat, no lanes) | none | grok-web-bot@ |
 | CLUTCH | `Clutch` | `clutch/` | `clutch` | clutch-bot@ |
 | MM | `MiniMax` | `minimax/` | `minimax` | mm-bot@ |
 | FX | `Fx` | `fx/` | `fx` | fx-bot@ |
@@ -186,8 +187,8 @@ Seat by seat:
 - **CODEX** (Codex):  high-precision code generation, algorithmic implementation, mechanical refactoring.  Tracks rate and token quota limits carefully.  Rules home:  `~/.codex/AGENTS.md`.
 - **AG** (Antigravity, Gemini 3.5 Flash):  autonomous multi-tool execution, sub-agent orchestration, local CLI and file edits, structured planning.  Uses `invoke_subagent` / `define_subagent` for parallel subtasks.  Rules home:  not recorded.
 - **CURSOR** (Cursor / Copilot):  interactive in-IDE editing, localized refactoring, quick inline fixes and targeted line edits inside the IDE.  Local Mac IDE/Auto only.  A Cursor cloud agent that Grok Bot drives signs `[GB-<NAME>]` ([Platform Bots](#platform-bots)); any other Cursor background or cloud agent signs `[CURSOR]` until Jay rules ([Open for Jay](#open-for-jay)).  Rules home:  `~/.cursor/rules/`.
-- **GROK** (Mac Grok TUI / CLI):  high-throughput implementation, rapid PR creation, automated test and documentation maintenance.  Focuses on velocity, auto-merging green PRs, and updating effort logs and living Completion notes.  No Zulip bot yet (OPEN in the guide), so GROK is not reachable on Zulip.  Rules home:  `~/.grok/GROK.md`.
-- **GROK-BUILD** (Grok Build TUI / App Builder preview):  same loop as GROK, separate identity.  Cloud preview runs in `/workspace`.  Never use the `grok/` prefix, sign as GROK, or post as the GROK bot.  Rules home:  not recorded.
+- **GROK** (terminal Grok:  the Mac Grok TUI / CLI and Grok Build are ONE seat, owner 2026-10-08):  high-throughput implementation, rapid PR creation, automated test and documentation maintenance.  Focuses on velocity, auto-merging green PRs, and updating effort logs and living Completion notes.  Posts as the `grok-build-bot@` Zulip bot.  `GROK-BUILD` is a retired alias:  historical posts and `grok-build/` branches still mean this seat, but never sign new work as GROK-BUILD.  Rules home:  `~/.grok/GROK.md`.
+- **GROK-WEB** (Grok on the web and the iOS app, owner 2026-10-08):  a separate cloud seat, different from terminal Grok in tools and reach.  No lanes or checkouts.  Posts as `grok-web-bot@`, through the hosted agent-sync MCP endpoint once it exists ([MCP design](docs/protocols/agent-sync-mcp.md)).
 - **CLUTCH** (Clutch):  owns `Simple-With-Us/Clutch`:  DSH and MiniMax drivers, Python ACP bridges, cordis profiles, web scripts, and the npm package BotFleet imports.  One seat for every model run through Clutch (owner 2026-10-07:  no per-model split).  Replaces HARNESS.  Pin `AGENT_SEAT=CLUTCH` / `AGENT_TAG=CLUTCH`.  Lane `~/apps/lanes/clutch/clutch-<slug>`.  Status blocks use `repo:  Clutch` (the GitHub repo name); topics use the Clutch acronym (see the guide's [Topics Are Threads](docs/protocols/zulip-fleet-guide.md#topics-are-threads)).  Never edit the DSH engine shape in BotFleet:  import `clutch/dsh/acp`.  Rules home:  not recorded.
 - **MM** (MiniMax Code desktop app on the Mavis local runtime, `~/.minimax`; opened 2026-09-03 as a seat and a selectable engine):  bounded implementation and code review, sourced deep research with citations, document generation (docx / pdf / pptx / xlsx), static-site deploy, Computer Use desktop control and in-app browser driving, plus text / image / video / speech generation and web search through the `mmx` CLI.  Pin `AGENT_SEAT=MM` / `AGENT_TAG=MM`.  No global rules file exists on this platform:  the fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt), and fleet skills install to `~/.minimax/skills`.  Built-in sub-agents `explore` / `worker` / `verifier` inherit MM.
 - **FX** (fx by Vercel Labs):  a terminal coding agent whose model is whatever provider it is logged into (a Grok subscription today; the Codex provider or a MiniMax endpoint later).  Implementation, repo audits, PR drafting, and ACP engine for BotFleet-style hosts.  Pin `AGENT_SEAT=FX` / `AGENT_TAG=FX`.  Rules home:  `~/.fx/AGENTS.md`.  Skills live in `~/.fx/skills` only.  fx also scans the Claude and Codex packs; never inherit their tags or identity.
@@ -197,11 +198,11 @@ Seat by seat:
 ### Platform Bots
 
 - **BotFleet (`BF-<ROLE>`).**  Role bots run by the owner's BotFleet app on the `claude`, `codex`, and `grok` CLIs plus ACP engines (Cursor, OpenCode, DeepSeek, DeepSeek Harness, Droid, Hermes, Kimi, Qwen).  These are engines, not seats; the DSH and KIMI seats are retired.  They carry most former Grok Bot duty (owner 2026-09-13).  Tag `[BF-<ROLE>]`; Notes name is the role in Title Case (`Compiler`).  Observed tags:  `BF-FIXER`, `BF-DESIGNER`, `BF-COMPILER`, `BF-PLUMBER`, `BF-PUBLISHER`, `BF-DEPLOYER`, `BF-DIRECTOR`; the tag scheme is pending owner confirmation.  Each role posts as its own Zulip bot where Jay provisioned one ([BotFleet (BF) Bots](docs/protocols/zulip-fleet-guide.md#botfleet-bf-bots)).  They follow the same board, effort-log, and Zulip loop as every seat, and a fleet wake reaches them.  The BF tag is distinct from `[GB-<NAME>]` (Grok Bot) and `[GROK]` (Mac Grok).
-- **Grok Bot (`GROK-BOT`, `GB-<NAME>`).**  Its own seat, distinct from Grok's own chats (GROK, GROK-BUILD), from the coordinator, from Mac Grok TUI, and from local Cursor.  It coordinates and implements through Cursor cloud agents.  Tag `[GB-<NAME>]`; Notes name is the role in Title Case.  Branch prefix is often `cursor/` in cloud.  Largely superseded by BotFleet (owner 2026-09-13) and mostly idle:  never wait on a GB seat or assume it is listening.  GB personas are owner-managed Zulip bots, in the `fleet` group only if Jay adds them ([Grok Bot (GB) Personas](docs/protocols/zulip-fleet-guide.md#grok-bot-gb-personas)).  Desktop Agents Window and iOS Cursor visibility:  `/Users/jay/apps/cursor-chat-surfaces/` and `docs/CURSOR-CHAT-SURFACES.md`.
+- **Grok Bot (`GROK-BOT`, `GB-<NAME>`).**  Its own seat, distinct from Grok's own chats (GROK, GROK-WEB), from the coordinator, from Mac Grok TUI, and from local Cursor.  It coordinates and implements through Cursor cloud agents.  Tag `[GB-<NAME>]`; Notes name is the role in Title Case.  Branch prefix is often `cursor/` in cloud.  Largely superseded by BotFleet (owner 2026-09-13) and mostly idle:  never wait on a GB seat or assume it is listening.  GB personas are owner-managed Zulip bots, in the `fleet` group only if Jay adds them ([Grok Bot (GB) Personas](docs/protocols/zulip-fleet-guide.md#grok-bot-gb-personas)).  Desktop Agents Window and iOS Cursor visibility:  `/Users/jay/apps/cursor-chat-surfaces/` and `docs/CURSOR-CHAT-SURFACES.md`.
 
 ### Availability
 
-- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (Mac), GROK-BUILD, CLUTCH, MM, FX, MC, MA, and the BotFleet role bots.  Track outages and down seats in [Outages, Handoffs, and Substitute Seats](#outages-handoffs-and-substitute-seats).
+- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (terminal), GROK-WEB (cloud), CLUTCH, MM, FX, MC, MA, and the BotFleet role bots.  Track outages and down seats in [Outages, Handoffs, and Substitute Seats](#outages-handoffs-and-substitute-seats).
 - **Retired.**  Never assign work to these seats, accept work from them, leave them In Progress, reserve Planned or future work for them, or wait on them.  Unclaim any leftover lanes.
   - MONET (owner 2026-10-07):  the Monet Claude account and app are no longer used.
   - RENOIR (owner 2026-10-07):  the seat never opened; the Renoir Claude account and app are no longer used.
@@ -1388,8 +1389,7 @@ From `scripts/fleet_skill_identity.py`, checked Wed, Oct 7, 2026.
 | CODEX | `~/.codex/skills` |
 | AG | `~/.gemini/skills` |
 | CURSOR | `~/.cursor/skills`.  The Grok Bot cloud fork of Cursor signs `GB-<NAME>`, not `GROK-BOT`, and gets only the `by-seat/grok-bot` pack. |
-| GROK | `~/.grok/skills` |
-| GROK-BUILD | `~/.grok-build/skills`.  The Grok Build fork signs `GROK-BUILD`, never `GROK`. |
+| GROK | `~/.grok/skills`, and `~/.grok-build/skills` for the Grok Build fork.  Both sign `GROK` (owner 2026-10-08). |
 | FX | `~/.fx/skills` |
 | MM | `~/.minimax/skills` |
 | MC | `~/.config/muse/skills` |
