@@ -171,11 +171,17 @@ RENOIR_INACTIVE_BANNER = (
 MUSE_CODE_EXTRA = (
     "> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive "
     "terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches "
-    "`muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Distinct from **Muse Assist** "
+    "`muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at "
+    "`~/apps/lanes/<prefix>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the "
+    "`muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` "
+    "appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  "
+    "Distinct from **Muse Assist** "
     "(`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative "
     "assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load "
-    "automatically when the workspace is trusted in `~/.config/muse/trust.json`.  "
-    "Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.\n\n"
+    "automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the "
+    "user-level `~/.claude/CLAUDE.md` loads as a fallback.  "
+    "Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  "
+    "Setup checklist: `docs/MUSE-ONBOARDING.md`.\n\n"
 )
 
 MUSE_ASSIST_BANNER = (
@@ -331,7 +337,8 @@ SEATS: dict[str, Seat] = {
         "~/.config/muse/skills", "exclusive",
         "This pack is for **MC** (Muse Code interactive terminal coding agent).  "
         "Tag `[MC]`.  Notes name `Muse Code`.  Branches `muse-code/<slug>` only.  "
-        "Worktrees `~/apps/<prefix>-muse-code`.  Distinct from Muse Assist "
+        "Lanes `~/apps/lanes/<prefix>/muse-code-<slug>` (make one with "
+        "`~/apps/lane new <app> <slug>`).  Distinct from Muse Assist "
         "(`[MA]`, branches `muse-assist/`).  Never sign as Monet, Claude, or Codex.  "
         "Pin `AGENT_SEAT=MC` / `AGENT_TAG=MC`.",
         extra_banner=MUSE_CODE_EXTRA,
