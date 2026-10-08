@@ -11,15 +11,19 @@ generous timeout because the machine running them may be loaded.
 from __future__ import annotations
 
 import ast
+import concurrent.futures
 import contextlib
 import copy
 import hashlib
 import io
 import json
 import os
+import re
+import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -28,6 +32,7 @@ from unittest import mock
 
 from fleet_lanes import guard as G
 from fleet_lanes import install_tools as T
+from fleet_lanes import lane_guard_hook as H
 from fleet_lanes.tests import fixtures_guard as F
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[2]
@@ -158,10 +163,24 @@ def run_main(*argv: str) -> tuple[int, str, str]:
     return rc, out.getvalue(), err.getvalue()
 
 
+REAL_MUSE = shutil.which("muse")          # looked up before any test changes PATH; only one opt-in test may run it
+REAL_MUSE_OPT_IN = "FLEET_LANES_TEST_REAL_MUSE"
+
+
+def path_without_muse() -> str:
+    """PATH with every directory that holds a `muse` removed, so no test but the one dedicated to it reaches the
+    real Muse Code, and a machine with muse and one without give the same results."""
+    keep = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d and not os.path.exists(os.path.join(d, "muse"))]
+    return os.pathsep.join(keep)
+
+
 class World(unittest.TestCase):
     """A fake home, a small source tree, and helpers.  Nothing here touches the real home."""
 
     def setUp(self) -> None:
+        path_patch = mock.patch.dict(os.environ, {"PATH": path_without_muse()})
+        path_patch.start()
+        self.addCleanup(path_patch.stop)
         tmp = tempfile.TemporaryDirectory(prefix="lane-tools-test-")
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(os.path.realpath(tmp.name))
@@ -570,11 +589,12 @@ class ApplyPlatformTests(World):
         self.assertEqual(res.status, "skipped", res)
         self.assertEqual(snapshot(self.tmp), before)
 
-    def test_muse_is_never_written(self) -> None:
+    def test_muse_apply_without_the_tools_is_refused_and_writes_nothing(self) -> None:
         self.seed(".config/muse/settings.json")
         before = snapshot(self.home)
         res = self.apply("muse")
-        self.assertEqual(res.status, "unsupported", res)
+        self.assertEqual(res.status, "refused", res)
+        self.assertIn("apply tools", res.detail)
         self.assertEqual(snapshot(self.home), before)
 
     def test_grok_gets_its_own_file_and_leaves_the_imported_one(self) -> None:
@@ -861,8 +881,8 @@ class PlanTests(World):
         self.assertEqual(rc, 0)
         for needle in ("== tools", "VERSION would read", f"sha={SHA}", "python3 -I -c", "+++ ", "--- ", "@@ ",
                        f"{self.paths.stable}/lane-guard-hook --format claude", "--format codex", "--format grok",
-                       "--format antigravity", "--format cursor", "== muse", "UNVERIFIED", "failClosed", "[unsupported]",
-                       "lane-guard.json", "/hooks in Codex"):
+                       "--format antigravity", "--format cursor", "== muse", "UNVERIFIED", "failClosed",
+                       "[plugin bundle new]", "OWNER ACTIONS", "lane-guard.json", "/hooks in Codex"):
             self.assertIn(needle, out)
         self.assertIn("shim " + self.paths.lane_shim + " [new]", out)
 
@@ -879,7 +899,7 @@ class PlanTests(World):
     def test_plan_exit_codes(self) -> None:
         self.seed()
         self.assertEqual(run_main(*self.plan_args())[0], 0)                       # muse is listed, not failed
-        self.assertEqual(run_main(*self.plan_args("muse"))[0], 1)                 # named explicitly
+        self.assertEqual(run_main(*self.plan_args("muse"))[0], 0)                 # informational: it writes nothing itself
         self.config("claude").write_text("{nope")
         rc, out, _ = run_main(*self.plan_args("claude"))
         self.assertEqual(rc, 1)
@@ -1024,7 +1044,7 @@ class VerifyTests(World):
         self.assertFails(self.verify("grok"), "no hook installed")
         self.config("codex").write_text("{broken")
         self.assertFails(self.verify("codex"), "not valid JSON")
-        self.assertFails(self.verify("muse"), "UNSUPPORTED")
+        self.assertAllPass([c for c in self.verify("muse") if c.status != "SKIP"])      # muse is a plugin now, see the Muse tests
 
     def test_fails_on_a_hook_that_hangs_exits_nonzero_or_prints_nothing(self) -> None:
         shim = Path(self.paths.hook_shim)
@@ -1111,15 +1131,13 @@ class CliTests(World):
             rc, _out, _err = run_main("--help")
         self.assertEqual(rc, 0)
 
-    def test_apply_muse_exits_1_and_writes_nothing(self) -> None:
+    def test_verify_muse_before_the_tools_exits_1_and_writes_nothing(self) -> None:
         self.seed()
         before = snapshot(self.tmp)
-        rc, out, _ = run_main("apply", "--home", str(self.home), "--source", self.source.scripts_dir, "muse")
-        self.assertEqual(rc, 1, out)
-        self.assertIn("UNSUPPORTED", out)
-        self.assertEqual(snapshot(self.tmp), before)
         rc, out, _ = run_main("verify", "--home", str(self.home), "muse")
         self.assertEqual(rc, 1, out)
+        self.assertIn("NOT HEALTHY", out)
+        self.assertEqual(snapshot(self.tmp), before)
 
     def test_apply_all_then_verify_then_again(self) -> None:
         self.seed_platforms()
@@ -1279,7 +1297,8 @@ class StableDirOwnershipTests(World):
         self.assertEqual(sorted(f.rel for f in plan.files if f.status == "stale"), ["link", "notes.txt", "sub/deep.txt"])
         res = T.apply_tools(self.source, self.paths, probes=False, replace_extra=True)
         self.assertEqual(res.status, "installed", res)
-        self.assertEqual(sorted(p.name for p in stable.iterdir()), ["VERSION", "fleet-apps.json", "fleet_lanes", "lane-guard-hook"])
+        self.assertEqual(sorted(p.name for p in stable.iterdir()),
+                         ["VERSION", "fleet-apps.json", "fleet_lanes", "lane-guard-hook", "muse-plugin", "muse-seat"])
 
     def test_leftovers_this_tool_makes_itself_are_not_extras(self) -> None:
         self.install(())
@@ -1358,7 +1377,7 @@ class StableDirOwnershipTests(World):
     def test_replace_extra_is_a_flag_of_plan_and_apply(self) -> None:
         self.install(())
         (self.stable() / "notes.txt").write_text("mine")
-        args = ["--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA]
+        args = ["--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA, "--timeout", str(TIMEOUT)]
         rc, out, _ = run_main("plan", *args, "tools")
         self.assertEqual(rc, 1, out)
         rc, out, _ = run_main("plan", *args, "--replace-extra", "tools")
@@ -1972,6 +1991,1384 @@ class PlanEchoTests(World):
                      '"statusMessage": "Checking checkout location"', "git status", "ls -la /usr/local/share/man/man1/something"):
             with self.subTest(text):
                 self.assertEqual(T.redact(text), text)
+
+
+# --------------------------------------------------------------------------- the shell prefilter in the hook shim
+#
+# The hook shim reads the payload with the shell and exits 0 without starting Python when the payload cannot
+# trigger the guard.  The classes below prove that is a superset of the guard's own early exit and that it never
+# changes an answer.  A fake python3 first on PATH records every call, so "Python did not start" is observable.
+
+SHELLS = [("sh", "/bin/sh")] + [(n, p) for n in ("dash", "bash", "ksh") for p in [shutil.which(n)] if p]
+
+
+class Recorder:
+    """A directory with a fake python3 that logs each call and keeps a copy of its stdin."""
+
+    def __init__(self, root: Path) -> None:
+        self.bin = root / "fakebin"
+        self.bin.mkdir()
+        self.log = root / "python-calls.log"
+        self.stdin_copy = root / "python-stdin.bin"
+        script = ("#!/bin/sh\n"
+                  f"echo called >> {shlex.quote(str(self.log))}\n"
+                  f"cat > {shlex.quote(str(self.stdin_copy))}\n"
+                  "exit 0\n")
+        fake = self.bin / "python3"
+        fake.write_text(script, encoding="utf-8")
+        os.chmod(fake, 0o755)
+
+    def env(self, **extra: str) -> dict:
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.bin.parent)}
+        env.update(extra)
+        return env
+
+    def calls(self) -> int:
+        return len(self.log.read_text().splitlines()) if self.log.exists() else 0
+
+    def reset(self) -> None:
+        for p in (self.log, self.stdin_copy):
+            if p.exists():
+                p.unlink()
+
+
+def run_bytes(argv: list, payload: bytes, env: dict, timeout: float = TIMEOUT, cwd: str | None = None) -> tuple:
+    p = subprocess.run(argv, input=payload, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=timeout)
+    return p.returncode, p.stdout, p.stderr
+
+
+def bash_payload(command: str, tool: str = "Bash", ensure_ascii: bool = True, **extra: object) -> bytes:
+    doc = {"session_id": "t", "hook_event_name": "PreToolUse", "tool_name": tool,
+           "tool_input": {"command": command, "description": "test"}, "cwd": "/Users/jay"}
+    doc.update(extra)
+    return json.dumps(doc, ensure_ascii=ensure_ascii).encode("utf-8")
+
+
+class GuardFactsTests(World):
+    """What the shell scripts copy from guard.py, and what they do when it cannot be copied."""
+
+    GUARD_TEXT = (REAL_PKG / "guard.py").read_text(encoding="utf-8")
+
+    def guard_with(self, old: str, new: str) -> str:
+        self.assertIn(old, self.GUARD_TEXT, "guard.py moved this line; update the test")
+        return self.GUARD_TEXT.replace(old, new, 1)
+
+    def test_facts_come_from_the_guard(self) -> None:
+        f = T.read_guard_facts()
+        self.assertEqual(f.words, tuple(G._TRIGGER.pattern.split("|")))
+        self.assertEqual(f.max_chars, G.MAX_COMMAND_CHARS)
+        self.assertEqual(f.shell_hints, tuple(dict.fromkeys(("bash",) + tuple(G._SHELL_TOOL_HINTS))))
+        self.assertEqual(f.problems, ())
+        self.assertEqual(set(f.lookalikes), {"\u0130", "\u0131", "\u212a"})        # dotted I, dotless i, Kelvin sign
+        self.assertEqual(T.read_guard_facts(str(SCRIPTS_DIR)), f)
+
+    def test_the_text_reader_agrees_with_the_import(self) -> None:
+        # a source tree elsewhere is read as text, never run
+        self.assertEqual(T.read_guard_facts(self.source.scripts_dir), T.read_guard_facts())
+
+    def test_nothing_above_the_basic_plane_folds_onto_a_trigger_letter(self) -> None:
+        letters = "".join(sorted({c for w in G._TRIGGER.pattern.split("|") for c in w if c.isalpha()}))
+        cls = re.compile("[" + letters + "]", re.IGNORECASE)
+        hits = [hex(cp) for cp in range(0x80, 0x110000) if not 0xD800 <= cp < 0xE000 and cls.fullmatch(chr(cp))]
+        self.assertEqual(hits, [hex(ord(c)) for c in T.read_guard_facts().lookalikes])
+
+    def test_the_letters_lower_can_make_from_non_ascii_are_all_known(self) -> None:
+        # guard._extract lower()s the tool name; a character outside ASCII whose lower() holds a letter of a shell
+        # word could complete that word without its ASCII spelling, so the Muse wrapper passes such a character on.
+        letters = "".join(sorted({c for h in T.read_guard_facts().shell_hints for c in h if c.isalpha()}))
+        hits = [hex(cp) for cp in range(0x80, 0x110000)
+                if not 0xD800 <= cp < 0xE000 and set(letters).intersection(chr(cp).lower())]
+        self.assertEqual(hits, [hex(ord(c)) for c in T._lower_lookalikes(letters)])
+        self.assertEqual(T._lower_lookalikes(letters), ("İ",))                  # dotted capital I lowers to i
+        self.assertIn("*'\"tool_name\"'*İ*) return 1 ;;", T.render_muse_wrapper("/s"))
+
+    def test_a_trigger_that_is_not_plain_words_gives_no_prefilter_and_a_warning(self) -> None:
+        cases = {
+            "a regex": re.compile(r"clon.|worktree|archive", re.IGNORECASE),
+            "case sensitive": re.compile(r"clone|worktree|archive"),
+            "upper case words": re.compile(r"Clone|Worktree", re.IGNORECASE),
+            "a group": re.compile(r"(?:clone)|pull", re.IGNORECASE),
+            "not even a pattern": None,
+        }
+        for label, rx in cases.items():
+            with self.subTest(label), mock.patch.object(G, "_TRIGGER", rx):
+                f = T.read_guard_facts()
+                self.assertEqual(f.words, ())
+                self.assertTrue(f.problems and "no prefilter" in f.problems[0].lower(), f.problems)
+                shim = T.render_hook_shim(f)
+                self.assertNotIn("case $_lg_in", shim)
+                self.assertIn('_lg_py "$@"', shim)
+
+    def test_a_source_tree_with_an_odd_trigger_is_read_the_same_way(self) -> None:
+        odd = {
+            "regex": self.guard_with('r"clone|worktree', 'r"clon.|worktree'),
+            "re.I alias": self.guard_with("re.IGNORECASE)\n\n_UNK", "re.I)\n\n_UNK"),
+            "no trigger at all": BROKEN_GUARD,
+            "syntax error": "def evaluate(:\n",
+        }
+        for label, text in odd.items():
+            with self.subTest(label):
+                src = self.make_source("odd-" + label.replace(" ", "-"), guard=text)
+                f = T.read_guard_facts(src.scripts_dir)
+                self.assertEqual(f.words, (), f)
+                self.assertTrue(f.problems, f)
+        ok = self.make_source("fewer", guard=self.guard_with("r\"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index\"",
+                                                             "r\"clone|pull\""))
+        self.assertEqual(T.read_guard_facts(ok.scripts_dir).words, ("clone", "pull"))
+        gone = Path(ok.scripts_dir) / "fleet_lanes" / "guard.py"
+        gone.unlink()
+        self.assertEqual(T.read_guard_facts(ok.scripts_dir).words, ())
+
+    def test_plan_and_apply_say_when_there_is_no_prefilter(self) -> None:
+        src = self.make_source("noprefilter", guard=self.guard_with('r"clone|worktree', 'r"clon.|worktree'))
+        tp = T.plan_tools(src, self.paths)
+        self.assertTrue(tp.warnings and "NO prefilter" in tp.warnings[0])
+        self.assertNotIn("case $_lg_in", tp.hook_shim_text)
+        rc, out, _ = run_main("plan", "--home", str(self.home), "--source", src.scripts_dir, "--registry", src.registry,
+                              "--sha", SHA, "tools")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("WARNING: ", out)
+        res = T.apply_tools(src, self.paths, timeout=TIMEOUT, probes=False)
+        self.assertEqual(res.status, "installed", res)
+        self.assertIn("WARNING", res.detail)
+        # the install is still healthy: every call reaches the guard, which is correct and only slower
+        checks = T.verify_tools(self.paths, timeout=TIMEOUT)
+        self.assertNotIn("FAIL", self.statuses(checks), "\n".join(c.line() for c in checks))
+        self.assertEqual({c.name: c.status for c in checks}["prefilter"], "WARN")
+
+    def test_a_normal_install_reports_a_prefilter(self) -> None:
+        self.install(())
+        checks = {c.name: c for c in T.verify_tools(self.paths, timeout=TIMEOUT)}
+        self.assertEqual(checks["prefilter"].status, "PASS", checks["prefilter"].line())
+        self.assertIn("10 trigger words", checks["prefilter"].detail)
+
+    def test_the_generated_patterns_are_exactly_the_guards_words(self) -> None:
+        text = T.render_hook_shim()
+        clauses = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("*") and ln.strip().endswith(") ;;")]
+        words = list(G._TRIGGER.pattern.split("|"))
+        self.assertEqual(len(clauses), len(words) + 1 + 3, clauses)                # words, the \u escape, 3 lookalikes
+        for word, clause in zip(words, clauses):
+            self.assertEqual(clause, T._ci_glob(word) + ") ;;")
+            self.assertNotIn(word, clause)                                         # spelled with bracket pairs, not literally
+        self.assertIn("*'\\u'*) ;;", clauses)
+        self.assertEqual(T.empty_prefilter(text).count(") ;;"), 0)
+        self.assertIn("*) exit 0 ;;", T.empty_prefilter(text))
+        self.assertEqual(T.empty_prefilter(T.render_hook_shim(T.GuardFacts())), T.render_hook_shim(T.GuardFacts()))
+        self.assertIn(f'-le {G.MAX_COMMAND_CHARS} ]', text)
+
+    def test_the_shim_text_is_ascii_safe_to_print(self) -> None:
+        text = T.render_hook_shim()
+        self.assertTrue(any(ord(c) > 127 for c in text))                           # the lookalike letters are raw bytes in the file
+        printed = "\n".join(T._printable(ln) for ln in text.splitlines())
+        self.assertTrue(all(ord(c) < 128 for c in printed))
+        self.assertIn("<U+212A>", printed)
+
+
+class PrefilterShimTests(World):
+    """The installed hook shim, run for real, against the guard it fronts."""
+
+    FORMATS = ("claude", "codex", "grok", "antigravity", "cursor", "muse")
+    SHAPE = {"claude": "claude", "codex": "claude", "grok": "claude", "antigravity": "antigravity",
+             "cursor": "cursor", "muse": "muse"}
+
+    def setUp(self) -> None:
+        super().setUp()
+        # the shim pins FLEET_APPS_JSON to its own copy of the registry, so the frozen fixture registry goes in the copy
+        Path(self.source.registry).write_text(json.dumps(F.REGISTRY_DATA), encoding="utf-8")
+        self.install(())
+        self.shim = self.paths.hook_shim
+        self.rec = Recorder(self.tmp)
+
+    # -- helpers
+
+    def shim_env(self) -> dict:
+        return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": F.HOME}
+
+    def run_shim(self, payload: bytes, *args: str, env: dict | None = None, shell: str | None = None) -> tuple:
+        argv = ([shell] if shell else []) + [self.shim, *(args or ("--format", "claude"))]
+        return run_bytes(argv, payload, env if env is not None else self.shim_env())
+
+    def py_calls(self, payload: bytes, *, shell: str | None = None, env: dict | None = None) -> int:
+        """How many times the fake python3 started for this payload (0 means the shell decided alone)."""
+        self.rec.reset()
+        rc, out, err = self.run_shim(payload, env=env if env is not None else self.rec.env(), shell=shell)
+        self.assertEqual((rc, out), (0, b""), err)
+        return self.rec.calls()
+
+    def row_env(self, fx: F.GuardFixture) -> dict:
+        env = dict(fx.env) if fx.env is not None else dict(F.BASE_ENV)
+        env["FLEET_APPS_JSON"] = self.source.registry
+        return env
+
+    def payload_for(self, fx: F.GuardFixture, fmt: str) -> bytes:
+        doc = T.probe_payload(self.SHAPE[fmt], fx.command, fx.cwd)
+        if fx.scratchpad_dir:
+            doc["scratchpad_dir"] = fx.scratchpad_dir
+        return json.dumps(doc).encode("utf-8")
+
+    def direct(self, payload: bytes, fmt: str, env: dict) -> tuple:
+        """What `python3 -m fleet_lanes.lane_guard_hook --format FMT` prints: the module's own main(), in process."""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True):
+            rc = H.main(["--format", fmt], io.StringIO(payload.decode("utf-8")), out, err)
+        return rc, out.getvalue().encode("utf-8")
+
+    # -- (a) the property: the shim never changes an answer
+
+    def test_every_fixture_row_gives_the_same_bytes_through_the_shim_and_directly(self) -> None:
+        jobs = []                        # (label, payload, fmt, env, expected)
+        for fx in F.FIXTURES:
+            env = self.row_env(fx)
+            for fmt in self.FORMATS:
+                payload = self.payload_for(fx, fmt)
+                jobs.append((f"{fx.id}/{fmt}", payload, fmt, env, self.direct(payload, fmt, env)))
+        self.assertEqual(len(jobs), len(F.FIXTURES) * len(self.FORMATS))
+
+        def run(job: tuple) -> tuple:
+            label, payload, fmt, env, _ = job
+            full_env = dict(env, PATH=os.environ.get("PATH", "/usr/bin:/bin"))
+            rc, out, err = run_bytes([self.shim, "--format", fmt], payload, full_env)
+            return label, rc, out, err
+
+        workers = max(2, min(8, (os.cpu_count() or 2) * 2))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            got = list(pool.map(run, jobs))
+        bad = []
+        for job, (label, rc, out, err) in zip(jobs, got):
+            if (rc, out) != job[4]:
+                bad.append(f"{label}: shim {(rc, out[:160])} != direct {(job[4][0], job[4][1][:160])} stderr={err[:200]!r}")
+        self.assertEqual(bad[:5], [], f"{len(bad)} of {len(jobs)} differ")
+        # the table really exercised both outcomes
+        outcomes = {(j[4][0], bool(j[4][1])) for j in jobs}
+        self.assertEqual(outcomes, {(0, True), (0, False)})
+
+    def test_a_sample_of_rows_matches_the_real_module_run_as_a_process(self) -> None:
+        rows = F.FIXTURES[::12]
+        self.assertGreater(len(rows), 10)
+        for fx in rows:
+            env = self.row_env(fx)
+            for fmt in ("claude", "cursor", "muse"):
+                with self.subTest(f"{fx.id}/{fmt}"):
+                    payload = self.payload_for(fx, fmt)
+                    full_env = dict(env, PATH=os.environ.get("PATH", "/usr/bin:/bin"))
+                    proc = run_bytes([sys.executable, "-m", "fleet_lanes.lane_guard_hook", "--format", fmt], payload,
+                                     full_env, cwd=str(SCRIPTS_DIR))
+                    via_shim = run_bytes([self.shim, "--format", fmt], payload, full_env)
+                    self.assertEqual((via_shim[0], via_shim[1]), (proc[0], proc[1]), via_shim[2])
+
+    def test_a_json_escaped_trigger_word_is_still_denied(self) -> None:
+        # "clone" decodes to "clone"; a prefilter that only looked at the raw text would let it through
+        command = "gh repo cl\\u006fne Simple-With-Us/HogHunter /tmp/hh-verify"
+        raw = ('{"tool_name":"Bash","tool_input":{"command":"' + command + '"},"cwd":"/Users/jay"}').encode("ascii")
+        self.assertNotIn(b"clone", raw)
+        self.assertEqual(json.loads(raw)["tool_input"]["command"], "gh repo clone Simple-With-Us/HogHunter /tmp/hh-verify")
+        rc, out, err = self.run_shim(raw, env=dict(self.shim_env(), AGENT_SEAT="CLAUDE"))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny", out)
+
+    def test_the_shim_runs_under_every_shell_that_is_installed(self) -> None:
+        self.assertIn("sh", dict(SHELLS))
+        for name, shell in SHELLS:
+            with self.subTest(name):
+                self.assertEqual(self.py_calls(bash_payload("ls -la"), shell=shell), 0)
+                self.assertEqual(self.py_calls(bash_payload("git clone x y"), shell=shell), 1)
+                self.assertEqual(self.py_calls(bash_payload("git CLONE x y"), shell=shell), 1)
+                self.assertEqual(self.py_calls(bash_payload("echo \u212a", ensure_ascii=False), shell=shell), 1)
+                # and the real guard behind it still denies
+                rc, out, err = self.run_shim(bash_payload(T.DENY_COMMAND), shell=shell)
+                self.assertEqual(rc, 0, err)
+                self.assertIn(b"permissionDecision", out)
+
+    # -- the locale: a multibyte locale must not change what the shell sees
+
+    def shells_with_zsh_as_sh(self) -> list:
+        """SHELLS plus zsh started under the name sh (its sh emulation), when zsh is installed."""
+        out = list(SHELLS)
+        zsh = shutil.which("zsh")
+        if zsh:
+            link_dir = self.tmp / "zsh-as-sh"
+            link_dir.mkdir(exist_ok=True)
+            link = link_dir / "sh"
+            if not link.exists():
+                os.symlink(zsh, link)
+            out.append(("zsh-as-sh", str(link)))
+        return out
+
+    SJIS_REPRO = ('{"tool_name":"Bash","tool_input":{"command":"c=あclone; gh repo ${c#あ} '
+                  'Simple-With-Us/HogHunter /tmp/hh-verify"},"cwd":"/Users/jay"}').encode("utf-8")
+
+    def test_a_multibyte_locale_cannot_hide_a_trigger_word(self) -> None:
+        # In ja_JP.SJIS and zh_CN.GB18030 an ASCII byte can be the second byte of a character.  A shell that honours
+        # the locale (bash and zsh do; dash does not) then reads the last byte of a UTF-8 character and the next
+        # letter as one character, so a trigger word glued to a non-ASCII character would never match.  Where those
+        # locales are not installed (a bare Linux image) the shell falls back to C and this passes trivially.
+        raw = self.SJIS_REPRO
+        direct = self.direct(raw, "claude", dict(F.BASE_ENV, FLEET_APPS_JSON=self.source.registry))
+        self.assertIn(b"permissionDecision", direct[1])                            # the guard denies it
+        for name, shell in self.shells_with_zsh_as_sh():
+            for var in ("LC_ALL", "LC_CTYPE", "LANG"):
+                for locale in ("ja_JP.SJIS", "zh_CN.GB18030"):
+                    with self.subTest(shell=name, var=var, locale=locale):
+                        self.assertEqual(self.py_calls(raw, shell=shell, env=self.rec.env(**{var: locale})), 1)
+        for var in ("LC_ALL", "LC_CTYPE", "LANG"):
+            with self.subTest(real_guard=var):
+                rc, out, err = self.run_shim(raw, env=dict(self.shim_env(), **{var: "ja_JP.SJIS"}))
+                self.assertEqual(rc, 0, err)
+                self.assertIn(b"permissionDecision", out)
+
+    def test_python_gets_the_callers_locale_unchanged(self) -> None:
+        env_log = self.tmp / "env.log"
+        fake = self.rec.bin / "python3"
+        fake.write_text("#!/bin/sh\nenv > %s\ncat >/dev/null\n" % shlex.quote(str(env_log)), encoding="utf-8")
+        os.chmod(fake, 0o755)
+        for name, shell in self.shells_with_zsh_as_sh():
+            for given, line in (({"LC_ALL": "ja_JP.SJIS"}, "LC_ALL=ja_JP.SJIS"), ({"LC_ALL": ""}, "LC_ALL="),
+                                ({}, None)):
+                with self.subTest(shell=name, given=given):
+                    if env_log.exists():
+                        env_log.unlink()
+                    self.run_shim(bash_payload("git clone x y"), env=self.rec.env(LANG="ja_JP.SJIS", **given), shell=shell)
+                    text = env_log.read_text()
+                    self.assertEqual([ln for ln in text.splitlines() if ln.startswith("LC_ALL=")],
+                                     [line] if line is not None else [])
+                    self.assertIn("LANG=ja_JP.SJIS", text.splitlines())
+                    self.assertNotIn("_lg_lc", text)
+
+    # -- (b) a benign payload never starts Python
+
+    def test_a_benign_payload_exits_without_starting_python(self) -> None:
+        for command in ("ls -la", "git status", "npm test", "echo hello && pwd", "cat README.md",
+                        "git commit -m 'fix the thing' && git push origin HEAD", "python3 -m unittest discover",
+                        "rm -rf node_modules .next", "caf\u00e9 \u2014 na\u00efve \u65e5\u672c\u8a9e"):
+            with self.subTest(command):
+                self.assertEqual(self.py_calls(bash_payload(command, ensure_ascii=False)), 0)
+                for locale in ("C", "en_US.UTF-8", "ja_JP.SJIS", "zh_CN.GB18030"):
+                    self.assertEqual(self.py_calls(bash_payload(command, ensure_ascii=False),
+                                                   env=self.rec.env(LC_ALL=locale)), 0)
+        for raw in (b"", b"   ", b"\n", b"not json", b"{", b"null", b"[]", b'{"tool_name":"Bash"}'):
+            with self.subTest(raw=raw):
+                self.assertEqual(self.py_calls(raw), 0)
+
+    def test_a_json_escaped_non_ascii_letter_costs_a_python_start(self) -> None:
+        # a \\u escape can spell any letter, so the shell cannot rule it out; only encoders that escape non-ASCII pay
+        escaped = bash_payload("caf\u00e9")
+        self.assertIn(b"\\u00e9", escaped)
+        self.assertEqual(self.py_calls(escaped), 1)
+
+    def test_a_benign_escape_is_not_a_reason_to_start_python(self) -> None:
+        # \n, \t and \" are JSON escapes that cannot spell a letter
+        doc = json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo \"a\"\n\tls\\"}})
+        self.assertIn("\\n", doc)
+        self.assertNotIn("\\u", doc)
+        self.assertEqual(self.py_calls(doc.encode()), 0)
+
+    # -- (c) every trigger word starts it, in any case
+
+    def test_each_trigger_word_starts_python_in_any_letter_case(self) -> None:
+        for word in G._TRIGGER.pattern.split("|"):
+            for variant in (word, word.upper(), word.capitalize(), "".join(c.upper() if i % 2 else c for i, c in enumerate(word))):
+                with self.subTest(variant):
+                    self.assertEqual(self.py_calls(bash_payload(f"echo {variant}")), 1)
+                    # also when the word is only in another field of the payload (a superset is fine)
+                    self.assertEqual(self.py_calls(bash_payload("ls", cwd=f"/x/{variant}")), 1)
+
+    def test_a_json_u_escape_starts_python(self) -> None:
+        for raw in (b'{"tool_input":{"command":"gh repo cl\\u006fne a b"}}', b'{"a":"\\u0063lone"}', b'\\u'):
+            with self.subTest(raw=raw):
+                self.assertEqual(self.py_calls(raw), 1)
+
+    def test_the_non_ascii_letters_that_fold_onto_a_trigger_letter_start_python(self) -> None:
+        for ch in T.read_guard_facts().lookalikes:
+            word = "wor" + ch + "tree" if ch == "\u212a" else "arch" + ch + "ve"
+            self.assertIsNotNone(G._TRIGGER.search(word), "the guard's own trigger matches this spelling")
+            payload = bash_payload(f"git {word} add x", ensure_ascii=False)
+            self.assertNotIn(b"\\u", payload)
+            for locale in ("C", "en_US.UTF-8", "tr_TR.UTF-8"):
+                with self.subTest(hex(ord(ch)) + " " + locale):
+                    self.assertEqual(self.py_calls(payload, env=self.rec.env(LC_ALL=locale)), 1)
+
+    def test_a_payload_over_the_guards_size_cap_goes_to_python(self) -> None:
+        head = b'{"tool_name":"Bash","tool_input":{"command":"ls","description":"'
+        tail = b'"}}'
+        cap = G.MAX_COMMAND_CHARS
+        for size, expected in ((cap - 1, 0), (cap, 0), (cap + 1, 1), (cap * 2, 1)):
+            with self.subTest(size):
+                pad = b"a" * (size - len(head) - len(tail))
+                payload = head + pad + tail
+                self.assertEqual(len(payload), size)
+                self.assertEqual(self.py_calls(payload), expected)
+
+    def test_a_big_payload_with_a_trigger_word_reaches_python_whole(self) -> None:
+        big = bash_payload("echo clone", description="x" * 600_000)
+        self.rec.reset()
+        rc, out, _ = self.run_shim(big, env=self.rec.env())
+        self.assertEqual((rc, out), (0, b""))
+        self.assertEqual(self.rec.stdin_copy.read_bytes(), big)
+
+    # -- python receives the original bytes
+
+    def test_python_gets_the_original_bytes_unchanged(self) -> None:
+        payloads = [
+            bash_payload("git clone a b"),
+            bash_payload("git clone a b") + b"\n",
+            bash_payload("git clone a b") + b"\n\n\n",
+            b"\n\n" + bash_payload("git clone a b"),
+            b'{"command":"echo clone \\\\ \\" \\n \\t"}',
+            b'{"a":\n"clone",\n  "b": 1}\n',
+            b"clone\r\nclone\r\n",
+            b"-n clone",
+            b"clone %s %d \\ $HOME `date` $(id) *",
+            "clone \u00e9\u2014".encode("utf-8"),
+            b"clone \xff\xfe invalid utf-8",
+            b"clone " + b"x" * 100_000,
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload[:40]):
+                self.rec.reset()
+                rc, out, err = self.run_shim(payload, "--format", "muse", env=self.rec.env())
+                self.assertEqual((rc, out), (0, b""), err)
+                self.assertEqual(self.rec.calls(), 1)
+                self.assertEqual(self.rec.stdin_copy.read_bytes(), payload)
+
+    def test_the_arguments_reach_python_too(self) -> None:
+        argv_log = self.tmp / "argv.log"
+        fake = self.rec.bin / "python3"
+        fake.write_text("#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done > %s\ncat >/dev/null\n" % shlex.quote(str(argv_log)),
+                        encoding="utf-8")
+        os.chmod(fake, 0o755)
+        self.run_shim(bash_payload("git clone a b"), "--format", "cursor", "--exit2", env=self.rec.env())
+        self.assertEqual(argv_log.read_text().splitlines()[-3:], ["--format", "cursor", "--exit2"])
+
+    def test_the_arguments_are_not_needed_to_decide(self) -> None:
+        # an unknown or missing flag never changes the early exit
+        self.assertEqual(self.py_calls(bash_payload("ls")), 0)
+        rc, out, _ = self.run_shim(bash_payload("ls"), "--bogus", "--format", "nope", env=self.rec.env())
+        self.assertEqual((rc, out), (0, b""))
+
+    def test_the_shell_variable_does_not_leak_into_pythons_environment(self) -> None:
+        env_log = self.tmp / "env.log"
+        fake = self.rec.bin / "python3"
+        fake.write_text("#!/bin/sh\nenv > %s\ncat >/dev/null\n" % shlex.quote(str(env_log)), encoding="utf-8")
+        os.chmod(fake, 0o755)
+        self.run_shim(bash_payload("git clone " + "a" * 5000), env=self.rec.env())
+        self.assertNotIn("_lg_in", env_log.read_text())
+        # even if the caller exported a variable of that name, the payload is not handed to Python in its environment
+        self.run_shim(bash_payload("git clone " + "a" * 5000), env=self.rec.env(_lg_in="preset"))
+        self.assertNotIn("_lg_in", env_log.read_text())
+
+    # -- (d) malformed input still ends in exit 0 with no output
+
+    def test_malformed_input_is_an_allow_through_the_real_guard(self) -> None:
+        cases = [b"", b"not json clone", b"{clone", b'{"tool_name": "Bash", "tool_input": {"command": "clone', b"\xff\xfe\x00clone",
+                 b"null", b"[]", b'"clone"', b"12 clone", b'{"tool_input": "clone"}', b'{"tool_name": 5, "command": "git clone x"}',
+                 b'{"tool_name":"Bash","tool_input":{"command":["git","clone"]}}', b"clone\x00 \x00",
+                 json.dumps({"tool_name": "Bash", "tool_input": {"command": "x" * 400_000 + " clone"}}).encode()]
+        for raw in cases:
+            with self.subTest(raw=raw[:40]):
+                rc, out, err = self.run_shim(raw)
+                self.assertEqual((rc, out), (0, b""), err)
+
+    def test_a_broken_python_behind_the_shim_is_still_an_allow(self) -> None:
+        guard = Path(self.paths.package_dir) / "guard.py"
+        guard.write_text("def evaluate(:\n", encoding="utf-8")
+        for raw in (bash_payload(T.DENY_COMMAND), bash_payload("ls")):
+            rc, out, _ = self.run_shim(raw)
+            self.assertEqual((rc, out), (0, b""))
+
+    # -- (e) latency, recorded and never asserted
+
+    def test_latency_smoke(self) -> None:
+        def timed(payload: bytes, n: int) -> float:
+            t0 = time.perf_counter()
+            for _ in range(n):
+                self.run_shim(payload)
+            return (time.perf_counter() - t0) / n
+
+        benign = timed(bash_payload("ls -la"), 5)
+        python = timed(bash_payload("git clone https://example.com/x.git y"), 3)
+        sys.stderr.write(f"\nlatency (recorded, not asserted): benign Bash call {benign * 1000:.0f} ms through the shell "
+                         f"prefilter, a call that reaches Python {python * 1000:.0f} ms\n")
+        self.assertGreater(benign, 0)
+
+    # -- verify stays honest
+
+    def test_verify_fails_when_the_prefilter_patterns_are_emptied(self) -> None:
+        self.seed_platforms()
+        self.install()
+        self.assertAllPass(self.verify("claude"))
+        shim = Path(self.shim)
+        original = shim.read_bytes()
+        shim.write_bytes(T.empty_prefilter(original.decode("utf-8")).encode("utf-8"))
+        os.chmod(shim, 0o755)
+        # a shim that exits 0 for everything gives the deny probe no output
+        for key in T.SUPPORTED_KEYS:
+            with self.subTest(key):
+                checks = self.verify(key)
+                self.assertFails(checks, "no output")
+                self.assertTrue(any(c.name == "deny/login-PATH" and c.status == "FAIL" for c in checks))
+        self.assertFails(T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL), "no output")      # the Muse wrapper calls the same shim
+        # and verify tools sees the edit twice: the digest and the shim text
+        tools = T.verify_tools(self.paths, timeout=TIMEOUT)
+        self.assertFails(tools, "differs")
+        self.assertFails(tools, "tree digest")
+        shim.write_bytes(original)
+        os.chmod(shim, 0o755)
+        self.assertAllPass(self.verify("claude"))
+        self.assertAllPass(T.verify_tools(self.paths, timeout=TIMEOUT))
+
+    def test_verify_fails_when_one_trigger_word_is_missing_from_the_patterns(self) -> None:
+        shim = Path(self.shim)
+        text = shim.read_text(encoding="utf-8")
+        cut = "\n".join(ln for ln in text.splitlines() if ln.strip() != T._ci_glob("worktree") + ") ;;") + "\n"
+        self.assertNotEqual(cut, text)
+        shim.write_text(cut, encoding="utf-8")
+        os.chmod(shim, 0o755)
+        # the probes use "clone", so only the exact-text check can see this one
+        self.assertFails(T.verify_tools(self.paths, timeout=TIMEOUT), "differs")
+
+    def test_the_self_test_includes_the_emptied_prefilter_phase(self) -> None:
+        lines: list = []
+        rc = T.self_test(lines.append, timeout=TIMEOUT, minimal_path=False, source=self.source)
+        text = "\n".join(lines)
+        self.assertEqual(rc, 0, text)
+        self.assertIn("with the prefilter patterns emptied", text)
+        self.assertIn("FAIL  muse", text)
+
+
+# --------------------------------------------------------------------------- Muse Code: the plugin bundle
+
+class MuseBundleTests(World):
+    def test_apply_tools_writes_the_bundle_and_the_seat_shim(self) -> None:
+        res = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, minimal_path=False)
+        self.assertEqual(res.status, "installed", res)
+        s = Path(self.paths.stable)
+        manifest = s / "muse-plugin" / "fleet-lane-guard" / ".muse-plugin" / "plugin.json"
+        wrapper = s / "muse-plugin" / "fleet-lane-guard" / "hooks" / "lane-guard.sh"
+        seat = s / "muse-seat"
+        for p in (manifest, wrapper, seat):
+            self.assertTrue(p.is_file(), p)
+        self.assertEqual(manifest.read_text(), T.render_muse_manifest(str(s)))
+        self.assertEqual(wrapper.read_text(), T.render_muse_wrapper(str(s)))
+        self.assertEqual(seat.read_text(), T.render_muse_seat())
+        self.assertTrue(os.access(wrapper, os.X_OK) and os.access(seat, os.X_OK))
+        self.assertEqual(stat.S_IMODE(manifest.stat().st_mode), 0o644)
+        self.assertEqual((self.paths.muse_bundle, self.paths.muse_manifest, self.paths.muse_wrapper, self.paths.muse_seat),
+                         (str(s / "muse-plugin" / "fleet-lane-guard"), str(manifest), str(wrapper), str(seat)))
+        # they are part of the digest, like every other file in the stable dir
+        ver = T.parse_version((s / "VERSION").read_text())
+        files = T.read_tree(str(s))
+        files.pop("VERSION")
+        self.assertEqual(ver["tree"], T.tree_digest(files))
+        self.assertIn("muse-seat", files)
+        self.assertIn("muse-plugin/fleet-lane-guard/hooks/lane-guard.sh", files)
+        self.assertEqual(sorted(p.name for p in s.parent.iterdir()), ["lane", "lane-tools"])    # no stage dir left over
+
+    def test_a_second_apply_is_unchanged_and_a_changed_stable_path_is_not_a_foreign_dir(self) -> None:
+        self.install(())
+        res = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, probes=False)
+        self.assertEqual(res.status, "unchanged", res)
+        plan = T.plan_tools(self.source, self.paths)
+        self.assertEqual(plan.problems, [])
+        self.assertEqual({fs.status for fs in plan.files}, {"same"})
+
+    def test_apply_tools_heals_a_muse_file_that_lost_its_executable_bit(self) -> None:
+        self.install(())
+        for path in (self.paths.muse_seat, self.paths.muse_wrapper):
+            with self.subTest(path):
+                os.chmod(path, 0o644)
+                self.assertFails([c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)], "not executable")
+                res = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, probes=False)
+                self.assertEqual(res.status, "installed", res)
+                self.assertTrue(os.access(path, os.X_OK))
+                self.assertEqual(T.apply_tools(self.source, self.paths, timeout=TIMEOUT, probes=False).status, "unchanged")
+
+    def test_the_manifest_has_the_shape_muse_validated(self) -> None:
+        doc = json.loads(T.render_muse_manifest("/stable dir/lane-tools"))
+        self.assertEqual((doc["schemaVersion"], doc["name"]), (1, "fleet-lane-guard"))
+        self.assertEqual(doc["compat"], {"source": "native", "manifestDir": ".muse-plugin"})
+        hooks = doc["capabilities"]["hooks"]
+        self.assertEqual(len(hooks), 1)
+        hook = hooks[0]
+        self.assertEqual((hook["id"], hook["event"], hook["timeoutMs"]), ("lane-guard", "PreToolUse", 5000))
+        self.assertNotIn("matcher", hook)                                          # Muse rejects it
+        self.assertEqual(hook["command"], ["/bin/sh", "/stable dir/lane-tools/muse-plugin/fleet-lane-guard/hooks/lane-guard.sh"])
+        self.assertTrue(all(os.path.isabs(a) for a in hook["command"]))
+        self.assertEqual(T.muse_hook_argv("/stable dir/lane-tools"), hook["command"])
+        for key in ("skills", "commands", "mcpServers", "reminders"):
+            self.assertEqual(doc["capabilities"][key], [])
+
+    def test_the_wrapper_has_absolute_paths_only(self) -> None:
+        text = T.render_muse_wrapper("/stable dir/it's")
+        self.assertIn("_lg_guard='/stable dir/it'\"'\"'s/lane-guard-hook'", text)
+        self.assertNotIn("$HOME", text)
+        self.assertNotIn("$PATH", text)
+
+    def test_muse_validate_accepts_the_bundle_when_muse_is_installed(self) -> None:
+        # Opt-in: this runs the REAL muse launcher and binary, which live outside the test's temp dir.  It goes
+        # through verify_muse, so it gets exactly the confined environment the product gives it (throwaway HOME and
+        # XDG dirs, auto-update off); MuseValidateEnvTests proves that environment with a fake launcher.
+        if os.environ.get(REAL_MUSE_OPT_IN) != "1":
+            self.skipTest(f"runs the real muse; set {REAL_MUSE_OPT_IN}=1 to run it")
+        if not REAL_MUSE:
+            self.skipTest("muse is not on PATH")
+        self.install(())
+        with mock.patch.dict(os.environ, {"PATH": os.path.dirname(REAL_MUSE) + os.pathsep + os.environ.get("PATH", "")}):
+            checks = {c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)}
+        self.assertEqual(checks["muse validate"].status, "PASS", checks["muse validate"].line())
+
+
+def muse_shapes() -> tuple:
+    """Raw hook payloads (key order, spacing and duplicate keys exactly as written) for the Muse wrapper's tool filter.
+
+    SHELL: guard._extract reads each one as a shell call (a missing or null top-level tool key, or a shell word in
+    the value it reads), so the wrapper must hand every one to the guard.  FAST: plain non-shell tool calls in the
+    spellings encoders produce, which must exit before the guard.  EITHER: not shell calls, in shapes the wrapper
+    cannot prove from the raw text (a shell word anywhere after the key counts), so it may pass them on (a process,
+    never a wrong answer)."""
+    cmd = json.dumps(T.DENY_COMMAND)
+    inp = '"tool_input": {"command": %s}' % cmd
+    shell = {
+        "no-tool-key": '{%s, "cwd": "/"}' % inp,
+        "tool_name-null": '{"tool_name": null, %s, "cwd": "/"}' % inp,
+        "tool_name-null-compact": '{"tool_name":null,"tool_input":{"command":%s},"cwd":"/"}' % cmd,
+        "tool_name-null-two-spaces": '{"tool_name":  null, %s, "cwd": "/"}' % inp,
+        "tool_name-null-tab": '{"tool_name":\tnull, %s, "cwd": "/"}' % inp,
+        "tool_name-null-newline": '{\n  "tool_name":\n    null,\n  %s,\n  "cwd": "/"\n}' % inp,
+        "toolName-null": '{"toolName": null, %s, "cwd": "/"}' % inp,
+        "tool_name-null+toolName-read": '{"tool_name": null, "toolName": "read", %s, "cwd": "/"}' % inp,
+        "toolName-read+tool_name-null": '{"toolName": "read", "tool_name": null, %s, "cwd": "/"}' % inp,
+        "nested-tool_name-no-top-key": '{"tool_input": {"command": %s, "tool_name": "x"}, "cwd": "/"}' % cmd,
+        "nested-tool_name-first": '{"meta": {"tool_name": "read"}, %s, "cwd": "/"}' % inp,
+        "tool_name-as-a-value": '{%s, "cwd": "/", "source": "tool_name"}' % inp,
+        "cursor-shape+toolName-value": ('{"hook_event_name": "beforeShellExecution", "command": %s, "cwd": "/", '
+                                        '"workspace_roots": ["/"], "meta": {"label": "toolName"}}' % cmd),
+        "bash-before-key-only": '{"cwd": "/bash", "tool_name": null, %s}' % inp,
+        "toolName-Bash+nested-tool_name-read": '{"meta": {"tool_name": "read"}, "toolName": "Bash", %s, "cwd": "/"}' % inp,
+        "duplicate-tool_name-last-Bash": '{"tool_name": "read", %s, "cwd": "/", "tool_name": "Bash"}' % inp,
+        "duplicate-tool_name-last-null": '{"tool_name": "read", %s, "cwd": "/", "tool_name": null}' % inp,
+        "escaped-quote-in-a-key": '{"x\\"tool_name": "read", %s, "cwd": "/"}' % inp,
+        "space-before-colon-Bash": '{"tool_name" : "Bash", %s, "cwd": "/"}' % inp,
+        "escaped-quote-then-bash": '{"tool_name": "x\\"bash", %s, "cwd": "/"}' % inp,
+        "shell-word-glued-to-non-ascii": '{"tool_name": "あbash", %s, "cwd": "/"}' % inp,
+        "json-escaped-shell-word": '{"tool_name": "\\u0062ash", %s, "cwd": "/"}' % inp,
+    }
+    fast = {
+        "read-compact": '{"hook_event_name":"PreToolUse","tool_name":"read","tool_input":{"command":%s},"cwd":"/"}' % cmd,
+        "read-default-separators": json.dumps({"hook_event_name": "PreToolUse", "session_id": "s", "cwd": "/",
+                                               "permission_mode": "default", "tool_name": "read",
+                                               "tool_input": {"command": T.DENY_COMMAND}}),
+        "read-indented": json.dumps({"hook_event_name": "PreToolUse", "tool_name": "read",
+                                     "tool_input": {"command": T.DENY_COMMAND}}, indent=2),
+        "toolName-read": '{"toolName":"read","toolInput":{"command":%s},"cwd":"/"}' % cmd,
+    }
+    either = {
+        "write-whose-content-says-bash": json.dumps({"tool_name": "write", "tool_input": {
+            "file_path": "/x", "content": "run it in bash: " + T.DENY_COMMAND}, "cwd": "/"}),
+        "tool_name-number": '{"tool_name": 5, %s, "cwd": "/"}' % inp,
+        "space-before-colon-read": '{"tool_name" : "read", %s, "cwd": "/"}' % inp,
+        "tool_name-after-a-nested-object": '{%s, "tool_name": "read", "cwd": "/"}' % inp,
+        "dotted-capital-I": '{"tool_name": "termİnal", %s, "cwd": "/"}' % inp,
+        "top-level-array": '[{"tool_name": "Bash", %s, "cwd": "/"}]' % inp,
+    }
+    enc = lambda d: {k: v.encode("utf-8") for k, v in d.items()}                    # noqa: E731
+    return enc(shell), enc(fast), enc(either)
+
+
+class MuseWrapperTests(World):
+    """hooks/lane-guard.sh with a fake guard shim behind it: which calls reach the guard, and with what bytes."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.stable = self.tmp / "stable dir"
+        self.stable.mkdir()
+        self.calls = self.tmp / "guard-calls.log"
+        self.stdin_copy = self.tmp / "guard-stdin.bin"
+        fake = self.stable / "lane-guard-hook"
+        fake.write_text("#!/bin/sh\n"
+                        f"echo \"$@\" >> {shlex.quote(str(self.calls))}\n"
+                        f"cat > {shlex.quote(str(self.stdin_copy))}\n"
+                        "echo '{\"fake\": \"deny\"}'\n"
+                        "exit 3\n", encoding="utf-8")
+        os.chmod(fake, 0o755)
+        self.wrapper = self.tmp / "lane-guard.sh"
+        self.wrapper.write_text(T.render_muse_wrapper(str(self.stable)), encoding="utf-8")
+        os.chmod(self.wrapper, 0o755)
+
+    def run_wrapper(self, payload: bytes, env: dict | None = None) -> tuple:
+        res = T.run_argv(["/bin/sh", str(self.wrapper)], payload, {} if env is None else env, TIMEOUT, cwd="/")
+        return res.returncode, res.stdout
+
+    def reached(self, payload: bytes) -> bool:
+        for p in (self.calls, self.stdin_copy):
+            if p.exists():
+                p.unlink()
+        rc, out = self.run_wrapper(payload)
+        self.assertEqual(rc, 0)                                                  # always: a hook failure is never a block
+        reached = self.calls.exists()
+        if reached:
+            self.assertEqual(self.calls.read_text().strip(), "--format muse")
+            self.assertEqual(self.stdin_copy.read_bytes(), payload)
+            self.assertEqual(out, b'{"fake": "deny"}\n')                         # its stdout, passed through
+        else:
+            self.assertEqual(out, b"")
+        return reached
+
+    def payload(self, tool: str, command: str = "ls") -> bytes:
+        return json.dumps({"hook_event_name": "PreToolUse", "session_id": "s", "cwd": "/", "permission_mode": "default",
+                           "tool_name": tool, "tool_input": {"command": command, "description": "d"}}).encode()
+
+    def test_shell_tool_calls_reach_the_guard_in_any_letter_case(self) -> None:
+        for tool in ("bash", "Bash", "BASH", "bAsH"):
+            with self.subTest(tool):
+                self.assertTrue(self.reached(self.payload(tool)))
+
+    def test_the_other_shell_tool_words_the_guard_knows_reach_it_too(self) -> None:
+        for tool in G._SHELL_TOOL_HINTS:
+            with self.subTest(tool):
+                self.assertTrue(self.reached(self.payload(tool)))
+
+    def test_tools_that_are_not_shell_tools_exit_before_the_guard(self) -> None:
+        for tool in ("read", "write", "edit", "grep", "glob", "web_fetch", "task", "mcp__thing__lookup"):
+            with self.subTest(tool):
+                self.assertFalse(self.reached(self.payload(tool, command="git clone https://example.com/a b")))
+
+    def test_the_tool_filter_is_a_superset_not_a_parse(self) -> None:
+        # the word is looked for after the tool_name key anywhere in the payload, so a non-shell tool whose input
+        # mentions a shell reaches the guard, which allows it.  That costs a process, never a wrong answer.
+        doc = {"tool_name": "write", "tool_input": {"file_path": "/x", "content": "run it in bash"}}
+        self.assertTrue(self.reached(json.dumps(doc).encode()))
+        # a word that comes BEFORE the key does not count
+        before = '{"cwd": "/bash", "tool_name": "read", "tool_input": {"file_path": "/x"}}'
+        self.assertFalse(self.reached(before.encode()))
+
+    def test_a_payload_that_names_no_tool_is_passed_on(self) -> None:
+        self.assertTrue(self.reached(b'{"command":"git clone a b","cwd":"/"}'))
+        self.assertTrue(self.reached(b'{"toolName":"Bash","toolInput":{"command":"ls"}}'))
+        self.assertFalse(self.reached(b'{"toolName":"read","toolInput":{"file_path":"/x"}}'))
+
+    def test_a_json_escaped_tool_name_is_passed_on(self) -> None:
+        self.assertTrue(self.reached(b'{"tool_name":"\\u0062ash","tool_input":{"command":"ls"}}'))
+
+    def test_every_shape_the_guard_reads_as_a_shell_call_reaches_it(self) -> None:
+        # null and missing tool keys, keys that only occur nested or as a value, odd spacing, duplicate keys
+        shell, fast, _ = muse_shapes()
+        for label, raw in shell.items():
+            with self.subTest(label):
+                self.assertTrue(self.reached(raw))
+        for label, raw in fast.items():
+            with self.subTest(label):
+                self.assertFalse(self.reached(raw))
+
+    def test_the_shapes_hold_under_every_installed_shell(self) -> None:
+        shell, fast, _ = muse_shapes()
+        for name, sh in SHELLS:
+            for label, raw in list(shell.items()) + list(fast.items()):
+                with self.subTest(shell=name, shape=label):
+                    for p in (self.calls, self.stdin_copy):
+                        if p.exists():
+                            p.unlink()
+                    res = T.run_argv([sh, str(self.wrapper)], raw, {}, TIMEOUT, cwd="/")
+                    self.assertEqual(res.returncode, 0, res.stderr)
+                    self.assertEqual(self.calls.exists(), label in shell, res.stdout)
+
+    def test_a_lookalike_letter_in_the_tool_name_reaches_the_guard(self) -> None:
+        self.assertTrue(self.reached('{"tool_name":"termİnal","tool_input":{"command":"ls"}}'.encode("utf-8")))
+
+    def test_a_big_payload_never_makes_the_wrapper_slow(self) -> None:
+        # Only case globs scan the whole payload; they stay linear in every shell.  `${x#*key}` and `${x%%key*}` do
+        # not (dash took 4 s on a 20 KB payload, bash 3.2 about 2 s on 256 KB), which is why the wrapper never runs
+        # them on a key that is not in its first MUSE_KEY_WINDOW bytes.  A hook that times out is never a deny.
+        content = ('a\\n{"b": [1]}\\\\ bash ' * 14000)[:256 * 1024]
+        shapes = {
+            "key-first": (json.dumps({"tool_name": "read", "tool_input": {"content": content}}), True),
+            "key-after-the-content": (json.dumps({"tool_input": {"content": content}, "tool_name": "read"}), True),
+            "key-after-a-long-flat-value": (json.dumps({"cwd": "x" * (256 * 1024), "tool_name": "read"}), True),
+            "no-key": (json.dumps({"tool_input": {"content": content}}), True),
+            "key-first-no-shell-word": (json.dumps({"tool_name": "read", "tool_input": {
+                "content": content.replace("bash", "bush")}}), False),
+        }
+        for name, sh in SHELLS:
+            for label, (raw, reaches) in shapes.items():
+                with self.subTest(shell=name, shape=label):
+                    for p in (self.calls, self.stdin_copy):
+                        if p.exists():
+                            p.unlink()
+                    t0 = time.perf_counter()
+                    res = T.run_argv([sh, str(self.wrapper)], raw.encode(), {}, TIMEOUT, cwd="/")
+                    took = time.perf_counter() - t0
+                    self.assertFalse(res.timed_out)
+                    self.assertEqual((res.returncode, self.calls.exists()), (0, reaches), res.stderr)
+                    self.assertLess(took, 20.0, f"{took:.1f}s")                    # the quadratic forms take minutes
+                    sys.stderr.write(f"\n{name} {label}: {took * 1000:.0f} ms (recorded)")
+
+    def test_a_multibyte_locale_cannot_hide_a_shell_word(self) -> None:
+        # In ja_JP.SJIS and zh_CN.GB18030 an ASCII byte can be the second byte of a character, so a shell that
+        # honours the locale would read the last byte of a UTF-8 character and the next letter as one character.
+        raw = '{"tool_name":"あbash","tool_input":{"command":"ls"}}'.encode("utf-8")
+        for var in ("LC_ALL", "LC_CTYPE", "LANG"):
+            for locale in ("ja_JP.SJIS", "zh_CN.GB18030"):
+                with self.subTest(var=var, locale=locale):
+                    for p in (self.calls, self.stdin_copy):
+                        if p.exists():
+                            p.unlink()
+                    rc, _ = self.run_wrapper(raw, env={var: locale})
+                    self.assertEqual(rc, 0)
+                    self.assertTrue(self.calls.exists())
+
+    def test_the_guard_gets_the_callers_locale_unchanged(self) -> None:
+        env_log = self.tmp / "guard-env.log"
+        (self.stable / "lane-guard-hook").write_text(f"#!/bin/sh\nenv > {shlex.quote(str(env_log))}\ncat >/dev/null\n",
+                                                     encoding="utf-8")
+        for given, line in (({"LC_ALL": "ja_JP.SJIS"}, "LC_ALL=ja_JP.SJIS"), ({"LC_ALL": ""}, "LC_ALL="), ({}, None)):
+            with self.subTest(given=given):
+                if env_log.exists():
+                    env_log.unlink()
+                self.run_wrapper(self.payload("bash"), env=given)
+                lines = [ln for ln in env_log.read_text().splitlines() if ln.startswith("LC_ALL=")]
+                self.assertEqual(lines, [line] if line is not None else [])
+
+    def test_input_that_names_no_tool_is_passed_on_and_the_guard_decides(self) -> None:
+        for raw in (b"", b"\xff\xfe", b"garbage"):
+            self.assertTrue(self.reached(raw))                                     # exit 0 either way (asserted inside)
+
+    def test_a_missing_guard_is_an_allow(self) -> None:
+        (self.stable / "lane-guard-hook").unlink()
+        rc, out = self.run_wrapper(self.payload("bash"))
+        self.assertEqual((rc, out), (0, b""))
+        rc, out = self.run_wrapper(b"")
+        self.assertEqual((rc, out), (0, b""))
+
+    def test_a_guard_that_fails_cannot_become_a_block(self) -> None:
+        # the fake exits 3; the wrapper still exits 0
+        self.assertTrue(self.reached(self.payload("bash")))
+
+    def test_no_environment_is_needed(self) -> None:
+        rc, out = self.run_wrapper(self.payload("bash"), env={})
+        self.assertEqual((rc, out), (0, b'{"fake": "deny"}\n'))
+
+    def test_without_hint_facts_every_call_reaches_the_guard(self) -> None:
+        self.wrapper.write_text(T.render_muse_wrapper(str(self.stable), T.GuardFacts()), encoding="utf-8")
+        self.assertTrue(self.reached(self.payload("read")))
+        self.assertNotIn("case $_lg_in", T.render_muse_wrapper(str(self.stable), T.GuardFacts()))
+
+
+class MuseWrapperRealGuardTests(World):
+    """The installed wrapper with the REAL hook shim and guard behind it, run the way Muse runs it (no shell, an empty
+    environment, from /), against the guard's own main() in process.  The wrapper may only ever add work, never
+    change an answer: every shape must give the same bytes both ways."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        Path(self.source.registry).write_text(json.dumps(F.REGISTRY_DATA), encoding="utf-8")
+        self.install(())
+        self.registry = os.path.join(self.paths.stable, T.REGISTRY_NAME)
+        self.hook_env: dict = {} if MINIMAL else {"PATH": os.environ.get("PATH", "")}
+
+    def direct(self, raw: bytes) -> bytes:
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"FLEET_APPS_JSON": self.registry}, clear=True):
+            H.main(["--format", "muse"], io.StringIO(raw.decode("utf-8")), out, io.StringIO())
+        return out.getvalue().encode("utf-8")
+
+    def via_wrapper(self, raw: bytes, env: dict | None = None) -> bytes:
+        res = T.run_argv(T.muse_hook_argv(self.paths.stable), raw, self.hook_env if env is None else env, TIMEOUT, cwd="/")
+        self.assertEqual((res.returncode, res.timed_out, res.error or ""), (0, False, ""), res.stderr)
+        return res.stdout
+
+    def test_the_wrapper_never_changes_the_guards_answer(self) -> None:
+        shell, fast, either = muse_shapes()
+        denied = 0
+        for group in (shell, fast, either):
+            for label, raw in group.items():
+                with self.subTest(label):
+                    want = self.direct(raw)
+                    self.assertEqual(self.via_wrapper(raw), want)
+                    denied += bool(want)
+        # the table really holds denials: every shell shape is one, the rest are not
+        self.assertEqual(denied, len(shell))
+        for label, raw in shell.items():
+            self.assertIn(b'"permissionDecision": "deny"', self.direct(raw), label)
+
+    def test_a_multibyte_locale_changes_nothing(self) -> None:
+        raw = '{"tool_name":"あbash","tool_input":{"command":%s},"cwd":"/"}' % json.dumps(T.DENY_COMMAND)
+        want = self.direct(raw.encode("utf-8"))
+        self.assertTrue(want)
+        for locale in ("ja_JP.SJIS", "zh_CN.GB18030"):
+            with self.subTest(locale):
+                self.assertEqual(self.via_wrapper(raw.encode("utf-8"), dict(self.hook_env, LC_ALL=locale)), want)
+
+
+class MuseSeatTests(World):
+    def setUp(self) -> None:
+        super().setUp()
+        self.install(())
+        self.seat = self.paths.muse_seat
+        self.fakebin = self.tmp / "muse-bin"
+        self.fakebin.mkdir()
+        fake = self.fakebin / "muse"
+        fake.write_text("#!/bin/sh\n"
+                        "echo \"seat=$AGENT_SEAT tag=$AGENT_TAG argc=$#\"\n"
+                        "for a in \"$@\"; do echo \"arg=[$a]\"; done\n", encoding="utf-8")
+        os.chmod(fake, 0o755)
+        self.emptybin = self.tmp / "empty-bin"
+        self.emptybin.mkdir()
+
+    def run_seat(self, *args: str, path: str | None = None, extra: dict | None = None, via: str | None = None) -> tuple:
+        env = {"PATH": path if path is not None else f"{self.fakebin}:/usr/bin:/bin", "HOME": str(self.home)}
+        env.update(extra or {})
+        p = subprocess.run([via or self.seat, *args], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           timeout=TIMEOUT)
+        return p.returncode, p.stdout.decode(), p.stderr.decode()
+
+    def test_it_sets_the_seat_and_passes_every_argument_through(self) -> None:
+        rc, out, err = self.run_seat("--model", "x y", "", "-p", "it's \"quoted\"")
+        self.assertEqual((rc, err), (0, ""), out)
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "seat=MC tag=MC argc=5")
+        self.assertEqual(lines[1:], ["arg=[--model]", "arg=[x y]", "arg=[]", "arg=[-p]", "arg=[it's \"quoted\"]"])
+
+    def test_it_replaces_a_seat_that_was_already_set(self) -> None:
+        rc, out, _ = self.run_seat(extra={"AGENT_SEAT": "CLAUDE", "AGENT_TAG": "CLAUDE"})
+        self.assertEqual((rc, out.splitlines()[0]), (0, "seat=MC tag=MC argc=0"))
+
+    def test_the_seat_is_the_registry_tag_of_muse_code(self) -> None:
+        reg = json.loads(REGISTRY_FILE.read_text(encoding="utf-8"))
+        tags = {s["tag"]: s for s in reg["seats"]}
+        self.assertEqual(T.MUSE_SEAT_TAG, "MC")
+        self.assertEqual(tags["MC"]["notesName"], "Muse Code")
+
+    def test_it_refuses_when_muse_is_not_found(self) -> None:
+        rc, out, err = self.run_seat("a", path=f"{self.emptybin}:/usr/bin:/bin")
+        self.assertEqual((rc, out), (127, ""))
+        self.assertIn("muse-seat: cannot find the real muse", err)
+
+    def test_it_refuses_when_the_muse_it_finds_is_itself(self) -> None:
+        (self.fakebin / "muse").unlink()
+        os.symlink(self.seat, self.fakebin / "muse")
+        for via in (self.seat, str(self.fakebin / "muse")):
+            with self.subTest(via):
+                rc, out, err = self.run_seat("a", via=via)
+                self.assertEqual((rc, out), (127, ""))
+                self.assertIn("is this wrapper itself", err)
+
+    def wrapper_named_muse(self, use_exec: bool) -> Path:
+        """A script named muse, first on PATH, that starts muse-seat again (the obvious way to give scripts the seat
+        too).  A hop counter stops it after 5 hops, so a broken muse-seat fails the test instead of hanging it."""
+        hops = self.tmp / "hops"
+        if hops.exists():
+            hops.unlink()
+        (self.fakebin / "muse").write_text(
+            "#!/bin/sh\n"
+            f"echo hop >> {shlex.quote(str(hops))}\n"
+            f"[ $(wc -l < {shlex.quote(str(hops))}) -gt 5 ] && exit 99\n"
+            + ("exec " if use_exec else "") + f"{shlex.quote(self.seat)} \"$@\"\n", encoding="utf-8")
+        os.chmod(self.fakebin / "muse", 0o755)
+        return hops
+
+    def test_it_refuses_a_muse_script_that_starts_it_again(self) -> None:
+        # -ef cannot see this: the script is a different file.  Without the guard it execs itself forever.
+        for name, shell in SHELLS:
+            for use_exec in (True, False):
+                with self.subTest(shell=name, exec=use_exec):
+                    hops = self.wrapper_named_muse(use_exec)
+                    p = subprocess.run([shell, self.seat, "a"], env={"PATH": f"{self.fakebin}:/usr/bin:/bin"},
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT)
+                    rc, out, err = p.returncode, p.stdout.decode(), p.stderr.decode()
+                    self.assertEqual((rc, out), (127, ""), err)
+                    self.assertEqual(hops.read_text().splitlines(), ["hop"])          # one hop, then the refusal
+                    self.assertIn("muse-seat: muse-seat is already running", err)
+
+    def test_a_session_it_started_cannot_start_it_again(self) -> None:
+        # The guard is an exported variable, so it is also set inside the Muse session muse-seat started.  There
+        # AGENT_SEAT is already MC and plain `muse` is the way to start another session; muse-seat says so.
+        rc, out, _ = self.run_seat("x")
+        self.assertEqual(rc, 0)
+        rc, out, err = self.run_seat("x", extra={"_MUSE_SEAT_ACTIVE": "1"})
+        self.assertEqual((rc, out), (127, ""))
+        self.assertIn("run muse itself", err)
+        fake = self.fakebin / "muse"
+        fake.write_text("#!/bin/sh\necho \"active=${_MUSE_SEAT_ACTIVE-unset} seat=$AGENT_SEAT\"\n", encoding="utf-8")
+        rc, out, _ = self.run_seat()
+        self.assertEqual((rc, out.strip()), (0, "active=1 seat=MC"))
+
+    def test_it_refuses_a_muse_that_is_not_executable(self) -> None:
+        os.chmod(self.fakebin / "muse", 0o644)
+        rc, _out, err = self.run_seat("a", path=f"{self.fakebin}:{self.emptybin}")
+        self.assertEqual(rc, 127)
+        self.assertIn("cannot find the real muse", err)
+
+    def test_it_works_when_started_by_name_from_path(self) -> None:
+        env = {"PATH": f"{self.paths.stable}:{self.fakebin}:/usr/bin:/bin", "HOME": str(self.home)}
+        p = subprocess.run(["/bin/sh", "-c", "muse-seat one two"], env=env, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=TIMEOUT)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(b"seat=MC tag=MC argc=2", p.stdout)
+        # and a symlink named muse that comes first is caught by name too
+        os.symlink(self.seat, self.emptybin / "muse")
+        env["PATH"] = f"{self.emptybin}:{self.paths.stable}:{self.fakebin}:/usr/bin:/bin"
+        p = subprocess.run(["/bin/sh", "-c", "muse"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT)
+        self.assertEqual(p.returncode, 127)
+        self.assertIn(b"is this wrapper itself", p.stderr)
+
+    def test_the_seat_shim_runs_under_every_installed_shell(self) -> None:
+        for name, shell in SHELLS:
+            with self.subTest(name):
+                p = subprocess.run([shell, self.seat, "x"], env={"PATH": f"{self.fakebin}:/usr/bin:/bin"},
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertIn(b"seat=MC tag=MC argc=1", p.stdout)
+
+
+class MusePlanApplyVerifyTests(World):
+    """plan, apply and verify for the muse target.  The installer never runs muse for plan or apply, never edits
+    Muse's config, and says what the owner has to do."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.muse_log = self.tmp / "muse-calls.log"
+        self.fakebin = self.tmp / "fake-muse-bin"
+        self.fakebin.mkdir()
+        self.set_fake_muse('{"valid": true}', 0)
+        self.path_env = mock.patch.dict(os.environ, {"PATH": f"{self.fakebin}:{os.environ.get('PATH', '/usr/bin:/bin')}"})
+        self.path_env.start()
+        self.addCleanup(self.path_env.stop)
+
+    def set_fake_muse(self, body: str, rc: int) -> None:
+        fake = self.fakebin / "muse"
+        fake.write_text("#!/bin/sh\n"
+                        f"echo \"$@\" >> {shlex.quote(str(self.muse_log))}\n"
+                        f"echo \"$HOME\" >> {shlex.quote(str(self.muse_log) + '.home')}\n"
+                        f"echo {shlex.quote(body)}\n"
+                        f"exit {rc}\n", encoding="utf-8")
+        os.chmod(fake, 0o755)
+
+    def muse_calls(self) -> list:
+        return self.muse_log.read_text().splitlines() if self.muse_log.exists() else []
+
+    def base(self) -> list:
+        return ["--home", str(self.home), "--source", self.source.scripts_dir, "--registry", self.source.registry,
+                "--sha", SHA, "--timeout", str(TIMEOUT), "--no-minimal-path"]
+
+    # -- plan
+
+    def test_plan_muse_prints_the_owner_actions_exactly_and_never_runs_muse(self) -> None:
+        self.seed(".config/muse/settings.json")
+        before = snapshot(self.tmp)
+        rc, out, err = run_main("plan", *self.base(), "muse")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertEqual(snapshot(self.tmp), before)
+        self.assertEqual(self.muse_calls(), [])
+        bundle = shlex.quote(self.paths.muse_bundle)
+        self.assertIn(f"     1. muse plugins install {bundle} --scope user\n", out)
+        self.assertIn("     2. muse plugins approve fleet-lane-guard\n", out)
+        self.assertIn("     3. start a new Muse Code session\n", out)
+        self.assertIn("OWNER ACTIONS (yours to run; this tool never edits Muse's config, and the only muse it runs "
+                      "is `muse plugins validate` in verify, confined to a throwaway HOME)", out)
+        self.assertIn("MUSE_EXPERIMENTAL_PLUGINS=1 may have to be set", out)
+        self.assertIn("UNVERIFIED", out)
+        self.assertIn(f"run {self.paths.muse_seat} instead of `muse`", out)
+        self.assertIn("AGENT_SEAT=MC and AGENT_TAG=MC", out)
+        self.assertIn("[plugin bundle new]", out)
+        self.assertIn("/bin/sh", out)                                              # the manifest is shown
+        self.assertNotIn('"matcher"', out)                                          # the manifest shown has no matcher key
+
+    def test_plan_muse_follows_the_installed_state(self) -> None:
+        self.install(())
+        rc, out, _ = run_main("plan", *self.base(), "muse")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("[plugin bundle current]", out)
+        Path(self.paths.muse_wrapper).write_text("#!/bin/sh\nexit 0\n")
+        rc, out, _ = run_main("plan", *self.base(), "muse")
+        self.assertIn("[plugin bundle stale]", out)
+        self.assertIn("changed", out)
+
+    def test_plan_tools_lists_the_muse_files_and_the_seat_shim(self) -> None:
+        rc, out, _ = run_main("plan", *self.base(), "tools")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("new      muse-seat", out)
+        self.assertIn("muse-plugin/fleet-lane-guard/hooks/lane-guard.sh", out)
+        self.assertIn("muse-plugin/fleet-lane-guard/.muse-plugin/plugin.json", out)
+        self.assertIn("prefilter: derived from guard.py _TRIGGER (10 words: clone, worktree", out)
+        self.assertTrue(all(ord(c) < 128 for c in out), "plan output must print on any terminal")
+
+    def test_plan_all_default_still_lists_muse_and_exits_zero(self) -> None:
+        self.seed()
+        rc, out, _ = run_main("plan", *self.base())
+        self.assertEqual(rc, 0, out)
+        self.assertIn("== muse", out)
+
+    # -- apply
+
+    def test_apply_muse_on_a_fresh_home_installs_the_stable_copy_with_the_bundle(self) -> None:
+        self.seed(".config/muse/settings.json")
+        cfg = self.home / ".config" / "muse" / "settings.json"
+        cfg_before = (cfg.read_bytes(), cfg.stat().st_mtime_ns)
+        rc, out, err = run_main("apply", *self.base(), "--no-verify", "muse")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertIn("INSTALLED  tools", out)                                      # the bundle is written with the stable copy
+        self.assertIn("UNCHANGED  muse", out)
+        self.assertTrue(os.access(self.paths.muse_wrapper, os.X_OK))
+        self.assertEqual(Path(self.paths.muse_manifest).read_text(), T.render_muse_manifest(self.paths.stable))
+        self.assertIn(f"OWNER ACTION 1 muse plugins install {shlex.quote(self.paths.muse_bundle)} --scope user\n", out)
+        self.assertEqual(self.muse_calls(), [])
+        self.assertEqual((cfg.read_bytes(), cfg.stat().st_mtime_ns), cfg_before)
+        self.assertFalse((self.home / ".config" / "muse" / "plugins").exists())
+
+    def test_apply_muse_refreshes_a_stale_bundle_and_leaves_a_current_one_alone(self) -> None:
+        self.install(())
+        Path(self.paths.muse_wrapper).write_text("#!/bin/sh\nexit 0\n")
+        rc, out, _ = run_main("apply", *self.base(), "--no-verify", "muse")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("INSTALLED  tools", out)
+        self.assertEqual(Path(self.paths.muse_wrapper).read_text(), T.render_muse_wrapper(self.paths.stable))
+        before = snapshot(self.tmp)
+        rc, out, _ = run_main("apply", *self.base(), "--no-verify", "muse")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("UNCHANGED  tools", out)
+        self.assertEqual(snapshot(self.tmp), before)
+
+    def test_apply_muse_refuses_when_the_stable_copy_cannot_be_installed(self) -> None:
+        stable = Path(self.paths.stable)
+        stable.mkdir(parents=True)
+        (stable / "mine.txt").write_text("not yours")                               # a foreign stable dir
+        rc, out, _ = run_main("apply", *self.base(), "--no-verify", "muse")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("REFUSED", out)
+        self.assertEqual([p.name for p in stable.iterdir()], ["mine.txt"])
+
+    def test_apply_tools_then_muse_prints_the_owner_actions_and_never_runs_muse_or_edits_its_config(self) -> None:
+        self.seed(".config/muse/settings.json")
+        cfg = self.home / ".config" / "muse" / "settings.json"
+        cfg_before = (cfg.read_bytes(), cfg.stat().st_mtime_ns)
+        rc, out, err = run_main("apply", *self.base(), "--no-verify", "tools")
+        self.assertEqual((rc, err), (0, ""), out)
+        before = snapshot(self.tmp)
+        rc, out, err = run_main("apply", *self.base(), "--no-verify", "muse")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertEqual(snapshot(self.tmp), before)                               # a current stable copy: nothing is written
+        self.assertEqual(self.muse_calls(), [])                                    # and muse is not run
+        self.assertIn("UNCHANGED  tools", out)
+        self.assertIn("UNCHANGED  muse", out)
+        bundle = shlex.quote(self.paths.muse_bundle)
+        self.assertIn(f"OWNER ACTION 1 muse plugins install {bundle} --scope user\n", out)
+        self.assertIn("OWNER ACTION 2 muse plugins approve fleet-lane-guard\n", out)
+        self.assertIn("OWNER ACTION 3 start a new Muse Code session\n", out)
+        self.assertIn("MUSE_EXPERIMENTAL_PLUGINS=1 may be required", out)
+        self.assertEqual((cfg.read_bytes(), cfg.stat().st_mtime_ns), cfg_before)
+        # with the verify that normally follows, the only thing ever run is the confined validate
+        rc, out, _ = run_main("apply", *self.base(), "muse")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.muse_calls(), [f"plugins validate {self.paths.muse_bundle} --json"])
+        self.assertEqual((cfg.read_bytes(), cfg.stat().st_mtime_ns), cfg_before)
+
+    def test_apply_tools_alone_never_calls_muse(self) -> None:
+        rc, out, _ = run_main("apply", *self.base(), "--no-verify", "tools")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.muse_calls(), [])
+        self.assertFalse((self.home / ".config").exists())                          # nothing was created for Muse
+
+    def test_apply_muse_refuses_a_stale_bundle(self) -> None:
+        self.install(())
+        Path(self.paths.muse_manifest).write_text("{}\n")
+        res = T.apply_muse(self.paths)
+        self.assertEqual(res.status, "refused", res)
+        self.assertIn("not what this install_tools writes", res.detail)
+
+    def test_the_platform_functions_route_muse_to_the_plugin_code(self) -> None:
+        plat = T.PLATFORMS["muse"]
+        self.assertEqual(plat.kind, "plugin")
+        self.assertNotIn("muse", T.SUPPORTED_KEYS)
+        self.assertEqual(T.plan_platform(plat, self.paths).action, "unsupported")
+        self.assertEqual(T.apply_platform(plat, self.paths).status, "refused")        # no bundle yet
+        self.install(())
+        self.assertEqual(T.apply_platform(plat, self.paths).status, "unchanged")
+        self.assertIn(("muse", "muse"), T.probe_formats())
+
+    # -- verify
+
+    def test_verify_muse_runs_the_hook_the_way_muse_does(self) -> None:
+        self.install(())
+        checks = T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
+        self.assertAllPass([c for c in checks if c.status != "SKIP"])
+        names = {c.name: c for c in checks}
+        for n in ("plugin.json", "hooks/lane-guard.sh", "shim muse-seat", "hook command", "deny/hook-env", "deny-Bash/hook-env",
+                  "allow/hook-env", "other-tool/hook-env", "muse validate", "owner actions"):
+            self.assertIn(n, names)
+        self.assertIn("hookSpecificOutput", names["deny/hook-env"].detail)
+        self.assertEqual(names["allow/hook-env"].status, "PASS")
+        self.assertEqual(names["muse validate"].status, "PASS")
+        self.assertEqual(names["owner actions"].status, "SKIP")
+        self.assertEqual(self.muse_calls(), [f"plugins validate {self.paths.muse_bundle} --json"])
+
+    def test_validate_runs_with_a_throwaway_home_so_muses_own_directory_is_never_touched(self) -> None:
+        self.install(())
+        self.seed(".config/muse/settings.json")
+        # The installed hook runs with an empty environment, so on Linux (/usr/bin/python3 has no
+        # pycache prefix) Python writes bytecode beside the installed module.  The product allows
+        # that on purpose (the tree digest and the staleness scan ignore __pycache__); only the rest
+        # of the home must stay untouched.
+        def without_bytecode(snap: dict) -> dict:
+            return {k: v for k, v in snap.items() if "__pycache__" not in k.split(os.sep)}
+        before = without_bytecode(snapshot(self.home))
+        T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
+        self.assertEqual(without_bytecode(snapshot(self.home)), before)
+        homes = Path(str(self.muse_log) + ".home").read_text().splitlines()
+        self.assertEqual(len(homes), 1)
+        self.assertNotIn(homes[0], (str(self.home), os.path.expanduser("~")))
+        self.assertTrue(os.path.basename(homes[0]).startswith("lane-muse-validate-"))
+        self.assertFalse(os.path.exists(homes[0]), "the throwaway home is removed afterwards")
+
+    def test_validate_is_confined_and_cannot_update_muse(self) -> None:
+        # The real muse is a launcher that finds its install dir from its own path, not from HOME.  Unless
+        # MUSE_NO_AUTO_UPDATE=1, it stamps that dir and starts a background self-update; MUSE_LAUNCHER_INSTALL=1
+        # installs before anything else; XDG_CONFIG_HOME and the MUSE_ variables would point it at the real config.
+        # This fake behaves like that, so a leak shows up as a file beside it.
+        self.install(())
+        env_log = self.tmp / "validate-env.log"
+        fake = self.fakebin / "muse"
+        fake.write_text("#!/bin/sh\n"
+                        f"env > {shlex.quote(str(env_log))}\n"
+                        'd=$(dirname "$0")\n'
+                        '[ "${MUSE_LAUNCHER_INSTALL-}" = 1 ] && : > "$d/installed-by-validate"\n'
+                        '[ "${MUSE_NO_AUTO_UPDATE-}" = 1 ] || : > "$d/.muse-update-checked-at"\n'
+                        "echo '{\"valid\": true}'\n", encoding="utf-8")
+        os.chmod(fake, 0o755)
+        real_xdg = self.tmp / "real-xdg"
+        leaked = {"XDG_CONFIG_HOME": str(real_xdg / "config"), "XDG_DATA_HOME": str(real_xdg / "data"),
+                  "XDG_CACHE_HOME": str(real_xdg / "cache"), "XDG_STATE_HOME": str(real_xdg / "state"),
+                  "MUSE_LAUNCHER_INSTALL": "1", "MUSE_SYNC_UPDATE": "1", "MUSE_CHANNEL": "muse-canary",
+                  "MUSE_LOGIN": "1", "MUSE_EXPERIMENTAL_PLUGINS": "1"}
+        with mock.patch.dict(os.environ, leaked):
+            checks = {c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)}
+        self.assertEqual(checks["muse validate"].status, "PASS", checks["muse validate"].line())
+        self.assertEqual(sorted(p.name for p in self.fakebin.iterdir()), ["muse"])      # no stamp, no install
+        self.assertFalse(real_xdg.exists())
+        seen = dict(ln.split("=", 1) for ln in env_log.read_text().splitlines() if "=" in ln)
+        scratch = seen["HOME"]
+        self.assertTrue(os.path.basename(scratch).startswith("lane-muse-validate-"), scratch)
+        self.assertFalse(os.path.exists(scratch), "the throwaway home is removed afterwards")
+        for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
+                     "TMPDIR", "MUSE_AUTH_PATH"):
+            with self.subTest(name):
+                self.assertTrue(seen.get(name, "").startswith(scratch + os.sep), (name, seen.get(name)))
+        self.assertEqual((seen.get("MUSE_NO_AUTO_UPDATE"), seen.get("MUSE_LOGIN")), ("1", "0"))
+        for name in ("MUSE_LAUNCHER_INSTALL", "MUSE_SYNC_UPDATE", "MUSE_CHANNEL"):
+            self.assertNotIn(name, seen)
+        self.assertEqual(seen.get("MUSE_EXPERIMENTAL_PLUGINS"), "1")                  # a feature switch, not a path
+        self.assertEqual(seen.get("PATH"), os.environ.get("PATH"))
+
+    def test_the_probes_run_with_an_empty_environment(self) -> None:
+        self.install(())
+        seen: list = []
+        real = T.run_argv
+
+        def spy(argv, stdin, env, timeout, cwd=None):
+            seen.append((list(argv), dict(env), cwd))
+            return real(argv, stdin, env, timeout, cwd)
+
+        with mock.patch.object(T, "run_argv", side_effect=spy):
+            T.verify_muse(self.paths, timeout=TIMEOUT)                                 # the default: an empty environment
+        hook_runs = [s for s in seen if s[0][:1] == ["/bin/sh"]]
+        self.assertEqual(len(hook_runs), 4)
+        for argv, env, cwd in hook_runs:
+            self.assertEqual((argv, env, cwd), (T.muse_hook_argv(self.paths.stable), {}, "/"))
+
+    def test_verify_muse_without_muse_installed_is_a_skip_not_a_failure(self) -> None:
+        self.install(())
+        with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):
+            self.assertIsNone(shutil.which("muse"))
+            checks = T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
+        by = {c.name: c for c in checks}
+        self.assertEqual(by["muse validate"].status, "SKIP")
+        self.assertNotIn("FAIL", self.statuses(checks), "\n".join(c.line() for c in checks))
+        self.assertEqual(self.muse_calls(), [])
+
+    def test_verify_muse_reports_a_bundle_that_muse_rejects(self) -> None:
+        self.install(())
+        self.set_fake_muse('{"error": {"code": "unsupported-field"}}', 1)
+        checks = {c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)}
+        self.assertEqual(checks["muse validate"].status, "FAIL")
+        self.set_fake_muse('{"valid": false}', 0)
+        checks = {c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)}
+        self.assertEqual(checks["muse validate"].status, "FAIL")
+        self.set_fake_muse("not json at all", 0)
+        checks = {c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)}
+        self.assertEqual(checks["muse validate"].status, "WARN")                    # no verdict is not a failure
+
+    def test_verify_muse_fails_when_the_wrapper_cannot_deny(self) -> None:
+        self.install(())
+        wrapper = Path(self.paths.muse_wrapper)
+        original = wrapper.read_bytes()
+        for label, text in (("allows everything", "#!/bin/sh\nexit 0\n"),
+                            ("prints junk", "#!/bin/sh\necho junk\n"),
+                            ("exits non-zero", "#!/bin/sh\nexit 3\n"),
+                            ("hangs", "#!/bin/sh\nsleep 30\n")):
+            with self.subTest(label):
+                wrapper.write_text(text)
+                os.chmod(wrapper, 0o755)
+                checks = T.verify_muse(self.paths, timeout=2.0 if label == "hangs" else TIMEOUT, minimal_path=MINIMAL)
+                self.assertFails(checks)
+                self.assertFails(checks, "differs")
+                self.assertTrue(any(c.name.startswith("deny") and c.status == "FAIL" for c in checks), label)
+        wrapper.write_bytes(original)
+        os.chmod(wrapper, 0o755)
+        self.assertAllPass([c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL) if c.status != "SKIP"])
+
+    def test_verify_muse_fails_when_the_manifest_is_wrong(self) -> None:
+        self.install(())
+        manifest = Path(self.paths.muse_manifest)
+        original = manifest.read_text()
+        doc = json.loads(original)
+        doc["capabilities"]["hooks"][0]["matcher"] = "bash"
+        manifest.write_text(json.dumps(doc))
+        self.assertFails(T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL), "matcher")
+        doc = json.loads(original)
+        doc["capabilities"]["hooks"][0]["command"] = ["sh", "hooks/lane-guard.sh"]           # relative: not found with no cwd
+        manifest.write_text(json.dumps(doc))
+        checks = T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
+        self.assertFails(checks, "hook command")
+        self.assertFails(checks, "not run")
+        manifest.write_text("{nope")
+        self.assertFails(T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL), "cannot read the hook command")
+        manifest.write_text(original)
+        self.assertAllPass([c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL) if c.status != "SKIP"])
+
+    def test_verify_muse_fails_when_the_guard_behind_it_is_broken_or_missing(self) -> None:
+        self.install(())
+        guard = Path(self.paths.package_dir) / "guard.py"
+        guard.write_text(BROKEN_GUARD)
+        self.assertFails(T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL), "no output")
+        guard.unlink()
+        os.rename(self.paths.stable, self.paths.stable + ".gone")
+        checks = T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
+        self.assertFails(checks, "missing")
+        self.assertNotIn("PASS", {c.status for c in checks if c.name.startswith("deny")})
+
+    def test_the_cli_verify_default_covers_muse_and_a_named_muse_works(self) -> None:
+        self.seed_platforms()
+        self.install()
+        rc, out, err = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertRegex(out, r"PASS\s+muse\s+deny/hook-env")
+        self.assertRegex(out, r"SKIP\s+muse\s+owner actions")
+        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), *MINIMAL_ARGS, "muse")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("-> healthy", out)
+        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), *MINIMAL_ARGS, "--strict", "muse")
+        self.assertEqual(rc, 0, out)                                               # nothing the owner has to clear shows as a WARN
+
+    def test_the_cli_verify_of_muse_fails_without_the_bundle(self) -> None:
+        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "muse")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("NOT HEALTHY", out)
+
+    def test_the_self_test_covers_muse(self) -> None:
+        lines: list = []
+        rc = T.self_test(lines.append, timeout=TIMEOUT, minimal_path=False, source=self.source)
+        text = "\n".join(lines)
+        self.assertEqual(rc, 0, text)
+        self.assertIn("FAIL  muse", text)
 
 
 if __name__ == "__main__":

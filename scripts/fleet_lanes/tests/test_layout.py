@@ -377,13 +377,14 @@ class RootsTests(HomeCase):
     def test_harness_locations(self) -> None:
         r = self.roots()
         by_name = {h.name: h for h in r.harness_locations}
-        for name in ("claude-repo", "codex", "cursor", "grok", "antigravity", "antigravity-ag", "botfleet",
-                     "codecaps-pages"):
+        for name in ("claude-repo", "muse-repo", "codex", "cursor", "grok", "antigravity", "antigravity-ag",
+                     "botfleet", "codecaps-pages"):
             self.assertTrue(by_name[name].sanctioned, name)
         for name in ("antigravity-scratch", "botfleet-workspaces", "documents"):
             self.assertFalse(by_name[name].sanctioned, name)
         self.assertTrue(by_name["codex"].glob_or_prefix.endswith("/.codex/worktrees"))
         self.assertIn("/Code/*/.claude/worktrees", by_name["claude-repo"].glob_or_prefix)
+        self.assertIn("/Code/*/.muse/worktrees", by_name["muse-repo"].glob_or_prefix)
 
     def test_glob_characters_in_the_home_path_are_escaped(self) -> None:
         odd = self.mkdir("we[ird]*home")
@@ -463,6 +464,21 @@ class ClassifyTests(HomeCase):
         self.assertEqual(L.classify_location(wt.parent, r), LC.MANAGED)
         self.assertEqual(L.classify_location(wt / "src" / "a.ts", r), LC.MANAGED)
         self.assertEqual(L.classify_location(self.home / "Code" / "BotFleet" / ".claude", r), LC.INTEGRATION_TREE)
+
+    def test_muse_repo_worktrees_are_managed_not_integration(self) -> None:
+        # `muse -w` makes worktrees at <repo>/.muse/worktrees inside the integration tree, and the
+        # root cannot be moved, so the place is sanctioned and tracked like the Claude one.
+        r = self.roots()
+        self.checkout("Code", "BotFleet")
+        wt = self.checkout("Code", "BotFleet", ".muse", "worktrees", "fix-login", git_file=True)
+        self.assertEqual(L.classify_location(wt, r), LC.MANAGED)
+        self.assertEqual(L.classify_location(wt.parent, r), LC.MANAGED)
+        self.assertEqual(L.classify_location(wt / "src" / "a.ts", r), LC.MANAGED)
+        self.assertEqual(L.classify_location(self.home / "Code" / "BotFleet" / ".muse", r), LC.INTEGRATION_TREE)
+        # only the registered worktrees folder is sanctioned: a sibling folder or another dot
+        # folder under the integration tree is not a harness location
+        other = self.checkout("Code", "BotFleet", ".muse", "scratch", "x", git_file=True)
+        self.assertEqual(L.classify_location(other, r), LC.INTEGRATION_TREE)
 
     def test_forbidden_code_toplevel_needs_a_checkout(self) -> None:
         r = self.roots()

@@ -14,7 +14,8 @@ Sanctioned places for checkouts:
        flat              ~/apps/<prefix>-<seat>-<slug>
      In nested mode a flat top-level checkout under ~/apps is LANE_FLAT_LEGACY (allowed while the
      fleet transitions).  In flat mode it is LANE_FLAT.
-  3. Harness-managed worktree locations (~/.codex/worktrees and friends).  Sanctioned but tracked.
+  3. Harness-managed worktree locations (~/.codex/worktrees, ~/Code/<App>/.muse/worktrees and
+     friends).  Sanctioned but tracked.
 
 Forbidden for any checkout: /tmp, /private/tmp, /var/tmp, /private/var/tmp, the per-user macOS
 temp dir (/private/var/folders/*/*/T) and the TMPDIR directory.  macOS /tmp is a symlink to
@@ -471,6 +472,7 @@ class HarnessLocation:
 # (name, path relative to home, sanctioned)
 _HARNESS_SPECS: tuple[tuple[str, str, bool], ...] = (
     ("claude-repo", "Code/*/.claude/worktrees", True),
+    ("muse-repo", "Code/*/.muse/worktrees", True),
     ("codex", ".codex/worktrees", True),
     ("cursor", ".cursor/worktrees", True),
     ("grok", ".grok/worktrees", True),

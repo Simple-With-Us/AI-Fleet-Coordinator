@@ -18,9 +18,18 @@ non-zero, times out, or prints nothing is a FAIL.
     python3 -m fleet_lanes.install_tools verify [--home H] [tools | PLATFORM ... | all]
     python3 -m fleet_lanes.install_tools --self-test
 
-PLATFORM is claude, codex, grok, antigravity, cursor or muse (muse is listed but never written: its
-hook surface is UNVERIFIED).  `all` is `tools` plus every supported platform.  `apply` needs a target;
-`plan` defaults to all (muse listed) and `verify` to all.
+PLATFORM is claude, codex, grok, antigravity, cursor or muse.  The first five get a hook entry in their
+config file.  muse is different: Muse Code takes hooks from a PLUGIN, so `apply tools` writes a plugin
+bundle into the stable dir (with everything else, atomically), `plan muse` shows it and the OWNER ACTIONS
+that finish the job, `apply muse` is `apply tools` (the bundle is part of the stable copy, and an unchanged
+copy is left alone) followed by those actions, and `verify muse` runs the hook the way Muse does.  This tool
+never edits Muse's config, and the only muse it runs is `muse plugins validate` inside the muse verify (a bare
+`verify`, `verify muse`, `apply muse` unless --no-verify, and --self-test, each when muse is on PATH): the muse
+found on PATH, with HOME, the XDG dirs, TMPDIR and Muse's credential path inside a throwaway dir, none of the
+caller's XDG_ or MUSE_ variables except the plugin switch, and MUSE_NO_AUTO_UPDATE=1 and MUSE_LOGIN=0 (see
+muse_validate_env).  That is confined, not proven read-only: the launcher still runs from its own install dir.
+`all` is `tools` plus the five config platforms.  `apply` needs a target; `plan` defaults to all plus muse and
+`verify` to all plus muse.
 
 Options (a subcommand accepts the ones that make sense for it):
 
@@ -48,6 +57,8 @@ Layout written under --home (default $HOME):
         fleet-apps.json               the registry the shims point FLEET_APPS_JSON at
         VERSION                       sha=, package=, files=, tree= (digest of every file above)
         lane-guard-hook               executable shim; takes --format FMT, reads the hook JSON on stdin
+        muse-seat                     executable shim: AGENT_SEAT=MC and AGENT_TAG=MC, then the real `muse`
+        muse-plugin/fleet-lane-guard/ the Muse Code plugin bundle (.muse-plugin/plugin.json, hooks/lane-guard.sh)
     apps/lane                         executable shim for `python3 -m fleet_lanes.lane`; written only when
                                       the package has lane.py, so it can never be a dead command
 
@@ -56,6 +67,42 @@ variable, so a lane that has its own half-edited fleet_lanes in the cwd (scripts
 never shadow the installed copy.  No `-B`: Python writes __pycache__ into the stable dir on first use,
 which keeps the per-Bash-call hook fast, and the tree digest ignores it.  The hook shim finds its
 own directory from $0, so the staged copy can be proven before it is swapped in.
+
+The hook shim also has a shell PREFILTER, because starting Python costs about 0.2 s on a loaded machine and
+the hook runs on every Bash call on five platforms.  The guard itself returns early unless a command holds one
+of a few words (guard._TRIGGER).  The shim reads the payload with the shell and, when it holds none of those
+words, exits 0 with no output without starting Python.  The words are COPIED from guard.py when the shim is
+generated (`read_guard_facts`: the imported guard for this checkout, the syntax tree of guard.py for any other
+tree), never typed here; if _TRIGGER is not a plain alternation of lower-case literal words compiled with exactly
+re.IGNORECASE, the shim gets no prefilter and `plan` and `apply` say so.  The match is a superset of the guard's
+own: every word in any ASCII letter case (bracket pairs, so no `tr`), a JSON `\\u` escape (it can spell any
+letter), and the three non-ASCII characters that re.IGNORECASE folds onto a trigger letter (U+0130, U+0131,
+U+212A).  It compares bytes: the shim sets LC_ALL=C before it reads the payload, because in a multibyte locale
+such as ja_JP.SJIS bash and zsh read an ASCII letter after a UTF-8 character as part of that character, and puts
+the caller's LC_ALL back (set, empty or unset) before Python starts.  A payload over guard.MAX_COMMAND_CHARS skips
+the match.  Whatever is not provably free of a trigger word reaches Python as the original bytes, so the answer is
+the guard's, byte for byte.  A NUL byte cannot live in a shell variable and is dropped; NUL is not valid JSON, so
+the guard allowed that payload anyway.  `verify` proves deny through the installed shim, and fails on a shim
+whose patterns match nothing.
+
+The Muse Code plugin.  Muse rejects a `matcher` on a plugin hook, so its hook runs on EVERY tool call.  The
+bundle's hooks/lane-guard.sh therefore exits 0 at once only when it can PROVE from the raw bytes that the guard
+will not see a shell call: the top-level tool key the guard reads (tool_name, or toolName when there is no
+tool_name) occurs exactly once, in the first 4096 bytes, with nothing nested or escaped before it, and holds a
+string with none of the guard's shell tool words after it.  Everything else (no tool key, a null one, one that
+only occurs nested or as a value, duplicates, odd spacing, a `\\u` escape) goes to the stable lane-guard-hook
+with --format muse as the original bytes (the Claude deny shape; an allow is empty stdout and exit 0), so the
+guard decides.  It matches bytes under LC_ALL=C like the shim.  Muse runs hooks outside its sandbox with a
+cleared environment, so every path in the bundle is absolute.  UNVERIFIED: whether MUSE_EXPERIMENTAL_PLUGINS=1
+is required, whether a running session picks up an approved plugin, whether `muse plugins install` (it copies the
+bundle into its cache) keeps the absolute command, and that Muse puts tool_name before any nested object (if it
+does not, every call reaches the shim, which is correct and slower).
+
+muse-seat starts Muse Code as seat MC: it sets AGENT_SEAT=MC and AGENT_TAG=MC and execs the real `muse` that
+`command -v muse` finds.  It refuses (exit 127, a message on stderr) when there is no muse, when the muse it
+finds is the wrapper itself, and when muse-seat already ran in this chain of processes (it exports
+_MUSE_SEAT_ACTIVE), which catches a wrapper script named muse that starts muse-seat again.  So inside a session
+muse-seat started, run `muse` itself; AGENT_SEAT is already MC there.
 
 Minimum Python is 3.9, the `/usr/bin/python3` of macOS, which GUI-launched agent apps resolve under
 a minimal PATH.  This module and the whole hook import path (layout, guard, lane_guard_hook) are 3.9
@@ -97,17 +144,19 @@ Safety:
     UNVERIFIED: that Claude passes the settings env block to hook processes.
   * Nothing here creates a .janitor-keep marker.
 
-Exit codes: 0 success, 1 a FAIL or a refusal, 64 usage error (matches the doctor).  A target named on
-the command line that is not PASS (muse, a platform that is not installed) exits 1; the same target
-reached through `all` is reported and skipped.
+Exit codes: 0 success, 1 a FAIL or a refusal, 64 usage error (matches the doctor).  A platform that is
+named on the command line and is not installed exits 1; the same platform reached through `all` is
+reported and skipped.
 
 Tests: fleet_lanes/tests/test_install_tools.py.
 """
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import difflib
+import functools
 import hashlib
 import json
 import math
@@ -148,6 +197,17 @@ REQUIRED_MODULES = ("__init__.py", "layout.py", "guard.py", "lane_guard_hook.py"
 LANE_MODULE = "lane.py"
 AG_GROUP = "lane-guard"
 GROK_FILE = "lane-guard.json"
+
+# Muse Code takes hooks from a PLUGIN, not from a settings file.  The bundle and the seat shim are
+# written into the stable dir by `apply tools`, with everything else, so they are swapped in atomically.
+MUSE_SEAT_NAME = "muse-seat"
+MUSE_PLUGIN_ID = "fleet-lane-guard"
+MUSE_PLUGIN_DIR = "muse-plugin/" + MUSE_PLUGIN_ID            # relative to the stable dir
+MUSE_MANIFEST = MUSE_PLUGIN_DIR + "/.muse-plugin/plugin.json"
+MUSE_WRAPPER = MUSE_PLUGIN_DIR + "/hooks/lane-guard.sh"
+MUSE_SEAT_TAG = "MC"                                          # AGENT_SEAT and AGENT_TAG for Muse Code
+_MUSE_FILES = (MUSE_SEAT_NAME, MUSE_MANIFEST, MUSE_WRAPPER)
+MUSE_EXPERIMENTAL_ENV = "MUSE_EXPERIMENTAL_PLUGINS"
 
 HOOK_TIMEOUT_S = 5            # timeout written into each platform config (seconds)
 PROBE_TIMEOUT_S = 5.0         # per probe subprocess
@@ -232,6 +292,22 @@ class Paths:
     def version(self) -> str:
         return os.path.join(self.stable, VERSION_NAME)
 
+    @property
+    def muse_seat(self) -> str:
+        return os.path.join(self.stable, MUSE_SEAT_NAME)
+
+    @property
+    def muse_bundle(self) -> str:
+        return os.path.join(self.stable, *MUSE_PLUGIN_DIR.split("/"))
+
+    @property
+    def muse_manifest(self) -> str:
+        return os.path.join(self.stable, *MUSE_MANIFEST.split("/"))
+
+    @property
+    def muse_wrapper(self) -> str:
+        return os.path.join(self.stable, *MUSE_WRAPPER.split("/"))
+
 
 def make_paths(home: str, stable_dir: str | None = None) -> Paths:
     """`home` is required: only the CLI supplies a default, so a test cannot reach the real home by
@@ -279,31 +355,230 @@ def resolve_source(scripts_dir: str | None = None, registry: str | None = None, 
     return Source(scripts_dir=sd, registry=reg, sha=sha if sha else sha_fn(sd))
 
 
+# --------------------------------------------------------------------------- what the shell scripts mirror of the guard
+
+@dataclass(frozen=True)
+class GuardFacts:
+    """The few facts about guard.py that the generated shell scripts mirror.  They are read once, when a script
+    is generated, never when it runs.  Anything that cannot be mirrored exactly is left out and named in
+    `problems`: a script then does LESS filtering (more calls reach the guard), never more."""
+    words: tuple = ()          # guard._TRIGGER's literal words, lower case; () = no prefilter
+    lookalikes: tuple = ()     # non-ASCII characters that re.IGNORECASE folds onto a letter of those words
+    max_chars: int = 0         # guard.MAX_COMMAND_CHARS; 0 = unknown, so no size gate
+    shell_hints: tuple = ()    # guard._SHELL_TOOL_HINTS plus "bash"; () = the Muse wrapper filters nothing
+    problems: tuple = ()       # why something above is missing, for `plan`
+
+
+_TRIGGER_WORDS_RE = re.compile(r"[a-z][a-z-]*(?:\|[a-z][a-z-]*)*")
+_HINT_RE = re.compile(r"[a-z][a-z_]*")
+
+
+@functools.lru_cache(maxsize=16)
+def _fold_lookalikes(letters: str) -> tuple:
+    """The non-ASCII characters that match one of `letters` under re.IGNORECASE.  Python folds U+212A (Kelvin
+    sign) onto k and U+0130 and U+0131 onto i, so a payload can hold a trigger word without the ASCII spelling.
+    Only the Basic Multilingual Plane is scanned (about 30 ms); the tests scan every code point and assert
+    nothing above it folds onto an ASCII letter."""
+    cls = re.compile("[" + letters + "]", re.IGNORECASE)
+    return tuple(ch for ch in map(chr, range(0x80, 0x10000)) if not 0xD800 <= ord(ch) < 0xE000 and cls.fullmatch(ch))
+
+
+def _facts_from_values(pattern: object, flags_ok: bool, max_chars: object, hints: object, where: str) -> GuardFacts:
+    problems: list = []
+    words: tuple = ()
+    look: tuple = ()
+    if not isinstance(pattern, str) or not _TRIGGER_WORDS_RE.fullmatch(pattern):
+        problems.append(f"{where}: guard._TRIGGER is not a plain alternation of lower-case literal words, so the "
+                        "hook shim has NO prefilter and starts Python on every call (still correct, only slower)")
+    elif not flags_ok:
+        problems.append(f"{where}: guard._TRIGGER is not compiled with exactly re.IGNORECASE, so the hook shim has "
+                        "NO prefilter and starts Python on every call (still correct, only slower)")
+    else:
+        words = tuple(pattern.split("|"))
+        look = _fold_lookalikes("".join(sorted({c for w in words for c in w if c.isalpha()})))
+    cap = max_chars if isinstance(max_chars, int) and not isinstance(max_chars, bool) and max_chars > 0 else 0
+    tools: tuple = ()
+    if isinstance(hints, (tuple, list)) and hints and all(isinstance(h, str) and _HINT_RE.fullmatch(h) for h in hints):
+        tools = tuple(dict.fromkeys(("bash",) + tuple(hints)))
+    else:
+        problems.append(f"{where}: guard._SHELL_TOOL_HINTS is not a tuple of plain lower-case words, so the Muse "
+                        "wrapper cannot tell shell tools from others and hands every tool call to the guard")
+    return GuardFacts(words, look, cap, tools, tuple(problems))
+
+
+def _guard_facts_local() -> GuardFacts:
+    """From the guard this module sits beside (the usual case: the checkout being installed)."""
+    try:
+        from . import guard as g
+        trigger = g._TRIGGER
+        return _facts_from_values(trigger.pattern, (trigger.flags & ~re.UNICODE) == re.IGNORECASE,
+                                  getattr(g, "MAX_COMMAND_CHARS", None), getattr(g, "_SHELL_TOOL_HINTS", None),
+                                  "guard.py")
+    except Exception as exc:     # an unreadable guard must not stop an install: it gets no filtering
+        return GuardFacts(problems=(f"guard.py cannot be read for the shell scripts ({type(exc).__name__}: {exc}); "
+                                    "they get no prefilter and no tool filter",))
+
+
+def _is_re_name(node: object, attr: str) -> bool:
+    return (isinstance(node, ast.Attribute) and node.attr == attr
+            and isinstance(node.value, ast.Name) and node.value.id == "re")
+
+
+def _const_int(node: object) -> object:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mult, ast.Add)):
+        left, right = _const_int(node.left), _const_int(node.right)
+        if isinstance(left, int) and isinstance(right, int):
+            return left * right if isinstance(node.op, ast.Mult) else left + right
+    return None
+
+
+def _guard_facts_from_file(path: str) -> GuardFacts:
+    """From another tree's guard.py (a --source elsewhere, or the stable copy), WITHOUT running it: the three
+    assignments are read from the syntax tree, and only the plain shapes guard.py uses are understood."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError, ValueError) as exc:
+        return GuardFacts(problems=(f"{path} cannot be read for the shell scripts ({type(exc).__name__}: {exc}); "
+                                    "they get no prefilter and no tool filter",))
+    pattern: object = None
+    flags_ok = False
+    cap: object = None
+    hints: object = None
+    for node in tree.body:
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)):
+            continue
+        name, value = node.targets[0].id, node.value
+        if name == "_TRIGGER":
+            if (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) and value.func.attr == "compile"
+                    and isinstance(value.func.value, ast.Name) and value.func.value.id == "re"
+                    and len(value.args) == 2 and not value.keywords
+                    and isinstance(value.args[0], ast.Constant) and isinstance(value.args[0].value, str)):
+                pattern, flags_ok = value.args[0].value, _is_re_name(value.args[1], "IGNORECASE")
+        elif name == "MAX_COMMAND_CHARS":
+            cap = _const_int(value)
+        elif name == "_SHELL_TOOL_HINTS":
+            if isinstance(value, ast.Tuple) and all(isinstance(e, ast.Constant) and isinstance(e.value, str)
+                                                    for e in value.elts):
+                hints = tuple(e.value for e in value.elts)
+    return _facts_from_values(pattern, flags_ok, cap, hints, os.path.basename(os.path.dirname(path)) + "/guard.py")
+
+
+def read_guard_facts(scripts_dir: str | None = None) -> GuardFacts:
+    """What the shell scripts mirror of the guard that is (or will be) installed from `scripts_dir`, a directory
+    that contains fleet_lanes/.  None, or this very package, means the imported guard; any other tree is read as
+    text (see `_guard_facts_from_file`)."""
+    if scripts_dir is None:
+        return _guard_facts_local()
+    pkg = os.path.join(scripts_dir, PACKAGE)
+    if os.path.realpath(pkg) == os.path.realpath(os.path.dirname(os.path.abspath(__file__))):
+        return _guard_facts_local()
+    return _guard_facts_from_file(os.path.join(pkg, "guard.py"))
+
+
 # --------------------------------------------------------------------------- shims
 
 _PY_BOOT = ('import sys, runpy; sys.path.insert(0, sys.argv.pop(1)); '
             'runpy.run_module("{module}", run_name="__main__", alter_sys=True)')
 
+_JSON_U_ESCAPE = "*'\\u'*"        # shell: any payload holding a backslash and a u (a JSON \uXXXX escape)
 
-def render_hook_shim() -> str:
-    """lane-guard-hook.  Relocatable: it derives its directory from $0, so a staged copy runs itself."""
+
+def _ci_glob(word: str) -> str:
+    """A shell case pattern that finds `word` in any ASCII letter case, using bracket pairs only.  It needs no
+    external tool (a `tr` that is missing from a hook's PATH would read as "nothing found").  The scripts run it
+    under LC_ALL=C (_C_LOCALE_LINES), so it compares bytes whatever locale the caller has."""
+    return "*" + "".join(f"[{c}{c.upper()}]" if c.isalpha() else c for c in word) + "*"
+
+
+# Both generated scripts match the raw payload BYTES, so they set LC_ALL=C before reading it.  In a multibyte locale
+# such as ja_JP.SJIS or zh_CN.GB18030 an ASCII byte can be the second byte of a character, and bash and zsh (not
+# dash) then read the last byte of a UTF-8 character and the next letter as one character: a trigger word glued to
+# a non-ASCII character would never match.  The caller's value is put back, exactly as it was, before the guard runs.
+_C_LOCALE_LINES = [
+    "# Match bytes, not characters: in a multibyte locale an ASCII letter can be the second byte of a character.",
+    "_lg_lc=${LC_ALL-}",
+    "_lg_lcset=${LC_ALL+x}",
+    "LC_ALL=C",
+]
+_RESTORE_LOCALE = 'if [ -n "$_lg_lcset" ]; then LC_ALL=$_lg_lc; else unset LC_ALL; fi'
+
+
+@functools.lru_cache(maxsize=16)
+def _lower_lookalikes(letters: str) -> tuple:
+    """The non-ASCII characters whose str.lower() holds one of `letters`.  guard._extract lower()s the tool name
+    before it looks for a shell word, and U+0130 lowers to i plus a combining dot (U+212A, the Kelvin sign, lowers to
+    k), so such a character could complete a shell word without its ASCII spelling.  Basic Multilingual Plane only,
+    like _fold_lookalikes; the tests scan every code point."""
+    want = set(letters)
+    return tuple(ch for ch in map(chr, range(0x80, 0x10000))
+                 if not 0xD800 <= ord(ch) < 0xE000 and want.intersection(ch.lower()))
+
+
+def render_hook_shim(facts: GuardFacts | None = None) -> str:
+    """lane-guard-hook.  Relocatable: it derives its directory from $0, so a staged copy runs itself.
+
+    The prefilter.  The guard reads a command only when it holds one of a few words (guard._TRIGGER); a payload
+    without any of them is allowed without being parsed.  Starting Python costs about 0.2 s on a loaded machine
+    and this hook runs on every Bash call on five platforms, so the shell makes the same call first.  The match
+    is on the RAW payload BYTES (LC_ALL=C while it runs, the caller's LC_ALL back before Python) and is a superset
+    of the guard's: every word in any ASCII letter case, a JSON \\u escape (it can spell any letter), and the few
+    non-ASCII letters that re.IGNORECASE folds onto them.  A payload over the guard's own size cap skips the match.
+    Whatever is not provably free of a trigger goes to Python as the original bytes, and the guard decides exactly
+    as it would have without the shell."""
+    facts = read_guard_facts() if facts is None else facts
     boot = _PY_BOOT.format(module=f"{PACKAGE}.lane_guard_hook")
-    return (
-        "#!/bin/sh\n"
-        f"# {GENERATED_MARK}.  Do not edit; run `python3 -m fleet_lanes.install_tools apply tools`.\n"
-        "# Runs the temp-checkout guard from THIS directory's copy of fleet_lanes, never from the caller's\n"
-        "# working directory (-I).  The guard allows on any internal error, so `install_tools verify`\n"
-        "# is the proof that it denies.  Arguments (--format FMT) pass through.\n"
-        'case "$0" in\n'
-        '  */*) D=${0%/*} ;;\n'
-        '  *) D=. ;;\n'
-        'esac\n'
-        'D=$(cd "$D" && pwd -P) || exit 70\n'
-        'PYTHONPATH=$D\n'
-        'FLEET_APPS_JSON=$D/fleet-apps.json\n'
-        'export PYTHONPATH FLEET_APPS_JSON\n'
-        f"exec /usr/bin/env python3 -I -c '{boot}' \"$D\" \"$@\"\n"
-    )
+    out = [
+        "#!/bin/sh",
+        f"# {GENERATED_MARK}.  Do not edit; run `python3 -m fleet_lanes.install_tools apply tools`.",
+        "# Runs the temp-checkout guard from THIS directory's copy of fleet_lanes, never from the caller's",
+        "# working directory (-I).  The guard allows on any internal error, so `install_tools verify`",
+        "# is the proof that it denies.  Arguments (--format FMT) pass through.",
+    ]
+    if facts.words:
+        out += [
+            "# Prefilter: a payload with none of the guard's trigger words (copied from guard.py when this file was",
+            "# generated) cannot be denied, so it exits 0 here without starting Python.  The match is on the raw",
+            "# payload, in any letter case, and also passes a JSON \\u escape and the non-ASCII letters that fold",
+            "# onto a trigger letter.  Everything else reaches Python as the original bytes.",
+        ]
+    out += [
+        "_lg_py() {",
+        "  # the caller's LC_ALL, exactly as it was (set, empty or unset), for Python",
+        '  if [ -n "${_lg_lcset-}" ]; then LC_ALL=$_lg_lc; else unset LC_ALL; fi',
+        "  unset _lg_in _lg_lc _lg_lcset",
+        '  case "$0" in',
+        "    */*) D=${0%/*} ;;",
+        "    *) D=. ;;",
+        "  esac",
+        '  D=$(cd "$D" && pwd -P) || exit 70',
+        "  PYTHONPATH=$D",
+        "  FLEET_APPS_JSON=$D/fleet-apps.json",
+        "  export PYTHONPATH FLEET_APPS_JSON",
+        f"  exec /usr/bin/env python3 -I -c '{boot}' \"$D\" \"$@\"",
+        "}",
+    ] + _C_LOCALE_LINES
+    if not facts.words:
+        out.append('_lg_py "$@"')
+        return "\n".join(out) + "\n"
+    out += ["if _lg_in=$(cat && printf x); then", "  _lg_in=${_lg_in%x}"]
+    indent = "  "
+    if facts.max_chars:
+        out.append(f'  if [ "${{#_lg_in}}" -le {facts.max_chars} ]; then')
+        indent = "    "
+    out.append(f"{indent}case $_lg_in in")
+    for word in facts.words:
+        out.append(f"{indent}  {_ci_glob(word)}) ;;")
+    out.append(f"{indent}  {_JSON_U_ESCAPE}) ;;")
+    for ch in facts.lookalikes:
+        out.append(f"{indent}  *{ch}*) ;;")
+    out += [f"{indent}  *) exit 0 ;;", f"{indent}esac"]
+    if facts.max_chars:
+        out.append("  fi")
+    out += ["  printf '%s' \"$_lg_in\" | _lg_py \"$@\"", "else", '  _lg_py "$@"', "fi"]
+    return "\n".join(out) + "\n"
 
 
 def render_lane_shim(stable: str) -> str:
@@ -318,6 +593,203 @@ def render_lane_shim(stable: str) -> str:
         'export PYTHONPATH FLEET_APPS_JSON\n'
         f"exec /usr/bin/env python3 -I -c '{boot}' \"$D\" \"$@\"\n"
     )
+
+
+# --------------------------------------------------------------------------- Muse Code: plugin bundle and seat shim
+
+def render_muse_manifest(stable: str) -> str:
+    """.muse-plugin/plugin.json.  Muse rejects a `matcher` on a plugin hook, so there is none; the command is an
+    argv array with absolute paths only, because Muse runs hooks outside its sandbox with a cleared environment
+    (and `muse plugins install` copies the bundle into its own cache, where a relative path would not find the
+    stable dir).  Shape taken from a bundle that `muse plugins validate` accepted."""
+    doc = {
+        "schemaVersion": 1,
+        "name": MUSE_PLUGIN_ID,
+        "displayName": "Fleet Lane Guard",
+        "version": "1.0.0",
+        "description": "Denies fleet-repo checkouts in temp directories (the Lane Map temp guard).",
+        "compat": {"source": "native", "manifestDir": ".muse-plugin"},
+        "capabilities": {
+            "skills": [],
+            "commands": [],
+            "hooks": [{
+                "id": "lane-guard",
+                "event": "PreToolUse",
+                "command": ["/bin/sh", os.path.join(stable, *MUSE_WRAPPER.split("/"))],
+                "timeoutMs": 5000,
+                "statusMessage": "Checking checkout location",
+            }],
+            "mcpServers": [],
+            "reminders": [],
+        },
+    }
+    return json.dumps(doc, indent=2) + "\n"
+
+
+def muse_hook_argv(stable: str) -> list:
+    """The hook command Muse is told to run (what the manifest holds)."""
+    return ["/bin/sh", os.path.join(stable, *MUSE_WRAPPER.split("/"))]
+
+
+MUSE_KEY_WINDOW = 4096     # the Muse wrapper reads a tool key only when it starts in the payload's first 4096 bytes
+
+
+def _muse_key_function(key: str, facts: GuardFacts, absent: str | None) -> list:
+    """Shell function _lg_plain_<key>: status 0 only when the payload is PROVABLY a call that guard._extract does
+    not treat as a shell call because of this key.  `absent`: a key that must not occur at all (the guard reads
+    toolName only when there is no top-level tool_name).  The proof, all on raw bytes:
+
+      * the key occurs exactly once, so there is no duplicate whose value Python's json would keep instead;
+      * right after it comes `:"` or `: "`, so its value is a string (a null, a number, an object, or odd spacing
+        around the colon is passed on);
+      * no shell word, in any ASCII letter case, and no non-ASCII letter that lower() turns into a letter of one,
+        appears anywhere after it (a superset of "in its value");
+      * it starts in the first MUSE_KEY_WINDOW bytes, and between the first `{` and it there is no `{`, `}`, `[`,
+        `]` or backslash.  Then no string before it can hide a quote, nothing is nested, and it is a key of the
+        top-level object (in valid JSON the first `{` opens the top-level object; if the top level is not an
+        object the guard does not see a shell call either, and the guard allows input that is not JSON at all).
+
+    Only `case` globs scan the whole payload, because they stay linear in every shell.  The one expansion that
+    looks for the key (`%%`) runs only when the window test passed, since bash takes seconds to run it to a key
+    far into a 256 KB payload."""
+    k = f"'\"{key}\"'"
+    out = [f"_lg_plain_{key}() {{"]
+    if absent:
+        out.append(f"  case $_lg_in in *'\"{absent}\"'*) return 1 ;; esac")
+    out += [
+        "  case $_lg_in in",
+        f"    *{k}*{k}*) return 1 ;;",
+        f"    *{k}':\"'*|*{k}': \"'*) ;;",
+        "    *) return 1 ;;",
+        "  esac",
+        "  case $_lg_in in",
+        f"    $_lg_far*{k}*) return 1 ;;",
+    ]
+    for hint in facts.shell_hints:
+        out.append(f"    *{k}{_ci_glob(hint)}) return 1 ;;")
+    for ch in _lower_lookalikes("".join(sorted({c for h in facts.shell_hints for c in h if c.isalpha()}))):
+        out.append(f"    *{k}*{ch}*) return 1 ;;")
+    out += [
+        "  esac",
+        f"  _lg_t=${{_lg_in%%{k}*}}",
+        "  case $_lg_t in *'{'*) ;; *) return 1 ;; esac",
+        "  case ${_lg_t#*'{'} in *'{'*|*'}'*|*'['*|*']'*|*'\\'*) return 1 ;; esac",
+        "  return 0",
+        "}",
+    ]
+    return out
+
+
+def render_muse_wrapper(stable: str, facts: GuardFacts | None = None) -> str:
+    """hooks/lane-guard.sh.  A Muse plugin hook cannot carry a matcher, so Muse runs this on EVERY tool call.  It
+    reads the payload and exits 0 at once only when it can PROVE from the raw bytes that guard._extract will not
+    treat it as a shell call: the top-level tool key the guard reads (tool_name, or toolName when there is no
+    tool_name) holds a plain string with none of the guard's shell tool words in it (see _muse_key_function).
+    Everything else, a missing or null tool key, a key that only occurs nested or as a value, duplicate keys, odd
+    spacing, a JSON \\u escape, goes to the stable lane-guard-hook with --format muse as the original bytes (the
+    Claude deny shape; an allow is empty stdout and exit 0), so the guard decides exactly as it would without the
+    wrapper.  The match is on bytes under LC_ALL=C, and the guard gets the caller's LC_ALL back."""
+    facts = read_guard_facts() if facts is None else facts
+    out = [
+        "#!/bin/sh",
+        f"# {GENERATED_MARK}.  Do not edit; run `python3 -m fleet_lanes.install_tools apply tools`.",
+        "# Muse Code plugin hook for the temp-checkout guard.  Muse refuses a matcher on a plugin hook, so this runs",
+        "# on EVERY tool call and must be cheap: a call that is provably not a shell call exits 0 here, before Python.",
+        "# Muse starts hooks outside its sandbox with a cleared environment, so the path below is absolute and nothing",
+        "# here relies on PATH or HOME.  Like every hook of this guard it allows when anything is wrong (exit 0,",
+        "# no output); `install_tools verify muse` is the proof that it denies.",
+        f"_lg_guard={shlex.quote(os.path.join(stable, HOOK_NAME))}",
+    ] + _C_LOCALE_LINES
+    if facts.shell_hints:
+        window, doublings = 16, 0
+        while window < MUSE_KEY_WINDOW:
+            window, doublings = window * 2, doublings + 1
+        out += [
+            "# Exit 0 early only when the tool key the guard reads is provably a plain string with no shell word in it:",
+            "# exactly once, a string value, nothing nested or escaped before it, in the first "
+            f"{MUSE_KEY_WINDOW} bytes.  Anything",
+            "# else (no key, null, nested, duplicated, odd spacing) is the guard's to decide.",
+            "_lg_far=" + "?" * 16,
+            f"for _lg_i in {' '.join(str(i) for i in range(1, doublings + 1))}; do _lg_far=$_lg_far$_lg_far; done",
+        ]
+        out += _muse_key_function("tool_name", facts, None)
+        out += _muse_key_function("toolName", facts, "tool_name")
+    out += [
+        "if _lg_in=$(cat && printf x); then",
+        "  _lg_in=${_lg_in%x}",
+    ]
+    if facts.shell_hints:
+        out += [
+            "  case $_lg_in in",
+            f"    {_JSON_U_ESCAPE}) ;;",
+            "    *) if _lg_plain_tool_name || _lg_plain_toolName; then exit 0; fi ;;",
+            "  esac",
+        ]
+    out += [
+        f"  {_RESTORE_LOCALE}",
+        '  [ -x "$_lg_guard" ] || exit 0',
+        '  printf \'%s\' "$_lg_in" | "$_lg_guard" --format muse',
+        "else",
+        f"  {_RESTORE_LOCALE}",
+        '  [ -x "$_lg_guard" ] && "$_lg_guard" --format muse',
+        "fi",
+        "exit 0",
+    ]
+    return "\n".join(out) + "\n"
+
+
+MUSE_SEAT_ACTIVE = "_MUSE_SEAT_ACTIVE"     # exported by muse-seat; set means "muse-seat already ran in this chain"
+
+
+def render_muse_seat() -> str:
+    """muse-seat: start Muse Code as seat MC.  Sets AGENT_SEAT and AGENT_TAG, then execs the real `muse` that
+    `command -v muse` finds.  It refuses (exit 127) when there is none, when the one it finds is this very script (a
+    symlink named muse earlier on PATH, caught by -ef), and when it already ran in this chain of processes: a
+    wrapper SCRIPT named muse that starts muse-seat again is a different file, so -ef cannot see it, and without the
+    exported _MUSE_SEAT_ACTIVE it would exec itself forever.  The cost of that guard: inside a session muse-seat
+    started, muse-seat refuses to start again; AGENT_SEAT is already MC there, so `muse` itself is the way."""
+    return (
+        "#!/bin/sh\n"
+        f"# {GENERATED_MARK}.  Do not edit; run `python3 -m fleet_lanes.install_tools apply tools`.\n"
+        f"# Starts Muse Code as the {MUSE_SEAT_TAG} seat: sets AGENT_SEAT and AGENT_TAG, then runs the real `muse`.\n"
+        "# Arguments pass through.  The seat is set here, never guessed from a folder or a branch.\n"
+        f"if [ -n \"${{{MUSE_SEAT_ACTIVE}-}}\" ]; then\n"
+        "  echo 'muse-seat: muse-seat is already running in this chain of processes.  Either the muse found on PATH "
+        "is a script that starts muse-seat again (put the real muse first in PATH), or this is a session muse-seat "
+        f"started, where AGENT_SEAT is already {MUSE_SEAT_TAG}: run muse itself.' >&2\n"
+        "  exit 127\n"
+        "fi\n"
+        f"{MUSE_SEAT_ACTIVE}=1\n"
+        f"export {MUSE_SEAT_ACTIVE}\n"
+        f"AGENT_SEAT={MUSE_SEAT_TAG}\n"
+        f"AGENT_TAG={MUSE_SEAT_TAG}\n"
+        "export AGENT_SEAT AGENT_TAG\n"
+        "case $0 in\n"
+        "  */*) _ms_self=$0 ;;\n"
+        '  *) _ms_self=$(command -v "$0") || _ms_self=$0 ;;\n'
+        "esac\n"
+        "_ms_real=$(command -v muse) || _ms_real=\n"
+        'if [ -z "$_ms_real" ] || [ ! -f "$_ms_real" ] || [ ! -x "$_ms_real" ]; then\n'
+        "  echo 'muse-seat: cannot find the real muse on PATH; install Muse Code or add it to PATH.' >&2\n"
+        "  exit 127\n"
+        "fi\n"
+        'if [ "$_ms_real" -ef "$_ms_self" ]; then\n'
+        "  printf 'muse-seat: the muse found on PATH (%s) is this wrapper itself; put the real muse first "
+        "in PATH, or call it by its full path.\\n' \"$_ms_real\" >&2\n"
+        "  exit 127\n"
+        "fi\n"
+        'exec "$_ms_real" "$@"\n'
+    )
+
+
+def muse_owner_actions(paths: Paths) -> list:
+    """What the OWNER still has to do after `apply tools`.  This tool never runs these commands and never edits
+    Muse's config, so it can only say them."""
+    return [
+        f"muse plugins install {shlex.quote(paths.muse_bundle)} --scope user",
+        f"muse plugins approve {MUSE_PLUGIN_ID}",
+        "start a new Muse Code session",
+    ]
 
 
 def hook_command(paths: Paths, fmt: str) -> str:
@@ -372,7 +844,11 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
         raise Refused(f"registry {src.registry} needs top-level 'apps' and 'seats' lists")
     files: dict[str, bytes] = {f"{PACKAGE}/{n}": _read_bytes(os.path.join(pkg, n)) for n in names}
     files[REGISTRY_NAME] = reg_bytes
-    files[HOOK_NAME] = render_hook_shim().encode("utf-8")
+    facts = read_guard_facts(src.scripts_dir)
+    files[HOOK_NAME] = render_hook_shim(facts).encode("utf-8")
+    files[MUSE_SEAT_NAME] = render_muse_seat().encode("utf-8")
+    files[MUSE_MANIFEST] = render_muse_manifest(paths.stable).encode("utf-8")
+    files[MUSE_WRAPPER] = render_muse_wrapper(paths.stable, facts).encode("utf-8")
     init_text = files[f"{PACKAGE}/__init__.py"].decode("utf-8", "replace")
     version = (f"sha={src.sha}\npackage={_package_version(init_text)}\nfiles={len(files)}\n"
                f"tree={tree_digest(files)}\n")
@@ -381,7 +857,7 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
 
 
 def file_mode(rel: str) -> int:
-    return 0o755 if rel == HOOK_NAME else 0o644
+    return 0o755 if rel in (HOOK_NAME, MUSE_SEAT_NAME, MUSE_WRAPPER) else 0o644
 
 
 def read_tree(root: str) -> dict[str, bytes]:
@@ -399,7 +875,7 @@ def read_tree(root: str) -> dict[str, bytes]:
 
 _TREE_RE = re.compile(r"^[0-9a-f]{64}$")
 _PKG_FILE_RE = re.compile(re.escape(PACKAGE) + r"/[^/]+\.py")
-_TOP_FILES = (VERSION_NAME, REGISTRY_NAME, HOOK_NAME)
+_TOP_FILES = (VERSION_NAME, REGISTRY_NAME, HOOK_NAME) + _MUSE_FILES
 
 
 def _expected_shape(rel: str) -> bool:
@@ -558,6 +1034,11 @@ class ToolsPlan:
     sha: str
     problems: list[str] = field(default_factory=list)
     lane_detail: str = ""           # for a foreign lane shim: what is at the path instead
+    warnings: list[str] = field(default_factory=list)   # a prefilter or tool filter that could not be generated
+    facts: GuardFacts = field(default_factory=GuardFacts)
+    seat_shim_text: str = ""
+    muse_manifest_text: str = ""
+    muse_wrapper_text: str = ""
 
 
 def _stable_location_problems(src: Source, paths: Paths) -> list[str]:
@@ -631,10 +1112,15 @@ def plan_tools(src: Source, paths: Paths, *, replace_extra: bool = False) -> Too
             lane_detail = describe_foreign(paths.lane_shim)
     elif os.path.lexists(paths.lane_shim) and _is_generated(paths.lane_shim):
         lane_state = "stale"
+    facts = read_guard_facts(src.scripts_dir)
     return ToolsPlan(stable=paths.stable, state=state, files=statuses,
                      version_text=files[VERSION_NAME].decode("utf-8"),
-                     hook_shim_text=render_hook_shim(), lane_shim_text=lane_text,
-                     lane_shim_state=lane_state, sha=src.sha, problems=problems, lane_detail=lane_detail)
+                     hook_shim_text=files[HOOK_NAME].decode("utf-8"), lane_shim_text=lane_text,
+                     lane_shim_state=lane_state, sha=src.sha, problems=problems, lane_detail=lane_detail,
+                     warnings=list(facts.problems), facts=facts,
+                     seat_shim_text=files[MUSE_SEAT_NAME].decode("utf-8"),
+                     muse_manifest_text=files[MUSE_MANIFEST].decode("utf-8"),
+                     muse_wrapper_text=files[MUSE_WRAPPER].decode("utf-8"))
 
 
 # --------------------------------------------------------------------------- running probes
@@ -668,6 +1154,26 @@ def run_shell(command: str, stdin: bytes, env: Mapping[str, str], timeout: float
     return RunResult(proc.returncode, out, err)
 
 
+def run_argv(argv: Sequence[str], stdin: bytes, env: Mapping[str, str], timeout: float, cwd: str | None = None) -> RunResult:
+    """`argv` run directly (no shell) with exactly `env`, the way a hook runner that clears the environment starts a
+    plugin hook.  The process group is killed on a timeout."""
+    try:
+        proc = subprocess.Popen(list(argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=dict(env), cwd=cwd, start_new_session=True)
+    except OSError as exc:
+        return RunResult(None, b"", b"", error=f"cannot start {argv[0] if argv else '?'}: {exc}")
+    try:
+        out, err = proc.communicate(stdin, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+        out, err = proc.communicate()
+        return RunResult(None, out or b"", err or b"", timed_out=True)
+    return RunResult(proc.returncode, out, err)
+
+
 def probe_env(home: str, path: str | None, base: Mapping[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ if base is None else base)
     for k in _SCRUB_ENV:
@@ -686,6 +1192,10 @@ def probe_payload(shape: str, command: str, cwd: str) -> dict:
     if shape == "cursor":           # beforeShellExecution: command, cwd and workspace_roots at the top level
         return {"hook_event_name": "beforeShellExecution", "command": command, "cwd": cwd,
                 "workspace_roots": [cwd]}
+    if shape == "muse":             # the shape of a payload Muse sends: its shell tool is named "bash", in lower case
+        return {"hook_event_name": "PreToolUse", "session_id": "lane-verify", "cwd": cwd,
+                "permission_mode": "default", "tool_name": "bash",
+                "tool_input": {"command": command, "description": "lane-guard verify"}}
     return {"session_id": "lane-verify", "hook_event_name": "PreToolUse", "tool_name": "Bash",
             "tool_input": {"command": command, "description": "lane-guard verify"}, "cwd": cwd}
 
@@ -787,7 +1297,8 @@ class Platform:
     matcher: str | None               # tool name the entry must match
     platform_dir: str                 # must exist, relative to home
     config_rel: str                   # config file, relative to home
-    supported: bool = True
+    supported: bool = True            # a hook entry in a config file that this tool writes
+    kind: str = "config"              # "plugin": no config file is edited (Muse Code takes hooks from a plugin)
     new_mode: int = 0o644
     hook_extra: tuple = ()            # extra keys of the hook object, as (key, value) pairs
     notes: tuple = ()
@@ -849,11 +1360,25 @@ PLATFORMS: dict[str, Platform] = {p.key: p for p in (
         unverified=("That Cursor re-reads hooks.json without a restart.",),
     ),
     Platform(
-        "muse", "Muse Code", "muse", "claude", "claude", "PreToolUse", "Bash",
-        ".config/muse", ".config/muse/settings.json", supported=False,
-        notes=("Listed only.  Nothing is written.",),
-        unverified=("Muse documents a hooks key in settings.json but not its deny output or exit contract, "
-                    "and its settings file has no hooks key today.  Unsupported until someone verifies it.",),
+        "muse", "Muse Code (plugin)", "muse", "muse", "claude", "PreToolUse", None,
+        ".config/muse", ".config/muse/settings.json", supported=False, kind="plugin",
+        notes=("Muse takes hooks from a PLUGIN, not from settings.json.  `apply tools` writes the plugin bundle "
+               f"({MUSE_PLUGIN_DIR}/) into the stable dir with everything else (`apply muse` runs that install); this "
+               "tool never edits Muse's config, and the only muse it runs is `muse plugins validate` in the muse "
+               "verify, confined to a throwaway HOME with auto-update off.  The owner installs and approves the "
+               "plugin (OWNER ACTIONS).",
+               "A plugin hook cannot carry a matcher, so Muse runs the wrapper on every tool call; the wrapper exits "
+               "0 at once only when it can prove the call is not a shell call, and hands everything else to the "
+               "guard.",
+               "Deny output is the Claude shape (hookSpecificOutput, permissionDecision deny); an allow is empty "
+               "stdout and exit 0.  Hooks start outside Muse's sandbox with a cleared environment, so every path "
+               "in the bundle is absolute."),
+        unverified=(f"Whether {MUSE_EXPERIMENTAL_ENV}=1 must be set for plugins to load.",
+                    "Whether a running Muse session picks up a newly approved plugin (start a new session).",
+                    "Whether `muse plugins install` keeps the absolute hook command (it copies the bundle into its "
+                    "cache), and whether an edited wrapper in the stable dir needs a re-approval.",
+                    "That Muse names its only shell tool bash (lower case); the wrapper also accepts the other shell "
+                    "tool words the guard knows."),
     ),
 )}
 # What the owner still has to do after a platform was written.  Printed by `apply`.
@@ -1382,6 +1907,10 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
     shows only our own entry; other hooks are counted and elided."""
     path = config_path(paths, plat)
     cmd = hook_command(paths, plat.fmt)
+    if plat.kind == "plugin":
+        return PlatformPlan(plat, paths.muse_bundle, "unsupported", cmd,
+                            "takes hooks from a plugin bundle, not from a config file; `plan muse` shows it and "
+                            "`apply tools` writes it.  No config file is edited")
     if not plat.supported:
         return PlatformPlan(plat, path, "unsupported", cmd, "no verified hook surface; nothing is written")
     if not os.path.isdir(os.path.join(paths.home, *plat.platform_dir.split("/"))):
@@ -1481,7 +2010,7 @@ def probe_formats() -> list[tuple[str, str]]:
     them, so a copy whose output is broken for ANY platform is never swapped in."""
     out: list[tuple[str, str]] = []
     for plat in PLATFORMS.values():
-        if plat.supported and (plat.fmt, plat.shape) not in out:
+        if (plat.supported or plat.kind == "plugin") and (plat.fmt, plat.shape) not in out:
             out.append((plat.fmt, plat.shape))
     return out
 
@@ -1503,7 +2032,8 @@ def apply_tools(src: Source, paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, 
     except Refused as exc:
         return Result("tools", "refused", str(exc))
     lane_text = plan.lane_shim_text
-    if plan.state == "current" and plan.lane_shim_state in ("same", "skipped", "foreign") and os.access(paths.hook_shim, os.X_OK):
+    runnable = all(os.access(p, os.X_OK) for p in (paths.hook_shim, paths.muse_seat, paths.muse_wrapper))
+    if plan.state == "current" and plan.lane_shim_state in ("same", "skipped", "foreign") and runnable:
         return Result("tools", "unchanged", f"{paths.stable} is current (sha {plan.sha[:12]})")
     os.makedirs(paths.apps_dir, exist_ok=True)
     os.makedirs(os.path.dirname(paths.stable), exist_ok=True)
@@ -1545,6 +2075,8 @@ def apply_tools(src: Source, paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, 
             extra = f"; no lane shim (the package has no {LANE_MODULE} yet)"
     except OSError as exc:
         return Result("tools", "failed", f"stable dir installed, but the lane shim failed: {exc}")
+    for w in plan.warnings:
+        extra += f"; WARNING {w}"
     return Result("tools", "installed", f"{paths.stable} sha {plan.sha[:12]}, {len(files)} files{extra}")
 
 
@@ -1589,6 +2121,8 @@ def apply_platform(plat: Platform, paths: Paths, *, now: Callable[[], float] = t
     platform's own format right now.  The `apply` command never sets `shim_proven` (it skips those probes):
     `apply tools` proves a staged copy, and an `unchanged` tools result proves nothing about this run.  Only
     callers that have just proven the shim themselves (the self-test, the tests) pass it."""
+    if plat.kind == "plugin":
+        return apply_muse(paths)
     plan = plan_platform(plat, paths, follow_symlinks=follow_symlinks)
     if plan.action == "unsupported":
         return Result(plat.key, "unsupported", plan.reason)
@@ -1693,7 +2227,13 @@ def verify_tools(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S) -> list[Chec
                          "parses and has apps and seats" if good else "parses but has no apps or seats"))
     except (OSError, ValueError) as exc:
         out.append(Check(t, REGISTRY_NAME, "FAIL", f"{paths.registry}: {exc}"))
-    out.append(_check_shim(t, HOOK_NAME, paths.hook_shim, render_hook_shim()))
+    facts = read_guard_facts(paths.stable)
+    out.append(_check_shim(t, HOOK_NAME, paths.hook_shim, render_hook_shim(facts)))
+    if facts.words:
+        out.append(Check(t, "prefilter", "PASS", f"{len(facts.words)} trigger words, {len(facts.lookalikes)} non-ASCII "
+                                                 "lookalikes and the \\u escape, all from the installed guard.py"))
+    else:
+        out.append(Check(t, "prefilter", "WARN", "; ".join(facts.problems) or "the installed guard has no trigger words"))
     if f"{PACKAGE}/{LANE_MODULE}" in have and os.path.lexists(paths.lane_shim) and not (
             os.path.isfile(paths.lane_shim) and not os.path.islink(paths.lane_shim) and _is_generated(paths.lane_shim)):
         out.append(Check(t, LANE_NAME, "WARN", f"{paths.lane_shim} is {describe_foreign(paths.lane_shim)}; left alone, "
@@ -1806,6 +2346,8 @@ def verify_platform(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIME
     in the config's env block (or, as a warning, in the caller's environment), and for Codex the feature
     flag and the trust record.  Finds the entry through the same event and matcher accessors the merge uses."""
     t = plat.key
+    if plat.kind == "plugin":
+        return verify_muse(paths, timeout=timeout, minimal_path=minimal_path)
     if not plat.supported:
         return [Check(t, "platform", "FAIL", "UNSUPPORTED: no verified hook surface, so there is nothing to verify")]
     path = config_path(paths, plat)
@@ -1847,6 +2389,221 @@ def verify_platform(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIME
                          "scrub it, but an agent started from this environment gets a guard that is off"))
     if plat.key == "codex" and entries and entries[0].group_index is not None:
         out.extend(_codex_checks(paths, os.path.join(paths.home, ".codex", "hooks.json"), entries[0]))
+    return out
+
+
+# --------------------------------------------------------------------------- Muse Code: plan, apply, verify
+
+@dataclass
+class MusePlan:
+    stable: str
+    bundle: str
+    state: str                       # new (no file yet), current, stale
+    files: list[FileStatus]
+    manifest_text: str
+    wrapper_text: str
+    seat_text: str
+    actions: list[str]
+    warnings: list[str]
+
+
+def _muse_expected(stable: str, facts: GuardFacts) -> dict[str, str]:
+    return {MUSE_SEAT_NAME: render_muse_seat(), MUSE_MANIFEST: render_muse_manifest(stable),
+            MUSE_WRAPPER: render_muse_wrapper(stable, facts)}
+
+
+def _read_regular(path: str) -> bytes | None:
+    """The bytes of a regular, non-symlink file, or None."""
+    try:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return None
+        return _read_bytes(path)
+    except OSError:
+        return None
+
+
+def plan_muse(src: Source, paths: Paths) -> MusePlan:
+    """Read-only: what `apply tools` writes for Muse Code (the plugin bundle and the seat shim), compared with what
+    the stable dir holds now, plus the OWNER ACTIONS that come after.  Nothing here runs muse or reads its config."""
+    facts = read_guard_facts(src.scripts_dir)
+    want = _muse_expected(paths.stable, facts)
+    statuses: list[FileStatus] = []
+    for rel, text in want.items():
+        have = _read_regular(os.path.join(paths.stable, *rel.split("/")))
+        statuses.append(FileStatus(rel, "new" if have is None else ("same" if have == text.encode("utf-8") else "changed")))
+    if all(s.status == "new" for s in statuses):
+        state = "new"
+    else:
+        state = "current" if all(s.status == "same" for s in statuses) else "stale"
+    return MusePlan(stable=paths.stable, bundle=paths.muse_bundle, state=state, files=statuses,
+                    manifest_text=want[MUSE_MANIFEST], wrapper_text=want[MUSE_WRAPPER], seat_text=want[MUSE_SEAT_NAME],
+                    actions=muse_owner_actions(paths), warnings=list(facts.problems))
+
+
+def apply_muse(paths: Paths) -> Result:
+    """The library half of `apply muse`: the bundle and the seat shim are part of the stable copy that
+    `apply_tools` swaps in atomically (the command line runs that first), so this writes nothing.  It checks that
+    the installed ones are the current ones and returns the verdict the owner actions hang on.  It never runs muse
+    and never edits Muse's config.  (The command line's `apply muse` then runs the muse verify unless --no-verify,
+    and that runs `muse plugins validate`; see verify_muse.)"""
+    facts = read_guard_facts(paths.stable)
+    for rel, text in _muse_expected(paths.stable, facts).items():
+        full = os.path.join(paths.stable, *rel.split("/"))
+        have = _read_regular(full)
+        if have is None:
+            return Result("muse", "refused", f"{full} is missing; run `apply tools` first (it writes the plugin bundle)")
+        if have != text.encode("utf-8"):
+            return Result("muse", "refused", f"{full} is not what this install_tools writes; run `apply tools` to refresh the stable copy")
+        if rel in (MUSE_SEAT_NAME, MUSE_WRAPPER) and not os.access(full, os.X_OK):
+            return Result("muse", "refused", f"{full} is not executable; run `apply tools`")
+    return Result("muse", "unchanged", f"plugin bundle {paths.muse_bundle} is current; the stable copy holds everything "
+                                       "this tool writes for Muse.  OWNER ACTIONS follow (yours to run; this tool "
+                                       "never installs or approves the plugin)")
+
+
+def _muse_cases() -> list[tuple[str, dict, bool]]:
+    """(check name, hook payload, must deny).  The payloads a Muse hook runner could send: its shell tool in lower
+    case, the same tool spelled Bash, and two tools that are not shell calls (one of them carrying the denied
+    command as plain text, which must never be judged as a command)."""
+    cwd = "/"
+    return [
+        ("deny/hook-env", probe_payload("muse", DENY_COMMAND, cwd), True),
+        ("deny-Bash/hook-env", dict(probe_payload("muse", DENY_COMMAND, cwd), tool_name="Bash"), True),
+        ("allow/hook-env", probe_payload("muse", ALLOW_COMMAND, cwd), False),
+        ("other-tool/hook-env", {"hook_event_name": "PreToolUse", "session_id": "lane-verify", "cwd": cwd,
+                                 "tool_name": "write", "tool_input": {"file_path": "/tmp/notes.md", "content": DENY_COMMAND}},
+         False),
+    ]
+
+
+# `muse plugins validate` runs the muse found on PATH.  That muse is a launcher that finds its install dir from its own
+# path, not from HOME, and unless auto-update is off it stamps that dir and starts a background self-update (curl to
+# its download host) on a run more than an hour after the last check; MUSE_LAUNCHER_INSTALL=1 installs before
+# anything else; XDG_CONFIG_HOME and a credential-path variable decide where its config, lock file and sign-in file
+# are.  So validate gets the caller's environment minus every XDG_ and MUSE_ variable, then HOME, the XDG dirs,
+# TMPDIR and the credential path inside a throwaway dir, auto-update off and sign-in off.  The one MUSE_ variable
+# kept is the plugin feature switch, which is not a path.  (Read from launcher version 3, October 2026, and seen in a
+# run of a sandboxed copy; what the Muse binary itself writes during validate is UNVERIFIED.)
+_MUSE_VALIDATE_DIRS = (("HOME", ""), ("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"),
+                       ("XDG_CACHE_HOME", "cache"), ("XDG_STATE_HOME", "state"), ("XDG_RUNTIME_DIR", "runtime"),
+                       ("TMPDIR", "tmp"))
+_MUSE_VALIDATE_FILES = (("MUSE_AUTH_PATH", ("config", "muse", "auth.json")),)
+_MUSE_VALIDATE_SET = (("MUSE_NO_AUTO_UPDATE", "1"), ("MUSE_LOGIN", "0"))
+_MUSE_VALIDATE_KEEP = (MUSE_EXPERIMENTAL_ENV,)
+
+
+def muse_validate_env(scratch: str, base: Mapping[str, str] | None = None) -> dict:
+    """The environment `verify` runs `muse plugins validate` with (see _MUSE_VALIDATE_DIRS).  Creates the dirs."""
+    base = os.environ if base is None else base
+    env = {k: v for k, v in base.items()
+           if not (k.startswith("XDG_") or k.startswith("MUSE_")) or k in _MUSE_VALIDATE_KEEP}
+    for name, rel in _MUSE_VALIDATE_DIRS:
+        path = os.path.join(scratch, rel) if rel else scratch
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        env[name] = path
+    for name, parts in _MUSE_VALIDATE_FILES:
+        env[name] = os.path.join(scratch, *parts)
+    env.update(_MUSE_VALIDATE_SET)
+    return env
+
+
+def _check_text(target: str, name: str, path: str, expected: str, executable: bool) -> Check:
+    have = _read_regular(path)
+    if have is None:
+        return Check(target, name, "FAIL", f"{path} is missing or not a regular file; run `apply tools`")
+    if executable and not (os.stat(path).st_mode & 0o111 and os.access(path, os.X_OK)):
+        return Check(target, name, "FAIL", f"{path} is not executable (mode {os.stat(path).st_mode & 0o777:o})")
+    if have != expected.encode("utf-8"):
+        return Check(target, name, "FAIL", f"{path} differs from what this install_tools writes; re-run `apply tools`")
+    return Check(target, name, "PASS", f"{path} current" + (", executable" if executable else ""))
+
+
+def verify_muse(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True) -> list[Check]:
+    """Prove the Muse plugin bundle works, without Muse.  The hook command is taken back out of the installed
+    manifest and run the way Muse runs a hook: directly (no shell), with an EMPTY environment, from `/`, with
+    absolute paths only.  (`minimal_path=False`, the CLI's --no-minimal-path, gives it the caller's PATH instead,
+    for a machine where python3 is not where an empty environment looks.)  A known deny payload must print the
+    deny shape, an allow payload and a payload for a tool that is not a shell tool must print nothing, and all
+    must exit 0.  When `muse` is on PATH, `muse plugins validate` also runs and its answer is reported; an absent
+    muse is a SKIP, never a failure.  That runs the real muse, so it is confined (muse_validate_env): HOME, the XDG
+    dirs, TMPDIR and Muse's credential path inside a throwaway directory (muse creates a lock file under its config
+    dir even to validate, observed), none of the caller's XDG_ or MUSE_ variables except the plugin switch, and
+    MUSE_NO_AUTO_UPDATE=1 and MUSE_LOGIN=0, so the launcher neither stamps its install dir nor updates itself.  It
+    is confined, not proven read-only: the launcher still runs from its own install dir.  What this cannot see is
+    whether the owner has installed and approved the plugin in Muse."""
+    t = "muse"
+    out: list[Check] = []
+    facts = read_guard_facts(paths.stable)
+    out.append(_check_text(t, "plugin.json", paths.muse_manifest, render_muse_manifest(paths.stable), False))
+    out.append(_check_text(t, "hooks/lane-guard.sh", paths.muse_wrapper, render_muse_wrapper(paths.stable, facts), True))
+    out.append(_check_text(t, "shim muse-seat", paths.muse_seat, render_muse_seat(), True))
+    argv: list | None = None
+    try:
+        doc = json.loads((_read_regular(paths.muse_manifest) or b"").decode("utf-8"))
+        hooks = doc["capabilities"]["hooks"]
+        pre = [h for h in hooks if isinstance(h, dict) and h.get("event") == "PreToolUse"]
+        if len(pre) != 1:
+            out.append(Check(t, "hook command", "FAIL", f"the manifest has {len(pre)} PreToolUse hooks, expected exactly 1"))
+        else:
+            argv = pre[0].get("command")
+            extra = sorted(set(pre[0]) & {"matcher"})
+            if extra:
+                out.append(Check(t, "hook command", "FAIL", "the manifest hook has a matcher, which Muse rejects"))
+                argv = None
+            elif argv != muse_hook_argv(paths.stable):
+                out.append(Check(t, "hook command", "FAIL", f"manifest command {argv!r} is not {muse_hook_argv(paths.stable)!r}"))
+                argv = None
+            else:
+                out.append(Check(t, "hook command", "PASS", " ".join(shlex.quote(a) for a in argv)))
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        out.append(Check(t, "hook command", "FAIL", f"cannot read the hook command from {paths.muse_manifest}: {exc}"))
+    hook_env: dict = {} if minimal_path else {"PATH": os.environ.get("PATH", "")}
+    if argv is None:
+        out.append(Check(t, "hook-env probes", "FAIL", "not run: no usable hook command in the manifest"))
+    else:
+        for name, payload, must_deny in _muse_cases():
+            res = run_argv(argv, json.dumps(payload).encode("utf-8"), hook_env, timeout, cwd="/")
+            problem: str | None = None
+            if res.error:
+                problem = res.error
+            elif res.timed_out:
+                problem = f"timed out after {timeout:g}s"
+            elif res.returncode != 0:
+                problem = f"exit {res.returncode}, expected 0"
+            elif must_deny:
+                problem = check_deny_output("muse", res.stdout)
+            elif res.stdout:
+                problem = "produced output, expected none"
+            observed = f"exit={res.returncode} stdout={_brief(res.stdout)}"
+            if res.stderr:
+                observed += f" stderr={_brief(res.stderr, 200)}"
+            out.append(Check(t, name, "FAIL" if problem else "PASS", (f"{problem}; " if problem else "") + observed))
+    muse_bin = shutil.which("muse")
+    if not os.path.isdir(paths.muse_bundle):
+        out.append(Check(t, "muse validate", "SKIP", f"there is no bundle at {paths.muse_bundle} to validate"))
+    elif not muse_bin:
+        out.append(Check(t, "muse validate", "SKIP", "muse is not on PATH, so `muse plugins validate` was not run"))
+    else:
+        with tempfile.TemporaryDirectory(prefix="lane-muse-validate-") as scratch_home:
+            res = run_argv([muse_bin, "plugins", "validate", paths.muse_bundle, "--json"], b"",
+                           muse_validate_env(scratch_home), max(timeout, 30.0))
+        verdict: object = None
+        try:
+            verdict = json.loads(res.stdout.decode("utf-8")).get("valid")
+        except (ValueError, AttributeError):
+            pass
+        if res.timed_out or res.error:
+            out.append(Check(t, "muse validate", "WARN", res.error or f"timed out after {max(timeout, 30.0):g}s; the bundle was not validated"))
+        elif verdict is True and res.returncode == 0:
+            out.append(Check(t, "muse validate", "PASS", f"{muse_bin} accepts {paths.muse_bundle}"))
+        elif verdict is False or res.returncode not in (0, None):
+            out.append(Check(t, "muse validate", "FAIL", f"{muse_bin} rejects the bundle (exit {res.returncode}): "
+                                                         f"{_brief(res.stdout or res.stderr, 300)}"))
+        else:
+            out.append(Check(t, "muse validate", "WARN", f"could not read a verdict from `muse plugins validate` (exit {res.returncode})"))
+    out.append(Check(t, "owner actions", "SKIP",
+                     "whether the owner has run `muse plugins install ... --scope user` and `muse plugins approve "
+                     f"{MUSE_PLUGIN_ID}` is not visible from here (this tool does not read Muse's config)"))
     return out
 
 
@@ -1986,6 +2743,43 @@ def _verify_targets(targets: Sequence[str], explicit: set[str], paths: Paths, *,
     return EXIT_FAIL if fails or (strict and warns) else EXIT_OK
 
 
+def _printable(line: str) -> str:
+    """A generated line with every non-ASCII character spelled <U+XXXX>, so the plan prints on any terminal."""
+    return re.sub(r"[^\x00-\x7f]", lambda m: f"<U+{ord(m.group()):04X}>", line)
+
+
+def _emit_muse_plan(plat: Platform, mp: MusePlan, paths: Paths, emit: Callable[[str], None]) -> None:
+    emit(f"== {plat.key}  {plat.label}  {mp.bundle}  [plugin bundle {mp.state}]")
+    emit("   Muse Code takes hooks from a plugin, not from settings.json.  The bundle and the seat shim are part of the "
+         "stable copy, written atomically with the rest by `apply tools`; `apply muse` runs that same install (an "
+         "unchanged copy is left alone), then prints the OWNER ACTIONS.  Nothing else is written for muse.")
+    for fs in mp.files:
+        emit(f"   {fs.status:<8} {fs.rel}")
+    for w in mp.warnings:
+        emit(f"   WARNING: {w}")
+    emit("   OWNER ACTIONS (yours to run; this tool never edits Muse's config, and the only muse it runs is "
+         "`muse plugins validate` in verify, confined to a throwaway HOME):")
+    for i, action in enumerate(mp.actions, 1):
+        emit(f"     {i}. {action}")
+    emit(f"   note: {MUSE_EXPERIMENTAL_ENV}=1 may have to be set for plugins to load (UNVERIFIED).")
+    emit(f"   muse-seat: run {paths.muse_seat} instead of `muse` to start Muse Code as seat {MUSE_SEAT_TAG} "
+         f"(it sets AGENT_SEAT={MUSE_SEAT_TAG} and AGENT_TAG={MUSE_SEAT_TAG}, then runs the real muse found on PATH; "
+         "it refuses when there is none, or when that one is itself).")
+    emit(f"   manifest {paths.muse_manifest}:")
+    for ln in mp.manifest_text.splitlines():
+        emit(f"     | {ln}")
+    emit(f"   hook wrapper {paths.muse_wrapper}:")
+    for ln in mp.wrapper_text.splitlines():
+        emit(f"     | {_printable(ln)}")
+    emit(f"   shim {paths.muse_seat}:")
+    for ln in mp.seat_text.splitlines():
+        emit(f"     | {ln}")
+    for n in plat.notes:
+        emit(f"   note: {n}")
+    for u in plat.unverified:
+        emit(f"   UNVERIFIED: {u}")
+
+
 def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
     home = _resolve_home(args)
     paths = make_paths(home, _resolve_stable(args))
@@ -2022,7 +2816,16 @@ def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
                  "and a GUI-launched app may resolve python3 under PATH=/usr/bin:/bin only")
             emit(f"   shim {paths.hook_shim}:")
             for ln in tp.hook_shim_text.splitlines():
-                emit(f"     | {ln}")
+                emit(f"     | {_printable(ln)}")
+            if tp.facts.words:
+                emit(f"   prefilter: derived from guard.py _TRIGGER ({len(tp.facts.words)} words: {', '.join(tp.facts.words)}), "
+                     f"the JSON \\u escape and {len(tp.facts.lookalikes)} non-ASCII lookalike letter(s); a payload over "
+                     f"{tp.facts.max_chars or 'any size'} characters skips it.  A benign Bash call exits in the shell, "
+                     "without starting Python")
+            for w in tp.warnings:
+                emit(f"   WARNING: {w}")
+            emit(f"   Muse Code files (written with the rest, swapped in atomically): {MUSE_SEAT_NAME}, "
+                 f"{MUSE_PLUGIN_DIR}/ (see `plan muse`)")
             if tp.lane_shim_state == "foreign":
                 emit(f"   shim {paths.lane_shim}: LEFT ALONE, it is {tp.lane_detail}; the stable dir and hook still install")
             elif tp.lane_shim_text is None:
@@ -2037,6 +2840,9 @@ def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
                 rc = EXIT_FAIL
             continue
         plat = PLATFORMS[tgt]
+        if plat.kind == "plugin":
+            _emit_muse_plan(plat, plan_muse(src, paths), paths, emit)
+            continue
         pp = plan_platform(plat, paths, follow_symlinks=args.follow_symlinks)
         emit(f"== {plat.key}  {plat.label}  {pp.path}  [{pp.action}]")
         if pp.link:
@@ -2066,6 +2872,10 @@ def _cmd_apply(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
     home = _resolve_home(args)
     paths = make_paths(home, _resolve_stable(args))
     targets, explicit = _expand(args.targets, ())
+    if "muse" in targets and "tools" not in targets:
+        # The Muse bundle is part of the stable copy, so `apply muse` writes it the only way it is written: with
+        # the rest of the stable copy, through the same stage, probe and swap.  An unchanged copy stays untouched.
+        targets.insert(targets.index("muse"), "tools")
     minimal = not args.no_minimal_path
     results: list[Result] = []
     for tgt in targets:
@@ -2083,6 +2893,10 @@ def _cmd_apply(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
     for r in results:
         if r.status in ("added", "updated") and r.target in NEXT_STEPS:
             emit(f"NEXT       {r.target:<12} {NEXT_STEPS[r.target]}")
+        if r.target == "muse" and r.ok:
+            for i, action in enumerate(muse_owner_actions(paths), 1):
+                emit(f"OWNER ACTION {i} {action}")
+            emit(f"NEXT       muse         {MUSE_EXPERIMENTAL_ENV}=1 may be required for plugins to load (UNVERIFIED)")
     if not args.no_verify:
         todo = [r.target for r in results if r.ok]
         if todo:
@@ -2097,12 +2911,22 @@ def _cmd_apply(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
 def _cmd_verify(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
     home = _resolve_home(args)
     paths = make_paths(home, _resolve_stable(args))
-    targets, explicit = _expand(args.targets, ("all",))
+    targets, explicit = _expand(args.targets, ("all", "muse"))
     return _verify_targets(targets, explicit, paths, timeout=args.timeout, minimal_path=not args.no_minimal_path,
                            strict=args.strict, emit=emit)
 
 
 # --------------------------------------------------------------------------- self-test
+
+_PREFILTER_CLAUSE = re.compile(r"^[ \t]*\*[^\n]*\) ;;[ \t]*\n", re.M)
+
+
+def empty_prefilter(shim_text: str) -> str:
+    """The hook shim with every prefilter pattern removed, leaving `*) exit 0 ;;` as the only clause: a shim that
+    allows everything without starting Python.  For the self-test and the tests, which prove that `verify` fails
+    on exactly that.  Text without a prefilter comes back unchanged."""
+    return _PREFILTER_CLAUSE.sub("", shim_text)
+
 
 def _seed_fake_home(home: str) -> None:
     """Platform dirs with the real files' SHAPES and dummy commands."""
@@ -2143,7 +2967,7 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
             emit(r.line())
             if not r.ok:
                 failures.append(f"apply {key}: {r.detail}")
-        targets = ["tools"] + list(SUPPORTED_KEYS)
+        targets = ["tools"] + list(SUPPORTED_KEYS) + ["muse"]
 
         def run_verify(label: str, show: tuple) -> tuple[int, list[Check]]:
             checks: list[Check] = []
@@ -2163,7 +2987,7 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
         os.rename(guard, hidden)
         try:
             _fails, checks = run_verify("with guard.py renamed, expect FAIL on every platform", ("FAIL",))
-            for key in SUPPORTED_KEYS:
+            for key in SUPPORTED_KEYS + ("muse",):
                 if not any(c.target == key and c.name.startswith("deny/") and c.status == "FAIL" for c in checks):
                     failures.append(f"verify did NOT fail {key} with the guard module renamed: a broken install would read as healthy")
             if not any(c.target == "tools" and c.status == "FAIL" for c in checks):
@@ -2173,11 +2997,34 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
         fails, _ = run_verify("after repair, expect no FAIL", ("FAIL",))
         if fails:
             failures.append(f"verify reported {fails} FAIL after the guard was restored")
+        # The prefilter in the hook shim decides before Python starts, so a shim whose patterns match nothing
+        # allows everything.  verify has to catch that too.
+        shim_bytes = _read_bytes(paths.hook_shim)
+        broken = empty_prefilter(shim_bytes.decode("utf-8"))
+        if broken.encode("utf-8") == shim_bytes:
+            failures.append("the hook shim has no prefilter to empty, so this phase could not run")
+        else:
+            with open(paths.hook_shim, "wb") as fh:
+                fh.write(broken.encode("utf-8"))
+            try:
+                _fails, checks = run_verify("with the prefilter patterns emptied, expect FAIL on every platform", ("FAIL",))
+                for key in SUPPORTED_KEYS + ("muse",):
+                    if not any(c.target == key and c.name.startswith("deny/") and c.status == "FAIL" for c in checks):
+                        failures.append(f"verify did NOT fail {key} with the prefilter emptied: a shim that allows everything would read as healthy")
+                if not any(c.target == "tools" and c.status == "FAIL" for c in checks):
+                    failures.append("verify tools did not notice the edited hook shim")
+            finally:
+                with open(paths.hook_shim, "wb") as fh:
+                    fh.write(shim_bytes)
+        fails, _ = run_verify("after the second repair, expect no FAIL", ("FAIL",))
+        if fails:
+            failures.append(f"verify reported {fails} FAIL after the hook shim was restored")
     if failures:
         for f in failures:
             emit(f"self-test FAIL: {f}")
         return EXIT_FAIL
-    emit("self-test PASS: the install verifies, a renamed guard module makes verify FAIL, and the repair verifies again")
+    emit("self-test PASS: the install verifies, a renamed guard module and an emptied prefilter each make verify FAIL, "
+         "and each repair verifies again")
     return EXIT_OK
 
 
