@@ -637,9 +637,10 @@ def scan_plan(roots: L.Roots, tmp_scan_roots: Iterable[str | os.PathLike[str]], 
     try:
         with os.scandir(roots.code_root) as it:
             for entry in sorted(it, key=lambda e: e.name):
-                wt = os.path.join(entry.path, ".claude", "worktrees")
-                if os.path.isdir(wt):
-                    specs.append(ScanSpec("code-claude-worktrees", os.path.realpath(wt), 1, False))
+                for tool_dir, label in (("claude", "code-claude-worktrees"), ("muse", "code-muse-worktrees")):
+                    wt = os.path.join(entry.path, f".{tool_dir}", "worktrees")
+                    if os.path.isdir(wt):
+                        specs.append(ScanSpec(label, os.path.realpath(wt), 1, False))
     except OSError:
         pass
     for rel, depth in _HARNESS_SCANS:
@@ -1110,6 +1111,10 @@ def infer_tool(real: str, roots: L.Roots, branch: str | None, seat: str | None,
                       (".buzz", "buzz"), (".claude", "claude-cli")):
         if under(rel):
             return tool, f"path:~/{rel}"
+    if re.search(r"/\.muse/worktrees(/|$)", real):
+        # `muse -w` makes its worktrees inside the integration tree; the path beats the branch
+        # prefix, which could name another seat.
+        return "muse-code", "path:.muse/worktrees"
     m = re.search(r"/\.claude/worktrees/([^/]+)", real)
     if m:
         name = m.group(1)
