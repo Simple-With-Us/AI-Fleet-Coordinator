@@ -477,25 +477,43 @@ def message_topic(message: Mapping[str, Any]) -> str:
 class EventQueue:
     """One Zulip event queue.  `narrow` is the pair-shaped list [["channel", C], ["topic", T]]
     (or None for everything the bot receives).  Messages come back with `flags` copied in from
-    the event, so callers see the same shape as GET /messages."""
+    the event, so callers see the same shape as GET /messages.
 
-    def __init__(self, client: ZulipClient, narrow: list[list[str]] | None) -> None:
+    `event_types` defaults to ["message"] (the CLI's `wait` and `listen`).  The listener daemon
+    registers more types and reads every event with `poll_events`.  `register_state` keeps the
+    register response (initial user and topic state, the long-poll timeout), and `last_event_at`
+    is the monotonic time of the last event of any kind, heartbeats included."""
+
+    def __init__(self, client: ZulipClient, narrow: list[list[str]] | None,
+                 event_types: list[str] | None = None, *, clock: Callable[[], float] = time.monotonic) -> None:
         self.client = client
         self.narrow = narrow
+        self.event_types = list(event_types or ["message"])
         self.queue_id: str | None = None
         self.last_event_id: int = -1
+        self.register_state: dict[str, Any] = {}
+        self.clock = clock
+        self.last_event_at: float | None = None
 
     def register(self) -> None:
-        params: dict[str, Any] = {"event_types": ["message"], "apply_markdown": False}
+        params: dict[str, Any] = {"event_types": self.event_types, "apply_markdown": False}
         if self.narrow is not None:
             params["narrow"] = self.narrow
         result = self.client.post("register", params)
         self.queue_id = str(result["queue_id"])
         self.last_event_id = int(result.get("last_event_id", -1))
+        self.register_state = result
+        self.last_event_at = self.clock()
 
-    def poll(self, timeout: float) -> list[dict[str, Any]]:
-        """Block up to `timeout` seconds for events.  Returns the message events (possibly none).
-        Raises QueueExpired when the server has dropped the queue."""
+    @property
+    def longpoll_timeout(self) -> float | None:
+        """The server's long-poll timeout from the register response, when it gave one."""
+        value = self.register_state.get("event_queue_longpoll_timeout_seconds")
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else None
+
+    def poll_events(self, timeout: float) -> list[dict[str, Any]]:
+        """Block up to `timeout` seconds; return every event except heartbeats, as received.
+        Message events get the event's `flags` copied into the message.  Raises QueueExpired."""
         if self.queue_id is None:
             raise QueueExpired()
         try:
@@ -510,16 +528,28 @@ class EventQueue:
             if exc.timeout:
                 return []
             raise
-        messages: list[dict[str, Any]] = []
-        for event in result.get("events", []):
+        events: list[dict[str, Any]] = []
+        raw = result.get("events", [])
+        if raw:
+            self.last_event_at = self.clock()
+        for event in raw:
             event_id = event.get("id")
             if isinstance(event_id, int):
                 self.last_event_id = max(self.last_event_id, event_id)
+            if event.get("type") == "heartbeat":
+                continue
             if event.get("type") == "message" and isinstance(event.get("message"), dict):
                 message = dict(event["message"])
                 message["flags"] = list(event.get("flags") or message.get("flags") or [])
-                messages.append(message)
-        return messages
+                event = {**event, "message": message}
+            events.append(event)
+        return events
+
+    def poll(self, timeout: float) -> list[dict[str, Any]]:
+        """Block up to `timeout` seconds for events.  Returns the message events (possibly none).
+        Raises QueueExpired when the server has dropped the queue."""
+        return [event["message"] for event in self.poll_events(timeout)
+                if event.get("type") == "message" and isinstance(event.get("message"), dict)]
 
     def close(self) -> str | None:
         """Best-effort DELETE of the queue; never raises.  Returns a one-line problem (never the

@@ -1,0 +1,8 @@
+{
+  "name": "agent-sync",
+  "version": "1.0.0",
+  "description": "Connects Claude Code sessions to the fleet's Zulip listener daemon: leases topics, shows passive headlines on each prompt, and wakes an idle session for owner messages, direct mentions and replies to its own posts.  Requires the agent-sync CLI at ~/.local/bin/agent-sync.",
+  "author": {"name": "Jay Wedgeworth"},
+  "homepage": "https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/protocols/agent-sync-listener.md",
+  "license": "Apache-2.0"
+}

@@ -2,11 +2,30 @@
 """agent-sync: the fleet's Zulip coordination CLI.  See scripts/agent_sync/README.md.
 
 This file is symlinked as ~/.local/bin/agent-sync, so it resolves its own real path before it
-puts the scripts directory on sys.path."""
+puts the scripts directory on sys.path.
+
+`attach` and `detach` (the Claude Code hooks run them on every prompt and Stop) are dispatched
+before the CLI is imported, so the hook path loads only light modules.
+
+Under launchd or a GUI app, `/usr/bin/env python3` can be the system Python 3.9, which cannot
+run this package.  Then the script re-runs itself with a Homebrew python3 when one exists.
+This part must stay valid Python 3.9."""
 import os
 import sys
 
+if sys.version_info < (3, 11):
+    for candidate in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3"):
+        if os.access(candidate, os.X_OK) and os.path.realpath(candidate) != os.path.realpath(sys.executable):
+            os.execv(candidate, [candidate, os.path.realpath(__file__)] + sys.argv[1:])
+    sys.stderr.write("agent-sync: Python 3.11 or newer is required (found %d.%d)\n" % sys.version_info[:2])
+    sys.exit(1)
+
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] in ("attach", "detach"):
+    from agent_sync.attach import main as attach_main  # noqa: E402
+
+    sys.exit(attach_main(sys.argv[2:], command=sys.argv[1]))
 
 from agent_sync.cli import main  # noqa: E402
 

@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "reply", "board", "owner_note"],
+  "properties": {
+    "action": {"enum": ["none", "reply", "board", "escalate"]},
+    "reply": {"type": ["string", "null"]},
+    "board": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["title", "severity", "desc"],
+      "properties": {
+        "title": {"type": "string"},
+        "severity": {"enum": ["P2", "P3"]},
+        "desc": {"type": "string"}
+      }
+    },
+    "owner_note": {"type": ["string", "null"]}
+  }
+}
