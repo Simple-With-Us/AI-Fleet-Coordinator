@@ -533,7 +533,8 @@ Every work item gets ONE topic.  The first post in it is the claim, the last is 
 Order (DEFAULT, pending Jay):
 
 1. THE BOARD first:  `board list` for the app, then `board claim <id>` (or `board file`, then claim) with `--by "$AGENT_SEAT" --env Mac --where "claimed: Wed, Oct 7, 2026 ~/apps/lanes/<prefix>/<seat>-<slug> @ <branch-prefix>/<slug>"`.
-2. Then the CLAIMED status block in the work topic.
+2. The matching GitHub issue by hand:  comment on, label, or assign it.  Writeback never marks a linked issue claimed.
+3. Then the CLAIMED status block in the work topic.
 
 Board writeback moves the item's row in the app's live effort log (`~/apps/*-EFFORT-LOG.md`) to its new status, so agents never hand-edit the live log.  The one exception is an indented continuation line under a row; never change a row's first line, which keys the row for sync.  Writeback opens or closes a GitHub issue only when the board item is that issue.  It never marks an issue claimed or closes a linked one, so do both by hand:  comment on, label, or assign the issue at claim, and close it at closeout.  Writeback does not push the repo's `docs/EFFORT-LOG.md` mirror either:  push your mirror row early in the branch and land it in the app PR.  THE BOARD, the issue, and the Zulip post are the triple claim; the same goes for the triple closeout.
 
