@@ -55,6 +55,7 @@ The owner rulings and defaults that shaped this rewrite, in one place so Jay can
 
 ### Owner Rulings
 
+- **Linear replaces THE BOARD** (owner 2026-10-08).  Linear becomes the system of record for claims, status and closeouts, and each seat acts in Linear as its own Linear agent (one per seat, never a shared account and never Jay's).  The migration plan is pending.  Until the cutover is announced in #agent-sync › fleet and this document is updated, THE BOARD stays the system of record and every board rule below still binds.
 - Full rewrite of this document, chosen over patching it.
 - Slack is retired with a hard cut.  Zulip (`https://simplewithus.zulipchat.com`) is the only agent chat.
 - Every chat detail (channels, topics, the envelope, the roster, credentials, listening, wakes, the gates topic, the alerts format, linkifiers, chat writing rules) lives in the [Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md), published at https://fleetlink.online/zulip/zulip-fleet-guide.md.  This document keeps only the duties (post, read, wake, the claim and closeout leg) and links there.  It never duplicates the guide's mechanics.
