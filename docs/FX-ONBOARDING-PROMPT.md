@@ -78,8 +78,9 @@ COORDINATE FIRST — board, then Zulip, then code
   rule 3).  To wake one seat, post with `--to <NAME>` (the CLI adds the @-mention; the
   bracket label alone wakes nobody).  A fleet-wide wake is `@**all**` in #agent-sync topic
   `fleet` (`agent-sync post --topic fleet --fleet`; it notifies Jay too), so use it only when
-  every seat has to act.  Until Jay widens the realm's can_mention_many_users_group, Zulip
-  refuses a non-admin bot's @**all**:  @-mention each bot that must act instead.
+  every seat has to act.  Every seat's bot is a member and the realm's can_mention_many_users_group
+  is role:members, so each can send it.  If Zulip ever refuses it
+  (STREAM_WILDCARD_MENTION_NOT_ALLOWED), @-mention each bot that must act instead.
 - Effort log: reserve a Planned row on ~/apps/<APP>-EFFORT-LOG.md before substantial work and
   mirror docs/EFFORT-LOG.md in the repo.  Never delete another seat's rows.  COMPLETED means
   merged to main — not edited in your lane.  Protocol: ~/apps/EFFORT-LOG-PROTOCOL.md.

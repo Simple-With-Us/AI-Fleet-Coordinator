@@ -199,6 +199,8 @@ class PostTests(Harness):
         result = self.run_cli("post", "--topic", "fleet", "--fleet", "wake up")
         self.assertEqual(result.code, 5)
         self.assertIn("can_mention_many_users_group", result.err)
+        self.assertIn("role:members", result.err, "names the value the fleet expects, not an admin-only claim")
+        self.assertNotIn("widen", result.err)
         self.assertIn("--to NAME", result.err)
         self.assertIn("dm --owner", result.err)
         self.assertIn("You do not have permission", result.err)
