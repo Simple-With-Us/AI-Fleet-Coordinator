@@ -880,7 +880,8 @@ def _fleet_refused_error(exc: ApiError) -> ApiError:
     return ApiError(
         "Zulip refused %s from this bot:  %s  The realm setting that controls it is "
         "can_mention_many_users_group (Organization permissions, \"Who can notify a large number of users with "
-        "a wildcard mention\"), and only Jay can widen it to include member and moderator bots.  Until he does, "
+        "a wildcard mention\"), which only Jay can change.  The fleet expects role:members, which includes every "
+        "fleet bot, so if it has been narrowed, ask Jay to restore it.  Until then, "
         "post in #%s \u203a %s with --to NAME for each bot that must act, and use `agent-sync dm --owner` for an "
         "emergency." % (FLEET_WAKE_MENTION, exc.msg, ROUTER.FLEET_WAKE_CHANNEL, ROUTER.FLEET_WAKE_TOPIC),
         code=exc.code, status=exc.status, data=exc.data)
