@@ -309,13 +309,20 @@ def lane_name_reads_back(prefix: str, seat: str, slug: str, registry: L.Registry
     folder is <seat>-<slug> under lanes/<prefix>/ (nested) or <prefix>-<seat>-<slug> under ~/apps
     (flat).  It is judged the way `layout.explain_lane_name` judges a lane path, but on the bare
     name, so nothing touches the filesystem (`evaluate` must stay pure).  `seat` is the canonical
-    folder token (worktreeSuffix) and `prefix` a registry app prefix; an unknown prefix fails.
+    folder token (worktreeSuffix) and `prefix` a registry app prefix; an unknown prefix fails.  In
+    layout v2 the folder above the name is the app's repo folder (`App.lane_dir`), found from `prefix`.
     """
     try:
         name = L.lane_dir_name(prefix, seat, slug) if flat else L.nested_dir_name(seat, slug)
     except L.LayoutError:
         return False
-    verdict, _reasons, app, hit, got = L._eval_name(name, registry, nested_prefix_dir=None if flat else prefix)
+    parent = None
+    if not flat:
+        owner = registry.app_by_prefix(prefix)
+        if owner is None or owner.prefix != prefix:
+            return False
+        parent = owner.lane_dir
+    verdict, _reasons, app, hit, got = L._eval_name(name, registry, nested_prefix_dir=parent)
     return (verdict == L.NameVerdict.CONFORMING and app is not None and app.prefix == prefix
             and hit is not None and hit.seat == seat and got == slug)
 
@@ -1351,7 +1358,9 @@ class _Evaluator:
                 app = None
                 if first and (k < 0 or len(rel) > len(first)):
                     if root == self.ctx.lanes_root_f:
-                        app = self.ctx.registry.app_by_prefix(first) or self._app_from_name(first)
+                        reg = self.ctx.registry
+                        app = (reg.app_by_lane_dir(first, case_insensitive=self.ctx.case_insensitive)
+                               or reg.app_by_prefix(first) or self._app_from_name(first))
                     else:
                         app = self._app_from_name(first)
                 return _Src(self.display(path), app, app.prefix if app else None,
@@ -2122,19 +2131,28 @@ class _Evaluator:
             return slug
         return "work"
 
-    def _lane(self, app: L.App | None, prefix: str | None, seat: str | None, slug: str) -> str:
+    def _repo_dir(self, app: L.App | None, owner_repo: str) -> str | None:
+        """The folder under the lanes root for this source (layout v2): the app's repo folder, else the
+        GitHub repo name as written (Kodus-Config, never the lowercase prefix), else None."""
+        if app is not None and L.is_valid_repo_dir(app.lane_dir):
+            return app.lane_dir
+        tail = owner_repo.rsplit("/", 1)[-1] if owner_repo else ""
+        return tail if L.is_valid_repo_dir(tail) else None
+
+    def _lane(self, app: L.App | None, repo_dir: str | None, prefix: str | None, seat: str | None, slug: str) -> str:
         roots = self.ctx.roots
-        if seat and prefix and L.is_valid_slug(prefix):
+        flat = roots.layout_mode == L.LAYOUT_FLAT
+        if seat and L.is_valid_slug(seat) and (repo_dir if not flat else (prefix if prefix and L.is_valid_slug(prefix) else None)):
             try:
-                return self.display(str(L.expected_lane_path(app or prefix, seat, slug, roots,
-                                                             self.ctx.registry)))
+                return self.display(str(L.expected_lane_path(app or (prefix if flat else repo_dir), seat, slug,
+                                                             roots, self.ctx.registry)))
             except L.LayoutError:
                 pass
-        p = prefix if prefix and L.is_valid_slug(prefix) else "<prefix>"
         s = seat or "<seat>"
-        if roots.layout_mode == L.LAYOUT_FLAT:
+        if flat:
+            p = prefix if prefix and L.is_valid_slug(prefix) else "<prefix>"
             return self.display(f"{roots.apps_root}/{p}-{s}-{slug}")
-        return self.display(f"{roots.lanes_root}/{p}/{s}-{slug}")
+        return self.display(f"{roots.lanes_root}/{repo_dir or '<Repo>'}/{s}-{slug}")
 
     def _lane_new_accepts(self, seat: L.Seat) -> bool:
         """The same seat checks `lane.resolve_seat` makes: live, a usable folder name it owns, and
@@ -2160,7 +2178,8 @@ class _Evaluator:
         usable = self._seat_usable_for_lane_new()
         shown_seat = (seat if usable else None) if lane_new_works else seat
         slug = self._slug(hit.target, app, prefix, shown_seat)
-        review = self.display(str(self.ctx.roots.review_root))
+        repo_dir = self._repo_dir(app, src.owner_repo)
+        review = self.display(f"{self.ctx.roots.lanes_root}/{repo_dir or '<Repo>'}/review-pr-<n>")
         blocked = (f"Blocked: fleet-repo checkouts are not allowed in temp directories, and this command "
                    f"would put {hit.what} of {src.label} at {self.display(hit.target)}.")
 
@@ -2185,14 +2204,14 @@ class _Evaluator:
             return "  ".join((
                 blocked,
                 f"{run}; it creates branch {branch_for(token)} off origin/main and the lane at "
-                f"{self._lane(app, prefix, token, slug)}.",
+                f"{self._lane(app, repo_dir, prefix, token, slug)}.",
                 f"For a read-only PR check, run `{shim} new {app.name} --review --pr <n>` instead; it makes "
-                f"a detached checkout under the review root {review}/.",
+                f"a detached checkout at {review}.",
                 f"Do not do this work in the main integration tree {tree}; that tree is for the human.",
             ))
         # No registered integration tree to hang a worktree on (or an unknown repo): `lane new` would
         # refuse, so keep pointing at the lane path itself.
-        lane = self._lane(app, prefix, seat, slug)
+        lane = self._lane(app, repo_dir, prefix, seat, slug)
         if app is not None and app.integration_dir_name:
             tree = self.display(f"{self.ctx.roots.code_root}/{app.integration_dir_name}")
             example = f"git -C {tree} worktree add -b {branch_for(seat)} {lane} origin/main"
@@ -2205,6 +2224,6 @@ class _Evaluator:
         return "  ".join((
             blocked,
             where + ".",
-            f"For a read-only PR check, use the review root {review}/ instead.",
+            f"For a read-only PR check, use a detached checkout at {review} instead.",
             f"Do not do this work in the main integration tree {tree}; that tree is for the human.",
         ))
