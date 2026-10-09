@@ -179,13 +179,16 @@ class LocalReadTests(ListenerHarness):
             {"seq": 2, "id": 501, "kind": "message", "channel": "agent-sync", "topic": "t", "sender": "Codex",
              "content": "already live", "delivered_to": "lease"}])
         L.append_jsonl(paths.owner_queue, [{"seq": 1, "kind": "owner_note", "title": "agent-sync CLAUDE",
-                                            "text": "a note for you", "note": "Jay asked for a deploy.", "owner": True}])
+                                            "text": "a note for you", "note": "Jay asked for a deploy.", "owner": True,
+                                            "risk": "high"}])
         before = len(self.fake.requests)
         result = self.run_cli("inbox", "--local", "--peek")
         self.assertEqual(result.code, 0, result.err)
         self.assertIn("please [marker removed] look", result.out)
         self.assertNotIn("already live", result.out)
         self.assertIn("Jay asked for a deploy.", result.out)
+        self.assertIn("risk: high", result.out)
+        self.assertIn(L.SCREEN_LINE, result.out, "the peer-request screen reminder sits outside the markers")
         self.assertEqual(result.out.count("END_UNTRUSTED_ZULIP nonce="), 2)
         self.assertEqual(len(self.fake.requests), before, "no network")
         self.run_cli("inbox", "--local")
