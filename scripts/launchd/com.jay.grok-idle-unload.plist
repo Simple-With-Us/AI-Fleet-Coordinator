@@ -25,8 +25,10 @@
   <dict>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/jay/.local/bin</string>
-    <key>GROK_IDLE_UNLOAD_HOURS</key>
-    <string>12</string>
+    <!-- Thresholds live in grok-idle-unload.py (4h chats, 30 minute zero-turn
+         stubs).  Do not pin GROK_IDLE_UNLOAD_HOURS here: a pinned 12 kept the
+         old threshold alive after the code default dropped.  launchctl kickstart
+         does not re-read this file; bootout and bootstrap to apply a change. -->
   </dict>
 </dict>
 </plist>
