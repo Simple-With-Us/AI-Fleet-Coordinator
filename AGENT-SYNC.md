@@ -82,7 +82,7 @@ Proposed to Jay with no objection.  Each is marked "(default 2026-10-07)" where 
 7. `gating now` and `gate clear` posts go to #builds › `gates` ([Serialize Full Local Gates](#serialize-full-local-gates)).
 8. The Sentry Slack alert workflow moves to Zulip #alerts ([Alert Workflows](#alert-workflows)).
 9. The GitHub outbox bridge posts to Zulip as the seat's own bot ([Chat: The Zulip Contract](#chat-the-zulip-contract)).
-10. The `fleet` user group is every seat bot plus every BotFleet bot (GB bots only if Jay adds them).  Until it exists, fleet wakes go to #agent-sync › `fleet` with an @-mention of each bot that must act ([Undirected, Directed, and Fleet-Wide](#undirected-directed-and-fleet-wide)).
+10. The fleet-wide wake is `@**all**` in #agent-sync › `fleet` (owner 2026-10-09), and it notifies Jay too.  There is no `fleet` user group and none will be made ([Undirected, Directed, and Fleet-Wide](#undirected-directed-and-fleet-wide)).
 11. Resolve the work topic when the board item reaches Deployed or Parked ([Closeout](#closeout)).
 12. The Parall/Monet desktop MCP rule is retired.  `~/Library/Application Support/Parall/Monet/vm_bundles/claudevm.bundle` stays protected live infra ([MCP Server Placement](#mcp-server-placement)).
 13. `~/apps/AGENT-SYNC.md` stays canonical, and the AFC repo copy is the mirror kept aligned in the same change ([How to Use This Document](#how-to-use-this-document)).
@@ -303,7 +303,7 @@ Reading is mandatory, with the same weight as posting, for every seat on every p
 Skim every message at its channel, topic, and sender first.  Full-read, and act where it is yours, when any of these match:
 
 - It @-mentions your seat's bot or carries your seat tag (`[GROK]`, `→GROK` or `->GROK`).
-- It @-mentions the `fleet` group.  Every listening seat on every platform full-reads a fleet wake:  it is rare, and the sender accepted the cost of waking everyone.
+- It is a fleet wake (`@**all**` in #agent-sync › `fleet`).  Every listening seat on every platform full-reads a fleet wake:  it is rare, and the sender accepted the cost of waking everyone.
 - It is in one of your work topics, or its topic starts with the acronym of the app you are working, even when it is not addressed to you.
 - It names one of your active branches or PR numbers.
 - It contains `OBJECTION`, `HALT`, `PROD DOWN`, `URGENT`, `OWNER`, `HEADS-UP`, or `DEPLOY CLAIM`.
@@ -351,9 +351,9 @@ Post with `agent-sync post` for a new topic and `agent-sync reply` in an existin
 
 - **Undirected** is the norm, claims and closeouts included:  just your tag.  A post need not be addressed to anyone.
 - **Directed,** only when a peer must act:  put the peer in the envelope (`[SEAT·session8→PEER]`) and @-mention its bot.  The bracket label alone wakes nobody.  Every subscriber still sees the post; the named peer full-reads, and the rest skim-match.
-- **Fleet-wide wake:**  an @-mention of the `fleet` user group in #agent-sync › `fleet`.  It reaches every listening seat on every platform, including Mac seats, cloud seats, BotFleet bots, and any GB persona still running, and every one of them must spend time on it (owner 2026-09-13).  Use it only when every seat genuinely has to act:  `HEADS-UP`, `HALT`, `PROD DOWN`, `URGENT`, or a `DEPLOY CLAIM` with an objection window (build breakage, a critical security fix, a deployment halt).
+- **Fleet-wide wake:**  `@**all**` in #agent-sync › `fleet` (owner 2026-10-09), sent with `agent-sync post --topic fleet --fleet`.  It notifies Jay too, which he accepts.  It reaches every listening seat on every platform, including Mac seats, cloud seats, BotFleet bots, and any GB persona still running, and every one of them must spend time on it (owner 2026-09-13).  Use it only when every seat genuinely has to act:  `HEADS-UP`, `HALT`, `PROD DOWN`, `URGENT`, or a `DEPLOY CLAIM` with an objection window (build breakage, a critical security fix, a deployment halt).
 - **Never wake the fleet** for a routine one-lane claim or for work in progress that only same-repo seats need.  Post in the work topic with no group mention, so only seats following that topic read it, and @-mention a specific peer if one must act.
-- **The group does not exist yet.**  Its membership defaults to every seat bot plus every BotFleet bot, with GB bots only if Jay adds them (default 2026-10-07).  Until it exists, post in #agent-sync › `fleet` and @-mention each bot that must act ([Fleet-Wide Wakes and the Fleet Group](docs/protocols/zulip-fleet-guide.md#fleet-wide-wakes-and-the-fleet-group)).
+- **Only `@**all**`, and only there.**  Never `@**everyone**`, `@**channel**` or `@**topic**`, and never `@**all**` in any other topic or channel.  There is no `fleet` user group and none will be made (Zulip Cloud Free does not allow one).  Until Jay widens the realm's `can_mention_many_users_group` (administrators only today), Zulip refuses a non-admin bot's `@**all**`:  @-mention each bot that must act (`--to`), and use `agent-sync dm --owner` for an emergency ([Fleet-Wide Wakes](docs/protocols/zulip-fleet-guide.md#fleet-wide-wakes)).
 - **`fleet` is a recipient only.**  It is never a sender, a signature, a tag such as `[FLEET]` or `[GB-FLEET]`, or an app acronym, and nothing posts as a bare fleet identity.
 - **Coordinator and AFC.**  `AFC` is the AI-Fleet-Coordinator app acronym and topic prefix, never a signing tag.  The coordinator is CLAUDE and posts as the CLAUDE bot.  AFC ops automation has no Zulip bot and does not post (pending Jay).  If Jay gives it one, it posts as its own bot, with `repo:  AI-Fleet-Coordinator` when it talks about itself.
 
@@ -1449,7 +1449,7 @@ From `scripts/fleet_skill_identity.py`, checked Wed, Oct 7, 2026.
 | MA | `by-seat/muse-assist` pack only |
 | CLUTCH | None yet |
 
-Pending installer fixes: add a CLUTCH entry; render the shared `~/.claude/skills` as CLAUDE (it still speaks as MONET); and drop the retired seats, since MONET still writes `~/Desktop/fleet-skills` and DSH still writes `~/.deepseek/skills`.
+The installer renders the shared `~/.claude/skills` as CLAUDE with the pin-or-fail seat block (#384, #405).  CLUTCH has no skill home yet, so it gets catalog and by-seat copies only, and the retired seats (MONET, RENOIR, DSH, KIMI) write no tool home.
 
 ### Catalog
 
@@ -1458,7 +1458,7 @@ Pending installer fixes: add a CLUTCH entry; render the shared `~/.claude/skills
 | Skill | Covers |
 | --- | --- |
 | `fleet-coordination` | Master skill: end-to-end fleet protocol, triple claim, secrets, sentence gap, Apple Notes, PR landing, closeout. |
-| `session-start` | Startup: chat catch-up, THE BOARD, a lane from `lane new`, then the claim.  Stale: the shared Claude copy still speaks as Monet. |
+| `session-start` | Startup: chat catch-up, THE BOARD, a lane from `lane new`, then the claim.  The shared `~/.claude` copy renders as CLAUDE with the pin-or-fail seat block (#384, #405). |
 | `board-ops` | THE BOARD CLI (`board stats`, `board list`, `board claim`, `board file`) and its API. |
 | `secret-handoff` | Secret safety, the handoff-file grep-trap ban, and Infisical as the runtime source of truth. |
 | `sentence-gap` | Two spaces between sentences, with the mechanism per surface.  Current as of 2026-10-08: the Claude Code Code tab and other Markdown chat panes use `&nbsp;` plus a space, GitHub and Zulip use U+00A0 plus a space, and files, commits and terminals use two ASCII spaces. |

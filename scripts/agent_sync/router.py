@@ -7,6 +7,9 @@ Steps (design section 2), for each (seat, message) pair:
 
   1. Drop a muted topic unless the message is `direct` or a DM.
   2. Classify:  own, owner, eligible, direct, fleet, wildcard, dm, wake_tag, stale, reply_to.
+     `fleet` is the fleet-wide wake:  a stream-wide wildcard (`@**all**`) in #agent-sync > `fleet`
+     (owner 2026-10-09: there is no `fleet` user group and none will be made).  A wildcard anywhere
+     else is only `wildcard`.
   3. Own posts go to other leases on the topic as passive sibling items.  Never inbox, never wake.
   4. A leased topic:  every live lease on it gets the item, interrupt or passive.  Done.
   5. A mention-class item in an unleased topic goes to the one live, wake-capable claude-code
@@ -32,11 +35,28 @@ from .live import is_presence, topic_key
 INTERRUPT = "interrupt"
 PASSIVE = "passive"
 WILDCARD_FLAGS = ("wildcard_mentioned", "stream_wildcard_mentioned", "topic_wildcard_mentioned")
+# The one place a wildcard is the fleet-wide wake (owner 2026-10-09).
+FLEET_WAKE_CHANNEL = "agent-sync"
+FLEET_WAKE_TOPIC = "fleet"
+FLEET_WAKE_KEY = topic_key(FLEET_WAKE_CHANNEL, FLEET_WAKE_TOPIC)
+_FLEET_WAKE_RE = re.compile(r"(?<![\\\w])@\*\*all\*\*")
 _WAKE_TAG_RE = re.compile(r"^\s*\[[A-Za-z0-9_-]+·wake\b")
 _REPLY_TO_RE = re.compile(r"(?:^|\s)re=(\d+)\b")
 _CODE_BLOCK_RE = re.compile(r"(?ms)^(```|~~~).*?(^\1\s*$|\Z)")
 _CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
 _QUOTE_LINE_RE = re.compile(r"(?m)^\s*>.*$")
+
+
+def fleet_wake_mention(content_outside_code: str, flags: Iterable[str]) -> bool:
+    """True when the message carries a stream-wide wildcard:  Zulip's `stream_wildcard_mentioned` flag
+    (or the legacy `wildcard_mentioned` without a topic-only flag), or a literal `@**all**` outside
+    code and quotes.  `@**topic**` reaches only the topic's participants, so it never counts."""
+    flag_set = set(flags)
+    if "stream_wildcard_mentioned" in flag_set:
+        return True
+    if "wildcard_mentioned" in flag_set and "topic_wildcard_mentioned" not in flag_set:
+        return True
+    return bool(_FLEET_WAKE_RE.search(content_outside_code))
 
 
 def outside_code(content: str) -> str:
@@ -137,7 +157,7 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     visible = outside_code(content)
     names = ("@**%s**" % me.full_name, "@**%s|%d**" % (me.full_name, me.user_id))
     c.direct = "mentioned" in flags and any(n in visible for n in names)
-    c.fleet = "@*fleet*" in visible
+    c.fleet = c.key == FLEET_WAKE_KEY and fleet_wake_mention(visible, flags)
     c.wildcard = any(f in flags for f in WILDCARD_FLAGS)
     c.wake_tag = bool(_WAKE_TAG_RE.match(content))
     ts = message.get("timestamp")
