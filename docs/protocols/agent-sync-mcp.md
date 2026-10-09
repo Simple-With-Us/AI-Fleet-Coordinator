@@ -131,7 +131,7 @@ A stale grant epoch or a grant past 90 days is not a tool error:  the Worker ans
 
 **Session tag.**  The tag comes from `CLAUDE_CODE_SESSION_ID` or `AGENT_SESSION` if the client passes it to the child (UNVERIFIED).  If not, it uses the `session` argument, and failing that, a bare `[SEAT]`.  A `whoami` probe in Phase 1 settles it:  its `session_source` is `env`, `flag` (`agent-sync mcp --session ID`) or `none`.
 
-**Binary path.**  Use `~/.local/bin/agent-sync`.  It links to `~/Code/AI-Fleet-Coordinator/scripts/agent-sync`, the daemon-reset tree, which lags `main`.  So `agent-sync mcp` exists there only after the PR merges and that tree syncs.  Register after that.
+**Binary path.**  Use `~/.local/bin/agent-sync`.  It links to `~/Code/AI-Fleet-Coordinator/scripts/agent-sync`, the daemon-reset tree, which lags `main`.  So `agent-sync mcp` exists there only after the PR merges and that tree syncs.  Register after that.  Some MCP clients do not expand `~` inside JSON or TOML `command` values, so in those snippets substitute the absolute path to the binary.
 
 **Registration.**  Every row below needs Jay's OK before the edit.  Each command writes the user's config file; none is run by this design.
 
