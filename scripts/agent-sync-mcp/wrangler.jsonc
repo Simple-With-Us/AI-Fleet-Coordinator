@@ -59,8 +59,8 @@
     // Seats this deploy serves (owner decisions D1, D2).  JET was left out while
     // openai-dot-bot was a realm administrator, because hosted seats accept
     // member (400) only (spec 3.6).  Jay demoted every bot to member on Fri,
-    // Oct 9, so JET is served again;  install_seat_key.py JET puts its key in
-    // (DEPLOY.md, "Re-enable JET").
+    // Oct 9, so JET is served again, with its key installed (deployed at about
+    // 8:10am;  DEPLOY.md, "Re-enable JET").
     "HOSTED_SEATS": "JET,GROK-WEB",
     // Bot emails (plain vars, spec 3.6).  The keys are Worker secrets.  A key
     // whose users/me is not this bot, not a bot, or not a member is refused.

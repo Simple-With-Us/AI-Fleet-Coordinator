@@ -1,6 +1,6 @@
 # Deploy the agent-sync MCP Worker
 
-The runbook for `https://agent-sync.jays.services` from Phase 2 on:  the seven tools, with GROK-WEB and JET both served (JET enabled Fri, Oct 9, after Jay demoted `openai-dot-bot` to member).  [DEPLOY-PHASE0.md](DEPLOY-PHASE0.md) is the record of the first deploy and the hostname move.
+The runbook for `https://agent-sync.jays.services` from Phase 2 on:  the seven tools, with GROK-WEB and JET both served (JET enabled Fri, Oct 9, after Jay demoted `openai-dot-bot` to member;  deployed with its key installed at about 8:10am, version `068c2953`).  [DEPLOY-PHASE0.md](DEPLOY-PHASE0.md) is the record of the first deploy and the hostname move.
 
 A merge is never a deploy (spec 3.2):  agents auto-merge to `main`, so every deploy is run by hand from a checkout of the merged commit, never from CI.  Decision D8 (Thu, Oct 8) accepts deploying with the Cloudflare Global key pair from the handoff file until Jay mints a per-Worker deploy token (owner item A5).  Anyone who can deploy this Worker can act as every hosted seat;  that is the accepted residual.
 
@@ -67,12 +67,12 @@ What only Jay can verify, because it needs his Access sign-in and consent:  the 
 
 ## Re-enable JET
 
-JET was left out of Phase 2 because `openai-dot-bot` was a realm administrator (role 200) and hosted seats accept member (400) only (spec 3.6;  the listener refuses admin keys too).  Jay demoted every bot to member on Fri, Oct 9, and steps 1 and 2 are done.  The same steps re-enable any seat that was taken out.
+JET was left out of Phase 2 because `openai-dot-bot` was a realm administrator (role 200) and hosted seats accept member (400) only (spec 3.6;  the listener refuses admin keys too).  Jay demoted every bot to member on Fri, Oct 9, and steps 1 to 3 are done.  Only step 4, Jay's ChatGPT connection, is left.  The same steps re-enable any seat that was taken out.
 
 1. Jay demotes the bot to **member** in Zulip (Organization settings → Users → the bot → Role).  Done for `openai-dot-bot` on Fri, Oct 9.
 2. Put the seat in `HOSTED_SEATS` in `wrangler.jsonc` (`"JET,GROK-WEB"`), open a PR, merge.  Done on Fri, Oct 9.
-3. Deploy (step 1), then `python3 -I install_seat_key.py JET --apply`.  The script refuses while the live role is not 400.
-4. Jay arms JET and connects ChatGPT (ARMING-JAY.md).
+3. Deploy (step 1), then `python3 -I install_seat_key.py JET --apply`.  The script refuses while the live role is not 400.  Done on Fri, Oct 9, at about 8:10am:  version `068c2953` is live, `ZULIP_KEY_JET` is installed, and `infra_phase0.py check` reports 0 failures.
+4. Jay arms JET and connects ChatGPT (ARMING-JAY.md).  Still open.
 
 ## Rotate a key
 
@@ -95,4 +95,4 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 - **A4:**  Infisical's Cloudflare Workers sync for the hosted keys, with "Disable Secret Deletion" (replaces step 2).
 - **A5:**  a per-Worker deploy token, kept out of agents' reach (replaces the Global key in step 1).
 - **A1 and D8:**  a key location no agent identity can read.  Until then the INFISICAL_AUTOMATION identity and the Global key can both reach GROK-WEB's key, which D8 accepts.
-- **JET:**  arm it and connect ChatGPT ([ARMING-JAY.md](ARMING-JAY.md)).  The bot is a member now, so nothing else blocks it.
+- **JET:**  arm it and connect ChatGPT ([ARMING-JAY.md](ARMING-JAY.md)).  The bot is a member, the Worker serves JET and its key is installed (Fri, Oct 9, about 8:10am), so nothing else blocks it.
