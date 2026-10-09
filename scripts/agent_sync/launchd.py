@@ -51,7 +51,10 @@ def plist_dict(home: str, python: str, program: str, root: str) -> dict:
         "RunAtLoad": True,
         "KeepAlive": True,
         "ThrottleInterval": 30,
-        "ProcessType": "Background",
+        # Not "Background":  under a machine-wide CPU storm (load average over 300, Fri, Oct 9) launchd started
+        # the listener in the background band and it got 0.02 CPU seconds in six minutes, so it never came up.
+        # Standard starts at once under the same load.
+        "ProcessType": "Standard",
         "WorkingDirectory": home,
         # AGENT_SYNC_INSTANCE pins this listener to the mac side of the seat partition:  a config
         # that says daemon.instance = "server" is refused here.

@@ -2,14 +2,14 @@
   "owner": "Simple-With-Us",
   "codeRoot": "/Users/jay/Code",
   "appsRoot": "/Users/jay/apps",
-  "slackChannelId": "C0BEZDJDNKV",
-  "notes": "Canonical fleet app + coding-seat inventory. onboard-new-app.sh adds a row here, then patches the registries listed in docs/ONBOARDING-NEW-APP.md. check-fleet-registry.py verifies those files still mention every app. GROK-BOT is a fleet-wide identity that drives Cursor cloud agents; it is not an app-specific seat and is not listed in seats[].",
+  "zulipRealm": "https://simplewithus.zulipchat.com",
+  "zulipChannel": "agent-sync",
+  "notes": "Canonical fleet app + coding-seat inventory.  onboard-new-app.sh adds a row here, then patches the registries listed in docs/ONBOARDING-NEW-APP.md.  check-fleet-registry.py verifies those files still mention every app.  GROK-BOT is a fleet-wide identity that drives Cursor cloud agents; it shares CURSOR's folder name and gets no lanes of its own.  Seats carry zulipBotEmail and zulipFileCode, copied from the roster in docs/protocols/zulip-fleet-guide.md (the file code must match the agent-sync CLI's rule).  A retired seat has no bot, and aliasOf names the live seat that a retired alias now means.",
   "apps": [
     {
       "repo": "Socratic-Trade",
       "acronym": "ST",
       "displayName": "Socratic Trade",
-      "slackRepo": "Socratic-Trade",
       "codeDir": "Socratic-Trade",
       "liveBoard": "TRADING-EFFORT-LOG.md",
       "worktreePrefix": "trading",
@@ -23,7 +23,6 @@
       "repo": "Congress.Trade",
       "acronym": "CT",
       "displayName": "Congress.Trade",
-      "slackRepo": "Congress.Trade",
       "codeDir": "Congress.Trade",
       "liveBoard": "CONGRESS-TRADE-EFFORT-LOG.md",
       "worktreePrefix": "congress",
@@ -37,7 +36,6 @@
       "repo": "Usage-Monitor",
       "acronym": "UM",
       "displayName": "Usage Monitor",
-      "slackRepo": "API-usage-monitor",
       "codeDir": "Usage-Monitor",
       "liveBoard": "API-USAGE-MONITOR-EFFORT-LOG.md",
       "worktreePrefix": "usage",
@@ -51,7 +49,6 @@
       "repo": "congress-trading-shared",
       "acronym": "CTS",
       "displayName": "congress-trading-shared",
-      "slackRepo": "congress-trading-shared",
       "codeDir": "congress-trading-shared",
       "liveBoard": "CONGRESS-SHARED-EFFORT-LOG.md",
       "worktreePrefix": "cts",
@@ -64,7 +61,6 @@
       "repo": "DealDex",
       "acronym": "DD",
       "displayName": "DealDex.net",
-      "slackRepo": "DealDex",
       "codeDir": "DealDex",
       "liveBoard": "DEALDEX-EFFORT-LOG.md",
       "worktreePrefix": "dealdex",
@@ -78,7 +74,6 @@
       "repo": "AI-Fleet-Coordinator",
       "acronym": "AFC",
       "displayName": "AI Fleet Coordinator",
-      "slackRepo": "AI-Fleet-Coordinator",
       "codeDir": "AI-Fleet-Coordinator",
       "liveBoard": "FLEET-INFRA-EFFORT-LOG.md",
       "worktreePrefix": "fleet",
@@ -91,7 +86,6 @@
       "repo": "Personal-Site",
       "acronym": "PS",
       "displayName": "Personal Site",
-      "slackRepo": "Personal-Site",
       "codeDir": "Personal-Site",
       "liveBoard": "PERSONAL-SITE-EFFORT-LOG.md",
       "worktreePrefix": "personal",
@@ -105,7 +99,6 @@
       "repo": "Autorotate",
       "acronym": "AR",
       "displayName": "Autorotate.Codes",
-      "slackRepo": "Autorotate",
       "codeDir": "Autorotate",
       "liveBoard": "AUTOROTATE-EFFORT-LOG.md",
       "worktreePrefix": "autorotate",
@@ -119,7 +112,6 @@
       "repo": "ContactLogo",
       "acronym": "CL",
       "displayName": "ContactLogo",
-      "slackRepo": "ContactLogo",
       "codeDir": "ContactLogo",
       "liveBoard": "CONTACTLOGO-EFFORT-LOG.md",
       "worktreePrefix": "contactlogo",
@@ -132,7 +124,6 @@
       "repo": "BotFleet",
       "acronym": "BF",
       "displayName": "BotFleet.app",
-      "slackRepo": "BotFleet",
       "codeDir": "BotFleet",
       "liveBoard": "BOTFLEET-EFFORT-LOG.md",
       "worktreePrefix": "botfleet",
@@ -146,7 +137,6 @@
       "repo": "HogHunter",
       "acronym": "HH",
       "displayName": "Hog Hunter",
-      "slackRepo": "HogHunter",
       "codeDir": "HogHunter",
       "liveBoard": "HOGHUNTER-EFFORT-LOG.md",
       "worktreePrefix": "hoghunter",
@@ -160,7 +150,6 @@
       "repo": "fleet-ops",
       "acronym": "OPS",
       "displayName": "Fleet Ops",
-      "slackRepo": "fleet-ops",
       "codeDir": "fleet-ops",
       "liveBoard": "FLEET-OPS-EFFORT-LOG.md",
       "worktreePrefix": "fleet-ops",
@@ -173,7 +162,6 @@
       "repo": "Clutch",
       "acronym": "CK",
       "displayName": "Clutch",
-      "slackRepo": "clutch",
       "codeDir": "Clutch",
       "liveBoard": "CLUTCH-EFFORT-LOG.md",
       "worktreePrefix": "clutch",
@@ -183,6 +171,19 @@
       "iconFile": "agent-logos/app-clutch.png",
       "kind": "infra",
       "notes": "Friendly adaptation of @deepseek-ai/dsh for DSH and MiniMax parity (formerly named Harness; renamed to Clutch 2026-09-30).  Always-on pm2 clutch-web on 127.0.0.1:3180.  Live install ~/apps/clutch-runtime (a real standalone clone of origin/main, updated by scripts/update-mac-app.sh), state in ~/.clutch.  Canonical npm package (clutch) for BotFleet's DSH driver."
+    },
+    {
+      "repo": "CodeCaps",
+      "acronym": "CC",
+      "displayName": "CodeCaps",
+      "codeDir": "CodeCaps",
+      "liveBoard": "CODECAPS-EFFORT-LOG.md",
+      "worktreePrefix": "codecaps",
+      "badgeClass": "repo-cc",
+      "hasAppIcon": true,
+      "iconFile": "agent-logos/app-cc.png",
+      "kind": "product",
+      "notes": "No digestColor:  the daily digest's --cc colour (#0d9488) is already congress-trading-shared's, and check-fleet-registry.py rejects a reused colour.  The acronym CC and the repo-cc badge come from REPO_BADGE in scripts/build-fleet-daily-digest.py.  Do not use CC#n for CodeCaps in Zulip topics:  the live CC# linkifier points at Clutch (zulip-fleet-guide.md, Current Linkifiers, decision 17 pending the owner), so use CodeCaps#n, which the generic repo pattern resolves correctly."
     }
   ],
   "seats": [
@@ -193,7 +194,9 @@
       "branchPrefixes": [
         "claude/",
         "agent/claude"
-      ]
+      ],
+      "zulipBotEmail": "claude-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Claude"
     },
     {
       "tag": "MONET",
@@ -212,7 +215,9 @@
       "worktreeSuffix": "codex",
       "branchPrefixes": [
         "codex/"
-      ]
+      ],
+      "zulipBotEmail": "codex-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Codex"
     },
     {
       "tag": "AG",
@@ -221,7 +226,9 @@
       "branchPrefixes": [
         "ag/",
         "agent/antigravity"
-      ]
+      ],
+      "zulipBotEmail": "ag-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "AG"
     },
     {
       "tag": "CURSOR",
@@ -229,7 +236,9 @@
       "worktreeSuffix": "cursor",
       "branchPrefixes": [
         "cursor/"
-      ]
+      ],
+      "zulipBotEmail": "cursor-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Cursor"
     },
     {
       "tag": "GROK",
@@ -237,7 +246,9 @@
       "worktreeSuffix": "grok",
       "branchPrefixes": [
         "grok/"
-      ]
+      ],
+      "zulipBotEmail": "grok-build-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Grok-Build"
     },
     {
       "tag": "GROK-BUILD",
@@ -245,7 +256,20 @@
       "worktreeSuffix": "grok-build",
       "branchPrefixes": [
         "grok-build/"
-      ]
+      ],
+      "retired": true,
+      "retiredDate": "2026-10-08",
+      "retiredReason": "Retired alias of GROK (owner 2026-10-08): the Mac Grok TUI and Grok Build are one seat that signs GROK.  Its Zulip bot, Grok-Build, is GROK's.  Existing grok-build/ branches and grok-build lanes stay readable.",
+      "aliasOf": "GROK"
+    },
+    {
+      "tag": "GROK-WEB",
+      "notesName": "Grok Web",
+      "worktreeSuffix": "grok-web",
+      "branchPrefixes": [],
+      "notes": "Grok on the web and the iOS app: a cloud seat with no Mac lanes or checkouts (owner 2026-10-08).  Held by the server listener, not the Mac one (docs/protocols/agent-sync-partition.toml).  No branch prefix, as in the AGENT-SYNC.md Active Seats table, so lane refuses it before it makes a worktree.  The tag GROK-WEB makes grok-web a seat token whatever the suffix is (layout.py derives an alias from the lowercase tag), so a GROK lane slug may not start with web-, as grok plus build is GROK-BUILD's.  GROK-WEB makes no lanes, so nothing else is affected.",
+      "zulipBotEmail": "grok-web-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Grok-Web"
     },
     {
       "tag": "DSH",
@@ -256,7 +280,7 @@
       ],
       "retired": true,
       "retiredDate": "2026-09-19",
-      "retiredReason": "Harness seat owns DSH + MMH work.  Use HARNESS for new work in ~/Code/Harness/."
+      "retiredReason": "DSH work moved to the Harness seat, which the Clutch seat has since replaced.  Use CLUTCH for new work in Simple-With-Us/Clutch."
     },
     {
       "tag": "HARNESS",
@@ -276,7 +300,9 @@
       "branchPrefixes": [
         "clutch/"
       ],
-      "notes": "Owner of Simple-With-Us/Clutch (DeepSeek and MiniMax drivers, ACP bridges, cordis profiles).  Replaces the HARNESS seat, owner 2026-10-07.  One seat for all models run through Clutch (owner 2026-10-07: no per-model split)."
+      "notes": "Owner of Simple-With-Us/Clutch (DeepSeek and MiniMax drivers, ACP bridges, cordis profiles).  Replaces the HARNESS seat, owner 2026-10-07.  One seat for all models run through Clutch (owner 2026-10-07: no per-model split).",
+      "zulipBotEmail": "clutch-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Clutch"
     },
     {
       "tag": "GROK-BOT",
@@ -303,7 +329,9 @@
       "worktreeSuffix": "fx",
       "branchPrefixes": [
         "fx/"
-      ]
+      ],
+      "zulipBotEmail": "fx-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "FX"
     },
     {
       "tag": "KIMI",
@@ -320,7 +348,9 @@
       "worktreeSuffix": "minimax",
       "branchPrefixes": [
         "minimax/"
-      ]
+      ],
+      "zulipBotEmail": "mm-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "MM"
     },
     {
       "tag": "MA",
@@ -330,7 +360,9 @@
         "muse-assist/",
         "muse/"
       ],
-      "notes": "Meta Muse cloud VM batch compute & creative assistant (dispatched via Mac/iOS apps; unmetered VM compute for multi-day transcoding/batch tasks). Formerly tagged MUSE."
+      "notes": "Meta Muse cloud VM batch compute & creative assistant (dispatched via Mac/iOS apps; unmetered VM compute for multi-day transcoding/batch tasks). Formerly tagged MUSE.",
+      "zulipBotEmail": "muse-assist-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "MA"
     },
     {
       "tag": "MC",
@@ -339,7 +371,9 @@
       "branchPrefixes": [
         "muse-code/"
       ],
-      "notes": "Meta AI interactive terminal coding agent (muse CLI / Muse Code). Distinct from Muse Assist ([MA])."
+      "notes": "Meta AI interactive terminal coding agent (muse CLI / Muse Code). Distinct from Muse Assist ([MA]).",
+      "zulipBotEmail": "mc-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "MC"
     }
   ]
 }

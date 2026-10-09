@@ -44,6 +44,7 @@ Cloud / no-Mac agents can **read** the live boards at `https://mac.jays.services
 | BotFleet | `/Users/jay/apps/BOTFLEET-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
 | Clutch | `/Users/jay/apps/CLUTCH-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
 | HogHunter | `/Users/jay/apps/HOGHUNTER-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
+| CodeCaps | `/Users/jay/apps/CODECAPS-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
 | fleet-ops | `/Users/jay/apps/FLEET-OPS-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
 | fleet-infra (machine-side) | `/Users/jay/apps/FLEET-INFRA-EFFORT-LOG.md` | (none — not a repo; no issues mirror) |
 
