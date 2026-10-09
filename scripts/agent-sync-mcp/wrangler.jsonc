@@ -4,8 +4,8 @@
   // Deploy by hand from DEPLOY.md.  Never from CI and never on merge:  agents
   // auto-merge to main, so a merge must not be a deploy (spec 3.2).
   //
-  // Secrets (never in this file):  ZULIP_KEY_GROK_WEB, and ZULIP_KEY_JET once
-  // JET is re-enabled.  install_seat_key.py puts them in from Infisical.
+  // Secrets (never in this file):  ZULIP_KEY_GROK_WEB and ZULIP_KEY_JET.
+  // install_seat_key.py puts them in from Infisical.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "agent-sync-mcp",
   "main": "src/index.js",
@@ -56,11 +56,12 @@
   "vars": {
     // Must equal the compiled hostname;  the Worker refuses to start otherwise.
     "PUBLIC_HOST": "agent-sync.jays.services",
-    // Seats this deploy serves (owner decisions D1, D2).  JET is left out on
-    // purpose:  openai-dot-bot is a realm administrator, and hosted seats accept
-    // member (400) only (spec 3.6).  Once Jay demotes it to member, add JET
-    // back here and run install_seat_key.py JET (DEPLOY.md, "Re-enable JET").
-    "HOSTED_SEATS": "GROK-WEB",
+    // Seats this deploy serves (owner decisions D1, D2).  JET was left out while
+    // openai-dot-bot was a realm administrator, because hosted seats accept
+    // member (400) only (spec 3.6).  Jay demoted every bot to member on Fri,
+    // Oct 9, so JET is served again;  install_seat_key.py JET puts its key in
+    // (DEPLOY.md, "Re-enable JET").
+    "HOSTED_SEATS": "JET,GROK-WEB",
     // Bot emails (plain vars, spec 3.6).  The keys are Worker secrets.  A key
     // whose users/me is not this bot, not a bot, or not a member is refused.
     "ZULIP_EMAIL_GROK_WEB": "grok-web-bot@simplewithus.zulipchat.com",
