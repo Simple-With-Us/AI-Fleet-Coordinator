@@ -1,8 +1,8 @@
 {
   "name": "agent-sync-mcp",
-  "version": "0.0.0-phase0",
+  "version": "2.0.0-phase2",
   "private": true,
-  "description": "Hosted agent-sync MCP server for cloud seats (Phase 0 stub: OAuth, arming, consent, hello and hello_write; no Zulip key).",
+  "description": "Hosted agent-sync MCP server for cloud seats: OAuth 2.1, arming and consent, and the seven agent-sync tools, each seat posting as its own Zulip bot.",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -11,7 +11,7 @@
     "test": "node --test test/*.test.mjs",
     "test:workerd": "node test/integration.workerd.mjs",
     "bundle": "wrangler deploy --dry-run --outdir dist",
-    "deploy": "echo 'Deploy by hand from DEPLOY-PHASE0.md, never from CI or on merge.' && exit 1"
+    "deploy": "echo 'Deploy by hand from DEPLOY.md, never from CI or on merge.' && exit 1"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "1.1.0",

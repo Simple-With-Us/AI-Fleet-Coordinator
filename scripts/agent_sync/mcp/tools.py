@@ -44,6 +44,7 @@ from .. import secretscan
 from .. import wakes as W
 from .. import zulip as Z
 from ..state import State
+from ..textfmt import sentence_gap
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS_PATH = os.path.join(HERE, "tools.json")
@@ -599,7 +600,10 @@ class Tools:
     def _deliver(self, key: tuple[str, float], *, body: str, channel: str, topic: str, channel_id: int,
                  check: Mapping[str, Any], send: Callable[[], int]) -> dict[str, Any]:
         row_key, ttl = key
-        fields = {"body_sha": _sha(body.strip()), "channel": channel, "topic": topic, "channel_id": channel_id}
+        # The hash is of the text Zulip stores:  the client converts sentence gaps to U+00A0 plus a
+        # space on the way out (textfmt, AFC #392), and the reconcile read compares stored content.
+        fields = {"body_sha": _sha(sentence_gap(body).strip()), "channel": channel, "topic": topic,
+                  "channel_id": channel_id}
         verdict, row = self._idem_begin(row_key, ttl, fields)
         if verdict == "duplicate" and row is not None:
             return {"id": int(row["id"]), "channel_id": int(row.get("channel_id") or channel_id), "duplicate": True}

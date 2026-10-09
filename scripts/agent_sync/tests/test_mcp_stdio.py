@@ -829,6 +829,22 @@ class WriteToolTests(McpHarness):
         self.assertEqual(len(self.posted()), 1)  # the reconcile read found it:  no second POST
         self.assertIn(T.RECONCILE_DELAY, [round(s, 6) for s in self.clock.sleeps[sleeps:]])
 
+    def test_reconcile_finds_a_post_whose_sentence_gap_the_client_converted(self):
+        # Finding:  the client sends two-space gaps as U+00A0 plus a space (AFC #392), so a hash of the
+        # unconverted body never matched the stored message and the retry posted a duplicate.
+        session = self.session(timeout=0.5)
+        self.fake.inject("POST", "messages", delay=1.5)
+        args = {"topic": "gapped", "text": "Landed late.  Twice over.", "idempotency_key": "gap-0001"}
+        self.assert_tool_error(session.call("post", args), "outcome_unknown")
+        deadline = time.monotonic() + 5
+        while len(self.fake.messages) < 1 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        stored = self.fake.messages[-1]
+        self.assertIn("\u00a0 ", stored["content"])
+        found = self.assert_structured("post", session.call("post", args))
+        self.assertEqual(found, {"id": stored["id"], "channel_id": 7, "duplicate": True})
+        self.assertEqual(len(self.posted()), 1)
+
     def test_dropped_post_is_outcome_unknown_then_sent_once(self):
         session = self.session()
         self.fake.inject("POST", "messages", drop=True)

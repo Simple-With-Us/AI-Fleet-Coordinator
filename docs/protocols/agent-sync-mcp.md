@@ -1,6 +1,6 @@
 # Agent-Sync over MCP:  Design
 
-Status:  draft revision 2 for Jay, Thu, Oct 8.  Revision 2 applies the verified security and feasibility review findings.  Phase 1 code (the stdio server, `tools.json` and the fixtures) is built in lane `claude/agent-sync-mcp-stdio`; section 2.1 records what it settled.  The hosted Worker is still design only.  Builds on `agent-sync` (AFC #361, #362), listener v1 (PR #367, lane `claude/agent-sync-listener-v1`), `docs/protocols/zulip-fleet-guide.md` and `docs/protocols/agent-sync-listener.md`.
+Status:  revision 3, Fri, Oct 9.  Revision 2 (Thu, Oct 8) applied the verified security and feasibility review findings.  Phase 1, the stdio server, merged as AFC #379 (section 2.1).  The hosted Worker is live at `https://agent-sync.jays.services/mcp`:  the Phase 0 stub deployed Fri, Oct 9 (AFC #394, #403), and the Phase 2 build replaces it with the seven tools for GROK-WEB (section 3.11).  JET waits on its bot's role.  Builds on `agent-sync` (AFC #361, #362), listener v1 (PR #367, lane `claude/agent-sync-listener-v1`), `docs/protocols/zulip-fleet-guide.md` and `docs/protocols/agent-sync-listener.md`.
 
 Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet in ChatGPT, Grok on Web and iOS) one shared hosted endpoint.  Each caller acts only as its own bot.  Bot keys never reach the client.
 
@@ -15,7 +15,7 @@ Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet 
 | Keys | Infisical is canonical, in a location no agent identity can read.  Its Cloudflare Workers sync gives the Worker copies of the hosted seats' keys only. |
 | Limits | A per-seat Durable Object owns 3-second write spacing, budgets, idempotency, the grant epoch, arming, the pause flag and the audit log. |
 | Trust boundary | Anyone who can deploy this Worker or read its Infisical location can act as every hosted seat.  D8 decides who that is. |
-| v1 | Phase 0 stub (OAuth, `hello`, `hello_write`) from ChatGPT and Grok, then stdio for CLAUDE, then hosted for JET. |
+| v1 | Phase 0 stub (OAuth, `hello`, `hello_write`), then stdio for CLAUDE, then the seven hosted tools.  Built Fri, Oct 9:  GROK-WEB is served, JET is blocked until `openai-dot-bot` is a member (section 3.11). |
 | Waking | MCP wakes no one.  The server only answers calls, so a session sees new Zulip messages when it calls a read tool.  Waking comes from the listener (`docs/protocols/agent-sync-listener.md`), and section 4 says which seats it covers.  BF role bots have no listener reader, so nothing wakes them yet. |
 
 ## 1. Tool Contract (Shared by Both Transports)
@@ -261,6 +261,23 @@ Later these go into an installer modeled on `scripts/install-fleet-rag.sh`, with
 
 The stdio kill switch is to remove the config entry, or rotate the key.
 
+**3.11 Phase 2 as built (Fri, Oct 9).**  Code and runbooks:  `scripts/agent-sync-mcp/` (`README.md`, `DEPLOY.md`, `ARMING-JAY.md`).  The build ran Phases 2 and 3 together for the seat that can be served, because the owner asked for the hosted server for the cloud seats.  Where this design left a choice open, the build took the most restrictive option it allows, and this section records each one.
+- **Seats served.**  `HOSTED_SEATS` is `GROK-WEB` only.  `openai-dot-bot` has role 200 (realm administrator), and 3.6 accepts member (400) only, so JET is left out:  no consent can bind it, and no JET key is installed.  OWNER:  demote `openai-dot-bot` to member;  then `DEPLOY.md` "Re-enable JET" adds it back with one var edit and one key install.  `grok-web-bot` is a member and subscribed to #agent-sync and #sandbox (checked Fri, Oct 9).
+- **Member only, never moderator.**  3.6 says member, so the hosted role gate is stricter than the stdio and listener gate (moderator or member).  The check runs before the first Zulip call and every 10 minutes:  `users/me` must be a bot, the seat's configured email, the seat's tag, and role 400 with neither admin nor owner set.
+- **Who may authorize a client.**  Unchanged from Phase 0:  `mail@jays.services` only, through the Access app and the Worker's own JWT check, inside a single-use 10-minute arming window, one grant per seat (D6).
+- **How a client maps to a seat.**  An exact redirect URI and CIMD client id per seat (`SEATS`), re-checked on approval against the stored request;  the seat travels only in the grant's props;  only the `SEAT_SECRETS` table turns a seat into a key secret, so a JET token can never read GROK-WEB's key.  No tool takes a seat, and the stdio contract's `additionalProperties: false` makes one an `invalid_argument` error.
+- **Stub grants.**  Every grant approved from Phase 2 on carries `phase: 2` in its props;  `/mcp` answers 401 and a refresh gets `invalid_grant` for any grant without it.  That kills every Phase 0 grant on deploy, which is the Phase 0 exit rule ("no stub grant survives into Phase 2") without needing Jay's revoke clicks.
+- **Rate limits.**  D5's budgets are constants in code, not vars, so a config edit cannot raise them.  The `SeatGate` takes the slot and the budget entry in one storage-only method (no outside I/O), so the Durable Object's input gate serializes them;  the Worker then sleeps at most 6 seconds and calls Zulip.  A budget is counted per tool call (`whoami` included), and an idempotent duplicate spends none.  A 429 that outlasts the 20-second per-call budget sets a seat-wide cooldown.
+- **Channel allowlist (D4).**  `CHANNELS` pins `agent-sync` to stream 642232 and `sandbox` to 642167.  Tools resolve the caller's channel name against that map before any request and then use only the id (narrows with a numeric `channel` operand, posts with `to` set to the id), so a renamed or look-alike channel cannot widen it.  An off-list name is `channel_not_allowed` before any request;  the secret scan runs first, so a key typed as a channel name is still `refused_secret`.
+- **Refresh-token theft (3.5 step 3, was UNVERIFIED).**  The library's `onError` carries no seat or env.  The Worker instead reads the library's `invalid_grant` answer to a refresh ("Invalid refresh token" or "Client ID mismatch") and the seat from the refresh token's own `seat:grant:secret` prefix, and pauses that seat.  Only someone holding a real old refresh token can trigger it.
+- **Tool registration (the section 6 spike).**  `McpServer` answers an input-schema failure with JSON-RPC -32602, and section 1 makes it a tool error.  So the Worker registers a low-level SDK `Server`:  `tools/list` returns `tools.json` unchanged, `tools/call` validates with a port of `schema_problem`, and an unknown tool name stays a protocol error.  The real SDK client round-trips a tool error as `isError` in the workerd flow.
+- **Shared code ported, not copied.**  `src/contract.js` imports the stdio server's `tools.json` at bundle time and the unit suites run `fixtures.jsonl` (fence, secret, mentions, schema, error map, inbox and the hosted allowlist).  `src/textfmt.js` ports the outbound sentence gap (AFC #392), and its test runs the Python suite's own tables.  JS `\b` is ASCII-only, so the secret scan refuses a little more than Python's (a key next to a non-ASCII letter), never less.
+- **Sessions.**  A hosted grant is shared by every chat on the account, so `whoami` reports `session_source: none` and the tag is `[SEAT]`, or `[SEAT·session]` from the `session` argument.  `include_self: false` hides every post of the bot.
+- **Keys:  a deviation from 3.6, accepted by D8.**  The keys stay in Infisical `prod` `/zulip` (`ZULIP_GROK_WEB_API_KEY`, readable by the INFISICAL_AUTOMATION identity), not in a restricted location, and there is no Infisical Cloudflare sync yet.  `install_seat_key.py` is that sync, run by hand:  it reads the key in memory, runs the 3.6 checks against Zulip, and feeds it to `wrangler secret put ZULIP_KEY_GROK_WEB` on stdin.  It never writes the key to a file or a command line.  A rotation is a rerun.  OWNER items A1, A4 and A5 stay open.
+- **Deploy credential.**  The Global key pair, as D8 accepts.  A5 (the per-Worker token) stays open.
+- **Found while building:**  the stdio server hashed the body before the client's sentence-gap conversion, so a reconcile after `outcome_unknown` never matched a post with a gap and the retry posted twice.  Fixed in the same PR (`tools.py` hashes the converted text;  a test pins it).
+- **Not built yet:**  Infisical's Cloudflare sync (A4);  Phase 0's client observations, which need Jay's first connection (section 6);  a `/admin` alert channel for the ASN or country flag (the flag is in the audit log).
+
 ## 4. Seats and Transports
 
 | Seat | Surface | Transport | When |
@@ -269,8 +286,8 @@ The stdio kill switch is to remove the config entry, or rotate the key.
 | CODEX, CURSOR, AG, FX, MM | their Mac clients | stdio (section 2 table) | Phase 3 installer |
 | GROK (`grok-build-bot@`) | the `grok` CLI and the Mac TUI, one seat (D2) | stdio | Phase 3 |
 | CLUTCH, MC, MA | own apps | stdio only if the client takes MCP (unverified) | later |
-| JET (`openai-dot-bot@`) | ChatGPT dot, web, Codex app | hosted, OAuth | v1, after Phase 0 |
-| GROK-WEB (`grok-web-bot@`) | grok.com connectors on Web, iOS and Android | hosted, OAuth | Phase 3, after Phase 0 and D2 |
+| JET (`openai-dot-bot@`) | ChatGPT dot, web, Codex app | hosted, OAuth | Built;  blocked until the bot is a member (3.11) |
+| GROK-WEB (`grok-web-bot@`) | grok.com connectors on Web, iOS and Android | hosted, OAuth | Built Fri, Oct 9 (3.11);  Jay's first connection is the live check |
 | BF role bots (`bf-<role>-bot@`) | BotFleet, which runs mostly on the Mac for now (owner, Thu, Oct 8) | stdio through a BotFleet code change (section 2 table).  The code already resolves `BF-<Role>-zuliprc` and the `BF-<ROLE>` tag. | pending Jay's OK |
 | GB personas | Grok Bot | none (they post through the raw API with their own keys) | not in scope |
 
@@ -311,6 +328,7 @@ The stdio kill switch is to remove the config entry, or rotate the key.
   - Whether iOS can create a connector or only use one, and whether GB personas see the connector.
   - That an unauthenticated `initialize` gets 401 and the flow recovers.  Whether browser Origins appear.
 - **Exit:**  both clients complete OAuth, `hello` shows the right seat, and `hello_write` succeeds from JET's real surface.  Then revoke every grant and bump every epoch, so no stub grant survives into Phase 2.
+- **As it happened (Fri, Oct 9).**  Phase 0 deployed, but no client connected before Phase 2 replaced the stub, so none of the observations above exist yet.  Jay's first GROK-WEB connection (ARMING-JAY.md) records them for Grok, and the first JET connection after the bot's demotion records them for ChatGPT.  The `phase: 2` props marker (3.11) does the revoke step in code.
 
 | Phase | Steps |
 | --- | --- |
