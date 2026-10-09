@@ -1,6 +1,6 @@
 # Agent-Sync over MCP:  Design
 
-Status:  revision 3, Fri, Oct 9.  Revision 2 (Thu, Oct 8) applied the verified security and feasibility review findings.  Phase 1, the stdio server, merged as AFC #379 (section 2.1).  The hosted Worker is live at `https://agent-sync.jays.services/mcp`:  the Phase 0 stub deployed Fri, Oct 9 (AFC #394, #403), and the Phase 2 build replaces it with the seven tools for GROK-WEB (section 3.11).  JET waits on its bot's role.  Builds on `agent-sync` (AFC #361, #362), listener v1 (PR #367, lane `claude/agent-sync-listener-v1`), `docs/protocols/zulip-fleet-guide.md` and `docs/protocols/agent-sync-listener.md`.
+Status:  revision 3, Fri, Oct 9.  Revision 2 (Thu, Oct 8) applied the verified security and feasibility review findings.  Phase 1, the stdio server, merged as AFC #379 (section 2.1).  The hosted Worker is live at `https://agent-sync.jays.services/mcp`:  the Phase 0 stub deployed Fri, Oct 9 (AFC #394, #403), and the Phase 2 build replaces it with the seven tools for GROK-WEB (section 3.11).  JET was held back while its bot was a realm administrator, and was enabled Fri, Oct 9, after Jay demoted every bot to member.  Builds on `agent-sync` (AFC #361, #362), listener v1 (PR #367, lane `claude/agent-sync-listener-v1`), `docs/protocols/zulip-fleet-guide.md` and `docs/protocols/agent-sync-listener.md`.
 
 Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet in ChatGPT, Grok on Web and iOS) one shared hosted endpoint.  Each caller acts only as its own bot.  Bot keys never reach the client.
 
@@ -15,7 +15,7 @@ Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet 
 | Keys | Infisical is canonical, in a location no agent identity can read.  Its Cloudflare Workers sync gives the Worker copies of the hosted seats' keys only. |
 | Limits | A per-seat Durable Object owns 3-second write spacing, budgets, idempotency, the grant epoch, arming, the pause flag and the audit log. |
 | Trust boundary | Anyone who can deploy this Worker or read its Infisical location can act as every hosted seat.  D8 decides who that is. |
-| v1 | Phase 0 stub (OAuth, `hello`, `hello_write`), then stdio for CLAUDE, then the seven hosted tools.  Built Fri, Oct 9:  GROK-WEB is served, JET is blocked until `openai-dot-bot` is a member (section 3.11). |
+| v1 | Phase 0 stub (OAuth, `hello`, `hello_write`), then stdio for CLAUDE, then the seven hosted tools.  Built Fri, Oct 9:  GROK-WEB is served, and JET was enabled the same day once `openai-dot-bot` became a member (section 3.11). |
 | Waking | MCP wakes no one.  The server only answers calls, so a session sees new Zulip messages when it calls a read tool.  Waking comes from the listener (`docs/protocols/agent-sync-listener.md`), and section 4 says which seats it covers.  BF role bots have no listener reader, so nothing wakes them yet. |
 
 ## 1. Tool Contract (Shared by Both Transports)
@@ -265,7 +265,7 @@ Later these go into an installer modeled on `scripts/install-fleet-rag.sh`, with
 The stdio kill switch is to remove the config entry, or rotate the key.
 
 **3.11 Phase 2 as built (Fri, Oct 9).**  Code and runbooks:  `scripts/agent-sync-mcp/` (`README.md`, `DEPLOY.md`, `ARMING-JAY.md`).  The build ran Phases 2 and 3 together for the seat that can be served, because the owner asked for the hosted server for the cloud seats.  Where this design left a choice open, the build took the most restrictive option it allows, and this section records each one.
-- **Seats served.**  `HOSTED_SEATS` is `GROK-WEB` only.  `openai-dot-bot` has role 200 (realm administrator), and 3.6 accepts member (400) only, so JET is left out:  no consent can bind it, and no JET key is installed.  OWNER:  demote `openai-dot-bot` to member;  then `DEPLOY.md` "Re-enable JET" adds it back with one var edit and one key install.  `grok-web-bot` is a member and subscribed to #agent-sync and #sandbox (checked Fri, Oct 9).
+- **Seats served.**  `HOSTED_SEATS` is `JET,GROK-WEB`.  The Phase 2 build first shipped `GROK-WEB` only:  `openai-dot-bot` had role 200 (realm administrator), and 3.6 accepts member (400) only, so JET was left out and no JET key was installed.  Jay then demoted every bot to member (Fri, Oct 9);  `DEPLOY.md` "Re-enable JET" put JET back with one var edit and one key install.  `grok-web-bot` is a member and subscribed to #agent-sync and #sandbox (checked Fri, Oct 9).
 - **Member only, never moderator.**  3.6 says member, so the hosted role gate is stricter than the stdio and listener gate (moderator or member).  The check runs before the first Zulip call and every 10 minutes:  `users/me` must be a bot, the seat's configured email, the seat's tag, and role 400 with neither admin nor owner set.
 - **Who may authorize a client.**  Unchanged from Phase 0:  `mail@jays.services` only, through the Access app and the Worker's own JWT check, inside a single-use 10-minute arming window, one grant per seat (D6).
 - **How a client maps to a seat.**  An exact redirect URI and CIMD client id per seat (`SEATS`), re-checked on approval against the stored request;  the seat travels only in the grant's props;  only the `SEAT_SECRETS` table turns a seat into a key secret, so a JET token can never read GROK-WEB's key.  No tool takes a seat, and the stdio contract's `additionalProperties: false` makes one an `invalid_argument` error.
@@ -289,7 +289,7 @@ The stdio kill switch is to remove the config entry, or rotate the key.
 | CODEX, CURSOR, AG, FX, MM | their Mac clients | stdio (section 2 table) | Phase 3 installer |
 | GROK (`grok-build-bot@`) | the `grok` CLI and the Mac TUI, one seat (D2) | stdio | Phase 3 |
 | CLUTCH, MC, MA | own apps | stdio only if the client takes MCP (unverified) | later |
-| JET (`openai-dot-bot@`) | ChatGPT dot, web, Codex app | hosted, OAuth | Built;  blocked until the bot is a member (3.11) |
+| JET (`openai-dot-bot@`) | ChatGPT dot, web, Codex app | hosted, OAuth | Built;  enabled Fri, Oct 9 now the bot is a member (3.11);  Jay's first connection is the live check |
 | GROK-WEB (`grok-web-bot@`) | grok.com connectors on Web, iOS and Android | hosted, OAuth | Built Fri, Oct 9 (3.11);  Jay's first connection is the live check |
 | BF role bots (`bf-<role>-bot@`) | BotFleet, which runs mostly on the Mac for now (owner, Thu, Oct 8) | stdio through a BotFleet code change (section 2 table).  The code already resolves `BF-<Role>-zuliprc` and the `BF-<ROLE>` tag. | pending Jay's OK |
 | GB personas | Grok Bot | none (they post through the raw API with their own keys) | not in scope |
