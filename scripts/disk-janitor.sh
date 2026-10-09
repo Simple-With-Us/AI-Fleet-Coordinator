@@ -329,8 +329,10 @@ wt_blocking_dirt() {
 }
 
 # ==== lanes-guard BEGIN  (board a7dfde0e Lane Map; board 912034a0 worktree vanish) ====
-# Layout (docs/protocols/lane-map.md): ~/apps/lanes/<prefix>/<seat>-<slug>, lanes/_review/<prefix>/pr-<n>,
-# lanes/_managed/<tool>/...  Nothing under $LANES_ROOT is ever retired on the legacy tests (0-ahead ancestry,
+# Layout v2 (docs/protocols/lane-map.md, owner 2026-10-09): ~/apps/lanes/<Repo>/<seat>-<slug>, lanes/<Repo>/review-pr-<n>,
+# lanes/<Repo>/<slug>-<hex> (Claude desktop), lanes/_codex/<slug>/<Repo>; the pre-v2 lanes/<prefix>/..., lanes/_review/...
+# and lanes/_managed/... still count until the migration moves them.  The test below is only "under $LANES_ROOT", so
+# no code change was needed for v2.  Nothing under $LANES_ROOT is ever retired on the legacy tests (0-ahead ancestry,
 # [gone] upstream, scratch pattern).  It retires only when a FRESH lane doctor report lists it in cleaner_candidates
 # with this checkout's CURRENT HEAD (the cleaner contract, scripts/fleet_lanes/README.md), on top of the janitor's
 # own birth, dirt, idle, inner-checkout and live lsof gates.  A missing, stale, future-dated, malformed or schema-1

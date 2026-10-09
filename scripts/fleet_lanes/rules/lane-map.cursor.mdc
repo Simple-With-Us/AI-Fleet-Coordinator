@@ -1,5 +1,5 @@
 ---
-description: Lane Map, where every git checkout lives.  Task lanes go under ~/apps/lanes, ~/Code is the human integration tree, and nothing is cloned into /tmp.
+description: Lane Map, where every git checkout lives.  Task lanes go under ~/apps/lanes/<Repo>, ~/Code is the human integration tree, and nothing is cloned into /tmp.
 alwaysApply: true
 ---
 

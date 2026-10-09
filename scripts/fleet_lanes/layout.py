@@ -4,18 +4,27 @@ Everything here is pure.  There is no subprocess and no network.  The only files
 `os.path.realpath` (symlink resolution) and one `.git` existence probe for direct children of
 ~/Code, and both work from an explicit home path carried by `Roots`, so tests can use a fake home.
 
-Sanctioned places for checkouts:
-  1. Integration trees at ~/Code/<App> (main only, human use).  Nothing else belongs at the top of
-     ~/Code.
-  2. Lanes under ~/apps.  The layout is chosen by the FLEET_LAYOUT environment variable:
-       nested (default)  ~/apps/lanes/<prefix>/<seat>-<slug>
-                         ~/apps/lanes/_managed/<harness>/   harness-chosen layouts
-                         ~/apps/lanes/_review/              short-lived PR verify checkouts
-       flat              ~/apps/<prefix>-<seat>-<slug>
-     In nested mode a flat top-level checkout under ~/apps is LANE_FLAT_LEGACY (allowed while the
-     fleet transitions).  In flat mode it is LANE_FLAT.
-  3. Harness-managed worktree locations (~/.codex/worktrees, ~/Code/<App>/.muse/worktrees and
-     friends).  Sanctioned but tracked.
+Layout v2 (owner decision 2026-10-09).  Sanctioned places for checkouts:
+  1. Integration trees at ~/Code/<Repo> (main only, human use).  Nothing else belongs inside them,
+     and nothing else belongs at the top of ~/Code.
+  2. Every agent copy of a repo, whoever made it, under ~/apps/lanes/<Repo>/ where <Repo> is the
+     folder name of the human tree under ~/Code (the GitHub repo name when the repo has no tree):
+       ~/apps/lanes/<Repo>/<seat>-<slug>      made by the lane tool
+       ~/apps/lanes/<Repo>/<slug>-<hex>       made by Claude desktop (its worktree location is ~/apps/lanes)
+       ~/apps/lanes/<Repo>/review-pr-<n>      read-only PR check (-<seat> is added when another seat has it)
+       ~/apps/lanes/_codex/<slug>/<Repo>      Codex desktop, the one tool that nests the other way round
+     The FLEET_LAYOUT variable can still say `flat` (~/apps/<prefix>-<seat>-<slug>); that is a legacy
+     opt-out and is no longer documented as a way to create lanes.
+  3. Harness-managed worktree locations (~/.codex/worktrees, .cursor/worktrees and friends).
+     Sanctioned but tracked.
+
+Legacy shapes still classify, so the fleet can migrate without a flag day: the old prefix folders
+(lanes/fleet, lanes/trading, ... and the case-only spellings such as lanes/botfleet), lanes/_managed/**,
+lanes/_review/**, flat ~/apps/<prefix>-<seat>-<slug> lanes, and the repo-local ~/Code/<Repo>/.claude/worktrees
+and .muse/worktrees.  `explain_layout` says which of these a path is (correct, legacy-migrate, legacy,
+codex-managed, tool-managed, human, wrong, unsanctioned) and where a legacy lane belongs.  The
+LocationClass VALUES are unchanged on purpose: HogHunter's vacuum and the doctor's JSON consumers
+hard-code them.
 
 Forbidden for any checkout: /tmp, /private/tmp, /var/tmp, /private/var/tmp, the per-user macOS
 temp dir (/private/var/folders/*/*/T) and the TMPDIR directory.  macOS /tmp is a symlink to
@@ -64,9 +73,13 @@ __all__ = [
     "seat_alias_map", "canonical_seat_set", "normalize_seat", "is_alias_only", "is_known_seat",
     "HarnessLocation", "Roots", "make_roots", "make_guard_roots", "make_tmp_roots", "is_forbidden_tmp",
     "resolve_path", "real_key", "dedupe_paths", "classify_location", "lane_root",
-    "validate_slug", "is_valid_slug", "lane_dir_name", "nested_dir_name", "branch_name",
+    "validate_slug", "is_valid_slug", "is_valid_repo_dir", "validate_repo_dir",
+    "lane_dir_name", "nested_dir_name", "branch_name",
+    "review_dir_name", "is_review_dir_name", "is_desktop_dir_name", "review_lane_path",
     "expected_lane_path", "LaneNameResult", "explain_lane_name", "check_lane_name",
+    "LayoutStatus", "LayoutResult", "STATUS_LABELS", "explain_layout",
     "check_branch_name", "seat_from_branch", "upgrade_with_branch",
+    "CODEX_DIR", "LEGACY_MANAGED_DIR", "LEGACY_REVIEW_DIR", "REVIEW_PREFIX",
 ]
 
 DEFAULT_OWNER = "Simple-With-Us"
@@ -79,8 +92,13 @@ ENV_LAYOUT = "FLEET_LAYOUT"
 ENV_LANES_ROOT = "FLEET_LANES_ROOT"
 ENV_APPS_JSON = "FLEET_APPS_JSON"
 
-MANAGED_DIR = "_managed"
-REVIEW_DIR = "_review"
+# Layout v2: Codex desktop nests <root>/<slug>/<Repo>, so its worktree root is lanes/_codex.  The old
+# `_managed` and `_review` folders are the pre-v2 homes of harness worktrees and PR checks.  They are
+# still recognised (MANAGED and REVIEW) so the fleet can migrate, and layout status calls them legacy.
+CODEX_DIR = "_codex"
+LEGACY_MANAGED_DIR = "_managed"
+LEGACY_REVIEW_DIR = "_review"
+REVIEW_PREFIX = "review-pr-"
 
 SLUG_MAX = 40
 _KEBAB_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -99,11 +117,11 @@ class LocationClass(StrEnum):
     """Where a path sits relative to the sanctioned and forbidden roots."""
 
     INTEGRATION_TREE = "INTEGRATION_TREE"            # ~/Code/<registered App>
-    LANE_NESTED = "LANE_NESTED"                      # lanes/<prefix>/<dir>
+    LANE_NESTED = "LANE_NESTED"                      # lanes/<Repo>/<seat>-<slug> (and the legacy lanes/<prefix>/...)
     LANE_FLAT_LEGACY = "LANE_FLAT_LEGACY"            # ~/apps/<dir> while the mode is nested
     LANE_FLAT = "LANE_FLAT"                          # ~/apps/<dir> while the mode is flat
-    REVIEW = "REVIEW"                                # lanes/_review/...
-    MANAGED = "MANAGED"                              # harness-chosen layouts, sanctioned but tracked
+    REVIEW = "REVIEW"                                # lanes/<Repo>/review-pr-<n> (and the legacy lanes/_review/...)
+    MANAGED = "MANAGED"                              # lanes/<Repo>/<slug>-<hex>, lanes/_codex/**, harness-chosen layouts
     FORBIDDEN_TMP = "FORBIDDEN_TMP"                  # /tmp and friends
     FORBIDDEN_CODE_TOPLEVEL = "FORBIDDEN_CODE_TOPLEVEL"  # a checkout directly under ~/Code, not a registered tree
     UNSANCTIONED = "UNSANCTIONED"                    # anywhere else: reported, not forbidden
@@ -204,6 +222,20 @@ class App:
         compares them ignoring dots and dashes, so ~/Code/Socratic.Trade counts as Socratic-Trade."""
         return (self.integration_dir_name,) if self.integration_dir_name else ()
 
+    @property
+    def lane_dir(self) -> str:
+        """The folder under the lanes root that holds every agent copy of this repo (layout v2).
+
+        It is the repo's folder name under ~/Code exactly as spelled there (the registry codeDir),
+        else the GitHub repo name (an app whose clone lives elsewhere), else the app name.  It is
+        not the lowercase `prefix`, which stays only for legacy flat lanes, legacy prefix folders,
+        `lane new` queries and telemetry tags.
+        """
+        if self.integration_dir_name:
+            return self.integration_dir_name
+        tail = self.owner_repo.rsplit("/", 1)[-1].strip() if self.owner_repo else ""
+        return tail or self.name
+
 
 @dataclass(frozen=True)
 class Seat:
@@ -239,6 +271,9 @@ EXTRA_APPS: tuple[App, ...] = (
     App("upptime-status", f"{DEFAULT_OWNER}/upptime-status", "upptime-status", "", registered=False),
     App("mmx-acp", "", "mmx-acp", "", registered=False),
     App("homebrew-tap", f"{DEFAULT_OWNER}/homebrew-tap", "homebrew-tap", "homebrew-tap", registered=False),
+    # A private full clone that lives in the lanes tree (lanes/fleetlink/claude-legacy-hotfix) but is a
+    # different repo from FleetLink.  It has no ~/Code tree, so its folder is the GitHub repo name.
+    App("fleetlink-legacy", f"{DEFAULT_OWNER}/fleetlink-legacy", "fleetlink-legacy", "", registered=False),
 )
 
 
@@ -265,6 +300,24 @@ class Registry:
         for app in self.apps:
             if app.prefix.lower() == want:
                 return app
+        return None
+
+    def app_by_lane_dir(self, name: str, *, case_insensitive: bool = False) -> App | None:
+        """The app whose lane folder (`App.lane_dir`) is `name`.  An exact match always wins; with
+        `case_insensitive` (a case-insensitive volume) a different spelling of the same name also
+        matches, so lanes/botfleet finds BotFleet there.  Dots and dashes are never folded:
+        Congress.Trade and Congress-Trade are different folders."""
+        want = name.strip()
+        if not want:
+            return None
+        for app in self.apps:
+            if app.lane_dir == want:
+                return app
+        if case_insensitive:
+            low = want.casefold()
+            for app in self.apps:
+                if app.lane_dir.casefold() == low:
+                    return app
         return None
 
     def app_by_name(self, name: str) -> App | None:
@@ -496,8 +549,9 @@ class Roots:
     code_root: Path
     apps_root: Path
     lanes_root: Path
-    managed_root: Path
-    review_root: Path
+    codex_root: Path
+    legacy_managed_root: Path
+    legacy_review_root: Path
     harness_locations: tuple[HarnessLocation, ...]
     tmp_roots: tuple[Path, ...]
     tmp_globs: tuple[str, ...]
@@ -505,6 +559,7 @@ class Roots:
     case_insensitive: bool = False
     integration_names: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    seat_tokens: tuple[str, ...] = ()
 
 
 def _real(path: str | os.PathLike[str]) -> str:
@@ -589,8 +644,9 @@ def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = Non
         code_root=Path(code_root),
         apps_root=Path(apps_root),
         lanes_root=Path(lanes_root),
-        managed_root=Path(lanes_root) / MANAGED_DIR,
-        review_root=Path(lanes_root) / REVIEW_DIR,
+        codex_root=Path(lanes_root) / CODEX_DIR,
+        legacy_managed_root=Path(lanes_root) / LEGACY_MANAGED_DIR,
+        legacy_review_root=Path(lanes_root) / LEGACY_REVIEW_DIR,
         harness_locations=tuple(
             HarnessLocation(name, _pattern_under(real_home, rel), sanctioned)
             for name, rel, sanctioned in _HARNESS_SPECS
@@ -601,6 +657,7 @@ def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = Non
         case_insensitive=(sys.platform == "darwin") if case_insensitive is None else bool(case_insensitive),
         integration_names=registry.integration_names(),
         warnings=tuple(warnings),
+        seat_tokens=tuple(sorted(canonical_seat_set(registry) | set(seat_alias_map(registry)) | ROLE_TOKENS)),
     )
 
 
@@ -707,6 +764,16 @@ def _has_git_entry(directory: str) -> bool:
 
 # --------------------------------------------------------------------------- classification
 
+def _harness_for(parts: tuple[str, ...], roots: Roots) -> tuple[int, HarnessLocation] | None:
+    """(components matched, location) of the longest harness location `parts` sits in, else None."""
+    best: tuple[int, HarnessLocation] | None = None
+    for loc in roots.harness_locations:
+        n = _glob_match(parts, loc.glob_or_prefix, roots)
+        if n and (best is None or n > best[0]):
+            best = (n, loc)
+    return best
+
+
 def _classify(real: str, roots: Roots, is_checkout: bool | None) -> tuple[LocationClass, str | None]:
     """(class, lane directory or None) for an already-resolved path."""
     orig = Path(real).parts
@@ -716,23 +783,36 @@ def _classify(real: str, roots: Roots, is_checkout: bool | None) -> tuple[Locati
     if _tmp_hit(parts, roots):
         return LocationClass.FORBIDDEN_TMP, None
 
-    best: tuple[int, HarnessLocation] | None = None
-    for loc in roots.harness_locations:
-        n = _glob_match(parts, loc.glob_or_prefix, roots)
-        if n and (best is None or n > best[0]):
-            best = (n, loc)
+    best = _harness_for(parts, roots)
     if best is not None:
         return (LocationClass.MANAGED if best[1].sanctioned else LocationClass.UNSANCTIONED), None
 
     lanes_p = _parts(roots.lanes_root, roots)
     if _under(parts, lanes_p):
-        if _under(parts, _parts(roots.managed_root, roots)):
+        # Folders that start with an underscore are reserved.  _codex is where Codex desktop nests
+        # <slug>/<Repo> (layout v2).  _managed and _review are the pre-v2 homes of harness worktrees
+        # and PR checks, still recognised so the fleet can migrate.  Any other one is unsanctioned.
+        if _under(parts, _parts(roots.codex_root, roots)) or _under(parts, _parts(roots.legacy_managed_root, roots)):
             return LocationClass.MANAGED, None
-        if _under(parts, _parts(roots.review_root, roots)):
+        if _under(parts, _parts(roots.legacy_review_root, roots)):
             return LocationClass.REVIEW, None
         rel = parts[len(lanes_p):]
-        if roots.layout_mode == LAYOUT_NESTED and len(rel) >= 2 and not rel[0].startswith("_"):
-            return LocationClass.LANE_NESTED, os.path.join(*orig[:len(lanes_p) + 2])
+        if rel and rel[0].startswith("_"):
+            return LocationClass.UNSANCTIONED, None
+        if len(rel) >= 2:
+            # lanes/<Repo>/<name>: the name says what the checkout is.  review-pr-<n> is a PR check;
+            # <slug>-<6 hex> with no seat in front is a Claude desktop worktree (harness-managed, so the
+            # dependency reaper leaves it alone); anything else is a lane the lane tool made or should have.
+            # Reviews and desktop worktrees count in either FLEET_LAYOUT mode, as _review and _managed did;
+            # only a lane needs the nested mode.
+            name = orig[len(lanes_p) + 1]
+            lane_dir = os.path.join(*orig[:len(lanes_p) + 2])
+            if is_review_dir_name(name):
+                return LocationClass.REVIEW, lane_dir
+            if is_desktop_dir_name(name, roots.seat_tokens):
+                return LocationClass.MANAGED, lane_dir
+            if roots.layout_mode == LAYOUT_NESTED:
+                return LocationClass.LANE_NESTED, lane_dir
         return LocationClass.UNSANCTIONED, None
 
     code_p = _parts(roots.code_root, roots)
@@ -773,8 +853,9 @@ def classify_location(path: str | os.PathLike[str], roots: Roots, *,
 
 
 def lane_root(path: str | os.PathLike[str], roots: Roots) -> Path | None:
-    """The lane directory a path belongs to (~/apps/<dir> or lanes/<prefix>/<dir>), else None.
-    A checkout whose path differs from its lane root is nested inside the lane."""
+    """The lane directory a path belongs to (~/apps/<dir> or lanes/<Repo>/<dir>), else None.  A
+    review checkout and a Claude desktop worktree under lanes/<Repo>/ have one too.  A checkout whose
+    path differs from its lane root is nested inside the lane."""
     found = _classify(resolve_path(path, roots), roots, None)[1]
     return Path(found) if found else None
 
@@ -802,6 +883,57 @@ def _token(value: str, what: str) -> str:
     return value
 
 
+# The repo folder is written exactly as the human tree is (AI-Fleet-Coordinator, Congress.Trade,
+# congress-trading-shared), so it is NOT held to the lowercase-kebab rule that lane slugs and seat
+# tokens follow.  It is one path component: letters, digits, dot, dash and underscore, starting
+# with a letter or digit (so never `_codex`, `.git` or `..`) and not ending in a dot.
+REPO_DIR_MAX = 100
+_REPO_DIR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def is_valid_repo_dir(name: object) -> bool:
+    return (isinstance(name, str) and 1 <= len(name) <= REPO_DIR_MAX and bool(_REPO_DIR_RE.match(name))
+            and not name.endswith("."))
+
+
+def validate_repo_dir(name: str) -> str:
+    """The repo folder name, or LayoutError.  See `is_valid_repo_dir`."""
+    if not is_valid_repo_dir(name):
+        raise LayoutError(f"repo folder must be one path component of letters, digits, '.', '-' or '_' "
+                          f"(starting with a letter or digit, at most {REPO_DIR_MAX}), got {name!r}")
+    return name
+
+
+_REVIEW_RE = re.compile(r"^review-pr-[0-9]{1,9}(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?$")
+_DESKTOP_RE = re.compile(r"^[a-z0-9][a-z0-9-]*-[0-9a-f]{6}$")
+
+
+def review_dir_name(pr: int, seat: str | None = None) -> str:
+    """review-pr-<n>, or review-pr-<n>-<seat> for the second seat that checks the same PR."""
+    if not isinstance(pr, int) or isinstance(pr, bool) or not 1 <= pr <= 999_999_999:
+        raise LayoutError(f"PR number must be a positive integer, got {pr!r}")
+    return f"{REVIEW_PREFIX}{pr}" if seat is None else f"{REVIEW_PREFIX}{pr}-{_token(seat, 'seat')}"
+
+
+def is_review_dir_name(name: str) -> bool:
+    return bool(_REVIEW_RE.match(name))
+
+
+def is_desktop_dir_name(name: str, seat_tokens: Iterable[str] = ()) -> bool:
+    """True for a Claude desktop worktree folder: <slug>-<6 hex>, and no seat word in front.
+
+    A lane the lane tool made always starts with a seat token (claude-fix-login), so a name that
+    starts with one is a lane even if it ends in six hex digits.  The reverse tie cannot be broken
+    from the name alone: a desktop slug that itself begins with a seat word (claude-foo-e380b8)
+    reads as a lane.  `_classify` is pure, so a lane.json manifest cannot decide it.
+    """
+    if not _DESKTOP_RE.match(name):
+        return False
+    seats = set(seat_tokens)
+    toks = name.split("-")
+    return not (toks[0] in seats or "-".join(toks[:2]) in seats)
+
+
 def lane_dir_name(prefix: str, seat: str, slug: str | None = None) -> str:
     """Flat lane directory name: <prefix>-<seat>[-<slug>].  The seat is used as given."""
     name = f"{_token(prefix, 'prefix')}-{_token(seat, 'seat')}"
@@ -809,7 +941,7 @@ def lane_dir_name(prefix: str, seat: str, slug: str | None = None) -> str:
 
 
 def nested_dir_name(seat: str, slug: str | None = None) -> str:
-    """Directory name inside lanes/<prefix>/: <seat>[-<slug>]."""
+    """Directory name inside lanes/<Repo>/: <seat>[-<slug>]."""
     name = _token(seat, "seat")
     return f"{name}-{validate_slug(slug)}" if slug is not None else name
 
@@ -825,20 +957,46 @@ def branch_name(seat: str, slug: str, registry: Registry | None = None) -> str:
     return f"{_token(seat.strip().lower(), 'seat')}/{slug}"
 
 
+def _app_dirs(app: App | str, registry: Registry | None, roots: Roots) -> tuple[str, str]:
+    """(repo folder, prefix) for an App, or for a string that names one (a repo folder, a prefix or a
+    repo name).  A string no app claims is used as the folder as written, and its lowercase as the prefix."""
+    if isinstance(app, App):
+        return app.lane_dir, app.prefix
+    key = str(app).strip()
+    if registry is not None:
+        found = (registry.app_by_lane_dir(key, case_insensitive=roots.case_insensitive)
+                 or registry.app_by_prefix(key) or registry.app_by_name(key))
+        if found is not None:
+            return found.lane_dir, found.prefix
+    return key, key.lower()
+
+
 def expected_lane_path(app: App | str, seat: str, slug: str | None, roots: Roots,
                        registry: Registry | None = None) -> Path:
     """Where a new lane belongs under the active layout mode.
 
-    nested: lanes_root/<prefix>/<seat>[-<slug>];  flat: apps_root/<prefix>-<seat>[-<slug>].
-    `app` is an App or a prefix string.  The seat is normalized (ag becomes antigravity).  A
-    missing slug names the seat's home lane for that app.
+    nested: lanes_root/<Repo>/<seat>[-<slug>];  flat: apps_root/<prefix>-<seat>[-<slug>].
+    `app` is an App, or a string naming one (the repo folder, the prefix or the repo name; a registry
+    is needed to resolve a prefix).  <Repo> is the repo's folder name under ~/Code exactly as spelled
+    there.  The seat is normalized (ag becomes antigravity).  A missing slug names the seat's home
+    lane for that app.
     """
-    prefix = app.prefix if isinstance(app, App) else str(app).strip().lower()
-    _token(prefix, "prefix")
+    lane_dir, prefix = _app_dirs(app, registry, roots)
     canon = normalize_seat(seat, registry)
     if roots.layout_mode == LAYOUT_FLAT:
+        _token(prefix, "prefix")
         return roots.apps_root / lane_dir_name(prefix, canon, slug)
-    return roots.lanes_root / prefix / nested_dir_name(canon, slug)
+    validate_repo_dir(lane_dir)
+    return roots.lanes_root / lane_dir / nested_dir_name(canon, slug)
+
+
+def review_lane_path(app: App | str, pr: int, roots: Roots, registry: Registry | None = None,
+                     seat: str | None = None) -> Path:
+    """Where the read-only checkout of PR `pr` belongs: lanes_root/<Repo>/review-pr-<n>.  Pass `seat`
+    for the review-pr-<n>-<seat> form a second seat gets when another seat already holds the plain one."""
+    lane_dir, _prefix = _app_dirs(app, registry, roots)
+    validate_repo_dir(lane_dir)
+    return roots.lanes_root / lane_dir / review_dir_name(pr, None if seat is None else normalize_seat(seat, registry))
 
 
 @dataclass(frozen=True)
@@ -913,8 +1071,11 @@ class LaneNameResult:
 
 
 def _eval_name(name: str, registry: Registry, *, nested_prefix_dir: str | None) -> tuple[NameVerdict, list[str], App | None, _SeatHit | None, str | None]:
-    """Judge one lane directory name.  `nested_prefix_dir` is the lanes/<prefix> directory name for
-    a nested lane (the name then holds only <seat>[-<slug>]), or None for a flat lane."""
+    """Judge one lane directory name.  `nested_prefix_dir` is the lanes/<Repo> folder name for a
+    nested lane (the name then holds only <seat>[-<slug>]), or None for a flat lane.  The parent
+    folder is the repo folder (`App.lane_dir`); the old lowercase prefix folders (lanes/fleet,
+    lanes/botfleet) still count as the right app and add the reason `legacy-prefix-dir:<dir>`, so
+    the lane name stays CONFORMING while `explain_layout` reports the folder as legacy."""
     canon = canonical_seat_set(registry)
     aliases = seat_alias_map(registry)
     lname = name.lower()
@@ -947,17 +1108,22 @@ def _eval_name(name: str, registry: Registry, *, nested_prefix_dir: str | None) 
         rest = lname[len(text) + 1:] if len(lname) > len(text) else ""
         has_rest = bool(rest)
     else:
-        app = registry.app_by_prefix(nested_prefix_dir)
-        exact = app is not None and nested_prefix_dir == app.prefix
+        app = registry.app_by_lane_dir(nested_prefix_dir)
+        exact = app is not None
         if app is None:
-            m = _match_app(nested_prefix_dir.lower(), registry)
-            if m is not None and m[1] == nested_prefix_dir.lower():
-                app = m[0]
-                reasons.append(f"prefix-dir-alias:{nested_prefix_dir}")
+            app = registry.app_by_prefix(nested_prefix_dir)
+            exact = app is not None and nested_prefix_dir == app.prefix
+            if app is None:
+                m = _match_app(nested_prefix_dir.lower(), registry)
+                if m is not None and m[1] == nested_prefix_dir.lower():
+                    app = m[0]
+                    reasons.append(f"prefix-dir-alias:{nested_prefix_dir}")
+                else:
+                    reasons.append(f"unknown-prefix-dir:{nested_prefix_dir}")
+            elif exact:
+                reasons.append(f"legacy-prefix-dir:{nested_prefix_dir}")
             else:
-                reasons.append(f"unknown-prefix-dir:{nested_prefix_dir}")
-        elif not exact:
-            reasons.append(f"prefix-dir-case:{nested_prefix_dir}")
+                reasons.append(f"prefix-dir-case:{nested_prefix_dir}")
         rest = lname
         has_rest = bool(rest)
 
@@ -998,7 +1164,9 @@ def explain_lane_name(path: str | os.PathLike[str], registry: Registry, roots: R
       NAME-DRIFT  lane-shaped but wrong: alias or mis-cased prefix, bot role, seat out of place
       NON-LANE    nothing in the name says it is a lane (botfleet-server, research)
     Paths outside a lane location (integration trees, managed, review, tmp) are NON-LANE with the
-    location named in the reasons.  The name is judged from the resolved path.
+    location named in the reasons.  The name is judged from the resolved path.  A nested lane in an
+    old prefix folder (lanes/fleet/claude-x) is judged on its own name and carries the reason
+    `legacy-prefix-dir:<dir>`; whether the folder is right is `explain_layout`'s question.
     """
     real = resolve_path(path, roots)
     cls, lane_dir = _classify(real, roots, None)
@@ -1019,6 +1187,119 @@ def explain_lane_name(path: str | os.PathLike[str], registry: Registry, roots: R
 def check_lane_name(path: str | os.PathLike[str], registry: Registry, roots: Roots) -> NameVerdict:
     """CONFORMING, ALIAS-ONLY, NAME-DRIFT or NON-LANE.  See `explain_lane_name` for the reasons."""
     return explain_lane_name(path, registry, roots).verdict
+
+
+# --------------------------------------------------------------------------- layout status (v2)
+
+class LayoutStatus(StrEnum):
+    """Is a checkout where the v2 layout wants it?  Compares equal to the plain strings."""
+
+    CORRECT = "correct"                  # lanes/<Repo>/<seat>-<slug>, <slug>-<hex>, review-pr-<n>
+    LEGACY_MIGRATE = "legacy-migrate"    # old prefix folder, ~/.codex/worktrees (both move in the migration), flat lane (retires in place)
+    LEGACY = "legacy"                    # lanes/_managed/** and lanes/_review/**: abolished, nothing new goes there
+    CODEX_MANAGED = "codex-managed"      # lanes/_codex/**: Codex desktop's own layout
+    TOOL_MANAGED = "tool-managed"        # another harness's own worktree folder (as before)
+    HUMAN = "human"                      # the integration tree under ~/Code
+    WRONG = "wrong"                      # a temp dir, directly under ~/Code, or inside ~/Code/<Repo>
+    UNSANCTIONED = "unsanctioned"        # anywhere else outside the map
+
+
+STATUS_LABELS: dict[str, str] = {
+    "correct": "correct",
+    "legacy-migrate": "legacy (migrate)",
+    "legacy": "legacy",
+    "codex-managed": "Codex-managed",
+    "tool-managed": "tool-managed",
+    "human": "human tree",
+    "wrong": "wrong",
+    "unsanctioned": "unsanctioned",
+}
+
+
+@dataclass(frozen=True)
+class LayoutResult:
+    """`target` is where a LEGACY-MIGRATE checkout belongs (None when it cannot be computed)."""
+
+    status: LayoutStatus
+    reasons: tuple[str, ...]
+    location: LocationClass
+    app: App | None = None
+    target: Path | None = None
+
+
+def explain_layout(path: str | os.PathLike[str], registry: Registry, roots: Roots) -> LayoutResult:
+    """Say whether `path` sits where layout v2 puts it, and where a legacy checkout belongs.
+
+    Pure, like everything here.  It never changes `classify_location`: a legacy or wrong place keeps
+    the LocationClass it always had (the doctor's JSON consumers key on those), and this is the
+    separate question.  Repo-local worktrees (~/Code/<Repo>/.claude/worktrees, .muse/worktrees) are
+    `wrong` yet stay MANAGED, so the janitor still retires them.
+    """
+    real = resolve_path(path, roots)
+    cls, _lane_dir = _classify(real, roots, None)
+    parts = _parts(real, roots)
+    orig = Path(real).parts
+
+    def done(status: LayoutStatus, *reasons: str, app: App | None = None, target: Path | None = None) -> LayoutResult:
+        return LayoutResult(status, tuple(reasons), cls, app, target)
+
+    if cls is LocationClass.INTEGRATION_TREE:
+        return done(LayoutStatus.HUMAN, "integration-tree")
+    if cls is LocationClass.FORBIDDEN_TMP:
+        return done(LayoutStatus.WRONG, "in-temp-dir")
+    if cls is LocationClass.FORBIDDEN_CODE_TOPLEVEL:
+        return done(LayoutStatus.WRONG, "checkout-directly-under-~/Code")
+    harness = _harness_for(parts, roots)
+    if harness is not None:
+        n, loc = harness
+        if not loc.sanctioned:
+            return done(LayoutStatus.UNSANCTIONED, f"harness-scratch:{loc.name}")
+        if loc.name in ("claude-repo", "muse-repo"):
+            return done(LayoutStatus.WRONG, f"inside-~/Code/<Repo>:{loc.name}")
+        if loc.name == "codex":
+            tail = orig[n:]
+            target = roots.codex_root.joinpath(*tail) if tail else None
+            return done(LayoutStatus.LEGACY_MIGRATE, "codex-worktrees-moves-to-lanes/_codex", target=target)
+        return done(LayoutStatus.TOOL_MANAGED, f"harness:{loc.name}")
+
+    lanes_p = _parts(roots.lanes_root, roots)
+    if _under(parts, lanes_p):
+        rel = parts[len(lanes_p):]
+        orig_rel = orig[len(lanes_p):]
+        if rel and rel[0] == CODEX_DIR:
+            return done(LayoutStatus.CODEX_MANAGED, "lanes/_codex")
+        if rel and rel[0] in (LEGACY_MANAGED_DIR, LEGACY_REVIEW_DIR):
+            return done(LayoutStatus.LEGACY, f"legacy-folder:{orig_rel[0]}")
+        if cls is LocationClass.UNSANCTIONED or len(orig_rel) < 2:
+            return done(LayoutStatus.UNSANCTIONED, "lanes-root-entry-outside-the-map")
+        first, name = orig_rel[0], orig_rel[1]
+        kind = ("review-checkout" if cls is LocationClass.REVIEW
+                else "claude-desktop" if cls is LocationClass.MANAGED else "lane")
+        app = registry.app_by_lane_dir(first)
+        if app is not None:
+            return done(LayoutStatus.CORRECT, kind, app=app)
+        old = registry.app_by_prefix(first)
+        if old is not None and first == old.prefix:
+            return done(LayoutStatus.LEGACY_MIGRATE, f"legacy-prefix-dir:{first}", kind, app=old,
+                        target=roots.lanes_root / old.lane_dir / name)
+        cased = registry.app_by_lane_dir(first, case_insensitive=True) if roots.case_insensitive else None
+        if cased is not None:
+            return done(LayoutStatus.LEGACY_MIGRATE, f"repo-dir-case:{first}", kind, app=cased,
+                        target=roots.lanes_root / cased.lane_dir / name)
+        return done(LayoutStatus.WRONG, f"unknown-repo-folder:{first}", kind)
+
+    if cls is LocationClass.LANE_FLAT_LEGACY:
+        res = explain_lane_name(real, registry, roots)
+        target = None
+        if res.app is not None and res.seat and not res.seat.startswith("BF-"):
+            try:
+                target = roots.lanes_root / res.app.lane_dir / nested_dir_name(res.seat, res.slug)
+            except LayoutError:
+                target = None
+        return done(LayoutStatus.LEGACY_MIGRATE, "flat-lane-under-~/apps", app=res.app, target=target)
+    if cls is LocationClass.LANE_FLAT:
+        return done(LayoutStatus.CORRECT, "flat-layout-mode")
+    return done(LayoutStatus.UNSANCTIONED, "outside-the-map")
 
 
 def _branch_prefixes(registry: Registry) -> tuple[list[str], list[str]]:

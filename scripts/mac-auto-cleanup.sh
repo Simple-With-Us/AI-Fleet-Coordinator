@@ -241,8 +241,9 @@ KEEP_RE = re.compile(
 IDLE_SEC = 4 * 3600  # 4 hours idle threshold
 
 # --- lanes-guard (board a7dfde0e / 912034a0) -------------------------------------------------------------
-# The old loop globbed only /Users/jay/apps/* (flat), so it never saw ~/apps/lanes/<prefix>/<lane>,
-# lanes/_review/..., lanes/_managed/<tool>/..., or ~/.codex/worktrees/<slug>/<Repo>.  Enumerate every linked
+# The old loop globbed only /Users/jay/apps/* (flat), so it never saw ~/apps/lanes/<Repo>/<lane> (layout v2) or the
+# pre-v2 lanes/<prefix>/<lane>, lanes/_review/..., lanes/_managed/<tool>/..., lanes/_codex/<slug>/<Repo>, or
+# ~/.codex/worktrees/<slug>/<Repo>.  Enumerate every linked
 # worktree git knows about instead, keep the flat glob for legacy lanes, and protect fresh / live lanes.
 # Every "cannot tell" keeps the deps: a failed lsof, pgrep or git call, an unreadable directory.
 HOME_DIR = os.path.expanduser("~")

@@ -220,23 +220,30 @@ done
 for p in /Users/jay/apps/botfleet-claude /Users/jay/apps/agent-sync-push /Users/jay/apps/botfleet-server; do   # regex only, never cd there
   printf '%s\n' "$p" | grep -qiE "$KEEP_RE" || fail "KEEP_RE must still protect the standing lane $p"
 done
-for p in "$LANES/botfleet/claude-x" "$FH/Code/BotFleet/.claude/worktrees/abc" "$FH/Code/BotFleet-copy" "$FH/apps/botfleet-claude-fix"; do
+for p in "$LANES/BotFleet/claude-x" "$FH/Code/BotFleet/.claude/worktrees/abc" "$FH/Code/BotFleet-copy" "$FH/apps/botfleet-claude-fix"; do
   janitor_keep_match "$p" && fail "KEEP_RE must not protect $p"
 done
 
 # ---- unit checks: nested-lane detection, inner checkout, git failure, argv, free probe ----------------------------
-mkdir -p "$FH/apps/lanes/botfleet/case-probe"
+mkdir -p "$FH/apps/lanes/BotFleet/case-probe"
 janitor_is_nested_lane "$FH/Apps/LANES/botfleet/case-probe" || fail "a case variant of LANES_ROOT is still a nested lane"
 ln -s "$LANES" "$T/lanes-link"
-janitor_is_nested_lane "$T/lanes-link/botfleet/case-probe" || fail "a symlinked spelling of LANES_ROOT is still a nested lane"
+janitor_is_nested_lane "$T/lanes-link/BotFleet/case-probe" || fail "a symlinked spelling of LANES_ROOT is still a nested lane"
 janitor_is_nested_lane "$FH/apps/botfleet-claude-x" && fail "a flat lane is not nested"
+# layout v2 (owner 2026-10-09): the janitor tests only "under the lanes root", so every v2 shape is a nested lane and
+# stays doctor-gated; a legacy prefix folder, a review checkout, a Claude desktop folder and a Codex folder all count
+for shape in "BotFleet/review-pr-482" "BotFleet/review-pr-482-codex" "BotFleet/active-engines-display-e380b8" \
+             "_codex/fix-thing/BotFleet" "Congress.Trade/claude-x" "AI-Fleet-Coordinator/claude-x" \
+             "botfleet/claude-x" "_managed/fleet/agent-sync-runtime" "_review/botfleet/pr-1"; do
+  janitor_is_nested_lane "$LANES/$shape" || fail "a v2 or legacy lane shape under the lanes root must count as nested: $shape"
+done
 
 # pgrep: a lane name with regex characters (pgrep exits 2 on the raw path) must still be found in argv
-RX="$LANES/botfleet/claude-c++-fix(1)"; mkdir -p "$RX"
+RX="$LANES/BotFleet/claude-c++-fix(1)"; mkdir -p "$RX"
 (cd / && exec python3 -c 'import time; time.sleep(300)' "$RX/server.js") </dev/null >/dev/null 2>&1 &
 PIDS="$PIDS $!"; sleep 1
 janitor_argv_busy "$RX" || fail "argv match must survive regex characters in the path"
-janitor_argv_busy "$LANES/botfleet/claude-nobody-runs-here" && fail "argv check must report idle when nothing matches"
+janitor_argv_busy "$LANES/BotFleet/claude-nobody-runs-here" && fail "argv check must report idle when nothing matches"
 
 # freek: a failed df with no prior reading is UNKNOWN (never 0 G, which opened lowfree, pressure and CRIT at once)
 : > "$T/df.fail"; rm -f "$STATE"
@@ -249,14 +256,14 @@ printf 'free=24\nts=x\n' > "$STATE"
 rm -f "$T/df.fail" "$STATE"
 
 # ---- RETIRE: one world, one fresh report; only the old merged lane with no keep marker and no cwd retires ----------
-L_FRESH="$LANES/botfleet/claude-fresh";       mk_lane "$L_FRESH" claude/fresh                                  # born now, 0 ahead
-L_MTIME="$LANES/botfleet/claude-mtime-only";  mk_lane "$L_MTIME" claude/mtime; commit_in "$L_MTIME" a; age_files "$L_MTIME"
-L_MERGED="$LANES/botfleet/claude-merged";     mk_lane "$L_MERGED" claude/merged; commit_in "$L_MERGED" a
+L_FRESH="$LANES/BotFleet/claude-fresh";       mk_lane "$L_FRESH" claude/fresh                                  # born now, 0 ahead
+L_MTIME="$LANES/BotFleet/claude-mtime-only";  mk_lane "$L_MTIME" claude/mtime; commit_in "$L_MTIME" a; age_files "$L_MTIME"
+L_MERGED="$LANES/BotFleet/claude-merged";     mk_lane "$L_MERGED" claude/merged; commit_in "$L_MERGED" a
 echo db > "$L_MERGED/local-state.sqlite"; age "$L_MERGED"
-L_KEEP="$LANES/botfleet/claude-keep";         mk_lane "$L_KEEP" claude/keep; commit_in "$L_KEEP" a; touch "$L_KEEP/.janitor-keep"; age "$L_KEEP"
-L_CWD="$LANES/botfleet/claude-cwd";           mk_lane "$L_CWD" claude/cwd; commit_in "$L_CWD" a; mkdir -p "$L_CWD/src"; age "$L_CWD"
-L_UNLISTED="$LANES/botfleet/claude-unlisted"; mk_lane "$L_UNLISTED" claude/unlisted; age "$L_UNLISTED"
-L_INNER="$LANES/botfleet/claude-holds-inner"; mk_lane "$L_INNER" claude/holds-inner; age "$L_INNER"
+L_KEEP="$LANES/BotFleet/claude-keep";         mk_lane "$L_KEEP" claude/keep; commit_in "$L_KEEP" a; touch "$L_KEEP/.janitor-keep"; age "$L_KEEP"
+L_CWD="$LANES/BotFleet/claude-cwd";           mk_lane "$L_CWD" claude/cwd; commit_in "$L_CWD" a; mkdir -p "$L_CWD/src"; age "$L_CWD"
+L_UNLISTED="$LANES/BotFleet/claude-unlisted"; mk_lane "$L_UNLISTED" claude/unlisted; age "$L_UNLISTED"
+L_INNER="$LANES/BotFleet/claude-holds-inner"; mk_lane "$L_INNER" claude/holds-inner; age "$L_INNER"
 mk_lane "$L_INNER/.claude/worktrees/session-1a2b3c" claude/session; echo wip >> "$L_INNER/.claude/worktrees/session-1a2b3c/f.txt"
 age_files "$L_INNER"
 [ -z "$(git -C "$L_KEEP" status --porcelain)" ] || fail "fixture: the keep marker must be ignored, so only the marker gate keeps that lane"
@@ -273,7 +280,7 @@ done
 git -C "$FH/Code/BotFleet" rev-parse -q --verify refs/heads/claude/merged >/dev/null || fail "retiring keeps the branch"
 
 # A real process with its cwd in the lane, seen by the REAL lsof, keeps it (the shim is a pass-through here).
-L_REALCWD="$LANES/botfleet/claude-realcwd"; mk_lane "$L_REALCWD" claude/realcwd; age "$L_REALCWD"
+L_REALCWD="$LANES/BotFleet/claude-realcwd"; mk_lane "$L_REALCWD" claude/realcwd; age "$L_REALCWD"
 (cd "$L_REALCWD" && exec sleep 300) </dev/null >/dev/null 2>&1 & PIDS="$PIDS $!"; sleep 1
 echo real > "$T/lsof.mode"; write_report "$LANE_REPORT" "$L_REALCWD"
 janitor_retire_worktrees
@@ -286,7 +293,7 @@ N=0
 # retire_case EXPECT NAME SETUP...: a new old, merged, approved lane; SETUP is eval'd to break exactly one thing.
 retire_case() {
   local expect="$1" name="$2" setup="$3" L
-  N=$((N + 1)); L="$LANES/botfleet/claude-case$N"
+  N=$((N + 1)); L="$LANES/BotFleet/claude-case$N"
   mk_lane "$L" "claude/case$N"; commit_in "$L" a; age "$L"
   echo ok > "$T/lsof.mode"; : > "$T/lsof.cwds"; echo copy > "$T/doctor.mode"; rm -f "$LANE_DOCTOR_FAIL"
   write_report "$LANE_REPORT" "$L"
@@ -325,11 +332,11 @@ retire_case keep   ".janitor-keep added after the report" 'touch "$L/.janitor-ke
 grep -q 'CWD-SNAPSHOT-FAILED rc=137' "$LOG" || fail "a killed lsof must be logged as CWD-SNAPSHOT-FAILED"
 
 # Letter case: git records a worktree in the case it was typed, lsof prints the on-disk case.  A lane typed as
-# apps/LANES/BotFleet/... is still a nested lane (no report = kept, even 0 commits ahead), and a process whose cwd lsof
+# apps/LANES/botfleet/... is still a nested lane (no report = kept, even 0 commits ahead), and a process whose cwd lsof
 # prints in the on-disk spelling still keeps it.
-TC_TYPED="$FH/apps/LANES/BotFleet/claude-typedcase"; TC_DISK="$LANES/botfleet/claude-typedcase"
+TC_TYPED="$FH/apps/LANES/botfleet/claude-typedcase"; TC_DISK="$LANES/BotFleet/claude-typedcase"
 mk_lane "$TC_TYPED" claude/typedcase; age "$TC_DISK"
-git -C "$FH/Code/BotFleet" worktree list --porcelain | grep -q "^worktree .*/LANES/BotFleet/claude-typedcase$" \
+git -C "$FH/Code/BotFleet" worktree list --porcelain | grep -q "^worktree .*/LANES/botfleet/claude-typedcase$" \
   || fail "fixture: git must record the typed case"
 echo ok > "$T/lsof.mode"; : > "$T/lsof.cwds"; write_report "$LANE_REPORT"   # a valid report that lists nothing
 janitor_retire_worktrees
@@ -341,7 +348,7 @@ present "$TC_DISK" || fail "a process cwd printed in the on-disk case must keep 
 janitor_retire_worktrees
 gone "$TC_DISK" || fail "control: the approved typed-case lane with no cwd retires"
 
-drop_lanes "$LANES/botfleet"
+drop_lanes "$LANES/BotFleet"
 
 # ---- janitor_pr_merged: by head sha, never by a reused branch name -----------------------------------------------
 P="$T/prrepo"; git "${GA[@]}" init -q "$P"; ( cd "$P" && echo a > a && git add a && git "${GA[@]}" commit -qm one ) || fail "pr repo"

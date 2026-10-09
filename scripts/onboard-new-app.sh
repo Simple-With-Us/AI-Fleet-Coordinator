@@ -186,7 +186,7 @@ echo "     The new registry row is only in this checkout until it merges and 'in
 echo "     refreshes ~/apps/lane-tools, so the first lane comes from here:"
 echo "       cd $here/scripts && AGENT_SEAT=<TAG> FLEET_APPS_JSON=$here/fleet-apps.json \\"
 echo "         python3 -m fleet_lanes.lane new $REPO fleet-onboard"
-echo "     Afterwards: AGENT_SEAT=<TAG> ~/apps/lane new $REPO <slug>  (lands in ~/apps/lanes/$WORKTREE_PREFIX/)."
+echo "     Afterwards: AGENT_SEAT=<TAG> ~/apps/lane new $REPO <slug>  (lands in ~/apps/lanes/$CODE_DIR/)."
 echo "     In that lane add AGENTS.md, docs/EFFORT-LOG.md, CI, effort-issues-sync"
 echo "     (copy from DealDex or Usage-Monitor; see docs/ONBOARDING-NEW-APP.md Phase 3)."
 echo "     After CI job \`verify\` exists: python3 $here/scripts/apply-github-ruleset.py --repo $OWNER/$REPO --kind product --checks verify"

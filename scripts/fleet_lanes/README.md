@@ -4,7 +4,7 @@ The tools behind the Lane Map (`docs/protocols/lane-map.md`): where every git ch
 
 | Tool | Command | What it does | What it writes |
 |---|---|---|---|
-| `lane` | `lane new`, `lane path`, `lane ls` | Creates a lane or a review checkout and prints its path. | A git worktree under `~/apps/lanes/` and a manifest inside the integration tree's `.git` folder.  Fetches the base branch (and probes origin for the new branch name) into the integration tree. |
+| `lane` | `lane new`, `lane path`, `lane ls` | Creates a lane or a review checkout and prints its path. | A git worktree under `~/apps/lanes/<Repo>/` and a manifest inside the integration tree's `.git` folder.  Fetches the base branch (and probes origin for the new branch name) into the integration tree. |
 | doctor | `lane ls`, `lane doctor`, `python3 -m fleet_lanes.doctor` | Finds every checkout on the Mac, says where it lives and whether removing it could lose work. | Nothing.  `--write PATH` saves the JSON report to that one file. |
 | temp guard hook | `lane-guard-hook` (`lane_guard_hook.py`, `guard.py`) | Denies a checkout of a fleet repo in a temp directory and prints the lane path to use. | Nothing. |
 | tools and hook installer | `python3 -m fleet_lanes.install_tools` | Installs a stable copy of the tools, wires the hook into each platform, and writes the Muse Code plugin bundle and seat shim. | The stable dir (with the hook shim, `muse-seat` and `muse-plugin/`), the `lane` shim, and one hook entry per platform config (backup first).  Nothing is written for Muse's own config. |
@@ -14,12 +14,13 @@ The sections below cover `lane`, the doctor, then the two installers.  The safet
 
 ## lane
 
-Creates the lane for one task and prints its path, or a read-only checkout of someone else's PR.  The seat comes only from the `AGENT_SEAT` environment variable, an uppercase registry tag such as `CLAUDE`, `AG`, `MM` or `CLUTCH` (any case is accepted).  If it is unset, unknown, a whole name such as `antigravity`, or a retired seat (`MONET`, `RENOIR`, `HARNESS`, `DSH`, `KIMI`), `lane` refuses; it never infers a seat from a login, a path or a branch.
+Creates the lane for one task and prints its path, or a read-only checkout of someone else's PR.  Layout v2 (owner 2026-10-09): the folder above a lane is the repo's folder name under `~/Code` exactly as spelled there (`Congress.Trade`, `AI-Fleet-Coordinator`), not the lowercase worktree prefix.  The seat comes only from the `AGENT_SEAT` environment variable, an uppercase registry tag such as `CLAUDE`, `AG`, `MM` or `CLUTCH` (any case is accepted).  If it is unset, unknown, a whole name such as `antigravity`, or a retired seat (`MONET`, `RENOIR`, `HARNESS`, `DSH`, `KIMI`), `lane` refuses; it never infers a seat from a login, a path or a branch.
 
 ```
 ~/apps/lane new <app> <slug> [--base REF] [--purpose TEXT] [--board ID] [--reuse-branch] [--dry-run] [--json]
 ~/apps/lane new <app> --review --pr N [--purpose TEXT] [--board ID] [--dry-run] [--json]
 ~/apps/lane path <app> <slug>          # prints the would-be path, no side effects
+~/apps/lane path <app> --review --pr N # the review checkout path this seat would get
 ~/apps/lane ls [doctor options]        # every checkout on the Mac (the doctor report)
 ~/apps/lane doctor [doctor options]    # same as ls
 
@@ -30,13 +31,13 @@ d=$(~/apps/lane new DealDex fix-login) && cd "$d"   # never cd "$(...)" alone: a
 
 | Option | Meaning |
 |---|---|
-| `<app>` | Repo name, code dir, worktree prefix or acronym, any case (`DealDex`, `dealdex`, `DD`).  Dots and dashes are ignored only if nothing matches exactly.  An unknown or ambiguous app exits 64 and lists the candidates. |
+| `<app>` | Repo name, repo folder, old worktree prefix or acronym, any case (`Congress.Trade`, `congress`, `CT`).  Dots and dashes are ignored only if nothing matches exactly.  An unknown or ambiguous app exits 64 and lists the candidates. |
 | `<slug>` | Lowercase kebab, 1 to 40 characters.  No seat, app or date inside it. |
 | `--base REF` | `origin/<branch>` or a bare `<branch>` that exists on origin.  Default `origin/main`.  Cannot be combined with `--reuse-branch`. |
 | `--purpose TEXT` | One line, at most 300 characters, saved in the manifest. |
 | `--board ID` | A board id saved in the manifest. |
 | `--reuse-branch` | Check out a branch that already exists (local or on origin) instead of creating one. |
-| `--review --pr N` | A detached, read-only checkout of the head of pull request N under the review root.  Takes no slug, `--base` or `--reuse-branch`. |
+| `--review --pr N` | A detached, read-only checkout of the head of pull request N at `~/apps/lanes/<Repo>/review-pr-N`.  Takes no slug, `--base` or `--reuse-branch`. |
 | `--dry-run` | Change nothing.  A review dry run skips `gh`, so its head sha is null. |
 | `--json` | Print the manifest plus `"path"` as one JSON object (`"existing": true` on an idempotent re-run, `"dry_run": true` on a dry run). |
 
@@ -46,9 +47,13 @@ Paths and names (the folder uses the seat's whole `worktreeSuffix`; the branch u
 
 | Kind | Path | Branch |
 |---|---|---|
-| Lane | `~/apps/lanes/<prefix>/<seat>-<slug>` | `<branch prefix><slug>`, for example `claude/fix-login`, `minimax/fix-login`, `ag/fix-login` (folder `antigravity-fix-login`) |
-| Review | `~/apps/lanes/_review/<prefix>/pr-<N>-<seat>` | Detached at the PR head |
-| Flat mode (`FLEET_LAYOUT=flat`) | `~/apps/<prefix>-<seat>-<slug>`; review checkouts stay under `lanes/_review` | Same |
+| Lane | `~/apps/lanes/<Repo>/<seat>-<slug>` | `<branch prefix><slug>`, for example `claude/fix-login`, `minimax/fix-login`, `ag/fix-login` (folder `antigravity-fix-login`) |
+| Review | `~/apps/lanes/<Repo>/review-pr-<N>`; a second seat on the same PR gets `review-pr-<N>-<seat>` | Detached at the PR head |
+| Claude desktop worktree | `~/apps/lanes/<Repo>/<slug>-<6 hex>` (the app names it; not made by `lane`) | Tool-chosen |
+| Codex desktop worktree | `~/apps/lanes/_codex/<slug>/<Repo>` (not made by `lane`) | Tool-chosen |
+| Legacy flat mode (`FLEET_LAYOUT=flat`), no longer documented as a way to make lanes | `~/apps/<prefix>-<seat>-<slug>`; it has no review folder, so `--review` is refused | Same |
+
+`<Repo>` is `App.lane_dir`: the registry `codeDir` (the folder name under `~/Code`), else the GitHub repo name for a repo with no tree there.  It is not held to the lowercase-kebab rule that seats and slugs follow, and it is validated as one path component (letters, digits, `.`, `-`, `_`).  A lane that has not migrated yet (`~/apps/lanes/fleet/claude-x`, a flat `~/apps/fleet-claude-x`) is found by `lane new`: it prints that path, says the migration will move it, and makes nothing.
 
 What `lane new` refuses (exit 64): an app with no integration tree in `~/Code` or no `fleet-apps.json` row (add the row first); an integration tree that is missing, is not a repo top, or has no `origin`; a path that is not `LANE_NESTED` (`LANE_FLAT` in flat mode) per `layout.classify_location`, or is under `~/Code` or inside another checkout; a folder name the layout would read as a different seat; a branch that already exists locally or on origin, or collides with a parent or child branch (unless `--reuse-branch`); a foreign thing already at the path; a registered worktree whose folder is gone (run `git worktree prune` yourself); a missing `~/apps`.
 
@@ -56,7 +61,7 @@ Flow for a new lane: offline checks, then `git fetch --no-tags origin <base>`, r
 
 Idempotent: if the path is already that tree's worktree on that branch (detached for a review), `lane new` prints the path and exits 0 with no fetch and no write.  It does not move a review to a newer PR head.
 
-Manifest: `lane.json` lives in the new worktree's private git dir, `<tree>/.git/worktrees/<name>/lane.json`, never in the working tree, written atomically.  A lane records `schema` 1, `tool`, `kind` "lane", `seat`, `tag`, `app`, `prefix`, `slug`, `branch`, `base`, `base_sha`, `purpose`, `board` and `created_at` (UTC, ISO-8601).  A review records `kind` "review", `pr`, `head_sha`, `head_ref`, `pr_state`, `cross_repo` and `expires_at` (created plus 7 days).  A failure to write the manifest is a warning on stderr and does not change the exit code.  `lane` never creates a `.janitor-keep` file: that marker makes the doctor say NEEDS-REVIEW forever, so it is not a way to protect a lane.
+Manifest: `lane.json` lives in the new worktree's private git dir, `<tree>/.git/worktrees/<name>/lane.json`, never in the working tree, written atomically.  A lane records `schema` 1, `tool`, `kind` "lane", `seat`, `tag`, `app`, `prefix`, `lane_dir`, `slug`, `branch`, `base`, `base_sha`, `purpose`, `board` and `created_at` (UTC, ISO-8601).  A review records `kind` "review", `pr`, `head_sha`, `head_ref`, `pr_state`, `cross_repo` and `expires_at` (created plus 7 days).  A failure to write the manifest is a warning on stderr and does not change the exit code.  `lane` never creates a `.janitor-keep` file: that marker makes the doctor say NEEDS-REVIEW forever, so it is not a way to protect a lane.
 
 Process rules: every process starts in one runner that checks an allowlist first (`git fetch --no-tags origin <ref>`, `git worktree list --porcelain`, `git worktree add` in exactly three shapes with an absolute path strictly inside the lanes root, `git rev-parse`, `git show-ref --verify`, `git for-each-ref`, `git config --get remote.origin.url`, and `gh pr view` for four JSON fields).  Anything else raises before a process exists.  Credentials in git and gh error text are redacted.  Concurrent fetches into the same `~/Code` tree can fail on a ref lock (exit 69); rerun.  Repo hooks such as `post-checkout` run during `git worktree add`, as they would by hand.
 
@@ -104,7 +109,7 @@ Discovery is the union of two methods, deduplicated by real path (so `~/Code/Soc
 |---|---|
 | `/tmp`, `/private/tmp`, `/var/tmp`, `/private/var/tmp`, `$TMPDIR` | 4 |
 | `~/apps` | 2 (every top-level entry, plus one level into non-git folders such as `mkt/`) |
-| `~/apps/lanes` | 4 |
+| `~/apps/lanes` | 4 (reaches `lanes/<Repo>/<lane>` and `lanes/_codex/<slug>/<Repo>`) |
 | `~/Code` | 1, plus each `~/Code/<App>/.claude/worktrees` and each `~/Code/<App>/.muse/worktrees` at 1 |
 | `~/.codex/worktrees`, `~/.cursor/worktrees`, `~/.ag/worktrees` | 3 |
 | `~/.grok`, `~/.fx` | 4 |
@@ -117,7 +122,9 @@ A registered worktree whose directory is gone is reported as PRUNABLE, not as a 
 
 ### Reading the output
 
-**Location class** (from `layout.classify_location`): INTEGRATION_TREE, LANE_NESTED, LANE_FLAT_LEGACY, LANE_FLAT, REVIEW, MANAGED, FORBIDDEN_TMP, FORBIDDEN_CODE_TOPLEVEL, UNSANCTIONED.  The Claude harness scratchpad under `/private/tmp/claude-<uid>` is still FORBIDDEN_TMP here, because a checkout inside it is a checkout in a temp directory.  Only the temp guard exempts it.
+**Location class** (from `layout.classify_location`): INTEGRATION_TREE, LANE_NESTED, LANE_FLAT_LEGACY, LANE_FLAT, REVIEW, MANAGED, FORBIDDEN_TMP, FORBIDDEN_CODE_TOPLEVEL, UNSANCTIONED.  Under layout v2 a review checkout `lanes/<Repo>/review-pr-<n>` is REVIEW and a Claude desktop worktree `lanes/<Repo>/<slug>-<6 hex>` and anything under `lanes/_codex` are MANAGED (so HogHunter's dependency step leaves them alone); the old `lanes/_review/**` and `lanes/_managed/**` keep REVIEW and MANAGED.  The class values never change.  The Claude harness scratchpad under `/private/tmp/claude-<uid>` is still FORBIDDEN_TMP here, because a checkout inside it is a checkout in a temp directory.  Only the temp guard exempts it.
+
+**Layout status** (from `layout.explain_layout`; `layout_status`, `layout_reasons` and, for a legacy place, `layout_target` in the JSON; a "Layout (v2)" table in the text report): `correct` (`lanes/<Repo>/<seat>-<slug>`, `<slug>-<hex>`, `review-pr-<n>`), `legacy-migrate` (an old prefix folder such as `lanes/fleet`, a flat `~/apps/<prefix>-<seat>-<slug>`, `~/.codex/worktrees`; the new path is shown), `legacy` (`lanes/_managed/**`, `lanes/_review/**`), `codex-managed` (`lanes/_codex/**`), `tool-managed` (another harness's own folder), `human` (the integration tree), `wrong` (a temp directory, a checkout directly under `~/Code`, a worktree inside `~/Code/<Repo>`) and `unsanctioned`.  A worktree inside `~/Code/<Repo>` (`.claude/worktrees`, `.muse/worktrees`) is also the `WRONG-PLACE` anomaly; it stays MANAGED so the cleaners still retire it.  `--strict` and the cleaner list do not change.
 
 **Safety class**, in precedence order.  This says whether removing the checkout could lose work.  It does not say the location is disposable (an integration tree with no lanes can read SAFE-TO-REMOVE), and **a cleaner must never act on SAFE-TO-REMOVE alone**: before the fresh-lane rule, a lane created an hour ago with no commits yet read SAFE-TO-REMOVE, and the label still says nothing about whether anyone is about to use a lane.  Cleaners read `cleaner_candidates` instead (see the cleaner contract below).
 
@@ -166,7 +173,7 @@ NEEDS-REVIEW reasons:
 
 `unpushed` is measured against remote-tracking refs already on disk.  The doctor never fetches, so a stale ref can overstate or understate it.
 
-**Creating tool** is a guess from the path first, then the lane's seat token, then the branch prefix.  `creating_tool_basis` says which.  A Claude worktree under `.claude/worktrees` is called claude-desktop only when its name ends in `-<6 hex>` like the desktop app's, and claude-cli otherwise, so treat that split as a hint.
+**Creating tool** is a guess from the path first, then the lane's seat token, then the branch prefix.  `creating_tool_basis` says which.  A Claude worktree is called claude-desktop when it sits at `lanes/<Repo>/<slug>-<6 hex>` (the desktop app's location under layout v2) or, under `.claude/worktrees`, when its name ends in `-<6 hex>`, and claude-cli otherwise, so treat that split as a hint.  Anything under `lanes/_codex` is codex.
 
 **Tool caches** (plugin and marketplace clones under `~/.grok`, `~/.codex/memories` and similar) are kept in `checkouts` and the summary with `tool_cache: true` and the safety class TOOL-CACHE, but they do not raise UNSANCTIONED anomalies or `--strict`.  Third-party clones (a remote owned by someone other than the registry owner) are treated the same way for UNSANCTIONED only.  FORBIDDEN_TMP and FORBIDDEN_CODE_TOPLEVEL always apply.
 
@@ -321,6 +328,7 @@ A bare invocation, or one whose first argument is a flag, runs `plan` for all pl
 | Platform | File | Text |
 |---|---|---|
 | `claude` | `.claude/CLAUDE.md` | Full.  This is the owner's own file: `plan` and `apply` need `--i-own-this-file` when it is named (a default `plan` skips it without reading it). |
+| `home-agents` | `AGENTS.md` (the home folder) | Full.  Also the owner's own file (`--i-own-this-file`).  Tools that load project instructions read it, and it carried a hand-copied block that no row refreshed until layout v2. |
 | `codex` | `.codex/AGENTS.md` | Full.  Warns above 30720 bytes and refuses a result above 32768 (limits chosen by the tool's author, not checked against Codex itself). |
 | `fx` | `.fx/AGENTS.md` | Full |
 | `grok` | `.grok/GROK.md` | Full; covers Grok and Grok Build |
@@ -335,7 +343,7 @@ Guards (exit 2, nothing written): a symlink that does not resolve to a regular f
 
 Exit codes: 0 ok; 1 `verify` found no current block, or a write failed; 2 refused by a guard (`plan` exits 2 only when an owner file is NAMED without `--i-own-this-file`; other predicted refusals are informational); 64 usage error.
 
-`plan` prints, per platform: the file, size, symlink and block state, what `apply` would do, WARNING and "would be REFUSED" lines, a unified diff, then `CONTRADICTIONS (report only; never edited automatically)`.  The scanner reports lines that state the old flat-lane rule (`flat-lane`), advise a checkout in a temp directory (`tmp-checkout`), or mention an `agent/<name>` branch prefix (`legacy-agent-prefix-mention`, no ruling made), and never edits them.  Everything printed from a file goes through a redactor for URL credentials and common token shapes.
+`plan` prints, per platform: the file, size, symlink and block state, what `apply` would do, WARNING and "would be REFUSED" lines, a unified diff, then `CONTRADICTIONS (report only; never edited automatically)`.  The scanner reports lines that state the old flat-lane rule (`flat-lane`), name a pre-v2 lane folder such as `~/apps/lanes/trading/`, `~/apps/lanes/<prefix>/`, `_managed` or `_review` (`old-lane-layout`; a repo's exact folder name such as `BotFleet` is never reported), advise a checkout in a temp directory (`tmp-checkout`), or mention an `agent/<name>` branch prefix (`legacy-agent-prefix-mention`, no ruling made), and never edits them.  Everything printed from a file goes through a redactor for URL credentials and common token shapes.
 
 The rule text is in `rules/` (`lane-map.full.md`, `lane-map.minimal.md`, `lane-map.cursor.mdc`).  It says the branch is "your branch prefix plus the slug", not `<seat>/<slug>`, because the Antigravity folder is `antigravity-x` and its branch is `ag/x`.
 
@@ -347,7 +355,7 @@ Each step is owner-approved, read the `plan` first, and nothing here is installe
 
 1. `install_tools apply tools`, then `verify tools`.  This creates `~/apps/lane-tools` and `~/apps/lane`.  It comes first because the rule text tells every agent to run `~/apps/lane`, and a rules block pointing at a missing command is worse than none.
 2. `install_tools apply <platform>` for each platform, then `verify`.  Codex needs one `/hooks` trust, and Claude needs a new session.  Muse Code needs the owner actions that `plan muse` prints (`muse plugins install ... --scope user`, then `muse plugins approve fleet-lane-guard`, then a new session); `apply tools` has already written the bundle.
-3. `install_rules apply <platform>` for each platform (`--i-own-this-file` for `claude`, `--create` for a file that does not exist).
+3. `install_rules apply <platform>` for each platform (`--i-own-this-file` for `claude` and `home-agents`, `--create` for a file that does not exist).
 4. After every merge that changes the package, `apply tools` again to refresh the stable copy.  After any change to a platform config, `verify` again.
 
 Changes to the live cleaners (`disk-janitor`, `mac-auto-cleanup`) are a separate step; see `docs/protocols/lane-map.md` § Cleaners.

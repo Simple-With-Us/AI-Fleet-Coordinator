@@ -150,7 +150,7 @@
       "repo": "fleet-ops",
       "acronym": "OPS",
       "displayName": "Fleet Ops",
-      "codeDir": "fleet-ops",
+      "codeDir": "Fleet-OPS",
       "liveBoard": "FLEET-OPS-EFFORT-LOG.md",
       "worktreePrefix": "fleet-ops",
       "badgeClass": "repo-ops",

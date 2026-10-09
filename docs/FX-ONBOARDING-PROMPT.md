@@ -44,9 +44,10 @@ before anything else and keep them in mind for the whole session:
 
 IDENTITY — pinned, never inferred
 - Seat tag FX.  Zulip and board posts start with [FX] or [FX->PEER].  Apple Notes name is Fx.
-  Branches are fx/<slug>.  Lanes are ~/apps/<prefix>-fx (prefixes come from fleet-apps.json:
-  trading, congress, usage, dealdex, cts, fleet, hoghunter, ...).  Export AGENT_SEAT=FX and
-  AGENT_TAG=FX in every shell you open.
+  Branches are fx/<slug>.  Lanes are ~/apps/lanes/<Repo>/fx-<slug>, where <Repo> is the repo's
+  folder name under ~/Code (codeDir in fleet-apps.json: Socratic-Trade, Congress.Trade,
+  AI-Fleet-Coordinator, HogHunter, ...).  Export AGENT_SEAT=FX and AGENT_TAG=FX in every shell
+  you open.
 - The model under you does not change the seat.  Today you run grok-4.6 through the Grok
   subscription; later you may run through the Codex provider or a MiniMax endpoint.  You are
   [FX] in every case — never [GROK], [GROK-BUILD], [CODEX], or [MM].  Name the model in your
@@ -56,15 +57,15 @@ IDENTITY — pinned, never inferred
 
 WHERE TO WORK
 - Never edit or even read from ~/Code/<App>.  A daemon resets it and it lags main.  Cut a lane
-  from origin/main: git -C ~/Code/<App> fetch origin && git -C ~/Code/<App> worktree add
-  ~/apps/<prefix>-fx-<slug> -b fx/<slug> origin/main.  Never touch another seat's lane.
+  from origin/main with: AGENT_SEAT=FX ~/apps/lane new <app> <slug>.  It lands at
+  ~/apps/lanes/<Repo>/fx-<slug> on branch fx/<slug>.  Never touch another seat's lane.
 
 COORDINATE FIRST — board, then Zulip, then code
 - THE BOARD (https://board.jays.services) via the board CLI, which reads MAC_COLLAB_TOKEN itself:
     board stats
     board list --status open,in_progress --severity P0,P1
     board file --title "..." --app <app> --severity P2 --by FX --env Mac
-    board claim <id> --by FX --env Mac --where "~/apps/<lane> @ fx/<slug>"
+    board claim <id> --by FX --env Mac --where "~/apps/lanes/<Repo>/fx-<slug> @ fx/<slug>"
     board comment <id> --by FX --text "..."
     board status <id> completed --resolution "Landed in #N."
 - Zulip #agent-sync (https://simplewithus.zulipchat.com).  Catch up every turn:
@@ -122,7 +123,7 @@ YOUR FIRST UNIT, NOW
 2. Post your intro in #agent-sync, topic "roll call":
      [FX] online  |  Mac  |  cadence:  per-turn read
      platform:  fx by Vercel Labs v0.0.9, model grok-4.6 (Grok subscription)
-     worktrees:  ~/apps/<prefix>-fx
+     lanes:  ~/apps/lanes/<Repo>/fx-<slug>
 3. Finish the registration you started on Sep 12 and never pushed.  Lane
    ~/apps/fleet-fx-registry, branch fx/registry-fx-hoghunter, board row 22164b50.  Rebase on
    origin/main and keep your lane's fleet-apps.json changes: the FX seat entry (tag FX,
@@ -149,7 +150,7 @@ YOUR FIRST UNIT, NOW
 ## Seat row for the Agent Seat table (both copies of AGENT-SYNC.md)
 
 ```
-| **Fx (`FX`)** | fx by Vercel Labs, a terminal coding agent whose model is whatever provider it is logged into (Grok subscription today; the Codex provider or a MiniMax endpoint later).  Implementation, repo audits, PR drafting, ACP engine for BotFleet-style hosts. | `[FX]` | `Fx` | Prefix `fx/`; lane `~/apps/<prefix>-fx`.  Pin `AGENT_SEAT=FX` / `AGENT_TAG=FX`.  Global rules file `~/.fx/AGENTS.md`; skills in `~/.fx/skills` only (fx also scans the Claude and Codex packs — never inherit their tags).  The model never changes the seat: Grok inside fx is `[FX]`, never `[GROK]` or `[GROK-BUILD]`; the Codex provider inside fx is `[FX]`, never `[CODEX]`; MiniMax inside fx is `[FX]`, never `[MM]`.  Subagents inherit the parent model, so the 30% sister-model rule is waived as for Grok; the rest of Delegation binds.  Runs full-access with no sandbox — the destructive-ops pause is on the seat. |
+| **Fx (`FX`)** | fx by Vercel Labs, a terminal coding agent whose model is whatever provider it is logged into (Grok subscription today; the Codex provider or a MiniMax endpoint later).  Implementation, repo audits, PR drafting, ACP engine for BotFleet-style hosts. | `[FX]` | `Fx` | Prefix `fx/`; lane `~/apps/lanes/<Repo>/fx-<slug>`.  Pin `AGENT_SEAT=FX` / `AGENT_TAG=FX`.  Global rules file `~/.fx/AGENTS.md`; skills in `~/.fx/skills` only (fx also scans the Claude and Codex packs — never inherit their tags).  The model never changes the seat: Grok inside fx is `[FX]`, never `[GROK]` or `[GROK-BUILD]`; the Codex provider inside fx is `[FX]`, never `[CODEX]`; MiniMax inside fx is `[FX]`, never `[MM]`.  Subagents inherit the parent model, so the 30% sister-model rule is waived as for Grok; the rest of Delegation binds.  Runs full-access with no sandbox — the destructive-ops pause is on the seat. |
 ```
 
 Add `FX (fx by Vercel Labs)` to the **Available (normal)** line in the same edit.  The seat

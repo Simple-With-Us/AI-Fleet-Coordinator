@@ -197,7 +197,7 @@ def _banner(tag: str, notes: str, prefix: str, suffix: str, zulip: str = "") -> 
     return (
         f"> **This install is for `{tag}`.**  Chat tag `[{tag}·session8]`.  "
         f"Notes `{notes}`.  "
-        f"Branches `{prefix}/`.  Worktrees `~/apps/<app>-{suffix}`.  Do not inherit "
+        f"Branches `{prefix}/`.  Lanes `~/apps/lanes/<Repo>/{suffix}-<slug>`.  Do not inherit "
         f"another seat's tag from {inherit}."
         f"{zulip}\n\n"
     )
@@ -303,7 +303,7 @@ CLAUDE_SHARED_BANNER = (
 CLAUDE_IDENTITY = (
     "This pack is for **CLAUDE** (the Claude account, the only Claude seat since "
     "owner 2026-10-07).  Session tag `[CLAUDE·session8]`.  Notes name `Claude`.  "
-    "Branches `claude/<slug>` only.  Lanes `~/apps/lanes/<prefix>/claude-<slug>`.  "
+    "Branches `claude/<slug>` only.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  "
     "MONET and RENOIR are retired.  Never sign as Monet.  Pin `AGENT_SEAT=CLAUDE`."
 )
 
@@ -340,7 +340,7 @@ CLUTCH_IDENTITY = (
     "This pack is for **CLUTCH** (the Clutch seat, owner of `Simple-With-Us/Clutch`: "
     "the DSH and MiniMax drivers, ACP bridges, and cordis profiles).  Session tag "
     "`[CLUTCH·session8]`.  Notes name `Clutch`.  Branches `clutch/<slug>` only.  "
-    "Lanes `~/apps/lanes/clutch/clutch-<slug>`.  One seat for every model run "
+    "Lanes `~/apps/lanes/Clutch/clutch-<slug>`.  One seat for every model run "
     "through Clutch (owner 2026-10-07: no per-model split).  Replaces HARNESS and "
     "DSH.  Never sign as Monet.  Pin `AGENT_SEAT=CLUTCH`."
 )
@@ -393,7 +393,7 @@ MUSE_CODE_EXTRA = (
     "> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive "
     "terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches "
     "`muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at "
-    "`~/apps/lanes/<prefix>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the "
+    "`~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the "
     "`muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` "
     "appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  "
     "Distinct from **Muse Assist** "
@@ -419,7 +419,7 @@ SEATS: dict[str, Seat] = {
         "~/.cursor/skills", "exclusive",
         "This pack is for the **CURSOR** seat (Cursor IDE and Auto on this Mac).  "
         "Zulip session tag `[CURSOR·session8]`.  Notes name `Cursor`.  Branches "
-        "`cursor/<slug>` only.  Worktrees `~/apps/<prefix>-cursor`.  Never post as `[MONET]`, "
+        "`cursor/<slug>` only.  Lanes `~/apps/lanes/<Repo>/cursor-<slug>`.  Never post as `[MONET]`, "
         "`[CLAUDE]`, or `[GROK]`.  A skill copied from the Monet pack is not your "
         "name — this install is.  Pin `AGENT_SEAT=CURSOR`.  Incident: 2026-08-23 "
         "Cursor inherited Monet identity from an unspecialized skill copy.",
@@ -433,7 +433,7 @@ SEATS: dict[str, Seat] = {
         "~/.gemini/skills", "exclusive",
         "This pack is for **AG** (Antigravity / Gemini).  Session tag `[AG·session8]`.  Notes name "
         "`Antigravity`.  Branches `ag/<slug>` (keep `agent/antigravity` only if the lane "
-        "already uses it).  Worktrees `~/apps/<prefix>-antigravity`.  Never sign "
+        "already uses it).  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Never sign "
         "as Monet, Cursor, or Claude.  Pin `AGENT_SEAT=AG`.",
         seat_key="ag",
         zulip_bot="ag-bot",
@@ -443,7 +443,7 @@ SEATS: dict[str, Seat] = {
         "CODEX", "Codex", "codex", "codex",
         "~/.codex/skills", "exclusive",
         "This pack is for **CODEX**.  Session tag `[CODEX·session8]`.  Notes name `Codex`.  "
-        "Branches `codex/<slug>` only.  Worktrees `~/apps/<prefix>-codex`.  "
+        "Branches `codex/<slug>` only.  Lanes `~/apps/lanes/<Repo>/codex-<slug>`.  "
         "Never sign as Monet.  Pin `AGENT_SEAT=CODEX`.",
         seat_key="codex",
         zulip_bot="codex-bot",
@@ -453,8 +453,8 @@ SEATS: dict[str, Seat] = {
         "GROK", "Grok", "grok", "grok",
         "~/.grok/skills", "exclusive",
         "This pack is for the **GROK** Mac TUI / CLI seat.  Session tag `[GROK·session8]`.  "
-        "Notes name `Grok`.  Branches `grok/<slug>` only.  Worktrees "
-        "`~/apps/<prefix>-grok`.  Never sign as Monet or Grok Bot.  Pin "
+        "Notes name `Grok`.  Branches `grok/<slug>` only.  Lanes "
+        "`~/apps/lanes/<Repo>/grok-<slug>`.  Never sign as Monet or Grok Bot.  Pin "
         "`AGENT_SEAT=GROK`.",
         extra_banner=GROK_EXTRA,
         seat_key="grok",
@@ -466,7 +466,7 @@ SEATS: dict[str, Seat] = {
         "~/.grok-build/skills", "exclusive",
         "This pack is for **GROK-BUILD** (Grok Build TUI / App Builder).  Session "
         "tag `[GROK-BUILD·session8]`.  Notes name `Grok Build`.  Branches `grok-build/<slug>` "
-        "only.  Worktrees `~/apps/<prefix>-grok-build`.  Do not use `grok/` or "
+        "only.  Lanes `~/apps/lanes/<Repo>/grok-build-<slug>`.  Do not use `grok/` or "
         "sign as GROK or a Grok Bot `[GB-<NAME>]` role.  Pin "
         "`AGENT_SEAT=GROK-BUILD`.",
         seat_key="grok-build",
@@ -477,8 +477,8 @@ SEATS: dict[str, Seat] = {
         "FX", "Fx", "fx", "fx",
         "~/.fx/skills", "exclusive",
         "This pack is for the **FX** terminal agent (`fx` / `fx.sh`).  Session tag "
-        "`[FX·session8]`.  Notes name `Fx`.  Branches `fx/<slug>` only.  Worktrees "
-        "`~/apps/<prefix>-fx`.  This is not Cursor, not Codex, and not Monet.  "
+        "`[FX·session8]`.  Notes name `Fx`.  Branches `fx/<slug>` only.  Lanes "
+        "`~/apps/lanes/<Repo>/fx-<slug>`.  This is not Cursor, not Codex, and not Monet.  "
         "Pin `AGENT_SEAT=FX`.",
         extra_banner=(
             "> **Runtime (fx).** Local Cursor IDE remains `[CURSOR]`.  Codex CLI "
@@ -557,7 +557,7 @@ SEATS: dict[str, Seat] = {
         "~/.minimax/skills", "exclusive",
         "This pack is for **MM** (MiniMax Code on the Mavis local runtime).  "
         "Session tag `[MM·session8]`.  Notes name `MiniMax`.  Branches `minimax/<slug>` only.  "
-        "Worktrees `~/apps/<prefix>-minimax`.  Running a MiniMax *model* inside "
+        "Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Running a MiniMax *model* inside "
         "another harness does not make you this seat.  Built-in Mavis sub-agents "
         "(`explore`, `worker`, `verifier`) inherit `MM` — they do not get "
         "their own Zulip bot.  Former tag `MINIMAX` is retired.  "
@@ -583,7 +583,7 @@ SEATS: dict[str, Seat] = {
         "~/.config/muse/skills", "exclusive",
         "This pack is for **MC** (Muse Code interactive terminal coding agent).  "
         "Session tag `[MC·session8]`.  Notes name `Muse Code`.  Branches `muse-code/<slug>` only.  "
-        "Lanes `~/apps/lanes/<prefix>/muse-code-<slug>` (make one with "
+        "Lanes `~/apps/lanes/<Repo>/muse-code-<slug>` (make one with "
         "`~/apps/lane new <app> <slug>`).  Distinct from Muse Assist "
         "(`[MA]`, branches `muse-assist/`).  Never sign as Monet, Claude, or Codex.  "
         "Pin `AGENT_SEAT=MC` / `AGENT_TAG=MC`.",
@@ -597,7 +597,7 @@ SEATS: dict[str, Seat] = {
         "docs/fleet-skills/by-seat/muse-assist", "exclusive",
         "This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  "
         "Session tag `[MA·session8]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` "
-        "(historical `muse/<slug>`).  Worktrees `~/apps/<prefix>-muse-assist`.  "
+        "(historical `muse/<slug>`).  No lane on the Mac (cloud VM).  "
         "Former tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly "
         "distinguish from Muse Code (`[MC]`).  Pin `AGENT_SEAT=MA` / `AGENT_TAG=MA`.",
         extra_banner=MUSE_ASSIST_BANNER,
@@ -1295,7 +1295,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         "tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-CONDUCTOR]`, "
         "`[DSH·session8]`, `[MM·session8]`), your seat's own bot and "
         "`~/.secrets/Zulip/<file code>-zuliprc`, branch "
-        "prefix (`<seat>/<slug>`), worktree (`~/apps/<app>-<seat>`), and Apple "
+        "prefix (`<seat>/<slug>`), lane (`~/apps/lanes/<Repo>/<seat>-<slug>`), and Apple "
         "Notes name (`Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, "
         "`Monet`, `DeepSeek Harness`, `MiniMax`, `Fx`, or the GB role in "
         "Title Case)."

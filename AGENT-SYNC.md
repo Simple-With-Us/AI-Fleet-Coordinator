@@ -224,7 +224,7 @@ What a launcher sets and clears in each child's environment (`AGENT_LAUNCHER`, `
 | MA | `Muse Assist` | `muse-assist/` (historical `muse/`) | `muse-assist` | muse-assist-bot@ |
 
 - **Tags.**  The seat column is the tag:  `[CLAUDE]`, `[AG]`, `[MM]`, and so on.  Mention names and credential file codes are in the guide's [Who's Here](docs/protocols/zulip-fleet-guide.md#whos-here); take them from there.
-- **Lanes.**  New lanes are `~/apps/lanes/<prefix>/<lane token>-<slug>` ([Lanes, Worktrees, and Branches](#lanes-worktrees-and-branches)).  Old flat lanes (`~/apps/<prefix>-<lane token>`, such as `~/apps/trading-claude`, `~/apps/trading-codex`, `~/apps/trading-antigravity`, and `~/apps/<prefix>-minimax`) retire in place.  The short tokens `ag` and `mm` on existing lanes are accepted aliases.
+- **Lanes.**  New lanes are `~/apps/lanes/<Repo>/<lane token>-<slug>`, where `<Repo>` is the repo's folder name under `~/Code` ([Lanes, Worktrees, and Branches](#lanes-worktrees-and-branches), [Where Lanes Live](#where-lanes-live)).  Old lanes in the earlier `~/apps/lanes/<prefix>/` folders such as `~/apps/lanes/trading/` (and in `_managed` and `_review`) are moved by the layout migration, and are reported as legacy until then.  The flat `~/apps/<prefix>-<lane token>` ones such as `~/apps/trading-claude`, `~/apps/trading-codex`, `~/apps/trading-antigravity` and `~/apps/<prefix>-minimax` are not moved by it: they stay where they are, are reported as legacy, and retire normally.  The short tokens `ag` and `mm` on existing lanes are accepted aliases.
 
 Seat by seat:
 
@@ -234,10 +234,10 @@ Seat by seat:
 - **CURSOR** (Cursor / Copilot):  interactive in-IDE editing, localized refactoring, quick inline fixes and targeted line edits inside the IDE.  Local Mac IDE/Auto only.  A Cursor cloud agent that Grok Bot drives signs `[GB-<NAME>]` ([Platform Bots](#platform-bots)); any other Cursor background or cloud agent signs `[CURSOR]` until Jay rules ([Open for Jay](#open-for-jay)).  Rules home:  `~/.cursor/rules/`.
 - **GROK** (terminal Grok:  the Mac Grok TUI / CLI and Grok Build are ONE seat, owner 2026-10-08):  high-throughput implementation, rapid PR creation, automated test and documentation maintenance.  Focuses on velocity, auto-merging green PRs, and updating effort logs and living Completion notes.  Posts as the `grok-build-bot@` Zulip bot.  `GROK-BUILD` is a retired alias:  historical posts and `grok-build/` branches still mean this seat, but never sign new work as GROK-BUILD.  Rules home:  `~/.grok/GROK.md`.
 - **GROK-WEB** (Grok on the web and the iOS app, owner 2026-10-08):  a separate cloud seat, different from terminal Grok in tools and reach.  No lanes or checkouts.  Posts as `grok-web-bot@`, through the hosted agent-sync MCP endpoint once it exists ([MCP design](docs/protocols/agent-sync-mcp.md)).
-- **CLUTCH** (Clutch):  owns `Simple-With-Us/Clutch`:  DSH and MiniMax drivers, Python ACP bridges, cordis profiles, web scripts, and the npm package BotFleet imports.  One seat for every model run through Clutch (owner 2026-10-07:  no per-model split).  Replaces HARNESS.  Pin `AGENT_SEAT=CLUTCH` / `AGENT_TAG=CLUTCH`.  Lane `~/apps/lanes/clutch/clutch-<slug>`.  Status blocks use `repo:  Clutch` (the GitHub repo name); topics use the Clutch acronym (see the guide's [Topics Are Threads](docs/protocols/zulip-fleet-guide.md#topics-are-threads)).  Never edit the DSH engine shape in BotFleet:  import `clutch/dsh/acp`.  Rules home:  not recorded.
+- **CLUTCH** (Clutch):  owns `Simple-With-Us/Clutch`:  DSH and MiniMax drivers, Python ACP bridges, cordis profiles, web scripts, and the npm package BotFleet imports.  One seat for every model run through Clutch (owner 2026-10-07:  no per-model split).  Replaces HARNESS.  Pin `AGENT_SEAT=CLUTCH` / `AGENT_TAG=CLUTCH`.  Lane `~/apps/lanes/Clutch/clutch-<slug>`.  Status blocks use `repo:  Clutch` (the GitHub repo name); topics use the Clutch acronym (see the guide's [Topics Are Threads](docs/protocols/zulip-fleet-guide.md#topics-are-threads)).  Never edit the DSH engine shape in BotFleet:  import `clutch/dsh/acp`.  Rules home:  not recorded.
 - **MM** (MiniMax Code desktop app on the Mavis local runtime, `~/.minimax`; opened 2026-09-03 as a seat and a selectable engine):  bounded implementation and code review, sourced deep research with citations, document generation (docx / pdf / pptx / xlsx), static-site deploy, Computer Use desktop control and in-app browser driving, plus text / image / video / speech generation and web search through the `mmx` CLI.  Pin `AGENT_SEAT=MM` / `AGENT_TAG=MM`.  No global rules file exists on this platform:  the fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt), and fleet skills install to `~/.minimax/skills`.  Built-in sub-agents `explore` / `worker` / `verifier` inherit MM.
 - **FX** (fx by Vercel Labs):  a terminal coding agent whose model is whatever provider it is logged into (a Grok subscription today; the Codex provider or a MiniMax endpoint later).  Implementation, repo audits, PR drafting, and ACP engine for BotFleet-style hosts.  Pin `AGENT_SEAT=FX` / `AGENT_TAG=FX`.  Rules home:  `~/.fx/AGENTS.md`.  Skills live in `~/.fx/skills` only.  fx also scans the Claude and Codex packs; never inherit their tags or identity.
-- **MC** (Muse Code, Meta AI's interactive terminal coding agent, `muse` CLI):  bounded implementation, local TUI/CLI execution, git worktree workflows, sub-agent delegation, task execution.  Distinct from MA.  Pin `AGENT_SEAT=MC` / `AGENT_TAG=MC` by starting Muse through the `muse-seat` wrapper (`~/apps/lane-tools/muse-seat`); start `muse` inside a lane and never use `muse -w`.  New lanes are `~/apps/lanes/<prefix>/muse-code-<slug>` (`~/apps/lane new`); old flat `~/apps/<prefix>-muse-code` lanes retire in place.  Rules home:  project `AGENTS.md` and `CLAUDE.md` in trusted workspaces (`~/.config/muse/trust.json`), with the user-level `~/.claude/CLAUDE.md` as a fallback, which carries the Lane Map block.  The temp-checkout deny hook is a user-scope plugin the owner installs and approves.  Dedicated fleet skills install to `~/.config/muse/skills`, shadowing any unspecialized foreign skills.  Setup checklist:  `docs/MUSE-ONBOARDING.md`.
+- **MC** (Muse Code, Meta AI's interactive terminal coding agent, `muse` CLI):  bounded implementation, local TUI/CLI execution, git worktree workflows, sub-agent delegation, task execution.  Distinct from MA.  Pin `AGENT_SEAT=MC` / `AGENT_TAG=MC` by starting Muse through the `muse-seat` wrapper (`~/apps/lane-tools/muse-seat`); start `muse` inside a lane and never use `muse -w`.  New lanes are `~/apps/lanes/<Repo>/muse-code-<slug>` (`~/apps/lane new`); an old flat `~/apps/<prefix>-muse-code` lane is not moved by the layout migration; it stays where it is and retires normally.  Rules home:  project `AGENTS.md` and `CLAUDE.md` in trusted workspaces (`~/.config/muse/trust.json`), with the user-level `~/.claude/CLAUDE.md` as a fallback, which carries the Lane Map block.  The temp-checkout deny hook is a user-scope plugin the owner installs and approves.  Dedicated fleet skills install to `~/.config/muse/skills`, shadowing any unspecialized foreign skills.  Setup checklist:  `docs/MUSE-ONBOARDING.md`.
 - **MA** (Muse Assist, Meta Muse cloud VM batch compute and creative assistant, dispatched from the Mac and iOS apps):  multi-day or multi-week heavy background compute (video transcoding, large media migrations, iCloud Photos sync) on unmetered VM runtime hours, without ongoing AI token burn.  Runs on a dedicated cloud VM with pre-authenticated `infisical`, `gh`, and `sentry`.  A cloud seat:  its Zulip credentials come from env, not a zuliprc.  The former tag `MUSE` migrated to MA (owner 2026-10-04) to tell it apart from MC.  No lane:  it runs on a cloud VM and has no checkout on this Mac.  It cannot see local files and has no hooks, so its rules home is its Soul.md, into which the owner pastes the rules card in `docs/MUSE-ONBOARDING.md`.
 
 ### Platform Bots
@@ -425,7 +425,7 @@ Never start substantial work without the triple claim, and never finish without 
 3. Set `--by` (your seat), `--env` (`Mac` or `cloud` only:  the seat chip already says who, and `--where` carries the specifics), and `--where`.  `--where` starts with the claim date, then gives the worktree `@` branch, so a forgotten lane is obvious (owner 2026-08-22).  The date below is the format example:
 
    ```bash
-   board claim <id> --by "$AGENT_SEAT" --env Mac --where "claimed: Sat, Aug 22, 2026 ~/apps/lanes/<prefix>/<seat>-<slug> @ <branch-prefix>/<slug>"
+   board claim <id> --by "$AGENT_SEAT" --env Mac --where "claimed: Sat, Aug 22, 2026 ~/apps/lanes/<Repo>/<seat>-<slug> @ <branch-prefix>/<slug>"
    ```
 
    Board `created_at` is not a substitute for the stated claim date.  The effort-log row date is the claim date, so refresh `--where` if you re-claim.
@@ -452,7 +452,7 @@ Never start substantial work without the triple claim, and never finish without 
 `~/Code/` is for integration trees only (owner 2026-09-25, all agents, all apps, all platforms, forever, including the owner's interactive sessions).
 
 - `~/Code/<App>` is the canonical integration tree for each fleet app.  It stays on `origin/main` and is the human review base (Xcode, beta previews, manual builds).
-- Never work in `~/Code/<App>`, and do not even add a folder there.  All per-seat worktrees and per-lane checkouts live under `~/apps/`, never under `~/Code/`.  Stray worktree folders, scratch clones, experimental checkouts, per-seat lanes, and `*-wt-*` directories all belong in `~/apps/`.
+- Never work in `~/Code/<App>`, and do not even add a folder there (no `<repo>/.claude/worktrees`, no `<repo>/.muse/worktrees`).  All per-seat worktrees and per-lane checkouts live under `~/apps/lanes/`, never under `~/Code/`.  Stray worktree folders, scratch clones, experimental checkouts, per-seat lanes, and `*-wt-*` directories are all checkouts, and every checkout goes under `~/apps/lanes/<Repo>/` (the Lane Map below); only non-git artifacts that must outlive a session go in `~/apps/scratch/<seat>/<topic>/`.
 - No new top-level folder may be added to `~/Code/` unless it is the integration tree for a brand-new fleet app being onboarded via `docs/ONBOARDING-NEW-APP.md` and `scripts/onboard-new-app.sh`.
 - Forbidden top-level entries under `~/Code/`:
   1. Linked git worktrees of any existing app.
@@ -464,14 +464,15 @@ Never start substantial work without the triple claim, and never finish without 
 
 ### Where Lanes Live
 
-Binding lane layout (owner 2026-10-07, board `a7dfde0e`).  Full text:  [Lane Map](docs/protocols/lane-map.md), including its rollout status and the fallback while `~/apps/lane` is not yet installed.  The `~/Code` rule above is unchanged by it.
+Binding lane layout (owner 2026-10-07, revised by the owner 2026-10-09 as layout v2, board `a7dfde0e`).  Full text:  [Lane Map](docs/protocols/lane-map.md), including its rollout status and the fallback while `~/apps/lane` is not yet refreshed.  The `~/Code` rule above is unchanged by it.  Every agent copy of a repo lives under `~/apps/lanes/<Repo>/`, where `<Repo>` is the folder name of the human tree under `~/Code` (`Socratic-Trade`, `Congress.Trade`, `AI-Fleet-Coordinator`), not the lowercase worktree prefix.
 
-- New lanes go at `~/apps/lanes/<prefix>/<seat>-<slug>`.
-- PR-check checkouts go at `~/apps/lanes/_review/<prefix>/pr-<n>[-<seat>]`.
-- At lane start, create either kind with `~/apps/lane new <app> <slug>`.  `AGENT_SEAT` must be set to your seat tag.
+- New lanes go at `~/apps/lanes/<Repo>/<seat>-<slug>`.
+- PR-check checkouts go at `~/apps/lanes/<Repo>/review-pr-<n>` (`review-pr-<n>-<seat>` for a second seat on the same PR).
+- Claude desktop files its worktrees at `~/apps/lanes/<Repo>/<slug>-<hex>` and Codex desktop at `~/apps/lanes/_codex/<slug>/<Repo>`.  There is no `_managed` or `_review` folder any more.
+- At lane start, create a lane or a PR check with `~/apps/lane new <app> <slug>` (or `--review --pr <n>`).  `AGENT_SEAT` must be set to your seat tag.
 - `<seat>` in a lane path is the whole `worktreeSuffix` from `fleet-apps.json` (`antigravity`, `minimax`; never `ag` or `mm`), the Lane token column in [Active Seats](#active-seats).
 - Never create a checkout of a fleet repo in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders`.
-- Existing flat lanes (`~/apps/<prefix>-<seat>[-<slug>]`, the old `~/apps/<app>-<seat>-<lane>` form) stay and retire in place.  Lane paths in older seat rows and docs show that legacy flat form; new lanes always use the nested form.
+- Existing lanes in the old places under `~/apps/lanes/` (`<prefix>/`, `_managed`, `_review`) stay until the layout migration moves them (`docs/protocols/lanes-v2-migration.md`).  The flat `~/apps/<prefix>-<seat>[-<slug>]` lanes are not moved by it: they stay where they are and retire normally.  `lane ls` reports both as legacy.  Lane paths in older seat rows and docs may show those forms; new lanes always use the v2 form.
 
 ### Seat Lanes and Branches
 
@@ -1372,7 +1373,7 @@ board list --app congress-trade --mine GROK-BOT   # one app's items for one seat
 board show <id>                                   # detail plus the full comment thread
 board file --title "Scout drops Senate rows on 502" --app congress-trade \
            --severity P1 --by GROK-BOT --env cloud --desc "path:line + repro"
-board claim <id> --by CLAUDE --env Mac --where "claimed: Wed, Oct 7, 2026 ~/apps/lanes/trading/claude-fix @ claude/fix"
+board claim <id> --by CLAUDE --env Mac --where "claimed: Wed, Oct 7, 2026 ~/apps/lanes/Socratic-Trade/claude-fix @ claude/fix"
 board comment <id> --by CODEX --text "Verified on main; the shared helper is right."
 board status <id> completed --resolution "Landed in #2894."
 ```

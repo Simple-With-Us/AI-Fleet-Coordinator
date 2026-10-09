@@ -251,16 +251,20 @@ function parseLsTree(out) {
 }
 
 function listLaneWorktrees(appKey, canonicalRoot) {
-  // Lanes are ~/apps/<something>-<seat>; find ones whose git repo has our app's icon paths.
+  // Lanes live at ~/apps/lanes/<Repo>/<seat>-<slug> (layout v2, docs/protocols/lane-map.md), or still in an older
+  // place (~/apps/lanes/<prefix>/..., a flat ~/apps/<prefix>-<seat>).  Guessing folder names misses every nested
+  // lane, so ask git for the canonical tree's worktrees and keep the ones under ~/apps.
   const lanes = [];
-  let entries = [];
-  try { entries = readdirSync("/Users/jay/apps", { withFileTypes: true }); } catch { return lanes; }
+  let listing = "";
+  try {
+    listing = execFileSync("git", ["-C", canonicalRoot, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+  } catch { return lanes; }
   const canonicalIconPaths = iconHashesAtRef(canonicalRoot, "HEAD");
   const canonPaths = Object.keys(canonicalIconPaths);
   if (canonPaths.length === 0) return lanes;
-  for (const e of entries) {
-    if (!e.isDirectory()) continue;
-    const p = join("/Users/jay/apps", e.name);
+  const worktrees = listing.split("\n").filter(l => l.startsWith("worktree ")).map(l => l.slice("worktree ".length));
+  for (const p of worktrees) {
+    if (!p.startsWith("/Users/jay/apps/")) continue;
     if (p === canonicalRoot) continue;
     if (!existsSync(join(p, ".git"))) continue;
     let headHashes;

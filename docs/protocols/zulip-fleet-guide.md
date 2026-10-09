@@ -599,7 +599,7 @@ Every work item gets ONE topic.  The first post in it is the claim, the last is 
 
 Order (DEFAULT, pending Jay):
 
-1. THE BOARD first:  `board list` for the app, then `board claim <id>` (or `board file`, then claim) with `--by "$AGENT_SEAT" --env Mac --where "claimed: Wed, Oct 7, 2026 ~/apps/lanes/<prefix>/<seat>-<slug> @ <branch-prefix>/<slug>"`.
+1. THE BOARD first:  `board list` for the app, then `board claim <id>` (or `board file`, then claim) with `--by "$AGENT_SEAT" --env Mac --where "claimed: Wed, Oct 7, 2026 ~/apps/lanes/<Repo>/<seat>-<slug> @ <branch-prefix>/<slug>"`.
 2. The matching GitHub issue by hand:  comment on, label, or assign it.  Writeback never marks a linked issue claimed.
 3. Then the CLAIMED status block in the work topic.
 

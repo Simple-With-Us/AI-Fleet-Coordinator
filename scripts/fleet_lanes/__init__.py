@@ -4,8 +4,9 @@ Modules:
   layout   registry loading, seat aliases, sanctioned and forbidden roots, location
            classification, and lane and branch naming rules (pure; no subprocess, no network)
 
-Layout choice is switched by the FLEET_LAYOUT environment variable: `nested` (default,
-~/apps/lanes/<prefix>/<seat>-<slug>) or `flat` (~/apps/<prefix>-<seat>-<slug>).
+Layout v2 (owner 2026-10-09): lanes live at ~/apps/lanes/<Repo>/<seat>-<slug>, where <Repo> is the
+repo's folder name under ~/Code.  The FLEET_LAYOUT environment variable can still say `flat`
+(~/apps/<prefix>-<seat>-<slug>), a legacy opt-out that is no longer documented as a way to make lanes.
 
 Tests (standard library only):
 

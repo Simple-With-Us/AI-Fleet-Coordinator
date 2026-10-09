@@ -117,7 +117,7 @@ echo
 if [ "$DRY_RUN" -eq 1 ]; then recorded="would be recorded"; else recorded="is recorded"; fi
 echo "Seat $TAG $recorded.  This script creates NO lanes: a lane is made per task, with"
 echo "  AGENT_SEAT=$TAG ~/apps/lane new <app> <slug>"
-echo "which lands at ~/apps/lanes/<prefix>/$SUFFIX-<slug> on branch ${PREFIX}<slug>."
+echo "which lands at ~/apps/lanes/<Repo>/$SUFFIX-<slug> on branch ${PREFIX}<slug>."
 echo "(Layout and rules: docs/protocols/lane-map.md.  Folder names use the whole suffix.)"
 echo
 echo "Still do by hand (the owner approves each live install; read every plan first):"

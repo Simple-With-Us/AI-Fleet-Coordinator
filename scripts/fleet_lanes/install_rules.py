@@ -3,7 +3,7 @@
 Every platform reads its own user-level rules file at the start of a session.  This tool adds one
 marker block to each of them, so every platform sees the Lane Map rule every session:
 
-    <!-- fleet-lane-map:begin v1 -->
+    <!-- fleet-lane-map:begin v2 -->
     ...rule text...
     <!-- fleet-lane-map:end -->
 
@@ -32,7 +32,8 @@ What `apply` does, per platform:
   - appends the block when absent and replaces it in place when present; bytes outside the block
     are never changed, and a second apply changes nothing and writes no backup
 
-Lines elsewhere in a file that state the old flat-lane rule or advise checkouts in /tmp are only
+Lines elsewhere in a file that state the old flat-lane rule, name the pre-v2 lane folders
+(lanes/<prefix>/, lanes/_managed, lanes/_review) or advise checkouts in /tmp are only
 REPORTED (the CONTRADICTIONS section of `plan`).  They are never edited.  `plan` never prints a line of
 the owner's file: the diff shows the hunk headers, our own added lines and, for a refresh, the old
 block's lines, and collapses every other line into a count; a contradiction shows its line number, its
@@ -74,7 +75,9 @@ EXIT_FAILED = 1      # verify found no current block, or a write failed
 EXIT_REFUSED = 2     # a guard refused (flag missing, symlink, size cap, markers, ...)
 EXIT_USAGE = 64      # same as doctor: a bad command line can never read as a refusal
 
-BLOCK_VERSION = 1
+# v2 = the layout v2 text (owner 2026-10-09): lanes/<Repo>/<seat>-<slug>, review-pr-<n>, lanes/_codex.
+# A v1 block (the old lanes/<prefix>/ and _review text) is replaced in place on the next apply.
+BLOCK_VERSION = 2
 BEGIN_PREFIX = "<!-- fleet-lane-map:begin v"
 END_LINE = "<!-- fleet-lane-map:end -->"
 _BEGIN_RE = re.compile(r"^[ \t]*<!-- fleet-lane-map:begin v(?P<v>\d+) -->[ \t]*$")
@@ -112,12 +115,18 @@ class Platform:
 
     @property
     def root_dir(self) -> str:
-        """First path component below the home (".cursor"); it must exist before --create works."""
-        return (self.rel_path or "").split("/", 1)[0]
+        """First folder below the home (".cursor"); it must exist before --create works.  A file straight in
+        the home (AGENTS.md) has none, so the home itself is the folder."""
+        rel = self.rel_path or ""
+        return rel.split("/", 1)[0] if "/" in rel else ""
 
 
 PLATFORMS: tuple[Platform, ...] = (
     Platform("claude", ".claude/CLAUDE.md", "full", "Claude Code (CLI and desktop)", owner_file=True),
+    # ~/AGENTS.md sits in the home directory, so every tool that loads project instructions reads it.  It
+    # carried a hand-copied block that no platform row refreshed (the lane-map v2 change found it stale).
+    Platform("home-agents", "AGENTS.md", "full", "Home-level AGENTS.md (shared by every tool that loads project instructions)",
+             owner_file=True),
     Platform("codex", ".codex/AGENTS.md", "full", "Codex", size_cap=CODEX_CAP, size_warn=CODEX_WARN),
     Platform("fx", ".fx/AGENTS.md", "full", "Fx"),
     Platform("grok", ".grok/GROK.md", "full", "Grok and Grok Build"),
@@ -337,7 +346,7 @@ def _snippet(tokens: Iterable[str], width: int = 110) -> str:
 @dataclass(frozen=True)
 class Contradiction:
     line: int          # 1-based line number in the file
-    kind: str          # flat-lane | tmp-checkout | legacy-agent-prefix-mention
+    kind: str          # flat-lane | old-lane-layout | tmp-checkout | legacy-agent-prefix-mention
     snippet: str       # the matched text only (not the line), redacted and shortened
 
 
@@ -349,6 +358,12 @@ _BUILTIN_PREFIXES = (
 _APPS_PATH = re.compile(
     r"(?<![\w.-])(?:~|\$\{?HOME\}?|/Users/[\w.-]+|/home/[\w.-]+)?/apps/(?P<name>[A-Za-z0-9][\w.<>-]*)")
 _FLAT_PLACEHOLDER = re.compile(r"<(?:prefix|app)>-<(?:seat|agent)>")
+# Layout v2 names the folder above a lane by the repo (lanes/Congress.Trade/claude-x).  The pre-v2 text
+# says lanes/<prefix>/..., lanes/trading/..., lanes/_managed/... or lanes/_review/..., none of which the
+# flat-lane scan above can see.  A folder that is a repo's exact folder name is never reported.
+_LANES_PATH = re.compile(
+    r"(?<![\w.-])(?:~|\$\{?HOME\}?|/Users/[\w.-]+|/home/[\w.-]+)?/apps/lanes/(?P<dir>[A-Za-z0-9_<][\w.<>-]*)")
+_OLD_LANE_DIRS = ("_managed", "_review", "_notes", "<prefix>", "<app>")
 _TMP_TOKEN = re.compile(r"(?:/private)?/tmp\b|/var/tmp\b|\$\{?TMPDIR\}?|/var/folders\b|\bmktemp\b")
 _CHECKOUT_WORD = re.compile(
     r"\b(?:git\s+clone|git\s+worktree|git\s+init|clone[sd]?|cloning|worktrees?|checkouts?)\b", re.I)
@@ -375,6 +390,18 @@ def _vocab(registry: L.Registry | None) -> tuple[list[str], list[str]]:
     return sorted(prefixes, key=lambda s: (-len(s), s)), sorted(seats, key=lambda s: (-len(s), s))
 
 
+def _old_lane_dirs(registry: L.Registry | None) -> frozenset[str]:
+    """Folder names under the lanes root that the pre-v2 layout used and v2 does not: the reserved
+    _managed, _review and _notes, the `<prefix>` placeholders, and every registry prefix that is not
+    already its app's repo folder (so `fleet` and `botfleet` are old, `BotFleet` and `homebrew-tap` are not)."""
+    out = set(_OLD_LANE_DIRS)
+    if registry is None:
+        out.update(_BUILTIN_PREFIXES)
+    else:
+        out.update(a.prefix for a in registry.apps if a.prefix != a.lane_dir)
+    return frozenset(out)
+
+
 def _is_flat_lane_name(name: str, prefixes: Sequence[str], seats: Sequence[str]) -> bool:
     lower = name.lower().rstrip(".,;:)`'\"")
     for p in prefixes:
@@ -387,10 +414,11 @@ def _is_flat_lane_name(name: str, prefixes: Sequence[str], seats: Sequence[str])
 
 def find_contradictions(text: str, *, registry: L.Registry | None = None,
                         skip: BlockLoc | None = None) -> list[Contradiction]:
-    """Lines that state the old flat-lane rule, advise a checkout in a temp directory, or mention a
-    legacy `agent/` branch prefix.  Lines inside our own marker block (`skip`) are never reported.
+    """Lines that state the old flat-lane rule, name a pre-v2 lane folder, advise a checkout in a temp
+    directory, or mention a legacy `agent/` branch prefix.  Lines inside our own marker block (`skip`) are never reported.
     Report only: nothing here is ever edited."""
     prefixes, seats = _vocab(registry)
+    old_dirs = _old_lane_dirs(registry)
     found: list[Contradiction] = []
     for i, line in enumerate(text.split("\n")):
         if skip is not None and skip.begin <= i <= skip.end:
@@ -401,6 +429,9 @@ def find_contradictions(text: str, *, registry: L.Registry | None = None,
             m.group(0) for m in _APPS_PATH.finditer(line) if _is_flat_lane_name(m.group("name"), prefixes, seats)]
         if flat:
             kinds.append(("flat-lane", flat))
+        old = [m.group(0) for m in _LANES_PATH.finditer(line) if m.group("dir") in old_dirs]
+        if old:
+            kinds.append(("old-lane-layout", old))
         tmp, word = _TMP_TOKEN.search(line), _CHECKOUT_WORD.search(line)
         if tmp and word and not _NEGATION.search(line):
             kinds.append(("tmp-checkout", [f"{tmp.group(0)} + {word.group(0)}"]))

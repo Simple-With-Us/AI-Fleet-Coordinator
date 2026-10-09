@@ -131,7 +131,9 @@ class ReasonTests(unittest.TestCase):
                 # `lane new` is the way for an app with an integration tree; the others keep the path.
                 self.assertTrue("/lane new " in r or "lanes root" in r, r)
                 self.assertIn("~/apps/lanes/", r)
-                self.assertIn("review root ~/apps/lanes/_review/", r)
+                self.assertRegex(r, r"detached checkout at ~/apps/lanes/[A-Za-z0-9._<>-]+/review-pr-<n>")
+                self.assertNotIn("_review", r)
+                self.assertNotIn("review root", r)
                 self.assertIn("main integration tree", r)
                 self.assertIn("for the human", r)
                 self.assertNotIn(G.ENV_GUARD, r)
@@ -143,19 +145,19 @@ class ReasonTests(unittest.TestCase):
     def test_lane_new_is_the_primary_instruction_then_the_concrete_lane(self) -> None:
         r = self._deny().reason
         self.assertIn("Run `~/apps/lane new DealDex work` instead; it creates branch claude/work off origin/main "
-                      "and the lane at ~/apps/lanes/dealdex/claude-work.", r)
+                      "and the lane at ~/apps/lanes/DealDex/claude-work.", r)
         self.assertIn("For a read-only PR check, run `~/apps/lane new DealDex --review --pr <n>` instead; it makes "
-                      "a detached checkout under the review root ~/apps/lanes/_review/.", r)
+                      "a detached checkout at ~/apps/lanes/DealDex/review-pr-<n>.", r)
         self.assertIn("integration tree ~/Code/DealDex", r)
         self.assertIn("a clone of Simple-With-Us/DealDex at /tmp/dealdex-work", r)
-        self.assertLess(r.index("`~/apps/lane new DealDex work`"), r.index("~/apps/lanes/dealdex/claude-work"))
+        self.assertLess(r.index("`~/apps/lane new DealDex work`"), r.index("~/apps/lanes/DealDex/claude-work"))
         self.assertNotIn("git -C", r, "the raw git command is not offered next to lane new")
         self.assertEqual(len(re.findall(r"\.  ", r)), 3, "four sentences, two spaces between them")
         self.assertNotIn("AGENT_SEAT", r, "no seat hint once the seat is usable")
 
     def test_seat_placeholder_when_unset(self) -> None:
         r = self._deny(AGENT_SEAT=None).reason
-        self.assertIn("~/apps/lanes/dealdex/<seat>-work", r)
+        self.assertIn("~/apps/lanes/DealDex/<seat>-work", r)
         self.assertIn("branch <seat>/work", r)
         self.assertIn("Set AGENT_SEAT to your seat tag, then run `~/apps/lane new DealDex work` instead;", r)
 
@@ -167,7 +169,7 @@ class ReasonTests(unittest.TestCase):
                 r = self._deny(AGENT_SEAT=value).reason
                 self.assertIn("Set AGENT_SEAT to your seat tag, then run `~/apps/lane new DealDex work` instead;", r)
                 self.assertIn("branch <seat>/work", r)
-                self.assertIn("~/apps/lanes/dealdex/<seat>-work", r)
+                self.assertIn("~/apps/lanes/DealDex/<seat>-work", r)
                 self.assertNotRegex(r, r"nope|deepseek|kimi|cursor")
 
     def test_a_target_name_that_would_read_as_another_seat_falls_back_to_work(self) -> None:
@@ -178,18 +180,18 @@ class ReasonTests(unittest.TestCase):
                 d = G.evaluate(_payload(f"git clone {F._DD} {target}"), _ctx(AGENT_SEAT="GROK"))
                 self.assertEqual(d.action, G.DENY)
                 self.assertIn("Run `~/apps/lane new DealDex work` instead; it creates branch grok/work off "
-                              "origin/main and the lane at ~/apps/lanes/dealdex/grok-work.", d.reason)
+                              "origin/main and the lane at ~/apps/lanes/DealDex/grok-work.", d.reason)
                 self.assertNotRegex(d.reason, r"grok-build|grok-bot")
         d = G.evaluate(_payload(f"git clone {F._DD} /tmp/build"), _ctx(AGENT_SEAT="CLAUDE"))
         self.assertIn("`~/apps/lane new DealDex build`", d.reason, "a slug that reads back is kept")
 
     def test_seat_tags_are_normalized(self) -> None:
         r = self._deny(AGENT_SEAT="AG").reason
-        self.assertIn("~/apps/lanes/dealdex/antigravity-work", r)
+        self.assertIn("~/apps/lanes/DealDex/antigravity-work", r)
         self.assertIn("branch ag/work", r)
         self.assertNotIn("AGENT_SEAT", r)
         r = self._deny(AGENT_SEAT="MM").reason
-        self.assertIn("~/apps/lanes/dealdex/minimax-work", r)
+        self.assertIn("~/apps/lanes/DealDex/minimax-work", r)
         self.assertIn("branch minimax/work", r)
         r = self._deny(AGENT_SEAT="mm").reason
         self.assertIn("branch minimax/work", r, "the CLI accepts a tag in any case")
@@ -200,20 +202,20 @@ class ReasonTests(unittest.TestCase):
 
     def test_custom_lanes_root(self) -> None:
         r = self._deny(FLEET_LANES_ROOT="~/work/lanes").reason
-        self.assertIn("~/work/lanes/dealdex/claude-work", r)
-        self.assertIn("review root ~/work/lanes/_review/", r)
+        self.assertIn("~/work/lanes/DealDex/claude-work", r)
+        self.assertIn("a detached checkout at ~/work/lanes/DealDex/review-pr-<n>.", r)
 
     def test_slug_from_destination(self) -> None:
         cases = {
-            "spec-grok-botfleet-wt": "~/apps/lanes/botfleet/claude-fix-thing",
-            "spec-um-1595-private-tmp": "~/apps/lanes/usage/claude-1595-wt",
-            "spec-gh-hoghunter": "~/apps/lanes/hoghunter/claude-verify",
-            "spec-mktemp-clutch": "~/apps/lanes/clutch/claude-repo",
-            "spec-tmpdir-codecaps": "~/apps/lanes/codecaps/claude-work",
-            "spec-mm-afc-baseline-cwd": "~/apps/lanes/fleet/claude-baseline",
-            "sweep-bf-st4013-workspace-clone": "~/apps/lanes/trading/claude-st4013",
-            "var-mktemp-inline": "~/apps/lanes/contactlogo/claude-work",     # cl is the app's acronym
-            "spec-mktemp-template-botfleet": "~/apps/lanes/botfleet/claude-work",  # so is bf
+            "spec-grok-botfleet-wt": "~/apps/lanes/BotFleet/claude-fix-thing",
+            "spec-um-1595-private-tmp": "~/apps/lanes/Usage-Monitor/claude-1595-wt",
+            "spec-gh-hoghunter": "~/apps/lanes/HogHunter/claude-verify",
+            "spec-mktemp-clutch": "~/apps/lanes/Clutch/claude-repo",
+            "spec-tmpdir-codecaps": "~/apps/lanes/CodeCaps/claude-work",
+            "spec-mm-afc-baseline-cwd": "~/apps/lanes/AI-Fleet-Coordinator/claude-baseline",
+            "sweep-bf-st4013-workspace-clone": "~/apps/lanes/Socratic-Trade/claude-st4013",
+            "var-mktemp-inline": "~/apps/lanes/ContactLogo/claude-work",     # cl is the app's acronym
+            "spec-mktemp-template-botfleet": "~/apps/lanes/BotFleet/claude-work",  # so is bf
         }
         for fid, lane in cases.items():
             with self.subTest(fid):
@@ -223,7 +225,7 @@ class ReasonTests(unittest.TestCase):
         d = G.evaluate(_payload("gh repo clone Simple-With-Us/Kodus-Config /tmp/kc"), _ctx())
         self.assertEqual(d.rule_id, G.RULE_GH_CLONE)
         self.assertIn("integration tree ~/Code/<App>", d.reason)
-        self.assertIn("gh repo clone Simple-With-Us/Kodus-Config ~/apps/lanes/kodus-config/claude-kc", d.reason)
+        self.assertIn("gh repo clone Simple-With-Us/Kodus-Config ~/apps/lanes/Kodus-Config/claude-kc", d.reason)
         self.assertNotIn("lane new", d.reason, "lane new refuses an app with no integration tree")
         self.assertIn("lanes root", d.reason)
 
@@ -231,28 +233,64 @@ class ReasonTests(unittest.TestCase):
         # The fixture registry has no CodeCaps row (the real one does now), so the CLI would refuse it here.
         r = _run(_fixture("spec-tmpdir-codecaps")).reason
         self.assertNotIn("lane new", r)
-        self.assertIn("at ~/apps/lanes/codecaps/claude-work", r)
-        self.assertIn("git -C ~/Code/CodeCaps worktree add -b claude/work ~/apps/lanes/codecaps/claude-work origin/main", r)
+        self.assertIn("at ~/apps/lanes/CodeCaps/claude-work", r)
+        self.assertIn("git -C ~/Code/CodeCaps worktree add -b claude/work ~/apps/lanes/CodeCaps/claude-work origin/main", r)
 
     def test_a_folder_sharing_seat_gets_a_placeholder_in_the_manual_command_too(self) -> None:
         # GROK-BOT's folder name and branch prefix are CURSOR's, so the raw git command must not
         # hand it cursor-work on cursor/work either.
         r = self._deny("spec-tmpdir-codecaps", AGENT_SEAT="GROK-BOT").reason
-        self.assertIn("~/apps/lanes/codecaps/<seat>-work", r)
+        self.assertIn("~/apps/lanes/CodeCaps/<seat>-work", r)
         self.assertIn("worktree add -b <seat>/work", r)
         self.assertNotIn("cursor", r)
 
     def test_unregistered_repo_of_a_fleet_owner(self) -> None:
         d = G.evaluate(_payload("git clone https://github.com/Simple-With-Us/NewThing.git /tmp/nt"), _ctx())
         self.assertEqual(d.action, G.DENY)
-        self.assertIn("~/apps/lanes/newthing/claude-nt", d.reason)
+        self.assertIn("~/apps/lanes/NewThing/claude-nt", d.reason, "the repo name as written, not a lowercase prefix")
+        self.assertIn("~/apps/lanes/NewThing/review-pr-<n>", d.reason)
         self.assertNotIn("lane new", d.reason, "lane new does not know a repo that is not in the registry")
 
     def test_unknown_app_uses_placeholders(self) -> None:
         r = _run(_fixture("var-for-loop-unknown-name")).reason
-        self.assertIn("~/apps/lanes/<prefix>/claude-check", r)
+        self.assertIn("~/apps/lanes/<Repo>/claude-check", r)
+        self.assertIn("review-pr-<n>", r)
+        self.assertNotIn("<prefix>", r)
         self.assertIn("Simple-With-Us/*", r)
         self.assertNotIn("lane new", r)
+
+    def test_repo_folders_with_capitals_and_dots_are_named_in_full(self) -> None:
+        # Layout v2 spells the folder as the human tree is spelled.  The old lowercase-kebab gate on the
+        # folder would have turned Congress.Trade and AI-Fleet-Coordinator into a `<prefix>` placeholder.
+        cases = {
+            "https://github.com/Simple-With-Us/Congress.Trade.git": "Congress.Trade",
+            "https://github.com/Simple-With-Us/AI-Fleet-Coordinator.git": "AI-Fleet-Coordinator",
+            "https://github.com/Simple-With-Us/congress-trading-shared.git": "congress-trading-shared",
+            "https://github.com/Simple-With-Us/Socratic-Trade.git": "Socratic-Trade",
+        }
+        for url, folder in cases.items():
+            with self.subTest(folder):
+                d = G.evaluate(_payload(f"git clone {url} /tmp/work"), _ctx())
+                self.assertEqual(d.action, G.DENY)
+                self.assertIn(f"the lane at ~/apps/lanes/{folder}/claude-work.", d.reason)
+                self.assertIn(f"a detached checkout at ~/apps/lanes/{folder}/review-pr-<n>.", d.reason)
+                self.assertNotIn("<Repo>", d.reason)
+                self.assertNotIn("<prefix>", d.reason)
+
+    def test_repo_folder_placeholder_is_repo_not_prefix(self) -> None:
+        r = _run(_fixture("var-for-loop-unknown-name")).reason
+        self.assertIn("lanes/<Repo>/", r)
+        self.assertNotIn("<prefix>", r)
+
+    def test_a_lane_name_in_an_old_prefix_folder_still_reads_back(self) -> None:
+        # `lane new` stays idempotent on a lane that has not migrated yet, and the guard still accepts it
+        reg = REGISTRY
+        for prefix in ("trading", "fleet", "congress", "botfleet", "dealdex"):
+            self.assertTrue(G.lane_name_reads_back(prefix, "claude", "x", reg), prefix)
+        self.assertFalse(G.lane_name_reads_back("nonesuch", "claude", "x", reg))
+        self.assertFalse(G.lane_name_reads_back("Socratic-Trade", "claude", "x", reg), "the argument is a prefix")
+        self.assertTrue(G.lane_name_reads_back("trading", "claude", "x", reg, flat=True))
+        self.assertFalse(G.lane_name_reads_back("trading", "grok", "build", reg), "grok-build is another seat's")
 
     def test_credentials_never_reach_the_decision(self) -> None:
         d = _run(_fixture("var-credential-url"))
@@ -364,7 +402,7 @@ class PayloadShapeTests(unittest.TestCase):
         p = {"tool_name": "shell", "cwd": F.HOME,
              "tool_input": {"command": self.CMD, "workdir": "/Users/jay/Code/BotFleet"}}
         self.assertEqual(G.evaluate(p, _ctx()).action, G.DENY)
-        p = {"tool_name": "run_command", "cwd": "/Users/jay/apps/lanes/dealdex/claude-x",
+        p = {"tool_name": "run_command", "cwd": "/Users/jay/apps/lanes/DealDex/claude-x",
              "tool_input": {"CommandLine": "git clone https://github.com/Simple-With-Us/DealDex.git", "Cwd": "/tmp/x"}}
         d = G.evaluate(p, _ctx())
         self.assertEqual((d.action, d.destination), (G.DENY, "/tmp/x/DealDex"))
@@ -512,12 +550,12 @@ def _big_command(target: int = 20_000, deny_at_end: bool = True) -> str:
         "cd /tmp/work-{i} && git -C /tmp/dealdex-work-{i} status --short",
         "git clone --depth 1 https://github.com/someone/else-{i}.git /tmp/else-{i}",
         'd=$(mktemp -d) && git init "$d" && git -C "$d" commit --allow-empty -m "wip {i}"',
-        "git -C ~/Code/BotFleet worktree add -b claude/x{i} ~/apps/lanes/botfleet/claude-x{i} origin/main",
-        "(cd ~/apps/lanes/dealdex/claude-{i} && git fetch origin && git pull --rebase) || true",
+        "git -C ~/Code/BotFleet worktree add -b claude/x{i} ~/apps/lanes/BotFleet/claude-x{i} origin/main",
+        "(cd ~/apps/lanes/DealDex/claude-{i} && git fetch origin && git pull --rebase) || true",
         "curl -sL https://example.com/pkg-{i}.tgz | tar -xz -C /tmp/pkg-{i}",
         "git worktree remove --force /tmp/um-wt-{i}; rm -rf /tmp/bf{i} /tmp/bf{i}.tgz",
         "echo 'git clone https://github.com/Simple-With-Us/DealDex.git /tmp/dd-{i}' >> /tmp/notes-{i}.txt",
-        "cat > ~/apps/lanes/fleet/claude-x/n{i}.md <<'EOF'\ngit clone https://github.com/Simple-With-Us/X.git /tmp/x{i}\nit's fine\nEOF",
+        "cat > ~/apps/lanes/AI-Fleet-Coordinator/claude-x/n{i}.md <<'EOF'\ngit clone https://github.com/Simple-With-Us/X.git /tmp/x{i}\nit's fine\nEOF",
         'git -C "$HOME/Code/Usage-Monitor" archive HEAD | tar -t | grep -c "worktree{i}"',
     ]
     out: list[str] = []

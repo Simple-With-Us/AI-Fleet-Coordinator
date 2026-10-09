@@ -4,7 +4,16 @@
                                               [--board ID] [--reuse-branch] [--dry-run] [--json]
     cd scripts && python3 -m fleet_lanes.lane new <app> --review --pr N [--dry-run] [--json]
     cd scripts && python3 -m fleet_lanes.lane path <app> <slug>
+    cd scripts && python3 -m fleet_lanes.lane path <app> --review --pr N
     cd scripts && python3 -m fleet_lanes.lane ls|doctor [doctor options]
+
+Layout v2 (owner decision 2026-10-09).  A lane is ~/apps/lanes/<Repo>/<seat>-<slug> and a read-only PR
+check is ~/apps/lanes/<Repo>/review-pr-<n>, where <Repo> is the repo's folder name under ~/Code exactly
+as spelled there (AI-Fleet-Coordinator, Congress.Trade, congress-trading-shared).  <app> may be that
+name, the old worktree prefix (fleet, trading) or the acronym.  When another seat already holds
+review-pr-<n>, a second seat gets review-pr-<n>-<seat>.  A lane that still sits in an old prefix folder
+(lanes/fleet/claude-x) is found and printed, not duplicated, until the migration moves it; so is a flat
+~/apps/<prefix>-<seat>-<slug> lane, which the migration does not move.
 
 `bin/lane` in this package is the shell shim that runs this module with `python3 -I` from its own
 checkout, so a fleet_lanes package in the caller's working directory never shadows it.
@@ -322,11 +331,11 @@ def _loose(text: str) -> str:
 
 
 def _app_keys(app: L.App) -> "set[str]":
-    return {k.lower() for k in (app.name, app.integration_dir_name, app.prefix, app.acronym) if k}
+    return {k.lower() for k in (app.name, app.integration_dir_name, app.lane_dir, app.prefix, app.acronym) if k}
 
 
 def _app_line(app: L.App) -> str:
-    bits = [f"prefix {app.prefix}"]
+    bits = [f"folder {app.lane_dir}", f"prefix {app.prefix}"]
     if app.acronym:
         bits.append(f"acronym {app.acronym}")
     if not app.registered:
@@ -525,17 +534,36 @@ def _plan_path(ctx: Ctx, app: L.App, seat: L.Seat, slug: str, branch: str) -> "t
     return path, Path(write_root)
 
 
-def _plan_review_path(ctx: Ctx, app: L.App, seat: L.Seat, pr: int) -> "tuple[Path, Path]":
-    """(review path, lanes root).  The destination must be inside the review root, which sits
-    under the lanes root, and folders may be created anywhere at or below the lanes root."""
+def _plan_review_path(ctx: Ctx, app: L.App, seat: L.Seat, pr: int, *, own: bool = False) -> "tuple[Path, Path]":
+    """(review path, lanes root).  The plain form is lanes/<Repo>/review-pr-<n>; `own` asks for the
+    review-pr-<n>-<seat> form a second seat gets.  The destination must classify as a review checkout,
+    and folders may be created anywhere at or below the lanes root."""
     roots = ctx.roots
-    path = roots.review_root / app.prefix / f"pr-{pr}-{seat.suffix}"
+    try:
+        path = L.review_lane_path(app, pr, roots, ctx.registry, seat=seat.suffix if own else None)
+    except L.LayoutError as exc:
+        raise Refusal(str(exc))
     got = L.classify_location(path, roots)
     if got is not L.LocationClass.REVIEW:
-        raise Refusal(f"{path} is outside the review root (it classifies as {got}); check FLEET_LANES_ROOT.")
+        raise Refusal(f"{path} is outside the lanes root (it classifies as {got}); check FLEET_LANES_ROOT.")
     if _in_tree(ctx, roots.lanes_root, roots.code_root):
         raise Refusal(f"the lanes folder {roots.lanes_root} is inside {roots.code_root}; check FLEET_LANES_ROOT.")
     return path, Path(roots.lanes_root)
+
+
+def _choose_review_path(ctx: Ctx, run: Runner, app: L.App, seat: L.Seat, pr: int) -> "tuple[Path, Path]":
+    """Which review folder this seat uses for PR `pr`: the plain review-pr-<n>, unless another seat's
+    manifest is on it, in which case review-pr-<n>-<seat>.  A rerun finds its own folder first, so
+    the answer does not change once a seat has one.  Reads only; nothing is written."""
+    plain, root = _plan_review_path(ctx, app, seat, pr)
+    own, _ = _plan_review_path(ctx, app, seat, pr, own=True)
+    if os.path.lexists(own):
+        return own, root
+    if os.path.lexists(plain):
+        manifest = _read_manifest(run, plain)
+        if manifest is not None and _owner_mismatch(manifest, seat) is not None:
+            return own, root
+    return plain, root
 
 
 def _integration_tree(ctx: Ctx, app: L.App) -> Path:
@@ -597,6 +625,20 @@ def _path_state(ctx: Ctx, run: Runner, tree: Path, path: Path, branch: "str | No
         raise Refusal(f"{path} is already a worktree of {tree} on {on}, not on "
                       f"{'a detached HEAD' if branch is None else 'branch ' + branch}; lane does not touch it.")
     return "same"
+
+
+def _legacy_lane(ctx: Ctx, run: Runner, tree: Path, path: Path, branch: str) -> "Path | None":
+    """A checkout of `branch` that sits in an old folder and would migrate to exactly `path`."""
+    want = ctx.key(path)
+    for rec in _worktrees(run, tree):
+        if rec.detached or rec.branch != branch or rec.prunable is not None or not os.path.isdir(rec.path):
+            continue
+        if ctx.key(rec.path) == want:
+            continue
+        res = L.explain_layout(rec.path, ctx.registry, ctx.roots)
+        if res.status is L.LayoutStatus.LEGACY_MIGRATE and res.target is not None and ctx.key(res.target) == want:
+            return Path(rec.path)
+    return None
 
 
 def _git_dir_of(run: Runner, path: Path) -> "Path | None":
@@ -700,21 +742,26 @@ def _confirm_added(ctx: Ctx, run: Runner, tree: Path, path: Path, branch: "str |
                           f"({problem}).  Lane removes nothing; look at `git -C {tree} worktree list` and run lane again.")
 
 
+def _owner_mismatch(manifest: Mapping[str, object], seat: L.Seat) -> "str | None":
+    """The other seat's name when the manifest says the checkout is not `seat`'s, else None."""
+    tag, suffix = manifest.get("tag"), manifest.get("seat")
+    if isinstance(tag, str) and tag.strip():
+        mine, theirs, shown = seat.name.lower(), tag.strip().lower(), tag.strip()
+    elif isinstance(suffix, str) and suffix.strip():
+        mine, theirs, shown = seat.suffix.lower(), suffix.strip().lower(), suffix.strip()
+    else:
+        return None
+    return shown[:40] if mine != theirs else None
+
+
 def _refuse_other_owner(run: Runner, path: Path, seat: L.Seat) -> "dict | None":
     """The manifest of an existing checkout, after making sure it is not another seat's."""
     manifest = _read_manifest(run, path)
     if manifest is None:
         return None
-    tag, suffix = manifest.get("tag"), manifest.get("seat")
-    if isinstance(tag, str) and tag.strip():
-        mine, theirs = seat.name.lower(), tag.strip().lower()
-    elif isinstance(suffix, str) and suffix.strip():
-        mine, theirs = seat.suffix.lower(), suffix.strip().lower()
-    else:
-        return manifest
-    if mine != theirs:
-        shown = (tag if isinstance(tag, str) and tag.strip() else suffix).strip()[:40]
-        raise Refusal(f"{path} already exists, and its {MANIFEST_NAME} says it belongs to {shown}, not {seat.name}.  "
+    other = _owner_mismatch(manifest, seat)
+    if other is not None:
+        raise Refusal(f"{path} already exists, and its {MANIFEST_NAME} says it belongs to {other}, not {seat.name}.  "
                       "Lane never hands one seat's checkout to another.")
     return manifest
 
@@ -818,7 +865,7 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
     def existing() -> int:
         manifest = _refuse_other_owner(run, path, seat) or {
             "schema": SCHEMA, "tool": TOOL_NAME, "kind": "lane", "seat": seat.suffix, "tag": seat.name,
-            "app": app.name, "prefix": app.prefix, "slug": slug, "branch": branch}
+            "app": app.name, "prefix": app.prefix, "lane_dir": app.lane_dir, "slug": slug, "branch": branch}
         ctx.say(f"already exists, nothing changed: {path} (branch {branch})")
         _emit(ctx, args.json, path, manifest, existing=True)
         return EXIT_OK
@@ -828,6 +875,22 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
         return existing()
 
     local, tracking = _branch_state(run, tree, branch)
+
+    # The same lane in an old folder (lanes/fleet/claude-x, a flat ~/apps/fleet-claude-x): print it, do
+    # not make a second one.  The layout migration moves one under the lanes root to `path`; a flat lane
+    # is not moved and retires where it is.  Only a branch that already exists can be checked out in
+    # one, so a brand-new lane skips the extra listing.
+    old = _legacy_lane(ctx, run, tree, path, branch) if (local or tracking) else None
+    if old is not None:
+        manifest = _refuse_other_owner(run, old, seat) or {
+            "schema": SCHEMA, "tool": TOOL_NAME, "kind": "lane", "seat": seat.suffix, "tag": seat.name,
+            "app": app.name, "prefix": app.prefix, "lane_dir": app.lane_dir, "slug": slug, "branch": branch}
+        moves = _in_tree(ctx, old, ctx.roots.lanes_root)
+        ctx.say(f"already exists in an old folder, nothing changed: {old} (branch {branch}).  "
+                + (f"The layout migration moves it to {path}." if moves
+                   else f"It stays there until it retires; a lane made today would be {path}."))
+        _emit(ctx, args.json, old, manifest, existing=True, legacy_location=True)
+        return EXIT_OK
     if args.reuse_branch:
         if local or tracking:
             _refuse_if_checked_out(run, tree, branch)
@@ -839,7 +902,7 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
     created = _iso(ctx.clock())
     manifest: "dict[str, object]" = {
         "schema": SCHEMA, "tool": TOOL_NAME, "kind": "lane", "seat": seat.suffix, "tag": seat.name,
-        "app": app.name, "prefix": app.prefix, "slug": slug, "branch": branch,
+        "app": app.name, "prefix": app.prefix, "lane_dir": app.lane_dir, "slug": slug, "branch": branch,
         "base": None if args.reuse_branch else base_ref, "base_sha": None,
         "purpose": purpose, "board": board, "created_at": created,
     }
@@ -916,16 +979,17 @@ def _new_review(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) ->
     purpose, board = _clean_purpose(args.purpose), _clean_board(args.board)
     if not app.owner_repo or not _GH_REPO.match(app.owner_repo):
         raise Refusal(f"{app.name} has no GitHub repo in the registry, so lane cannot look up PR {pr}.")
-    path, lanes_root = _plan_review_path(ctx, app, seat, pr)
+    _plain, lanes_root = _plan_review_path(ctx, app, seat, pr)
     tree = _integration_tree(ctx, app)
-    run = Runner(ctx.env, write_root=ctx.roots.review_root, fold=ctx.fold(), exec_fn=ctx.exec_fn)
+    run = Runner(ctx.env, write_root=lanes_root, fold=ctx.fold(), exec_fn=ctx.exec_fn)
     _check_tree(ctx, run, tree)
+    path, _ = _choose_review_path(ctx, run, app, seat, pr)
     _guard_destination(ctx, tree, path, lanes_root)
 
     def existing() -> int:
         manifest = _refuse_other_owner(run, path, seat) or {
             "schema": SCHEMA, "tool": TOOL_NAME, "kind": "review", "seat": seat.suffix, "tag": seat.name,
-            "app": app.name, "prefix": app.prefix, "pr": pr}
+            "app": app.name, "prefix": app.prefix, "lane_dir": app.lane_dir, "pr": pr}
         ctx.say(f"review checkout already exists, nothing changed (not updated to the PR's newest head): {path}")
         _emit(ctx, args.json, path, manifest, existing=True)
         return EXIT_OK
@@ -936,7 +1000,7 @@ def _new_review(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) ->
     created_dt = ctx.clock()
     manifest: "dict[str, object]" = {
         "schema": SCHEMA, "tool": TOOL_NAME, "kind": "review", "seat": seat.suffix, "tag": seat.name,
-        "app": app.name, "prefix": app.prefix, "pr": pr, "head_sha": None, "head_ref": None,
+        "app": app.name, "prefix": app.prefix, "lane_dir": app.lane_dir, "pr": pr, "head_sha": None, "head_ref": None,
         "pr_state": None, "cross_repo": None, "purpose": purpose, "board": board,
         "created_at": _iso(created_dt),
         "expires_at": _iso(created_dt + _dt.timedelta(days=REVIEW_DAYS)),
@@ -1021,7 +1085,20 @@ def _cmd_path(ctx: Ctx, args: argparse.Namespace) -> int:
     app = resolve_app(ctx.registry, args.app)
     _require_lane_app(app)
     seat = resolve_seat(ctx.env, ctx.registry)
-    path, _ = _plan_path(ctx, app, seat, args.slug, branch_for(seat, args.slug))
+    if args.review:
+        if args.pr is None:
+            raise Refusal("--review needs --pr N.")
+        if args.slug:
+            raise Refusal("--review takes only the app and --pr N (no slug).")
+        _plain, lanes_root = _plan_review_path(ctx, app, seat, args.pr)
+        run = Runner(ctx.env, write_root=lanes_root, fold=ctx.fold(), exec_fn=ctx.exec_fn)
+        path, _ = _choose_review_path(ctx, run, app, seat, args.pr)
+    else:
+        if args.pr is not None:
+            raise Refusal("--pr belongs with --review.")
+        if not args.slug:
+            raise Refusal("a slug is required: lane path <app> <slug>.")
+        path, _ = _plan_path(ctx, app, seat, args.slug, branch_for(seat, args.slug))
     ctx.out.write(f"{path}\n")
     return EXIT_OK
 
@@ -1049,9 +1126,12 @@ def _build_parser() -> _Parser:
     new.add_argument("--pr", metavar="N", type=_positive_int, help="pull request number for --review")
     new.add_argument("--dry-run", action="store_true", help="show what would happen; change nothing")
     new.add_argument("--json", action="store_true", help="print the manifest plus the path as JSON on stdout")
-    path = sub.add_parser("path", help="print the path a lane would get (no side effects)")
-    path.add_argument("app")
-    path.add_argument("slug")
+    path = sub.add_parser("path", help="print the path a lane (or, with --review --pr N, a review checkout) would get; "
+                          "no side effects")
+    path.add_argument("app", help="repo name, code dir, worktree prefix or acronym (any case)")
+    path.add_argument("slug", nargs="?", help="lowercase kebab, 1 to 40 characters")
+    path.add_argument("--review", action="store_true", help="the review checkout of a PR (needs --pr)")
+    path.add_argument("--pr", metavar="N", type=_positive_int, help="pull request number for --review")
     sub.add_parser("ls", help="every checkout on this Mac (the doctor report; takes doctor options)")
     sub.add_parser("doctor", help="same as ls")
     return p
