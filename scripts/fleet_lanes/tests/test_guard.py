@@ -228,7 +228,7 @@ class ReasonTests(unittest.TestCase):
         self.assertIn("lanes root", d.reason)
 
     def test_unregistered_app_keeps_the_lane_path_and_the_manual_command(self) -> None:
-        # CodeCaps has a ~/Code tree but no fleet-apps.json row, and the CLI refuses it until it is added.
+        # The fixture registry has no CodeCaps row (the real one does now), so the CLI would refuse it here.
         r = _run(_fixture("spec-tmpdir-codecaps")).reason
         self.assertNotIn("lane new", r)
         self.assertIn("at ~/apps/lanes/codecaps/claude-work", r)
