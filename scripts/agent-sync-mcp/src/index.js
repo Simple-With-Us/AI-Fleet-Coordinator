@@ -44,6 +44,7 @@ import {
 import { verifyAccessJwt } from "./access.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy } from "./pages.js";
 import { mcpHandler } from "./mcp.js";
+import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 
 export { SeatGate };
 
@@ -288,10 +289,9 @@ async function listAllGrants(oauth, seat) {
 
 async function authorizePost(request, env, config, oauth, email) {
   if (!sameOriginPost(request, config.issuer)) return errorPage("Request Refused", "Approve or deny from the consent page itself.", 403);
-  const form = await request.formData();
-  const handle = String(form.get("handle") ?? "");
-  const decision = String(form.get("decision") ?? "");
-  const postedSeat = String(form.get("seat") ?? "");
+  const parsed = await readForm(request, ConsentForm, CONSENT_ARRAY_KEYS);
+  if (!parsed.ok) return errorPage("Request Refused", "That form was not valid.  Go back to the consent page and try again.", 400);
+  const { handle, decision, seat: postedSeat = "" } = parsed.data;
 
   if (decision !== "approve") {
     let denied;
@@ -308,7 +308,7 @@ async function authorizePost(request, env, config, oauth, email) {
     return new Response(null, { status: 302, headers });
   }
 
-  const scopes = form.getAll("scope").map(String).filter((s) => config.scopes.includes(s));
+  const scopes = [...new Set(parsed.data.scope ?? [])].filter((s) => config.scopes.includes(s));
   if (scopes.length === 0) return errorPage("Pick A Scope", "Approve needs at least one scope.  Go back and tick one.", 400);
 
   let approved;
@@ -363,6 +363,17 @@ async function authorizePost(request, env, config, oauth, email) {
   const headers = withReferrerPolicy(approved.headers);
   headers.set("Location", redirectTo);
   return new Response(null, { status: 302, headers });
+}
+
+/** Parse a form body against a strict schema.  A body that is not a form at all is a refusal, not a 500. */
+async function readForm(request, schema, arrayKeys) {
+  let form;
+  try {
+    form = await request.formData();
+  } catch {
+    return { ok: false, reason: "form_unreadable" };
+  }
+  return parseForm(schema, form, arrayKeys);
 }
 
 function expiredPage() {
@@ -437,10 +448,10 @@ async function serveAdmin(request, env, config, oauth, email) {
   }
   if (path === "/admin/action" && request.method === "POST") {
     if (!sameOriginPost(request, config.issuer, { requireFetchSite: true })) return errorPage("Request Refused", "Admin changes must come from the admin page.", 403);
-    const form = await request.formData();
-    if (!safeEqual(String(form.get("csrf") ?? ""), readCookie(request, CSRF_COOKIE))) return errorPage("Request Refused", "The admin form expired.  Reload Agent-Sync Admin and try again.", 403);
-    const action = String(form.get("action") ?? "");
-    const seat = String(form.get("seat") ?? "");
+    const parsed = await readForm(request, AdminForm, []);
+    if (!parsed.ok) return errorPage("Request Refused", "That form was not valid.  Reload Agent-Sync Admin and try again.", 400);
+    if (!safeEqual(parsed.data.csrf, readCookie(request, CSRF_COOKIE))) return errorPage("Request Refused", "The admin form expired.  Reload Agent-Sync Admin and try again.", 403);
+    const { action, seat = "" } = parsed.data;
     const needsSeat = ["arm", "disarm", "pause", "unpause", "revoke"].includes(action);
     if (needsSeat && !config.hostedSeats.includes(seat)) return errorPage("Request Refused", "Unknown seat.", 400);
     switch (action) {
@@ -481,7 +492,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         break;
       }
       case "update_grok_client": {
-        const clientId = String(form.get("client_id") ?? "");
+        const clientId = parsed.data.client_id ?? "";
         const configured = config.seats["GROK-WEB"]?.redirectUris ?? [];
         if (isUrlShapedClientId(clientId) || configured.length === 0) return errorPage("Nothing To Sync", "Add Grok's redirect URI to SEATS in wrangler.jsonc and redeploy first.", 400);
         const updated = await oauth.updateClient(clientId, { redirectUris: [...configured] });

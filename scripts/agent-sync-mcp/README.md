@@ -35,6 +35,7 @@ Not in Phase 0 (and the 6 spike is partial:  only the two Phase 0 schemas go thr
 | `src/index.js` | entry:  Host check, routing, token gate, provider, `/mcp`, `/authorize`, `/admin` |
 | `src/config.js` | constants and `loadConfig(env)` (fails closed) |
 | `src/policy.js` | pure gates:  Host, redirect, client id, PKCE, resource, token form and header, bounded body read, same-origin |
+| `src/forms.js` | zod schemas for the consent POST and the `/admin/action` POST (strict:  unknown keys, repeated keys, files and out-of-enum values are refused) |
 | `src/access.js` | Access JWT verification (WebCrypto) |
 | `src/seat-state.js` | arming, epoch, pause and audit logic over any key-value store |
 | `src/seat-gate.js` | the `SeatGate` Durable Object (RPC wrapper over `seat-state.js`) |
@@ -46,7 +47,7 @@ Not in Phase 0 (and the 6 spike is partial:  only the two Phase 0 schemas go thr
 
 ```bash
 cd scripts/agent-sync-mcp
-node --test test/*.test.mjs   # pure logic, no install needed;  CI runs this
+node --test test/*.test.mjs   # pure logic, no install needed (ci.yml runs this;  test/forms.test.mjs skips itself without zod)
 npm ci --ignore-scripts && npm run test:workerd  # one Miniflare flow over the bundled Worker
 ```
 
