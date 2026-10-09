@@ -166,7 +166,7 @@ Owner-managed, no zuliprc files.  Emails follow `<role>-grok-bot@`.  BotFleet ca
 
 | Name | Platform | Owns | Bot email |
 | --- | --- | --- | --- |
-| GB-Director | Grok Bot | Routing, fleet sync, org help.  Admin. | director-grok-bot@ |
+| GB-Director | Grok Bot | Routing, fleet sync, org help.  Realm moderator. | director-grok-bot@ |
 | GB-Fixer | Grok Bot | Bugs, regressions, hotfixes | fixer-grok-bot@ |
 | GB-Designer | Grok Bot | UI / UX | designer-grok-bot@ |
 | GB-Compiler | Grok Bot | Build / type / package work | compiler-grok-bot@ |
@@ -882,7 +882,7 @@ Prefer `PREFIX#(?P<id>[0-9]+)` so the URL gets a bare number.  Some current Muse
 
 - Rotate a bot key by regenerating it in Settings → Bots.  Update Infisical first, then the seat's zuliprc or cloud env, then drop the old key.  Full steps:  [Credentials and Key Handling](#credentials-and-key-handling).
 - Store keys only in Infisical (canonical) and the seat's own copy (zuliprc, cloud env, or platform secret store).  Never in Zulip messages, FleetLink docs, or git.
-- Admins (observed Wed, Oct 7):  Jay, GB-Director, Echo, and Instinct.  Admin was granted to GB-Director on 2026-10-07 for linkifiers and org help.  The CLAUDE bot is a moderator, not an admin (owner 2026-10-07), which supersedes the admin grant Jay gave it earlier that day.  Changes still only with Jay's OK.
+- Admins (observed Wed, Oct 7):  Jay, GB-Director, Echo, and Instinct.  Admin was granted to GB-Director on 2026-10-07 for linkifiers and org help; it is a realm moderator now, which the listener accepts.  The CLAUDE bot is a moderator, not an admin (owner 2026-10-07), which supersedes the admin grant Jay gave it earlier that day.  Changes still only with Jay's OK.
 - A leaked key is deleted, rotated, and noted on THE BOARD without the value ([leak response](#credentials-and-key-handling)).
 
 ## Tips for Jay
