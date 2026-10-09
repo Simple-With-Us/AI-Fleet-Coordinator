@@ -562,6 +562,10 @@ class ClassifyTests(HomeCase):
         self.assertEqual(L.classify_location(lane, flat), LC.UNSANCTIONED)
         self.assertEqual(L.classify_location(self.mkdir("apps", "lanes", "_review", "p"), flat), LC.REVIEW)
         self.assertEqual(L.classify_location(self.mkdir("apps", "lanes", "_managed", "c"), flat), LC.MANAGED)
+        # layout v2: a review and a Claude desktop folder count in either mode, as _review and _managed did
+        self.assertEqual(L.classify_location(self.mkdir("apps", "lanes", "BotFleet", "review-pr-5"), flat), LC.REVIEW)
+        self.assertEqual(L.classify_location(self.mkdir("apps", "lanes", "BotFleet", "fix-it-a1b2c3"), flat), LC.MANAGED)
+        self.assertEqual(L.classify_location(self.mkdir("apps", "lanes", "BotFleet", "claude-x"), flat), LC.UNSANCTIONED)
 
     def test_harness_managed_locations(self) -> None:
         r = self.roots()

@@ -799,17 +799,20 @@ def _classify(real: str, roots: Roots, is_checkout: bool | None) -> tuple[Locati
         rel = parts[len(lanes_p):]
         if rel and rel[0].startswith("_"):
             return LocationClass.UNSANCTIONED, None
-        if roots.layout_mode == LAYOUT_NESTED and len(rel) >= 2:
+        if len(rel) >= 2:
             # lanes/<Repo>/<name>: the name says what the checkout is.  review-pr-<n> is a PR check;
             # <slug>-<6 hex> with no seat in front is a Claude desktop worktree (harness-managed, so the
             # dependency reaper leaves it alone); anything else is a lane the lane tool made or should have.
+            # Reviews and desktop worktrees count in either FLEET_LAYOUT mode, as _review and _managed did;
+            # only a lane needs the nested mode.
             name = orig[len(lanes_p) + 1]
             lane_dir = os.path.join(*orig[:len(lanes_p) + 2])
             if is_review_dir_name(name):
                 return LocationClass.REVIEW, lane_dir
             if is_desktop_dir_name(name, roots.seat_tokens):
                 return LocationClass.MANAGED, lane_dir
-            return LocationClass.LANE_NESTED, lane_dir
+            if roots.layout_mode == LAYOUT_NESTED:
+                return LocationClass.LANE_NESTED, lane_dir
         return LocationClass.UNSANCTIONED, None
 
     code_p = _parts(roots.code_root, roots)

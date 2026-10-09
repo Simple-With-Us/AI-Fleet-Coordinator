@@ -1443,11 +1443,13 @@ class ReviewTests(WorldCase):
         self.assertIn("claude/attached", res.err)
         self.assertNoChange(before)
 
-    def test_flat_mode_has_no_review_folder(self) -> None:
+    def test_flat_mode_still_puts_review_checkouts_in_the_repo_folder(self) -> None:
+        # as before layout v2, a review does not depend on the layout mode (the guard's deny text offers it in both)
         w = self.w
         res = w.lane("new", "DealDex", "--review", "--pr", "7", env={"FLEET_LAYOUT": "flat"})
-        self.assertEqual((res.rc, res.out), (64, ""), res.err)
-        self.assertIn("FLEET_LAYOUT=flat", res.err)
+        self.assertEqual((res.rc, res.out), (0, f"{w.review_path()}\n"), res.err)
+        flat_roots = L.make_roots(w.home, dict(w.env, FLEET_LAYOUT="flat"), registry=REGISTRY)
+        self.assertEqual(L.classify_location(w.review_path(), flat_roots), L.LocationClass.REVIEW)
 
     def test_review_root_outside_the_map_is_refused(self) -> None:
         w = self.w

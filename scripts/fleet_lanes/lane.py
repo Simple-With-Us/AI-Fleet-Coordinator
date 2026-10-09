@@ -538,9 +538,6 @@ def _plan_review_path(ctx: Ctx, app: L.App, seat: L.Seat, pr: int, *, own: bool 
     review-pr-<n>-<seat> form a second seat gets.  The destination must classify as a review checkout,
     and folders may be created anywhere at or below the lanes root."""
     roots = ctx.roots
-    if roots.layout_mode != L.LAYOUT_NESTED:
-        raise Refusal("a review checkout lives in lanes/<Repo>/review-pr-<n>, and FLEET_LAYOUT=flat has no such folder; "
-                      "unset FLEET_LAYOUT.")
     try:
         path = L.review_lane_path(app, pr, roots, ctx.registry, seat=seat.suffix if own else None)
     except L.LayoutError as exc:
@@ -876,9 +873,12 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
     if _path_state(ctx, run, tree, path, branch) == "same":
         return existing()
 
+    local, tracking = _branch_state(run, tree, branch)
+
     # The same lane in an old folder (lanes/fleet/claude-x, a flat ~/apps/fleet-claude-x): print it, do
-    # not make a second one.  The layout migration moves it to `path`.
-    old = _legacy_lane(ctx, run, tree, path, branch)
+    # not make a second one.  The layout migration moves it to `path`.  Only a branch that already
+    # exists can be checked out in one, so a brand-new lane skips the extra listing.
+    old = _legacy_lane(ctx, run, tree, path, branch) if (local or tracking) else None
     if old is not None:
         manifest = _refuse_other_owner(run, old, seat) or {
             "schema": SCHEMA, "tool": TOOL_NAME, "kind": "lane", "seat": seat.suffix, "tag": seat.name,
@@ -887,8 +887,6 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
                 f"The layout migration moves it to {path}.")
         _emit(ctx, args.json, old, manifest, existing=True, legacy_location=True)
         return EXIT_OK
-
-    local, tracking = _branch_state(run, tree, branch)
     if args.reuse_branch:
         if local or tracking:
             _refuse_if_checked_out(run, tree, branch)
