@@ -65,9 +65,9 @@ What only Jay can verify, because it needs his Access sign-in and consent:  the 
 
 ## Re-enable JET
 
-JET is left out because `openai-dot-bot` is a realm administrator (role 200) and hosted seats accept member (400) only (spec 3.6;  the listener refuses admin keys too).
+JET is left out until it is re-enabled.  `openai-dot-bot` was a realm administrator (role 200), and hosted seats accept member (400) only (spec 3.6;  the listener refuses admin keys too).
 
-1. Jay demotes `openai-dot-bot` to **member** in Zulip (Organization settings → Users → the bot → Role).
+1. Done Fri, Oct 9:  Jay demoted `openai-dot-bot` to **member** (all bots are members now).  `install_seat_key.py` still checks the live role in step 3.
 2. Add `JET` to `HOSTED_SEATS` in `wrangler.jsonc` (`"JET,GROK-WEB"`), open a PR, merge.
 3. Deploy (step 1), then `python3 -I install_seat_key.py JET --apply`.  The script refuses while the live role is not 400.
 4. Jay arms JET and connects ChatGPT (ARMING-JAY.md).
@@ -93,4 +93,4 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 - **A4:**  Infisical's Cloudflare Workers sync for the hosted keys, with "Disable Secret Deletion" (replaces step 2).
 - **A5:**  a per-Worker deploy token, kept out of agents' reach (replaces the Global key in step 1).
 - **A1 and D8:**  a key location no agent identity can read.  Until then the INFISICAL_AUTOMATION identity and the Global key can both reach GROK-WEB's key, which D8 accepts.
-- **JET:**  demote `openai-dot-bot` to member (above).
+- **JET:**  the demotion of `openai-dot-bot` to member is done (Fri, Oct 9);  steps 2 to 4 above are still open.
