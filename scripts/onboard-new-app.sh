@@ -190,5 +190,5 @@ echo "     (copy from DealDex or Usage-Monitor; see docs/ONBOARDING-NEW-APP.md P
 echo "     After CI job \`verify\` exists: python3 $here/scripts/apply-github-ruleset.py --repo $OWNER/$REPO --kind product --checks verify"
 echo "  2. Patch registries listed in docs/ONBOARDING-NEW-APP.md Phase 4."
 echo "  3. python3 $here/scripts/check-fleet-registry.py"
-echo "  4. PR the app + this coordinator repo. Slack claim/closeout."
+echo "  4. PR the app + this coordinator repo.  Claim and close out in Zulip #agent-sync:  agent-sync post --topic \"<APP> <board8> <subject>\" ..."
 echo "  5. Owner dashboards (Infisical / Coolify / ASC) stay on the checklist."

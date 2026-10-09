@@ -34,29 +34,29 @@ assert_no() {
 printf '%s\n' '[{"name":"vision-worker","pm2_env":{"name":"vision-worker","status":"online"}}]' \
   >"${tmp}/poisoned.json"
 assert_no "${tmp}/poisoned.json" \
-  shellular scout senate-relay senate-tunnel agent-sync-push \
-  code-main-keeper vision-worker xcode-health cursor-slack-sync agy-acp \
+  shellular scout senate-relay senate-tunnel \
+  code-main-keeper vision-worker xcode-health agy-acp \
   grok-leader grok-acp mac-collab mac-collab-sync
 
-# same poisoned dump still fails the original 10-job list
+# same poisoned dump still fails the original job list
 assert_no "${tmp}/poisoned.json" \
-  shellular scout senate-relay senate-tunnel agent-sync-push \
-  code-main-keeper vision-worker xcode-health cursor-slack-sync agy-acp
+  shellular scout senate-relay senate-tunnel \
+  code-main-keeper vision-worker xcode-health agy-acp
 
 # complete dump with top-level name
 python3 - "${tmp}/complete.json" <<'PY'
 import json, sys
 path = sys.argv[1]
 names = [
-    "shellular", "scout", "senate-relay", "senate-tunnel", "agent-sync-push",
-    "code-main-keeper", "vision-worker", "xcode-health", "cursor-slack-sync",
-    "agy-acp", "grok-leader", "grok-acp", "mac-collab", "mac-collab-sync",
+    "shellular", "scout", "senate-relay", "senate-tunnel",
+    "code-main-keeper", "vision-worker", "xcode-health", "agy-acp",
+    "grok-leader", "grok-acp", "mac-collab", "mac-collab-sync",
 ]
 json.dump([{"name": n} for n in names], open(path, "w"))
 PY
 assert_ok "${tmp}/complete.json" \
-  shellular scout senate-relay senate-tunnel agent-sync-push \
-  code-main-keeper vision-worker xcode-health cursor-slack-sync agy-acp \
+  shellular scout senate-relay senate-tunnel \
+  code-main-keeper vision-worker xcode-health agy-acp \
   grok-leader grok-acp mac-collab mac-collab-sync
 
 # pm2_env.name only
