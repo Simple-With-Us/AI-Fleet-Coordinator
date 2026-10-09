@@ -33,7 +33,7 @@ Canonical inventory: [`../fleet-apps.json`](../fleet-apps.json).
 ## Why this exists
 
 A new folder under `~/Code` is **not** a fleet app yet. Peers will not see it
-on the effort board, the daily digest, Slack skim-match, Apple Notes acronyms,
+on the effort board, the daily digest, Zulip skim-match, Apple Notes acronyms,
 or iOS ship tooling. Agents will also work in `~/Code/<App>` and collide with
 the integration tree. This procedure is the self-propagation rule from
 `AGENT-SYNC.md`, expanded so the next app is not a scavenger hunt.
@@ -98,7 +98,7 @@ Pick and write these down. They never change casually.
 |-------|---------|--------|
 | GitHub repo | `DealDex` | `Simple-With-Us/<repo>` |
 | `~/Code` folder | `DealDex` | Same spelling as the repo when possible |
-| Slack `repo:` | `DealDex` | First body field in every #agent-sync post |
+| Zulip `repo:` | `DealDex` | `repo:` value in every #agent-sync status block |
 | Acronym | `DD` | Apple Notes `[DD, Grok] …` |
 | Live board file | `DEALDEX-EFFORT-LOG.md` | Lives in `/Users/jay/apps/` |
 | Worktree prefix | `dealdex` | Lanes at `~/apps/lanes/dealdex/grok-<slug>` |
@@ -179,7 +179,7 @@ Required:
 
 | Path | What |
 |------|------|
-| `AGENTS.md` | Worktree keepout, Slack stanza, effort board path, verify commands, product traps |
+| `AGENTS.md` | Worktree keepout, Zulip coordination stanza, effort board path, verify commands, product traps |
 | `CLAUDE.md` | Symlink to `AGENTS.md` |
 | `docs/EFFORT-LOG.md` | Board mirror (template in `EFFORT-LOG-PROTOCOL.md`) |
 | `/Users/jay/apps/<BOARD>.md` | Live board, same content |
@@ -188,7 +188,6 @@ Required:
 | `scripts/sync-effort-issues.py` | **Verbatim** from an existing app |
 | `.github/workflows/effort-issues-sync.yml` | **Verbatim** except cron minute |
 | `.github/workflows/ci.yml` | At least lint/typecheck/test on `ubuntu-latest` |
-| `scripts/slack-sync.sh` | From this repo, so cloud seats can post |
 | `scripts/cloud-setup.sh` | Idempotent Claude Code Cloud / Codespaces install. Setup script cwd is the parent of the clone — see [CLAUDE-CODE-CLOUD-ENVIRONMENTS.md](CLAUDE-CODE-CLOUD-ENVIRONMENTS.md) |
 
 If the repo's `.gitignore` ignores `AGENTS.md` (Grok / Replit leftover),
@@ -226,7 +225,7 @@ Optional but expected before the app is "done" as a fleet citizen:
 ### Live machine (`/Users/jay/apps` — not a git repo)
 
 - `EFFORT-LOG-PROTOCOL.md` — Board registry table
-- `AGENT-SYNC.md` — intro app list, Apple Notes acronym table, Slack
+- `AGENT-SYNC.md` — intro app list, Apple Notes acronym table, Zulip
   `repo:` canonical names
 - `AGENT-COORDINATION-QUICKSTART.md` — effort-log table
 - `FLEET-UI-COPY.md` — binding apps + theme paragraph
@@ -244,7 +243,6 @@ Optional but expected before the app is "done" as a fleet citizen:
   `LIVE_EFFORT_FILES`, `REPO_BADGE`, `REPO_APP_ICON`, `REPO_STRIP_ALIASES`,
   CSS color, HTML legend
 - `scripts/build-agent-calendar.py` — `DEFAULT_REPOS`
-- `scripts/slack-sync.sh` — comment listing canonical topic tags
 - `agent-logos/app-<acronym>.png` + `agent-logos/README.md` (product apps)
 - `README.md` if the new app changes setup instructions
 
@@ -266,19 +264,19 @@ Run `python3 scripts/check-fleet-registry.py` until it is clean.
 
 ---
 
-## Phase 5 — Slack + Notes
+## Phase 5 — Zulip + Notes
 
-1. Poll `#agent-sync`, then post a claim:
+1. Read `#agent-sync` (`agent-sync inbox`, `agent-sync topics --limit 30`), then post a
+   claim in a work topic such as `AFC <board8> onboard <App>`:
 
    ```
-   [GROK] sync-N
-   repo: <slackRepo>, AI-Fleet-Coordinator, fleet-infra
-   claim: <branch>
-   state: WIP
-   work: onboard <App> as a fleet app
+   [GROK] repo:  <repo>, AI-Fleet-Coordinator, fleet-infra  |  CLAIMED
+   claim:  <branch>
+   claimed:  <Day, Mon D, YYYY>
+   work:  onboard <App> as a fleet app
    ```
 
-2. After merge: closeout on Slack, move both boards to Completed, write /
+2. After merge: closeout in Zulip (`DONE`, then `agent-sync resolve`), move both boards to Completed, write /
    update Apple Notes `[<ACRONYM>, FLEET, Grok] onboard <App>` in folder
    **Coding** via `/Users/jay/apps/apple-notes-coding.sh`.
 
@@ -339,7 +337,7 @@ The inverse of onboarding.  Do these in order, each through a `claude/*` lane an
 - [ ] `fleet-apps.json` has the row
 - [ ] Digest + calendar `DEFAULT_REPOS` include the repo
 - [ ] Apple Notes acronym table includes the acronym
-- [ ] Slack `repo:` name is in `AGENT-SYNC.md`
+- [ ] Zulip `repo:` name is in `AGENT-SYNC.md`
 - [ ] `check-fleet-registry.py` exits 0
-- [ ] Slack claim + closeout posted
+- [ ] Zulip claim + closeout posted
 - [ ] Remaining owner dashboard items are listed, not silently skipped
