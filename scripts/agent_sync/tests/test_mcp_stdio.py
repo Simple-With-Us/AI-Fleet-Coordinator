@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest import mock
 
 from agent_sync import cli
 from agent_sync import daemon
@@ -63,6 +64,68 @@ class _ChoppyRaw:
 
     def flush(self) -> None:
         pass
+
+
+class _NeverRaw:
+    """A raw stream whose reader has stopped:  every write would block, three different ways."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def write(self, chunk) -> int | None:
+        self.calls += 1
+        if self.calls % 3 == 1:
+            return None
+        if self.calls % 3 == 2:
+            raise BlockingIOError(errno.EAGAIN, "would block", 0)
+        return 0
+
+    def flush(self) -> None:
+        pass
+
+
+class _BlockingText(io.TextIOBase):
+    """A text stream (no .buffer) over a non-blocking pipe:  it takes the first `first` characters of
+    a write, then raises BlockingIOError(characters_written=first); its first flush also would block."""
+
+    def __init__(self, first: int = 5, *, accept: bool = True) -> None:
+        super().__init__()
+        self.first = first
+        self.accept = accept
+        self.chunks: list[str] = []
+        self.write_calls = 0
+        self.flush_calls = 0
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text) -> int:
+        self.write_calls += 1
+        if not self.accept:
+            raise BlockingIOError(errno.EAGAIN, "would block", 0)
+        if self.write_calls == 1:
+            self.chunks.append(text[: self.first])
+            raise BlockingIOError(errno.EAGAIN, "would block", self.first)
+        self.chunks.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        self.flush_calls += 1
+        if self.accept and self.flush_calls == 1:
+            raise BlockingIOError(errno.EAGAIN, "would block", 0)
+
+
+class _BufferedText:
+    """What a TextIOWrapper looks like to the writer:  a .buffer, and a flush that would block once."""
+
+    def __init__(self) -> None:
+        self.buffer = _ChoppyRaw(step=11)
+        self.flush_calls = 0
+
+    def flush(self) -> None:
+        self.flush_calls += 1
+        if self.flush_calls == 1:
+            raise BlockingIOError(errno.EAGAIN, "would block", 0)
 
 
 def _nonblocking(fd: int) -> None:
@@ -249,6 +312,72 @@ class ProtocolTests(McpHarness):
             writer.close()
             thread.join(timeout=30)
         self.assertEqual(bytes(received), data)
+
+    def test_writer_gives_up_on_a_client_that_stops_reading(self):
+        # Review finding:  with no overall deadline a client that stopped reading wedged the server.
+        data = b'{"jsonrpc":"2.0","id":1,"result":{}}\n'
+        with mock.patch.object(S, "WRITE_DEADLINE_S", 0.3):
+            for name, stream in (("raw, no fd", _NeverRaw()), ("text with a buffer", type("T", (), {
+                    "buffer": _NeverRaw(), "flush": lambda self: None})()), ("bare stream", _NeverRaw())):
+                with self.subTest(name):
+                    started = time.monotonic()
+                    with self.assertRaises(BrokenPipeError):
+                        S._line_writer(stream)(data)
+                    elapsed = time.monotonic() - started
+                    self.assertGreaterEqual(elapsed, 0.25)
+                    self.assertLess(elapsed, 10)  # bounded, not a spin that never ends
+
+    def test_writer_deadline_over_a_pipe_nobody_reads(self):
+        read_fd, write_fd = os.pipe()
+        _nonblocking(write_fd)
+        writer = os.fdopen(write_fd, "wb", buffering=0)
+        try:
+            with mock.patch.object(S, "WRITE_DEADLINE_S", 0.3):
+                started = time.monotonic()
+                with self.assertRaises(BrokenPipeError):
+                    S._line_writer(writer)(b"x" * 400_000 + b"\n")  # far more than a pipe holds
+                self.assertLess(time.monotonic() - started, 10)
+        finally:
+            writer.close()
+            os.close(read_fd)
+
+    def test_the_deadline_covers_the_whole_line_not_each_wait(self):
+        # A client that takes a byte now and then never lets one wait expire, but the line as a whole is late.
+        class Drip:
+            def __init__(self) -> None:
+                self.data = bytearray()
+
+            def write(self, chunk) -> int:
+                time.sleep(0.05)
+                self.data += bytes(chunk[:1])
+                return 1
+
+            def flush(self) -> None:
+                pass
+
+        with mock.patch.object(S, "WRITE_DEADLINE_S", 0.3):
+            drip = Drip()
+            with self.assertRaises(BrokenPipeError):
+                S._line_writer(drip)(b"y" * 200 + b"\n")
+            self.assertLess(len(drip.data), 201)
+
+    def test_text_stream_would_block_is_retried_without_a_double_write(self):
+        # Review finding:  the io.TextIOBase branch let BlockingIOError from write or flush crash the server.
+        data = (json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"x": "z" * 100}}) + "\n").encode("ascii")
+        text = _BlockingText(first=5)
+        self.assertIsNone(getattr(text, "buffer", None))  # so the line goes through the TextIOBase branch
+        S._line_writer(text)(data)
+        self.assertEqual("".join(text.chunks), data.decode("ascii"))  # exactly once
+        self.assertGreaterEqual(text.flush_calls, 2)  # the flush that would block was retried
+        # A wrapper with a .buffer takes the first branch, whose own flush used to be unguarded.
+        wrapped = _BufferedText()
+        S._line_writer(wrapped)(data)
+        self.assertEqual(bytes(wrapped.buffer.data), data)
+        self.assertGreaterEqual(wrapped.flush_calls, 2)
+        # A text stream that never accepts anything hits the same deadline.
+        with mock.patch.object(S, "WRITE_DEADLINE_S", 0.3):
+            with self.assertRaises(BrokenPipeError):
+                S._line_writer(_BlockingText(accept=False))(data)
 
     def test_tools_contract(self):
         tools = {t["name"]: t for t in self.spec["tools"]}

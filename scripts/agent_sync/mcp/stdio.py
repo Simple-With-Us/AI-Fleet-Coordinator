@@ -60,6 +60,8 @@ META_VERSION = "io.modelcontextprotocol/protocolVersion"
 META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 LIST_TTL_MS = 300000
 MAX_LINE = 4 << 20
+WRITE_DEADLINE_S = 30.0  # one response line must be out within this long, else the client is gone
+NO_FD_POLL_S = 0.01  # a stream with no fd to select on is retried after this pause
 IGNORED_ENV = ("ZULIP_RC", "ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE", Z.ENV_SECRETS_DIR)
 
 PARSE_ERROR = -32700
@@ -254,53 +256,90 @@ def _line_reader(stream: Any) -> Callable[[], bytes | None]:
     return read
 
 
-def _wait_writable(stream: Any) -> None:
-    """Wait until a non-blocking fd can take more.  A stream with no fd is simply retried."""
+def _expired(deadline: float) -> bool:
+    return time.monotonic() >= deadline
+
+
+def _gone() -> BrokenPipeError:
+    return BrokenPipeError("the client took no more output for %g seconds" % WRITE_DEADLINE_S)
+
+
+def _wait_writable(stream: Any, deadline: float) -> None:
+    """Wait (at most until `deadline`) for a non-blocking fd to take more.  A stream with no fd is
+    retried after a short pause, so a fake that never accepts bytes does not spin."""
     try:
         fd = stream.fileno()
     except (AttributeError, OSError, ValueError):  # io.UnsupportedOperation is both
+        time.sleep(max(0.0, min(NO_FD_POLL_S, deadline - time.monotonic())))
         return
-    select.select([], [fd], [], 1.0)
+    select.select([], [fd], [], max(0.0, min(1.0, deadline - time.monotonic())))
 
 
-def _write_all(stream: Any, data: bytes) -> None:
+def _write_all(stream: Any, data: bytes, deadline: float | None = None) -> None:
     """Write every byte.  A raw stream may take only part of the data (a signal, a non-blocking
-    fd) or none of it (None when the fd would block); a buffered one raises BlockingIOError."""
+    fd) or none of it (None when the fd would block); a buffered one raises BlockingIOError.  A
+    client that stops reading is not waited for forever:  past `deadline` (default
+    WRITE_DEADLINE_S from now) this raises BrokenPipeError, which ends the server cleanly."""
+    if deadline is None:
+        deadline = time.monotonic() + WRITE_DEADLINE_S
     view = memoryview(data)
     while view:
+        if _expired(deadline):
+            raise _gone()
         try:
             written = stream.write(view)
         except BlockingIOError as exc:
             written = exc.characters_written
         if not written:
-            _wait_writable(stream)
+            _wait_writable(stream, deadline)
             continue
         view = view[written:]
 
 
-def _flush(stream: Any) -> None:
+def _flush(stream: Any, deadline: float | None = None) -> None:
+    if deadline is None:
+        deadline = time.monotonic() + WRITE_DEADLINE_S
     while True:
         try:
             stream.flush()
             return
         except BlockingIOError:
-            _wait_writable(stream)
+            if _expired(deadline):
+                raise _gone() from None
+            _wait_writable(stream, deadline)
+
+
+def _write_text(stream: Any, text: str, deadline: float) -> None:
+    """Write an ASCII line to a text stream, once.  A BlockingIOError says how many characters
+    went in, so only the rest is retried:  retrying the whole line would send the head twice."""
+    while text:
+        if _expired(deadline):
+            raise _gone()
+        try:
+            stream.write(text)
+            return
+        except BlockingIOError as exc:
+            text = text[exc.characters_written:]
+            if text:
+                _wait_writable(stream, deadline)
 
 
 def _line_writer(stream: Any) -> Callable[[bytes], None]:
+    """One call writes one whole line and flushes it, all under a single WRITE_DEADLINE_S."""
     raw = getattr(stream, "buffer", None)
 
     def write(data: bytes) -> None:
+        deadline = time.monotonic() + WRITE_DEADLINE_S
         if raw is not None:
-            stream.flush()
-            _write_all(raw, data)
-            _flush(raw)
+            _flush(stream, deadline)
+            _write_all(raw, data, deadline)
+            _flush(raw, deadline)
         elif isinstance(stream, io.TextIOBase):
-            stream.write(data.decode("ascii"))
-            stream.flush()
+            _write_text(stream, data.decode("ascii"), deadline)
+            _flush(stream, deadline)
         else:
-            _write_all(stream, data)
-            _flush(stream)
+            _write_all(stream, data, deadline)
+            _flush(stream, deadline)
 
     return write
 
@@ -404,5 +443,8 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
     reader, writer = _protect_stdout(rt)
     try:
         return server.serve(reader, writer)
-    except (KeyboardInterrupt, BrokenPipeError):
+    except KeyboardInterrupt:
+        return 0
+    except BrokenPipeError as exc:  # the client closed the pipe, or stopped reading it for WRITE_DEADLINE_S
+        log("stopping:  %s" % (exc or "the client closed the pipe"))
         return 0
