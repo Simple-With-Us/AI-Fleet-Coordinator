@@ -794,19 +794,37 @@ class LaneNewTests(WorldCase):
 
     def test_an_existing_lane_whose_manifest_names_another_seat_is_not_handed_over(self) -> None:
         w = self.w
-        for argv, path in ((("new", "DealDex", "fix-thing"), w.lane_path()),
-                           (("new", "DealDex", "--review", "--pr", "7"), w.review_path())):
-            with self.subTest(argv=argv):
-                self.assertEqual(w.lane(*argv).rc, 0)
-                manifest_path = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=path)) / "lane.json"
-                body = json.loads(manifest_path.read_text(encoding="utf-8"))
-                body["tag"] = "CODEX"
-                manifest_path.write_text(json.dumps(body), encoding="utf-8")
-                before = w.everything_hash()
-                res = w.lane(*argv)
-                self.assertEqual((res.rc, res.out), (64, ""), res.err)
-                self.assertIn("CODEX", res.err)
-                self.assertNoChange(before)
+        self.assertEqual(w.lane("new", "DealDex", "fix-thing").rc, 0)
+        manifest_path = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=w.lane_path())) / "lane.json"
+        body = json.loads(manifest_path.read_text(encoding="utf-8"))
+        body["tag"] = "CODEX"
+        manifest_path.write_text(json.dumps(body), encoding="utf-8")
+        before = w.everything_hash()
+        res = w.lane("new", "DealDex", "fix-thing")
+        self.assertEqual((res.rc, res.out), (64, ""), res.err)
+        self.assertIn("CODEX", res.err)
+        self.assertNoChange(before)
+
+    def test_a_review_checkout_that_names_another_seat_is_not_handed_over_either(self) -> None:
+        # A review has a way out a lane does not: the second seat gets review-pr-<n>-<seat>.  It is never
+        # handed the first seat's folder, and the first seat's folder is left exactly as it was.
+        w = self.w
+        self.assertEqual(w.lane("new", "DealDex", "--review", "--pr", "7").rc, 0)
+        plain = w.review_path()
+        manifest_path = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=plain)) / "lane.json"
+        body = json.loads(manifest_path.read_text(encoding="utf-8"))
+        body["tag"] = "CODEX"
+        manifest_path.write_text(json.dumps(body), encoding="utf-8")
+        plain_before = manifest_path.read_text(encoding="utf-8")
+        res = w.lane("new", "DealDex", "--review", "--pr", "7")
+        self.assertEqual((res.rc, res.out), (0, f"{w.review_path(seat='claude')}\n"), res.err)
+        self.assertEqual(manifest_path.read_text(encoding="utf-8"), plain_before)
+        again = w.lane("new", "DealDex", "--review", "--pr", "7")
+        self.assertEqual((again.rc, again.out), (0, f"{w.review_path(seat='claude')}\n"), again.err)
+        self.assertIn("already exists", again.err)
+        # the owner itself still gets the plain folder back
+        codex = w.lane("new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "CLUTCH"})
+        self.assertEqual(codex.out, f"{w.review_path(seat='clutch')}\n", "a third seat gets its own folder")
 
     def test_bad_slugs_are_refused(self) -> None:
         w = self.w

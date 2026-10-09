@@ -1004,6 +1004,89 @@ class DiscoveryTests(GitCase):
         self.assertIn("not in the parent repo's worktree list (moved or stale)", co["safety_reasons"])
         self.assertIn(str(lane), {a["path"] for a in rep["anomalies"] if a["type"] == "PRUNABLE"})
 
+    def test_layout_v2_statuses_in_the_report(self) -> None:
+        """Layout v2 (owner 2026-10-09): every checkout says whether its place is right.  The location
+        classes, the strict count and the cleaner contract do not change."""
+        apps = self.home / "apps"
+        lanes = apps / "lanes"
+        correct = self.add_worktree(self.parent, lanes / "DealDex" / "claude-fix", "claude/fix")
+        review = lanes / "DealDex" / "review-pr-9"
+        review.parent.mkdir(parents=True, exist_ok=True)
+        self.git(self.parent, "worktree", "add", "-q", "--detach", str(review))
+        desktop = self.add_worktree(self.parent, lanes / "DealDex" / "fix-it-a1b2c3", "claude/fix-it-a1b2c3")
+        codex_new = self.add_worktree(self.parent, lanes / "_codex" / "ab12" / "DealDex", "codex/ab12")
+        old_flat = self.lane(self.parent, "dealdex-claude-old", "claude/old")
+        old_managed = self.add_worktree(self.parent, lanes / "_managed" / "codex" / "DealDex", "codex/managed")
+        codex_old = self.add_worktree(self.parent, self.home / ".codex" / "worktrees" / "cd34" / "DealDex", "codex/cd34")
+        repo_local = self.add_worktree(self.parent, self.parent / ".claude" / "worktrees" / "y-1a2b3c", "claude/y-1a2b3c")
+        tmp_clone = self.add_worktree(self.parent, self.faketmp / "bf-x" / "wt", "claude/tmpwork")
+        rep = self.report()
+        want = {
+            correct: ("correct", "LANE_NESTED"), review: ("correct", "REVIEW"), desktop: ("correct", "MANAGED"),
+            codex_new: ("codex-managed", "MANAGED"), old_flat: ("legacy-migrate", "LANE_FLAT_LEGACY"),
+            old_managed: ("legacy", "MANAGED"), codex_old: ("legacy-migrate", "MANAGED"),
+            repo_local: ("wrong", "MANAGED"), tmp_clone: ("wrong", "FORBIDDEN_TMP"), self.parent: ("human", "INTEGRATION_TREE"),
+        }
+        for path, (status, cls) in want.items():
+            with self.subTest(path=os.path.relpath(path, self.home)):
+                co = self.one(rep, path)
+                self.assertEqual((co["layout_status"], co["location_class"]), (status, cls), co["layout_reasons"])
+        # a legacy checkout names its new home, a correct one does not
+        self.assertEqual(self.one(rep, old_flat)["layout_target"], os.path.join(os.path.realpath(lanes), "DealDex", "claude-old"))
+        self.assertEqual(self.one(rep, codex_old)["layout_target"],
+                         os.path.join(os.path.realpath(lanes), "_codex", "cd34", "DealDex"))
+        self.assertIsNone(self.one(rep, correct)["layout_target"])
+        self.assertIsNone(self.one(rep, old_managed)["layout_target"])
+        # tools are told from the path alone
+        self.assertEqual(self.one(rep, desktop)["creating_tool"], "claude-desktop")
+        self.assertEqual(self.one(rep, codex_new)["creating_tool"], "codex")
+        self.assertIn("lanes/_codex", self.one(rep, codex_new)["creating_tool_basis"])
+        # a name verdict is judged only for lanes: a review, a desktop folder and Codex's are not lanes
+        for path in (review, desktop, codex_new):
+            self.assertIsNone(self.one(rep, path)["name_verdict"])
+        # the only new anomaly is WRONG-PLACE, and only for the repo-local harness worktree
+        wrong = [a for a in rep["anomalies"] if a["type"] == "WRONG-PLACE"]
+        self.assertEqual([os.path.realpath(a["path"]) for a in wrong], [os.path.realpath(repo_local)])
+        self.assertIn("inside-~/Code/<Repo>", wrong[0]["detail"])
+        self.assertEqual(rep["anomalies"][0]["type"], "FORBIDDEN_TMP", "the order of anomalies is still most urgent first")
+        # strict counts the temp checkout only: a worktree in the wrong place is not a new exit code
+        self.assertEqual(rep["summary"]["strict_violations"], 1)
+        by = rep["summary"]["by_layout_status"]
+        self.assertEqual(by, {"correct": 3, "legacy-migrate": 2, "legacy": 1, "codex-managed": 1, "human": 1, "wrong": 2})
+        text = doctor.render_text(rep)
+        self.assertIn("Layout (v2)", text)
+        self.assertIn("legacy (migrate)", text)
+        self.assertIn("Codex-managed", text)
+        self.assertIn("WRONG-PLACE", text)
+
+    def test_legacy_prefix_folders_keep_their_lane_name_verdict(self) -> None:
+        """~67 lanes sit in old prefix folders today.  They must read as legacy, not as name drift."""
+        old = self.add_worktree(self.parent, self.home / "apps" / "lanes" / "dealdex" / "claude-old", "claude/old")
+        rep = self.report()
+        co = self.one(rep, old)
+        self.assertEqual((co["location_class"], co["name_verdict"]), ("LANE_NESTED", "CONFORMING"))
+        self.assertEqual(co["layout_status"], "legacy-migrate")
+        self.assertTrue(any(r.startswith("legacy-prefix-dir:") or r.startswith("repo-dir-case:")
+                            for r in co["layout_reasons"]), co["layout_reasons"])
+        self.assertNotIn(("NAME-DRIFT", "claude-old"), {(a["type"], os.path.basename(a["path"])) for a in rep["anomalies"]})
+
+    def test_an_unknown_repo_folder_under_lanes_is_wrong_place_and_name_drift(self) -> None:
+        stray = self.add_worktree(self.parent, self.home / "apps" / "lanes" / "nonesuch" / "claude-x", "claude/x")
+        rep = self.report()
+        co = self.one(rep, stray)
+        self.assertEqual((co["layout_status"], co["location_class"]), ("wrong", "LANE_NESTED"))
+        types = {a["type"] for a in rep["anomalies"] if os.path.basename(a["path"]) == "claude-x"}
+        self.assertEqual(types, {"WRONG-PLACE", "NAME-DRIFT"})
+
+    def test_json_keeps_schema_2_and_the_old_fields(self) -> None:
+        rep = self.report()
+        self.assertEqual(rep["schema"], 2)
+        co = self.one(rep, self.parent)
+        for key in ("location_class", "name_verdict", "safety", "creating_tool", "lane_root", "layout_status",
+                    "layout_reasons", "layout_target"):
+            self.assertIn(key, co)
+        self.assertIn("by_layout_status", rep["summary"])
+
     def test_creating_tool_inference(self) -> None:
         roots = L.make_roots(self.home, self.env, registry=self.registry, case_insensitive=False)
         home = self.home
@@ -1021,6 +1104,13 @@ class DiscoveryTests(GitCase):
             (home / "Code" / "DealDex" / ".muse" / "worktrees" / "fix-login", None, None, None, "muse-code"),
             (home / "Code" / "DealDex" / ".muse" / "worktrees" / "fix-login", "claude/x", None, "claude", "muse-code"),
             (home / "Code" / "DealDex", "main", None, None, "human"),
+            # layout v2: Codex nests lanes/_codex/<slug>/<Repo>; the desktop app files lanes/<Repo>/<slug>-<hex>
+            (home / "apps" / "lanes" / "_codex" / "ab12" / "DealDex", None, None, None, "codex"),
+            (home / "apps" / "lanes" / "DealDex" / "fix-bug-a1b2c3", "claude/fix-bug-a1b2c3", None, None, "claude-desktop"),
+            (home / "apps" / "lanes" / "DealDex" / "fix-bug-a1b2c3" / "src", None, None, None, "claude-desktop"),
+            (home / "apps" / "lanes" / "DealDex" / "claude-fix-a1b2c3", None, "claude", None, "claude-cli"),
+            (home / "apps" / "lanes" / "DealDex" / "minimax-x", None, "minimax", None, "minimax"),
+            (home / "apps" / "lanes" / "DealDex" / "review-pr-7", None, None, None, "unknown"),
             (home / "apps" / "dealdex-codex-x", None, "codex", None, "codex"),
             (home / "apps" / "dealdex-monet-x", None, "monet", None, "claude-cli"),
             (home / "apps" / "dealdex-mm-x", None, "minimax", None, "minimax"),

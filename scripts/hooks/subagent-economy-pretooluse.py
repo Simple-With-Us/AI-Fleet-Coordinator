@@ -103,7 +103,7 @@ def check_agent(tool_input):
                 "itself, so one agent gets two worktrees -- the harness's, plus the lane it "
                 "actually works in.  The first is then pure setup cost and disk.  Keep exactly "
                 "one: isolation when the harness should own the checkout, or the instruction "
-                "when the agent needs a named lane under ~/apps."
+                "when the agent needs a named lane under ~/apps/lanes/<Repo>/."
             )
 
 
