@@ -6,7 +6,7 @@ CLAUDE seat, Thu, Oct 8.  Deployed on Thu, Oct 8 as the Coolify application "age
 
 The listener runs as two instances of the same package (`scripts/agent_sync`), by owner decision on Thu, Oct 8.
 
-- **mac** is the LaunchAgent on the owner's Mac.  It holds only the CLAUDE seat:  live delivery into Claude sessions and the tool-less `claude -p` wake.
+- **mac** is the LaunchAgent on the owner's Mac.  It holds the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM):  live delivery into Claude sessions and the tool-less `claude -p` wake for CLAUDE, and inbox capture for the other eight.
 - **server** is a container on the Coolify box (Hetzner).  It holds the Grok Bot (GB) personas and has room for other seats later.  A GB persona is woken on an @-mention or a DM by calling its Grok Bot routine webhook.  The routine then replies in Zulip with the persona's own key.
 
 BotFleet (BF) bots are handled natively by BotFleet, not by either instance.
@@ -15,7 +15,7 @@ The server instance reuses everything in the listener:  the router, dedupe, the 
 
 ## Seat Partition
 
-[`agent-sync-partition.toml`](agent-sync-partition.toml) gives each seat to one instance:  `mac`, `server`, or `none` (no listener holds it).  Today CLAUDE is `mac` and the eleven GB personas are `server`.  Every other fleet seat is `none`:  the BF role bots, CODEX, AG, CURSOR, GROK, CLUTCH, FX, MM, MC, MA and the rest.
+[`agent-sync-partition.toml`](agent-sync-partition.toml) gives each seat to one instance:  `mac`, `server`, or `none` (no listener holds it).  Today the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM) are `mac`, and the eleven GB personas plus MA, JET, GROK-WEB, INSTINCT and ECHO are `server`.  The BF role bots and GROK-BUILD (the older code of the GROK seat) are `none`.
 
 **A seat must never be configured in both instances.**  If it were, two listeners would each hold a queue for the same bot and each wake it, so one message could be answered twice.  The partition fails closed, and it is enforced at start, at connect and on reload.
 
@@ -43,7 +43,7 @@ CODE is the seat with hyphens turned into underscores.
 - The realm is never taken from `ZULIP_SITE`.  It is `AGENT_SYNC_REALM`, else `https://simplewithus.zulipchat.com`.  The site's host must match the realm host, or the seat is refused.
 - A missing variable refuses the seat, and the error names the variable, never a value.
 - A seat may not name `ZULIP_EMAIL`, `ZULIP_API_KEY` or `ZULIP_RC`, the CLI's single-seat variables.  Two seats may not share a variable.  Within one seat, the Zulip email, key and site and the routine URL and key must be five different variables, so a typo cannot send the bot's Zulip key to the routine.  The routine may not read `ZULIP_SITE`.  In each case the seats lose their queue and the config shows red, so seats cannot alias one bot.
-- Values lose wrapping quotes and surrounding spaces, as zuliprc values do, for the Zulip variables and the routine URL and key alike.  A synced `"https://..."` is therefore not refused as "not https", and a quoted key is not sent as `Bearer "<key>"`.
+- Values lose wrapping quotes and surrounding spaces, as zuliprc values do, for the Zulip variables and the routine URL and key alike.  A copied `"https://..."` is therefore not refused as "not https", and a quoted key is not sent as `Bearer "<key>"`.
 - Each loaded key and its base64 form are scrubbed from every log line, error and status, as on the Mac.
 - **The environment is read once.**  A container's environment is fixed when Coolify creates it, and the daemon copies it at start.  `agent-sync daemon reload` re-reads only `listener.toml`.  A new or changed variable (a persona enabled, a key rotated) reaches the listener only when the app is restarted in Coolify.  Coolify's docs say the same:  use Restart when only runtime values changed.  A status line for a missing variable says to restart.
 - The Infisical names are pending from Muse.  If they differ from the defaults, set `email_env` and `key_env` in the seat's section rather than renaming secrets.
@@ -210,13 +210,13 @@ GNU sed keeps the file's owner and mode 600.  For a larger change, edit the file
 **Enabling another persona.**  Every persona's section in the sample already carries `wake = "http"` and a `routine` block that names its default variables, so enabling one is a one-line edit.
 
 1. Add its routine URL and key (`GB_<ROLE>_ROUTINE_URL`, `GB_<ROLE>_ROUTINE_KEY`) in Infisical (`prod`, `/zulip`), and check that its Zulip email and key are there.
-2. Make sure all four reach the app's Environment Variables in Coolify (by the sync, or copied by hand), runtime only (step 3).
+2. Make sure all four reach the app's Environment Variables in Coolify (copied by hand with the script from step 3), runtime only (step 3).
 3. In `/data/listener.toml`, set the persona's `enabled = true` with the scoped `sed` above.  If its routine needs another method, auth or header, change those lines the same way.
 4. **Restart the app in Coolify.**  The container's environment is fixed when it is created, so `agent-sync daemon reload` would leave the persona red with "environment variable not set".
 5. Run `agent-sync status` and check step 7 for the persona.
 6. Mirror the change in `scripts/agent_sync/server/listener.toml` in a PR, so a fresh volume starts the same way.
 
-**Rotating a key.**  Change it in Infisical first, make sure the new value reaches Coolify (by the sync, or copied by hand), then restart the app.  The same applies to a bot's Zulip key and to a routine URL or key.  Until the restart, the listener keeps using the old value.
+**Rotating a key.**  Change it in Infisical first, make sure the new value reaches Coolify (copied by hand with the script from step 3), then restart the app.  The same applies to a bot's Zulip key and to a routine URL or key.  Until the restart, the listener keeps using the old value.
 
 ## Open Questions
 

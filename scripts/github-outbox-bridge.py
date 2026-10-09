@@ -27,8 +27,8 @@ or one seat from the CLI (--seat --repo --issue).  --once for a launchd
 StartInterval job (the default); --loop for a foreground loop.  --dry-run reads
 everything and writes nothing.
 
-Protocol: ~/apps/AGENT-SYNC.md § Message Structure.  Skim rules mirror
-~/apps/agent-sync-poll.py.  Tracked in AI-Fleet-Coordinator as
+Protocol: ~/apps/AGENT-SYNC.md § Message Shape.  Skim rules follow § Skim, Then
+Full-Read Only on a Match.  Tracked in AI-Fleet-Coordinator as
 scripts/github-outbox-bridge.py; live copy ~/apps/github-outbox-bridge.py.
 Runs on the Mac's /usr/bin/python3 (3.9): stdlib only, no 3.10+ syntax.
 """
@@ -120,7 +120,7 @@ def is_own_post(text: str, seat: str) -> bool:
 
 
 def skim_match(text: str, seat: str) -> bool:
-    """Same skim rule as agent-sync-poll.py: the seat, a FLEET wake, or an alarm word."""
+    """Skim rule (AGENT-SYNC.md § Skim, Then Full-Read Only on a Match): the seat, a FLEET wake, or an alarm word."""
     head = text[:240]
     if "->FLEET" in head:
         return True
@@ -463,7 +463,7 @@ class Bridge:
             note = (
                 "%srelay-down -->\n"
                 "Posting to Zulip has failed %d ticks in a row (%s).  Your comments stay queued "
-                "and post when it recovers.  A Mac seat should check pm2 agent-sync-push."
+                "and post when it recovers.  A Mac seat should check that Zulip is reachable and that the seat's bot credential works (agent-sync whoami)."
                 % (BRIDGE_MARKER, count, exc)
             )
             try:
