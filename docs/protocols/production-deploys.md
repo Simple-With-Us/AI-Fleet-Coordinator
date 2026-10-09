@@ -26,7 +26,7 @@ per-release owner ask, **but only announce-then-deploy**:
 4. Then deploy, **health-verify, and update the boards** (the deployer owns the close-out).
 
 **Back the announce with an atomic claim (added 2026-09-16, board item bd6d325e).** The
-Slack announce gives peers visibility, but it is not itself a lock — a poll-cadence gap is
+Zulip announce gives peers visibility, but it is not itself a lock — a poll-cadence gap is
 exactly what let two lanes deploy the same commit 2 seconds apart on 2026-07-09 (Coolify's
 cancel API is broken, so both builds ran). THE BOARD's claim endpoint now rejects a second
 claim of an `in_progress` item by a different seat within a 20-minute lease (`PATCH
@@ -43,7 +43,7 @@ board status <id> completed --resolution "deployed <commit>"
 ```
 
 A `409` means another seat already claimed that app's deploy lock — stand down, do not
-also trigger, and go find them in `#agent-sync` instead of assuming your Slack post won.
+also trigger, and go find them in `#agent-sync` instead of assuming your Zulip post won.
 This does not require GitHub Environments or a new board `source_kind`; it reuses the
 claim conflict check that already exists.
 
