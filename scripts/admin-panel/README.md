@@ -61,7 +61,7 @@ seconds.  Worst case per section:
 | `recall` | 3 — health, stats, canary search |
 | `board` | 2 |
 | `coolify` | 2 |
-| `github` | 14 — one PR search plus one Actions call per repo (it was 24) |
+| `github` | 15 — one PR search plus one Actions call per repo (it was 24) |
 | `vercel` | 6 — projects, teams, and up to four team-scoped calls |
 | `sentry` | 1 |
 | `pagerduty` | 1 |

@@ -4,7 +4,7 @@
   "appsRoot": "/Users/jay/apps",
   "zulipRealm": "https://simplewithus.zulipchat.com",
   "zulipChannel": "agent-sync",
-  "notes": "Canonical fleet app + coding-seat inventory. onboard-new-app.sh adds a row here, then patches the registries listed in docs/ONBOARDING-NEW-APP.md. check-fleet-registry.py verifies those files still mention every app. GROK-BOT is a fleet-wide identity that drives Cursor cloud agents; it shares CURSOR's folder name and gets no lanes of its own.  Seats carry zulipBotEmail and zulipFileCode, copied from the roster in docs/protocols/zulip-fleet-guide.md (the file code must match the agent-sync CLI's rule).  A retired seat has no bot, and aliasOf names the live seat that a retired alias now means.",
+  "notes": "Canonical fleet app + coding-seat inventory.  onboard-new-app.sh adds a row here, then patches the registries listed in docs/ONBOARDING-NEW-APP.md.  check-fleet-registry.py verifies those files still mention every app.  GROK-BOT is a fleet-wide identity that drives Cursor cloud agents; it shares CURSOR's folder name and gets no lanes of its own.  Seats carry zulipBotEmail and zulipFileCode, copied from the roster in docs/protocols/zulip-fleet-guide.md (the file code must match the agent-sync CLI's rule).  A retired seat has no bot, and aliasOf names the live seat that a retired alias now means.",
   "apps": [
     {
       "repo": "Socratic-Trade",
@@ -183,7 +183,7 @@
       "hasAppIcon": true,
       "iconFile": "agent-logos/app-cc.png",
       "kind": "product",
-      "notes": "No digestColor: the daily digest's --cc colour (#0d9488) is already congress-trading-shared's, and check-fleet-registry.py rejects a reused colour.  The acronym CC and the repo-cc badge come from REPO_BADGE in scripts/build-fleet-daily-digest.py."
+      "notes": "No digestColor:  the daily digest's --cc colour (#0d9488) is already congress-trading-shared's, and check-fleet-registry.py rejects a reused colour.  The acronym CC and the repo-cc badge come from REPO_BADGE in scripts/build-fleet-daily-digest.py.  Do not use CC#n for CodeCaps in Zulip topics:  the live CC# linkifier points at Clutch (zulip-fleet-guide.md, Current Linkifiers, decision 17 pending the owner), so use CodeCaps#n, which the generic repo pattern resolves correctly."
     }
   ],
   "seats": [
@@ -265,9 +265,9 @@
     {
       "tag": "GROK-WEB",
       "notesName": "Grok Web",
-      "worktreeSuffix": "grok-web",
+      "worktreeSuffix": "grokweb",
       "branchPrefixes": [],
-      "notes": "Grok on the web and the iOS app: a cloud seat with no Mac lanes or checkouts (owner 2026-10-08).  Held by the server listener, not the Mac one (docs/protocols/agent-sync-partition.toml).  No branch prefix, as in the AGENT-SYNC.md Active Seats table, so lane refuses it before it makes a worktree.",
+      "notes": "Grok on the web and the iOS app: a cloud seat with no Mac lanes or checkouts (owner 2026-10-08).  Held by the server listener, not the Mac one (docs/protocols/agent-sync-partition.toml).  No branch prefix, as in the AGENT-SYNC.md Active Seats table, so lane refuses it before it makes a worktree.  The suffix is grokweb, not grok-web, so it does not extend the live GROK seat's grok- folder name and block GROK slugs that start with web-.",
       "zulipBotEmail": "grok-web-bot@simplewithus.zulipchat.com",
       "zulipFileCode": "Grok-Web"
     },
@@ -374,24 +374,6 @@
       "notes": "Meta AI interactive terminal coding agent (muse CLI / Muse Code). Distinct from Muse Assist ([MA]).",
       "zulipBotEmail": "mc-bot@simplewithus.zulipchat.com",
       "zulipFileCode": "MC"
-    },
-    {
-      "tag": "ECHO",
-      "notesName": "Echo",
-      "worktreeSuffix": "echo",
-      "branchPrefixes": [],
-      "notes": "Cloud seat, the bat bot of the Instinct family (docs/protocols/zulip-fleet-guide.md, Instinct Family).  No Mac lanes, so no branch prefix and lane refuses it.  Held by the server listener (docs/protocols/agent-sync-partition.toml).",
-      "zulipBotEmail": "instinct-bat-bot@simplewithus.zulipchat.com",
-      "zulipFileCode": "Echo"
-    },
-    {
-      "tag": "INSTINCT",
-      "notesName": "Instinct",
-      "worktreeSuffix": "instinct",
-      "branchPrefixes": [],
-      "notes": "Cloud seat, the owl bot of the Instinct family:  the iMessage interface seat, with no coding lanes (docs/INSTINCT-ONBOARDING-PROMPT.md), so no branch prefix and lane refuses it.  Held by the server listener (docs/protocols/agent-sync-partition.toml).",
-      "zulipBotEmail": "instinct-owl-bot@simplewithus.zulipchat.com",
-      "zulipFileCode": "Instinct"
     }
   ]
 }

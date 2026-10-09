@@ -578,7 +578,7 @@ function coolifyState(status) {
 
 /* ----------------------------------------------------------------- github */
 /* Subrequests: one org-wide PR search + one actions/runs call per repo.     */
-/* Worst case 1 + APPS.length = 14.  It used to be two per repo — 24 — and   */
+/* Worst case 1 + APPS.length = 15.  It used to be two per repo — 24 — and   */
 /* that alone was half the platform's budget.                                */
 
 async function checkGitHub(env) {

@@ -223,11 +223,13 @@ class Seat:
         return ""
 
 
-# Apps with lanes on disk but no fleet-apps.json row.  owner_repo and prefix come from the git
-# remotes and lane names seen in the 2026-10-07 sweep.  mmx-acp had no remote (owner_repo ""), and
-# Kodus-Config, upptime-status and mmx-acp have no ~/Code tree (their clone lives in ~/apps), so
-# their integration_dir_name is "".  Simple-With-Us appears on disk as simple-with-us-*,
-# simplewithus-* and Simple-With-Us-*; the hyphenated lowercase form is the prefix.
+# Apps with lanes on disk but no fleet-apps.json row.  CodeCaps has a row now;  its entry here stays
+# only as the fallback for an installed copy of the registry that predates the row, and a registry row
+# wins.  owner_repo and prefix come from the git remotes and lane names seen in the 2026-10-07 sweep.
+# mmx-acp had no remote (owner_repo ""), and Kodus-Config, upptime-status and mmx-acp have no ~/Code
+# tree (their clone lives in ~/apps), so their integration_dir_name is "".  Simple-With-Us appears on
+# disk as simple-with-us-*, simplewithus-* and Simple-With-Us-*; the hyphenated lowercase form is the
+# prefix.
 EXTRA_APPS: tuple[App, ...] = (
     App("CodeCaps", f"{DEFAULT_OWNER}/codecaps", "codecaps", "CodeCaps", registered=False),
     App("FleetLink", f"{DEFAULT_OWNER}/FleetLink", "fleetlink", "FleetLink", registered=False),

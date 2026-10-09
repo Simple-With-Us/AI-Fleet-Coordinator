@@ -57,7 +57,7 @@ def zulip_errors(data: dict) -> list[str]:
 
     Presence is not required:  GROK-BOT is a set of owner-managed personas with no zuliprc, and
     a retired seat has no bot.  What is present must be well formed.  The bot email cannot be
-    derived from the tag (muse-assist-bot@, instinct-owl-bot@), so it is checked for shape and
+    derived from the tag (muse-assist-bot@, grok-build-bot@), so it is checked for shape and
     uniqueness only; the file code is derived by the CLI, so it is compared against the CLI.
     """
     errors: list[str] = []

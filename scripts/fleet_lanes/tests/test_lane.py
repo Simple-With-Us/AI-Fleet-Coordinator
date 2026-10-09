@@ -538,7 +538,7 @@ class ResolveTests(unittest.TestCase):
             with self.subTest(seat=seat.name):
                 self.assertTrue(L.is_valid_slug(seat.suffix))
                 if not seat.primary_branch_prefix():
-                    # A cloud seat has no Mac lanes (GROK-WEB, ECHO, INSTINCT).  No prefix is how lane
+                    # A cloud seat has no Mac lanes (GROK-WEB).  No prefix is how lane
                     # refuses it, before it makes a worktree.
                     laneless.append(seat.name)
                     with self.assertRaises(K.Refusal):
