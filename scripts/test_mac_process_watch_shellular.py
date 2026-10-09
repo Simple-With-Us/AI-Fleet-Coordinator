@@ -286,10 +286,20 @@ class EvidenceScope(Watch):
         self.assertLeftAlone(self.check(T0), "stale-evidence")
         self.assertLeftAlone(self.check(T0 + 200), "stale-evidence")
 
-    def test_ioreg_missing_after_start_is_evidence(self) -> None:
+    def test_ioreg_missing_is_never_evidence(self) -> None:
+        # node-machine-id runs ioreg at module load: before the banner, in the
+        # same second as the process start.  It cannot be newer than the
+        # baseline, and a later line would be a different failure.  pm2
+        # crash-loops the process in that case; this check never kills for it.
         self.error(T0 - 60, "ioreg: command not found")
-        self.assertLeftAlone(self.check(T0, start=T0 - 1000), "suspect")
-        self.assertKilled(self.check(T0 + 120, start=T0 - 1000))
+        self.assertLeftAlone(self.check(T0, start=T0 - 1000))
+        self.assertLeftAlone(self.check(T0 + 120, start=T0 - 1000))
+
+    def test_ioreg_failure_in_the_same_second_as_the_start_banner(self) -> None:
+        self.error(T0 - 1000, "/bin/sh: ioreg: command not found")
+        self.output(T0 - 1000, BANNER)
+        self.assertLeftAlone(self.check(T0, start=T0 - 1000))
+        self.assertLeftAlone(self.check(T0 + 240, start=T0 - 1000))
 
     def test_ioreg_lines_from_before_a_restart_are_ignored(self) -> None:
         self.error(T0 - 600, "ioreg: command not found")

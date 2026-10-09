@@ -34,7 +34,7 @@
 #     must repeat MAC_PROCESS_WATCH_HTTP_SLOW_STRIKES (default 3) runs in
 #     a row before the restart.  See the comment at the HTTP loop.
 #   - shellular process up but the relay is provably still down (handshake
-#     fail / ioreg-missing / retry loop newer than the last Connected line,
+#     fail / retry loop newer than the last Connected line,
 #     seen on two passes >=120s apart, 180s grace after a restart) -> kill
 #     pid (God autorestarts).  A fresh "Connection lost ... Reconnecting"
 #     alone is never enough.  shellular-error.log is copy-truncated past
@@ -238,9 +238,13 @@ raise SystemExit(0 if not missing else 1)
 #      server" / client-connected line in shellular-out.log, the latest
 #      "Shellular CLI v" start banner, and the process start time.
 #   2. Evidence = relay failure lines (shellular-error.log: "Closed before
-#      handshake", "Relay wss://... failed", "No relay responded", the
-#      ioreg-missing pair; shellular-out.log: "Retrying in") strictly newer
-#      than the baseline.  Older lines are history, never evidence.
+#      handshake", "Relay wss://... failed", "No relay responded";
+#      shellular-out.log: "Retrying in") strictly newer than the baseline.
+#      Older lines are history, never evidence.  An ioreg failure is NOT
+#      evidence: node-machine-id runs it at module load, before the banner
+#      and in the same second as the process start, so it can never be
+#      newer than the baseline; today it throws and pm2 crash-loops the
+#      process instead of leaving a silent zombie.
 #   3. No evidence, evidence older than 20 minutes, or missing/unparseable
 #      logs -> healthy.
 #   4. Grace: 180s after any (re)start -> healthy, whatever the logs say.
@@ -364,7 +368,6 @@ def clear_state():
 OK = re.compile(r"(?<!dis)connected to server|(?<!dis)connected on", re.I)
 BANNER = re.compile(r"Shellular CLI v")
 HANDSHAKE = re.compile(r"Closed before handshake|Relay wss://.*failed|No relay responded")
-IOREG = re.compile(r"ioreg.*not found|not found.*ioreg|IOPlatformExpertDevice")
 RETRY = re.compile(r"Retrying in \d")
 
 err_rows = read_lines(err)
@@ -375,7 +378,7 @@ last_banner = max([t for t, m in out_rows if BANNER.search(m)], default=0.0)
 start = max(last_banner, process_start())
 baseline = max(last_ok, start)
 
-evidence = [t for t, m in err_rows if t > baseline and (HANDSHAKE.search(m) or IOREG.search(m))]
+evidence = [t for t, m in err_rows if t > baseline and HANDSHAKE.search(m)]
 evidence += [t for t, m in out_rows if t > baseline and RETRY.search(m)]
 
 if not evidence:

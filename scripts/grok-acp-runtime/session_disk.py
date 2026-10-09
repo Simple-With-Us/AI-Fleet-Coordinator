@@ -104,6 +104,86 @@ def _parse_ts(raw: Any) -> float:
         return 0.0
 
 
+def _newest_event_times(
+    path: Path,
+    kinds: tuple[str, ...],
+    *,
+    chunk: int = 256 * 1024,
+    max_bytes: int = 64 * 1024 * 1024,
+) -> dict[str, float]:
+    """Newest `ts` per event type, reading events.jsonl backwards.
+
+    events.jsonl holds ~1,000+ phase_changed lines per session, so a fixed
+    line tail can lose the last turn_started of a long turn.  This walks the
+    file from the end in chunks, parses only lines that mention a wanted type
+    and stops as soon as every type has been found (or max_bytes were read).
+    A type that never occurs is simply absent from the result.
+    """
+    found: dict[str, float] = {}
+    needles = {kind: ('"%s"' % kind).encode() for kind in kinds}
+    try:
+        fh = path.open("rb")
+    except OSError:
+        return found
+    with fh:
+        try:
+            pos = fh.seek(0, 2)
+        except OSError:
+            return found
+        carry = b""
+        read_total = 0
+        while pos > 0 and len(found) < len(kinds) and read_total < max_bytes:
+            step = min(chunk, pos)
+            pos -= step
+            read_total += step
+            try:
+                fh.seek(pos)
+                buf = fh.read(step) + carry
+            except OSError:
+                break
+            if pos > 0:
+                nl = buf.find(b"\n")
+                if nl < 0:
+                    carry = buf
+                    continue
+                carry, buf = buf[:nl], buf[nl + 1 :]
+            else:
+                carry = b""
+            for line in reversed(buf.split(b"\n")):
+                if not line.strip():
+                    continue
+                if not any(needle in line for needle in needles.values()):
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                kind = obj.get("type") if isinstance(obj, dict) else None
+                if kind in needles and kind not in found:
+                    found[kind] = _parse_ts(obj.get("ts"))
+                    if len(found) == len(kinds):
+                        break
+    return found
+
+
+def mcp_load_marks(session_id: str) -> JsonDict:
+    """When this session's MCP set was last loaded, from events.jsonl.
+
+    configAt = newest mcp_config_resolved, initAt = newest mcp_init_completed
+    (either may be None).  A resume or session/load logs both; it moves
+    neither summary updated_at nor any turn time.  mcp_server_starting is NOT
+    used: a crash-looping server emits it constantly.
+    """
+    path = find_session_dir(session_id)
+    if path is None:
+        return {"configAt": None, "initAt": None}
+    found = _newest_event_times(path / "events.jsonl", ("mcp_config_resolved", "mcp_init_completed"))
+    return {
+        "configAt": found.get("mcp_config_resolved") or None,
+        "initAt": found.get("mcp_init_completed") or None,
+    }
+
+
 def _attach_state_fields(row: JsonDict, state: JsonDict) -> None:
     row["turnState"] = state.get("turnState")
     row["phase"] = state.get("phase")
@@ -198,8 +278,11 @@ def turn_state(session_id: str) -> JsonDict:
             "pendingTool": None,
         }
     events = _jsonl_last(path / "events.jsonl", n=400)
-    last_started = 0.0
-    last_ended = 0.0
+    # A long turn pushes its turn_started out of any fixed tail, which made a
+    # busy chat read as idle; find the newest start and end over the whole file.
+    turn_times = _newest_event_times(path / "events.jsonl", ("turn_started", "turn_ended"))
+    last_started = turn_times.get("turn_started", 0.0)
+    last_ended = turn_times.get("turn_ended", 0.0)
     phase = None
     phase_ts = 0.0
     pending_tool = None
@@ -331,11 +414,20 @@ def _epoch(raw: Any) -> float:
 
 
 def last_activity_epoch(row: JsonDict) -> float:
-    """Latest sign of life: summary updated_at or the last turn start/end."""
+    """Latest sign of life: summary updated_at, the last turn start/end, or the
+    last time the chat was (re)loaded.
+
+    A resume or session/load moves neither summary updated_at nor any turn
+    time, so a chat resumed after a day of silence would otherwise look a day
+    idle the moment it is loaded.  row["loadedAt"] (set by the unload job from
+    the session's newest mcp_config_resolved / mcp_init_completed event and
+    the start time of its current MCP processes) is that floor.
+    """
     return max(
         updated_at_epoch(row),
         _epoch(row.get("turnStartedAt")),
         _epoch(row.get("turnEndedAt")),
+        _epoch(row.get("loadedAt")),
     )
 
 
@@ -407,7 +499,7 @@ def count_real_user_turns(session_id: str) -> int | None:
 def annotate_user_turns(rows: list[JsonDict]) -> list[JsonDict]:
     """Set row["userTurns"] on loaded, unattached rows (the stub candidates)."""
     for row in rows:
-        if row.get("live") or not row.get("loaded"):
+        if row.get("live") or row.get("attached") or not row.get("loaded"):
             continue
         sid = str(row.get("sessionId") or "")
         if sid:
@@ -416,8 +508,13 @@ def annotate_user_turns(rows: list[JsonDict]) -> list[JsonDict]:
 
 
 def is_stub_row(row: JsonDict) -> bool:
-    """No attached client, zero real user turns, and no turn ever started."""
-    if row.get("live"):
+    """No attached client, zero real user turns, and no turn ever started.
+
+    "Attached" is row["live"] (a TUI listed in active_sessions.json) or
+    row["attached"] (a connected grok client whose working directory is this
+    chat's; set by the unload job -- the leader exposes no connection list).
+    """
+    if row.get("live") or row.get("attached"):
         return False
     if row.get("userTurns") != 0:
         return False
@@ -435,7 +532,7 @@ def unload_skip_reason(
     """None = this chat should session/close.  Else a skip reason.
 
     A chat is a candidate only when it holds MCP processes (row["loaded"],
-    set from the process table) or a TUI is attached (row["live"]).
+    set from the process table).
     Does not delete transcripts.  Unknown timestamps are skipped (not
     unloaded).  Working / needs-input / pendingTool / this TUI / a session
     with background processes outside the leader stay up.
@@ -449,7 +546,10 @@ def unload_skip_reason(
     me = self_id if self_id is not None else self_session_id()
     if me and sid == me:
         return "self"
-    if not (row.get("live") or row.get("loaded")):
+    # Closing only frees something when the leader holds MCP processes for the
+    # chat.  `live` (a TUI) is an input to the skip rules, never a reason to
+    # close a chat that has nothing loaded.
+    if not row.get("loaded"):
         return "not_loaded"
     state = str(row.get("turnState") or "unknown")
     if state in {"working", "needs-input"}:

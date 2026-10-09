@@ -7,20 +7,40 @@ session/close unloads that chat's MCP tool processes.  Disk history
 
 A chat is a candidate only when it is LOADED: the shared Grok leader holds
 MCP child processes that carry its GROK_SESSION_ID (read from the process
-table with sysctl KERN_PROCARGS2; never logged), or a TUI is attached.
-Two clocks:
+table with sysctl KERN_PROCARGS2; never logged).  Two clocks:
 
-  stub   Never took a real user turn, no attached client.  A client opened
-         the session and walked away, yet it holds a full MCP set (seven of
-         these cost ~1.6 GiB on 2026-10-08).  Unloads after 30 minutes idle.
-         GROK_IDLE_UNLOAD_STUB_MINUTES / --stub-minutes (0 turns it off).
+  stub   Never took a real user turn and no client is attached.  A client
+         opened the session and walked away, yet it holds a full MCP set
+         (seven of these cost ~1.6 GiB on 2026-10-08).  Unloads after 30
+         minutes idle.  GROK_IDLE_UNLOAD_STUB_MINUTES / --stub-minutes (0 = off).
   other  Unloads after 4 hours idle.  GROK_IDLE_UNLOAD_HOURS / --max-age-hours.
 
-Never closes working, needs-input, pendingTool, $GROK_SESSION_ID, or a chat
-that still has background processes (carrying its id) outside the leader.
-A session whose close failed is terminated directly (SIGTERM on its MCP
-children) as a fallback; so are MCP children of sessions whose directory is
-gone.  --no-reap-orphans turns both off.
+"Idle" counts from the newest of summary updated_at, the last turn start or
+end, and the last time the chat was LOADED (newest mcp_config_resolved /
+mcp_init_completed event, and the start of its current MCP processes), so a
+chat resumed today after a day of silence is not unloaded before its first turn.
+
+"No client attached" means no grok process (TUI, stdio client) has the chat's
+working directory as its own; the leader exposes no connection list.  A cwd
+that cannot be read counts as attached.
+
+MCP versus work: a process under the leader that carries the chat's id is an
+MCP server only when its branch root (the leader's child) is not a shell and was
+forked inside the chat's MCP load window.  Everything else (a shell, a watcher,
+a dev server, a process forked later) is work a tool started: it protects the
+chat and is never signalled.  So does any process carrying the id outside the
+leader.
+
+Never closes working, needs-input, pendingTool, $GROK_SESSION_ID, or a chat with
+background work.  Right before each close every rule is re-checked on fresh
+data; a chat that changed since selection is skipped.
+
+When session/close answers closeOutcome "notResident" (the leader does not hold
+the chat) yet its MCP processes still run under the leader, they are terminated
+directly after one more re-check.  Never after a timeout, an RPC error or a
+refusal.  MCP processes of sessions whose directory is gone are reaped too, at
+most 5 sessions a run, and only with exactly one leader, a readable sessions
+directory and a successful list.  --no-reap-orphans turns both off.
 
 The leader helpers are slow on a loaded Mac (a fresh client needs 15-25s just
 to list).  Each helper call gets GROK_IDLE_UNLOAD_HELPER_TIMEOUT_SEC (180s).
@@ -53,6 +73,7 @@ from typing import Any, NamedTuple
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import session_disk as _sd  # noqa: E402
 from session_disk import (  # noqa: E402
     DEFAULT_IDLE_UNLOAD_SEC,
     DEFAULT_STUB_IDLE_SEC,
@@ -63,6 +84,7 @@ from session_disk import (  # noqa: E402
     idle_age_seconds,
     is_stub_row,
     load_active,
+    mcp_load_marks,
     peek_summary,
     select_idle_unload,
     self_session_id,
@@ -77,6 +99,19 @@ EX_TEMPFAIL = 75
 # A process this young may belong to a session whose directory is still being
 # created, so it is never reaped for a "missing" directory.
 MIN_MISSING_DIR_AGE_SEC = 600.0
+# At most this many sessions are reaped for a "missing" directory per run.
+MAX_REAP_PER_RUN = 5
+# A process is an MCP server of a session only when it was forked inside that
+# session's load window: from just before mcp_config_resolved to a grace after
+# mcp_init_completed (a slow server was seen starting ~4 minutes after the
+# first).  Anything else under the leader carrying the session id is work a
+# tool started (a shell, a watcher, a dev server), and protects the chat.
+MCP_WINDOW_LEAD_SEC = 30.0
+MCP_WINDOW_GRACE_SEC = 300.0
+MCP_WINDOW_NO_INIT_SEC = 600.0
+SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"})
+LEADER_LOCK = Path.home() / ".grok" / "leader.lock"
+CLOSE_OUTCOME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,40}$")
 SESSION_ID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
@@ -248,6 +283,7 @@ class ProcRow(NamedTuple):
     started: float  # epoch seconds, 0.0 when unknown
     leader: bool
     session_id: str | None
+    grok_client: bool = False  # a grok process that is not the leader
 
 
 def parse_procargs(
@@ -340,10 +376,12 @@ def scan_processes() -> list[ProcRow]:
             continue
         raw = _read_procargs(pid)
         leader = False
+        client = False
         sid: str | None = None
         if raw:
             argv, env = parse_procargs(raw)
             leader = is_leader_argv(argv)
+            client = (not leader) and bool(argv) and os.path.basename(argv[0]).startswith("grok")
             sid = session_id_from_env(env)
         rows.append(
             ProcRow(
@@ -353,6 +391,7 @@ def scan_processes() -> list[ProcRow]:
                 started=float(info.start_tvsec),
                 leader=leader,
                 session_id=sid,
+                grok_client=client,
             )
         )
     return rows
@@ -373,6 +412,34 @@ def leader_pids(procs: list[ProcRow]) -> list[int]:
     return [p.pid for p in procs if p.leader]
 
 
+def lock_pid() -> int | None:
+    """The pid ~/.grok/leader.lock names, when readable."""
+    try:
+        raw = LEADER_LOCK.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return int(raw) if raw.isdigit() else None
+
+
+def pinned_leaders(procs: list[ProcRow]) -> list[int]:
+    """The leader whose tree we act on: the pid in leader.lock when that process
+    is a leader, else every process that looks like one."""
+    found = leader_pids(procs)
+    pid = lock_pid()
+    if pid is not None and pid in found:
+        return [pid]
+    return found
+
+
+def single_leader(procs: list[ProcRow]) -> bool:
+    """Exactly one leader, and leader.lock (when readable) agrees with it."""
+    found = leader_pids(procs)
+    if len(found) != 1:
+        return False
+    pid = lock_pid()
+    return pid is None or pid == found[0]
+
+
 def descendants(procs: list[ProcRow], roots: list[int]) -> set[int]:
     by_ppid: dict[int, list[int]] = collections.defaultdict(list)
     for p in procs:
@@ -389,22 +456,185 @@ def descendants(procs: list[ProcRow], roots: list[int]) -> set[int]:
     return out
 
 
+# ---------------------------------------------------------------- attached clients
+# The leader exposes no list of connected clients (session/list carries only id,
+# cwd, title, updatedAt and a kind/facets meta), and active_sessions.json is empty
+# in leader mode.  Stdio clients (Shellular, BotFleet, grok-drive, seat-mcp) and
+# TUIs run as their own `grok` processes, and a client works in its chat's
+# directory, so a grok process whose working directory equals a chat's cwd
+# counts as attached to it.  A client whose cwd cannot be read means we cannot
+# tell, so every chat counts as attached for that run (fail safe).
+
+PROC_PIDVNODEPATHINFO = 9
+
+
+class _VNodePathInfo(ctypes.Structure):
+    # struct proc_vnodepathinfo: two vnode_info_path, each a 152-byte
+    # vnode_info followed by a MAXPATHLEN (1024) path.  Only the cwd is read.
+    _fields_ = [
+        ("cdir_info", ctypes.c_char * 152),
+        ("cdir_path", ctypes.c_char * 1024),
+        ("rdir_info", ctypes.c_char * 152),
+        ("rdir_path", ctypes.c_char * 1024),
+    ]
+
+
+def proc_cwd(pid: int) -> str | None:
+    """Working directory of one process through libproc, or None."""
+    try:
+        _, libproc = _libs()
+        info = _VNodePathInfo()
+        got = libproc.proc_pidinfo(
+            pid, PROC_PIDVNODEPATHINFO, 0, ctypes.byref(info), ctypes.sizeof(info)
+        )
+    except Exception:
+        return None
+    if got != ctypes.sizeof(info):
+        return None
+    path = info.cdir_path.decode("utf-8", "replace")
+    return path or None
+
+
+def _norm_path(path: str) -> str:
+    return os.path.realpath(path)
+
+
+def cwd_probe_works() -> bool:
+    """proc_cwd(self) must equal os.getcwd(); otherwise the struct layout is wrong."""
+    got = proc_cwd(os.getpid())
+    return got is not None and _norm_path(got) == _norm_path(os.getcwd())
+
+
+def client_cwds(
+    procs: list[ProcRow], *, own_pid: int, leaders: list[int]
+) -> set[str] | None:
+    """Working directories of connected grok clients, or None when unknown.
+
+    Not clients: the leader's own descendants and this job's descendants (its
+    helper runs `grok agent --leader stdio`).
+    """
+    skip = descendants(procs, leaders) | descendants(procs, [own_pid]) | {own_pid}
+    out: set[str] = set()
+    for p in procs:
+        if not p.grok_client or p.pid in skip:
+            continue
+        cwd = proc_cwd(p.pid)
+        if cwd is None:
+            return None
+        out.add(_norm_path(cwd))
+    if out and not cwd_probe_works():
+        return None
+    return out
+
+
+def is_attached(cwd: Any, clients: set[str] | None) -> bool:
+    if clients is None:
+        return True  # cannot tell: assume somebody is attached
+    if not clients:
+        return False
+    if not cwd:
+        return True  # no cwd to compare, and a client exists
+    return _norm_path(str(cwd)) in clients
+
+
+# ---------------------------------------------------------------- MCP versus work
+
+
+def mcp_window(marks: JsonDict | None) -> tuple[float, float] | None:
+    """(earliest, latest) start time of this session's current MCP processes."""
+    if not marks:
+        return None
+    cfg = marks.get("configAt")
+    init = marks.get("initAt")
+    if not cfg and not init:
+        return None
+    if cfg:
+        lo = float(cfg) - MCP_WINDOW_LEAD_SEC
+    else:
+        lo = float(init) - MCP_WINDOW_NO_INIT_SEC
+    if init and (not cfg or float(init) >= float(cfg)):
+        hi = float(init) + MCP_WINDOW_GRACE_SEC
+    else:
+        hi = float(cfg) + MCP_WINDOW_NO_INIT_SEC + MCP_WINDOW_GRACE_SEC
+    return lo, hi
+
+
+def branch_root(pid: int, by_pid: dict[int, ProcRow], leaders: set[int]) -> ProcRow | None:
+    """The ancestor of `pid` whose parent is the leader (pid itself if it is one)."""
+    cur = pid
+    for _ in range(64):
+        proc = by_pid.get(cur)
+        if proc is None:
+            return None
+        if proc.ppid in leaders:
+            return proc
+        cur = proc.ppid
+    return None
+
+
 def classify_sessions(
-    procs: list[ProcRow], *, self_pid: int | None = None
-) -> dict[str, dict[str, list[int]]]:
+    procs: list[ProcRow],
+    *,
+    self_pid: int | None = None,
+    marks_for: Any = None,
+) -> dict[str, dict[str, Any]]:
     """Group session-carrying processes by id.
 
-    "tree"    — under the leader: its MCP servers (the memory we can free).
-    "outside" — carrying the id but NOT under the leader (tool-spawned work
-                that outlived its parent, dev servers, ...): background work.
+    "tree"    all of them that sit under the leader.
+    "mcp"     the part of "tree" that is the chat's MCP servers (the memory we
+              can free): branches whose leader-child root is not a shell and was
+              forked inside the session's MCP load window (see mcp_window).
+    "task"    the rest of "tree": a shell, or anything forked outside the window.
+              That is work a tool started; it protects the chat and is never
+              signalled by this job.  When unsure, a process is a task.
+    "nonshell" "tree" pids whose branch root is not a shell (used only to reap
+              sessions whose directory is gone, where no window exists).
+    "outside" carrying the id but NOT under the leader (reparented tool work,
+              dev servers, ...): background work.
+    "mcpStarted" earliest start among "mcp" (0.0 when none): when the chat's
+              current MCP set was loaded.
     """
-    tree_pids = descendants(procs, leader_pids(procs))
-    out: dict[str, dict[str, list[int]]] = {}
+    leaders = pinned_leaders(procs)
+    leader_set = set(leaders)
+    tree_pids = descendants(procs, leaders)
+    by_pid = {p.pid: p for p in procs}
+    lookup = marks_for if marks_for is not None else mcp_load_marks
+    out: dict[str, dict[str, Any]] = {}
     for p in procs:
         if not p.session_id or p.pid == self_pid:
             continue
-        slot = out.setdefault(p.session_id, {"tree": [], "outside": []})
-        slot["tree" if p.pid in tree_pids else "outside"].append(p.pid)
+        slot = out.setdefault(
+            p.session_id,
+            {
+                "tree": [], "mcp": [], "task": [], "nonshell": [], "outside": [],
+                "mcpStarted": 0.0, "marks": {}, "taskRoots": [],
+            },
+        )
+        if p.pid not in tree_pids:
+            slot["outside"].append(p.pid)
+            continue
+        slot["tree"].append(p.pid)
+    for sid, slot in out.items():
+        if not slot["tree"]:
+            continue
+        slot["marks"] = lookup(sid) or {}
+        window = mcp_window(slot["marks"])
+        for pid in slot["tree"]:
+            root = branch_root(pid, by_pid, leader_set)
+            shell_root = root is None or root.comm.lower() in SHELLS
+            if not shell_root:
+                slot["nonshell"].append(pid)
+            is_mcp = (
+                not shell_root
+                and window is not None
+                and root.started > 0
+                and window[0] <= root.started <= window[1]
+            )
+            slot["mcp" if is_mcp else "task"].append(pid)
+            if not is_mcp and root is not None and root.comm not in slot["taskRoots"]:
+                slot["taskRoots"].append(root.comm)  # comm only, for the log
+        starts = [by_pid[pid].started for pid in slot["mcp"] if by_pid[pid].started > 0]
+        slot["mcpStarted"] = min(starts) if starts else 0.0
     return out
 
 
@@ -413,13 +643,16 @@ def classify_sessions(
 
 def build_rows(
     listed: list[JsonDict],
-    smap: dict[str, dict[str, list[int]]],
+    smap: dict[str, dict[str, Any]],
+    clients: set[str] | None = None,
+    *,
+    include_unlisted: bool = True,
 ) -> list[JsonDict]:
     """Merge the leader list, disk state and the process table into rows."""
     listed_ids = {str(s.get("sessionId")) for s in listed}
     extra: list[JsonDict] = []
     for sid, slot in smap.items():
-        if not slot["tree"] or sid in listed_ids:
+        if not include_unlisted or not slot["tree"] or sid in listed_ids:
             continue
         peek = peek_summary(sid)
         if not peek.get("ok"):
@@ -434,10 +667,19 @@ def build_rows(
     rows = enrich_sessions(listed + extra)
     apply_pid_liveness(rows)
     for row in rows:
-        slot = smap.get(str(row.get("sessionId")))
+        sid = str(row.get("sessionId"))
+        slot = smap.get(sid)
         row["loaded"] = bool(slot and slot["tree"])
-        row["procs"] = len(slot["tree"]) if slot else 0
-        row["backgroundPids"] = len(slot["outside"]) if slot else 0
+        row["procs"] = len(slot["mcp"]) if slot else 0
+        row["backgroundPids"] = (len(slot["outside"]) + len(slot["task"])) if slot else 0
+        row["attached"] = is_attached(row.get("cwd"), clients)
+        marks = slot["marks"] if slot else {}
+        row["loadedAt"] = max(
+            float(marks.get("configAt") or 0.0),
+            float(marks.get("initAt") or 0.0),
+            float(slot["mcpStarted"]) if slot else 0.0,
+        )
+        row["taskRoots"] = slot["taskRoots"] if slot else []
     annotate_user_turns(rows)
     return rows
 
@@ -465,25 +707,49 @@ def kill_pids(pids: list[int], session_id: str, *, dry_run: bool) -> tuple[bool,
     return err is None, err
 
 
+def sessions_root_healthy() -> bool:
+    """~/.grok/sessions is a readable directory that holds at least one session.
+
+    When it is not, find_session_dir() returns None for EVERY session, and every
+    loaded chat would look like one whose directory is gone.
+    """
+    root = _sd.SESSIONS_ROOT
+    try:
+        if not root.is_dir():
+            return False
+        return any(child.is_dir() for group in root.iterdir() if group.is_dir() for child in group.iterdir())
+    except OSError:
+        return False
+
+
 def reap_missing_dir_orphans(
-    smap: dict[str, dict[str, list[int]]],
+    smap: dict[str, dict[str, Any]],
     procs: list[ProcRow],
     *,
     protected_ids: set[str],
     now: float,
     dry_run: bool,
+    max_sessions: int = MAX_REAP_PER_RUN,
 ) -> list[JsonDict]:
-    """SIGTERM leader-tree MCP children of sessions whose directory is gone."""
+    """SIGTERM non-shell leader-tree children of sessions whose directory is gone.
+
+    No window exists for such a session (its events.jsonl is gone with it), so
+    anything whose branch root is a shell is left alone, and at most
+    `max_sessions` sessions are reaped per run.
+    """
     started = {p.pid: p.started for p in procs}
     actions: list[JsonDict] = []
-    for sid, slot in smap.items():
+    for sid in sorted(smap):
+        if len(actions) >= max_sessions:
+            break
+        slot = smap[sid]
         if sid in protected_ids or not slot["tree"]:
             continue
         if find_session_dir(sid) is not None:
             continue
         old = [
             pid
-            for pid in slot["tree"]
+            for pid in slot["nonshell"]
             if started.get(pid, 0.0) and now - started[pid] >= MIN_MISSING_DIR_AGE_SEC
         ]
         if not old:
@@ -500,6 +766,47 @@ def reap_missing_dir_orphans(
             rec["error"] = err
         actions.append(rec)
     return actions
+
+
+def fresh_row(row: JsonDict, *, own_pid: int) -> tuple[JsonDict, dict[str, dict[str, Any]]]:
+    """Rebuild ONE row from the process table and disk as they are right now."""
+    procs = scan_processes()
+    smap = classify_sessions(procs, self_pid=own_pid)
+    clients = client_cwds(procs, own_pid=own_pid, leaders=pinned_leaders(procs))
+    sid = str(row.get("sessionId"))
+    base: JsonDict = {k: row[k] for k in ("sessionId", "cwd", "title", "note") if row.get(k) is not None}
+    peek = peek_summary(sid)
+    base["updatedAt"] = peek.get("updatedAt") or row.get("updatedAt")
+    rows = build_rows([base], smap, clients, include_unlisted=False)
+    return rows[0], smap
+
+
+def still_eligible(
+    row: JsonDict,
+    *,
+    own_pid: int,
+    max_idle_sec: float,
+    self_id: str,
+    stub_idle_sec: float,
+) -> tuple[str | None, dict[str, dict[str, Any]] | None]:
+    """(None, smap) when the chat is STILL a candidate right now, else (reason, None).
+
+    Eligibility is decided once at the start of the run, but closes run one after
+    another and can start minutes later.  Re-run every rule on fresh data
+    immediately before acting.  A failure to re-check counts as "no".
+    """
+    try:
+        fresh, smap = fresh_row(row, own_pid=own_pid)
+    except Exception as exc:
+        return "recheck_failed:%s" % type(exc).__name__, None
+    why = unload_skip_reason(
+        fresh,
+        now=time.time(),
+        max_idle_sec=max_idle_sec,
+        self_id=self_id,
+        stub_idle_sec=stub_idle_sec,
+    )
+    return (why, None) if why is not None else (None, smap)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -543,26 +850,32 @@ def main(argv: list[str] | None = None) -> int:
         max_idle_sec = float(DEFAULT_IDLE_UNLOAD_SEC)
     stub_idle_sec = max(0.0, float(args.stub_minutes)) * 60.0
     now = started_at
+    own_pid = os.getpid()
     self_id = self_session_id()
     timeouts: list[JsonDict] = []
     errors: list[str] = []
 
+    clients: set[str] | None = None
     try:
         procs = scan_processes()
+        clients = client_cwds(procs, own_pid=own_pid, leaders=pinned_leaders(procs))
     except Exception as exc:  # libproc missing, sysctl refused
         procs = []
         errors.append("process scan failed: %s" % type(exc).__name__)
-    smap = classify_sessions(procs, self_pid=os.getpid())
+    smap = classify_sessions(procs, self_pid=own_pid)
 
     listed: list[JsonDict] = []
+    list_ok = True
     try:
         listed = list_leader_sessions(args.helper_timeout)
     except HelperTimeout as exc:
+        list_ok = False
         timeouts.append({"call": exc.call, "timeoutSec": exc.timeout, "at": now_iso()})
     except HelperError as exc:
+        list_ok = False
         errors.append("list: %s" % exc)
 
-    rows = build_rows(listed, smap)
+    rows = build_rows(listed, smap, clients)
     skipped = []
     skipped_by_reason: collections.Counter[str] = collections.Counter()
     for row in rows:
@@ -575,14 +888,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         if reason:
             skipped_by_reason[reason] += 1
-            skipped.append({
+            rec_skip: JsonDict = {
                 "sessionId": row.get("sessionId"),
                 "reason": reason,
                 "loaded": bool(row.get("loaded")),
                 "live": bool(row.get("live")),
+                "attached": bool(row.get("attached")),
                 "turnState": row.get("turnState"),
                 "idleSec": int(idle_age_seconds(row, now)),
-            })
+            }
+            if row.get("taskRoots"):
+                rec_skip["taskRoots"] = row.get("taskRoots")
+            skipped.append(rec_skip)
     candidates = select_idle_unload(
         rows,
         now=now,
@@ -592,6 +909,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     closed: list[JsonDict] = []
+    fallback_ids: list[str] = []
     stop_closing = False
     for row in candidates:
         sid = str(row.get("sessionId"))
@@ -613,9 +931,33 @@ def main(argv: list[str] | None = None) -> int:
             rec["ok"] = True
             rec["note"] = "helper timed out earlier" if stop_closing else "budget spent"
         else:
+            # Decided at the start of the run; a turn, a resume or a new client
+            # may have arrived since.  Look again before touching it.
+            why, _ = still_eligible(
+                row,
+                own_pid=own_pid,
+                max_idle_sec=max_idle_sec,
+                self_id=self_id,
+                stub_idle_sec=stub_idle_sec,
+            )
+            if why is not None:
+                rec["action"] = "skipped"
+                rec["ok"] = True
+                rec["reason"] = "changed_since_selection:%s" % why
+                skipped_by_reason["changed_since_selection"] += 1
+                closed.append(rec)
+                continue
             rec["action"] = "session/close"
             try:
-                rec.update(close_session(sid, str(row.get("cwd") or "/Users/jay"), args.helper_timeout))
+                data = close_session(sid, str(row.get("cwd") or "/Users/jay"), args.helper_timeout)
+                outcome = str(data.get("closeOutcome") or "")
+                if outcome and CLOSE_OUTCOME_RE.match(outcome):
+                    rec["closeOutcome"] = outcome
+                rec.update({k: v for k, v in data.items() if k != "closeOutcome"})
+                if rec.get("closeOutcome") == "notResident" and data.get("ok") is not False:
+                    # The leader says it does not hold this chat, yet MCP
+                    # processes carrying its id sit under the leader: leaked.
+                    fallback_ids.append(sid)
             except HelperTimeout as exc:
                 stop_closing = True  # the host is overloaded; do not queue more
                 timeouts.append({"call": exc.call, "sessionId": sid, "timeoutSec": exc.timeout, "at": now_iso()})
@@ -624,36 +966,56 @@ def main(argv: list[str] | None = None) -> int:
         closed.append(rec)
 
     orphans: list[JsonDict] = []
+    orphans_skipped: str | None = None
     if args.reap_orphans:
-        # Fallback: a candidate whose close failed keeps its MCP children, so
-        # terminate them directly.  Only candidates (every skip rule passed).
+        # Fallback: only when the leader itself answered "notResident" for a
+        # chat whose MCP processes are still running under it.  Never after a
+        # timeout, an RPC error or a refusal -- the leader may still be
+        # working on the close, or may have refused because a turn began.
         by_id = {str(r.get("sessionId")): r for r in candidates}
-        for rec in closed:
-            if rec.get("ok") is not False:
+        for sid in fallback_ids:
+            if sid not in by_id:
                 continue
-            sid = str(rec["sessionId"])
-            slot = smap.get(sid)
-            if not slot or not slot["tree"] or sid not in by_id:
-                continue
-            ok, err = kill_pids(slot["tree"], sid, dry_run=args.dry_run)
+            why, fresh_map = still_eligible(
+                by_id[sid],
+                own_pid=own_pid,
+                max_idle_sec=max_idle_sec,
+                self_id=self_id,
+                stub_idle_sec=stub_idle_sec,
+            )
             orphan: JsonDict = {
                 "sessionId": sid,
-                "pids": len(slot["tree"]),
-                "fallbackAfterCloseFailure": True,
+                "fallbackAfterNotResident": True,
                 "action": "would_sigterm" if args.dry_run else "sigterm",
-                "ok": ok,
             }
+            slot = (fresh_map or {}).get(sid)
+            if why is not None or not slot or not slot["mcp"]:
+                orphan["action"] = "skipped"
+                orphan["ok"] = True
+                orphan["reason"] = why or "no_mcp_processes"
+                orphans.append(orphan)
+                continue
+            ok, err = kill_pids(slot["mcp"], sid, dry_run=args.dry_run)
+            orphan["pids"] = len(slot["mcp"])
+            orphan["ok"] = ok
             if err:
                 orphan["error"] = err
             orphans.append(orphan)
-        protected = {a["sessionId"] for a in load_active()}
-        if self_id:
-            protected.add(self_id)
-        orphans.extend(
-            reap_missing_dir_orphans(
-                smap, procs, protected_ids=protected, now=now, dry_run=args.dry_run
+        if not list_ok:
+            orphans_skipped = "leader list failed"
+        elif not single_leader(procs):
+            orphans_skipped = "not exactly one leader process"
+        elif not sessions_root_healthy():
+            orphans_skipped = "sessions directory unreadable or empty"
+        else:
+            protected = {a["sessionId"] for a in load_active()}
+            if self_id:
+                protected.add(self_id)
+            orphans.extend(
+                reap_missing_dir_orphans(
+                    smap, procs, protected_ids=protected, now=now, dry_run=args.dry_run
+                )
             )
-        )
 
     out: JsonDict = {
         "ok": all(r.get("ok") is not False for r in closed + orphans) and not errors and not timeouts,
@@ -663,6 +1025,7 @@ def main(argv: list[str] | None = None) -> int:
         "stubMinutes": args.stub_minutes,
         "selfSessionId": self_id or None,
         "leaderPids": len(leader_pids(procs)),
+        "clientCwds": None if clients is None else len(clients),
         "loaded": sum(1 for s in smap.values() if s["tree"]),
         "listed": len(listed),
         "rows": len(rows),
@@ -670,6 +1033,8 @@ def main(argv: list[str] | None = None) -> int:
         "skippedByReason": dict(skipped_by_reason),
         "orphans": orphans,
     }
+    if orphans_skipped:
+        out["orphansSkipped"] = orphans_skipped
     if args.verbose or args.dry_run:
         out["skipped"] = skipped
     if timeouts:

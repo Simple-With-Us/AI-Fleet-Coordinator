@@ -142,6 +142,7 @@ class IdleUnloadSelectTests(unittest.TestCase):
         base = {
             "sessionId": "idle-old",
             "live": True,
+            "loaded": True,
             "turnState": "idle",
             "updatedAt": now - (14 * 3600),
         }
@@ -196,8 +197,11 @@ class IdleUnloadSelectTests(unittest.TestCase):
     def test_skips_self_and_not_live(self):
         row, now = self._row(sessionId="me")
         self.assertEqual(unload_skip_reason(row, now=now, self_id="me"), "self")
-        row2, now = self._row(live=False)
+        row2, now = self._row(live=False, loaded=False)
         self.assertEqual(unload_skip_reason(row2, now=now, self_id="me"), "not_loaded")
+        # A TUI with nothing loaded frees nothing: attached is a skip input, not a candidate.
+        row3, now = self._row(loaded=False)
+        self.assertEqual(unload_skip_reason(row3, now=now, self_id="me"), "not_loaded")
 
     def test_skips_pending_tool_and_missing_ts(self):
         row, now = self._row(pendingTool="bash")
