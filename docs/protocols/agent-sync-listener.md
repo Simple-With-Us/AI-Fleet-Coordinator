@@ -146,7 +146,7 @@ Owner messages raise priority, not authority.  A headless run has no owner chat,
 
 **Chosen.**  Hooks for passive delivery and an `asyncRewake` hook for waking an idle session on both surfaces.  They ship as a local plugin, `plugins/agent-sync/` in AFC, with `.claude-plugin/marketplace.json` (marketplace `afc`) at the AFC root.  Install with `claude plugin marketplace add <the runtime checkout path> --scope user` and `claude plugin install agent-sync@afc --scope user`.  Every PR that touches the plugin bumps its `version`, and the install step runs `claude plugin update agent-sync`.  `agent-sync status` prints the repo and installed versions.
 
-**Scope.**  The hooks attach only when `CLAUDE_CODE_ENTRYPOINT` is `cli` or `claude-desktop` (test 1 confirms what `-p`, `--bg` and SDK runs report).  Anything else exits 0 without writing a lease unless `AGENT_SYNC_ATTACH=1` is set.  The seat comes from `AGENT_SEAT`, else from `[platform.claude-code] seat` in `listener.toml` (decision 6).  When neither resolves, the hook exits 0 and logs one line to `logs/hooks.log`.  The pid comes from `CLAUDE_PID`, which hooks and Bash already receive (else the hook's parent pid).
+**Scope.**  The hooks attach only when `CLAUDE_CODE_ENTRYPOINT` is `cli` or `claude-desktop` (test 1 confirms what `-p`, `--bg` and SDK runs report).  Anything else exits 0 without writing a lease unless `AGENT_SYNC_ATTACH=1` is set.  A session a launcher started (`AGENT_LAUNCHER` or `AGENT_LAUNCH_SEAT` set) never attaches, even with `AGENT_SYNC_ATTACH=1`, and `AGENT_SYNC_ATTACH=0` turns the hooks off for any session.  The seat follows AGENT-SYNC's seat precedence (`scripts/agent_sync/identity.py`):  `AGENT_SEAT`, else `[platform.claude-code] seat` in `listener.toml` (decision 6).  When neither resolves, the hook exits 0 and logs one line to `logs/hooks.log`.  A seat the partition does not give to the `mac` instance (a BotFleet bot, a cloud seat, an unlisted seat) gets no lease:  the session-start hook says so in one line, such as "seat BF-PLUMBER is not served by the Mac listener", and the other hooks stay silent.  The pid comes from `CLAUDE_PID`, which hooks and Bash already receive (else the hook's parent pid).
 
 **Fast path.**  The entry script dispatches `attach` and `detach` before `cli` is imported.  `attach.py` and `live.py` import only json, os, time, fcntl, threading, re, unicodedata and tomllib; argparse loads only for the forms that are not hooks, and subprocess only when a lease is first written (`ps` for the start time).  The import costs about 16 ms here, and a test checks that no heavy module loads.  Importing the full CLI costs 0.3 to 0.45 seconds, too much for every prompt and Stop.
 
@@ -285,7 +285,7 @@ owner_coalesce_seconds = 5
 presence_topics = [["agent-sync","roll call"],["agent-sync","fleet"],["builds","gates"],["alerts","*"]]
 
 [platform.claude-code]
-seat = "CLAUDE"                   # read by hooks and the CLI when AGENT_SEAT is unset (decision 6)
+seat = "CLAUDE"                   # the Claude Code platform default for hooks and local views (decision 6)
 rewake_verified = false           # true after manual test 1; until then live delivery is headlines only
 
 [seat.CLAUDE]
@@ -388,7 +388,7 @@ Decided by the owner, Wed, Oct 7 (2026-10-07).
 4. **Retire the Slack DM runner** (`com.jay.slack-agent-inbox`) in the later Slack cut, not in this change.
 5. **No agent posts, DMs or reacts through Jay's account** (confirmed).  Owner priority goes only to messages from Jay's human user id whose `client` is a human Zulip app; an API post made with Jay's key is non-owner, non-eligible and flagged.
    Review note (same day):  the `client` is what the sending request reports, so the check flags honest API use but cannot stop someone holding Jay's key from claiming a human client.  Owner priority is a routing hint, never authority for a side effect (section 2, manual test 5).
-6. **Seat source for Claude hooks.**  `[platform.claude-code] seat = "CLAUDE"` in `listener.toml`, read by the hooks and the CLI when `AGENT_SEAT` is unset.
+6. **Seat source for Claude hooks.**  `[platform.claude-code] seat = "CLAUDE"` in `listener.toml` is the Claude Code platform default.  The hooks and the local commands (`status`, `wakes`, `inbox --local`) use it when no launcher started the session and `AGENT_SEAT` is unset.  It never applies to network posting, which needs `--as`, `AGENT_SEAT` or `--default-seat`, and never under a launcher (`AGENT_LAUNCHER`), where `AGENT_LAUNCH_SEAT` is the seat or there is none.  Reworded Fri, Oct 9 for the owner's seat-precedence ruling (AGENT-SYNC § Identity Rules).
 7. **Claude bot role.**  The daemon refuses admin and owner bot keys and accepts moderator (300) and member (400).  The Claude bot is now a moderator.  There is no `allow_admin` escape hatch.
 8. **No taint guard.**  No `PreToolUse` hook, no `taint.json`, no tool lockdown in live sessions.  Everything else about live delivery stays:  passive headlines, the `asyncRewake` watcher for interrupts (owner messages, direct mentions, replies to the session's own posts), live budgets, untrusted-content markers with the escape protection, and caps.
 

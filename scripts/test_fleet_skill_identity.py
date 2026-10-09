@@ -22,6 +22,7 @@ from fleet_skill_identity import (  # noqa: E402
     COORDINATOR_SELF_ID,
     FORBIDDEN_LOCAL_IOS_SHIP,
     GB_ROLE_TAGS,
+    LAUNCHER_CLAUSE,
     NEVER_INSTALL,
     SEATS,
     catalog_seats,
@@ -58,11 +59,20 @@ def _coord() -> str:
         return f.read()
 
 
+def _arm(tag: str) -> str:
+    """The rendered default arm of the seat-precedence block for an ordinary session."""
+    return f'else SEAT="${{AGENT_SEAT:-{tag}}}"; fi'
+
+
+def _ordinary(notes: str, tag: str) -> str:
+    return f"this is an ordinary {notes} session, and your seat is **{tag}**"
+
+
 class SpecializeTests(unittest.TestCase):
     def test_cursor_is_not_monet(self) -> None:
         out = specialize_from_monet(_session(), SEATS["cursor"], skill_name="session-start")
-        self.assertIn("AGENT_SEAT=CURSOR", out)
-        self.assertIn("set AGENT_SEAT — CURSOR for an ordinary Cursor session", out)
+        self.assertIn(_arm("CURSOR"), out)
+        self.assertIn(_ordinary("Cursor", "CURSOR"), out)
         self.assertNotIn("AGENT_SEAT=MONET", out)
         self.assertIn("[CURSOR]", out)
         self.assertNotIn("AGENT_SEAT=MONET", out)
@@ -74,8 +84,8 @@ class SpecializeTests(unittest.TestCase):
 
     def test_ag_suffix_is_antigravity(self) -> None:
         out = specialize_from_monet(_session(), SEATS["ag"], skill_name="session-start")
-        self.assertIn("AGENT_SEAT=AG", out)
-        self.assertIn("set AGENT_SEAT — AG for an ordinary Antigravity session", out)
+        self.assertIn(_arm("AG"), out)
+        self.assertIn(_ordinary("Antigravity", "AG"), out)
         self.assertIn("ag/<slug>", out)
         self.assertIn("trading-antigravity", out)
         self.assertNotIn("trading-monet", out)
@@ -105,8 +115,8 @@ class SpecializeTests(unittest.TestCase):
 
     def test_specialize_universal(self) -> None:
         out_sess = specialize_universal(_session(), skill_name="session-start")
-        self.assertIn("AGENT_SEAT=<YOUR_SEAT>", out_sess)
-        self.assertIn("set AGENT_SEAT — your own seat tag", out_sess)
+        self.assertIn("set AGENT_SEAT to your platform default", out_sess)
+        self.assertIn("Platform Defaults", out_sess)
         self.assertIn("`[<YOUR_TAG>·session8]` tag", out_sess)
         self.assertIn("<seat>/<slug>", out_sess)
         self.assertNotIn("AGENT_SEAT=MONET", out_sess)
@@ -128,7 +138,10 @@ class SpecializeTests(unittest.TestCase):
         src = _session()
         for key, tag in mapping.items():
             out = specialize_from_monet(src, SEATS[key], skill_name="session-start")
-            self.assertIn(f"set AGENT_SEAT — {tag} for an ordinary", out, key)
+            if SEATS[key].retired:  # never anyone's default:  the arm fails
+                self.assertIn(f'else SEAT="${{AGENT_SEAT:?{tag} is retired; take no work as {tag}}}"; fi', out, key)
+            else:
+                self.assertIn(_arm(tag), out, key)
             self.assertNotIn("AGENT_SEAT=MONET", out, key)
         grok_bot = specialize_from_monet(
             src, SEATS["grok-bot"], skill_name="session-start"
@@ -167,8 +180,8 @@ class SpecializeTests(unittest.TestCase):
             _session(), SEATS["claude_shared"], skill_name="session-start"
         )
         self.assertIn("Shared `~/.claude/skills`", out)
-        self.assertIn("AGENT_SEAT=CLAUDE", out)
-        self.assertIn("set AGENT_SEAT — CLAUDE for an ordinary Claude session", out)
+        self.assertIn(_arm("CLAUDE"), out)
+        self.assertIn(_ordinary("Claude", "CLAUDE"), out)
         self.assertNotIn("MONET, CLAUDE, or RENOIR", out)
 
     def test_sentence_gap_keeps_protocol_name(self) -> None:
@@ -194,8 +207,8 @@ class SpecializeTests(unittest.TestCase):
         out = specialize_from_monet(
             _session(), SEATS["fx"], skill_name="session-start"
         )
-        self.assertIn("AGENT_SEAT=FX", out)
-        self.assertIn("set AGENT_SEAT — FX for an ordinary Fx session", out)
+        self.assertIn(_arm("FX"), out)
+        self.assertIn(_ordinary("Fx", "FX"), out)
         self.assertNotIn("AGENT_SEAT=CURSOR", out)
         self.assertIn("[FX·session8]", out)
 
@@ -726,8 +739,8 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
         self.assertIn(seat, catalog_seats())
         self.assertTrue(skill_allowed_for_seat("mac-cleanup", seat))
         out = specialize_from_monet(_session(), seat, skill_name="session-start")
-        self.assertIn("AGENT_SEAT=CLUTCH", out)
-        self.assertIn("set AGENT_SEAT — CLUTCH for an ordinary Clutch session", out)
+        self.assertIn(_arm("CLUTCH"), out)
+        self.assertIn(_ordinary("Clutch", "CLUTCH"), out)
         self.assertIn("clutch/<slug>", out)
         self.assertIn("clutch-bot@simplewithus.zulipchat.com", out)
         self.assertIn("~/.secrets/Zulip/Clutch-zuliprc", out)
@@ -745,7 +758,9 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
             )
             self.assertIn(f"`[{seat.tag}·session8]` tag", ss, key)
             self.assertNotIn("[MONET·session8", ss, key)
-            self.assertIn(f"`--by` for this seat is `{seat.tag}`", board, key)
+            self.assertIn(f"`--by` for this seat is your verified seat (`{seat.tag}` in an ordinary", board, key)
+            self.assertIn('--by "$AGENT_SEAT"', board, key)
+            self.assertNotIn(f"--by {seat.tag}", board, key)
         gb = specialize_from_monet(_session(), SEATS["grok-bot"], skill_name="session-start")
         self.assertNotIn("MONET·session8", gb)
         uni = specialize_universal(_session(), skill_name="session-start")
@@ -778,25 +793,29 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
 
 
 class AgentSeatPinTests(unittest.TestCase):
-    """No rendered skill may overwrite an AGENT_SEAT that is already set.
+    """The seat-precedence block (AGENT-SYNC § Identity Rules, owner 2026-10-09).
 
     BotFleet runs Claude, Codex and other CLIs as engines for its own bots, and
     those engines load these skills.  A bare `export AGENT_SEAT=<PLATFORM>`
-    would stamp the platform seat over the seat the launcher assigned.  Until
-    the owner's seat-precedence rule lands, every identity block is
-    pin-or-fail and never overwrites.
+    would stamp the platform seat over the seat the launcher assigned.  Every
+    identity block reads AGENT_LAUNCH_SEAT first, fails closed (exit 3) when a
+    launcher set none, takes the platform default only in an ordinary session,
+    and never overwrites an AGENT_SEAT that is already set.  T15 and T16 of the
+    seat-precedence design.
     """
 
     FIX = "python3 scripts/install-fleet-skills.py --repo-only"
-    PIN = re.compile(r'^export AGENT_SEAT="\$\{AGENT_SEAT:[?-]')
-    SENTENCE = (
-        "Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as "
-        "BotFleet assigns its bots' seats."
-    )
+    EXPORT = 'export AGENT_SEAT="${AGENT_SEAT:-$SEAT}"'
 
     @staticmethod
     def _exports(text: str) -> list[str]:
         return [l for l in text.splitlines() if l.startswith("export AGENT_SEAT")]
+
+    @staticmethod
+    def _block(text: str) -> str:
+        """The rendered seat block, from its `if` line through the whoami line."""
+        match = re.search(r'(?ms)^if \[ -n "\$\{AGENT_LAUNCH_SEAT:-\}" \].*?^agent-sync whoami --as "\$SEAT"$', text)
+        return match.group(0) if match else ""
 
     def _renders(self) -> list[tuple[str, str]]:
         src = _session()
@@ -811,44 +830,51 @@ class AgentSeatPinTests(unittest.TestCase):
         # names the dead replacement instead of letting it rot silently.
         self.assertEqual(self._exports(_session()), ["export AGENT_SEAT=MONET"])
 
-    def test_every_render_has_one_pin_or_fail_line_and_no_bare_assignment(self) -> None:
+    def test_every_render_has_one_block_and_no_bare_assignment(self) -> None:
         for key, out in self._renders():
             if key == "kimi":  # STOP-only retired copy: the identity section is cut
                 self.assertEqual(self._exports(out), [], key)
                 continue
-            lines = self._exports(out)
-            self.assertEqual(len(lines), 1, f"{key}: {lines}")
-            self.assertRegex(lines[0], self.PIN, key)
+            self.assertEqual(self._exports(out), [self.EXPORT], key)
+            self.assertTrue(self._block(out), key)
             self.assertNotRegex(out, r"(?m)^export AGENT_SEAT=[^\"]", key)
             self.assertNotIn("@@", out, f"{key}: an identity token survived the render")
 
-    def test_exclusive_seat_line_names_its_own_seat_and_platform(self) -> None:
+    def test_exclusive_seat_block_names_its_own_seat_and_platform(self) -> None:
         for key, seat in SEATS.items():
             if key in {"kimi", "grok-bot"}:
                 continue
             out = specialize_from_monet(_session(), seat, skill_name="session-start")
-            want = (
-                'export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — '
-                f"{seat.tag} for an ordinary {seat.notes} session; a launcher such as "
-                "BotFleet may assign another seat, and that assignment wins}\""
-            )
-            self.assertIn(want, out.splitlines(), key)
+            if seat.retired:
+                self.assertIn(f"{seat.tag} is retired and is no platform's default", out, key)
+                continue
+            self.assertIn(_arm(seat.tag), self._block(out).splitlines(), key)
+            self.assertIn(_ordinary(seat.notes, seat.tag), out, key)
+            self.assertIn(f"`<branch-prefix>` below is your seat's branch prefix:  `{seat.prefix}`", out, key)
 
-    def test_sentence_directly_follows_the_code_block(self) -> None:
+    def test_t15_every_render_carries_the_launcher_clause(self) -> None:
         for key, out in self._renders():
             if key == "kimi":
-                self.assertNotIn(self.SENTENCE, out)
+                self.assertNotIn(LAUNCHER_CLAUSE, out)
                 continue
-            self.assertRegex(
-                out,
-                r'(?s)export AGENT_SEAT=[^\n]*\n```\n\n' + re.escape(self.SENTENCE) + r"\n",
-                key,
-            )
+            self.assertIn(LAUNCHER_CLAUSE, out, key)
+            self.assertIn("you have no seat:  do no fleet action", out, key)
+            if not SEATS.get(key) or not SEATS[key].retired:
+                self.assertNotIn("[MONET·", out, key)
 
-    def test_grok_bot_keeps_a_seat_that_is_set_and_otherwise_takes_the_launcher_role(self) -> None:
+    def test_t15_board_and_claim_lines_carry_no_platform_seat(self) -> None:
+        for key, seat in SEATS.items():
+            if seat.retired:
+                continue
+            out = specialize_from_monet(_session(), seat, skill_name="session-start")
+            self.assertIn('--by "$AGENT_SEAT"', out, key)
+            self.assertNotRegex(out, r"--by [A-Z]", key)
+            self.assertIn("claim:  <branch-prefix>/<slug>", out, key)
+            self.assertNotIn(f"claim:  {seat.prefix}/", out, key)
+
+    def test_grok_bot_has_no_platform_default(self) -> None:
         out = specialize_from_monet(_session(), SEATS["grok-bot"], skill_name="session-start")
-        (line,) = self._exports(out)
-        self.assertTrue(line.startswith('export AGENT_SEAT="${AGENT_SEAT:-${AGENT_TAG:?set GB-'), line)
+        self.assertIn('else SEAT="${AGENT_SEAT:-${AGENT_TAG:?set GB-', self._block(out))
 
     def test_tracked_trees_carry_no_bare_assignment(self) -> None:
         # Every rendered tree, not only the ones a fresh-render test compares:
@@ -864,61 +890,46 @@ class AgentSeatPinTests(unittest.TestCase):
                     offenders.append(os.path.relpath(str(path), ROOT))
         self.assertEqual(offenders, [], f"bare AGENT_SEAT export; re-render with: {self.FIX}")
 
-    @unittest.skipUnless(shutil.which("bash"), "bash is needed to run the pin line")
-    def test_the_line_never_overwrites_and_fails_when_unset(self) -> None:
+    @unittest.skipUnless(shutil.which("bash"), "bash is needed to run the seat block")
+    def test_t16_the_block_follows_the_precedence_in_a_real_shell(self) -> None:
         import subprocess
 
         base = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_")}
         base["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
+
+        def run(block: str, **env: str) -> tuple[int, str, str]:
+            script = block.replace('agent-sync whoami --as "$SEAT"', 'printf "%s|%s" "$SEAT" "$AGENT_SEAT"')
+            done = subprocess.run(["bash", "-c", script], env={**base, **env}, capture_output=True, text=True)
+            return done.returncode, done.stdout, done.stderr
+
         for key, out in self._renders():
             if key == "kimi":
                 continue
-            (line,) = self._exports(out)
-            script = f'{line}\nprintf "%s" "$AGENT_SEAT"\n'
-            which = subprocess.run(["bash", "-n", "-c", script], capture_output=True, text=True)
-            self.assertEqual(which.returncode, 0, f"{key}: {which.stderr}")
-
-            kept = subprocess.run(
-                ["bash", "-c", script],
-                env={**base, "AGENT_SEAT": "BF-LAUNCHED"},
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual((kept.returncode, kept.stdout), (0, "BF-LAUNCHED"), f"{key}: {kept.stderr}")
-
-            empty = subprocess.run(
-                ["bash", "-c", script],
-                env={**base, "AGENT_SEAT": ""},
-                capture_output=True,
-                text=True,
-            )
+            block = self._block(out)
+            check = subprocess.run(["bash", "-n", "-c", block], capture_output=True, text=True)
+            self.assertEqual(check.returncode, 0, f"{key}: {check.stderr}")
+            # A launcher's seat wins, and the AGENT_SEAT an engine's rules exported is left alone
+            # (the CLI then refuses the mismatch).
+            self.assertEqual(run(block, AGENT_LAUNCHER="botfleet", AGENT_LAUNCH_SEAT="BF-PLUMBER", AGENT_SEAT="CODEX"),
+                             (0, "BF-PLUMBER|CODEX", ""), key)
+            self.assertEqual(run(block, AGENT_LAUNCHER="botfleet", AGENT_LAUNCH_SEAT="BF-PLUMBER")[:2],
+                             (0, "BF-PLUMBER|BF-PLUMBER"), key)
+            # A launcher with no seat fails closed, before any default is read.
+            code, stdout, stderr = run(block, AGENT_LAUNCHER="botfleet", AGENT_SEAT="CLAUDE")
+            self.assertEqual((code, stdout), (3, ""), key)
+            self.assertIn("no seat assigned by botfleet", stderr, key)
+            # A seat already set is kept.
+            self.assertEqual(run(block, AGENT_SEAT="BF-LAUNCHED")[:2], (0, "BF-LAUNCHED|BF-LAUNCHED"), key)
+            # Nothing set:  the platform default, or a loud failure where there is none.
+            code, stdout, stderr = run(block)
+            seat = SEATS.get(key)
+            if seat is not None and seat.mode == "exclusive" and not seat.retired:
+                self.assertEqual((code, stdout), (0, "%s|%s" % (seat.tag, seat.tag)), key)
+            else:
+                self.assertNotEqual(code, 0, key)
+                self.assertEqual(stdout, "", key)
             if key == "grok-bot":
-                # The role comes from the launcher's AGENT_TAG.
-                tagged = subprocess.run(
-                    ["bash", "-c", script],
-                    env={**base, "AGENT_TAG": "GB-ORACLE"},
-                    capture_output=True,
-                    text=True,
-                )
-                self.assertEqual((tagged.returncode, tagged.stdout), (0, "GB-ORACLE"), key)
-                held = subprocess.run(
-                    ["bash", "-c", script],
-                    env={**base, "AGENT_SEAT": "BF-LAUNCHED", "AGENT_TAG": "GB-ORACLE"},
-                    capture_output=True,
-                    text=True,
-                )
-                self.assertEqual(held.stdout, "BF-LAUNCHED", key)
-            unset = subprocess.run(
-                ["bash", "-c", script], env=base, capture_output=True, text=True
-            )
-            for label, run in (("empty", empty), ("unset", unset)):
-                self.assertNotEqual(run.returncode, 0, f"{key} ({label}) must fail")
-                self.assertEqual(run.stdout, "", f"{key} ({label}) must print no seat")
-                self.assertIn(
-                    "GB-ORACLE" if key == "grok-bot" else "that assignment wins",
-                    run.stderr,
-                    f"{key} ({label}) message missing",
-                )
+                self.assertEqual(run(block, AGENT_TAG="GB-ORACLE")[:2], (0, "GB-ORACLE|GB-ORACLE"), key)
 
 
 # Skills whose tracked renders are held at their origin/main text.  The
@@ -1118,8 +1129,8 @@ class InstallerRepoOnlyTests(unittest.TestCase):
         shared = (self.home / ".claude" / "skills" / "session-start" / "SKILL.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("AGENT_SEAT=CLAUDE", shared)
-        self.assertIn("set AGENT_SEAT — CLAUDE for an ordinary Claude session", shared)
+        self.assertIn(_arm("CLAUDE"), shared)
+        self.assertIn(_ordinary("Claude", "CLAUDE"), shared)
         self.assertNotIn("MONET, CLAUDE, or RENOIR", shared)
 
     def test_unchanged_pack_zip_is_not_rewritten(self) -> None:

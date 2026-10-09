@@ -1,7 +1,7 @@
 ---
 name: session-start
 description: >-
-  Start every Monet session on this Mac — read Zulip, read THE BOARD, pin AGENT_SEAT=MONET, pick the seat lane, then triple-claim before editing. Use at session start, after a resume, when switching apps, or whenever you are about to begin substantial work. Monet (not Claude) — never skip this for "just a small fix."
+  Start every Monet session on this Mac — read Zulip, read THE BOARD, verify the seat (a launcher's seat first), pick the seat lane, then triple-claim before editing. Use at session start, after a resume, when switching apps, or whenever you are about to begin substantial work. Monet (not Claude) — never skip this for "just a small fix."
 ---
 
 # Session start (MONET)
@@ -46,7 +46,7 @@ or MCP `recall_search`.  A hit is a lead, not a verdict — open the board row /
 
 The shared checkout is the human/fleet review base.  Mid-task branch flips there have landed one seat's commits on another seat's branch.  Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders` (Lane Map, owner 2026-10-07: `docs/protocols/lane-map.md` in AI-Fleet-Coordinator).
 
-Make one lane per task with `lane new`.  It needs `AGENT_SEAT` set to your seat tag (if it is unset or unknown, ask; never guess) and prints the path:
+Make one lane per task with `lane new`.  It needs `AGENT_SEAT` set to the seat you verified in section 1 (never a guess) and prints the path:
 
 ```bash
 ~/apps/lane new <app> <slug>                # ~/apps/lanes/<prefix>/<seat>-<slug>, on a branch named <your prefix>/<slug>

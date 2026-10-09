@@ -27,6 +27,7 @@ import sys
 import time
 from typing import Any, Callable, Mapping, TextIO
 
+from . import identity as I
 from . import live as L
 
 ENTRYPOINTS = ("cli", "claude-desktop")
@@ -134,8 +135,13 @@ def claude_pid(env: Mapping[str, str]) -> int:
 
 def in_claude_scope(env: Mapping[str, str]) -> bool:
     """Hooks attach only for interactive surfaces.  A `claude -p`, background or SDK run (any
-    other CLAUDE_CODE_ENTRYPOINT) never writes a lease unless AGENT_SYNC_ATTACH=1."""
-    return env.get("CLAUDE_CODE_ENTRYPOINT") in ENTRYPOINTS or env.get("AGENT_SYNC_ATTACH") == "1"
+    other CLAUDE_CODE_ENTRYPOINT) never writes a lease unless AGENT_SYNC_ATTACH=1.  A session a
+    launcher started (AGENT_LAUNCHER or AGENT_LAUNCH_SEAT) never attaches, whatever its entrypoint
+    and even with AGENT_SYNC_ATTACH=1:  launchers own their bots' mail.  AGENT_SYNC_ATTACH=0 turns
+    the hooks off for any session."""
+    if env.get(I.ENV_ATTACH) == "0" or I.launched(env):
+        return False
+    return env.get("CLAUDE_CODE_ENTRYPOINT") in ENTRYPOINTS or env.get(I.ENV_ATTACH) == "1"
 
 
 def read_hook_input(stream: TextIO) -> dict[str, Any]:
@@ -252,6 +258,14 @@ def hook(ctx: Ctx, event: str) -> int:
         L.hook_log(ctx.root, "no-seat", hook=event)
         return 0
     hook_input = read_hook_input(ctx.stdin)
+    served, why = I.served_here(seat, ctx.env)
+    if not served:
+        # A seat this machine's listener does not serve (a BotFleet bot, a cloud seat, an unlisted
+        # one) gets no lease:  nothing would ever fill its inbox, and the lease would only mislead.
+        L.hook_log(ctx.root, "not-served", hook=event, seat=seat)
+        if event == "session-start":
+            _context(ctx, event, "[agent-sync] %s." % why)
+        return 0
     paths = L.SeatPaths(ctx.root, seat)
     pid = claude_pid(ctx.env)
     if event == "session-end":
@@ -342,7 +356,7 @@ def rewake(ctx: Ctx) -> int:
     if not in_claude_scope(ctx.env):
         return 0
     seat = L.claude_seat(ctx.env, ctx.config)
-    if seat is None or not L.rewake_verified(ctx.config):
+    if seat is None or not L.rewake_verified(ctx.config) or not I.served_here(seat, ctx.env)[0]:
         return 0
     paths = L.SeatPaths(ctx.root, seat)
     pid = claude_pid(ctx.env)
@@ -423,15 +437,25 @@ def _parser(prog: str):
 def _resolve_lease(ctx: Ctx, args: Any, *, create: bool) -> tuple[L.SeatPaths, str] | None:
     """Every value that becomes part of a path is checked first:  a seat name, a platform name and
     a lease id are plain tokens, never a path (`--lease ../../x` is refused)."""
-    seat_raw = getattr(args, "as_seat", None) or ctx.env.get("AGENT_SEAT") or ""
-    if not seat_raw and ctx.env.get("CLAUDE_PID"):
-        seat_raw = L.claude_seat(ctx.env, ctx.config) or ""
-    seat = seat_raw.strip().upper()
+    # Seat precedence (identity.py):  a launcher's seat wins and a differing --as or AGENT_SEAT is
+    # refused; a launcher with no seat refuses; the Claude Code platform default applies only to an
+    # ordinary Claude session (CLAUDE_PID set, no launcher).
+    default = L.platform_seat(ctx.config) if ctx.env.get("CLAUDE_PID") else None
+    resolved = I.resolve_seat(ctx.env, flag=getattr(args, "as_seat", None), default=default, use_tag=False)
+    if resolved.problem:
+        ctx.err("agent-sync attach: %s\n" % resolved.problem)
+        return None
+    seat = (resolved.seat or "").strip().upper()
     if not seat:
         ctx.err("agent-sync attach: no seat; set AGENT_SEAT or pass --as NAME\n")
         return None
     if not _SEAT_RE.fullmatch(seat):
         raise UsageProblem("--as / AGENT_SEAT must be a seat name such as CLAUDE")
+    if create:
+        served, why = I.served_here(seat, ctx.env)
+        if not served:
+            ctx.err("agent-sync attach: %s\n" % why)
+            return None
     paths = L.SeatPaths(ctx.root, seat)
     explicit = getattr(args, "lease", None) or (ctx.env.get("AGENT_LEASE") or "").strip() or None
     platform = getattr(args, "platform", None) or ctx.env.get("AGENT_PLATFORM") or None

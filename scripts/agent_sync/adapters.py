@@ -51,6 +51,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from . import live as L
 from . import zulip as Z
 from .config import WAKE_MAX_BUDGET_USD, RoutineConfig
+from .identity import WAKE_LAUNCHER
 from .wakes import CONTRACT_PATH, parse_result, schema_text
 
 WAKE_TIMEOUT = 240.0
@@ -90,13 +91,23 @@ def claude_argv(claude: str, model: str) -> list[str]:
             "--append-system-prompt-file", CONTRACT_PATH]
 
 
-def claude_env(env: Mapping[str, str], home: str, wake_path: str) -> dict[str, str]:
+def claude_env(env: Mapping[str, str], home: str, wake_path: str, *, seat: str | None = None) -> dict[str, str]:
     """`env -i` plus a fixed list:  every CLAUDE_CODE_* (the messaging socket and token), AGENT_*,
-    ZULIP_* and ANTHROPIC_API_KEY are dropped, so the run uses the claude.ai login."""
+    ZULIP_* and ANTHROPIC_API_KEY are dropped, so the run uses the claude.ai login.
+
+    With `seat` (a wake, or test-wake), the listener acts as the reference launcher
+    (AGENT-SYNC § Identity Rules › Launcher Contract):  it sets AGENT_LAUNCHER=agent-sync-wake,
+    AGENT_LAUNCH_SEAT and AGENT_SEAT to the seat it is waking, and AGENT_SYNC_ATTACH=0, fresh, after
+    every inherited identity variable was dropped.  The wake has no tools and posts nothing itself
+    (the daemon posts its validated reply as the seat's bot), so this only keeps the seat explicit."""
     user = env.get("USER") or env.get("LOGNAME") or os.path.basename(home)
-    return {"HOME": home, "USER": user, "LOGNAME": user, "LANG": "en_US.UTF-8",
-            "TMPDIR": env.get("TMPDIR") or "/tmp", "PATH": wake_path,
-            "ENABLE_CLAUDEAI_MCP_SERVERS": "false", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1"}
+    out = {"HOME": home, "USER": user, "LOGNAME": user, "LANG": "en_US.UTF-8",
+           "TMPDIR": env.get("TMPDIR") or "/tmp", "PATH": wake_path,
+           "ENABLE_CLAUDEAI_MCP_SERVERS": "false", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1"}
+    if seat:
+        out.update({"AGENT_LAUNCHER": WAKE_LAUNCHER, "AGENT_LAUNCH_SEAT": seat, "AGENT_SEAT": seat,
+                    "AGENT_SYNC_ATTACH": "0"})
+    return out
 
 
 class RunResult:

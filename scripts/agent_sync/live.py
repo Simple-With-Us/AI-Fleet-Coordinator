@@ -32,6 +32,8 @@ import time
 import unicodedata
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
+from . import identity as I
+
 try:
     import tomllib
 except ImportError:  # pragma: no cover - 3.10 and older have no tomllib; the config then reads as empty
@@ -287,14 +289,21 @@ def load_config(root: str, path: str | None = None) -> tuple[dict[str, Any], str
         return {}, "cannot read %s: %s" % (path, exc)
 
 
+def platform_seat(config: Mapping[str, Any]) -> str | None:
+    """The `[platform.claude-code] seat` in listener.toml:  the Claude Code platform default, for an
+    ordinary session only (never under a launcher; identity.resolve_seat applies that)."""
+    platform = (config.get("platform") or {}).get("claude-code") or {}
+    return str(platform.get("seat") or "").strip() or None
+
+
 def claude_seat(env: Mapping[str, str], config: Mapping[str, Any]) -> str | None:
-    """The seat for Claude Code hooks:  AGENT_SEAT, else [platform.claude-code] seat."""
-    raw = env.get("AGENT_SEAT") or ""
-    if not raw:
-        platform = (config.get("platform") or {}).get("claude-code") or {}
-        raw = str(platform.get("seat") or "")
-    raw = raw.strip().upper()
-    return raw if re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{0,31}", raw) else None
+    """The seat for Claude Code hooks (identity.resolve_seat):  AGENT_LAUNCH_SEAT; nothing when
+    AGENT_LAUNCHER is set without one, or when AGENT_SEAT differs from it; else AGENT_SEAT; else
+    the [platform.claude-code] seat.  None when no seat resolves or the name is not a plain token."""
+    resolved = I.resolve_seat(env, default=platform_seat(config), use_tag=False)
+    if resolved.problem:
+        return None
+    return I.valid_seat(resolved.seat)
 
 
 def rewake_verified(config: Mapping[str, Any]) -> bool:

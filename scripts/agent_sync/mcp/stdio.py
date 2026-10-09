@@ -24,8 +24,11 @@ Those shapes were pinned against the client schemas in Claude Code 2.1.290 (the 
 how).  Capabilities are {"tools": {}}:  no listChanged, so a client never opens
 `subscriptions/listen`.
 
-Identity is stricter than the CLI's:  the seat is pinned by --as or AGENT_SEAT (never read from the
-key), and the key comes from a zuliprc file (mode 600, realm-locked) found by the CLI's own
+Identity is stricter than the CLI's:  the seat follows the CLI's precedence (identity.resolve_seat:  a
+launcher's AGENT_LAUNCH_SEAT wins and a differing --as or AGENT_SEAT exits 3, AGENT_LAUNCHER with no
+seat exits 3, then --as, AGENT_SEAT, and last --default-seat, which a platform's MCP registration
+passes so that no config pins AGENT_SEAT over a launcher), it is never read from the key's file
+name, and the key comes from a zuliprc file (mode 600, realm-locked) found by the CLI's own
 resolver, zulip.resolve_credentials:  --rc, then env ZULIP_RC, then $HOME/.secrets/Zulip/<Seat>-zuliprc.
 So a launcher's ZULIP_RC wins over the home file.  The ZULIP_EMAIL/ZULIP_API_KEY/ZULIP_SITE triple
 (a raw key in a client's config) and AGENT_SYNC_SECRETS_DIR are ignored.  The CLI does not check that
@@ -51,6 +54,7 @@ from typing import Any, BinaryIO, Callable, Mapping
 from .. import __version__
 from .. import cli as CLI
 from .. import config as C
+from .. import identity as I
 from .. import zulip as Z
 from ..state import state_root
 from . import tools as T
@@ -410,9 +414,15 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
     def log(text: str) -> None:
         rt.err("agent-sync mcp: " + text)
 
-    raw_seat = getattr(args, "as_seat", None) or rt.env.get("AGENT_SEAT")
+    resolved = I.resolve_seat(rt.env, flag=getattr(args, "as_seat", None), default=getattr(args, "default_seat", None),
+                              use_tag=False)
+    if resolved.problem:
+        log(resolved.problem)
+        return 3
+    raw_seat = resolved.seat
     if not raw_seat:
-        log("no seat: set AGENT_SEAT in the MCP client's config entry (e.g. AGENT_SEAT=CLAUDE), or pass --as NAME")
+        log("no seat: pass --default-seat NAME in the MCP client's config entry (the platform's default, e.g. "
+            "--default-seat CLAUDE; a launcher's AGENT_LAUNCH_SEAT wins over it), or set AGENT_SEAT, or pass --as NAME")
         return 3
     try:
         seat = Z.normalise_seat(raw_seat)
