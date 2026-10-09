@@ -1,0 +1,78 @@
+{
+  // Hosted agent-sync MCP server, Phase 0 stub (docs/protocols/agent-sync-mcp.md).
+  // Account Usage.Jays.Services, hostname agent-sync.jays.services (decision D1).
+  // Deploy by hand from DEPLOY-PHASE0.md.  Never from CI and never on merge:
+  // agents auto-merge to main, so a merge must not be a deploy (spec 3.2).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agent-sync-mcp",
+  "main": "src/index.js",
+  "account_id": "3a9368057468d0909cafaa85df12d1b7",
+  "compatibility_date": "2026-09-24",
+  // nodejs_compat:  agents imports node:async_hooks.
+  // global_fetch_strictly_public:  the OAuth library advertises and fetches
+  // client metadata documents only with this flag, and it keeps those fetches
+  // off private addresses.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+
+  // Only the custom domain.  workers.dev and preview URLs would bypass the
+  // path-scoped Access app and keep old versions callable (spec 3.2).
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "agent-sync.jays.services", "custom_domain": true }
+  ],
+
+  "observability": { "enabled": true },
+
+  "kv_namespaces": [
+    // Grants, hashed tokens and encrypted props (the OAuth library's store).
+    // DEPLOY-PHASE0.md step 3 creates it and fills in the id.
+    { "binding": "OAUTH_KV", "id": "REPLACE_WITH_OAUTH_KV_ID" }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      // One per seat:  arming window, grant epoch, pause flag, audit tail.
+      { "name": "SEAT_GATE", "class_name": "SeatGate" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SeatGate"] }
+  ],
+
+  // Per-IP cap on /oauth/token (spec 3.3).  The namespace id is any integer
+  // unique to this account's rate limiters.
+  "ratelimits": [
+    { "name": "TOKEN_RATE_LIMITER", "namespace_id": "4711", "simple": { "limit": 30, "period": 60 } }
+  ],
+
+  "vars": {
+    // Must equal the compiled hostname;  the Worker refuses to start otherwise.
+    "PUBLIC_HOST": "agent-sync.jays.services",
+    // Phase 0 seats (owner decisions D1, D2).
+    "HOSTED_SEATS": "JET,GROK-WEB",
+    // Redirect and client allowlist per seat.  A redirect URI belongs to
+    // exactly one seat, and that is the only seat a consent can bind it to.
+    // GROK-WEB starts empty:  Grok's first attempt is refused and its redirect
+    // URI shows up in /admin, then it is added here (ARMING-JAY.md).
+    "SEATS": {
+      "JET": {
+        "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+        "cimd_client_ids": ["https://chatgpt.com/oauth/client.json"]
+      },
+      "GROK-WEB": {
+        "redirect_uris": [],
+        "cimd_client_ids": []
+      }
+    },
+    // Cloudflare Access, re-verified by the Worker on /authorize and /admin.
+    // ACCESS_AUD comes from the Access app infra_phase0.py creates.  Until it
+    // is set, /authorize and /admin answer 403 (fail closed).
+    "ACCESS_TEAM_DOMAIN": "silent-frost-37e0.cloudflareaccess.com",
+    "ACCESS_AUD": "REPLACE_WITH_ACCESS_AUD",
+    // Must match the Access policy's emails exactly.
+    "OWNER_EMAILS": "mail@jays.services,jaywedgeworth22@gmail.com",
+    // Kill switch step 4:  "1" makes /mcp answer 503.
+    "MCP_DISABLED": "0"
+  }
+}

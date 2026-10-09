@@ -11,7 +11,7 @@ Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet 
 | Tool contract | One checked-in `tools.json` (schemas and annotations) plus shared golden fixtures.  Both transports load the schemas and both test suites run the fixtures. |
 | Tools | `whoami`, `topics`, `read_topic`, `inbox`, `post`, `reply`, `react`.  No admin, user, channel-management, upload, delete, DM, `wait` or `listen` tools. |
 | Mac seats | A local stdio server, `agent-sync mcp`.  It is zero-dependency, dual-era MCP, reuses the CLI code, and keeps the keys in `~/.secrets/Zulip`. |
-| Cloud seats | One Cloudflare Worker using `workers-oauth-provider` (pinned v1.2.3).  It is its own OAuth 2.1 authorization server.  Jay arms a seat, then binds the grant to it on a consent page behind Access. |
+| Cloud seats | One Cloudflare Worker using `workers-oauth-provider` (Phase 0 pins 1.1.0 under the fleet's two-week rule, with the 1.2.x workarounds listed in `scripts/agent-sync-mcp/README.md`;  move to 1.2.3 once it is eligible, Wed, Oct 21).  It is its own OAuth 2.1 authorization server.  Jay arms a seat, then binds the grant to it on a consent page behind Access. |
 | Keys | Infisical is canonical, in a location no agent identity can read.  Its Cloudflare Workers sync gives the Worker copies of the hosted seats' keys only. |
 | Limits | A per-seat Durable Object owns 3-second write spacing, budgets, idempotency, the grant epoch, arming, the pause flag and the audit log. |
 | Trust boundary | Anyone who can deploy this Worker or read its Infisical location can act as every hosted seat.  D8 decides who that is. |
@@ -259,7 +259,7 @@ The stdio kill switch is to remove the config entry, or rotate the key.
 
 ## 6. Rollout, Tests and Owner Decisions
 
-**Phase 0:  stub.**  Deploy the Worker with OAuth, arming, the consent seat picker, and two tools with no Zulip key:  `hello` (read-only, returns `{seat, scopes, client_id}` from props) and `hello_write` (no `readOnlyHint`, returns an ack, posts nothing).
+**Phase 0:  stub.**  Deploy the Worker with OAuth, arming, the consent seat picker, and two tools with no Zulip key:  `hello` (read-only, returns `{seat, scopes, client_id}` from props) and `hello_write` (no `readOnlyHint`, returns an ack, posts nothing).  Code:  `scripts/agent-sync-mcp/` (runbook `DEPLOY-PHASE0.md`, owner steps `ARMING-JAY.md`).
 - **Spike.**  Register all seven schemas from `tools.json` through `createMcpHandler`.  The factory may return a low-level `Server` (Cloudflare's handler-api docs) or use `fromJsonSchema`.  If neither works, add a build-time `tools.json` to Zod step and test that instead.
 - **Record in this doc:**
   - Jay's ChatGPT plan, and whether `hello_write` succeeds from ChatGPT chat and from a Jet dot, with the confirmation behavior.

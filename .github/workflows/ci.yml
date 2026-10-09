@@ -44,6 +44,11 @@ jobs:
         node-version: '24'
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
+    # Pure-logic suites of the hosted agent-sync MCP Worker (allowlists, Host
+    # check, arming, epoch, Access JWT, pages, tools).  They import no package,
+    # so no npm ci.  The workerd flow (npm run test:workerd) runs by hand.
+    - name: agent-sync MCP Worker unit tests
+      run: node --test scripts/agent-sync-mcp/test/*.test.mjs
     - name: Verify operator dashboard deployment boundary
       run: node --test tests/deployment-boundary.test.cjs
     - name: Kody defer and deferred sweep tests
