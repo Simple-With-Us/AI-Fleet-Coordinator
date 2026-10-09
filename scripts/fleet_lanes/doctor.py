@@ -54,6 +54,16 @@ one bulk `gh pr list` call per repo, matched by headRefName and headRefOid.  A m
 equals local HEAD covers the checkout, and that evidence is applied before any unpushed or
 detached-HEAD reason is recorded.  When gh is missing or fails the PR state is UNKNOWN, never NONE.
 
+Layout v2 (owner decision 2026-10-09).  Each checkout also carries `layout_status`, `layout_reasons` and, for a
+legacy checkout whose new home is known, `layout_target` (see `layout.explain_layout`): `correct` is
+lanes/<Repo>/<seat>-<slug>, <slug>-<hex> (Claude desktop) or review-pr-<n>; `legacy-migrate` is an old prefix
+folder (lanes/fleet), a flat ~/apps lane or ~/.codex/worktrees; `legacy` is lanes/_managed and lanes/_review;
+`codex-managed` is lanes/_codex; `tool-managed` is another harness's own folder; `human` is the integration
+tree; `wrong` is a temp dir, a checkout directly under ~/Code, or a worktree inside ~/Code/<Repo>
+(.claude/worktrees, .muse/worktrees, reported as the WRONG-PLACE anomaly).  The location classes, the safety
+classes, the strict exit code and the cleaner contract do not change: a legacy or wrong place keeps the class it
+always had, so the cleaners and the HogHunter vacuum see what they saw before.
+
 JSON schema 2 = schema 1 plus the top-level fresh_days, cleaner_min_days, gh_repos and
 cleaner_candidates, summary.cleaner_candidates, and the TOOL-CACHE safety class.  Exit codes: 0, 2 for
 `--strict` hits, 64 for a usage error.
@@ -754,6 +764,9 @@ class Checkout:
     size_mb: float | None = None
     name_verdict: str | None = None
     name_reasons: list[str] = field(default_factory=list)
+    layout_status: str = ""
+    layout_reasons: list[str] = field(default_factory=list)
+    layout_target: str | None = None
     branch_verdict: str = ""
     safety: str = "UNKNOWN"
     safety_reasons: list[str] = field(default_factory=list)
@@ -1106,6 +1119,16 @@ def infer_tool(real: str, roots: L.Roots, branch: str | None, seat: str | None,
         base = fold(os.path.join(home, rel))
         return r == base or r.startswith(base + os.sep)
 
+    # Layout v2: Codex desktop nests lanes/_codex/<slug>/<Repo>, and Claude desktop files its worktrees
+    # as lanes/<Repo>/<slug>-<6 hex>.  Both are told from the path alone.
+    lanes = fold(os.fspath(roots.lanes_root))
+    if r == lanes + os.sep + L.CODEX_DIR or r.startswith(lanes + os.sep + L.CODEX_DIR + os.sep):
+        return "codex", f"path:lanes/{L.CODEX_DIR}"
+    if r.startswith(lanes + os.sep):
+        rel = real[len(os.fspath(roots.lanes_root)) + 1:].split(os.sep)
+        if len(rel) >= 2 and L.is_desktop_dir_name(rel[1], roots.seat_tokens):
+            return "claude-desktop", "path:lanes/<Repo>/<slug>-<hex> (the desktop app's worktree location)"
+
     for rel, tool in ((".codex", "codex"), (".cursor", "cursor"), (".grok", "grok"), (".fx", "fx"),
                       (".gemini", "antigravity"), (".ag", "antigravity"), (".botfleet", "botfleet"),
                       (".buzz", "buzz"), (".claude", "claude-cli")):
@@ -1147,6 +1170,10 @@ def _decorate(co: Checkout, ctx: _Ctx) -> None:
     if cls in _LANE_CLASSES:
         co.name_verdict = str(L.upgrade_with_branch(res.verdict, co.branch, registry))
         co.name_reasons = list(res.reasons)
+    layout = L.explain_layout(co.realpath, registry, roots)
+    co.layout_status = str(layout.status)
+    co.layout_reasons = list(layout.reasons)
+    co.layout_target = os.fspath(layout.target) if layout.target is not None else None
     co.branch_verdict = str(L.check_branch_name(co.branch, registry))
     seat = res.seat if cls in _LANE_CLASSES else None
     co.creating_tool, co.creating_tool_basis = infer_tool(
@@ -1368,7 +1395,7 @@ def cleaner_candidates(checkouts: Iterable[Checkout], *, fresh_days: float = FRE
 # --------------------------------------------------------------------------- build the report
 
 _ANOMALY_ORDER = ("FORBIDDEN_TMP", "FORBIDDEN_CODE_TOPLEVEL", "ORPHAN", "PRUNABLE", "UNSANCTIONED",
-                  "FULL-CLONE-IN-LANE", "NAME-DRIFT", "NON-LANE")
+                  "WRONG-PLACE", "FULL-CLONE-IN-LANE", "NAME-DRIFT", "NON-LANE")
 
 
 def _utc_now() -> _dt.datetime:
@@ -1419,6 +1446,11 @@ def _anomalies_for(co: Checkout) -> list[dict]:
         add("FULL-CLONE-IN-LANE", "full clone inside a lane root; lanes should be linked worktrees")
     if co.name_verdict in ("NAME-DRIFT", "NON-LANE"):
         add(co.name_verdict, "lane name: " + ", ".join(co.name_reasons))
+    # A place the v2 layout calls wrong that has no anomaly of its own above: a worktree inside
+    # ~/Code/<Repo> (.claude/worktrees, .muse/worktrees) or in a lanes folder that is no repo's.  It keeps its
+    # location class (MANAGED, LANE_NESTED) so the cleaners still see it; this is the only place it is named.
+    if co.layout_status == "wrong" and cls not in ("FORBIDDEN_TMP", "FORBIDDEN_CODE_TOPLEVEL") and not co.tool_cache:
+        add("WRONG-PLACE", "layout v2: " + ", ".join(co.layout_reasons))
     return out
 
 
@@ -1686,6 +1718,7 @@ def _summarize(shown: Sequence[Checkout], anomalies: Sequence[dict]) -> dict:
     return {
         "total": len(shown),
         "by_location_class": _count(c.location_class for c in shown),
+        "by_layout_status": _count(c.layout_status or "unknown" for c in shown),
         "by_safety": _count(c.safety for c in shown),
         "by_creating_tool": _count(c.creating_tool for c in shown),
         "by_repo": _count(c.owner_repo or "(no github remote)" for c in shown),
@@ -1730,6 +1763,9 @@ def _table(title: str, counts: Mapping[str, int], limit: int | None = None) -> l
 
 def _row(co: dict, home: str) -> list[str]:
     bits = [co["kind"], co["location_class"], co["branch"] or f"(detached {co['detached_sha']})"]
+    if co.get("layout_status") and co["layout_status"] != "correct":
+        label = L.STATUS_LABELS.get(co["layout_status"], co["layout_status"])
+        bits.append(f"layout {label}" + (f" -> {_tilde(co['layout_target'], home)}" if co.get("layout_target") else ""))
     if co["tool_cache"]:
         bits.append("[tool cache]")
     facts = []
@@ -1755,6 +1791,7 @@ def render_text(report: Mapping) -> str:
     if report["lsof"] != "ok":
         out += ["lsof unavailable: ACTIVE cannot be determined, so clean checkouts report UNKNOWN", ""]
     out += _table("Location class", s["by_location_class"])
+    out += _table("Layout (v2)", {L.STATUS_LABELS.get(k, k): v for k, v in s["by_layout_status"].items()})
     out += _table("Safety class", s["by_safety"])
     out += _table("Creating tool", s["by_creating_tool"])
     out += _table("Repo", s["by_repo"], limit=15)

@@ -5,7 +5,7 @@ description: Fleet human-facing prose — two spaces between sentences, light th
 
 # Owner-facing copy (AG)
 
-> **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Worktrees `~/apps/<app>-antigravity`.  Do not inherit another seat's tag from a shared template.  Zulip bot `ag-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/AG-zuliprc` (mode 600).  Session tag `[AG·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `ag-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/AG-zuliprc` (mode 600).  Session tag `[AG·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/AGENT-SYNC.md` § Two spaces, timestamps, TestFlight metadata.

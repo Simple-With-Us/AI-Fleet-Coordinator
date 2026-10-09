@@ -5,7 +5,7 @@ description: Land a Fx feature branch to main across the fleet — seat worktree
 
 # Land a feature branch (FX)
 
-> **This install is for `FX`.**  Chat tag `[FX·session8]`.  Notes `Fx`.  Branches `fx/`.  Worktrees `~/apps/<app>-fx`.  Do not inherit another seat's tag from a shared template.  Zulip bot `fx-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/FX-zuliprc` (mode 600).  Session tag `[FX·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `FX`.**  Chat tag `[FX·session8]`.  Notes `Fx`.  Branches `fx/`.  Lanes `~/apps/lanes/<Repo>/fx-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `fx-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/FX-zuliprc` (mode 600).  Session tag `[FX·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Runtime (fx).** Local Cursor IDE remains `[CURSOR]`.  Codex CLI remains `[CODEX]`.  Do not inherit those tags from a shared skill directory fx also scans (`~/.claude/skills`, `~/.codex/skills`).  Prefer `~/.fx/skills` for this seat.
 
@@ -16,7 +16,7 @@ Seat: **FX**.  Branch: `fx/<slug>`.  Never `claude/`.  Never `monet/`.  Never la
 
 ## Preconditions
 
-1. You are in your lane (`~/apps/lanes/<prefix>/<seat>-<slug>`, made with `~/apps/lane new`; a flat `~/apps/<prefix>-<seat>[-<lane>]` lane that already exists is fine).  See `session-start`.
+1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, made with `~/apps/lane new`; a lane in an old place (`~/apps/lanes/<prefix>/`, or a flat `~/apps/<prefix>-<seat>[-<lane>]`) that already exists is fine until the migration moves it).  See `session-start`.
 2. `git status` is clean except `.env.local` / `.dev.vars` (never commit those).
 3. `git config user.email` is `12656028+jaywedgeworth22@users.noreply.github.com`.
 

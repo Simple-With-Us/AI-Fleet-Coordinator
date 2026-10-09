@@ -5,7 +5,7 @@ description: Land a Grok Build feature branch to main across the fleet — seat 
 
 # Land a feature branch (GROK-BUILD)
 
-> **This install is for `GROK-BUILD`.**  Chat tag `[GROK-BUILD·session8]`.  Notes `Grok Build`.  Branches `grok-build/`.  Worktrees `~/apps/<app>-grok-build`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK-BUILD·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `GROK-BUILD`.**  Chat tag `[GROK-BUILD·session8]`.  Notes `Grok Build`.  Branches `grok-build/`.  Lanes `~/apps/lanes/<Repo>/grok-build-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK-BUILD·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.
@@ -14,7 +14,7 @@ Seat: **GROK-BUILD**.  Branch: `grok-build/<slug>`.  Never `claude/`.  Never `mo
 
 ## Preconditions
 
-1. You are in your lane (`~/apps/lanes/<prefix>/<seat>-<slug>`, made with `~/apps/lane new`; a flat `~/apps/<prefix>-<seat>[-<lane>]` lane that already exists is fine).  See `session-start`.
+1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, made with `~/apps/lane new`; a lane in an old place (`~/apps/lanes/<prefix>/`, or a flat `~/apps/<prefix>-<seat>[-<lane>]`) that already exists is fine until the migration moves it).  See `session-start`.
 2. `git status` is clean except `.env.local` / `.dev.vars` (never commit those).
 3. `git config user.email` is `12656028+jaywedgeworth22@users.noreply.github.com`.
 

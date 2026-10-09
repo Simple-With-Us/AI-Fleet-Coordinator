@@ -6,7 +6,7 @@ description: >-
 
 # Session start (Universal)
 
-This universal skill applies across all agent platforms and seats.  Identify your active seat (**AG**, **CURSOR**, **CODEX**, **GROK**, **GROK-BUILD**, **CLAUDE**, **<YOUR_AGENT_TAG>**, **RENOIR**, **DSH**, **MM**, **FX**, or a Grok Bot `[GB-<NAME>]` role), use your own Zulip session tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-CONDUCTOR]`, `[DSH·session8]`, `[MM·session8]`), your seat's own bot and `~/.secrets/Zulip/<file code>-zuliprc`, branch prefix (`<seat>/<slug>`), worktree (`~/apps/<app>-<seat>`), and Apple Notes name (`Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`, `DeepSeek Harness`, `MiniMax`, `Fx`, or the GB role in Title Case).
+This universal skill applies across all agent platforms and seats.  Identify your active seat (**AG**, **CURSOR**, **CODEX**, **GROK**, **GROK-BUILD**, **CLAUDE**, **<YOUR_AGENT_TAG>**, **RENOIR**, **DSH**, **MM**, **FX**, or a Grok Bot `[GB-<NAME>]` role), use your own Zulip session tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-CONDUCTOR]`, `[DSH·session8]`, `[MM·session8]`), your seat's own bot and `~/.secrets/Zulip/<file code>-zuliprc`, branch prefix (`<seat>/<slug>`), lane (`~/apps/lanes/<Repo>/<seat>-<slug>`), and Apple Notes name (`Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`, `DeepSeek Harness`, `MiniMax`, `Fx`, or the GB role in Title Case).
 
 ## 1. Identity
 
@@ -55,28 +55,28 @@ The shared checkout is the human/fleet review base.  Mid-task branch flips there
 Make one lane per task with `lane new`.  It needs `AGENT_SEAT` set to the seat you verified in section 1 (never a guess) and prints the path:
 
 ```bash
-~/apps/lane new <app> <slug>                # ~/apps/lanes/<prefix>/<seat>-<slug>, on a branch named <your prefix>/<slug>
-~/apps/lane new <app> --review --pr <n>     # a read-only check of someone else's PR
+~/apps/lane new <app> <slug>                # ~/apps/lanes/<Repo>/<seat>-<slug>, on a branch named <your prefix>/<slug>
+~/apps/lane new <app> --review --pr <n>     # a read-only check of someone else's PR, at ~/apps/lanes/<Repo>/review-pr-<n>
 cd "$(~/apps/lane path <app> <slug>)"
 ```
 
 | App | Zulip `repo:` | Acronym | Lane folder | Live board |
 |-----|---------------|---------|-------------|------------|
-| Socratic.Trade | `Socratic.Trade` | ST | `~/apps/lanes/trading/<seat>-<slug>` | `~/apps/TRADING-EFFORT-LOG.md` |
-| Congress.Trade | `Congress.Trade` | CT | `~/apps/lanes/congress/<seat>-<slug>` | `~/apps/CONGRESS-TRADE-EFFORT-LOG.md` |
-| Usage Monitor | `API-usage-monitor` | UM | `~/apps/lanes/usage/<seat>-<slug>` | `~/apps/API-USAGE-MONITOR-EFFORT-LOG.md` |
-| congress-trading-shared | `congress-trading-shared` | CTS | `~/apps/lanes/cts/<seat>-<slug>` | `~/apps/CONGRESS-SHARED-EFFORT-LOG.md` |
-| DealDex | `DealDex` | DD | `~/apps/lanes/dealdex/<seat>-<slug>` | `~/apps/DEALDEX-EFFORT-LOG.md` |
-| Personal-Site | `Personal-Site` | PS | `~/apps/lanes/personal/<seat>-<slug>` | `~/apps/PERSONAL-SITE-EFFORT-LOG.md` |
-| AI-Fleet-Coordinator / machine infra | `AI-Fleet-Coordinator` or `fleet-infra` | AFC | `~/apps/lanes/fleet/<seat>-<slug>` | `~/apps/FLEET-INFRA-EFFORT-LOG.md` |
+| Socratic.Trade | `Socratic.Trade` | ST | `~/apps/lanes/Socratic-Trade/<seat>-<slug>` | `~/apps/TRADING-EFFORT-LOG.md` |
+| Congress.Trade | `Congress.Trade` | CT | `~/apps/lanes/Congress.Trade/<seat>-<slug>` | `~/apps/CONGRESS-TRADE-EFFORT-LOG.md` |
+| Usage Monitor | `API-usage-monitor` | UM | `~/apps/lanes/Usage-Monitor/<seat>-<slug>` | `~/apps/API-USAGE-MONITOR-EFFORT-LOG.md` |
+| congress-trading-shared | `congress-trading-shared` | CTS | `~/apps/lanes/congress-trading-shared/<seat>-<slug>` | `~/apps/CONGRESS-SHARED-EFFORT-LOG.md` |
+| DealDex | `DealDex` | DD | `~/apps/lanes/DealDex/<seat>-<slug>` | `~/apps/DEALDEX-EFFORT-LOG.md` |
+| Personal-Site | `Personal-Site` | PS | `~/apps/lanes/Personal-Site/<seat>-<slug>` | `~/apps/PERSONAL-SITE-EFFORT-LOG.md` |
+| AI-Fleet-Coordinator / machine infra | `AI-Fleet-Coordinator` or `fleet-infra` | AFC | `~/apps/lanes/AI-Fleet-Coordinator/<seat>-<slug>` | `~/apps/FLEET-INFRA-EFFORT-LOG.md` |
 
-`<seat>` is your seat's whole folder name from `fleet-apps.json` (`worktreeSuffix`), never a short tag.  Flat lanes that already exist (for example `~/apps/trading-<seat>`) stay until they retire; do not create new ones.  Inventory is `~/Code/AI-Fleet-Coordinator/fleet-apps.json`.  `scripts/setup-agent-lanes.sh` is retired (it exits 2); do not run it.  If `~/apps/lane` is missing, the owner has not installed it yet: run `python3 -m fleet_lanes.lane new <app> <slug>` from the `scripts/` folder of an AI-Fleet-Coordinator checkout, or create the lane by hand to match the table in `docs/protocols/lane-map.md`.
+`<seat>` is your seat's whole folder name from `fleet-apps.json` (`worktreeSuffix`), never a short tag, and the folder above it is the repo's folder name under `~/Code` (`codeDir`), exactly as spelled there.  Lanes in the old places (`~/apps/lanes/<prefix>/` such as `lanes/trading`, `_managed`, `_review`, and flat ones such as `~/apps/trading-<seat>`) stay until the layout migration moves them; do not create new ones there.  Inventory is `~/Code/AI-Fleet-Coordinator/fleet-apps.json`.  `scripts/setup-agent-lanes.sh` is retired (it exits 2); do not run it.  If `~/apps/lane` is missing, the owner has not installed it yet: run `python3 -m fleet_lanes.lane new <app> <slug>` from the `scripts/` folder of an AI-Fleet-Coordinator checkout, or create the lane by hand to match the table in `docs/protocols/lane-map.md`.
 
 Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and `docs/EFFORT-LOG.md`.  Personal-Site `AGENTS.md` can lag `README.md` (the live source is `site/`); believe README + current tree over a stale "static snapshot" paragraph.
 
 ## 4. Triple-claim before substantial edits
 
-1. **THE BOARD** — `board list --app <app>` then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/<prefix>/<seat>-<slug> @ <branch>"`.  If nothing exists: `board file --title "..." --app <app> --severity P1 --by "$AGENT_SEAT" --env Mac --where "..." --desc "..."`.
+1. **THE BOARD** — `board list --app <app>` then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/<Repo>/<seat>-<slug> @ <branch>"`.  If nothing exists: `board file --title "..." --app <app> --severity P1 --by "$AGENT_SEAT" --env Mac --where "..." --desc "..."`.
 2. **Effort board** — In Progress on the live file **and** `docs/EFFORT-LOG.md` (fleet-infra has no repo mirror).  Never delete another seat's row.
 3. **Zulip** — then GitHub issue if you are executing a numbered one.
 

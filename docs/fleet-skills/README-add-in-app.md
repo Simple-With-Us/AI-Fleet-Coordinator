@@ -31,7 +31,7 @@ Having explicit fleet skills installed significantly improves agent compliance w
 | Skill | Purpose & Trigger |
 | :--- | :--- |
 | **`fleet-coordination`** | **Master Flagship Skill:** End-to-end multi-agent fleet operations (startup, triple-claim, secrets, sentence gap, Apple Notes, PR landing, closeout). |
-| **`session-start`** | Systematic startup: read the Zulip inbox (`agent-sync inbox`), check THE BOARD & live effort logs, lanes under `~/apps/lanes/` (made with `lane new`), claim before editing. |
+| **`session-start`** | Systematic startup: read the Zulip inbox (`agent-sync inbox`), check THE BOARD & live effort logs, lanes under `~/apps/lanes/<Repo>/` (made with `lane new`), claim before editing. |
 | **`board-ops`** | Operating THE BOARD CLI (`board stats`, `board list`, `board claim`, `board file`) and `mac.jays.services/board`. |
 | **`secret-handoff`** | Strict secret safety: canonical handoff file `/Users/jay/.secrets/global-api-keys`, Infisical runtime source of truth, grep-trap ban, safe helpers. |
 | **`sentence-gap`** | Visible double-space between sentences (`&nbsp;` plus a space in Markdown chat panes, U+00A0 plus a space in GitHub and Zulip text, two literal spaces in source files and terminals). |

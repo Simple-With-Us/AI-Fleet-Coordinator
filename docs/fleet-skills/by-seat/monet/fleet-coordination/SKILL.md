@@ -90,7 +90,7 @@ Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `
 
 Always work in your own lane.  Make it with `lane new` (owner 2026-10-07, `docs/protocols/lane-map.md`; `AGENT_SEAT` must be set to your seat tag):
 ```bash
-~/apps/lane new <app> <feature-slug>   # ~/apps/lanes/<prefix>/<seat>-<feature-slug>, branch <your prefix>/<feature-slug>
+~/apps/lane new <app> <feature-slug>   # ~/apps/lanes/<Repo>/<seat>-<feature-slug>, branch <your prefix>/<feature-slug>
 ```
 Flat lanes that already exist (`~/apps/<app>-<seat>-<lane>`) stay until they retire; do not create new ones.
 

@@ -938,7 +938,7 @@ def lane_dir_name(prefix: str, seat: str, slug: str | None = None) -> str:
 
 
 def nested_dir_name(seat: str, slug: str | None = None) -> str:
-    """Directory name inside lanes/<prefix>/: <seat>[-<slug>]."""
+    """Directory name inside lanes/<Repo>/: <seat>[-<slug>]."""
     name = _token(seat, "seat")
     return f"{name}-{validate_slug(slug)}" if slug is not None else name
 

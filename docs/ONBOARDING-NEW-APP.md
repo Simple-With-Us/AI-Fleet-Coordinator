@@ -52,9 +52,10 @@ for integration trees only"* (owner ruling 2026-09-25).
 ## Hard rules
 
 1. **`~/Code/<App>` is the human integration tree.**  It stays on `origin/main`.
-   Agents work in a lane at `~/apps/lanes/<worktreePrefix>/<seat>-<slug>`, made
-   with `~/apps/lane new <app> <slug>` (`docs/protocols/lane-map.md`; flat
-   `~/apps/<worktreePrefix>-<seat>` lanes already on disk retire in place).
+   Agents work in a lane at `~/apps/lanes/<codeDir>/<seat>-<slug>`, made
+   with `~/apps/lane new <app> <slug>` (`docs/protocols/lane-map.md`; lanes in the old
+   `~/apps/lanes/<worktreePrefix>/` and flat `~/apps/<worktreePrefix>-<seat>` places are
+   moved by the layout migration).
    **No new top-level folder
    may be added to `~/Code/`** unless it is the integration tree for another
    brand-new fleet app being onboarded via this procedure — strays are
@@ -101,7 +102,8 @@ Pick and write these down. They never change casually.
 | Zulip `repo:` | `DealDex` | `repo:` value in every #agent-sync status block |
 | Acronym | `DD` | Apple Notes `[DD, Grok] …` |
 | Live board file | `DEALDEX-EFFORT-LOG.md` | Lives in `/Users/jay/apps/` |
-| Worktree prefix | `dealdex` | Lanes at `~/apps/lanes/dealdex/grok-<slug>` |
+| `codeDir` | `DealDex` | Lanes at `~/apps/lanes/DealDex/grok-<slug>`; the folder is the `~/Code` folder name exactly as spelled |
+| Worktree prefix | `dealdex` | Legacy flat lane names, an accepted `lane new <app>` query and telemetry tags; no longer a lane folder |
 | Visibility | private / public | Match the product |
 
 Post a Planned row on **fleet-infra** (`FLEET-INFRA-EFFORT-LOG.md`) *and* on
@@ -146,7 +148,7 @@ seat that is doing the task (`docs/protocols/lane-map.md`):
 
 ```bash
 export AGENT_SEAT=<your seat tag>         # for example GROK; lane refuses if it is unset
-~/apps/lane new <App> fleet-onboard       # lands at ~/apps/lanes/<prefix>/<seat>-fleet-onboard
+~/apps/lane new <App> fleet-onboard       # lands at ~/apps/lanes/<codeDir>/<seat>-fleet-onboard
 cd "$(~/apps/lane path <App> fleet-onboard)"
 ```
 
@@ -330,7 +332,7 @@ The inverse of onboarding.  Do these in order, each through a `claude/*` lane an
 ## Definition of done
 
 - [ ] `~/Code/<App>` is a git checkout of `Simple-With-Us/<repo>` on `main`
-- [ ] The onboarding PR was made from a lane under `~/apps/lanes/<prefix>/`, not from `~/Code/<App>`
+- [ ] The onboarding PR was made from a lane under `~/apps/lanes/<codeDir>/`, not from `~/Code/<App>`
 - [ ] `AGENTS.md` is tracked and forbids working in `~/Code/<App>`
 - [ ] Live board + `docs/EFFORT-LOG.md` exist and are in the Board registry
 - [ ] Effort Issues Sync workflow is on `main`

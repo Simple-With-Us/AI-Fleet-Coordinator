@@ -306,7 +306,7 @@ def lane_name_reads_back(prefix: str, seat: str, slug: str, registry: L.Registry
 
     It does not when the slug's first word joins the seat into another seat's name: seat grok with
     slug build makes grok-build, which is GROK-BUILD's, and grok-bot reads as the cursor seat.  The
-    folder is <seat>-<slug> under lanes/<prefix>/ (nested) or <prefix>-<seat>-<slug> under ~/apps
+    folder is <seat>-<slug> under lanes/<Repo>/ (nested) or <prefix>-<seat>-<slug> under ~/apps
     (flat).  It is judged the way `layout.explain_lane_name` judges a lane path, but on the bare
     name, so nothing touches the filesystem (`evaluate` must stay pure).  `seat` is the canonical
     folder token (worktreeSuffix) and `prefix` a registry app prefix; an unknown prefix fails.  In

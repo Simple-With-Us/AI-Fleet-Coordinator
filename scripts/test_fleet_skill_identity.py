@@ -1214,7 +1214,7 @@ class BranchPrefixMatchesLaneNewTests(unittest.TestCase):
         self.assertNotIn("`agent/<name>`", launch)
         self.assertIn("<seat prefix>/<slug>", launch)
 
-        cursor = para("lanes/trading/cursor-<slug>")
+        cursor = para("lanes/Socratic-Trade/cursor-<slug>")
         self.assertIn("`cursor/<slug>`", cursor)
         # The new lane's branch is not the legacy standing lane's branch.
         self.assertNotIn("cursor-<slug>`), on its own branch (`agent/cursor`)", cursor)

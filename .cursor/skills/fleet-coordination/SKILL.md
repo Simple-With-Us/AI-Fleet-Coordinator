@@ -5,7 +5,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 # Fleet Coordination Protocol (Universal)
 
-> **This install is for `CURSOR`.**  Chat tag `[CURSOR·session8]`.  Notes `Cursor`.  Branches `cursor/`.  Worktrees `~/apps/<app>-cursor`.  Do not inherit another seat's tag from a shared template.  Zulip bot `cursor-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Cursor-zuliprc` (mode 600).  Session tag `[CURSOR·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `CURSOR`.**  Chat tag `[CURSOR·session8]`.  Notes `Cursor`.  Branches `cursor/`.  Lanes `~/apps/lanes/<Repo>/cursor-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `cursor-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Cursor-zuliprc` (mode 600).  Session tag `[CURSOR·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Runtime fork (Cursor).** Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-CONDUCTOR, GB-MONITOR, GB-FIXER, GB-DEPLOYER, GB-COMPILER, GB-NURSE, GB-HOUSEKEEPER, GB-ACCOUNTANT, GB-ORACLE) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
 
@@ -92,7 +92,7 @@ Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `
 
 Always work in your own lane.  Make it with `lane new` (owner 2026-10-07, `docs/protocols/lane-map.md`; `AGENT_SEAT` must be set to your seat tag):
 ```bash
-~/apps/lane new <app> <feature-slug>   # ~/apps/lanes/<prefix>/<seat>-<feature-slug>, branch <your prefix>/<feature-slug>
+~/apps/lane new <app> <feature-slug>   # ~/apps/lanes/<Repo>/<seat>-<feature-slug>, branch <your prefix>/<feature-slug>
 ```
 Flat lanes that already exist (`~/apps/<app>-<seat>-<lane>`) stay until they retire; do not create new ones.
 

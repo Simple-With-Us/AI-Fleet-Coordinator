@@ -225,11 +225,12 @@ class World(object):
         rc = K.main(list(argv), env=full_env, clock=clock or (lambda: NOW), exec_fn=exec_fn, stdout=out, stderr=err)
         return Result(rc, out.getvalue(), err.getvalue(), calls)
 
-    def lane_path(self, slug: str = "fix-thing", prefix: str = "dealdex", seat: str = "claude") -> Path:
-        return self.roots.lanes_root / prefix / f"{seat}-{slug}"
+    def lane_path(self, slug: str = "fix-thing", repo: str = "DealDex", seat: str = "claude") -> Path:
+        return self.roots.lanes_root / repo / f"{seat}-{slug}"
 
-    def review_path(self, pr: int = 7, seat: str = "claude", prefix: str = "dealdex") -> Path:
-        return self.roots.review_root / prefix / f"pr-{pr}-{seat}"
+    def review_path(self, pr: int = 7, seat: "Optional[str]" = None, repo: str = "DealDex") -> Path:
+        """lanes/<Repo>/review-pr-<n>, or review-pr-<n>-<seat> for the second seat on that PR."""
+        return self.roots.lanes_root / repo / (f"review-pr-{pr}" + (f"-{seat}" if seat else ""))
 
     def advance_origin(self, branch: str = "main") -> str:
         git_dir = str(self.origin)
@@ -466,7 +467,7 @@ class ResolveTests(unittest.TestCase):
             K.resolve_app(REGISTRY, "nonesuch")
         text = str(cm.exception)
         self.assertIn("unknown app 'nonesuch'", text)
-        self.assertIn("DealDex  (prefix dealdex, acronym DD)", text)
+        self.assertIn("DealDex  (folder DealDex, prefix dealdex, acronym DD)", text)
         with self.assertRaises(K.Refusal) as cm:
             K.resolve_app(REGISTRY, "deal")
         self.assertIn("DealDex", str(cm.exception))
@@ -603,7 +604,8 @@ class LaneNewTests(WorldCase):
         manifest = json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest, {
             "schema": 1, "tool": "lane new", "kind": "lane", "seat": "claude", "tag": "CLAUDE", "app": "DealDex",
-            "prefix": "dealdex", "slug": "fix-thing", "branch": "claude/fix-thing", "base": "origin/main",
+            "prefix": "dealdex", "lane_dir": "DealDex", "slug": "fix-thing", "branch": "claude/fix-thing",
+            "base": "origin/main",
             "base_sha": SHAS["main"], "purpose": "Fix the thing", "board": "a7dfde0e",
             "created_at": "2026-10-07T16:15:00+00:00",
         })
@@ -660,6 +662,39 @@ class LaneNewTests(WorldCase):
         w.lane("new", "DealDex", "--review", "--pr", "7")
         found = [p for p in w.root.rglob(".janitor-keep")]
         self.assertEqual(found, [])
+
+    def test_a_lane_in_an_old_folder_is_found_and_not_duplicated(self) -> None:
+        # A flat ~/apps/dealdex-claude-legacy lane has not migrated yet.  `lane new DealDex legacy` prints it,
+        # exits 0 and makes nothing, instead of failing on "branch already exists" or making a second lane.
+        w = self.w
+        old = w.roots.apps_root / "dealdex-claude-legacy"
+        w.git(["worktree", "add", "-q", "-b", "claude/legacy", str(old), "origin/main"], cwd=w.tree)
+        before = w.everything_hash()
+        res = w.lane("new", "DealDex", "legacy")
+        self.assertEqual((res.rc, res.out), (0, f"{old}\n"), res.err)
+        self.assertIn("old folder", res.err)
+        self.assertIn(str(w.lane_path("legacy")), res.err, "it says where the migration will put it")
+        self.assertFalse(res.has("fetch"))
+        self.assertFalse(res.has("worktree", "add"))
+        self.assertNoChange(before)
+        body = w.lane("new", "DealDex", "legacy", "--json").json()
+        self.assertEqual((body["existing"], body["legacy_location"], body["path"]), (True, True, str(old)))
+        self.assertEqual(w.lane("new", "DealDex", "legacy", "--reuse-branch").out, f"{old}\n")
+        self.assertEqual(w.lane("new", "DealDex", "legacy", "--dry-run").out, f"{old}\n")
+        self.assertFalse(w.lane_path("legacy").exists())
+        # another seat's slug of the same name is its own lane, not this one
+        other = w.lane("new", "DealDex", "legacy", env={"AGENT_SEAT": "AG"})
+        self.assertEqual(other.rc, 0, other.err)
+        self.assertEqual(other.out, f"{w.lane_path('legacy', seat='antigravity')}\n")
+
+    def test_expected_path_uses_the_repo_folder_for_every_spelling_of_the_app(self) -> None:
+        w = self.w
+        for query in ("DealDex", "dealdex", "dd"):
+            self.assertEqual(w.lane("path", query, "x").out, f"{w.lane_path('x')}\n", query)
+        self.assertEqual(w.lane("path", "Congress-Trade", "x").out, f"{w.roots.lanes_root / 'Congress.Trade' / 'claude-x'}\n")
+        self.assertEqual(w.lane("path", "ct", "x").out, f"{w.roots.lanes_root / 'Congress.Trade' / 'claude-x'}\n")
+        self.assertEqual(w.lane("path", "trading", "x").out, f"{w.roots.lanes_root / 'Socratic-Trade' / 'claude-x'}\n")
+        self.assertEqual(w.lane("path", "Socratic-Trade", "x").out, f"{w.roots.lanes_root / 'Socratic-Trade' / 'claude-x'}\n")
 
     def test_idempotent_second_run(self) -> None:
         w = self.w
@@ -728,7 +763,7 @@ class LaneNewTests(WorldCase):
                 body = res.json()
                 self.assertEqual(res.rc, 0, res.err)
                 self.assertEqual((body["seat"], body["tag"], body["branch"]), (folder, tag, branch))
-                self.assertEqual(body["path"], str(w.roots.lanes_root / "dealdex" / f"{folder}-x"))
+                self.assertEqual(body["path"], str(w.roots.lanes_root / "DealDex" / f"{folder}-x"))
 
     def test_a_slug_that_reads_as_another_seat_is_refused(self) -> None:
         # GROK + slug build-x would be folder grok-build-x, which the layout reads as GROK-BUILD's.
@@ -1132,7 +1167,7 @@ class LaneNewTests(WorldCase):
         elsewhere = w.root / "elsewhere"
         elsewhere.mkdir()
         (w.roots.lanes_root).mkdir(parents=True)
-        os.symlink(elsewhere, w.roots.lanes_root / "dealdex")
+        os.symlink(elsewhere, w.roots.lanes_root / "DealDex")
         before = w.everything_hash()
         res = w.lane("new", "DealDex", "fix-thing")
         self.assertEqual((res.rc, res.out), (64, ""), res.err)
@@ -1150,7 +1185,7 @@ class LaneNewTests(WorldCase):
 
     def test_a_lane_cannot_be_placed_inside_another_checkout(self) -> None:
         w = self.w
-        prefix_dir = w.roots.lanes_root / "dealdex"
+        prefix_dir = w.roots.lanes_root / "DealDex"
         prefix_dir.mkdir(parents=True)
         w.git(["init", "-q", str(prefix_dir)])
         res = w.lane("new", "DealDex", "fix-thing")
@@ -1227,7 +1262,7 @@ class ReviewTests(WorldCase):
         manifest = json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))
         expected = {
             "schema": 1, "tool": "lane new", "kind": "review", "seat": "claude", "tag": "CLAUDE", "app": "DealDex",
-            "prefix": "dealdex", "pr": 7, "head_sha": SHAS["pr"], "head_ref": "feature/pr-work",
+            "prefix": "dealdex", "lane_dir": "DealDex", "pr": 7, "head_sha": SHAS["pr"], "head_ref": "feature/pr-work",
             "pr_state": "OPEN", "cross_repo": False, "purpose": "Check the PR", "board": None,
             "created_at": "2026-10-07T16:15:00+00:00", "expires_at": "2026-10-14T16:15:00+00:00",
         }
@@ -1249,7 +1284,7 @@ class ReviewTests(WorldCase):
         add = [v for v in res.verbs if v[:2] == ("worktree", "add")]
         self.assertEqual(add, [("worktree", "add", "--detach", str(self.w.review_path()), SHAS["pr"])])
         for argv in res.calls:
-            K.check_allowed(argv[:1] + argv[4:] if argv[0] == "git" else argv, write_root=self.w.roots.review_root,
+            K.check_allowed(argv[:1] + argv[4:] if argv[0] == "git" else argv, write_root=self.w.roots.lanes_root,
                             fold=str.casefold)
 
     def test_second_run_is_idempotent_and_does_not_update(self) -> None:
@@ -1265,12 +1300,61 @@ class ReviewTests(WorldCase):
         self.assertFalse(res.has("fetch"))
 
     def test_two_seats_get_separate_checkouts_of_the_same_pr(self) -> None:
+        # Layout v2 names the check review-pr-<n>, with no seat.  The first seat gets that name and a
+        # second seat gets review-pr-<n>-<seat>, so no seat is ever refused another seat's checkout.
         w = self.w
-        w.lane("new", "DealDex", "--review", "--pr", "7")
+        first = w.lane("new", "DealDex", "--review", "--pr", "7")
+        self.assertEqual((first.rc, first.out), (0, f"{w.review_path()}\n"), first.err)
         res = w.lane("new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"})
         self.assertEqual((res.rc, res.out), (0, f"{w.review_path(seat='antigravity')}\n"), res.err)
         self.assertTrue(w.review_path().is_dir())
         self.assertTrue(w.review_path(seat="antigravity").is_dir())
+        self.assertEqual(L.classify_location(w.review_path(seat="antigravity"), w.roots), L.LocationClass.REVIEW)
+        # reruns are idempotent for both seats and each finds its own folder
+        again = w.lane("new", "DealDex", "--review", "--pr", "7")
+        self.assertEqual((again.rc, again.out), (0, f"{w.review_path()}\n"), again.err)
+        again = w.lane("new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"})
+        self.assertEqual((again.rc, again.out), (0, f"{w.review_path(seat='antigravity')}\n"), again.err)
+        self.assertIn("already exists", again.err)
+        # the manifests say who owns which
+        for path, seat in ((w.review_path(), "claude"), (w.review_path(seat="antigravity"), "antigravity")):
+            git_dir = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=path))
+            self.assertEqual(json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))["seat"], seat)
+        # `path --review` agrees with `new --review` for both seats and writes nothing
+        self.assertEqual(w.lane("path", "DealDex", "--review", "--pr", "7").out, f"{w.review_path()}\n")
+        self.assertEqual(w.lane("path", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"}).out,
+                         f"{w.review_path(seat='antigravity')}\n")
+        # a third seat sees the plain name taken by someone else and gets its own
+        third = w.lane("new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "MM"})
+        self.assertEqual((third.rc, third.out), (0, f"{w.review_path(seat='minimax')}\n"), third.err)
+
+    def test_a_seat_that_made_the_suffixed_checkout_keeps_finding_it_when_the_plain_one_is_gone(self) -> None:
+        w = self.w
+        w.lane("new", "DealDex", "--review", "--pr", "7")
+        w.lane("new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"})
+        w.git(["worktree", "remove", "--force", str(w.review_path())], cwd=w.tree)
+        res = w.lane("new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"})
+        self.assertEqual((res.rc, res.out), (0, f"{w.review_path(seat='antigravity')}\n"), res.err)
+        self.assertFalse(w.review_path().exists())
+
+    def test_the_review_checkout_sits_beside_the_lanes_of_the_same_repo(self) -> None:
+        w = self.w
+        w.lane("new", "DealDex", "fix-thing")
+        w.lane("new", "DealDex", "--review", "--pr", "7")
+        self.assertEqual(sorted(p.name for p in (w.roots.lanes_root / "DealDex").iterdir()),
+                         ["claude-fix-thing", "review-pr-7"])
+        self.assertEqual(sorted(p.name for p in w.roots.lanes_root.iterdir()), ["DealDex"],
+                         "no _review folder, no prefix folder")
+
+    def test_path_review_prints_the_path_and_changes_nothing(self) -> None:
+        w = self.w
+        before = w.everything_hash()
+        res = w.lane("path", "dd", "--review", "--pr", "7")
+        self.assertEqual((res.rc, res.out), (0, f"{w.review_path()}\n"), res.err)
+        self.assertNoChange(before)
+        for argv in (["path", "DealDex", "--review"], ["path", "DealDex", "x", "--review", "--pr", "7"],
+                     ["path", "DealDex", "x", "--pr", "7"], ["path", "DealDex"]):
+            self.assertEqual(w.lane(*argv).rc, 64, argv)
 
     def test_dry_run_changes_nothing_and_skips_the_network(self) -> None:
         w = self.w
@@ -1304,7 +1388,7 @@ class ReviewTests(WorldCase):
                 res = w.lane("new", "DealDex", "--review", "--pr", "7", gh=lambda argv, t=text: D.CmdResult(0, t, ""))
                 self.assertEqual((res.rc, res.out), (69, ""), res.err)
         self.assertFalse(w.review_path().exists())
-        self.assertFalse(w.roots.review_root.exists())
+        self.assertFalse((w.roots.lanes_root / "DealDex").exists(), "nothing is created before the PR is looked up")
 
     def test_a_pr_head_that_moved_before_the_fetch_is_exit_69(self) -> None:
         w = self.w
@@ -1341,10 +1425,11 @@ class ReviewTests(WorldCase):
         self.assertIn("claude/attached", res.err)
         self.assertNoChange(before)
 
-    def test_flat_mode_still_puts_review_checkouts_under_the_review_root(self) -> None:
+    def test_flat_mode_has_no_review_folder(self) -> None:
         w = self.w
         res = w.lane("new", "DealDex", "--review", "--pr", "7", env={"FLEET_LAYOUT": "flat"})
-        self.assertEqual((res.rc, res.out), (0, f"{w.review_path()}\n"), res.err)
+        self.assertEqual((res.rc, res.out), (64, ""), res.err)
+        self.assertIn("FLEET_LAYOUT=flat", res.err)
 
     def test_review_root_outside_the_map_is_refused(self) -> None:
         w = self.w

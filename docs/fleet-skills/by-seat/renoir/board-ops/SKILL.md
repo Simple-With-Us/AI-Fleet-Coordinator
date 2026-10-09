@@ -31,10 +31,10 @@ Claude Code only offers "Always Allow" when the command has a stable prefix.  `b
 
 ```bash
 board file --title "Scout drops Senate rows on 502" --app congress-trade \
-  --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/congress/<seat>-fix @ <branch>" \
+  --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>" \
   --desc "path:line + repro"
 
-board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/congress/<seat>-fix @ <branch>"
+board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>"
 
 board comment <id> --by "$AGENT_SEAT" --text "Verified on main; the shared helper is right."
 

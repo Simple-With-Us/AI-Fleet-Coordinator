@@ -14,7 +14,7 @@ setup-agent-lanes.sh is retired and does nothing.
 Create a lane per task instead:
 
   export AGENT_SEAT=<your seat tag>          # for example CLAUDE, CODEX, AG, MM, CLUTCH
-  ~/apps/lane new <app> <slug>               # lands at ~/apps/lanes/<prefix>/<seat>-<slug>
+  ~/apps/lane new <app> <slug>               # lands at ~/apps/lanes/<Repo>/<seat>-<slug>
   ~/apps/lane new <app> --review --pr <n>    # read-only check of someone else's PR
 
 Layout, rules and platform details: docs/protocols/lane-map.md

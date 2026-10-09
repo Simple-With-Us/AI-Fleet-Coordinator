@@ -5,7 +5,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 # Fleet Coordination Protocol (Universal)
 
-> **This install is for `FX`.**  Chat tag `[FX·session8]`.  Notes `Fx`.  Branches `fx/`.  Worktrees `~/apps/<app>-fx`.  Do not inherit another seat's tag from a shared template.  Zulip bot `fx-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/FX-zuliprc` (mode 600).  Session tag `[FX·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `FX`.**  Chat tag `[FX·session8]`.  Notes `Fx`.  Branches `fx/`.  Lanes `~/apps/lanes/<Repo>/fx-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `fx-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/FX-zuliprc` (mode 600).  Session tag `[FX·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Runtime (fx).** Local Cursor IDE remains `[CURSOR]`.  Codex CLI remains `[CODEX]`.  Do not inherit those tags from a shared skill directory fx also scans (`~/.claude/skills`, `~/.codex/skills`).  Prefer `~/.fx/skills` for this seat.
 
@@ -92,7 +92,7 @@ Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `
 
 Always work in your own lane.  Make it with `lane new` (owner 2026-10-07, `docs/protocols/lane-map.md`; `AGENT_SEAT` must be set to your seat tag):
 ```bash
-~/apps/lane new <app> <feature-slug>   # ~/apps/lanes/<prefix>/<seat>-<feature-slug>, branch <your prefix>/<feature-slug>
+~/apps/lane new <app> <feature-slug>   # ~/apps/lanes/<Repo>/<seat>-<feature-slug>, branch <your prefix>/<feature-slug>
 ```
 Flat lanes that already exist (`~/apps/<app>-<seat>-<lane>`) stay until they retire; do not create new ones.
 

@@ -6,12 +6,12 @@ description: >-
 
 # Session start (CLAUDE)
 
-> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Worktrees `~/apps/<app>-claude`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Claude-zuliprc` (mode 600).  Session tag `[CLAUDE·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Claude-zuliprc` (mode 600).  Session tag `[CLAUDE·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Shared `~/.claude/skills`.**  This directory is the `CLAUDE` seat's skill home, and other tools scan it too.  Other seats (Codex, Cursor, Grok, Grok-Web, AG, Clutch, FX, MM, MC, MA) must take identity from their own pack, never from here.
 
 
-This pack is for **CLAUDE** (the Claude account, the only Claude seat since owner 2026-10-07).  Session tag `[CLAUDE·session8]`.  Notes name `Claude`.  Branches `claude/<slug>` only.  Lanes `~/apps/lanes/<prefix>/claude-<slug>`.  MONET and RENOIR are retired.  Never sign as Monet.  `CLAUDE` is the default seat of an ordinary session; a launcher's seat wins (Identity).
+This pack is for **CLAUDE** (the Claude account, the only Claude seat since owner 2026-10-07).  Session tag `[CLAUDE·session8]`.  Notes name `Claude`.  Branches `claude/<slug>` only.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  MONET and RENOIR are retired.  Never sign as Monet.  `CLAUDE` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
 ## 1. Identity
 
@@ -60,28 +60,28 @@ The shared checkout is the human/fleet review base.  Mid-task branch flips there
 Make one lane per task with `lane new`.  It needs `AGENT_SEAT` set to the seat you verified in section 1 (never a guess) and prints the path:
 
 ```bash
-~/apps/lane new <app> <slug>                # ~/apps/lanes/<prefix>/<seat>-<slug>, on a branch named <your prefix>/<slug>
-~/apps/lane new <app> --review --pr <n>     # a read-only check of someone else's PR
+~/apps/lane new <app> <slug>                # ~/apps/lanes/<Repo>/<seat>-<slug>, on a branch named <your prefix>/<slug>
+~/apps/lane new <app> --review --pr <n>     # a read-only check of someone else's PR, at ~/apps/lanes/<Repo>/review-pr-<n>
 cd "$(~/apps/lane path <app> <slug>)"
 ```
 
 | App | Zulip `repo:` | Acronym | Lane folder | Live board |
 |-----|---------------|---------|-------------|------------|
-| Socratic.Trade | `Socratic.Trade` | ST | `~/apps/lanes/trading/<seat>-<slug>` | `~/apps/TRADING-EFFORT-LOG.md` |
-| Congress.Trade | `Congress.Trade` | CT | `~/apps/lanes/congress/<seat>-<slug>` | `~/apps/CONGRESS-TRADE-EFFORT-LOG.md` |
-| Usage Monitor | `API-usage-monitor` | UM | `~/apps/lanes/usage/<seat>-<slug>` | `~/apps/API-USAGE-MONITOR-EFFORT-LOG.md` |
-| congress-trading-shared | `congress-trading-shared` | CTS | `~/apps/lanes/cts/<seat>-<slug>` | `~/apps/CONGRESS-SHARED-EFFORT-LOG.md` |
-| DealDex | `DealDex` | DD | `~/apps/lanes/dealdex/<seat>-<slug>` | `~/apps/DEALDEX-EFFORT-LOG.md` |
-| Personal-Site | `Personal-Site` | PS | `~/apps/lanes/personal/<seat>-<slug>` | `~/apps/PERSONAL-SITE-EFFORT-LOG.md` |
-| AI-Fleet-Coordinator / machine infra | `AI-Fleet-Coordinator` or `fleet-infra` | AFC | `~/apps/lanes/fleet/<seat>-<slug>` | `~/apps/FLEET-INFRA-EFFORT-LOG.md` |
+| Socratic.Trade | `Socratic.Trade` | ST | `~/apps/lanes/Socratic-Trade/<seat>-<slug>` | `~/apps/TRADING-EFFORT-LOG.md` |
+| Congress.Trade | `Congress.Trade` | CT | `~/apps/lanes/Congress.Trade/<seat>-<slug>` | `~/apps/CONGRESS-TRADE-EFFORT-LOG.md` |
+| Usage Monitor | `API-usage-monitor` | UM | `~/apps/lanes/Usage-Monitor/<seat>-<slug>` | `~/apps/API-USAGE-MONITOR-EFFORT-LOG.md` |
+| congress-trading-shared | `congress-trading-shared` | CTS | `~/apps/lanes/congress-trading-shared/<seat>-<slug>` | `~/apps/CONGRESS-SHARED-EFFORT-LOG.md` |
+| DealDex | `DealDex` | DD | `~/apps/lanes/DealDex/<seat>-<slug>` | `~/apps/DEALDEX-EFFORT-LOG.md` |
+| Personal-Site | `Personal-Site` | PS | `~/apps/lanes/Personal-Site/<seat>-<slug>` | `~/apps/PERSONAL-SITE-EFFORT-LOG.md` |
+| AI-Fleet-Coordinator / machine infra | `AI-Fleet-Coordinator` or `fleet-infra` | AFC | `~/apps/lanes/AI-Fleet-Coordinator/<seat>-<slug>` | `~/apps/FLEET-INFRA-EFFORT-LOG.md` |
 
-`<seat>` is your seat's whole folder name from `fleet-apps.json` (`worktreeSuffix`), never a short tag.  Flat lanes that already exist (for example `~/apps/trading-claude`) stay until they retire; do not create new ones.  Inventory is `~/Code/AI-Fleet-Coordinator/fleet-apps.json`.  `scripts/setup-agent-lanes.sh` is retired (it exits 2); do not run it.  If `~/apps/lane` is missing, the owner has not installed it yet: run `python3 -m fleet_lanes.lane new <app> <slug>` from the `scripts/` folder of an AI-Fleet-Coordinator checkout, or create the lane by hand to match the table in `docs/protocols/lane-map.md`.
+`<seat>` is your seat's whole folder name from `fleet-apps.json` (`worktreeSuffix`), never a short tag, and the folder above it is the repo's folder name under `~/Code` (`codeDir`), exactly as spelled there.  Lanes in the old places (`~/apps/lanes/<prefix>/` such as `lanes/trading`, `_managed`, `_review`, and flat ones such as `~/apps/trading-claude`) stay until the layout migration moves them; do not create new ones there.  Inventory is `~/Code/AI-Fleet-Coordinator/fleet-apps.json`.  `scripts/setup-agent-lanes.sh` is retired (it exits 2); do not run it.  If `~/apps/lane` is missing, the owner has not installed it yet: run `python3 -m fleet_lanes.lane new <app> <slug>` from the `scripts/` folder of an AI-Fleet-Coordinator checkout, or create the lane by hand to match the table in `docs/protocols/lane-map.md`.
 
 Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and `docs/EFFORT-LOG.md`.  Personal-Site `AGENTS.md` can lag `README.md` (the live source is `site/`); believe README + current tree over a stale "static snapshot" paragraph.
 
 ## 4. Triple-claim before substantial edits
 
-1. **THE BOARD** — `board list --app <app>` then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/<prefix>/<seat>-<slug> @ <branch>"`.  If nothing exists: `board file --title "..." --app <app> --severity P1 --by "$AGENT_SEAT" --env Mac --where "..." --desc "..."`.
+1. **THE BOARD** — `board list --app <app>` then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/<Repo>/<seat>-<slug> @ <branch>"`.  If nothing exists: `board file --title "..." --app <app> --severity P1 --by "$AGENT_SEAT" --env Mac --where "..." --desc "..."`.
 2. **Effort board** — In Progress on the live file **and** `docs/EFFORT-LOG.md` (fleet-infra has no repo mirror).  Never delete another seat's row.
 3. **Zulip** — then GitHub issue if you are executing a numbered one.
 

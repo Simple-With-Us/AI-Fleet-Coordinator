@@ -5,7 +5,7 @@ description: Use THE BOARD (mac.jays.services/board + the board CLI) as the firs
 
 # THE BOARD (FX)
 
-> **This install is for `FX`.**  Chat tag `[FX·session8]`.  Notes `Fx`.  Branches `fx/`.  Worktrees `~/apps/<app>-fx`.  Do not inherit another seat's tag from a shared template.  Zulip bot `fx-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/FX-zuliprc` (mode 600).  Session tag `[FX·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `FX`.**  Chat tag `[FX·session8]`.  Notes `Fx`.  Branches `fx/`.  Lanes `~/apps/lanes/<Repo>/fx-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `fx-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/FX-zuliprc` (mode 600).  Session tag `[FX·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Runtime (fx).** Local Cursor IDE remains `[CURSOR]`.  Codex CLI remains `[CODEX]`.  Do not inherit those tags from a shared skill directory fx also scans (`~/.claude/skills`, `~/.codex/skills`).  Prefer `~/.fx/skills` for this seat.
 
@@ -33,10 +33,10 @@ Some agent CLIs only allowlist a stable command prefix.  `board stats` allowlist
 
 ```bash
 board file --title "Scout drops Senate rows on 502" --app congress-trade \
-  --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/congress/<seat>-fix @ <branch>" \
+  --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>" \
   --desc "path:line + repro"
 
-board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/congress/<seat>-fix @ <branch>"
+board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>"
 
 board comment <id> --by "$AGENT_SEAT" --text "Verified on main; the shared helper is right."
 

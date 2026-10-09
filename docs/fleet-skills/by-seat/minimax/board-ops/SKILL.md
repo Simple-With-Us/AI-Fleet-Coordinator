@@ -5,7 +5,7 @@ description: Use THE BOARD (mac.jays.services/board + the board CLI) as the firs
 
 # THE BOARD (MM)
 
-> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Worktrees `~/apps/<app>-minimax`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mm-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MM-zuliprc` (mode 600).  Session tag `[MM·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mm-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MM-zuliprc` (mode 600).  Session tag `[MM·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Runtime (MiniMax).** MiniMax Code has no global rules file.  The fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt); per-repo `AGENTS.md` is project memory.  Skills here are loaded on demand from `<available_skills>`, so read the one that matches before acting — nothing in this directory is auto-applied.  `config.yaml` ships `permissionMode: bypassPermissions`, so nothing prompts: hold the destructive-op pause yourself.
 
@@ -33,10 +33,10 @@ Some agent CLIs only allowlist a stable command prefix.  `board stats` allowlist
 
 ```bash
 board file --title "Scout drops Senate rows on 502" --app congress-trade \
-  --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/congress/<seat>-fix @ <branch>" \
+  --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>" \
   --desc "path:line + repro"
 
-board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/congress/<seat>-fix @ <branch>"
+board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>"
 
 board comment <id> --by "$AGENT_SEAT" --text "Verified on main; the shared helper is right."
 

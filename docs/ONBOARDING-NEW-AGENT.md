@@ -33,7 +33,7 @@ A seat is one persistent identity that may spawn many sessions:
 |-------|---------|
 | Chat / board tag | `GROK` (ALL CAPS) |
 | Apple Notes display | `Grok` (Title Case) |
-| Worktree suffix (the whole name) | `grok` → lanes at `~/apps/lanes/dealdex/grok-<slug>` |
+| Worktree suffix (the whole name) | `grok` → lanes at `~/apps/lanes/DealDex/grok-<slug>` |
 | Branch prefix | `grok/` (never push under another seat's prefix) |
 | Seat env | `AGENT_SEAT=GROK` |
 
@@ -56,7 +56,7 @@ per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
    Look first at THE BOARD (`https://mac.jays.services/board`, short link `https://board.jays.services`).
 2. **Do not work in `~/Code/<App>`.**  That is the human integration tree.
    Work in a lane: `~/apps/lane new <app> <slug>` makes one at
-   `~/apps/lanes/<prefix>/<suffix>-<slug>` (`docs/protocols/lane-map.md`).
+   `~/apps/lanes/<Repo>/<suffix>-<slug>` (`docs/protocols/lane-map.md`).
 3. **Board first, then Zulip, then code.**  Triple claim and triple closeout
    (THE BOARD + effort-board / GitHub issue + `#agent-sync`) on every real unit.
 4. **Commit → push → open PR → merge when CI is green.** Do not wait for the
@@ -212,7 +212,7 @@ No lane is created at onboarding.  When the seat starts a task, it makes its own
 
 ```bash
 export AGENT_SEAT=<TAG>                       # an uppercase registry tag; lane refuses if unset
-~/apps/lane new <app> <slug>                  # ~/apps/lanes/<prefix>/<suffix>-<slug>
+~/apps/lane new <app> <slug>                  # ~/apps/lanes/<Repo>/<suffix>-<slug>
 ~/apps/lane new <app> --review --pr <n>       # read-only check of someone else's PR
 ```
 
@@ -224,14 +224,16 @@ from a path or a branch.
 
 Naming (from `fleet-apps.json`):
 
-| App | Prefix | Example lane |
-|-----|--------|--------------|
-| Socratic.Trade | `trading` | `~/apps/lanes/trading/grok-<slug>` |
-| Congress.Trade | `congress` | `~/apps/lanes/congress/grok-<slug>` |
-| Usage-Monitor | `usage` | `~/apps/lanes/usage/grok-<slug>` |
-| DealDex | `dealdex` | `~/apps/lanes/dealdex/grok-<slug>` |
-| congress-trading-shared | `cts` | `~/apps/lanes/cts/grok-<slug>` |
-| AI-Fleet-Coordinator | `fleet` | `~/apps/lanes/fleet/grok-<slug>` |
+| App | Repo folder (`codeDir`) | Example lane |
+|-----|-------------------------|--------------|
+| Socratic.Trade | `Socratic-Trade` | `~/apps/lanes/Socratic-Trade/grok-<slug>` |
+| Congress.Trade | `Congress.Trade` | `~/apps/lanes/Congress.Trade/grok-<slug>` |
+| Usage-Monitor | `Usage-Monitor` | `~/apps/lanes/Usage-Monitor/grok-<slug>` |
+| DealDex | `DealDex` | `~/apps/lanes/DealDex/grok-<slug>` |
+| congress-trading-shared | `congress-trading-shared` | `~/apps/lanes/congress-trading-shared/grok-<slug>` |
+| AI-Fleet-Coordinator | `AI-Fleet-Coordinator` | `~/apps/lanes/AI-Fleet-Coordinator/grok-<slug>` |
+
+The old worktree prefix (`trading`, `congress`, `fleet`, ...) still works as the `<app>` argument, but it is no longer a folder name.
 
 Do **not** `npm install` every lane up front. Install when the seat starts
 real work.

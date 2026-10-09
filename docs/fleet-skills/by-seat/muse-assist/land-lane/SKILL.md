@@ -5,7 +5,7 @@ description: Land a Muse Assist feature branch to main across the fleet — seat
 
 # Land a feature branch (MA)
 
-> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  Worktrees `~/apps/<app>-muse-assist`.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MA-zuliprc` (mode 600).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  Lanes `~/apps/lanes/<Repo>/muse-assist-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MA-zuliprc` (mode 600).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
@@ -16,7 +16,7 @@ Seat: **MA**.  Branch: `muse-assist/<slug>`.  Never `claude/`.  Never `monet/`. 
 
 ## Preconditions
 
-1. You are in your lane (`~/apps/lanes/<prefix>/<seat>-<slug>`, made with `~/apps/lane new`; a flat `~/apps/<prefix>-<seat>[-<lane>]` lane that already exists is fine).  See `session-start`.
+1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, made with `~/apps/lane new`; a lane in an old place (`~/apps/lanes/<prefix>/`, or a flat `~/apps/<prefix>-<seat>[-<lane>]`) that already exists is fine until the migration moves it).  See `session-start`.
 2. `git status` is clean except `.env.local` / `.dev.vars` (never commit those).
 3. `git config user.email` is `12656028+jaywedgeworth22@users.noreply.github.com`.
 

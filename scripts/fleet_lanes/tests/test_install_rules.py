@@ -183,7 +183,8 @@ class TemplateTests(unittest.TestCase):
         for variant in IR.TEMPLATE_FILES:
             with self.subTest(variant=variant):
                 lines = IR.block_lines(variant)
-                self.assertEqual(lines[0], "<!-- fleet-lane-map:begin v1 -->")
+                self.assertEqual(lines[0], f"<!-- fleet-lane-map:begin v{IR.BLOCK_VERSION} -->")
+                self.assertEqual(IR.BLOCK_VERSION, 2, "layout v2 text is block version 2")
                 self.assertEqual(lines[-1], "<!-- fleet-lane-map:end -->")
                 self.assertEqual(IR.block_text(variant), "\n".join(lines) + "\n")
 
@@ -211,10 +212,29 @@ class TemplateTests(unittest.TestCase):
         for variant in ("full", "minimal"):
             body = IR.body_text(variant)
             with self.subTest(variant=variant):
-                for needle in ("docs/protocols/lane-map.md", "~/Code/<App>", "~/apps/lanes/", "_review",
+                for needle in ("docs/protocols/lane-map.md", "~/Code/<Repo>", "~/apps/lanes/<Repo>/", "review-pr-<n>",
                                "~/apps/lane new <app> <slug>", "AGENT_SEAT", "/tmp", "/private/tmp", "/var/tmp",
-                               "$TMPDIR", "/var/folders", "throwaway", "whole", "~/apps/<prefix>-<seat>"):
+                               "$TMPDIR", "/var/folders", "throwaway", "whole", "~/apps/<prefix>-<seat>",
+                               "_managed", "_review", "2026-10-09"):
                     self.assertIn(needle, body)
+
+    def test_the_full_text_names_every_v2_home(self) -> None:
+        full = IR.body_text("full")
+        for needle in ("~/apps/lanes/<Repo>/<seat>-<slug>", "~/apps/lanes/<Repo>/review-pr-<n>",
+                       "~/apps/lanes/<Repo>/<slug>-<hex>", "~/apps/lanes/_codex/<slug>/<Repo>", "<repo>/.claude/worktrees",
+                       "Congress.Trade", "AI-Fleet-Coordinator"):
+            self.assertIn(needle, full)
+        self.assertNotIn("~/apps/lanes/_review/<prefix>", full, "the pre-v2 review path is gone from the rule")
+        self.assertNotIn("lanes/<prefix>/<seat>", full)
+
+    def test_a_v1_block_is_replaced_in_place_by_the_current_one(self) -> None:
+        v1 = "# Rules\n\n" + IR.BEGIN_PREFIX + "1 -->\n~/apps/lanes/<prefix>/<seat>-<slug>\n" + IR.END_LINE + "\n\ntail\n"
+        res = IR.compose(v1, "full")
+        self.assertEqual(res.action, "replace")
+        self.assertTrue(res.new_text.startswith("# Rules\n\n" + IR.BEGIN_PREFIX + f"{IR.BLOCK_VERSION} -->\n"))
+        self.assertTrue(res.new_text.endswith("\ntail\n"))
+        self.assertNotIn("<prefix>/<seat>", res.new_text.split(IR.END_LINE)[0].replace(
+            "~/apps/lanes/<prefix>/ such as", ""))
 
     def test_branch_is_prefix_plus_slug_not_the_folder_seat_name(self) -> None:
         # AG: folder antigravity-<slug>, branch ag/<slug>.  The draft's "<seat>/<slug>" was wrong for it.
@@ -321,7 +341,7 @@ class ComposeTests(unittest.TestCase):
     def test_older_version_marker_is_replaced_and_newer_is_refused(self) -> None:
         old = "<!-- fleet-lane-map:begin v0 -->\nx\n" + IR.END_LINE + "\n"
         self.assertEqual(IR.compose(old, "full").action, "replace")
-        newer = "<!-- fleet-lane-map:begin v2 -->\nx\n" + IR.END_LINE + "\n"
+        newer = f"<!-- fleet-lane-map:begin v{IR.BLOCK_VERSION + 1} -->\nx\n" + IR.END_LINE + "\n"
         with self.assertRaises(IR.MarkerError):
             IR.compose(newer, "full")
 
@@ -382,10 +402,13 @@ class ContradictionTests(unittest.TestCase):
         ])
         self.assertEqual(self.kinds(text), [(i, "flat-lane") for i in range(1, 9)])
 
-    def test_nested_lanes_and_tools_are_not_contradictions(self) -> None:
+    def test_v2_lanes_and_tools_are_not_contradictions(self) -> None:
         text = "\n".join([
-            "~/apps/lanes/trading/claude-fix-thing",
-            "~/apps/lanes/_review/fleet/pr-12",
+            "~/apps/lanes/Socratic-Trade/claude-fix-thing",
+            "~/apps/lanes/Congress.Trade/review-pr-12",
+            "~/apps/lanes/_codex/fix/BotFleet and ~/apps/lanes/BotFleet/active-engines-display-e380b8",
+            "/Users/jay/apps/lanes/AI-Fleet-Coordinator/claude-x and ~/apps/lanes/congress-trading-shared/cursor-y",
+            "~/apps/lanes/homebrew-tap/codex-x",
             "Printer: ~/apps/fleet-mode and ~/apps/agent-sync/consumer.mjs",
             "run ~/apps/lane new fleet my-slug",
             "~/apps/scratch/claude/topic",
@@ -394,6 +417,40 @@ class ContradictionTests(unittest.TestCase):
             "~/apps/apple-notes-coding.sh and ~/apps/AGENT-SYNC.md",
         ])
         self.assertEqual(self.kinds(text), [])
+
+    def test_the_pre_v2_lane_folders_are_reported(self) -> None:
+        text = "\n".join([
+            "~/apps/lanes/trading/claude-fix-thing",                   # 1: an old prefix folder
+            "see $HOME/apps/lanes/fleet/ for the lanes",               # 2
+            "~/apps/lanes/_review/fleet/pr-12",                        # 3: the old review root
+            "Files go in ~/apps/lanes/_managed/codex.",                # 4
+            "lanes are `~/apps/lanes/<prefix>/<seat>-<slug>`.",        # 5: the placeholder
+            "/Users/jay/apps/lanes/contactlogo/claude-x",              # 6: the case-only old spelling
+            "~/apps/lanes/_notes/x and ~/apps/lanes/dealdex/y",        # 7
+            "~/apps/lanes/ContactLogo/claude-x",                       # fine
+            "~/apps/lanes/AI-Fleet-Coordinator/claude-x",              # fine
+        ])
+        self.assertEqual(self.kinds(text), [(i, "old-lane-layout") for i in range(1, 8)])
+        snippets = [c.snippet for c in IR.find_contradictions(text, registry=REGISTRY)]
+        self.assertEqual(snippets[0], "~/apps/lanes/trading")
+        self.assertEqual(snippets[2], "~/apps/lanes/_review")
+
+    def test_old_lane_layout_with_the_real_registry(self) -> None:
+        real = L.load_registry(env={})
+        text = "\n".join(["~/apps/lanes/botfleet/claude-x", "~/apps/lanes/fleet-ops/minimax-x",
+                          "~/apps/lanes/BotFleet/claude-x", "~/apps/lanes/Fleet-OPS/minimax-x",
+                          "~/apps/lanes/homebrew-tap/codex-x", "~/apps/lanes/congress-trading-shared/cursor-x"])
+        self.assertEqual([(c.line, c.kind) for c in IR.find_contradictions(text, registry=real)],
+                         [(1, "old-lane-layout"), (2, "old-lane-layout")])
+
+    def test_old_lane_layout_without_a_registry(self) -> None:
+        got = IR.find_contradictions("~/apps/lanes/trading/claude-x and ~/apps/lanes/BotFleet/claude-y\n", registry=None)
+        self.assertEqual([(c.kind, c.snippet) for c in got], [("old-lane-layout", "~/apps/lanes/trading")])
+
+    def test_a_file_with_the_old_text_outside_the_block_is_reported_by_plan(self) -> None:
+        text = "| Socratic.Trade | `trading` | `~/apps/lanes/trading/claude-x` |\n"
+        (c,) = IR.find_contradictions(text, registry=REGISTRY)
+        self.assertEqual(c.kind, "old-lane-layout")
 
     def test_temp_checkout_advice(self) -> None:
         text = "\n".join([
@@ -449,7 +506,7 @@ class PlanTests(HomeCase):
         self.assertIn("exists: no", out)
         self.assertIn("apply would: create", out)
         self.assertIn("pass --create", out)
-        self.assertIn("+" + IR.BEGIN_PREFIX + "1 -->", out)
+        self.assertIn("+" + IR.BEGIN_PREFIX + f"{IR.BLOCK_VERSION} -->", out)
         self.assertIn("--- /dev/null", out)
 
     def test_missing_file_and_missing_platform_dir_is_refused_even_with_create(self) -> None:
@@ -1236,7 +1293,7 @@ class PlanEchoTests(HomeCase):
         for words in ("intro line", "live key", "restricted", "last line before the append", "beside it", "api_key"):
             self.assertNotIn(words, out)
         self.assertIn("unchanged line", out)
-        self.assertIn("+" + IR.BEGIN_PREFIX + "1 -->", out)                 # our own added lines are still shown
+        self.assertIn("+" + IR.BEGIN_PREFIX + f"{IR.BLOCK_VERSION} -->", out)  # our own added lines are still shown
         self.assertRegex(out, r"line 8  \[flat-lane\]")                     # the contradiction is still located
 
     def test_a_contradiction_shows_the_matched_text_and_nothing_else(self) -> None:
