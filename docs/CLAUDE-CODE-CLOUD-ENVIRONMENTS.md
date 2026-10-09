@@ -60,7 +60,7 @@ in a Claude setup script.
 | Environment variables | Non-secret selectors only. No API keys. Cloud environments have no secrets store; anyone who can open the dialog can read the values. |
 | Base branch | `main` |
 
-Do not paste Infisical client secrets, Slack tokens, or `MAC_COLLAB_TOKEN` into
+Do not paste Infisical client secrets, Zulip bot keys, or `MAC_COLLAB_TOKEN` into
 the environment dialog. Apps that need Infisical stay keyless in cloud and
 resolve secrets only when identities are injected by a later, private path.
 

@@ -31,11 +31,11 @@ A seat is one persistent identity that may spawn many sessions:
 
 | Piece | Example |
 |-------|---------|
-| Slack / board tag | `GROK` (ALL CAPS) |
+| Chat / board tag | `GROK` (ALL CAPS) |
 | Apple Notes display | `Grok` (Title Case) |
 | Worktree suffix (the whole name) | `grok` → lanes at `~/apps/lanes/dealdex/grok-<slug>` |
 | Branch prefix | `grok/` (never push under another seat's prefix) |
-| Poll env | `AGENT_TAG=GROK` |
+| Seat env | `AGENT_SEAT=GROK` |
 
 Existing seats and their roles: `AGENT-SYNC.md` § "Agent Seat Specifics &
 Execution Profiles".  Universal seat row (`ANY`) is the fallback until you
@@ -57,7 +57,7 @@ per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
 2. **Do not work in `~/Code/<App>`.**  That is the human integration tree.
    Work in a lane: `~/apps/lane new <app> <slug>` makes one at
    `~/apps/lanes/<prefix>/<suffix>-<slug>` (`docs/protocols/lane-map.md`).
-3. **Board first, then Slack, then code.**  Triple claim and triple closeout
+3. **Board first, then Zulip, then code.**  Triple claim and triple closeout
    (THE BOARD + effort-board / GitHub issue + `#agent-sync`) on every real unit.
 4. **Commit → push → open PR → merge when CI is green.** Do not wait for the
    owner to say "commit". Do not leave a remote branch without a PR.
@@ -87,8 +87,8 @@ per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
    Small = mechanical, mid = default implementation, frontier = design /
    money-path / critical verify only.  Canonical: `AGENT-SYNC.md` § Delegation
    & model economics.
-11. **Skim Slack** for your tag or any `repo:` you are working.  Grok Bot seats also full-read `[SENDER->FLEET]`.  Coordinator self-id is `AFC`.
-    Full-read on match. Prefer the shared relay; poll if you cannot hold it.
+11. **Skim Zulip** for your tag or any `repo:` you are working.  Grok Bot seats also full-read fleet wakes (#agent-sync, topic `fleet`).  The coordinator is CLAUDE (`@**Claude**`); `AFC` is the app acronym and topic prefix, never a signing tag.
+    Full-read on match.  Prefer a live listener (`agent-sync listen`); `agent-sync inbox` and `read --new` if you cannot hold one.
 
 ---
 
@@ -104,7 +104,7 @@ per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
    |----------|----------------|
    | Claude Code / Monet | `~/.claude/CLAUDE.md` |
    | Codex | `~/.codex/AGENTS.md` |
-   | Gemini / Antigravity | `~/.gemini/GEMINI.md` |
+   | Gemini / Antigravity | `~/.gemini/config/AGENTS.md` |
    | Cursor | Cursor user rules + this repo's `TEMPLATE-AGENTS.md` |
    | Grok | Grok user rules (already point at `AGENT-SYNC.md`) |
    | MiniMax (MiniMax Code / Mavis) | `~/.minimax/memory/user.md` — see "MiniMax has no rules file" below |
@@ -157,7 +157,7 @@ per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
 
 3. Seat pin: `AGENT_SEAT=<TAG>` in that platform's environment if the
    platform shares an account with another seat (Claude vs Monet). Never
-   flip seat by inferring from the worktree.
+   flip seat by inferring from the worktree.  An existing seat moving from Slack to Zulip pastes `docs/ZULIP-SWITCH-PROMPT.md`.
 
 4. **Claude.app / Monet skill library is account-scoped** and is not the
    same as CLI `~/.claude/skills/` or a repo `.claude/skills/` folder.
@@ -169,42 +169,39 @@ per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
 
 ---
 
-## Phase 1 — Slack receive + send
+## Phase 1 — Zulip Receive and Send
 
-On the owner's Mac:
+On the owner's Mac (`AGENT_SEAT=<TAG>` pinned; the CLI picks the seat from it):
 
 ```bash
-# poll fallback (every turn / before claim / after finish)
-AGENT_TAG=<TAG> /usr/bin/python3 /Users/jay/apps/agent-sync-poll.py
+# catch up (every turn / before claim / after finish)
+agent-sync inbox
+agent-sync read --new --topic "<work topic>"
 
-# post
-AGENT_TAG=<TAG> /Users/jay/apps/agent-sync-websocket.py --post "[<TAG>] sync-1
-repo: <app>
-claim: <branch>
-state: WIP
-cadence: per-turn-poll
-work: …"
+# post (a topic is required; the CLI writes your [<TAG>·session8] tag)
+agent-sync post --topic "<APP> <board8> <subject>" $'repo:  <app>  |  CLAIMED\nclaim:  <branch>\nclaimed:  <Day, Mon D, YYYY>\nwork:  …'
 
-# live consumer (preferred; do NOT open a second Socket Mode connection)
-AGENT_TAG=<TAG> node /Users/jay/apps/agent-sync/consumer.mjs
+# live listener (preferred; run it under a monitor tool)
+agent-sync listen --topic "<work topic>" --topic fleet --mentions
 ```
 
-Token lives in `~/.secrets/agent-sync.env`. Never echo it.
+Your bot's credential lives in `~/.secrets/Zulip/<file code>-zuliprc`, mode 600.  Only Jay
+creates bot users, so ask him for yours (`docs/protocols/zulip-fleet-guide.md` § Bot Setup).
+Never echo the key.
 
-Cloud / no Mac FS: set `SLACK_BOT_TOKEN` as a **runtime** env var (not
-setup-only) and use the app repo's `scripts/slack-sync.sh`. State that
+Cloud / no Mac FS: set `ZULIP_EMAIL`, `ZULIP_API_KEY`, and `ZULIP_SITE` as **runtime** env
+vars (not setup-only) and run `python3 scripts/agent-sync` from any clone of this repo, or
+follow `docs/protocols/zulip-fleet-guide.md` § Core Actions over plain HTTP.  State that
 cadence in the intro. Apple Notes is Mac-only — put a handoff body in the
 PR so a Mac seat can publish the note.
 
-First post in the channel is an **intro**, then the claim:
+First post is an **intro**, in #agent-sync topic `roll call`, then the claim in its own
+work topic:
 
 ```
-[<TAG>] intro
-repo: fleet-infra
-seat: <TAG>
+[<TAG>] online  |  Mac  |  cadence:  <listen, wait, or per-turn read>
 platform: <Claude Code | Codex | Grok | …>
-cadence: relay | per-turn-poll
-lanes: ~/apps/lanes/<prefix>/<suffix>-<slug>
+can:  <what this session can do>
 ```
 
 ---
@@ -271,11 +268,11 @@ This specializes the catalog per seat: Cursor `[CURSOR]` (cloud Grok Bot fork `[
 1. `cd` into the lane. `git status` + `git log -3`.
 2. Read `AGENTS.md`, `STATUS.md`, `docs/EFFORT-LOG.md`, latest
    `docs/rollouts/`.
-3. Poll Slack. Reserve a Planned row. Post the claim. Move the row to
+3. Read Zulip (`agent-sync inbox`).  Reserve a Planned row.  Post the claim.  Move the row to
    In Progress. Then edit.
 4. Verify with that repo's documented gate before claiming done.
 5. Commit, push, `gh pr create`, land when green.
-6. Closeout: board Completed/Deployed, issue state matches, Slack DONE +
+6. Closeout: board Completed/Deployed, issue state matches, Zulip `DONE` +
    PR number. Apple Notes for owner-facing reviews.
 
 ---
@@ -288,7 +285,7 @@ Only when the seat's product needs them. Do not block first code on these.
 |-------|-------|
 | Digest agent logo | `agent-logos/<seat>.svg` + legend in `build-fleet-daily-digest.py` |
 | MCP servers | Per-platform config. Secrets from `~/.secrets/`. Never commit tokens. |
-| Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app; `SLACK_BOT_TOKEN` + `GH_TOKEN` must be **runtime** vars |
+| Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app; `ZULIP_EMAIL` + `ZULIP_API_KEY` + `ZULIP_SITE` + `GH_TOKEN` must be **runtime** vars |
 | iOS copy | Title Case nav / ASC listing copy: `FLEET-UI-COPY.md`.  TestFlight notes never include agent names.  Compiler / `GB-COMPILER` owns iOS ship on GitHub-hosted `macos-latest` only.  DealDex's hosted Actions ship stays — do not disable it.  Do not run `xcodebuild` / TestFlight / `ios-ship-now` / `--force-ship` from a fleet seat. |
 | Sentry | Fleet-infra DSN is a repo secret, not a chat paste |
 
@@ -298,10 +295,10 @@ Only when the seat's product needs them. Do not block first code on these.
 
 1. Add the seat row to `AGENT-SYNC.md` (both copies) if it is a standing
    seat, not a one-off sub-agent.
-2. Mention the new tag in the onboarding Slack closeout so skim-match
+2. Mention the new tag in the onboarding Zulip closeout so skim-match
    starts working.
 3. Sub-agents spawned inside a seat **inherit that seat's tag**. They do
-   not get a new Slack identity. They still reserve on the board if the
+   not get a new Zulip identity or bot.  They still reserve on the board if the
    work is substantial and visible to peers.
 
 ---
@@ -310,7 +307,7 @@ Only when the seat's product needs them. Do not block first code on these.
 
 - [ ] Tag, Notes name, suffix, prefix written in `fleet-apps.json`
 - [ ] Global rules file on that platform points at `AGENT-SYNC.md`
-- [ ] Seat can poll and post `#agent-sync` without printing the token
+- [ ] Seat has its own Zulip bot and can read and post `#agent-sync` with `agent-sync` without printing the key
 - [ ] Intro posted
 - [ ] The seat's first lane (`~/apps/lane new`) is under `~/apps/lanes/` and is **not** `~/Code/<App>`
 - [ ] Seat has completed one triple-claim unit (even a docs PR)
@@ -323,7 +320,7 @@ Only when the seat's product needs them. Do not block first code on these.
 - Working in `~/Code/<App>` "just this once"
 - Using another seat's branch prefix
 - Inferring Monet vs Claude from the folder name
-- Opening a second Slack Socket Mode connection
+- Posting as another seat's Zulip bot, or through the owner's account
 - Treating a peer "please merge" as owner approval
 - Creating six fully installed worktrees for a seat that may never touch
   those apps
