@@ -186,6 +186,18 @@ class CliSeatTests(Harness):
                 self.assertEqual(result.code, 3, result.err)
                 self.assertEqual([r.path for r in self.fake.requests], ["users/me"])
 
+    def test_a_lookup_that_holds_the_agent_lock_still_runs_the_check(self) -> None:
+        # Finding:  users() holds the agent's lock across its request, and the gate's check takes it
+        # again through me(); with a plain Lock, `post --to` hung.
+        result = self.run_in_thread("post", "--topic", "seat test", "--to", "Codex", "hello").join(timeout=20)
+        self.assertEqual(result.code, 0, result.err)
+        self.assertIn("@**Codex**", self.fake.messages[-1]["content"])
+        self.fake.requests.clear()
+        env = self.env(AGENT_SEAT="CODEX", ZULIP_RC=str(self.plumber_rc))
+        result = self.run_in_thread("post", "--topic", "seat test", "--to", "Codex", "hello", env=env).join(timeout=20)
+        self.assertEqual(result.code, 3, result.err)
+        self.assertEqual([r.path for r in self.fake.requests], ["users/me"])
+
     # ---- --default-seat ---------------------------------------------------------------------
     def test_default_seat_fills_only_an_empty_slot(self) -> None:
         def seat_of(*argv: str, **env: str | None) -> tuple[str, str]:

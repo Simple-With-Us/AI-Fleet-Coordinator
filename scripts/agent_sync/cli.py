@@ -189,7 +189,9 @@ class Agent:
         self._users: list[dict[str, Any]] | None = None
         self._users_at = 0.0
         self._stream_ids: dict[str, int] = {}
-        self._lock = threading.Lock()
+        # Reentrant:  users() holds it across its request, and the client gate's verify() takes it
+        # again through me() on the same thread.
+        self._lock = threading.RLock()
 
     # ---- identity -----------------------------------------------------------------------
     @property
