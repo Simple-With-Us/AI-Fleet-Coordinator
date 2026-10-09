@@ -13,8 +13,16 @@ CLAUDE and MONET are two different Claude accounts.  Local `~/.claude` (hooks, m
 ## 1. Identity
 
 ```bash
-export AGENT_SEAT=MONET
+if [ -n "${AGENT_LAUNCH_SEAT:-}" ]; then SEAT="$AGENT_LAUNCH_SEAT"
+elif [ -n "${AGENT_LAUNCHER:-}" ]; then echo "no seat assigned by $AGENT_LAUNCHER" >&2; exit 3
+else SEAT="${AGENT_SEAT:?MONET is retired; take no work as MONET}"; fi
+export AGENT_SEAT="${AGENT_SEAT:-$SEAT}"
+agent-sync whoami --as "$SEAT"
 ```
+
+Your seat is the first of these that applies (AGENT-SYNC § Identity Rules):  a seat Jay names to you in this conversation; a seat your launcher assigned (`AGENT_LAUNCH_SEAT` with `AGENT_LAUNCHER`, matching your launch prompt), which beats this file whatever model you are; otherwise you have no seat here:  MONET is retired and is no platform's default.  If `AGENT_LAUNCHER` is set with no `AGENT_LAUNCH_SEAT`, or they disagree with your launch prompt, you have no seat:  do no fleet action, and say so.
+
+Stop if `whoami` shows another seat's bot or the credential is missing (the CLI also refuses on its own).  Never use another seat's credential or Jay's account.  Your shell may not keep exports between commands, so pass `--as <SEAT>` on every agent-sync call, and read `"$AGENT_SEAT"` in the commands below as the seat you verified.  `<branch-prefix>` below is your seat's branch prefix:  `monet` for MONET, or the one your launcher names.  Never write `AGENT_LAUNCH_SEAT` or `AGENT_LAUNCHER`, and never overwrite an `AGENT_SEAT` you found already set.
 
 Never open or push `claude/*` from a Monet session.
 

@@ -24,6 +24,11 @@ jobs:
     - name: agent-sync CLI tests
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
+    # Fleet skills pack: canonical pin-or-fail identity block, every rendered
+    # tree equal to a fresh render, and the AGENT-SYNC roster the pack mirrors.
+    - name: Fleet skill identity tests
+      run: |
+        cd scripts && python3 -m unittest test_fleet_skill_identity -v
     # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.

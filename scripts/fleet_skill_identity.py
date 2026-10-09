@@ -22,20 +22,32 @@ SEAT_LINE_TOKEN = "@@SEAT_BRANCH_LINE@@"
 NEVER_PUSH_TOKEN = "@@SEAT_NEVER_PUSH@@"
 SEAT_PIN_TOKEN = "@@SEAT_PIN_BLOCK@@"
 
-# The canonical pack's identity code block is a bare assignment.  Rendered as
-# is, it would stamp the platform's seat over a seat a launcher assigned
-# (BotFleet runs Claude, Codex and other CLIs as engines for its own bots).
-# Every render swaps it for the seat-precedence block (AGENT-SYNC § Identity
-# Rules, owner 2026-10-09):  a launcher's AGENT_LAUNCH_SEAT, no seat at all
-# when a launcher set none, then AGENT_SEAT, then the platform default.  Key on
-# the whole fenced block so a bare value other than MONET is caught too.
-_SEAT_PIN_SOURCE = re.compile(r"```bash\nexport AGENT_SEAT=[A-Za-z0-9_<>-]+\n```")
+# The canonical pack's identity block is the retired MONET seat's own block,
+# exactly what seat_pin_block() renders for MONET (#405 made the canonical
+# carry the renderer's own output).  Every render swaps the whole block for the
+# destination seat's seat-precedence block (AGENT-SYNC § Identity Rules, owner
+# 2026-10-09):  a launcher's AGENT_LAUNCH_SEAT, no seat at all when a launcher
+# set none, then AGENT_SEAT, then the platform default.  The pattern also takes
+# the two older canonical shapes (a bare `export AGENT_SEAT=MONET`, and the
+# pin-or-fail line plus its never-overwrite sentence), so an older canonical is
+# still swapped whole.
 
-# The sentence every rendered identity block carries.  The tests and
+# The sentence every rendered identity block ends with.  The tests and
 # check-seat-blocks.py look for it:  a pack without it has no launcher clause.
 LAUNCHER_CLAUSE = (
     "Never write `AGENT_LAUNCH_SEAT` or `AGENT_LAUNCHER`, and never overwrite an "
     "`AGENT_SEAT` you found already set."
+)
+_OLD_NEVER_OVERWRITE = (
+    "Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as "
+    "BotFleet assigns its bots' seats."
+)
+_SEAT_PIN_SOURCE = re.compile(
+    r"```bash\n(?:"
+    r"export AGENT_SEAT=[^\n]+\n```(?:\n\n" + re.escape(_OLD_NEVER_OVERWRITE) + r")?"
+    r"|if \[ -n \"\$\{AGENT_LAUNCH_SEAT:-\}\" \][^`]*?```\n\nYour seat is the first[^\n]*\n\nStop if [^\n]*?"
+    + re.escape(LAUNCHER_CLAUSE)
+    + r")"
 )
 
 # What a rendered command writes where the seat goes (`board ... --by`).  The
