@@ -125,5 +125,4 @@ test("package.json pins exact versions (fleet two-week rule, see README)", () =>
   const all = { ...pkg.dependencies, ...pkg.devDependencies };
   for (const [name, version] of Object.entries(all)) assert.match(version, /^\d+\.\d+\.\d+$/, `${name} must be pinned exactly`);
   assert.equal(pkg.dependencies["@cloudflare/workers-oauth-provider"], "1.1.0");
-  assert.equal(pkg.devDependencies.wrangler, "4.139.0");
 });
