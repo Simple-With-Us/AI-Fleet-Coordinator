@@ -12,7 +12,8 @@ test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", (
   assert.equal(cfg.host, "agent-sync.jays.services");
   // Production serves both seats.  JET was held back while openai-dot-bot was a
   // realm administrator (hosted seats accept member (400) only, spec 3.6);  Jay
-  // demoted it on Fri, Oct 9 (DEPLOY.md, "Re-enable JET").
+  // demoted it on Fri, Oct 9, and JET was deployed with its key at about 8:10am
+  // (DEPLOY.md, "Re-enable JET").
   assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB"]);
   assert.deepEqual([...loadConfig(testEnv()).hostedSeats], ["JET", "GROK-WEB"]);
   assert.deepEqual(Object.fromEntries(cfg.channels), { "agent-sync": 642232, sandbox: 642167 }, "D4:  #agent-sync and #sandbox, by stream id");
