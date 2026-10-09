@@ -8,6 +8,15 @@ Does not print secrets.  Requires a process holding ~/.grok/leader.sock
   python3 /Users/jay/apps/grok-acp-runtime/leader-client.py list
   python3 /Users/jay/apps/grok-acp-runtime/leader-client.py peek --session-id ID --cwd DIR
   python3 /Users/jay/apps/grok-acp-runtime/leader-client.py prompt --session-id ID --cwd DIR --prompt "..."
+
+Timeouts.  Each RPC keeps its historical default (initialize 25s,
+session/list 20s, session/close 15s) so callers with a short subprocess
+timeout (grok-drive.py, seat-mcp) still get a clean JSON error first.  A fresh
+leader client is slow on a loaded Mac (session/list measured 14-22s on
+2026-10-08), so a patient caller passes --rpc-timeout SECONDS (or sets
+GROK_LEADER_RPC_TIMEOUT): ONE total budget for the whole command that replaces
+the per-RPC defaults, ending in a clean JSON "no ACP result" error before the
+caller has to kill this process.
 """
 from __future__ import annotations
 
@@ -18,11 +27,27 @@ import select
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 GROK = "/Users/jay/.grok/bin/grok"
 CMD = [GROK, "agent", "--always-approve", "--leader", "stdio"]
 SESSIONS_ROOT = Path.home() / ".grok" / "sessions"
+
+# Total-budget deadline (epoch seconds) when --rpc-timeout / the env var is set.
+_BUDGET_DEADLINE = None
+
+
+def _now_iso():
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _timeout(default):
+    """Per-RPC timeout: the remaining total budget when one is set."""
+    if _BUDGET_DEADLINE is None:
+        return default
+    return max(1.0, _BUDGET_DEADLINE - time.time())
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
@@ -99,7 +124,7 @@ class LeaderStdio:
             if collect_text:
                 return result, "".join(chunks)
             return result
-        raise TimeoutError("no ACP result for %s" % method)
+        raise TimeoutError("no ACP result for %s within %.0fs" % (method, timeout))
 
     def notify(self, method, params):
         line = json.dumps({"jsonrpc": "2.0", "method": method, "params": params}) + "\n"
@@ -179,6 +204,7 @@ def slim_session(s):
 
 
 def _initialize(client, timeout=25.0):
+    timeout = _timeout(timeout)
     return client.request(
         "initialize",
         {
@@ -227,6 +253,7 @@ def peek_from_disk(session_id: str) -> dict:
 
 
 def _resume(client, session_id, cwd, timeout=20.0):
+    timeout = _timeout(timeout)
     """Attach to a session the TUI already has open.  session/load hangs on live chats."""
     return client.request(
         "session/resume",
@@ -236,7 +263,14 @@ def _resume(client, session_id, cwd, timeout=20.0):
 
 
 def main():
+    global _BUDGET_DEADLINE
     p = argparse.ArgumentParser(description="List/load/prompt local Grok chats via the shared leader")
+    p.add_argument(
+        "--rpc-timeout",
+        type=float,
+        default=None,
+        help="total seconds for the whole command (default: per-RPC timeouts; env GROK_LEADER_RPC_TIMEOUT)",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("handshake")
     ls = sub.add_parser("list")
@@ -261,6 +295,15 @@ def main():
     pr.add_argument("--wait", action="store_true", help="wait for the TUI turn to finish and return its text")
     args = p.parse_args()
 
+    budget = args.rpc_timeout
+    if budget is None:
+        try:
+            budget = float(os.environ.get("GROK_LEADER_RPC_TIMEOUT", "") or 0.0) or None
+        except ValueError:
+            budget = None
+    if budget is not None and budget > 0:
+        _BUDGET_DEADLINE = time.time() + budget
+
     if args.cmd == "peek":
         fn = disk_peek or peek_from_disk
         print(json.dumps(fn(args.session_id), indent=2))
@@ -282,7 +325,7 @@ def main():
             params = {}
             if args.cwd:
                 params["cwd"] = args.cwd
-            listed = client.request("session/list", params, timeout=20.0)
+            listed = client.request("session/list", params, timeout=_timeout(20.0))
             sessions = [slim_session(s) for s in (listed.get("sessions") or [])]
             print(json.dumps({"ok": True, "count": len(sessions), "sessions": sessions}, indent=2))
             return
@@ -295,7 +338,7 @@ def main():
                     "cwd": args.cwd,
                     "mcpServers": [],
                 },
-                timeout=45.0,
+                timeout=_timeout(45.0),
                 collect_text=True,
             )
             print(json.dumps({
@@ -323,7 +366,7 @@ def main():
             result = client.request(
                 "session/close",
                 {"sessionId": args.session_id},
-                timeout=15.0,
+                timeout=_timeout(15.0),
             )
             kept = find_session_dir(args.session_id) is not None
             meta = result.get("_meta") if isinstance(result, dict) else None
@@ -361,5 +404,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(json.dumps({"ok": False, "error": str(e)}), file=sys.stderr)
+        print(json.dumps({"ok": False, "at": _now_iso(), "error": str(e)}), file=sys.stderr)
         sys.exit(1)

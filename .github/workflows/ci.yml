@@ -24,6 +24,12 @@ jobs:
     - name: agent-sync CLI tests
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
+    # Mac watch and Grok idle-unload logic.  Both suites build their own temp
+    # HOME and fixture sessions, so they read no live state and kill nothing.
+    - name: Mac watch and Grok idle-unload tests
+      run: |
+        python3 scripts/test_grok_idle_unload.py
+        python3 scripts/test_mac_process_watch_shellular.py
     - name: Verify public activity boundary
       run: python3 scripts/test-public-activity.py
     # The admin panel inlines its own copy of the app registry because the Worker
