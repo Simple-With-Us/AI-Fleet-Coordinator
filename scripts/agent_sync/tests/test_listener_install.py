@@ -48,6 +48,7 @@ class InstallTests(ListenerHarness):
         self.assertEqual(mode_of(self.home / ".agent-sync" / "listener.toml"), 0o600)
         self.assertIn("[seat.CLAUDE]", sample)
         self.assertIn("# [seat.CODEX]", sample)
+        self.assertIn("the partition gives them to \"mac\"", sample, "the sample says the other Mac seats can be enabled")
         self.assertIn("# [seat.MM]", sample)
         self.assertNotIn("[seat.AG]", sample, "a seat with no credential file is not listed")
         self.assertIn("no reader on this Mac (left out on purpose): BF-BUILDER", sample)
