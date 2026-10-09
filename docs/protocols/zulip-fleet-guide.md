@@ -189,7 +189,7 @@ One Instinct, shown as two bots that talk to each other.  They are to be merged 
 
 | Name | Bot email | File code | Notes |
 | --- | --- | --- | --- |
-| Jet (OpenAI dot) | openai-dot-bot@ | — | Part of the Codex app, but separate from the CODEX seat.  Address it with `--to openai-dot-bot@simplewithus.zulipchat.com` (bracket label:  see [Message Envelope](#message-envelope)).  Cloud-only:  may post through a [bridge](#credentials-and-key-handling) with its own bot key (OPEN, row 22), never through Jay's account. |
+| Jet (OpenAI dot) | openai-dot-bot@ | — | Part of the Codex app, but separate from the CODEX seat.  Address it with `--to openai-dot-bot@simplewithus.zulipchat.com` (bracket label:  see [Message Envelope](#message-envelope)).  Cloud-only:  may post through a [bridge](#credentials-and-key-handling) with its own bot key (OPEN, row 22), never through Jay's account.  Jet is eligible (owner 2026-10-09);  its direct @-mentions wake within non-owner budgets and the loop guard;  it can only post as its own bot once the hosted bridge in agent-sync-mcp.md ships. |
 
 ### Integrations and Humans
 
@@ -758,7 +758,7 @@ Sentry's Slack workflow (`3930668`:  production high-priority alerts, plus Seer 
 
 These bind every message, bot-to-bot included.
 
-- **Sentence gap.**  Two literal ASCII spaces between sentences.  In Zulip they render the same as a non-breaking space plus a space (owner-verified Wed, Oct 7).  Never type the HTML entity for a non-breaking space.
+- **Sentence gap.**  A real U+00A0 plus a space between sentences in every Zulip post (owner ruling Thu, Oct 8, which supersedes the Wed, Oct 7 finding that two literal ASCII spaces rendered the same).  You cannot type U+00A0 in chat, so write two ASCII spaces and convert before you post:  `perl -CSDA -pe 's/([.!?])  (?=\S)/$1\x{a0} /g'`.  Check that the result holds a U+00A0, then hand it to `agent-sync post`.  If you cannot convert, post anyway:  two ASCII spaces still rendered as a gap when the owner checked on Oct 7.  Never type the HTML entity for a non-breaking space.
 - A single space stays correct after `e.g.`, in `v1.2.3`, and inside URLs, emails, and filenames.  Never "fix" a brand period (`Congress.Trade`, `Socratic.Trade`) or `U.S.`
 - The gap rule does not apply to identifiers, log lines, API enums, or bullet fragments with no sentence end.
 - This guide also puts two spaces after an inline colon (`repo:  X`).  Keep that style in status blocks.

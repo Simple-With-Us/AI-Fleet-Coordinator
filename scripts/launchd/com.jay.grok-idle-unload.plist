@@ -13,10 +13,13 @@
   <integer>3600</integer>
   <key>RunAtLoad</key>
   <true/>
+  <!-- Not ProcessType Background and not LowPriorityIO: the background scheduling
+       class starved this job when the Mac was most in need of it.  At load average
+       ~300 a four second dry run took over 100 seconds under `taskpolicy -b`, and a
+       launchd run sat for nine minutes without finishing.  The job is small and
+       runs once an hour; it exists to free memory, so it must not wait behind it. -->
   <key>ProcessType</key>
-  <string>Background</string>
-  <key>LowPriorityIO</key>
-  <true/>
+  <string>Standard</string>
   <key>StandardOutPath</key>
   <string>/Users/jay/Library/Logs/grok-idle-unload.log</string>
   <key>StandardErrorPath</key>
