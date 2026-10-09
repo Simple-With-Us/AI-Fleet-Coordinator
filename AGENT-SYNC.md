@@ -1096,7 +1096,7 @@ Binding on all seats and all apps (owner 2026-08-13).
 
 - A cloud seat that needs `xcodebuild`, the Simulator, or Apple Notes on the Mac cannot run them directly.  From AI-Fleet-Coordinator, run `scripts/request-mac-seat.sh --repo <repo> --title "..." --prompt "..." --by <SEAT>`.  It files a GitHub issue titled `[needs-mac] <title>` with the label `needs-mac`.
 - A Mac seat's `mac-seat-claim.sh` launchd poller (`com.jay.mac-seat-watch`) picks up the `needs-mac` issue and does the work locally.  The issue stays open until that Mac seat posts results.
-- The request must also be announced in Zulip #agent-sync through the `agent-sync` CLI, in a topic such as `<APP> <board8> needs-mac <subject>`.  The script's built-in post still targets the retired Slack relay, and porting it to `agent-sync post` is pending.  Until then, run the script with `--no-slack` and post the request yourself with `agent-sync post` ([Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md#the-agent-sync-cli)).
+- The request must also be announced in Zulip #agent-sync through the `agent-sync` CLI, in a topic such as `<APP> <board8> needs-mac <subject>`.  The script already posts it for you through `agent-sync post`, as the `--by` seat's own bot, in the topic `needs-mac <repo>`.  Pass `--no-zulip` (the old `--no-slack` still works as a deprecated alias) to skip that post and announce the request yourself in your work topic with `agent-sync post` ([Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md#the-agent-sync-cli)).
 
 ### Mac App Builds: Exactly One Installed Copy
 
@@ -1273,7 +1273,7 @@ Every repo's `AGENTS.md` (or equivalent agent-rules file) carries this stanza, v
 - Global tool configs already point at this protocol (Claude `~/.claude/CLAUDE.md`, Codex `~/.codex/AGENTS.md`, Gemini `~/.gemini/GEMINI.md`), so a session in a brand-new repo sees it before the repo has its own rules file.
 - `~/apps/EFFORT-LOG-PROTOCOL.md` (canonical) standardizes effort-log use across all apps: a per-app live board plus the repo mirror.  Bootstrap each new app from its template.
 - Codex helper: `~/apps/codex-coordination-audit.py --repo <path>` audits a repo for the stanza, the effort-log mirror, the chat engine, and the Sentry CI reporter.  Run `codex-coordination-audit.py --apply` only on an owned, clean Codex branch.
-- Pending: `TEMPLATE-AGENTS.md` and `codex-coordination-audit.py` still carry the old Slack stanza (`C0BEZDJDNKV`) under the heading `## Inter-agent coordination`, and the audit's engine check still looks for `scripts/slack-sync.sh`.  Both must switch to the stanza above, Title Case heading included, and to the `agent-sync` CLI.  Existing repos keep the old heading until their stanza is replaced.
+- `TEMPLATE-AGENTS.md` now carries a Zulip `## Inter-Agent Coordination` section (Title Case heading).  Pending: `codex-coordination-audit.py` (a helper in `/Users/jay/apps`, outside this repo) still carries the old Slack stanza (`C0BEZDJDNKV`) under the heading `## Inter-agent coordination`, and its engine check still looks for `scripts/slack-sync.sh`.  It must switch to the stanza above, Title Case heading included, and to the `agent-sync` CLI.  Existing repos keep the old heading until their stanza is replaced.
 
 ## Appendix A: Reference Tables
 
@@ -1391,7 +1391,7 @@ Install or refresh all skills across platforms:
 python3 /Users/jay/Code/AI-Fleet-Coordinator/scripts/install-fleet-skills.py
 ```
 
-- `scripts/install-fleet-skills.py` rewrites identity per seat before install and omits skills that do not suit that harness.  It must now write each seat's Zulip identity instead of Slack tags: the seat's bot from the [roster](docs/protocols/zulip-fleet-guide.md#whos-here), its `~/.secrets/Zulip/<file code>-zuliprc` path, and the `[SEAT·session8]` session tag.  Pending: it still writes Slack tags.
+- `scripts/install-fleet-skills.py` rewrites identity per seat before install and omits skills that do not suit that harness.  It writes each seat's Zulip identity: the seat's bot from the [roster](docs/protocols/zulip-fleet-guide.md#whos-here), its `~/.secrets/Zulip/<file code>-zuliprc` path, and the `[SEAT·session8]` session tag.
 - **Never copy one seat's pack into another seat unchanged.**  The pack carries that seat's identity and zuliprc reference.  Why: [Appendix D](#appendix-d-history-and-incidents).
 
 ### Skill Homes (Active Seats)
@@ -1419,8 +1419,8 @@ Pending installer fixes: add a CLUTCH entry; render the shared `~/.claude/skills
 
 | Skill | Covers |
 | --- | --- |
-| `fleet-coordination` | Master skill: end-to-end fleet protocol, triple claim, secrets, sentence gap, Apple Notes, PR landing, closeout.  Stale: the chat leg of a claim is now the status post in the Zulip work topic. |
-| `session-start` | Startup: chat catch-up, THE BOARD, a lane from `lane new`, then the claim.  Stale: the old poll pass is now `agent-sync inbox` and `agent-sync read`, and the shared Claude copy still speaks as Monet. |
+| `fleet-coordination` | Master skill: end-to-end fleet protocol, triple claim, secrets, sentence gap, Apple Notes, PR landing, closeout. |
+| `session-start` | Startup: chat catch-up, THE BOARD, a lane from `lane new`, then the claim.  Stale: the shared Claude copy still speaks as Monet. |
 | `board-ops` | THE BOARD CLI (`board stats`, `board list`, `board claim`, `board file`) and its API. |
 | `secret-handoff` | Secret safety, the handoff-file grep-trap ban, and Infisical as the runtime source of truth. |
 | `sentence-gap` | Two spaces between sentences.  Stale: it still teaches Monet's old HTML-entity rule for chat.  Owner-verified: two literal ASCII spaces in Claude Code desktop and in Zulip, and the entity never shows as text. |
@@ -1434,7 +1434,7 @@ Pending installer fixes: add a CLUTCH entry; render the shared `~/.claude/skills
 | `fleet-infra` | Private inventory through `fleet-ops:ATTACK-MAP.md`; no secrets in public repos. |
 | `dns-and-registrars` | Cloudflare is DNS for every fleet domain.  Canonical doc: `docs/DNS-AND-REGISTRARS.md`. |
 | `mac-cleanup` | Mac and Hetzner disk cleanup.  Not an iOS ship loop.  Omitted from the cloud Grok Bot. |
-| `closeout` | End-of-task closeout across THE BOARD, issues and Apple Notes.  Stale: its Slack leg is now the `DONE` post in the work topic, then `agent-sync resolve`. |
+| `closeout` | End-of-task closeout across THE BOARD, issues, Zulip and Apple Notes.  The Zulip leg is the `DONE` post in the work topic, then `agent-sync resolve`. |
 
 ## Appendix C: Examples
 

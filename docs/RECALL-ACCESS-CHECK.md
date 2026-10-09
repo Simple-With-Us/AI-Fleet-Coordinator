@@ -74,7 +74,7 @@ which anyone who can open it can read (see
 
 **Manual fallback**, only for a sandbox whose platform cannot inject an identity: say so on the
 board item and a Mac-side seat will hand the three values over through the usual `chmod 600`
-file — do not ask for them in Slack or in a comment.
+file — do not ask for them in Zulip or in a comment.
 
 ---
 
@@ -164,10 +164,10 @@ Where it goes, and what already carries it (checked 2026-09-03):
 | `~/.gemini/config/AGENTS.md` (Antigravity) | covered |
 | `~/.grok/GROK.md` | added 2026-09-03 |
 | `~/.cursor/rules/fleet-recall.mdc` | added 2026-09-03 (`alwaysApply: true`; mirrored in this repo) |
-| `~/.minimax/memory/user.md` (MiniMax / Mavis, Slack `[MM]`) | added 2026-09-04 — MiniMax has no global rules file; user memory is the only always-on layer, and `~/.minimax/skills/` is load-on-demand.  Slack tag is `[MM]` (former `MINIMAX` retired).  See [ONBOARDING-NEW-AGENT.md](ONBOARDING-NEW-AGENT.md) Phase 0. |
+| `~/.minimax/memory/user.md` (MiniMax / Mavis, chat tag `[MM]`) | added 2026-09-04 — MiniMax has no global rules file; user memory is the only always-on layer, and `~/.minimax/skills/` is load-on-demand.  Chat tag is `[MM]` (former `MINIMAX` retired).  See [ONBOARDING-NEW-AGENT.md](ONBOARDING-NEW-AGENT.md) Phase 0. |
 | Product repo `AGENTS.md` files | covered — see `docs/AGENTS-RECALL-SNIPPET.md` |
 | ChatGPT / Claude.ai / Gemini web personalization | paste the block as-is |
-| DeepSeek Harness (DSH), Kimi | skills only (`~/.deepseek/skills`); DSH Slack tag is `[DSH]` (former `DEEPSEEK` retired).  Kimi is retired |
+| DeepSeek Harness (DSH), Kimi | skills only (`~/.deepseek/skills`); DSH chat tag is `[DSH]` (former `DEEPSEEK` retired).  Kimi is retired |
 
 Keep the wording aligned with the `fleet-recall` skill and the AGENT-SYNC stanza, so a seat
 reading two sources never gets two different rules.
