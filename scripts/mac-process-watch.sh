@@ -28,8 +28,11 @@
 #     bare `lsof` was a no-op and watch treated lock-held as DOWN).
 #   - grok-leader status=errored while lock-held -> pm2 stop (not restart)
 #     so the job is stopped instead of a 355-restart storm.
-#   - local /health not 200 for mac-collab/xcode-health/agent-sync
-#     -> pm2 restart that job
+#   - local /health for mac-collab/xcode-health: curl rc 7
+#     (connection refused) -> pm2 restart that job at once.  Any other
+#     failure (timeout, empty reply, HTTP error) is SLOW, not dead: it
+#     must repeat MAC_PROCESS_WATCH_HTTP_SLOW_STRIKES (default 3) runs in
+#     a row before the restart.  See the comment at the HTTP loop.
 #   - shellular ioreg-missing / retry-without-Connected -> bounce pid
 #   - shellular process up but relay 1006/handshake-fail -> kill pid (God autorestarts)
 #   - launchd always-on not-loaded -> bootstrap plist (if not disabled).
@@ -91,13 +94,14 @@ grok_leader_lock_held() {
 
 # Deprecated / off-Mac (do not watch or resurrect): scout, senate-relay,
 # senate-tunnel, residential-proxy, Congress/Socratic/Usage mac-xcode runners.
+# Slack retired in the hard cut to Zulip on 2026-10-07: agent-sync-push
+# (the Slack relay, :8787), cursor-slack-sync and the slack-agent-inbox
+# launchd job are gone and must not be watched or resurrected.
 expect_pm2=(
   shellular
-  agent-sync-push
   code-main-keeper
   vision-worker
   xcode-health
-  cursor-slack-sync
   agy-acp
   grok-leader
   grok-acp
@@ -117,8 +121,6 @@ expect_pm2=(
 # harnessBootstrapPlist for Macs that only have the legacy-named plist).
 expect_launchd=(
   "com.jay.claude-remote-control com.jay.claude-remote-control.plist"
-  "com.jay.slack-agent-inbox com.jay.slack-agent-inbox.plist"
-  "homebrew.mxcl.moshi-hook homebrew.mxcl.moshi-hook.plist"
   "app.botfleet.server app.botfleet.server.plist com.jay.botfleet-server"
 )
 BOTFLEET_LABEL="app.botfleet.server"
@@ -164,10 +166,8 @@ expect_files=(
   "${HOME}/apps/mac-resource-watch.py"
   "${HOME}/apps/mac-resource-watch.sh"
   "${HOME}/apps/check-hetzner-cx43.sh"
-  "${HOME}/Code/Socratic.Trade/scripts/sync-provider-knobs.sh"
+  "${HOME}/Code/Socratic-Trade/scripts/sync-provider-knobs.sh"
   "${HOME}/apps/ios-fleet/ship-now-gui.sh"
-  "${HOME}/apps/slack-agent-listen.py"
-  "${HOME}/apps/slack-agent-listen-start.sh"
   "${HOME}/apps/grok-acp-runtime/start.sh"
   "${HOME}/apps/grok-acp-runtime/grok-idle-unload.py"
   "${HOME}/apps/clutch-runtime/scripts/start-web.sh"
@@ -758,6 +758,7 @@ steal_stale_lock() {
 }
 steal_stale_lock "${HOME}/.claude-disk-janitor/.lock" "disk-janitor"
 steal_stale_lock "${HOME}/.claude-merge-shepherd/.lock" "merge-shepherd"
+steal_stale_lock "${HOME}/.dsh/profiles/node_modules.lock" "dsh-profiles" 600
 
 # --- shellular relay liveness (process up, cloud dead) ---
 if pgrep -f 'shellular-runtime/node_modules/shellular/dist/main.js' >/dev/null 2>&1; then
@@ -776,16 +777,91 @@ fi
 expect_http=(
   "mac-collab http://127.0.0.1:8792/health"
   "xcode-health http://127.0.0.1:8791/health"
-  "agent-sync-push http://127.0.0.1:8787/health"
 )
+
+# Slow is not dead (2026-10-08 incident).  Under heavy load (load average
+# ~460, swap full) these servers stay alive but answer slowly, so one
+# timed-out probe used to trigger `pm2 restart`.  The starved process
+# could not exit, pm2 SIGKILLed it ~60s later, and the cold start took
+# 2-4 minutes -- that restart, not the slowness, produced the real
+# "connection refused" outages (mac-collab on Oct 8: 6:53pm, 7:05pm and
+# 7:31pm; xcode-health the same way).  A warm-but-slow server beats a
+# multi-minute cold start, so by curl exit code:
+#   0   healthy; reset the streak.
+#   7   could not connect (refused): nothing is listening -> restart now.
+#   any other non-zero (28 timeout, 52 empty reply, 56 recv failure, 22
+#       HTTP error, ...) -> SLOW: count it, and restart only after
+#       HTTP_SLOW_STRIKES consecutive runs (default 3, ~6 min at the 120s
+#       cadence), then reset the streak.
+# SLOW sets down=1 so the hourly "OK all expected jobs online" heartbeat
+# is not printed while a service is slow.
+HTTP_SLOW_STATE="${STATE}.http-slow"
+HTTP_SLOW_STRIKES="${MAC_PROCESS_WATCH_HTTP_SLOW_STRIKES:-3}"
+# Positive integers only; anything else (junk, 0) falls back to 3.
+case "$HTTP_SLOW_STRIKES" in
+  '' | *[!0-9]* | 0 | 00*) HTTP_SLOW_STRIKES=3 ;;
+esac
+
+# Consecutive slow-probe streak for one service ("name count" lines in
+# $HTTP_SLOW_STATE; same tmp+mv write as allow_restart).  Prints 0 when
+# there is none.
+http_slow_get() {
+  local want="$1" k c n=0
+  if [ -f "$HTTP_SLOW_STATE" ]; then
+    while read -r k c || [ -n "$k" ]; do
+      [ "$k" = "$want" ] && n="$c"
+    done <"$HTTP_SLOW_STATE"
+  fi
+  case "$n" in '' | *[!0-9]*) n=0 ;; esac
+  echo "$n"
+}
+
+# Set one service's streak; 0 drops its line.
+http_slow_set() {
+  local want="$1" count="$2" k c
+  local tmp="${HTTP_SLOW_STATE}.tmp.$$"
+  : >"$tmp"
+  if [ -f "$HTTP_SLOW_STATE" ]; then
+    while read -r k c || [ -n "$k" ]; do
+      [ -z "$k" ] && continue
+      [ "$k" = "$want" ] || printf '%s %s\n' "$k" "$c" >>"$tmp"
+    done <"$HTTP_SLOW_STATE"
+  fi
+  if [ "$count" -gt 0 ]; then
+    printf '%s %s\n' "$want" "$count" >>"$tmp"
+  fi
+  mv "$tmp" "$HTTP_SLOW_STATE"
+}
+
 if pm2_daemon_up; then
   for spec in "${expect_http[@]}"; do
     name="${spec%% *}"
     url="${spec#* }"
-    if ! curl -fsS -m 3 -o /dev/null "$url" 2>/dev/null; then
+    curl_rc=0
+    curl -fsS -m 8 -o /dev/null "$url" 2>/dev/null || curl_rc=$?
+    streak="$(http_slow_get "$name")"
+    if [ "$curl_rc" -eq 0 ]; then
+      if [ "$streak" -gt 0 ]; then
+        http_slow_set "$name" 0
+      fi
+    elif [ "$curl_rc" -eq 7 ]; then
       down=1
-      log "DOWN  pm2:$name  status=http-dead"
+      log "DOWN  pm2:$name  status=http-dead curl=$curl_rc"
+      if [ "$streak" -gt 0 ]; then
+        http_slow_set "$name" 0
+      fi
       try_restart "pm2:$name-http" pm2 restart "$name"
+    else
+      down=1
+      streak=$((streak + 1))
+      log "SLOW  pm2:$name  curl=$curl_rc streak=${streak}/${HTTP_SLOW_STRIKES}"
+      if [ "$streak" -ge "$HTTP_SLOW_STRIKES" ]; then
+        log "DOWN  pm2:$name  status=http-slow curl=$curl_rc streak=${streak}/${HTTP_SLOW_STRIKES}"
+        http_slow_set "$name" 0
+        try_restart "pm2:$name-http" pm2 restart "$name"
+      else
+        http_slow_set "$name" "$streak"
+      fi
     fi
   done
 fi
