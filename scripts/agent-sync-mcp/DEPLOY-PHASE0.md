@@ -20,7 +20,7 @@ What must change for the custom domain to bind:  the CNAME must go.  Cloudflare 
 ```bash
 sysctl vm.swapusage                      # this Mac is memory-tight;  wait if swap is nearly full
 cd scripts/agent-sync-mcp
-npm ci                                   # lockfile resolved with --before=2026-09-25
+npm ci --ignore-scripts                  # lockfile resolved with --before=2026-09-25;  no install scripts (tested this way)
 npx --no-install wrangler --version      # must print 4.139.0
 node --test test/*.test.mjs              # pure suites
 perl -e 'alarm 600; exec @ARGV' npm run test:workerd   # optional:  the Miniflare flow (about 300 MB)
@@ -94,6 +94,7 @@ What it checks, with the curl equivalent for a by-hand look:
 | `curl -si -X POST https://agent-sync.jays.services/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"check","version":"0"}}}'` | 401 with `WWW-Authenticate: Bearer resource_metadata="https://agent-sync.jays.services/.well-known/oauth-protected-resource/mcp"` |
 | `curl -si https://agent-sync.jays.services/mcp` | 401 |
 | `curl -si https://agent-sync.jays.services/authorize` and `/admin` | 302 to `https://silent-frost-37e0.cloudflareaccess.com/…` (Access, before the Worker) |
+| `curl -si -X POST https://agent-sync.jays.services/admin/action -d action=arm` | stopped by Access (302 to the team domain, or an Access 401/403), never the Worker's own "Sign-In Required" page:  proves the `/admin` destination covers subpaths |
 | `curl -si https://agent-sync.jays.services/` and `/oauth/register` and `/post` | 404 |
 | workers.dev | `https://agent-sync-mcp.<account subdomain>.workers.dev` does not serve this Worker (the script looks up the subdomain) |
 | custom domain | bound to service `agent-sync-mcp` |

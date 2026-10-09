@@ -6,11 +6,22 @@ import { loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRESH_TOKEN_TTL_S, ACCESS_
 import { ROOT, wranglerConfig, testEnv, CHATGPT_REDIRECT } from "./helpers.mjs";
 
 test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", () => {
-  const cfg = loadConfig(wranglerConfig().vars);
+  const vars = wranglerConfig().vars;
+  const cfg = loadConfig(vars);
   assert.equal(cfg.host, "agent-sync.jays.services");
   assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB"]);
   assert.equal(cfg.redirectOwner.get(CHATGPT_REDIRECT), "JET");
-  assert.equal(cfg.access.configured, false, "placeholder AUD must not count as configured");
+  // Before DEPLOY-PHASE0.md step 3 the file holds the placeholder;  after it, a real tag.
+  if (vars.ACCESS_AUD === "REPLACE_WITH_ACCESS_AUD") {
+    assert.equal(cfg.access.configured, false);
+  } else {
+    assert.match(vars.ACCESS_AUD, /^[0-9a-f]{64}$/);
+    assert.equal(cfg.access.configured, true);
+  }
+  assert.equal(loadConfig(testEnv({ ACCESS_AUD: "REPLACE_WITH_ACCESS_AUD" })).access.configured, false, "placeholder AUD fails closed");
+  assert.equal(loadConfig(testEnv({ ACCESS_AUD: "" })).access.configured, false, "empty AUD fails closed");
+  assert.equal(loadConfig(testEnv({ ACCESS_TEAM_DOMAIN: "" })).access.configured, false, "empty team domain fails closed");
+  assert.equal(loadConfig(testEnv({ OWNER_EMAILS: "" })).access.configured, false, "no owner email fails closed");
   assert.equal(loadConfig(testEnv()).access.configured, true);
 });
 

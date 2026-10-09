@@ -47,7 +47,7 @@ Not in Phase 0:  Zulip calls, `tools.json` and the seven real tools, spacing and
 ```bash
 cd scripts/agent-sync-mcp
 node --test test/*.test.mjs   # pure logic, no install needed;  CI runs this
-npm ci && npm run test:workerd  # one Miniflare flow over the bundled Worker
+npm ci --ignore-scripts && npm run test:workerd  # one Miniflare flow over the bundled Worker
 ```
 
 The workerd flow covers:  foreign Host and workers.dev 404, metadata `issuer` equal to `authorization_servers[0]` byte for byte, the 401 on an unauthenticated `initialize`, Access refusal, the unarmed notice with no CIMD fetch, unlisted CIMD refused before any fetch, admin CSRF, consent with `iss` on the redirect, the PKCE code exchange with ChatGPT's real CIMD document, `tools/list` against `tools.phase0.json`, a `seat` argument refused, the scope challenge, pause, two parallel approvals leaving one grant, a reused handle, a cross-family seat, an epoch bump alone killing a grant, revoke, and Grok's first attempt landing in the refusal log.

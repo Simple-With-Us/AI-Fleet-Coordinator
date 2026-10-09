@@ -3,7 +3,7 @@
 // Access certificates and ChatGPT's real CIMD document served by a mocked
 // outbound fetch, then walks the whole Phase 0 flow.
 //
-//   npm ci && npm run test:workerd
+//   npm ci --ignore-scripts && npm run test:workerd
 //
 // It needs node_modules, so CI runs only the plain `node --test` suites.
 

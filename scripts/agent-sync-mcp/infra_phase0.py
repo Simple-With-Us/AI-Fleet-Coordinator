@@ -339,6 +339,12 @@ def cmd_check(cf: Cloudflare | None, _apply: bool) -> None:
         location = next((v for k, v in headers.items() if k.lower() == "location"), "")
         expect(f"{path} redirects to Access", status in (302, 303) and TEAM_DOMAIN in location, f"{status} {location[:80]}")
 
+    # Access covers subpaths of /admin too:  a POST to /admin/action must stop at
+    # Access, never reach the Worker (whose own 403 says "Sign-In Required").
+    status, headers, body = _http("POST", f"{ISSUER}/admin/action", b"action=arm&seat=JET", {"Content-Type": "application/x-www-form-urlencoded"})
+    location = next((v for k, v in headers.items() if k.lower() == "location"), "")
+    expect("/admin/action is stopped by Access", (status in (302, 303) and TEAM_DOMAIN in location) or (status in (401, 403) and b"Sign-In Required" not in body), f"{status} {location[:80]}")
+
     for path in ("/", "/oauth/register", "/post"):
         status, _, _ = _http("GET", f"{ISSUER}{path}")
         expect(f"{path} is 404", status == 404, str(status))
