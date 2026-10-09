@@ -35,7 +35,7 @@ __all__ = [
     "REALM", "DEFAULT_CHANNEL", "MAX_TOPIC_LENGTH", "USER_AGENT",
     "AgentSyncError", "UsageError", "CredentialError", "ApiError", "NetworkError", "QueueExpired",
     "Credentials", "normalise_seat", "credential_file_name", "seat_from_rc_path", "session_tag",
-    "realm_url", "resolve_credentials", "read_zuliprc", "verify_realm",
+    "realm_url", "resolve_credentials", "read_zuliprc", "env_credentials", "verify_realm",
     "ZulipClient", "EventQueue", "message_channel", "message_topic",
 ]
 
@@ -222,6 +222,22 @@ def read_zuliprc(path: Path) -> Credentials:
     if missing:
         raise CredentialError("%s [api] section is missing: %s" % (path, ", ".join(missing)))
     return Credentials(email=values["email"], key=values["key"], site=_normalise_site(values["site"]), source=str(path))
+
+
+def env_credentials(env: Mapping[str, str], *, email_env: str, key_env: str, site_env: str,
+                    label: str) -> Credentials:
+    """One seat's credentials from the environment, under the variable names its config gives
+    (the listener's server instance, where Infisical syncs each bot's email and key into the
+    container).  A missing variable is named in the error; a value never is."""
+    values = {name: _strip_quotes(env.get(name) or "") for name in (email_env, key_env, site_env)}
+    missing = [name for name in (email_env, key_env, site_env) if not values[name]]
+    if missing:
+        raise CredentialError("seat %s: environment variable%s not set: %s" % (
+            label, "" if len(missing) == 1 else "s", ", ".join(missing)))
+    if any(ch in values[key_env] for ch in "\r\n\x00"):
+        raise CredentialError("seat %s: %s holds a control character; refusing it" % (label, key_env))
+    return Credentials(email=values[email_env], key=values[key_env], site=_normalise_site(values[site_env]),
+                       source="env %s" % key_env)
 
 
 def resolve_credentials(env: Mapping[str, str], *, rc_arg: str | None, seat: str | None,

@@ -1,0 +1,9 @@
+# Build context filter for scripts/agent_sync/server/Dockerfile (BuildKit reads <Dockerfile>.dockerignore).
+# Only the listener package, its entry script and the seat partition go into the image.
+*
+!scripts/agent-sync
+!scripts/agent_sync/
+!docs/protocols/agent-sync-partition.toml
+scripts/agent_sync/tests/
+**/__pycache__/
+**/*.pyc

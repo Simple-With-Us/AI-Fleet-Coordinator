@@ -1,0 +1,74 @@
+# agent-sync listener seat partition.  Owner decision, Thu, Oct 8 (2026-10-08).
+#
+# The listener runs as two instances of the same package (scripts/agent_sync):
+#   mac     the owner's Mac (LaunchAgent com.jay.agent-sync-listener):  every seat that runs on
+#           the Mac.  CLAUDE gets live delivery and the tool-less claude -p wake; the others get
+#           inbox capture (owner, Thu, Oct 8:  "grok build is on the mac too").
+#   server  the Coolify container on the Hetzner box:  the cloud seats (owner, Thu, Oct 8:
+#           OpenAI dot (Jet), Muse Assist, the Grok Bots, Instinct and Echo, plus GROK-WEB).
+#           GB personas wake through their Grok Bot routine webhooks; the other cloud seats are
+#           listed now so no Mac config can hold them, and get a wake adapter when one exists.
+#   none    no listener instance holds the seat.  BotFleet handles its BF bots natively.
+#
+# A seat must never be configured in both instances:  two listeners would each hold a queue for
+# the same bot and each wake it, and a reply could go out twice.  Every listener reads this file
+# (the Mac reads the checkout's copy, the container image carries one) and it fails closed.  A
+# listener refuses to start when its listener.toml configures a seat, enabled or not, that this
+# file does not give to its own instance:  a seat of the other instance, a `none` seat, or a seat
+# that is not listed here at all.  It also refuses a section that reads another listed seat's
+# credential (for example [seat.GBC] with bot = "GB-Compiler"), and at connect it refuses a key
+# whose users/me identity is not the seat's own bot.  A missing file refuses every seat.
+#
+# Change an entry only with the owner's OK, in the PR that enables the seat.  Move a seat by
+# removing it from one instance's listener.toml before adding it to the other's.
+
+version = 1
+
+[seats]
+# Mac seats
+CLAUDE = "mac"
+CODEX = "mac"
+AG = "mac"
+CURSOR = "mac"
+GROK = "mac"
+CLUTCH = "mac"
+FX = "mac"
+MM = "mac"
+MC = "mac"
+
+# Cloud seats
+MA = "server"
+JET = "server"
+GROK-WEB = "server"
+INSTINCT = "server"
+ECHO = "server"
+
+# Grok Bot personas.  GB-DIRECTOR is an admin today (granted 2026-10-07 for linkifiers), so the
+# listener refuses its key until it is a moderator or member (listener decision 7).
+GB-DIRECTOR = "server"
+GB-FIXER = "server"
+GB-DESIGNER = "server"
+GB-COMPILER = "server"
+GB-HOUSEKEEPER = "server"
+GB-PUBLISHER = "server"
+GB-DEPLOYER = "server"
+GB-MONITOR = "server"
+GB-PLUMBER = "server"
+GB-ORACLE = "server"
+GB-TRADER = "server"
+
+# BotFleet role bots:  BotFleet handles them natively, not either listener instance.
+BF-BUILDER = "none"
+BF-COMPILER = "none"
+BF-DEPLOYER = "none"
+BF-DESIGNER = "none"
+BF-FIXER = "none"
+BF-HOUSEKEEPER = "none"
+BF-MONITOR = "none"
+BF-ORACLE = "none"
+BF-PLUMBER = "none"
+BF-PUBLISHER = "none"
+
+# GROK-BUILD is the older code of the GROK seat (terminal Grok and Grok Build are one seat,
+# owner 2026-10-08); listed as none so neither name can be held twice.
+GROK-BUILD = "none"
