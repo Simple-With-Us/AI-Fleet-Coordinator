@@ -725,7 +725,9 @@ class Tools:
         self._reserve_write()
         try:
             self._run_cli(CLI.cmd_react, argparse.Namespace(id=message_id, emoji=emoji, json=True))
-        except Z.ApiError as exc:
-            if exc.code != "REACTION_ALREADY_EXISTS":
+        except (Z.ApiError, Z.NetworkError) as exc:
+            # The POST may have reached Zulip, so a gateway status or a cut or timed-out request is
+            # outcome_unknown, as for post and reply.  A retry is safe:  an existing reaction is a success.
+            if not (isinstance(exc, Z.ApiError) and exc.code == "REACTION_ALREADY_EXISTS"):
                 raise map_exception(exc, write=True, sent=True) from None
         return self._write_result({"id": message_id, "emoji": emoji})

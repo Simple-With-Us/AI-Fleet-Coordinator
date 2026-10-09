@@ -589,6 +589,36 @@ class WriteToolTests(McpHarness):
         self.assert_structured("react", session.call("react", {"message_id": target, "emoji": "eyes"}))
         self.assert_tool_error(session.call("react", {"message_id": 999999, "emoji": "eyes"}), "zulip_error")
 
+    def test_react_gateway_status_is_outcome_unknown(self):
+        # Review finding:  a 502, 503 or 504 on the reaction POST may have stored it, so it is
+        # outcome_unknown (like post and reply), not zulip_error.  A plain refusal stays zulip_error.
+        target = self.fake.add_message("Codex", "agent-sync", "r", "x")
+        session = self.session()
+        path = "messages/%d/reactions" % target
+        for status in (502, 503, 504):
+            with self.subTest(status=status):
+                self.fake.inject("POST", path, status=status, body={"result": "error", "msg": "gateway"})
+                error = self.assert_tool_error(session.call("react", {"message_id": target, "emoji": "eyes"}),
+                                               "outcome_unknown")
+                self.assertEqual(error["status"], status)
+                self.assertIs(error["retryable"], False)
+        self.fake.inject("POST", path, status=400, body={"result": "error", "msg": "bad emoji", "code": "BAD_REQUEST"})
+        self.assert_tool_error(session.call("react", {"message_id": target, "emoji": "eyes"}), "zulip_error")
+
+    def test_react_dropped_or_timed_out_request_is_outcome_unknown(self):
+        # Review finding:  a NetworkError from the reaction POST fell through to call() with sent=False,
+        # so a cut or timed-out request that may have stored the reaction read as `unavailable`.
+        target = self.fake.add_message("Codex", "agent-sync", "r", "x")
+        path = "messages/%d/reactions" % target
+        session = self.session()
+        self.fake.inject("POST", path, drop=True)
+        self.assert_tool_error(session.call("react", {"message_id": target, "emoji": "eyes"}), "outcome_unknown")
+        slow = self.session(timeout=0.5)
+        self.fake.inject("POST", path, delay=1.5)
+        self.assert_tool_error(slow.call("react", {"message_id": target, "emoji": "eyes"}), "outcome_unknown")
+        # The caller may simply retry:  a reaction that already exists counts as a success.
+        self.assert_structured("react", session.call("react", {"message_id": target, "emoji": "eyes"}))
+
     def test_session_argument_only_without_a_client_session(self):
         session = self.session(self.mcp_env(CLAUDE_CODE_SESSION_ID=None))
         info = self.assert_structured("whoami", session.call("whoami"))
