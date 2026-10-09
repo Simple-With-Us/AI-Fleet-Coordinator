@@ -226,17 +226,31 @@ class GraceAfterRestart(Watch):
         self.error(T0 - 50, HANDSHAKE)
         self.assertLeftAlone(self.check(T0, start=T0 - 100), "grace")
 
-    @unittest.skipUnless(os.path.exists("/bin/ps"), "needs /bin/ps")
+    def stub_ps(self, etime: str) -> str:
+        """A fake `ps` that answers `-o etime=` with a fixed value."""
+        path = self.home / "fake-ps"
+        path.write_text("#!/bin/sh\necho '   %s'\n" % etime, encoding="utf-8")
+        path.chmod(0o755)
+        return str(path)
+
     def test_ps_etime_of_the_pid_is_the_fallback_start_time(self) -> None:
-        now = time.time()
-        self.error(now - 5, HANDSHAKE)
-        # This very test process started moments ago, so it is inside grace.
-        result = self.check(
-            now,
-            SHELLULAR_PID=str(os.getpid()),
-            MAC_PROCESS_WATCH_SHELLULAR_GRACE_SEC="3600",  # robust on a slow host
-        )
+        self.error(T0 - 60, HANDSHAKE)
+        # `ps` says the pid is 2 minutes old: inside grace, and the failure
+        # is newer than the start.
+        result = self.check(T0, SHELLULAR_PID="4242", SHELLULAR_PS=self.stub_ps("02:00"))
         self.assertLeftAlone(result, "grace")
+
+    def test_ps_etime_with_days_is_parsed(self) -> None:
+        self.error(T0 - 30, HANDSHAKE)
+        result = self.check(T0, SHELLULAR_PID="4242", SHELLULAR_PS=self.stub_ps("3-02:03:04"))
+        self.assertLeftAlone(result, "suspect")
+
+    def test_ps_that_fails_or_prints_junk_means_no_start_time(self) -> None:
+        self.error(T0 - 30, HANDSHAKE)
+        for junk in ("", "garbage", "12:xx"):
+            self.assertLeftAlone(
+                self.check(T0, SHELLULAR_PID="4242", SHELLULAR_PS=self.stub_ps(junk)), "suspect"
+            )
 
     def test_after_grace_the_two_pass_rule_applies(self) -> None:
         self.output(T0 - 100, BANNER)

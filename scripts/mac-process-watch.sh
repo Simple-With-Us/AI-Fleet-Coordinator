@@ -251,7 +251,7 @@ raise SystemExit(0 if not missing else 1)
 # Knobs: MAC_PROCESS_WATCH_SHELLULAR_CONFIRM_SEC (120), _GRACE_SEC (180),
 # _STALE_SEC (1200), _STATE_MAX_AGE_SEC (900).  Test overrides:
 # SHELLULAR_ERR_LOG, SHELLULAR_OUT_LOG, SHELLULAR_STATE, SHELLULAR_NOW,
-# SHELLULAR_START_EPOCH, SHELLULAR_PID.
+# SHELLULAR_START_EPOCH, SHELLULAR_PID, SHELLULAR_PS (stub for `ps`).
 shellular_relay_dead() {
   SHELLULAR_STATE_DEFAULT="${STATE}.shellular" python3 - <<'PY'
 import os, re, subprocess, sys, time
@@ -337,7 +337,10 @@ def process_start():
         return 0.0
     try:
         res = subprocess.run(
-            ["/bin/ps", "-p", pid, "-o", "etime="], capture_output=True, text=True, timeout=10
+            [env.get("SHELLULAR_PS") or "/bin/ps", "-p", pid, "-o", "etime="],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         secs = etime_to_seconds(res.stdout)
     except (OSError, ValueError, subprocess.TimeoutExpired):
