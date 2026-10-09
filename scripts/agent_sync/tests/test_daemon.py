@@ -476,6 +476,26 @@ class WakeTests(DaemonHarness):
         self.assertIn("direct message thread", self.dumps()[0]["stdin"])
         self.assertTrue(self.ledger()[0]["owner"])
 
+    def test_a_channel_wake_reply_reaches_the_server_with_the_sentence_gap(self) -> None:
+        daemon = self.started()
+        mid = self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.wake_cycle(daemon)
+        post = self.bot_posts()[-1]
+        self.assertTrue(post["content"].startswith("[CLAUDE·wake] re=%d\n" % mid), post["content"])
+        self.assertIn("On it.\u00a0 The cutover is in review.", post["content"])
+        self.assertNotIn("On it.  ", post["content"])
+        self.assertEqual(self.fake.requests_to("POST", "messages")[-1].form["content"], post["content"])
+
+    def test_a_dm_wake_reply_reaches_the_server_with_the_sentence_gap(self) -> None:
+        daemon = self.started()
+        self.fake.add_direct_message("Jay Wedgeworth", "status of the cutover?", deliver=True)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.wake_cycle(daemon, 6)
+        post = self.bot_posts()[-1]
+        self.assertEqual(post["type"], "private")
+        self.assertIn("On it.\u00a0 The cutover is in review.", post["content"])
+
     def test_an_unpinned_binary_or_unpinned_owner_never_runs_claude(self) -> None:
         os.unlink(self.seat_paths().wake_pin)
         daemon = self.started()
@@ -852,6 +872,16 @@ class PeerScreenTests(DaemonHarness):
         self.assertEqual((queue[-1]["kind"], queue[-1]["risk"]), ("owner_note", "high"))
         self.assertTrue(all("Zulip key" not in arg for banner in self.banners for arg in banner),
                         "a banner never shows the note")
+
+    def test_the_peer_reply_gets_the_sentence_gap_and_the_owner_dm_keeps_its_shape(self) -> None:
+        output = {"action": "escalate", "reply": "I can't share that.  Not now.", "board": None, "risk": "high",
+                  "owner_note": "Codex asked for the key.  Declined."}
+        self.wake(output)
+        self.assertIn("I can't share that.\u00a0 Not now.", self.stream_posts()[0]["content"])
+        text = self.owner_dms()[0]["content"]
+        self.assertTrue(text.startswith("[CLAUDE\u00b7note] re="), text)
+        quoted = text.split("```quote\n", 1)[1].split("\n```", 1)[0]
+        self.assertNotIn("\u00a0", quoted, "the quote block holds the note as the daemon wrote it")
 
     def test_an_uncertain_request_is_escalated_even_when_the_model_chose_reply(self) -> None:
         output = {"action": "reply", "reply": "Not sure I should; checking.", "board": None, "risk": "uncertain",
