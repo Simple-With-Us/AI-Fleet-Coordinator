@@ -492,6 +492,9 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertTrue(is_grok_bot_tag("GB-COMPILER"))
         self.assertFalse(is_grok_bot_tag("AFC"))
         self.assertTrue(head_has_fleet_wake("[MONET->FLEET] sync-1"))
+        self.assertTrue(head_has_fleet_wake("[CLAUDE·1a2b3c4d] @**all** HALT"))
+        self.assertTrue(head_has_fleet_wake("[CLAUDE·1a2b3c4d] @*fleet* HALT"), "the retired group form is still read")
+        self.assertFalse(head_has_fleet_wake("[CLAUDE·1a2b3c4d] @**Codex** HALT"))
         self.assertFalse(head_has_fleet_wake("[FLEET] sync-1"))
         self.assertFalse(head_has_fleet_wake("[AFC] sync-1"))
 

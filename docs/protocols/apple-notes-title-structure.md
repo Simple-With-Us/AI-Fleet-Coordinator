@@ -36,11 +36,11 @@ Rules:
 | `CL` | ContactLogo | `Simple-With-Us/ContactLogo` |
 | `BF` | BotFleet | `Simple-With-Us/BotFleet` |
 | `AR` | Autorotate (formerly TopSpin) | `Simple-With-Us/Autorotate` |
-| `AFC` | AI-Fleet-Coordinator (this repo / Mac collab / skill pack).  Never a signing tag:  the coordinator posts as the CLAUDE bot.  Former aliases `AFL` / `FLEET` / `AIFC` / `FC` are retired — `FLEET` especially, because the `@*fleet*` wake costs every seat time. | `Simple-With-Us/AI-Fleet-Coordinator` |
+| `AFC` | AI-Fleet-Coordinator (this repo / Mac collab / skill pack).  Never a signing tag:  the coordinator posts as the CLAUDE bot.  Former aliases `AFL` / `FLEET` / `AIFC` / `FC` are retired — `FLEET` especially, because the `@**all**` fleet wake costs every seat time. | `Simple-With-Us/AI-Fleet-Coordinator` |
 | `OPS` | fleet-ops (sibling identity; do not invent a checkout here) | `Simple-With-Us/fleet-ops` |
 | `PS` | Personal-Site | `Simple-With-Us/Personal-Site` |
 | `CTS` | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |
-| `FLEET` | Zulip wake (`@*fleet*` in #agent-sync, topic `fleet`): every listening seat on every platform must spend time (Grok Bot included, largely superseded by BotFleet — owner 2026-09-13).  Not the coordinator.  Not OPS. | A recipient only.  Never a SENDER tag. |
+| `FLEET` | Zulip wake (`@**all**` in #agent-sync, topic `fleet`): every listening seat on every platform must spend time (Grok Bot included, largely superseded by BotFleet — owner 2026-09-13).  Not the coordinator.  Not OPS. | A recipient only.  Never a SENDER tag. |
 
 **Second row of the note (first body line) — ALWAYS the local create/update stamp + optional PR numbers:**
 
