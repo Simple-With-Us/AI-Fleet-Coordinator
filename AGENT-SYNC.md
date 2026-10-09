@@ -1303,6 +1303,7 @@ Lookup data only.  The binding rules live in the sections above.
 | `CK` | Clutch | `CLUTCH-EFFORT-LOG.md` | `clutch` |
 | `HH` | HogHunter | `HOGHUNTER-EFFORT-LOG.md` | `hoghunter` |
 | `OPS` | fleet-ops | `FLEET-OPS-EFFORT-LOG.md` | `fleet-ops` |
+| `CC` | CodeCaps | `CODECAPS-EFFORT-LOG.md` | `codecaps` |
 
 Name drift, verified Wed, Oct 7, 2026:
 

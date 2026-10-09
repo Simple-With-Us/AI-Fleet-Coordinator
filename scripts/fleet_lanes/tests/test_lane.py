@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import tomllib
 import unittest
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -532,11 +533,24 @@ class ResolveTests(unittest.TestCase):
         registry = L.load_registry(L.default_registry_path({}))
         live = [s for s in registry.seats if not s.retired]
         self.assertTrue(live)
+        laneless = []
         for seat in live:
             with self.subTest(seat=seat.name):
-                self.assertTrue(seat.primary_branch_prefix(), "needs a slash-terminated branch prefix")
                 self.assertTrue(L.is_valid_slug(seat.suffix))
+                if not seat.primary_branch_prefix():
+                    # A cloud seat has no Mac lanes (GROK-WEB, ECHO, INSTINCT).  No prefix is how lane
+                    # refuses it, before it makes a worktree.
+                    laneless.append(seat.name)
+                    with self.assertRaises(K.Refusal):
+                        K.branch_for(seat, "x")
+                    continue
                 self.assertEqual(K.branch_for(seat, "x"), seat.primary_branch_prefix() + "/x")
+        # Only seats the listener partition gives to the server may go without a prefix.
+        partition = tomllib.loads(
+            (SCRIPTS_DIR.parent / "docs" / "protocols" / "agent-sync-partition.toml").read_text(encoding="utf-8")
+        )["seats"]
+        for name in laneless:
+            self.assertEqual(partition.get(name), "server", f"{name} has no branch prefix but is not a server seat")
         retired = {s.name for s in registry.seats if s.retired}
         for tag in ("MONET", "RENOIR", "HARNESS", "DSH", "KIMI"):
             self.assertIn(tag, retired)

@@ -2,7 +2,10 @@
 """Verify every fleet-apps.json app is mentioned in the known registries.
 
 Exits 1 if any required file is missing a repo, acronym, live board, or
-DEFAULT_REPOS entry. Run from the AI-Fleet-Coordinator worktree:
+DEFAULT_REPOS entry.  It also checks the registry's Zulip fields:  the realm and
+channel must match the agent-sync CLI, and each seat's bot email and credential
+file code must be well formed and agree with the CLI's file-name rule.  Run from
+the AI-Fleet-Coordinator worktree:
 
     python3 scripts/check-fleet-registry.py
 
@@ -19,9 +22,11 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from public_activity_repos import PUBLIC_REPOS  # noqa: E402
+from agent_sync.zulip import DEFAULT_CHANNEL, REALM, credential_file_name  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "fleet-apps.json"
@@ -41,6 +46,66 @@ def contains(path: Path, needle: str) -> bool:
     if not path.is_file():
         return False
     return needle in path.read_text(errors="replace")
+
+
+# <short name>-bot@<realm host>.  Zulip appends "-bot" to the short name itself.
+BOT_EMAIL_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*-bot@(?P<host>[a-z0-9.-]+)$")
+
+
+def zulip_errors(data: dict) -> list[str]:
+    """Check the registry's Zulip fields against the agent-sync CLI and each other.
+
+    Presence is not required:  GROK-BOT is a set of owner-managed personas with no zuliprc, and
+    a retired seat has no bot.  What is present must be well formed.  The bot email cannot be
+    derived from the tag (muse-assist-bot@, instinct-owl-bot@), so it is checked for shape and
+    uniqueness only; the file code is derived by the CLI, so it is compared against the CLI.
+    """
+    errors: list[str] = []
+    if data.get("zulipRealm") != REALM:
+        errors.append(f"zulipRealm {data.get('zulipRealm')!r} must be {REALM!r} (scripts/agent_sync/zulip.py REALM)")
+    if data.get("zulipChannel") != DEFAULT_CHANNEL:
+        errors.append(
+            f"zulipChannel {data.get('zulipChannel')!r} must be {DEFAULT_CHANNEL!r} "
+            "(scripts/agent_sync/zulip.py DEFAULT_CHANNEL)"
+        )
+    host = urlparse(REALM).hostname or ""
+    seats = [s for s in data.get("seats", []) if isinstance(s, dict)]
+    tags = [s.get("tag") or "" for s in seats]
+    for tag in sorted({t for t in tags if tags.count(t) > 1}):
+        errors.append(f"seat {tag or '(no tag)'} appears more than once in fleet-apps.json")
+    live = {s["tag"] for s in seats if s.get("tag") and not s.get("retired")}
+    emails: dict[str, str] = {}
+    for seat in seats:
+        tag = seat.get("tag") or "(no tag)"
+        email = seat.get("zulipBotEmail")
+        code = seat.get("zulipFileCode")
+        alias = seat.get("aliasOf")
+        if alias is not None:
+            if not seat.get("retired"):
+                errors.append(f"seat {tag} has aliasOf {alias!r} but is not retired; an alias is always retired")
+            if alias not in live:
+                errors.append(f"seat {tag} is an alias of {alias!r}, which is not a live seat in fleet-apps.json")
+        if seat.get("retired") and (email or code):
+            errors.append(f"seat {tag} is retired and must not carry a Zulip bot (retired seats have none)")
+        if bool(email) != bool(code):
+            errors.append(f"seat {tag} must carry zulipBotEmail and zulipFileCode together, or neither")
+        if code and seat.get("tag") and code != credential_file_name(tag).removesuffix("-zuliprc"):
+            errors.append(
+                f"seat {tag} zulipFileCode {code!r} disagrees with the agent-sync file-name rule "
+                f"({credential_file_name(tag).removesuffix('-zuliprc')!r})"
+            )
+        if email:
+            match = BOT_EMAIL_RE.match(email)
+            if not match or match.group("host") != host:
+                errors.append(f"seat {tag} zulipBotEmail {email!r} must look like <short-name>-bot@{host}")
+            elif email.split("@", 1)[0].endswith("-bot-bot"):
+                # Zulip appends -bot itself; a short name typed as "codex-bot" made codex-bot-bot@ (2026-10-07).
+                errors.append(f"seat {tag} zulipBotEmail {email!r} ends in -bot-bot; the short name must not end in -bot")
+            elif email in emails:
+                errors.append(f"seat {tag} and seat {emails[email]} share the Zulip bot {email}")
+            else:
+                emails[email] = tag
+    return errors
 
 
 def main() -> int:
@@ -65,7 +130,6 @@ def main() -> int:
         repo = app["repo"]
         acronym = app["acronym"]
         board = app["liveBoard"]
-        slack = app.get("slackRepo") or repo
 
         if repo in public_repos and f'"{repo}": (' not in digest:
             errors.append(f"digest REPO_BADGE missing {repo}")
@@ -80,8 +144,8 @@ def main() -> int:
                 )
         if repo not in protocol and board not in protocol:
             errors.append(f"coordinator EFFORT-LOG-PROTOCOL.md missing {repo} / {board}")
-        if slack not in agent_sync and repo not in agent_sync:
-            errors.append(f"coordinator AGENT-SYNC.md missing repo {repo} / slack {slack}")
+        if repo not in agent_sync:
+            errors.append(f"coordinator AGENT-SYNC.md missing repo {repo}")
         if acronym not in agent_sync:
             errors.append(f"coordinator AGENT-SYNC.md missing acronym {acronym}")
 
@@ -89,7 +153,7 @@ def main() -> int:
             errors.append(f"~/apps/EFFORT-LOG-PROTOCOL.md missing {repo} / {board}")
         if live_sync.is_file():
             live = live_sync.read_text()
-            if slack.casefold() not in live.casefold() and repo.casefold() not in live.casefold():
+            if repo.casefold() not in live.casefold():
                 errors.append(f"~/apps/AGENT-SYNC.md missing {repo}")
             if acronym not in live:
                 errors.append(f"~/apps/AGENT-SYNC.md missing acronym {acronym}")
@@ -107,6 +171,8 @@ def main() -> int:
         if app.get("hasAppIcon") and icon:
             if not (ROOT / icon).is_file() and not (ROOT / "agent-logos" / Path(icon).name).is_file():
                 errors.append(f"missing app icon {icon}")
+
+    errors.extend(zulip_errors(data))
 
     colors: dict[str, str] = {}
     for app in apps:

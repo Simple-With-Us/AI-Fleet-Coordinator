@@ -7,7 +7,7 @@
 # Usage:
 #   ./scripts/onboard-new-app.sh --repo DealDex --acronym DD \
 #       --code-dir DealDex --worktree-prefix dealdex \
-#       --board DEALDEX-EFFORT-LOG.md --slack-repo DealDex
+#       --board DEALDEX-EFFORT-LOG.md
 #
 # Safe to re-run: skips existing clone / board / JSON row.  Creates no lane and no
 # folder under ~/Code other than the integration tree; make a lane per task with
@@ -20,7 +20,6 @@ ACRONYM=""
 CODE_DIR=""
 WORKTREE_PREFIX=""
 BOARD=""
-SLACK_REPO=""
 VISIBILITY="private"
 DESCRIPTION=""
 OWNER="${FLEET_OWNER:-jaywedgeworth22}"
@@ -43,7 +42,12 @@ while [ $# -gt 0 ]; do
     --code-dir) CODE_DIR="${2:-}"; shift 2 ;;
     --worktree-prefix) WORKTREE_PREFIX="${2:-}"; shift 2 ;;
     --board) BOARD="${2:-}"; shift 2 ;;
-    --slack-repo) SLACK_REPO="${2:-}"; shift 2 ;;
+    --slack-repo)
+      # Accepted so older command lines keep working.  The registry no longer has a
+      # separate chat name for an app:  status blocks write `repo:` with the GitHub
+      # repo name and topics use the acronym.
+      echo "note: --slack-repo is ignored; Slack is retired and the registry has no chat repo name" >&2
+      shift 2 ;;
     --visibility) VISIBILITY="${2:-}"; shift 2 ;;
     --description) DESCRIPTION="${2:-}"; shift 2 ;;
     --owner) OWNER="${2:-}"; shift 2 ;;
@@ -61,7 +65,6 @@ fi
 CODE_DIR="${CODE_DIR:-$REPO}"
 WORKTREE_PREFIX="${WORKTREE_PREFIX:-$(echo "$REPO" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | cut -c1-16)}"
 BOARD="${BOARD:-$(printf '%s' "$REPO" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '-')-EFFORT-LOG.md}"
-SLACK_REPO="${SLACK_REPO:-$REPO}"
 
 CODE_PATH="$CODE_ROOT/$CODE_DIR"
 LIVE_BOARD="$APPS_ROOT/$BOARD"
@@ -148,11 +151,11 @@ fi
 
 # --- fleet-apps.json row ---
 if [ "$DRY_RUN" -eq 0 ]; then
-  python3 - "$here/fleet-apps.json" "$REPO" "$ACRONYM" "$CODE_DIR" "$WORKTREE_PREFIX" "$BOARD" "$SLACK_REPO" <<'PY'
+  python3 - "$here/fleet-apps.json" "$REPO" "$ACRONYM" "$CODE_DIR" "$WORKTREE_PREFIX" "$BOARD" <<'PY'
 import json, sys
 from pathlib import Path
 path = Path(sys.argv[1])
-repo, acronym, code_dir, prefix, board, slack = sys.argv[2:8]
+repo, acronym, code_dir, prefix, board = sys.argv[2:7]
 data = json.loads(path.read_text())
 if any(a.get("repo") == repo for a in data.get("apps", [])):
     print(f"fleet-apps.json already has {repo}")
@@ -161,7 +164,6 @@ data.setdefault("apps", []).append({
     "repo": repo,
     "acronym": acronym,
     "displayName": repo,
-    "slackRepo": slack,
     "codeDir": code_dir,
     "liveBoard": board,
     "worktreePrefix": prefix,
@@ -190,5 +192,9 @@ echo "     (copy from DealDex or Usage-Monitor; see docs/ONBOARDING-NEW-APP.md P
 echo "     After CI job \`verify\` exists: python3 $here/scripts/apply-github-ruleset.py --repo $OWNER/$REPO --kind product --checks verify"
 echo "  2. Patch registries listed in docs/ONBOARDING-NEW-APP.md Phase 4."
 echo "  3. python3 $here/scripts/check-fleet-registry.py"
-echo "  4. PR the app + this coordinator repo.  Claim and close out in Zulip #agent-sync:  agent-sync post --topic \"<APP> <board8> <subject>\" ..."
+echo "  4. PR the app + this coordinator repo.  Claim and close out in Zulip:  topic \"$ACRONYM <board8> <subject>\""
+echo "     in #agent-sync, posted with 'agent-sync post' (docs/protocols/zulip-fleet-guide.md)."
+echo "     If the app's PR numbers should link in Zulip, ask Jay about a linkifier for it: the guide's"
+echo "     Current Linkifiers table lists the acronyms that have one, and an unlisted \`$ACRONYM#n\` falls through"
+echo "     to the generic repo pattern.  Never change a linkifier without Jay's OK."
 echo "  5. Owner dashboards (Infisical / Coolify / ASC) stay on the checklist."

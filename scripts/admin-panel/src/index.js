@@ -93,10 +93,10 @@ const ENDPOINTS = [
 // when an app is onboarded — scripts/check-fleet-registry.py will not catch
 // drift in this copy.
 //
-// Hog Hunter is a local-only Mac app and CodeCaps is not registered in
-// fleet-apps.json yet.  CodeCaps is probed at github.io/codecaps/ (not the
-// retired agent-bar/ path).  Autorotate stays in APPS for GitHub; its public
-// probe is autorotate.vercel.app — autorotate.codes and Scout are retired.
+// Hog Hunter is a local-only Mac app.  CodeCaps is in APPS and is probed at
+// its custom domain (see ENDPOINTS), not the retired agent-bar/ path.
+// Autorotate stays in APPS for GitHub; its public probe is
+// autorotate.vercel.app — autorotate.codes and Scout are retired.
 const APPS = [
   { repo: 'Socratic-Trade', name: 'Socratic Trade', kind: 'product' },
   { repo: 'Congress.Trade', name: 'Congress.Trade', kind: 'product' },
@@ -111,6 +111,7 @@ const APPS = [
   { repo: 'HogHunter', name: 'Hog Hunter', kind: 'product' },
   { repo: 'fleet-ops', name: 'Fleet Ops', kind: 'infra' },
   { repo: 'Clutch', name: 'Clutch', kind: 'infra' },
+  { repo: 'CodeCaps', name: 'CodeCaps', kind: 'product' },
 ];
 
 // Vercel personal projects come back on the first call; team-scoped ones need
@@ -577,7 +578,7 @@ function coolifyState(status) {
 
 /* ----------------------------------------------------------------- github */
 /* Subrequests: one org-wide PR search + one actions/runs call per repo.     */
-/* Worst case 1 + APPS.length = 13.  It used to be two per repo — 24 — and   */
+/* Worst case 1 + APPS.length = 14.  It used to be two per repo — 24 — and   */
 /* that alone was half the platform's budget.                                */
 
 async function checkGitHub(env) {
