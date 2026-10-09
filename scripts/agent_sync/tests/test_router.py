@@ -8,13 +8,13 @@ from agent_sync import router as R
 from agent_sync.live import topic_key
 
 ME = R.SeatIdentity("CLAUDE", 10, "Claude", "claude-bot@zulip.test")
-OWNER, CODEX, CURSOR, SENTRY, JET = 12, 11, 13, 40, 41
+OWNER, CODEX, CURSOR, SENTRY, NEW_BOT, JET = 12, 11, 13, 40, 41, 42
 NOW = 10_000.0
 
 
 def ctx(**kw):
     options = dict(owner_user_id=OWNER, owner_clients=["website", "ZulipMobile"], eligible_user_ids=[10, CODEX, CURSOR],
-                   is_bot={10: True, CODEX: True, CURSOR: True, OWNER: False, SENTRY: True, JET: True},
+                   is_bot={10: True, CODEX: True, CURSOR: True, OWNER: False, SENTRY: True, NEW_BOT: True, JET: True},
                    now=NOW, stale_after=7200.0, presence=[("agent-sync", "roll call"), ("alerts", "*")])
     options.update(kw)
     return R.Context(**options)
@@ -101,12 +101,49 @@ class PrefilterTests(unittest.TestCase):
         self.assertEqual(self.wake(msg(content=DIRECT[0], flags=DIRECT[1])), (True, "peer", None))
 
     def test_ineligible_senders_never_wake(self) -> None:
-        for sender in (SENTRY, JET, 999):
+        for sender in (SENTRY, NEW_BOT, 999):
             with self.subTest(sender=sender):
                 self.assertEqual(self.wake(msg(sender=sender, content=DIRECT[0], flags=DIRECT[1])),
                                  (True, None, "not_eligible"))
         self.assertEqual(self.wake(msg(sender=OWNER, client="ZulipPython", content=DIRECT[0], flags=DIRECT[1])),
                          (True, None, "owner_api"))
+
+    def test_jet_is_eligible_once_pinned_and_wakes_within_the_peer_budgets(self) -> None:
+        """Owner 2026-10-09:  Jet is a fleet seat bot, so `daemon init` pins its id like the others.  Configured, a
+        direct mention wakes as a peer (never as the owner); not configured, it is an unknown bot like any other."""
+        pinned = dict(eligible_user_ids=[10, CODEX, CURSOR, JET])
+        direct = msg(sender=JET, content=DIRECT[0], flags=DIRECT[1])
+        c = R.classify(direct, ME, ctx(**pinned))
+        self.assertTrue(c.eligible and c.sender_is_bot and c.direct)
+        self.assertFalse(c.owner or c.owner_api, "Jet is never the owner")
+        self.assertEqual(self.wake(direct, **pinned), (True, "peer", None))
+        self.assertEqual(self.wake(direct), (True, None, "not_eligible"), "no pin, no wake")
+        # Only a direct mention wakes:  every other Jet post behaves like any other peer's.
+        self.assertEqual(self.wake(msg(sender=JET, content="@*fleet* standup"), **pinned), (True, None, "group_or_wildcard"))
+        self.assertEqual(self.wake(msg(sender=JET, dm=True), **pinned), (True, None, "dm_from_bot"))
+        self.assertEqual(self.wake(msg(sender=JET, content="[JET·wake] re=1 @**Claude** hi", flags=["mentioned"]), **pinned),
+                         (True, None, "wake_tag"))
+        self.assertEqual(self.wake(msg(sender=JET, content=DIRECT[0], flags=DIRECT[1], ts=NOW - 9000), **pinned),
+                         (True, None, "stale"))
+        # Pinning Jet pins no one else.
+        self.assertEqual(self.wake(msg(sender=NEW_BOT, content=DIRECT[0], flags=DIRECT[1]), **pinned),
+                         (True, None, "not_eligible"))
+
+    def test_a_jet_interrupt_in_a_leased_topic_counts_against_the_peer_budget(self) -> None:
+        pinned = ctx(eligible_user_ids=[10, CODEX, CURSOR, JET])
+        direct = msg(sender=JET, content=DIRECT[0], flags=DIRECT[1])
+        open_room = lease("A", topics=[("agent-sync", "t")])
+        self.assertEqual(R.route(direct, ME, pinned, [open_room])[1].lease_items, [("A", "interrupt", "message")])
+        asked = []
+
+        def full(key, owner):
+            asked.append(owner)
+            return "per_hour"
+
+        d = R.route(direct, ME, pinned, [lease("A", topics=[("agent-sync", "t")], room=full)])[1]
+        self.assertEqual(d.lease_items[0][1], "passive")
+        self.assertEqual(d.throttled, [("A", "per_hour")])
+        self.assertEqual(asked, [False], "the room check runs as a non-owner turn, never the owner's")
 
     def test_peer_fleet_wildcard_and_followed_chatter_do_not_wake(self) -> None:
         self.assertEqual(self.wake(msg(content="@*fleet* standup")), (True, None, "group_or_wildcard"))
