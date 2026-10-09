@@ -215,7 +215,7 @@ destination:
   chat, so write two ASCII spaces and convert with
   `perl -CSDA -pe 's/([.!?])  (?=\S)/$1\x{a0} /g'`, then check the result holds a U+00A0.
 - **Files read as source and other plain text** (repo markdown and text, commit messages,
-  code comments, config, effort-board rows, terminal output, Slack posts): two LITERAL ASCII
+  code comments, config, effort-board rows, terminal output): two LITERAL ASCII
   spaces.  An entity would appear as literal text.
 - **HTML a renderer shows** (Apple Notes `--html`, in-app HTML/JSX): `Sentence one.&nbsp;
   Sentence two.`  Notes.app is an HTML renderer, so two ASCII spaces in a `<p>` collapse to

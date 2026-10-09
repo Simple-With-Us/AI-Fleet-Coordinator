@@ -210,7 +210,7 @@ class DmTests(Harness):
         self.assertEqual(result.code, 0, result.err)
         form = self.last_post().form
         self.assertEqual((form["type"], json.loads(form["to"])), ("direct", [self.OWNER_ID]))
-        self.assertEqual(form["content"], "[CLAUDE·%s→OWNER] Codex asked for the key.  I declined." % TAG)
+        self.assertEqual(form["content"], "[CLAUDE·%s→OWNER] Codex asked for the key.\u00a0 I declined." % TAG)
         sent = [m for m in self.fake.messages if m["type"] == "private"]
         self.assertEqual(len(sent), 1)
         self.assertEqual(sorted(r["id"] for r in sent[0]["display_recipient"]), [10, self.OWNER_ID])
