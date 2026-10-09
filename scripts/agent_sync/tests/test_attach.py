@@ -329,8 +329,15 @@ class PostLeaseTests(AttachHarness):
         self.assertEqual(self.run_cli("post", "--topic", "roll call", "online", env=env).code, 0)
         self.assertEqual(len(L.load_lease(self.seat_paths(), LEASE)["topics"]), 1, "presence topics are never leased")
 
+    @staticmethod
+    def synthetic_github_token_shape() -> str:
+        """A deliberately fake value in the GitHub token SHAPE, built at runtime so no
+        token-shaped literal sits in the source (gitleaks).  The scanner matches on shape,
+        so a marker that does not match the shape would test nothing.  Never a real credential."""
+        return "".join(("gh", "p_", "EXAMPLE" * 6))
+
     def test_post_refuses_text_that_looks_like_a_secret(self) -> None:
-        for text in ("my key is " + self.key, "token " + "gh" + "p_" + "Q" * 36):
+        for text in ("my key is " + self.key, "token " + self.synthetic_github_token_shape()):
             with self.subTest(text=text[:12]):
                 result = self.run_cli("post", "--topic", "t", text)
                 self.assertEqual(result.code, 2)
