@@ -456,7 +456,7 @@ async function main() {
     process.exit(0);
   }
 
-  log("posting to #agent-sync via agent-sync-websocket.py");
+  log("posting to #agent-sync via agent-sync");
   postToZulip(message);
   log("posted.");
 }
