@@ -160,17 +160,62 @@ class PostTests(Harness):
         self.assertEqual(len(listed), 5)
         self.assertEqual(self.fake.requests_to("POST", "messages"), [])
 
-    def test_fleet_without_the_group_is_refused(self) -> None:
-        result = self.run_cli("post", "--topic", "t", "--fleet", "wake up")
-        self.assertEqual(result.code, 2)
-        self.assertIn("owner must create", result.err)
+    def test_fleet_adds_at_all_in_agent_sync_fleet(self) -> None:
+        result = self.run_cli("post", "--topic", "fleet", "--fleet", "wake up")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s] @**all** wake up" % TAG)
+        self.assertEqual(self.last_post().form["to"], "agent-sync")
+        self.assertEqual(self.fake.requests_to("GET", "user_groups"), [], "no user group lookup:  there is no fleet group")
+
+    def test_fleet_with_to_adds_the_peer_and_the_wildcard(self) -> None:
+        result = self.run_cli("post", "--topic", "fleet", "--fleet", "--to", "Codex", "HALT")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192CODEX] @**Codex** @**all** HALT" % TAG)
+
+    def test_fleet_topic_and_channel_match_without_case(self) -> None:
+        self.assertEqual(self.run_cli("post", "--topic", "Fleet", "--channel", "Agent-Sync", "--fleet", "x").code, 0)
+        self.assertIn("@**all**", self.last_post().form["content"])
+
+    def test_fleet_is_refused_outside_agent_sync_fleet_before_any_request(self) -> None:
+        for argv in (("--topic", "t"), ("--topic", "fleet2"), ("--topic", "roll call"),
+                     ("--topic", "fleet", "--channel", "general"), ("--topic", "fleet", "--channel", "sandbox")):
+            with self.subTest(argv=argv):
+                before = len(self.fake.requests)
+                result = self.run_cli("post", *argv, "--fleet", "--to", "Codex", "wake up")
+                self.assertEqual(result.code, 2)
+                self.assertIn("only works in #agent-sync \u203a fleet", result.err)
+                self.assertIn("--to", result.err)
+                self.assertEqual(len(self.fake.requests), before, "refused before any request, even the --to lookup")
         self.assertEqual(self.fake.requests_to("POST", "messages"), [])
 
-    def test_fleet_with_the_group_adds_the_group_mention(self) -> None:
-        self.fake.user_groups.append({"id": 3, "name": "fleet"})
-        result = self.run_cli("post", "--topic", "t", "--fleet", "wake up")
-        self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s] @*fleet* wake up" % TAG)
+    def test_text_with_at_all_but_no_fleet_flag_is_left_alone(self) -> None:
+        self.assertEqual(self.run_cli("post", "--topic", "t", "plain text").code, 0)
+        self.assertNotIn("@**all**", self.last_post().form["content"])
+
+    def test_fleet_refused_by_zulip_names_the_realm_setting_and_suggests_to(self) -> None:
+        self.fake.inject("POST", "messages", status=400, body={
+            "result": "error", "code": "STREAM_WILDCARD_MENTION_NOT_ALLOWED",
+            "msg": "You do not have permission to use channel wildcard mentions in this channel."})
+        result = self.run_cli("post", "--topic", "fleet", "--fleet", "wake up")
+        self.assertEqual(result.code, 5)
+        self.assertIn("can_mention_many_users_group", result.err)
+        self.assertIn("--to NAME", result.err)
+        self.assertIn("dm --owner", result.err)
+        self.assertIn("You do not have permission", result.err)
+        self.assertEqual(len(self.fake.requests_to("POST", "messages")), 1, "not retried")
+
+    def test_fleet_refusal_is_recognised_by_message_when_the_code_is_missing(self) -> None:
+        self.fake.inject("POST", "messages", status=400, body={
+            "result": "error", "msg": "You do not have permission to use wildcard mentions in this channel."})
+        result = self.run_cli("post", "--topic", "fleet", "--fleet", "wake up")
+        self.assertEqual(result.code, 5)
+        self.assertIn("can_mention_many_users_group", result.err)
+
+    def test_other_errors_during_fleet_are_not_rewritten(self) -> None:
+        self.fake.inject("POST", "messages", status=400, body={"result": "error", "code": "BAD_REQUEST", "msg": "nope"})
+        result = self.run_cli("post", "--topic", "fleet", "--fleet", "wake up")
+        self.assertEqual(result.code, 5)
+        self.assertNotIn("can_mention_many_users_group", result.err)
 
     def test_text_dash_reads_stdin(self) -> None:
         self.run_cli("post", "--topic", "t", "-", stdin="line one\nline two\n")

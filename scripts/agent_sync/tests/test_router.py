@@ -39,13 +39,15 @@ def lease(lease_id="L1", *, topics=(), platform="claude-code", mentions=True, ca
 
 
 DIRECT = ("@**Claude** please look", ["mentioned"])
+# The fleet-wide wake (owner 2026-10-09):  @**all** in #agent-sync > fleet.  Zulip sets the stream wildcard flag.
+FLEET_KW = dict(topic="fleet", flags=["wildcard_mentioned", "stream_wildcard_mentioned"])
 
 
 class ClassifyTests(unittest.TestCase):
     def test_direct_needs_the_flag_and_the_raw_name(self) -> None:
         self.assertTrue(R.classify(msg(content=DIRECT[0], flags=DIRECT[1]), ME, ctx()).direct)
         self.assertTrue(R.classify(msg(content="@**Claude|10** hi", flags=["mentioned"]), ME, ctx()).direct)
-        self.assertFalse(R.classify(msg(content="@*fleet* all hands", flags=["mentioned"]), ME, ctx()).direct,
+        self.assertFalse(R.classify(msg(content="@*ops* all hands", flags=["mentioned"]), ME, ctx()).direct,
                          "a group mention sets the flag but is not direct")
         self.assertFalse(R.classify(msg(content="@**Claude** hi", flags=[]), ME, ctx()).direct)
 
@@ -71,11 +73,58 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(c.reply_to, 77)
         self.assertTrue(R.classify(msg(ts=NOW - 8000), ME, ctx()).stale)
         self.assertTrue(R.classify(msg(flags=["stream_wildcard_mentioned"]), ME, ctx()).wildcard)
-        self.assertTrue(R.classify(msg(content="@*fleet* wake up"), ME, ctx()).fleet)
         self.assertTrue(R.classify(msg(dm=True), ME, ctx()).dm)
         self.assertTrue(R.classify(msg(sender=10), ME, ctx()).own)
         self.assertEqual(R.classify(msg(content="[CLAUDE·ab] hi re=5"), ME, ctx()).reply_to, 5)
         self.assertIsNone(R.classify(msg(content="hi\nre=5 on line two"), ME, ctx()).reply_to)
+
+    def test_at_all_in_agent_sync_fleet_is_the_fleet_wake(self) -> None:
+        for name, kw in {
+            "flags and literal": dict(content="@**all** HALT", **FLEET_KW),
+            "stream flag only": dict(content="HALT", topic="fleet", flags=["stream_wildcard_mentioned"]),
+            "legacy flag only": dict(content="HALT", topic="fleet", flags=["wildcard_mentioned"]),
+            "literal only (no flags on the event)": dict(content="[CODEX·ab] @**all** HALT", topic="fleet"),
+            "topic and channel without case": dict(content="@**all** HALT", topic="Fleet", channel="Agent-Sync"),
+            "@**everyone** is the same stream wildcard": dict(content="@**everyone** HALT", **FLEET_KW),
+        }.items():
+            with self.subTest(name):
+                c = R.classify(msg(**kw), ME, ctx())
+                self.assertTrue(c.fleet, "fleet")
+        # A real @**all** also carries the wildcard class, as it always did.
+        c = R.classify(msg(content="@**all** HALT", **FLEET_KW), ME, ctx())
+        self.assertTrue(c.fleet and c.wildcard and "fleet" in c.labels() and "wildcard" in c.labels())
+
+    def test_a_wildcard_anywhere_else_is_only_a_wildcard(self) -> None:
+        for name, kw in {
+            "another topic": dict(content="@**all** hi", topic="t", flags=["stream_wildcard_mentioned"]),
+            "another channel, topic fleet": dict(content="@**all** hi", topic="fleet", channel="general",
+                                                  flags=["stream_wildcard_mentioned"]),
+            "roll call": dict(content="@**all** hi", topic="roll call", flags=["stream_wildcard_mentioned"]),
+            "literal in another topic": dict(content="@**all** hi", topic="t"),
+        }.items():
+            with self.subTest(name):
+                c = R.classify(msg(**kw), ME, ctx())
+                self.assertFalse(c.fleet, "fleet")
+        self.assertTrue(R.classify(msg(content="@**all** hi", topic="t", flags=["stream_wildcard_mentioned"]),
+                                   ME, ctx()).wildcard)
+
+    def test_fleet_needs_a_real_stream_wildcard(self) -> None:
+        for name, kw in {
+            "plain chatter in fleet": dict(content="standup notes", topic="fleet"),
+            "@**topic** reaches only the topic's participants": dict(
+                content="@**topic** hi", topic="fleet", flags=["wildcard_mentioned", "topic_wildcard_mentioned"]),
+            "@**all** in a code span": dict(content="use `@**all**` to wake everyone", topic="fleet"),
+            "@**all** in a code block": dict(content="```\n@**all**\n```", topic="fleet"),
+            "@**all** in a quote": dict(content="> @**all** said earlier\nok", topic="fleet"),
+            "escaped @**all**": dict(content="\\@**all** is how you ping", topic="fleet"),
+            "the old group text": dict(content="@*fleet* wake up", topic="fleet"),
+            "@**all** glued to a word": dict(content="mail@**all**", topic="fleet"),
+        }.items():
+            with self.subTest(name):
+                self.assertFalse(R.classify(msg(**kw), ME, ctx()).fleet, "fleet")
+        # The old group text is no longer a fleet wake anywhere, so it cannot trigger an owner wake.
+        d = R.route(msg(sender=OWNER, content="@*fleet* wake up", topic="t"), ME, ctx(), [])[1]
+        self.assertIsNone(d.wake)
 
     def test_unknown_senders_count_as_bots_and_are_not_eligible(self) -> None:
         c = R.classify(msg(sender=999), ME, ctx())
@@ -93,7 +142,7 @@ class PrefilterTests(unittest.TestCase):
     def test_owner_direct_dm_or_fleet_wakes_as_owner(self) -> None:
         self.assertEqual(self.wake(msg(sender=OWNER, content=DIRECT[0], flags=DIRECT[1])), (True, "owner", None))
         self.assertEqual(self.wake(msg(sender=OWNER, dm=True)), (True, "owner", None))
-        self.assertEqual(self.wake(msg(sender=OWNER, content="@*fleet* everyone stop")), (True, "owner", None))
+        self.assertEqual(self.wake(msg(sender=OWNER, content="@**all** everyone stop", **FLEET_KW)), (True, "owner", None))
         self.assertEqual(self.wake(msg(sender=OWNER, content=DIRECT[0], flags=DIRECT[1], ts=NOW - 9000)),
                          (True, "owner", None), "a stale owner item still wakes (once per topic, in the daemon)")
 
@@ -119,7 +168,8 @@ class PrefilterTests(unittest.TestCase):
         self.assertEqual(self.wake(direct, **pinned), (True, "peer", None))
         self.assertEqual(self.wake(direct), (True, None, "not_eligible"), "no pin, no wake")
         # Only a direct mention wakes:  every other Jet post behaves like any other peer's.
-        self.assertEqual(self.wake(msg(sender=JET, content="@*fleet* standup"), **pinned), (True, None, "group_or_wildcard"))
+        self.assertEqual(self.wake(msg(sender=JET, content="@**all** standup", **FLEET_KW), **pinned),
+                         (True, None, "group_or_wildcard"))
         self.assertEqual(self.wake(msg(sender=JET, dm=True), **pinned), (True, None, "dm_from_bot"))
         self.assertEqual(self.wake(msg(sender=JET, content="[JET·wake] re=1 @**Claude** hi", flags=["mentioned"]), **pinned),
                          (True, None, "wake_tag"))
@@ -146,7 +196,8 @@ class PrefilterTests(unittest.TestCase):
         self.assertEqual(asked, [False], "the room check runs as a non-owner turn, never the owner's")
 
     def test_peer_fleet_wildcard_and_followed_chatter_do_not_wake(self) -> None:
-        self.assertEqual(self.wake(msg(content="@*fleet* standup")), (True, None, "group_or_wildcard"))
+        # A peer's fleet wake lands in the inbox and never starts a turn:  it would wake about 12 seats.
+        self.assertEqual(self.wake(msg(content="@**all** standup", **FLEET_KW)), (True, None, "group_or_wildcard"))
         self.assertEqual(self.wake(msg(content="@**all** heads up", flags=["stream_wildcard_mentioned"])),
                          (True, None, "group_or_wildcard"))
         self.assertEqual(self.wake(msg(content="chatter"), followed=[topic_key("agent-sync", "t")]),
@@ -217,6 +268,32 @@ class LeaseRoutingTests(unittest.TestCase):
                       [lease("a", created=1.0), lease("b", created=5.0)])[1]
         self.assertEqual(tie.lease_items[0][0], "b")
 
+    def test_an_owner_fleet_wake_goes_to_one_wake_capable_lease_like_a_mention(self) -> None:
+        old = lease("old", last_prompt=50.0, created=1.0)
+        recent = lease("recent", last_prompt=90.0, created=2.0)
+        c, d = R.route(msg(sender=OWNER, content="@**all** HALT", **FLEET_KW), ME, ctx(), [old, recent])
+        self.assertTrue(c.fleet and c.owner)
+        self.assertEqual(d.lease_items, [("recent", "interrupt", "message")])
+        self.assertEqual((d.seat_inbox, d.delivered_to, d.wake_block), (True, "recent", "delivered_to_lease"))
+        self.assertTrue(d.wake_owner)
+        # With no wake-capable lease it falls to the seat inbox and the owner wake.
+        c, d = R.route(msg(sender=OWNER, content="@**all** HALT", **FLEET_KW), ME, ctx(), [lease("nc", capable=False)])
+        self.assertEqual((d.lease_items, d.seat_inbox, d.wake), ([], True, "owner"))
+
+    def test_a_peer_fleet_wake_reaches_the_inbox_and_never_a_lease_or_a_wake(self) -> None:
+        c, d = R.route(msg(content="@**all** HALT", **FLEET_KW), ME, ctx(), [lease("L")])
+        self.assertTrue(c.fleet and c.eligible and not c.owner)
+        self.assertEqual((d.lease_items, d.seat_inbox, d.wake, d.wake_block), ([], True, None, "group_or_wildcard"))
+
+    def test_an_owner_wildcard_outside_the_fleet_topic_keeps_the_wildcard_handling(self) -> None:
+        for topic in ("t", "roll call", "AFC 1a2b3c4d work"):
+            with self.subTest(topic=topic):
+                c, d = R.route(msg(sender=OWNER, content="@**all** hi", topic=topic,
+                                   flags=["wildcard_mentioned", "stream_wildcard_mentioned"]), ME, ctx(), [])
+                self.assertFalse(c.fleet)
+                self.assertTrue(c.wildcard)
+                self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, None, "group_or_wildcard"))
+
     def test_with_no_wake_capable_lease_a_mention_falls_to_the_inbox_and_the_wake(self) -> None:
         c, d = R.route(msg(content=DIRECT[0], flags=DIRECT[1]), ME, ctx(), [lease("nc", capable=False)])
         self.assertEqual(d.lease_items, [])
@@ -224,7 +301,10 @@ class LeaseRoutingTests(unittest.TestCase):
 
     def test_muted_topics_drop_unless_direct_or_dm(self) -> None:
         muted = ctx(muted=[topic_key("agent-sync", "t")])
-        self.assertEqual(R.route(msg(content="@*fleet* x"), ME, muted, [])[1].drop_reason, "muted")
+        self.assertEqual(R.route(msg(content="@**all** x", **FLEET_KW), ME,
+                                 ctx(muted=[topic_key("agent-sync", "fleet")]), [])[1].drop_reason, "muted")
+        self.assertEqual(R.route(msg(content="@**all** x", flags=["stream_wildcard_mentioned"]), ME, muted, [])[1].drop_reason,
+                         "muted")
         self.assertTrue(R.route(msg(content=DIRECT[0], flags=DIRECT[1]), ME, muted, [])[1].seat_inbox)
 
     def test_topics_match_without_case(self) -> None:
