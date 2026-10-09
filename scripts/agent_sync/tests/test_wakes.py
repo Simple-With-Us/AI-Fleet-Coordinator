@@ -77,7 +77,10 @@ class ReplyTextTests(unittest.TestCase):
 
     def test_the_secret_scanner_flags_keys_and_loaded_credentials(self) -> None:
         loaded = secrets.token_hex(16)
-        prefix = "gh" + "p_"  # split so the source holds no key-shaped literal
+        # Synthetic, obviously fake values in each provider's key SHAPE:  the scanner matches on
+        # shape, so a marker that does not match would test nothing.  They are assembled at
+        # runtime so gitleaks does not flag the test source; none is a credential.
+        prefix = "gh" + "p_"
         cases = {
             "github": "here " + prefix + "A" * 36,
             "anthropic": "sk-" + "ant-" + "b" * 30,

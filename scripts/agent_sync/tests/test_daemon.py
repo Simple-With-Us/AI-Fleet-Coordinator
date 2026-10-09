@@ -330,6 +330,30 @@ class LeaseLifecycleTests(DaemonHarness):
         self.write_lease("L2", platform="codex", pid=dead_pid())
         self.assertEqual(daemon.lease_alive(self.seat_paths(), L.load_lease(self.seat_paths(), "L2"))[1], "pid gone")
 
+    def test_wait_grace_never_keeps_a_dead_agent_alive(self) -> None:
+        daemon = self.started()
+        self.write_lease("W1", platform="codex", pid=dead_pid(), wait_until=self.clock.time() + 120)
+        self.assertEqual(daemon.lease_alive(self.seat_paths(), L.load_lease(self.seat_paths(), "W1")), (False, "pid gone"))
+        self.starts[os.getpid()] = 1000
+        self.write_lease("W2", platform="codex", pid_start=1000, wait_until=self.clock.time() + 120,
+                         heartbeat=self.clock.time() - 10_000)
+        self.assertEqual(daemon.lease_alive(self.seat_paths(), L.load_lease(self.seat_paths(), "W2")), (True, "wait grace"),
+                         "a live agent between two waits stays leased even with an old heartbeat")
+
+    def test_one_failing_event_does_not_stop_the_rest_of_the_batch(self) -> None:
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        seen: list[str] = []
+
+        def boom(_runner, _event):
+            raise RuntimeError("update handler failed")
+
+        daemon.handle_update = boom
+        daemon.route_message = lambda _runner, message: seen.append(str(message.get("id")))
+        daemon.handle_events(runner, [{"type": "update_message", "id": 1},
+                                      {"type": "message", "id": 2, "message": {"id": 42}}])
+        self.assertEqual(seen, ["42"], "the message after the failing event is still routed")
+
     def test_a_silent_lease_releases_wake_worthy_items_after_ten_minutes(self) -> None:
         daemon = self.started()
         self.write_lease("L1", topics=[("agent-sync", "t")], platform="codex", heartbeat=self.clock.time() + 3600)

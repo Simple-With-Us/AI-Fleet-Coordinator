@@ -487,10 +487,14 @@ class Daemon:
             return False, "ended"
         now = self.clock.time()
         pid = lease.get("pid")
-        if isinstance(lease.get("wait_until"), (int, float)) and lease["wait_until"] > now:
-            return True, "wait grace"
         if not L.pid_alive(pid):
             return False, "pid gone"
+        if isinstance(lease.get("wait_until"), (int, float)) and lease["wait_until"] > now:
+            # The grace bridges the gap between one `attach --wait` and the next for a live
+            # agent; it never keeps a lease alive after the agent process itself is gone.
+            if not self._start_matches(int(pid), lease.get("pid_start")):
+                return False, "pid reused"
+            return True, "wait grace"
         if not self._start_matches(int(pid), lease.get("pid_start")):
             return False, "pid reused"
         if lease.get("platform") == "claude-code":
@@ -557,29 +561,33 @@ class Daemon:
     def handle_events(self, runner: SeatRunner, events: Iterable[Mapping[str, Any]]) -> None:
         for event in events:
             kind = event.get("type")
-            if kind == "message" and isinstance(event.get("message"), dict):
-                self.route_message(runner, event["message"])
-            elif kind == "update_message":
-                self.handle_update(runner, event)
-            elif kind == "user_topic":
-                runner.apply_user_topic(event)
-            elif kind == "realm_user":
-                person = event.get("person") or {}
-                uid = person.get("user_id")
-                if isinstance(uid, int):
-                    if event.get("op") == "remove":
-                        runner.users.pop(uid, None)
-                    else:
-                        entry = runner.users.setdefault(uid, {})
-                        entry.update(person)
-                        if "role" in person and "is_admin" not in person:  # Zulip sends only the changed field
-                            entry["is_admin"] = person["role"] in (100, 200)
-                            entry["is_owner"] = person["role"] == 100
-                    if runner.me is not None and uid == runner.me.user_id and event.get("op") != "remove" \
-                            and role_refused(runner.users[uid]):
-                        # The seat's own bot was promoted to admin or owner:  drop the queue now,
-                        # not when it next expires (owner decision 2026-10-07).
-                        self._refuse(runner, role_refusal(runner.seat, runner.users[uid].get("role")))
+            try:
+                if kind == "message" and isinstance(event.get("message"), dict):
+                    self.route_message(runner, event["message"])
+                elif kind == "update_message":
+                    self.handle_update(runner, event)
+                elif kind == "user_topic":
+                    runner.apply_user_topic(event)
+                elif kind == "realm_user":
+                    person = event.get("person") or {}
+                    uid = person.get("user_id")
+                    if isinstance(uid, int):
+                        if event.get("op") == "remove":
+                            runner.users.pop(uid, None)
+                        else:
+                            entry = runner.users.setdefault(uid, {})
+                            entry.update(person)
+                            if "role" in person and "is_admin" not in person:  # Zulip sends only the changed field
+                                entry["is_admin"] = person["role"] in (100, 200)
+                                entry["is_owner"] = person["role"] == 100
+                        if runner.me is not None and uid == runner.me.user_id and event.get("op") != "remove" \
+                                and role_refused(runner.users[uid]):
+                            # The seat's own bot was promoted to admin or owner:  drop the queue now,
+                            # not when it next expires (owner decision 2026-10-07).
+                            self._refuse(runner, role_refusal(runner.seat, runner.users[uid].get("role")))
+            except Exception as exc:  # one bad event must never stop the main loop or the batch
+                self.log.write("event-error", seat=runner.seat, type=str(kind)[:40], id=event.get("id"),
+                               error=self.scrub(type(exc).__name__ + ": " + str(exc)))
         runner.flush_cursor()
 
     def route_backfill(self, runner: SeatRunner, messages: list[dict[str, Any]]) -> None:
