@@ -400,13 +400,14 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
     # The resolver (Agent -> Z.resolve_credentials) takes --rc, then env ZULIP_RC, then the seat's default
     # file.  The default is named here only so that a missing file reads "credential file not found: PATH"
     # (the resolver's own message for it points at the env triple, which mcp ignores).
+    default_rc = Z.default_rc_path(seat, env, home)
     rc_arg = getattr(args, "rc", None)
     if not rc_arg and not env.get("ZULIP_RC"):
-        rc_arg = str(Z.default_rc_path(seat, env, home))
+        rc_arg = str(default_rc)
     rc_path = Path(rc_arg or env["ZULIP_RC"]).expanduser()
     if ignored:
         log("ignoring %s:  mcp reads the key only from a zuliprc file (--rc, ZULIP_RC, then %s)"
-            % (", ".join(ignored), home / ".secrets" / "Zulip" / Z.credential_file_name(seat)))
+            % (", ".join(ignored), default_rc))
     session_id, source = getattr(args, "session", None), "flag"
     if not session_id:
         session_id, source = env.get("CLAUDE_CODE_SESSION_ID") or env.get("AGENT_SESSION"), "env"
