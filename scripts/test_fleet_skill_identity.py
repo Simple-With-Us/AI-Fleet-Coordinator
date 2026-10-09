@@ -24,14 +24,17 @@ from fleet_skill_identity import (  # noqa: E402
     GB_ROLE_TAGS,
     NEVER_INSTALL,
     SEATS,
+    catalog_seats,
     catalog_skill_names,
     head_has_fleet_wake,
     is_grok_bot_tag,
     platform_installs,
     repo_platform_copies,
+    set_yaml_description,
     skill_allowed_for_seat,
     specialize_from_monet,
     specialize_universal,
+    zulip_identity_sentence,
 )
 
 SESSION = os.path.join(ROOT, "docs", "fleet-skills", "session-start", "SKILL.md")
@@ -59,6 +62,7 @@ class SpecializeTests(unittest.TestCase):
     def test_cursor_is_not_monet(self) -> None:
         out = specialize_from_monet(_session(), SEATS["cursor"], skill_name="session-start")
         self.assertIn("AGENT_SEAT=CURSOR", out)
+        self.assertIn("set AGENT_SEAT — CURSOR for an ordinary Cursor session", out)
         self.assertNotIn("AGENT_SEAT=MONET", out)
         self.assertIn("[CURSOR]", out)
         self.assertNotIn("AGENT_SEAT=MONET", out)
@@ -71,36 +75,39 @@ class SpecializeTests(unittest.TestCase):
     def test_ag_suffix_is_antigravity(self) -> None:
         out = specialize_from_monet(_session(), SEATS["ag"], skill_name="session-start")
         self.assertIn("AGENT_SEAT=AG", out)
+        self.assertIn("set AGENT_SEAT — AG for an ordinary Antigravity session", out)
         self.assertIn("ag/<slug>", out)
         self.assertIn("trading-antigravity", out)
         self.assertNotIn("trading-monet", out)
 
     def test_ag_notes_name_is_antigravity(self) -> None:
+        # The canonical apple-notes text is seat-neutral (`[APP, Agent]`), so the
+        # seat's Notes name comes from the install banner, never from Monet.
         out = specialize_from_monet(_notes(), SEATS["ag"], skill_name="apple-notes")
-        self.assertIn("[APP, Antigravity]", out)
-        self.assertNotIn("[APP, AG]", out)
-        self.assertIn("then `Antigravity` (Title Case", out)
+        self.assertIn("Notes `Antigravity`", out)
+        self.assertNotIn("Notes `AG`", out)
+        self.assertNotIn("[APP, Monet]", out)
 
     def test_cursor_and_grok_notes_names(self) -> None:
-        out_cur = specialize_from_monet(_notes(), SEATS["cursor"], skill_name="apple-notes")
-        self.assertIn("[APP, Cursor]", out_cur)
-        out_grok = specialize_from_monet(_notes(), SEATS["grok"], skill_name="apple-notes")
-        self.assertIn("[APP, Grok]", out_grok)
-        out_codex = specialize_from_monet(_notes(), SEATS["codex"], skill_name="apple-notes")
-        self.assertIn("[APP, Codex]", out_codex)
+        for key, notes in (("cursor", "Cursor"), ("grok", "Grok"), ("codex", "Codex")):
+            out = specialize_from_monet(_notes(), SEATS[key], skill_name="apple-notes")
+            self.assertIn(f"Notes `{notes}`", out, key)
+            self.assertNotIn("[APP, Monet]", out, key)
 
     def test_fleet_coordination_seats_table_preserved(self) -> None:
         out = specialize_from_monet(_coord(), SEATS["ag"], skill_name="fleet-coordination")
-        self.assertIn("Antigravity / Gemini: `[AG]`", out)
-        self.assertIn("Monet: `[MONET]`", out)
-        self.assertIn("Cursor: `[CURSOR]`", out)
-        self.assertIn("Codex: `[CODEX]`", out)
-        self.assertNotIn("AG: `[AG]`", out)
+        self.assertIn("Antigravity / Gemini: `AG`", out)
+        self.assertIn("Cursor: `CURSOR`", out)
+        self.assertIn("Codex: `CODEX`", out)
+        self.assertIn("Clutch: `CLUTCH`", out)
+        self.assertIn("Claude: `CLAUDE`", out)
+        self.assertNotIn("Monet: `", out)
 
     def test_specialize_universal(self) -> None:
         out_sess = specialize_universal(_session(), skill_name="session-start")
-        self.assertIn("AGENT_TAG=<YOUR_TAG>", out_sess)
         self.assertIn("AGENT_SEAT=<YOUR_SEAT>", out_sess)
+        self.assertIn("set AGENT_SEAT — your own seat tag", out_sess)
+        self.assertIn("`[<YOUR_TAG>·session8]` tag", out_sess)
         self.assertIn("<seat>/<slug>", out_sess)
         self.assertNotIn("AGENT_SEAT=MONET", out_sess)
 
@@ -121,7 +128,7 @@ class SpecializeTests(unittest.TestCase):
         src = _session()
         for key, tag in mapping.items():
             out = specialize_from_monet(src, SEATS[key], skill_name="session-start")
-            self.assertIn(f"AGENT_SEAT={tag}", out, key)
+            self.assertIn(f"set AGENT_SEAT — {tag} for an ordinary", out, key)
             self.assertNotIn("AGENT_SEAT=MONET", out, key)
         grok_bot = specialize_from_monet(
             src, SEATS["grok-bot"], skill_name="session-start"
@@ -151,7 +158,8 @@ class SpecializeTests(unittest.TestCase):
         self.assertFalse(any("/.kimi/" in dest or dest.endswith("/.kimi/skills") for dest in dests))
         self.assertFalse(any("/.renoir/" in dest or dest.endswith("/.renoir/skills") for dest in dests))
         out = specialize_from_monet(_session(), SEATS["renoir"], skill_name="session-start")
-        self.assertIn("Inactive seat", out)
+        self.assertIn("Retired seat", out)
+        self.assertNotIn("not yet active", out)
         self.assertIn("Do not install to `~/.renoir/skills`", out)
 
     def test_claude_shared_pin(self) -> None:
@@ -159,8 +167,9 @@ class SpecializeTests(unittest.TestCase):
             _session(), SEATS["claude_shared"], skill_name="session-start"
         )
         self.assertIn("Shared `~/.claude/skills`", out)
-        self.assertIn("RENOIR", out)
-        self.assertIn("MONET, CLAUDE, or RENOIR", out)
+        self.assertIn("AGENT_SEAT=CLAUDE", out)
+        self.assertIn("set AGENT_SEAT — CLAUDE for an ordinary Claude session", out)
+        self.assertNotIn("MONET, CLAUDE, or RENOIR", out)
 
     def test_sentence_gap_keeps_protocol_name(self) -> None:
         with open(GAP, encoding="utf-8") as f:
@@ -186,8 +195,9 @@ class SpecializeTests(unittest.TestCase):
             _session(), SEATS["fx"], skill_name="session-start"
         )
         self.assertIn("AGENT_SEAT=FX", out)
+        self.assertIn("set AGENT_SEAT — FX for an ordinary Fx session", out)
         self.assertNotIn("AGENT_SEAT=CURSOR", out)
-        self.assertIn("[FX]", out)
+        self.assertIn("[FX·session8]", out)
 
     def test_fold_unwraps_quoted_yaml_string(self) -> None:
         from fleet_skill_identity import fold_yaml_description
@@ -430,12 +440,17 @@ class PerSeatVoiceTests(unittest.TestCase):
             self.assertNotIn("Claude/Monet transcript", out, name)
 
     def test_claude_shared_does_not_claim_reader_is_monet(self) -> None:
-        out = specialize_from_monet(
-            _session(), SEATS["claude_shared"], skill_name="session-start"
-        )
-        self.assertIn("Shared `~/.claude/skills`", out)
-        self.assertNotIn("You are **MONET**", out)
-        self.assertIn("MONET, CLAUDE, or RENOIR", out)
+        for name in catalog_skill_names(DOCS):
+            if not skill_allowed_for_seat(name, SEATS["claude_shared"]):
+                continue
+            out = specialize_from_monet(
+                _load_skill(name), SEATS["claude_shared"], skill_name=name
+            )
+            self.assertNotIn("You are **MONET**", out, name)
+            self.assertNotIn("AGENT_SEAT=MONET", out, name)
+            self.assertNotIn("This install is for `MONET`", out, name)
+            self.assertNotIn("MONET, CLAUDE, or RENOIR", out, name)
+            self.assertNotIn("[MONET·session8", out, name)
 
 
 class CoordinatorSelfIdTests(unittest.TestCase):
@@ -534,7 +549,6 @@ class CoordinatorSelfIdTests(unittest.TestCase):
                 self.assertNotIn("| FLEET |", src.split("AI-Fleet-Coordinator")[1][:80])
             if name == "fleet-coordination":
                 self.assertIn("| **`AFC`** |", src)
-                self.assertIn("every Grok Bot seat", src)
             if name == "apple-notes":
                 self.assertIn("| AFC |", src)
                 self.assertNotIn("| FLEET | cross-app", src)
@@ -566,12 +580,10 @@ class CoordinatorSelfIdTests(unittest.TestCase):
                 out = specialize_from_monet(_load_skill(name), seat, skill_name=name)
                 for phrase in self.FORBIDDEN_COORDINATOR_SELF:
                     self.assertNotIn(phrase, out, f"{key}/{name}: {phrase}")
-                if name == "session-start" and key != "kimi":
+                if name == "session-start" and not seat.retired:
                     self.assertIn("| AFC |", out, f"{key}/{name} lost AFC acronym")
                 if name == "fleet-coordination":
                     self.assertIn("AFC", out, f"{key}/{name}")
-                    self.assertIn("GB-COMPILER", out, f"{key}/{name}")
-                    self.assertIn("GB-ORACLE", out, f"{key}/{name}")
                     self.assertNotRegex(out, r"GB-COMPILE(?!R)", msg=f"{key}/{name}")
 
     def test_by_seat_catalog_matches_specialization(self) -> None:
@@ -593,6 +605,368 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertNotIn("This install is for `FLEET`", cursor_ss)
 
 
+GUIDE = os.path.join(ROOT, "docs", "protocols", "zulip-fleet-guide.md")
+RETIRED_HOME_FRAGMENTS = ("/Desktop/fleet-skills", "/.deepseek/", "/.kimi/", "/.renoir/")
+
+
+def _guide_roster() -> dict[str, tuple[str, str]]:
+    """Seat tag -> (bot local part, credential file code) from the guide."""
+    text = Path(GUIDE).read_text(encoding="utf-8")
+    start = text.index("### Agent Seats")
+    end = text.index("### BotFleet (BF) Bots")
+    rows: dict[str, tuple[str, str]] = {}
+    for line in text[start:end].splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 5 or not re.fullmatch(r"[A-Z][A-Z-]*", cells[0]):
+            continue
+        rows[cells[0]] = (cells[2].rstrip("@"), cells[3])
+    return rows
+
+
+def _bot_local(seat) -> str:
+    local = seat.zulip_bot
+    return local if local.endswith("-bot") else f"{local}-bot"
+
+
+class ZulipIdentityAndRetirementTests(unittest.TestCase):
+    """The identity writer speaks Zulip, drops retired homes, and knows CLUTCH."""
+
+    ACTIVE_CATALOG_TAGS = {
+        "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "MA",
+    }
+
+    def test_every_zulip_identity_matches_the_guide_roster(self) -> None:
+        roster = _guide_roster()
+        self.assertTrue(roster, "guide roster table not found")
+        seen: set[str] = set()
+        for key, seat in SEATS.items():
+            if not seat.zulip_bot:
+                continue
+            if seat.tag not in roster:
+                # GROK-BUILD is an alias row that posts through GROK's bot.
+                self.assertEqual(
+                    (_bot_local(seat), seat.zulip_rc), roster["GROK"], key
+                )
+                continue
+            seen.add(seat.tag)
+            self.assertEqual(
+                (_bot_local(seat), seat.zulip_rc), roster[seat.tag], key
+            )
+        self.assertTrue(self.ACTIVE_CATALOG_TAGS <= seen, self.ACTIVE_CATALOG_TAGS - seen)
+
+    def test_retired_seats_have_no_bot_home_or_install_banner(self) -> None:
+        retired = {k: s for k, s in SEATS.items() if s.retired}
+        self.assertEqual(set(retired), {"monet", "renoir", "deepseek", "kimi"})
+        for key, seat in retired.items():
+            self.assertEqual(seat.zulip_bot, "", key)
+            self.assertFalse(seat.write_home, key)
+            self.assertEqual(zulip_identity_sentence(seat), "", key)
+            out = specialize_from_monet(_session(), seat, skill_name="session-start")
+            self.assertIn("Retired seat", out, key)
+            self.assertNotIn("This install is for", out, key)
+
+    def test_no_install_target_is_a_retired_or_catalog_only_home(self) -> None:
+        dests = [dest for dest, _seat in platform_installs()]
+        for dest in dests:
+            for fragment in RETIRED_HOME_FRAGMENTS:
+                self.assertNotIn(fragment, dest + "/", dest)
+            self.assertNotIn("/by-seat/", dest)
+        tags = {seat.tag for _dest, seat in platform_installs()}
+        self.assertFalse(tags & {"MONET", "RENOIR", "DSH", "KIMI", "CLUTCH"}, tags)
+
+    def test_retired_session_start_is_inert(self) -> None:
+        for key in ("monet", "renoir", "deepseek", "kimi"):
+            seat = SEATS[key]
+            out = specialize_from_monet(_session(), seat, skill_name="session-start")
+            front = out.split("---")[1]
+            self.assertIn(f"{seat.tag} is retired", front, key)
+            self.assertNotIn("Start every", out, key)
+            self.assertNotIn("triple-claim before editing", out.split("---")[1], key)
+            if key == "kimi":
+                # Kimi's copy is only a Stop section.  MONET, RENOIR and DSH keep
+                # their body until the peer-screen lane lands (STOP_ONLY_RETIRED).
+                self.assertIn("## Stop", out, key)
+                self.assertNotIn("## 1. Identity", out, key)
+                self.assertIn("`AFC`", out, key)
+            else:
+                self.assertNotIn("## Stop", out, key)
+
+    def test_set_yaml_description_replaces_inline_and_folded_values(self) -> None:
+        folded = "---\nname: x\ndescription: >-\n  old one\n  old two\n---\n\n# X\n"
+        inline = "---\nname: x\ndescription: old\n---\n\n# X\n"
+        for src in (folded, inline):
+            out = set_yaml_description(src, "new value")
+            self.assertIn("description: >-\n  new value\n---", out)
+            self.assertNotIn("old", out)
+            self.assertTrue(out.endswith("# X\n"))
+
+    def test_shared_claude_home_renders_as_claude(self) -> None:
+        shared = SEATS["claude_shared"]
+        self.assertEqual(shared.tag, "CLAUDE")
+        self.assertEqual((shared.zulip_bot, shared.zulip_rc), ("claude-bot", "Claude"))
+        homes = dict((seat.seat_key, dest) for dest, seat in platform_installs())
+        self.assertTrue(homes["claude_shared"].endswith("/.claude/skills"))
+        repo_claude = [
+            (dest, seat)
+            for dest, seat in repo_platform_copies(ROOT)
+            if dest.endswith(os.path.join(".claude", "skills"))
+        ]
+        self.assertEqual(len(repo_claude), 1)
+        self.assertEqual(repo_claude[0][1].tag, "CLAUDE")
+        # The shared home is a second home for the claude pack, not another pack.
+        self.assertNotIn(shared, catalog_seats())
+        self.assertIn(SEATS["claude"], catalog_seats())
+
+    def test_clutch_is_catalog_only_with_its_own_identity(self) -> None:
+        seat = SEATS["clutch"]
+        self.assertEqual((seat.tag, seat.notes, seat.prefix, seat.suffix),
+                         ("CLUTCH", "Clutch", "clutch", "clutch"))
+        self.assertFalse(seat.write_home)
+        self.assertFalse(seat.retired)
+        self.assertIn(seat, catalog_seats())
+        self.assertTrue(skill_allowed_for_seat("mac-cleanup", seat))
+        out = specialize_from_monet(_session(), seat, skill_name="session-start")
+        self.assertIn("AGENT_SEAT=CLUTCH", out)
+        self.assertIn("set AGENT_SEAT — CLUTCH for an ordinary Clutch session", out)
+        self.assertIn("clutch/<slug>", out)
+        self.assertIn("clutch-bot@simplewithus.zulipchat.com", out)
+        self.assertIn("~/.secrets/Zulip/Clutch-zuliprc", out)
+        self.assertIn("[CLUTCH·session8]", out)
+        self.assertNotIn("AGENT_SEAT=MONET", out)
+        self.assertNotIn("DSH·session8", out)
+
+    def test_session_tag_and_board_by_are_the_readers_own(self) -> None:
+        for key, seat in SEATS.items():
+            if seat.retired or seat.mode == "grok_bot":
+                continue
+            ss = specialize_from_monet(_session(), seat, skill_name="session-start")
+            board = specialize_from_monet(
+                _load_skill("board-ops"), seat, skill_name="board-ops"
+            )
+            self.assertIn(f"`[{seat.tag}·session8]` tag", ss, key)
+            self.assertNotIn("[MONET·session8", ss, key)
+            self.assertIn(f"`--by` for this seat is `{seat.tag}`", board, key)
+        gb = specialize_from_monet(_session(), SEATS["grok-bot"], skill_name="session-start")
+        self.assertNotIn("MONET·session8", gb)
+        uni = specialize_universal(_session(), skill_name="session-start")
+        self.assertNotIn("MONET·session8", uni)
+        self.assertIn("<YOUR_TAG>·session8", uni)
+        uni_board = specialize_universal(_load_skill("board-ops"), skill_name="board-ops")
+        self.assertNotIn("for this seat is `MONET`", uni_board)
+
+    def test_slack_survives_only_as_a_retirement_note(self) -> None:
+        """Every Slack mention in a rendered skill, the README or the writer says retired."""
+        offenders: list[str] = []
+
+        def scan(label: str, text: str) -> None:
+            for n, line in enumerate(text.splitlines(), 1):
+                if re.search(r"slack", line, re.I) and "retired" not in line.lower():
+                    offenders.append(f"{label}:{n}: {line.strip()[:100]}")
+
+        names = catalog_skill_names(DOCS)
+        for key, seat in SEATS.items():
+            for name in names:
+                if skill_allowed_for_seat(name, seat):
+                    scan(f"{key}/{name}", specialize_from_monet(_load_skill(name), seat, skill_name=name))
+        for name in names:
+            scan(f"universal/{name}", specialize_universal(_load_skill(name), skill_name=name))
+            scan(f"source/{name}", _load_skill(name))
+        scan("README-add-in-app.md", Path(DOCS, "README-add-in-app.md").read_text(encoding="utf-8"))
+        for script in ("fleet_skill_identity.py", "install-fleet-skills.py"):
+            scan(script, Path(ROOT, "scripts", script).read_text(encoding="utf-8"))
+        self.assertEqual(offenders, [], "live Slack instruction survived:\n" + "\n".join(offenders))
+
+
+class AgentSeatPinTests(unittest.TestCase):
+    """No rendered skill may overwrite an AGENT_SEAT that is already set.
+
+    BotFleet runs Claude, Codex and other CLIs as engines for its own bots, and
+    those engines load these skills.  A bare `export AGENT_SEAT=<PLATFORM>`
+    would stamp the platform seat over the seat the launcher assigned.  Until
+    the owner's seat-precedence rule lands, every identity block is
+    pin-or-fail and never overwrites.
+    """
+
+    FIX = "python3 scripts/install-fleet-skills.py --repo-only"
+    PIN = re.compile(r'^export AGENT_SEAT="\$\{AGENT_SEAT:[?-]')
+    SENTENCE = (
+        "Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as "
+        "BotFleet assigns its bots' seats."
+    )
+
+    @staticmethod
+    def _exports(text: str) -> list[str]:
+        return [l for l in text.splitlines() if l.startswith("export AGENT_SEAT")]
+
+    def _renders(self) -> list[tuple[str, str]]:
+        src = _session()
+        out: list[tuple[str, str]] = []
+        for key, seat in SEATS.items():
+            out.append((key, specialize_from_monet(src, seat, skill_name="session-start")))
+        out.append(("universal", specialize_universal(src, skill_name="session-start")))
+        return out
+
+    def test_canonical_block_is_a_bare_assignment_the_renderer_replaces(self) -> None:
+        # If the canonical pack ever stops using a bare export, this test
+        # names the dead replacement instead of letting it rot silently.
+        self.assertEqual(self._exports(_session()), ["export AGENT_SEAT=MONET"])
+
+    def test_every_render_has_one_pin_or_fail_line_and_no_bare_assignment(self) -> None:
+        for key, out in self._renders():
+            if key == "kimi":  # STOP-only retired copy: the identity section is cut
+                self.assertEqual(self._exports(out), [], key)
+                continue
+            lines = self._exports(out)
+            self.assertEqual(len(lines), 1, f"{key}: {lines}")
+            self.assertRegex(lines[0], self.PIN, key)
+            self.assertNotRegex(out, r"(?m)^export AGENT_SEAT=[^\"]", key)
+            self.assertNotIn("@@", out, f"{key}: an identity token survived the render")
+
+    def test_exclusive_seat_line_names_its_own_seat_and_platform(self) -> None:
+        for key, seat in SEATS.items():
+            if key in {"kimi", "grok-bot"}:
+                continue
+            out = specialize_from_monet(_session(), seat, skill_name="session-start")
+            want = (
+                'export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — '
+                f"{seat.tag} for an ordinary {seat.notes} session; a launcher such as "
+                "BotFleet may assign another seat, and that assignment wins}\""
+            )
+            self.assertIn(want, out.splitlines(), key)
+
+    def test_sentence_directly_follows_the_code_block(self) -> None:
+        for key, out in self._renders():
+            if key == "kimi":
+                self.assertNotIn(self.SENTENCE, out)
+                continue
+            self.assertRegex(
+                out,
+                r'(?s)export AGENT_SEAT=[^\n]*\n```\n\n' + re.escape(self.SENTENCE) + r"\n",
+                key,
+            )
+
+    def test_grok_bot_keeps_a_seat_that_is_set_and_otherwise_takes_the_launcher_role(self) -> None:
+        out = specialize_from_monet(_session(), SEATS["grok-bot"], skill_name="session-start")
+        (line,) = self._exports(out)
+        self.assertTrue(line.startswith('export AGENT_SEAT="${AGENT_SEAT:-${AGENT_TAG:?set GB-'), line)
+
+    def test_tracked_trees_carry_no_bare_assignment(self) -> None:
+        # Every rendered tree, not only the ones a fresh-render test compares:
+        # the root skills/ tree, the platform trees and the by-seat catalog.
+        # docs/fleet-skills itself is the hand-edited Monet upload pack.
+        offenders: list[str] = []
+        roots = [Path(ROOT, "skills"), Path(DOCS, "by-seat")]
+        roots += [Path(dest) for dest, _seat in repo_platform_copies(ROOT)]
+        for root in roots:
+            for path in sorted(root.rglob("SKILL.md")):
+                text = path.read_text(encoding="utf-8")
+                if re.search(r'(?m)^export AGENT_SEAT=[^"]', text) or "@@" in text:
+                    offenders.append(os.path.relpath(str(path), ROOT))
+        self.assertEqual(offenders, [], f"bare AGENT_SEAT export; re-render with: {self.FIX}")
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is needed to run the pin line")
+    def test_the_line_never_overwrites_and_fails_when_unset(self) -> None:
+        import subprocess
+
+        base = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_")}
+        base["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
+        for key, out in self._renders():
+            if key == "kimi":
+                continue
+            (line,) = self._exports(out)
+            script = f'{line}\nprintf "%s" "$AGENT_SEAT"\n'
+            which = subprocess.run(["bash", "-n", "-c", script], capture_output=True, text=True)
+            self.assertEqual(which.returncode, 0, f"{key}: {which.stderr}")
+
+            kept = subprocess.run(
+                ["bash", "-c", script],
+                env={**base, "AGENT_SEAT": "BF-LAUNCHED"},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual((kept.returncode, kept.stdout), (0, "BF-LAUNCHED"), f"{key}: {kept.stderr}")
+
+            empty = subprocess.run(
+                ["bash", "-c", script],
+                env={**base, "AGENT_SEAT": ""},
+                capture_output=True,
+                text=True,
+            )
+            if key == "grok-bot":
+                # The role comes from the launcher's AGENT_TAG.
+                tagged = subprocess.run(
+                    ["bash", "-c", script],
+                    env={**base, "AGENT_TAG": "GB-ORACLE"},
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual((tagged.returncode, tagged.stdout), (0, "GB-ORACLE"), key)
+                held = subprocess.run(
+                    ["bash", "-c", script],
+                    env={**base, "AGENT_SEAT": "BF-LAUNCHED", "AGENT_TAG": "GB-ORACLE"},
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(held.stdout, "BF-LAUNCHED", key)
+            unset = subprocess.run(
+                ["bash", "-c", script], env=base, capture_output=True, text=True
+            )
+            for label, run in (("empty", empty), ("unset", unset)):
+                self.assertNotEqual(run.returncode, 0, f"{key} ({label}) must fail")
+                self.assertEqual(run.stdout, "", f"{key} ({label}) must print no seat")
+                self.assertIn(
+                    "GB-ORACLE" if key == "grok-bot" else "that assignment wins",
+                    run.stderr,
+                    f"{key} ({label}) message missing",
+                )
+
+
+# Skills whose tracked renders are held at their origin/main text.  The
+# Slack sweep (board 18f61cf4) was told not to touch anything named
+# drive-grok-tui, so its by-seat and platform renders are skipped by the two
+# freshness checks below.  To unfreeze:  delete this constant, run
+# `python3 scripts/install-fleet-skills.py --repo-only`, and commit the five
+# drive-grok-tui renders plus the new by-seat/clutch copy it produces.
+FROZEN_RENDERS = frozenset({"drive-grok-tui"})
+
+
+class CatalogMatchesFreshRenderTests(unittest.TestCase):
+    """by-seat/ and skills/ must equal a fresh render, so a second --repo-only is a no-op."""
+
+    FIX = "python3 scripts/install-fleet-skills.py --repo-only"
+
+    def test_by_seat_catalog_equals_fresh_render(self) -> None:
+        stale: list[str] = []
+        expected_dirs = set()
+        for seat in catalog_seats():
+            key = seat.seat_key or seat.tag.lower()
+            expected_dirs.add(key)
+            for name in catalog_skill_names(DOCS):
+                if name in FROZEN_RENDERS:
+                    continue
+                path = Path(DOCS, "by-seat", key, name, "SKILL.md")
+                if not skill_allowed_for_seat(name, seat):
+                    if path.exists():
+                        stale.append(os.path.relpath(str(path), ROOT) + " (must not exist)")
+                    continue
+                want = specialize_from_monet(_load_skill(name), seat, skill_name=name)
+                have = path.read_text(encoding="utf-8") if path.is_file() else None
+                if have != want:
+                    stale.append(os.path.relpath(str(path), ROOT))
+        on_disk = {p.name for p in Path(DOCS, "by-seat").iterdir() if p.is_dir()}
+        self.assertEqual(on_disk, expected_dirs, "by-seat dirs differ from catalog_seats()")
+        self.assertEqual(stale, [], f"stale by-seat copies; re-render with: {self.FIX}")
+
+    def test_universal_skills_equal_fresh_render(self) -> None:
+        stale = []
+        for name in catalog_skill_names(DOCS):
+            path = Path(ROOT, "skills", name, "SKILL.md")
+            want = specialize_universal(_load_skill(name), skill_name=name)
+            if not path.is_file() or path.read_text(encoding="utf-8") != want:
+                stale.append(os.path.relpath(str(path), ROOT))
+        self.assertEqual(stale, [], f"stale skills/ copies; re-render with: {self.FIX}")
+
+
 class RepoPlatformCopiesTests(unittest.TestCase):
     """The repo-tracked platform trees must equal a fresh render of the pack.
 
@@ -606,7 +980,7 @@ class RepoPlatformCopiesTests(unittest.TestCase):
         stale: list[str] = []
         for dest, seat in repo_platform_copies(ROOT):
             for name in catalog_skill_names(DOCS):
-                if not skill_allowed_for_seat(name, seat):
+                if name in FROZEN_RENDERS or not skill_allowed_for_seat(name, seat):
                     continue
                 path = Path(dest, name, "SKILL.md")
                 want = specialize_from_monet(
@@ -727,6 +1101,27 @@ class InstallerRepoOnlyTests(unittest.TestCase):
         self.assertNotIn("--repo-only", out)
         self.assertTrue(self._home_files(), "default mode must write tool homes")
 
+    def test_default_mode_never_writes_retired_or_catalog_only_homes(self) -> None:
+        # Make every one of those homes' parent exist, so only the seat table,
+        # not a missing folder, can keep the installer out of them.
+        for parent in (".deepseek", ".kimi", ".renoir", "Desktop", ".clutch"):
+            (self.home / parent).mkdir(parents=True)
+        self._run([])
+        wrote = [
+            f for f in self._home_files()
+            if f.startswith((".deepseek/", ".kimi/", ".renoir/", "Desktop/", ".clutch/"))
+        ]
+        self.assertEqual(wrote, [])
+        self.assertTrue(
+            (self.home / ".claude" / "skills" / "session-start" / "SKILL.md").is_file()
+        )
+        shared = (self.home / ".claude" / "skills" / "session-start" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("AGENT_SEAT=CLAUDE", shared)
+        self.assertIn("set AGENT_SEAT — CLAUDE for an ordinary Claude session", shared)
+        self.assertNotIn("MONET, CLAUDE, or RENOIR", shared)
+
     def test_unchanged_pack_zip_is_not_rewritten(self) -> None:
         self._run(["--repo-only"])
         zpath = Path(self.installer.DOCS_SKILLS, "session-start.zip")
@@ -771,7 +1166,7 @@ class BranchPrefixMatchesLaneNewTests(unittest.TestCase):
         line = next(
             l for l in text.splitlines() if l.strip().startswith("- Antigravity / Gemini:")
         )
-        self.assertIn(f"branch prefix `{prefix}`", line)
+        self.assertIn(f"prefix `{prefix}`", line)
         # The bare "`agent/` or `ag/`" pairing offered two valid prefixes.
         self.assertNotIn("`agent/` or `ag/`", line)
 

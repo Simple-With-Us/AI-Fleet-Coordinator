@@ -21,8 +21,7 @@ mirror, CI, and owner-only dashboard steps.
   --acronym DD \
   --code-dir DealDex \
   --worktree-prefix dealdex \
-  --board DEALDEX-EFFORT-LOG.md \
-  --slack-repo DealDex
+  --board DEALDEX-EFFORT-LOG.md
 ```
 
 `--help` lists every flag. After the script: `python3 scripts/check-fleet-registry.py`.

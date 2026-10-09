@@ -104,7 +104,7 @@ per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
    |----------|----------------|
    | Claude Code / Monet | `~/.claude/CLAUDE.md` |
    | Codex | `~/.codex/AGENTS.md` |
-   | Gemini / Antigravity | `~/.gemini/GEMINI.md` |
+   | Gemini / Antigravity | `~/.gemini/config/AGENTS.md` |
    | Cursor | Cursor user rules + this repo's `TEMPLATE-AGENTS.md` |
    | Grok | Grok user rules (already point at `AGENT-SYNC.md`) |
    | MiniMax (MiniMax Code / Mavis) | `~/.minimax/memory/user.md` — see "MiniMax has no rules file" below |
