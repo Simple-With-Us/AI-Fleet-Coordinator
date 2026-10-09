@@ -27,7 +27,8 @@
   "overrides": {
     "agents": {
       "@modelcontextprotocol/client": "$@modelcontextprotocol/client",
-      "@modelcontextprotocol/sdk": "$@modelcontextprotocol/sdk"
+      "@modelcontextprotocol/sdk": "$@modelcontextprotocol/sdk",
+      "@modelcontextprotocol/server": "$@modelcontextprotocol/server"
     }
   }
 }
