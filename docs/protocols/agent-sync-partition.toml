@@ -43,8 +43,9 @@ GROK-WEB = "server"
 INSTINCT = "server"
 ECHO = "server"
 
-# Grok Bot personas.  GB-DIRECTOR is an admin today (granted 2026-10-07 for linkifiers), so the
-# listener refuses its key until it is a moderator or member (listener decision 7).
+# Grok Bot personas.  GB-DIRECTOR is a realm moderator now (it was an admin earlier), and
+# the listener accepts moderator and member bots only (listener decision 7), so its key is
+# accepted.  Its seat stays disabled in the server sample only because it has no routine yet.
 GB-DIRECTOR = "server"
 GB-FIXER = "server"
 GB-DESIGNER = "server"
