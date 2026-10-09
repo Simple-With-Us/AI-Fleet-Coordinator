@@ -265,9 +265,9 @@
     {
       "tag": "GROK-WEB",
       "notesName": "Grok Web",
-      "worktreeSuffix": "grokweb",
+      "worktreeSuffix": "grok-web",
       "branchPrefixes": [],
-      "notes": "Grok on the web and the iOS app: a cloud seat with no Mac lanes or checkouts (owner 2026-10-08).  Held by the server listener, not the Mac one (docs/protocols/agent-sync-partition.toml).  No branch prefix, as in the AGENT-SYNC.md Active Seats table, so lane refuses it before it makes a worktree.  The suffix is grokweb, not grok-web, so it does not extend the live GROK seat's grok- folder name and block GROK slugs that start with web-.",
+      "notes": "Grok on the web and the iOS app: a cloud seat with no Mac lanes or checkouts (owner 2026-10-08).  Held by the server listener, not the Mac one (docs/protocols/agent-sync-partition.toml).  No branch prefix, as in the AGENT-SYNC.md Active Seats table, so lane refuses it before it makes a worktree.  The tag GROK-WEB makes grok-web a seat token whatever the suffix is (layout.py derives an alias from the lowercase tag), so a GROK lane slug may not start with web-, as grok plus build is GROK-BUILD's.  GROK-WEB makes no lanes, so nothing else is affected.",
       "zulipBotEmail": "grok-web-bot@simplewithus.zulipchat.com",
       "zulipFileCode": "Grok-Web"
     },
