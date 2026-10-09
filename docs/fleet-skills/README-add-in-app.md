@@ -18,7 +18,7 @@ Updated **2026-10-08**: the installer **specializes identity per seat** (Zulip b
 | DeepSeek Harness | `[DSH]` | `docs/fleet-skills/by-seat/deepseek/` (catalog only) | `deepseek/` | Retired 2026-09-19, use Clutch.  Former Slack tag `DEEPSEEK` is retired.  A DeepSeek *model* in Cursor is still Cursor |
 | Clutch | `[CLUTCH]` | `docs/fleet-skills/by-seat/clutch/` (catalog only, no skill home yet) | `clutch/` | Replaces HARNESS and DSH.  One seat for every model run through Clutch |
 | MiniMax Code / Mavis | `[MM]` | `~/.minimax/skills` | `minimax/` | Former Slack tag `MINIMAX` is retired.  Loaded on demand from `<available_skills>`, never auto-applied; the always-on fleet pointer is `~/.minimax/memory/user.md` |
-| Kimi | `[KIMI]` | `~/.kimi/skills` | `kimi/` | Retired — do not take work |
+| Kimi | `[KIMI]` | `docs/fleet-skills/by-seat/kimi/` (catalog only) | `kimi/` | Retired — do not take work |
 
 These skills govern fleet operations across all apps (Socratic.Trade, Congress.Trade, Usage-Monitor, congress-trading-shared, DealDex, Personal-Site, Autorotate, ContactLogo, and AI-Fleet-Coordinator).
 

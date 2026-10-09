@@ -172,10 +172,10 @@ GROK_EXTRA = (
 # `~/.claude/skills` home renders as CLAUDE.  Other tools scan this directory
 # (fx does), which is the one thing the banner has to say.
 CLAUDE_SHARED_BANNER = (
-    "> **Shared `~/.claude/skills`.** This directory is the `CLAUDE` seat's "
-    "skill home, and other tools scan it too.  Codex, Cursor, Grok, Grok-Web, "
-    "AG, Clutch, FX, MM, MC, and MA have their own skill dirs and must not take "
-    "identity from here.\n\n"
+    "> **Shared `~/.claude/skills`.**  This directory is the `CLAUDE` seat's "
+    "skill home, and other tools scan it too.  Other seats (Codex, Cursor, "
+    "Grok, Grok-Web, AG, Clutch, FX, MM, MC, MA) must take identity from their "
+    "own pack, never from here.\n\n"
 )
 
 CLAUDE_IDENTITY = (
@@ -194,7 +194,7 @@ MONET_IDENTITY = (
 )
 
 MONET_RETIRED_BANNER = (
-    "> **Retired seat.** Owner directive 2026-10-07: the Monet Claude account and "
+    "> **Retired seat.**  Owner directive 2026-10-07: the Monet Claude account and "
     "app are no longer used, and `CLAUDE` is the only Claude seat.  Do not take "
     "work as MONET, do not leave MONET In Progress, and do not install this pack "
     "anywhere.  This catalog copy is inactive.\n\n"
@@ -209,7 +209,7 @@ DSH_IDENTITY = (
 )
 
 DSH_RETIRED_BANNER = (
-    "> **Retired seat.** DSH (DeepSeek Harness) is retired (2026-09-19): use "
+    "> **Retired seat.**  DSH (DeepSeek Harness) is retired (2026-09-19): use "
     "`CLUTCH` for `Simple-With-Us/Clutch`.  Do not take work as DSH and do not "
     "install this pack to `~/.deepseek/skills`.  This catalog copy is inactive.\n\n"
 )
@@ -224,7 +224,7 @@ CLUTCH_IDENTITY = (
 )
 
 CLUTCH_CATALOG_BANNER = (
-    "> **Catalog copy.** The Clutch seat has no skill home yet, so this pack is "
+    "> **Catalog copy.**  The Clutch seat has no skill home yet, so this pack is "
     "not installed anywhere.  Do not copy it into another tool's skill "
     "directory.\n\n"
 )
@@ -234,7 +234,7 @@ KIMI_IDENTITY = (
     "**KIMI is retired / unavailable long-term (owner 2026-08-21).** Do not "
     "start a Kimi session.  Do not take new work, do not leave Kimi In Progress, "
     "and do not reserve future lanes for Kimi.  If you are reading this after a "
-    "mistaken spawn, say so in #agent-sync topic `roll call` and stop.  Never sign as Monet."
+    "mistaken spawn, say so in your own chat with the owner and stop.  Never sign as Monet."
 )
 
 KIMI_RETIRED_BANNER = (
@@ -254,7 +254,7 @@ MINIMAX_EXTRA = (
 )
 
 RENOIR_RETIRED_BANNER = (
-    "> **Retired seat.** Owner directive 2026-10-07: the seat never opened, and "
+    "> **Retired seat.**  Owner directive 2026-10-07: the seat never opened, and "
     "the Renoir Claude account and app are no longer used.  `CLAUDE` is the only "
     "Claude seat.  Do not install to `~/.renoir/skills`.  Do not take fleet work "
     "as RENOIR.  This catalog copy is inactive.\n\n"
@@ -1071,7 +1071,7 @@ def retired_description(seat: Seat) -> str:
     return (
         f"{seat.tag} is retired.  Do not start a {seat.notes} session.  Do not "
         "take work.  If you are reading this after a mistaken spawn, say so in "
-        "the agent-sync channel (topic roll call) and stop."
+        "your own chat with the owner and stop."
     )
 
 
@@ -1133,7 +1133,7 @@ def _apply_retired(text: str, seat: Seat, skill_name: str) -> str:
             + "## Stop\n\n"
             + f"{seat.tag} is retired.  Do not start a {seat.notes} session.  Do not take "
             "work.  If you are reading this after a mistaken spawn, say so in "
-            "#agent-sync topic `roll call` and stop.  "
+            "your own chat with the owner and stop.  "
             + f"Do not export `AGENT_SEAT={seat.tag}` to take work.  Do not claim work "
             f"or pick a {seat.notes} lane.  Coordinator self-id is `{COORDINATOR_SELF_ID}`.  "
             "A fleet-wide wake is `@*fleet*` in #agent-sync topic `fleet`.\n"

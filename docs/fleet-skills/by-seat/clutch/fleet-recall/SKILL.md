@@ -6,7 +6,7 @@ description: >-
 
 # Fleet recall
 
-> **Catalog copy.** The Clutch seat has no skill home yet, so this pack is not installed anywhere.  Do not copy it into another tool's skill directory.
+> **Catalog copy.**  The Clutch seat has no skill home yet, so this pack is not installed anywhere.  Do not copy it into another tool's skill directory.
 
 
 The fleet has one shared memory: the `fleet-agents` collection in the self-hosted Qdrant on the

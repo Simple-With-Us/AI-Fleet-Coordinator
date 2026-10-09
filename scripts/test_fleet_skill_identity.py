@@ -771,6 +771,15 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
         self.assertEqual(offenders, [], "live Slack instruction survived:\n" + "\n".join(offenders))
 
 
+# Skills whose tracked renders are held at their origin/main text.  The
+# Slack sweep (board 18f61cf4) was told not to touch anything named
+# drive-grok-tui, so its by-seat and platform renders are skipped by the two
+# freshness checks below.  To unfreeze:  delete this constant, run
+# `python3 scripts/install-fleet-skills.py --repo-only`, and commit the five
+# drive-grok-tui renders plus the new by-seat/clutch copy it produces.
+FROZEN_RENDERS = frozenset({"drive-grok-tui"})
+
+
 class CatalogMatchesFreshRenderTests(unittest.TestCase):
     """by-seat/ and skills/ must equal a fresh render, so a second --repo-only is a no-op."""
 
@@ -783,6 +792,8 @@ class CatalogMatchesFreshRenderTests(unittest.TestCase):
             key = seat.seat_key or seat.tag.lower()
             expected_dirs.add(key)
             for name in catalog_skill_names(DOCS):
+                if name in FROZEN_RENDERS:
+                    continue
                 path = Path(DOCS, "by-seat", key, name, "SKILL.md")
                 if not skill_allowed_for_seat(name, seat):
                     if path.exists():
@@ -819,7 +830,7 @@ class RepoPlatformCopiesTests(unittest.TestCase):
         stale: list[str] = []
         for dest, seat in repo_platform_copies(ROOT):
             for name in catalog_skill_names(DOCS):
-                if not skill_allowed_for_seat(name, seat):
+                if name in FROZEN_RENDERS or not skill_allowed_for_seat(name, seat):
                     continue
                 path = Path(dest, name, "SKILL.md")
                 want = specialize_from_monet(
