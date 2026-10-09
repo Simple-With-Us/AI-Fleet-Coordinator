@@ -142,13 +142,17 @@ class IdleUnloadSelectTests(unittest.TestCase):
         base = {
             "sessionId": "idle-old",
             "live": True,
+            "loaded": True,
             "turnState": "idle",
             "updatedAt": now - (14 * 3600),
         }
         base.update(kwargs)
         return base, now
 
-    def test_unloads_live_idle_over_12h(self):
+    def test_default_long_clock_is_four_hours(self):
+        self.assertEqual(DEFAULT_IDLE_UNLOAD_SEC, 4 * 3600)
+
+    def test_unloads_live_idle_over_four_hours(self):
         row, now = self._row()
         self.assertIsNone(
             unload_skip_reason(row, now=now, max_idle_sec=DEFAULT_IDLE_UNLOAD_SEC, self_id="me")
@@ -166,12 +170,19 @@ class IdleUnloadSelectTests(unittest.TestCase):
             "fresh",
         )
 
-    def test_eight_hours_still_fresh_at_12h(self):
+    def test_three_hours_still_fresh_at_four_hours(self):
         row, now = self._row()
-        row["updatedAt"] = now - (8 * 3600)
+        row["updatedAt"] = now - (3 * 3600)
         self.assertEqual(
             unload_skip_reason(row, now=now, max_idle_sec=DEFAULT_IDLE_UNLOAD_SEC, self_id="me"),
             "fresh",
+        )
+
+    def test_eight_hours_is_idle_at_four_hours(self):
+        row, now = self._row()
+        row["updatedAt"] = now - (8 * 3600)
+        self.assertIsNone(
+            unload_skip_reason(row, now=now, max_idle_sec=DEFAULT_IDLE_UNLOAD_SEC, self_id="me")
         )
 
     def test_skips_working_and_needs_input(self):
@@ -186,8 +197,11 @@ class IdleUnloadSelectTests(unittest.TestCase):
     def test_skips_self_and_not_live(self):
         row, now = self._row(sessionId="me")
         self.assertEqual(unload_skip_reason(row, now=now, self_id="me"), "self")
-        row2, now = self._row(live=False)
-        self.assertEqual(unload_skip_reason(row2, now=now, self_id="me"), "not_live")
+        row2, now = self._row(live=False, loaded=False)
+        self.assertEqual(unload_skip_reason(row2, now=now, self_id="me"), "not_loaded")
+        # A TUI with nothing loaded frees nothing: attached is a skip input, not a candidate.
+        row3, now = self._row(loaded=False)
+        self.assertEqual(unload_skip_reason(row3, now=now, self_id="me"), "not_loaded")
 
     def test_skips_pending_tool_and_missing_ts(self):
         row, now = self._row(pendingTool="bash")
