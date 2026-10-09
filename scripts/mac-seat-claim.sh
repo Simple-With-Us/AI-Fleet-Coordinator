@@ -173,7 +173,7 @@ spawn_local_agent() {
     echo $! >"${logfile}.pid"
   )
   echo "mac-seat-claim: spawned ${agent} pid $(cat "${logfile}.pid") log ${logfile}"
-  post_agent_sync "repo: ${issue_ref} | mac-seat claimed ${issue_ref}; spawned ${agent} -p (log ${logfile}).  Not claiming compile passed." "mac seat claims ${REPO_FILTER:+$REPO_FILTER}"
+  post_agent_sync "repo: ${issue_ref} | mac-seat claimed ${issue_ref}; spawned ${agent} -p (log ${logfile}).  Not claiming compile passed." "mac seat claims${REPO_FILTER:+ $REPO_FILTER}"
 }
 
 pick_issue() {
