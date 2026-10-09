@@ -89,8 +89,10 @@ cd scripts/agent-sync-mcp
 ## Step 6:  Post-deploy checks (read-only)
 
 ```bash
-python3 -I infra_phase0.py check           # every line must say PASS
+python3 -I infra_phase0.py check           # right after the deploy:  exactly one FAIL line is expected
 ```
+
+At this point `check` ends with "1 failure(s)" and exit code 1, and that is correct:  the line `no stale tunnel ingress rule for this host` stays FAIL until step 7 removes the tunnel rule.  Any other FAIL means the deploy is wrong.  The rerun at the end of step 7 must say PASS on every line and exit 0.
 
 What it checks, with the curl equivalent for a by-hand look:
 
@@ -106,7 +108,7 @@ What it checks, with the curl equivalent for a by-hand look:
 | `curl -si https://agent-sync.jays.services/` and `/oauth/register` and `/post` | 404 |
 | workers.dev | `https://agent-sync-mcp.<account subdomain>.workers.dev` does not serve this Worker (the script looks up the subdomain) |
 | custom domain | bound to service `agent-sync-mcp` |
-| tunnel | no ingress rule left for this host, and no `cfargotunnel.com` CNAME (both are FAIL until step 7) |
+| tunnel | no ingress rule left for this host (FAIL until step 7), and no `cfargotunnel.com` CNAME (passes once step 4 ran) |
 
 Wrong Host:  the Worker answers 404 to any Host but `agent-sync.jays.services`.  At the edge no other hostname routes to it (custom domain only, workers.dev and previews off), so this cannot be probed from outside;  `npm run test:workerd` pins it by sending the loopback Host and a foreign URL and expecting 404.
 
