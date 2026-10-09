@@ -6,7 +6,7 @@ description: >-
 
 # Apple Notes (Universal)
 
-> **This install is for `MA`.** Slack `[MA]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  Worktrees `~/apps/<app>-muse-assist`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  Worktrees `~/apps/<app>-muse-assist`.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MA-zuliprc` (mode 600).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
@@ -36,7 +36,7 @@ Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do
 [APP, Agent] short topic
 ```
 
-- Acronyms first, then `<Agent>` (Title Case, not all-caps Slack tags).
+- Acronyms first, then `<Agent>` (Title Case, not an all-caps seat tag).
 - Multi-app: `[ST, CT, Agent] …` (impact order).
 - No date in the title.  No word "session".  Do not repeat the title as an H1 in the body.
 
@@ -85,7 +85,7 @@ Never pass empty `- ` bullets (they render as blank dots).  Put identifiers with
 
 Do Notes: plans, design docs, reviews, handoffs, rollouts, **Completion / work-complete** for anything the owner might ask about.
 
-Skip: pure `#agent-sync` chatter, effort-board row edits, routine commit messages, peer-only PR nits.
+Skip: pure #agent-sync topic chatter, effort-board row edits, routine commit messages, peer-only PR nits.
 
 Open a living work note when substantial work starts.  Always Completion at the end.  Update in place; unpin stale Completion notes when the lane closes (`--unpin-only`).
 
