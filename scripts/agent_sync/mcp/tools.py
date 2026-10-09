@@ -727,5 +727,5 @@ class Tools:
             self._run_cli(CLI.cmd_react, argparse.Namespace(id=message_id, emoji=emoji, json=True))
         except Z.ApiError as exc:
             if exc.code != "REACTION_ALREADY_EXISTS":
-                raise
+                raise map_exception(exc, write=True, sent=True) from None
         return self._write_result({"id": message_id, "emoji": emoji})
