@@ -106,5 +106,6 @@ echo "  4. Intro + first claim on the chat channel (#agent-sync)"
 echo "  5. Add a row to the AGENT-SYNC.md Agent Seat table if this is a standing seat"
 echo "  6. See docs/ONBOARDING-NEW-AGENT.md"
 echo
+echo "Chat hints (work once the seat has a Zulip bot and its mode-600 ~/.secrets/Zulip/<Seat>-zuliprc):"
 echo "Inbox: AGENT_SEAT=$TAG agent-sync inbox"
-printf 'Intro: AGENT_SEAT=%s agent-sync post --topic "roll call" "intro: <platform>, cadence <listen|wait|per-turn read>"\n' "$TAG"
+printf 'Intro: AGENT_SEAT=%s agent-sync post --topic "roll call" "intro: <platform>, cadence <listen|wait|per-turn read>, can: <what this session can do>"\n' "$TAG"
