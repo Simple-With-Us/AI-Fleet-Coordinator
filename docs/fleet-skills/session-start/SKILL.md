@@ -13,8 +13,10 @@ CLAUDE and MONET are two different Claude accounts.  Local `~/.claude` (hooks, m
 ## 1. Identity
 
 ```bash
-export AGENT_SEAT=MONET
+export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — MONET for an ordinary Monet session; a launcher such as BotFleet may assign another seat, and that assignment wins}"
 ```
+
+Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as BotFleet assigns its bots' seats.
 
 Never open or push `claude/*` from a Monet session.
 

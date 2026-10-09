@@ -19,6 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
 from fleet_skill_identity import (  # noqa: E402
+    _SEAT_PIN_SOURCE,
     COORDINATOR_SELF_ID,
     FORBIDDEN_LOCAL_IOS_SHIP,
     GB_ROLE_TAGS,
@@ -30,6 +31,7 @@ from fleet_skill_identity import (  # noqa: E402
     is_grok_bot_tag,
     platform_installs,
     repo_platform_copies,
+    seat_pin_block,
     set_yaml_description,
     skill_allowed_for_seat,
     specialize_from_monet,
@@ -507,15 +509,17 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertNotIn("MINIMAX", tags)
         self.assertNotIn("DEEPSEEK", tags)
         text = Path(os.path.join(ROOT, "AGENT-SYNC.md")).read_text(encoding="utf-8")
-        self.assertIn("| **MiniMax (`MM`)** |", text)
-        self.assertIn("| **DeepSeek Harness (`DSH`)** |", text)
+        # The Oct 7 rewrite moved the seat roster into the Active Seats
+        # table (MM is a row) and the Availability list (DSH is retired).
+        self.assertIn("| MM | `MiniMax` | `minimax/` |", text)
+        self.assertNotRegex(text, r"(?m)^\| DSH \|")
+        self.assertIn("DSH, DeepSeek Harness (2026-09-19)", text)
         self.assertIn("`[MM]`", text)
-        self.assertIn("`[DSH]`", text)
         self.assertNotIn("| **MiniMax (`MINIMAX`)** |", text)
         self.assertNotIn("| **DeepSeek (`DEEPSEEK`)** |", text)
         coord = _coord()
-        self.assertIn("MiniMax (MM): `[MM]`", coord)
-        self.assertIn("DeepSeek Harness (DSH): `[DSH]`", coord)
+        self.assertIn("MiniMax (MM): `MM` (display `MiniMax`, prefix `minimax/`", coord)
+        self.assertIn("Retired:  MONET, RENOIR, HARNESS, DSH, KIMI have no bot", coord)
         self.assertNotIn("MiniMax: `[MINIMAX]`", coord)
         self.assertNotIn("DeepSeek: `[DEEPSEEK]`", coord)
 
@@ -524,7 +528,11 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertIn("| `AFC` |", text)
         self.assertIn("Simple-With-Us/AI-Fleet-Coordinator", text)
         self.assertIn("[AFC] sync-N", text)
-        self.assertIn("every Grok Bot seat", text)
+        # The fleet-wide wake rule now lives in "Undirected, Directed, and
+        # Fleet-Wide"; `fleet` is a recipient only, never a sender or an acronym.
+        self.assertIn("### Undirected, Directed, and Fleet-Wide", text)
+        self.assertIn("every listening seat on every platform", text)
+        self.assertIn("`fleet` is a recipient only", text)
         self.assertNotIn("| `AFL` |", text)
         for phrase in self.FORBIDDEN_COORDINATOR_SELF:
             self.assertNotIn(phrase, text, phrase)
@@ -784,7 +792,7 @@ class AgentSeatPinTests(unittest.TestCase):
     those engines load these skills.  A bare `export AGENT_SEAT=<PLATFORM>`
     would stamp the platform seat over the seat the launcher assigned.  Until
     the owner's seat-precedence rule lands, every identity block is
-    pin-or-fail and never overwrites.
+    pin-or-fail and never overwrites, the canonical Monet pack's included.
     """
 
     FIX = "python3 scripts/install-fleet-skills.py --repo-only"
@@ -806,10 +814,16 @@ class AgentSeatPinTests(unittest.TestCase):
         out.append(("universal", specialize_universal(src, skill_name="session-start")))
         return out
 
-    def test_canonical_block_is_a_bare_assignment_the_renderer_replaces(self) -> None:
-        # If the canonical pack ever stops using a bare export, this test
-        # names the dead replacement instead of letting it rot silently.
-        self.assertEqual(self._exports(_session()), ["export AGENT_SEAT=MONET"])
+    def test_canonical_block_is_the_monet_pin_or_fail_block_the_renderer_replaces(self) -> None:
+        # The canonical pack carries the retired MONET seat's own pin-or-fail
+        # block (what seat_pin_block() renders for MONET), never a bare
+        # assignment.  If its shape drifts from the renderer's source pattern,
+        # this test names the dead replacement instead of letting it rot.
+        src = _session()
+        block = seat_pin_block(SEATS["monet"])
+        self.assertEqual(self._exports(src), [block.splitlines()[1]])
+        self.assertIn(block, src)
+        self.assertEqual(_SEAT_PIN_SOURCE.findall(src), [block])
 
     def test_every_render_has_one_pin_or_fail_line_and_no_bare_assignment(self) -> None:
         for key, out in self._renders():
@@ -1192,9 +1206,12 @@ class BranchPrefixMatchesLaneNewTests(unittest.TestCase):
 
 
 class AgentSyncRosterTests(unittest.TestCase):
-    """The availability roster must agree with the seat table and registry."""
+    """The availability roster must agree with the seat table and registry.
 
-    MARKER = "Retired, do not assign:"
+    The Oct 7 rewrite replaced the old "## Agent availability" section and the
+    bold seat-table rows with "### Availability" (an Available bullet and a
+    Retired bullet list) and the "### Active Seats" table.
+    """
 
     def _registry(self) -> list[dict]:
         import json
@@ -1204,29 +1221,44 @@ class AgentSyncRosterTests(unittest.TestCase):
         )
         return data["seats"]
 
+    def _text(self) -> str:
+        return Path(ROOT, "AGENT-SYNC.md").read_text(encoding="utf-8")
+
+    def _section(self, start_marker: str, end_marker: str) -> str:
+        text = self._text()
+        start = text.index(start_marker)
+        return text[start : text.index(end_marker, start + len(start_marker))]
+
     def _roster(self) -> str:
-        text = Path(ROOT, "AGENT-SYNC.md").read_text(encoding="utf-8")
-        start = text.index("## Agent availability")
-        end = text.index("## CI Runner Infrastructure Policy")
-        return text[start:end]
+        return self._section("\n### Availability\n", "\n## ")
+
+    def _active_table_tags(self) -> set[str]:
+        table = self._section("\n### Active Seats\n", "\n- **Tags.**")
+        return {
+            m.group(1)
+            for m in re.finditer(r"(?m)^\| ([A-Z][A-Z-]*) \|", table)
+        }
 
     def _available_paragraph(self) -> str:
         roster = self._roster()
         start = roster.index("**Available (normal):**")
-        return roster[start : roster.index("\n\n", start)]
+        return roster[start : roster.index("\n- **Retired.**", start)]
 
-    def test_active_seats_sentence_lists_no_retired_seat(self) -> None:
-        match = re.search(r"Active seats: ([A-Z, -]+)\.", self._roster())
-        self.assertIsNotNone(match)
-        active = {t.strip() for t in match.group(1).split(",")}
+    def _retired_block(self) -> str:
+        roster = self._roster()
+        start = roster.index("- **Retired.**")
+        return roster[start:]
+
+    def test_active_seats_table_lists_no_retired_seat(self) -> None:
+        active = self._active_table_tags()
         retired = {r["tag"] for r in self._registry() if r.get("retired")}
         self.assertEqual(active & retired, set(), active)
         self.assertIn("CLUTCH", active)
+        self.assertIn("CLAUDE", active)
 
     def test_available_list_has_no_retired_seat_and_names_clutch(self) -> None:
-        para = self._available_paragraph()
-        self.assertIn(self.MARKER, para)
-        before, after = para.split(self.MARKER, 1)
+        before = self._available_paragraph()
+        after = self._retired_block()
         retired = [r["tag"] for r in self._registry() if r.get("retired")]
         for tag in retired:
             self.assertNotRegex(before, rf"\b{re.escape(tag)}\b", tag)
@@ -1235,15 +1267,22 @@ class AgentSyncRosterTests(unittest.TestCase):
             self.assertRegex(after, rf"\b{tag}\b", tag)
 
     def test_roster_never_says_renoir_is_a_future_seat(self) -> None:
-        self.assertNotIn("future third seat", self._roster())
+        self.assertNotIn("future third seat", self._text())
+        self.assertIn("RENOIR (owner 2026-10-07)", self._retired_block())
 
-    def test_seat_table_marks_the_same_seats_retired(self) -> None:
-        text = Path(ROOT, "AGENT-SYNC.md").read_text(encoding="utf-8")
+    def test_retired_list_matches_the_seat_table(self) -> None:
+        text = self._text()
+        active = self._active_table_tags()
+        block = self._retired_block()
         for tag in ("MONET", "RENOIR", "HARNESS"):
+            self.assertNotIn(tag, active, tag)
             row = next(
-                l for l in text.splitlines() if l.startswith(f"| **") and f"(`{tag}`)" in l
+                (l for l in block.splitlines() if l.lstrip().startswith(f"- {tag} (")),
+                None,
             )
-            self.assertIn("Retired 2026-10-07", row, tag)
+            self.assertIsNotNone(row, f"{tag} missing from the Retired list")
+            self.assertIn("2026-10-07", row, tag)
+            self.assertNotRegex(text, rf"(?m)^\| {tag} \|", tag)
 
 
 if __name__ == "__main__":
