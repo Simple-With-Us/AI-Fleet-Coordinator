@@ -55,4 +55,8 @@ export class SeatGate extends DurableObject {
   refusals(limit) {
     return state.refusals(this.store, limit);
   }
+
+  tokenRefusals(limit) {
+    return state.tokenRefusals(this.store, limit);
+  }
 }

@@ -6,9 +6,10 @@
 //
 // Request order, outermost first:
 //   1. Host check (404 for anything but agent-sync.jays.services) and a path
-//      allowlist (404 for everything else).
-//   2. /oauth/token:  rate limit, CIMD client allowlist before any fetch,
-//      blank client_secret dropped.
+//      allowlist (404 for everything else).  GET /health is a static 200.
+//   2. /oauth/token:  rate limit, Content-Type and Authorization checked the
+//      way the library reads them, client_id allowlist before any fetch, blank
+//      client_secret dropped, and the re-serialized form is what gets forwarded.
 //   3. The OAuth library:  metadata, token endpoint, bearer check on /mcp.
 //   4. /mcp:  seat, epoch and grant age re-checked in the seat's SeatGate.
 //      /authorize and /admin:  Access JWT re-verified, then our gates.
@@ -32,14 +33,16 @@ import {
   preGateAuthorize,
   postGateAuthRequest,
   gateTokenForm,
-  basicClientId,
+  isFormContentType,
+  readLimited,
   isUrlShapedClientId,
+  cimdHostname,
   logSafe,
   sameOriginPost,
   safeEqual,
 } from "./policy.js";
 import { verifyAccessJwt } from "./access.js";
-import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences } from "./pages.js";
+import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy } from "./pages.js";
 import { mcpHandler } from "./mcp.js";
 
 export { SeatGate };
@@ -74,8 +77,12 @@ function gate(env, name) {
   return env.SEAT_GATE.get(env.SEAT_GATE.idFromName(name));
 }
 
-async function logRefusal(env, { where, reason, clientId, redirectUri }) {
-  const row = { where, reason: logSafe(reason, 80), client_id: logSafe(clientId), redirect_uri: logSafe(redirectUri) };
+/**
+ * Refusals go to one SeatGate instance.  `by` is the Access email, present only
+ * on /authorize rows (those requests passed Access);  token rows are anonymous.
+ */
+async function logRefusal(env, { where, reason, clientId, redirectUri, by }) {
+  const row = { where, reason: logSafe(reason, 80), client_id: logSafe(clientId), redirect_uri: logSafe(redirectUri), ...(by ? { by: logSafe(by, 120) } : {}) };
   console.log(JSON.stringify({ event: "refused", ...row }));
   try {
     await gate(env, GATE_LOG_NAME).logRefusal(row);
@@ -206,24 +213,24 @@ async function serveApp(request, env, _ctx) {
   }
   const oauth = env.OAUTH_PROVIDER;
   if (route === "authorize") {
-    if (request.method === "GET") return authorizeGet(request, env, config, oauth);
+    if (request.method === "GET") return authorizeGet(request, env, config, oauth, who.email);
     if (request.method === "POST") return authorizePost(request, env, config, oauth, who.email);
     return textResponse("Method Not Allowed", 405, { Allow: "GET, POST" });
   }
   return serveAdmin(request, env, config, oauth, who.email);
 }
 
-async function authorizeGet(request, env, config, oauth) {
+async function authorizeGet(request, env, config, oauth, email) {
   const params = new URL(request.url).searchParams;
   const pre = preGateAuthorize(params, config);
   if (!pre.ok) {
-    await logRefusal(env, { where: "authorize", ...pre });
+    await logRefusal(env, { where: "authorize", ...pre, by: email });
     return errorPage("Request Refused", `This app and redirect are not on the allowlist (${pre.reason}).`, 400);
   }
   // Arming first, so an unarmed request never makes the library fetch a CIMD document.
   const seatState = await gate(env, pre.seat).getState();
   if (!seatState.armed) {
-    await logRefusal(env, { where: "authorize", reason: "not_armed", clientId: pre.clientId, redirectUri: pre.redirectUri });
+    await logRefusal(env, { where: "authorize", reason: "not_armed", clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
     return noConnectionPage();
   }
 
@@ -232,14 +239,14 @@ async function authorizeGet(request, env, config, oauth) {
     authRequest = await oauth.parseAuthRequest(request);
   } catch (error) {
     if (error instanceof AuthorizationError || error instanceof CimdFetchError) {
-      await logRefusal(env, { where: "authorize", reason: `library_${error.code ?? error.reason ?? "refused"}`, clientId: pre.clientId, redirectUri: pre.redirectUri });
+      await logRefusal(env, { where: "authorize", reason: `library_${error.code ?? error.reason ?? "refused"}`, clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
       return errorPage("Request Refused", "The OAuth library refused this request.", 400);
     }
     throw error;
   }
   const seat = postGateAuthRequest(authRequest, config);
   if (seat !== pre.seat) {
-    await logRefusal(env, { where: "authorize", reason: "post_gate", clientId: pre.clientId, redirectUri: pre.redirectUri });
+    await logRefusal(env, { where: "authorize", reason: "post_gate", clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
     return errorPage("Request Refused", "This request does not match the allowlist.", 400);
   }
   const client = await oauth.lookupClient(authRequest.clientId);
@@ -250,7 +257,7 @@ async function authorizeGet(request, env, config, oauth) {
   return consentPage(
     {
       clientName: client.clientName ?? client.clientId,
-      clientDomain: isUrlShapedClientId(client.clientId) ? new URL(client.clientId).hostname : "",
+      clientDomain: cimdHostname(client.clientId),
       clientId: client.clientId,
       redirectHost: new URL(authRequest.redirectUri).hostname,
       scopes: [...config.scopes],
@@ -296,7 +303,7 @@ async function authorizePost(request, env, config, oauth, email) {
     }
     const seat = postGateAuthRequest(denied.request, config);
     if (seat) await gate(env, seat).disarm({ by: email, reason: "denied" });
-    const headers = new Headers(denied.headers);
+    const headers = withReferrerPolicy(denied.headers);
     if (!headers.has("Location")) headers.set("Location", denied.redirectTo);
     return new Response(null, { status: 302, headers });
   }
@@ -314,8 +321,18 @@ async function authorizePost(request, env, config, oauth, email) {
   // The stored request, never the form, decides the seat family.
   const seat = postGateAuthRequest(approved.request, config);
   if (!seat || seat !== postedSeat) {
-    await logRefusal(env, { where: "consent", reason: "seat_family_mismatch", clientId: approved.request.clientId, redirectUri: approved.request.redirectUri });
+    await logRefusal(env, { where: "consent", reason: "seat_family_mismatch", clientId: approved.request.clientId, redirectUri: approved.request.redirectUri, by: email });
     return errorPage("Request Refused", "That seat cannot be bound to this app.", 400);
+  }
+  // Resolve the display name first:  it may fetch a CIMD document, and a failure
+  // there must not come after the arming window is spent and the epoch bumped.
+  // The only awaited external call after `approve` is completeAuthorization.
+  let clientName = logSafe(approved.request.clientId, 120);
+  try {
+    const client = await oauth.lookupClient(approved.request.clientId);
+    if (client?.clientName) clientName = logSafe(client.clientName, 120);
+  } catch {
+    console.log(JSON.stringify({ event: "client_lookup_failed", where: "consent" }));
   }
   const seatGate = gate(env, seat);
   const won = await seatGate.approve({ by: email });
@@ -324,8 +341,6 @@ async function authorizePost(request, env, config, oauth, email) {
   }
 
   const approvedAt = Date.now();
-  const client = await oauth.lookupClient(approved.request.clientId);
-  const clientName = logSafe(client?.clientName ?? approved.request.clientId, 120);
   const { redirectTo } = await oauth.completeAuthorization({
     request: approved.request,
     userId: seat,
@@ -345,7 +360,7 @@ async function authorizePost(request, env, config, oauth, email) {
   }
   await seatGate.audit({ event: "grant_created", seat, by: email, client: clientName, redirect_host: new URL(approved.request.redirectUri).host, scopes: approved.request.scope, epoch: won.epoch, revoked_others: revoked });
 
-  const headers = new Headers(approved.headers);
+  const headers = withReferrerPolicy(approved.headers);
   headers.set("Location", redirectTo);
   return new Response(null, { status: 302, headers });
 }
@@ -404,12 +419,14 @@ async function serveAdmin(request, env, config, oauth, email) {
     audits.sort((a, b) => b.ts - a.ts);
     const clients = (await oauth.listClients()).items ?? [];
     const refusals = await gate(env, GATE_LOG_NAME).refusals(30);
+    const tokenRefusals = await gate(env, GATE_LOG_NAME).tokenRefusals(15);
     return adminPage(
       {
         email,
         seats,
         clients: clients.filter((c) => !isUrlShapedClientId(c.clientId)),
         refusals,
+        tokenRefusals,
         audits: audits.slice(0, 40),
         csrf,
         notice: DONE_NOTICES[done] ?? "",
@@ -475,13 +492,22 @@ async function serveAdmin(request, env, config, oauth, email) {
       default:
         return errorPage("Request Refused", "Unknown action.", 400);
     }
-    return new Response(null, { status: 303, headers: { Location: `/admin?done=${encodeURIComponent(action)}`, "Cache-Control": "no-store" } });
+    return new Response(null, { status: 303, headers: withReferrerPolicy({ Location: `/admin?done=${encodeURIComponent(action)}`, "Cache-Control": "no-store" }) });
   }
   return notFound();
 }
 
 // ---------------------------------------------------------------- /oauth/token gate
 
+/**
+ * Gate POST /oauth/token before the library can fetch a client metadata
+ * document.  Three rules keep this gate and the library reading the same
+ * request:  the Content-Type test is the library's own expression, the
+ * Authorization header must be strict Basic or is refused, and the request the
+ * library receives is rebuilt from the form this gate validated (never the
+ * original bytes).  Anything that is not a POST goes straight to the library,
+ * which answers 405 before it reads a client id.
+ */
 async function gateToken(request, env, config) {
   if (request.method !== "POST") return request;
   if (env.TOKEN_RATE_LIMITER) {
@@ -489,20 +515,21 @@ async function gateToken(request, env, config) {
     const { success } = await env.TOKEN_RATE_LIMITER.limit({ key: `token:${ip}` });
     if (!success) return oauthJsonError("temporarily_unavailable", "Too many token requests.", 429, { "Retry-After": "60" });
   }
-  const contentType = (request.headers.get("content-type") ?? "").toLowerCase();
-  if (!contentType.startsWith("application/x-www-form-urlencoded")) return request;
+  if (!isFormContentType(request.headers.get("content-type"))) {
+    return oauthJsonError("invalid_request", "Content-Type must be application/x-www-form-urlencoded", 400);
+  }
   const declared = Number(request.headers.get("content-length") ?? "0");
   if (declared > MAX_TOKEN_BODY) return oauthJsonError("invalid_request", "Request body too large.", 413);
-  const text = await request.clone().text();
-  if (text.length > MAX_TOKEN_BODY) return oauthJsonError("invalid_request", "Request body too large.", 413);
-  const result = gateTokenForm(new URLSearchParams(text), basicClientId(request.headers.get("authorization")), config);
+  const text = await readLimited(request, MAX_TOKEN_BODY);
+  if (text === null) return oauthJsonError("invalid_request", "Request body too large.", 413);
+  const result = gateTokenForm(new URLSearchParams(text), request.headers.get("authorization"), config);
   if (!result.ok) {
     await logRefusal(env, { where: "token", reason: result.reason, clientId: result.clientId, redirectUri: "" });
     return oauthJsonError("invalid_client", "Client not allowed.", 401);
   }
-  if (!result.form) return request;
   const headers = new Headers(request.headers);
   headers.delete("content-length");
+  headers.set("content-type", "application/x-www-form-urlencoded");
   return new Request(request.url, { method: "POST", headers, body: result.form.toString() });
 }
 
@@ -520,6 +547,12 @@ export default {
     if (!hostAllowed(request, config.host)) return notFound();
     const route = classifyPath(new URL(request.url).pathname);
     if (!route) return notFound();
+    if (route === "health") {
+      // Static liveness probe for the fleet admin panel:  no seat, config or
+      // grant data, and it never reaches the OAuth library.
+      if (request.method !== "GET" && request.method !== "HEAD") return textResponse("Method Not Allowed", 405, { Allow: "GET, HEAD" });
+      return new Response(request.method === "HEAD" ? null : '{"ok":true}', { status: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
+    }
     if (route === "mcp" && config.mcpDisabled) return textResponse("The agent-sync MCP server is turned off.", 503, { "Retry-After": "3600" });
     if (route === "token") {
       const gated = await gateToken(request, env, config);

@@ -5,6 +5,10 @@ import {
   strictRedirectProblem,
   hostAllowed,
   isUrlShapedClientId,
+  clientIdVerdict,
+  cimdHostname,
+  isFormContentType,
+  readLimited,
   classifyPath,
   preGateAuthorize,
   postGateAuthRequest,
@@ -68,6 +72,8 @@ test("path allowlist", () => {
   assert.equal(classifyPath("/authorize"), "authorize");
   assert.equal(classifyPath("/admin"), "admin");
   assert.equal(classifyPath("/admin/action"), "admin");
+  assert.equal(classifyPath("/health"), "health");
+  for (const p of ["/health/", "/Health", "/health/x", "/healthz"]) assert.equal(classifyPath(p), null, p);
   assert.equal(classifyPath("/.well-known/oauth-authorization-server"), "metadata");
   assert.equal(classifyPath("/.well-known/oauth-protected-resource/mcp"), "metadata");
   for (const p of ["/", "/oauth/register", "/mcp/", "/post", "/admin2", "/.well-known/openid-configuration"]) {
@@ -75,11 +81,42 @@ test("path allowlist", () => {
   }
 });
 
-test("URL-shaped client ids", () => {
+test("URL-shaped client ids, including the shapes URL parsing normalizes into a URL", () => {
   assert.equal(isUrlShapedClientId(CHATGPT_CLIENT), true);
   assert.equal(isUrlShapedClientId("http://x"), true);
   assert.equal(isUrlShapedClientId("data:,x"), true);
   assert.equal(isUrlShapedClientId("abc123DEF"), false);
+  assert.equal(isUrlShapedClientId(undefined), false);
+  // WHATWG URL drops leading and trailing spaces and removes tabs and newlines.
+  assert.equal(isUrlShapedClientId(" https://evil.example/c.json"), true);
+  assert.equal(isUrlShapedClientId("https://evil.example/c.json "), true);
+  assert.equal(isUrlShapedClientId("ht\ttps://evil.example/c.json"), true);
+  assert.equal(isUrlShapedClientId("h\nttps://evil.example/c.json"), true);
+  assert.equal(isUrlShapedClientId("\u0001https://evil.example/c.json"), true);
+  assert.equal(cimdHostname(CHATGPT_CLIENT), "chatgpt.com");
+  assert.equal(cimdHostname("http://chatgpt.com/x"), "");
+  assert.equal(cimdHostname("abc123DEF"), "");
+});
+
+test("client id verdict:  exact allowlisted CIMD id or the library's hand-client shape, nothing else", () => {
+  assert.deepEqual(clientIdVerdict(CHATGPT_CLIENT, config), { ok: true, seat: "JET" });
+  assert.deepEqual(clientIdVerdict("AbCdEf123_-xYz09", config), { ok: true, seat: "" });
+  assert.deepEqual(clientIdVerdict("", config), { ok: true, seat: "" });
+  assert.deepEqual(clientIdVerdict(undefined, config), { ok: true, seat: "" });
+  const refusedUrl = [
+    "https://evil.example/c.json",
+    "https://chatgpt.com/oauth/client.json?x=1",
+    "https://chatgpt.com/oauth/client.json ",
+    " https://chatgpt.com/oauth/client.json",
+    "ht\ttps://evil.example/c.json",
+    "HTTPS://CHATGPT.COM/oauth/client.json",
+    "http://chatgpt.com/oauth/client.json",
+    "data:,x",
+  ];
+  for (const id of refusedUrl) assert.deepEqual(clientIdVerdict(id, config), { ok: false, reason: "cimd_client_not_allowlisted" }, JSON.stringify(id));
+  for (const id of ["a b", "short", "x".repeat(65), "has.dot.in.it", "slash/in/id1", "unicode\u00e9xxx", "\u00a0AbCdEf123456"]) {
+    assert.equal(clientIdVerdict(id, config).ok, false, JSON.stringify(id));
+  }
 });
 
 test("pre-gate admits ChatGPT for JET", () => {
@@ -106,6 +143,9 @@ test("pre-gate refuses before any fetch", () => {
     [{ scope: "zulip:read zulip:admin" }, "scope_not_supported"],
     [{ response_type: "token" }, "response_type_not_code"],
     [{ client_id: "" }, "client_id_missing_or_long"],
+    [{ client_id: " https://chatgpt.com/oauth/client.json" }, "cimd_client_not_allowlisted"],
+    [{ client_id: "ht\ttps://evil.example/c.json" }, "cimd_client_not_allowlisted"],
+    [{ client_id: "not a shape" }, "client_id_shape"],
     [{ client_id: [CHATGPT_CLIENT, "x"] }, "repeated_client_id"],
     [{ redirect_uri: [CHATGPT_REDIRECT, CHATGPT_REDIRECT] }, "repeated_redirect_uri"],
   ];
@@ -121,7 +161,19 @@ test("pre-gate refuses a seat that is not hosted", () => {
   assert.equal(preGateAuthorize(authorizeParams(), narrow).reason, "seat_not_hosted");
 });
 
-test("a Grok redirect binds only to GROK-WEB, and a hand client may use it", () => {
+test("Grok's published client metadata document binds only to GROK-WEB", () => {
+  const grokClient = "https://grok.com/oauth/mcp-client.json";
+  const grokRedirect = "https://grok.com/connectors-oauth-exchange-code/";
+  const got = preGateAuthorize(authorizeParams({ client_id: grokClient, redirect_uri: grokRedirect }), config);
+  assert.deepEqual(got, { ok: true, seat: "GROK-WEB", clientId: grokClient, redirectUri: grokRedirect, scopes: ["zulip:read", "zulip:write"] });
+  // Cross-family in both directions.
+  assert.equal(preGateAuthorize(authorizeParams({ client_id: CHATGPT_CLIENT, redirect_uri: grokRedirect }), config).reason, "cimd_client_not_allowlisted");
+  assert.equal(preGateAuthorize(authorizeParams({ client_id: grokClient, redirect_uri: CHATGPT_REDIRECT }), config).reason, "cimd_client_not_allowlisted");
+  // console.x.ai is not allowlisted until the xAI account is Business or Enterprise.
+  assert.equal(preGateAuthorize(authorizeParams({ client_id: grokClient, redirect_uri: "https://console.x.ai/connectors-oauth-exchange-code/" }), config).reason, "redirect_not_allowlisted");
+});
+
+test("a hand-registered client may use a seat's configured redirect", () => {
   const grok = "https://grok.com/oauth/callback";
   const seats = { ...testEnv().SEATS, "GROK-WEB": { redirect_uris: [grok], cimd_client_ids: [] } };
   const cfg = loadConfig(testEnv({ SEATS: seats }));
@@ -140,34 +192,105 @@ test("post-gate re-checks the library's parsed request", () => {
   assert.equal(postGateAuthRequest({ ...good, resource: "https://x.example/mcp" }, config), null);
   assert.equal(postGateAuthRequest({ ...good, redirectUri: "https://evil.example/cb" }, config), null);
   assert.equal(postGateAuthRequest({ ...good, clientId: "https://evil.example/c.json" }, config), null);
+  assert.equal(postGateAuthRequest({ ...good, clientId: " https://chatgpt.com/oauth/client.json" }, config), null);
+  assert.equal(postGateAuthRequest({ ...good, clientId: "AbCdEf1234567890" }, config), "JET", "a hand client id passes the shape check");
+  assert.equal(postGateAuthRequest({ ...good, clientId: "https://grok.com/oauth/mcp-client.json" }, config), null, "Grok's id with ChatGPT's redirect is cross-family");
   assert.equal(postGateAuthRequest({ ...good, scope: ["admin"] }, config), null);
 });
 
-test("token gate:  unlisted CIMD refused, blank secret dropped", () => {
-  const refused = gateTokenForm(new URLSearchParams({ grant_type: "authorization_code", client_id: "https://evil.example/c.json" }), undefined, config);
+const basic = (id, secret = "") => `Basic ${btoa(`${encodeURIComponent(id)}:${secret}`)}`;
+
+test("token gate:  unlisted CIMD refused, blank secret dropped, the validated form is what is forwarded", () => {
+  const refused = gateTokenForm(new URLSearchParams({ grant_type: "authorization_code", client_id: "https://evil.example/c.json" }), null, config);
   assert.equal(refused.ok, false);
   assert.equal(refused.reason, "cimd_client_not_allowlisted");
-  const viaBasic = gateTokenForm(new URLSearchParams({ grant_type: "refresh_token" }), "https://evil.example/c.json", config);
+  const viaBasic = gateTokenForm(new URLSearchParams({ grant_type: "refresh_token" }), basic("https://evil.example/c.json"), config);
   assert.equal(viaBasic.ok, false);
+  assert.equal(viaBasic.reason, "cimd_client_not_allowlisted");
 
-  const chatgpt = gateTokenForm(new URLSearchParams({ client_id: CHATGPT_CLIENT, code: "x" }), undefined, config);
-  assert.deepEqual(chatgpt, { ok: true });
+  const chatgpt = gateTokenForm(new URLSearchParams({ client_id: CHATGPT_CLIENT, code: "x" }), null, config);
+  assert.equal(chatgpt.ok, true);
+  assert.equal(chatgpt.form.get("client_id"), CHATGPT_CLIENT);
 
-  const blank = gateTokenForm(new URLSearchParams("client_id=abc&client_secret=&code=x"), undefined, config);
+  const blank = gateTokenForm(new URLSearchParams("client_id=AbCdEf1234567890&client_secret=&code=x"), undefined, config);
   assert.equal(blank.ok, true);
   assert.equal(blank.form.has("client_secret"), false);
   assert.equal(blank.form.get("code"), "x");
 
-  const real = gateTokenForm(new URLSearchParams("client_id=abc&client_secret=s3cret"), undefined, config);
-  assert.deepEqual(real, { ok: true });
+  const real = gateTokenForm(new URLSearchParams("client_id=AbCdEf1234567890&client_secret=s3cret"), "", config);
+  assert.equal(real.ok, true);
+  assert.equal(real.form.get("client_secret"), "s3cret");
 
-  assert.equal(gateTokenForm(new URLSearchParams("client_id=a&client_id=b"), undefined, config).reason, "repeated_client_id");
+  assert.equal(gateTokenForm(new URLSearchParams("client_id=a&client_id=b"), null, config).reason, "repeated_client_id");
+});
+
+test("token gate:  a Basic header the library would not read as Basic cannot hide a form client_id", () => {
+  // The library splits the scheme on a space or tab only.  Each header below is
+  // Basic to a JS \\s regex but not Basic to the library, which then reads the
+  // form client_id and fetches it.  The gate refuses the header outright.
+  const evilForm = new URLSearchParams({ grant_type: "authorization_code", client_id: "https://evil.example/c.json", code: "x" });
+  const creds = btoa("x:");
+  for (const sep of ["\u00a0", "\u3000", "\ufeff", "\u000b", "\u000c", "\u2003", "\t"]) {
+    const got = gateTokenForm(evilForm, `Basic${sep}${creds}`, config);
+    assert.equal(got.ok, false, JSON.stringify(sep));
+    assert.equal(got.reason, "authorization_not_basic", JSON.stringify(sep));
+  }
+  // Even a perfectly normal Basic header cannot skip the form id check.
+  const withBasic = gateTokenForm(evilForm, basic("AbCdEf1234567890"), config);
+  assert.equal(withBasic.ok, false);
+  assert.equal(withBasic.reason, "cimd_client_not_allowlisted");
+  for (const header of ["Bearer abc", "Basic", "Basic ", "Basic  YTo=", "Basic YTo= ", "Basic !!!!", "Basic Zm9v", "Digest x=1"]) {
+    assert.equal(gateTokenForm(new URLSearchParams("code=x"), header, config).reason, "authorization_not_basic", JSON.stringify(header));
+  }
+  assert.equal(gateTokenForm(new URLSearchParams("code=x"), basic("AbCdEf1234567890", "s"), config).ok, true);
+  assert.equal(gateTokenForm(new URLSearchParams("code=x"), `basic ${btoa("AbCdEf1234567890:")}`, config).ok, true, "the scheme is case-insensitive");
+});
+
+test("token gate:  leading-space and tab-split ids are refused whichever field carries them", () => {
+  for (const id of [" https://evil.example/c.json", "ht\ttps://evil.example/c.json", "https://evil.example/c.json\n"]) {
+    const viaForm = gateTokenForm(new URLSearchParams({ client_id: id }), null, config);
+    assert.equal(viaForm.ok, false, JSON.stringify(id));
+    assert.equal(viaForm.reason, "cimd_client_not_allowlisted", JSON.stringify(id));
+    assert.equal(gateTokenForm(new URLSearchParams(), basic(id), config).ok, false, JSON.stringify(id));
+  }
+});
+
+test("token gate:  Content-Type is read the way the library reads it", () => {
+  assert.equal(isFormContentType("application/x-www-form-urlencoded"), true);
+  assert.equal(isFormContentType("Application/X-WWW-Form-Urlencoded; charset=UTF-8"), true);
+  // The library trims with JS trim(), which drops all of these;  a startsWith test would skip the gate.
+  for (const lead of ["\u00a0", "\ufeff", "\u3000", " ", "\t", "\u000b", "\u2003"]) {
+    assert.equal(isFormContentType(`${lead}application/x-www-form-urlencoded`), true, JSON.stringify(lead));
+  }
+  for (const other of ["application/json", "text/plain; x=application/x-www-form-urlencoded", "multipart/form-data", "", null, undefined, "application/x-www-form-urlencoded2"]) {
+    assert.equal(isFormContentType(other), false, JSON.stringify(other));
+  }
 });
 
 test("Basic header client id", () => {
   assert.equal(basicClientId(`Basic ${btoa("client%3Aid:secret")}`), "client:id");
-  assert.equal(basicClientId("Bearer x"), undefined);
-  assert.equal(basicClientId(undefined), undefined);
+  assert.equal(basicClientId(undefined), "");
+  assert.equal(basicClientId(""), "");
+  assert.equal(basicClientId("Bearer x"), null);
+  assert.equal(basicClientId(`Basic${"\u00a0"}${btoa("x:")}`), null);
+  assert.equal(basicClientId(`Basic ${btoa("no-colon")}`), null);
+});
+
+test("bounded body read stops a large chunked upload", async () => {
+  const mk = (body) => new Request("https://agent-sync.jays.services/oauth/token", { method: "POST", body });
+  assert.equal(await readLimited(mk("a=b&c=d"), 100), "a=b&c=d");
+  assert.equal(await readLimited(new Request("https://agent-sync.jays.services/oauth/token"), 100), "");
+  assert.equal(await readLimited(mk("x".repeat(101)), 100), null);
+  const stream = new ReadableStream({
+    pull(controller) {
+      controller.enqueue(new TextEncoder().encode("y".repeat(1000)));
+    },
+  });
+  const chunked = new Request("https://agent-sync.jays.services/oauth/token", { method: "POST", body: stream, duplex: "half" });
+  assert.equal(await readLimited(chunked, 4096), null, "an endless stream is cut off");
+  // A BOM is kept (the form parser keeps it), so the key the gate sees is the key the library sees.
+  const bom = await readLimited(mk(new Uint8Array([0xef, 0xbb, 0xbf, 0x61, 0x3d, 0x62])), 100);
+  assert.equal(bom, "\ufeffa=b");
 });
 
 test("same-origin POST and CSRF compare", () => {

@@ -73,3 +73,32 @@ export function authorizeParams(overrides = {}) {
   }
   return params;
 }
+
+export const ISSUER = "https://agent-sync.jays.services";
+
+/**
+ * The Origin header a browser sends on a form POST, per the Fetch Standard's
+ * "append a request Origin header" (mode is not "cors", so the referrer policy
+ * decides).  `policy` is the Referrer-Policy of the page that holds the form;
+ * the form posts to `target` from a page at `document`.  Returns the header
+ * value, or null when none is sent.  Browsers send "null" under `no-referrer`,
+ * which is what broke Approve and Arm before this was pinned.
+ */
+export function browserPostOrigin({ policy, document = ISSUER, target = ISSUER }) {
+  const docOrigin = new URL(document).origin;
+  const targetUrl = new URL(target);
+  // No header at all means the browser default, strict-origin-when-cross-origin.
+  const effective = (policy ?? "").split(",").pop().trim().toLowerCase() || "strict-origin-when-cross-origin";
+  switch (effective) {
+    case "no-referrer":
+      return "null";
+    case "no-referrer-when-downgrade":
+    case "strict-origin":
+    case "strict-origin-when-cross-origin":
+      return new URL(document).protocol === "https:" && targetUrl.protocol !== "https:" ? "null" : docOrigin;
+    case "same-origin":
+      return docOrigin === targetUrl.origin ? docOrigin : "null";
+    default:
+      return docOrigin;
+  }
+}

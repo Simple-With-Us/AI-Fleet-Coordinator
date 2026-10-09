@@ -25,11 +25,22 @@ test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", (
   assert.equal(loadConfig(testEnv()).access.configured, true);
 });
 
-test("Access email list matches the Access policy the runbook creates", () => {
+test("Access email list is mail@jays.services only, in the Worker and in the Access policy", () => {
+  // Spec 3.3.  The identity provider is One-time PIN, so every extra address is an admin credential.
   const cfg = loadConfig(wranglerConfig().vars);
-  assert.deepEqual([...cfg.access.ownerEmails], ["mail@jays.services", "jaywedgeworth22@gmail.com"]);
+  assert.deepEqual([...cfg.access.ownerEmails], ["mail@jays.services"]);
   const infra = readFileSync(path.join(ROOT, "infra_phase0.py"), "utf8");
-  for (const email of cfg.access.ownerEmails) assert.ok(infra.includes(`"${email}"`), `${email} missing from infra_phase0.py`);
+  assert.match(infra, /^OWNER_EMAILS = \["mail@jays\.services"\]$/m, "infra_phase0.py must list the same single address");
+  assert.ok(!/jaywedgeworth22/.test(infra) && !/jaywedgeworth22/.test(readFileSync(path.join(ROOT, "wrangler.jsonc"), "utf8")));
+});
+
+test("GROK-WEB uses Grok's published client metadata document, and both ids pass the strict parse", () => {
+  const cfg = loadConfig(wranglerConfig().vars);
+  assert.deepEqual([...cfg.seats["GROK-WEB"].cimdClientIds], ["https://grok.com/oauth/mcp-client.json"]);
+  assert.deepEqual([...cfg.seats["GROK-WEB"].redirectUris], ["https://grok.com/connectors-oauth-exchange-code/"]);
+  assert.equal(cfg.cimdOwner.get("https://grok.com/oauth/mcp-client.json"), "GROK-WEB");
+  // console.x.ai is added only for a Business or Enterprise xAI account (spec 4).
+  assert.equal(cfg.redirectOwner.has("https://console.x.ai/connectors-oauth-exchange-code/"), false);
 });
 
 test("issuer, resource and metadata URL are fixed to the D1 hostname", () => {
@@ -74,6 +85,9 @@ test("wrangler.jsonc keeps every hostname but the custom domain off", () => {
   assert.ok(w.compatibility_flags.includes("nodejs_compat"));
   assert.ok(w.compatibility_flags.includes("global_fetch_strictly_public"));
   assert.deepEqual(w.migrations, [{ tag: "v1", new_sqlite_classes: ["SeatGate"] }]);
+  // The automatic per-request logs are off:  nothing proves they omit the Access JWT header or cookies.
+  assert.equal(w.observability.enabled, true);
+  assert.equal(w.observability.logs.invocation_logs, false);
   assert.equal(w.kv_namespaces[0].binding, "OAUTH_KV");
   assert.equal(w.durable_objects.bindings[0].class_name, "SeatGate");
 });

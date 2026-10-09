@@ -37,12 +37,27 @@ export function ownerTime(ms) {
   return `${get("weekday")}, ${get("month")} ${get("day")}, ${get("hour")}:${get("minute")}${get("dayPeriod").toLowerCase()}`;
 }
 
+// `same-origin`, never `no-referrer`:  a browser sends `Origin: null` on a form
+// POST from a page with `no-referrer` (Fetch Standard, "append a request Origin
+// header"), and the Worker refuses anything but `Origin: <issuer>`, so Jay could
+// neither arm a seat nor approve a consent.  `same-origin` keeps the Origin on
+// our own forms and sends no Referer (so no /authorize URL) to anyone else,
+// including the redirect back to the client.  test/pages.test.mjs pins this.
+export const REFERRER_POLICY = "same-origin";
+
+/** Add the page Referrer-Policy to the headers of a redirect (it applies to the next hop). */
+export function withReferrerPolicy(headers) {
+  const next = new Headers(headers);
+  next.set("Referrer-Policy", REFERRER_POLICY);
+  return next;
+}
+
 export function pageHeaders(extra) {
   const headers = new Headers(extra);
   headers.set("Content-Type", "text/html; charset=utf-8");
   headers.set("Content-Security-Policy", PAGE_CSP);
   headers.set("X-Frame-Options", "DENY");
-  headers.set("Referrer-Policy", "no-referrer");
+  headers.set("Referrer-Policy", REFERRER_POLICY);
   headers.set("Cache-Control", "no-store");
   headers.set("X-Content-Type-Options", "nosniff");
   return headers;
@@ -128,7 +143,7 @@ function actionButton(csrf, action, label, fields = {}) {
 }
 
 /** /admin (spec 3.9, Phase 0 subset):  seat state, grants, clients, refusals, audit. */
-export function adminPage({ email, seats, clients, refusals, audits, csrf, notice, grokRedirectsConfigured }, headers) {
+export function adminPage({ email, seats, clients, refusals, tokenRefusals = [], audits, csrf, notice, grokRedirectsConfigured }, headers) {
   const seatRows = seats
     .map((s) => {
       const grants = s.grants.length
@@ -155,10 +170,18 @@ export function adminPage({ email, seats, clients, refusals, audits, csrf, notic
     ? refusals
         .map(
           (r) =>
-            `<tr><td>${escapeHtml(ownerTime(r.ts))}</td><td>${escapeHtml(r.where)}</td><td>${escapeHtml(r.reason)}</td><td><code>${escapeHtml(r.client_id)}</code></td><td><code>${escapeHtml(r.redirect_uri)}</code></td></tr>`,
+            `<tr><td>${escapeHtml(ownerTime(r.ts))}</td><td>${escapeHtml(r.by ?? "")}</td><td>${escapeHtml(r.reason)}</td><td><code>${escapeHtml(r.client_id)}</code></td><td><code>${escapeHtml(r.redirect_uri)}</code></td></tr>`,
         )
         .join("")
     : `<tr><td colspan="5">No refusals logged.</td></tr>`;
+  const tokenRefusalRows = tokenRefusals.length
+    ? tokenRefusals
+        .map(
+          (r) =>
+            `<tr><td>${escapeHtml(ownerTime(r.ts))}</td><td>${escapeHtml(r.count ?? 1)}</td><td>${escapeHtml(r.reason)}</td><td><code>${escapeHtml(r.client_id)}</code></td></tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="4">None.</td></tr>`;
   const auditRows = audits.length
     ? audits
         .map((a) => `<tr><td>${escapeHtml(ownerTime(a.ts))}</td><td>${escapeHtml(a.seat)}</td><td>${escapeHtml(a.event)}</td><td><code>${escapeHtml(JSON.stringify(a.detail ?? {}))}</code></td></tr>`)
@@ -172,14 +195,19 @@ ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
 <h2>Hand-Registered Clients (Grok Manual Form)</h2>
 <p>${sentences(
     grokRedirectsConfigured
-      ? "GROK-WEB redirect URIs are configured."
-      : "GROK-WEB has no redirect URI yet, so a new client gets a placeholder redirect and Grok's first attempt is refused and logged below.",
-    "Copy Grok's redirect URI from the refusal log into SEATS in wrangler.jsonc, redeploy, then press Sync Grok Redirects.",
+      ? "GROK-WEB redirect URIs are configured, so a new manual client gets them."
+      : "GROK-WEB has no redirect URI yet, so a new manual client gets a placeholder redirect and Grok's first attempt is refused and logged below.",
+    "Grok normally connects with its published client metadata document and needs no manual client.",
+    "This button is the fallback for a Grok form that asks for a client ID.",
   )}</p>
 <p>${actionButton(csrf, "create_grok_client", "Create Grok Manual Client")}</p>
 <table><tr><th>Client ID</th><th>Name</th><th>Redirect URIs</th><th></th></tr>${clientRows}</table>
-<h2>Refused Requests</h2>
-<table><tr><th>When</th><th>Where</th><th>Reason</th><th>Client ID</th><th>Redirect URI</th></tr>${refusalRows}</table>
+<h2>Refused Authorize Requests</h2>
+<p>${sentences("Each row is a request that passed Cloudflare Access, so the signed-in email is shown.", "Only copy a redirect URI from here if the time matches your own attempt.")}</p>
+<table><tr><th>When</th><th>Signed In As</th><th>Reason</th><th>Client ID</th><th>Redirect URI</th></tr>${refusalRows}</table>
+<h2>Refused Token Requests (Unauthenticated, Counted)</h2>
+<p>${sentences("Anyone on the internet can send these, so they are counted per reason and client ID and kept apart from the authorize log.")}</p>
+<table><tr><th>Last Seen</th><th>Count</th><th>Reason</th><th>Client ID</th></tr>${tokenRefusalRows}</table>
 <h2>Audit</h2>
 <table><tr><th>When</th><th>Seat</th><th>Event</th><th>Detail</th></tr>${auditRows}</table>`;
   return htmlResponse("Agent-Sync Admin", body, { headers });

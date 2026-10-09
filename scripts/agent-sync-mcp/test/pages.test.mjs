@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { STYLE, STYLE_HASH, PAGE_CSP, SENTENCE_GAP, escapeHtml, ownerTime, consentPage, adminPage, errorPage, noConnectionPage } from "../src/pages.js";
+import { STYLE, STYLE_HASH, PAGE_CSP, SENTENCE_GAP, REFERRER_POLICY, escapeHtml, ownerTime, consentPage, adminPage, errorPage, noConnectionPage, withReferrerPolicy } from "../src/pages.js";
+import { sameOriginPost } from "../src/policy.js";
+import { browserPostOrigin, ISSUER } from "./helpers.mjs";
 
 test("the stylesheet hash in the CSP matches the stylesheet", () => {
   assert.equal(STYLE_HASH, `sha256-${createHash("sha256").update(STYLE, "utf8").digest("base64")}`);
@@ -71,4 +73,54 @@ test("admin page renders state and escapes refusal-log values", async () => {
   assert.ok(html.includes("https://grok.com/cb"));
   assert.ok(!html.includes("<script"));
   assert.equal((html.match(/name="csrf"/g) ?? []).length >= 4, true);
+});
+
+const consentFacts = { clientName: "ChatGPT", clientDomain: "chatgpt.com", clientId: "https://chatgpt.com/oauth/client.json", redirectHost: "chatgpt.com", scopes: ["zulip:read"], seat: "JET", handle: "h", replacing: [] };
+const adminFacts = { email: "mail@jays.services", seats: [], clients: [], refusals: [], audits: [], csrf: "c".repeat(64), notice: "", grokRedirectsConfigured: true };
+
+test("P1:  every page that posts a form keeps Origin, so Approve and Arm work in a real browser", async () => {
+  // Before the fix every page sent Referrer-Policy: no-referrer, browsers sent
+  // Origin: null on the form POST, and sameOriginPost refused it.
+  const pages = {
+    consent: consentPage(consentFacts),
+    admin: adminPage(adminFacts),
+    error: errorPage("This Page Expired", "One.  Two.", 400),
+    noConnection: noConnectionPage(),
+  };
+  for (const [name, res] of Object.entries(pages)) {
+    const policy = res.headers.get("Referrer-Policy");
+    assert.equal(policy, REFERRER_POLICY, name);
+    assert.notEqual(policy, "no-referrer", name);
+    const origin = browserPostOrigin({ policy });
+    assert.equal(origin, ISSUER, `${name}:  the browser sends the issuer as Origin`);
+    const post = new Request(`${ISSUER}/admin/action`, { method: "POST", headers: { Origin: origin, "Sec-Fetch-Site": "same-origin" } });
+    assert.equal(sameOriginPost(post, ISSUER, { requireFetchSite: true }), true, name);
+  }
+  // The failure mode this guards against, spelled out.
+  assert.equal(browserPostOrigin({ policy: "no-referrer" }), "null");
+  const broken = new Request(`${ISSUER}/admin/action`, { method: "POST", headers: { Origin: "null", "Sec-Fetch-Site": "same-origin" } });
+  assert.equal(sameOriginPost(broken, ISSUER, { requireFetchSite: true }), false, "Origin: null must stay refused");
+  // same-origin keeps Origin for our own forms only;  a cross-origin target gets none, and no Referer.
+  assert.equal(browserPostOrigin({ policy: REFERRER_POLICY, target: "https://chatgpt.com/cb" }), "null");
+});
+
+test("redirects carry the page Referrer-Policy too, and keep the headers they had", () => {
+  const out = withReferrerPolicy({ Location: "https://chatgpt.com/cb", "Set-Cookie": "a=b" });
+  assert.equal(out.get("Referrer-Policy"), REFERRER_POLICY);
+  assert.equal(out.get("Location"), "https://chatgpt.com/cb");
+  assert.equal(withReferrerPolicy(new Headers({ "Referrer-Policy": "no-referrer" })).get("Referrer-Policy"), REFERRER_POLICY);
+});
+
+test("admin page keeps authorize and token refusals apart and shows the Access email", async () => {
+  const res = adminPage({
+    ...adminFacts,
+    refusals: [{ ts: 0, where: "authorize", by: "mail@jays.services", reason: "redirect_not_allowlisted", client_id: "https://grok.com/oauth/mcp-client.json", redirect_uri: "https://grok.com/cb" }],
+    tokenRefusals: [{ ts: 0, where: "token", reason: "cimd_client_not_allowlisted", client_id: "https://<evil>/c.json", count: 41 }],
+  });
+  const html = await res.text();
+  const [authorizePart, tokenPart] = html.split("Refused Token Requests");
+  assert.ok(authorizePart.includes("Refused Authorize Requests"));
+  assert.ok(authorizePart.includes("mail@jays.services") && authorizePart.includes("https://grok.com/cb"));
+  assert.ok(!authorizePart.includes("&#60;evil&#62;"), "token rows are not in the authorize table");
+  assert.ok(tokenPart.includes("&#60;evil&#62;") && tokenPart.includes(">41<"));
 });

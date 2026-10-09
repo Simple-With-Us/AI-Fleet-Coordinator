@@ -9,7 +9,12 @@
 import { ARM_WINDOW_MS, GRANT_MAX_AGE_MS } from "./config.js";
 
 const AUDIT_CAP = 200;
-const REFUSAL_CAP = 200;
+// Authorize refusals come from a request that passed Cloudflare Access, so the
+// log is Jay's own traffic and stays small.  Token refusals are unauthenticated
+// internet traffic:  they are counted per (reason, client_id) in a separate,
+// smaller table so they can never push Grok's first attempt out of view.
+const REFUSAL_CAP = 100;
+const TOKEN_REFUSAL_CAP = 40;
 
 async function read(store) {
   const [epoch, paused, arm] = await Promise.all([store.get("epoch"), store.get("paused"), store.get("arm")]);
@@ -104,13 +109,32 @@ export async function tail(store, limit = 50) {
   return rows.slice(-limit).reverse();
 }
 
-/** Refusal log (spec 3.3, 3.4 step 4):  raw ids only, never bodies or tokens. */
+/**
+ * Refusal log (spec 3.3, 3.4 step 4):  raw ids only, never bodies or tokens.
+ * `where: "token"` rows are unauthenticated and go to the counted table;  every
+ * other row is an Access-authenticated /authorize refusal and keeps its order.
+ */
 export async function logRefusal(store, entry, now = Date.now()) {
+  if (entry.where === "token") {
+    const rows = (await store.get("token_refusals")) ?? [];
+    const key = `${entry.reason}|${entry.client_id ?? ""}`;
+    const at = rows.findIndex((r) => `${r.reason}|${r.client_id ?? ""}` === key);
+    const prior = at >= 0 ? rows.splice(at, 1)[0] : null;
+    rows.push({ ts: now, where: "token", reason: entry.reason, client_id: entry.client_id ?? "", count: (prior?.count ?? 0) + 1 });
+    while (rows.length > TOKEN_REFUSAL_CAP) rows.shift();
+    await store.put("token_refusals", rows);
+    return;
+  }
   await appendCapped(store, "refusals", { ts: now, ...entry }, REFUSAL_CAP);
 }
 
 export async function refusals(store, limit = 50) {
   const rows = (await store.get("refusals")) ?? [];
+  return rows.slice(-limit).reverse();
+}
+
+export async function tokenRefusals(store, limit = 20) {
+  const rows = (await store.get("token_refusals")) ?? [];
   return rows.slice(-limit).reverse();
 }
 

@@ -22,6 +22,8 @@ import argparse
 import json
 import os
 import pathlib
+import re
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -37,7 +39,9 @@ TUNNEL_NAME = "Jay's Tunnel"
 MIRROR_APP_UUID = "1e1a5fc4-0f7d-44ac-bb0d-5fa6d5d73ddf"  # agents.jays.services
 ACCESS_APP_NAME = "agent-sync.jays.services consent and admin"
 ACCESS_PATHS = [f"{HOST}/authorize", f"{HOST}/admin"]
-OWNER_EMAILS = ["mail@jays.services", "jaywedgeworth22@gmail.com"]
+# Spec 3.3:  mail@jays.services only.  The identity provider is One-time PIN, so every
+# address on this list is an admin credential for the server;  keep it to one.
+OWNER_EMAILS = ["mail@jays.services"]
 KV_TITLE = "agent-sync-mcp-OAUTH_KV"
 WORKER_NAME = "agent-sync-mcp"
 HANDOFF = pathlib.Path.home() / ".secrets" / "global-api-keys"
@@ -151,6 +155,24 @@ def custom_domains(cf: Cloudflare) -> list[dict]:
 # ---------------------------------------------------------------- steps
 
 
+def local_listener(port: str) -> str:
+    """Process name, pid and working directory of whatever listens on 127.0.0.1:<port>."""
+    try:
+        out = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fpc"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "lsof unavailable"
+    pids = re.findall(r"^p(\d+)$", out, re.M)
+    names = re.findall(r"^c(.+)$", out, re.M)
+    if not pids:
+        return "nothing listening"
+    try:
+        cwd_out = subprocess.run(["lsof", "-a", "-p", pids[0], "-d", "cwd", "-Fn"], capture_output=True, text=True, timeout=10).stdout
+        cwd = next((line[1:] for line in cwd_out.splitlines() if line.startswith("n")), "unknown cwd")
+    except (OSError, subprocess.SubprocessError):
+        cwd = "unknown cwd"
+    return f"{names[0] if names else 'process'} pid {pids[0]} in {cwd}"
+
+
 def cmd_status(cf: Cloudflare, _apply: bool) -> None:
     zid = zone_id(cf)
     say(f"zone {ZONE_NAME}: {zid}")
@@ -162,6 +184,9 @@ def cmd_status(cf: Cloudflare, _apply: bool) -> None:
         say(f"tunnel {TUNNEL_NAME} ({t['id']}, {t.get('status')}): {len(rules)} ingress rule(s) for {HOST}")
         for r in rules:
             say(f"  ingress: {r.get('hostname')} -> {r.get('service')}")
+            port = re.search(r"localhost:(\d+)$", str(r.get("service") or ""))
+            if port:
+                say(f"  local listener on port {port.group(1)} (read-only lsof):  {local_listener(port.group(1))}")
     for d in custom_domains(cf):
         say(f"worker custom domain: {d.get('hostname')} -> {d.get('service')} ({d.get('environment')})")
     app = access_app(cf)
@@ -256,6 +281,9 @@ def cmd_dns(cf: Cloudflare, apply: bool) -> None:
             say(f"backup: {path}")
             cf.ok("DELETE", f"/zones/{zid}/dns_records/{r['id']}")
             say("deleted")
+            say("The backup is a record of what existed, NOT a rollback:  recreating this CNAME would publish")
+            say("the Mac's local port again with no Access.  To undo a bad deploy, roll back the Worker version.")
+            say("Next:  deploy (step 5), then 'check', then 'tunnel --apply' (step 6) to drop the dead ingress rule.")
 
 
 def cmd_tunnel(cf: Cloudflare, apply: bool) -> None:
@@ -273,6 +301,8 @@ def cmd_tunnel(cf: Cloudflare, apply: bool) -> None:
         raise SystemExit("error: unexpected ingress shape (want exactly one rule removed and a catch-all last); not touching it")
     say(f"tunnel {TUNNEL_NAME} ({t['id']}): {len(ingress)} rules -> {len(keep)}")
     say(f"remove: {removed[0].get('hostname')} -> {removed[0].get('service')}")
+    say("Do this right after the custom domain is verified:  a dead rule that points at a local dev port")
+    say("comes back to life the moment anyone re-adds a CNAME for this host.")
     if plan(apply, "PUT the tunnel configuration without that rule (whole-config write on a live tunnel)"):
         path = _backup(f"tunnel-{t['id']}-config.json", config)
         say(f"backup: {path}")
@@ -345,6 +375,9 @@ def cmd_check(cf: Cloudflare | None, _apply: bool) -> None:
     location = next((v for k, v in headers.items() if k.lower() == "location"), "")
     expect("/admin/action is stopped by Access", (status in (302, 303) and TEAM_DOMAIN in location) or (status in (401, 403) and b"Sign-In Required" not in body), f"{status} {location[:80]}")
 
+    status, _, body = _http("GET", f"{ISSUER}/health")
+    expect("/health is the static 200 the fleet admin panel probes", status == 200 and body.strip() == b'{"ok":true}', str(status))
+
     for path in ("/", "/oauth/register", "/post"):
         status, _, _ = _http("GET", f"{ISSUER}{path}")
         expect(f"{path} is 404", status == 404, str(status))
@@ -356,6 +389,10 @@ def cmd_check(cf: Cloudflare | None, _apply: bool) -> None:
             expect("workers.dev does not serve this Worker", status != 200 or b'"issuer"' not in body, str(status))
         domains = custom_domains(cf)
         expect("custom domain bound to the Worker", any(d.get("service") == WORKER_NAME for d in domains), json.dumps([d.get("service") for d in domains]))
+        t = tunnel(cf)
+        stale = [r.get("service") for r in (tunnel_config(cf, t["id"]).get("ingress") or []) if r.get("hostname") == HOST] if t else []
+        expect("no stale tunnel ingress rule for this host (run 'tunnel --apply')", not stale, json.dumps(stale))
+        expect("no leftover tunnel DNS record", not [r for r in dns_records(cf, zone_id(cf)) if r["type"] == "CNAME" and r["content"].endswith(".cfargotunnel.com")])
 
     say(f"{failures} failure(s)")
     if failures:

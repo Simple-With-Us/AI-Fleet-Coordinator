@@ -4,7 +4,7 @@ import { verifyAccessJwt, clearCertCache } from "../src/access.js";
 
 const TEAM = "silent-frost-37e0.cloudflareaccess.com";
 const AUD = "b".repeat(64);
-const access = { configured: true, teamDomain: TEAM, aud: AUD, ownerEmails: ["mail@jays.services", "jaywedgeworth22@gmail.com"] };
+const access = { configured: true, teamDomain: TEAM, aud: AUD, ownerEmails: ["mail@jays.services", "second-owner@example.com"] };
 const NOW = Date.parse("2026-10-09T06:00:00Z");
 const nowS = Math.floor(NOW / 1000);
 
@@ -41,7 +41,7 @@ const verify = (token, acc = access) => verifyAccessJwt(token, acc, { fetchCerts
 test("a valid owner token passes", async () => {
   clearCertCache();
   assert.deepEqual(await verify(await sign(good())), { ok: true, email: "mail@jays.services" });
-  assert.deepEqual(await verify(await sign({ ...good(), email: "jaywedgeworth22@gmail.com" })), { ok: true, email: "jaywedgeworth22@gmail.com" });
+  assert.deepEqual(await verify(await sign({ ...good(), email: "second-owner@example.com" })), { ok: true, email: "second-owner@example.com" });
 });
 
 test("every bad claim fails closed", async () => {

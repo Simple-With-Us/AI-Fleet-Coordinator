@@ -71,9 +71,30 @@ test("audit and refusal logs are capped and newest first", async () => {
   const store = S.memoryStore();
   for (let i = 0; i < 250; i++) await S.logRefusal(store, { where: "authorize", reason: `r${i}` }, T0 + i);
   const rows = await S.refusals(store, 500);
-  assert.equal(rows.length, 200);
+  assert.equal(rows.length, 100);
   assert.equal(rows[0].reason, "r249");
   await S.arm(store, { by: "jay" }, T0);
   const tail = await S.tail(store, 5);
   assert.equal(tail[0].event, "arm");
+});
+
+test("token refusals are counted apart and cannot push an authorize row out of the log", async () => {
+  const store = S.memoryStore();
+  await S.logRefusal(store, { where: "authorize", reason: "redirect_not_allowlisted", client_id: "grok", redirect_uri: "https://grok.com/cb", by: "mail@jays.services" }, T0);
+  // A distributed sender floods /oauth/token with 500 refusals across 300 distinct ids.
+  for (let i = 0; i < 500; i++) await S.logRefusal(store, { where: "token", reason: "cimd_client_not_allowlisted", client_id: `https://evil.example/${i % 300}.json` }, T0 + 1 + i);
+  const authorize = await S.refusals(store, 50);
+  assert.equal(authorize.length, 1);
+  assert.equal(authorize[0].by, "mail@jays.services");
+  const token = await S.tokenRefusals(store, 100);
+  assert.ok(token.length <= 40, `token table is capped (${token.length})`);
+  assert.ok(token.every((r) => r.where === "token"));
+  // Repeats collapse into one row with a count and the latest time.
+  const store2 = S.memoryStore();
+  for (let i = 0; i < 7; i++) await S.logRefusal(store2, { where: "token", reason: "authorization_not_basic", client_id: "" }, T0 + i);
+  await S.logRefusal(store2, { where: "token", reason: "client_id_shape", client_id: "a b" }, T0 + 10);
+  const rows = await S.tokenRefusals(store2);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((r) => [r.reason, r.count]), [["client_id_shape", 1], ["authorization_not_basic", 7]]);
+  assert.equal((await S.refusals(store2)).length, 0, "token rows never reach the authorize log");
 });

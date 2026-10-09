@@ -46,7 +46,8 @@ jobs:
       run: node --test scripts/safari-start/worker.test.mjs
     # Pure-logic suites of the hosted agent-sync MCP Worker (allowlists, Host
     # check, arming, epoch, Access JWT, pages, tools).  They import no package,
-    # so no npm ci.  The workerd flow (npm run test:workerd) runs by hand.
+    # so no npm ci.  The workerd flow (npm run test:workerd) runs in its own
+    # path-filtered workflow, agent-sync-mcp.yml.
     - name: agent-sync MCP Worker unit tests
       run: node --test scripts/agent-sync-mcp/test/*.test.mjs
     - name: Verify operator dashboard deployment boundary
