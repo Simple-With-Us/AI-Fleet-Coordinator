@@ -33,7 +33,7 @@ The daemon is one process:  one poller thread per seat bot, the router on the ma
 - **LaunchAgent:**  `com.jay.agent-sync-listener`, `RunAtLoad`, `KeepAlive`, `ThrottleInterval 30`.  `ProgramArguments` is `/opt/homebrew/bin/python3 ~/.local/bin/agent-sync daemon run`, with an absolute python because under launchd `/usr/bin/env python3` is 3.9.6.  `PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin`.  `StandardOutPath` and `StandardErrorPath` are mode-600 files under `~/.agent-sync/logs/`.  The plist holds no secrets.  `agent-sync daemon install` writes it and prints the `launchctl bootstrap` command; it never runs launchctl.
 - **Entry script:**  `scripts/agent-sync` re-runs itself with a Homebrew python3 when it finds itself on Python older than 3.11, so a GUI app or launchd that resolves the system 3.9 still works.
 - **Single instance:**  `flock` on `~/.agent-sync/listener/daemon.lock` (it also holds the pid for `daemon reload` and `status`).
-- **Lifecycle:**  a bad config never makes the daemon exit (which would re-register every queue every 30 seconds); it stays up, shows red in status and sends one notify-owner.  SIGTERM deletes its queues and kills any wake child's process group.  SIGHUP re-reads the config.
+- **Lifecycle:**  a bad config never makes the daemon exit (which would re-register every queue every 30 seconds); it stays up, shows red in status and sends one notify-owner.  SIGTERM deletes its queues and kills the process group of every running wake child (several seats can wake at once), and a child that starts after the stop is killed at once.  SIGHUP re-reads the config.
 
 **Which bots.**  Only seats with a `[seat.X]` section in `listener.toml` get a queue.  The daemon never globs `~/.secrets/Zulip`; it reads exactly `<bot>-zuliprc` for each listed seat, and never `ZULIP_RC` or the environment triple, so seats cannot alias one bot.  At connect it calls `GET /users/me`, checks that the email matches the file, and refuses any bot whose role is not moderator (300) or member (400), or that reports `is_admin` or `is_owner` (decision 7).  A refused seat shows red and is retried every 5 minutes.  BF role bots, Echo, Instinct and Grok-Web have no reader here and are not listed by default.
 
@@ -76,7 +76,7 @@ Per-session `listen` under the Monitor tool was rejected:  nothing listens when 
 
 ```json
 {"seat":"CLAUDE","lease_id":"claude-code-90631-1791000000","platform":"claude-code","pid":90631,"pid_start":1791000000,
- "session_id":"<uuid, rewritten by the prompt hook>","cwd":"/Users/jay/apps/lanes/fleet/...",
+ "session_id":"<uuid, rewritten by the prompt hook>","cwd":"<absolute lane path from the hook>",
  "topics":[{"channel":"agent-sync","topic":"AFC 18f61cf4 Zulip cutover","expires":null}],
  "mentions":true,"wake_capable":true,"permission_mode":null,"posted":[4801,4812],"wakes_seen":17,
  "last_prompt":1791000300,"heartbeat":1791000300}
@@ -113,7 +113,7 @@ Per-session `listen` under the Monitor tool was rejected:  nothing listens when 
    | Non-owner `fleet`, any `wildcard`, silent mention, followed-topic chatter | No.  A single peer's `@*fleet*` would otherwise wake about 12 seats |
    | `wake_tag`, DM from a bot, non-owner `stale` | No.  Inbox only |
 
-8. Advance the cursor only after the append is flushed.  A message id that crashes the router 3 times is quarantined to the seat inbox.
+8. Advance the cursor only after the append is flushed.  A message id that crashes the router 3 times is quarantined to the seat inbox.  A retry repeats only the steps that did not complete:  across the retries, a lease or seat-inbox append and the wake offer each happen at most once, and the loop guard counts a wake reply once, whichever step failed.
 
 **Live classes** (step 4):
 
@@ -338,7 +338,7 @@ Every platform uses the same daemon, files, `attach --wait` and `--drain`.  Only
 
 **`MAC-LOCAL-PROCESSES.md` row** (added in the PR that installs the LaunchAgent, with the Apple Note refreshed):
 
-| `com.jay.agent-sync-listener` | Always-on | Zulip listener.  launchd KeepAlive runs `/opt/homebrew/bin/python3 /Users/jay/.local/bin/agent-sync daemon run` (the installer's symlink into the AFC integration tree; a reset of that tree takes effect only on `launchctl kickstart -k gui/$(id -u)/com.jay.agent-sync-listener`).  One event queue per seat listed in `~/.agent-sync/listener.toml`.  Routes to `~/.agent-sync/<SEAT>/` inbox files.  Wakes CLAUDE through a tool-less `claude -p --safe-mode --tools ""` only after `agent-sync daemon test-wake --run` passes and `--pin` pins the binary.  Logs `~/.agent-sync/logs/listener.log`, `launchd.out` and `launchd.err`.  Check with `agent-sync status`, pause with `agent-sync daemon pause`.  No secrets in the plist.  Will replace `agent-sync-push`, `cursor-slack-sync`, `consumer.mjs`, `com.minimax.agent-sync-consumer` and `com.jay.slack-agent-inbox` at the Slack cut. | Up / Down |
+| `com.jay.agent-sync-listener` | Always-on | Zulip listener.  launchd KeepAlive runs `/opt/homebrew/bin/python3 ~/.local/bin/agent-sync daemon run` (the installer's symlink into the AFC integration tree; a reset of that tree takes effect only on `launchctl kickstart -k gui/$(id -u)/com.jay.agent-sync-listener`).  One event queue per seat listed in `~/.agent-sync/listener.toml`.  Routes to `~/.agent-sync/<SEAT>/` inbox files.  Wakes CLAUDE through a tool-less `claude -p --safe-mode --tools ""` only after `agent-sync daemon test-wake --run` passes and `--pin` pins the binary.  Logs `~/.agent-sync/logs/listener.log`, `launchd.out` and `launchd.err`.  Check with `agent-sync status`, pause with `agent-sync daemon pause`.  No secrets in the plist.  Will replace `agent-sync-push`, `cursor-slack-sync`, `consumer.mjs`, `com.minimax.agent-sync-consumer` and `com.jay.slack-agent-inbox` at the Slack cut. | Up / Down |
 
 **Slack retirement (hard cut, later).**  After 24 green hours:  every queue heartbeating, `status --probe` passing for CLAUDE, and one real wake round trip done.  File the BotFleet `zulip` relay-source board item first.  Check each process with `pgrep` before acting; the CODEX and AGY consumers may already be gone.
 

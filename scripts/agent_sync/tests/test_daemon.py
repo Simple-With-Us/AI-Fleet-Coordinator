@@ -185,6 +185,71 @@ class RoutingTests(DaemonHarness):
         flagged = [b for b in self.banners if "API client" in b[8]]
         self.assertEqual(len(flagged), 1)
 
+    def test_a_route_retry_counts_a_wake_reply_once_whichever_step_failed(self) -> None:
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        fails = {"note": 1, "live": 1}
+        real_note, real_append = daemon.loopguard.note, L.append_live
+
+        def flaky_note(*args, **kw):
+            if fails["note"]:
+                fails["note"] -= 1
+                raise OSError("disk full")
+            return real_note(*args, **kw)
+
+        def flaky_append(*args, **kw):
+            if fails["live"]:
+                fails["live"] -= 1
+                raise OSError("disk full")
+            return real_append(*args, **kw)
+
+        # The note itself fails once:  the retry still counts the wake reply.
+        self.fake.add_message("Codex", "agent-sync", "t", "[CODEX·wake] re=1\nreply", deliver=False)
+        with mock.patch.object(daemon.loopguard, "note", side_effect=flaky_note):
+            daemon.route_message(runner, self.fake.messages[-1])
+        self.assertEqual(L.read_json(daemon.loopguard.path).get(TOPIC_KEY), 1, "a failed note is retried")
+        # A step after the note fails once:  the retry does not count the reply a second time.
+        self.write_lease("L1", topics=[("agent-sync", "t")])
+        second = self.fake.add_message("Codex", "agent-sync", "t", "[CODEX·wake] re=2\nreply", deliver=False)
+        with mock.patch.object(L, "append_live", side_effect=flaky_append):
+            daemon.route_message(runner, self.fake.messages[-1])
+        self.assertEqual(L.read_json(daemon.loopguard.path).get(TOPIC_KEY), 2)
+        self.assertEqual([i["id"] for i in self.live_items("L1") if i["kind"] == "message"], [second])
+
+    def test_a_route_retry_repeats_only_the_steps_that_did_not_complete(self) -> None:
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        failed: list[str] = []
+        real_offer, real_append = daemon.offer_wake, L.append_live
+
+        def flaky_offer(*args, **kw):
+            if "offer" not in failed:
+                failed.append("offer")
+                raise OSError("disk full")
+            return real_offer(*args, **kw)
+
+        def flaky_append(paths, lease_id, items):
+            if lease_id == "L2" and "L2" not in failed:
+                failed.append("L2")
+                raise OSError("disk full")
+            return real_append(paths, lease_id, items)
+
+        # No lease on the topic:  the seat-inbox row lands once even though the wake offer failed once.
+        mid = self.fake.add_message("Codex", "agent-sync", "t", MENTION, deliver=False)
+        with mock.patch.object(daemon, "offer_wake", side_effect=flaky_offer):
+            daemon.route_message(runner, dict(self.fake.messages[-1], flags=["mentioned"]))
+        self.assertEqual([r["id"] for r in self.inbox()], [mid])
+        self.assertEqual([(r["state"], r["trigger_ids"]) for r in self.ledger()], [("queued", [mid])])
+        # Two leases on a topic, the second append fails once:  the first lease gets no second copy.
+        self.write_lease("L1", topics=[("agent-sync", "u")])
+        self.write_lease("L2", topics=[("agent-sync", "u")])
+        second = self.fake.add_message("Codex", "agent-sync", "u", MENTION, deliver=False)
+        with mock.patch.object(L, "append_live", side_effect=flaky_append):
+            daemon.route_message(runner, dict(self.fake.messages[-1], flags=["mentioned"]))
+        self.assertEqual(failed, ["offer", "L2"])
+        for lease_id in ("L1", "L2"):
+            self.assertEqual([i["id"] for i in self.live_items(lease_id) if i["kind"] == "message"], [second], lease_id)
+
     def test_a_mention_goes_to_one_wake_capable_session_instead_of_a_wake(self) -> None:
         self.write_config(rewake=True)
         daemon = self.started()
@@ -567,6 +632,24 @@ class WakeTests(DaemonHarness):
         self.assertEqual((meta["kind"], meta["trigger_sender_id"]), ("draft", 11))
         self.assertEqual(self.ledger()[-1]["draft_to"], "racer")
 
+    def test_a_draft_after_the_seat_inbox_rotated_still_names_the_trigger_sender(self) -> None:
+        harness = self
+
+        class RotatingRacer(A.ClaudeRunner):
+            def run(self, *args, **kw):
+                result = super().run(*args, **kw)
+                paths = harness.seat_paths()
+                os.replace(paths.seat_inbox, paths.seat_inbox + ".1")
+                harness.write_lease("racer", topics=[("agent-sync", "t")])
+                return result
+
+        daemon = self.started(claude_runner=RotatingRacer(timeout=20))
+        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.wake_cycle(daemon)
+        drafts = [i for i in self.live_items("racer") if i["kind"] == "draft"]
+        self.assertEqual([(d["trigger_sender_id"], d["trigger_owner"]) for d in drafts], [(11, False)])
+
     def test_schema_violations_secrets_and_tools_never_post(self) -> None:
         daemon = self.started()
         cases = [
@@ -810,6 +893,48 @@ class SecurityTests(DaemonHarness):
 
 class ThreadedRunTests(DaemonHarness):
     """The production loop:  poller, router and wake worker threads, then a clean stop."""
+
+    def child_env(self) -> dict[str, str]:
+        return {"PATH": "/usr/bin:/bin", "HOME": str(self.home)}
+
+    def test_shutdown_kills_every_running_wake_child_not_only_the_latest(self) -> None:
+        # Two wake seats share the daemon's runner.  Seat B's child is still running when seat A's
+        # child starts and ends; shutdown must still kill B's process group.  The children are
+        # plain python scripts (no init event), so the runner itself never kills B.
+        daemon = self.daemon()
+        marker = self.tmp / "b.pid"
+        slow = "import os, time\nopen(%r, 'w').write(str(os.getpid()))\ntime.sleep(120)\n" % str(marker)
+        results = {}
+
+        def run_b() -> None:
+            results["b"] = daemon.claude_runner.run([sys.executable, "-c", slow], self.child_env(),
+                                                    str(self.tmp / "wake-b"), "p")
+
+        def kill_b() -> None:
+            try:
+                os.killpg(int(marker.read_text()), 9)
+            except (OSError, ValueError):
+                pass
+
+        self.addCleanup(kill_b)
+        thread = threading.Thread(target=run_b, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 30
+        while not (marker.exists() and marker.read_text().strip()) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(marker.exists(), "child B never started")
+        daemon.claude_runner.run([sys.executable, "-c", "pass"], self.child_env(), str(self.tmp / "wake-a"), "p")
+        daemon.shutdown()
+        thread.join(timeout=20)
+        self.assertFalse(thread.is_alive(), "shutdown left the still-running child B alive")
+        self.assertEqual(results["b"].exit, -9)
+
+    def test_a_wake_child_that_starts_after_shutdown_is_killed_at_once(self) -> None:
+        daemon = self.daemon()
+        daemon.shutdown()
+        result = daemon.claude_runner.run([sys.executable, "-c", "import time\ntime.sleep(30)\n"], self.child_env(),
+                                          str(self.tmp / "wake-late"), "p")
+        self.assertEqual(result.exit, -9)
 
     def test_run_routes_wakes_and_stops_cleanly(self) -> None:
         from agent_sync.daemon import Clock

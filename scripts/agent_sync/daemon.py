@@ -331,7 +331,7 @@ class Daemon:
         self.log = JsonLog(os.path.join(L.logs_dir(self.root), "listener.log"), self.scrub)
         self.stderr = stderr or sys.stderr
         self.notifier = notifier or A.Notifier(self.root, clock=self.clock.time)
-        self.claude_runner = claude_runner or A.ClaudeRunner(on_start=self._track_child)
+        self.claude_runner = claude_runner or A.ClaudeRunner(on_start=self._track_child, on_exit=self._untrack_child)
         self.wake_path = wake_path or A.default_wake_path(self.home)
         self.agents_runner = agents_runner or self._run_agents
         self.board_runner = board_runner
@@ -347,7 +347,7 @@ class Daemon:
         self.global_ring = Ring()
         self.agents_cache: tuple[float, dict[int, str] | None] = (-1e9, None)
         self.start_cache: dict[int, tuple[float, int]] = {}
-        self.child: subprocess.Popen[Any] | None = None
+        self.children: set[subprocess.Popen[Any]] = set()  # every running wake child, one per waking seat
         self.child_lock = threading.Lock()
         self.stop = threading.Event()
         self.router_queue: queue.Queue[tuple[str, str, Any]] = queue.Queue()
@@ -603,9 +603,10 @@ class Daemon:
             return
         runner.ring.add(message_id)
         self._note_probe(runner, message)
+        done: set[Any] = set()  # side effects that completed, so a retry never repeats them
         for attempt in range(3):
             try:
-                self._route(runner, message)
+                self._route(runner, message, done)
                 break
             except Exception as exc:  # noqa: BLE001 - one bad message must not stop routing
                 runner.crashes[message_id] = runner.crashes.get(message_id, 0) + 1
@@ -639,15 +640,21 @@ class Daemon:
                 "stale": c.stale, "wake_worthy": d.wake_worthy, "wake_owner": d.wake_owner,
                 "routed_at": self.clock.time()}
 
-    def _route(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+    def _route(self, runner: SeatRunner, message: Mapping[str, Any], done: set[Any] | None = None) -> None:
+        """Route one message.  `done` is shared by route_message's retries:  each append and the
+        wake offer is recorded there once it succeeds, so a retry after a partial failure resumes
+        instead of delivering a second copy."""
         assert runner.me is not None
+        done = set() if done is None else done
         now = self.clock.time()
         views = self.lease_views(runner)
         c, d = R.route(message, runner.me, self.context(runner), views)
         first_seen = message["id"] not in self.global_ring
         if first_seen:
-            self.global_ring.add(message["id"])
+            # The note comes before the ring mark:  a note that raises is retried, and a later
+            # failure never counts the same wake reply twice.
             self.loopguard.note(c.key, wake_reply=c.wake_tag, owner=c.owner)
+            self.global_ring.add(message["id"])
             if c.owner_api:
                 self.notifier.notify(self.config.claude_seat or runner.seat, "agent-sync: owner account",
                                      "a post from your account came from an API client (%s), treated as not you"
@@ -665,8 +672,11 @@ class Daemon:
             return
         item = self.make_item(runner, message, c, d)
         for lease_id, klass, kind in d.lease_items:
+            if ("live", lease_id) in done:
+                continue
             row = dict(item, **{"class": klass, "kind": kind})
             L.append_live(runner.paths, lease_id, [row])
+            done.add(("live", lease_id))
         for lease_id, reason in d.throttled:
             if reason == "per_topic":
                 continue  # routine spacing:  the item is a passive headline, no banner and no throttle line
@@ -679,9 +689,12 @@ class Daemon:
                     "content": "Live budget reached (%s): this topic is passive here until the budget resets." % reason}])
         if d.seat_inbox:
             row = dict(item, delivered_to=d.delivered_to)
-            self._append_seat_inbox(runner, [row])
-            if d.wake and not d.delivered_to:
+            if "inbox" not in done:
+                self._append_seat_inbox(runner, [row])
+                done.add("inbox")
+            if d.wake and not d.delivered_to and "wake" not in done:
                 self.offer_wake(runner, row, owner=d.wake == "owner")
+                done.add("wake")
 
     def _append_seat_inbox(self, runner: SeatRunner, rows: list[dict[str, Any]]) -> None:
         paths = runner.paths
@@ -866,11 +879,7 @@ class Daemon:
         now = self.clock.time()
         present = {i.get("id") for i in L.read_jsonl(runner.paths.live_inbox(lease_id)) if i.get("kind") == "message"}
         wanted = [i for i in pending.trigger_ids if i not in present]
-        found: dict[int, dict[str, Any]] = {}
-        for path in (runner.paths.seat_inbox + ".1", runner.paths.seat_inbox):
-            for row in L.read_jsonl(path):
-                if row.get("id") in wanted and row.get("kind", "message") == "message" and not row.get("quarantined"):
-                    found[row["id"]] = row  # the newest copy wins
+        found = self._seat_inbox_rows(runner, wanted)
         rows = []
         for message_id in wanted:
             if message_id in found:
@@ -880,6 +889,24 @@ class Daemon:
                 rows.append(row)
         L.append_live(runner.paths, lease_id, rows)
         self._mark_seat_inbox(runner, [r["id"] for r in rows], lease_id)
+
+    def _seat_inbox_rows(self, runner: SeatRunner, ids: Iterable[int]) -> dict[int, dict[str, Any]]:
+        """The newest seat-inbox message row for each wanted id:  the current file first, then the
+        rotated copy only for ids still missing, so a row in the current file always wins."""
+        wanted = {i for i in ids if isinstance(i, int)}
+        found: dict[int, dict[str, Any]] = {}
+        for path in (runner.paths.seat_inbox, runner.paths.seat_inbox + ".1"):
+            missing = wanted - set(found)
+            if not missing:
+                break
+            newest: dict[int, dict[str, Any]] = {}
+            for row in L.read_jsonl(path):
+                message_id = row.get("id")
+                if isinstance(message_id, int) and message_id in missing \
+                        and row.get("kind", "message") == "message" and not row.get("quarantined"):
+                    newest[message_id] = row  # a later line (a requeued copy) wins
+            found.update(newest)
+        return found
 
     def _mark_seat_inbox(self, runner: SeatRunner, ids: list[int], lease_id: str) -> None:
         """Mark seat-inbox rows delivered_to a lease (an atomic rewrite under the inbox lock)."""
@@ -900,9 +927,18 @@ class Daemon:
                     fh.write(json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n")
             os.replace(tmp, runner.paths.seat_inbox)
 
-    def _track_child(self, proc: subprocess.Popen[Any] | None) -> None:
+    def _track_child(self, proc: subprocess.Popen[Any]) -> None:
+        """A wake child started.  Under the lock, so a child either lands in shutdown's snapshot
+        or sees the stop flag here and is killed at once."""
         with self.child_lock:
-            self.child = proc
+            self.children.add(proc)
+            stopping = self.stop.is_set()
+        if stopping:
+            _kill_group(proc)
+
+    def _untrack_child(self, proc: subprocess.Popen[Any]) -> None:
+        with self.child_lock:
+            self.children.discard(proc)
 
     def run_jobs(self, seat: str, *, limit: int | None = None) -> int:
         """Run queued wakes of one seat on this thread (tests, and the worker loop)."""
@@ -993,11 +1029,11 @@ class Daemon:
         reply = obj.get("reply") if obj.get("action") in ("reply", "board", "escalate") else None
         lease_id = self.takeover(runner, pending)
         if lease_id and reply:
-            senders = {i.get("id"): i.get("sender_id") for i in L.read_jsonl(runner.paths.seat_inbox)}
+            source = self._seat_inbox_rows(runner, [trigger]).get(trigger) or {}
             L.append_live(runner.paths, lease_id, [{
                 "kind": "draft", "class": "passive", "id": trigger, "channel": pending.channel, "topic": pending.topic,
                 "type": pending.type, "sender": "%s wake (draft, not posted)" % runner.seat, "ts": self.clock.time(),
-                "owner": False, "trigger_owner": pending.owner, "trigger_sender_id": senders.get(trigger),
+                "owner": False, "trigger_owner": pending.owner, "trigger_sender_id": source.get("sender_id"),
                 "content": reply}])
             outcome["draft_to"] = lease_id
             reply = None
@@ -1389,12 +1425,9 @@ class Daemon:
     def shutdown(self) -> None:
         self.stop.set()
         with self.child_lock:
-            child = self.child
-        if child is not None:
-            try:
-                os.killpg(child.pid, signal.SIGKILL)
-            except OSError:
-                pass
+            children = list(self.children)
+        for child in children:
+            _kill_group(child)
         for runner in self.seats.values():
             runner.disconnect()
             runner.flush_cursor(force=True)
@@ -1430,6 +1463,14 @@ def clear_pause(root: str, seat: str | None) -> bool:
 
     L.update_json(pause_path(root), mutate)
     return bool(removed)
+
+
+def _kill_group(proc: subprocess.Popen[Any]) -> None:
+    """SIGKILL a wake child's process group (it runs in its own session)."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        pass
 
 
 def _process_start(pid: int) -> int:

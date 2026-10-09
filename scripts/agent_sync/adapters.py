@@ -117,13 +117,17 @@ def _kill_group(proc: subprocess.Popen[Any]) -> None:
 
 
 class ClaudeRunner:
-    """Runs one headless wake.  `on_start(proc)` lets the daemon kill the child's group on SIGTERM."""
+    """Runs one headless wake.  `on_start(proc)` and `on_exit(proc)` bracket each child, so the
+    daemon can track every running child (several seats may wake at once) and kill each group on
+    SIGTERM."""
 
     def __init__(self, *, timeout: float = WAKE_TIMEOUT, clock: Callable[[], float] = time.monotonic,
-                 on_start: Callable[[subprocess.Popen[Any] | None], None] | None = None) -> None:
+                 on_start: Callable[[subprocess.Popen[Any]], None] | None = None,
+                 on_exit: Callable[[subprocess.Popen[Any]], None] | None = None) -> None:
         self.timeout = timeout
         self.clock = clock
         self.on_start = on_start
+        self.on_exit = on_exit
 
     def run(self, argv: Sequence[str], env: Mapping[str, str], cwd: str, prompt: str) -> RunResult:
         out = RunResult()
@@ -218,8 +222,8 @@ class ClaudeRunner:
             out.stderr_len = len(err)
             out.stderr_sha = hashlib.sha256(err).hexdigest()
         finally:
-            if self.on_start:
-                self.on_start(None)
+            if proc is not None and self.on_exit:
+                self.on_exit(proc)
             try:
                 os.unlink(prompt_path)
             except OSError:
