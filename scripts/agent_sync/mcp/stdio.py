@@ -24,12 +24,14 @@ Those shapes were pinned against the client schemas in Claude Code 2.1.290 (the 
 how).  Capabilities are {"tools": {}}:  no listChanged, so a client never opens
 `subscriptions/listen`.
 
-Identity is stricter than the CLI's:  the seat comes from --as or AGENT_SEAT, the key only from
-$HOME/.secrets/Zulip/<Seat>-zuliprc (mode 600, realm-locked).  --rc is refused, and ZULIP_RC, the
-ZULIP_EMAIL/ZULIP_API_KEY/ZULIP_SITE triple and AGENT_SYNC_SECRETS_DIR are ignored, because an
-inherited override would post as another bot under this seat's tag.  At startup users/me must
-belong to the seat (seat_tag_for) and its role must be moderator (300) or member (400); otherwise
-the process exits 3 before it reads a single request.  So does a users/me that is not a bot.
+Identity is stricter than the CLI's:  the seat is pinned by --as or AGENT_SEAT (never read from the
+key), and the key comes from a zuliprc file (mode 600, realm-locked) found by the CLI's own
+resolver, zulip.resolve_credentials:  --rc, then env ZULIP_RC, then $HOME/.secrets/Zulip/<Seat>-zuliprc.
+So a launcher's ZULIP_RC wins over the home file.  The ZULIP_EMAIL/ZULIP_API_KEY/ZULIP_SITE triple
+(a raw key in a client's config) and AGENT_SYNC_SECRETS_DIR are ignored.  The CLI does not check that
+a key belongs to the seat, so this process does, before it reads a single request:  users/me must be a
+bot that signs as the seat (seat_tag_for) with the moderator (300) or member (400) role, otherwise it
+exits 3.  A ZULIP_RC that names another bot's file therefore exits 3 and posts nothing.
 
 Python 3.11+, standard library only.
 """
@@ -62,7 +64,7 @@ LIST_TTL_MS = 300000
 MAX_LINE = 4 << 20
 WRITE_DEADLINE_S = 30.0  # one response line must be out within this long, else the client is gone
 NO_FD_POLL_S = 0.01  # a stream with no fd to select on is retried after this pause
-IGNORED_ENV = ("ZULIP_RC", "ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE", Z.ENV_SECRETS_DIR)
+IGNORED_ENV = ("ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE", Z.ENV_SECRETS_DIR)
 
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
@@ -378,14 +380,11 @@ def _protect_stdout(rt: CLI.Runtime) -> tuple[Any, Any]:
 
 
 def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float] = time.time) -> int:
-    """`agent-sync mcp`.  Exit 0 at EOF; 2 for --rc or a bad seat name; 3 when the seat, the
-    credential or the bot's role is refused; 5 or 6 when Zulip cannot confirm the bot at startup."""
+    """`agent-sync mcp`.  Exit 0 at EOF; 2 for a bad seat name; 3 when the seat, the credential or
+    the bot's role is refused; 5 or 6 when Zulip cannot confirm the bot at startup."""
     def log(text: str) -> None:
         rt.err("agent-sync mcp: " + text)
 
-    if getattr(args, "rc", None):
-        log("--rc is not accepted here; mcp reads only $HOME/.secrets/Zulip/<Seat>-zuliprc for the seat")
-        return 2
     raw_seat = getattr(args, "as_seat", None) or rt.env.get("AGENT_SEAT")
     if not raw_seat:
         log("no seat: set AGENT_SEAT in the MCP client's config entry (e.g. AGENT_SEAT=CLAUDE), or pass --as NAME")
@@ -398,9 +397,16 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
     ignored = [name for name in IGNORED_ENV if rt.env.get(name)]
     env = {name: value for name, value in rt.env.items() if name not in IGNORED_ENV}
     home = _home(env, rt.home)
-    rc_path = home / ".secrets" / "Zulip" / Z.credential_file_name(seat)
+    # The resolver (Agent -> Z.resolve_credentials) takes --rc, then env ZULIP_RC, then the seat's default
+    # file.  The default is named here only so that a missing file reads "credential file not found: PATH"
+    # (the resolver's own message for it points at the env triple, which mcp ignores).
+    rc_arg = getattr(args, "rc", None)
+    if not rc_arg and not env.get("ZULIP_RC"):
+        rc_arg = str(Z.default_rc_path(seat, env, home))
+    rc_path = Path(rc_arg or env["ZULIP_RC"]).expanduser()
     if ignored:
-        log("ignoring %s:  mcp reads only %s" % (", ".join(ignored), rc_path))
+        log("ignoring %s:  mcp reads the key only from a zuliprc file (--rc, ZULIP_RC, then %s)"
+            % (", ".join(ignored), home / ".secrets" / "Zulip" / Z.credential_file_name(seat)))
     session_id, source = getattr(args, "session", None), "flag"
     if not session_id:
         session_id, source = env.get("CLAUDE_CODE_SESSION_ID") or env.get("AGENT_SESSION"), "env"
@@ -410,7 +416,7 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
                            sleep=rt.sleep, timeout=rt.timeout, events_timeout=rt.events_timeout)
     agent: CLI.Agent | None = None
     try:
-        agent = CLI.Agent(agent_rt, argparse.Namespace(as_seat=seat, rc=str(rc_path), session=session_id, json=True))
+        agent = CLI.Agent(agent_rt, argparse.Namespace(as_seat=seat, rc=rc_arg, session=session_id, json=True))
         me = agent.me()
     except Z.CredentialError as exc:
         log(str(exc))

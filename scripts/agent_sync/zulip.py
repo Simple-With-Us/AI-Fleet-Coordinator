@@ -35,7 +35,7 @@ __all__ = [
     "REALM", "DEFAULT_CHANNEL", "MAX_TOPIC_LENGTH", "USER_AGENT",
     "AgentSyncError", "UsageError", "CredentialError", "ApiError", "NetworkError", "QueueExpired",
     "Credentials", "normalise_seat", "credential_file_name", "seat_from_rc_path", "session_tag",
-    "realm_url", "resolve_credentials", "read_zuliprc", "env_credentials", "verify_realm",
+    "realm_url", "default_rc_path", "resolve_credentials", "read_zuliprc", "env_credentials", "verify_realm",
     "ZulipClient", "EventQueue", "message_channel", "message_topic",
 ]
 
@@ -240,6 +240,13 @@ def env_credentials(env: Mapping[str, str], *, email_env: str, key_env: str, sit
                        source="env %s" % key_env)
 
 
+def default_rc_path(seat: str, env: Mapping[str, str], home: Path) -> Path:
+    """The third credential source:  <secrets dir>/<Title>-zuliprc for the seat.  The secrets dir
+    is env AGENT_SYNC_SECRETS_DIR or ~/.secrets/Zulip."""
+    secrets_dir = Path(env.get(ENV_SECRETS_DIR) or (home / ".secrets" / "Zulip")).expanduser()
+    return secrets_dir / credential_file_name(seat)
+
+
 def resolve_credentials(env: Mapping[str, str], *, rc_arg: str | None, seat: str | None,
                         home: Path | None = None) -> Credentials:
     """Apply the credential order.  An explicit --rc or ZULIP_RC that cannot be read is an error;
@@ -251,8 +258,7 @@ def resolve_credentials(env: Mapping[str, str], *, rc_arg: str | None, seat: str
         return read_zuliprc(Path(env["ZULIP_RC"]).expanduser())
     tried: list[str] = []
     if seat:
-        secrets_dir = Path(env.get(ENV_SECRETS_DIR) or (home / ".secrets" / "Zulip")).expanduser()
-        candidate = secrets_dir / credential_file_name(seat)
+        candidate = default_rc_path(seat, env, home)
         tried.append(str(candidate))
         if candidate.exists():
             return read_zuliprc(candidate)

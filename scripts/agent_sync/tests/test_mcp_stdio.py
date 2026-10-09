@@ -892,24 +892,77 @@ class StartupTests(McpHarness):
         self.assertEqual((code, lines), (3, []))
         self.assertIn("not to CODEX", stderr)
 
-    def test_subprocess_ignores_credential_overrides(self):
+    WHOAMI = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "whoami", "arguments": {}}}
+
+    def other_bot_rc(self, name: str = "Codex-zuliprc"):
+        """Codex's bot, its own key and an rc file for it (the key is checked absent from all output)."""
         other_key = zulip_shaped()
         self.extra_secrets.append(other_key)
         self.fake.add_bot("codex-bot@zulip.test", "Codex", other_key)
-        other_rc = write_rc(self.tmp / "other" / "Codex-zuliprc", email="codex-bot@zulip.test", key=other_key,
-                            site=self.fake.url)
+        return other_key, write_rc(self.tmp / "other" / name, email="codex-bot@zulip.test", key=other_key,
+                                   site=self.fake.url)
+
+    def test_subprocess_ignores_the_key_triple_and_secrets_dir(self):
+        # Only the file pointers (--rc, ZULIP_RC) and the home file are credential sources.  A raw key in
+        # the environment, or a moved secrets dir, is ignored with a note and never a fall-through.
+        other_key, _ = self.other_bot_rc()
         override_dir = self.tmp / "override"
         write_rc(override_dir / "Claude-zuliprc", email="codex-bot@zulip.test", key=other_key, site=self.fake.url)
-        env = self.mcp_env(ZULIP_RC=str(other_rc), ZULIP_EMAIL="codex-bot@zulip.test", ZULIP_API_KEY=other_key,
-                           ZULIP_SITE=self.fake.url, AGENT_SYNC_SECRETS_DIR=str(override_dir))
-        call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "whoami", "arguments": {}}}
-        code, lines, stderr = self.spawn(env, [call])
+        env = self.mcp_env(ZULIP_EMAIL="codex-bot@zulip.test", ZULIP_API_KEY=other_key, ZULIP_SITE=self.fake.url,
+                           AGENT_SYNC_SECRETS_DIR=str(override_dir))
+        code, lines, stderr = self.spawn(env, [self.WHOAMI])
         self.assertEqual(code, 0, stderr)
         self.assertEqual(lines[0]["result"]["structuredContent"]["email"], BOT_EMAIL)
-        self.assertIn("ignoring ZULIP_RC, ZULIP_EMAIL, ZULIP_API_KEY, ZULIP_SITE, AGENT_SYNC_SECRETS_DIR", stderr)
-        self.home_rc.unlink()  # no seat file:  refused, never a fall-through to the overrides
-        code, lines, stderr = self.spawn(env, [call])
+        self.assertIn("ignoring ZULIP_EMAIL, ZULIP_API_KEY, ZULIP_SITE, AGENT_SYNC_SECRETS_DIR", stderr)
+        self.home_rc.unlink()  # no seat file:  refused, never a fall-through to the triple
+        code, lines, stderr = self.spawn(env, [self.WHOAMI])
         self.assertEqual((code, lines), (3, []))
+        self.assertIn("credential file not found", stderr)
+        self.assertIn(str(self.home_rc), stderr)  # the default path, not the moved secrets dir
+
+    def test_subprocess_zulip_rc_wins_over_the_home_file(self):
+        # Review follow-up:  mcp used to build the home path itself and strip ZULIP_RC.  It now goes through
+        # the CLI's resolver, so a launcher's ZULIP_RC is the key, and the home file is not even read.
+        launcher_key = zulip_shaped()
+        self.extra_secrets.append(launcher_key)
+        self.fake.add_bot(BOT_EMAIL, "Claude", launcher_key)  # a second key for the same bot
+        launcher_rc = write_rc(self.tmp / "launcher" / "anything-zuliprc", email=BOT_EMAIL, key=launcher_key,
+                               site=self.fake.url)
+        stale_key = zulip_shaped()
+        self.extra_secrets.append(stale_key)
+        write_rc(self.home_rc, email=BOT_EMAIL, key=stale_key, site=self.fake.url)  # a key Zulip rejects
+        code, lines, stderr = self.spawn(self.mcp_env(), [self.WHOAMI])
+        self.assertEqual(code, 3, stderr)  # sanity:  the home file alone does not work
+        self.assertIn("HTTP 401", stderr)
+        code, lines, stderr = self.spawn(self.mcp_env(ZULIP_RC=str(launcher_rc)), [self.WHOAMI])
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(lines[0]["result"]["structuredContent"]["email"], BOT_EMAIL)
+        self.assertNotIn("ignoring ZULIP_RC", stderr)
+        # An unreadable ZULIP_RC is an error, never a fall-through to the home file.
+        write_rc(self.home_rc, email=BOT_EMAIL, key=self.key, site=self.fake.url)
+        code, lines, stderr = self.spawn(self.mcp_env(ZULIP_RC=str(self.tmp / "missing-zuliprc")), [self.WHOAMI])
+        self.assertEqual((code, lines), (3, []))
+        self.assertIn("credential file not found", stderr)
+
+    def test_subprocess_zulip_rc_of_another_bot_is_refused_before_any_post(self):
+        # Honouring ZULIP_RC does not reopen the confused deputy:  users/me must still sign as the seat.
+        _, other_rc = self.other_bot_rc()
+        post = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "post", "arguments": {"topic": "deputy", "text": "should never post"}}}
+        code, lines, stderr = self.spawn(self.mcp_env(ZULIP_RC=str(other_rc)), [post])
+        self.assertEqual((code, lines), (3, []))
+        self.assertIn("not to CLAUDE", stderr)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+        self.assertEqual(self.fake.messages, [])
+
+    def test_subprocess_rc_flag_wins_over_zulip_rc(self):
+        _, other_rc = self.other_bot_rc()
+        code, lines, stderr = self.spawn(self.mcp_env(ZULIP_RC=str(other_rc)), [self.WHOAMI],
+                                         argv=("--rc", str(self.home_rc)))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(lines[0]["result"]["structuredContent"]["email"], BOT_EMAIL)
+        code, lines, stderr = self.spawn(self.mcp_env(), [self.WHOAMI], argv=("--rc", str(self.tmp / "none-zuliprc")))
+        self.assertEqual((code, lines), (3, []))  # an explicit --rc that cannot be read does not fall through
         self.assertIn("credential file not found", stderr)
 
     def test_subprocess_survives_a_line_nested_too_deeply(self):
@@ -987,14 +1040,6 @@ class StartupTests(McpHarness):
         self.assertEqual(len(lines), 1)
         result = json.loads(lines[0])["result"]
         self.assertEqual(self.assert_structured("read_topic", result)["count"], 50)
-
-    def test_rc_flag_is_refused(self):
-        out, err = io.StringIO(), io.StringIO()
-        code = cli.main(["mcp", "--rc", str(self.home_rc)], env=self.mcp_env(), stdin=io.StringIO(""), stdout=out,
-                        stderr=err, home=self.home)
-        self.transcript.extend([out.getvalue(), err.getvalue()])
-        self.assertEqual((code, out.getvalue()), (2, ""))
-        self.assertIn("--rc is not accepted", err.getvalue())
 
     def test_realm_lock_refuses_before_any_request(self):
         write_rc(self.home_rc, email=BOT_EMAIL, key=self.key, site="http://127.0.0.1:1")  # not the realm's port

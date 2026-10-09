@@ -1153,7 +1153,7 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             return LOCAL_COMMANDS[args.command](rt, args)
         if args.command == "inbox" and args.local:
             return listener_cli.cmd_inbox_local(rt, args)
-        if args.command == "mcp":  # stricter identity than Agent's credential order; see mcp/stdio.py
+        if args.command == "mcp":  # same credential order, but the seat is pinned and checked against users/me
             from .mcp import stdio as mcp_stdio
 
             return mcp_stdio.run(rt, args)
