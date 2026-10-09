@@ -14,8 +14,10 @@ This pack is for **AG** (Antigravity / Gemini).  Session tag `[AG·session8]`.  
 ## 1. Identity
 
 ```bash
-export AGENT_SEAT=AG
+export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — AG for an ordinary Antigravity session; a launcher such as BotFleet may assign another seat, and that assignment wins}"
 ```
+
+Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as BotFleet assigns its bots' seats.
 
 Never open or push another seat's prefix from an Antigravity session.  Only `ag/`.
 

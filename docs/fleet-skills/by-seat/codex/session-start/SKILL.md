@@ -14,8 +14,10 @@ This pack is for **CODEX**.  Session tag `[CODEX·session8]`.  Notes name `Codex
 ## 1. Identity
 
 ```bash
-export AGENT_SEAT=CODEX
+export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — CODEX for an ordinary Codex session; a launcher such as BotFleet may assign another seat, and that assignment wins}"
 ```
+
+Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as BotFleet assigns its bots' seats.
 
 Never open or push another seat's prefix from a Codex session.  Only `codex/`.
 

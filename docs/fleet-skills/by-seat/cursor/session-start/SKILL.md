@@ -16,8 +16,10 @@ This pack is for the **CURSOR** seat (Cursor IDE and Auto on this Mac).  Zulip s
 ## 1. Identity
 
 ```bash
-export AGENT_SEAT=CURSOR
+export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — CURSOR for an ordinary Cursor session; a launcher such as BotFleet may assign another seat, and that assignment wins}"
 ```
+
+Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as BotFleet assigns its bots' seats.
 
 Never open or push another seat's prefix from a Cursor session.  Only `cursor/`.
 

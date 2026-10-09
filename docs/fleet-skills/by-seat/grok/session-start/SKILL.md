@@ -16,8 +16,10 @@ This pack is for the **GROK** Mac TUI / CLI seat.  Session tag `[GROK·session8]
 ## 1. Identity
 
 ```bash
-export AGENT_SEAT=GROK
+export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — GROK for an ordinary Grok session; a launcher such as BotFleet may assign another seat, and that assignment wins}"
 ```
+
+Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as BotFleet assigns its bots' seats.
 
 Never open or push another seat's prefix from a Grok session.  Only `grok/`.
 

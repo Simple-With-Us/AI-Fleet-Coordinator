@@ -12,6 +12,7 @@ rewritten into a Claude-voiced copy.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 
 
@@ -19,6 +20,61 @@ IDENTITY_TOKEN = "@@SEAT_IDENTITY_PARAGRAPH@@"
 YOU_ARE_TOKEN = "@@SEAT_YOU_ARE@@"
 SEAT_LINE_TOKEN = "@@SEAT_BRANCH_LINE@@"
 NEVER_PUSH_TOKEN = "@@SEAT_NEVER_PUSH@@"
+SEAT_PIN_TOKEN = "@@SEAT_PIN_BLOCK@@"
+
+# The canonical pack's identity code block is a bare assignment.  Rendered as
+# is, it stamps the platform's seat over a seat a launcher already assigned
+# (BotFleet runs Claude, Codex and other CLIs as engines for its own bots).
+# Every render swaps it for a pin-or-fail line that never overwrites, until
+# the owner's seat-precedence rule lands.  Key on the whole fenced block so a
+# bare value other than MONET is caught too.
+_SEAT_PIN_SOURCE = re.compile(r"```bash\nexport AGENT_SEAT=[A-Za-z0-9_<>-]+\n```")
+
+SEAT_NEVER_OVERWRITE = (
+    "Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as "
+    "BotFleet assigns its bots' seats."
+)
+
+# Shell-safe: the message sits inside "${AGENT_SEAT:?...}" so it carries no
+# `$`, backtick, double quote or closing brace.
+_SEAT_PIN_LAUNCHER = (
+    "a launcher such as BotFleet may assign another seat, and that assignment wins"
+)
+
+
+def _seat_pin_block(export_line: str) -> str:
+    return f"```bash\n{export_line}\n```\n\n{SEAT_NEVER_OVERWRITE}"
+
+
+def seat_pin_block(seat: "Seat") -> str:
+    """Identity code block for one exclusive seat: pin-or-fail, never overwrite."""
+    return _seat_pin_block(
+        'export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — '
+        f"{seat.tag} for an ordinary {seat.notes} session; {_SEAT_PIN_LAUNCHER}"
+        '}"'
+    )
+
+
+def universal_pin_block() -> str:
+    """Identity code block for the neutral skills/ tree (no seat is known)."""
+    return _seat_pin_block(
+        'export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — your own seat tag; '
+        f'{_SEAT_PIN_LAUNCHER}'
+        '}"'
+    )
+
+
+def grok_bot_pin_block() -> str:
+    """Identity code block for a Grok Bot role.
+
+    A seat that is already set stays; otherwise the role the launcher put in
+    AGENT_TAG becomes the seat; if neither is set the shell fails loudly.
+    """
+    return _seat_pin_block(
+        'export AGENT_SEAT="${AGENT_SEAT:-${AGENT_TAG:?set '
+        f"{gb_role_pin_list()}"
+        '}}"'
+    )
 
 
 @dataclass(frozen=True)
@@ -825,6 +881,7 @@ def _specialize_grok_bot(text: str, seat: Seat, skill_name: str) -> str:
     ]
     for old, new in ordered:
         text = text.replace(old, new)
+    text = text.replace(SEAT_PIN_TOKEN, grok_bot_pin_block())
     text = text.replace(IDENTITY_TOKEN, seat.identity_paragraph)
     text = text.replace(
         YOU_ARE_TOKEN,
@@ -856,6 +913,7 @@ def _insert_after_first_heading(text: str, block: str) -> str:
 
 
 def _stash_identity_source(text: str) -> str:
+    text = _SEAT_PIN_SOURCE.sub(SEAT_PIN_TOKEN, text)
     text = text.replace(
         MONET_PACK_LINE + "\n\n" + MONET_CLAUDE_SHARED_PARA,
         IDENTITY_TOKEN,
@@ -900,6 +958,7 @@ def _unstash_identity(text: str, seat: Seat) -> str:
         f"Seat: **{seat.tag}**.  Branch: `{seat.prefix}/<slug>`.{extra_never}",
     )
     text = text.replace(NEVER_PUSH_TOKEN, never)
+    text = text.replace(SEAT_PIN_TOKEN, seat_pin_block(seat))
     return text
 
 
@@ -1238,6 +1297,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
 
     for old, new in ordered_universal:
         text = text.replace(old, new)
+    text = text.replace(SEAT_PIN_TOKEN, universal_pin_block())
 
     text = _unprotect(text)
     text = _rewrite_universal_voice(text)

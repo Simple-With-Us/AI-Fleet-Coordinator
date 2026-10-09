@@ -16,8 +16,10 @@ This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  
 ## 1. Identity
 
 ```bash
-export AGENT_SEAT=MA
+export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — MA for an ordinary Muse Assist session; a launcher such as BotFleet may assign another seat, and that assignment wins}"
 ```
+
+Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as BotFleet assigns its bots' seats.
 
 Never open or push another seat's prefix from a Muse Assist session.  Only `muse-assist/`.
 

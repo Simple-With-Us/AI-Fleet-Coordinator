@@ -14,8 +14,10 @@ This pack is for **Grok Bot** roles driving Cursor cloud agents.  Chat tag is `[
 ## 1. Identity
 
 ```bash
-export AGENT_SEAT="${AGENT_TAG:?set GB-CONDUCTOR, GB-MONITOR, GB-FIXER, GB-DEPLOYER, GB-COMPILER, GB-NURSE, GB-HOUSEKEEPER, GB-ACCOUNTANT, or GB-ORACLE}"
+export AGENT_SEAT="${AGENT_SEAT:-${AGENT_TAG:?set GB-CONDUCTOR, GB-MONITOR, GB-FIXER, GB-DEPLOYER, GB-COMPILER, GB-NURSE, GB-HOUSEKEEPER, GB-ACCOUNTANT, or GB-ORACLE}}"
 ```
+
+Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as BotFleet assigns its bots' seats.
 
 Never sign as `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.  Only your `[GB-<NAME>]` tag.
 
