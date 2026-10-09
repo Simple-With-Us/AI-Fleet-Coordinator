@@ -1,13 +1,13 @@
 # Agent-Sync Listener:  Server Instance
 
-CLAUDE seat, Thu, Oct 8.  Deployed on Thu, Oct 8 as the Coolify application "agent-sync listener (server)" (project Fleet Infra, environment production, uuid `l40rxd4rbj1pnogmbtetzmsf`), at commit 4761f44.  It does not deploy itself:  see Coolify Setup, step 1.  The listener design is [agent-sync-listener.md](agent-sync-listener.md); this page covers only what the server instance adds.
+CLAUDE seat, Thu, Oct 8.  Deployed on Thu, Oct 8 as the Coolify application "agent-sync listener (server)" (project Fleet Infra, environment production, uuid `l40rxd4rbj1pnogmbtetzmsf`), at commit 4761f44.  It does not deploy itself:  see Coolify Setup, step 1.  The listener design is [agent-sync-listener.md](agent-sync-listener.md); this page covers only what the server instance adds.  Fri, Oct 9:  the five cloud seats (MA, JET, GROK-WEB, INSTINCT and ECHO) now have sections, with inbox capture (see [Cloud Seats](#cloud-seats)).
 
 ## Summary
 
 The listener runs as two instances of the same package (`scripts/agent_sync`), by owner decision on Thu, Oct 8.
 
 - **mac** is the LaunchAgent on the owner's Mac.  It holds the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM):  live delivery into Claude sessions and the tool-less `claude -p` wake for CLAUDE, and inbox capture for the other eight.
-- **server** is a container on the Coolify box (Hetzner).  It holds the Grok Bot (GB) personas and has room for other seats later.  A GB persona is woken on an @-mention or a DM by calling its Grok Bot routine webhook.  The routine then replies in Zulip with the persona's own key.
+- **server** is a container on the Coolify box (Hetzner).  It holds the Grok Bot (GB) personas and the five cloud seats (MA, JET, GROK-WEB, INSTINCT and ECHO).  A cloud seat has a queue and inbox capture and no wake.  A GB persona is woken on an @-mention or a DM by calling its Grok Bot routine webhook.  The routine then replies in Zulip with the persona's own key.
 
 BotFleet (BF) bots are handled natively by BotFleet, not by either instance.
 
@@ -15,7 +15,7 @@ The server instance reuses everything in the listener:  the router, dedupe, the 
 
 ## Seat Partition
 
-[`agent-sync-partition.toml`](agent-sync-partition.toml) gives each seat to one instance:  `mac`, `server`, or `none` (no listener holds it).  Today the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM) are `mac`, and the eleven GB personas plus MA, JET, GROK-WEB, INSTINCT and ECHO are `server`.  The BF role bots and GROK-BUILD (the older code of the GROK seat) are `none`.
+[`agent-sync-partition.toml`](agent-sync-partition.toml) gives each seat to one instance:  `mac`, `server`, or `none` (no listener holds it).  Today the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM) are `mac`, and the eleven GB personas plus MA, JET, GROK-WEB, INSTINCT and ECHO are `server`.  The BF role bots and GROK-BUILD (the older code of the GROK seat) are `none`.  The server sample enables the five cloud seats with `wake = "inbox"` (since Fri, Oct 9).
 
 **A seat must never be configured in both instances.**  If it were, two listeners would each hold a queue for the same bot and each wake it, so one message could be answered twice.  The partition fails closed, and it is enforced at start, at connect and on reload.
 
@@ -48,7 +48,7 @@ CODE is the seat with hyphens turned into underscores.
 - **The environment is read once.**  A container's environment is fixed when Coolify creates it, and the daemon copies it at start.  `agent-sync daemon reload` re-reads only `listener.toml`.  A new or changed variable (a persona enabled, a key rotated) reaches the listener only when the app is restarted in Coolify.  Coolify's docs say the same:  use Restart when only runtime values changed.  A status line for a missing variable says to restart.
 - The Infisical names are pending from Muse.  If they differ from the defaults, set `email_env` and `key_env` in the seat's section rather than renaming secrets.
 
-**Admin and owner keys stay refused (listener decision 7).**  The listener accepts only moderator (300) and member (400) bots.  GB-Director is a realm moderator now, not an admin, so its key is accepted; its seat is present in the sample but disabled only because it has no routine yet.  If an admin or owner bot's key is configured for a seat, `users/me` shows role 200 or 100.  The seat is then refused, logged as `seat-refused` with the role, retried every 5 minutes, shown red in status, and notified once a day.  The other seats keep running.
+**Admin and owner keys stay refused (listener decision 7).**  The listener accepts only moderator (300) and member (400) bots.  Every bot is a realm member now (owner, Fri, Oct 9:  "all bots are Members now not admin").  That includes GB-Director, Muse Assist (MA), Jet (JET), Instinct and Echo, which were admins earlier.  GB-Director's seat is present in the sample but disabled only because it has no routine yet.  If an admin or owner bot's key is configured for a seat, `users/me` shows role 200 or 100.  The seat is then refused, logged as `seat-refused` with the role, retried every 5 minutes, shown red in status, and notified once a day.  The other seats keep running.
 
 ## DMs
 
@@ -124,7 +124,7 @@ routine = { url_env = "GB_COMPILER_ROUTINE_URL", key_env = "GB_COMPILER_ROUTINE_
 | `Dockerfile.dockerignore` | Keeps only those paths in the build context (BuildKit); the tests stay out |
 | `entrypoint.sh` | On first start, copies the sample config onto the volume as `$AGENT_SYNC_CONFIG`, never overwriting one, then execs `agent-sync` (exec form, so SIGTERM reaches the daemon, which deletes its queues) |
 | `healthcheck.py` | Unhealthy when `/data/listener/status.json` is missing or older than 60 seconds.  The daemon rewrites it every 2 seconds; a refused start never writes it |
-| `listener.toml` | The server sample:  GB-COMPILER enabled with `wake = "http"`.  The other ten personas are present with `enabled = false`, each with `wake = "http"` and a `routine` block that names its default variables (their routines do not exist yet) |
+| `listener.toml` | The server sample:  GB-COMPILER enabled with `wake = "http"`, and the five cloud seats (MA, JET, GROK-WEB, INSTINCT and ECHO) enabled with `wake = "inbox"`.  The other ten personas are present with `enabled = false`, each with `wake = "http"` and a `routine` block that names its default variables (their routines do not exist yet) |
 
 **Environment the container expects.**  The image sets these:
 
@@ -139,6 +139,7 @@ Infisical (project "AI Fleet Coordinator", environment `prod`, folder `/zulip`) 
 - `ZULIP_SITE` (Coolify only)
 - `ZULIP_GB_COMPILER_EMAIL` and `ZULIP_GB_COMPILER_API_KEY`
 - `GB_COMPILER_ROUTINE_URL` and `GB_COMPILER_ROUTINE_KEY`
+- For each cloud seat, `ZULIP_<CODE>_EMAIL` and `ZULIP_<CODE>_API_KEY`, with CODE `MA`, `JET`, `GROK_WEB`, `INSTINCT` or `ECHO` (ten variables, no routine)
 - For each persona enabled later:  `ZULIP_GB_<ROLE>_EMAIL`, `ZULIP_GB_<ROLE>_API_KEY`, `GB_<ROLE>_ROUTINE_URL` and `GB_<ROLE>_ROUTINE_KEY`, or the names its section sets
 
 These are optional, and best left unset:
@@ -164,17 +165,17 @@ These are optional, and best left unset:
 5. **Health check.**  Leave Coolify's dashboard health check disabled.  For a Dockerfile application Coolify detects the image's `HEALTHCHECK` and uses it instead, which also lets a rolling deploy wait for the new container before removing the old one.  The image checks every 30 seconds, with a 60-second start period and 3 retries.  On the host, `docker inspect --format '{{.State.Health.Status}}' <container>` shows the result (expect `healthy`).  Healthy means only that the main loop rewrote `status.json` in the last 60 seconds.  It does not mean a seat is connected, the owner is pinned or a routine is ready; step 7 checks those.
 6. **First deploy, then init.**  Until `daemon init` runs, `owner_user_id` is 0, so nothing is treated as the owner and nothing wakes.  Open the app's terminal in Coolify (or `docker exec -it <container> sh`) and run:
    ```
-   agent-sync daemon init --seat GB-COMPILER   # reads the user list as GB-Compiler, asks before pinning
-   agent-sync daemon reload                    # SIGHUP:  re-reads listener.toml (enough here; no variable changed)
+   agent-sync daemon init --seat MA     # reads the user list as MA (any enabled seat with working credentials), asks before pinning
+   agent-sync daemon reload             # SIGHUP:  re-reads listener.toml (enough here; no variable changed)
    agent-sync status
    ```
-   `init` pins `owner_user_id` and `eligible_user_ids` into `/data/listener.toml`.  It also checks each enabled seat's environment credentials, role and #agent-sync subscription.
+   `init` pins `owner_user_id` and `eligible_user_ids` into `/data/listener.toml`.  It also checks each enabled seat's environment credentials, role and #agent-sync subscription.  **Always pass `--seat`.**  Without it the reader is the first enabled seat in name order (ECHO, with the sample as it is now), and `init` stops with that seat's missing variable.  Name a seat whose credentials are present and correct;  GB-COMPILER is red until the owner replaces its credentials (see Open Questions).
 
    Over a non-interactive `docker exec` there is no terminal to answer the prompt, so `init` needs `--yes` or it changes nothing.  The Coolify host is reachable as the ssh alias `coolify`:
    ```
    ssh coolify
    C=$(docker ps --filter name=l40rxd4rbj1pnogmbtetzmsf --format '{{.Names}}')
-   docker exec "$C" agent-sync daemon init --seat GB-COMPILER --yes
+   docker exec "$C" agent-sync daemon init --seat MA --yes
    docker exec "$C" agent-sync daemon reload
    docker exec "$C" agent-sync status
    ```
@@ -182,7 +183,8 @@ These are optional, and best left unset:
    - `listener: running (pid ...)`
    - `instance server; owner pinned: yes`
    - no line that starts with `RED` (config, partition, credential or role problems)
-   - `GB-COMPILER  connected`, with `wake http (routine ready, <host>)` on the same line
+   - `GB-COMPILER  connected`, with `wake http (routine ready, <host>)` on the same line (while its credentials are the wrong bot's, expect it red instead, and read the rest of the list without it)
+   - each cloud seat (MA, JET, GROK-WEB, INSTINCT, ECHO) `connected`, with `wake inbox`
    - no `routine NOT ready` and no `DOWN` for any enabled seat
 
    `LaunchAgent: not installed` is expected in the container.  A fresh or lost volume reseeds the sample with `owner_user_id = 0`, so after one, run step 6 again.
@@ -207,6 +209,14 @@ grep -A6 '^\[seat\.GB-FIXER\]$' /data/listener.toml      # check the result
 
 GNU sed keeps the file's owner and mode 600.  For a larger change, edit the file on the host instead, at the volume's path (`docker volume inspect <volume> --format '{{.Mountpoint}}'`), keeping owner 10001 and mode 600.
 
+**A section added to the sample does not reach a live volume.**  The entrypoint copies the sample only when `/data/listener.toml` does not exist, so merging a new `[seat.X]` section changes fresh volumes and nothing else.  To add one to the running app, append it, never replace the file (a replacement loses the pinned `owner_user_id` and `eligible_user_ids`).  `docker exec` runs as `agentsync`, so an append keeps the owner and mode 600:
+```
+docker exec -i "$C" sh -c 'cat >> /data/listener.toml' < section.toml
+docker exec "$C" grep -A4 '^\[seat\.MA\]$' /data/listener.toml      # check it landed once
+docker exec "$C" agent-sync daemon reload                              # only if every variable it names is already in the container
+```
+Appending a section twice makes the TOML invalid (a duplicate table), so check first with the `grep`.
+
 **Enabling another persona.**  Every persona's section in the sample already carries `wake = "http"` and a `routine` block that names its default variables, so enabling one is a one-line edit.
 
 1. Add its routine URL and key (`GB_<ROLE>_ROUTINE_URL`, `GB_<ROLE>_ROUTINE_KEY`) in Infisical (`prod`, `/zulip`), and check that its Zulip email and key are there.
@@ -217,6 +227,29 @@ GNU sed keeps the file's owner and mode 600.  For a larger change, edit the file
 6. Mirror the change in `scripts/agent_sync/server/listener.toml` in a PR, so a fresh volume starts the same way.
 
 **Rotating a key.**  Change it in Infisical first, make sure the new value reaches Coolify (copied by hand with the script from step 3), then restart the app.  The same applies to a bot's Zulip key and to a routine URL or key.  Until the restart, the listener keeps using the old value.
+
+## Cloud Seats
+
+MA (`muse-assist-bot@`), JET (`openai-dot-bot@`), GROK-WEB (`grok-web-bot@`), INSTINCT (`instinct-owl-bot@`) and ECHO (`instinct-bat-bot@`) are cloud seats:  they run in other apps, with no Mac and no zuliprc file.  The partition gives all five to this instance (owner, Thu, Oct 8), and since Fri, Oct 9 the sample holds each with this section (Echo's is the same, kept minimal because Echo may be retired when it merges with Instinct):
+
+```toml
+[seat.MA]
+instance = "server"
+creds = "env"
+wake = "inbox"
+```
+
+**What a cloud seat's queue does.**
+
+- It holds one Zulip event queue for the bot, so its @-mentions and DMs are captured at zero tokens into `/data/<SEAT>/` while no session of that app is open, and a restart backfills from the cursor.  The prefilter, dedupe, budgets and loop guard are the same as everywhere else.
+- It checks the key at connect.  The bot's role must be member or moderator, and the key's own bot must be the seat (the tag derived from the bot's email must equal the seat).  A wrong key shows `seat-refused` in the log and red in `agent-sync status`, and the other seats keep running.
+- It makes the bot visible in `agent-sync status` (connected or red, last event, cursor).
+
+**What it does not do.**  No wake adapter exists for these seats, so nothing is woken.  Nothing reads their inboxes either:  the hosted MCP `inbox` tool (`docs/protocols/agent-sync-mcp.md`) is stateless and queries Zulip itself, one `is:mentioned` search per allowlisted channel, with no DMs.  It never reads these files.  The only reader today is an operator inside the container (`agent-sync inbox --local --as MA`, or `--as JET`, and so on).  A cloud seat is therefore captured, not served.  The real consumers, a wake adapter for a seat that can take one, or an MCP tool that reads this inbox, are Open Questions below.
+
+**Not eligible senders.**  `daemon init` pins `eligible_user_ids` from `FLEET_SEATS` (`scripts/agent_sync/listener_cli.py`).  That list holds MA and JET but not GROK-WEB, INSTINCT or ECHO, so a message from one of those three is captured and never triggers a wake on another seat.  This changes only if the list changes.
+
+**Credentials and roles.**  Each seat reads `ZULIP_<CODE>_EMAIL` and `ZULIP_<CODE>_API_KEY` (CODE `MA`, `JET`, `GROK_WEB`, `INSTINCT`, `ECHO`).  All ten are in Infisical `prod` `/zulip` and are copied into the Coolify app as runtime-only literals by the script of Coolify Setup, step 3.  They are copied by hand and the app must be restarted afterwards.  Rotation follows "Rotating a key" below.  MA, JET and INSTINCT were realm admins, which the listener refuses;  every bot is a realm member now (owner, Fri, Oct 9), so none is refused.
 
 ## Open Questions
 
@@ -229,4 +262,4 @@ GNU sed keeps the file's owner and mode 600.  For a larger change, edit the file
 - **Infisical to Coolify.**  Settled for now:  a script copies `/zulip` (`prod`) into the app by hand.  This repo configures no Infisical sync.  Every variable is runtime only and a change needs a restart.  An automatic sync would remove the manual re-copy on rotation.
 - **Variable names.**  The Infisical names are pending from Muse.  The defaults above are what the sample config reads.  If they differ, set `email_env` and `key_env` (or the routine's `url_env` and `key_env`) in the seat's section, copy the variables into Coolify under those names, and restart the app.
 - **GB-COMPILER credentials.**  `ZULIP_GB_COMPILER_EMAIL` and `ZULIP_GB_COMPILER_API_KEY` in Infisical currently hold another bot's credentials, an admin bot's.  The seat is refused (the key's own bot is not GB-COMPILER, and an admin key is refused) until the owner replaces them with the real GB-Compiler pair.  Then copy them to Coolify and restart the app.
-- **Cloud seats with no section.**  The partition gives this instance MA, JET, GROK-WEB, INSTINCT and ECHO, but `scripts/agent_sync/server/listener.toml` has no section for any of them, so none is listening.  Before a section is added, check each bot's role:  MA, JET and INSTINCT are admin bots and the listener would refuse them; ECHO is a member.
+- **Cloud seat inboxes have no reader.**  MA, JET, GROK-WEB, INSTINCT and ECHO are held with inbox capture, and nothing consumes it (see [Cloud Seats](#cloud-seats)).  Options:  an `http` wake adapter for a seat whose app can take a webhook (none can today), a hosted MCP tool that reads this instance's seat inbox (it would need a path from the Worker to the container, which does not exist), or a periodic Zulip digest from the captured rows.  Until one of these is chosen, the queue is durable capture and a status line only.  The same goes for `FLEET_SEATS`:  GROK-WEB, INSTINCT and ECHO are not eligible senders.
