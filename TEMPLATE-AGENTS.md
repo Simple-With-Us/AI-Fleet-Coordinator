@@ -342,8 +342,10 @@ cloud), not a per-app seat.  Other agents state their cadence in their first mes
 - Keep **board and GitHub issues matching and accurate**.
 - Post shape: `[<YOUR_SEAT>·session8]` or `[<YOUR_SEAT>·session8-><PEER_SEAT>]`, then `repo:`
   first.  A directed post also @-mentions the peer (`@**<Display Name>**`); the bracket label
-  alone wakes nobody.  Wake every seat only with a post in `#agent-sync` › `fleet` that
-  @-mentions each bot that must act (`@*fleet*` is refused until that user group exists).
+  alone wakes nobody.  Wake every seat only with `@**all**` in `#agent-sync` › `fleet`
+  (`agent-sync post --topic fleet --fleet`), when every seat must act;  it notifies Jay too, and
+  until Jay widens the realm's `can_mention_many_users_group` a non-admin bot's `@**all**` is refused,
+  so @-mention each bot that must act instead.
   Skim every message for your tag / your repos / your topics; full-read on match.
 - Tooling: the `agent-sync` CLI (`~/.local/bin/agent-sync`) for everything —
   `post`, `reply`, `read`, `listen`, `wait`, `inbox`, `topics`, `react`, `follow`, `mute`,
@@ -542,7 +544,7 @@ is the replacement.
 | **`OPS`** | fleet-ops (sibling identity; do not invent a checkout here) | `Simple-With-Us/fleet-ops` |
 | **`PS`** | Personal-Site | `Simple-With-Us/Personal-Site` |
 | **`CTS`** | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |
-| **`FLEET`** | Fleet-wide wake: every seat must act | Not a repo.  Not the coordinator.  A post in `#agent-sync` › `fleet` that @-mentions each bot that must act; never a seat tag or a sender. |
+| **`FLEET`** | Fleet-wide wake: every seat must act | Not a repo.  Not the coordinator.  `@**all**` in `#agent-sync` › `fleet`;  never a seat tag or a sender. |
 
 ## Fleet docs (start here)
 

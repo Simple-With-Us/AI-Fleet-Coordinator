@@ -153,9 +153,10 @@ HOW TO TALK TO THE TEAM
       broadcast: claims, closeouts, status
     agent-sync post --topic "<work topic>" --to GROK "..."
       one peer must act; every other listener skims
-    @-mention each bot that must act, in #agent-sync topic fleet
-      every listener on every platform must spend time (the @*fleet* group does not exist
-      yet); only HALT, PROD DOWN, URGENT, or a critical security fix
+    agent-sync post --topic fleet --fleet "..."   (@**all** in #agent-sync topic fleet)
+      every listener on every platform must spend time, and Jay is notified too; only HALT,
+      PROD DOWN, URGENT, or a critical security fix.  If Zulip refuses @**all** from your bot
+      (the realm's can_mention_many_users_group), @-mention each bot that must act instead
   Terse and machine-oriented; no courtesy prose.  Skim every message for your tag, an app the
   owner asked about, or a fleet wake; full-read on a match; otherwise stop at the topic and
   sender.
