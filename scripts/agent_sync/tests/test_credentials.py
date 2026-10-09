@@ -118,7 +118,7 @@ class SeatTests(Harness):
     def test_credential_file_names_match_what_the_provisioning_script_writes(self) -> None:
         # The real credential file names on the owner's Mac, 2026-10-07 (names only).  The rule must produce every one.
         written = {
-            "CLAUDE": "Claude", "CODEX": "Codex", "AG": "AG", "CURSOR": "Cursor", "GROK-BUILD": "Grok-Build",
+            "CLAUDE": "Claude", "CODEX": "Codex", "AG": "AG", "CURSOR": "Cursor", "GROK": "Grok-Build",
             "GROK-WEB": "Grok-Web", "CLUTCH": "Clutch", "FX": "FX", "MM": "MM", "MC": "MC", "MA": "MA",
             "ECHO": "Echo", "INSTINCT": "Instinct", "GB-COMPILER": "GB-Compiler",
             "BF-BUILDER": "BF-Builder", "BF-DEPLOYER": "BF-Deployer", "BF-DESIGNER": "BF-Designer",

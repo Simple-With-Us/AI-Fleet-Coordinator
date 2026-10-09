@@ -38,6 +38,9 @@ from typing import Any, Callable, Mapping, Sequence, TextIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import __version__
+from . import listener_cli
+from . import live as LIVE
+from . import secretscan
 from . import zulip as Z
 from .state import State, state_root
 from .zulip import (ApiError, CredentialError, EventQueue, NetworkError, QueueExpired, UsageError,
@@ -592,6 +595,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("inbox", "show @-mentions of this bot newer than the seat-wide inbox cursor")
     p.add_argument("--limit", type=_positive_int, default=20, metavar="N", help="messages to show (default: %(default)s)")
     p.add_argument("--peek", action="store_true", help="do not advance the cursor")
+    p.add_argument("--local", action="store_true",
+                   help="read the listener's seat inbox file and owner queue instead of Zulip (no network)")
 
     for name, summary in (("follow", "follow a topic (notifications on)"), ("mute", "mute a topic"),
                           ("unmute", "return a topic to the channel's default visibility")):
@@ -606,6 +611,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("react", "add an emoji reaction to a message")
     p.add_argument("--id", type=_message_id, required=True, metavar="MSGID", help="message to react to")
     p.add_argument("emoji", metavar="EMOJI", help="emoji name, for example eyes or thumbs_up")
+
+    listener_cli.add_parsers(sub, common)
     return parser
 
 
@@ -685,6 +692,9 @@ def _read_text(agent: Agent, parts: Sequence[str]) -> str:
     text = text.strip()
     if not text:
         raise UsageError("the message text is empty")
+    found = secretscan.scan(text, secretscan.basic_forms(agent.creds.email, agent.creds.key))
+    if found:
+        raise UsageError("refusing to post: the text looks like it contains %s" % found)
     return text
 
 
@@ -695,6 +705,7 @@ EMAIL_TAG_OVERRIDES = {
     "openai-dot": "JET",
     "instinct-bat": "ECHO",
     "instinct-owl": "INSTINCT",
+    "grok-build": "GROK",  # terminal Grok and Grok Build are one seat (owner 2026-10-08)
 }
 
 
@@ -779,6 +790,10 @@ def _send(agent: Agent, channel: str, topic: str, body: str) -> int:
         raise
     message_id = int(result["id"])
     agent.state.record_posted(message_id)
+    try:  # a session with a listener lease leases the topic for 2 hours and remembers the id
+        LIVE.note_post(str(state_root(agent.rt.env, agent.rt.home)), agent.seat, agent.rt.env, channel, topic, message_id)
+    except (OSError, ValueError):
+        pass
     if agent.state.cursor(channel, topic) is None:
         # A fresh session that posts and then waits must see the reply, even one that arrives before
         # `wait` starts; with no cursor, `wait` would take that reply for history.
@@ -1055,6 +1070,11 @@ def _on_sigterm(signum: int, frame: Any) -> None:
     raise KeyboardInterrupt
 
 
+LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
+    "daemon": listener_cli.cmd_daemon, "status": listener_cli.cmd_status, "wakes": listener_cli.cmd_wakes,
+}
+
+
 def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = None, stdin: TextIO | None = None,
          stdout: TextIO | None = None, stderr: TextIO | None = None, home: Path | None = None,
          sleep: Callable[[float], None] | None = None, stop: threading.Event | None = None,
@@ -1062,10 +1082,15 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
     rt = Runtime(env=os.environ if env is None else env, stdin=stdin or sys.stdin, stdout=stdout or sys.stdout,
                  stderr=stderr or sys.stderr, home=home, sleep=sleep or time.sleep, stop=stop,
                  timeout=timeout, events_timeout=events_timeout)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ("attach", "detach"):  # the entry script normally dispatches these before importing cli
+        from . import attach
+
+        return attach.main(argv[1:], command=argv[0], env=rt.env, stdin=rt.stdin, stdout=rt.stdout, stderr=rt.stderr)
     parser = build_parser()
     try:
         with contextlib.redirect_stdout(rt.stdout), contextlib.redirect_stderr(rt.stderr):
-            args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+            args = parser.parse_args(argv)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 2)
 
@@ -1075,6 +1100,10 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             previous = signal.signal(signal.SIGTERM, _on_sigterm)
     agent: Agent | None = None
     try:
+        if args.command in LOCAL_COMMANDS:
+            return LOCAL_COMMANDS[args.command](rt, args)
+        if args.command == "inbox" and args.local:
+            return listener_cli.cmd_inbox_local(rt, args)
         agent = Agent(rt, args)
         return COMMANDS[args.command](agent, args)
     except Z.AgentSyncError as exc:
