@@ -5,7 +5,7 @@ The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at
 | Seat | Bot | State |
 | --- | --- | --- |
 | GROK-WEB | `grok-web-bot@` (member) | Served.  Grok on the web, iOS and Android, through grok.com connectors. |
-| JET | `openai-dot-bot@` (realm administrator) | Blocked:  hosted seats accept member (400) only (spec 3.6).  Jay demotes the bot to member, then [DEPLOY.md](DEPLOY.md) "Re-enable JET". |
+| JET | `openai-dot-bot@` (member) | Served.  ChatGPT and the Jet dots, through ChatGPT custom connectors.  Enabled Fri, Oct 9, after Jay demoted the bot from administrator to member (hosted seats accept member (400) only, spec 3.6). |
 
 Deploy and operate:  [DEPLOY.md](DEPLOY.md).  Connect a client:  [ARMING-JAY.md](ARMING-JAY.md).  The Phase 0 runbook ([DEPLOY-PHASE0.md](DEPLOY-PHASE0.md)) is kept as the record of how the hostname moved.
 
