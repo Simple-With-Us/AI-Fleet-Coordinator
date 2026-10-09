@@ -14,14 +14,14 @@
     "deploy": "echo 'Deploy by hand from DEPLOY-PHASE0.md, never from CI or on merge.' && exit 1"
   },
   "dependencies": {
-    "@cloudflare/workers-oauth-provider": "1.1.0",
-    "@modelcontextprotocol/client": "2.2.0",
-    "@modelcontextprotocol/sdk": "1.31.0",
-    "@modelcontextprotocol/server": "2.0.0",
-    "agents": "0.24.0",
+    "@cloudflare/workers-oauth-provider": "1.2.1",
+    "@modelcontextprotocol/client": "2.3.0",
+    "@modelcontextprotocol/sdk": "1.32.0",
+    "@modelcontextprotocol/server": "2.3.0",
+    "agents": "0.26.0",
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "wrangler": "4.139.0"
+    "wrangler": "4.147.0"
   }
 }
