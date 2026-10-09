@@ -4,8 +4,10 @@
 Canonical source: docs/fleet-skills (Monet / Claude.app pack).
 Home dirs, repo-tracked copies, and docs/fleet-skills/by-seat/<seat>/ get
 rewritten identity.  Skills in NEVER_INSTALL (ios-ship) are omitted, not
-copied as a Monet-voiced leftover.  Kimi and Renoir have write_home=False
-(catalog/by-seat only; do not install to ~/.kimi or ~/.renoir).
+copied as a Monet-voiced leftover.  Retired seats (Monet, Renoir, DSH, Kimi)
+and Clutch (no skill home yet) have write_home=False: catalog/by-seat only,
+never a tool home (no ~/Desktop/fleet-skills, ~/.deepseek, ~/.kimi, ~/.renoir).
+The shared ~/.claude/skills home renders as CLAUDE, the only Claude seat.
 
 Usage:
     python3 scripts/install-fleet-skills.py              # repo trees AND tool homes

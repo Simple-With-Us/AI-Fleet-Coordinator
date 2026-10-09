@@ -5,16 +5,7 @@ description: Mac and Hetzner disk/RAM/CPU housekeeping. Run safe cleanup scripts
 
 # Housekeeper (disk, RAM, CPU)
 
-> **This install is for `RENOIR`.**  Chat tag `[RENOIR·session8]`.  Notes `Renoir`.  Branches `renoir/`.  Worktrees `~/apps/<app>-renoir`.  Do not inherit another seat's tag from a shared template.
-
-> **Inactive seat.** Renoir is not yet active.  Do not install to `~/.renoir/skills`.  Do not take fleet work until the owner opens the seat.
-
-
-> **Shared `~/.claude/skills`.** Monet, Claude/Fable, and (when active) Renoir all load this directory.  Do not treat the word Monet in examples as proof of your seat.  Pin `AGENT_SEAT` from the logged-in account before a Zulip post or `board --by`:
-> - Monet → `MONET`, Notes `Monet`, `renoir/`, `~/apps/lanes/<prefix>/monet-<slug>`
-> - Claude / Fable → `CLAUDE`, Notes `Claude`, `claude/`, `~/apps/lanes/<prefix>/claude-<slug>`
-> - Renoir → `RENOIR` (retired), Notes `Renoir`, `renoir/`
-> Codex, Cursor, Grok, Grok-Web, AG, Clutch, FX, MM, MC, and MA have their own skill dirs and must not take identity from here.
+> **Retired seat.** Owner directive 2026-10-07: the seat never opened, and the Renoir Claude account and app are no longer used.  `CLAUDE` is the only Claude seat.  Do not install to `~/.renoir/skills`.  Do not take fleet work as RENOIR.  This catalog copy is inactive.
 
 
 **Ownership split (2026-09-01).**  BF-Housekeeper (BotFleet) owns **this Mac**.  GB-HOUSEKEEPER (Grok Bot) owns the **Hetzner/Coolify host**.  Neither crosses.  During the Grok-Bot → BotFleet transition both must work, so they de-conflict through a shared lock rather than a schedule.

@@ -6,7 +6,7 @@ description: >-
 
 # Fleet recall
 
-> **Inactive seat.** Renoir is not yet active.  Do not install to `~/.renoir/skills`.  Do not take fleet work until the owner opens the seat.
+> **Retired seat.** Owner directive 2026-10-07: the seat never opened, and the Renoir Claude account and app are no longer used.  `CLAUDE` is the only Claude seat.  Do not install to `~/.renoir/skills`.  Do not take fleet work as RENOIR.  This catalog copy is inactive.
 
 
 The fleet has one shared memory: the `fleet-agents` collection in the self-hosted Qdrant on the

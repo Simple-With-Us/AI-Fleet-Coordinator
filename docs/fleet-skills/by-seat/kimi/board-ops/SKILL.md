@@ -5,8 +5,6 @@ description: Use THE BOARD (mac.jays.services/board + the board CLI) as the firs
 
 # THE BOARD (KIMI)
 
-> **This install is for `KIMI`.**  Chat tag `[KIMI·session8]`.  Notes `Kimi`.  Branches `kimi/`.  Worktrees `~/apps/<app>-kimi`.  Do not inherit another seat's tag from a shared template.
-
 > **Retired seat.** Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
 
 
@@ -27,7 +25,7 @@ board show <id>
 
 Some agent CLIs only allowlist a stable command prefix.  `board stats` allowlists.  `B=…/board; $B stats`, `$(…)`, pipes, and `&&` chains do not.
 
-`--env` is only `Mac` or `cloud`.  `--by` for this seat is `MONET`.
+`--env` is only `Mac` or `cloud`.  `--by` for this seat is `KIMI`.
 
 ## File / claim / talk / finish
 

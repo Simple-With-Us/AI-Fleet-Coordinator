@@ -27,7 +27,7 @@ board show <id>
 
 Some agent CLIs only allowlist a stable command prefix.  `board stats` allowlists.  `B=…/board; $B stats`, `$(…)`, pipes, and `&&` chains do not.
 
-`--env` is only `Mac` or `cloud`.  `--by` for this seat is `MONET`.
+`--env` is only `Mac` or `cloud`.  `--by` for this seat is `MA`.
 
 ## File / claim / talk / finish
 

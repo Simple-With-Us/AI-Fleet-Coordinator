@@ -24,14 +24,17 @@ from fleet_skill_identity import (  # noqa: E402
     GB_ROLE_TAGS,
     NEVER_INSTALL,
     SEATS,
+    catalog_seats,
     catalog_skill_names,
     head_has_fleet_wake,
     is_grok_bot_tag,
     platform_installs,
     repo_platform_copies,
+    set_yaml_description,
     skill_allowed_for_seat,
     specialize_from_monet,
     specialize_universal,
+    zulip_identity_sentence,
 )
 
 SESSION = os.path.join(ROOT, "docs", "fleet-skills", "session-start", "SKILL.md")
@@ -151,7 +154,8 @@ class SpecializeTests(unittest.TestCase):
         self.assertFalse(any("/.kimi/" in dest or dest.endswith("/.kimi/skills") for dest in dests))
         self.assertFalse(any("/.renoir/" in dest or dest.endswith("/.renoir/skills") for dest in dests))
         out = specialize_from_monet(_session(), SEATS["renoir"], skill_name="session-start")
-        self.assertIn("Inactive seat", out)
+        self.assertIn("Retired seat", out)
+        self.assertNotIn("not yet active", out)
         self.assertIn("Do not install to `~/.renoir/skills`", out)
 
     def test_claude_shared_pin(self) -> None:
@@ -159,8 +163,8 @@ class SpecializeTests(unittest.TestCase):
             _session(), SEATS["claude_shared"], skill_name="session-start"
         )
         self.assertIn("Shared `~/.claude/skills`", out)
-        self.assertIn("RENOIR", out)
-        self.assertIn("MONET, CLAUDE, or RENOIR", out)
+        self.assertIn("AGENT_SEAT=CLAUDE", out)
+        self.assertNotIn("MONET, CLAUDE, or RENOIR", out)
 
     def test_sentence_gap_keeps_protocol_name(self) -> None:
         with open(GAP, encoding="utf-8") as f:
@@ -430,12 +434,17 @@ class PerSeatVoiceTests(unittest.TestCase):
             self.assertNotIn("Claude/Monet transcript", out, name)
 
     def test_claude_shared_does_not_claim_reader_is_monet(self) -> None:
-        out = specialize_from_monet(
-            _session(), SEATS["claude_shared"], skill_name="session-start"
-        )
-        self.assertIn("Shared `~/.claude/skills`", out)
-        self.assertNotIn("You are **MONET**", out)
-        self.assertIn("MONET, CLAUDE, or RENOIR", out)
+        for name in catalog_skill_names(DOCS):
+            if not skill_allowed_for_seat(name, SEATS["claude_shared"]):
+                continue
+            out = specialize_from_monet(
+                _load_skill(name), SEATS["claude_shared"], skill_name=name
+            )
+            self.assertNotIn("You are **MONET**", out, name)
+            self.assertNotIn("AGENT_SEAT=MONET", out, name)
+            self.assertNotIn("This install is for `MONET`", out, name)
+            self.assertNotIn("MONET, CLAUDE, or RENOIR", out, name)
+            self.assertNotIn("[MONET·session8", out, name)
 
 
 class CoordinatorSelfIdTests(unittest.TestCase):
@@ -593,6 +602,207 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertNotIn("This install is for `FLEET`", cursor_ss)
 
 
+GUIDE = os.path.join(ROOT, "docs", "protocols", "zulip-fleet-guide.md")
+RETIRED_HOME_FRAGMENTS = ("/Desktop/fleet-skills", "/.deepseek/", "/.kimi/", "/.renoir/")
+
+
+def _guide_roster() -> dict[str, tuple[str, str]]:
+    """Seat tag -> (bot local part, credential file code) from the guide."""
+    text = Path(GUIDE).read_text(encoding="utf-8")
+    start = text.index("### Agent Seats")
+    end = text.index("### BotFleet (BF) Bots")
+    rows: dict[str, tuple[str, str]] = {}
+    for line in text[start:end].splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 5 or not re.fullmatch(r"[A-Z][A-Z-]*", cells[0]):
+            continue
+        rows[cells[0]] = (cells[2].rstrip("@"), cells[3])
+    return rows
+
+
+def _bot_local(seat) -> str:
+    local = seat.zulip_bot
+    return local if local.endswith("-bot") else f"{local}-bot"
+
+
+class ZulipIdentityAndRetirementTests(unittest.TestCase):
+    """The identity writer speaks Zulip, drops retired homes, and knows CLUTCH."""
+
+    ACTIVE_CATALOG_TAGS = {
+        "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "MA",
+    }
+
+    def test_every_zulip_identity_matches_the_guide_roster(self) -> None:
+        roster = _guide_roster()
+        self.assertTrue(roster, "guide roster table not found")
+        seen: set[str] = set()
+        for key, seat in SEATS.items():
+            if not seat.zulip_bot:
+                continue
+            if seat.tag not in roster:
+                # GROK-BUILD is an alias row that posts through GROK's bot.
+                self.assertEqual(
+                    (_bot_local(seat), seat.zulip_rc), roster["GROK"], key
+                )
+                continue
+            seen.add(seat.tag)
+            self.assertEqual(
+                (_bot_local(seat), seat.zulip_rc), roster[seat.tag], key
+            )
+        self.assertTrue(self.ACTIVE_CATALOG_TAGS <= seen, self.ACTIVE_CATALOG_TAGS - seen)
+
+    def test_retired_seats_have_no_bot_home_or_install_banner(self) -> None:
+        retired = {k: s for k, s in SEATS.items() if s.retired}
+        self.assertEqual(set(retired), {"monet", "renoir", "deepseek", "kimi"})
+        for key, seat in retired.items():
+            self.assertEqual(seat.zulip_bot, "", key)
+            self.assertFalse(seat.write_home, key)
+            self.assertEqual(zulip_identity_sentence(seat), "", key)
+            out = specialize_from_monet(_session(), seat, skill_name="session-start")
+            self.assertIn("Retired seat", out, key)
+            self.assertNotIn("This install is for", out, key)
+
+    def test_no_install_target_is_a_retired_or_catalog_only_home(self) -> None:
+        dests = [dest for dest, _seat in platform_installs()]
+        for dest in dests:
+            for fragment in RETIRED_HOME_FRAGMENTS:
+                self.assertNotIn(fragment, dest + "/", dest)
+            self.assertNotIn("/by-seat/", dest)
+        tags = {seat.tag for _dest, seat in platform_installs()}
+        self.assertFalse(tags & {"MONET", "RENOIR", "DSH", "KIMI", "CLUTCH"}, tags)
+
+    def test_retired_session_start_is_inert(self) -> None:
+        for key in ("monet", "renoir", "deepseek", "kimi"):
+            seat = SEATS[key]
+            out = specialize_from_monet(_session(), seat, skill_name="session-start")
+            front = out.split("---")[1]
+            self.assertIn(f"{seat.tag} is retired", front, key)
+            self.assertNotIn("Start every", out, key)
+            self.assertNotIn("triple-claim before editing", out, key)
+            self.assertIn("## Stop", out, key)
+            self.assertNotIn("## 1. Identity", out, key)
+            self.assertIn("`AFC`", out, key)
+
+    def test_set_yaml_description_replaces_inline_and_folded_values(self) -> None:
+        folded = "---\nname: x\ndescription: >-\n  old one\n  old two\n---\n\n# X\n"
+        inline = "---\nname: x\ndescription: old\n---\n\n# X\n"
+        for src in (folded, inline):
+            out = set_yaml_description(src, "new value")
+            self.assertIn("description: >-\n  new value\n---", out)
+            self.assertNotIn("old", out)
+            self.assertTrue(out.endswith("# X\n"))
+
+    def test_shared_claude_home_renders_as_claude(self) -> None:
+        shared = SEATS["claude_shared"]
+        self.assertEqual(shared.tag, "CLAUDE")
+        self.assertEqual((shared.zulip_bot, shared.zulip_rc), ("claude-bot", "Claude"))
+        homes = dict((seat.seat_key, dest) for dest, seat in platform_installs())
+        self.assertTrue(homes["claude_shared"].endswith("/.claude/skills"))
+        repo_claude = [
+            (dest, seat)
+            for dest, seat in repo_platform_copies(ROOT)
+            if dest.endswith(os.path.join(".claude", "skills"))
+        ]
+        self.assertEqual(len(repo_claude), 1)
+        self.assertEqual(repo_claude[0][1].tag, "CLAUDE")
+        # The shared home is a second home for the claude pack, not another pack.
+        self.assertNotIn(shared, catalog_seats())
+        self.assertIn(SEATS["claude"], catalog_seats())
+
+    def test_clutch_is_catalog_only_with_its_own_identity(self) -> None:
+        seat = SEATS["clutch"]
+        self.assertEqual((seat.tag, seat.notes, seat.prefix, seat.suffix),
+                         ("CLUTCH", "Clutch", "clutch", "clutch"))
+        self.assertFalse(seat.write_home)
+        self.assertFalse(seat.retired)
+        self.assertIn(seat, catalog_seats())
+        self.assertTrue(skill_allowed_for_seat("mac-cleanup", seat))
+        out = specialize_from_monet(_session(), seat, skill_name="session-start")
+        self.assertIn("AGENT_SEAT=CLUTCH", out)
+        self.assertIn("clutch/<slug>", out)
+        self.assertIn("clutch-bot@simplewithus.zulipchat.com", out)
+        self.assertIn("~/.secrets/Zulip/Clutch-zuliprc", out)
+        self.assertIn("[CLUTCH·session8]", out)
+        self.assertNotIn("AGENT_SEAT=MONET", out)
+        self.assertNotIn("DSH·session8", out)
+
+    def test_session_tag_and_board_by_are_the_readers_own(self) -> None:
+        for key, seat in SEATS.items():
+            if seat.retired or seat.mode == "grok_bot":
+                continue
+            ss = specialize_from_monet(_session(), seat, skill_name="session-start")
+            board = specialize_from_monet(
+                _load_skill("board-ops"), seat, skill_name="board-ops"
+            )
+            self.assertIn(f"`[{seat.tag}·session8]` tag", ss, key)
+            self.assertNotIn("[MONET·session8", ss, key)
+            self.assertIn(f"`--by` for this seat is `{seat.tag}`", board, key)
+        gb = specialize_from_monet(_session(), SEATS["grok-bot"], skill_name="session-start")
+        self.assertNotIn("MONET·session8", gb)
+        uni = specialize_universal(_session(), skill_name="session-start")
+        self.assertNotIn("MONET·session8", uni)
+        self.assertIn("<YOUR_TAG>·session8", uni)
+        uni_board = specialize_universal(_load_skill("board-ops"), skill_name="board-ops")
+        self.assertNotIn("for this seat is `MONET`", uni_board)
+
+    def test_slack_survives_only_as_a_retirement_note(self) -> None:
+        """Every Slack mention in a rendered skill, the README or the writer says retired."""
+        offenders: list[str] = []
+
+        def scan(label: str, text: str) -> None:
+            for n, line in enumerate(text.splitlines(), 1):
+                if re.search(r"slack", line, re.I) and "retired" not in line.lower():
+                    offenders.append(f"{label}:{n}: {line.strip()[:100]}")
+
+        names = catalog_skill_names(DOCS)
+        for key, seat in SEATS.items():
+            for name in names:
+                if skill_allowed_for_seat(name, seat):
+                    scan(f"{key}/{name}", specialize_from_monet(_load_skill(name), seat, skill_name=name))
+        for name in names:
+            scan(f"universal/{name}", specialize_universal(_load_skill(name), skill_name=name))
+            scan(f"source/{name}", _load_skill(name))
+        scan("README-add-in-app.md", Path(DOCS, "README-add-in-app.md").read_text(encoding="utf-8"))
+        for script in ("fleet_skill_identity.py", "install-fleet-skills.py"):
+            scan(script, Path(ROOT, "scripts", script).read_text(encoding="utf-8"))
+        self.assertEqual(offenders, [], "live Slack instruction survived:\n" + "\n".join(offenders))
+
+
+class CatalogMatchesFreshRenderTests(unittest.TestCase):
+    """by-seat/ and skills/ must equal a fresh render, so a second --repo-only is a no-op."""
+
+    FIX = "python3 scripts/install-fleet-skills.py --repo-only"
+
+    def test_by_seat_catalog_equals_fresh_render(self) -> None:
+        stale: list[str] = []
+        expected_dirs = set()
+        for seat in catalog_seats():
+            key = seat.seat_key or seat.tag.lower()
+            expected_dirs.add(key)
+            for name in catalog_skill_names(DOCS):
+                path = Path(DOCS, "by-seat", key, name, "SKILL.md")
+                if not skill_allowed_for_seat(name, seat):
+                    if path.exists():
+                        stale.append(os.path.relpath(str(path), ROOT) + " (must not exist)")
+                    continue
+                want = specialize_from_monet(_load_skill(name), seat, skill_name=name)
+                have = path.read_text(encoding="utf-8") if path.is_file() else None
+                if have != want:
+                    stale.append(os.path.relpath(str(path), ROOT))
+        on_disk = {p.name for p in Path(DOCS, "by-seat").iterdir() if p.is_dir()}
+        self.assertEqual(on_disk, expected_dirs, "by-seat dirs differ from catalog_seats()")
+        self.assertEqual(stale, [], f"stale by-seat copies; re-render with: {self.FIX}")
+
+    def test_universal_skills_equal_fresh_render(self) -> None:
+        stale = []
+        for name in catalog_skill_names(DOCS):
+            path = Path(ROOT, "skills", name, "SKILL.md")
+            want = specialize_universal(_load_skill(name), skill_name=name)
+            if not path.is_file() or path.read_text(encoding="utf-8") != want:
+                stale.append(os.path.relpath(str(path), ROOT))
+        self.assertEqual(stale, [], f"stale skills/ copies; re-render with: {self.FIX}")
+
+
 class RepoPlatformCopiesTests(unittest.TestCase):
     """The repo-tracked platform trees must equal a fresh render of the pack.
 
@@ -726,6 +936,26 @@ class InstallerRepoOnlyTests(unittest.TestCase):
         self.assertIn("Home-dir installs:\n", out)
         self.assertNotIn("--repo-only", out)
         self.assertTrue(self._home_files(), "default mode must write tool homes")
+
+    def test_default_mode_never_writes_retired_or_catalog_only_homes(self) -> None:
+        # Make every one of those homes' parent exist, so only the seat table,
+        # not a missing folder, can keep the installer out of them.
+        for parent in (".deepseek", ".kimi", ".renoir", "Desktop", ".clutch"):
+            (self.home / parent).mkdir(parents=True)
+        self._run([])
+        wrote = [
+            f for f in self._home_files()
+            if f.startswith((".deepseek/", ".kimi/", ".renoir/", "Desktop/", ".clutch/"))
+        ]
+        self.assertEqual(wrote, [])
+        self.assertTrue(
+            (self.home / ".claude" / "skills" / "session-start" / "SKILL.md").is_file()
+        )
+        shared = (self.home / ".claude" / "skills" / "session-start" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("AGENT_SEAT=CLAUDE", shared)
+        self.assertNotIn("MONET, CLAUDE, or RENOIR", shared)
 
     def test_unchanged_pack_zip_is_not_rewritten(self) -> None:
         self._run(["--repo-only"])

@@ -5,6 +5,9 @@ description: Drive a live Mac Grok TUI session from any local or cloud agent (Cl
 
 # Drive a live Grok TUI
 
+> **Retired seat.** Owner directive 2026-10-07: the Monet Claude account and app are no longer used, and `CLAUDE` is the only Claude seat.  Do not take work as MONET, do not leave MONET In Progress, and do not install this pack anywhere.  This catalog copy is inactive.
+
+
 The Mac Grok TUI joins `~/.grok/leader.sock`.  Any agent can attach through
 `grok-drive.py` (Mac) or seat-mcp (Mac or cloud).  Do **not** spawn a second
 `grok-acp` on `:12419` to talk to those chats.
