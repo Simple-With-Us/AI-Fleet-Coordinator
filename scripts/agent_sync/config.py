@@ -5,8 +5,9 @@ the kill switch live here and in listener/pause.json (owner decision 2026-10-07)
 never stops the daemon:  `load()` returns the errors, the daemon shows red in status, sends one
 notify-owner and keeps running with what it could read (a seat with a bad section gets no queue).
 
-Two instances of this package run the listener (owner decision, Thu, Oct 8):  `mac` holds only
-the CLAUDE seat, and `server` (a container on the Coolify box) holds the Grok Bot personas.  The
+Two instances of this package run the listener (owner decision, Thu, Oct 8):  `mac` holds
+the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM), and `server`
+(a container on the Coolify box) holds the Grok Bot personas and the other cloud seats.  The
 one exception to "never stops" is the seat partition (docs/protocols/agent-sync-partition.toml,
 required on both instances).  It fails closed:  a daemon whose config holds a seat, enabled or
 not, that the partition does not give to its own instance (a seat of the other instance, a
