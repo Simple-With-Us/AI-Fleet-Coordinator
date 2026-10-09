@@ -57,7 +57,7 @@ detached-HEAD reason is recorded.  When gh is missing or fails the PR state is U
 Layout v2 (owner decision 2026-10-09).  Each checkout also carries `layout_status`, `layout_reasons` and, for a
 legacy checkout whose new home is known, `layout_target` (see `layout.explain_layout`): `correct` is
 lanes/<Repo>/<seat>-<slug>, <slug>-<hex> (Claude desktop) or review-pr-<n>; `legacy-migrate` is an old prefix
-folder (lanes/fleet), a flat ~/apps lane or ~/.codex/worktrees; `legacy` is lanes/_managed and lanes/_review;
+folder (lanes/fleet), ~/.codex/worktrees or a flat ~/apps lane (the last is not moved by the migration); `legacy` is lanes/_managed and lanes/_review;
 `codex-managed` is lanes/_codex; `tool-managed` is another harness's own folder; `human` is the integration
 tree; `wrong` is a temp dir, a checkout directly under ~/Code, or a worktree inside ~/Code/<Repo>
 (.claude/worktrees, .muse/worktrees, reported as the WRONG-PLACE anomaly).  The location classes, the safety

@@ -12,7 +12,8 @@ check is ~/apps/lanes/<Repo>/review-pr-<n>, where <Repo> is the repo's folder na
 as spelled there (AI-Fleet-Coordinator, Congress.Trade, congress-trading-shared).  <app> may be that
 name, the old worktree prefix (fleet, trading) or the acronym.  When another seat already holds
 review-pr-<n>, a second seat gets review-pr-<n>-<seat>.  A lane that still sits in an old prefix folder
-(lanes/fleet/claude-x) is found and printed, not duplicated, until the migration moves it.
+(lanes/fleet/claude-x) is found and printed, not duplicated, until the migration moves it; so is a flat
+~/apps/<prefix>-<seat>-<slug> lane, which the migration does not move.
 
 `bin/lane` in this package is the shell shim that runs this module with `python3 -I` from its own
 checkout, so a fleet_lanes package in the caller's working directory never shadows it.
@@ -876,15 +877,18 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
     local, tracking = _branch_state(run, tree, branch)
 
     # The same lane in an old folder (lanes/fleet/claude-x, a flat ~/apps/fleet-claude-x): print it, do
-    # not make a second one.  The layout migration moves it to `path`.  Only a branch that already
-    # exists can be checked out in one, so a brand-new lane skips the extra listing.
+    # not make a second one.  The layout migration moves one under the lanes root to `path`; a flat lane
+    # is not moved and retires where it is.  Only a branch that already exists can be checked out in
+    # one, so a brand-new lane skips the extra listing.
     old = _legacy_lane(ctx, run, tree, path, branch) if (local or tracking) else None
     if old is not None:
         manifest = _refuse_other_owner(run, old, seat) or {
             "schema": SCHEMA, "tool": TOOL_NAME, "kind": "lane", "seat": seat.suffix, "tag": seat.name,
             "app": app.name, "prefix": app.prefix, "lane_dir": app.lane_dir, "slug": slug, "branch": branch}
+        moves = _in_tree(ctx, old, ctx.roots.lanes_root)
         ctx.say(f"already exists in an old folder, nothing changed: {old} (branch {branch}).  "
-                f"The layout migration moves it to {path}.")
+                + (f"The layout migration moves it to {path}." if moves
+                   else f"It stays there until it retires; a lane made today would be {path}."))
         _emit(ctx, args.json, old, manifest, existing=True, legacy_location=True)
         return EXIT_OK
     if args.reuse_branch:

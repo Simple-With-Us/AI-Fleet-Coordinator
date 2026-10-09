@@ -54,8 +54,8 @@ for integration trees only"* (owner ruling 2026-09-25).
 1. **`~/Code/<App>` is the human integration tree.**  It stays on `origin/main`.
    Agents work in a lane at `~/apps/lanes/<codeDir>/<seat>-<slug>`, made
    with `~/apps/lane new <app> <slug>` (`docs/protocols/lane-map.md`; lanes in the old
-   `~/apps/lanes/<worktreePrefix>/` and flat `~/apps/<worktreePrefix>-<seat>` places are
-   moved by the layout migration).
+   `~/apps/lanes/<worktreePrefix>/` places are moved by the layout migration, and flat
+   `~/apps/<worktreePrefix>-<seat>` lanes retire where they are).
    **No new top-level folder
    may be added to `~/Code/`** unless it is the integration tree for another
    brand-new fleet app being onboarded via this procedure — strays are

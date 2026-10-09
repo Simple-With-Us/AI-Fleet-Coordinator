@@ -31,7 +31,7 @@ Every git checkout on this Mac has exactly one of these homes.  A temp directory
 
 `worktreePrefix` (`trading`, `fleet`, `botfleet`, ...) is no longer a folder name.  It stays in the registry for the legacy flat lane names (`~/apps/<prefix>-<seat>-<slug>`), as an accepted name for `<app>` in `lane new`, and in telemetry tags.
 
-`<seat>` is the WHOLE name, `worktreeSuffix` from `fleet-apps.json`: `claude`, `codex`, `cursor`, `grok`, `grok-build`, `clutch`, `fx`, `antigravity`, `minimax`, `muse-code`.  `muse-assist` is also a registry seat, but that cloud assistant has no checkout on this Mac, so no lane is ever made for it.  `monet`, `renoir` and `harness` are retired as of 2026-10-07, `deepseek` since 2026-09-19 and `kimi` since 2026-08-21: accepted on old lanes, never used for new ones.  Owner ruling 2026-10-07: LANE FOLDER NAMES use whole names; short tags (`AG`, `MM`) are for chat posts (Zulip) and board attribution only.  The ruling covers folder names, not branches: branch prefixes are whatever the registry lists (`minimax/`, `ag/`, `claude/`).  The short tokens `ag` and `mm` already on existing lanes are accepted as aliases and never reported as errors.
+`<seat>` is the WHOLE name, `worktreeSuffix` from `fleet-apps.json`: `claude`, `codex`, `cursor`, `grok`, `grok-build`, `clutch`, `fx`, `antigravity`, `minimax`, `muse-code`.  (The 2026-10-09 proposal the owner approved listed the Muse Code token as `mc`; this page keeps the registry's `muse-code` under "keep today's token rules", so a Muse Code lane is `muse-code-<slug>`.  **Owner question:** confirm `muse-code`, or say that `mc` was meant literally.)  `muse-assist` is also a registry seat, but that cloud assistant has no checkout on this Mac, so no lane is ever made for it.  `monet`, `renoir` and `harness` are retired as of 2026-10-07, `deepseek` since 2026-09-19 and `kimi` since 2026-08-21: accepted on old lanes, never used for new ones.  Owner ruling 2026-10-07: LANE FOLDER NAMES use whole names; short tags (`AG`, `MM`) are for chat posts (Zulip) and board attribution only.  The ruling covers folder names, not branches: branch prefixes are whatever the registry lists (`minimax/`, `ag/`, `claude/`).  The short tokens `ag` and `mm` already on existing lanes are accepted as aliases and never reported as errors.
 
 `<slug>` is lowercase kebab, 1 to 40 characters, derived from the task (a board id or a short purpose).  No seat, app, or date inside the slug.
 
@@ -66,7 +66,7 @@ Every checkout gets a layout status next to its safety class (`layout_status` in
 | Status | Meaning | Examples |
 |---|---|---|
 | correct | Where v2 puts it | `~/apps/lanes/Socratic-Trade/claude-fix`, `.../BotFleet/review-pr-482`, `.../BotFleet/active-engines-display-e380b8` |
-| legacy (migrate) | An old shape the migration moves, with its new path shown | `~/apps/lanes/fleet/claude-x` (and `botfleet`, `trading`, ...), a flat `~/apps/fleet-claude-x`, `~/.codex/worktrees/<slug>/<Repo>` |
+| legacy (migrate) | An old shape with its new path shown.  The migration moves the first two; a flat lane is not moved and retires where it is | `~/apps/lanes/fleet/claude-x` (and `botfleet`, `trading`, ...), `~/.codex/worktrees/<slug>/<Repo>` (with `--include-codex`), a flat `~/apps/fleet-claude-x` |
 | legacy | A folder v2 abolishes | `~/apps/lanes/_managed/**`, `~/apps/lanes/_review/**` |
 | Codex-managed | Codex's own layout | `~/apps/lanes/_codex/<slug>/<Repo>` |
 | tool-managed | Another harness's own folder, as before | `~/.cursor/worktrees`, `~/.grok/worktrees`, `~/.gemini/antigravity/worktrees` |
@@ -93,7 +93,7 @@ Facts verified 2026-10-07 unless the row says otherwise.  `UNVERIFIED` means the
 |---|---|---|---|---|
 | Claude Code CLI | `~/Code/<Repo>/.claude/worktrees/<name>` (`claude -w`, subagent and workflow worktrees) | No setting.  A global `WorktreeCreate` hook could, but it has no matcher and it breaks the desktop warm pool and leaks branches, so it is rejected.  These paths are reported as `WRONG-PLACE` (the tools keep making them) but still count as harness-managed, so the janitor retires them.  The rule is to start in a lane made by `lane new` instead of using `claude -w`.  OWNER QUESTION: say whether subagent `isolation: worktree` stays allowed. | `PreToolUse` Bash hook in `~/.claude/settings.json` | `~/.claude/CLAUDE.md` |
 | Claude desktop (Code tab) | The location in the tool settings table | Yes, `~/apps/lanes` (layout `<location>/<Repo>/<slug>-<hex>`; branch prefix is `ccBranchPrefix`) | Same hook as the CLI | Same |
-| Codex | `~/apps/lanes/_codex/<slug>/<Repo>` once the setting above is changed (today `~/.codex/worktrees/<slug>/<Repo>`) | Yes: `[desktop] git-worktree-root` (CLI `--worktree` behavior UNVERIFIED) | `PreToolUse` Bash in `~/.codex/hooks.json` (re-trust by hash after editing) | `~/.codex/AGENTS.md` |
+| Codex | `~/apps/lanes/_codex/<slug>/<Repo>` once the setting above is changed (today `~/apps/lanes/_managed/codex/<slug>/<Repo>`; older ones sit in `~/.codex/worktrees/<slug>/<Repo>`) | Yes: `[desktop] git-worktree-root` (CLI `--worktree` behavior UNVERIFIED) | `PreToolUse` Bash in `~/.codex/hooks.json` (re-trust by hash after editing) | `~/.codex/AGENTS.md` |
 | OpenCode | Its session directory, `~/apps/lanes` | Yes (setting location UNVERIFIED) | None found | UNVERIFIED |
 | Cursor | `~/.cursor/worktrees` (hard-coded, empty today; Cursor opens lanes directly) | No | `beforeShellExecution` in `~/.cursor/hooks.json`; the installed entry is `failClosed: false`, so a broken install fails open and only `install_tools verify` proves it works | `~/.cursor/rules/*.mdc` (loading UNVERIFIED) plus each repo's `AGENTS.md` |
 | Grok, Grok Build | `~/.grok/worktrees/<repo>/worktree-<id>` (empty today) | No documented key | `~/.grok/hooks/*.json`; also reads `~/.claude/settings.json` hooks (deny output format differs, UNVERIFIED) | `~/.grok/GROK.md` |
@@ -111,7 +111,7 @@ Owner decision 2026-10-09: the existing lanes move to the v2 tree in one pass, a
 
 - The old shapes keep working until then: `lane ls` reports them as `legacy (migrate)` with their new path, and `lane new` finds a lane that has not moved yet.
 - A moved lane leaves a symlink at its old path, pointing at the new one.  The symlinks stay for 7 days (the removal date is written to the migration log) so a shell or an editor that still has the old path keeps working, then `lanes-v2-migrate.py --remove-links` deletes only those symlinks.
-- Lanes with a running process, uncommitted changes or a lock are skipped and listed; run the script again when they are free.
+- Lanes with a running process, uncommitted changes, a lock or another checkout below them (a gitignored `.claude/worktrees/<name>`) are skipped and listed; run the script again when they are free.
 - `_managed` and `_review` disappear with their last entry.  The agent-sync runtime checkout under `_managed/fleet` is live infrastructure, so the script skips it and it needs its own step (owner decision pending).
 - Bot lanes (BotFleet `kody`, `fixer`, `designer`, `compiler`) have no seat row in the registry; they are reported as `BOT-LANE` until the owner registers a scheme.
 

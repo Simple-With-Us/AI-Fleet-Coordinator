@@ -5,7 +5,7 @@
 # `agent-sessions` (and `project=` also drives Usage Monitor's per-project cost
 # attribution — see UM AGENTS.md "Per-project cost attribution").
 #
-# On-demand helper — not a daemon, nothing to load/bootout. Run it:
+# On-demand helper — not a daemon, nothing to load/bootout.  Run it:
 #   - right after creating a new lane under ~/apps/lanes/<Repo>/<seat>-<slug>
 #     (layout v2, owner 2026-10-09; a lane still in an old ~/apps/lanes/<prefix>/ folder, or an
 #     old flat lane ~/apps/<prefix>-<seat>[-suffix], works too)
@@ -115,7 +115,7 @@ prefixes = sorted(
 )
 
 # Known seat suffixes, plus the abbreviations actually seen in lane names on
-# this Mac (mm -> minimax, ag -> antigravity). Longest match string first.
+# this Mac (mm -> minimax, ag -> antigravity).  Longest match string first.
 seat_matches = [(s["worktreeSuffix"], s["worktreeSuffix"]) for s in fleet["seats"]]
 seat_matches += [("mm", "minimax"), ("ag", "antigravity")]
 seat_matches = sorted(set(seat_matches), key=lambda kv: -len(kv[0]))

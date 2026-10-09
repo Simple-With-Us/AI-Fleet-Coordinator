@@ -1195,7 +1195,7 @@ class LayoutStatus(StrEnum):
     """Is a checkout where the v2 layout wants it?  Compares equal to the plain strings."""
 
     CORRECT = "correct"                  # lanes/<Repo>/<seat>-<slug>, <slug>-<hex>, review-pr-<n>
-    LEGACY_MIGRATE = "legacy-migrate"    # old prefix folder, flat lane, ~/.codex/worktrees: moves in the migration
+    LEGACY_MIGRATE = "legacy-migrate"    # old prefix folder, ~/.codex/worktrees (both move in the migration), flat lane (retires in place)
     LEGACY = "legacy"                    # lanes/_managed/** and lanes/_review/**: abolished, nothing new goes there
     CODEX_MANAGED = "codex-managed"      # lanes/_codex/**: Codex desktop's own layout
     TOOL_MANAGED = "tool-managed"        # another harness's own worktree folder (as before)

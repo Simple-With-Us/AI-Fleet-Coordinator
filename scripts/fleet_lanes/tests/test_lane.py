@@ -673,7 +673,9 @@ class LaneNewTests(WorldCase):
         res = w.lane("new", "DealDex", "legacy")
         self.assertEqual((res.rc, res.out), (0, f"{old}\n"), res.err)
         self.assertIn("old folder", res.err)
-        self.assertIn(str(w.lane_path("legacy")), res.err, "it says where the migration will put it")
+        self.assertIn("stays there until it retires", res.err, "a flat lane is not moved by the layout migration")
+        self.assertNotIn("migration moves it", res.err)
+        self.assertIn(str(w.lane_path("legacy")), res.err, "it says where a fresh lane would go")
         self.assertFalse(res.has("fetch"))
         self.assertFalse(res.has("worktree", "add"))
         self.assertNoChange(before)
@@ -686,6 +688,17 @@ class LaneNewTests(WorldCase):
         other = w.lane("new", "DealDex", "legacy", env={"AGENT_SEAT": "AG"})
         self.assertEqual(other.rc, 0, other.err)
         self.assertEqual(other.out, f"{w.lane_path('legacy', seat='antigravity')}\n")
+
+    def test_a_lane_in_an_old_prefix_folder_is_told_the_migration_moves_it(self) -> None:
+        w = self.w
+        old = w.roots.lanes_root / "dealdex" / "claude-legacy"
+        old.parent.mkdir(parents=True)
+        if (w.roots.lanes_root / "DealDex").exists():
+            self.skipTest("a case-insensitive volume: lanes/dealdex is lanes/DealDex, so it is not an old folder here")
+        w.git(["worktree", "add", "-q", "-b", "claude/legacy", str(old), "origin/main"], cwd=w.tree)
+        res = w.lane("new", "DealDex", "legacy")
+        self.assertEqual((res.rc, res.out), (0, f"{old}\n"), res.err)
+        self.assertIn(f"The layout migration moves it to {w.lane_path('legacy')}", res.err)
 
     def test_expected_path_uses_the_repo_folder_for_every_spelling_of_the_app(self) -> None:
         w = self.w

@@ -23,6 +23,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[2] / "lanes-v2-migrate.py"
 _spec = importlib.util.spec_from_file_location("lanes_v2_migrate", SCRIPT)
@@ -179,6 +180,39 @@ class DryRunTests(World):
         self.assertEqual((rc, body["apply"]), (0, False))
         self.assertTrue(any(i["action"] == "move" for i in body["items"]))
         self.assertTrue((self.lanes / "fleet" / "claude-a").is_dir())
+
+    def test_apply_with_json_keeps_stdout_one_parseable_document(self) -> None:
+        self.lane("fleet", "claude-a", "AI-Fleet-Coordinator")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc, out = self.run_cli("--apply", "--json")
+        self.assertEqual(rc, 0, out)
+        body = json.loads(out)
+        self.assertEqual((body["apply"], body["failures"]), (True, 0))
+        self.assertIn("done", err.getvalue(), "the progress lines went to stderr")
+        self.assertIn("Finished:", err.getvalue())
+
+    def test_a_folder_that_cannot_be_read_is_a_skip_not_a_traceback(self) -> None:
+        a = self.lane("fleet", "claude-a", "AI-Fleet-Coordinator")
+        with mock.patch.object(M, "inspect", side_effect=PermissionError("denied")):
+            plan = self.plan()
+        self.assertEqual(plan[str(a)].action, "skip")
+        self.assertIn("cannot be read right now", plan[str(a)].reasons[0])
+
+    def test_a_broken_symlink_where_a_repo_folder_belongs_does_not_crash_the_plan(self) -> None:
+        self.lane("fleet", "claude-a", "AI-Fleet-Coordinator")
+        (self.lanes / "AI-Fleet-Coordinator").symlink_to(self.home / "nowhere")
+        rc, out = self.run_cli()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Dry run", out)
+
+    def test_an_error_while_planning_exits_2_not_with_a_traceback(self) -> None:
+        self.lane("fleet", "claude-a", "AI-Fleet-Coordinator")
+        err = io.StringIO()
+        with mock.patch.object(M, "build_plan", side_effect=OSError("disk gone")), contextlib.redirect_stderr(err):
+            rc, _out = self.run_cli()
+        self.assertEqual(rc, 2)
+        self.assertIn("disk gone", err.getvalue())
 
     def test_usage_errors_are_64(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()):
@@ -362,6 +396,113 @@ class RefusalTests(World):
         self.assertEqual(log["links"], [])
 
 
+class InnerCheckoutTests(World):
+    """A lane that holds another checkout (claude -w, subagent isolation: worktree) must not move."""
+
+    def ignore_claude_dir(self, repo: str) -> None:
+        main = self.repos[repo]
+        (main / ".gitignore").write_text(".claude/\n")
+        git(main, "add", ".gitignore")
+        git(main, "commit", "-q", "-m", "ignore .claude")
+
+    def lane_with_inner(self) -> "tuple[Path, Path]":
+        self.ignore_claude_dir("AI-Fleet-Coordinator")
+        lane = self.lane("fleet", "claude-a", "AI-Fleet-Coordinator")
+        inner = lane / ".claude" / "worktrees" / "n"
+        git(self.repos["AI-Fleet-Coordinator"], "worktree", "add", "-q", "-b", "claude/inner", str(inner))
+        return lane, inner
+
+    def test_a_gitignored_inner_worktree_reads_clean_but_still_blocks_the_move(self) -> None:
+        lane, inner = self.lane_with_inner()
+        self.assertEqual(git(lane, "status", "--porcelain"), "", "the premise: git status cannot see the inner checkout")
+        item = self.plan()[str(lane)]
+        self.assertEqual(item.action, "skip", item.reasons)
+        self.assertIn("inner checkout", " ".join(item.reasons))
+        self.assertIn(os.path.join(".claude", "worktrees", "n"), " ".join(item.reasons))
+        rc, out = self.run_cli("--apply")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(lane.is_dir() and not lane.is_symlink(), "the lane stays where it is")
+        self.assertFalse((self.lanes / "AI-Fleet-Coordinator").exists())
+        self.assertIn(os.path.realpath(inner), [os.path.realpath(p) for p in self.worktrees("AI-Fleet-Coordinator")])
+        self.assertNotIn("prunable", git(self.repos["AI-Fleet-Coordinator"], "worktree", "list", "--porcelain"))
+
+    def test_the_lane_moves_once_the_inner_checkout_is_gone(self) -> None:
+        lane, inner = self.lane_with_inner()
+        git(self.repos["AI-Fleet-Coordinator"], "worktree", "remove", str(inner))
+        rc, out = self.run_cli("--apply")
+        self.assertEqual(rc, 0, out)
+        self.assert_valid_lane(self.lanes / "AI-Fleet-Coordinator" / "claude-a", "AI-Fleet-Coordinator", "claude/claude-a")
+
+    def test_a_move_that_started_before_the_inner_checkout_appeared_is_refused_at_the_last_moment(self) -> None:
+        self.ignore_claude_dir("AI-Fleet-Coordinator")
+        lane = self.lane("fleet", "claude-a", "AI-Fleet-Coordinator")
+        item = self.plan()[str(lane)]
+        self.assertEqual(item.action, "move")
+        git(self.repos["AI-Fleet-Coordinator"], "worktree", "add", "-q", "-b", "claude/late", str(lane / ".claude" / "worktrees" / "late"))
+        with self.assertRaises(M.Skipped) as cm:
+            M.apply_move(self.ctx(), item, {"links": [], "events": []})
+        self.assertIn("inner checkout", str(cm.exception))
+        self.assertTrue(lane.is_dir() and not lane.is_symlink())
+
+    def test_the_walker_reports_what_git_is_tied_to_and_leaves_standalone_clones_alone(self) -> None:
+        lane = self.lane("fleet", "claude-a", "AI-Fleet-Coordinator")
+        self.assertEqual(M.inner_checkouts(str(lane)), [], "the lane's own .git is not an inner checkout")
+        (lane / "node_modules" / "pkg").mkdir(parents=True)
+        git(lane / "node_modules" / "pkg", "init", "-q")
+        self.assertEqual(M.inner_checkouts(str(lane)), [], "node_modules is not entered")
+        elsewhere = self.home / "elsewhere"
+        git(self.home, "init", "-q", str(elsewhere))
+        (lane / "link").symlink_to(elsewhere)
+        self.assertEqual(M.inner_checkouts(str(lane)), [], "a symlink is not followed")
+        # a SwiftPM-style checkout is a standalone clone: nothing outside it names its path
+        spm = lane / ".build" / "checkouts" / "Sparkle"
+        spm.mkdir(parents=True)
+        git(spm, "init", "-q")
+        self.assertEqual(M.inner_checkouts(str(lane)), [], "a plain clone is not tied to the lane")
+        # a linked worktree (a .git FILE) is: its repository records this path
+        deep = lane / "a" / "b" / "c"
+        deep.parent.mkdir(parents=True)
+        git(self.repos["DealDex"], "worktree", "add", "-q", "--detach", str(deep))
+        self.assertEqual(M.inner_checkouts(str(lane)), [str(deep)])
+        too_deep = lane / "v" / "w" / "x" / "y" / "z"
+        too_deep.parent.mkdir(parents=True)
+        git(self.repos["DealDex"], "worktree", "add", "-q", "--detach", str(too_deep))
+        self.assertEqual(M.inner_checkouts(str(lane)), [str(deep)], "the walk stops four levels down")
+        # a clone with a worktree hanging off it is tied to the lane the other way round
+        host = lane / "host"
+        host.mkdir()
+        git(host, "init", "-q", "-b", "main")
+        (host / "f").write_text("x")
+        git(host, "add", "f")
+        git(host, "commit", "-q", "-m", "x")
+        git(host, "worktree", "add", "-q", "--detach", str(self.home / "hanging"))
+        self.assertEqual(M.inner_checkouts(str(lane)), sorted([str(deep), str(host)]))
+
+    def test_a_lane_that_only_holds_a_standalone_clone_still_moves(self) -> None:
+        lane = self.lane("fleet", "claude-a", "AI-Fleet-Coordinator")
+        spm = lane / ".build" / "checkouts" / "Sparkle"
+        spm.mkdir(parents=True)
+        git(spm, "init", "-q")
+        (lane / ".gitignore").write_text(".build/\n")
+        git(lane, "add", ".gitignore")
+        git(lane, "commit", "-q", "-m", "ignore .build")
+        self.assertEqual(self.plan()[str(lane)].action, "move")
+
+    def test_one_lane_with_an_inner_checkout_defers_the_whole_case_only_folder(self) -> None:
+        if not self.ci:
+            self.skipTest("a case-sensitive volume has no whole-folder case rename")
+        self.ignore_claude_dir("DealDex")
+        a = self.lane("dealdex", "claude-a", "DealDex")
+        b = self.lane("dealdex", "minimax-b", "DealDex", branch="minimax/b")
+        git(self.repos["DealDex"], "worktree", "add", "-q", "-b", "claude/inner", str(b / ".claude" / "worktrees" / "n"))
+        (folder,) = [i for i in self.plan().values() if i.action == "defer"]
+        self.assertIn("minimax-b: ", " ".join(folder.reasons))
+        self.assertIn("inner checkout", " ".join(folder.reasons))
+        self.run_cli("--apply")
+        self.assertIn("dealdex", os.listdir(self.lanes), "nothing in the folder was renamed")
+        self.assertTrue(a.exists())
+
+
 class LegacyFolderTests(World):
     def test_empty_leftovers_are_removed_with_rmdir_only(self) -> None:
         for rel in ("_managed/antigravity", "_managed/botfleet", "_review/botfleet", "_notes"):
@@ -466,6 +607,67 @@ class CaseOnlyFolderTests(World):
         self.assertTrue(clone.is_symlink() and os.readlink(clone) == str(self.lanes / "fleetlink-legacy" / "claude-legacy-hotfix"))
         self.assertTrue(wt.is_symlink() and os.readlink(wt) == str(self.lanes / "FleetLink" / "minimax-zulip-stanza"))
 
+    def test_the_folder_is_renamed_in_place_first_so_its_lanes_never_leave_their_paths(self) -> None:
+        if not self.ci:
+            self.skipTest("a case-sensitive volume has no whole-folder case rename")
+        self.lane("dealdex", "claude-a", "DealDex")
+        real = os.rename
+        calls: list = []
+
+        def spy(src, dst, *a, **k):
+            calls.append((os.path.basename(src), os.path.basename(dst)))
+            return real(src, dst, *a, **k)
+        with mock.patch.object(M.os, "rename", side_effect=spy):
+            M.case_rename(self.ctx(), str(self.lanes / "dealdex"), str(self.lanes / "DealDex"))
+        self.assertEqual(calls, [("dealdex", "DealDex")], "one rename, no temporary name")
+        self.assertIn("DealDex", os.listdir(self.lanes))
+
+    def test_a_volume_that_ignores_the_direct_rename_falls_back_to_the_temporary_name(self) -> None:
+        if not self.ci:
+            self.skipTest("a case-sensitive volume has no whole-folder case rename")
+        self.lane("dealdex", "claude-a", "DealDex")
+        real = os.rename
+        calls: list = []
+
+        def flaky(src, dst, *a, **k):
+            calls.append(os.path.basename(dst))
+            if len(calls) == 1:
+                raise OSError("refused")
+            return real(src, dst, *a, **k)
+        with mock.patch.object(M.os, "rename", side_effect=flaky):
+            M.case_rename(self.ctx(), str(self.lanes / "dealdex"), str(self.lanes / "DealDex"))
+        self.assertEqual(len(calls), 3, calls)
+        self.assertTrue(calls[1].startswith(".dealdex-case-rename-"))
+        self.assertIn("DealDex", os.listdir(self.lanes))
+        self.assertNotIn("dealdex", os.listdir(self.lanes))
+
+    def test_a_full_clone_that_also_changes_name_is_renamed_in_place_because_git_cannot_move_a_main_tree(self) -> None:
+        if not self.ci:
+            self.skipTest("a case-sensitive volume has no whole-folder case rename")
+        old = self.clone("dealdex", "claude-x-DealDex", "https://github.com/Simple-With-Us/DealDex.git")
+        self.lane("dealdex", "minimax-b", "DealDex", branch="minimax/b")
+        (folder,) = [i for i in self.plan().values() if i.action == "rename-folder"]
+        self.assertEqual(folder.extra["clones"], ["claude-x-DealDex"])
+        rc, out = self.run_cli("--apply")
+        self.assertEqual(rc, 0, out)
+        new = self.lanes / "DealDex" / "claude-x"
+        self.assertTrue((new / ".git").is_dir() and (new / "README").is_file())
+        self.assertEqual(git(new, "rev-parse", "--abbrev-ref", "HEAD"), "main")
+        self.assertTrue(old.is_symlink() and os.readlink(old) == str(new), "the old name keeps working for the grace period")
+
+    def test_another_checkout_still_in_the_folder_at_apply_time_defers_the_rename(self) -> None:
+        if not self.ci:
+            self.skipTest("a case-sensitive volume has no whole-folder case rename")
+        self.lane("dealdex", "claude-a", "DealDex")
+        (folder,) = [i for i in self.plan().values() if i.action == "rename-folder"]
+        # a clone for another repo shows up after the plan was made and cannot move out
+        stray = self.clone("dealdex", "claude-stray", "https://github.com/Simple-With-Us/elsewhere.git")
+        with self.assertRaises(M.Skipped) as cm:
+            M.apply_bucket(self.ctx(), folder, {"links": [], "events": []})
+        self.assertIn("claude-stray", str(cm.exception))
+        self.assertIn("dealdex", os.listdir(self.lanes), "the folder was not renamed")
+        self.assertTrue(stray.is_dir())
+
 
 class GitdirCaseTests(World):
     def test_only_a_pure_case_difference_inside_the_admin_dir_is_rewritten(self) -> None:
@@ -502,6 +704,31 @@ class CodexTests(World):
         self.assert_valid_lane(new, "DealDex", "codex/ab12")
         self.assertTrue(old.is_symlink())
 
+    def test_the_managed_codex_folder_is_codexs_live_root_so_it_waits_for_the_flag_too(self) -> None:
+        old = self.lanes / "_managed" / "codex" / "cd34" / "DealDex"
+        old.parent.mkdir(parents=True)
+        git(self.repos["DealDex"], "worktree", "add", "-q", "-b", "codex/cd34", str(old))
+        (old.parent / ".codex-worktree-name").write_text("cd34\n")
+        item = self.plan()[str(old)]
+        self.assertEqual(item.action, "skip")
+        self.assertIn("--include-codex", " ".join(item.reasons))
+        self.run_cli("--apply")
+        self.assertTrue(old.is_dir() and not old.is_symlink(), "an open Codex app is not pulled out from under itself")
+        rc, out = self.run_cli("--apply", "--include-codex")
+        self.assertEqual(rc, 0, out)
+        new = self.lanes / "_codex" / "cd34" / "DealDex"
+        self.assert_valid_lane(new, "DealDex", "codex/cd34")
+        self.assertEqual((new.parent / ".codex-worktree-name").read_text(), "cd34\n", "the marker is copied beside the checkout")
+        self.assertTrue((old.parent / ".codex-worktree-name").is_file(), "the original marker is never deleted")
+
+    def test_a_slug_folder_with_only_a_marker_is_said_not_ignored(self) -> None:
+        marker_only = self.home / ".codex" / "worktrees" / "ef56"
+        marker_only.mkdir(parents=True)
+        (marker_only / ".codex-worktree-name").write_text("ef56\n")
+        item = self.plan()[str(marker_only)]
+        self.assertEqual(item.action, "note")
+        self.assertIn("marker", " ".join(item.reasons))
+
 
 class LinkTests(World):
     def moved(self) -> "tuple[Path, Path]":
@@ -525,6 +752,20 @@ class LinkTests(World):
         self.assertFalse((self.lanes / "fleet").exists(), "the old prefix folder goes with its last link")
         log = json.loads((self.lanes / ".lanes-v2-migration.json").read_text())
         self.assertIsNotNone(log["links"][0]["removed"])
+
+    def test_a_link_whose_lane_was_retired_goes_on_its_date_and_lets_the_old_folder_empty(self) -> None:
+        old, new = self.moved()
+        git(self.repos["AI-Fleet-Coordinator"], "worktree", "remove", str(new))        # what the janitor does to a merged lane
+        self.assertTrue(old.is_symlink() and not old.exists(), "the link now leads nowhere")
+        rc, out = self.run_cli("--remove-links", "--apply", today=dt.date(2026, 10, 15))
+        self.assertIn("waiting until 2026-10-16", out)
+        self.assertTrue(old.is_symlink(), "not before its date")
+        rc, out = self.run_cli("--remove-links", "--apply", today=dt.date(2026, 10, 16))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("its target is gone", out)
+        self.assertNotIn("refused", out)
+        self.assertFalse(os.path.lexists(old))
+        self.assertFalse((self.lanes / "fleet").exists(), "the old prefix folder goes with its last link")
 
     def test_a_link_that_now_points_elsewhere_is_refused(self) -> None:
         old, new = self.moved()

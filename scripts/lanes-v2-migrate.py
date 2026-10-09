@@ -4,7 +4,8 @@
     python3 scripts/lanes-v2-migrate.py                      # dry run: print the plan, change nothing
     python3 scripts/lanes-v2-migrate.py --apply              # do it
     python3 scripts/lanes-v2-migrate.py --json               # the plan as JSON (a dry run unless --apply)
-    python3 scripts/lanes-v2-migrate.py --include-codex      # also plan ~/.codex/worktrees -> lanes/_codex
+    python3 scripts/lanes-v2-migrate.py --include-codex      # also move Codex's worktrees (~/.codex/worktrees and
+                                                             # lanes/_managed/codex) to lanes/_codex
     python3 scripts/lanes-v2-migrate.py --remove-links       # list the old-path symlinks that are due (dry run)
     python3 scripts/lanes-v2-migrate.py --remove-links --apply
 
@@ -20,7 +21,8 @@ What it does, per lane found under ~/apps/lanes (the disk is read at run time, n
     default), so a shell or an editor that still has the old path keeps working.  `--remove-links` deletes
     only those symlinks, only when due, only when they still point where they were made to point.
   * an old folder that differs from <Repo> only in letter case (botfleet -> BotFleet; one folder on APFS) is
-    renamed as a whole, through a temporary name, and every lane in it is repaired with
+    renamed as a whole (one rename(2), so no lane leaves its path; a temporary name only as a fallback),
+    and every lane in it is repaired with
     `git worktree repair`.  This happens only when EVERY checkout in the folder is safe to touch; otherwise
     the whole folder is deferred.  No symlink is made for it: the two spellings are one path.
   * empty leftovers (lanes/_managed/*, lanes/_review/*, lanes/_notes) are removed with rmdir, which refuses
@@ -31,13 +33,17 @@ What it refuses (skip, with the reason in the plan; run again when the cause is 
   * a lane with a process whose working directory is inside it, or when lsof cannot be read at all
   * uncommitted work (tracked or untracked), a locked worktree, a prunable one, a detached state git
     cannot report, a worktree with submodules (git refuses to move those), a target that already exists
+  * a linked worktree, submodule or clone-with-worktrees below the lane (a gitignored .claude/worktrees/<name>
+    reads clean in `git status`, and moving its parent would break its link back to the repository)
   * a symlink (already migrated), anything that is not a checkout, a repo it cannot place
   Nothing is ever removed with rm -rf, git is only asked `worktree move` and `worktree repair` besides
   read-only commands, and every path it writes is checked to be inside the lanes root (or, for Codex,
   ~/.codex/worktrees on the way out).
 
 Default is a dry run.  The log (`<lanes root>/.lanes-v2-migration.json`) records every link made and every
-step taken.  Exit codes: 0 ok (skips are not failures), 2 a step failed with --apply, 64 usage error.
+step taken.  With --json the one JSON document is the only thing on stdout; progress goes to stderr.
+Exit codes: 0 ok (skips are not failures), 2 a step failed with --apply or the plan could not be read,
+64 usage error.  Pause the disk janitor while --apply runs (docs/protocols/lanes-v2-migration.md).
 
 Python 3.9 safe, standard library only, plus the fleet_lanes package beside this file.
 Tests: scripts/fleet_lanes/tests/test_migrate_v2.py.
@@ -49,6 +55,7 @@ import datetime as _dt
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -80,6 +87,9 @@ SKIP = "skip"                  # refused: the reason says why, and a rerun may a
 DEFER = "defer"                # a folder rename that waits for its lanes to be safe
 NOTE = "note"                  # nothing to do, said so
 
+CODEX_WHY = ("Codex worktrees move only with --include-codex, with the Codex app closed and its "
+             "git-worktree-root already changed (docs/protocols/lanes-v2-migration.md)")
+CODEX_MARKER = ".codex-worktree-name"
 _KEBAB = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _OLD_REVIEW = re.compile(r"^pr-([0-9]{1,9})(?:-([a-z0-9]+(?:-[a-z0-9]+)*))?$")
 _SAFE_GIT = {
@@ -338,6 +348,65 @@ def _checkouts_below(root: str, depth: int) -> "list[str]":
     return sorted(found)
 
 
+_INNER_SKIP = (".git", "node_modules")
+_INNER_DEPTH = 4
+
+
+def _links_back(d: str, git_entry: "os.DirEntry[str]") -> bool:
+    """Does the `.git` entry in `d` tie that folder to a path git has written down elsewhere?
+
+    A `.git` FILE is a linked worktree (or a submodule): the repository it belongs to records this folder's
+    path in its own admin directory.  A `.git` directory with worktrees hanging off it is the same problem
+    the other way round.  A plain `.git` directory (a SwiftPM or Cargo checkout, an npm git dependency) is a
+    standalone clone that carries no path to the lane, so moving the lane around it breaks nothing."""
+    try:
+        if git_entry.is_file(follow_symlinks=False):
+            return True
+        if git_entry.is_dir(follow_symlinks=False):
+            with os.scandir(os.path.join(git_entry.path, "worktrees")) as it:
+                return any(True for _ in it)
+    except OSError:
+        return False
+    return False
+
+
+def inner_checkouts(root: str, depth: int = _INNER_DEPTH) -> "list[str]":
+    """Folders below `root` (never `root` itself) that git is tied to by a path: a nested linked worktree, a
+    submodule, or a clone with worktrees hanging off it.
+
+    `claude -w` or a subagent with `isolation: worktree` started inside a lane puts its checkout under
+    `<lane>/.claude/worktrees/<name>`, and every fleet repo ignores `.claude/`, so `git status` reads clean while
+    the lane holds a whole checkout whose repository names the lane's old path.  Moving the lane would leave
+    that inner worktree's admin entry pointing at the old path, where the symlink hides it until the symlink
+    goes and `git worktree prune` strands the checkout.  Symlinks are not followed; `.git` and `node_modules`
+    are not entered; `depth` is how many folders down the walk goes."""
+    found: "list[str]" = []
+    stack = [(root, 0)]
+    while stack:
+        d, level = stack.pop()
+        try:
+            with os.scandir(d) as it:
+                entries = list(it)
+        except OSError:
+            continue
+        if d != root:
+            git_entry = next((e for e in entries if e.name == ".git"), None)
+            if git_entry is not None and _links_back(d, git_entry):
+                found.append(d)
+                continue
+        if level >= depth:
+            continue
+        for e in entries:
+            if e.name in _INNER_SKIP:
+                continue
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    stack.append((e.path, level + 1))
+            except OSError:
+                continue
+    return sorted(found)
+
+
 def _empty_tree(path: str) -> "list[str] | None":
     """Directories under `path` (deepest first, `path` last) when the whole tree holds nothing but empty
     folders and .DS_Store files; None when anything else is in it (a file, a symlink, a checkout)."""
@@ -376,6 +445,12 @@ def _blockers(ctx: Ctx, f: Facts) -> "list[str]":
         why.append("the worktree is locked")
     if f.prunable:
         why.append("git lists the worktree as prunable (its folder or admin entry is broken)")
+    inner = inner_checkouts(f.path)
+    if inner:
+        rel = [os.path.relpath(p, f.path) for p in inner[:3]]
+        why.append("it holds an inner checkout (" + ", ".join(rel) + (" ..." if len(inner) > 3 else "")
+                   + "; a gitignored one such as .claude/worktrees/<name> reads clean in git status): "
+                   "close or remove it first, because moving this lane would break the inner worktree's link")
     return why
 
 
@@ -402,14 +477,19 @@ def plan_lanes(ctx: Ctx) -> "list[Item]":
         if name.startswith("_"):
             items.append(Item(NOTE, path, kind="folder", reasons=["a reserved folder v2 does not know; not touched"]))
             continue
-        items.extend(plan_bucket(ctx, path, name))
+        try:
+            items.extend(plan_bucket(ctx, path, name))
+        except OSError as exc:
+            items.append(Item(SKIP, path, kind="folder", reasons=[f"cannot be read right now ({exc}); run again"]))
     return items
 
 
 def plan_bucket(ctx: Ctx, bucket: str, name: str) -> "list[Item]":
     out: "list[Item]" = []
     children: "list[tuple[str, str]]" = []
-    for e in sorted(os.scandir(bucket), key=lambda e: e.name):
+    with os.scandir(bucket) as it:
+        entries = sorted(it, key=lambda e: e.name)
+    for e in entries:
         if e.is_symlink():
             out.append(Item(NOTE, e.path, kind="link", reasons=["a symlink (already migrated, or not ours); not touched"]))
         elif e.is_dir(follow_symlinks=False):
@@ -423,8 +503,12 @@ def plan_bucket(ctx: Ctx, bucket: str, name: str) -> "list[Item]":
                     out.append(Item(NOTE, e.path, kind="folder", reasons=["not a checkout and not empty; not touched"]))
     case_only: "list[Item]" = []
     for cname, cpath in children:
-        facts = inspect(ctx, cpath)
-        it = plan_one_lane(ctx, cname, cpath, facts, bucket_name=name)
+        try:
+            facts = inspect(ctx, cpath)
+            it = plan_one_lane(ctx, cname, cpath, facts, bucket_name=name)
+        except OSError as exc:
+            out.append(Item(SKIP, cpath, kind="folder", reasons=[f"cannot be read right now ({exc}); run again"]))
+            continue
         if it.action == BUCKET:
             case_only.append(it)
         else:
@@ -432,6 +516,14 @@ def plan_bucket(ctx: Ctx, bucket: str, name: str) -> "list[Item]":
     if case_only:
         out.extend(plan_case_bucket(ctx, bucket, name, case_only, out))
     return out
+
+
+def _same_folder(a: str, b: str) -> bool:
+    """True when both exist and are one folder (a broken symlink or a vanished path is simply False)."""
+    try:
+        return os.path.lexists(b) and os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 def plan_one_lane(ctx: Ctx, cname: str, cpath: str, f: Facts, *, bucket_name: str) -> Item:
@@ -465,7 +557,7 @@ def plan_one_lane(ctx: Ctx, cname: str, cpath: str, f: Facts, *, bucket_name: st
     if nn:
         it.notes.append(nn)
     old_parent = os.path.dirname(cpath)
-    same_folder = os.path.lexists(os.path.join(ctx.lanes, repo_dir)) and os.path.samefile(old_parent, os.path.join(ctx.lanes, repo_dir))
+    same_folder = _same_folder(old_parent, os.path.join(ctx.lanes, repo_dir))
     blockers = _blockers(ctx, f)
     exact_folder = same_folder and os.path.basename(old_parent) == repo_dir
     if same_folder and name == cname:
@@ -509,7 +601,8 @@ def plan_case_bucket(ctx: Ctx, bucket: str, name: str, members: "list[Item]", ot
     renames = {os.path.basename(m.old): os.path.basename(m.new or "") for m in members
                if os.path.basename(m.new or "") != os.path.basename(m.old)}
     if renames:
-        plan.extra = {"renames": renames, "mains": {os.path.basename(m.old): m.main for m in members if m.main}}
+        plan.extra = {"renames": renames, "mains": {os.path.basename(m.old): m.main for m in members if m.main},
+                      "clones": [os.path.basename(m.old) for m in members if m.clone]}
     for m in members:
         plan.notes.extend(m.notes)
     if stuck:
@@ -546,7 +639,10 @@ def plan_legacy_folder(ctx: Ctx, folder: str, name: str) -> "list[Item]":
         if name == L.LEGACY_MANAGED_DIR and rel[0] == "codex" and len(rel) == 3:
             blockers = _blockers(ctx, f)
             it = Item(CODEX, path, os.path.join(ctx.lanes, L.CODEX_DIR, rel[1], rel[2]), kind="worktree", main=f.main)
-            if blockers:
+            if not ctx.include_codex:
+                it.action = SKIP
+                it.reasons.append(CODEX_WHY + "; this one is Codex's current git-worktree-root")
+            elif blockers:
                 it.action = SKIP
                 it.reasons.extend(blockers)
             elif os.path.lexists(it.new or ""):
@@ -586,16 +682,17 @@ def plan_codex(ctx: Ctx) -> "list[Item]":
     base = os.path.join(ctx.home, ".codex", "worktrees")
     if not os.path.isdir(base):
         return out
+    holders = set()
     for path in _checkouts_below(base, 2):
         rel = os.path.relpath(path, base).split(os.sep)
         if len(rel) != 2:
             continue
+        holders.add(rel[0])
         f = inspect(ctx, path)
         it = Item(CODEX, path, os.path.join(ctx.lanes, L.CODEX_DIR, rel[0], rel[1]), kind="worktree", main=f.main)
         if not ctx.include_codex:
             it.action = SKIP
-            it.reasons.append("Codex worktrees move only with --include-codex, with the Codex app closed and its "
-                              "git-worktree-root already changed (docs/protocols/lanes-v2-migration.md)")
+            it.reasons.append(CODEX_WHY)
         else:
             blockers = _blockers(ctx, f)
             if blockers:
@@ -605,6 +702,14 @@ def plan_codex(ctx: Ctx) -> "list[Item]":
                 it.action = SKIP
                 it.reasons.append(f"the target {it.new} already exists")
         out.append(it)
+    try:
+        slugs = sorted(e.name for e in os.scandir(base) if e.is_dir(follow_symlinks=False))
+    except OSError:
+        slugs = []
+    for slug in slugs:
+        if slug not in holders and os.path.lexists(os.path.join(base, slug, CODEX_MARKER)):
+            out.append(Item(NOTE, os.path.join(base, slug), kind="folder",
+                            reasons=[f"only a {CODEX_MARKER} marker, no checkout; not touched"]))
     return out
 
 
@@ -683,6 +788,15 @@ def apply_move(ctx: Ctx, item: Item, log: dict) -> None:
     log["links"].append({"link": old, "target": new, "made": _stamp(ctx), "remove_after": remove_after, "removed": None})
     log["events"].append({"at": _stamp(ctx), "action": item.action, "old": old, "new": new})
     item.detail = f"symlink left at the old path until {remove_after}"
+    if item.action == CODEX:
+        # Codex keeps <slug>/.codex-worktree-name beside <Repo>; copy it (never move or delete one in ~/.codex)
+        src_marker = os.path.join(os.path.dirname(old), CODEX_MARKER)
+        dst_marker = os.path.join(os.path.dirname(new), CODEX_MARKER)
+        if os.path.isfile(src_marker) and not os.path.lexists(dst_marker):
+            try:
+                shutil.copyfile(src_marker, dst_marker)
+            except OSError as exc:
+                item.detail += f"; the {CODEX_MARKER} marker was not copied ({exc})"
 
 
 class Skipped(Exception):
@@ -723,6 +837,37 @@ def fix_gitdir_case(member_path: str, main: str) -> bool:
         return False
 
 
+def case_rename(ctx: Ctx, bucket: str, target: str) -> None:
+    """Give a folder its exact spelling (botfleet -> BotFleet; one folder on this volume).
+
+    One rename(2) first: the folder never leaves its path, so a `git worktree prune` that runs at that
+    moment (the janitor, every 30 minutes) still finds every lane.  Only when the volume did not take the
+    new spelling does it go through a temporary name, which leaves a short moment with no folder at all;
+    that is why the doc asks for the cleaners to be paused while `--apply` runs."""
+    parent = os.path.dirname(target)
+    old_name, new_name_ = os.path.basename(bucket), os.path.basename(target)
+    try:
+        os.rename(bucket, target)
+    except OSError:
+        pass
+    try:
+        listing = os.listdir(parent)
+    except OSError as exc:
+        raise MigrateError(f"cannot read {parent} after the rename: {exc}")
+    if new_name_ in listing and old_name not in listing:
+        return
+    tmp = os.path.join(ctx.lanes, f".{old_name}-case-rename-{os.getpid()}")
+    os.rename(bucket, tmp)
+    try:
+        os.rename(tmp, target)
+    except OSError as exc:
+        try:
+            os.rename(tmp, bucket)
+        except OSError:
+            raise MigrateError(f"the folder is stuck at {tmp} ({exc}); rename it back by hand")
+        raise MigrateError(f"could not rename to {target}: {exc}")
+
+
 def apply_bucket(ctx: Ctx, item: Item, log: dict) -> None:
     bucket, target = item.old, item.new or ""
     if not _inside(ctx, bucket, ctx.lanes) or not _inside(ctx, target, ctx.lanes):
@@ -739,21 +884,21 @@ def apply_bucket(ctx: Ctx, item: Item, log: dict) -> None:
             raise Skipped(f"{os.path.basename(member)}: " + "; ".join(blockers))
         if f.main:
             mains.setdefault(f.main, []).append(os.path.join(target, os.path.basename(member)))
+    member_keys = {ctx.fold(os.path.abspath(m)) for m in item.members}
+    with os.scandir(bucket) as it:
+        for e in it:
+            if e.is_symlink() or not e.is_dir(follow_symlinks=False):
+                continue
+            if os.path.lexists(os.path.join(e.path, ".git")) and ctx.fold(os.path.abspath(e.path)) not in member_keys:
+                raise Skipped(f"{e.name} is also in the folder and has not moved out yet; "
+                              "a rename would carry it to the wrong folder")
     renames: "dict[str, str]" = dict(item.extra.get("renames", {}))
     mains_by_name: "dict[str, str]" = dict(item.extra.get("mains", {}))
+    clones = set(item.extra.get("clones", []))
     for old_base, new_base in renames.items():
         if os.path.lexists(os.path.join(target, new_base)):
             raise Skipped(f"{new_base} already exists in the folder")
-    tmp = os.path.join(ctx.lanes, f".{os.path.basename(bucket)}-case-rename-{os.getpid()}")
-    os.rename(bucket, tmp)
-    try:
-        os.rename(tmp, target)
-    except OSError as exc:
-        try:
-            os.rename(tmp, bucket)
-        except OSError:
-            raise MigrateError(f"the folder is stuck at {tmp} ({exc}); rename it back by hand")
-        raise MigrateError(f"could not rename to {target}: {exc}")
+    case_rename(ctx, bucket, target)
     problems: "list[str]" = []
     for main, paths in mains.items():
         rc, _out, err = ctx.git(main, ["worktree", "repair", *paths])
@@ -764,10 +909,18 @@ def apply_bucket(ctx: Ctx, item: Item, log: dict) -> None:
     log["events"].append({"at": _stamp(ctx), "action": item.action, "old": bucket, "new": target})
     for old_base, new_base in renames.items():
         src, dst = os.path.join(target, old_base), os.path.join(target, new_base)
-        rc, _out, err = ctx.git(mains_by_name.get(old_base, ""), ["worktree", "move", src, dst])
-        if rc != 0:
-            problems.append(f"git worktree move {old_base} -> {new_base}: " + (err.strip().splitlines() or ["?"])[-1][:160])
-            continue
+        if old_base in clones:
+            # git refuses `worktree move` for a main working tree, so a full clone is a plain rename
+            try:
+                os.rename(src, dst)
+            except OSError as exc:
+                problems.append(f"rename {old_base} -> {new_base}: {exc}")
+                continue
+        else:
+            rc, _out, err = ctx.git(mains_by_name.get(old_base, ""), ["worktree", "move", src, dst])
+            if rc != 0:
+                problems.append(f"git worktree move {old_base} -> {new_base}: " + (err.strip().splitlines() or ["?"])[-1][:160])
+                continue
         os.symlink(dst, src)
         remove_after = (ctx.today + _dt.timedelta(days=ctx.grace_days)).isoformat()
         log["links"].append({"link": src, "target": dst, "made": _stamp(ctx), "remove_after": remove_after, "removed": None})
@@ -830,7 +983,10 @@ def plan_links(ctx: Ctx) -> "list[dict]":
         elif os.readlink(p) != ln.get("target"):
             row["state"] = "refused: it points somewhere else now"
         elif not os.path.isdir(ln.get("target", "")):
-            row["state"] = "refused: its target is missing"
+            # the janitor retired the moved lane: the link is ours (it still points where we put it) and
+            # leads nowhere, so it goes on its date like any other, which lets the old prefix folder empty
+            row["state"] = "due" if due else f"waiting until {ln.get('remove_after')}"
+            row["target_gone"] = True
         else:
             row["state"] = "due" if due else f"waiting until {ln.get('remove_after')}"
         rows.append(row)
@@ -841,7 +997,7 @@ def remove_links(ctx: Ctx, rows: "list[dict]", apply: bool, out: Callable[[str],
     log = load_log(ctx.log_path)
     failures = 0
     for row in rows:
-        out(f"{row['state']:<28} {row['link']} -> {row['target']}")
+        out(f"{row['state']:<28} {row['link']} -> {row['target']}" + ("  (its target is gone)" if row.get("target_gone") else ""))
         if not apply or row["state"] != "due":
             continue
         try:
@@ -949,7 +1105,7 @@ def main(argv: "Sequence[str] | None" = None, *, home: "str | None" = None, env:
         return EXIT_FAILED if remove_links(ctx, rows, args.apply, out) else EXIT_OK
     try:
         items = build_plan(ctx)
-    except MigrateError as exc:
+    except (MigrateError, OSError) as exc:
         sys.stderr.write(f"lanes-v2-migrate: {exc}\n")
         return EXIT_FAILED
     if args.json and not args.apply:
@@ -960,15 +1116,17 @@ def main(argv: "Sequence[str] | None" = None, *, home: "str | None" = None, env:
         out("")
         render(items, ctx, out)
         return EXIT_OK
-    out(f"Applying.  Lanes root {ctx.lanes}.  Log {ctx.log_path}.")
-    failures = apply_plan(ctx, items, out)
+    # with --json the one document on stdout must parse, so the progress lines go to stderr
+    progress = (lambda line: sys.stderr.write(line + "\n")) if args.json else out
+    progress(f"Applying.  Lanes root {ctx.lanes}.  Log {ctx.log_path}.")
+    failures = apply_plan(ctx, items, progress)
     if args.json:
         out_stream.write(json.dumps({"apply": True, "lanes_root": ctx.lanes, "failures": failures,
                                      "items": [i.as_dict() for i in items]}, indent=2) + "\n")
     skipped = sum(1 for i in items if i.action in (SKIP, DEFER) or i.result == "skipped")
-    out("")
-    out(f"Finished: {sum(1 for i in items if i.result == 'done')} done, {skipped} skipped or deferred, {failures} failed.  "
-        "Run it again once the skipped lanes are free.")
+    progress("")
+    progress(f"Finished: {sum(1 for i in items if i.result == 'done')} done, {skipped} skipped or deferred, {failures} failed.  "
+             "Run it again once the skipped lanes are free.")
     return EXIT_FAILED if failures else EXIT_OK
 
 
