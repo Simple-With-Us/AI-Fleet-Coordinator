@@ -44,8 +44,8 @@ GROK-WEB = "server"
 INSTINCT = "server"
 ECHO = "server"
 
-# Grok Bot personas.  GB-DIRECTOR is a realm member now (it was an admin earlier), and the
-# listener accepts moderator and member bots only (listener decision 7), so its key is
+# Grok Bot personas.  GB-DIRECTOR is a realm member now (it was an admin earlier), and
+# the listener accepts moderator and member bots only (listener decision 7), so its key is
 # accepted.  Its seat stays disabled in the server sample only because it has no routine yet.
 GB-DIRECTOR = "server"
 GB-FIXER = "server"

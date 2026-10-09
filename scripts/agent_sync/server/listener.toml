@@ -74,7 +74,7 @@ instance = "server"
 creds = "env"                     # ZULIP_ECHO_EMAIL, ZULIP_ECHO_API_KEY (instinct-bat-bot@)
 wake = "inbox"
 
-# GB-DIRECTOR (Routing, fleet sync, org help, director-grok-bot@).  Present but disabled:  no routine yet.  It is a realm member now, which the listener accepts.
+# GB-DIRECTOR (Routing, fleet sync, org help, director-grok-bot@).  Present but disabled:  no routine yet.  It is a realm member now (it was an admin earlier), which the listener accepts.
 # The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
 # "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
 # enabled = true here, then restart the app (a reload does not read new environment variables).
