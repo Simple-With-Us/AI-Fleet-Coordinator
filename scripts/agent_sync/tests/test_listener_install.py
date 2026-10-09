@@ -36,6 +36,7 @@ class InstallTests(ListenerHarness):
         self.assertEqual(data["ProgramArguments"], [sys.executable, str(self.home / ".local/bin/agent-sync"), "daemon", "run"])
         self.assertTrue(data["KeepAlive"])
         self.assertEqual(data["ThrottleInterval"], 30)
+        self.assertEqual(data["ProcessType"], "Standard")  # Background starves at startup under a heavy load
         self.assertEqual(data["StandardOutPath"], str(self.home / ".agent-sync/logs/launchd.out"))
         self.assertEqual(data["StandardErrorPath"], str(self.home / ".agent-sync/logs/launchd.err"))
         self.assertNotIn("KEY", json.dumps(data["EnvironmentVariables"]).upper().replace("KEEPALIVE", ""))
