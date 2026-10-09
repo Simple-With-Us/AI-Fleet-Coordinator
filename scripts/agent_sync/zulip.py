@@ -31,12 +31,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from .textfmt import sentence_gap
+
 __all__ = [
     "REALM", "DEFAULT_CHANNEL", "MAX_TOPIC_LENGTH", "USER_AGENT",
     "AgentSyncError", "UsageError", "CredentialError", "ApiError", "NetworkError", "QueueExpired",
     "Credentials", "normalise_seat", "credential_file_name", "seat_from_rc_path", "session_tag",
     "realm_url", "resolve_credentials", "read_zuliprc", "env_credentials", "verify_realm",
-    "ZulipClient", "EventQueue", "message_channel", "message_topic",
+    "ZulipClient", "EventQueue", "message_channel", "message_topic", "outbound_params",
 ]
 
 REALM = "https://simplewithus.zulipchat.com"
@@ -66,6 +68,9 @@ GATEWAY_STATUSES = frozenset({502, 503, 504})  # the proxy in front of Zulip res
 
 _SEAT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
 _LOOPBACK_NAMES = {"localhost"}
+# Endpoints whose `content` is message text this process is sending (a new message, an edit, a
+# scheduled message).  Reads, `messages/render` and the rest are not outbound text.
+_OUTBOUND_TEXT_PATH = re.compile(r"(?:messages|scheduled_messages)(?:/\d+)?")
 
 
 class AgentSyncError(Exception):
@@ -303,6 +308,18 @@ def verify_realm(creds: Credentials, realm: str) -> None:
 # HTTP client
 # --------------------------------------------------------------------------------------------
 
+def outbound_params(method: str, path: str, params: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    """`params` with the sentence gap in any message `content` this call sends.  The one place every
+    outbound path passes through (CLI post, reply and dm, the daemon's wake replies and owner
+    DMs, the listener probe).  It is a safety net:  authors still write the gap, and Zulip's renderer
+    collapses plain doubled spaces.  Only `content` changes, never the topic, the recipients or
+    anything this client reads."""
+    if (method in ("POST", "PATCH") and params and isinstance(params.get("content"), str)
+            and _OUTBOUND_TEXT_PATH.fullmatch(path.strip("/"))):
+        return {**params, "content": sentence_gap(params["content"])}
+    return params
+
+
 def encode_params(params: Mapping[str, Any] | None) -> str:
     """Form-encode.  Strings go through unchanged; bools, ints and floats become Zulip's
     textual forms; lists and dicts are JSON-encoded (narrow, subscriptions, event_types)."""
@@ -363,7 +380,7 @@ class ZulipClient:
         timeout, because a quiet queue is normal.  Non-GET requests are never retried on a
         network failure or a gateway error: a POST /messages that timed out may have posted."""
         method = method.upper()
-        query = encode_params(params)
+        query = encode_params(outbound_params(method, path, params))
         url = self.base + path.lstrip("/")
         data: bytes | None = None
         if method == "GET":
