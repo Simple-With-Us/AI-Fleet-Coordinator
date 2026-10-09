@@ -659,7 +659,7 @@ class Notifier:
 
     def notify(self, seat: str, title: str, text: str, *, kind: str, key: str | None = None,
                once_per: float = 86400.0, note: str | None = None, trigger_ids: Sequence[int] = (),
-               sender_id: Any = None, owner: bool = False) -> bool:
+               sender_id: Any = None, owner: bool = False, risk: str | None = None) -> bool:
         now = self.clock()
         key = key or "%s:%s" % (seat, kind)
         with self.lock:
@@ -686,7 +686,7 @@ class Notifier:
                 L.append_jsonl(paths.owner_queue, [{"seq": seq, "ts": now, "seat": seat, "kind": kind,
                                                     "title": clean_banner(title), "text": clean_banner(text, 300),
                                                     "note": note, "trigger_ids": list(trigger_ids),
-                                                    "sender_id": sender_id, "owner": owner}])
+                                                    "sender_id": sender_id, "owner": owner, "risk": risk}])
                 data["next_seq"] = seq + 1
                 L.write_json(meta, data)
             argv = osascript_argv(self.osascript, text, title)

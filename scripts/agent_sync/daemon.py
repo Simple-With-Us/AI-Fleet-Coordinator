@@ -1185,9 +1185,10 @@ class Daemon:
         obj, why = W.validate(result.parsed)
         if why:
             self.log.write("wake-invalid", seat=runner.seat, wake_id=pending.wake_id, reason=why)
-        outcome = self.act(runner, pending, obj)
+        outcome = self.act(runner, pending, obj, history=history)
         runner.ledger.append(pending.row("done", self.clock.time(), cost_usd=result.cost_usd, exit=result.exit,
-                                         secs=result.secs, action=obj["action"], invalid=why, **outcome))
+                                         secs=result.secs, action=obj["action"], risk=obj.get("risk"),
+                                         coerced=obj.get("coerced"), invalid=why, **outcome))
 
     def trigger_row(self, runner: SeatRunner, pending: W.Pending) -> dict[str, Any] | None:
         """The trigger a routine wake is about:  the newest owner trigger when the owner is among
@@ -1259,9 +1260,12 @@ class Daemon:
                                  % (runner.seat, A.clean_banner(reason, 60)),
                                  kind="wake-failed", key="wake-failed:%s" % pending.wake_id, once_per=0)
 
-    def act(self, runner: SeatRunner, pending: W.Pending, obj: Mapping[str, Any]) -> dict[str, Any]:
+    def act(self, runner: SeatRunner, pending: W.Pending, obj: Mapping[str, Any], *,
+            history: Iterable[Mapping[str, Any]] = ()) -> dict[str, Any]:
         """Carry out a validated result:  post the reply (mentions neutralized, secret-scanned,
-        tagged), file the board item when allowed, and send owner notes through notify-owner."""
+        tagged), file the board item when allowed, and send owner notes through notify-owner.  A
+        note about a peer request, or any request screened uncertain or high, is also sent to the
+        owner as a Zulip DM from the seat's own bot (`dm_owner`)."""
         outcome: dict[str, Any] = {"posted_id": None, "board_uid": None, "note": False}
         trigger = pending.trigger_ids[-1] if pending.trigger_ids else 0
         reply = obj.get("reply") if obj.get("action") in ("reply", "board", "escalate") else None
@@ -1293,13 +1297,88 @@ class Daemon:
         if obj.get("action") == "escalate" or (isinstance(note, str) and note.strip()):
             outcome["note"] = True
             where = "a DM" if pending.type == "private" else "#%s > %s" % (pending.channel, pending.topic)
+            risk = obj.get("risk") if obj.get("risk") in W.RISKS else None
             self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat, "a note for you about %s" % where,
                                  kind="owner_note", key="note:%s" % pending.wake_id, once_per=0,
                                  note=note if isinstance(note, str) else None, trigger_ids=pending.trigger_ids,
-                                 owner=pending.owner)
+                                 owner=pending.owner, risk=risk)
+            if not pending.owner or risk in ("uncertain", "high"):
+                outcome.update(self.dm_owner(runner, pending, note if isinstance(note, str) else "", risk, history))
             if pending.owner and not outcome["posted_id"] and not lease_id:
                 outcome["posted_id"] = self.post(runner, pending, W.compose_reply(runner.seat, trigger, W.OWNER_ACK))
         return outcome
+
+    def owner_dm_text(self, runner: SeatRunner, pending: W.Pending, note: str, risk: str | None,
+                      history: Iterable[Mapping[str, Any]]) -> str:
+        """The owner DM for an escalated request:  who asked, where, the risk, the responder's note
+        and a link to the trigger.  Sender, place and link are the daemon's own fields; the note is
+        model output derived from untrusted text, so it sits in a quote block with backticks and
+        mentions removed.  The tag is `[SEAT·note]`, not `·wake`, so the router never takes the DM for
+        a wake reply."""
+        peers = [i for i in pending.trigger_ids if i not in pending.owner_ids]
+        trigger = (peers or pending.trigger_ids or [0])[-1]
+        senders = {m.get("id"): m for m in history if isinstance(m, Mapping)}
+        sender = senders.get(trigger) or self._seat_inbox_rows(runner, [trigger]).get(trigger) or {}
+        name = A.clean_banner(str(sender.get("sender_full_name") or sender.get("sender") or "a peer"), 60)
+        sender_id = sender.get("sender_id")
+        bot = runner.users.get(sender_id, {}).get("is_bot") if isinstance(sender_id, int) else None
+        where = "a DM" if pending.type == "private" else "#%s > %s" % (
+            A.clean_banner(pending.channel, 60), A.clean_banner(pending.topic, 80))
+        link = A.zulip_link(self.realm, {"id": trigger, "type": pending.type, "recipients": pending.recipients,
+                                         "channel": pending.channel, "topic": pending.topic,
+                                         "stream_id": pending.stream_id})
+        quoted = A.clean_banner(note.replace("`", "'"), W.LIMITS["owner_note"]) if note.strip() else "(no note)"
+        text = "\n".join([
+            "[%s\u00b7note] re=%d" % (runner.seat, trigger),
+            "From: %s%s" % (name, " (bot)" if bot else ""),
+            "Where: %s" % where,
+            "Risk: %s" % (risk or "not screened"),
+            "```quote",
+            quoted,
+            "```",
+            "Message: %s" % link,
+        ])
+        return W.neutralize_mentions(text)
+
+    def dm_owner(self, runner: SeatRunner, pending: W.Pending, note: str, risk: str | None,
+                 history: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+        """Send the owner a Zulip DM as the seat's own bot.  It rides on a wake that already passed
+        the seat's budgets, so it is at most one DM per wake, and it never raises:  a refusal or a
+        failure is logged and recorded in the ledger row, and the banner and owner queue still hold
+        the note."""
+        owner_id = self.config.owner_user_id
+        if owner_id <= 0 or runner.client is None or runner.fatal:
+            self.log.write("owner-dm-skipped", seat=runner.seat, wake_id=pending.wake_id,
+                           reason="no_owner_id" if owner_id <= 0 else "seat_unavailable")
+            return {"owner_dm": None, "owner_dm_error": "owner dm skipped"}
+        text = self.owner_dm_text(runner, pending, note, risk, history)
+        found = secretscan.scan(text, self.hidden)
+        withheld = None
+        if found:
+            # Every decline must reach the owner, so a note the scanner flags is withheld, not the DM.
+            withheld = "secret scanner: %s" % found
+            self.log.write("owner-dm-note-withheld", seat=runner.seat, wake_id=pending.wake_id, reason=withheld)
+            text = self.owner_dm_text(runner, pending, "(withheld by the secret scanner; it is in the owner queue)",
+                                      risk, history)
+            if secretscan.scan(text, self.hidden):  # the sender or place was the problem:  say nothing at all
+                self.log.write("owner-dm-refused", seat=runner.seat, wake_id=pending.wake_id, reason="secret scanner")
+                return {"owner_dm": None, "owner_dm_error": withheld}
+        wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
+        if wait > 0:
+            self.clock.sleep(wait)
+        try:
+            result = runner.client.post("messages", {"type": "direct", "to": [owner_id], "content": text})
+        except Z.AgentSyncError as exc:
+            reason = self.scrub(str(exc))
+            self.log.write("owner-dm-failed", seat=runner.seat, wake_id=pending.wake_id, error=reason)
+            return {"owner_dm": None, "owner_dm_error": reason}
+        finally:
+            runner.last_post = self.clock.monotonic()
+        message_id = result.get("id")
+        sent: dict[str, Any] = {"owner_dm": int(message_id) if isinstance(message_id, int) else None}
+        if withheld:
+            sent["owner_dm_note_withheld"] = withheld
+        return sent
 
     def post(self, runner: SeatRunner, pending: W.Pending, text: str) -> int | None:
         """A channel trigger is answered in its topic; a DM trigger only by DM to the original

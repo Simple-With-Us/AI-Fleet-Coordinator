@@ -31,6 +31,8 @@ PROMPT_HISTORY = 15
 PROMPT_BODY_LIMIT = 1500
 LIMITS = {"reply": 1500, "title": 120, "desc": 1500, "owner_note": 500}
 ACTIONS = ("none", "reply", "board", "escalate")
+RISKS = ("low", "uncertain", "high")  # a peer request screened by the responder (AGENT-SYNC Precedence rule 3); null = no request
+SCREEN_NOTE = "peer request screened %s; see the trigger"
 SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wake", "wake-schema.json")
 CONTRACT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wake", "wake-contract.md")
 OPEN_STATES = ("queued", "accepted")
@@ -359,17 +361,25 @@ def parse_result(event: Mapping[str, Any]) -> Any:
 
 def validate(obj: Any) -> tuple[dict[str, Any], str | None]:
     """Check against the fixed schema (required keys, no extras, enums, types and lengths).  Any
-    violation becomes {"action": "none"} with the reason (never the body)."""
-    none = {"action": "none", "reply": None, "board": None, "owner_note": None}
+    violation becomes {"action": "none"} with the reason (never the body).
+
+    A request screened `high` or `uncertain` always reaches the owner:  any action but escalate
+    becomes escalate (a board payload is dropped), and an escalate with no note gets a synthesized
+    one instead of being dropped to none.  A coerced result carries a `coerced` key saying what
+    changed, for the ledger; a result that needed no change has exactly the schema's keys."""
+    none = {"action": "none", "reply": None, "board": None, "owner_note": None, "risk": None}
     if not isinstance(obj, dict):
         return none, "not an object"
     keys = set(obj)
-    required = {"action", "reply", "board", "owner_note"}
+    required = {"action", "reply", "board", "owner_note", "risk"}
     if keys != required:
         return none, "keys %s" % ("missing " + ",".join(sorted(required - keys)) if required - keys
                                   else "extra " + ",".join(sorted(keys - required)))
     if obj["action"] not in ACTIONS:
         return none, "action not in the enum"
+    risk = obj["risk"]
+    if risk is not None and risk not in RISKS:
+        return none, "risk not in the enum"
     for name in ("reply", "owner_note"):
         value = obj[name]
         if value is not None and not isinstance(value, str):
@@ -391,9 +401,21 @@ def validate(obj: Any) -> tuple[dict[str, Any], str | None]:
         return none, "action reply with no reply"
     if obj["action"] == "board" and board is None:
         return none, "action board with no board"
-    if obj["action"] == "escalate" and not (isinstance(obj["owner_note"], str) and obj["owner_note"].strip()):
-        return none, "action escalate with no owner_note"
-    return dict(obj), None
+    result = dict(obj)
+    escalating = risk in ("high", "uncertain")
+    coerced: list[str] = []
+    if escalating and result["action"] != "escalate":
+        coerced.append("action %s to escalate" % result["action"])
+        result["action"] = "escalate"
+        result["board"] = None  # act() files a board item only for action board
+    if result["action"] == "escalate" and not (isinstance(result["owner_note"], str) and result["owner_note"].strip()):
+        if not escalating:
+            return none, "action escalate with no owner_note"
+        coerced.append("owner_note synthesized")
+        result["owner_note"] = SCREEN_NOTE % risk
+    if coerced:
+        result["coerced"] = "risk %s: %s" % (risk, "; ".join(coerced))
+    return result, None
 
 
 # --------------------------------------------------------------------------------------------

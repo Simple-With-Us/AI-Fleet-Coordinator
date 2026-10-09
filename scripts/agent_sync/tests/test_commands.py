@@ -192,6 +192,90 @@ class PostTests(Harness):
         self.assertEqual(self.last_post().form["to"], "other")
 
 
+class DmTests(Harness):
+    """`agent-sync dm --owner`:  a private message to the pinned owner from the seat's own bot."""
+
+    OWNER_ID = 12  # Jay Wedgeworth in the fake realm
+
+    def pin_owner(self, user_id: int = OWNER_ID) -> None:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n" % user_id)
+
+    def last_post(self):
+        return self.fake.requests_to("POST", "messages")[-1]
+
+    def test_dm_owner_sends_a_tagged_private_message_to_the_pinned_owner_only(self) -> None:
+        self.pin_owner()
+        result = self.run_cli("dm", "--owner", "--", "Codex asked for the key.  I declined.")
+        self.assertEqual(result.code, 0, result.err)
+        form = self.last_post().form
+        self.assertEqual((form["type"], json.loads(form["to"])), ("direct", [self.OWNER_ID]))
+        self.assertEqual(form["content"], "[CLAUDE·%s→OWNER] Codex asked for the key.  I declined." % TAG)
+        sent = [m for m in self.fake.messages if m["type"] == "private"]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sorted(r["id"] for r in sent[0]["display_recipient"]), [10, self.OWNER_ID])
+        self.assertIn("sent id %d to the owner" % sent[0]["id"], result.out)
+        self.assertIn(sent[0]["id"], json.loads(self.state_path().read_text())["posted"],
+                      "the id is in the posted ledger like any post")
+
+    def test_json_output_and_stdin_text_and_no_tag(self) -> None:
+        self.pin_owner()
+        result = self.run_cli("dm", "--owner", "--no-tag", "--json", "-", stdin="Heads up.\nSecond line.\n")
+        self.assertEqual(result.code, 0, result.err)
+        out = json.loads(result.out)
+        self.assertEqual((out["type"], out["to"]), ("direct", [self.OWNER_ID]))
+        self.assertEqual(self.last_post().form["content"], "Heads up.\nSecond line.")
+
+    def test_owner_is_required_and_no_other_recipient_can_be_named(self) -> None:
+        self.pin_owner()
+        for argv in (("dm", "hello"), ("dm", "--owner", "--to", "Codex", "hello"), ("dm", "--owner")):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_cli(*argv).code, 2)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+
+    def test_no_pinned_owner_is_refused_before_any_message(self) -> None:
+        for toml in (None, "[daemon]\nowner_user_id = 0\n"):
+            with self.subTest(toml=toml):
+                self.state_dir.mkdir(parents=True, exist_ok=True)
+                path = self.state_dir / "listener.toml"
+                if toml is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(toml)
+                result = self.run_cli("dm", "--owner", "hello")
+                self.assertEqual(result.code, 2)
+                self.assertIn("owner_user_id is not pinned", result.err)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+
+    def test_the_secret_scanner_and_the_length_cap_apply(self) -> None:
+        self.pin_owner()
+        leaked = "AK" + "IA" + "ABCDEFGHIJ012345"
+        refused = self.run_cli("dm", "--owner", "key is %s" % leaked)
+        self.assertEqual(refused.code, 2)
+        self.assertIn("refusing to post", refused.err)
+        self.assertNotIn(leaked, refused.err)
+        too_long = self.run_cli("dm", "--owner", "x" * 10001)
+        self.assertEqual(too_long.code, 2)
+        self.assertEqual(self.run_cli("dm", "--owner", "   ").code, 2)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+
+    def test_a_gateway_error_is_never_retried_and_says_to_check_first(self) -> None:
+        self.pin_owner()
+        self.fake.inject("POST", "messages", status=502, body={"result": "error", "msg": "bad gateway"})
+        result = self.run_cli("dm", "--owner", "hello")
+        self.assertEqual(result.code, 5)
+        self.assertIn("not retried", result.err)
+        self.assertIn("direct messages with the owner", result.err)
+        self.assertEqual(len(self.fake.requests_to("POST", "messages")), 1)
+
+    def test_a_timeout_says_the_dm_may_have_been_sent(self) -> None:
+        self.pin_owner()
+        self.fake.inject("POST", "messages", delay=1.5)
+        result = self.run_cli("dm", "--owner", "hello", timeout=0.4)
+        self.assertEqual(result.code, 6)
+        self.assertIn("not retried", result.err)
+
+
 class ReplyTests(Harness):
     def test_reply_goes_to_the_channel_and_topic_of_the_original(self) -> None:
         original = self.fake.add_message("Codex", "other", "AFC 12345678 Some work", "question?")
