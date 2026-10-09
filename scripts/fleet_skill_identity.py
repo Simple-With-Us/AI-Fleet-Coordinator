@@ -204,8 +204,8 @@ def _banner(tag: str, notes: str, prefix: str, suffix: str, zulip: str = "") -> 
 
 
 # Coordinator / ops self-id for this repo (Simple-With-Us/AI-Fleet-Coordinator).
-# FLEET is a fleet-wide wake in Zulip (`@*fleet*` in #agent-sync topic `fleet`),
-# not this system's name.
+# FLEET is a recipient word for the fleet-wide wake in Zulip (`@**all**` in
+# #agent-sync topic `fleet`), not this system's name.
 COORDINATOR_SELF_ID = "AFC"
 OPS_SELF_ID = "OPS"
 FLEET_WAKE = "FLEET"
@@ -247,10 +247,11 @@ def is_grok_bot_tag(tag: str) -> bool:
 def head_has_fleet_wake(head: str) -> bool:
     """True when a post header carries the fleet-wide wake, not a sender name.
 
-    Zulip writes the fleet wake as `@*fleet*`; `->FLEET` is the retired
-    pre-Zulip header form, still accepted because older docs quote it.
+    Zulip writes the fleet wake as `@**all**` (owner 2026-10-09; there is no
+    `fleet` user group).  `@*fleet*` and `->FLEET` are retired header forms,
+    still accepted because older docs and posts quote them.
     """
-    return "@*fleet*" in head or "->FLEET" in head or "→FLEET" in head
+    return "@**all**" in head or "@*fleet*" in head or "->FLEET" in head or "→FLEET" in head
 
 
 GB_ROLE_LIST = _gb_role_list()
@@ -1276,7 +1277,7 @@ def _apply_retired(text: str, seat: Seat, skill_name: str) -> str:
             "your own chat with the owner and stop.  "
             + f"Do not export `AGENT_SEAT={seat.tag}` to take work.  Do not claim work "
             f"or pick a {seat.notes} lane.  Coordinator self-id is `{COORDINATOR_SELF_ID}`.  "
-            "A fleet-wide wake is `@*fleet*` in #agent-sync topic `fleet`.\n"
+            "A fleet-wide wake is `@**all**` in #agent-sync topic `fleet`.\n"
         )
     return text
 

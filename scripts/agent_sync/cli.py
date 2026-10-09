@@ -41,6 +41,7 @@ from . import __version__
 from . import identity as I
 from . import listener_cli
 from . import live as LIVE
+from . import router as ROUTER
 from . import secretscan
 from . import zulip as Z
 from .state import State, state_root
@@ -611,7 +612,11 @@ def build_parser() -> argparse.ArgumentParser:
     channel_opt(p)
     p.add_argument("--to", action="append", default=[], metavar="NAME",
                    help="address a user or bot by exact full name or email (repeatable); adds the @-mention that wakes it")
-    p.add_argument("--fleet", action="store_true", help="also @-mention the 'fleet' user group (the owner must have created it)")
+    p.add_argument("--fleet", action="store_true",
+                   help="fleet-wide wake:  also add @**all**.  Only in #agent-sync, topic 'fleet'.  It notifies every "
+                        "seat and the owner, so use it only when every seat must act.  Zulip refuses it from a bot the "
+                        "realm's can_mention_many_users_group does not include;  then use --to for each bot that "
+                        "must act")
     p.add_argument("--no-tag", action="store_true", help="do not prepend the [SEAT\u00b7session] tag")
     p.add_argument("text", nargs="+", metavar="TEXT", help="message text; a single '-' reads it from stdin")
 
@@ -847,17 +852,54 @@ def _send(agent: Agent, channel: str, topic: str, body: str) -> int:
     return 0
 
 
+FLEET_WAKE_MENTION = "@**all**"
+_WILDCARD_REFUSED_CODES = ("STREAM_WILDCARD_MENTION_NOT_ALLOWED", "TOPIC_WILDCARD_MENTION_NOT_ALLOWED")
+
+
+def _wildcard_refused(exc: ApiError) -> bool:
+    """Zulip's refusal of a wildcard mention:  machine code `STREAM_WILDCARD_MENTION_NOT_ALLOWED`
+    ("You do not have permission to use channel wildcard mentions in this channel"), with the message
+    as a fallback in case a Zulip version renames the code."""
+    if exc.code in _WILDCARD_REFUSED_CODES:
+        return True
+    text = (exc.msg or "").casefold()
+    return "wildcard" in text and "mention" in text and "permission" in text
+
+
+def _check_fleet_target(channel: str, topic: str) -> None:
+    """`post --fleet` is the fleet-wide wake, and it is allowed in exactly one place."""
+    if channel.casefold() != ROUTER.FLEET_WAKE_CHANNEL or topic.strip().casefold() != ROUTER.FLEET_WAKE_TOPIC:
+        raise UsageError(
+            "--fleet is the fleet-wide wake (%s) and only works in #%s \u203a %s, not in #%s \u203a %s.  "
+            "Use --to NAME for a peer, or drop --fleet" % (
+                FLEET_WAKE_MENTION, ROUTER.FLEET_WAKE_CHANNEL, ROUTER.FLEET_WAKE_TOPIC,
+                _visible(channel, inline=True), _visible(topic, inline=True)))
+
+
+def _fleet_refused_error(exc: ApiError) -> ApiError:
+    return ApiError(
+        "Zulip refused %s from this bot:  %s  The realm setting that controls it is "
+        "can_mention_many_users_group (Organization permissions, \"Who can notify a large number of users with "
+        "a wildcard mention\"), and only Jay can widen it to include member and moderator bots.  Until he does, "
+        "post in #%s \u203a %s with --to NAME for each bot that must act, and use `agent-sync dm --owner` for an "
+        "emergency." % (FLEET_WAKE_MENTION, exc.msg, ROUTER.FLEET_WAKE_CHANNEL, ROUTER.FLEET_WAKE_TOPIC),
+        code=exc.code, status=exc.status, data=exc.data)
+
+
 def cmd_post(agent: Agent, args: argparse.Namespace) -> int:
+    if args.fleet:
+        _check_fleet_target(args.channel, args.topic)  # before any request, including the --to lookup
     text = _read_text(agent, args.text)
     mentions, labels = _resolve_peers(agent, args.to)
     if args.fleet:
-        groups = agent.client.get("user_groups").get("user_groups") or []
-        if not any(str(g.get("name", "")).casefold() == "fleet" for g in groups):
-            raise UsageError("there is no user group named 'fleet' in this realm; the owner must create it "
-                             "before --fleet can wake everyone")
-        mentions.append("@*fleet*")
+        mentions.append(FLEET_WAKE_MENTION)
     body = _compose(agent, text, labels=labels, mentions=mentions, no_tag=args.no_tag)
-    return _send(agent, args.channel, args.topic, body)
+    try:
+        return _send(agent, args.channel, args.topic, body)
+    except ApiError as exc:
+        if args.fleet and _wildcard_refused(exc):
+            raise _fleet_refused_error(exc) from None
+        raise
 
 
 def _owner_user_id(agent: Agent) -> int:

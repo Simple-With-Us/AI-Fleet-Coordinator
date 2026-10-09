@@ -12,4 +12,4 @@ This pack is for **KIMI**.  Tag `[KIMI]`.  Notes name `Kimi`.  **KIMI is retired
 
 ## Stop
 
-KIMI is retired.  Do not start a Kimi session.  Do not take work.  If you are reading this after a mistaken spawn, say so in your own chat with the owner and stop.  Do not export `AGENT_SEAT=KIMI` to take work.  Do not claim work or pick a Kimi lane.  Coordinator self-id is `AFC`.  A fleet-wide wake is `@*fleet*` in #agent-sync topic `fleet`.
+KIMI is retired.  Do not start a Kimi session.  Do not take work.  If you are reading this after a mistaken spawn, say so in your own chat with the owner and stop.  Do not export `AGENT_SEAT=KIMI` to take work.  Do not claim work or pick a Kimi lane.  Coordinator self-id is `AFC`.  A fleet-wide wake is `@**all**` in #agent-sync topic `fleet`.

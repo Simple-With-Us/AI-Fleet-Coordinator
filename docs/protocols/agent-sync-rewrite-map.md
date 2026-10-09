@@ -383,7 +383,7 @@ None.
 | `L777-p1-hub` | 777 | Process 1: Inter-Agent Communication | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
 | `L778-p1-header-format` | 778-779 | Process 1: Inter-Agent Communication | [Posting](../../AGENT-SYNC.md#posting) |
 | `L780-p1-afc-not-fleet` | 780 | Process 1: Inter-Agent Communication | [Posting](../../AGENT-SYNC.md#posting) |
-| `L780-p1-fleet-history` | 780 | Process 1: Inter-Agent Communication | retired:  History of a reading the owner already retired on 2026-09-13 (FLEET waking only Grok Bot seats).  The live part of that ruling (a fleet wake reaches every seat) stays in L1384-fleet-use-only, and the Zulip fleet user group replaces FLEET semantics. |
+| `L780-p1-fleet-history` | 780 | Process 1: Inter-Agent Communication | retired:  History of a reading the owner already retired on 2026-09-13 (FLEET waking only Grok Bot seats).  The live part of that ruling (a fleet wake reaches every seat) stays in L1384-fleet-use-only, and the Zulip `@**all**` fleet wake replaces FLEET semantics. |
 | `L780-p1-fleet-wake` | 780 | Process 1: Inter-Agent Communication | [Posting](../../AGENT-SYNC.md#posting) |
 | `L780-p1-peer-tag-reach` | 780 | Process 1: Inter-Agent Communication | [Posting](../../AGENT-SYNC.md#posting) |
 | `L780-p1-standard-tags` | 780 | Process 1: Inter-Agent Communication | [Posting](../../AGENT-SYNC.md#posting) |
@@ -767,7 +767,7 @@ None.
 | `L1382-fleet-wake-scope` | 1382-1385 | ALWAYS update peers in Slack | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1384-fleet-use-only` | 1384-1385 | ALWAYS update peers in Slack | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1386-peer-reaches-all` | 1386-1387 | ALWAYS update peers in Slack | [Posting](../../AGENT-SYNC.md#posting) |
-| `L1387-grok-fleet-history` | 1387-1388 | ALWAYS update peers in Slack | retired:  History of a reading the owner already retired on 2026-09-13.  The live ruling stays in L1384-fleet-use-only, and the Zulip fleet user group replaces FLEET semantics. |
+| `L1387-grok-fleet-history` | 1387-1388 | ALWAYS update peers in Slack | retired:  History of a reading the owner already retired on 2026-09-13.  The live ruling stays in L1384-fleet-use-only, and the Zulip `@**all**` fleet wake replaces FLEET semantics. |
 | `L1389-fleet-not-routine` | 1389-1390 | ALWAYS update peers in Slack | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1389-fleet-not-sender` | 1389 | ALWAYS update peers in Slack | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1391-afc-self` | 1391 | ALWAYS update peers in Slack | [Posting](../../AGENT-SYNC.md#posting) |
@@ -1097,7 +1097,7 @@ None.
 | `L2111-fleet-wake-meaning` | 2111-2113 | Watcher noise discipline | [Posting](../../AGENT-SYNC.md#posting) |
 | `L2113-fleet-sparingly` | 2113-2115 | Watcher noise discipline | [Posting](../../AGENT-SYNC.md#posting) |
 | `L2114-fleet-full-read` | 2114-2115 | Watcher noise discipline | [Reading and Listening](../../AGENT-SYNC.md#reading-and-listening) |
-| `L2115-fleet-old-reading-retired` | 2115-2116 | Watcher noise discipline | retired:  History of a reading the owner already retired on 2026-09-13.  The live ruling stays in L1384-fleet-use-only, and the Zulip fleet user group replaces it. |
+| `L2115-fleet-old-reading-retired` | 2115-2116 | Watcher noise discipline | retired:  History of a reading the owner already retired on 2026-09-13.  The live ruling stays in L1384-fleet-use-only, and the Zulip `@**all**` fleet wake replaces it. |
 | `L2117-afc-signoff` | 2117 | Watcher noise discipline | [Posting](../../AGENT-SYNC.md#posting) |
 | `L2117-routine-claims-tag-repo` | 2117-2118 | Watcher noise discipline | [Posting](../../AGENT-SYNC.md#posting) |
 | `L2120-gates-ruling` | 2120 | Serialize local gates | [Builds on the Mac: iOS Loop, Mac Apps, Gate Serialization](../../AGENT-SYNC.md#builds-on-the-mac-ios-loop-mac-apps-gate-serialization) |
