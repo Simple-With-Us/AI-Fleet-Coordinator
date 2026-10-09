@@ -119,8 +119,8 @@ For a lane the script skipped and you have since made safe:
 ```bash
 git -C ~/Code/<Repo> worktree move ~/apps/lanes/<old>/<name> ~/apps/lanes/<Repo>/<name>   # a linked worktree
 ln -s ~/apps/lanes/<Repo>/<name> ~/apps/lanes/<old>/<name>                                 # optional, for 7 days
-# a case-only folder: through a temporary name, then repair
-mv ~/apps/lanes/botfleet ~/apps/lanes/.botfleet-tmp && mv ~/apps/lanes/.botfleet-tmp ~/apps/lanes/BotFleet
+# a case-only folder (cleaners paused): one rename, so no lane leaves its path, then repair
+mv ~/apps/lanes/botfleet ~/apps/lanes/BotFleet
 git -C ~/Code/BotFleet worktree repair ~/apps/lanes/BotFleet/<lane> ...
 ```
 
