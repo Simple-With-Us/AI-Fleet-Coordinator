@@ -40,6 +40,17 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(os.access(INSTALL, os.X_OK))
         self.assertTrue(ENTRY.read_text().startswith("#!/usr/bin/env python3"))
 
+    def test_the_default_checkout_is_the_managed_runtime_checkout_never_the_human_tree(self) -> None:
+        text = INSTALL.read_text()
+        self.assertIn('DEFAULT_CHECKOUT="/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"', text)
+        self.assertNotIn('DEFAULT_CHECKOUT="/Users/jay/Code', text)
+
+    def test_the_runtime_sync_script_is_executable_and_parses(self) -> None:
+        script = Path(__file__).resolve().parents[2] / "agent-sync-runtime-sync.sh"
+        self.assertTrue(os.access(script, os.X_OK))
+        result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_dry_run_changes_nothing(self) -> None:
         result = self.run_install("--dry-run", str(self.checkout))
         self.assertEqual(result.returncode, 0, result.stderr)
