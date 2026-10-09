@@ -33,8 +33,12 @@
 #     failure (timeout, empty reply, HTTP error) is SLOW, not dead: it
 #     must repeat MAC_PROCESS_WATCH_HTTP_SLOW_STRIKES (default 3) runs in
 #     a row before the restart.  See the comment at the HTTP loop.
-#   - shellular ioreg-missing / retry-without-Connected -> bounce pid
-#   - shellular process up but relay 1006/handshake-fail -> kill pid (God autorestarts)
+#   - shellular process up but the relay is provably still down (handshake
+#     fail / retry loop newer than the last Connected line,
+#     seen on two passes >=120s apart, 180s grace after a restart) -> kill
+#     pid (God autorestarts).  A fresh "Connection lost ... Reconnecting"
+#     alone is never enough.  shellular-error.log is copy-truncated past
+#     256 KB (pm2-logrotate is not installed).
 #   - launchd always-on not-loaded -> bootstrap plist (if not disabled).
 #     "Loaded" is probed by the Label the plist declares, and a bootstrap
 #     launchd refuses because that label is already loaded (EIO 5 /
@@ -222,6 +226,232 @@ raise SystemExit(0 if not missing else 1)
 ' "$dump_path" "$@"
 }
 
+# --- shellular relay liveness (process up, cloud dead) -------------------
+# Shellular can stay "online" in pm2 while its cloud relay is dead
+# (1006 / ECONNRESET).  Bounce the node pid so God autorestarts it -- but
+# only when the relay is PROVABLY still down, because Shellular normally
+# reconnects by itself within seconds (2026-10-08: 71 of 187 "Connection
+# lost" lines reconnected in <=5s, 35 of 54 handshake failures recovered
+# unaided) and the old rule killed it mid-reconnect: 29 DOWN lines and 17
+# kills in one day.  Rules, in order:
+#   1. Baseline = the latest of: a "Connected to server" / "Reconnected to
+#      server" / client-connected line in shellular-out.log, the latest
+#      "Shellular CLI v" start banner, and the process start time.
+#   2. Evidence = relay failure lines (shellular-error.log: "Closed before
+#      handshake", "Relay wss://... failed", "No relay responded";
+#      shellular-out.log: "Retrying in") strictly newer than the baseline.
+#      Older lines are history, never evidence.  An ioreg failure is NOT
+#      evidence: node-machine-id runs it at module load, before the banner
+#      and in the same second as the process start, so it can never be
+#      newer than the baseline; today it throws and pm2 crash-loops the
+#      process instead of leaving a silent zombie.
+#   3. No evidence, evidence older than 20 minutes, or missing/unparseable
+#      logs -> healthy.
+#   4. Grace: 180s after any (re)start -> healthy, whatever the logs say.
+#   5. Evidence must stand on two watch passes at least 120s apart with no
+#      recovery between them (state file ${STATE}.shellular holds
+#      "first last baseline").  Only then exit 0 (= dead, kill).
+# Exit 0 = dead (kill), 1 = leave it.  One verdict line on stdout.
+# Knobs: MAC_PROCESS_WATCH_SHELLULAR_CONFIRM_SEC (120), _GRACE_SEC (180),
+# _STALE_SEC (1200), _STATE_MAX_AGE_SEC (900).  Test overrides:
+# SHELLULAR_ERR_LOG, SHELLULAR_OUT_LOG, SHELLULAR_STATE, SHELLULAR_NOW,
+# SHELLULAR_START_EPOCH, SHELLULAR_PID, SHELLULAR_PS (stub for `ps`).
+shellular_relay_dead() {
+  SHELLULAR_STATE_DEFAULT="${STATE}.shellular" python3 - <<'PY'
+import os, re, subprocess, sys, time
+from pathlib import Path
+
+home = Path.home()
+env = os.environ
+err = Path(env.get("SHELLULAR_ERR_LOG") or home / ".pm2/logs/shellular-error.log")
+out = Path(env.get("SHELLULAR_OUT_LOG") or home / ".pm2/logs/shellular-out.log")
+state = Path(env.get("SHELLULAR_STATE") or env["SHELLULAR_STATE_DEFAULT"])
+
+
+def num(name, default):
+    try:
+        v = float(env.get(name, ""))
+        return v if v > 0 else default
+    except ValueError:
+        return default
+
+
+now = float(env.get("SHELLULAR_NOW") or time.time())
+confirm = num("MAC_PROCESS_WATCH_SHELLULAR_CONFIRM_SEC", 120.0)
+grace = num("MAC_PROCESS_WATCH_SHELLULAR_GRACE_SEC", 180.0)
+stale = num("MAC_PROCESS_WATCH_SHELLULAR_STALE_SEC", 1200.0)
+state_max_age = num("MAC_PROCESS_WATCH_SHELLULAR_STATE_MAX_AGE_SEC", 900.0)
+
+PREFIX = re.compile(r"^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d):\s?(.*)$")
+
+
+def read_lines(path, max_bytes=262144):
+    """[(epoch, message)] from the tail of a pm2 log; lines without a stamp skipped."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - max_bytes))
+            data = fh.read().decode("utf-8", "ignore")
+    except OSError:
+        return []
+    lines = data.splitlines()
+    if size > max_bytes and lines:
+        lines = lines[1:]  # first line is cut mid-way
+    rows = []
+    for line in lines:
+        m = PREFIX.match(line)
+        if not m:
+            continue
+        y, mo, d, h, mi, s = (int(x) for x in m.groups()[:6])
+        try:
+            ts = time.mktime((y, mo, d, h, mi, s, 0, 0, -1))
+        except (OverflowError, ValueError):
+            continue
+        rows.append((ts, m.group(7)))
+    return rows
+
+
+def etime_to_seconds(text):
+    """ps etime: [[dd-]hh:]mm:ss"""
+    text = text.strip()
+    if not text:
+        return None
+    days = 0
+    if "-" in text:
+        d, text = text.split("-", 1)
+        days = int(d)
+    parts = [int(p) for p in text.split(":")]
+    if len(parts) == 2:
+        parts = [0] + parts
+    if len(parts) != 3:
+        return None
+    return days * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+
+def process_start():
+    raw = env.get("SHELLULAR_START_EPOCH", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            return 0.0
+    pid = env.get("SHELLULAR_PID", "").strip()
+    if not pid.isdigit():
+        return 0.0
+    try:
+        res = subprocess.run(
+            [env.get("SHELLULAR_PS") or "/bin/ps", "-p", pid, "-o", "etime="],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        secs = etime_to_seconds(res.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return 0.0
+    return now - secs if secs is not None else 0.0
+
+
+def finish(code, message):
+    if message:
+        print(message)
+    sys.exit(code)
+
+
+def clear_state():
+    try:
+        state.unlink()
+    except OSError:
+        pass
+
+
+OK = re.compile(r"(?<!dis)connected to server|(?<!dis)connected on", re.I)
+BANNER = re.compile(r"Shellular CLI v")
+HANDSHAKE = re.compile(r"Closed before handshake|Relay wss://.*failed|No relay responded")
+RETRY = re.compile(r"Retrying in \d")
+
+err_rows = read_lines(err)
+out_rows = read_lines(out)
+
+last_ok = max([t for t, m in out_rows if OK.search(m)], default=0.0)
+last_banner = max([t for t, m in out_rows if BANNER.search(m)], default=0.0)
+start = max(last_banner, process_start())
+baseline = max(last_ok, start)
+
+evidence = [t for t, m in err_rows if t > baseline and HANDSHAKE.search(m)]
+evidence += [t for t, m in out_rows if t > baseline and RETRY.search(m)]
+
+if not evidence:
+    clear_state()
+    finish(1, "")
+newest = max(evidence)
+if start and now - start < grace:
+    clear_state()
+    finish(1, "grace start=%ds ago left=%ds" % (now - start, grace - (now - start)))
+if now - newest > stale:
+    clear_state()
+    finish(1, "stale-evidence newest=%ds ago" % (now - newest))
+
+first = last = None
+saved_baseline = None
+try:
+    parts = state.read_text().split()
+    first, last, saved_baseline = float(parts[0]), float(parts[1]), float(parts[2])
+except (OSError, ValueError, IndexError):
+    pass
+# The baseline can be a start time derived from `ps` etime, which jitters by a
+# second or so between passes; only a real move forward (a recovery or restart
+# happened) resets the streak.
+if first is None or now - last > state_max_age or baseline > saved_baseline + 5 or first > now:
+    first = now
+try:
+    state.parent.mkdir(parents=True, exist_ok=True)
+    tmp = state.with_name(state.name + ".tmp.%d" % os.getpid())
+    tmp.write_text("%d %d %d\n" % (first, now, baseline))
+    os.replace(tmp, state)
+except OSError:
+    pass  # cannot persist: never kill on a single pass
+
+age = now - first
+if age >= confirm:
+    clear_state()
+    finish(0, "unrecovered=%ds evidence=%d newest=%ds ago" % (age, len(evidence), now - newest))
+finish(1, "suspect age=%ds/%ds evidence=%d newest=%ds ago" % (age, confirm, len(evidence), now - newest))
+PY
+}
+
+# pm2-logrotate is not installed on this Mac (~/.pm2/modules is empty), so
+# shellular-error.log only ever grew and kept its failure lines for days.
+# Copy-truncate it past a size: one .1 generation, same inode, so pm2's
+# append handle keeps writing.  The OUT log is left alone -- it holds the
+# "Connected" markers the check above reads.
+rotate_shellular_error_log() {
+  local f="${SHELLULAR_ERR_LOG:-${HOME}/.pm2/logs/shellular-error.log}"
+  local max="${MAC_PROCESS_WATCH_SHELLULAR_ERR_MAX_BYTES:-262144}" size
+  [ -f "$f" ] || return 0
+  case "$max" in '' | *[!0-9]*) max=262144 ;; esac
+  size="$(wc -c <"$f" 2>/dev/null | tr -d ' ')"
+  case "$size" in '' | *[!0-9]*) return 0 ;; esac
+  [ "$size" -gt "$max" ] || return 0
+  if cp "$f" "$f.1" 2>/dev/null && : >"$f"; then
+    log "ROTATE  shellular-error.log  size=${size}B max=${max}B kept=shellular-error.log.1"
+  else
+    log "FAIL  shellular-error.log  rotate-failed size=${size}B"
+  fi
+}
+
+# Test hooks: no lock, no pgrep, no kill.
+#   bash mac-process-watch.sh --shellular-check    (verdict line + exit code)
+#   bash mac-process-watch.sh --shellular-rotate
+if [ "${1:-}" = "--shellular-check" ]; then
+  shellular_relay_dead
+  exit $?
+fi
+if [ "${1:-}" = "--shellular-rotate" ]; then
+  rotate_shellular_error_log
+  exit $?
+fi
+
 # Test hook: does not take the watch lock or talk to pm2.
 #   bash mac-process-watch.sh --dump-covers <dump.json> name [name...]
 if [ "${1:-}" = "--dump-covers" ]; then
@@ -347,48 +577,6 @@ for line in out.splitlines():
         os.kill(pid, 15)
     except OSError:
         pass
-PY
-}
-
-# Shellular can stay "online" in pm2 while its cloud relay is dead
-# (1006 / ECONNRESET).  Bounce the node pid so God autorestarts it.
-shellular_relay_dead() {
-  python3 - <<'PY'
-import re, time
-from pathlib import Path
-err = Path.home() / ".pm2/logs/shellular-error.log"
-out = Path.home() / ".pm2/logs/shellular-out.log"
-now = time.time()
-
-def tail(p, n=80):
-    if not p.exists():
-        return []
-    return p.read_text(errors="ignore").splitlines()[-n:]
-
-err_lines = tail(err)
-out_lines = tail(out)
-
-# 2026-08-21: ecosystem PATH omitted /usr/sbin so ioreg failed and the
-# process stayed "online" with zero TCP sockets.
-if err.exists() and now - err.stat().st_mtime <= 180:
-    if any("ioreg" in x and "not found" in x for x in err_lines):
-        raise SystemExit(0)
-    if any("IOPlatformExpertDevice" in x for x in err_lines):
-        raise SystemExit(0)
-
-handshake = re.compile(r"Closed before handshake|Relay wss://.*failed|No relay responded")
-if err.exists() and now - err.stat().st_mtime <= 180 and any(handshake.search(x) for x in err_lines):
-    if out.exists() and out.stat().st_mtime >= err.stat().st_mtime:
-        if any(("Reconnected to server" in x) or ("Connected to server" in x) or ("connected on" in x) for x in out_lines[-40:]):
-            raise SystemExit(1)
-    raise SystemExit(0)
-
-# Retry loop with no recent Connected (post-reboot stall).
-retrying = any("Retrying in" in x for x in out_lines[-15:])
-connected = any(("Connected to server" in x) or ("Reconnected to server" in x) for x in out_lines[-30:])
-if retrying and not connected:
-    raise SystemExit(0)
-raise SystemExit(1)
 PY
 }
 
@@ -761,15 +949,29 @@ steal_stale_lock "${HOME}/.claude-merge-shepherd/.lock" "merge-shepherd"
 steal_stale_lock "${HOME}/.dsh/profiles/node_modules.lock" "dsh-profiles" 600
 
 # --- shellular relay liveness (process up, cloud dead) ---
-if pgrep -f 'shellular-runtime/node_modules/shellular/dist/main.js' >/dev/null 2>&1; then
-  if shellular_relay_dead; then
+# Rules and knobs: see shellular_relay_dead above.
+if [ "$RESTART" = "1" ]; then
+  rotate_shellular_error_log
+fi
+spid="$(pgrep -n -f 'shellular-runtime/node_modules/shellular/dist/main.js' || true)"
+if [ -n "${spid:-}" ]; then
+  verdict="$(SHELLULAR_PID="$spid" shellular_relay_dead)"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
     down=1
-    log "DOWN  pm2:shellular  status=relay-dead"
-    spid="$(pgrep -n -f 'shellular-runtime/node_modules/shellular/dist/main.js' || true)"
-    if [ -n "${spid:-}" ]; then
-      try_restart "pm2:shellular-relay" kill "$spid"
-    fi
+    log "DOWN  pm2:shellular  status=relay-dead ${verdict}"
+    try_restart "pm2:shellular-relay" kill "$spid"
+  else
+    case "$verdict" in
+      suspect*)
+        down=1
+        log "SLOW  pm2:shellular  relay-suspect ${verdict#suspect }"
+        ;;
+    esac
   fi
+else
+  # Process gone: nothing to confirm; a stale streak must not carry over.
+  rm -f "${STATE}.shellular" 2>/dev/null || true
 fi
 
 # --- local HTTP health (pm2 "online" with a dead/orphan port) ---

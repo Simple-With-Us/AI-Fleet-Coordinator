@@ -1,0 +1,161 @@
+# agent-sync listener config for the SERVER instance (the Coolify container on the Hetzner box).
+# Design:  docs/protocols/agent-sync-server.md in AI-Fleet-Coordinator.
+#
+# It holds no secrets.  Each Grok Bot persona's Zulip email and API key, ZULIP_SITE, and each
+# routine's URL and sender key reach the container as environment variables synced from Infisical
+# (project "AI Fleet Coordinator", folder /zulip).  The names below are the defaults
+# (ZULIP_<CODE>_EMAIL, ZULIP_<CODE>_API_KEY, <CODE>_ROUTINE_URL, <CODE>_ROUTINE_KEY, where CODE is
+# the seat with hyphens as underscores); set email_env, key_env or the routine's url_env and
+# key_env to use other names.
+#
+# The container copies this file onto its volume (AGENT_SYNC_CONFIG) on first start.  Then
+# `agent-sync daemon init` pins owner_user_id and eligible_user_ids in that copy, and
+# `agent-sync daemon reload` (or a restart) applies it.  Until then nothing is treated as the
+# owner and nothing wakes.  A reload re-reads only this file:  a new or changed environment
+# variable reaches the listener only when the container restarts.  Edit this copy in place (the
+# image has no editor; see the server doc), and never mount it as a single file, because
+# `daemon init` replaces it atomically.  Every seat here must be "server" in
+# docs/protocols/agent-sync-partition.toml:  a seat is never configured in both instances.
+
+[daemon]
+instance = "server"
+owner_user_id = 0                 # pinned by `agent-sync daemon init`, never derived at runtime
+eligible_user_ids = []            # fleet seat bots, pinned by `agent-sync daemon init`
+owner_clients = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]
+stale_after_minutes = 120
+coalesce_seconds = 20
+coalesce_max_seconds = 90
+owner_coalesce_seconds = 5
+notify_banners = false            # no display here:  notify-owner writes only <seat>/owner-queue.jsonl
+presence_topics = [["agent-sync", "roll call"], ["agent-sync", "fleet"], ["builds", "gates"], ["alerts", "*"]]
+
+# GB-Compiler:  enabled, woken through its Grok Bot routine.  The request format is pending from
+# GB-Compiler; change method, auth, header or signature_prefix here when it lands.  auth is
+# "bearer" (Authorization: Bearer <key>), "header" (the key itself in `header`) or "hmac-sha256"
+# (the hex HMAC-SHA256 of the raw body, keyed with the sender key, in `header`).
+[seat.GB-COMPILER]
+instance = "server"
+creds = "env"                     # ZULIP_GB_COMPILER_EMAIL, ZULIP_GB_COMPILER_API_KEY; the site from ZULIP_SITE
+wake = "http"
+routine = { url_env = "GB_COMPILER_ROUTINE_URL", key_env = "GB_COMPILER_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-DIRECTOR (Routing, fleet sync, org help, director-grok-bot@).  Present but disabled:  no routine yet.  It is a realm moderator now, which the listener accepts.
+# The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
+# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# enabled = true here, then restart the app (a reload does not read new environment variables).
+[seat.GB-DIRECTOR]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_GB_DIRECTOR_EMAIL, ZULIP_GB_DIRECTOR_API_KEY
+wake = "http"
+routine = { url_env = "GB_DIRECTOR_ROUTINE_URL", key_env = "GB_DIRECTOR_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-FIXER (Bugs, regressions, hotfixes, fixer-grok-bot@).  Present but disabled:  no routine yet.
+# The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
+# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# enabled = true here, then restart the app (a reload does not read new environment variables).
+[seat.GB-FIXER]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_GB_FIXER_EMAIL, ZULIP_GB_FIXER_API_KEY
+wake = "http"
+routine = { url_env = "GB_FIXER_ROUTINE_URL", key_env = "GB_FIXER_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-DESIGNER (UI / UX, designer-grok-bot@).  Present but disabled:  no routine yet.
+# The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
+# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# enabled = true here, then restart the app (a reload does not read new environment variables).
+[seat.GB-DESIGNER]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_GB_DESIGNER_EMAIL, ZULIP_GB_DESIGNER_API_KEY
+wake = "http"
+routine = { url_env = "GB_DESIGNER_ROUTINE_URL", key_env = "GB_DESIGNER_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-HOUSEKEEPER (Cron, Coolify, host hygiene, housekeeper-grok-bot@).  Present but disabled:  no routine yet.
+# The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
+# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# enabled = true here, then restart the app (a reload does not read new environment variables).
+[seat.GB-HOUSEKEEPER]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_GB_HOUSEKEEPER_EMAIL, ZULIP_GB_HOUSEKEEPER_API_KEY
+wake = "http"
+routine = { url_env = "GB_HOUSEKEEPER_ROUTINE_URL", key_env = "GB_HOUSEKEEPER_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-PUBLISHER (Releases, changelogs, docs, publisher-grok-bot@).  Present but disabled:  no routine yet.
+# The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
+# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# enabled = true here, then restart the app (a reload does not read new environment variables).
+[seat.GB-PUBLISHER]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_GB_PUBLISHER_EMAIL, ZULIP_GB_PUBLISHER_API_KEY
+wake = "http"
+routine = { url_env = "GB_PUBLISHER_ROUTINE_URL", key_env = "GB_PUBLISHER_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-DEPLOYER (Deploys, rollbacks, deployer-grok-bot@).  Present but disabled:  no routine yet.
+# The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
+# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# enabled = true here, then restart the app (a reload does not read new environment variables).
+[seat.GB-DEPLOYER]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_GB_DEPLOYER_EMAIL, ZULIP_GB_DEPLOYER_API_KEY
+wake = "http"
+routine = { url_env = "GB_DEPLOYER_ROUTINE_URL", key_env = "GB_DEPLOYER_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-MONITOR (Uptime, probes, monitor-grok-bot@).  Present but disabled:  no routine yet.
+# The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
+# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# enabled = true here, then restart the app (a reload does not read new environment variables).
+[seat.GB-MONITOR]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_GB_MONITOR_EMAIL, ZULIP_GB_MONITOR_API_KEY
+wake = "http"
+routine = { url_env = "GB_MONITOR_ROUTINE_URL", key_env = "GB_MONITOR_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-PLUMBER (Infra, tunnels, networking, plumber-grok-bot@).  Present but disabled:  no routine yet.
+# The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
+# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# enabled = true here, then restart the app (a reload does not read new environment variables).
+[seat.GB-PLUMBER]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_GB_PLUMBER_EMAIL, ZULIP_GB_PLUMBER_API_KEY
+wake = "http"
+routine = { url_env = "GB_PLUMBER_ROUTINE_URL", key_env = "GB_PLUMBER_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-ORACLE (Research, deep answers, oracle-grok-bot@).  Present but disabled:  no routine yet.
+# The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
+# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# enabled = true here, then restart the app (a reload does not read new environment variables).
+[seat.GB-ORACLE]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_GB_ORACLE_EMAIL, ZULIP_GB_ORACLE_API_KEY
+wake = "http"
+routine = { url_env = "GB_ORACLE_ROUTINE_URL", key_env = "GB_ORACLE_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-TRADER (Trading seat, trader-grok-bot@).  Present but disabled:  no routine yet.
+# The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
+# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# enabled = true here, then restart the app (a reload does not read new environment variables).
+[seat.GB-TRADER]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_GB_TRADER_EMAIL, ZULIP_GB_TRADER_API_KEY
+wake = "http"
+routine = { url_env = "GB_TRADER_ROUTINE_URL", key_env = "GB_TRADER_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }

@@ -4,6 +4,9 @@
 # Cloud agents cannot run xcodebuild.  File a structured needs-mac issue, post to
 # #agent-sync, and let the Mac launchd poller (mac-seat-claim.sh) pick it up.
 #
+# The post goes to Zulip in a `needs-mac <repo>` topic, sent as the claiming
+# seat's own bot.  The old agent-sync relay POST is retired.
+#
 # Usage:
 #   ./scripts/request-mac-seat.sh \
 #     --repo Socratic.Trade \
@@ -24,7 +27,7 @@
 #   --worktree PATH      Worktree path on Jay's Mac (~/apps/...)
 #   --reason TEXT        Why Mac is needed (default: xcodebuild)
 #   --board-id ID        Optional THE BOARD item id to link
-#   --no-slack           Skip agent-sync tunnel post
+#   --no-zulip           Skip the Zulip work-topic post
 #   --dry-run            Print actions without creating the issue
 #   -h, --help           Show this help
 
@@ -33,8 +36,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FLEET_APPS="${REPO_ROOT}/fleet-apps.json"
 OWNER="${GITHUB_OWNER:-jaywedgeworth22}"
-AGENT_SYNC_POST_URL="${AGENT_SYNC_POST_URL:-https://agent-sync.jays.services/post}"
-AGENT_SYNC_ENV="${AGENT_SYNC_ENV:-$HOME/.secrets/agent-sync.env}"
+# Zulip posting needs no shared secret: the agent-sync CLI reads the seat's own
+# ~/.secrets/Zulip/<file code>-zuliprc.  The old AGENT_SYNC_POST_URL / AGENT_SYNC_ENV
+# relay is retired and deliberately not referenced here.
+ZULIP_CHANNEL="${ZULIP_CHANNEL:-agent-sync}"
 
 REPO=""
 TITLE=""
@@ -45,7 +50,7 @@ BRANCH=""
 WORKTREE=""
 REASON="xcodebuild"
 BOARD_ID=""
-NO_SLACK=0
+NO_ZULIP=0
 DRY_RUN=0
 
 usage() {
@@ -86,7 +91,8 @@ while [ $# -gt 0 ]; do
     --worktree) WORKTREE="${2:-}"; shift 2 ;;
     --reason) REASON="${2:-}"; shift 2 ;;
     --board-id) BOARD_ID="${2:-}"; shift 2 ;;
-    --no-slack) NO_SLACK=1; shift ;;
+    --no-zulip) NO_ZULIP=1; shift ;;
+    --no-slack) NO_ZULIP=1; shift ;;   # deprecated alias, same as --no-zulip
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage 0 ;;
     *) die "unknown arg: $1 (try --help)" ;;
@@ -162,37 +168,24 @@ run gh issue create \
   --body "$ISSUE_BODY" \
   --label "needs-mac"
 
-if [ "$NO_SLACK" -eq 0 ] && [ -f "$AGENT_SYNC_ENV" ]; then
-  POST_TOKEN=""
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      AGENT_SYNC_POST_TOKEN=*) POST_TOKEN="${line#AGENT_SYNC_POST_TOKEN=}" ;;
-    esac
-  done < "$AGENT_SYNC_ENV"
-  POST_TOKEN="${POST_TOKEN%\"}"
-  POST_TOKEN="${POST_TOKEN#\"}"
-  POST_TOKEN="${POST_TOKEN%\'}"
-  POST_TOKEN="${POST_TOKEN#\'}"
-
-  if [ -n "$POST_TOKEN" ]; then
-    SLACK_TEXT="repo: ${REPO_NAME} | [${BY}->MAC] needs-mac ${REASON}: ${TITLE}"
-    [ -n "$BRANCH" ] && SLACK_TEXT="${SLACK_TEXT} | branch ${BRANCH}"
-    [ -n "$WORKTREE" ] && SLACK_TEXT="${SLACK_TEXT} | ${WORKTREE}"
-    SLACK_TEXT="${SLACK_TEXT} | agent ${AGENT}"
-    if [ "$DRY_RUN" -eq 1 ]; then
-      printf 'DRY: curl -sS -X POST %q -H Authorization: Bearer <redacted> -d %q\n' \
-        "$AGENT_SYNC_POST_URL" "{\"text\":\"${SLACK_TEXT}\",\"username\":\"${BY}\"}"
-    else
-      export SLACK_TEXT BY
-      curl -fsS -X POST "$AGENT_SYNC_POST_URL" \
-        -H "Authorization: Bearer ${POST_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -d "$(python3 - <<'PY'
-import json, os
-print(json.dumps({"text": os.environ["SLACK_TEXT"], "username": os.environ["BY"]}))
-PY
-)" >/dev/null || echo "request-mac-seat: agent-sync post failed (issue still filed)" >&2
-    fi
+if [ "$NO_ZULIP" -eq 0 ]; then
+  # Post to Zulip with the seat's own bot via the agent-sync CLI.  The CLI reads
+  # that seat's ~/.secrets/Zulip/<file code>-zuliprc itself, so there is no
+  # shared bearer token to parse, rotate, or leak in this script.  (The old relay
+  # POST is retired; see AGENT-SYNC.md.)
+  TEXT="repo: ${REPO_NAME} | needs-mac ${REASON}: ${TITLE}"
+  [ -n "$BRANCH" ] && TEXT="${TEXT} | branch ${BRANCH}"
+  [ -n "$WORKTREE" ] && TEXT="${TEXT} | ${WORKTREE}"
+  TEXT="${TEXT} | agent ${AGENT}"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf 'DRY: agent-sync post --as %s --channel %s --topic %q: %s\n' \
+      "$BY" "$ZULIP_CHANNEL" "needs-mac ${REPO_NAME}" "$TEXT"
+  elif ! command -v agent-sync >/dev/null 2>&1; then
+    echo "request-mac-seat: agent-sync not on PATH; skipping Zulip post (issue still filed)" >&2
+  else
+    agent-sync post --as "$BY" --channel "$ZULIP_CHANNEL" \
+      --topic "needs-mac ${REPO_NAME}" "$TEXT" >/dev/null \
+      || echo "request-mac-seat: Zulip post failed (issue still filed)" >&2
   fi
 fi
 

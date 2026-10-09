@@ -31,6 +31,8 @@ PROMPT_HISTORY = 15
 PROMPT_BODY_LIMIT = 1500
 LIMITS = {"reply": 1500, "title": 120, "desc": 1500, "owner_note": 500}
 ACTIONS = ("none", "reply", "board", "escalate")
+RISKS = ("low", "uncertain", "high")  # a peer request screened by the responder (AGENT-SYNC Precedence rule 3); null = no request
+SCREEN_NOTE = "peer request screened %s; see the trigger"
 SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wake", "wake-schema.json")
 CONTRACT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wake", "wake-contract.md")
 OPEN_STATES = ("queued", "accepted")
@@ -121,16 +123,21 @@ class Ledger:
             elif state == "started":
                 crashed.append(view)
                 self.append({"ts": now, "wake_id": wake_id, "seat": view.get("seat"), "state": "failed",
-                             "reason": "daemon stopped during the run", "cost_usd": view.get("reserved_usd",
-                                                                                            WAKE_MAX_BUDGET_USD)})
+                             "reason": "daemon stopped during the run",
+                             "cost_usd": _usd(view.get("reserved_usd"), WAKE_MAX_BUDGET_USD)})
         return reload, crashed
+
+
+def _usd(value: Any, default: float) -> float:
+    """A recorded dollar amount, where 0 is a real value (an http routine wake), not a gap."""
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else default
 
 
 def wake_cost(view: Mapping[str, Any]) -> float:
     if view.get("state") in ("done", "failed") and isinstance(view.get("cost_usd"), (int, float)):
         return float(view["cost_usd"])
     if view.get("state") == "started":
-        return float(view.get("reserved_usd") or WAKE_MAX_BUDGET_USD)
+        return _usd(view.get("reserved_usd"), WAKE_MAX_BUDGET_USD)
     return 0.0
 
 
@@ -145,17 +152,19 @@ def spent_today(views: Iterable[Mapping[str, Any]], now: float) -> float:
 
 def reserved_usd(views: Iterable[Mapping[str, Any]]) -> float:
     """What wakes waiting in the FIFO (`accepted`, not yet started) may still spend:  each run's
-    maximum.  A started run's reservation is already in spent_today."""
-    return round(sum(WAKE_MAX_BUDGET_USD for v in views if v.get("state") == "accepted"), 6)
+    maximum (`reserve_usd` on the accepted row:  $0.25 for claude, a routine's configured cost
+    for http; a row without it is a claude wake).  A started run's reservation is already in
+    spent_today."""
+    return round(sum(_usd(v.get("reserve_usd"), WAKE_MAX_BUDGET_USD) for v in views if v.get("state") == "accepted"), 6)
 
 
 def budget_block(views: Mapping[str, Mapping[str, Any]], budget: Mapping[str, float], *, owner: bool, key: str,
-                 now: float, exclude: str | None = None) -> str | None:
+                 now: float, exclude: str | None = None, run_max: float = WAKE_MAX_BUDGET_USD) -> str | None:
     """None when one more wake fits the seat's budget, else the name of the limit it hits.
     Wakes count from the moment they are accepted into the FIFO.  `usd_per_day` is a ceiling
     that nothing bypasses, the owner included:  money spent today, plus the maximum of every
-    accepted wake still waiting, plus this run's maximum.  `exclude` is the wake being checked,
-    so a re-check just before its run never counts it twice."""
+    accepted wake still waiting, plus this run's maximum (`run_max`).  `exclude` is the wake
+    being checked, so a re-check just before its run never counts it twice."""
     others = {wake_id: view for wake_id, view in views.items() if wake_id != exclude}
     counted: list[Mapping[str, Any]] = []
     for view in others.values():
@@ -165,7 +174,7 @@ def budget_block(views: Mapping[str, Mapping[str, Any]], budget: Mapping[str, fl
                 and now - at < DAY:
             counted.append(view)
     committed = spent_today(others.values(), now) + reserved_usd(others.values())
-    if committed + WAKE_MAX_BUDGET_USD > float(budget["usd_per_day"]) + 1e-9:
+    if committed + run_max > float(budget["usd_per_day"]) + 1e-9:
         return "usd_per_day"
 
     def times_of(view: Mapping[str, Any]) -> float:
@@ -352,17 +361,25 @@ def parse_result(event: Mapping[str, Any]) -> Any:
 
 def validate(obj: Any) -> tuple[dict[str, Any], str | None]:
     """Check against the fixed schema (required keys, no extras, enums, types and lengths).  Any
-    violation becomes {"action": "none"} with the reason (never the body)."""
-    none = {"action": "none", "reply": None, "board": None, "owner_note": None}
+    violation becomes {"action": "none"} with the reason (never the body).
+
+    A request screened `high` or `uncertain` always reaches the owner:  any action but escalate
+    becomes escalate (a board payload is dropped), and an escalate with no note gets a synthesized
+    one instead of being dropped to none.  A coerced result carries a `coerced` key saying what
+    changed, for the ledger; a result that needed no change has exactly the schema's keys."""
+    none = {"action": "none", "reply": None, "board": None, "owner_note": None, "risk": None}
     if not isinstance(obj, dict):
         return none, "not an object"
     keys = set(obj)
-    required = {"action", "reply", "board", "owner_note"}
+    required = {"action", "reply", "board", "owner_note", "risk"}
     if keys != required:
         return none, "keys %s" % ("missing " + ",".join(sorted(required - keys)) if required - keys
                                   else "extra " + ",".join(sorted(keys - required)))
     if obj["action"] not in ACTIONS:
         return none, "action not in the enum"
+    risk = obj["risk"]
+    if risk is not None and risk not in RISKS:
+        return none, "risk not in the enum"
     for name in ("reply", "owner_note"):
         value = obj[name]
         if value is not None and not isinstance(value, str):
@@ -384,9 +401,21 @@ def validate(obj: Any) -> tuple[dict[str, Any], str | None]:
         return none, "action reply with no reply"
     if obj["action"] == "board" and board is None:
         return none, "action board with no board"
-    if obj["action"] == "escalate" and not (isinstance(obj["owner_note"], str) and obj["owner_note"].strip()):
-        return none, "action escalate with no owner_note"
-    return dict(obj), None
+    result = dict(obj)
+    escalating = risk in ("high", "uncertain")
+    coerced: list[str] = []
+    if escalating and result["action"] != "escalate":
+        coerced.append("action %s to escalate" % result["action"])
+        result["action"] = "escalate"
+        result["board"] = None  # act() files a board item only for action board
+    if result["action"] == "escalate" and not (isinstance(result["owner_note"], str) and result["owner_note"].strip()):
+        if not escalating:
+            return none, "action escalate with no owner_note"
+        coerced.append("owner_note synthesized")
+        result["owner_note"] = SCREEN_NOTE % risk
+    if coerced:
+        result["coerced"] = "risk %s: %s" % (risk, "; ".join(coerced))
+    return result, None
 
 
 # --------------------------------------------------------------------------------------------

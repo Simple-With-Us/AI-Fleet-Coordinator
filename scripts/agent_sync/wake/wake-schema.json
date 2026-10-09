@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["action", "reply", "board", "owner_note"],
+  "required": ["action", "reply", "board", "owner_note", "risk"],
   "properties": {
     "action": {"enum": ["none", "reply", "board", "escalate"]},
     "reply": {"type": ["string", "null"]},
@@ -15,6 +15,7 @@
         "desc": {"type": "string"}
       }
     },
-    "owner_note": {"type": ["string", "null"]}
+    "owner_note": {"type": ["string", "null"]},
+    "risk": {"enum": ["low", "uncertain", "high", null]}
   }
 }

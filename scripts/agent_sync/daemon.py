@@ -2,8 +2,14 @@
 leases, seat inboxes, the wake ledger, budgets, the Claude headless wake and notify-owner.
 
 Threads in production (`Daemon.run`):  one poller per seat bot, the router on the main thread
-(it also runs `tick`), and one wake worker per seat whose adapter is `claude`.  Tests drive the
-same code step by step:  `connect_seat`, `pump`, `tick` and `run_jobs`, with a fake clock.
+(it also runs `tick`), and one wake worker per seat whose adapter is `claude` or `http`.  Tests
+drive the same code step by step:  `connect_seat`, `pump`, `tick` and `run_jobs`, with a fake clock.
+
+Two instances run this code (owner decision, Thu, Oct 8):  `mac` holds the CLAUDE seat (live
+delivery and the tool-less claude wake), `server` holds the Grok Bot personas (environment
+credentials and the remote routine wake).  A daemon whose config holds a seat that the seat
+partition does not give to its instance (another instance's seat, a `none` seat, or one the
+partition does not list) refuses to start (config.partition_errors).
 
 The daemon never spends a model token while idle.  A token is spent only on a headless wake,
 which starts only for a seat-inbox item the deterministic prefilter marks wake-worthy, inside the
@@ -38,7 +44,7 @@ from . import router as R
 from . import secretscan
 from . import wakes as W
 from . import zulip as Z
-from .cli import format_time
+from .cli import format_time, seat_tag_for
 
 EVENT_TYPES = ["message", "update_message", "user_topic", "realm_user"]
 FLEET_ROLES = (300, 400)  # moderator and member (owner decision 2026-10-07); owner 100 and admin 200 refused
@@ -64,6 +70,10 @@ PROBE_CHANNEL = "sandbox"
 PROBE_TOPIC = "listener probe"
 PAUSE_COMMAND = "agent-sync pause"
 PLUGIN_MANIFEST = os.path.join(A.REPO_ROOT, "plugins", "agent-sync", ".claude-plugin", "plugin.json")
+# A process's environment is fixed when it starts:  `daemon reload` re-reads listener.toml only.
+ENV_RESTART_HINT = ("environment variables are read once, when the listener starts:  restart it (on the server, "
+                    "restart or redeploy the app) after adding or changing one; agent-sync daemon reload re-reads "
+                    "only listener.toml")
 
 
 class Clock:
@@ -96,10 +106,14 @@ def role_refusal(seat: str, role: Any) -> str:
 # --------------------------------------------------------------------------------------------
 
 class JsonLog:
-    def __init__(self, path: str, scrub: Callable[[str], str]) -> None:
+    """listener.log, and (AGENT_SYNC_LOG_STDOUT=1, the server container) the same scrubbed line
+    on stdout, written under the same lock."""
+
+    def __init__(self, path: str, scrub: Callable[[str], str], tee: Any = None) -> None:
         self.path = path
         self.scrub = scrub
         self.lock = threading.Lock()
+        self.tee = tee
 
     def write(self, event: str, **fields: Any) -> None:
         row = {"ts": round(time.time(), 3), "event": event}
@@ -121,6 +135,12 @@ class JsonLog:
                     os.close(fd)
             except OSError:
                 pass
+            if self.tee is not None:
+                try:
+                    self.tee.write(text)
+                    self.tee.flush()
+                except (OSError, ValueError):
+                    pass
 
 
 # --------------------------------------------------------------------------------------------
@@ -180,8 +200,15 @@ class SeatRunner:
 
     # ---- connection -------------------------------------------------------------------------
     def load_credentials(self) -> None:
-        path = os.path.join(self.daemon.secrets_dir, self.cfg.bot + "-zuliprc")
-        creds = Z.read_zuliprc(path)  # file only, one per seat: never ZULIP_RC or the env triple
+        # One file per seat, or (creds = "env", server instance) the variables the seat names:
+        # never ZULIP_RC or the CLI's triple, so seats cannot alias one bot.  The realm is never
+        # taken from the credential:  its site must match AGENT_SYNC_REALM (or the default).
+        try:
+            creds = C.seat_credentials(self.cfg, self.daemon.env, self.daemon.secrets_dir)
+        except Z.CredentialError as exc:
+            if self.cfg.creds == "env" and "not set" in str(exc):
+                raise Z.CredentialError("%s; %s" % (exc, ENV_RESTART_HINT)) from None
+            raise
         Z.verify_realm(creds, self.daemon.realm)
         self.creds = creds
         self.daemon.hide(creds.email, creds.key)
@@ -200,6 +227,14 @@ class SeatRunner:
             raise RoleRefused("users/me for seat %s answered as a different user; refusing it" % self.seat)
         if role_refused(me):
             raise RoleRefused(role_refusal(self.seat, role))
+        # A seat holds only its own bot.  The partition is checked by seat name, so a section
+        # under another name (bot = "GB-Compiler" in [seat.CLAUDE], or email_env and key_env
+        # pointed at another seat's variables) would otherwise hold a bot that another seat or
+        # the other instance holds too.  users/me says whose key this really is.
+        tag = seat_tag_for(me)
+        if tag != self.seat:
+            raise RoleRefused("the credential for seat %s belongs to the bot of seat %s (users/me); a seat holds "
+                              "only its own bot, so it is refused" % (self.seat, tag))
         self.me = R.SeatIdentity(self.seat, int(me["user_id"]), str(me.get("full_name") or ""), self.creds.email)
         for sub in self.client.get("users/me/subscriptions").get("subscriptions") or []:
             if isinstance(sub.get("stream_id"), int):
@@ -319,7 +354,8 @@ class Daemon:
                  agents_runner: Callable[[Sequence[str]], str | None] | None = None,
                  board_runner: Callable[..., Any] | None = None, board_bin: str | None = None,
                  start_time: Callable[[int], int] | None = None, http_timeout: float = 30.0,
-                 events_timeout: float | None = None, stderr: Any = None) -> None:
+                 events_timeout: float | None = None, stderr: Any = None, stdout: Any = None,
+                 routine_runner: A.RoutineRunner | None = None, partition_file: str | None = None) -> None:
         self.env = dict(os.environ if env is None else env)
         self.home = home or self.env.get("HOME") or os.path.expanduser("~")
         self.root = root or L.state_root(self.env)
@@ -328,9 +364,12 @@ class Daemon:
         self.secrets_dir = os.path.expanduser(self.env.get(Z.ENV_SECRETS_DIR) or os.path.join(self.home, ".secrets", "Zulip"))
         self.hidden: list[str] = []
         self.hidden_lock = threading.Lock()
-        self.log = JsonLog(os.path.join(L.logs_dir(self.root), "listener.log"), self.scrub)
+        self.stdout = stdout or sys.stdout
+        tee = self.stdout if self.env.get("AGENT_SYNC_LOG_STDOUT", "").strip().casefold() in ("1", "true", "yes") else None
+        self.log = JsonLog(os.path.join(L.logs_dir(self.root), "listener.log"), self.scrub, tee=tee)
         self.stderr = stderr or sys.stderr
         self.notifier = notifier or A.Notifier(self.root, clock=self.clock.time)
+        self.banners_allowed = self.notifier.banners  # the config can only turn banners off (the server has none)
         self.claude_runner = claude_runner or A.ClaudeRunner(on_start=self._track_child, on_exit=self._untrack_child)
         self.wake_path = wake_path or A.default_wake_path(self.home)
         self.agents_runner = agents_runner or self._run_agents
@@ -339,7 +378,18 @@ class Daemon:
         self.start_time = start_time or _process_start
         self.http_timeout = http_timeout
         self.events_timeout = events_timeout
-        self.config = C.load(self.root)
+        self.stop = threading.Event()
+        self.routine_runner = routine_runner or A.RoutineRunner(sleep=self.clock.sleep, clock=self.clock.monotonic,
+                                                                should_stop=self.stop.is_set)
+        self.config_path = L.config_path(self.root, self.env)
+        self.partition_file = partition_file or C.partition_path(self.env)
+        self.config = C.load(self.root, self.config_path)
+        # The seat partition:  a config that holds a seat this instance may not hold never gets a
+        # queue; run() refuses to start (no flock, no thread, no register).
+        self.refusal = self.partition_check(self.config)
+        if self.refusal:
+            self.config.seats = {}
+        self.reload_refused: list[str] = []
         self.seats: dict[str, SeatRunner] = {}
         self.coalescer = W.Coalescer(window=self.config.coalesce_seconds, max_window=self.config.coalesce_max_seconds,
                                      owner_window=self.config.owner_coalesce_seconds, new_id=self._new_wake_id)
@@ -349,7 +399,6 @@ class Daemon:
         self.start_cache: dict[int, tuple[float, int]] = {}
         self.children: set[subprocess.Popen[Any]] = set()  # every running wake child, one per waking seat
         self.child_lock = threading.Lock()
-        self.stop = threading.Event()
         self.router_queue: queue.Queue[tuple[str, str, Any]] = queue.Queue()
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
@@ -358,7 +407,13 @@ class Daemon:
         self.reload_requested = False
         self.acronyms = A.fleet_acronyms()
         self._apply_config()
-        self._recover_ledgers()
+        # A listener that already holds the state directory owns its ledgers and cursors:  a
+        # second daemon (a container waiting to take over on a redeploy, or a stray manual run)
+        # must not mark that listener's running wake failed or reload its queued wakes.  run()
+        # rebuilds everything from disk once it holds the lock.
+        self.deferred = self.lock_held_elsewhere()
+        if not self.deferred:
+            self._recover_ledgers()
 
     # ---- secrecy -------------------------------------------------------------------------------
     def hide(self, email: str, key: str) -> None:
@@ -366,6 +421,15 @@ class Daemon:
             for value in secretscan.basic_forms(email, key):
                 if value and value not in self.hidden:
                     self.hidden.append(value)
+
+    def hide_values(self, values: Iterable[str]) -> None:
+        """Scrub these exact values (a routine URL, its query string, its key) from every log
+        line, error and status, like a bot key."""
+        with self.hidden_lock:
+            for value in values:
+                if value and len(value) >= 4 and value not in self.hidden:  # never redact a 1-3 character string
+                    self.hidden.append(value)
+            self.hidden.sort(key=len, reverse=True)  # the whole URL before the query inside it
 
     def scrub(self, text: str) -> str:
         with self.hidden_lock:
@@ -390,8 +454,43 @@ class Daemon:
         threading.excepthook = lambda args: report(getattr(args.thread, "name", "thread"), args.exc_type, args.exc_value)
 
     # ---- config ------------------------------------------------------------------------------
+    def partition_check(self, cfg: C.Config) -> list[str]:
+        """Why this config must not run here (the seat partition), or []."""
+        partition, error = C.load_partition(self.partition_file)
+        if error:
+            return [error + "; cannot check the seat partition, so no seat is held"]
+        env_instance = (self.env.get(C.ENV_INSTANCE) or "").strip().casefold() or None
+        return C.partition_errors(cfg, partition, partition_file=self.partition_file, env_instance=env_instance)
+
+    def routine(self, runner: "SeatRunner") -> tuple[A.RoutineTarget | None, str | None, str]:
+        """The seat's routine, resolved from the environment the daemon started with.  A reload
+        re-reads listener.toml (so it picks up changed variable names or auth settings), but the
+        values come from the process environment, which is fixed at start:  only a restart (on
+        the server, restarting or redeploying the container) picks up a new or changed URL or
+        key.  Its secrets are hidden before anything can log them."""
+        target, why, detail = A.resolve_routine(runner.cfg.routine, self.env)
+        if target is not None:
+            self.hide_values(target.secrets())
+        elif why == "routine_not_configured" and "not set" in detail:
+            detail = "%s; %s" % (detail, ENV_RESTART_HINT)
+        return target, why, detail
+
     def _apply_config(self) -> None:
         cfg = self.config
+        self.notifier.banners = self.banners_allowed and cfg.notify_banners
+        for seat_cfg in list(cfg.seats.values()) + list(cfg.disabled.values()):
+            # Routine secrets are hidden as soon as the config names them, before any wake.
+            if seat_cfg.routine is None:
+                continue
+            # A refused routine (a malformed URL included) still hides whatever its variables
+            # hold.  routine_secret_values never raises, so a typo in a URL variable cannot stop
+            # the daemon at start, on a reload or on a rebuild.
+            target, _, _ = A.resolve_routine(seat_cfg.routine, self.env)
+            if target is not None:
+                self.hide_values(target.secrets())
+                continue
+            self.hide_values(A.routine_secret_values(self.env.get(seat_cfg.routine.url_env) or "",
+                                                     self.env.get(seat_cfg.routine.key_env) or ""))
         if cfg.errors:
             self.log.write("config-errors", errors=cfg.errors)
             if not self.config_notified:
@@ -413,7 +512,19 @@ class Daemon:
             gone.disconnect()
 
     def reload(self) -> None:
-        self.config = C.load(self.root)
+        new = C.load(self.root, self.config_path)
+        refused = self.partition_check(new)
+        if refused:
+            # Never a runner for a seat this instance may not hold:  the running config stays.
+            self.reload_refused = refused
+            self.log.write("reload-refused", errors=refused)
+            self.notifier.notify(self.config.claude_seat or "LISTENER", "agent-sync listener",
+                                 "reload refused: the config holds a seat this instance may not hold; see agent-sync "
+                                 "status",
+                                 kind="partition", key="partition-reload")
+            return
+        self.reload_refused = []
+        self.config = new
         self.config_notified = False
         self._apply_config()
         self.log.write("reloaded", seats=sorted(self.seats), errors=len(self.config.errors))
@@ -434,6 +545,46 @@ class Daemon:
                     self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
                                          "a wake for your message stopped mid-run and was not re-run",
                                          kind="wake-crashed", key="crash:%s" % view.get("wake_id"))
+
+    def lock_path(self) -> str:
+        return os.path.join(L.listener_dir(self.root), "daemon.lock")
+
+    def lock_held_elsewhere(self) -> bool:
+        """True while another listener holds daemon.lock (a shared probe, released at once)."""
+        import fcntl
+
+        try:
+            fd = os.open(self.lock_path(), os.O_RDONLY)
+        except OSError:
+            return False
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        finally:
+            os.close(fd)
+
+    def rebuild_from_disk(self) -> None:
+        """After waiting for another listener:  drop every runner built while it ran (their
+        cursors are stale) and every wake it had pending, then read the config, the cursors and
+        the ledgers again, as that listener left them when it stopped."""
+        for runner in self.seats.values():
+            runner.stop.set()
+        self.seats = {}
+        self.coalescer.pending.clear()
+        self.config = C.load(self.root, self.config_path)
+        self.refusal = self.partition_check(self.config)
+        if self.refusal:
+            self.config.seats = {}
+        self.reload_refused = []
+        self.config_notified = False
+        self._apply_config()
+        self._recover_ledgers()
+        self.deferred = False
+        self.log.write("rebuilt-after-wait", seats=sorted(self.seats))
 
     def _new_wake_id(self) -> str:
         return "w%d-%s" % (int(self.clock.time()), os.urandom(4).hex())
@@ -779,7 +930,7 @@ class Daemon:
     def offer_wake(self, runner: SeatRunner, item: Mapping[str, Any], *, owner: bool) -> None:
         now = self.clock.time()
         key = L.topic_key(str(item.get("channel") or ""), str(item.get("topic") or ""))
-        if runner.cfg.wake != "claude":
+        if runner.cfg.wake not in C.WORKER_WAKES:
             if owner:
                 self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
                                      "a message from you is waiting in the %s seat inbox (no headless wake)" % runner.seat,
@@ -818,7 +969,8 @@ class Daemon:
                 overflow = True
             else:
                 overflow = False
-                runner.ledger.append(pending.row("accepted", now))
+                runner.ledger.append(pending.row("accepted", now, reserve_usd=runner.cfg.wake_max_usd,
+                                                 adapter=runner.cfg.wake))
                 runner.jobs.append(pending)
                 runner.jobs_cond.notify_all()
         if overflow:
@@ -853,17 +1005,22 @@ class Daemon:
             return "seat_refused"  # a credential or role problem:  nothing is posted with that key
         if L.paused(self.root, runner.seat, wakes=True):
             return "paused"
-        if runner.cfg.wake != "claude":
+        if runner.cfg.wake == "claude":
+            _, why = self._pinned_claude(runner)
+            if why:
+                return why
+        elif runner.cfg.wake == "http":
+            _, why, _ = self.routine(runner)
+            if why:
+                return why
+        else:
             return "inbox_only"
-        _, why = self._pinned_claude(runner)
-        if why:
-            return why
         if self.loopguard.blocked(pending.key):
             return "loop_guard"
         if not pending.owner and pending.trigger_ts is not None and now - pending.trigger_ts > self.config.stale_after:
             return "stale"  # a stale non-owner item never wakes, even after a restart
         return W.budget_block(runner.ledger.wakes(), runner.cfg.budget, owner=pending.owner, key=pending.key,
-                              now=now, exclude=pending.wake_id)
+                              now=now, exclude=pending.wake_id, run_max=runner.cfg.wake_max_usd)
 
     def takeover(self, runner: SeatRunner, pending: W.Pending) -> str | None:
         """A live session that took over:  a lease on the topic, or for a mention trigger, a
@@ -990,6 +1147,9 @@ class Daemon:
         if reason:
             self._drop(runner, pending, reason, now)
             return
+        if runner.cfg.wake == "http":
+            self.run_routine(runner, pending, now)
+            return
         claude, why = self._pinned_claude(runner)
         if claude is None:
             self._drop(runner, pending, why or "not_pinned", now)
@@ -1025,13 +1185,87 @@ class Daemon:
         obj, why = W.validate(result.parsed)
         if why:
             self.log.write("wake-invalid", seat=runner.seat, wake_id=pending.wake_id, reason=why)
-        outcome = self.act(runner, pending, obj)
+        outcome = self.act(runner, pending, obj, history=history)
         runner.ledger.append(pending.row("done", self.clock.time(), cost_usd=result.cost_usd, exit=result.exit,
-                                         secs=result.secs, action=obj["action"], invalid=why, **outcome))
+                                         secs=result.secs, action=obj["action"], risk=obj.get("risk"),
+                                         coerced=obj.get("coerced"), invalid=why, **outcome))
 
-    def act(self, runner: SeatRunner, pending: W.Pending, obj: Mapping[str, Any]) -> dict[str, Any]:
+    def trigger_row(self, runner: SeatRunner, pending: W.Pending) -> dict[str, Any] | None:
+        """The trigger a routine wake is about:  the newest owner trigger when the owner is among
+        them, else the newest trigger.  Read from the seat inbox (and its rotated copy); fetched
+        from Zulip and classified again only when both have rotated past it."""
+        ids = pending.owner_ids or pending.trigger_ids
+        if not ids:
+            return None
+        message_id = ids[-1]
+        row = self._seat_inbox_rows(runner, [message_id]).get(message_id)
+        if row is not None:
+            return row
+        if runner.client is None or runner.me is None:
+            return None
+        message = runner.client.get("messages/%d" % message_id, {"apply_markdown": False}).get("message") or {}
+        if not message:
+            return None
+        c, d = R.route(message, runner.me, self.context(runner), [])
+        return self.make_item(runner, message, c, d)
+
+    def run_routine(self, runner: SeatRunner, pending: W.Pending, now: float) -> None:
+        """The `http` wake:  one fixed JSON body to the seat's routine (a Grok Bot routine
+        webhook).  The routine replies in Zulip itself; the daemon posts nothing for this seat."""
+        target, why, detail = self.routine(runner)
+        if target is None:
+            self.log.write("routine-unready", seat=runner.seat, wake_id=pending.wake_id, reason=why, detail=detail)
+            self._drop(runner, pending, why or "routine_not_configured", now)
+            return
+        cost = runner.cfg.wake_max_usd
+        try:
+            row = self.trigger_row(runner, pending)
+        except Z.AgentSyncError as exc:
+            runner.ledger.append(pending.row("failed", now, reason="trigger: %s" % self.scrub(str(exc)), cost_usd=0.0,
+                                             adapter="http"))
+            return
+        if row is None or not isinstance(row.get("id"), int):
+            runner.ledger.append(pending.row("failed", now, reason="trigger not found", cost_usd=0.0, adapter="http"))
+            return
+        body = A.routine_body(seat=runner.seat, wake_id=pending.wake_id, trigger_ids=pending.trigger_ids, row=row,
+                              bot_user_id=runner.me.user_id if runner.me else None, realm=self.realm, now=now,
+                              scrub=self.scrub)
+        data = A.routine_bytes(body)
+        runner.ledger.append(pending.row("started", now, reserved_usd=cost, adapter="http", message_id=row["id"],
+                                         dm=body["dm"]))
+        result = self.routine_runner.deliver(target, data, idempotency_key=pending.wake_id)
+        self.log.write("wake-routine", seat=runner.seat, wake_id=pending.wake_id, host=target.host,
+                       method=target.method, auth=target.auth, accepted=result.accepted, status=result.status,
+                       attempts=result.attempts, history=result.history, secs=result.secs, error=result.error,
+                       body_len=len(data), response_len=result.response_len, response_sha256=result.response_sha)
+        done = self.clock.time()
+        if result.accepted:
+            runner.ledger.append(pending.row("done", done, cost_usd=cost, adapter="http", action="routine",
+                                             http_status=result.status, attempts=result.attempts, secs=result.secs,
+                                             message_id=row["id"], dm=body["dm"]))
+            return
+        reason = self.scrub(result.error or "not accepted")
+        runner.ledger.append(pending.row("failed", done, reason=reason, cost_usd=cost, adapter="http",
+                                         http_status=result.status, attempts=result.attempts, secs=result.secs,
+                                         message_id=row["id"], dm=body["dm"]))
+        status = result.status
+        if status is not None and 400 <= status < 500:
+            # A 4xx is a contract or key problem:  say so once a day, whoever triggered it.
+            self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
+                                 "the %s routine refused a wake (HTTP %d); check the routine URL, key and format"
+                                 % (runner.seat, status), kind="routine-refused", key="routine:%s:%d" % (runner.seat, status))
+        if pending.owner:
+            self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
+                                 "a wake for your message did not reach the %s routine (%s); it is in the seat inbox"
+                                 % (runner.seat, A.clean_banner(reason, 60)),
+                                 kind="wake-failed", key="wake-failed:%s" % pending.wake_id, once_per=0)
+
+    def act(self, runner: SeatRunner, pending: W.Pending, obj: Mapping[str, Any], *,
+            history: Iterable[Mapping[str, Any]] = ()) -> dict[str, Any]:
         """Carry out a validated result:  post the reply (mentions neutralized, secret-scanned,
-        tagged), file the board item when allowed, and send owner notes through notify-owner."""
+        tagged), file the board item when allowed, and send owner notes through notify-owner.  A
+        note about a peer request, or any request screened uncertain or high, is also sent to the
+        owner as a Zulip DM from the seat's own bot (`dm_owner`)."""
         outcome: dict[str, Any] = {"posted_id": None, "board_uid": None, "note": False}
         trigger = pending.trigger_ids[-1] if pending.trigger_ids else 0
         reply = obj.get("reply") if obj.get("action") in ("reply", "board", "escalate") else None
@@ -1063,13 +1297,88 @@ class Daemon:
         if obj.get("action") == "escalate" or (isinstance(note, str) and note.strip()):
             outcome["note"] = True
             where = "a DM" if pending.type == "private" else "#%s > %s" % (pending.channel, pending.topic)
+            risk = obj.get("risk") if obj.get("risk") in W.RISKS else None
             self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat, "a note for you about %s" % where,
                                  kind="owner_note", key="note:%s" % pending.wake_id, once_per=0,
                                  note=note if isinstance(note, str) else None, trigger_ids=pending.trigger_ids,
-                                 owner=pending.owner)
+                                 owner=pending.owner, risk=risk)
+            if not pending.owner or risk in ("uncertain", "high"):
+                outcome.update(self.dm_owner(runner, pending, note if isinstance(note, str) else "", risk, history))
             if pending.owner and not outcome["posted_id"] and not lease_id:
                 outcome["posted_id"] = self.post(runner, pending, W.compose_reply(runner.seat, trigger, W.OWNER_ACK))
         return outcome
+
+    def owner_dm_text(self, runner: SeatRunner, pending: W.Pending, note: str, risk: str | None,
+                      history: Iterable[Mapping[str, Any]]) -> str:
+        """The owner DM for an escalated request:  who asked, where, the risk, the responder's note
+        and a link to the trigger.  Sender, place and link are the daemon's own fields; the note is
+        model output derived from untrusted text, so it sits in a quote block with backticks and
+        mentions removed.  The tag is `[SEAT·note]`, not `·wake`, so the router never takes the DM for
+        a wake reply."""
+        peers = [i for i in pending.trigger_ids if i not in pending.owner_ids]
+        trigger = (peers or pending.trigger_ids or [0])[-1]
+        senders = {m.get("id"): m for m in history if isinstance(m, Mapping)}
+        sender = senders.get(trigger) or self._seat_inbox_rows(runner, [trigger]).get(trigger) or {}
+        name = A.clean_banner(str(sender.get("sender_full_name") or sender.get("sender") or "a peer"), 60)
+        sender_id = sender.get("sender_id")
+        bot = runner.users.get(sender_id, {}).get("is_bot") if isinstance(sender_id, int) else None
+        where = "a DM" if pending.type == "private" else "#%s > %s" % (
+            A.clean_banner(pending.channel, 60), A.clean_banner(pending.topic, 80))
+        link = A.zulip_link(self.realm, {"id": trigger, "type": pending.type, "recipients": pending.recipients,
+                                         "channel": pending.channel, "topic": pending.topic,
+                                         "stream_id": pending.stream_id})
+        quoted = A.clean_banner(note.replace("`", "'"), W.LIMITS["owner_note"]) if note.strip() else "(no note)"
+        text = "\n".join([
+            "[%s\u00b7note] re=%d" % (runner.seat, trigger),
+            "From: %s%s" % (name, " (bot)" if bot else ""),
+            "Where: %s" % where,
+            "Risk: %s" % (risk or "not screened"),
+            "```quote",
+            quoted,
+            "```",
+            "Message: %s" % link,
+        ])
+        return W.neutralize_mentions(text)
+
+    def dm_owner(self, runner: SeatRunner, pending: W.Pending, note: str, risk: str | None,
+                 history: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+        """Send the owner a Zulip DM as the seat's own bot.  It rides on a wake that already passed
+        the seat's budgets, so it is at most one DM per wake, and it never raises:  a refusal or a
+        failure is logged and recorded in the ledger row, and the banner and owner queue still hold
+        the note."""
+        owner_id = self.config.owner_user_id
+        if owner_id <= 0 or runner.client is None or runner.fatal:
+            self.log.write("owner-dm-skipped", seat=runner.seat, wake_id=pending.wake_id,
+                           reason="no_owner_id" if owner_id <= 0 else "seat_unavailable")
+            return {"owner_dm": None, "owner_dm_error": "owner dm skipped"}
+        text = self.owner_dm_text(runner, pending, note, risk, history)
+        found = secretscan.scan(text, self.hidden)
+        withheld = None
+        if found:
+            # Every decline must reach the owner, so a note the scanner flags is withheld, not the DM.
+            withheld = "secret scanner: %s" % found
+            self.log.write("owner-dm-note-withheld", seat=runner.seat, wake_id=pending.wake_id, reason=withheld)
+            text = self.owner_dm_text(runner, pending, "(withheld by the secret scanner; it is in the owner queue)",
+                                      risk, history)
+            if secretscan.scan(text, self.hidden):  # the sender or place was the problem:  say nothing at all
+                self.log.write("owner-dm-refused", seat=runner.seat, wake_id=pending.wake_id, reason="secret scanner")
+                return {"owner_dm": None, "owner_dm_error": withheld}
+        wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
+        if wait > 0:
+            self.clock.sleep(wait)
+        try:
+            result = runner.client.post("messages", {"type": "direct", "to": [owner_id], "content": text})
+        except Z.AgentSyncError as exc:
+            reason = self.scrub(str(exc))
+            self.log.write("owner-dm-failed", seat=runner.seat, wake_id=pending.wake_id, error=reason)
+            return {"owner_dm": None, "owner_dm_error": reason}
+        finally:
+            runner.last_post = self.clock.monotonic()
+        message_id = result.get("id")
+        sent: dict[str, Any] = {"owner_dm": int(message_id) if isinstance(message_id, int) else None}
+        if withheld:
+            sent["owner_dm_note_withheld"] = withheld
+        return sent
 
     def post(self, runner: SeatRunner, pending: W.Pending, text: str) -> int | None:
         """A channel trigger is answered in its topic; a DM trigger only by DM to the original
@@ -1229,6 +1538,12 @@ class Daemon:
             day = [v for v in views.values() if isinstance((v.get("times") or {}).get("started"), (int, float))
                    and now - v["times"]["started"] < W.DAY]
             claude = A.resolve_claude(runner.cfg.claude, self.wake_path) if runner.cfg.wake == "claude" else None
+            routine = None
+            if runner.cfg.wake == "http":
+                target, why, detail = self.routine(runner)
+                routine = {"ready": target is not None, "why": why, "detail": self.scrub(detail),
+                           "host": target.host if target else None, "method": runner.cfg.routine.method
+                           if runner.cfg.routine else None, "auth": runner.cfg.routine.auth if runner.cfg.routine else None}
             leases = []
             for lease_id in L.list_lease_ids(runner.paths):
                 lease = L.load_lease(runner.paths, lease_id)
@@ -1243,8 +1558,8 @@ class Daemon:
             if runner.down_since is not None and now - runner.down_since > DOWN_NOTIFY_SECONDS:
                 red.append("down for %d minutes" % ((now - runner.down_since) // 60))
             seats[seat] = {
-                "bot": runner.cfg.bot, "connected": runner.connected, "cursor": runner.cursor,
-                "last_event": runner.last_event_wall, "wake": runner.cfg.wake,
+                "bot": runner.cfg.bot, "creds": runner.cfg.creds, "connected": runner.connected, "cursor": runner.cursor,
+                "last_event": runner.last_event_wall, "wake": runner.cfg.wake, "routine": routine,
                 "pinned": A.pinned(runner.paths, claude) if claude else None, "claude": claude,
                 "wakes_24h": len(day), "cost_24h": W.spent_today(views.values(), now),
                 "usd_per_day": runner.cfg.budget["usd_per_day"], "budget": runner.cfg.budget, "live": runner.cfg.live,
@@ -1252,7 +1567,9 @@ class Daemon:
                 "paused": L.paused(self.root, seat), "wakes_paused": L.paused(self.root, seat, wakes=True),
                 "leases": leases, "red": red}
         return {"pid": os.getpid(), "version": __version__, "started": self.started_at, "updated": now,
-                "config_errors": list(self.config.errors), "owner_user_id": self.config.owner_user_id,
+                "instance": self.config.instance, "disabled": sorted(self.config.disabled),
+                "config_errors": [self.scrub(e) for e in self.config.errors + self.refusal + self.reload_refused],
+                "owner_user_id": self.config.owner_user_id,
                 "rewake_verified": self.config.rewake_verified, "pause": L.read_json(pause_path(self.root)),
                 "seats": seats}
 
@@ -1378,27 +1695,67 @@ class Daemon:
                     continue
             self.run_jobs(runner.seat, limit=1)
 
-    def run(self) -> int:
-        """Foreground daemon (what launchd runs).  Single instance by flock; a bad config never
-        exits (it would re-register every queue every 30 seconds under KeepAlive)."""
+    def refuse_start(self) -> int:
+        """The seat partition failed:  say why on stderr and in the log, notify once a day, and
+        exit before the flock, any thread or any register.  Nothing writes status.json, so a
+        container health check fails too."""
+        for problem in self.refusal:
+            self.stderr.write("agent-sync daemon: refusing to start: %s\n" % self.scrub(problem))
+        try:
+            self.stderr.flush()
+        except (OSError, ValueError):
+            pass
+        self.log.write("refused-start", errors=self.refusal)
+        self.notifier.notify(self.config.claude_seat or "LISTENER", "agent-sync listener",
+                             "refused to start: the seat partition check failed; see the listener log",
+                             kind="partition", key="partition-start")
+        return 2
+
+    def run(self, *, wait_lock: bool = False) -> int:
+        """Foreground daemon (what launchd and the container run).  Single instance by flock; a
+        bad config never exits (it would re-register every queue every 30 seconds under
+        KeepAlive), except the seat partition, which refuses to start.  `wait_lock` (the server
+        container) waits for a running listener on the same state volume to stop instead of
+        exiting, so a rolling redeploy hands over without two queues per bot."""
         import fcntl
 
-        L.private_dir(L.listener_dir(self.root))
-        lock_fd = os.open(os.path.join(L.listener_dir(self.root), "daemon.lock"), os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            self.stderr.write("agent-sync daemon: another listener is already running\n")
-            os.close(lock_fd)
-            return 1
-        os.ftruncate(lock_fd, 0)
-        os.write(lock_fd, str(os.getpid()).encode())
-        self.install_excepthooks()
+        if self.refusal:
+            return self.refuse_start()
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGTERM, lambda s, f: self.stop.set())
             signal.signal(signal.SIGINT, lambda s, f: self.stop.set())
             signal.signal(signal.SIGHUP, lambda s, f: setattr(self, "reload_requested", True))
-        self.log.write("started", pid=os.getpid(), seats=sorted(self.seats), errors=len(self.config.errors))
+        L.private_dir(L.listener_dir(self.root))
+        lock_fd = os.open(self.lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
+        waiting = False
+        while True:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if waiting and self.stop.is_set():
+                    os.close(lock_fd)  # stopped while waiting for the other listener:  nothing to clean up
+                    return 0
+                if not wait_lock:
+                    self.stderr.write("agent-sync daemon: another listener is already running\n")
+                    os.close(lock_fd)
+                    return 1
+                if not waiting:
+                    waiting = True
+                    self.stderr.write("agent-sync daemon: another listener holds the state directory; waiting for it "
+                                      "to stop\n")
+                    self.log.write("waiting-for-lock", pid=os.getpid())
+                self.stop.wait(1.0)
+        if waiting or self.deferred:
+            self.rebuild_from_disk()
+            if self.refusal:  # the config changed while this listener waited
+                os.close(lock_fd)
+                return self.refuse_start()
+        os.ftruncate(lock_fd, 0)
+        os.write(lock_fd, str(os.getpid()).encode())
+        self.install_excepthooks()
+        self.log.write("started", pid=os.getpid(), seats=sorted(self.seats), errors=len(self.config.errors),
+                       instance=self.config.instance)
         try:
             while not self.stop.is_set():
                 # Threads belong to a runner object, not a seat name:  a seat removed by a reload
@@ -1406,7 +1763,7 @@ class Daemon:
                 # gets a new runner with fresh threads.
                 for seat, runner in list(self.seats.items()):
                     for role, target, wanted in (("poll", self.seat_loop, True),
-                                                 ("wake", self.worker_loop, runner.cfg.wake == "claude")):
+                                                 ("wake", self.worker_loop, runner.cfg.wake in C.WORKER_WAKES)):
                         thread = runner.threads.get(role)
                         if wanted and (thread is None or not thread.is_alive()):
                             thread = threading.Thread(target=target, args=(runner,), name="%s-%s" % (role, seat),
