@@ -42,8 +42,12 @@ refusal.  MCP processes of sessions whose directory is gone are reaped too, at
 most 5 sessions a run, and only with exactly one leader, a readable sessions
 directory and a successful list.  --no-reap-orphans turns both off.
 
-The leader helpers are slow on a loaded Mac (a fresh client needs 15-25s just
-to list).  Each helper call gets GROK_IDLE_UNLOAD_HELPER_TIMEOUT_SEC (180s).
+The leader helpers are slow on a loaded Mac (a fresh client needed 15-25s just
+to list, and 60-90s at load 280).  Candidates are found from the process table
+and disk, so session/list is not called unless --use-list (or
+GROK_IDLE_UNLOAD_USE_LIST=1) asks for it; only session/close is, and only for a
+chat that is about to be unloaded.  Each helper call gets
+GROK_IDLE_UNLOAD_HELPER_TIMEOUT_SEC (180s).
 On a timeout this prints one JSON line with a timestamp on stderr and exits
 75 (EX_TEMPFAIL); other failures exit 1.
 
@@ -134,6 +138,10 @@ class HelperError(Exception):
 
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
@@ -838,6 +846,15 @@ def main(argv: list[str] | None = None) -> int:
         default=env_float("GROK_IDLE_UNLOAD_BUDGET_SEC", DEFAULT_BUDGET_SEC, minimum=30.0),
         help="stop starting new closes after this many seconds",
     )
+    p.add_argument(
+        "--use-list",
+        action="store_true",
+        default=env_flag("GROK_IDLE_UNLOAD_USE_LIST"),
+        help=(
+            "also call the leader's session/list (env GROK_IDLE_UNLOAD_USE_LIST=1).  Off by default: "
+            "it took 14-90s on a loaded Mac and only adds chats that are not loaded, which are never candidates"
+        ),
+    )
     p.add_argument("--reap-orphans", action="store_true", default=True)
     p.add_argument("--no-reap-orphans", action="store_false", dest="reap_orphans")
     p.add_argument("--verbose", action="store_true", help="list every skipped chat")
@@ -864,16 +881,21 @@ def main(argv: list[str] | None = None) -> int:
         errors.append("process scan failed: %s" % type(exc).__name__)
     smap = classify_sessions(procs, self_pid=own_pid)
 
+    # Loaded chats come from the process table and disk (build_rows adds every
+    # chat that holds MCP processes), so the leader's session/list adds nothing a
+    # candidate needs.  It is the slowest and most failure-prone call here, so it
+    # runs only on request.
     listed: list[JsonDict] = []
     list_ok = True
-    try:
-        listed = list_leader_sessions(args.helper_timeout)
-    except HelperTimeout as exc:
-        list_ok = False
-        timeouts.append({"call": exc.call, "timeoutSec": exc.timeout, "at": now_iso()})
-    except HelperError as exc:
-        list_ok = False
-        errors.append("list: %s" % exc)
+    if args.use_list:
+        try:
+            listed = list_leader_sessions(args.helper_timeout)
+        except HelperTimeout as exc:
+            list_ok = False
+            timeouts.append({"call": exc.call, "timeoutSec": exc.timeout, "at": now_iso()})
+        except HelperError as exc:
+            list_ok = False
+            errors.append("list: %s" % exc)
 
     rows = build_rows(listed, smap, clients)
     skipped = []
