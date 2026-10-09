@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import unittest
 
 from agent_sync import zulip as Z
@@ -79,7 +80,8 @@ class SeatTests(Harness):
     def test_no_seat_and_no_rc_exits_3_with_the_instruction(self) -> None:
         result = self.run_cli("whoami", env=self.env(AGENT_SEAT=None))
         self.assertEqual(result.code, 3)
-        self.assertIn("set AGENT_SEAT (e.g. CLAUDE) or pass --rc", result.err)
+        self.assertIn("set AGENT_SEAT (e.g. CLAUDE)", result.err)
+        self.assertIn("or pass --rc", result.err)
         self.assertEqual(self.fake.requests, [])
 
     def test_agent_tag_is_the_fallback_and_is_upper_cased(self) -> None:
@@ -87,8 +89,24 @@ class SeatTests(Harness):
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(json.loads(result.out)["seat"], "CLAUDE")
 
+    def other_bot(self, email: str, name: str, file_name: str) -> None:
+        """That bot's own key and rc file (a seat's key must be its own bot's:  identity.check_bot)."""
+        key = secrets.token_hex(16)
+        self.other_keys.append(key)
+        self.fake.add_bot(email, name, key)
+        write_rc(self.secrets_dir / file_name, email=email, key=key, site=self.fake.url)
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.other_keys: list[str] = []
+
+    def tearDown(self) -> None:
+        super().tearDown()
+        for key in self.other_keys:
+            self.assertNotIn(key, "\n".join(self.transcript))
+
     def test_as_flag_beats_env(self) -> None:
-        write_rc(self.secrets_dir / "Codex-zuliprc", email=BOT_EMAIL, key=self.key, site=self.fake.url)
+        self.other_bot("codex-bot@zulip.test", "Codex", "Codex-zuliprc")
         result = self.run_cli("whoami", "--json", "--as", "codex")
         self.assertEqual(result.code, 0, result.err)
         info = json.loads(result.out)
@@ -132,7 +150,7 @@ class SeatTests(Harness):
                 self.assertEqual(Z.seat_from_rc_path("/x/" + stem + "-zuliprc"), seat)  # and back again
 
     def test_a_seat_with_an_override_finds_its_file_in_the_secrets_dir(self) -> None:
-        write_rc(self.secrets_dir / "MM-zuliprc", email=BOT_EMAIL, key=self.key, site=self.fake.url)
+        self.other_bot("mm-bot@zulip.test", "MiniMax", "MM-zuliprc")
         result = self.run_cli("whoami", "--json", "--as", "mm")
         self.assertEqual(result.code, 0, result.err)
         info = json.loads(result.out)

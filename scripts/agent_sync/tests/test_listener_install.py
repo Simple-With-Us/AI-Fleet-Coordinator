@@ -146,7 +146,8 @@ class InitAndTestWakeTests(ListenerHarness):
         dry = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE")
         self.assertEqual(dry.code, 0, dry.err)
         self.assertIn("--safe-mode", dry.out)
-        self.assertIn("environment names: CLAUDE_CODE_DISABLE_ADVISOR_TOOL, ENABLE_CLAUDEAI_MCP_SERVERS, HOME", dry.out)
+        self.assertIn("environment names: AGENT_LAUNCHER, AGENT_LAUNCH_SEAT, AGENT_SEAT, AGENT_SYNC_ATTACH, "
+                      "CLAUDE_CODE_DISABLE_ADVISOR_TOOL, ENABLE_CLAUDEAI_MCP_SERVERS, HOME", dry.out)
         self.assertIn("BEGIN_UNTRUSTED_ZULIP", dry.out)
         self.assertEqual(self.dumps(), [], "no --run, no claude")
         self.set_claude(mode="tool", hang=30, output=reply_output())

@@ -19,6 +19,7 @@ from typing import Any
 
 from . import adapters as A
 from . import config as C
+from . import identity as I
 from . import launchd
 from . import live as L
 from . import wakes as W
@@ -64,7 +65,16 @@ def _secrets_dir(rt: Any) -> str:
 
 
 def _seat(rt: Any, args: argparse.Namespace, cfg: C.Config | None = None) -> str | None:
-    raw = getattr(args, "seat", None) or getattr(args, "as_seat", None) or rt.env.get("AGENT_SEAT") or rt.env.get("AGENT_TAG")
+    """The seat a local command shows (identity.resolve_seat):  a launcher's AGENT_LAUNCH_SEAT, and
+    a refusal when --seat, --as, AGENT_SEAT or AGENT_TAG names another or the launcher set none;
+    else --seat, --as, AGENT_SEAT, AGENT_TAG, --default-seat; and only then, with no launcher, the
+    `[platform.claude-code]` seat (the Claude Code platform default for the hooks and these local
+    views, never for posting)."""
+    flag = getattr(args, "seat", None) or getattr(args, "as_seat", None)
+    resolved = I.resolve_seat(rt.env, flag=flag, default=getattr(args, "default_seat", None))
+    if resolved.problem:
+        raise Z.CredentialError(resolved.problem)
+    raw = resolved.seat
     if not raw:
         cfg = cfg or _load(rt)
         raw = cfg.claude_seat
@@ -212,7 +222,11 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             lines.append("disabled seats (enabled = false, no queue): %s" % ", ".join(status["disabled"]))
     else:
         lines.append("no status yet (the daemon writes listener/status.json every few seconds)")
-    seat = _seat(rt, args)
+    try:
+        seat = _seat(rt, args)
+    except Z.CredentialError as exc:  # a launched session with no seat, or a re-pin:  no seat inbox shown
+        seat = None
+        lines.append("seat inbox: not shown (%s)" % exc)
     if seat:
         paths = L.SeatPaths(root, seat)
         cursor = L.read_json(paths.local_cursor).get("seq") or 0
@@ -228,7 +242,10 @@ def run_probe(rt: Any, args: argparse.Namespace, root: str, running: bool) -> di
     """Post in #sandbox > listener probe and pass when the daemon routes that id within the timeout."""
     if not running:
         return {"ok": False, "reason": "the listener is not running"}
-    seat = _seat(rt, args)
+    try:
+        seat = _seat(rt, args)
+    except Z.CredentialError as exc:
+        return {"ok": False, "reason": str(exc)}
     if not seat:
         return {"ok": False, "reason": "no seat; pass --seat"}
     cfg = _load(rt)
@@ -384,7 +401,7 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
                             is_bot=lambda uid: bots.get(uid, True), owner_of=lambda m: False, format_time=format_time,
                             board_enabled=False)
     argv = A.claude_argv(claude, seat_cfg.model)
-    env = A.claude_env(rt.env, home, wake_path)
+    env = A.claude_env(rt.env, home, wake_path, seat=seat)
     rt.out("argv:\n%s\n\nenvironment names: %s\ncwd: %s\n\nprompt:\n%s\n" % (
         json.dumps(argv, indent=1), ", ".join(sorted(env)), paths.wake_dir, prompt))
     if not args.run:

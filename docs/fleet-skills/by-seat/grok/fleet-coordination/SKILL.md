@@ -7,7 +7,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 > **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Worktrees `~/apps/<app>-grok`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`.  If this session is **Grok Build**, pin `AGENT_SEAT=GROK-BUILD`, tag `[GROK-BUILD]`, branches `grok-build/`, worktrees `~/apps/<app>-grok-build`.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
+> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), so never sign `GROK-BUILD`, a retired alias the CLI refuses.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
 Canonical reference: `/Users/jay/apps/AGENT-SYNC.md` and `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md`.  
@@ -50,7 +50,7 @@ Use these canonical acronyms in Apple Notes titles (`[APP, Agent] topic`), commi
 
 Every agent session must start with systematic orientation before touching code:
 
-1. **Establish Seat Identity:**  pin `AGENT_SEAT` (or pass `--as`).  If it is unset, ask Jay; never guess from a folder, branch, or model.  Never sign as another seat.  Sessions of one seat share a bot and are told apart by the `[SEAT·session8]` tag (U+00B7) plus the topic.
+1. **Establish Seat Identity:**  your seat is the first that applies (AGENT-SYNC § Identity Rules, owner 2026-10-09):  a seat Jay names to you in this conversation; a seat a trusted launcher assigned (`AGENT_LAUNCH_SEAT`, set with `AGENT_LAUNCHER`), which beats every rules file, skill, and model; otherwise your platform's default for an ordinary session (AGENT-SYNC › Platform Defaults), or ask Jay on a platform with none.  A launcher with no seat means no fleet action.  Verify with `agent-sync whoami --as <SEAT>` before your first post (the CLI refuses another seat's bot on its own); never guess from a folder, branch, or model.  Never sign as another seat.  Sessions of one seat share a bot and are told apart by the `[SEAT·session8]` tag (U+00B7) plus the topic.
    - Claude: `CLAUDE` (display `Claude`, branch prefix `claude/`, bot `claude-bot@`, file code `Claude`)
    - Codex: `CODEX` (display `Codex`, prefix `codex/`, `codex-bot@`, `Codex`)
    - Antigravity / Gemini: `AG` (display `Antigravity`, prefix `ag/`, `ag-bot@`, `AG`)

@@ -135,30 +135,33 @@ A stale grant epoch or a grant past 90 days is not a tool error:  the Worker ans
 
 **Registration.**  Every row below needs Jay's OK before the edit.  Each command writes the user's config file; none is run by this design.
 
+**Seat:  `--default-seat`, never a pinned `AGENT_SEAT`** (owner seat-precedence ruling 2026-10-09, AGENT-SYNC § Identity Rules).  Each registration passes its platform's default as `agent-sync mcp --default-seat <DEFAULT>`.  The server applies the CLI's order (`scripts/agent_sync/identity.py`):  a launcher's `AGENT_LAUNCH_SEAT` wins and a differing `AGENT_SEAT` or `--as` exits 3; `AGENT_LAUNCHER` with no launch seat exits 3; otherwise `--as`, `AGENT_SEAT`, then the default.  So an engine a launcher started (BotFleet running Claude or Codex for a BF bot) never serves the platform's seat from the owner's user config.  That holds only when the client passes its own environment to the server:  Claude Code does (the server is its child process); Codex appears to pass MCP servers a filtered environment (VERIFY:  its config schema has an `env_vars` passthrough list, read from the installed binary, but the default filtering was not observed), so its block lists the seat variables in `env_vars` either way.  The other clients are VERIFY:  a launched `whoami` call settles each one.
+
 | Client (seat) | Exact command or edit |
 | --- | --- |
-| Claude Code (CLAUDE) | `claude mcp add agent-sync --scope user -e AGENT_SEAT=CLAUDE -- ~/.local/bin/agent-sync mcp`.  The name goes first:  `-e` is variadic and swallows a following name (checked in a temp project).  The short form `claude mcp add --scope user agent-sync -- agent-sync mcp` is not enough:  without `AGENT_SEAT` the server exits 3 at startup, and a bare `agent-sync` depends on the client's PATH. |
-| Codex CLI (CODEX) | `codex mcp add agent-sync --env AGENT_SEAT=CODEX -- ~/.local/bin/agent-sync mcp`, or the same thing as a `~/.codex/config.toml` block (below) |
-| Antigravity (AG) | `agy mcp add --env AGENT_SEAT=AG agent-sync ~/.local/bin/agent-sync mcp` (flags before the name; matches `--help`, not executed) |
-| Grok CLI and TUI (GROK) | `grok mcp add --scope user -e AGENT_SEAT=GROK agent-sync -- ~/.local/bin/agent-sync mcp`.  Terminal Grok and Grok Build are one seat, GROK (D2).  It reads `Grok-Build-zuliprc` and posts as grok-build-bot@.  `AGENT_SEAT=GROK-BUILD` exits 3, because that bot signs as GROK. |
-| Cursor (CURSOR) | `~/.cursor/mcp.json` → `mcpServers.agent-sync = {"command": "<home>/.local/bin/agent-sync", "args": ["mcp"], "env": {"AGENT_SEAT": "CURSOR"}}` |
-| MiniMax (MM) | `~/.minimax/mcp.json` → `mcpServers.agent-sync = {"type": "stdio", "command": "<home>/.local/bin/agent-sync", "args": ["mcp"], "env": {"AGENT_SEAT": "MM"}, "enabled": true, "configured": true, "builtin": false}` (the shape of the existing `fleet-recall` entry; add path unverified) |
-| fx (FX) | `~/.fx/mcp.json` → `mcp.agent-sync = {"type": "local", "command": ["env", "AGENT_SEAT=FX", "<home>/.local/bin/agent-sync", "mcp"], "enabled": true}`.  fx has no `env` key. |
-| BotFleet role bots (BF-<ROLE>) | Not a config edit.  BotFleet hands its stdio MCP servers to its ACP engines from code (`acpMcpServers` in `server/drivers/acp/core.ts`, BotFleet `main`, read Thu, Oct 8).  So this is a BotFleet change that adds `{name: "agent-sync", command: "<home>/.local/bin/agent-sync", args: ["mcp"], env: [{name: "AGENT_SEAT", value: "BF-<ROLE>"}]}` for the bot taking the turn.  Example:  `BF-PLUMBER` reads `BF-Plumber-zuliprc` and is accepted only if `users/me` is bf-plumber-bot@ with the member or moderator role.  Pending Jay's OK (section 4). |
+| Claude Code (CLAUDE) | `claude mcp add agent-sync --scope user -- ~/.local/bin/agent-sync mcp --default-seat CLAUDE`.  Everything after `--` is the server command.  No `-e AGENT_SEAT=...`:  a pinned seat would name CLAUDE inside a launched engine (it fails closed there, but serves nothing). |
+| Codex CLI (CODEX) | `codex mcp add agent-sync -- ~/.local/bin/agent-sync mcp --default-seat CODEX`, then add the `env_vars` line of the `~/.codex/config.toml` block below (the command has no flag for it), or write that block by hand.  If Codex filters as it appears to, then without `env_vars` it drops `AGENT_LAUNCHER` and `AGENT_LAUNCH_SEAT` before the server starts, and a launched Codex engine would serve CODEX. |
+| Antigravity (AG) | `agy mcp add agent-sync -- ~/.local/bin/agent-sync mcp --default-seat AG` (VERIFY:  if `agy` takes no `--`, edit its MCP config so `args` is `["mcp", "--default-seat", "AG"]`) |
+| Grok CLI and TUI (GROK) | `grok mcp add --scope user agent-sync -- ~/.local/bin/agent-sync mcp --default-seat GROK`.  Terminal Grok and Grok Build are one seat, GROK (D2).  It reads `Grok-Build-zuliprc` and posts as grok-build-bot@.  `GROK-BUILD` exits 3, because that bot signs as GROK. |
+| Cursor (CURSOR) | `~/.cursor/mcp.json` → `mcpServers.agent-sync = {"command": "<home>/.local/bin/agent-sync", "args": ["mcp", "--default-seat", "CURSOR"]}` |
+| MiniMax (MM) | `~/.minimax/mcp.json` → `mcpServers.agent-sync = {"type": "stdio", "command": "<home>/.local/bin/agent-sync", "args": ["mcp", "--default-seat", "MM"], "enabled": true, "configured": true, "builtin": false}` (the shape of the existing `fleet-recall` entry; add path unverified) |
+| fx (FX) | `~/.fx/mcp.json` → `mcp.agent-sync = {"type": "local", "command": ["<home>/.local/bin/agent-sync", "mcp", "--default-seat", "FX"], "enabled": true}`.  fx has no `env` key, and none is needed now. |
+| Muse Code (MC) | Not registered yet (no MCP config path recorded).  When it is:  `args` `["mcp", "--default-seat", "MC"]`. |
+| BotFleet role bots (BF-<ROLE>) | Not registered (owner 2026-10-09):  BF bots post only through BotFleet's native Zulip, so BotFleet hands its engines no agent-sync server.  An engine that loads the owner's user config still finds the platform registration above; under BotFleet's `AGENT_LAUNCHER=botfleet` it exits 3 with no launch seat, and with `AGENT_LAUNCH_SEAT=BF-<ROLE>` it serves only that bot's own key, or exits 3 when the engine has none. |
 
-The config-file forms, for an edit by hand or the installer.  In every `command` value below `<home>` is the absolute home directory, because no shell expands those fields.  Codex, `~/.codex/config.toml` (the `[mcp_servers.X]` shape `install-fleet-rag.sh` writes, plus Codex's `env` table):
+The config-file forms, for an edit by hand or the installer.  In every `command` value below `<home>` is the absolute home directory, because no shell expands those fields.  Codex, `~/.codex/config.toml` (the `[mcp_servers.X]` shape `install-fleet-rag.sh` writes, plus Codex's `env_vars` passthrough list):
 
 ```toml
 [mcp_servers.agent-sync]
 command = "<home>/.local/bin/agent-sync"
-args = ["mcp"]
-env = { AGENT_SEAT = "CODEX" }
+args = ["mcp", "--default-seat", "CODEX"]
+env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG", "AGENT_SESSION"]
 ```
 
 Cursor, `~/.cursor/mcp.json`, merged into the existing `mcpServers` object:
 
 ```json
-{"mcpServers": {"agent-sync": {"command": "<home>/.local/bin/agent-sync", "args": ["mcp"], "env": {"AGENT_SEAT": "CURSOR"}}}}
+{"mcpServers": {"agent-sync": {"command": "<home>/.local/bin/agent-sync", "args": ["mcp", "--default-seat", "CURSOR"]}}}
 ```
 
 Later these go into an installer modeled on `scripts/install-fleet-rag.sh`, with marked blocks and no tokens, and it covers MiniMax and fx, which that script skips.  Listener wake sessions are unaffected, because they run `--strict-mcp-config` and disallow `mcp__*`.  `agent-sync mcp` is a helper other seats run, so its `MAC-LOCAL-PROCESSES.md` row (on-demand) and the Apple Note refresh land in the Phase 1 PR.

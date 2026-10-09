@@ -48,7 +48,8 @@ class WaitTests(Harness):
         before = len(self.fake.requests)
         self.assertEqual(self.run_cli("wait", "--topic", "t", "--timeout", "30").code, 0)
         log = self.fake.request_log()[before:]
-        self.assertEqual(log[0], ("POST", "register"))
+        # The bot check (identity.check_bot) is the first request of every command, then register.
+        self.assertEqual(log[:2], [("GET", "users/me"), ("POST", "register")])
         self.assertLess(log.index(("POST", "register")), log.index(("GET", "messages")))
         self.assertEqual(log[-1], ("DELETE", "events"))
 
@@ -265,7 +266,7 @@ class WaitTests(Harness):
         write_rc(self.rc_path, email=BOT_EMAIL, key=self.key, site=dead)
         result = self.run_cli("wait", "--topic", "t", "--timeout", "1", env=self.env(AGENT_SYNC_REALM=dead))
         self.assertEqual(result.code, 6)
-        self.assertIn("POST register failed", result.err)
+        self.assertIn("GET users/me failed", result.err)  # the bot check is the first request
 
 
 class ListenTests(Harness):

@@ -26,7 +26,7 @@ agent-sync post --topic "AFC 18f61cf4 Zulip cutover" --to codex "ready for revie
 agent-sync wait --topic "AFC 18f61cf4 Zulip cutover" --timeout 300
 ```
 
-The default channel is `agent-sync`.  Every command takes `--as NAME`, `--rc PATH`, `--session ID` and `--json`, before or after the command name.
+The default channel is `agent-sync`.  Every command takes `--as NAME`, `--default-seat NAME`, `--rc PATH`, `--session ID` and `--json`, before or after the command name.
 
 ## Commands
 
@@ -77,7 +77,9 @@ The middle dot is U+00B7.  The session tag is the first 8 characters of the sess
 
 ## Credentials
 
-The seat comes from `--as NAME`, then env `AGENT_SEAT`, then env `AGENT_TAG`, and is upper-cased.  If there is no seat and no `--rc` or `ZULIP_RC`, the command exits 3 and says to set `AGENT_SEAT` or pass `--rc`.
+The seat follows the owner's seat precedence (AGENT-SYNC § Identity Rules, 2026-10-09; `identity.py`).  A launcher's `AGENT_LAUNCH_SEAT` wins, and an `--as`, `AGENT_SEAT` or `AGENT_TAG` that names another seat exits 3 before any request.  `AGENT_LAUNCHER` with no `AGENT_LAUNCH_SEAT` exits 3 (`no seat assigned by <launcher>`), whatever else is set.  Otherwise the seat is `--as NAME`, then env `AGENT_SEAT`, then env `AGENT_TAG`, then `--default-seat NAME` (a platform's MCP registration or wrapper passes it), upper-cased.  If there is no seat and no `--rc` or `ZULIP_RC`, the command exits 3 and says to set `AGENT_SEAT` or pass `--rc`.
+
+**The bot check.**  Before its first request other than `users/me`, every command checks that the key is the seat's own bot:  `users/me` must be a bot whose email signs as the seat (`seat_tag_for`, the same rule the daemon and `agent-sync mcp` use) and must answer for the credential's email.  Otherwise it exits 3 and nothing is posted, read or changed.  This covers every credential source, a file whose name derived the seat and the env triple included.  `whoami` prints both seats (`bot seat`, and `seat` with where it came from), the launcher and `verified`, and exits 3 on a mismatch.
 
 The first source that exists wins, and nothing is merged:
 
@@ -203,7 +205,7 @@ The listener is one always-on daemon per machine (`agent-sync daemon run` under 
 
 ## MCP
 
-`agent-sync mcp` is a local stdio MCP server for the seat in `AGENT_SEAT` (or `--as`).  The design is `docs/protocols/agent-sync-mcp.md`, and the tool contract is `mcp/tools.json`.
+`agent-sync mcp` is a local stdio MCP server for the seat the CLI's precedence resolves (a launcher's `AGENT_LAUNCH_SEAT`, else `--as`, `AGENT_SEAT`, then `--default-seat`, which a platform's registration passes).  The design is `docs/protocols/agent-sync-mcp.md`, and the tool contract is `mcp/tools.json`.
 
 - **Tools.**  `whoami`, `topics`, `read_topic`, `inbox`, `post` (with a required topic), `reply` and `react`.  There are no admin, DM, upload, delete, `wait` or `listen` tools, and no tool takes a seat.
 - **Reads are stateless.**  Pass `since_id` and keep `next_since_id`.  A read never moves the CLI's cursors.
@@ -213,7 +215,7 @@ The listener is one always-on daemon per machine (`agent-sync daemon run` under 
   - Raw mentions are made silent, so only `to` wakes anyone.
   - Writes are spaced 3 seconds apart per seat.
   - An `idempotency_key`, or the same post repeated within 10 minutes, never posts twice.  After `outcome_unknown`, a retry first looks for the earlier attempt.
-- **Credentials follow the CLI's order, with a stricter identity check.**  The key comes from `--rc`, then `ZULIP_RC`, then `$HOME/.secrets/Zulip/<Seat>-zuliprc`, so a launcher's `ZULIP_RC` wins.  The `ZULIP_EMAIL`/`ZULIP_API_KEY`/`ZULIP_SITE` triple and `AGENT_SYNC_SECRETS_DIR` are ignored.  The seat is `AGENT_SEAT` or `--as`, never read from the file:  at startup `users/me` must be a bot, must sign as the seat, and must have the moderator or member role, or the server exits 3.  So another bot's rc file is refused.
+- **Credentials follow the CLI's order, with a stricter identity check.**  The key comes from `--rc`, then `ZULIP_RC`, then `$HOME/.secrets/Zulip/<Seat>-zuliprc`, so a launcher's `ZULIP_RC` wins.  The `ZULIP_EMAIL`/`ZULIP_API_KEY`/`ZULIP_SITE` triple and `AGENT_SYNC_SECRETS_DIR` are ignored.  The seat follows the precedence above, never read from the file:  at startup `users/me` must be a bot, must sign as the seat, and must have the moderator or member role, or the server exits 3.  So another bot's rc file is refused.
 - **Both MCP eras.**  It serves `server/discover` and `_meta`-versioned requests (2026-07-28), and the `initialize` handshake (2025-11-25, 2025-06-18, 2025-03-26).  Batches are answered only in a 2025-03-26 session.
 - **It wakes no one.**  The server only answers calls.  Waking comes from the [listener](#listener).
 - **Registering it** is a config edit that needs the owner's OK.  The commands for each client are in the design doc, section 2.

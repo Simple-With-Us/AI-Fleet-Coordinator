@@ -38,11 +38,13 @@ from typing import Any, Callable, Mapping, Sequence, TextIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import __version__
+from . import identity as I
 from . import listener_cli
 from . import live as LIVE
 from . import secretscan
 from . import zulip as Z
 from .state import State, state_root
+from .identity import EMAIL_TAG_OVERRIDES, seat_tag_for  # noqa: F401 - re-exported (daemon, listener_cli, tests)
 from .zulip import (ApiError, CredentialError, EventQueue, NetworkError, QueueExpired, UsageError,
                     message_channel, message_topic)
 
@@ -154,10 +156,18 @@ class Agent:
         env = rt.env
         rc_arg = getattr(args, "rc", None)
         has_rc = bool(rc_arg or env.get("ZULIP_RC"))
-        raw_seat = getattr(args, "as_seat", None) or env.get("AGENT_SEAT") or env.get("AGENT_TAG")
-        seat = Z.normalise_seat(raw_seat) if raw_seat else None
+        # Seat precedence (identity.py):  a launcher's AGENT_LAUNCH_SEAT wins and a differing --as,
+        # AGENT_SEAT or AGENT_TAG is refused; AGENT_LAUNCHER with no seat refuses everything; then
+        # --as, AGENT_SEAT, AGENT_TAG, --default-seat; then the rc file's name.  Before any network
+        # command, verify() checks the key's bot against the seat (main does it; whoami reports it).
+        resolved = I.resolve_seat(env, flag=getattr(args, "as_seat", None), default=getattr(args, "default_seat", None))
+        if resolved.problem:
+            raise CredentialError(resolved.problem)
+        self.seat_source = resolved.source
+        self.launcher = resolved.launcher
+        seat = Z.normalise_seat(resolved.seat) if resolved.seat else None
         if seat is None and not has_rc:
-            raise CredentialError("no seat: set AGENT_SEAT (e.g. CLAUDE) or pass --rc")
+            raise CredentialError("no seat: set AGENT_SEAT (e.g. CLAUDE), pass --as NAME or --default-seat NAME, or pass --rc")
         session_id = getattr(args, "session", None) or env.get("CLAUDE_CODE_SESSION_ID") or env.get("AGENT_SESSION")
         self.tag = Z.session_tag(session_id)
         self.creds = Z.resolve_credentials(env, rc_arg=rc_arg, seat=seat, home=rt.home)
@@ -166,17 +176,22 @@ class Agent:
             seat = Z.seat_from_rc_path(rc_path)
             if seat is None:
                 raise CredentialError("cannot tell the seat from %s; pass --as NAME or set AGENT_SEAT" % rc_path)
+            self.seat_source = "rc file name"
         self.seat = seat
         self.realm = Z.realm_url(env)
         Z.verify_realm(self.creds, self.realm)
         self.client = Z.ZulipClient(self.creds, self.realm, timeout=rt.timeout, events_timeout=rt.events_timeout,
                                     sleep=rt.sleep)
+        self._verified = False
+        self._gate_client()
         self.state = State(state_root(env, rt.home), self.seat, self.tag)
         self._me: dict[str, Any] | None = None
         self._users: list[dict[str, Any]] | None = None
         self._users_at = 0.0
         self._stream_ids: dict[str, int] = {}
-        self._lock = threading.Lock()
+        # Reentrant:  users() holds it across its request, and the client gate's verify() takes it
+        # again through me() on the same thread.
+        self._lock = threading.RLock()
 
     # ---- identity -----------------------------------------------------------------------
     @property
@@ -189,6 +204,34 @@ class Agent:
             if self._me is None:
                 self._me = self.client.get("users/me")
             return self._me
+
+    def identity_problem(self) -> str | None:
+        """None when the key is this seat's own bot (users/me, fetched once per process), else why
+        not.  Covers every credential source:  --rc, ZULIP_RC, the seat's file, a file whose name
+        derived the seat, and the env triple."""
+        return I.check_bot(self.me(), self.seat, self.creds.email)
+
+    def verify(self) -> None:
+        """Refuse (exit 3) unless the key is this seat's own bot.  The client gate calls it before
+        the first request other than users/me, so nothing is posted, read or changed under a
+        mismatched identity, and a command's own argument checks still run before any request."""
+        if self._verified:
+            return
+        problem = self.identity_problem()
+        if problem:
+            raise CredentialError(problem)
+        self._verified = True
+
+    def _gate_client(self) -> None:
+        """Route every request but users/me through verify() first (once per process)."""
+        request = self.client.request
+
+        def gated(method: str, path: str, *args: Any, **kwargs: Any) -> Any:
+            if not self._verified and path.strip("/") != "users/me":
+                self.verify()
+            return request(method, path, *args, **kwargs)
+
+        self.client.request = gated  # type: ignore[method-assign]
 
     def users(self, *, refresh: bool = False) -> list[dict[str, Any]]:
         with self._lock:
@@ -515,7 +558,12 @@ def _common_parent() -> argparse.ArgumentParser:
     parent = argparse.ArgumentParser(add_help=False)
     group = parent.add_argument_group("identity and output")
     group.add_argument("--as", dest="as_seat", metavar="NAME", default=argparse.SUPPRESS,
-                       help="seat name (default: env AGENT_SEAT, then AGENT_TAG)")
+                       help="seat name (default: env AGENT_SEAT, then AGENT_TAG).  Under a launcher, "
+                            "AGENT_LAUNCH_SEAT wins and a different --as is refused")
+    group.add_argument("--default-seat", dest="default_seat", metavar="NAME", default=argparse.SUPPRESS,
+                       help="the platform default seat for an ordinary session (an MCP registration or a wrapper "
+                            "passes it):  used only when --as, AGENT_SEAT and AGENT_TAG are unset, and never under a "
+                            "launcher (AGENT_LAUNCHER)")
     group.add_argument("--rc", metavar="PATH", default=argparse.SUPPRESS,
                        help="zuliprc file to use (default: env ZULIP_RC, then ~/.secrets/Zulip/<Seat>-zuliprc)")
     group.add_argument("--session", metavar="ID", default=argparse.SUPPRESS,
@@ -631,17 +679,28 @@ def build_parser() -> argparse.ArgumentParser:
 # --------------------------------------------------------------------------------------------
 
 def cmd_whoami(agent: Agent, args: argparse.Namespace) -> int:
+    """Both identities:  the seat this session resolved, and the bot its key authenticates as.
+    Exits 3 when they differ (the key is printed by no path)."""
     me = agent.me()
+    problem = agent.identity_problem()
     info = {"full_name": me.get("full_name"), "email": me.get("email") or agent.creds.email,
             "user_id": me.get("user_id"), "is_bot": me.get("is_bot"), "seat": agent.seat,
+            "bot_seat": seat_tag_for(me), "seat_source": agent.seat_source, "launcher": agent.launcher,
+            "verified": problem is None, "problem": problem,
             "session": agent.tag, "credential": agent.creds.source, "realm": agent.realm}
     if agent.json:
         agent.emit_json(info)
-        return 0
-    rows = [("bot", info["full_name"]), ("email", info["email"]), ("user id", info["user_id"]),
-            ("seat", agent.seat), ("session", agent.tag or "none (state is shared under nosession)"),
-            ("credential", agent.creds.source), ("realm", agent.realm)]
-    agent.out("".join("%-11s %s\n" % (label + ":", value) for label, value in rows))
+    else:
+        rows = [("bot", info["full_name"]), ("email", info["email"]), ("user id", info["user_id"]),
+                ("bot seat", info["bot_seat"]), ("seat", "%s (%s)" % (agent.seat, agent.seat_source)),
+                ("launcher", agent.launcher or "none (an ordinary session)"),
+                ("verified", "yes:  the key is this seat's own bot" if problem is None else "NO"),
+                ("session", agent.tag or "none (state is shared under nosession)"),
+                ("credential", agent.creds.source), ("realm", agent.realm)]
+        agent.out("".join("%-11s %s\n" % (label + ":", value) for label, value in rows))
+    if problem:
+        agent.err(problem)
+        return 3
     return 0
 
 
@@ -706,33 +765,6 @@ def _read_text(agent: Agent, parts: Sequence[str]) -> str:
     if found:
         raise UsageError("refusing to post: the text looks like it contains %s" % found)
     return text
-
-
-# Bot email local parts (minus the "-bot" Zulip appends) whose seat tag is not just the upper-cased
-# local part.  Display names are cosmetic (owner 2026-10-07), so labels come from emails, never names.
-EMAIL_TAG_OVERRIDES = {
-    "muse-assist": "MA",
-    "openai-dot": "JET",
-    "instinct-bat": "ECHO",
-    "instinct-owl": "INSTINCT",
-    "grok-build": "GROK",  # terminal Grok and Grok Build are one seat (owner 2026-10-08)
-}
-
-
-def seat_tag_for(user: dict) -> str:
-    """The seat tag a user or bot signs as: mm-bot@ -> MM, bf-builder-bot@ -> BF-BUILDER,
-    compiler-grok-bot@ -> GB-COMPILER, muse-assist-bot@ -> MA.  Humans get their first name."""
-    if not user.get("is_bot"):
-        first = (str(user.get("full_name") or "").split() or ["USER"])[0]
-        return first.upper()
-    local = str(user.get("email") or "").split("@", 1)[0].lower()
-    if local.endswith("-bot"):
-        local = local[: -len("-bot")]
-    if local in EMAIL_TAG_OVERRIDES:
-        return EMAIL_TAG_OVERRIDES[local]
-    if local.endswith("-grok"):
-        return "GB-" + local[: -len("-grok")].upper()
-    return local.upper() or "-".join(str(user.get("full_name") or "").upper().split())
 
 
 def _resolve_peers(agent: Agent, names: Sequence[str]) -> tuple[list[str], list[str]]:
@@ -1157,7 +1189,7 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             from .mcp import stdio as mcp_stdio
 
             return mcp_stdio.run(rt, args)
-        agent = Agent(rt, args)
+        agent = Agent(rt, args)  # every request after users/me waits for agent.verify(); whoami reports it
         return COMMANDS[args.command](agent, args)
     except Z.AgentSyncError as exc:
         rt.err("agent-sync: %s" % exc)
