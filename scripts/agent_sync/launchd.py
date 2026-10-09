@@ -20,9 +20,9 @@ from . import zulip as Z
 
 LABEL = "com.jay.agent-sync-listener"
 # Fleet seats with a reader on this Mac (they can be enabled), then bots that have none.
-READER_SEATS = ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK-BUILD", "CLUTCH", "FX", "MM", "MC", "MA"]
+READER_SEATS = ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC"]  # the Mac seats (partition "mac")
 NO_READER = ["BF-BUILDER", "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-FIXER", "BF-HOUSEKEEPER",
-             "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER", "ECHO", "INSTINCT", "GROK-WEB"]
+             "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER", "MA", "JET", "ECHO", "INSTINCT", "GROK-WEB"]
 DEFAULT_PYTHON = "/opt/homebrew/bin/python3"
 
 
@@ -53,7 +53,9 @@ def plist_dict(home: str, python: str, program: str, root: str) -> dict:
         "ThrottleInterval": 30,
         "ProcessType": "Background",
         "WorkingDirectory": home,
-        "EnvironmentVariables": {"HOME": home, "LANG": "en_US.UTF-8",
+        # AGENT_SYNC_INSTANCE pins this listener to the mac side of the seat partition:  a config
+        # that says daemon.instance = "server" is refused here.
+        "EnvironmentVariables": {"HOME": home, "LANG": "en_US.UTF-8", "AGENT_SYNC_INSTANCE": "mac",
                                  "PATH": "%s/.local/bin:/opt/homebrew/bin:/usr/bin:/bin" % home},
         "StandardOutPath": os.path.join(logs, "launchd.out"),
         "StandardErrorPath": os.path.join(logs, "launchd.err"),
@@ -72,6 +74,10 @@ def sample_config(secrets_dir: str) -> str:
         "# Changes take effect on `agent-sync daemon reload` (SIGHUP) or a restart.",
         "",
         "[daemon]",
+        "# The Mac instance holds the Mac seats (owner decision, Thu, Oct 8); the cloud seats (Grok Bots, MA, Jet,",
+        "# Instinct, Echo, Grok Web) run on the server instance.  docs/protocols/agent-sync-partition.toml says which instance holds which",
+        "# seat and fails closed:  a listener refuses to start with any seat it does not give to this instance.",
+        'instance = "mac"',
         "owner_user_id = 0                 # pinned by `agent-sync daemon init`, never derived at runtime",
         "eligible_user_ids = []            # fleet seat bots, pinned by `agent-sync daemon init`",
         "# Owner priority needs the owner's user id AND one of these clients (human Zulip apps).  A post",
@@ -97,10 +103,13 @@ def sample_config(secrets_dir: str) -> str:
         "owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }",
         "live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, loop_turns = 3 }",
     ]
-    for seat in READER_SEATS[1:]:
-        if present(seat):
-            stem = Z.credential_file_name(seat)[: -len("-zuliprc")]
-            lines += ["", "# [seat.%s]" % seat, '# bot = "%s"' % stem, '# wake = "inbox"']
+    listed = [seat for seat in READER_SEATS[1:] if present(seat)]
+    if listed:
+        lines += ["", "# The other Mac seats (the partition gives them to \"mac\").  Uncomment to capture their",
+                  "# @-mentions and DMs into their inboxes (owner, Thu, Oct 8:  get the listeners all active)."]
+    for seat in listed:
+        stem = Z.credential_file_name(seat)[: -len("-zuliprc")]
+        lines += ["", "# [seat.%s]" % seat, '# bot = "%s"' % stem, '# wake = "inbox"']
     others = [s for s in NO_READER if present(s)]
     if others:
         lines += ["", "# Bots with no reader on this Mac (left out on purpose): %s" % ", ".join(others)]

@@ -44,6 +44,13 @@ class DaemonHarness(ListenerHarness):
         self.assertTrue(daemon.connect_seat("CLAUDE"), daemon.seats["CLAUDE"].error)
         return daemon
 
+    def two_seat_partition(self) -> str:
+        """A test partition that gives CODEX to the Mac as well.  The repo's partition holds only
+        CLAUDE there and fails closed, so these multi-seat tests need their own."""
+        path = self.tmp / "partition-two-seats.toml"
+        path.write_text('[seats]\nCLAUDE = "mac"\nCODEX = "mac"\n')
+        return str(path)
+
     def wake_cycle(self, daemon, seconds: float = 25.0) -> None:
         self.clock.advance(seconds)
         daemon.tick()
@@ -121,7 +128,7 @@ class RoutingTests(DaemonHarness):
         self.fake.add_bot("codex-bot@zulip.test", "Codex", codex_key)
         write_rc(self.secrets_dir / "Codex-zuliprc", email="codex-bot@zulip.test", key=codex_key, site=self.fake.url)
         self.write_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n\n[seat.CODEX]\nbot = "Codex"\nwake = "inbox"\n')
-        daemon = self.started()
+        daemon = self.started(env=self.env(AGENT_SYNC_PARTITION=self.two_seat_partition()))
         self.assertTrue(daemon.connect_seat("CODEX"))
         mid = self.fake.add_message("Cursor", "agent-sync", "t", "@**Claude** and @**Codex** please both look")
         self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
@@ -867,7 +874,7 @@ class SecurityTests(DaemonHarness):
         write_rc(self.secrets_dir / "Codex-zuliprc", email="codex-bot@zulip.test", key=codex_key, site=self.fake.url)
         self.write_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n\n[seat.CODEX]\nbot = "Codex"\nwake = "inbox"\n')
         err = io.StringIO()
-        daemon = self.started(stderr=err)
+        daemon = self.started(stderr=err, env=self.env(AGENT_SYNC_PARTITION=self.two_seat_partition()))
         self.assertTrue(daemon.connect_seat("CODEX"))
         tokens = [self.key, codex_key] + [__import__("base64").b64encode(("%s:%s" % pair).encode()).decode()
                                           for pair in (("claude-bot@zulip.test", self.key), ("codex-bot@zulip.test", codex_key))]

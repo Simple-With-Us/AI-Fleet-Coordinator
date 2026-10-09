@@ -38,6 +38,7 @@ except ImportError:  # pragma: no cover - 3.10 and older have no tomllib; the co
     tomllib = None  # type: ignore[assignment]
 
 ENV_STATE_DIR = "AGENT_SYNC_STATE_DIR"
+ENV_CONFIG = "AGENT_SYNC_CONFIG"  # an explicit listener.toml path (the server container keeps it on its volume)
 CONFIG_NAME = "listener.toml"
 POSTED_KEEP = 200
 POST_LEASE_SECONDS = 2 * 3600
@@ -257,9 +258,19 @@ def hook_log(root: str, event: str, **fields: Any) -> None:
 # Config (light read; the daemon validates it fully in config.py)
 # --------------------------------------------------------------------------------------------
 
-def load_config(root: str) -> tuple[dict[str, Any], str | None]:
+def config_path(root: str, env: Mapping[str, str] | None = None) -> str:
+    """The listener.toml every reader and writer uses:  AGENT_SYNC_CONFIG when set, else
+    <state root>/listener.toml.  The daemon, `daemon init`, status, the probe and test-wake all
+    resolve it here, so `init` pins the same file the daemon reads."""
+    override = (env or {}).get(ENV_CONFIG)
+    if override:
+        return os.path.expanduser(override)
+    return os.path.join(root, CONFIG_NAME)
+
+
+def load_config(root: str, path: str | None = None) -> tuple[dict[str, Any], str | None]:
     """(config, error).  A missing file is ({}, None); an unreadable one is ({}, message)."""
-    path = os.path.join(root, CONFIG_NAME)
+    path = path or os.path.join(root, CONFIG_NAME)
     if tomllib is None:  # pragma: no cover
         return {}, "Python 3.11 or newer is needed to read %s" % path
     try:
