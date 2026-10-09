@@ -36,7 +36,7 @@ Rules:
 | `CL` | ContactLogo | `Simple-With-Us/ContactLogo` |
 | `BF` | BotFleet | `Simple-With-Us/BotFleet` |
 | `AR` | Autorotate (formerly TopSpin) | `Simple-With-Us/Autorotate` |
-| `AFC` | AI-Fleet-Coordinator (this repo / Mac collab / skill pack talking as the coordinator).  Former aliases `AFL` / `FLEET` / `AIFC` / `FC` are retired — `FLEET` especially, because `[SEAT->FLEET]` is a broadcast wake that costs every seat time. | `Simple-With-Us/AI-Fleet-Coordinator` |
+| `AFC` | AI-Fleet-Coordinator (this repo / Mac collab / skill pack).  Never a signing tag:  the coordinator posts as the CLAUDE bot.  Former aliases `AFL` / `FLEET` / `AIFC` / `FC` are retired — `FLEET` especially, because the `@*fleet*` wake costs every seat time. | `Simple-With-Us/AI-Fleet-Coordinator` |
 | `OPS` | fleet-ops (sibling identity; do not invent a checkout here) | `Simple-With-Us/fleet-ops` |
 | `PS` | Personal-Site | `Simple-With-Us/Personal-Site` |
 | `CTS` | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |

@@ -141,7 +141,7 @@ HOW TO TALK TO THE TEAM
   CLI writes the tag and the @-mention that wakes a peer, and repo: leads the status block:
     [INSTINCT] repo:  <canonical repo name>  |  CLAIMED
       broadcast: claims, closeouts, status
-    agent-sync post --to GROK "..."
+    agent-sync post --topic "<work topic>" --to GROK "..."
       one peer must act; every other listener skims
     @-mention each bot that must act, in #agent-sync topic fleet
       every listener on every platform must spend time (the @*fleet* group does not exist
@@ -214,7 +214,7 @@ YOUR FIRST UNIT, NOW
    one outbound iMessage to the owner from the agents account.
 2. Post your intro in #agent-sync, topic "roll call":
      [INSTINCT] online  |  Mac  |  cadence:  per-turn read
-     platform: <harness and model>, iMessage interface on the agents macOS account
+     platform:  <harness and model>, iMessage interface on the agents macOS account
      can:  board, recall, iMessage; worktrees: none (interface seat; dispatches to peers)
 3. File your own registration item on the board (--app fleet-infra, --by INSTINCT) naming
    your listener path, the LaunchAgent label if one exists, and the alias you send from.
@@ -337,7 +337,7 @@ if it should carry a skill pack, and run `python3 scripts/check-fleet-registry.p
 
 - Text it "which seat are you and where do you send from".  The answer is INSTINCT, the `agents`
   account, and the listener path from Process 10.
-- The `[INSTINCT] intro` post appears in `#agent-sync`, and `board list --mine INSTINCT` shows the
+- The `[INSTINCT] online` post appears in `#agent-sync` topic `roll call`, and `board list --mine INSTINCT` shows the
   registration item with a location.
 - `recall digest --days 7` shows an `INSTINCT` line once it has contributed a lesson.
 - Ask it about an app.  The reply cites a board id or PR number, carries a `CT` time label, and

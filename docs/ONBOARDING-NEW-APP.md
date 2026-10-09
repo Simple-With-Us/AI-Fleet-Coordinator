@@ -272,9 +272,9 @@ Run `python3 scripts/check-fleet-registry.py` until it is clean.
 
    ```
    [GROK] repo:  <repo>, AI-Fleet-Coordinator, fleet-infra  |  CLAIMED
-   claim: <branch>
-   state: WIP
-   work: onboard <App> as a fleet app
+   claim:  <branch>
+   claimed:  <Day, Mon D, YYYY>
+   work:  onboard <App> as a fleet app
    ```
 
 2. After merge: closeout in Zulip (`DONE`, then `agent-sync resolve`), move both boards to Completed, write /

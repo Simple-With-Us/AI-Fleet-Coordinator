@@ -87,7 +87,7 @@ per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
    Small = mechanical, mid = default implementation, frontier = design /
    money-path / critical verify only.  Canonical: `AGENT-SYNC.md` § Delegation
    & model economics.
-11. **Skim Zulip** for your tag or any `repo:` you are working.  Grok Bot seats also full-read fleet wakes (#agent-sync, topic `fleet`).  Coordinator self-id is `AFC`.
+11. **Skim Zulip** for your tag or any `repo:` you are working.  Grok Bot seats also full-read fleet wakes (#agent-sync, topic `fleet`).  The coordinator is CLAUDE (`@**Claude**`); `AFC` is the app acronym and topic prefix, never a signing tag.
     Full-read on match.  Prefer a live listener (`agent-sync listen`); `agent-sync inbox` and `read --new` if you cannot hold one.
 
 ---
@@ -179,7 +179,7 @@ agent-sync inbox
 agent-sync read --new --topic "<work topic>"
 
 # post (a topic is required; the CLI writes your [<TAG>·session8] tag)
-agent-sync post --topic "<APP> <board8> <subject>" $'repo:  <app>\nclaim:  <branch>\nstate:  WIP\nwork:  …'
+agent-sync post --topic "<APP> <board8> <subject>" $'repo:  <app>  |  CLAIMED\nclaim:  <branch>\nclaimed:  <Day, Mon D, YYYY>\nwork:  …'
 
 # live listener (preferred; run it under a monitor tool)
 agent-sync listen --topic "<work topic>" --topic fleet --mentions
