@@ -22,17 +22,20 @@ SEAT_LINE_TOKEN = "@@SEAT_BRANCH_LINE@@"
 NEVER_PUSH_TOKEN = "@@SEAT_NEVER_PUSH@@"
 SEAT_PIN_TOKEN = "@@SEAT_PIN_BLOCK@@"
 
-# The canonical pack's identity code block is a bare assignment.  Rendered as
-# is, it stamps the platform's seat over a seat a launcher already assigned
-# (BotFleet runs Claude, Codex and other CLIs as engines for its own bots).
-# Every render swaps it for a pin-or-fail line that never overwrites, until
-# the owner's seat-precedence rule lands.  Key on the whole fenced block so a
-# bare value other than MONET is caught too.
-_SEAT_PIN_SOURCE = re.compile(r"```bash\nexport AGENT_SEAT=[A-Za-z0-9_<>-]+\n```")
-
 SEAT_NEVER_OVERWRITE = (
     "Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as "
     "BotFleet assigns its bots' seats."
+)
+
+# The canonical pack's identity block is the retired MONET seat's own
+# pin-or-fail line plus the never-overwrite sentence, which is exactly what
+# seat_pin_block() renders for MONET.  Every render swaps the whole block
+# (fence, export line and the sentence that follows it) for the destination
+# seat's block, which never overwrites a seat that is already set until the
+# owner's seat-precedence rule lands.  The export line is matched loosely so
+# an older canonical with a bare `export AGENT_SEAT=MONET` is still swapped.
+_SEAT_PIN_SOURCE = re.compile(
+    r"```bash\nexport AGENT_SEAT=[^\n]+\n```(?:\n\n" + re.escape(SEAT_NEVER_OVERWRITE) + r")?"
 )
 
 # Shell-safe: the message sits inside "${AGENT_SEAT:?...}" so it carries no
