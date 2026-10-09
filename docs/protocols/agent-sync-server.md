@@ -1,6 +1,6 @@
 # Agent-Sync Listener:  Server Instance
 
-CLAUDE seat, Thu, Oct 8.  Built on branch `claude/agent-sync-server`, which is stacked on the listener v1 branch (`claude/agent-sync-listener-v1`, PR #367).  Not deployed yet.  The listener design is [agent-sync-listener.md](agent-sync-listener.md); this page covers only what the server instance adds.
+CLAUDE seat, Thu, Oct 8.  Deployed on Thu, Oct 8 as the Coolify application "agent-sync listener (server)" (project Fleet Infra, environment production, uuid `l40rxd4rbj1pnogmbtetzmsf`), at commit 4761f44.  It does not deploy itself:  see Coolify Setup, step 1.  The listener design is [agent-sync-listener.md](agent-sync-listener.md); this page covers only what the server instance adds.
 
 ## Summary
 
@@ -48,7 +48,7 @@ CODE is the seat with hyphens turned into underscores.
 - **The environment is read once.**  A container's environment is fixed when Coolify creates it, and the daemon copies it at start.  `agent-sync daemon reload` re-reads only `listener.toml`.  A new or changed variable (a persona enabled, a key rotated) reaches the listener only when the app is restarted in Coolify.  Coolify's docs say the same:  use Restart when only runtime values changed.  A status line for a missing variable says to restart.
 - The Infisical names are pending from Muse.  If they differ from the defaults, set `email_env` and `key_env` in the seat's section rather than renaming secrets.
 
-**Admin and owner keys stay refused (listener decision 7).**  GB-Director is an admin today, so its seat is present in the sample but disabled.  If it is enabled anyway, `users/me` shows role 200.  The seat is then refused, logged as `seat-refused` with the role, retried every 5 minutes, shown red in status, and notified once a day.  The other seats keep running.
+**Admin and owner keys stay refused (listener decision 7).**  The listener accepts only moderator (300) and member (400) bots.  GB-Director is a realm moderator now, not an admin, so its key is accepted; its seat is present in the sample but disabled only because it has no routine yet.  If an admin or owner bot's key is configured for a seat, `users/me` shows role 200 or 100.  The seat is then refused, logged as `seat-refused` with the role, retried every 5 minutes, shown red in status, and notified once a day.  The other seats keep running.
 
 ## DMs
 
@@ -124,7 +124,7 @@ routine = { url_env = "GB_COMPILER_ROUTINE_URL", key_env = "GB_COMPILER_ROUTINE_
 | `Dockerfile.dockerignore` | Keeps only those paths in the build context (BuildKit); the tests stay out |
 | `entrypoint.sh` | On first start, copies the sample config onto the volume as `$AGENT_SYNC_CONFIG`, never overwriting one, then execs `agent-sync` (exec form, so SIGTERM reaches the daemon, which deletes its queues) |
 | `healthcheck.py` | Unhealthy when `/data/listener/status.json` is missing or older than 60 seconds.  The daemon rewrites it every 2 seconds; a refused start never writes it |
-| `listener.toml` | The server sample:  GB-COMPILER enabled with `wake = "http"`.  The other ten personas are present with `enabled = false`, each with `wake = "http"` and a `routine` block that names its default variables (their routines do not exist yet; GB-DIRECTOR is an admin) |
+| `listener.toml` | The server sample:  GB-COMPILER enabled with `wake = "http"`.  The other ten personas are present with `enabled = false`, each with `wake = "http"` and a `routine` block that names its default variables (their routines do not exist yet) |
 
 **Environment the container expects.**  The image sets these:
 
@@ -134,9 +134,9 @@ routine = { url_env = "GB_COMPILER_ROUTINE_URL", key_env = "GB_COMPILER_ROUTINE_
 - `AGENT_SYNC_LOG_STDOUT=1`, which writes every log line to stdout as well as to `/data/logs/listener.log`
 - `HOME=/home/agentsync`
 
-Infisical (project "AI Fleet Coordinator", environment `prod`, folder `/zulip`) holds these.  Coolify gets runtime-only copies, synced or copied by hand (Coolify Setup, step 3):
+Infisical (project "AI Fleet Coordinator", environment `prod`, folder `/zulip`) holds every one of these except `ZULIP_SITE`.  Coolify gets runtime-only copies, copied by hand with a script (Coolify Setup, step 3).  `ZULIP_SITE` is not in Infisical:  set it in Coolify as a plain value, `https://simplewithus.zulipchat.com`.
 
-- `ZULIP_SITE`
+- `ZULIP_SITE` (Coolify only)
 - `ZULIP_GB_COMPILER_EMAIL` and `ZULIP_GB_COMPILER_API_KEY`
 - `GB_COMPILER_ROUTINE_URL` and `GB_COMPILER_ROUTINE_KEY`
 - For each persona enabled later:  `ZULIP_GB_<ROLE>_EMAIL`, `ZULIP_GB_<ROLE>_API_KEY`, `GB_<ROLE>_ROUTINE_URL` and `GB_<ROLE>_ROUTINE_KEY`, or the names its section sets
@@ -157,8 +157,9 @@ These are optional, and best left unset:
    docs/protocols/agent-sync-partition.toml
    ```
    Every redeploy re-registers the queues, hands over the lock and backfills, so an unrelated merge to `main` should not start one.  The last matching pattern wins, so a test file is excluded.  Watch Paths filter only Git webhook deploys.  A manual deploy from the dashboard, or one through the authenticated Deploy Webhook, always runs.  The alternative is to turn auto-deploy off and deploy by hand.
+   **As deployed, nothing auto-deploys.**  The repo is public, so Coolify created no GitHub webhook, and Watch Paths do nothing until one exists.  To get push deploys, add a manual webhook in the repo's GitHub settings:  URL `https://host.jays.services/webhooks/source/github/events/manual`, push events only, secret from the application's Webhooks page in Coolify (its GitHub webhook secret).  Adding it is the owner's call.  Until then, deploy by hand from the dashboard.  The pinned seats live on the `/data` volume, so a deploy does not change them.  After a deploy that changes which bots `daemon init` treats as eligible (`FLEET_SEATS`), run step 6 again.
 2. **No domain, no port mapping.**  The listener only makes outbound connections (Zulip and the routines), so it needs no hostname and no proxy route.  Leave the Ports Exposes default, clear any Domains value Coolify pre-fills, and add no port mapping, so no hostname or proxy route exists.  The image listens on no port.  In particular, **`agent-sync.jays.services` is not reused here.**  That is the retired Slack relay's hostname, and old clients and tokens still point at it.
-3. **Environment.**  Infisical (project "AI Fleet Coordinator", environment `prod`, folder `/zulip`) is the source of truth, and Coolify holds copies.  If an Infisical sync into this Coolify app is set up, it does the copy.  Otherwise copy by hand:  create or rotate a value in Infisical first, then set the same name and value in the app's Environment Variables in Coolify (AGENT-SYNC, Secret handoff).  Which of the two applies is an open question.  For **every** variable in the list above, set it to runtime only:  untick **Available during build** and keep **Available in the container**.  Coolify defaults new variables to both, and a build-time value can end up in the build log and in the image metadata.  The Dockerfile declares no `ARG` and needs no build-time value, so nothing here belongs at build time.  After adding or changing any variable, **restart the app** (a reload does not read the environment).
+3. **Environment.**  Infisical (project "AI Fleet Coordinator", environment `prod`, folder `/zulip`) is the source of truth, and Coolify holds copies, with one exception:  `ZULIP_SITE` is not in Infisical, so set it in Coolify as a plain value, `https://simplewithus.zulipchat.com`.  No Infisical sync into this app exists.  The deployed copies were made by hand with a script that reads Infisical `prod` and writes Coolify runtime-only variables, never printing a value.  To change one, update Infisical first, then re-run that copy (AGENT-SYNC, Secret handoff).  Coolify also copies each variable into the preview scope on its own.  Preview deployments are off, so those copies are unused.  For **every** variable in the list above, set it to runtime only:  untick **Available during build** and keep **Available in the container**.  Coolify defaults new variables to both, and a build-time value can end up in the build log and in the image metadata.  The Dockerfile declares no `ARG` and needs no build-time value, so nothing here belongs at build time.  After adding or changing any variable, **restart the app** (a reload does not read the environment).
 4. **Storage.**  Add one persistent volume mounted at `/data`.  A new named volume inherits the image's `/data` ownership (uid 10001, mode 700).  A bind mount needs `chown 10001:10001` and `chmod 700` on the host directory first.  The volume holds the config, the cursors, the seat inboxes, the ledger, the logs and `daemon.lock`.  Losing it loses the cursors:  the next start begins at the newest message and replays nothing.  Never mount `listener.toml` as a single file:  `daemon init` replaces it atomically (`os.replace`), which a single-file mount refuses.
 5. **Health check.**  Leave Coolify's dashboard health check disabled.  For a Dockerfile application Coolify detects the image's `HEALTHCHECK` and uses it instead, which also lets a rolling deploy wait for the new container before removing the old one.  The image checks every 30 seconds, with a 60-second start period and 3 retries.  On the host, `docker inspect --format '{{.State.Health.Status}}' <container>` shows the result (expect `healthy`).  Healthy means only that the main loop rewrote `status.json` in the last 60 seconds.  It does not mean a seat is connected, the owner is pinned or a routine is ready; step 7 checks those.
 6. **First deploy, then init.**  Until `daemon init` runs, `owner_user_id` is 0, so nothing is treated as the owner and nothing wakes.  Open the app's terminal in Coolify (or `docker exec -it <container> sh`) and run:
@@ -168,6 +169,15 @@ These are optional, and best left unset:
    agent-sync status
    ```
    `init` pins `owner_user_id` and `eligible_user_ids` into `/data/listener.toml`.  It also checks each enabled seat's environment credentials, role and #agent-sync subscription.
+
+   Over a non-interactive `docker exec` there is no terminal to answer the prompt, so `init` needs `--yes` or it changes nothing.  The Coolify host is reachable as the ssh alias `coolify`:
+   ```
+   ssh coolify
+   C=$(docker ps --filter name=l40rxd4rbj1pnogmbtetzmsf --format '{{.Names}}')
+   docker exec "$C" agent-sync daemon init --seat GB-COMPILER --yes
+   docker exec "$C" agent-sync daemon reload
+   docker exec "$C" agent-sync status
+   ```
 7. **Verify.**  A green container does not prove a good deploy.  `agent-sync status` must show all of these:
    - `listener: running (pid ...)`
    - `instance server; owner pinned: yes`
@@ -216,5 +226,7 @@ GNU sed keeps the file's owner and mode 600.  For a larger change, edit the file
 - **One trigger per wake.**  A coalesced batch sends the newest owner trigger (else the newest trigger) as `message_id` and `excerpt`, plus every id in `trigger_ids`.  If the routine wants every body, the contract changes to a list.
 - **Spend.**  `usd_per_day` counts `cost_usd` per routine wake (default 0).  Grok Bot's own spend is not metered here; the count budgets (6 an hour, 40 a day, owner 20 a day) are the limit.
 - **Owner notes on the server.**  They land in an owner queue nobody reads there.  A Zulip DM to the owner from a notifier bot, or a pull from the Mac, would close that gap.
-- **Infisical to Coolify.**  Which mechanism copies `/zulip` (`prod`) into this app:  an Infisical secret sync, or a manual copy?  This repo configures none.  Either way, every variable is runtime only and a change needs a restart.
+- **Infisical to Coolify.**  Settled for now:  a script copies `/zulip` (`prod`) into the app by hand.  This repo configures no Infisical sync.  Every variable is runtime only and a change needs a restart.  An automatic sync would remove the manual re-copy on rotation.
 - **Variable names.**  The Infisical names are pending from Muse.  The defaults above are what the sample config reads.  If they differ, set `email_env` and `key_env` (or the routine's `url_env` and `key_env`) in the seat's section, copy the variables into Coolify under those names, and restart the app.
+- **GB-COMPILER credentials.**  `ZULIP_GB_COMPILER_EMAIL` and `ZULIP_GB_COMPILER_API_KEY` in Infisical currently hold another bot's credentials, an admin bot's.  The seat is refused (the key's own bot is not GB-COMPILER, and an admin key is refused) until the owner replaces them with the real GB-Compiler pair.  Then copy them to Coolify and restart the app.
+- **Cloud seats with no section.**  The partition gives this instance MA, JET, GROK-WEB, INSTINCT and ECHO, but `scripts/agent_sync/server/listener.toml` has no section for any of them, so none is listening.  Before a section is added, check each bot's role:  MA, JET and INSTINCT are admin bots and the listener would refuse them; ECHO is a member.
