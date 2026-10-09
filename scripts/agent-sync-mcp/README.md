@@ -64,6 +64,8 @@ The fleet pins packages released at least two weeks before use.  On Fri, Oct 9 t
 
 **Exceptions merged by the dependency bots (Fri, Oct 9).**  Renovate's security bumps took `@modelcontextprotocol/sdk` to 1.31.0 (#397, #398) and `@modelcontextprotocol/client` to 2.2.0 (#396, #399) for GHSA-6qxp-vccf-f47h, an OAuth client flaw that does not affect MCP servers (this Worker uses neither package's OAuth client).  Dependabot's bumps took `wrangler` to 4.149.0 (#400, #401) for `undici` 7.29.1 and `sharp`.  `agents` 0.24.0 names exact peers 2.0.0 and 1.30.0, so `package.json` has an `overrides` entry pointing them at the root versions;  without it `npm ci` stops on ERESOLVE.  The unit suites and the whole workerd flow pass on these versions.
 
+**Deferred (Fri, Oct 9).**  Renovate's #408 bumped `package.json` to `workers-oauth-provider` 1.2.1, `agents` 0.26.0, `@modelcontextprotocol/server` 2.3.0, `client` 2.3.0 and `sdk` 1.32.0 without the lockfile, so `npm ci` failed again, and none of those is two weeks old.  `package.json` is back on the locked versions above, and `renovate.json` now holds this directory to a 14-day release age with no automerge, so the next bump arrives as a PR that runs the workerd flow before anyone merges it.  The 1.2.x move is the one described below.
+
 | Package | Pinned | Published | Newer, not yet eligible |
 | --- | --- | --- | --- |
 | `@cloudflare/workers-oauth-provider` | 1.1.0 | Sep 24, 2026 | 1.2.0, 1.2.1 (Sep 28), 1.2.2 (Oct 6), 1.2.3 (Oct 7) |
