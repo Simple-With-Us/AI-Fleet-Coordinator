@@ -121,16 +121,21 @@ class Ledger:
             elif state == "started":
                 crashed.append(view)
                 self.append({"ts": now, "wake_id": wake_id, "seat": view.get("seat"), "state": "failed",
-                             "reason": "daemon stopped during the run", "cost_usd": view.get("reserved_usd",
-                                                                                            WAKE_MAX_BUDGET_USD)})
+                             "reason": "daemon stopped during the run",
+                             "cost_usd": _usd(view.get("reserved_usd"), WAKE_MAX_BUDGET_USD)})
         return reload, crashed
+
+
+def _usd(value: Any, default: float) -> float:
+    """A recorded dollar amount, where 0 is a real value (an http routine wake), not a gap."""
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else default
 
 
 def wake_cost(view: Mapping[str, Any]) -> float:
     if view.get("state") in ("done", "failed") and isinstance(view.get("cost_usd"), (int, float)):
         return float(view["cost_usd"])
     if view.get("state") == "started":
-        return float(view.get("reserved_usd") or WAKE_MAX_BUDGET_USD)
+        return _usd(view.get("reserved_usd"), WAKE_MAX_BUDGET_USD)
     return 0.0
 
 
@@ -145,17 +150,19 @@ def spent_today(views: Iterable[Mapping[str, Any]], now: float) -> float:
 
 def reserved_usd(views: Iterable[Mapping[str, Any]]) -> float:
     """What wakes waiting in the FIFO (`accepted`, not yet started) may still spend:  each run's
-    maximum.  A started run's reservation is already in spent_today."""
-    return round(sum(WAKE_MAX_BUDGET_USD for v in views if v.get("state") == "accepted"), 6)
+    maximum (`reserve_usd` on the accepted row:  $0.25 for claude, a routine's configured cost
+    for http; a row without it is a claude wake).  A started run's reservation is already in
+    spent_today."""
+    return round(sum(_usd(v.get("reserve_usd"), WAKE_MAX_BUDGET_USD) for v in views if v.get("state") == "accepted"), 6)
 
 
 def budget_block(views: Mapping[str, Mapping[str, Any]], budget: Mapping[str, float], *, owner: bool, key: str,
-                 now: float, exclude: str | None = None) -> str | None:
+                 now: float, exclude: str | None = None, run_max: float = WAKE_MAX_BUDGET_USD) -> str | None:
     """None when one more wake fits the seat's budget, else the name of the limit it hits.
     Wakes count from the moment they are accepted into the FIFO.  `usd_per_day` is a ceiling
     that nothing bypasses, the owner included:  money spent today, plus the maximum of every
-    accepted wake still waiting, plus this run's maximum.  `exclude` is the wake being checked,
-    so a re-check just before its run never counts it twice."""
+    accepted wake still waiting, plus this run's maximum (`run_max`).  `exclude` is the wake
+    being checked, so a re-check just before its run never counts it twice."""
     others = {wake_id: view for wake_id, view in views.items() if wake_id != exclude}
     counted: list[Mapping[str, Any]] = []
     for view in others.values():
@@ -165,7 +172,7 @@ def budget_block(views: Mapping[str, Mapping[str, Any]], budget: Mapping[str, fl
                 and now - at < DAY:
             counted.append(view)
     committed = spent_today(others.values(), now) + reserved_usd(others.values())
-    if committed + WAKE_MAX_BUDGET_USD > float(budget["usd_per_day"]) + 1e-9:
+    if committed + run_max > float(budget["usd_per_day"]) + 1e-9:
         return "usd_per_day"
 
     def times_of(view: Mapping[str, Any]) -> float:
