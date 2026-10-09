@@ -62,7 +62,7 @@ META_VERSION = "io.modelcontextprotocol/protocolVersion"
 META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 LIST_TTL_MS = 300000
 MAX_LINE = 4 << 20
-WRITE_DEADLINE_S = 30.0  # one response line must be out within this long, else the client is gone
+WRITE_DEADLINE_S = 30.0  # a non-blocking stream that takes no output for this long means the client is gone
 NO_FD_POLL_S = 0.01  # a stream with no fd to select on is retried after this pause
 IGNORED_ENV = ("ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE", Z.ENV_SECRETS_DIR)
 
@@ -258,35 +258,53 @@ def _line_reader(stream: Any) -> Callable[[], bytes | None]:
     return read
 
 
-def _expired(deadline: float) -> bool:
-    return time.monotonic() >= deadline
+class _Deadline:
+    """How long the client may go without taking any output.  It runs out WRITE_DEADLINE_S after the
+    last byte the client accepted (or after the line began), so a slow reader that keeps taking bytes
+    never trips it and one that has stopped does.  Only progress restarts it:  never a None, a 0 or a
+    would-block that took nothing."""
+
+    def __init__(self) -> None:
+        self.at = 0.0
+        self.progress()
+
+    def progress(self) -> None:
+        self.at = time.monotonic() + WRITE_DEADLINE_S
+
+    def expired(self) -> bool:
+        return time.monotonic() >= self.at
+
+    def remaining(self) -> float:
+        return self.at - time.monotonic()
 
 
 def _gone() -> BrokenPipeError:
-    return BrokenPipeError("the client took no more output for %g seconds" % WRITE_DEADLINE_S)
+    return BrokenPipeError("the client accepted no output for %g seconds" % WRITE_DEADLINE_S)
 
 
-def _wait_writable(stream: Any, deadline: float) -> None:
+def _wait_writable(stream: Any, deadline: _Deadline) -> None:
     """Wait (at most until `deadline`) for a non-blocking fd to take more.  A stream with no fd is
     retried after a short pause, so a fake that never accepts bytes does not spin."""
     try:
         fd = stream.fileno()
     except (AttributeError, OSError, ValueError):  # io.UnsupportedOperation is both
-        time.sleep(max(0.0, min(NO_FD_POLL_S, deadline - time.monotonic())))
+        time.sleep(max(0.0, min(NO_FD_POLL_S, deadline.remaining())))
         return
-    select.select([], [fd], [], max(0.0, min(1.0, deadline - time.monotonic())))
+    select.select([], [fd], [], max(0.0, min(1.0, deadline.remaining())))
 
 
-def _write_all(stream: Any, data: bytes, deadline: float | None = None) -> None:
+def _write_all(stream: Any, data: bytes, deadline: _Deadline | None = None) -> None:
     """Write every byte.  A raw stream may take only part of the data (a signal, a non-blocking
     fd) or none of it (None when the fd would block); a buffered one raises BlockingIOError.  A
-    client that stops reading is not waited for forever:  past `deadline` (default
-    WRITE_DEADLINE_S from now) this raises BrokenPipeError, which ends the server cleanly."""
+    non-blocking stream whose client takes nothing for WRITE_DEADLINE_S (counted from the last byte
+    it took, or from `deadline`) raises BrokenPipeError, which ends the server cleanly.  The
+    process's real protocol fd is made blocking (see _protect_stdout), where one write finishes or
+    raises, so this deadline does not bound it."""
     if deadline is None:
-        deadline = time.monotonic() + WRITE_DEADLINE_S
+        deadline = _Deadline()
     view = memoryview(data)
     while view:
-        if _expired(deadline):
+        if deadline.expired():
             raise _gone()
         try:
             written = stream.write(view)
@@ -295,43 +313,50 @@ def _write_all(stream: Any, data: bytes, deadline: float | None = None) -> None:
         if not written:
             _wait_writable(stream, deadline)
             continue
+        deadline.progress()
         view = view[written:]
 
 
-def _flush(stream: Any, deadline: float | None = None) -> None:
+def _flush(stream: Any, deadline: _Deadline | None = None) -> None:
     if deadline is None:
-        deadline = time.monotonic() + WRITE_DEADLINE_S
+        deadline = _Deadline()
     while True:
         try:
             stream.flush()
-            return
         except BlockingIOError:
-            if _expired(deadline):
+            if deadline.expired():
                 raise _gone() from None
             _wait_writable(stream, deadline)
+        else:
+            deadline.progress()
+            return
 
 
-def _write_text(stream: Any, text: str, deadline: float) -> None:
+def _write_text(stream: Any, text: str, deadline: _Deadline) -> None:
     """Write an ASCII line to a text stream, once.  A BlockingIOError says how many characters
     went in, so only the rest is retried:  retrying the whole line would send the head twice."""
     while text:
-        if _expired(deadline):
+        if deadline.expired():
             raise _gone()
         try:
             stream.write(text)
+            deadline.progress()
             return
         except BlockingIOError as exc:
+            if exc.characters_written > 0:
+                deadline.progress()
             text = text[exc.characters_written:]
             if text:
                 _wait_writable(stream, deadline)
 
 
 def _line_writer(stream: Any) -> Callable[[bytes], None]:
-    """One call writes one whole line and flushes it, all under a single WRITE_DEADLINE_S."""
+    """One call writes one whole line and flushes it.  The client may take WRITE_DEADLINE_S between
+    accepted bytes (see _Deadline), not WRITE_DEADLINE_S for the whole line."""
     raw = getattr(stream, "buffer", None)
 
     def write(data: bytes) -> None:
-        deadline = time.monotonic() + WRITE_DEADLINE_S
+        deadline = _Deadline()
         if raw is not None:
             _flush(stream, deadline)
             _write_all(raw, data, deadline)
@@ -452,6 +477,8 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
         return server.serve(reader, writer)
     except KeyboardInterrupt:
         return 0
-    except BrokenPipeError as exc:  # the client closed the pipe, or stopped reading it for WRITE_DEADLINE_S
+    # The client closed the pipe.  On a non-blocking stream (the deadline does not bound the real, blocking
+    # protocol fd) it also means no output was taken for WRITE_DEADLINE_S.
+    except BrokenPipeError as exc:
         log("stopping:  %s" % (exc or "the client closed the pipe"))
         return 0

@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -82,6 +83,113 @@ class _NeverRaw:
 
     def flush(self) -> None:
         pass
+
+
+def _fake_time(clock: FakeClock) -> types.SimpleNamespace:
+    """Stands in for the `time` module inside stdio:  monotonic and sleep run on a FakeClock, so a
+    deadline test takes no real time and cannot be skewed by a loaded machine."""
+    return types.SimpleNamespace(monotonic=clock.time, sleep=clock.sleep)
+
+
+class _SlowRaw:
+    """A raw stream whose reader takes `take` bytes a write, `step_s` of fake time apart.  After
+    `stall_after` writes it takes nothing (None, would block) for good."""
+
+    def __init__(self, clock: FakeClock, *, step_s: float, take: int, stall_after: int | None = None) -> None:
+        self.clock = clock
+        self.step_s = step_s
+        self.take = take
+        self.stall_after = stall_after
+        self.data = bytearray()
+        self.accepted_writes = 0
+        self.started = clock.now
+        self.last_accept_at = clock.now
+
+    @property
+    def accepted(self) -> int:
+        return len(self.data)
+
+    def write(self, chunk) -> int | None:
+        if self.stall_after is not None and self.accepted_writes >= self.stall_after:
+            return None
+        self.clock.sleep(self.step_s)
+        taken = bytes(chunk[: self.take])
+        self.data += taken
+        self.accepted_writes += 1
+        self.last_accept_at = self.clock.now
+        return len(taken)
+
+    def flush(self) -> None:
+        pass
+
+
+class _SlowBlockingText(io.TextIOBase):
+    """A text stream (no .buffer) that takes `take` characters a write and says so with
+    BlockingIOError(characters_written=take), `step_s` of fake time apart.  After `stall_after`
+    writes it raises BlockingIOError taking nothing."""
+
+    def __init__(self, clock: FakeClock, *, step_s: float, take: int, stall_after: int | None = None) -> None:
+        super().__init__()
+        self.clock = clock
+        self.step_s = step_s
+        self.take = take
+        self.stall_after = stall_after
+        self.chunks: list[str] = []
+        self.accepted_writes = 0
+        self.started = clock.now
+        self.last_accept_at = clock.now
+
+    @property
+    def accepted(self) -> int:
+        return sum(len(chunk) for chunk in self.chunks)
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text) -> int:
+        if self.stall_after is not None and self.accepted_writes >= self.stall_after:
+            raise BlockingIOError(errno.EAGAIN, "would block", 0)
+        self.clock.sleep(self.step_s)
+        self.chunks.append(text[: self.take])
+        self.accepted_writes += 1
+        self.last_accept_at = self.clock.now
+        raise BlockingIOError(errno.EAGAIN, "would block", min(self.take, len(text)))
+
+    def flush(self) -> None:
+        pass
+
+
+class _GatedBuffered:
+    """A text wrapper whose flush would block for `flush_blocks_s` of fake time, and whose raw stream then
+    takes nothing for `write_blocks_s` more before it takes everything."""
+
+    def __init__(self, clock: FakeClock, *, flush_blocks_s: float, write_blocks_s: float) -> None:
+        self.clock = clock
+        self.started = clock.now
+        self.flush_open_at = clock.now + flush_blocks_s
+        self.write_blocks_s = write_blocks_s
+        self.write_open_at: float | None = None
+        outer = self
+
+        class Raw:
+            data = bytearray()
+
+            def write(self, chunk) -> int | None:
+                if outer.write_open_at is None:
+                    outer.write_open_at = outer.clock.now + outer.write_blocks_s
+                if outer.clock.now < outer.write_open_at:
+                    return None
+                self.data += bytes(chunk)
+                return len(chunk)
+
+            def flush(self) -> None:
+                pass
+
+        self.buffer = Raw()
+
+    def flush(self) -> None:
+        if self.clock.now < self.flush_open_at:
+            raise BlockingIOError(errno.EAGAIN, "would block", 0)
 
 
 class _BlockingText(io.TextIOBase):
@@ -341,25 +449,87 @@ class ProtocolTests(McpHarness):
             writer.close()
             os.close(read_fd)
 
-    def test_the_deadline_covers_the_whole_line_not_each_wait(self):
-        # A client that takes a byte now and then never lets one wait expire, but the line as a whole is late.
-        class Drip:
-            def __init__(self) -> None:
-                self.data = bytearray()
+    def test_a_slow_reader_that_keeps_taking_bytes_is_never_cut_off(self):
+        # Review finding:  one fixed deadline per line aborted a client that was still reading, only slowly.
+        # The deadline is for no progress:  every accepted byte restarts it.
+        data = b"y" * 99 + b"\n"
+        for name, make in (("raw", lambda raw: raw), ("text with a buffer", lambda raw: type("T", (), {
+                "buffer": raw, "flush": lambda self: None})()), ("bare stream", lambda raw: raw)):
+            with self.subTest(name):
+                clock = FakeClock()
+                slow = _SlowRaw(clock, step_s=0.4, take=5)  # 20 writes, 8 s in all, 0.4 s between accepted bytes
+                with mock.patch.object(S, "time", _fake_time(clock)), mock.patch.object(S, "WRITE_DEADLINE_S", 1.0):
+                    S._line_writer(make(slow))(data)
+                self.assertEqual(bytes(slow.data), data)
+                self.assertGreater(clock.now - slow.started, 1.0)  # the whole line took longer than the deadline
 
-            def write(self, chunk) -> int:
-                time.sleep(0.05)
-                self.data += bytes(chunk[:1])
-                return 1
+    def test_a_slow_text_stream_that_keeps_taking_characters_is_never_cut_off(self):
+        text = "z" * 59 + "\n"
+        clock = FakeClock()
+        slow = _SlowBlockingText(clock, step_s=0.4, take=3)
+        self.assertIsNone(getattr(slow, "buffer", None))  # the io.TextIOBase branch
+        with mock.patch.object(S, "time", _fake_time(clock)), mock.patch.object(S, "WRITE_DEADLINE_S", 1.0):
+            S._line_writer(slow)(text.encode("ascii"))
+        self.assertEqual("".join(slow.chunks), text)  # exactly once
+        self.assertGreater(clock.now - slow.started, 1.0)
 
-            def flush(self) -> None:
-                pass
+    def test_a_stall_after_progress_is_cut_off_from_the_last_accepted_byte(self):
+        # The deadline restarts on accepted bytes only, so a client that took some and then stopped is
+        # still cut off, WRITE_DEADLINE_S after the last byte it took.
+        data = b"w" * 100 + b"\n"
+        for name in ("raw", "text"):
+            with self.subTest(name):
+                clock = FakeClock()
+                if name == "raw":
+                    stream = _SlowRaw(clock, step_s=0.4, take=5, stall_after=3)
+                else:
+                    stream = _SlowBlockingText(clock, step_s=0.4, take=5, stall_after=3)
+                with mock.patch.object(S, "time", _fake_time(clock)), mock.patch.object(S, "WRITE_DEADLINE_S", 1.0):
+                    with self.assertRaises(BrokenPipeError) as caught:
+                        S._line_writer(stream)(data)
+                self.assertIn("accepted no output for 1 seconds", str(caught.exception))
+                self.assertEqual(stream.accepted, 15)  # it took three writes and then nothing
+                idle = clock.now - stream.last_accept_at
+                self.assertGreaterEqual(idle, 1.0)
+                self.assertLess(idle, 1.1)  # cut off at the deadline, not long after
 
-        with mock.patch.object(S, "WRITE_DEADLINE_S", 0.3):
-            drip = Drip()
-            with self.assertRaises(BrokenPipeError):
-                S._line_writer(drip)(b"y" * 200 + b"\n")
-            self.assertLess(len(drip.data), 201)
+    def test_a_flush_that_finally_succeeds_restarts_the_deadline(self):
+        # The flush before the write may wait most of a deadline;  the write then gets a fresh one.
+        clock = FakeClock()
+        gate = _GatedBuffered(clock, flush_blocks_s=0.6, write_blocks_s=0.6)
+        data = b"v" * 40 + b"\n"
+        with mock.patch.object(S, "time", _fake_time(clock)), mock.patch.object(S, "WRITE_DEADLINE_S", 1.0):
+            S._line_writer(gate)(data)
+        self.assertEqual(bytes(gate.buffer.data), data)
+        self.assertGreater(clock.now - gate.started, 1.0)  # 0.6 s of flush plus 0.6 s of write, over one deadline
+
+    def test_writer_over_a_nonblocking_pipe_with_a_slow_live_reader_completes(self):
+        # Review finding, reproduced on a real pipe:  a reader taking 8 KB every 25 ms was cut off after one
+        # deadline although it never stopped.  The line takes about 2.5 s;  the deadline is 1.5 s.
+        read_fd, write_fd = os.pipe()
+        _nonblocking(write_fd)
+        data = b"x" * 800_000 + b"\n"
+        writer = os.fdopen(write_fd, "wb", buffering=0)
+        received = bytearray()
+
+        def drain() -> None:
+            with os.fdopen(read_fd, "rb", buffering=0) as reader:
+                for chunk in iter(lambda: reader.read(8192), b""):
+                    received.extend(chunk)
+                    time.sleep(0.025)
+
+        thread = threading.Thread(target=drain)
+        thread.start()
+        started = time.monotonic()
+        try:
+            with mock.patch.object(S, "WRITE_DEADLINE_S", 1.5):
+                S._line_writer(writer)(data)
+            elapsed = time.monotonic() - started
+        finally:
+            writer.close()
+            thread.join(timeout=60)
+        self.assertEqual(bytes(received), data)
+        self.assertGreater(elapsed, 1.5)  # longer than the deadline, and still delivered
 
     def test_text_stream_would_block_is_retried_without_a_double_write(self):
         # Review finding:  the io.TextIOBase branch let BlockingIOError from write or flush crash the server.
