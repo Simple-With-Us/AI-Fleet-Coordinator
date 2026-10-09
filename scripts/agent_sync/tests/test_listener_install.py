@@ -7,6 +7,7 @@ import io
 import json
 import os
 import plistlib
+import secrets
 import subprocess
 import sys
 import unittest
@@ -113,6 +114,46 @@ class InitAndTestWakeTests(ListenerHarness):
         # claude, codex, cursor and grok-bot@ (tag GROK) are pinned; Sentry and minimax-bot@ (tag MINIMAX) are not.
         self.assertEqual(sorted(cfg.eligible_user_ids), [10, 11, 13, 14])
         self.assertIn("CLAUDE: file mode ok, role 400", result.out)
+
+    def codex_rc(self) -> Path:
+        key = secrets.token_hex(16)
+        self.extra_keys.append(("codex-bot@zulip.test", key))
+        self.fake.add_bot("codex-bot@zulip.test", "Codex", key)
+        return write_rc(self.secrets_dir / "Codex-zuliprc", email="codex-bot@zulip.test", key=key, site=self.fake.url)
+
+    def test_init_reads_with_a_disabled_file_seats_own_credential_file(self) -> None:
+        self.codex_rc()
+        self.write_config(owner=0, eligible=[], seats='[seat.CLAUDE]\nbot = "Claude"\n\n'
+                                                        '[seat.CODEX]\nbot = "Codex"\nenabled = false\n')
+        result = self.run_cli("daemon", "init", "--yes", "--seat", "CODEX")
+        self.assertEqual(result.code, 0, result.err + result.out)
+        self.assertIn("reading the user list as CODEX (%s)" % (self.secrets_dir / "Codex-zuliprc"), result.out)
+        cfg = C.load(self.root)
+        self.assertEqual((cfg.owner_user_id, sorted(cfg.eligible_user_ids)), (12, [10, 11, 13, 14]))
+        self.assertEqual(sorted(cfg.disabled), ["CODEX"], "init pins ids and does not enable the seat")
+
+    def test_init_takes_an_explicit_rc_and_zulip_rc_before_the_seats_file(self) -> None:
+        moved = self.tmp / "claude-moved-rc"
+        self.rc_path.rename(moved)
+        self.assertEqual(self.run_cli("daemon", "init", "--yes", "--seat", "CLAUDE").code, 3, "the file is gone")
+        result = self.run_cli("daemon", "init", "--yes", "--seat", "CLAUDE", "--rc", str(moved))
+        self.assertEqual(result.code, 0, result.err + result.out)
+        self.assertIn("reading the user list as CLAUDE (%s)" % moved, result.out)
+        self.write_config(owner=0, eligible=[])
+        result = self.run_cli("daemon", "init", "--yes", env=self.env(ZULIP_RC=str(moved)))
+        self.assertEqual(result.code, 0, result.err + result.out)
+        self.assertEqual(C.load(self.root).owner_user_id, 12)
+
+    def test_init_refuses_a_key_that_is_not_the_seats_own_bot(self) -> None:
+        self.codex_rc()
+        self.write_config(owner=0, eligible=[], seats='[seat.CLAUDE]\nbot = "Claude"\n\n'
+                                                        '[seat.CODEX]\nbot = "Codex"\nenabled = false\n')
+        before = (self.state_dir / "listener.toml").read_text()
+        result = self.run_cli("daemon", "init", "--yes", "--seat", "CODEX", "--rc", str(self.rc_path))
+        self.assertEqual(result.code, 3, result.out + result.err)
+        self.assertIn("authenticates as CLAUDE", result.err)
+        self.assertIn("not CODEX", result.err)
+        self.assertEqual((self.state_dir / "listener.toml").read_text(), before)
 
     def test_init_pins_the_grok_build_bot_under_the_tag_grok(self) -> None:
         # grok-build-bot@ derives to the seat tag GROK (EMAIL_TAG_OVERRIDES), so GROK must be in FLEET_SEATS.
