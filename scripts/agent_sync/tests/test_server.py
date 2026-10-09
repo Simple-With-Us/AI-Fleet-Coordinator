@@ -919,6 +919,111 @@ class ServerInitTests(ServerHarness):
         self.assertIn("ZULIP_GB_COMPILER_API_KEY", missing.err)
 
 
+DISABLED_DIRECTOR = textwrap.dedent("""\
+    [seat.GB-DIRECTOR]
+    instance = "server"
+    enabled = false
+    creds = "env"
+    wake = "http"
+    routine = { url_env = "GB_DIRECTOR_ROUTINE_URL", key_env = "GB_DIRECTOR_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+    """)
+
+
+class ServerInitCredentialSourceTests(ServerHarness):
+    """`daemon init` reads the realm as the --seat bot, from --rc, then ZULIP_RC, then the seat's own source in
+    listener.toml (enabled or not), and refuses a key that is not that seat's bot."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.write_server_config(seats=DISABLED_DIRECTOR)
+        self.director_key = secrets.token_hex(16)
+        self.extra_keys.append((DIRECTOR_EMAIL, self.director_key))
+        self.director = self.fake.add_bot(DIRECTOR_EMAIL, "GB-Director", self.director_key)
+
+    def director_env(self, **extra: str | None) -> dict[str, str]:
+        return self.server_env(ZULIP_GB_DIRECTOR_EMAIL=DIRECTOR_EMAIL, ZULIP_GB_DIRECTOR_API_KEY=self.director_key,
+                               **extra)
+
+    def assert_pinned_as_director(self, result) -> None:
+        self.assertEqual(result.code, 0, result.err + result.out)
+        self.assertIn("reading the user list as GB-DIRECTOR", result.out)
+        self.assertEqual(self.fake.requests[0].path, "users/me")
+        cfg = C.load(self.root, str(self.config_file))
+        self.assertEqual(cfg.owner_user_id, 12)
+        self.assertEqual(sorted(cfg.eligible_user_ids), [10, 11, 13, 14])
+        self.assertEqual(sorted(cfg.disabled), ["GB-DIRECTOR"], "init pins ids and does not enable the seat")
+
+    def test_a_disabled_env_seat_reads_with_its_own_environment_credentials(self) -> None:
+        self.assertFalse((self.secrets_dir / "GB-Director-zuliprc").exists())
+        result = self.run_cli("daemon", "init", "--yes", "--seat", "GB-DIRECTOR", env=self.director_env())
+        self.assert_pinned_as_director(result)
+        self.assertIn("(env ZULIP_GB_DIRECTOR_API_KEY)", result.out)
+        self.assertNotIn("credential file not found", result.err)
+
+    def test_a_disabled_env_seat_names_the_variables_it_is_missing(self) -> None:
+        result = self.run_cli("daemon", "init", "--yes", "--seat", "GB-DIRECTOR", env=self.server_env())
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("ZULIP_GB_DIRECTOR_EMAIL", result.err)
+        self.assertIn("ZULIP_GB_DIRECTOR_API_KEY", result.err)
+        self.assertNotIn("zuliprc", result.err, "an env seat never falls back to a credential file")
+        self.assertIn("owner_user_id = 12", self.config_file.read_text(), "nothing was pinned")
+
+    def test_as_names_the_seat_when_seat_is_absent(self) -> None:
+        result = self.run_cli("daemon", "init", "--yes", "--as", "GB-DIRECTOR", env=self.director_env())
+        self.assert_pinned_as_director(result)
+
+    def test_rc_beats_the_seats_own_source(self) -> None:
+        rc = write_rc(self.tmp / "elsewhere" / "director-rc", email=DIRECTOR_EMAIL, key=self.director_key,
+                      site=self.fake.url)
+        result = self.run_cli("daemon", "init", "--yes", "--seat", "GB-DIRECTOR", "--as", "GB-DIRECTOR", "--rc", str(rc),
+                              env=self.server_env())
+        self.assert_pinned_as_director(result)
+        self.assertIn("(%s)" % rc, result.out)
+
+    def test_an_unreadable_rc_is_an_error_not_a_fall_through(self) -> None:
+        result = self.run_cli("daemon", "init", "--yes", "--seat", "GB-DIRECTOR", "--rc", str(self.tmp / "nope"),
+                              env=self.director_env())
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("credential file not found: %s" % (self.tmp / "nope"), result.err)
+
+    def test_zulip_rc_beats_the_seats_own_source_and_loses_to_rc(self) -> None:
+        rc = write_rc(self.tmp / "elsewhere" / "director-rc", email=DIRECTOR_EMAIL, key=self.director_key,
+                      site=self.fake.url)
+        result = self.run_cli("daemon", "init", "--yes", "--seat", "GB-DIRECTOR", env=self.server_env(ZULIP_RC=str(rc)))
+        self.assert_pinned_as_director(result)
+        self.assertIn("(%s)" % rc, result.out)
+        bad = write_rc(self.tmp / "elsewhere" / "bad-rc", email=GB_EMAIL, key=self.gb_key, site=self.fake.url)
+        result = self.run_cli("daemon", "init", "--yes", "--seat", "GB-DIRECTOR", "--rc", str(rc),
+                              env=self.director_env(ZULIP_RC=str(bad)))
+        self.assert_pinned_as_director(result)
+
+    def test_a_key_that_is_another_seats_bot_is_refused_and_nothing_is_pinned(self) -> None:
+        before = self.config_file.read_text()
+        other = write_rc(self.tmp / "elsewhere" / "compiler-rc", email=GB_EMAIL, key=self.gb_key, site=self.fake.url)
+        for argv, env in ((("--rc", str(other)), self.director_env()), ((), self.director_env(ZULIP_RC=str(other)))):
+            result = self.run_cli("daemon", "init", "--yes", "--seat", "GB-DIRECTOR", *argv, env=env)
+            self.assertEqual(result.code, 3, result.out + result.err)
+            self.assertIn("authenticates as GB-COMPILER", result.err)
+            self.assertIn("not GB-DIRECTOR", result.err)
+            self.assertEqual(self.config_file.read_text(), before)
+        self.assertEqual([r.path for r in self.fake.requests if r.path != "users/me"], [],
+                         "nothing but users/me ran under the wrong identity")
+
+    def test_an_unconfigured_seat_uses_the_cli_order_with_the_environment_triple(self) -> None:
+        designer_key = secrets.token_hex(16)
+        self.extra_keys.append(("designer-grok-bot@zulip.test", designer_key))
+        self.fake.add_bot("designer-grok-bot@zulip.test", "GB-Designer", designer_key)
+        env = self.server_env(ZULIP_EMAIL="designer-grok-bot@zulip.test", ZULIP_API_KEY=designer_key,
+                              ZULIP_SITE=self.fake.url)
+        result = self.run_cli("daemon", "init", "--yes", "--seat", "GB-DESIGNER", env=env)
+        self.assertEqual(result.code, 0, result.err + result.out)
+        self.assertIn("reading the user list as GB-DESIGNER (env)", result.out)
+        # A configured seat never falls back to the triple:  it reads its own variables, and names the ones it lacks.
+        configured = self.run_cli("daemon", "init", "--yes", "--seat", "GB-DIRECTOR", env=env)
+        self.assertEqual(configured.code, 3, configured.out + configured.err)
+        self.assertIn("ZULIP_GB_DIRECTOR_API_KEY", configured.err)
+
+
 # --------------------------------------------------------------------------------------------
 # Container pieces
 # --------------------------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import os
 import re
 import signal
 import time
+from pathlib import Path
 from typing import Any
 
 from . import adapters as A
@@ -283,6 +284,23 @@ def _rewrite_pins(text: str, owner: int, eligible: list[int]) -> str:
     return text
 
 
+def _init_credentials(rt: Any, args: argparse.Namespace, cfg: C.Config, seat: str, secrets_dir: str) -> Z.Credentials:
+    """The credentials `daemon init` reads the user list with, in this order:  --rc, ZULIP_RC, the
+    seat's own source in listener.toml (enabled or not:  an env seat's email_env and key_env, else
+    its zuliprc file), and for a seat the config does not list, the CLI's order (the seat's file
+    under the secrets dir, then ZULIP_EMAIL, ZULIP_API_KEY and ZULIP_SITE).  An explicit --rc or
+    ZULIP_RC that cannot be read is an error, never a fall-through."""
+    rc_arg = getattr(args, "rc", None)
+    if rc_arg:
+        return Z.read_zuliprc(Path(rc_arg).expanduser())
+    if rt.env.get("ZULIP_RC"):
+        return Z.read_zuliprc(Path(rt.env["ZULIP_RC"]).expanduser())
+    seat_cfg = cfg.seats.get(seat) or cfg.disabled.get(seat)
+    if seat_cfg is not None:
+        return C.seat_credentials(seat_cfg, rt.env, secrets_dir)
+    return Z.resolve_credentials(rt.env, rc_arg=None, seat=seat, home=Path(_home(rt)))
+
+
 def cmd_init(rt: Any, args: argparse.Namespace) -> int:
     from .cli import seat_tag_for
 
@@ -298,17 +316,20 @@ def cmd_init(rt: Any, args: argparse.Namespace) -> int:
             launchd.write_private(config_path, launchd.sample_config(secrets_dir))
         rt.out("wrote the sample config %s\n" % config_path)
     cfg = C.load(root, config_path)
-    # The bot that reads the user list:  --seat, the Claude seat, else the first enabled seat
-    # (the server instance has no Claude seat).
+    # The bot that reads the user list:  --seat, then --as, the Claude seat, else the first enabled
+    # seat (the server instance has no Claude seat).
     default = cfg.claude_seat if cfg.claude_seat in cfg.seats else (sorted(cfg.seats) or [cfg.claude_seat or "CLAUDE"])[0]
-    seat = Z.normalise_seat(args.seat or default or "CLAUDE")
-    if seat in cfg.seats:
-        creds = C.seat_credentials(cfg.seats[seat], rt.env, secrets_dir)
-    else:
-        creds = Z.read_zuliprc(os.path.join(secrets_dir, Z.credential_file_name(seat)))
+    seat = Z.normalise_seat(getattr(args, "seat", None) or getattr(args, "as_seat", None) or default or "CLAUDE")
+    creds = _init_credentials(rt, args, cfg, seat, secrets_dir)
     realm = Z.realm_url(rt.env)
     Z.verify_realm(creds, realm)
     client = Z.ZulipClient(creds, realm, timeout=rt.timeout, sleep=rt.sleep)
+    # The #410 bot check, whatever the source:  the key must be the --seat's own bot, so a stray --rc
+    # or ZULIP_RC cannot read the realm as another seat.
+    problem = I.check_bot(client.get("users/me"), seat, creds.email)
+    if problem:
+        raise Z.CredentialError(problem)
+    rt.out("reading the user list as %s (%s)\n" % (seat, creds.source))
     members = list(client.get("users").get("members") or [])
     owners = [u for u in members if u.get("role") == 100 and not u.get("is_bot") and u.get("is_active", True)]
     if len(owners) != 1:
@@ -531,7 +552,9 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
     q.add_argument("--seat", metavar="S", help="one seat (default: every pause)")
     add("reload", "re-read listener.toml (SIGHUP to the running listener)", dsub)
     q = add("init", "pin owner_user_id and eligible_user_ids in listener.toml (asks first)", dsub)
-    q.add_argument("--seat", metavar="S", help="the bot to read the user list with (default: the Claude seat)")
+    q.add_argument("--seat", metavar="S", help="the bot to read the user list with (default: the Claude seat); its "
+                                               "credentials come from --rc, ZULIP_RC, then its listener.toml source "
+                                               "(enabled or not), and must be that seat's own bot")
     q.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     q = add("test-wake", "show the wake argv, environment names and prompt; --run runs it on canned hostile "
                          "messages; --pin then pins the binary that passed", dsub)
