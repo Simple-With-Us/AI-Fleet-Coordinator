@@ -1,0 +1,56 @@
+[
+  {
+    "name": "hello",
+    "title": "Hello",
+    "description": "Phase 0 probe.  Returns the seat this connection acts as, its scopes and the OAuth client id.  Reads nothing from Zulip.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "outputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seat", "scopes", "client_id"],
+      "properties": {
+        "seat": { "type": "string" },
+        "scopes": { "type": "array", "items": { "type": "string" } },
+        "client_id": { "type": "string" }
+      }
+    }
+  },
+  {
+    "name": "hello_write",
+    "title": "Hello Write",
+    "description": "Phase 0 write probe.  It is marked as a write so the client asks for confirmation the way it will for a real post, but it posts nothing and only returns an acknowledgment.",
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "note": { "type": "string", "maxLength": 200 }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ack", "seat", "posted"],
+      "properties": {
+        "ack": { "type": "boolean" },
+        "seat": { "type": "string" },
+        "posted": { "type": "boolean" },
+        "note_length": { "type": "integer" }
+      }
+    }
+  }
+]

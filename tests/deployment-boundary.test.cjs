@@ -61,7 +61,9 @@ test('deployment input allowlist rejects private documents and future unknown fi
       ...LOGO_FILES.map((f) => `public/${f}`),
       'api/quota.js', 'api/rag-snapshot.js', 'site-snapshot.json', 'vercel.json', 'vercel-ignore.sh',
     ];
-    const denied = ['ATTACK-MAP.md', 'docs/DOMAINS-AND-ROUTING.md', 'docs/domains.json', 'docs/new-private-note.md', 'scripts/cloud-setup.sh', 'api/new-private-helper.js', '.env', 'new-inventory.json'];
+    // scripts/agent-sync-mcp is a separate Cloudflare Worker (docs/protocols/agent-sync-mcp.md)
+    // that must never ship to Vercel.
+    const denied = ['ATTACK-MAP.md', 'docs/DOMAINS-AND-ROUTING.md', 'docs/domains.json', 'docs/new-private-note.md', 'scripts/cloud-setup.sh', 'api/new-private-helper.js', '.env', 'new-inventory.json', 'scripts/agent-sync-mcp/src/index.js', 'scripts/agent-sync-mcp/wrangler.jsonc', 'scripts/agent-sync-mcp/infra_phase0.py'];
     for (const name of [...allowed, ...denied]) {
       fs.mkdirSync(path.dirname(path.join(temp, name)), { recursive: true });
       fs.writeFileSync(path.join(temp, name), 'fixture');
