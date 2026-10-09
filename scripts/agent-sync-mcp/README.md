@@ -55,15 +55,17 @@ The workerd flow (also run in CI by `.github/workflows/agent-sync-mcp.yml` on ch
 
 ## Versions and the two-week rule
 
-The fleet pins packages released at least two weeks before use.  On Fri, Oct 9 that means on or before Thu, Sep 24.  `package-lock.json` was resolved with `npm install --before=2026-09-25`, so transitive packages follow the same rule.
+The fleet pins packages released at least two weeks before use.  On Fri, Oct 9 that means on or before Thu, Sep 24.  `package-lock.json` was resolved with `npm install --before=2026-09-25`, so transitive packages follow the same rule, with one exception:  the two Renovate security bumps below.
+
+**Security exception (Fri, Oct 9).**  Renovate merged `@modelcontextprotocol/sdk` 1.31.0 (#397) and `@modelcontextprotocol/client` 2.2.0 (#396) for GHSA-6qxp-vccf-f47h, an OAuth client flaw that sends stored credentials to an authorization server the MCP server names.  Both were published Mon, Sep 28, so they are under two weeks old and become eligible Mon, Oct 12.  The advisory does not affect MCP servers, and this Worker uses neither package's OAuth client, but the bumps changed `package.json` without the lockfile, so `npm ci` failed on every run.  The lockfile now carries them (re-resolved with `--before=2026-09-29`, which adds only `@modelcontextprotocol/core` 2.2.0 under the client).  `agents` 0.24.0 names exact peers 2.0.0 and 1.30.0, so `package.json` has an `overrides` entry that points its peers at the root versions;  without it `npm ci` stops on ERESOLVE.  The whole workerd flow passes with the override.
 
 | Package | Pinned | Published | Newer, not yet eligible |
 | --- | --- | --- | --- |
 | `@cloudflare/workers-oauth-provider` | 1.1.0 | Sep 24, 2026 | 1.2.0, 1.2.1 (Sep 28), 1.2.2 (Oct 6), 1.2.3 (Oct 7) |
 | `agents` | 0.24.0 | Sep 18, 2026 | 0.25.0, 0.26.0 (Oct 2), 0.27.0 (Oct 7) |
 | `@modelcontextprotocol/server` | 2.0.0 | Jul 27, 2026 | exact peer of agents 0.24.0 |
-| `@modelcontextprotocol/client` | 2.0.0 | Jul 27, 2026 | exact peer of agents 0.24.0 |
-| `@modelcontextprotocol/sdk` | 1.30.0 | Jul 27, 2026 | exact peer of agents 0.24.0 |
+| `@modelcontextprotocol/client` | 2.2.0 | Sep 28, 2026 | security exception (above);  agents 0.24.0 peers 2.0.0, overridden |
+| `@modelcontextprotocol/sdk` | 1.31.0 | Sep 28, 2026 | security exception (above);  agents 0.24.0 peers 1.30.0, overridden |
 | `zod` | 4.6.5 | Sep 13, 2026 | none |
 | `wrangler` (dev) | 4.139.0 | Sep 24, 2026 | 4.140.0 and later |
 

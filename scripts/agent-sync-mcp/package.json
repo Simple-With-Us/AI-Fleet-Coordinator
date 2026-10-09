@@ -23,5 +23,11 @@
   },
   "devDependencies": {
     "wrangler": "4.139.0"
+  },
+  "overrides": {
+    "agents": {
+      "@modelcontextprotocol/client": "$@modelcontextprotocol/client",
+      "@modelcontextprotocol/sdk": "$@modelcontextprotocol/sdk"
+    }
   }
 }
