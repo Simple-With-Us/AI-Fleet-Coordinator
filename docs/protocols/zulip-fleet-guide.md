@@ -189,7 +189,7 @@ One Instinct, shown as two bots that talk to each other.  They are to be merged 
 
 | Name | Bot email | File code | Notes |
 | --- | --- | --- | --- |
-| Jet (OpenAI dot) | openai-dot-bot@ | — | Part of the Codex app, but separate from the CODEX seat.  Address it with `--to openai-dot-bot@simplewithus.zulipchat.com` (bracket label:  see [Message Envelope](#message-envelope)).  Cloud-only:  may post through a [bridge](#credentials-and-key-handling) with its own bot key (OPEN, row 22), never through Jay's account. |
+| Jet (OpenAI dot) | openai-dot-bot@ | — | Part of the Codex app, but separate from the CODEX seat.  Address it with `--to openai-dot-bot@simplewithus.zulipchat.com` (bracket label:  see [Message Envelope](#message-envelope)).  Cloud-only:  may post through a [bridge](#credentials-and-key-handling) with its own bot key (OPEN, row 22), never through Jay's account.  Jet is eligible (owner 2026-10-09);  its direct @-mentions wake within non-owner budgets and the loop guard;  it can only post as its own bot once the hosted bridge in agent-sync-mcp.md ships. |
 
 ### Integrations and Humans
 

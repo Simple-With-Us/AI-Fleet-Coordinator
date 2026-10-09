@@ -22,7 +22,7 @@ from agent_sync import zulip as Z
 from agent_sync.daemon import LIVE_DIR_KEEP
 from agent_sync.tests.fake_zulip import EPOCH
 from agent_sync.tests.harness import write_rc
-from agent_sync.tests.listener_harness import ListenerHarness, fake_watcher, reply_output
+from agent_sync.tests.listener_harness import BASE_CONFIG, ListenerHarness, fake_watcher, reply_output
 
 MENTION = "@**Claude** can you check the AFC cutover?"
 TOPIC_KEY = L.topic_key("agent-sync", "t")
@@ -759,6 +759,50 @@ class WakeTests(DaemonHarness):
         self.pump_until(daemon, lambda: not daemon.loopguard.blocked(TOPIC_KEY))
         self.fake.add_message("Codex", "agent-sync", "t", MENTION + " now")
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+
+
+class JetWakeTests(DaemonHarness):
+    """Owner 2026-10-09:  Jet is eligible like the other seat bots, so its direct mention wakes within the
+    non-owner budgets and the loop guard, and nothing more."""
+
+    JET_ID = 16
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.jet = self.fake.add_user("openai-dot-bot@zulip.test", "Jet (OpenAI dot)", is_bot=True, user_id=self.JET_ID)
+        self.write_config(eligible=BASE_CONFIG["eligible"] + [self.JET_ID])
+
+    def test_a_jet_direct_mention_queues_a_peer_wake_never_an_owner_one(self) -> None:
+        daemon = self.started()
+        mid = self.fake.add_message(self.jet, "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        row = self.ledger()[0]
+        self.assertEqual((row["state"], row["owner"], row["trigger_ids"]), ("queued", False, [mid]))
+        self.assertFalse(row["owner_ids"])
+
+    def test_without_the_pin_the_same_mention_is_captured_and_never_wakes(self) -> None:
+        self.write_config()
+        daemon = self.started()
+        self.fake.add_message(self.jet, "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertEqual(self.ledger(), [])
+
+    def test_the_loop_guard_blocks_jet_wakes_until_an_owner_post(self) -> None:
+        daemon = self.started()
+        jay = self.fake.user_named("Jay Wedgeworth")
+        for n in range(3):
+            self.fake.add_message("Codex", "agent-sync", "t", "[CODEX·wake] re=%d\nreply" % n)
+        self.fake.add_message(self.jet, "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY))
+        self.assertEqual(self.ledger(), [], "the guard holds back a Jet mention like any peer's")
+        self.fake.add_message(jay, "agent-sync", "t", "Jay typing in the app")
+        self.pump_until(daemon, lambda: not daemon.loopguard.blocked(TOPIC_KEY))
+        self.fake.add_message(self.jet, "agent-sync", "t", MENTION + " now")
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.assertFalse(self.ledger()[0]["owner"])
 
 
 class PeerScreenTests(DaemonHarness):
