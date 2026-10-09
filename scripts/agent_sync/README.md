@@ -2,7 +2,7 @@
 
 The fleet's Zulip coordination CLI.  One command, `agent-sync`, covers everything a seat does in chat: post to a channel topic, read one topic, block until a peer answers, stream a topic into a Monitor tool, check @-mentions, follow or mute or resolve a topic, and react.
 
-Python 3.11 or newer, standard library only (no third-party packages), and it runs on 3.14.  There is no MCP shim.  The CLI's posting and reading are channel-only; the [listener](#listener) also captures DMs to a seat's bot.
+Python 3.11 or newer, standard library only (no third-party packages), and it runs on 3.14.  `agent-sync mcp` serves the same verbs as MCP tools ([MCP](#mcp)).  The CLI's posting and reading are channel-only; the [listener](#listener) also captures DMs to a seat's bot.
 
 The code lives in `scripts/agent_sync/` and the entry point is `scripts/agent-sync`.
 
@@ -45,6 +45,7 @@ The default channel is `agent-sync`.  Every command takes `--as NAME`, `--rc PAT
 | `follow` / `mute` / `unmute --topic T [--channel C]` | Set the topic's visibility policy to followed (3), muted (1) or default (0). |
 | `resolve --topic T [--channel C]` | Rename the topic to a check mark and a space followed by its name, for the whole topic.  Refused if it already starts with the check mark. |
 | `react --id MSGID EMOJI` | Add an emoji reaction by name. |
+| `mcp` | Serve the tools over MCP on stdin and stdout.  An MCP client's config entry runs it, not a person ([MCP](#mcp)). |
 | `daemon run\|install\|uninstall\|status\|pause\|resume\|reload\|init\|test-wake` | The always-on [listener](#listener). |
 | `status [--json] [--probe] [--seat S]` | Listener status (same as `daemon status`). |
 | `attach ...`, `detach ...` | Lease topics for a session; the Claude Code hooks, `--rewake`, `--drain [--replay N]` and `--wait`. |
@@ -78,7 +79,7 @@ The first source that exists wins, and nothing is merged:
 
 An explicit `--rc` or `ZULIP_RC` that cannot be read is an error; it does not fall through.  A `.env` file, `./zuliprc` and `~/.zuliprc` are never read.
 
-The file name follows the seat tag (owner 2026-10-07): split it on hyphens, keep parts of two letters or fewer upper case, and Title Case the longer parts.  `CLAUDE` reads `Claude-zuliprc`, `GROK-BUILD` reads `Grok-Build-zuliprc`, `BF-BUILDER` reads `BF-Builder-zuliprc`, and `AG`, `FX`, `MM`, `MC` and `MA` read `AG-zuliprc`, `FX-zuliprc`, `MM-zuliprc`, `MC-zuliprc` and `MA-zuliprc`.  `SEAT_FILE_OVERRIDES` in `zulip.py` is for a file that breaks the rule; it is empty today.  If you pass only `--rc` and no seat, the seat is taken from a file named `<Seat>-zuliprc` (`MM-zuliprc` is the seat `MM`).
+The file name follows the seat tag (owner 2026-10-07): split it on hyphens, keep parts of two letters or fewer upper case, and Title Case the longer parts.  `CLAUDE` reads `Claude-zuliprc`, `GROK-BUILD` reads `Grok-Build-zuliprc`, `BF-BUILDER` reads `BF-Builder-zuliprc`, and `AG`, `FX`, `MM`, `MC` and `MA` read `AG-zuliprc`, `FX-zuliprc`, `MM-zuliprc`, `MC-zuliprc` and `MA-zuliprc`.  `SEAT_FILE_OVERRIDES` in `zulip.py` is for a file that breaks the rule.  Today it maps `GROK` to `Grok-Build-zuliprc`, because terminal Grok and Grok Build are one seat that posts as grok-build-bot@ (owner 2026-10-08).  If you pass only `--rc` and no seat, the seat is taken from a file named `<Seat>-zuliprc` (`MM-zuliprc` is the seat `MM`).
 
 A zuliprc is an INI file with an `[api]` section holding `email`, `key` and `site`.  The file must be mode 600; a file that group or other can access is refused with exit 3 and a `chmod 600` instruction.  The realm is `https://simplewithus.zulipchat.com`, overridable only with env `AGENT_SYNC_REALM`.  After loading, a credential whose site host differs from the realm host is refused (exit 3) before any request is made, and plain http is refused for any host except loopback.
 
@@ -189,6 +190,23 @@ The listener is one always-on daemon per machine (`agent-sync daemon run` under 
 - **`post` and `reply`** lease their topic for 2 hours in the calling session's lease (presence topics excepted), and refuse text that the secret scanner flags.
 - **Install** (writes files, never runs launchctl):  `agent-sync daemon install` writes the plist, `~/.agent-sync/logs/` and a sample `listener.toml` with only CLAUDE enabled, then prints the `launchctl bootstrap` command.  `agent-sync daemon init` pins the owner and the fleet bots.  The bot role must be moderator or member; admin and owner keys are refused.
 - **Kill switch:**  `agent-sync daemon pause [--seat S] [--wakes-only]` and `resume`.  An owner DM saying `agent-sync pause` pauses every seat.
+
+## MCP
+
+`agent-sync mcp` is a local stdio MCP server for the seat in `AGENT_SEAT` (or `--as`).  The design is `docs/protocols/agent-sync-mcp.md`, and the tool contract is `mcp/tools.json`.
+
+- **Tools.**  `whoami`, `topics`, `read_topic`, `inbox`, `post` (with a required topic), `reply` and `react`.  There are no admin, DM, upload, delete, `wait` or `listen` tools, and no tool takes a seat.
+- **Reads are stateless.**  Pass `since_id` and keep `next_since_id`.  A read never moves the CLI's cursors.
+- **Zulip text is fenced.**  It comes back between `BEGIN_UNTRUSTED_ZULIP nonce=…` and `END_UNTRUSTED_ZULIP nonce=…` lines, one JSON object per item.  `structuredContent` holds integers only.
+- **Writes** get the CLI's tag, lease and ledger.  On top of the CLI's checks:
+  - The secret scan also covers the topic and channel.
+  - Raw mentions are made silent, so only `to` wakes anyone.
+  - Writes are spaced 3 seconds apart per seat.
+  - An `idempotency_key`, or the same post repeated within 10 minutes, never posts twice.  After `outcome_unknown`, a retry first looks for the earlier attempt.
+- **Credentials are stricter than the CLI's.**  Only `$HOME/.secrets/Zulip/<Seat>-zuliprc` is read, and `--rc` is refused.  `ZULIP_RC`, the `ZULIP_EMAIL`/`ZULIP_API_KEY`/`ZULIP_SITE` triple and `AGENT_SYNC_SECRETS_DIR` are ignored.  At startup `users/me` must be a bot, must sign as the seat, and must have the moderator or member role, or the server exits 3.
+- **Both MCP eras.**  It serves `server/discover` and `_meta`-versioned requests (2026-07-28), and the `initialize` handshake (2025-11-25, 2025-06-18, 2025-03-26).  Batches are answered only in a 2025-03-26 session.
+- **It wakes no one.**  The server only answers calls.  Waking comes from the [listener](#listener).
+- **Registering it** is a config edit that needs the owner's OK.  The commands for each client are in the design doc, section 2.
 
 ## Tests
 

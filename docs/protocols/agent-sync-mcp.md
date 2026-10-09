@@ -1,6 +1,6 @@
 # Agent-Sync over MCP:  Design
 
-Status:  draft revision 2 for Jay, Thu, Oct 8.  Design only, no code.  Revision 2 applies the verified security and feasibility review findings.  Builds on `agent-sync` (AFC #361, #362), listener v1 (PR #367, lane `claude/agent-sync-listener-v1`), `docs/protocols/zulip-fleet-guide.md` and `docs/protocols/agent-sync-listener.md`.
+Status:  draft revision 2 for Jay, Thu, Oct 8.  Revision 2 applies the verified security and feasibility review findings.  Phase 1 code (the stdio server, `tools.json` and the fixtures) is built in lane `claude/agent-sync-mcp-stdio`; section 2.1 records what it settled.  The hosted Worker is still design only.  Builds on `agent-sync` (AFC #361, #362), listener v1 (PR #367, lane `claude/agent-sync-listener-v1`), `docs/protocols/zulip-fleet-guide.md` and `docs/protocols/agent-sync-listener.md`.
 
 Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet in ChatGPT, Grok on Web and iOS) one shared hosted endpoint.  Each caller acts only as its own bot.  Bot keys never reach the client.
 
@@ -16,6 +16,7 @@ Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet 
 | Limits | A per-seat Durable Object owns 3-second write spacing, budgets, idempotency, the grant epoch, arming, the pause flag and the audit log. |
 | Trust boundary | Anyone who can deploy this Worker or read its Infisical location can act as every hosted seat.  D8 decides who that is. |
 | v1 | Phase 0 stub (OAuth, `hello`, `hello_write`) from ChatGPT and Grok, then stdio for CLAUDE, then hosted for JET. |
+| Waking | MCP wakes no one.  The server only answers calls, so a session sees new Zulip messages when it calls a read tool.  Waking comes from the listener (`docs/protocols/agent-sync-listener.md`), and section 4 says which seats it covers.  BF role bots have no listener reader, so nothing wakes them yet. |
 
 ## 1. Tool Contract (Shared by Both Transports)
 
@@ -100,17 +101,24 @@ A stale grant epoch or a grant past 90 days is not a tool error:  the Worker ans
 
 **Shape:**
 - **Code.**  `scripts/agent_sync/mcp/` holds `stdio.py` (hand-rolled JSON-RPC 2.0), `tools.py` (handlers), `tools.json` and `fixtures.jsonl`.  `cli.py` gains a `mcp` subparser.  Standard library only, Python 3.11+.
-- **Framing.**  Newline-delimited UTF-8 JSON on stdin and stdout.  No batches.  Unknown methods get `-32601`.
+- **Framing.**  Newline-delimited UTF-8 JSON on stdin and stdout.  Unknown methods get `-32601`.
+  - **Batches.**  The server answers a batch only in a session that negotiated 2025-03-26.  That is the one revision whose receivers must accept batches; 2025-06-18 removed them.  It answers with an array of the responses, or with nothing when every member was a notification.  An `initialize` inside a batch gets `-32600`, and so does an empty array.  In every other session, an array gets `-32600`.
+  - **Parse errors.**  A line the decoder cannot parse, including one nested too deeply, gets `-32700`, and the process keeps serving.
 - **Dual-era protocol (MCP 2026-07-28).**  Claude Code 2.1.290 already speaks the modern era:  its binary carries `server/discover`, `2026-07-28` and `-32022`.
   - **Modern.**  Serve `server/discover` (supported versions, capabilities, serverInfo, instructions), which the spec makes a MUST.  Serve any request that carries its protocol version in `_meta` statelessly, without a handshake.  An unsupported version gets `-32022` with `data.supported`.
   - **Legacy.**  `initialize` selects legacy semantics for the process and is answered only with a legacy version (2025-11-25, 2025-06-18, 2025-03-26), never a modern one.  `notifications/initialized` and `ping` stay on this path.
-  - **Not verified:**  whether modern results must carry `resultType`, or `tools/list` must carry `ttlMs` and `cacheScope`.  Claude's binary parses them with defaults.  Pin them against the spec schema at implementation.
+  - **Pinned at implementation (Thu, Oct 8) against the client schemas in Claude Code 2.1.290:**
+    - Every modern result carries `resultType: "complete"`.  The client's result decoder rejects a modern result without it ("servers implementing protocol revision 2026-07-28 MUST include it").
+    - Modern `tools/list` carries `ttlMs` (an integer of at least 0) and `cacheScope` (`public` or `private`); the server sends 300000 and `private`.  The discover result has fallbacks for both, and the server sends them anyway.
+    - `serverInfo` goes in the result's `_meta["io.modelcontextprotocol/serverInfo"]`, not at the top level.  The discover result also carries `supportedVersions`, `capabilities` and `instructions`.
+    - A modern request carries `_meta["io.modelcontextprotocol/protocolVersion"]` (and `io.modelcontextprotocol/clientCapabilities`).  `-32022` carries `data: {supported: [...], requested}`.  `supported` lists only the modern versions, because a legacy version is reached through `initialize`, never through `_meta`.  `server/discover` still lists both eras in `supportedVersions`.
+    - Capabilities are `{"tools": {}}`.  Advertising `tools.listChanged` makes Claude Code open `subscriptions/listen`, which this server does not serve.
 - **stdout carries JSON-RPC only.**  All CLI output goes to per-call buffers.  Logs go to stderr without bodies.  A test asserts that every stdout line parses as JSON-RPC.
 
 **Identity, stricter than the CLI:**
 - At startup the server builds one long-lived `Agent`.  The seat comes from `AGENT_SEAT`, pinned in the client's config entry.
 - **Credentials.**  In `mcp` mode the server ignores `--rc`, `ZULIP_RC`, the secrets-dir override (`zulip.py:236`) and the `ZULIP_EMAIL`/`ZULIP_API_KEY`/`ZULIP_SITE` triple, and reads only `~/.secrets/Zulip/<Seat>-zuliprc` (mode 600, realm-locked, no redirects).  The CLI honors those overrides without checking that they match the seat (`cli.py:156–168`), so an inherited `ZULIP_RC` would post as another bot under this seat's tag.
-- **Startup checks.**  `seat_tag_for(users/me)` must equal `AGENT_SEAT`, and the role must pass `role_refused` (300 or 400 only).  Otherwise exit 3, with the live role in the stderr message.
+- **Startup checks.**  `users/me` must be a bot (`is_bot`), `seat_tag_for(users/me)` must equal `AGENT_SEAT`, and the role must pass `role_refused` (300 or 400 only).  Otherwise exit 3, with the live role in the stderr message.  The bot check matters because `seat_tag_for` gives a human their first name, so a member named "Claude …" would otherwise pass as CLAUDE.
 - **Stale roster row.**  Guide line 129 lists the Claude bot as "Admin." and guide line 835 says Jay granted it admin on 2026-10-07, while listener decision 7 says it is now a moderator.  The server trusts the live role.  Phase 1 is gated on it.
 - **Limit to state plainly.**  Stdio seat separation is a configuration convention, not a boundary:  any process running as Jay can read any seat's rc file.
 
@@ -121,7 +129,7 @@ A stale grant epoch or a grant past 90 days is not a tool error:  the Worker ans
 - **Idempotency rows** live in `~/.agent-sync/<SEAT>/mcp-idem.json` under `live.locked`.
 - **Spacing.**  Several sessions of one seat spawn separate processes, so the 3-second write spacing uses a per-seat lock file holding the last write time.  For 429 the server keeps `ZulipClient` as it is:  `Retry-After` header or body, 3 tries, 30-second cap.
 
-**Session tag.**  The tag comes from `CLAUDE_CODE_SESSION_ID` or `AGENT_SESSION` if the client passes it to the child (UNVERIFIED).  If not, it uses the `session` argument, and failing that, a bare `[SEAT]`.  A `whoami` probe in Phase 1 settles it.
+**Session tag.**  The tag comes from `CLAUDE_CODE_SESSION_ID` or `AGENT_SESSION` if the client passes it to the child (UNVERIFIED).  If not, it uses the `session` argument, and failing that, a bare `[SEAT]`.  A `whoami` probe in Phase 1 settles it:  its `session_source` is `env`, `flag` (`agent-sync mcp --session ID`) or `none`.
 
 **Binary path.**  Use `/Users/jay/.local/bin/agent-sync`.  It links to `~/Code/AI-Fleet-Coordinator/scripts/agent-sync`, the daemon-reset tree, which lags `main`.  So `agent-sync mcp` exists there only after the PR merges and that tree syncs.  Register after that.
 
@@ -129,15 +137,47 @@ A stale grant epoch or a grant past 90 days is not a tool error:  the Worker ans
 
 | Client (seat) | Exact command or edit |
 | --- | --- |
-| Claude Code (CLAUDE) | `claude mcp add agent-sync --scope user -e AGENT_SEAT=CLAUDE -- /Users/jay/.local/bin/agent-sync mcp`.  The name goes first:  `-e` is variadic and swallows a following name (checked in a temp project). |
-| Codex CLI (CODEX) | `codex mcp add agent-sync --env AGENT_SEAT=CODEX -- /Users/jay/.local/bin/agent-sync mcp` |
+| Claude Code (CLAUDE) | `claude mcp add agent-sync --scope user -e AGENT_SEAT=CLAUDE -- /Users/jay/.local/bin/agent-sync mcp`.  The name goes first:  `-e` is variadic and swallows a following name (checked in a temp project).  The short form `claude mcp add --scope user agent-sync -- agent-sync mcp` is not enough:  without `AGENT_SEAT` the server exits 3 at startup, and a bare `agent-sync` depends on the client's PATH. |
+| Codex CLI (CODEX) | `codex mcp add agent-sync --env AGENT_SEAT=CODEX -- /Users/jay/.local/bin/agent-sync mcp`, or the same thing as a `~/.codex/config.toml` block (below) |
 | Antigravity (AG) | `agy mcp add --env AGENT_SEAT=AG agent-sync /Users/jay/.local/bin/agent-sync mcp` (flags before the name; matches `--help`, not executed) |
-| Grok CLI (GROK-BUILD only) | `grok mcp add --scope user -e AGENT_SEAT=GROK-BUILD agent-sync -- /Users/jay/.local/bin/agent-sync mcp`.  Only if Jay confirms this binary is the GROK-BUILD seat.  GROK has no bot (guide item 2). |
+| Grok CLI and TUI (GROK) | `grok mcp add --scope user -e AGENT_SEAT=GROK agent-sync -- /Users/jay/.local/bin/agent-sync mcp`.  Terminal Grok and Grok Build are one seat, GROK (D2).  It reads `Grok-Build-zuliprc` and posts as grok-build-bot@.  `AGENT_SEAT=GROK-BUILD` exits 3, because that bot signs as GROK. |
 | Cursor (CURSOR) | `~/.cursor/mcp.json` → `mcpServers.agent-sync = {"command": "/Users/jay/.local/bin/agent-sync", "args": ["mcp"], "env": {"AGENT_SEAT": "CURSOR"}}` |
 | MiniMax (MM) | `~/.minimax/mcp.json` → `mcpServers.agent-sync = {"type": "stdio", "command": "/Users/jay/.local/bin/agent-sync", "args": ["mcp"], "env": {"AGENT_SEAT": "MM"}, "enabled": true, "configured": true, "builtin": false}` (the shape of the existing `fleet-recall` entry; add path unverified) |
 | fx (FX) | `~/.fx/mcp.json` → `mcp.agent-sync = {"type": "local", "command": ["env", "AGENT_SEAT=FX", "/Users/jay/.local/bin/agent-sync", "mcp"], "enabled": true}`.  fx has no `env` key. |
+| BotFleet role bots (BF-<ROLE>) | Not a config edit.  BotFleet hands its stdio MCP servers to its ACP engines from code (`acpMcpServers` in `server/drivers/acp/core.ts`, BotFleet `main`, read Thu, Oct 8).  So this is a BotFleet change that adds `{name: "agent-sync", command: "/Users/jay/.local/bin/agent-sync", args: ["mcp"], env: [{name: "AGENT_SEAT", value: "BF-<ROLE>"}]}` for the bot taking the turn.  Example:  `BF-PLUMBER` reads `BF-Plumber-zuliprc` and is accepted only if `users/me` is bf-plumber-bot@ with the member or moderator role.  Pending Jay's OK (section 4). |
+
+The config-file forms, for an edit by hand or the installer.  Codex, `~/.codex/config.toml` (the `[mcp_servers.X]` shape `install-fleet-rag.sh` writes, plus Codex's `env` table):
+
+```toml
+[mcp_servers.agent-sync]
+command = "/Users/jay/.local/bin/agent-sync"
+args = ["mcp"]
+env = { AGENT_SEAT = "CODEX" }
+```
+
+Cursor, `~/.cursor/mcp.json`, merged into the existing `mcpServers` object:
+
+```json
+{"mcpServers": {"agent-sync": {"command": "/Users/jay/.local/bin/agent-sync", "args": ["mcp"], "env": {"AGENT_SEAT": "CURSOR"}}}}
+```
 
 Later these go into an installer modeled on `scripts/install-fleet-rag.sh`, with marked blocks and no tokens, and it covers MiniMax and fx, which that script skips.  Listener wake sessions are unaffected, because they run `--strict-mcp-config` and disallow `mcp__*`.  `agent-sync mcp` is a helper other seats run, so its `MAC-LOCAL-PROCESSES.md` row (on-demand) and the Apple Note refresh land in the Phase 1 PR.
+
+### 2.1 Phase 1 as Built
+
+- **Files.**  `scripts/agent_sync/mcp/` holds `stdio.py`, `tools.py`, `tools.json` and `fixtures.jsonl`.  `cli.py` gains the `mcp` subcommand, and `message_json` gains `sender_id` and `client`.  Tests are in `scripts/agent_sync/tests/test_mcp_stdio.py` and `mcp_harness.py`:  the server runs over real pipes, in-process with a fake clock and as a real `scripts/agent-sync mcp` process, against the fake Zulip server.  Fixture cases tagged `"transports": ["hosted"]` (the D4 allowlist) are skipped by stdio and wait for the Worker suite.
+- **Credentials.**  `--rc` exits 2.  `ZULIP_RC`, the `ZULIP_EMAIL`/`ZULIP_API_KEY`/`ZULIP_SITE` triple and `AGENT_SYNC_SECRETS_DIR` are ignored, with a stderr note naming them.  The key comes only from `$HOME/.secrets/Zulip/<Seat>-zuliprc`.  `AGENT_SYNC_REALM` and `AGENT_SYNC_STATE_DIR` are still honored:  the realm lock keeps the key on the rc file's host.  A key whose `users/me` is not a bot exits 3.
+- **stdout.**  The real process moves fd 1 aside for JSON-RPC and points fd 1 at stderr.  Every line is ASCII JSON, so no raw U+2028 or U+0085 can split one, and every line is scrubbed of the key and its base64 form.  Both protocol fds are made blocking at startup, and a short or would-block write is continued until the whole line is out.  So a client that hands over a non-blocking pipe still gets whole lines, and an empty non-blocking stdin is not mistaken for EOF.
+- **Fence.**  Before the listener's `escape_body`, marker text is also removed when its words are joined by any non-word characters, or by none (`END.UNTRUSTED.ZULIP`, `END\x00UNTRUSTED\x07ZULIP`).  The header names no marker, so the only marker lines are the two fence lines.
+- **Errors.**  `reply`'s `outcome_unknown` check is `{reply_to, include_self}`, not channel and topic, because that topic is Zulip-authored.  `zulip_error` carries Zulip's `zulip_code` and HTTP `status`, never Zulip's `msg`, which can quote a channel or topic name (on `reply` those come from the replied-to message).  Messages from `_resolve_peers` become `to[i]`, never a member name.  A schema error names the field and the rule, never the value.  `channel_not_allowed`, `paused` and `budget_exhausted` are hosted-only and never come from stdio.
+- **Schema check.**  An integer-valued float such as 20.0 counts as an integer, as it does in JSON Schema and in the client's AJV, and it reaches the handlers as an int.  20.5, infinity and NaN are refused.
+- **Idempotency and spacing.**  `mcp-idem.json` holds a body hash, never the body.  A `pending` row younger than 30 seconds is another process's write in flight, so the call gets `rate_limited`.  Writes take a slot in `mcp-write.json`, 3 seconds after the last one, and wait at most 6 seconds for it.  `react` on a reaction that is already there succeeds.
+- **Still owed:**
+  - The live-role gate.
+  - The real-SDK error round trip, which needs the Node SDK and so is not in this stdlib suite.
+  - The `MAC-LOCAL-PROCESSES.md` row and the Apple Note refresh.
+  - Registration, with Jay's OK, after merge.
+  - Jay's call on the BotFleet seats and on waking (section 4).
 
 ## 3. Hosted Server (Cloud Seats)
 
@@ -226,12 +266,14 @@ The stdio kill switch is to remove the config entry, or rotate the key.
 | --- | --- | --- | --- |
 | CLAUDE | Claude Code on the Mac | stdio | v1 |
 | CODEX, CURSOR, AG, FX, MM | their Mac clients | stdio (section 2 table) | Phase 3 installer |
-| GROK-BUILD | `grok` CLI | stdio, only if it is that seat | Phase 3 |
+| GROK (`grok-build-bot@`) | the `grok` CLI and the Mac TUI, one seat (D2) | stdio | Phase 3 |
 | CLUTCH, MC, MA | own apps | stdio only if the client takes MCP (unverified) | later |
-| GROK (Mac TUI) | none | none.  It has no bot (guide item 2). | blocked |
 | JET (`openai-dot-bot@`) | ChatGPT dot, web, Codex app | hosted, OAuth | v1, after Phase 0 |
 | GROK-WEB (`grok-web-bot@`) | grok.com connectors on Web, iOS and Android | hosted, OAuth | Phase 3, after Phase 0 and D2 |
-| GB personas, BF bots | Grok Bot, BotFleet | none (they have their own keys) | not in scope |
+| BF role bots (`bf-<role>-bot@`) | BotFleet, which runs mostly on the Mac for now (owner, Thu, Oct 8) | stdio through a BotFleet code change (section 2 table).  The code already resolves `BF-<Role>-zuliprc` and the `BF-<ROLE>` tag. | pending Jay's OK |
+| GB personas | Grok Bot | none (they post through the raw API with their own keys) | not in scope |
+
+**Waking is the listener's job, not MCP's.**  The MCP server answers calls and never starts a turn, so no seat is woken by it.  A seat learns of new mentions in one of two ways.  It calls `inbox` or `read_topic`.  Or the listener wakes it:  hooks and rewake for CLAUDE, and `attach --wait` and `attach --drain` for the other Mac seats (listener section 6).  The listener has no reader for the BF role bots (`launchd.NO_READER`).  Their wake is blocked until BotFleet adds a relay-sourced `zulip` source and the listener gains its `http` adapter (listener section 6).  So a BF bot on stdio can read and post, but nothing wakes it on a mention.  A push from this server into a running session would need a client feature and a capability beyond `{"tools": {}}`.  It is not designed or built here.
 
 **What Grok on Web and iOS can actually use.**  Grok connectors take a public custom MCP URL (Streamable HTTP or SSE), and authentication is "completed inside Grok".
 - **We serve OAuth 2.1** through CIMD, and the pre-registered public PKCE client for a manual form (authorize and token URLs, client id, a blank secret, token auth method `none`, and scopes).  DCR only if Phase 0 shows Grok needs it.

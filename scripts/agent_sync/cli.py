@@ -278,6 +278,8 @@ class Agent:
     def message_json(self, message: Mapping[str, Any]) -> dict[str, Any]:
         return {
             "id": message.get("id"),
+            "sender_id": message.get("sender_id"),
+            "client": message.get("client"),
             "channel": message_channel(message),
             "topic": message_topic(message),
             "sender_email": message.get("sender_email"),
@@ -611,6 +613,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("react", "add an emoji reaction to a message")
     p.add_argument("--id", type=_message_id, required=True, metavar="MSGID", help="message to react to")
     p.add_argument("emoji", metavar="EMOJI", help="emoji name, for example eyes or thumbs_up")
+
+    add("mcp", "serve the agent-sync tools over MCP on stdin and stdout (an MCP client's config runs this, not a person)")
 
     listener_cli.add_parsers(sub, common)
     return parser
@@ -1104,6 +1108,10 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             return LOCAL_COMMANDS[args.command](rt, args)
         if args.command == "inbox" and args.local:
             return listener_cli.cmd_inbox_local(rt, args)
+        if args.command == "mcp":  # stricter identity than Agent's credential order; see mcp/stdio.py
+            from .mcp import stdio as mcp_stdio
+
+            return mcp_stdio.run(rt, args)
         agent = Agent(rt, args)
         return COMMANDS[args.command](agent, args)
     except Z.AgentSyncError as exc:
