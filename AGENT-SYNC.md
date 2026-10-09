@@ -100,7 +100,7 @@ Each point stays as this document states it until Jay rules.
 - **Cursor background agents.**  The old tag registry said CURSOR means Cursor background agents; the old seat table said CURSOR is local Mac IDE/Auto only.  A Cursor cloud agent that Grok Bot drives signs `GB-<NAME>`.  Until Jay rules, any other Cursor background or cloud agent signs CURSOR, because location never changes the seat ([Identity Rules](#identity-rules)).
 - **Hosted iOS ship owner.**  The old text says Compiler (`GB-COMPILER`) owns iOS ship on hosted `macos-latest`, but GB personas are mostly idle and BotFleet carries most Grok Bot duty.  Whether BF-Compiler, which owns BF builds, now carries it is open ([CI Runners](#ci-runners-strict-all-repos)).
 - **MA coordination threshold.**  The old seat table says MA follows "the 2x coordination threshold rule", which no version of this document defines.  It is left out until Jay defines it.
-- **Clutch `repo:` value.**  The old text wrote `repo: clutch` (the registry `slackRepo` value).  This document writes `repo:  Clutch`, the GitHub repo name, per the rule in [App Acronyms and Repos](#app-acronyms-and-repos).
+- **Clutch `repo:` value.**  The old text wrote `repo: clutch` (the registry's former `slackRepo` value).  This document writes `repo:  Clutch`, the GitHub repo name, per the rule in [App Acronyms and Repos](#app-acronyms-and-repos).
 
 ## Absolute Rules and Authority
 
@@ -1265,7 +1265,7 @@ Onboard through the procedure docs and their scripts.  Never invent a one-off jo
 - A new seat picks a short, unique, uppercase tag.  That tag is its identity on THE BOARD, in its branch prefix and lane names, and in its Zulip bot's labels.  Its Apple Notes name is the seat name in Title Case.
 - Any new or custom agent engine (for example a custom SDK agent) adopts this whole protocol: the claim and closeout rules, the Zulip conventions, the Apple Notes standards, and safe PR landing.
 - Each seat gets exactly one Zulip bot and one credential, and only Jay creates them.  Agents never create accounts.  Ask Jay for the bot; the setup and credential paths are in the [Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md#bot-setup).
-- Pending: `scripts/onboard-new-agent.sh` has no Zulip step yet.  Request the bot from Jay by hand until it does.
+- `scripts/onboard-new-agent.sh` prints the owner-run Zulip bot step (`--zulip-short` sets the bot's short name).  Request the bot from Jay.
 
 ### New Repos
 
@@ -1303,11 +1303,12 @@ Lookup data only.  The binding rules live in the sections above.
 | `CK` | Clutch | `CLUTCH-EFFORT-LOG.md` | `clutch` |
 | `HH` | HogHunter | `HOGHUNTER-EFFORT-LOG.md` | `hoghunter` |
 | `OPS` | fleet-ops | `FLEET-OPS-EFFORT-LOG.md` | `fleet-ops` |
+| `CC` | CodeCaps | `CODECAPS-EFFORT-LOG.md` | `codecaps` |
 
 Name drift, verified Wed, Oct 7, 2026:
 
 - The ST repo on GitHub and in `fleet-apps.json` is `Socratic-Trade`; Socratic.Trade is the product name used in `repo:` lines.  Both mean ST.
-- The old canonical name `API-usage-monitor` (still the registry's `slackRepo` value) is GitHub `Usage-Monitor`.
+- The old canonical name `API-usage-monitor` (the registry's former `slackRepo` value, removed when the registry moved to Zulip) is GitHub `Usage-Monitor`.
 - The registry's `fleet-ops` is GitHub `Fleet-OPS`.  GitHub names are case-insensitive, so both resolve.
 - Autorotate is archived on GitHub.
 - Clutch (`CK`) is missing from the old canonical list; it belongs.
