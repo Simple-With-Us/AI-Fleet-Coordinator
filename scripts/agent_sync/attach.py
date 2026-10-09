@@ -74,7 +74,7 @@ class Ctx:
         self.now = now
         self.sleep = sleep
         self.root = L.state_root(env)
-        self.config, self.config_error = L.load_config(self.root)
+        self.config, self.config_error = L.load_config(self.root, L.config_path(self.root, env))
 
     def out(self, text: str) -> None:
         self.stdout.write(text)
