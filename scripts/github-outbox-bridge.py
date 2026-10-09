@@ -238,8 +238,8 @@ class ZulipChannel:
             "messages",
             narrow=narrow,
             anchor=anchor,
-            num_before=limit,
-            num_after=0,
+            num_before=0,
+            num_after=limit,
             apply_markdown="false",
         )
         return data.get("messages", [])
@@ -272,6 +272,13 @@ class ZulipPoster:
 
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Never forward the Zulip Basic Authorization header to a redirect target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class ZulipClient:
     """Minimal Zulip read client: HTTP Basic with the seat's own key.
 
@@ -300,23 +307,29 @@ class ZulipClient:
                 self.key = value
             elif name == "site":
                 self.site = value
-        if self.site:
-            if not self.site.startswith("https://"):
-                raise BridgeError("credential site is not https; refusing it")
-            if self.site.rstrip("/") != self.REALM:
-                raise BridgeError("credential site is not the fleet realm; refusing it")
+        if not self.site:
+            raise BridgeError("credential file is missing site; refusing it")
+        if not self.site.startswith("https://"):
+            raise BridgeError("credential site is not https; refusing it")
+        if self.site.rstrip("/") != self.REALM:
+            raise BridgeError("credential site is not the fleet realm; refusing it")
 
     def get(self, path, **params):
         if not (self.email and self.key):
             raise BridgeError("no Zulip credential in the rc file")
+        if "narrow" in params:
+            params["narrow"] = json.dumps(params["narrow"])
         url = "%s/api/v1/%s?%s" % (self.site.rstrip("/"), path, urllib.parse.urlencode(params))
         token = base64.b64encode(("%s:%s" % (self.email, self.key)).encode()).decode()
         req = urllib.request.Request(url, headers={"Authorization": "Basic " + token})
+        opener = urllib.request.build_opener(_NoRedirectHandler())
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with opener.open(req, timeout=20) as resp:
                 data = json.load(resp)
         except urllib.error.HTTPError as exc:
             raise BridgeError("Zulip HTTP %d" % exc.code)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise BridgeError("Zulip returned invalid JSON")
         except urllib.error.URLError as exc:
             raise BridgeError("Zulip unreachable: %s" % getattr(exc, "reason", exc))
         if data.get("result") == "error":
