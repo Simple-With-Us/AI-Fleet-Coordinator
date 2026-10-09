@@ -41,7 +41,7 @@ wake = "http"
 routine = { url_env = "GB_COMPILER_ROUTINE_URL", key_env = "GB_COMPILER_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 
-# GB-DIRECTOR (Routing, fleet sync, org help, director-grok-bot@).  Present but disabled:  no routine yet.  It is a realm moderator now, which the listener accepts.
+# GB-DIRECTOR (Routing, fleet sync, org help, director-grok-bot@).  Present but disabled:  no routine yet.  It is a realm member now (it was an admin earlier), which the listener accepts.
 # The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
 # "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
 # enabled = true here, then restart the app (a reload does not read new environment variables).
