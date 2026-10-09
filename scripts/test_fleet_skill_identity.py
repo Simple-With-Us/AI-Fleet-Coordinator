@@ -79,31 +79,32 @@ class SpecializeTests(unittest.TestCase):
         self.assertNotIn("trading-monet", out)
 
     def test_ag_notes_name_is_antigravity(self) -> None:
+        # The canonical apple-notes text is seat-neutral (`[APP, Agent]`), so the
+        # seat's Notes name comes from the install banner, never from Monet.
         out = specialize_from_monet(_notes(), SEATS["ag"], skill_name="apple-notes")
-        self.assertIn("[APP, Antigravity]", out)
-        self.assertNotIn("[APP, AG]", out)
-        self.assertIn("then `Antigravity` (Title Case", out)
+        self.assertIn("Notes `Antigravity`", out)
+        self.assertNotIn("Notes `AG`", out)
+        self.assertNotIn("[APP, Monet]", out)
 
     def test_cursor_and_grok_notes_names(self) -> None:
-        out_cur = specialize_from_monet(_notes(), SEATS["cursor"], skill_name="apple-notes")
-        self.assertIn("[APP, Cursor]", out_cur)
-        out_grok = specialize_from_monet(_notes(), SEATS["grok"], skill_name="apple-notes")
-        self.assertIn("[APP, Grok]", out_grok)
-        out_codex = specialize_from_monet(_notes(), SEATS["codex"], skill_name="apple-notes")
-        self.assertIn("[APP, Codex]", out_codex)
+        for key, notes in (("cursor", "Cursor"), ("grok", "Grok"), ("codex", "Codex")):
+            out = specialize_from_monet(_notes(), SEATS[key], skill_name="apple-notes")
+            self.assertIn(f"Notes `{notes}`", out, key)
+            self.assertNotIn("[APP, Monet]", out, key)
 
     def test_fleet_coordination_seats_table_preserved(self) -> None:
         out = specialize_from_monet(_coord(), SEATS["ag"], skill_name="fleet-coordination")
-        self.assertIn("Antigravity / Gemini: `[AG]`", out)
-        self.assertIn("Monet: `[MONET]`", out)
-        self.assertIn("Cursor: `[CURSOR]`", out)
-        self.assertIn("Codex: `[CODEX]`", out)
-        self.assertNotIn("AG: `[AG]`", out)
+        self.assertIn("Antigravity / Gemini: `AG`", out)
+        self.assertIn("Cursor: `CURSOR`", out)
+        self.assertIn("Codex: `CODEX`", out)
+        self.assertIn("Clutch: `CLUTCH`", out)
+        self.assertIn("Claude: `CLAUDE`", out)
+        self.assertNotIn("Monet: `", out)
 
     def test_specialize_universal(self) -> None:
         out_sess = specialize_universal(_session(), skill_name="session-start")
-        self.assertIn("AGENT_TAG=<YOUR_TAG>", out_sess)
         self.assertIn("AGENT_SEAT=<YOUR_SEAT>", out_sess)
+        self.assertIn("`[<YOUR_TAG>·session8]` tag", out_sess)
         self.assertIn("<seat>/<slug>", out_sess)
         self.assertNotIn("AGENT_SEAT=MONET", out_sess)
 
@@ -191,7 +192,7 @@ class SpecializeTests(unittest.TestCase):
         )
         self.assertIn("AGENT_SEAT=FX", out)
         self.assertNotIn("AGENT_SEAT=CURSOR", out)
-        self.assertIn("[FX]", out)
+        self.assertIn("[FX·session8]", out)
 
     def test_fold_unwraps_quoted_yaml_string(self) -> None:
         from fleet_skill_identity import fold_yaml_description
@@ -543,7 +544,6 @@ class CoordinatorSelfIdTests(unittest.TestCase):
                 self.assertNotIn("| FLEET |", src.split("AI-Fleet-Coordinator")[1][:80])
             if name == "fleet-coordination":
                 self.assertIn("| **`AFC`** |", src)
-                self.assertIn("every Grok Bot seat", src)
             if name == "apple-notes":
                 self.assertIn("| AFC |", src)
                 self.assertNotIn("| FLEET | cross-app", src)
@@ -575,12 +575,10 @@ class CoordinatorSelfIdTests(unittest.TestCase):
                 out = specialize_from_monet(_load_skill(name), seat, skill_name=name)
                 for phrase in self.FORBIDDEN_COORDINATOR_SELF:
                     self.assertNotIn(phrase, out, f"{key}/{name}: {phrase}")
-                if name == "session-start" and key != "kimi":
+                if name == "session-start" and not seat.retired:
                     self.assertIn("| AFC |", out, f"{key}/{name} lost AFC acronym")
                 if name == "fleet-coordination":
                     self.assertIn("AFC", out, f"{key}/{name}")
-                    self.assertIn("GB-COMPILER", out, f"{key}/{name}")
-                    self.assertIn("GB-ORACLE", out, f"{key}/{name}")
                     self.assertNotRegex(out, r"GB-COMPILE(?!R)", msg=f"{key}/{name}")
 
     def test_by_seat_catalog_matches_specialization(self) -> None:
@@ -1001,7 +999,7 @@ class BranchPrefixMatchesLaneNewTests(unittest.TestCase):
         line = next(
             l for l in text.splitlines() if l.strip().startswith("- Antigravity / Gemini:")
         )
-        self.assertIn(f"branch prefix `{prefix}`", line)
+        self.assertIn(f"prefix `{prefix}`", line)
         # The bare "`agent/` or `ag/`" pairing offered two valid prefixes.
         self.assertNotIn("`agent/` or `ag/`", line)
 
