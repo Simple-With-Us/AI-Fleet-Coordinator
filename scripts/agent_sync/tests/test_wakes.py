@@ -373,3 +373,27 @@ class ClaudeRunnerTests(ListenerHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LedgerCacheTests(unittest.TestCase):
+    """status() reads every seat's ledger every 2 s; the file is parsed only when it changed."""
+
+    def test_rows_reparse_only_after_the_file_changes(self) -> None:
+        import tempfile
+        from unittest import mock
+        from agent_sync import live as live_mod
+        from agent_sync import wakes as wakes_mod
+        with tempfile.TemporaryDirectory() as d:
+            ledger = wakes_mod.Ledger(os.path.join(d, "wakes.jsonl"))
+            ledger.append({"wake_id": "w1", "state": "queued", "ts": 1.0})
+            real = live_mod.read_jsonl
+            with mock.patch.object(wakes_mod.L, "read_jsonl", side_effect=real) as spy:
+                self.assertEqual(len(ledger.rows()), 1)
+                self.assertEqual(len(ledger.rows()), 1)
+                self.assertEqual(spy.call_count, 1, "an unchanged ledger must not be re-parsed")
+                ledger.append({"wake_id": "w1", "state": "started", "ts": 2.0})
+                self.assertEqual(len(ledger.rows()), 2)
+                self.assertEqual(spy.call_count, 2, "an append must be seen on the next read")
+                rows = ledger.rows()
+                rows[0]["state"] = "mutated"
+                self.assertEqual(ledger.rows()[0]["state"], "queued", "callers get copies, not the cache")

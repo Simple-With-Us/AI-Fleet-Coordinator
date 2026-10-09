@@ -52,14 +52,31 @@ class Ledger:
     def __init__(self, path: str) -> None:
         self.path = path
         self.lock = threading.Lock()
+        # rows() runs on every status write (every 2 s) for every seat; re-parse the file only
+        # when it changed.  Keyed on inode, size and mtime, so an append or a prune's
+        # os.replace always misses the cache.
+        self._cache_sig: tuple[int, int, int] | None = None
+        self._cache_rows: list[dict[str, Any]] = []
+
+    def _sig(self) -> tuple[int, int, int] | None:
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            return None
+        return (st.st_ino, st.st_size, st.st_mtime_ns)
 
     def append(self, row: Mapping[str, Any]) -> None:
         with self.lock:
             L.append_jsonl(self.path, [row])
+            self._cache_sig = None
 
     def rows(self) -> list[dict[str, Any]]:
         with self.lock:
-            return L.read_jsonl(self.path)
+            sig = self._sig()
+            if sig is None or sig != self._cache_sig:
+                self._cache_rows = L.read_jsonl(self.path)
+                self._cache_sig = sig
+            return [dict(r) for r in self._cache_rows]
 
     def wakes(self) -> dict[str, dict[str, Any]]:
         """wake id -> the merged view:  the latest state, the first time each state was reached,
@@ -90,6 +107,7 @@ class Ledger:
                     for row in keep:
                         fh.write(json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n")
                 os.replace(tmp, self.path)
+                self._cache_sig = None
 
     def recover(self, now: float) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """After a restart:  (wakes to reload, wakes that were started and never finished).  The
