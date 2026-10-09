@@ -676,10 +676,15 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
             front = out.split("---")[1]
             self.assertIn(f"{seat.tag} is retired", front, key)
             self.assertNotIn("Start every", out, key)
-            self.assertNotIn("triple-claim before editing", out, key)
-            self.assertIn("## Stop", out, key)
-            self.assertNotIn("## 1. Identity", out, key)
-            self.assertIn("`AFC`", out, key)
+            self.assertNotIn("triple-claim before editing", out.split("---")[1], key)
+            if key == "kimi":
+                # Kimi's copy is only a Stop section.  MONET, RENOIR and DSH keep
+                # their body until the peer-screen lane lands (STOP_ONLY_RETIRED).
+                self.assertIn("## Stop", out, key)
+                self.assertNotIn("## 1. Identity", out, key)
+                self.assertIn("`AFC`", out, key)
+            else:
+                self.assertNotIn("## Stop", out, key)
 
     def test_set_yaml_description_replaces_inline_and_folded_values(self) -> None:
         folded = "---\nname: x\ndescription: >-\n  old one\n  old two\n---\n\n# X\n"

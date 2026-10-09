@@ -1111,11 +1111,20 @@ def set_yaml_description(text: str, value: str) -> str:
     return "---\n" + "\n".join(out) + text[end:]
 
 
+# Retired seats whose session-start copy is cut down to a Stop section.  Kimi
+# was already cut on main.  MONET, RENOIR and DSH keep the full body for now,
+# because the peer-screen lane is still editing lines inside it; cutting them
+# is a follow-up once that lands.
+STOP_ONLY_RETIRED = frozenset({"kimi"})
+
+
 def _apply_retired(text: str, seat: Seat, skill_name: str) -> str:
-    """Make a retired seat's session-start inert: no start-a-session text, no procedure."""
+    """Make a retired seat's session-start say it is retired, not "start a session"."""
     if skill_name != "session-start":
         return text
     text = set_yaml_description(text, retired_description(seat))
+    if seat.seat_key not in STOP_ONLY_RETIRED:
+        return text
     marker = "## 1. Identity"
     idx = text.find(marker)
     if idx >= 0:
