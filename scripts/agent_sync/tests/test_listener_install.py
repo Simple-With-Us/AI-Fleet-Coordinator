@@ -124,6 +124,22 @@ class InitAndTestWakeTests(ListenerHarness):
         self.assertIn(build["user_id"], cfg.eligible_user_ids)
         self.assertNotIn(web["user_id"], cfg.eligible_user_ids, "GROK-WEB is a different seat and not a Mac seat bot")
 
+    def test_init_pins_jet_but_not_gb_personas_webhook_bots_or_grok_web(self) -> None:
+        # openai-dot-bot@ derives to the seat tag JET (EMAIL_TAG_OVERRIDES).  Owner 2026-10-09:  Jet is eligible
+        # like any seat bot.  Webhook bots, GB personas and the other cloud seats stay out.
+        jet = self.fake.add_user("openai-dot-bot@zulip.test", "Jet (OpenAI dot)", is_bot=True, user_id=32)
+        persona = self.fake.add_user("compiler-grok-bot@zulip.test", "GB-Compiler", is_bot=True, user_id=33)
+        web = self.fake.add_user("grok-web-bot@zulip.test", "Grok (Web/iOS)", is_bot=True, user_id=34)
+        sentry = self.fake.add_user("sentry-bot@zulip.test", "Sentry", is_bot=True, user_id=35)
+        result = self.run_cli("daemon", "init", "--yes")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertIn("JET=%d" % jet["user_id"], result.out)
+        eligible = C.load(self.root).eligible_user_ids
+        self.assertIn(jet["user_id"], eligible)
+        for other in (persona, web, sentry):
+            self.assertNotIn(other["user_id"], eligible, other["email"])
+        self.assertEqual(sorted(eligible), [10, 11, 13, 14, jet["user_id"]])
+
     def test_test_wake_prints_the_plan_and_run_pins_the_binary(self) -> None:
         self.write_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\nclaude = "%s"\n' % self.claude)
         dry = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE")
