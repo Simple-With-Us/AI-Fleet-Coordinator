@@ -145,9 +145,16 @@ class RealRegistryTests(unittest.TestCase):
     def test_extras_are_appended_and_unregistered(self) -> None:
         reg = L.load_registry(env={})
         extras = {a.name: a for a in reg.apps if not a.registered}
-        for name in ("CodeCaps", "FleetLink", "Simple-With-Us", "Kodus-Config", "upptime-status",
+        for name in ("FleetLink", "Simple-With-Us", "Kodus-Config", "upptime-status",
                      "mmx-acp", "homebrew-tap"):
             self.assertIn(name, extras)
+
+    def test_codecaps_has_a_registry_row_so_it_is_not_an_extra(self) -> None:
+        reg = L.load_registry(env={})
+        caps = reg.app_by_prefix("codecaps")
+        self.assertEqual((caps.name, caps.acronym, caps.integration_dir_name), ("CodeCaps", "CC", "CodeCaps"))
+        self.assertTrue(caps.registered)
+        self.assertEqual([a.name for a in reg.apps if a.name.lower() == "codecaps"], ["CodeCaps"])
 
 
 class RegistryParsingTests(HomeCase):

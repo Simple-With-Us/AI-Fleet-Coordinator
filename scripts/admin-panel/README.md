@@ -61,7 +61,7 @@ seconds.  Worst case per section:
 | `recall` | 3 — health, stats, canary search |
 | `board` | 2 |
 | `coolify` | 2 |
-| `github` | 14 — one PR search plus one Actions call per repo (it was 24) |
+| `github` | 15 — one PR search plus one Actions call per repo (it was 24) |
 | `vercel` | 6 — projects, teams, and up to four team-scoped calls |
 | `sentry` | 1 |
 | `pagerduty` | 1 |
@@ -238,8 +238,8 @@ Deliberate absences and retired probes:
 - **Hog Hunter has no endpoint row.**  It is a local-only Mac app with no product
   domain.  CodeCaps is probed at its custom domain `codecaps.simplewithus.com`
   (the `gh-pages` branch carries that CNAME; the `github.io` path is
-  case-sensitive and the lower-case spelling 404s), and is not in
-  `fleet-apps.json` yet, so it has no `APPS` row either.
+  case-sensitive and the lower-case spelling 404s), and has an `APPS` row
+  now that it is in `fleet-apps.json`.
 - **Scout is retired (2026-09-09).**  Do not probe `scout.jays.services`.
 - **`autorotate.codes` is retired (NXDOMAIN).**  Probe `autorotate.vercel.app`
   instead; Autorotate remains in `APPS` for the GitHub card.
