@@ -328,6 +328,7 @@ A bare invocation, or one whose first argument is a flag, runs `plan` for all pl
 | Platform | File | Text |
 |---|---|---|
 | `claude` | `.claude/CLAUDE.md` | Full.  This is the owner's own file: `plan` and `apply` need `--i-own-this-file` when it is named (a default `plan` skips it without reading it). |
+| `home-agents` | `AGENTS.md` (the home folder) | Full.  Also the owner's own file (`--i-own-this-file`).  Tools that load project instructions read it, and it carried a hand-copied block that no row refreshed until layout v2. |
 | `codex` | `.codex/AGENTS.md` | Full.  Warns above 30720 bytes and refuses a result above 32768 (limits chosen by the tool's author, not checked against Codex itself). |
 | `fx` | `.fx/AGENTS.md` | Full |
 | `grok` | `.grok/GROK.md` | Full; covers Grok and Grok Build |
@@ -354,7 +355,7 @@ Each step is owner-approved, read the `plan` first, and nothing here is installe
 
 1. `install_tools apply tools`, then `verify tools`.  This creates `~/apps/lane-tools` and `~/apps/lane`.  It comes first because the rule text tells every agent to run `~/apps/lane`, and a rules block pointing at a missing command is worse than none.
 2. `install_tools apply <platform>` for each platform, then `verify`.  Codex needs one `/hooks` trust, and Claude needs a new session.  Muse Code needs the owner actions that `plan muse` prints (`muse plugins install ... --scope user`, then `muse plugins approve fleet-lane-guard`, then a new session); `apply tools` has already written the bundle.
-3. `install_rules apply <platform>` for each platform (`--i-own-this-file` for `claude`, `--create` for a file that does not exist).
+3. `install_rules apply <platform>` for each platform (`--i-own-this-file` for `claude` and `home-agents`, `--create` for a file that does not exist).
 4. After every merge that changes the package, `apply tools` again to refresh the stable copy.  After any change to a platform config, `verify` again.
 
 Changes to the live cleaners (`disk-janitor`, `mac-auto-cleanup`) are a separate step; see `docs/protocols/lane-map.md` § Cleaners.

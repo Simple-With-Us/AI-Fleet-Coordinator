@@ -691,6 +691,24 @@ class PlanTests(HomeCase):
         result = IR.verify_platform(IR.PLATFORM_BY_NAME["fx"], self.home)
         self.assertFalse(result.ok)
 
+    def test_the_home_level_agents_md_is_a_platform_and_an_owner_file(self) -> None:
+        # ~/AGENTS.md carried a hand-copied block that no platform row refreshed
+        p = IR.PLATFORM_BY_NAME["home-agents"]
+        self.assertEqual((p.rel_path, p.variant, p.owner_file, p.root_dir), ("AGENTS.md", "full", True, ""))
+        self.write("AGENTS.md", "# Home\n\n" + IR.BEGIN_PREFIX + "1 -->\nold v1 text\n" + IR.END_LINE + "\n\ntail\n")
+        code, out, err = self.run_cli("plan", "home-agents")
+        self.assertIn("owner's own file", out + err, "plan refuses it without the ownership flag")
+        code, out, err = self.run_cli("plan", "home-agents", "--i-own-this-file")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("replace", out)
+        code, out, err = self.run_cli("apply", "home-agents", "--i-own-this-file")
+        self.assertEqual(code, 0, out + err)
+        text = Path(self.path("AGENTS.md")).read_text(encoding="utf-8")
+        self.assertIn(IR.BEGIN_PREFIX + f"{IR.BLOCK_VERSION} -->", text)
+        self.assertNotIn("old v1 text", text)
+        self.assertTrue(text.endswith("\ntail\n"))
+        self.assertEqual(self.run_cli("verify", "home-agents")[0], 0)
+
     def test_default_plan_covers_every_platform(self) -> None:
         _, out, _ = self.run_cli("plan")
         for p in IR.PLATFORMS:

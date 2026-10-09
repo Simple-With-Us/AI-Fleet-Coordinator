@@ -115,12 +115,18 @@ class Platform:
 
     @property
     def root_dir(self) -> str:
-        """First path component below the home (".cursor"); it must exist before --create works."""
-        return (self.rel_path or "").split("/", 1)[0]
+        """First folder below the home (".cursor"); it must exist before --create works.  A file straight in
+        the home (AGENTS.md) has none, so the home itself is the folder."""
+        rel = self.rel_path or ""
+        return rel.split("/", 1)[0] if "/" in rel else ""
 
 
 PLATFORMS: tuple[Platform, ...] = (
     Platform("claude", ".claude/CLAUDE.md", "full", "Claude Code (CLI and desktop)", owner_file=True),
+    # ~/AGENTS.md sits in the home directory, so every tool that loads project instructions reads it.  It
+    # carried a hand-copied block that no platform row refreshed (the lane-map v2 change found it stale).
+    Platform("home-agents", "AGENTS.md", "full", "Home-level AGENTS.md (shared by every tool that loads project instructions)",
+             owner_file=True),
     Platform("codex", ".codex/AGENTS.md", "full", "Codex", size_cap=CODEX_CAP, size_warn=CODEX_WARN),
     Platform("fx", ".fx/AGENTS.md", "full", "Fx"),
     Platform("grok", ".grok/GROK.md", "full", "Grok and Grok Build"),
