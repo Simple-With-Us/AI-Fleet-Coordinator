@@ -6,7 +6,7 @@ description: >-
 
 # Sentence gap (portable — always on)
 
-> **This install is for `GROK`.** Slack `[GROK]`.  Notes `Grok`.  Branches `grok/`.  Worktrees `~/apps/<app>-grok`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Worktrees `~/apps/<app>-grok`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`.  If this session is **Grok Build**, pin `AGENT_SEAT=GROK-BUILD`, tag `[GROK-BUILD]`, branches `grok-build/`, worktrees `~/apps/<app>-grok-build`.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
@@ -19,7 +19,7 @@ The block below is Monet's protocol, pasted verbatim. Follow it exactly. Do not 
 
 Put a **visibly wider gap** between sentences — after `.` `!` `?` when a new sentence
 follows — in every piece of prose a human reads.  Not just product copy: chat replies,
-commit messages, PR titles and bodies, code comments, docs, tickets, Slack posts, release
+commit messages, PR titles and bodies, code comments, docs, tickets, Zulip posts, release
 notes, design docs.
 
 Do **not** add a gap after a non-terminal abbreviation (`e.g.`, `i.e.`, `Dr.`, `v1.2.3`),

@@ -5,7 +5,7 @@ description: Use THE BOARD (mac.jays.services/board + the board CLI) as the firs
 
 # THE BOARD (MA)
 
-> **This install is for `MA`.** Slack `[MA]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  Worktrees `~/apps/<app>-muse-assist`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  Worktrees `~/apps/<app>-muse-assist`.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MA-zuliprc` (mode 600).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
@@ -64,7 +64,7 @@ The board is the **write surface**.  Live `~/apps/*-EFFORT-LOG.md` and GitHub Is
 ## Do not
 
 - Paste `MAC_COLLAB_TOKEN` into curl "to be safe."  Use `board`.
-- Use THE BOARD as the only closeout.  Slack + effort board + issues still move.
+- Use THE BOARD as the only closeout.  Zulip + effort board + issues still move.
 - File a duplicate because you did not `board list --search` first.
 
 ## Canon

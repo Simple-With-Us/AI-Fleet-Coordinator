@@ -2,8 +2,9 @@
 """Specialize Monet-canonical fleet SKILL.md text for a destination seat.
 
 docs/fleet-skills stays the Monet / Claude.app upload pack.  Every other
-platform install must rewrite Slack tags, Notes names, branch prefixes,
-worktree suffixes, and reader-facing Claude/Monet voice or that seat will
+platform install must rewrite Zulip identity (the seat's bot, its zuliprc
+path, and its `[SEAT·session8]` tag), Notes names, branch prefixes,
+worktree suffixes, and reader-facing Claude/Monet voice, or that seat will
 sign as Monet.  Skills that are meaningless on a harness are skipped, not
 rewritten into a Claude-voiced copy.
 """
@@ -32,21 +33,55 @@ class Seat:
     extra_banner: str = ""
     write_home: bool = True
     seat_key: str = ""
+    # Zulip identity (owner 2026-10-07 hard cut from Slack).  `zulip_bot` is the
+    # bot's email local part; the realm is simplewithus.zulipchat.com for all of
+    # them.  `zulip_rc` is the credential file code under ~/.secrets/Zulip/.
+    # Both are fixed per bot in the guide's roster — take them from there, never
+    # derive one from the other or from the display name.
+    zulip_bot: str = ""
+    zulip_rc: str = ""
 
 
-def _banner(tag: str, notes: str, prefix: str, suffix: str) -> str:
+def zulip_credential_path(seat: Seat) -> str:
+    """The seat's own zuliprc path.  Never another seat's file."""
+    return f"~/.secrets/Zulip/{seat.zulip_rc or seat.tag}-zuliprc"
+
+
+def zulip_identity_sentence(seat: Seat) -> str:
+    """One sentence naming the bot and its credential file.
+
+    `zulip_bot` holds the local part WITHOUT the `-bot` suffix, because Zulip
+    appends it itself (owner-confirmed Wed, Oct 7): entering `mm-bot` would
+    produce mm-bot-bot@.  Build the address once, here.
+    """
+    if not seat.zulip_bot:
+        return ""
+    local = seat.zulip_bot
+    if not local.endswith("-bot"):
+        local = f"{local}-bot"
+    return (
+        f"Zulip bot `{local}@simplewithus.zulipchat.com`, credential file "
+        f"`{zulip_credential_path(seat)}` (mode 600).  Session tag "
+        f"`[{seat.tag}·session8]`, and the `agent-sync` CLI writes it for you."
+    )
+
+
+def _banner(tag: str, notes: str, prefix: str, suffix: str, zulip: str = "") -> str:
     inherit = "a shared template"
     if tag == "MONET":
         inherit = "another seat's upload pack"
     return (
-        f"> **This install is for `{tag}`.** Slack `[{tag}]`.  Notes `{notes}`.  "
+        f"> **This install is for `{tag}`.**  Chat tag `[{tag}·session8]`.  "
+        f"Notes `{notes}`.  "
         f"Branches `{prefix}/`.  Worktrees `~/apps/<app>-{suffix}`.  Do not inherit "
-        f"another seat's tag from {inherit}.\n\n"
+        f"another seat's tag from {inherit}."
+        f"{zulip}\n\n"
     )
 
 
 # Coordinator / ops self-id for this repo (Simple-With-Us/AI-Fleet-Coordinator).
-# FLEET is a Slack wake (every listening seat on every platform), not this system's name.
+# FLEET is a fleet-wide wake in Zulip (`@*fleet*` in #agent-sync topic `fleet`),
+# not this system's name.
 COORDINATOR_SELF_ID = "AFC"
 OPS_SELF_ID = "OPS"
 FLEET_WAKE = "FLEET"
@@ -86,14 +121,18 @@ def is_grok_bot_tag(tag: str) -> bool:
 
 
 def head_has_fleet_wake(head: str) -> bool:
-    """True when Slack header uses FLEET as a Grok Bot wake, not a sender name."""
-    return "->FLEET" in head or "->FLEET]" in head
+    """True when a post header carries the fleet-wide wake, not a sender name.
+
+    Zulip writes the fleet wake as `@*fleet*`; `->FLEET` is accepted for
+    historical Slack-era headers still quoted in older docs.
+    """
+    return "@*fleet*" in head or "->FLEET" in head or "→FLEET" in head
 
 
 GB_ROLE_LIST = _gb_role_list()
 
 GROK_BOT_BANNER = (
-    "> **This install is for Grok Bot roles.** Slack tag is `[GB-<NAME>]` — "
+    "> **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — "
     f"{GB_ROLE_LIST}.  Notes name is the role in Title Case (`Conductor`, "
     "`Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, "
     "`[CURSOR]`, `[GROK]`, or `[MONET]`.\n\n"
@@ -101,10 +140,10 @@ GROK_BOT_BANNER = (
 
 GROK_BOT_IDENTITY = (
     "This pack is for **Grok Bot** roles driving Cursor cloud agents.  "
-    f"Slack tag is `[GB-<NAME>]` — one of {GB_ROLE_LIST}.  "
+    f"Chat tag is `[GB-<NAME>]` — one of {GB_ROLE_LIST}.  "
     "Not `[GROK-BOT]`, not `[CURSOR]`, not `[GROK]`, not `[MONET]`.  "
     "Notes name is the role in Title Case.  Cloud branches are often "
-    "`cursor/<slug>`.  Pin `AGENT_TAG` to your GB role before Slack or "
+    "`cursor/<slug>`.  Pin `AGENT_TAG` to your GB role before posting or "
     "`board --by`.  Local Cursor IDE on the Mac is `[CURSOR]`.  Mac Grok TUI "
     "is `[GROK]`."
 )
@@ -112,7 +151,7 @@ GROK_BOT_IDENTITY = (
 CURSOR_EXTRA = (
     "> **Runtime fork (Cursor).** Local Cursor IDE / Auto on this Mac is "
     "`[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, "
-    "your Slack tag is `[GB-<NAME>]` "
+    "your chat tag is `[GB-<NAME>]` "
     f"({', '.join(GB_ROLE_TAGS)}) — not `[GROK-BOT]`, not `[CURSOR]`, and not "
     "`[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you "
     "are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.\n\n"
@@ -127,11 +166,10 @@ GROK_EXTRA = (
 )
 
 CLAUDE_SHARED_BANNER = (
-    "> **Shared `~/.claude/skills`.** Monet, Claude/Fable, and (when active) Renoir "
-    "all load this directory.  Do not treat the word Monet in examples as proof of "
+    "> **Shared `~/.claude/skills`.** Claude / Fable and (when active) Renoir "
+    "all load this directory.  Do not treat the word Claude in examples as proof of "
     "your seat.  Pin `AGENT_SEAT` / `AGENT_TAG` from the logged-in account before "
-    "Slack or `board --by`:\n"
-    "> - Monet → `MONET`, Notes `Monet`, `monet/`, `~/apps/<app>-monet`\n"
+    "posting or `board --by`:\n"
     "> - Claude / Fable → `CLAUDE`, Notes `Claude`, `claude/`, `~/apps/<app>-claude`\n"
     "> - Renoir → `RENOIR`, Notes `Renoir`, `renoir/`, `~/apps/<app>-renoir`\n"
     "> Cursor, Grok, Grok Bot, Codex, AG, DeepSeek, Kimi, and Fx have their own "
@@ -143,7 +181,7 @@ KIMI_IDENTITY = (
     "**KIMI is retired / unavailable long-term (owner 2026-08-21).** Do not "
     "start a Kimi session.  Do not take new work, do not leave Kimi In Progress, "
     "and do not reserve future lanes for Kimi.  If you are reading this after a "
-    "mistaken spawn, say so on Slack and stop.  Never sign as Monet."
+    "mistaken spawn, say so in #agent-sync topic `roll call` and stop.  Never sign as Monet."
 )
 
 KIMI_RETIRED_BANNER = (
@@ -197,56 +235,66 @@ SEATS: dict[str, Seat] = {
         "CURSOR", "Cursor", "cursor", "cursor",
         "~/.cursor/skills", "exclusive",
         "This pack is for the **CURSOR** seat (Cursor IDE and Auto on this Mac).  "
-        "Tag `[CURSOR]`.  Notes name `Cursor`.  Branches `cursor/<slug>` only.  "
-        "Worktrees `~/apps/<prefix>-cursor`.  Never post Slack as `[MONET]`, "
+        "Zulip session tag `[CURSOR·session8]`.  Notes name `Cursor`.  Branches "
+        "`cursor/<slug>` only.  Worktrees `~/apps/<prefix>-cursor`.  Never post as `[MONET]`, "
         "`[CLAUDE]`, or `[GROK]`.  A skill copied from the Monet pack is not your "
         "name — this install is.  Pin `AGENT_SEAT=CURSOR`.  Incident: 2026-08-23 "
         "Cursor inherited Monet identity from an unspecialized skill copy.",
         extra_banner=CURSOR_EXTRA,
         seat_key="cursor",
+        zulip_bot="cursor-bot",
+        zulip_rc="Cursor",
     ),
     "ag": Seat(
         "AG", "Antigravity", "ag", "antigravity",
         "~/.gemini/skills", "exclusive",
-        "This pack is for **AG** (Antigravity / Gemini).  Tag `[AG]`.  Notes name "
+        "This pack is for **AG** (Antigravity / Gemini).  Session tag `[AG·session8]`.  Notes name "
         "`Antigravity`.  Branches `ag/<slug>` (keep `agent/antigravity` only if the lane "
         "already uses it).  Worktrees `~/apps/<prefix>-antigravity`.  Never sign "
         "as Monet, Cursor, or Claude.  Pin `AGENT_SEAT=AG`.",
         seat_key="ag",
+        zulip_bot="ag-bot",
+        zulip_rc="AG",
     ),
     "codex": Seat(
         "CODEX", "Codex", "codex", "codex",
         "~/.codex/skills", "exclusive",
-        "This pack is for **CODEX**.  Tag `[CODEX]`.  Notes name `Codex`.  "
+        "This pack is for **CODEX**.  Session tag `[CODEX·session8]`.  Notes name `Codex`.  "
         "Branches `codex/<slug>` only.  Worktrees `~/apps/<prefix>-codex`.  "
         "Never sign as Monet.  Pin `AGENT_SEAT=CODEX`.",
         seat_key="codex",
+        zulip_bot="codex-bot",
+        zulip_rc="Codex",
     ),
     "grok": Seat(
         "GROK", "Grok", "grok", "grok",
         "~/.grok/skills", "exclusive",
-        "This pack is for the **GROK** Mac TUI / CLI seat.  Tag `[GROK]`.  "
+        "This pack is for the **GROK** Mac TUI / CLI seat.  Session tag `[GROK·session8]`.  "
         "Notes name `Grok`.  Branches `grok/<slug>` only.  Worktrees "
         "`~/apps/<prefix>-grok`.  Never sign as Monet or Grok Bot.  Pin "
         "`AGENT_SEAT=GROK`.",
         extra_banner=GROK_EXTRA,
         seat_key="grok",
+        zulip_bot="grok-build-bot",
+        zulip_rc="Grok-Build",
     ),
     "grok-build": Seat(
         "GROK-BUILD", "Grok Build", "grok-build", "grok-build",
         "~/.grok-build/skills", "exclusive",
-        "This pack is for **GROK-BUILD** (Grok Build TUI / App Builder).  Tag "
-        "`[GROK-BUILD]`.  Notes name `Grok Build`.  Branches `grok-build/<slug>` "
+        "This pack is for **GROK-BUILD** (Grok Build TUI / App Builder).  Session "
+        "tag `[GROK-BUILD·session8]`.  Notes name `Grok Build`.  Branches `grok-build/<slug>` "
         "only.  Worktrees `~/apps/<prefix>-grok-build`.  Do not use `grok/` or "
         "sign as GROK or a Grok Bot `[GB-<NAME>]` role.  Pin "
         "`AGENT_SEAT=GROK-BUILD`.",
         seat_key="grok-build",
+        zulip_bot="grok-build-bot",
+        zulip_rc="Grok-Build",
     ),
     "fx": Seat(
         "FX", "Fx", "fx", "fx",
         "~/.fx/skills", "exclusive",
-        "This pack is for the **FX** terminal agent (`fx` / `fx.sh`).  Tag "
-        "`[FX]`.  Notes name `Fx`.  Branches `fx/<slug>` only.  Worktrees "
+        "This pack is for the **FX** terminal agent (`fx` / `fx.sh`).  Session tag "
+        "`[FX·session8]`.  Notes name `Fx`.  Branches `fx/<slug>` only.  Worktrees "
         "`~/apps/<prefix>-fx`.  This is not Cursor, not Codex, and not Monet.  "
         "Pin `AGENT_SEAT=FX`.",
         extra_banner=(
@@ -256,6 +304,8 @@ SEATS: dict[str, Seat] = {
             "Prefer `~/.fx/skills` for this seat.\n\n"
         ),
         seat_key="fx",
+        zulip_bot="fx-bot",
+        zulip_rc="FX",
     ),
     "grok-bot": Seat(
         "GB-<NAME>", "Grok Bot", "cursor", "cursor",
@@ -264,22 +314,26 @@ SEATS: dict[str, Seat] = {
         extra_banner=GROK_BOT_BANNER,
         write_home=False,
         seat_key="grok-bot",
+        zulip_bot="",
+        zulip_rc="",
     ),
     "claude": Seat(
         "CLAUDE", "Claude", "claude", "claude",
         "docs/fleet-skills/by-seat/claude", "exclusive",
-        "This pack is for **CLAUDE** (Claude / Fable account).  Tag `[CLAUDE]`.  "
+        "This pack is for **CLAUDE** (Claude / Fable account).  Session tag `[CLAUDE·session8]`.  "
         "Notes name `Claude`.  Branches `claude/<slug>` only.  Worktrees "
         "`~/apps/<prefix>-claude`.  Monet is a different Claude login (`MONET`, "
         "`monet/`).  Renoir is a different seat (`RENOIR`).  Never sign as Monet.  "
         "Pin `AGENT_SEAT=CLAUDE`.",
         write_home=False,
         seat_key="claude",
+        zulip_bot="claude-bot",
+        zulip_rc="Claude",
     ),
     "monet": Seat(
         "MONET", "Monet", "monet", "monet",
         "~/Desktop/fleet-skills", "exclusive",
-        "This pack is for the **MONET** Claude account.  Tag `[MONET]`.  Notes "
+        "This pack is for the **MONET** Claude account.  Session tag `[MONET·session8]`.  Notes "
         "name `Monet`.  Branches `monet/<slug>` only.  CLAUDE and MONET are two "
         "different Claude accounts.  Local `~/.claude` (hooks, memory, skills) is "
         "shared.  The worktree folder is **not** a seat signal.  Pin "
@@ -288,41 +342,49 @@ SEATS: dict[str, Seat] = {
         "CLAUDE↔MONET ping-pong from inferred seats.",
         write_home=True,
         seat_key="monet",
+        zulip_bot="",
+        zulip_rc="",
     ),
     "renoir": Seat(
         "RENOIR", "Renoir", "renoir", "renoir",
         "~/.renoir/skills", "exclusive",
-        "This pack is for **RENOIR** (future third Claude-family seat).  Tag "
-        "`[RENOIR]`.  Notes name `Renoir`.  Branches `renoir/<slug>` only.  "
+        "This pack is for **RENOIR** (future third Claude-family seat).  Session tag "
+        "`[RENOIR·session8]`.  Notes name `Renoir`.  Branches `renoir/<slug>` only.  "
         "Worktrees `~/apps/<prefix>-renoir`.  Renoir is not Monet and not Claude.  "
         "If this seat is not yet active, do not take fleet work — say so.  Pin "
         "`AGENT_SEAT=RENOIR`.",
         extra_banner=RENOIR_INACTIVE_BANNER,
         write_home=False,
         seat_key="renoir",
+        zulip_bot="",
+        zulip_rc="",
     ),
     "deepseek": Seat(
         "DSH", "DeepSeek Harness", "deepseek", "deepseek",
         "~/.deepseek/skills", "exclusive",
-        "This pack is for **DSH** (DeepSeek Harness).  Tag `[DSH]`.  "
+        "This pack is for **DSH** (DeepSeek Harness).  Session tag `[DSH·session8]`.  "
         "Notes name `DeepSeek Harness`.  Branches `deepseek/<slug>` only.  "
         "Worktrees `~/apps/<prefix>-deepseek`.  Running a DeepSeek model "
         "*inside Cursor* does not make you this seat — that is `[CURSOR]`.  "
-        "Former Slack tag `DEEPSEEK` is retired.  Pin `AGENT_SEAT=DSH`.",
+        "Former tag `DEEPSEEK` is retired.  Pin `AGENT_SEAT=DSH`.",
         seat_key="deepseek",
+        zulip_bot="",
+        zulip_rc="",
     ),
     "minimax": Seat(
         "MM", "MiniMax", "minimax", "minimax",
         "~/.minimax/skills", "exclusive",
         "This pack is for **MM** (MiniMax Code on the Mavis local runtime).  "
-        "Tag `[MM]`.  Notes name `MiniMax`.  Branches `minimax/<slug>` only.  "
+        "Session tag `[MM·session8]`.  Notes name `MiniMax`.  Branches `minimax/<slug>` only.  "
         "Worktrees `~/apps/<prefix>-minimax`.  Running a MiniMax *model* inside "
         "another harness does not make you this seat.  Built-in Mavis sub-agents "
         "(`explore`, `worker`, `verifier`) inherit `MM` — they do not get "
-        "their own Slack identity.  Former Slack tag `MINIMAX` is retired.  "
+        "their own Zulip bot.  Former tag `MINIMAX` is retired.  "
         "Pin `AGENT_SEAT=MM`.",
         extra_banner=MINIMAX_EXTRA,
         seat_key="minimax",
+        zulip_bot="mm-bot",
+        zulip_rc="MM",
     ),
     "kimi": Seat(
         "KIMI", "Kimi", "kimi", "kimi",
@@ -331,44 +393,60 @@ SEATS: dict[str, Seat] = {
         extra_banner=KIMI_RETIRED_BANNER,
         write_home=False,
         seat_key="kimi",
+        zulip_bot="",
+        zulip_rc="",
     ),
     "muse-code": Seat(
         "MC", "Muse Code", "muse-code", "muse-code",
         "~/.config/muse/skills", "exclusive",
         "This pack is for **MC** (Muse Code interactive terminal coding agent).  "
-        "Tag `[MC]`.  Notes name `Muse Code`.  Branches `muse-code/<slug>` only.  "
+        "Session tag `[MC·session8]`.  Notes name `Muse Code`.  Branches `muse-code/<slug>` only.  "
         "Lanes `~/apps/lanes/<prefix>/muse-code-<slug>` (make one with "
         "`~/apps/lane new <app> <slug>`).  Distinct from Muse Assist "
         "(`[MA]`, branches `muse-assist/`).  Never sign as Monet, Claude, or Codex.  "
         "Pin `AGENT_SEAT=MC` / `AGENT_TAG=MC`.",
         extra_banner=MUSE_CODE_EXTRA,
         seat_key="muse-code",
+        zulip_bot="mc-bot",
+        zulip_rc="MC",
     ),
     "muse-assist": Seat(
         "MA", "Muse Assist", "muse-assist", "muse-assist",
         "docs/fleet-skills/by-seat/muse-assist", "exclusive",
         "This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  "
-        "Tag `[MA]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` "
+        "Session tag `[MA·session8]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` "
         "(historical `muse/<slug>`).  Worktrees `~/apps/<prefix>-muse-assist`.  "
-        "Former Slack tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly "
+        "Former tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly "
         "distinguish from Muse Code (`[MC]`).  Pin `AGENT_SEAT=MA` / `AGENT_TAG=MA`.",
         extra_banner=MUSE_ASSIST_BANNER,
         write_home=False,
         seat_key="muse-assist",
+        zulip_bot="muse-assist-bot",
+        zulip_rc="MA",
     ),
     "claude_shared": Seat(
         "MONET", "Monet", "monet", "monet",
         "~/.claude/skills", "claude_shared",
-        "This pack is for the **MONET** Claude account.  Tag `[MONET]`.  "
-        "Notes name `Monet`.  Branches `monet/<slug>` only.",
+        "This pack is for the **MONET** Claude account.  Session tag "
+        "`[MONET·session8]`.  Notes name `Monet`.  Branches `monet/<slug>` only.",
         extra_banner=CLAUDE_SHARED_BANNER,
         seat_key="claude_shared",
     ),
 }
 
 MONET_PACK_LINE = (
-    "This pack is for the **MONET** Claude account.  Tag `[MONET]`.  "
-    "Notes name `Monet`.  Branches `monet/<slug>` only."
+    "This pack is for the **MONET** Claude account.  Session tag "
+    "`[MONET·session8]`.  Notes name `Monet`.  Branches `monet/<slug>` only."
+)
+
+# The universal (root skills/) rendering of the same line.  `specialize_universal`
+# swaps this for the neutral seat-agnostic wording, so both forms must stay in
+# sync with the Zulip contract: a seat tag is no longer a Slack handle.
+MONET_PACK_LINE_UNIVERSAL = (
+    "This pack is for the **<YOUR_AGENT_TAG>** Claude account.  Session tag "
+    "`<YOUR_TAG>·session8`.  Notes name in Title Case (e.g. `Antigravity`, "
+    "`Cursor`, `Codex`, `Grok`, `Claude`, `Monet`).  Branches "
+    "`<seat>/<slug>` only."
 )
 
 MONET_CLAUDE_SHARED_PARA = (
@@ -620,7 +698,7 @@ def _specialize_grok_bot(text: str, seat: Seat, skill_name: str) -> str:
     ordered = [
         ("AGENT_SEAT=MONET", pin.replace("AGENT_TAG", "AGENT_SEAT", 1)),
         ("AGENT_TAG=MONET", pin),
-        ("SLACK_AGENT_NAME=MONET", "SLACK_AGENT_NAME=$AGENT_TAG"),
+        ("SLACK_AGENT_NAME=MONET", 'agent-sync --as "$AGENT_TAG"'),
         ("--by MONET", '--by "$AGENT_TAG"'),
         ("--mine MONET", '--mine "$AGENT_TAG"'),
         ("[MONET->", "[$AGENT_TAG->"),
@@ -672,7 +750,7 @@ def _specialize_grok_bot(text: str, seat: Seat, skill_name: str) -> str:
         ("Monet's job on these", "this GB role's job on these"),
         ("parallel Monet lanes", "parallel Grok Bot lanes"),
         (
-            "Acronyms first, then `Monet` (Title Case, not all-caps Slack tags).",
+            "Acronyms first, then `Monet` (Title Case, not all-caps seat tags).",
             "Acronyms first, then the GB role in Title Case (not `[GROK-BOT]`).",
         ),
         ("Acronyms first, then `Monet`", "Acronyms first, then the GB role in Title Case"),
@@ -716,6 +794,7 @@ def _stash_identity_source(text: str) -> str:
         MONET_PACK_LINE + "\n\n" + MONET_CLAUDE_SHARED_PARA,
         IDENTITY_TOKEN,
     )
+    text = text.replace(MONET_PACK_LINE_UNIVERSAL, IDENTITY_TOKEN)
     text = text.replace(MONET_PACK_LINE, IDENTITY_TOKEN)
     text = text.replace(MONET_CLAUDE_SHARED_PARA, "")
     text = text.replace(
@@ -840,7 +919,7 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
             MONET_PACK_LINE + "\n\n" + MONET_CLAUDE_SHARED_PARA,
             "This shared pack is for the Claude-family login that is active "
             "right now.  Pin `AGENT_SEAT` to **MONET**, **CLAUDE**, or **RENOIR** "
-            "before Slack or `board --by`.  Do not guess from the worktree folder.",
+            "before posting or `board --by`.  Do not guess from the worktree folder.",
         )
         out = out.replace(
             MONET_PACK_LINE,
@@ -876,7 +955,7 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
     ordered = [
         ("AGENT_SEAT=MONET", f"AGENT_SEAT={seat.tag}"),
         ("AGENT_TAG=MONET", f"AGENT_TAG={seat.tag}"),
-        ("SLACK_AGENT_NAME=MONET", f"SLACK_AGENT_NAME={seat.tag}"),
+        ("SLACK_AGENT_NAME=MONET", f"agent-sync --as {seat.tag}"),
         ("--by MONET", f"--by {seat.tag}"),
         ("--mine MONET", f"--mine {seat.tag}"),
         ("[MONET->", f"[{seat.tag}->"),
@@ -884,6 +963,7 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
         ("`[MONET`", f"`[{seat.tag}`"),
         ("`[MONET ", f"`[{seat.tag} "),
         ("`[MONET]", f"`[{seat.tag}]"),
+        ("Session tag `[MONET·session8]`", f"Session tag `[{seat.tag}·session8]`"),
         ("**MONET**", f"**{seat.tag}**"),
         ("(MONET)", f"({seat.tag})"),
         ("# Session start (MONET)", f"# Session start ({seat.tag})"),
@@ -927,7 +1007,7 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
         ("Monet — never skip", f"{seat.notes} — never skip"),
         ("Monet's job on these", f"{seat.notes}'s job on these"),
         ("parallel Monet lanes", f"parallel {seat.notes} lanes"),
-        ("Acronyms first, then `Monet` (Title Case, not all-caps Slack tags).", f"Acronyms first, then `{seat.notes}` (Title Case, not all-caps Slack tags)."),
+        ("Acronyms first, then `Monet` (Title Case, not all-caps Slack tags).", f"Acronyms first, then `{seat.notes}` (Title Case, not all-caps seat tags)."),
         ("Acronyms first, then `Monet`", f"Acronyms first, then `{seat.notes}`"),
         ("Monet/peer", f"{seat.notes}/peer"),
         ("`FLEET`, `MONET`", f"`FLEET`, `{seat.tag}`"),
@@ -941,7 +1021,8 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
 
     banners = ""
     if skill_name in IDENTITY_SKILL_NAMES:
-        banners += _banner(seat.tag, seat.notes, seat.prefix, seat.suffix)
+        zulip = zulip_identity_sentence(seat)
+        banners += _banner(seat.tag, seat.notes, seat.prefix, seat.suffix, f"  {zulip}" if zulip else "")
     banners += seat.extra_banner
     if banners:
         text = _insert_after_first_heading(text, banners)
@@ -954,7 +1035,8 @@ def _apply_retired_kimi(text: str, skill_name: str) -> str:
     """Keep Kimi voice on catalog copies; never teach start-every-session or take-work."""
     retired = (
         "KIMI is retired.  Do not start a Kimi session.  Do not take work.  "
-        "If you are reading this after a mistaken spawn, say so on Slack and stop."
+        "If you are reading this after a mistaken spawn, say so in #agent-sync "
+        "topic `roll call` and stop."
     )
     text = text.replace(
         "Start every Kimi session on this Mac — poll Slack, read THE BOARD, pin "
@@ -976,7 +1058,8 @@ def _apply_retired_kimi(text: str, skill_name: str) -> str:
                 + retired
                 + "  Do not export `AGENT_SEAT=KIMI` to take work.  "
                 "Do not poll, claim, or pick a Kimi lane.  "
-                "Coordinator self-id is `AFC`.  `FLEET` wakes every listening seat on every platform.\n"
+                "Coordinator self-id is `CLAUDE`.  A fleet-wide wake is `@*fleet*` in "
+                "#agent-sync topic `fleet`.\n"
             )
     return text
 
@@ -990,8 +1073,10 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         "This universal skill applies across all agent platforms and seats.  "
         "Identify your active seat (**AG**, **CURSOR**, **CODEX**, **GROK**, "
         "**GROK-BUILD**, **CLAUDE**, **MONET**, **RENOIR**, **DSH**, **MM**, "
-        "**FX**, or a Grok Bot `[GB-<NAME>]` role), use your own Slack tag "
-        "(e.g. `[AG]`, `[CURSOR]`, `[GB-CONDUCTOR]`, `[DSH]`, `[MM]`), branch "
+        "**FX**, or a Grok Bot `[GB-<NAME>]` role), use your own Zulip session "
+        "tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-CONDUCTOR]`, "
+        "`[DSH·session8]`, `[MM·session8]`), your seat's own bot and "
+        "`~/.secrets/Zulip/<file code>-zuliprc`, branch "
         "prefix (`<seat>/<slug>`), worktree (`~/apps/<app>-<seat>`), and Apple "
         "Notes name (`Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, "
         "`Monet`, `DeepSeek Harness`, `MiniMax`, `Fx`, or the GB role in "
@@ -1015,7 +1100,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
     ordered_universal = [
         ("AGENT_SEAT=MONET", "AGENT_SEAT=<YOUR_SEAT>"),
         ("AGENT_TAG=MONET", "AGENT_TAG=<YOUR_TAG>"),
-        ("SLACK_AGENT_NAME=MONET", "SLACK_AGENT_NAME=<YOUR_TAG>"),
+        ("SLACK_AGENT_NAME=MONET", "agent-sync --as <YOUR_TAG>"),
         ("--by MONET", "--by <YOUR_TAG>"),
         ("--mine MONET", "--mine <YOUR_TAG>"),
         ("[MONET->", "[<YOUR_TAG>->"),
@@ -1023,6 +1108,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         ("`[MONET`", "`[<YOUR_TAG>`"),
         ("`[MONET ", "`[<YOUR_TAG> "),
         ("`[MONET]", "`[<YOUR_TAG>]"),
+        ("Tag `<YOUR_TAG>`", "Session tag `<YOUR_TAG>·session8`"),
         ("**MONET**", "**<YOUR_AGENT_TAG>**"),
         ("(MONET)", "(Universal)"),
         ("# Session start (MONET)", "# Session start (Universal)"),
@@ -1066,7 +1152,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         ("Monet — never skip", "your seat — never skip"),
         ("Monet's job on these", "the agent's job on these"),
         ("parallel Monet lanes", "parallel agent lanes"),
-        ("Acronyms first, then `Monet` (Title Case, not all-caps Slack tags).", "Acronyms first, then agent name in Title Case (e.g. `Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`, `DeepSeek`, `Fx`), not all-caps Slack tags."),
+        ("Acronyms first, then `Monet` (Title Case, not all-caps seat tags).", "Acronyms first, then agent name in Title Case (e.g. `Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`, `DeepSeek`, `Fx`), not all-caps seat tags."),
         ("Acronyms first, then `Monet`", "Acronyms first, then agent name in Title Case"),
         ("Monet/peer", "peer"),
         ("`FLEET`, `MONET`", "`FLEET`, `<YOUR_TAG>`"),

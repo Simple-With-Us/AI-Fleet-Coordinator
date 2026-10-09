@@ -1,11 +1,11 @@
 ---
 name: owner-copy
-description: Fleet human-facing prose — two spaces between sentences, light theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation. Use when writing UI strings, ASC listing fields, PR/commit/Slack/Notes prose, release notes, or any paragraph a human will read. Also when changing theme defaults or taking screenshots.
+description: Fleet human-facing prose — two spaces between sentences, light theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation. Use when writing UI strings, ASC listing fields, PR/commit/chat/Notes prose, release notes, or any paragraph a human will read. Also when changing theme defaults or taking screenshots.
 ---
 
 # Owner-facing copy (MM)
 
-> **This install is for `MM`.** Slack `[MM]`.  Notes `MiniMax`.  Branches `minimax/`.  Worktrees `~/apps/<app>-minimax`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Worktrees `~/apps/<app>-minimax`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mm-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MM-zuliprc` (mode 600).  Session tag `[MM·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Runtime (MiniMax).** MiniMax Code has no global rules file.  The fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt); per-repo `AGENTS.md` is project memory.  Skills here are loaded on demand from `<available_skills>`, so read the one that matches before acting — nothing in this directory is auto-applied.  `config.yaml` ships `permissionMode: bypassPermissions`, so nothing prompts: hold the destructive-op pause yourself.
 
@@ -17,10 +17,11 @@ Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/
 Full protocol (always follow, do not weaken): skill `sentence-gap`
 (this pack's `sentence-gap` — Monet portable protocol).
 
-Binding for every paragraph a human reads — in-app UI, ASC description / promotional text / What’s New / review notes, push, email, help, Apple Notes, effort boards, **chat replies**, PR titles/bodies, commit messages, Slack.
+Binding for every paragraph a human reads — in-app UI, ASC description / promotional text / What’s New / review notes, push, email, help, Apple Notes, effort boards, **chat replies**, PR titles/bodies, commit messages, Zulip.
 
-- **Files** (repo docs, commit/PR/Slack/Notes source): two literal ASCII spaces after `.` / `!` / `?` before the next sentence.  Do not write `&nbsp;` into files.
+- **Files** (repo docs, commit/PR/Notes source): two literal ASCII spaces after `.` / `!` / `?` before the next sentence.  Do not write `&nbsp;` into files.
 - **BotFleet / OpenMausBot / cloud chat:** two ASCII spaces.  Never display the six characters `&nbsp;` (owner 2026-09-03).  Backend inserts a real U+00A0 if the renderer would collapse the gap.
+- **Zulip:** two literal ASCII spaces (owner-verified Wed, Oct 7 — Zulip renders them the same as a non-breaking space plus a space).  Never type the HTML entity there.
 - **Claude Code desktop app (Code tab):** two literal ASCII spaces (owner-verified 2026-09-04; the 2026-08-19 entity advice is withdrawn).
 
 Headings / titles / buttons: **Title Case**.  Body: sentence case.  Values that are not a full sentence: lowercase or sentence case.
@@ -69,7 +70,7 @@ baseline; a real tooltip component is better where the app already has one.
 
 ## Timestamps (owner-facing agent writing)
 
-Say every time on the owner's clock: 12-hour, with am or pm.  That clock is Central.  Do not type CDT, CST, or CT.  The owner assumes am/pm is their time.  Write `3:15am`, not `3:15am CDT` and not `08:15Z`.  When the day matters, write `Sun, Oct 5, 2026 at 3:15am`.  Name a zone only when the time is not that clock.  The usual case is UTC, in parentheses after the local time: `3:15am (2026-10-05T08:15:00Z)`.  Never lead with Zulu or a 24-hour UTC stamp in chat, Notes, Slack, boards, or PRs.  `00:00 UTC` is 7:00pm the previous calendar day during daylight saving, and 6:00pm the previous calendar day after the fall-back.  Convert with `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Printing a zone abbreviation on a local time is the failure mode.  Binding for every agent, bot, and platform.
+Say every time on the owner's clock: 12-hour, with am or pm.  That clock is Central.  Do not type CDT, CST, or CT.  The owner assumes am/pm is their time.  Write `3:15am`, not `3:15am CDT` and not `08:15Z`.  When the day matters, write `Sun, Oct 5, 2026 at 3:15am`.  Name a zone only when the time is not that clock.  The usual case is UTC, in parentheses after the local time: `3:15am (2026-10-05T08:15:00Z)`.  Never lead with Zulu or a 24-hour UTC stamp in chat, Notes, Zulip, boards, or PRs.  `00:00 UTC` is 7:00pm the previous calendar day during daylight saving, and 6:00pm the previous calendar day after the fall-back.  Convert with `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Printing a zone abbreviation on a local time is the failure mode.  Binding for every agent, bot, and platform.
 
 Product UI times are the **viewer's** timezone except market-day accounting (Chicago) and session bells (`9:30 AM ET`).
 

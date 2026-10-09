@@ -6,7 +6,7 @@ description: >-
 
 # Sentence gap (portable — always on)
 
-> **This install is for `KIMI`.** Slack `[KIMI]`.  Notes `Kimi`.  Branches `kimi/`.  Worktrees `~/apps/<app>-kimi`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `KIMI`.**  Chat tag `[KIMI·session8]`.  Notes `Kimi`.  Branches `kimi/`.  Worktrees `~/apps/<app>-kimi`.  Do not inherit another seat's tag from a shared template.
 
 > **Retired seat.** Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
 
@@ -19,7 +19,7 @@ The block below is Monet's protocol, pasted verbatim. Follow it exactly. Do not 
 
 Put a **visibly wider gap** between sentences — after `.` `!` `?` when a new sentence
 follows — in every piece of prose a human reads.  Not just product copy: chat replies,
-commit messages, PR titles and bodies, code comments, docs, tickets, Slack posts, release
+commit messages, PR titles and bodies, code comments, docs, tickets, Zulip posts, release
 notes, design docs.
 
 Do **not** add a gap after a non-terminal abbreviation (`e.g.`, `i.e.`, `Dr.`, `v1.2.3`),

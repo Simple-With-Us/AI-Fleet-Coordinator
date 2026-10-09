@@ -5,7 +5,7 @@ description: Fleet DNS and registrar playbook.  Cloudflare is DNS for every flee
 
 # Fleet DNS and Registrars (ALL AGENTS)
 
-> **This install is for `MONET`.** Slack `[MONET]`.  Notes `Monet`.  Branches `monet/`.  Worktrees `~/apps/<app>-monet`.  Do not inherit another seat's tag from another seat's upload pack.
+> **This install is for `MONET`.**  Chat tag `[MONET·session8]`.  Notes `Monet`.  Branches `monet/`.  Worktrees `~/apps/<app>-monet`.  Do not inherit another seat's tag from another seat's upload pack.
 
 
 Cloudflare is the DNS manager for every fleet domain.  Registrar and Cloudflare account are separate.

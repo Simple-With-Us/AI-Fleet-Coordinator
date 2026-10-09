@@ -5,7 +5,7 @@ description: Use THE BOARD (mac.jays.services/board + the board CLI) as the firs
 
 # THE BOARD (KIMI)
 
-> **This install is for `KIMI`.** Slack `[KIMI]`.  Notes `Kimi`.  Branches `kimi/`.  Worktrees `~/apps/<app>-kimi`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `KIMI`.**  Chat tag `[KIMI·session8]`.  Notes `Kimi`.  Branches `kimi/`.  Worktrees `~/apps/<app>-kimi`.  Do not inherit another seat's tag from a shared template.
 
 > **Retired seat.** Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
 
@@ -64,7 +64,7 @@ The board is the **write surface**.  Live `~/apps/*-EFFORT-LOG.md` and GitHub Is
 ## Do not
 
 - Paste `MAC_COLLAB_TOKEN` into curl "to be safe."  Use `board`.
-- Use THE BOARD as the only closeout.  Slack + effort board + issues still move.
+- Use THE BOARD as the only closeout.  Zulip + effort board + issues still move.
 - File a duplicate because you did not `board list --search` first.
 
 ## Canon

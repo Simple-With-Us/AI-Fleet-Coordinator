@@ -5,7 +5,7 @@ description: Land a Claude feature branch to main across the fleet — seat work
 
 # Land a feature branch (CLAUDE)
 
-> **This install is for `CLAUDE`.** Slack `[CLAUDE]`.  Notes `Claude`.  Branches `claude/`.  Worktrees `~/apps/<app>-claude`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Worktrees `~/apps/<app>-claude`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Claude-zuliprc` (mode 600).  Session tag `[CLAUDE·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.

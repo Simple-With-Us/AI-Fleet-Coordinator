@@ -5,7 +5,7 @@ description: Use THE BOARD (mac.jays.services/board + the board CLI) as the firs
 
 # THE BOARD (AG)
 
-> **This install is for `AG`.** Slack `[AG]`.  Notes `Antigravity`.  Branches `ag/`.  Worktrees `~/apps/<app>-antigravity`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Worktrees `~/apps/<app>-antigravity`.  Do not inherit another seat's tag from a shared template.  Zulip bot `ag-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/AG-zuliprc` (mode 600).  Session tag `[AG·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Primary coordination surface (owner 2026-08-19).  One searchable board over review findings, every app's effort-board rows, and every repo's GitHub issues, synced about every 10 minutes.
@@ -62,7 +62,7 @@ The board is the **write surface**.  Live `~/apps/*-EFFORT-LOG.md` and GitHub Is
 ## Do not
 
 - Paste `MAC_COLLAB_TOKEN` into curl "to be safe."  Use `board`.
-- Use THE BOARD as the only closeout.  Slack + effort board + issues still move.
+- Use THE BOARD as the only closeout.  Zulip + effort board + issues still move.
 - File a duplicate because you did not `board list --search` first.
 
 ## Canon
