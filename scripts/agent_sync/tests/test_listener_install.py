@@ -109,8 +109,20 @@ class InitAndTestWakeTests(ListenerHarness):
         self.assertEqual(result.code, 0, result.err)
         cfg = C.load(self.root)
         self.assertEqual(cfg.owner_user_id, 12)
-        self.assertEqual(sorted(cfg.eligible_user_ids), [10, 11, 13])  # claude, codex, cursor bots; not Sentry
+        # claude, codex, cursor and grok-bot@ (tag GROK) are pinned; Sentry and minimax-bot@ (tag MINIMAX) are not.
+        self.assertEqual(sorted(cfg.eligible_user_ids), [10, 11, 13, 14])
         self.assertIn("CLAUDE: file mode ok, role 400", result.out)
+
+    def test_init_pins_the_grok_build_bot_under_the_tag_grok(self) -> None:
+        # grok-build-bot@ derives to the seat tag GROK (EMAIL_TAG_OVERRIDES), so GROK must be in FLEET_SEATS.
+        build = self.fake.add_user("grok-build-bot@zulip.test", "Grok Build", is_bot=True, user_id=30)
+        web = self.fake.add_user("grok-web-bot@zulip.test", "Grok (Web/iOS)", is_bot=True, user_id=31)
+        result = self.run_cli("daemon", "init", "--yes")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertIn("GROK=%d" % build["user_id"], result.out)
+        cfg = C.load(self.root)
+        self.assertIn(build["user_id"], cfg.eligible_user_ids)
+        self.assertNotIn(web["user_id"], cfg.eligible_user_ids, "GROK-WEB is a different seat and not a Mac seat bot")
 
     def test_test_wake_prints_the_plan_and_run_pins_the_binary(self) -> None:
         self.write_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\nclaude = "%s"\n' % self.claude)

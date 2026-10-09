@@ -911,7 +911,7 @@ class ServerInitTests(ServerHarness):
         cfg = C.load(self.root, str(self.config_file))
         self.assertEqual(cfg.instance, "server")
         self.assertEqual(cfg.owner_user_id, 12)
-        self.assertEqual(sorted(cfg.eligible_user_ids), [10, 11, 13])
+        self.assertEqual(sorted(cfg.eligible_user_ids), [10, 11, 13, 14])  # claude, codex, cursor, grok-bot@ (GROK)
         self.assertFalse((self.state_dir / "listener.toml").exists(), "init wrote AGENT_SYNC_CONFIG, not the default")
         self.assertEqual(stat.S_IMODE(os.stat(self.config_file).st_mode), 0o600)
         missing = self.run_cli("daemon", "init", "--yes", env=self.server_env(ZULIP_GB_COMPILER_API_KEY=None))
