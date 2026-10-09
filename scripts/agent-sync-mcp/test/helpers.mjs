@@ -41,10 +41,15 @@ export function wranglerConfig() {
   return parseJsonc(readFileSync(path.join(ROOT, "wrangler.jsonc"), "utf8"));
 }
 
-/** wrangler.jsonc vars, with a real-looking ACCESS_AUD so Access counts as configured. */
+/**
+ * wrangler.jsonc vars, with a real-looking ACCESS_AUD so Access counts as
+ * configured, and both seats hosted:  the tests cover the JET path too, which
+ * production turns on only after openai-dot-bot is demoted to member.
+ */
 export function testEnv(overrides = {}) {
   const vars = { ...wranglerConfig().vars };
   vars.ACCESS_AUD = "a".repeat(64);
+  vars.HOSTED_SEATS = "JET,GROK-WEB";
   return { ...vars, ...overrides };
 }
 

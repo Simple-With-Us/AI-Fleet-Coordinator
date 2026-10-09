@@ -2,14 +2,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRESH_TOKEN_TTL_S, ACCESS_TOKEN_TTL_S, GATE_LOG_NAME, KNOWN_SEATS } from "../src/config.js";
+import { loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRESH_TOKEN_TTL_S, ACCESS_TOKEN_TTL_S, GATE_LOG_NAME, KNOWN_SEATS, SEAT_SECRETS, PROPS_PHASE } from "../src/config.js";
+import { REALM } from "../src/zulip.js";
 import { ROOT, wranglerConfig, testEnv, CHATGPT_REDIRECT } from "./helpers.mjs";
 
 test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", () => {
   const vars = wranglerConfig().vars;
   const cfg = loadConfig(vars);
   assert.equal(cfg.host, "agent-sync.jays.services");
-  assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB"]);
+  // Production serves GROK-WEB only:  openai-dot-bot is a realm administrator,
+  // and hosted seats accept member (400) only (spec 3.6).  JET comes back with
+  // one var edit once Jay demotes the bot (DEPLOY.md, "Re-enable JET").
+  assert.deepEqual([...cfg.hostedSeats], ["GROK-WEB"]);
+  assert.deepEqual([...loadConfig(testEnv()).hostedSeats], ["JET", "GROK-WEB"]);
+  assert.deepEqual(Object.fromEntries(cfg.channels), { "agent-sync": 642232, sandbox: 642167 }, "D4:  #agent-sync and #sandbox, by stream id");
+  assert.equal(cfg.ownerUserId, 1211974);
+  assert.equal(cfg.botEmails["GROK-WEB"], "grok-web-bot@simplewithus.zulipchat.com");
   assert.equal(cfg.redirectOwner.get(CHATGPT_REDIRECT), "JET");
   // Before DEPLOY-PHASE0.md step 3 the file holds the placeholder;  after it, a real tag.
   if (vars.ACCESS_AUD === "REPLACE_WITH_ACCESS_AUD") {
@@ -72,8 +80,28 @@ test("config refuses loose or ambiguous allowlists", () => {
     [{ PUBLIC_HOST: "evil.example" }, /PUBLIC_HOST/],
     [{ SEATS: "{not json" }, /not valid JSON/],
     [{ SEATS: "" }, /not set/],
+    [{ CHANNELS: {} }, /CHANNELS is empty/],
+    [{ CHANNELS: { "agent-sync": "642232" } }, /stream id/],
+    [{ CHANNELS: { "agent-sync": 1, sandbox: 1 } }, /listed twice/],
+    [{ CHANNELS: { "Agent Sync!": 1 } }, /plain lowercase/],
+    [{ OWNER_USER_ID: "" }, /OWNER_USER_ID/],
+    [{ OWNER_CLIENTS: "" }, /OWNER_CLIENTS/],
+    [{ ZULIP_EMAIL_GROK_WEB: "" }, /ZULIP_EMAIL_GROK_WEB/],
+    [{ ZULIP_EMAIL_GROK_WEB: "grok-web-bot@evil.example" }, /ZULIP_EMAIL_GROK_WEB/],
+    [{ ZULIP_EMAIL_JET: "jay@simplewithus.zulipchat.com" }, /ZULIP_EMAIL_JET/],
   ];
   for (const [over, re] of bad) assert.throws(() => loadConfig(testEnv(over)), re, JSON.stringify(over));
+});
+
+test("every known seat has its own key secret and email var, and the realm is compiled in", () => {
+  assert.deepEqual(Object.keys(SEAT_SECRETS).sort(), [...KNOWN_SEATS].sort());
+  const keys = Object.values(SEAT_SECRETS).map((s) => s.key);
+  assert.equal(new Set(keys).size, keys.length);
+  const w = wranglerConfig();
+  for (const { key } of Object.values(SEAT_SECRETS)) assert.ok(!(key in w.vars), `${key} is a secret, never a var`);
+  assert.equal(REALM, "https://simplewithus.zulipchat.com");
+  assert.ok(!("REALM" in w.vars) && !("ZULIP_SITE" in w.vars), "a config edit cannot move Zulip egress");
+  assert.equal(PROPS_PHASE, 2);
 });
 
 test("wrangler.jsonc keeps every hostname but the custom domain off", () => {

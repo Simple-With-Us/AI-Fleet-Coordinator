@@ -1,8 +1,11 @@
 {
-  // Hosted agent-sync MCP server, Phase 0 stub (docs/protocols/agent-sync-mcp.md).
+  // Hosted agent-sync MCP server (docs/protocols/agent-sync-mcp.md section 3).
   // Account Usage.Jays.Services, hostname agent-sync.jays.services (decision D1).
-  // Deploy by hand from DEPLOY-PHASE0.md.  Never from CI and never on merge:
-  // agents auto-merge to main, so a merge must not be a deploy (spec 3.2).
+  // Deploy by hand from DEPLOY.md.  Never from CI and never on merge:  agents
+  // auto-merge to main, so a merge must not be a deploy (spec 3.2).
+  //
+  // Secrets (never in this file):  ZULIP_KEY_GROK_WEB, and ZULIP_KEY_JET once
+  // JET is re-enabled.  install_seat_key.py puts them in from Infisical.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "agent-sync-mcp",
   "main": "src/index.js",
@@ -35,7 +38,8 @@
 
   "durable_objects": {
     "bindings": [
-      // One per seat:  arming window, grant epoch, pause flag, audit tail.
+      // One per seat:  arming window, grant epoch, pause flag, spacing,
+      // budgets, idempotency, role cache and the audit logs.
       { "name": "SEAT_GATE", "class_name": "SeatGate" }
     ]
   },
@@ -52,8 +56,22 @@
   "vars": {
     // Must equal the compiled hostname;  the Worker refuses to start otherwise.
     "PUBLIC_HOST": "agent-sync.jays.services",
-    // Phase 0 seats (owner decisions D1, D2).
-    "HOSTED_SEATS": "JET,GROK-WEB",
+    // Seats this deploy serves (owner decisions D1, D2).  JET is left out on
+    // purpose:  openai-dot-bot is a realm administrator, and hosted seats accept
+    // member (400) only (spec 3.6).  Once Jay demotes it to member, add JET
+    // back here and run install_seat_key.py JET (DEPLOY.md, "Re-enable JET").
+    "HOSTED_SEATS": "GROK-WEB",
+    // Bot emails (plain vars, spec 3.6).  The keys are Worker secrets.  A key
+    // whose users/me is not this bot, not a bot, or not a member is refused.
+    "ZULIP_EMAIL_GROK_WEB": "grok-web-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_JET": "openai-dot-bot@simplewithus.zulipchat.com",
+    // D4 channel allowlist, pinned name to stream id.  Every tool uses the id,
+    // so a renamed or look-alike channel cannot widen it.
+    "CHANNELS": { "agent-sync": 642232, "sandbox": 642167 },
+    // Jay's Zulip user id and human clients (the listener's owner rule).  The
+    // `owner` flag on a message is a routing hint, never authority.
+    "OWNER_USER_ID": "1211974",
+    "OWNER_CLIENTS": "website,ZulipMobile,ZulipFlutter,ZulipElectron,ZulipDesktop",
     // Redirect and client allowlist per seat.  A redirect URI belongs to
     // exactly one seat, and that is the only seat a consent can bind it to.
     // GROK-WEB uses Grok's published client metadata document (fetched

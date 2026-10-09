@@ -1,71 +1,80 @@
-# agent-sync MCP Worker (Phase 0 stub)
+# agent-sync MCP Worker
 
-The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at `https://agent-sync.jays.services/mcp` that cloud-only seats (JET in ChatGPT, GROK-WEB on grok.com) add as a custom MCP connector.  Phase 0 proves the OAuth path end to end with two tools that hold no Zulip key:
+The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at `https://agent-sync.jays.services/mcp` that cloud-only seats add as a custom MCP connector.  It serves the same seven tools as the stdio server (`agent-sync mcp`), from the same `scripts/agent_sync/mcp/tools.json`, and each seat posts as its own Zulip bot.
 
-- `hello` (read-only) returns `{seat, scopes, client_id}` from the grant.
-- `hello_write` is marked as a write, so the client asks for confirmation the way it will for a real post, and returns an acknowledgment.  It posts nothing.
+| Seat | Bot | State |
+| --- | --- | --- |
+| GROK-WEB | `grok-web-bot@` (member) | Served.  Grok on the web, iOS and Android, through grok.com connectors. |
+| JET | `openai-dot-bot@` (realm administrator) | Blocked:  hosted seats accept member (400) only (spec 3.6).  Jay demotes the bot to member, then [DEPLOY.md](DEPLOY.md) "Re-enable JET". |
 
-Deploy:  [DEPLOY-PHASE0.md](DEPLOY-PHASE0.md).  Connect and exit criteria:  [ARMING-JAY.md](ARMING-JAY.md).
+Deploy and operate:  [DEPLOY.md](DEPLOY.md).  Connect a client:  [ARMING-JAY.md](ARMING-JAY.md).  The Phase 0 runbook ([DEPLOY-PHASE0.md](DEPLOY-PHASE0.md)) is kept as the record of how the hostname moved.
 
-## What Phase 0 implements
+## Tools
 
-| Spec | Here |
-| --- | --- |
-| 3.1, 3.2 OAuth 2.1 server, KV, Durable Object | `@cloudflare/workers-oauth-provider` `OAuthProvider` with `apiRoute: "/mcp"`, `OAUTH_KV`, `SeatGate` (SQLite) |
-| 3.2 hostnames | `workers_dev: false`, `preview_urls: false`, custom domain only;  the outer `fetch` answers 404 to any Host but `agent-sync.jays.services`;  `createMcpHandler` gets `allowedHostnames` |
-| 3.3 endpoints | `/mcp`, `/oauth/token`, the two metadata documents, and a static `GET /health` (200 `{"ok":true}`, no data;  the fleet admin panel probes it);  everything else 404.  DCR is off (no registration endpoint) |
-| 3.3 abuse limits | a `client_id` must be an exact allowlisted CIMD id or the shape the library generates for a hand-registered client (16 characters of `[A-Za-z0-9_-]`);  anything else is refused on `/authorize` and `/oauth/token` before the library could fetch it.  The token gate reads the request the way the library does:  its Content-Type test is the library's own expression, any `Authorization` that is not strict `Basic <base64>` is refused (the library splits the scheme on a space or tab, JS `\s` does not), every candidate id is checked, and the library receives a request rebuilt from the validated form.  Authorize refusals (Access email, time) and token refusals (counted per reason and id) go to separate tables in `/admin`;  `TOKEN_RATE_LIMITER` caps `/oauth/token` per IP |
-| 3.3 Access | `/authorize` and `/admin` sit behind a path-scoped Access app, and the Worker re-verifies `Cf-Access-Jwt-Assertion` (certificates, `aud`, `iss`, `exp`, owner email).  Missing config fails closed |
-| 3.3 401 | unauthenticated `/mcp`, `initialize` included, gets 401 with `resource_metadata` |
-| 3.4 arming | `/admin` opens a single-use 10-minute window per seat;  outside it `/authorize` shows "No Connection Expected" and fetches nothing |
-| 3.4 gate | exact redirect allowlist after a strict URL parse, PKCE S256 for every client, `resource` must be `/mcp`, scopes within `zulip:read zulip:write` |
-| 3.4 consent | `beginConsent`/`approveConsent`/`denyConsent` (browser-bound, single-use handle), a no-script page with `default-src 'none'` and `frame-ancestors 'none'`, the seat re-validated against the stored request's redirect family on POST.  Every page and redirect carries `Referrer-Policy: same-origin`:  `no-referrer` makes browsers send `Origin: null` on form POSTs, which the same-origin check (correctly) refuses |
-| 3.5 grant binding | the arming window is consumed and the epoch bumped atomically, then `completeAuthorization` with the seat in props, then every other grant of the seat is revoked (D6) |
-| 3.5 token checks | `tokenExchangeCallback` re-checks seat, epoch and grant age (`invalid_grant`) and pause (`temporarily_unavailable`, grant kept);  every `/mcp` call re-checks the same and answers 401 `invalid_token` |
-| 3.5 lifetimes | 1-hour access tokens, `refreshTokenTTL` 90 days, set explicitly |
-| 3.10 kill switch | `/admin` Pause, Revoke All And Bump Epoch;  `MCP_DISABLED` = `"1"` makes `/mcp` answer 503 |
-| 6 spike | the two tools are registered from checked-in JSON Schemas (`src/tools.phase0.json`) through `fromJsonSchema` with the cf-worker validator, and the workerd test asserts `tools/list` matches the file |
+`whoami`, `topics`, `read_topic`, `inbox`, `post`, `reply`, `react`, exactly as `tools.json` defines them (spec section 1).  `tools/list` serves that file, so both transports list the same schemas, and a test pins it.
 
-Not in Phase 0 (and the 6 spike is partial:  only the two Phase 0 schemas go through `createMcpHandler`;  the full seven-tool `post` schema, with its patterns, `maxItems`, defaults and `outputSchema`, is registered in the Phase 2 workerd test before real tools land):  Zulip calls, `tools.json` and the seven real tools, spacing and budgets, idempotency, the full audit schema, ASN and country flags, and pausing on refresh-token mismatch (logged only).
+- **Identity.**  The seat comes only from the grant's props, and only `SEAT_SECRETS` turns a seat into a key.  No schema takes a seat;  an extra argument is an `invalid_argument` tool error.
+- **Seat binding (3.6).**  Before the first Zulip call and every 10 minutes after, `users/me` for the seat's key must be a bot, this seat's email and tag, and a member (role 400), never an administrator or owner.  A refusal is cached, audited and answered `not_authorized`.
+- **Channels (D4).**  `#agent-sync` and `#sandbox`, pinned name to stream id in `CHANNELS`.  Every narrow and every post uses the id, never a name lookup.  `reply` and `react` fetch the target and check its stream;  `inbox` runs one stream-scoped `is:mentioned` query per channel and drops anything else, so DMs and private-channel mentions never reach the client.
+- **Untrusted content.**  Every Zulip-authored string comes back inside one nonce fence, folded, de-markered and escaped;  `structuredContent` carries integers only, and writes echo no Zulip text.
+- **Outbound.**  The tag `[SEAT]` or `[SEAT·session]` (from the `session` argument), raw mentions made silent, groups and wildcards neutralized (`@**all**` included), mentions only through `to`, the secret scan on text, topic and channel before any request, the 10,000-character cap, and the sentence gap (U+00A0 plus a space, the port of `textfmt.py`).
+- **Limits (3.7, D5).**  Writes (posts, replies, reactions) 3 seconds apart, reads half a second, a call waits at most 6 seconds for its slot;  writes 20 an hour and 120 a day, reactions 60 an hour, reads 300 an hour.  A 429 is retried within 20 seconds (at most 2 attempts, `Retry-After` header or body), then the seat cools down.
+- **Idempotency.**  `post` and `reply` rows by explicit key (24 hours) or by a hash of the post (10 minutes):  a repeat returns the first id with `duplicate: true`.  A write that may have landed is `outcome_unknown`;  its retry reads the topic first (no sooner than 15 seconds after the attempt) and sends only if the first attempt is not there.
+- **Errors.**  The spec 1 model:  `isError`, no `structuredContent`, `{code, message, retryable, ...}` in the text and in `_meta["agent-sync/error"]`, scrubbed of the key and never quoting Zulip's `msg` or a member name.
+- **Audit (3.9).**  One row per call, kept 90 days:  seat, grant ref, client, tool, stream, topic (its hash when it looks like a secret), message id, outcome, latency, body length, idempotency ref, ASN and country.  An ASN or country change within one grant is flagged.  Never a body, a key, a token or a header.
+
+## OAuth and the kill switch (Phase 0, unchanged)
+
+OAuth 2.1 with CIMD for ChatGPT and Grok, DCR off, a hand-registered public client for Grok's manual form, S256 PKCE for every client, an exact redirect allowlist, `/authorize` and `/admin` behind a path-scoped Access app that the Worker re-verifies, a single-use 10-minute arming window, one grant per seat (D6), the grant epoch, pause, and `MCP_DISABLED`.  Phase 2 adds three things:
+
+- Every new grant carries `phase: 2` in its props;  a grant without it (any Phase 0 stub grant) gets 401 on `/mcp` and `invalid_grant` on refresh, so no stub grant reaches the real tools (spec 6, Phase 0 exit).
+- A refresh that fails as `refresh_token_mismatch` or `client_mismatch` (a replayed or stolen refresh token) pauses that seat (spec 3.5 step 3).  The seat is read from the refresh token's own `seat:grant:secret` prefix, because the library's `onError` names no seat.
+- `/admin` shows each seat's key and role state and the tool-call log.
 
 ## Layout
 
 | Path | What |
 | --- | --- |
-| `src/index.js` | entry:  Host check, routing, token gate, provider, `/mcp`, `/authorize`, `/admin` |
-| `src/config.js` | constants and `loadConfig(env)` (fails closed) |
-| `src/policy.js` | pure gates:  Host, redirect, client id, PKCE, resource, token form and header, bounded body read, same-origin |
-| `src/forms.js` | zod schemas for the consent POST and the `/admin/action` POST (strict:  unknown keys, repeated keys, files and out-of-enum values are refused) |
-| `src/access.js` | Access JWT verification (WebCrypto) |
-| `src/seat-state.js` | arming, epoch, pause and audit logic over any key-value store |
-| `src/seat-gate.js` | the `SeatGate` Durable Object (RPC wrapper over `seat-state.js`) |
-| `src/pages.js` | consent, notice and admin HTML |
-| `src/tool-logic.js`, `src/tools.phase0.json`, `src/mcp.js` | the two tools and the MCP handler |
-| `infra_phase0.py` | Cloudflare API steps for the runbook, dry run by default |
+| `src/index.js` | entry:  Host check, routing, token gate, provider, `/mcp`, `/authorize`, `/admin`, the refresh-mismatch pause |
+| `src/config.js` | constants, `SEAT_SECRETS`, `PROPS_PHASE` and `loadConfig(env)` (fails closed) |
+| `src/contract.js` | the shared contract, ported from the stdio server:  schema check, fence, error model, secret scan, mentions, tags, the Central clock |
+| `src/hosted-tools.js` | the seven tools for one seat |
+| `src/zulip.js` | Zulip egress:  the compiled realm only, no redirects, 15-second timeout, the 429 budget |
+| `src/textfmt.js` | the outbound sentence gap (port of `scripts/agent_sync/textfmt.py`) |
+| `src/mcp.js` | a low-level SDK `Server` per request:  `tools/list` from `tools.json`, `tools/call` to the hosted tools |
+| `src/seat-state.js`, `src/seat-gate.js` | the `SeatGate` Durable Object:  arming, epoch, pause, spacing, budgets, cooldown, idempotency, role cache, audit |
+| `src/policy.js`, `src/forms.js`, `src/access.js`, `src/pages.js` | the OAuth gates, strict forms, Access JWT check, consent and admin HTML |
+| `install_seat_key.py` | puts a seat's key into the Worker's secrets from Infisical, after the 3.6 checks |
+| `infra_phase0.py` | Cloudflare API steps and the read-only `check` |
 
 ## Tests
 
 ```bash
 cd scripts/agent-sync-mcp
-node --test test/*.test.mjs   # pure logic, no install needed (ci.yml runs this;  test/forms.test.mjs skips itself without zod)
+node --test test/*.test.mjs                      # no install needed (ci.yml runs this)
 npm ci --ignore-scripts && npm run test:workerd  # one Miniflare flow over the bundled Worker
 ```
 
-The workerd flow (also run in CI by `.github/workflows/agent-sync-mcp.yml` on changes under this directory) covers:  foreign Host and workers.dev 404, `/health`, metadata `issuer` equal to `authorization_servers[0]` byte for byte, the 401 on an unauthenticated `initialize`, Access refusal, the unarmed notice with no CIMD fetch, unlisted CIMD refused before any fetch, admin CSRF, consent with `iss` on the redirect, the PKCE code exchange with ChatGPT's real CIMD document, `tools/list` against `tools.phase0.json`, a `seat` argument refused, the scope challenge, pause, two parallel approvals leaving one grant, a reused handle, a cross-family seat, an epoch bump alone killing a grant, revoke, the deny path, an expired arming window, Grok's published client metadata document (consent, a `none` exchange, `hello` as GROK-WEB, refresh), the manual-form fallback with a blank `client_secret` and a foreign redirect landing in the refusal log with the Access email, parser-differential tricks on `/oauth/token` fetching nothing, and a browser-style Origin derived from each page's `Referrer-Policy`.
+- The unit suites run the shared golden fixtures (`scripts/agent_sync/mcp/fixtures.jsonl`:  fence, secret, mentions, schema, error map, inbox and the hosted allowlist) against the hosted tools and a fake Zulip (`test/fake-zulip.mjs`), plus seat binding, spacing, budgets, idempotency and reconcile, 429, audit and leak checks, and the sentence gap against the Python suite's own tables (skipped where `python3` is missing).
+- The workerd flow (also in `.github/workflows/agent-sync-mcp.yml`) walks the Phase 0 OAuth flow, checks `tools/list` against `tools.json`, a `seat` argument as a tool error, an unknown tool as a protocol error, the scope challenge, pause, epoch and revoke, then Grok's client metadata document through consent to a `post` as GROK-WEB in `#sandbox` (checked at the fake Zulip:  GROK-WEB's own key, the tag, the sentence gap), a tool error through the real SDK client, and a replayed refresh token pausing the seat.
 
 ## Versions and the two-week rule
 
-The fleet pins packages released at least two weeks before use.  On Fri, Oct 9 that means on or before Thu, Sep 24.  `package-lock.json` was resolved with `npm install --before=2026-09-25`, so transitive packages follow the same rule.
+The fleet pins packages released at least two weeks before use.  On Fri, Oct 9 that means on or before Thu, Sep 24.  `package-lock.json` was resolved with `npm install --before=2026-09-25`, so transitive packages follow the same rule, with the exceptions marked below.
+
+**Exceptions merged by the dependency bots (Fri, Oct 9).**  Renovate's security bumps took `@modelcontextprotocol/sdk` to 1.31.0 (#397, #398) and `@modelcontextprotocol/client` to 2.2.0 (#396, #399) for GHSA-6qxp-vccf-f47h, an OAuth client flaw that does not affect MCP servers (this Worker uses neither package's OAuth client).  Dependabot's bumps took `wrangler` to 4.149.0 (#400, #401) for `undici` 7.29.1 and `sharp`.  `agents` 0.24.0 names exact peers 2.0.0 and 1.30.0, so `package.json` has an `overrides` entry pointing them at the root versions;  without it `npm ci` stops on ERESOLVE.  The unit suites and the whole workerd flow pass on these versions.
+
+**Deferred (Fri, Oct 9).**  Renovate's #408 bumped `package.json` to `workers-oauth-provider` 1.2.1, `agents` 0.26.0, `@modelcontextprotocol/server` 2.3.0, `client` 2.3.0 and `sdk` 1.32.0 without the lockfile, so `npm ci` failed again, and none of those is two weeks old.  `package.json` is back on the locked versions above, and `renovate.json` now holds this directory to a 14-day release age with no automerge, so the next bump arrives as a PR that runs the workerd flow before anyone merges it.  The 1.2.x move is the one described below.
 
 | Package | Pinned | Published | Newer, not yet eligible |
 | --- | --- | --- | --- |
 | `@cloudflare/workers-oauth-provider` | 1.1.0 | Sep 24, 2026 | 1.2.0, 1.2.1 (Sep 28), 1.2.2 (Oct 6), 1.2.3 (Oct 7) |
 | `agents` | 0.24.0 | Sep 18, 2026 | 0.25.0, 0.26.0 (Oct 2), 0.27.0 (Oct 7) |
 | `@modelcontextprotocol/server` | 2.0.0 | Jul 27, 2026 | exact peer of agents 0.24.0 |
-| `@modelcontextprotocol/client` | 2.0.0 | Jul 27, 2026 | exact peer of agents 0.24.0 |
-| `@modelcontextprotocol/sdk` | 1.30.0 | Jul 27, 2026 | exact peer of agents 0.24.0 |
+| `@modelcontextprotocol/client` | 2.2.0 | Sep 28, 2026 | exception:  security bump;  agents 0.24.0 peers 2.0.0, overridden |
+| `@modelcontextprotocol/sdk` | 1.31.0 | Sep 28, 2026 | exception:  security bump;  agents 0.24.0 peers 1.30.0, overridden |
 | `zod` | 4.6.5 | Sep 13, 2026 | none |
-| `wrangler` (dev) | 4.139.0 | Sep 24, 2026 | 4.140.0 and later |
+| `wrangler` (dev) | 4.149.0 | Oct 8, 2026 | exception:  Dependabot bump for `undici` 7.29.1 and `sharp` |
 
 The spec names `workers-oauth-provider` v1.2.3.  1.1.0 covers everything Phase 0 needs:  CIMD (`clientIdMetadataDocumentEnabled`), `resourceMetadata`, `iss` on every authorization redirect, S256-only PKCE, the consent helpers, and `invalid_grant` revoking the grant.  ChatGPT's CIMD document offers `none` and `private_key_jwt`;  1.1.0 negotiates `none`, which the 1.2.2 changelog confirms "keeps working".  The 1.2.x features we do without, and how:
 
