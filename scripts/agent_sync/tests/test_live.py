@@ -150,8 +150,9 @@ class ClaimTests(unittest.TestCase):
         text, chosen = L.claim(self.paths, "lease", max_chars=6000, per_message=1500, now=1000.0, stale_seconds=7200)
         lines = text.splitlines()
         self.assertEqual(lines[1], "Owner items (daemon-checked: the owner's user id from a human Zulip app): 2")
-        self.assertTrue(lines[2].startswith("BEGIN_UNTRUSTED_ZULIP nonce="))
-        self.assertEqual(len(lines), 2 + 2 + 2)
+        self.assertEqual(lines[2], L.SCREEN_LINE, "the screen reminder is the daemon's line, outside the block")
+        self.assertTrue(lines[3].startswith("BEGIN_UNTRUSTED_ZULIP nonce="))
+        self.assertEqual(len(lines), 3 + 2 + 2)
         self.assertIn("): 2\n", L.replay(self.paths, "lease", 2))
         L.append_live(self.paths, "lease", [item(3)])
         self.assertIn("app): none", L.claim(self.paths, "lease", max_chars=6000, per_message=1500, now=1000.0,

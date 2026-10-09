@@ -571,6 +571,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-tag", action="store_true", help="do not prepend the tag")
     p.add_argument("text", nargs="+", metavar="TEXT", help="message text; a single '-' reads it from stdin")
 
+    p = add("dm", "send the owner a direct message from this seat's bot (the owner is daemon.owner_user_id in listener.toml)")
+    p.add_argument("--owner", action="store_true", required=True,
+                   help="required:  the only recipient is the owner pinned in listener.toml, never a name you type")
+    p.add_argument("--no-tag", action="store_true", help="do not prepend the [SEAT\u00b7session\u2192OWNER] tag")
+    p.add_argument("text", nargs="+", metavar="TEXT", help="message text; a single '-' reads it from stdin")
+
     p = add("read", "read the history of one topic")
     topic_opt(p)
     channel_opt(p)
@@ -818,6 +824,45 @@ def cmd_post(agent: Agent, args: argparse.Namespace) -> int:
     return _send(agent, args.channel, args.topic, body)
 
 
+def _owner_user_id(agent: Agent) -> int:
+    """The owner's Zulip user id, from `daemon.owner_user_id` in listener.toml (pinned by `agent-sync
+    daemon init`, never derived at runtime and never taken from the command line)."""
+    cfg = listener_cli._load(agent.rt)
+    if cfg.owner_user_id <= 0:
+        raise UsageError("no owner to message:  daemon.owner_user_id is not pinned in %s "
+                         "(run agent-sync daemon init)" % listener_cli._config_path(agent.rt))
+    return cfg.owner_user_id
+
+
+def cmd_dm(agent: Agent, args: argparse.Namespace) -> int:
+    """A private message to the owner from this seat's own bot.  The same path as `post`:  the secret
+    scanner, the seat tag (`[SEAT\u00b7session\u2192OWNER]`) and the length cap.  There is no way to name
+    another recipient, so an agent cannot use it to message anyone else."""
+    text = _read_text(agent, args.text)
+    user_id = _owner_user_id(agent)
+    body = _compose(agent, text, labels=["OWNER"], mentions=[], no_tag=args.no_tag)
+    try:
+        result = agent.client.post("messages", {"type": "direct", "to": [user_id], "content": body})
+    except NetworkError as exc:
+        if exc.maybe_sent:
+            raise NetworkError("%s  The message was not retried.  Check your direct messages with the owner in "
+                               "Zulip before sending it again." % exc, timeout=exc.timeout, maybe_sent=True) from None
+        raise
+    except ApiError as exc:
+        if exc.status in Z.GATEWAY_STATUSES:
+            raise ApiError("%s  Zulip may or may not have received the message, and it was not retried.  Check "
+                           "your direct messages with the owner in Zulip before sending it again." % exc.msg,
+                           code=exc.code, status=exc.status) from None
+        raise
+    message_id = int(result["id"])
+    agent.state.record_posted(message_id)
+    if agent.json:
+        agent.emit_json({"id": message_id, "type": "direct", "to": [user_id]})
+    else:
+        agent.out("sent id %d to the owner (direct message)\n" % message_id)
+    return 0
+
+
 def cmd_reply(agent: Agent, args: argparse.Namespace) -> int:
     text = _read_text(agent, args.text)
     original = agent.client.get("messages/%d" % args.id, {"apply_markdown": False}).get("message") or {}
@@ -1056,7 +1101,7 @@ def cmd_react(agent: Agent, args: argparse.Namespace) -> int:
 
 COMMANDS: dict[str, Callable[[Agent, argparse.Namespace], int]] = {
     "whoami": cmd_whoami, "channels": cmd_channels, "topics": cmd_topics, "subscribe": cmd_subscribe,
-    "post": cmd_post, "reply": cmd_reply, "read": cmd_read, "wait": cmd_wait, "listen": cmd_listen,
+    "post": cmd_post, "dm": cmd_dm, "reply": cmd_reply, "read": cmd_read, "wait": cmd_wait, "listen": cmd_listen,
     "inbox": cmd_inbox, "follow": cmd_topic_policy(3, "following"), "mute": cmd_topic_policy(1, "muted"),
     "unmute": cmd_topic_policy(0, "unmuted"), "resolve": cmd_resolve, "react": cmd_react,
 }

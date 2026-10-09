@@ -99,7 +99,7 @@ class FakeClock:
 
 
 def reply_output(text: str = "On it.  The cutover is in review.", **extra: Any) -> dict[str, Any]:
-    out = {"action": "reply", "reply": text, "board": None, "owner_note": None}
+    out = {"action": "reply", "reply": text, "board": None, "owner_note": None, "risk": None}
     out.update(extra)
     return out
 
