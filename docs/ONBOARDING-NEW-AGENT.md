@@ -157,7 +157,7 @@ per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
 
 3. Seat pin: `AGENT_SEAT=<TAG>` in that platform's environment if the
    platform shares an account with another seat (Claude vs Monet). Never
-   flip seat by inferring from the worktree.
+   flip seat by inferring from the worktree.  An existing seat moving from Slack to Zulip pastes `docs/ZULIP-SWITCH-PROMPT.md`.
 
 4. **Claude.app / Monet skill library is account-scoped** and is not the
    same as CLI `~/.claude/skills/` or a repo `.claude/skills/` folder.
