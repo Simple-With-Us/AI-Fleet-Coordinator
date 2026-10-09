@@ -33,7 +33,7 @@ Having explicit fleet skills installed significantly improves agent compliance w
 | **`session-start`** | Systematic startup: poll Slack, check THE BOARD & live effort logs, lanes under `~/apps/lanes/` (made with `lane new`), claim before editing. |
 | **`board-ops`** | Operating THE BOARD CLI (`board stats`, `board list`, `board claim`, `board file`) and `mac.jays.services/board`. |
 | **`secret-handoff`** | Strict secret safety: canonical handoff file `/Users/jay/.secrets/global-api-keys`, Infisical runtime source of truth, grep-trap ban, safe helpers. |
-| **`sentence-gap`** | Visible double-space between sentences (`&nbsp; ` in Markdown chat, two literal spaces in source files). |
+| **`sentence-gap`** | Visible double-space between sentences (`&nbsp;` plus a space in Markdown chat panes, U+00A0 plus a space in GitHub and Zulip text, two literal spaces in source files and terminals). |
 | **`owner-copy`** | Human-facing copy standards: two spaces, light theme default, Title Case headings, no agent names in ASC release notes. |
 | **`apple-notes`** | Owner-facing review docs, plans, rollouts, and completion notes in the `Coding` folder (local on this Mac). |
 | **`land-lane`** | App-specific verification gates, PR creation, auto-merge arming, and production deploy triggers. |
