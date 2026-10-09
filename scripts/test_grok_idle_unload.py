@@ -748,6 +748,7 @@ class MainTests(SessionFixture):
         self.now = session_disk._parse_ts("2026-10-08T18:35:00Z")
         self.closed: list[str] = []
         self.killed: list[int] = []
+        self.list_calls = 0
         self.scans = 0
         self.on_rescan = None
         self.cwds: dict[int, str] = {}
@@ -773,6 +774,7 @@ class MainTests(SessionFixture):
             return {"ok": True, "sessionId": sid, "diskKept": True, "closeOutcome": "closed"}
 
         def fake_list(timeout):
+            self.list_calls += 1
             if isinstance(listing, Exception):
                 raise listing
             return self.listed
@@ -807,6 +809,22 @@ class MainTests(SessionFixture):
     def append_event(self, sid, event):
         with self.events(sid).open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(event) + "\n")
+
+    def test_the_leader_list_is_not_called_unless_asked(self) -> None:
+        code, out, _ = self.run_main([], listing=gu.HelperTimeout("list", 180.0))
+        self.assertEqual(self.list_calls, 0)
+        self.assertEqual(code, 0)  # a dead-slow list cannot fail the run
+        self.assertEqual(self.closed, [SID])  # candidates come from the process table and disk
+        self.assertEqual(out["listed"], 0)
+        with patch.dict(os.environ, {"GROK_IDLE_UNLOAD_USE_LIST": "1"}):
+            self.run_main([])
+        self.assertEqual(self.list_calls, 1)
+
+    def test_a_list_that_succeeds_adds_rows_but_not_candidates(self) -> None:
+        code, out, _ = self.run_main(["--use-list"])
+        self.assertEqual(self.list_calls, 1)
+        self.assertEqual(out["listed"], 2)
+        self.assertEqual(self.closed, [SID])
 
     def test_only_the_stub_is_closed_inside_four_hours(self) -> None:
         code, out, _ = self.run_main([])
@@ -961,7 +979,7 @@ class MainTests(SessionFixture):
         self.assertIsNone(out["clientCwds"])
 
     def test_list_timeout_still_closes_loaded_stubs_then_exits_75(self) -> None:
-        code, out, err = self.run_main([], listing=gu.HelperTimeout("list", 180.0))
+        code, out, err = self.run_main(["--use-list"], listing=gu.HelperTimeout("list", 180.0))
         self.assertEqual(code, gu.EX_TEMPFAIL)
         self.assertEqual(self.closed, [SID])  # discovered from the process table + disk
         line = json.loads(err.strip().splitlines()[-1])
@@ -1037,7 +1055,7 @@ class MainTests(SessionFixture):
         self.assertEqual(self.killed, [])
 
     def test_list_error_is_a_plain_failure(self) -> None:
-        code, out, err = self.run_main([], listing=gu.HelperError("session/list exploded"))
+        code, out, err = self.run_main(["--use-list"], listing=gu.HelperError("session/list exploded"))
         self.assertEqual(code, 1)
         self.assertIn("list: session/list exploded", out["errors"][0])
         self.assertEqual(err, "")
@@ -1077,7 +1095,7 @@ class MainTests(SessionFixture):
 
     def test_no_reaping_when_the_leader_list_failed(self) -> None:
         self.orphan_setup()
-        code, out, _ = self.run_main([], listing=gu.HelperError("boom"))
+        code, out, _ = self.run_main(["--use-list"], listing=gu.HelperError("boom"))
         self.assertNotIn(31, self.killed)
         self.assertEqual(out["orphansSkipped"], "leader list failed")
 
