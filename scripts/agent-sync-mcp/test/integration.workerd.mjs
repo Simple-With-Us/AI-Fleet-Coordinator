@@ -1,7 +1,8 @@
-// One workerd integration test (spec 6, Worker suite, Phase 0 subset).
+// One workerd integration test (spec 6, Worker suite).
 // Runs the bundled Worker in Miniflare (from the pinned wrangler) with fake
-// Access certificates and ChatGPT's real CIMD document served by a mocked
-// outbound fetch, then walks the whole Phase 0 flow.
+// Access certificates, ChatGPT's and Grok's real CIMD documents and a fake
+// Zulip (test/fake-zulip.mjs) served by a mocked outbound fetch, then walks
+// the OAuth flow and the seven tools, ending with a post as GROK-WEB.
 //
 //   npm ci --ignore-scripts && npm run test:workerd
 //
@@ -12,8 +13,14 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
-import TOOLS from "../src/tools.phase0.json" with { type: "json" };
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import CONTRACT from "../../agent_sync/mcp/tools.json" with { type: "json" };
 import { ROOT, wranglerConfig, testEnv, browserPostOrigin, CHATGPT_CLIENT, CHATGPT_REDIRECT, RESOURCE } from "./helpers.mjs";
+import { FakeZulip, REALM, STREAMS, zulipShapedKey } from "./fake-zulip.mjs";
+
+const TOOLS = CONTRACT.tools;
+const JET_KEY = zulipShapedKey(11);
+const zulip = new FakeZulip({ bots: [{ email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet", key: JET_KEY }] });
 
 const HOST = "https://agent-sync.jays.services";
 const TEAM = "silent-frost-37e0.cloudflareaccess.com";
@@ -89,6 +96,7 @@ async function outboundFetch(request) {
     return Response.json(CHATGPT_CIMD);
   }
   if (request.url === GROK_CLIENT) return Response.json(GROK_CIMD);
+  if (request.url.startsWith(`${REALM}/`)) return zulip.fetch(request);
   return new Response("blocked in test", { status: 599 });
 }
 
@@ -115,7 +123,7 @@ function startWorker(upstream) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD }),
+        bindings: testEnv({ ACCESS_AUD: AUD, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY }),
         outboundService: outboundFetch,
       },
     ],
@@ -231,7 +239,9 @@ async function mcp(accessToken, method, params = {}) {
   return { status: res.status, headers: res.headers, json };
 }
 
-const INIT = { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "phase0-test", version: "0" } };
+const INIT = { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "workerd-test", version: "0" } };
+const call = (accessToken, name, args = {}) => mcp(accessToken, "tools/call", { name, arguments: args });
+const seatOf = async (accessToken) => (await call(accessToken, "whoami")).json?.result?.structuredContent?.seat;
 
 // ---------------------------------------------------------------- flow
 
@@ -370,36 +380,45 @@ try {
     assert.equal(tokens.scope, "zulip:read");
   });
 
-  await step("tools/list matches tools.phase0.json, and hello shows JET", async () => {
+  await step("tools/list is tools.json, and whoami shows JET with a read-only grant", async () => {
     const init = await mcp(tokens.access_token, "initialize", INIT);
     assert.equal(init.status, 200, JSON.stringify(init.json));
     assert.match(init.json.result.instructions, /one bot, JET\./);
+    assert.match(init.json.result.instructions, /BEGIN_UNTRUSTED_ZULIP and END_UNTRUSTED_ZULIP/);
+    assert.deepEqual(init.json.result.capabilities, { tools: {} });
     const list = await mcp(tokens.access_token, "tools/list");
     assert.equal(list.status, 200);
     const tools = list.json.result.tools;
     assert.deepEqual(tools.map((t) => t.name), TOOLS.map((t) => t.name));
     for (const t of TOOLS) {
-      const got = tools.find((x) => x.name === t.name);
-      for (const key of ["title", "description", "annotations", "inputSchema", "outputSchema"]) {
-        assert.deepEqual(got[key], t[key], `${t.name} ${key}`);
-      }
+      // Era fields aside, every tool is exactly the stdio server's contract.
+      assert.deepEqual(Object.fromEntries(Object.keys(t).map((k) => [k, tools.find((x) => x.name === t.name)[k]])), t, t.name);
     }
-    const hello = await mcp(tokens.access_token, "tools/call", { name: "hello", arguments: {} });
-    assert.deepEqual(hello.json.result.structuredContent, { seat: "JET", scopes: ["zulip:read"], client_id: CHATGPT_CLIENT });
+    const who = await call(tokens.access_token, "whoami");
+    assert.equal(who.json.result.structuredContent.seat, "JET");
+    assert.equal(who.json.result.structuredContent.transport, "hosted");
+    assert.equal(who.json.result.structuredContent.email, "openai-dot-bot@simplewithus.zulipchat.com");
   });
 
-  await step("a seat argument is a validation error, and a missing scope names the challenge", async () => {
-    const r = await mcp(tokens.access_token, "tools/call", { name: "hello", arguments: { seat: "GROK-WEB" } });
-    assert.ok(r.json.error || r.json.result?.isError, JSON.stringify(r.json));
-    const w2 = await mcp(tokens.access_token, "tools/call", { name: "hello_write", arguments: { note: "x" } });
+  await step("a seat argument is a tool error, an unknown tool a protocol error, and a missing scope names the challenge", async () => {
+    const r = await call(tokens.access_token, "whoami", { seat: "GROK-WEB" });
+    assert.equal(r.json.result.isError, true, JSON.stringify(r.json));
+    assert.equal(r.json.result.structuredContent, undefined);
+    assert.equal(r.json.result._meta["agent-sync/error"].code, "invalid_argument");
+    assert.match(r.json.result._meta["agent-sync/error"].message, /unknown argument 'seat'/);
+    const unknown = await call(tokens.access_token, "hello");
+    assert.ok(unknown.json.error, JSON.stringify(unknown.json));
+    const before = zulip.requestsTo("POST", "messages").length;
+    const w2 = await call(tokens.access_token, "post", { channel: "sandbox", topic: "t", text: "x" });
     assert.equal(w2.json.result.isError, true);
     assert.equal(w2.json.result.structuredContent, undefined);
     assert.ok(w2.json.result._meta["mcp/www_authenticate"][0].includes('error="insufficient_scope"'));
+    assert.equal(zulip.requestsTo("POST", "messages").length, before);
   });
 
   await step("pause:  tools say paused, refresh is temporarily_unavailable, and the grant survives", async () => {
     assert.equal((await adminAction("pause", { seat: "JET" })).status, 303);
-    const r = await mcp(tokens.access_token, "tools/call", { name: "hello", arguments: {} });
+    const r = await call(tokens.access_token, "whoami");
     assert.equal(r.json.result._meta["agent-sync/error"].code, "paused");
     const t = await token({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: CHATGPT_CLIENT });
     assert.equal(t.body.error, "temporarily_unavailable");
@@ -426,7 +445,7 @@ try {
   });
 
   await step("the new grant replaced the old:  old tokens get 401 and old refresh gets invalid_grant", async () => {
-    const r = await mcp(tokens.access_token, "tools/call", { name: "hello", arguments: {} });
+    const r = await call(tokens.access_token, "whoami");
     assert.equal(r.status, 401);
     const t = await token({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: CHATGPT_CLIENT });
     assert.equal(t.body.error, "invalid_grant");
@@ -493,12 +512,11 @@ try {
     const c = new URL(res.headers.get("location")).searchParams.get("code");
     const t = await token({ grant_type: "authorization_code", code: c, code_verifier: p.verifier, redirect_uri: CHATGPT_REDIRECT, client_id: CHATGPT_CLIENT, resource: RESOURCE });
     assert.equal(t.status, 200);
-    const ok = await mcp(t.body.access_token, "tools/call", { name: "hello", arguments: {} });
-    assert.equal(ok.json.result.structuredContent.seat, "JET");
+    assert.equal(await seatOf(t.body.access_token), "JET");
     // Bump the epoch directly in the Durable Object, leaving the KV grant in place.
     const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
     await ns.get(ns.idFromName("JET")).bumpEpoch({ by: "test", reason: "epoch_only" });
-    const dead = await mcp(t.body.access_token, "tools/call", { name: "hello", arguments: {} });
+    const dead = await call(t.body.access_token, "whoami");
     assert.equal(dead.status, 401);
     assert.match(dead.headers.get("www-authenticate"), /error="invalid_token"/);
     const r = await token({ grant_type: "refresh_token", refresh_token: t.body.refresh_token, client_id: CHATGPT_CLIENT });
@@ -512,7 +530,9 @@ try {
   });
 
   let grokCimdTokens;
-  await step("Grok connects through its published client metadata document and acts as GROK-WEB", async () => {
+  let grokManualTokens;
+  let grokManualClientId;
+  await step("Grok connects through its published client metadata document and posts as GROK-WEB in #sandbox", async () => {
     // Unarmed GROK-WEB fetches nothing.
     outbound.length = 0;
     const who = { clientId: GROK_CLIENT, redirect: GROK_REDIRECT };
@@ -543,10 +563,23 @@ try {
     const t = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: g.verifier, redirect_uri: GROK_REDIRECT, client_id: GROK_CLIENT, resource: RESOURCE });
     assert.equal(t.status, 200, JSON.stringify(t.body));
     grokCimdTokens = t.body;
-    const hello = await mcp(t.body.access_token, "tools/call", { name: "hello", arguments: {} });
-    assert.deepEqual(hello.json.result.structuredContent, { seat: "GROK-WEB", scopes: ["zulip:read", "zulip:write"], client_id: GROK_CLIENT });
-    const write = await mcp(t.body.access_token, "tools/call", { name: "hello_write", arguments: { note: "phase 0" } });
-    assert.deepEqual(write.json.result.structuredContent, { ack: true, seat: "GROK-WEB", posted: false, note_length: 7 });
+    assert.equal(await seatOf(t.body.access_token), "GROK-WEB");
+    const write = await call(t.body.access_token, "post", { channel: "sandbox", topic: "hosted smoke", text: "Hello from Grok.  Two sentences." });
+    assert.equal(write.status, 200, JSON.stringify(write.json));
+    const posted = zulip.messages.at(-1);
+    assert.deepEqual(write.json.result.structuredContent, { id: posted.id, channel_id: STREAMS.sandbox, duplicate: false });
+    assert.equal(posted.sender_email, "grok-web-bot@simplewithus.zulipchat.com", "posted with GROK-WEB's own key");
+    assert.equal(posted.subject, "hosted smoke");
+    assert.equal(posted.content, "[GROK-WEB] Hello from Grok.\u00a0 Two sentences.");
+    const read = await call(t.body.access_token, "read_topic", { channel: "sandbox", topic: "hosted smoke", include_self: true });
+    assert.deepEqual(read.json.result.structuredContent.ids, [posted.id]);
+    assert.match(read.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
+    const off = await call(t.body.access_token, "post", { channel: "general", topic: "t", text: "x" });
+    assert.equal(off.json.result._meta["agent-sync/error"].code, "channel_not_allowed");
+    // The admin page shows the call rows and the role check, never a body.
+    const admin = await (await browser("/admin")).text();
+    assert.match(admin, /role 400, checked/);
+    assert.ok(admin.includes("hosted smoke") && !admin.includes("Two sentences"));
     const refreshed = await token({ grant_type: "refresh_token", refresh_token: t.body.refresh_token, client_id: GROK_CLIENT });
     assert.equal(refreshed.status, 200, JSON.stringify(refreshed.body));
     grokCimdTokens = refreshed.body;
@@ -556,6 +589,7 @@ try {
     assert.equal((await adminAction("create_grok_client")).status, 303);
     const admin = await (await browser("/admin")).text();
     const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Grok \(manual form, GROK-WEB\)/)[1];
+    grokManualClientId = clientId;
     assert.ok(admin.includes(GROK_REDIRECT), "the hand client takes the configured redirect, not a placeholder");
     assert.ok(!admin.includes("no-redirect-yet"));
 
@@ -579,11 +613,48 @@ try {
     const code = new URL(res.headers.get("location")).searchParams.get("code");
     const t = await token({ grant_type: "authorization_code", code, code_verifier: g.verifier, redirect_uri: GROK_REDIRECT, client_id: clientId, client_secret: "", resource: RESOURCE });
     assert.equal(t.status, 200, JSON.stringify(t.body));
-    const hello = await mcp(t.body.access_token, "tools/call", { name: "hello", arguments: {} });
-    assert.equal(hello.json.result.structuredContent.seat, "GROK-WEB");
+    assert.equal(await seatOf(t.body.access_token), "GROK-WEB");
     // D6:  one grant per seat, so the document-based Grok grant is gone.
-    const old = await mcp(grokCimdTokens.access_token, "tools/call", { name: "hello", arguments: {} });
+    const old = await call(grokCimdTokens.access_token, "whoami");
     assert.equal(old.status, 401);
+    grokManualTokens = t.body;
+  });
+
+  await step("the real SDK client:  a tool error round-trips as isError, never a protocol failure", async () => {
+    const transport = new StreamableHTTPClientTransport(new URL(`${HOST}/mcp`), {
+      fetch: (url, init = {}) => {
+        const headers = new Headers(init.headers);
+        headers.set("Authorization", `Bearer ${grokManualTokens.access_token}`);
+        return mf.dispatchFetch(String(url), { ...init, headers });
+      },
+    });
+    const client = new Client({ name: "sdk-round-trip", version: "0" });
+    await client.connect(transport);
+    try {
+      const listed = await client.listTools();
+      assert.deepEqual(listed.tools.map((t) => t.name), TOOLS.map((t) => t.name));
+      const refused = await client.callTool({ name: "read_topic", arguments: { channel: "general", topic: "t" } });
+      assert.equal(refused.isError, true);
+      assert.equal(JSON.parse(refused.content[0].text).code, "channel_not_allowed");
+      const who = await client.callTool({ name: "whoami", arguments: {} });
+      assert.equal(who.structuredContent.seat, "GROK-WEB");
+    } finally {
+      await client.close();
+    }
+  });
+
+  await step("a refresh token replayed after rotation pauses the seat", async () => {
+    const first = await token({ grant_type: "refresh_token", refresh_token: grokManualTokens.refresh_token, client_id: grokManualClientId });
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    const second = await token({ grant_type: "refresh_token", refresh_token: first.body.refresh_token, client_id: grokManualClientId });
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    // The original token is now two rotations old:  neither current nor previous.
+    const replay = await token({ grant_type: "refresh_token", refresh_token: grokManualTokens.refresh_token, client_id: grokManualClientId });
+    assert.equal(replay.body.error, "invalid_grant");
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
+    assert.equal((await ns.get(ns.idFromName("GROK-WEB")).getState()).paused, true);
+    const r = await call(second.body.access_token, "whoami");
+    assert.equal(r.json.result._meta["agent-sync/error"].code, "paused");
   });
 
   console.log(`\n${passed} passed`);

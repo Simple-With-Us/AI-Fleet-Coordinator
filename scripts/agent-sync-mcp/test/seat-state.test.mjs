@@ -47,13 +47,19 @@ test("epoch check:  current grant ok, bumped epoch stale, old grant too old", as
   const store = S.memoryStore();
   await S.arm(store, { by: "jay" }, T0);
   const { epoch } = await S.approve(store, { by: "jay" }, T0);
-  assert.deepEqual(await S.check(store, { epoch, approvedAt: T0 }, T0 + 1000), { code: "ok" });
-  assert.deepEqual(await S.check(store, { epoch, approvedAt: T0 }, T0 + GRANT_MAX_AGE_MS), { code: "grant_too_old" });
-  assert.deepEqual(await S.check(store, { epoch, approvedAt: T0 + 10 * 60_000 }, T0), { code: "grant_too_old" });
+  assert.deepEqual(await S.check(store, { epoch, approvedAt: T0, phase: 2 }, T0 + 1000), { code: "ok" });
+  assert.deepEqual(await S.check(store, { epoch, approvedAt: T0, phase: 2 }, T0 + GRANT_MAX_AGE_MS), { code: "grant_too_old" });
+  assert.deepEqual(await S.check(store, { epoch, approvedAt: T0 + 10 * 60_000, phase: 2 }, T0), { code: "grant_too_old" });
   await S.bumpEpoch(store, { by: "jay", reason: "revoke" }, T0 + 2000);
-  assert.deepEqual(await S.check(store, { epoch, approvedAt: T0 }, T0 + 3000), { code: "stale_epoch" });
-  assert.deepEqual(await S.check(store, { epoch: "1", approvedAt: T0 }, T0), { code: "bad_props" });
+  assert.deepEqual(await S.check(store, { epoch, approvedAt: T0, phase: 2 }, T0 + 3000), { code: "stale_epoch" });
+  assert.deepEqual(await S.check(store, { epoch: "1", approvedAt: T0, phase: 2 }, T0), { code: "bad_props" });
   assert.deepEqual(await S.check(store, {}, T0), { code: "bad_props" });
+  // A Phase 0 stub grant (no phase in its props) never reaches the real tools.
+  await S.arm(store, { by: "jay" }, T0 + 4000);
+  const fresh = await S.approve(store, { by: "jay" }, T0 + 4000);
+  assert.deepEqual(await S.check(store, { epoch: fresh.epoch, approvedAt: T0 + 4000 }, T0 + 5000), { code: "stale_phase" });
+  assert.deepEqual(await S.check(store, { epoch: fresh.epoch, approvedAt: T0 + 4000, phase: 1 }, T0 + 5000), { code: "stale_phase" });
+  assert.deepEqual(await S.check(store, { epoch: fresh.epoch, approvedAt: T0 + 4000, phase: 2 }, T0 + 5000), { code: "ok" });
 });
 
 test("pause reports paused for a live grant, stale for a dead one", async () => {
@@ -61,10 +67,10 @@ test("pause reports paused for a live grant, stale for a dead one", async () => 
   await S.arm(store, { by: "jay" }, T0);
   const { epoch } = await S.approve(store, { by: "jay" }, T0);
   await S.setPaused(store, { by: "jay", paused: true }, T0);
-  assert.deepEqual(await S.check(store, { epoch, approvedAt: T0 }, T0 + 1), { code: "paused" });
-  assert.deepEqual(await S.check(store, { epoch: epoch - 1, approvedAt: T0 }, T0 + 1), { code: "stale_epoch" });
+  assert.deepEqual(await S.check(store, { epoch, approvedAt: T0, phase: 2 }, T0 + 1), { code: "paused" });
+  assert.deepEqual(await S.check(store, { epoch: epoch - 1, approvedAt: T0, phase: 2 }, T0 + 1), { code: "stale_epoch" });
   await S.setPaused(store, { by: "jay", paused: false }, T0 + 2);
-  assert.deepEqual(await S.check(store, { epoch, approvedAt: T0 }, T0 + 3), { code: "ok" });
+  assert.deepEqual(await S.check(store, { epoch, approvedAt: T0, phase: 2 }, T0 + 3), { code: "ok" });
 });
 
 test("audit and refusal logs are capped and newest first", async () => {

@@ -1,8 +1,14 @@
 // SeatGate:  one SQLite-backed Durable Object per seat (`idFromName(seat)`),
 // plus one instance named GATE_LOG_NAME for the refusal log.  It owns the
-// arming window, the grant epoch, the pause flag and the audit tail (spec 3.7,
-// Phase 0 subset:  no Zulip calls, spacing or budgets yet).  The logic lives in
-// seat-state.js;  this class only exposes it over RPC.
+// arming window, the grant epoch, the pause flag and the audit tail (Phase 0),
+// and the call gate (spec 3.7):  write and read spacing, budgets, the 429
+// cooldown, idempotency rows, the role cache and the per-call audit log.
+//
+// Every method is storage operations only, with no outside I/O, so the
+// Durable Object's input gate makes each one atomic:  two calls of one seat
+// can never take the same write slot.  The Worker makes the Zulip calls
+// after its slot comes back.  The logic lives in seat-state.js;  this class
+// only exposes it over RPC.
 
 import { DurableObject } from "cloudflare:workers";
 import * as state from "./seat-state.js";
@@ -58,5 +64,49 @@ export class SeatGate extends DurableObject {
 
   tokenRefusals(limit) {
     return state.tokenRefusals(this.store, limit);
+  }
+
+  reserve(options) {
+    return state.reserve(this.store, options);
+  }
+
+  noteRateLimited(options) {
+    return state.noteRateLimited(this.store, options);
+  }
+
+  idemBegin(options) {
+    return state.idemBegin(this.store, options);
+  }
+
+  idemSet(options) {
+    return state.idemSet(this.store, options);
+  }
+
+  idemDrop(options) {
+    return state.idemDrop(this.store, options);
+  }
+
+  idemPeek(options) {
+    return state.idemPeek(this.store, options);
+  }
+
+  roleGet() {
+    return state.roleGet(this.store);
+  }
+
+  roleSet(entry) {
+    return state.roleSet(this.store, entry);
+  }
+
+  roleStatus() {
+    return state.roleStatus(this.store);
+  }
+
+  auditCall(row) {
+    return state.auditCall(this.store, row);
+  }
+
+  callTail(limit) {
+    return state.callTail(this.store, limit);
   }
 }

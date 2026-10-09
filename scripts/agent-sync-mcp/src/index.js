@@ -1,8 +1,8 @@
-// Hosted agent-sync MCP Worker, Phase 0 stub (docs/protocols/agent-sync-mcp.md
-// section 6):  OAuth 2.1 with CIMD for ChatGPT and a hand-registered public
-// PKCE client for Grok's manual form, arming, a consent page behind Cloudflare
-// Access, a per-seat epoch and pause switch, and two tools that hold no Zulip
-// key (hello, hello_write).
+// Hosted agent-sync MCP Worker (docs/protocols/agent-sync-mcp.md section 3):
+// OAuth 2.1 with CIMD for ChatGPT and Grok and a hand-registered public PKCE
+// client for Grok's manual form, arming, a consent page behind Cloudflare
+// Access, a per-seat epoch and pause switch (Phase 0), and the seven agent-sync
+// tools from tools.json, each seat posting as its own Zulip bot (Phase 2).
 //
 // Request order, outermost first:
 //   1. Host check (404 for anything but agent-sync.jays.services) and a path
@@ -11,7 +11,8 @@
 //      way the library reads them, client_id allowlist before any fetch, blank
 //      client_secret dropped, and the re-serialized form is what gets forwarded.
 //   3. The OAuth library:  metadata, token endpoint, bearer check on /mcp.
-//   4. /mcp:  seat, epoch and grant age re-checked in the seat's SeatGate.
+//   4. /mcp:  seat, phase, epoch and grant age re-checked in the seat's
+//      SeatGate, then the tools run with that seat's key only.
 //      /authorize and /admin:  Access JWT re-verified, then our gates.
 
 import { OAuthProvider, OAuthError, AuthorizationError, CimdFetchError } from "@cloudflare/workers-oauth-provider";
@@ -26,6 +27,8 @@ import {
   REFRESH_TOKEN_TTL_S,
   GATE_LOG_NAME,
   KNOWN_SEATS,
+  PROPS_PHASE,
+  SEAT_SECRETS,
 } from "./config.js";
 import {
   hostAllowed,
@@ -43,7 +46,9 @@ import {
 } from "./policy.js";
 import { verifyAccessJwt } from "./access.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy } from "./pages.js";
-import { mcpHandler } from "./mcp.js";
+import { serveMcpRequest } from "./mcp.js";
+import { HostedTools } from "./hosted-tools.js";
+import { ZulipClient } from "./zulip.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 
 export { SeatGate };
@@ -133,7 +138,7 @@ function providerFor(env) {
       authorization_servers: [ISSUER],
       scopes_supported: [...SCOPES],
       bearer_methods_supported: ["header"],
-      resource_name: "Agent-Sync (Phase 0 stub)",
+      resource_name: "Agent-Sync",
     },
     tokenExchangeCallback: (options) => checkTokenExchange(env, options),
     onError: ({ code, status, internal }) => {
@@ -152,7 +157,7 @@ async function checkTokenExchange(env, { grantType, props, userId, grantId }) {
     throw new OAuthError("invalid_grant", { description: "This grant is not for a hosted seat." });
   }
   const seatGate = gate(env, seat);
-  const result = await seatGate.check({ epoch: props.epoch, approvedAt: props.approved_at });
+  const result = await seatGate.check({ epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase });
   await seatGate.audit({ event: "token_exchange", seat, grant_type: grantType, grant_ref: await sha256Ref(grantId), outcome: result.code });
   if (result.code === "paused") {
     // Not invalid_grant:  that would revoke the grant, and unpausing must work.
@@ -174,19 +179,38 @@ async function serveMcp(request, env, ctx) {
   if (typeof seat !== "string" || seat !== auth.userId || !config.hostedSeats.includes(seat)) {
     return invalidToken("This token is not for a hosted seat.");
   }
-  const result = await gate(env, seat).check({ epoch: props.epoch, approvedAt: props.approved_at });
+  const seatGate = gate(env, seat);
+  const result = await seatGate.check({ epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase });
   if (result.code !== "ok" && result.code !== "paused") return invalidToken("This grant is no longer valid.");
 
+  const scopes = Array.isArray(auth.scope) ? auth.scope.map(String) : [];
+  // The key comes from the seat in the verified props, through SEAT_SECRETS only.
+  const secretNames = SEAT_SECRETS[seat];
+  const key = typeof env[secretNames.key] === "string" ? env[secretNames.key].trim() : "";
+  const email = config.botEmails[seat];
+  const grantId = typeof auth.token === "string" ? auth.token.split(":")[1] ?? "" : "";
+  const tools = new HostedTools({
+    seat,
+    scopes,
+    clientId: typeof auth.clientId === "string" ? auth.clientId : "",
+    grantRef: grantId ? await sha256Ref(grantId) : "",
+    paused: result.code === "paused",
+    config,
+    zulip: key ? new ZulipClient({ email, key }) : null,
+    key,
+    gate: seatGate,
+    cf: { asn: request.cf?.asn, country: request.cf?.country },
+  });
   const authInfo = {
     token: auth.token,
     clientId: auth.clientId,
-    scopes: Array.isArray(auth.scope) ? [...auth.scope] : [],
+    scopes,
     ...(Number.isFinite(auth.expiresAt) ? { expiresAt: auth.expiresAt } : {}),
-    extra: { props: { seat, client_id: auth.clientId }, paused: result.code === "paused" },
+    extra: { seat },
   };
-  const response = await mcpHandler.fetch(request, { authInfo });
+  const response = await serveMcpRequest(request, tools, authInfo);
   if (response.status === 403 && request.headers.has("origin")) {
-    // Phase 0 records whether any client sends a browser Origin (spec 3.2).
+    // Records whether any client sends a browser Origin (spec 3.2).
     console.log(JSON.stringify({ event: "mcp_origin_refused", origin_host: logSafe(safeHost(request.headers.get("origin")), 120) }));
   }
   return response;
@@ -346,7 +370,7 @@ async function authorizePost(request, env, config, oauth, email) {
     userId: seat,
     metadata: { seat, client_name: clientName, approved_by: email, approved_at: approvedAt },
     scope: approved.request.scope,
-    props: { seat, scopes: approved.request.scope, approved_at: approvedAt, epoch: won.epoch, client_id: approved.request.clientId },
+    props: { seat, scopes: approved.request.scope, approved_at: approvedAt, epoch: won.epoch, client_id: approved.request.clientId, phase: PROPS_PHASE },
   });
 
   // D6:  one grant per seat.  The library only replaces grants of the same
@@ -413,21 +437,27 @@ async function serveAdmin(request, env, config, oauth, email) {
     const done = new URL(request.url).searchParams.get("done");
     const seats = [];
     const audits = [];
+    const calls = [];
     for (const seat of config.hostedSeats) {
       const g = gate(env, seat);
       const st = await g.getState();
       const grants = await listAllGrants(oauth, seat);
+      const keyName = SEAT_SECRETS[seat].key;
       seats.push({
         seat,
         ...st,
+        keyInstalled: typeof env[keyName] === "string" && env[keyName].trim() !== "",
+        role: await g.roleStatus(),
         grants: grants.map((x) => ({ client: x.metadata?.client_name ?? x.clientId, scope: x.scope ?? [], createdAt: toMs(x.createdAt) })),
       });
       for (const row of await g.tail(15)) {
         const { ts, event, ...detail } = row;
         audits.push({ ts, seat, event, detail });
       }
+      calls.push(...(await g.callTail(25)));
     }
     audits.sort((a, b) => b.ts - a.ts);
+    calls.sort((a, b) => b.ts - a.ts);
     const clients = (await oauth.listClients()).items ?? [];
     const refusals = await gate(env, GATE_LOG_NAME).refusals(30);
     const tokenRefusals = await gate(env, GATE_LOG_NAME).tokenRefusals(15);
@@ -439,6 +469,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         refusals,
         tokenRefusals,
         audits: audits.slice(0, 40),
+        calls: calls.slice(0, 40),
         csrf,
         notice: DONE_NOTICES[done] ?? "",
         grokRedirectsConfigured: (config.seats["GROK-WEB"]?.redirectUris ?? []).length > 0,
@@ -541,7 +572,35 @@ async function gateToken(request, env, config) {
   const headers = new Headers(request.headers);
   headers.delete("content-length");
   headers.set("content-type", "application/x-www-form-urlencoded");
-  return new Request(request.url, { method: "POST", headers, body: result.form.toString() });
+  return { request: new Request(request.url, { method: "POST", headers, body: result.form.toString() }), form: result.form };
+}
+
+/**
+ * Spec 3.5 step 3:  a refresh that fails because the refresh token is not the
+ * grant's current or previous one (a replayed, stolen token) or names another
+ * client pauses that seat.  The library's onError gets no seat, so this reads
+ * it from the refresh token itself (`seat:grantId:secret`) and the library's
+ * error description.  Only an existing grant can produce these two errors.
+ */
+async function pauseOnRefreshMismatch(env, config, form, response) {
+  if (response.status !== 400 || form.get("grant_type") !== "refresh_token") return;
+  const seat = String(form.get("refresh_token") ?? "").split(":")[0];
+  if (!config.hostedSeats.includes(seat)) return;
+  let body;
+  try {
+    body = await response.clone().json();
+  } catch {
+    return;
+  }
+  const reason = { "Invalid refresh token": "refresh_token_mismatch", "Client ID mismatch": "client_mismatch" }[body?.error_description];
+  if (body?.error !== "invalid_grant" || !reason) return;
+  console.log(JSON.stringify({ event: "alert_refresh_mismatch", seat, reason }));
+  try {
+    const seatGate = gate(env, seat);
+    await seatGate.setPaused({ by: `system:${reason}`, paused: true });
+  } catch {
+    console.log(JSON.stringify({ event: "pause_failed", seat }));
+  }
 }
 
 // ---------------------------------------------------------------- entry
@@ -568,7 +627,10 @@ export default {
     if (route === "token") {
       const gated = await gateToken(request, env, config);
       if (gated instanceof Response) return gated;
-      request = gated;
+      if (gated instanceof Request) return providerFor(env).fetch(gated, env, ctx);
+      const response = await providerFor(env).fetch(gated.request, env, ctx);
+      await pauseOnRefreshMismatch(env, config, gated.form, response);
+      return response;
     }
     return providerFor(env).fetch(request, env, ctx);
   },

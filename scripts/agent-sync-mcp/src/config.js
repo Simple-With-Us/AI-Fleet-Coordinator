@@ -1,4 +1,4 @@
-// Configuration for the hosted agent-sync MCP Worker (Phase 0 stub).
+// Configuration for the hosted agent-sync MCP Worker (Phase 0 OAuth, Phase 2 tools).
 //
 // Pure module:  no `cloudflare:` imports, so `node --test` can load it in CI
 // without `npm ci`.  Every value comes from wrangler.jsonc `vars`.  A missing
@@ -28,6 +28,23 @@ export const REFRESH_TOKEN_TTL_S = 90 * 24 * 60 * 60;
 // The refusal log lives in one extra SeatGate instance under this name.  It is
 // never a seat:  KNOWN_SEATS cannot contain it.
 export const GATE_LOG_NAME = "__refusal-log__";
+
+// Every grant approved from Phase 2 on carries `phase: 2` in its props.  A
+// grant without it (a Phase 0 stub grant) is refused on /mcp and on refresh, so
+// no stub grant reaches the real tools (spec section 6, Phase 0 exit).
+export const PROPS_PHASE = 2;
+
+// Where each seat's bot key and email live.  The key is a Worker secret, the
+// email a plain var (spec 3.6).  The seat comes only from the grant's props,
+// and only this table turns it into a key, so a JET grant can never read
+// GROK-WEB's key.
+export const SEAT_SECRETS = Object.freeze({
+  JET: Object.freeze({ key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" }),
+  "GROK-WEB": Object.freeze({ key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" }),
+});
+
+const BOT_EMAIL_RE = /^[a-z0-9-]+-bot@simplewithus\.zulipchat\.com$/;
+const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9 _-]{0,59}$/;
 
 function parseJsonVar(env, name) {
   const raw = env[name];
@@ -87,6 +104,34 @@ export function loadConfig(env) {
     seats[seat] = Object.freeze({ redirectUris: Object.freeze(redirectUris), cimdClientIds: Object.freeze(cimdClientIds) });
   }
 
+  // D4:  the channel allowlist, pinned name to stream id.  Tools use the id,
+  // never a name lookup, so a renamed or look-alike channel cannot widen it.
+  const channelsRaw = parseJsonVar(env, "CHANNELS");
+  if (typeof channelsRaw !== "object" || Array.isArray(channelsRaw)) throw new Error("config: CHANNELS must be an object");
+  const channels = new Map();
+  for (const [name, id] of Object.entries(channelsRaw)) {
+    if (!CHANNEL_NAME_RE.test(name)) throw new Error("config: a CHANNELS name is not a plain lowercase channel name");
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`config: CHANNELS.${name} must be a stream id`);
+    if ([...channels.values()].includes(id)) throw new Error("config: a stream id is listed twice in CHANNELS");
+    channels.set(name, id);
+  }
+  if (channels.size === 0) throw new Error("config: CHANNELS is empty");
+
+  // The owner's pinned Zulip user id and human clients (listener rule):  the
+  // `owner` flag on a message is a routing hint, never authority.
+  const ownerUserId = Number(env.OWNER_USER_ID);
+  if (!Number.isSafeInteger(ownerUserId) || ownerUserId <= 0) throw new Error("config: OWNER_USER_ID must be a Zulip user id");
+  const ownerClients = parseList(env, "OWNER_CLIENTS");
+  if (ownerClients.length === 0) throw new Error("config: OWNER_CLIENTS is empty");
+
+  // Bot emails for every hosted seat (plain vars;  the keys are secrets).
+  const botEmails = {};
+  for (const seat of hostedSeats) {
+    const email = String(env[SEAT_SECRETS[seat].email] ?? "").trim().toLowerCase();
+    if (!BOT_EMAIL_RE.test(email)) throw new Error(`config: ${SEAT_SECRETS[seat].email} must be a bot email in the realm`);
+    botEmails[seat] = email;
+  }
+
   const teamDomain = String(env.ACCESS_TEAM_DOMAIN ?? "").trim();
   const accessAud = String(env.ACCESS_AUD ?? "").trim();
   const ownerEmails = parseList(env, "OWNER_EMAILS").map((e) => e.toLowerCase());
@@ -110,6 +155,11 @@ export function loadConfig(env) {
       configured: /^[a-z0-9-]+\.cloudflareaccess\.com$/.test(teamDomain) && /^[0-9a-f]{64}$/.test(accessAud) && ownerEmails.length > 0,
     }),
     mcpDisabled: String(env.MCP_DISABLED ?? "") === "1",
+    channels,
+    channelIds: Object.freeze([...channels.values()]),
+    ownerUserId,
+    ownerClients: Object.freeze(ownerClients),
+    botEmails: Object.freeze(botEmails),
   });
 }
 

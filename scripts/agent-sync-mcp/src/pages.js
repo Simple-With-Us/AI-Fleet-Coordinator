@@ -120,7 +120,7 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
 </table>
 ${replaceLine}
 <p>${sentences(
-    "Phase 0 stub:  the only tools are hello and hello_write, and nothing is posted to Zulip.",
+    "This seat reads and posts in the allowlisted channels as its own Zulip bot, within its budgets.",
     "Every chat on that account will act as this seat.",
   )}</p>
 <form id="consent" method="post" action="/authorize">
@@ -142,15 +142,17 @@ function actionButton(csrf, action, label, fields = {}) {
   return `<form class="inline" method="post" action="/admin/action">${csrfField(csrf)}<input type="hidden" name="action" value="${escapeHtml(action)}">${hidden}<button type="submit">${escapeHtml(label)}</button></form>`;
 }
 
-/** /admin (spec 3.9, Phase 0 subset):  seat state, grants, clients, refusals, audit. */
-export function adminPage({ email, seats, clients, refusals, tokenRefusals = [], audits, csrf, notice, grokRedirectsConfigured }, headers) {
+/** /admin (spec 3.9):  seat state, keys, grants, clients, refusals, tool calls, audit. */
+export function adminPage({ email, seats, clients, refusals, tokenRefusals = [], audits, calls = [], csrf, notice, grokRedirectsConfigured }, headers) {
   const seatRows = seats
     .map((s) => {
       const grants = s.grants.length
         ? s.grants.map((g) => `${escapeHtml(g.client)} <small>(${escapeHtml(g.scope.join(" "))}, ${escapeHtml(ownerTime(g.createdAt))})</small>`).join("<br>")
         : "none";
       const armed = s.armed ? `<span class="ok">Armed until ${escapeHtml(ownerTime(s.armedUntil))}</span>` : "Not armed";
-      return `<tr><td><strong>${escapeHtml(s.seat)}</strong></td><td>${armed}</td><td>${s.paused ? "Paused" : "Live"}</td><td>${escapeHtml(s.epoch)}</td><td>${grants}</td><td>${[
+      const role = s.role ? (s.role.ok ? `role ${escapeHtml(s.role.role)}, checked ${escapeHtml(ownerTime(s.role.checked_at))}` : `<span class="warn">refused:  ${escapeHtml(s.role.reason)}</span>`) : "not checked yet";
+      const key = s.keyInstalled ? `Installed<br><small>${role}</small>` : `<span class="warn">Missing</span>`;
+      return `<tr><td><strong>${escapeHtml(s.seat)}</strong></td><td>${armed}</td><td>${s.paused ? "Paused" : "Live"}</td><td>${escapeHtml(s.epoch)}</td><td>${key}</td><td>${grants}</td><td>${[
         actionButton(csrf, "arm", "Arm", { seat: s.seat }),
         s.armed ? actionButton(csrf, "disarm", "Disarm", { seat: s.seat }) : "",
         s.paused ? actionButton(csrf, "unpause", "Unpause", { seat: s.seat }) : actionButton(csrf, "pause", "Pause", { seat: s.seat }),
@@ -182,16 +184,24 @@ export function adminPage({ email, seats, clients, refusals, tokenRefusals = [],
         )
         .join("")
     : `<tr><td colspan="4">None.</td></tr>`;
+  const callRows = calls.length
+    ? calls
+        .map(
+          (c) =>
+            `<tr><td>${escapeHtml(ownerTime(c.ts))}</td><td>${escapeHtml(c.seat)}</td><td>${escapeHtml(c.tool)}</td><td>${escapeHtml(c.error_code ?? "ok")}</td><td>${escapeHtml(c.channel_id ?? "")}</td><td>${escapeHtml(c.topic ?? "")}</td><td>${escapeHtml(c.message_id ?? "")}</td><td>${escapeHtml(c.latency_ms ?? "")}</td><td><code>${escapeHtml(c.grant_ref ?? "")}</code></td><td>${escapeHtml([c.asn ?? "", c.country ?? ""].join(" ").trim())}</td></tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="10">No tool calls yet.</td></tr>`;
   const auditRows = audits.length
     ? audits
         .map((a) => `<tr><td>${escapeHtml(ownerTime(a.ts))}</td><td>${escapeHtml(a.seat)}</td><td>${escapeHtml(a.event)}</td><td><code>${escapeHtml(JSON.stringify(a.detail ?? {}))}</code></td></tr>`)
         .join("")
     : `<tr><td colspan="4">No events yet.</td></tr>`;
   const body = `<h1>Agent-Sync Admin</h1>
-<p>Signed in as ${escapeHtml(email)}.${SENTENCE_GAP}Phase 0 stub:  no Zulip key is loaded.</p>
+<p>Signed in as ${escapeHtml(email)}.${SENTENCE_GAP}A seat serves tools only with its key installed and a live member role.</p>
 ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
 <h2>Seats</h2>
-<table><tr><th>Seat</th><th>Arming</th><th>State</th><th>Epoch</th><th>Grants</th><th>Actions</th></tr>${seatRows}</table>
+<table><tr><th>Seat</th><th>Arming</th><th>State</th><th>Epoch</th><th>Zulip Key</th><th>Grants</th><th>Actions</th></tr>${seatRows}</table>
 <h2>Hand-Registered Clients (Grok Manual Form)</h2>
 <p>${sentences(
     grokRedirectsConfigured
@@ -208,6 +218,9 @@ ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
 <h2>Refused Token Requests (Unauthenticated, Counted)</h2>
 <p>${sentences("Anyone on the internet can send these, so they are counted per reason and client ID and kept apart from the authorize log.")}</p>
 <table><tr><th>Last Seen</th><th>Count</th><th>Reason</th><th>Client ID</th></tr>${tokenRefusalRows}</table>
+<h2>Tool Calls</h2>
+<p>${sentences("One row per call, newest first.", "Bodies, keys and tokens are never stored.", "A topic that looked like a secret shows as its hash.")}</p>
+<table><tr><th>When</th><th>Seat</th><th>Tool</th><th>Outcome</th><th>Stream</th><th>Topic</th><th>Message</th><th>Ms</th><th>Grant</th><th>Network</th></tr>${callRows}</table>
 <h2>Audit</h2>
 <table><tr><th>When</th><th>Seat</th><th>Event</th><th>Detail</th></tr>${auditRows}</table>`;
   return htmlResponse("Agent-Sync Admin", body, { headers });
