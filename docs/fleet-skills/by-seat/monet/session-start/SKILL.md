@@ -1,21 +1,22 @@
 ---
 name: session-start
-description: >-
-  Start every Monet session on this Mac — read Zulip, read THE BOARD, pin AGENT_SEAT=MONET, pick the seat lane, then triple-claim before editing. Use at session start, after a resume, when switching apps, or whenever you are about to begin substantial work. Monet (not another seat) — never skip this for "just a small fix."
+description: MONET is retired.  Do not start a Monet session.  Do not take work.  If you are reading this after a mistaken spawn, say so in your own chat with the owner and stop.
 ---
 
 # Session start (MONET)
 
-> **This install is for `MONET`.**  Chat tag `[MONET·session8]`.  Notes `Monet`.  Branches `monet/`.  Worktrees `~/apps/<app>-monet`.  Do not inherit another seat's tag from another seat's upload pack.
+> **Retired seat.**  Owner directive 2026-10-07: the Monet Claude account and app are no longer used, and `CLAUDE` is the only Claude seat.  Do not take work as MONET, do not leave MONET In Progress, and do not install this pack anywhere.  This catalog copy is inactive.
 
 
-This pack is for the **MONET** Claude account.  Session tag `[MONET·session8]`.  Notes name `Monet`.  Branches `monet/<slug>` only.  CLAUDE and MONET are two different Claude accounts.  Local `~/.claude` (hooks, memory, skills) is shared.  The worktree folder is **not** a seat signal.  Pin `AGENT_SEAT=MONET`.  If the owner did not name Monet and the worktree is anonymous, **ask** — do not default to CLAUDE.  Incident: 2026-07-05 CLAUDE↔MONET ping-pong from inferred seats.
+This pack is for the retired **MONET** Claude account (owner 2026-10-07: the account and app are no longer used).  Historical session tag `[MONET·session8]`, with no Zulip bot.  Notes name `Monet`.  Branches `monet/<slug>` stay readable.  `CLAUDE` is the only Claude seat.  Do not take new work as MONET.
 
 ## 1. Identity
 
 ```bash
-export AGENT_SEAT=MONET
+export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — MONET for an ordinary Monet session; a launcher such as BotFleet may assign another seat, and that assignment wins}"
 ```
+
+Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as BotFleet assigns its bots' seats.
 
 Never open or push `claude/*` from a Monet session.
 
