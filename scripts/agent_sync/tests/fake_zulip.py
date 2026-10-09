@@ -532,7 +532,8 @@ class FakeZulip:
 
     def _get_messages(self, params: dict[str, str], user_id: int) -> dict[str, Any]:
         narrow = json.loads(params.get("narrow") or "[]")
-        wants_dm = any(item["operator"] == "dm" or (item["operator"] == "is" and item["operand"] in ("dm", "private"))
+        # As on the live server, is:mentioned also finds DMs that mention the caller.
+        wants_dm = any(item["operator"] == "dm" or (item["operator"] == "is" and item["operand"] in ("dm", "private", "mentioned"))
                        for item in narrow)
         matching = sorted((m for m in self.messages
                            if (m["type"] == "stream" or (wants_dm and self._receives(user_id, m)))

@@ -52,7 +52,7 @@ Ask-first reclaim (explicit Jay OK required before any delete/clear):
 
 HOLD MiniMax kills unless Jay says otherwise.  Playbook: /Users/jay/Code/AI-Fleet-Coordinator/docs/HOUSEKEEPER.md
 
-Report in this Housekeeper chat: disk free before/after, swap, load 1/5/15, what you deleted, and the largest remaining dirs.  Do not extra-ship.  Do not Slack unless kicking grok at a repo or after a completed app update.
+Report in this Housekeeper chat: disk free before/after, swap, load 1/5/15, what you deleted, and the largest remaining dirs.  Do not extra-ship.  Do not post in Zulip unless kicking grok at a repo or after a completed app update.
 
 If this wake is a resource trigger or webhook, the payload names the metric and sample.  Start with that pressure.  Do not only report.
 ```

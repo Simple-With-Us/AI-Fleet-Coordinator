@@ -30,7 +30,7 @@
   "kv_namespaces": [
     // Grants, hashed tokens and encrypted props (the OAuth library's store).
     // DEPLOY-PHASE0.md step 3 creates it and fills in the id.
-    { "binding": "OAUTH_KV", "id": "REPLACE_WITH_OAUTH_KV_ID" }
+    { "binding": "OAUTH_KV", "id": "877c08ea88a847dfa080a7d55db00f52" }
   ],
 
   "durable_objects": {
@@ -76,7 +76,7 @@
     // ACCESS_AUD comes from the Access app infra_phase0.py creates.  Until it
     // is set, /authorize and /admin answer 403 (fail closed).
     "ACCESS_TEAM_DOMAIN": "silent-frost-37e0.cloudflareaccess.com",
-    "ACCESS_AUD": "REPLACE_WITH_ACCESS_AUD",
+    "ACCESS_AUD": "ccc199b875e1695813415fad65b550627345d8f632e6aff0144e6f18f6c7951e",
     // Must match the Access policy's emails exactly.  Spec 3.3:  mail@jays.services
     // only.  The identity provider is One-time PIN, so a second address would make
     // that inbox a full admin credential for this server.

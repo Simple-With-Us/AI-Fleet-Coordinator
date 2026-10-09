@@ -2,6 +2,7 @@
 
 Modules:
   zulip   credential loading, a urllib-only HTTP client with retries, and the event-queue helper
+  textfmt the sentence-gap safety net the client applies to message text it sends
   state   per-session cursors and posted-id ledger, plus the seat-wide inbox cursor
   cli     the argparse front end (`main(argv) -> int`); `scripts/agent-sync` is the entry point
 
@@ -16,6 +17,10 @@ The listener (docs/protocols/agent-sync-listener.md):
   launchd       `daemon install` and `uninstall` (writes files, never runs launchctl)
   listener_cli  `daemon ...`, `status`, `wakes` and `inbox --local`
   secretscan    the secret scanner for anything about to be posted
+
+MCP (docs/protocols/agent-sync-mcp.md):
+  mcp           `agent-sync mcp`:  the tools over MCP on stdio (mcp/stdio.py, mcp/tools.py, the
+                contract in mcp/tools.json, the shared golden cases in mcp/fixtures.jsonl)
 
 Python 3.11 or newer, standard library only.  See README.md for usage, the credential order,
 the state layout, the exit codes and the wire rules.
