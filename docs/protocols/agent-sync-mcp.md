@@ -131,26 +131,26 @@ A stale grant epoch or a grant past 90 days is not a tool error:  the Worker ans
 
 **Session tag.**  The tag comes from `CLAUDE_CODE_SESSION_ID` or `AGENT_SESSION` if the client passes it to the child (UNVERIFIED).  If not, it uses the `session` argument, and failing that, a bare `[SEAT]`.  A `whoami` probe in Phase 1 settles it:  its `session_source` is `env`, `flag` (`agent-sync mcp --session ID`) or `none`.
 
-**Binary path.**  Use `/Users/jay/.local/bin/agent-sync`.  It links to `~/Code/AI-Fleet-Coordinator/scripts/agent-sync`, the daemon-reset tree, which lags `main`.  So `agent-sync mcp` exists there only after the PR merges and that tree syncs.  Register after that.
+**Binary path.**  Use `~/.local/bin/agent-sync`.  It links to `~/Code/AI-Fleet-Coordinator/scripts/agent-sync`, the daemon-reset tree, which lags `main`.  So `agent-sync mcp` exists there only after the PR merges and that tree syncs.  Register after that.
 
 **Registration.**  Every row below needs Jay's OK before the edit.  Each command writes the user's config file; none is run by this design.
 
 | Client (seat) | Exact command or edit |
 | --- | --- |
-| Claude Code (CLAUDE) | `claude mcp add agent-sync --scope user -e AGENT_SEAT=CLAUDE -- /Users/jay/.local/bin/agent-sync mcp`.  The name goes first:  `-e` is variadic and swallows a following name (checked in a temp project).  The short form `claude mcp add --scope user agent-sync -- agent-sync mcp` is not enough:  without `AGENT_SEAT` the server exits 3 at startup, and a bare `agent-sync` depends on the client's PATH. |
-| Codex CLI (CODEX) | `codex mcp add agent-sync --env AGENT_SEAT=CODEX -- /Users/jay/.local/bin/agent-sync mcp`, or the same thing as a `~/.codex/config.toml` block (below) |
-| Antigravity (AG) | `agy mcp add --env AGENT_SEAT=AG agent-sync /Users/jay/.local/bin/agent-sync mcp` (flags before the name; matches `--help`, not executed) |
-| Grok CLI and TUI (GROK) | `grok mcp add --scope user -e AGENT_SEAT=GROK agent-sync -- /Users/jay/.local/bin/agent-sync mcp`.  Terminal Grok and Grok Build are one seat, GROK (D2).  It reads `Grok-Build-zuliprc` and posts as grok-build-bot@.  `AGENT_SEAT=GROK-BUILD` exits 3, because that bot signs as GROK. |
-| Cursor (CURSOR) | `~/.cursor/mcp.json` → `mcpServers.agent-sync = {"command": "/Users/jay/.local/bin/agent-sync", "args": ["mcp"], "env": {"AGENT_SEAT": "CURSOR"}}` |
-| MiniMax (MM) | `~/.minimax/mcp.json` → `mcpServers.agent-sync = {"type": "stdio", "command": "/Users/jay/.local/bin/agent-sync", "args": ["mcp"], "env": {"AGENT_SEAT": "MM"}, "enabled": true, "configured": true, "builtin": false}` (the shape of the existing `fleet-recall` entry; add path unverified) |
-| fx (FX) | `~/.fx/mcp.json` → `mcp.agent-sync = {"type": "local", "command": ["env", "AGENT_SEAT=FX", "/Users/jay/.local/bin/agent-sync", "mcp"], "enabled": true}`.  fx has no `env` key. |
-| BotFleet role bots (BF-<ROLE>) | Not a config edit.  BotFleet hands its stdio MCP servers to its ACP engines from code (`acpMcpServers` in `server/drivers/acp/core.ts`, BotFleet `main`, read Thu, Oct 8).  So this is a BotFleet change that adds `{name: "agent-sync", command: "/Users/jay/.local/bin/agent-sync", args: ["mcp"], env: [{name: "AGENT_SEAT", value: "BF-<ROLE>"}]}` for the bot taking the turn.  Example:  `BF-PLUMBER` reads `BF-Plumber-zuliprc` and is accepted only if `users/me` is bf-plumber-bot@ with the member or moderator role.  Pending Jay's OK (section 4). |
+| Claude Code (CLAUDE) | `claude mcp add agent-sync --scope user -e AGENT_SEAT=CLAUDE -- ~/.local/bin/agent-sync mcp`.  The name goes first:  `-e` is variadic and swallows a following name (checked in a temp project).  The short form `claude mcp add --scope user agent-sync -- agent-sync mcp` is not enough:  without `AGENT_SEAT` the server exits 3 at startup, and a bare `agent-sync` depends on the client's PATH. |
+| Codex CLI (CODEX) | `codex mcp add agent-sync --env AGENT_SEAT=CODEX -- ~/.local/bin/agent-sync mcp`, or the same thing as a `~/.codex/config.toml` block (below) |
+| Antigravity (AG) | `agy mcp add --env AGENT_SEAT=AG agent-sync ~/.local/bin/agent-sync mcp` (flags before the name; matches `--help`, not executed) |
+| Grok CLI and TUI (GROK) | `grok mcp add --scope user -e AGENT_SEAT=GROK agent-sync -- ~/.local/bin/agent-sync mcp`.  Terminal Grok and Grok Build are one seat, GROK (D2).  It reads `Grok-Build-zuliprc` and posts as grok-build-bot@.  `AGENT_SEAT=GROK-BUILD` exits 3, because that bot signs as GROK. |
+| Cursor (CURSOR) | `~/.cursor/mcp.json` → `mcpServers.agent-sync = {"command": "~/.local/bin/agent-sync", "args": ["mcp"], "env": {"AGENT_SEAT": "CURSOR"}}` |
+| MiniMax (MM) | `~/.minimax/mcp.json` → `mcpServers.agent-sync = {"type": "stdio", "command": "~/.local/bin/agent-sync", "args": ["mcp"], "env": {"AGENT_SEAT": "MM"}, "enabled": true, "configured": true, "builtin": false}` (the shape of the existing `fleet-recall` entry; add path unverified) |
+| fx (FX) | `~/.fx/mcp.json` → `mcp.agent-sync = {"type": "local", "command": ["env", "AGENT_SEAT=FX", "~/.local/bin/agent-sync", "mcp"], "enabled": true}`.  fx has no `env` key. |
+| BotFleet role bots (BF-<ROLE>) | Not a config edit.  BotFleet hands its stdio MCP servers to its ACP engines from code (`acpMcpServers` in `server/drivers/acp/core.ts`, BotFleet `main`, read Thu, Oct 8).  So this is a BotFleet change that adds `{name: "agent-sync", command: "~/.local/bin/agent-sync", args: ["mcp"], env: [{name: "AGENT_SEAT", value: "BF-<ROLE>"}]}` for the bot taking the turn.  Example:  `BF-PLUMBER` reads `BF-Plumber-zuliprc` and is accepted only if `users/me` is bf-plumber-bot@ with the member or moderator role.  Pending Jay's OK (section 4). |
 
 The config-file forms, for an edit by hand or the installer.  Codex, `~/.codex/config.toml` (the `[mcp_servers.X]` shape `install-fleet-rag.sh` writes, plus Codex's `env` table):
 
 ```toml
 [mcp_servers.agent-sync]
-command = "/Users/jay/.local/bin/agent-sync"
+command = "~/.local/bin/agent-sync"
 args = ["mcp"]
 env = { AGENT_SEAT = "CODEX" }
 ```
@@ -158,7 +158,7 @@ env = { AGENT_SEAT = "CODEX" }
 Cursor, `~/.cursor/mcp.json`, merged into the existing `mcpServers` object:
 
 ```json
-{"mcpServers": {"agent-sync": {"command": "/Users/jay/.local/bin/agent-sync", "args": ["mcp"], "env": {"AGENT_SEAT": "CURSOR"}}}}
+{"mcpServers": {"agent-sync": {"command": "~/.local/bin/agent-sync", "args": ["mcp"], "env": {"AGENT_SEAT": "CURSOR"}}}}
 ```
 
 Later these go into an installer modeled on `scripts/install-fleet-rag.sh`, with marked blocks and no tokens, and it covers MiniMax and fx, which that script skips.  Listener wake sessions are unaffected, because they run `--strict-mcp-config` and disallow `mcp__*`.  `agent-sync mcp` is a helper other seats run, so its `MAC-LOCAL-PROCESSES.md` row (on-demand) and the Apple Note refresh land in the Phase 1 PR.
