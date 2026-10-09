@@ -297,9 +297,8 @@ budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner
            owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, loop_turns = 3 }
 
-# The other Mac seats are listed commented out.  The partition already gives all nine Mac
-# seats to "mac", so enabling one is an edit here plus `agent-sync daemon reload`.  A seat the
-# partition gives to the server instance, marks none, or does not list still refuses to start.
+# The other Mac seats (the partition gives them to "mac").  Uncomment to capture their
+# @-mentions and DMs into their inboxes (owner, Thu, Oct 8:  get the listeners all active).
 
 # [seat.CODEX]
 # bot = "Codex"
