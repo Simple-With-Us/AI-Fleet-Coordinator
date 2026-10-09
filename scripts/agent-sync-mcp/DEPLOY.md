@@ -1,6 +1,6 @@
 # Deploy the agent-sync MCP Worker
 
-The runbook for `https://agent-sync.jays.services` from Phase 2 on:  the seven tools, GROK-WEB served, JET blocked until its bot is a member.  [DEPLOY-PHASE0.md](DEPLOY-PHASE0.md) is the record of the first deploy and the hostname move.
+The runbook for `https://agent-sync.jays.services` from Phase 2 on:  the seven tools, with GROK-WEB and JET both served (JET enabled Fri, Oct 9, after Jay demoted `openai-dot-bot` to member).  [DEPLOY-PHASE0.md](DEPLOY-PHASE0.md) is the record of the first deploy and the hostname move.
 
 A merge is never a deploy (spec 3.2):  agents auto-merge to `main`, so every deploy is run by hand from a checkout of the merged commit, never from CI.  Decision D8 (Thu, Oct 8) accepts deploying with the Cloudflare Global key pair from the handoff file until Jay mints a per-Worker deploy token (owner item A5).  Anyone who can deploy this Worker can act as every hosted seat;  that is the accepted residual.
 
@@ -31,14 +31,16 @@ perl -e 'alarm 900; exec @ARGV' npm run test:workerd
 
 The same Worker, KV namespace, `SeatGate` class (migration `v1`, no new migration) and custom domain as Phase 0.  From this deploy on, every Phase 0 grant is dead:  its props carry no `phase: 2`, so `/mcp` answers 401 and a refresh gets `invalid_grant`.
 
-## Step 2:  Install the GROK-WEB key
+## Step 2:  Install the hosted seats' keys
 
 ```bash
 python3 -I install_seat_key.py GROK-WEB            # checks only
 python3 -I install_seat_key.py GROK-WEB --apply    # wrangler secret put ZULIP_KEY_GROK_WEB, value on stdin
+python3 -I install_seat_key.py JET                 # checks only
+python3 -I install_seat_key.py JET --apply         # wrangler secret put ZULIP_KEY_JET, value on stdin
 ```
 
-The script reads `ZULIP_GROK_WEB_EMAIL` and `ZULIP_GROK_WEB_API_KEY` from Infisical (project "AI Fleet Coordinator", `prod`, `/zulip`) through the INFISICAL_AUTOMATION identity, and refuses unless the seat is in `HOSTED_SEATS`, the email equals `ZULIP_EMAIL_GROK_WEB`, and Zulip's `users/me` for the key is that bot, a bot, and a member (role 400).  The value goes to wrangler on stdin and is never printed, logged or written to a file.  `wrangler secret put` deploys a new version at once.
+For each seat the script reads `ZULIP_<SEAT>_EMAIL` and `ZULIP_<SEAT>_API_KEY` (`ZULIP_GROK_WEB_*`, `ZULIP_JET_*`) from Infisical (project "AI Fleet Coordinator", `prod`, `/zulip`) through the INFISICAL_AUTOMATION identity, and refuses unless the seat is in `HOSTED_SEATS`, the email equals `ZULIP_EMAIL_GROK_WEB`, and Zulip's `users/me` for the key is that bot, a bot, and a member (role 400).  The value goes to wrangler on stdin and is never printed, logged or written to a file.  `wrangler secret put` deploys a new version at once.
 
 Spec 3.6 wants Infisical's Cloudflare Workers sync to push the key, from a location no agent identity can read.  Neither exists yet (owner items A1 and A4), and D8 accepts that:  this script is the sync, run by hand, and the key stays in `/zulip` where the automation identity can read it.  When Jay sets up the sync with "Disable Secret Deletion", stop using the script for that seat.
 
@@ -59,16 +61,16 @@ The step refuses unless exactly one rule goes and the catch-all stays last, and 
 python3 -I infra_phase0.py check           # every line PASS, exit 0
 ```
 
-It covers the metadata documents (`issuer` equal to `authorization_servers[0]`, S256 only, `iss`, CIMD, no DCR), 401 with `resource_metadata` on an unauthenticated `initialize` and on `GET /mcp`, Access in front of `/authorize`, `/admin` and `/admin/action`, `/health`, 404 elsewhere, no workers.dev, the custom domain, and no tunnel rule or tunnel CNAME for the host.  Then open `/admin`:  GROK-WEB shows **Installed** under Zulip Key (the role line appears after the first tool call), JET is absent.
+It covers the metadata documents (`issuer` equal to `authorization_servers[0]`, S256 only, `iss`, CIMD, no DCR), 401 with `resource_metadata` on an unauthenticated `initialize` and on `GET /mcp`, Access in front of `/authorize`, `/admin` and `/admin/action`, `/health`, 404 elsewhere, no workers.dev, the custom domain, and no tunnel rule or tunnel CNAME for the host.  Then open `/admin`:  GROK-WEB and JET each show **Installed** under Zulip Key (the role line appears after the first tool call).  A seat that is not in `HOSTED_SEATS` is absent.
 
 What only Jay can verify, because it needs his Access sign-in and consent:  the full OAuth round trip and the first real post.  [ARMING-JAY.md](ARMING-JAY.md) has the steps;  the workerd flow proves the same path against a fake Zulip.
 
 ## Re-enable JET
 
-JET is left out because `openai-dot-bot` is a realm administrator (role 200) and hosted seats accept member (400) only (spec 3.6;  the listener refuses admin keys too).
+JET was left out of Phase 2 because `openai-dot-bot` was a realm administrator (role 200) and hosted seats accept member (400) only (spec 3.6;  the listener refuses admin keys too).  Jay demoted every bot to member on Fri, Oct 9, and steps 1 and 2 are done.  The same steps re-enable any seat that was taken out.
 
-1. Jay demotes `openai-dot-bot` to **member** in Zulip (Organization settings → Users → the bot → Role).
-2. Add `JET` to `HOSTED_SEATS` in `wrangler.jsonc` (`"JET,GROK-WEB"`), open a PR, merge.
+1. Jay demotes the bot to **member** in Zulip (Organization settings → Users → the bot → Role).  Done for `openai-dot-bot` on Fri, Oct 9.
+2. Put the seat in `HOSTED_SEATS` in `wrangler.jsonc` (`"JET,GROK-WEB"`), open a PR, merge.  Done on Fri, Oct 9.
 3. Deploy (step 1), then `python3 -I install_seat_key.py JET --apply`.  The script refuses while the live role is not 400.
 4. Jay arms JET and connects ChatGPT (ARMING-JAY.md).
 
@@ -93,4 +95,4 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 - **A4:**  Infisical's Cloudflare Workers sync for the hosted keys, with "Disable Secret Deletion" (replaces step 2).
 - **A5:**  a per-Worker deploy token, kept out of agents' reach (replaces the Global key in step 1).
 - **A1 and D8:**  a key location no agent identity can read.  Until then the INFISICAL_AUTOMATION identity and the Global key can both reach GROK-WEB's key, which D8 accepts.
-- **JET:**  demote `openai-dot-bot` to member (above).
+- **JET:**  arm it and connect ChatGPT ([ARMING-JAY.md](ARMING-JAY.md)).  The bot is a member now, so nothing else blocks it.

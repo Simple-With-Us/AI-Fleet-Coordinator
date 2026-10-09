@@ -17,7 +17,7 @@ Before anything is written it proves the key is fit for the seat, the same
 checks the Worker repeats every 10 minutes:  the seat is in HOSTED_SEATS, the
 Infisical email equals the ZULIP_EMAIL_<SEAT> var, and Zulip's users/me for the
 key is that bot, a bot, and a member (role 400), never an administrator or
-owner.  So an admin key (openai-dot-bot today) is refused and never installed.
+owner.  So an admin key (openai-dot-bot until Fri, Oct 9) is refused and never installed.
 
 Standard library only.  Python 3.11+.  Run from scripts/agent-sync-mcp/.
 """
