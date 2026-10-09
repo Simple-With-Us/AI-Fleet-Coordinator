@@ -1167,7 +1167,7 @@ class Daemon:
                                 owner_of=self.owner_of, format_time=format_time, board_enabled=board_on)
         runner.ledger.append(pending.row("started", now, reserved_usd=C.WAKE_MAX_BUDGET_USD, adapter="claude"))
         argv = A.claude_argv(claude, runner.cfg.model)
-        result = self.claude_runner.run(argv, A.claude_env(self.env, self.home, self.wake_path),
+        result = self.claude_runner.run(argv, A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat),
                                         runner.paths.wake_dir, prompt)
         self.log.write("wake-run", seat=runner.seat, wake_id=pending.wake_id, exit=result.exit, secs=result.secs,
                        cost=result.cost_usd, refused=result.refused, error=result.error, models=result.models,

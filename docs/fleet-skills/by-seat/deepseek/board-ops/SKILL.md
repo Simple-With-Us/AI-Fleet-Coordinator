@@ -17,7 +17,7 @@ Humans: `https://mac.jays.services/board` (HTTP Basic Auth, any username, passwo
 ```bash
 board stats
 board list --status open,in_progress --severity P0,P1
-board list --app congress-trade --mine DSH
+board list --app congress-trade --mine "$AGENT_SEAT"
 board show <id>
 ```
 
@@ -25,18 +25,18 @@ board show <id>
 
 Some agent CLIs only allowlist a stable command prefix.  `board stats` allowlists.  `B=…/board; $B stats`, `$(…)`, pipes, and `&&` chains do not.
 
-`--env` is only `Mac` or `cloud`.  `--by` for this seat is `DSH`.
+`--env` is only `Mac` or `cloud`.  `--by` for this seat is your verified seat (`DSH` in an ordinary DeepSeek Harness session).
 
 ## File / claim / talk / finish
 
 ```bash
 board file --title "Scout drops Senate rows on 502" --app congress-trade \
-  --severity P1 --by DSH --env Mac --where "~/apps/lanes/congress/<seat>-fix @ <branch>" \
+  --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/congress/<seat>-fix @ <branch>" \
   --desc "path:line + repro"
 
-board claim <id> --by DSH --env Mac --where "~/apps/lanes/congress/<seat>-fix @ <branch>"
+board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/congress/<seat>-fix @ <branch>"
 
-board comment <id> --by DSH --text "Verified on main; the shared helper is right."
+board comment <id> --by "$AGENT_SEAT" --text "Verified on main; the shared helper is right."
 
 board status <id> completed --resolution "Landed in #2894."
 ```
@@ -48,7 +48,7 @@ Status values: `open`, `in_progress`, `completed`, `deployed`, `addressed`, `won
 ## What you owe the board
 
 1. **Before substantial work:** list the app.  Claim the existing item or file then claim.
-2. **While working:** keep `--by DSH`, `--env Mac`, and `--where "lane path @ branch"` accurate.
+2. **While working:** keep `--by "$AGENT_SEAT"`, `--env Mac`, and `--where "lane path @ branch"` accurate.
 3. **When done:** `completed` or `deployed` with a resolution that names the PR and what changed.  Do not leave `in_progress` after you stopped.
 4. **On a peer's item:** comment with evidence.  Reviewing fixes here is expected.
 

@@ -22,61 +22,123 @@ SEAT_LINE_TOKEN = "@@SEAT_BRANCH_LINE@@"
 NEVER_PUSH_TOKEN = "@@SEAT_NEVER_PUSH@@"
 SEAT_PIN_TOKEN = "@@SEAT_PIN_BLOCK@@"
 
-SEAT_NEVER_OVERWRITE = (
+# The canonical pack's identity block is the retired MONET seat's own block,
+# exactly what seat_pin_block() renders for MONET (#405 made the canonical
+# carry the renderer's own output).  Every render swaps the whole block for the
+# destination seat's seat-precedence block (AGENT-SYNC § Identity Rules, owner
+# 2026-10-09):  a launcher's AGENT_LAUNCH_SEAT, no seat at all when a launcher
+# set none, then AGENT_SEAT, then the platform default.  The pattern also takes
+# the two older canonical shapes (a bare `export AGENT_SEAT=MONET`, and the
+# pin-or-fail line plus its never-overwrite sentence), so an older canonical is
+# still swapped whole.
+
+# The sentence every rendered identity block ends with.  The tests and
+# check-seat-blocks.py look for it:  a pack without it has no launcher clause.
+LAUNCHER_CLAUSE = (
+    "Never write `AGENT_LAUNCH_SEAT` or `AGENT_LAUNCHER`, and never overwrite an "
+    "`AGENT_SEAT` you found already set."
+)
+_OLD_NEVER_OVERWRITE = (
     "Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as "
     "BotFleet assigns its bots' seats."
 )
-
-# The canonical pack's identity block is the retired MONET seat's own
-# pin-or-fail line plus the never-overwrite sentence, which is exactly what
-# seat_pin_block() renders for MONET.  Every render swaps the whole block
-# (fence, export line and the sentence that follows it) for the destination
-# seat's block, which never overwrites a seat that is already set until the
-# owner's seat-precedence rule lands.  The export line is matched loosely so
-# an older canonical with a bare `export AGENT_SEAT=MONET` is still swapped.
 _SEAT_PIN_SOURCE = re.compile(
-    r"```bash\nexport AGENT_SEAT=[^\n]+\n```(?:\n\n" + re.escape(SEAT_NEVER_OVERWRITE) + r")?"
+    r"```bash\n(?:"
+    r"export AGENT_SEAT=[^\n]+\n```(?:\n\n" + re.escape(_OLD_NEVER_OVERWRITE) + r")?"
+    r"|if \[ -n \"\$\{AGENT_LAUNCH_SEAT:-\}\" \][^`]*?```\n\nYour seat is the first[^\n]*\n\nStop if [^\n]*?"
+    + re.escape(LAUNCHER_CLAUSE)
+    + r")"
 )
 
-# Shell-safe: the message sits inside "${AGENT_SEAT:?...}" so it carries no
-# `$`, backtick, double quote or closing brace.
-_SEAT_PIN_LAUNCHER = (
-    "a launcher such as BotFleet may assign another seat, and that assignment wins"
-)
+# What a rendered command writes where the seat goes (`board ... --by`).  The
+# identity block exports AGENT_SEAT from the verified seat when it is unset.
+BY_SEAT = '"$AGENT_SEAT"'
+# The placeholder for the reader's branch prefix in example claim posts.  A
+# launched bot's prefix is its launcher's to name, so no render hard-codes one.
+BRANCH_PREFIX = "<branch-prefix>"
 
 
-def _seat_pin_block(export_line: str) -> str:
-    return f"```bash\n{export_line}\n```\n\n{SEAT_NEVER_OVERWRITE}"
+def _seat_block(default_arm: str, ordinary: str, extra: str = "") -> str:
+    """The seat-precedence code block plus the rules around it.
+
+    `default_arm` is the shell word for an ordinary session (the platform
+    default, or a `${...:?...}` that fails when there is none); `ordinary`
+    says what an ordinary session is.  The block fails closed:  a launcher
+    with no seat exits 3 before any default is read.
+    """
+    return (
+        "```bash\n"
+        'if [ -n "${AGENT_LAUNCH_SEAT:-}" ]; then SEAT="$AGENT_LAUNCH_SEAT"\n'
+        'elif [ -n "${AGENT_LAUNCHER:-}" ]; then echo "no seat assigned by $AGENT_LAUNCHER" >&2; exit 3\n'
+        f"else SEAT={default_arm}; fi\n"
+        'export AGENT_SEAT="${AGENT_SEAT:-$SEAT}"\n'
+        'agent-sync whoami --as "$SEAT"\n'
+        "```\n\n"
+        "Your seat is the first of these that applies (AGENT-SYNC § Identity Rules):  "
+        "a seat Jay names to you in this conversation; a seat your launcher assigned "
+        "(`AGENT_LAUNCH_SEAT` with `AGENT_LAUNCHER`, matching your launch prompt), "
+        f"which beats this file whatever model you are; otherwise {ordinary}  "
+        "If `AGENT_LAUNCHER` is set with no `AGENT_LAUNCH_SEAT`, or they disagree "
+        "with your launch prompt, you have no seat:  do no fleet action, and say so."
+        "\n\n"
+        "Stop if `whoami` shows another seat's bot or the credential is missing "
+        "(the CLI also refuses on its own).  Never use another seat's credential or "
+        "Jay's account.  Your shell may not keep exports between commands, so pass "
+        "`--as <SEAT>` on every agent-sync call, and read `\"$AGENT_SEAT\"` in the "
+        f"commands below as the seat you verified.{extra}  {LAUNCHER_CLAUSE}"
+    )
+
+
+def _bot_address(seat: "Seat") -> str:
+    local = seat.zulip_bot
+    if local and not local.endswith("-bot"):
+        local = f"{local}-bot"
+    return f"{local}@" if local else ""
 
 
 def seat_pin_block(seat: "Seat") -> str:
-    """Identity code block for one exclusive seat: pin-or-fail, never overwrite."""
-    return _seat_pin_block(
-        'export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — '
-        f"{seat.tag} for an ordinary {seat.notes} session; {_SEAT_PIN_LAUNCHER}"
-        '}"'
+    """Identity block for one seat:  its platform default arm, never an overwrite."""
+    prefix_line = (
+        f"  `{BRANCH_PREFIX}` below is your seat's branch prefix:  `{seat.prefix}` "
+        f"for {seat.tag}, or the one your launcher names."
+    )
+    if seat.retired:
+        # A retired seat is never anyone's default:  the arm fails instead.
+        return _seat_block(
+            f'"${{AGENT_SEAT:?{seat.tag} is retired; take no work as {seat.tag}}}"',
+            f"you have no seat here:  {seat.tag} is retired and is no platform's default.",
+            prefix_line,
+        )
+    bot = _bot_address(seat)
+    return _seat_block(
+        f'"${{AGENT_SEAT:-{seat.tag}}}"',
+        f"this is an ordinary {seat.notes} session, and your seat is **{seat.tag}**"
+        + (f" (bot `{bot}`)." if bot else "."),
+        prefix_line,
     )
 
 
 def universal_pin_block() -> str:
-    """Identity code block for the neutral skills/ tree (no seat is known)."""
-    return _seat_pin_block(
-        'export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — your own seat tag; '
-        f'{_SEAT_PIN_LAUNCHER}'
-        '}"'
+    """Identity block for the neutral skills/ tree (no seat is known)."""
+    return _seat_block(
+        '"${AGENT_SEAT:?set AGENT_SEAT to your platform default from AGENT-SYNC Identity Rules}"',
+        "take your platform's default from AGENT-SYNC § Identity Rules › Platform "
+        "Defaults (a platform with no default asks Jay).",
+        f"  `{BRANCH_PREFIX}` below is your seat's branch prefix.",
     )
 
 
 def grok_bot_pin_block() -> str:
-    """Identity code block for a Grok Bot role.
+    """Identity block for a Grok Bot role.
 
-    A seat that is already set stays; otherwise the role the launcher put in
-    AGENT_TAG becomes the seat; if neither is set the shell fails loudly.
+    Grok Bot is the launcher for its roles, so there is no platform default:
+    the role comes from the launcher, else from AGENT_SEAT or AGENT_TAG, and
+    the shell fails loudly when none is set.
     """
-    return _seat_pin_block(
-        'export AGENT_SEAT="${AGENT_SEAT:-${AGENT_TAG:?set '
-        f"{gb_role_pin_list()}"
-        '}}"'
+    return _seat_block(
+        f'"${{AGENT_SEAT:-${{AGENT_TAG:?set {gb_role_pin_list()}}}}}"',
+        "your seat is the `GB-<NAME>` role Grok Bot gave you; there is no platform default.",
+        f"  `{BRANCH_PREFIX}` below is `cursor` for a Cursor cloud agent.",
     )
 
 
@@ -220,11 +282,11 @@ CURSOR_EXTRA = (
 )
 
 GROK_EXTRA = (
-    "> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`.  If this session "
-    "is **Grok Build**, pin `AGENT_SEAT=GROK-BUILD`, tag `[GROK-BUILD]`, branches "
-    "`grok-build/`, worktrees `~/apps/<app>-grok-build`.  Grok Bot (Cursor cloud) "
-    "uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  "
-    "Never `[MONET]`.\n\n"
+    "> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok "
+    "Build:  one seat (owner 2026-10-08), so never sign `GROK-BUILD`, a retired "
+    "alias the CLI refuses.  Old `grok-build/` branches stay readable.  Grok Bot "
+    "(Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not "
+    "`[GROK-BOT]`.  Never `[MONET]`.\n\n"
 )
 
 # CLAUDE is the only Claude seat (owner 2026-10-07), so the shared
@@ -822,8 +884,9 @@ def _specialize_grok_bot(text: str, seat: Seat, skill_name: str) -> str:
     ordered = [
         ("AGENT_SEAT=MONET", pin.replace("AGENT_TAG", "AGENT_SEAT", 1)),
         ("AGENT_TAG=MONET", pin),
-        ("--by MONET", '--by "$AGENT_TAG"'),
-        ("--mine MONET", '--mine "$AGENT_TAG"'),
+        ("--by MONET", f"--by {BY_SEAT}"),
+        ("--mine MONET", f"--mine {BY_SEAT}"),
+        ("claim:  monet/<slug>", f"claim:  {BRANCH_PREFIX}/<slug>"),
         ("`--by` for this seat is `MONET`", "`--by` for this seat is `$AGENT_TAG`"),
         ("[MONET·session8", "[$AGENT_TAG·session8"),
         ("[MONET->", "[$AGENT_TAG->"),
@@ -1038,6 +1101,18 @@ def rewrite_skill_tree(root: str) -> int:
     return changed
 
 
+_PIN_PROSE = re.compile(r"Pin `AGENT_SEAT=([A-Z0-9-]+)`(?: / `AGENT_TAG=\1`)?\.")
+
+
+def _launcher_aware_prose(text: str) -> str:
+    """Seat paragraphs said "Pin `AGENT_SEAT=X`."  Under the owner's seat-precedence
+    rule X is only the ordinary session's default, so say that instead."""
+    return _PIN_PROSE.sub(
+        lambda m: f"`{m.group(1)}` is the default seat of an ordinary session; a launcher's seat wins (Identity).",
+        text,
+    )
+
+
 def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
     if seat.mode == "grok_bot":
         return _specialize_grok_bot(text, seat, skill_name)
@@ -1048,9 +1123,11 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
     ordered = [
         ("AGENT_SEAT=MONET", f"AGENT_SEAT={seat.tag}"),
         ("AGENT_TAG=MONET", f"AGENT_TAG={seat.tag}"),
-        ("--by MONET", f"--by {seat.tag}"),
-        ("--mine MONET", f"--mine {seat.tag}"),
-        ("`--by` for this seat is `MONET`", f"`--by` for this seat is `{seat.tag}`"),
+        ("--by MONET", f"--by {BY_SEAT}"),
+        ("--mine MONET", f"--mine {BY_SEAT}"),
+        ("`--by` for this seat is `MONET`",
+         f"`--by` for this seat is your verified seat (`{seat.tag}` in an ordinary {seat.notes} session)"),
+        ("claim:  monet/<slug>", f"claim:  {BRANCH_PREFIX}/<slug>"),
         ("[MONET·session8", f"[{seat.tag}·session8"),
         ("[MONET->", f"[{seat.tag}->"),
         ("[MONET]", f"[{seat.tag}]"),
@@ -1111,6 +1188,7 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
     text = _unstash_identity(text, seat)
     text = _unprotect(text)
     text = _rewrite_reader_voice(text, seat)
+    text = _launcher_aware_prose(text)
 
     banners = ""
     if skill_name in IDENTITY_SKILL_NAMES and not seat.retired:
@@ -1239,8 +1317,9 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
     ordered_universal = [
         ("AGENT_SEAT=MONET", "AGENT_SEAT=<YOUR_SEAT>"),
         ("AGENT_TAG=MONET", "AGENT_TAG=<YOUR_TAG>"),
-        ("--by MONET", "--by <YOUR_TAG>"),
-        ("--mine MONET", "--mine <YOUR_TAG>"),
+        ("--by MONET", f"--by {BY_SEAT}"),
+        ("--mine MONET", f"--mine {BY_SEAT}"),
+        ("claim:  monet/<slug>", f"claim:  {BRANCH_PREFIX}/<slug>"),
         ("`--by` for this seat is `MONET`", "`--by` for this seat is `<YOUR_TAG>`"),
         ("[MONET·session8", "[<YOUR_TAG>·session8"),
         ("[MONET->", "[<YOUR_TAG>->"),

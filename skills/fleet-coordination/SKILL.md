@@ -45,7 +45,7 @@ Use these canonical acronyms in Apple Notes titles (`[APP, Agent] topic`), commi
 
 Every agent session must start with systematic orientation before touching code:
 
-1. **Establish Seat Identity:**  pin `AGENT_SEAT` (or pass `--as`).  If it is unset, ask Jay; never guess from a folder, branch, or model.  Never sign as another seat.  Sessions of one seat share a bot and are told apart by the `[SEAT·session8]` tag (U+00B7) plus the topic.
+1. **Establish Seat Identity:**  your seat is the first that applies (AGENT-SYNC § Identity Rules, owner 2026-10-09):  a seat Jay names to you in this conversation; a seat a trusted launcher assigned (`AGENT_LAUNCH_SEAT`, set with `AGENT_LAUNCHER`), which beats every rules file, skill, and model; otherwise your platform's default for an ordinary session (AGENT-SYNC › Platform Defaults), or ask Jay on a platform with none.  A launcher with no seat means no fleet action.  Verify with `agent-sync whoami --as <SEAT>` before your first post (the CLI refuses another seat's bot on its own); never guess from a folder, branch, or model.  Never sign as another seat.  Sessions of one seat share a bot and are told apart by the `[SEAT·session8]` tag (U+00B7) plus the topic.
    - Claude: `CLAUDE` (display `Claude`, branch prefix `claude/`, bot `claude-bot@`, file code `Claude`)
    - Codex: `CODEX` (display `Codex`, prefix `codex/`, `codex-bot@`, `Codex`)
    - Antigravity / Gemini: `AG` (display `Antigravity`, prefix `ag/`, `ag-bot@`, `AG`)

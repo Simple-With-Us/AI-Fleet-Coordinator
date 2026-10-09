@@ -1,25 +1,31 @@
 ---
 name: session-start
 description: >-
-  Start every Grok session on this Mac — read Zulip, read THE BOARD, pin AGENT_SEAT=GROK, pick the seat lane, then triple-claim before editing. Use at session start, after a resume, when switching apps, or whenever you are about to begin substantial work. Grok (not another seat) — never skip this for "just a small fix."
+  Start every Grok session on this Mac — read Zulip, read THE BOARD, verify the seat (a launcher's seat first), pick the seat lane, then triple-claim before editing. Use at session start, after a resume, when switching apps, or whenever you are about to begin substantial work. Grok (not another seat) — never skip this for "just a small fix."
 ---
 
 # Session start (GROK)
 
 > **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Worktrees `~/apps/<app>-grok`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`.  If this session is **Grok Build**, pin `AGENT_SEAT=GROK-BUILD`, tag `[GROK-BUILD]`, branches `grok-build/`, worktrees `~/apps/<app>-grok-build`.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
+> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), so never sign `GROK-BUILD`, a retired alias the CLI refuses.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
-This pack is for the **GROK** Mac TUI / CLI seat.  Session tag `[GROK·session8]`.  Notes name `Grok`.  Branches `grok/<slug>` only.  Worktrees `~/apps/<prefix>-grok`.  Never sign as Monet or Grok Bot.  Pin `AGENT_SEAT=GROK`.
+This pack is for the **GROK** Mac TUI / CLI seat.  Session tag `[GROK·session8]`.  Notes name `Grok`.  Branches `grok/<slug>` only.  Worktrees `~/apps/<prefix>-grok`.  Never sign as Monet or Grok Bot.  `GROK` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
 ## 1. Identity
 
 ```bash
-export AGENT_SEAT="${AGENT_SEAT:?set AGENT_SEAT — GROK for an ordinary Grok session; a launcher such as BotFleet may assign another seat, and that assignment wins}"
+if [ -n "${AGENT_LAUNCH_SEAT:-}" ]; then SEAT="$AGENT_LAUNCH_SEAT"
+elif [ -n "${AGENT_LAUNCHER:-}" ]; then echo "no seat assigned by $AGENT_LAUNCHER" >&2; exit 3
+else SEAT="${AGENT_SEAT:-GROK}"; fi
+export AGENT_SEAT="${AGENT_SEAT:-$SEAT}"
+agent-sync whoami --as "$SEAT"
 ```
 
-Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as BotFleet assigns its bots' seats.
+Your seat is the first of these that applies (AGENT-SYNC § Identity Rules):  a seat Jay names to you in this conversation; a seat your launcher assigned (`AGENT_LAUNCH_SEAT` with `AGENT_LAUNCHER`, matching your launch prompt), which beats this file whatever model you are; otherwise this is an ordinary Grok session, and your seat is **GROK** (bot `grok-build-bot@`).  If `AGENT_LAUNCHER` is set with no `AGENT_LAUNCH_SEAT`, or they disagree with your launch prompt, you have no seat:  do no fleet action, and say so.
+
+Stop if `whoami` shows another seat's bot or the credential is missing (the CLI also refuses on its own).  Never use another seat's credential or Jay's account.  Your shell may not keep exports between commands, so pass `--as <SEAT>` on every agent-sync call, and read `"$AGENT_SEAT"` in the commands below as the seat you verified.  `<branch-prefix>` below is your seat's branch prefix:  `grok` for GROK, or the one your launcher names.  Never write `AGENT_LAUNCH_SEAT` or `AGENT_LAUNCHER`, and never overwrite an `AGENT_SEAT` you found already set.
 
 Never open or push another seat's prefix from a Grok session.  Only `grok/`.
 
@@ -51,7 +57,7 @@ or MCP `recall_search`.  A hit is a lead, not a verdict — open the board row /
 
 The shared checkout is the human/fleet review base.  Mid-task branch flips there have landed one seat's commits on another seat's branch.  Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders` (Lane Map, owner 2026-10-07: `docs/protocols/lane-map.md` in AI-Fleet-Coordinator).
 
-Make one lane per task with `lane new`.  It needs `AGENT_SEAT` set to your seat tag (if it is unset or unknown, ask; never guess) and prints the path:
+Make one lane per task with `lane new`.  It needs `AGENT_SEAT` set to the seat you verified in section 1 (never a guess) and prints the path:
 
 ```bash
 ~/apps/lane new <app> <slug>                # ~/apps/lanes/<prefix>/<seat>-<slug>, on a branch named <your prefix>/<slug>
@@ -75,14 +81,14 @@ Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and `doc
 
 ## 4. Triple-claim before substantial edits
 
-1. **THE BOARD** — `board list --app <app>` then `board claim <id> --by GROK --env Mac --where "~/apps/lanes/<prefix>/<seat>-<slug> @ <branch>"`.  If nothing exists: `board file --title "..." --app <app> --severity P1 --by GROK --env Mac --where "..." --desc "..."`.
+1. **THE BOARD** — `board list --app <app>` then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/<prefix>/<seat>-<slug> @ <branch>"`.  If nothing exists: `board file --title "..." --app <app> --severity P1 --by "$AGENT_SEAT" --env Mac --where "..." --desc "..."`.
 2. **Effort board** — In Progress on the live file **and** `docs/EFFORT-LOG.md` (fleet-infra has no repo mirror).  Never delete another seat's row.
 3. **Zulip** — then GitHub issue if you are executing a numbered one.
 
 Post in the work topic (`<APP> <board8> <subject>`, at most 58 characters):
 
 ```bash
-agent-sync post --topic "AFC 18f61cf4 claim title" $'repo:  <project>  |  CLAIMED\nclaim:  grok/<slug>\nclaimed:  <Day, Mon D, YYYY>\nwork: <one line>'
+agent-sync post --topic "AFC 18f61cf4 claim title" $'repo:  <project>  |  CLAIMED\nclaim:  <branch-prefix>/<slug>\nclaimed:  <Day, Mon D, YYYY>\nwork: <one line>'
 ```
 
 A reply is a post to the same channel and topic.  The CLI writes the `[GROK·session8]` tag; never hand-write a bare tag unless you also write the envelope.

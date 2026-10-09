@@ -29,6 +29,11 @@ jobs:
     - name: Fleet skill identity tests
       run: |
         cd scripts && python3 -m unittest test_fleet_skill_identity -v
+    # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
+    # rendered skill may export a platform seat over a launcher's, write the
+    # launcher variables, or lack the launcher clause.
+    - name: Seat blocks in the rendered skill trees
+      run: python3 scripts/check-seat-blocks.py
     # Mac watch and Grok idle-unload logic.  Both suites build their own temp
     # HOME and fixture sessions, so they read no live state and kill nothing.
     - name: Mac watch and Grok idle-unload tests
