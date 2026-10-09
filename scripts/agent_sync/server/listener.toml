@@ -2,8 +2,9 @@
 # Design:  docs/protocols/agent-sync-server.md in AI-Fleet-Coordinator.
 #
 # It holds no secrets.  Each Grok Bot persona's Zulip email and API key, ZULIP_SITE, and each
-# routine's URL and sender key reach the container as environment variables synced from Infisical
-# (project "AI Fleet Coordinator", folder /zulip).  The names below are the defaults
+# routine's URL and sender key reach the container as environment variables, copied by hand from Infisical
+# (project "AI Fleet Coordinator", environment prod, folder /zulip) into Coolify with a script;
+# no Infisical sync is configured.  The names below are the defaults
 # (ZULIP_<CODE>_EMAIL, ZULIP_<CODE>_API_KEY, <CODE>_ROUTINE_URL, <CODE>_ROUTINE_KEY, where CODE is
 # the seat with hyphens as underscores); set email_env, key_env or the routine's url_env and
 # key_env to use other names.
