@@ -1,8 +1,8 @@
 # agent-sync listener config for the SERVER instance (the Coolify container on the Hetzner box).
 # Design:  docs/protocols/agent-sync-server.md in AI-Fleet-Coordinator.
 #
-# It holds no secrets.  Each Grok Bot persona's Zulip email and API key, ZULIP_SITE, and each
-# routine's URL and sender key reach the container as environment variables, copied by hand from Infisical
+# It holds no secrets.  Each seat's Zulip email and API key (a Grok Bot persona's or a cloud seat's), ZULIP_SITE,
+# and each routine's URL and sender key reach the container as environment variables, copied by hand from Infisical
 # (project "AI Fleet Coordinator", environment prod, folder /zulip) into Coolify with a script;
 # no Infisical sync is configured.  The names below are the defaults
 # (ZULIP_<CODE>_EMAIL, ZULIP_<CODE>_API_KEY, <CODE>_ROUTINE_URL, <CODE>_ROUTINE_KEY, where CODE is
@@ -40,6 +40,39 @@ creds = "env"                     # ZULIP_GB_COMPILER_EMAIL, ZULIP_GB_COMPILER_A
 wake = "http"
 routine = { url_env = "GB_COMPILER_ROUTINE_URL", key_env = "GB_COMPILER_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# Cloud seats (MA, JET, GROK-WEB, INSTINCT and ECHO):  enabled with wake = "inbox".  Each holds a queue,
+# so its @-mentions and DMs are captured at zero tokens under /data/<SEAT>/, and its key is checked at
+# connect (a member or moderator bot, and the key's own bot must be the seat).  They have no wake
+# adapter, so nothing is woken, and nothing reads those inboxes yet:  the hosted MCP inbox tool asks
+# Zulip itself.  Read one inside the container with `agent-sync inbox --local --as <SEAT>`.  Their
+# variables are ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY, and they reach the container only when the
+# app restarts (a reload does not read the environment).  The partition gives all five to "server".
+[seat.MA]
+instance = "server"
+creds = "env"                     # ZULIP_MA_EMAIL, ZULIP_MA_API_KEY (muse-assist-bot@)
+wake = "inbox"
+
+[seat.JET]
+instance = "server"
+creds = "env"                     # ZULIP_JET_EMAIL, ZULIP_JET_API_KEY (openai-dot-bot@)
+wake = "inbox"
+
+[seat.GROK-WEB]
+instance = "server"
+creds = "env"                     # ZULIP_GROK_WEB_EMAIL, ZULIP_GROK_WEB_API_KEY (grok-web-bot@)
+wake = "inbox"
+
+[seat.INSTINCT]
+instance = "server"
+creds = "env"                     # ZULIP_INSTINCT_EMAIL, ZULIP_INSTINCT_API_KEY (instinct-owl-bot@)
+wake = "inbox"
+
+# Echo is Instinct's partner bot and may be retired when the two merge.  Kept minimal on purpose.
+[seat.ECHO]
+instance = "server"
+creds = "env"                     # ZULIP_ECHO_EMAIL, ZULIP_ECHO_API_KEY (instinct-bat-bot@)
+wake = "inbox"
 
 # GB-DIRECTOR (Routing, fleet sync, org help, director-grok-bot@).  Present but disabled:  no routine yet.  It is a realm member now (it was an admin earlier), which the listener accepts.
 # The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow

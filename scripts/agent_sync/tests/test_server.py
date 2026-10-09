@@ -41,6 +41,15 @@ GB_EMAIL = "compiler-grok-bot@zulip.test"
 DIRECTOR_EMAIL = "director-grok-bot@zulip.test"
 SEAT = "GB-COMPILER"
 MENTION = "@**GB-Compiler** the build is red on main, can you look?"
+# The cloud seats the partition gives the server instance besides the GB personas, with the bot email
+# whose local part derives each seat tag (identity.EMAIL_TAG_OVERRIDES) and a display name to @-mention.
+CLOUD_SEATS = {
+    "MA": ("muse-assist-bot@zulip.test", "Muse Assist"),
+    "JET": ("openai-dot-bot@zulip.test", "Jet Dot"),
+    "GROK-WEB": ("grok-web-bot@zulip.test", "Grok Web"),
+    "INSTINCT": ("instinct-owl-bot@zulip.test", "Instinct Owl"),
+    "ECHO": ("instinct-bat-bot@zulip.test", "Echo Bat"),
+}
 
 
 def routine_cfg(**kw) -> C.RoutineConfig:
@@ -881,9 +890,17 @@ class PartitionTests(ServerHarness):
         self.assertEqual(server.errors, [])
         self.assertEqual(server.instance, "server")
         self.assertEqual(C.partition_errors(server, partition, env_instance="server"), [])
-        self.assertEqual(sorted(server.seats), [SEAT])
+        self.assertEqual(sorted(server.seats), sorted([SEAT] + list(CLOUD_SEATS)),
+                         "the enabled seats are GB-COMPILER and the five cloud seats")
         self.assertEqual(server.seats[SEAT].wake, "http")
         self.assertEqual(server.seats[SEAT].creds, "env")
+        for seat in CLOUD_SEATS:
+            seat_cfg = server.seats[seat]
+            code = C.env_code(seat)
+            self.assertEqual((seat_cfg.wake, seat_cfg.creds, seat_cfg.instance, seat_cfg.routine),
+                             ("inbox", "env", "server", None), "%s has capture only, no wake adapter" % seat)
+            self.assertEqual((seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
+                             ("ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"), seat)
         self.assertEqual(sorted(server.disabled), [s for s in gb if s != SEAT],
                          "every other persona is present but disabled")
         for seat, seat_cfg in server.disabled.items():
@@ -898,13 +915,99 @@ class PartitionTests(ServerHarness):
 
 
 # --------------------------------------------------------------------------------------------
+# The cloud seats (MA, JET, GROK-WEB, INSTINCT and ECHO)
+# --------------------------------------------------------------------------------------------
+
+class CloudSeatTests(ServerHarness):
+    """The shipped sample config holds the five cloud seats with inbox capture.  Each test starts from
+    that file itself (only the owner and eligible pins differ), so a change to the sample is tested."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.cloud: dict[str, dict] = {}
+        self.cloud_keys: dict[str, str] = {}
+        for seat, (email, name) in CLOUD_SEATS.items():
+            key = secrets.token_hex(16)
+            self.cloud_keys[seat] = key
+            self.extra_keys.append((email, key))
+            self.cloud[seat] = self.fake.add_bot(email, name, key)
+        text = (SERVER_DIR / "listener.toml").read_text()
+        text, pins = re.subn(r"(?m)^owner_user_id = 0 .*$", "owner_user_id = 12", text)
+        text, eligible = re.subn(r"(?m)^eligible_user_ids = \[\] .*$", "eligible_user_ids = [10, 11, 13, 14, 15]", text)
+        self.assertEqual((pins, eligible), (1, 1), "the sample still carries both pins to replace")
+        self.config_file.write_text(text)
+
+    def cloud_env(self) -> dict[str, str]:
+        variables = {}
+        for seat, (email, _) in CLOUD_SEATS.items():
+            variables["ZULIP_%s_EMAIL" % C.env_code(seat)] = email
+            variables["ZULIP_%s_API_KEY" % C.env_code(seat)] = self.cloud_keys[seat]
+        return self.server_env(**variables)
+
+    def test_the_sample_starts_with_every_cloud_seat_connected_on_its_own_queue(self) -> None:
+        daemon = self.server_daemon(env=self.cloud_env())
+        self.assertEqual(daemon.refusal, [], "the partition gives the server all five")
+        self.assertEqual(daemon.config.errors, [])
+        for seat in CLOUD_SEATS:
+            self.assertTrue(daemon.connect_seat(seat), "%s: %s" % (seat, daemon.seats[seat].error))
+            self.assertIn(self.cloud_keys[seat], daemon.hidden)
+            self.assertEqual(daemon.seats[seat].creds.source, "env ZULIP_%s_API_KEY" % C.env_code(seat))
+        self.assertEqual(sorted(r["user_id"] for r in self.fake.registrations),
+                         sorted(bot["user_id"] for bot in self.cloud.values()),
+                         "five queues, one per bot, and none for a persona that was not started")
+        self.assertEqual(len({r["user_id"] for r in self.fake.registrations}), 5)
+
+    def test_a_mention_is_captured_in_the_seats_inbox_and_nothing_wakes(self) -> None:
+        daemon = self.server_daemon(env=self.cloud_env())
+        for seat in CLOUD_SEATS:
+            self.assertTrue(daemon.connect_seat(seat), daemon.seats[seat].error)
+        sent = {seat: self.fake.add_message("Codex", "agent-sync", "cloud %s" % seat, "@**%s** please look" % name)
+                for seat, (_, name) in CLOUD_SEATS.items()}
+        for seat in CLOUD_SEATS:
+            self.pump_until(daemon, lambda seat=seat: len(self.inbox(seat)) >= 1, seat=seat)
+            self.assertEqual([row["id"] for row in self.inbox(seat)], [sent[seat]], seat)
+            self.assertEqual(self.ledger(seat), [], "%s has no wake adapter, so nothing is ever woken" % seat)
+        self.assertEqual(self.routine.received, [])
+        self.assertEqual([m for m in self.fake.messages if m["sender_id"] in {b["user_id"] for b in self.cloud.values()}],
+                         [], "the daemon never posts for a cloud seat")
+
+    def test_a_cloud_bot_that_is_still_an_admin_is_refused_while_the_others_run(self) -> None:
+        self.fake.set_role(self.cloud["JET"]["user_id"], 200)
+        daemon = self.server_daemon(env=self.cloud_env())
+        self.assertFalse(daemon.connect_seat("JET"))
+        self.assertIn("refuses admin and owner keys", daemon.seats["JET"].error)
+        for seat in ("MA", "GROK-WEB", "INSTINCT", "ECHO"):
+            self.assertTrue(daemon.connect_seat(seat), "%s: %s" % (seat, daemon.seats[seat].error))
+        self.assertNotIn(self.cloud["JET"]["user_id"], [r["user_id"] for r in self.fake.registrations])
+
+    def test_a_missing_variable_names_it_and_the_other_seats_still_connect(self) -> None:
+        env = self.cloud_env()
+        env.pop("ZULIP_ECHO_API_KEY")
+        daemon = self.server_daemon(env=env)
+        self.assertFalse(daemon.connect_seat("ECHO"))
+        self.assertIn("ZULIP_ECHO_API_KEY", daemon.seats["ECHO"].error)
+        self.assertTrue(daemon.connect_seat("MA"), daemon.seats["MA"].error)
+
+    def test_a_key_that_belongs_to_another_cloud_bot_is_refused_at_connect(self) -> None:
+        env = self.cloud_env()
+        env["ZULIP_ECHO_EMAIL"] = CLOUD_SEATS["INSTINCT"][0]
+        env["ZULIP_ECHO_API_KEY"] = self.cloud_keys["INSTINCT"]
+        daemon = self.server_daemon(env=env)
+        self.assertFalse(daemon.connect_seat("ECHO"), "Echo's section holding Instinct's key never gets a queue")
+        self.assertIn("belongs to the bot of seat INSTINCT", daemon.seats["ECHO"].error)
+        self.assertEqual(self.fake.registrations, [])
+
+
+# --------------------------------------------------------------------------------------------
 # init with environment credentials
 # --------------------------------------------------------------------------------------------
 
 class ServerInitTests(ServerHarness):
     def test_init_writes_the_server_sample_and_pins_the_owner_with_env_credentials(self) -> None:
         self.config_file.unlink()
-        result = self.run_cli("daemon", "init", "--yes", env=self.server_env())
+        # Without --seat the reader is the first enabled seat in name order, which is ECHO now that the
+        # sample holds the cloud seats, so the runbook always names one.
+        result = self.run_cli("daemon", "init", "--yes", "--seat", SEAT, env=self.server_env())
         self.assertEqual(result.code, 0, result.err + result.out)
         self.assertIn("wrote the sample config %s" % self.config_file, result.out)
         self.assertIn("GB-COMPILER: environment credentials ok, role 400", result.out)
@@ -914,7 +1017,7 @@ class ServerInitTests(ServerHarness):
         self.assertEqual(sorted(cfg.eligible_user_ids), [10, 11, 13, 14])  # claude, codex, cursor, grok-bot@ (GROK)
         self.assertFalse((self.state_dir / "listener.toml").exists(), "init wrote AGENT_SYNC_CONFIG, not the default")
         self.assertEqual(stat.S_IMODE(os.stat(self.config_file).st_mode), 0o600)
-        missing = self.run_cli("daemon", "init", "--yes", env=self.server_env(ZULIP_GB_COMPILER_API_KEY=None))
+        missing = self.run_cli("daemon", "init", "--yes", "--seat", SEAT, env=self.server_env(ZULIP_GB_COMPILER_API_KEY=None))
         self.assertNotEqual(missing.code, 0)
         self.assertIn("ZULIP_GB_COMPILER_API_KEY", missing.err)
 
