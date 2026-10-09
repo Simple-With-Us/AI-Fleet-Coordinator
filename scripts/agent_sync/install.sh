@@ -4,21 +4,24 @@
 #   scripts/agent_sync/install.sh [--dry-run] [CHECKOUT]
 #
 # Symlinks ~/.local/bin/agent-sync to CHECKOUT/scripts/agent-sync and creates ~/.agent-sync
-# (mode 700, the state directory).  CHECKOUT defaults to /Users/jay/Code/AI-Fleet-Coordinator,
-# the integration tree that tracks origin/main.  With --dry-run it only prints what it would do.
+# (mode 700, the state directory).  CHECKOUT defaults to the managed runtime checkout
+# /Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime,
+# a detached worktree on origin/main that LaunchAgent com.jay.agent-sync-runtime-sync keeps current.
+# Never point it at the human integration tree ~/Code/AI-Fleet-Coordinator:  a daemon resets that tree,
+# and a stuck merge there stops it updating.  With --dry-run it only prints what it would do.
 #
 # It touches nothing else: no pm2, no LaunchAgents, no Slack files, nothing under ~/.secrets.
 # Credentials are the owner's job; see README.md for the zuliprc location and the file mode.
 set -euo pipefail
 
-DEFAULT_CHECKOUT="/Users/jay/Code/AI-Fleet-Coordinator"
+DEFAULT_CHECKOUT="/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"
 dry_run=0
 checkout=""
 
 for arg in "$@"; do
   case "$arg" in
     --dry-run) dry_run=1 ;;
-    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "install.sh: unknown option: $arg" >&2; exit 2 ;;
     *) if [ -n "$checkout" ]; then echo "install.sh: only one checkout path is allowed" >&2; exit 2; fi
        checkout="$arg" ;;
