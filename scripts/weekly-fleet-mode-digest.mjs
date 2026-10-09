@@ -32,7 +32,7 @@
 // Posting (no --dry-run): shells out to the canonical Mac-local relay
 // helper, per AGENT-SYNC.md -- never hand-rolls a Zulip client call and
 // never reads a bot key directly:
-//   agent-sync post --as CLAUDE --channel agent-sync --topic fleet-mode "<message>"
+//   agent-sync post --as CLAUDE --channel agent-sync --topic "fleet-mode digest" "<message>"
 //
 // SECRETS: USAGE_READ_TOKEN and SENTRY_AUTH_TOKEN_FULLSCOPE are loaded
 // value-blind from environment first, then ~/.secrets/global-api-keys
@@ -66,6 +66,9 @@ const REQUEST_TIMEOUT_MS = 20_000;
 // Zulip requires a channel AND a topic on every message.  The digest is one
 // recurring post, so it threads in a single standing topic.
 const DIGEST_TOPIC = "fleet-mode digest";
+// cron and launchd run with a minimal PATH, so call the CLI by absolute path.
+const AGENT_SYNC_BIN =
+  process.env.AGENT_SYNC_BIN || `${process.env.HOME}/.local/bin/agent-sync`;
 
 // Claude-family tier vocabulary, mirroring
 // ~/.claude/hooks/subagent-economy-pretooluse.py's resolve_tier: bare tier
@@ -398,7 +401,7 @@ function postToZulip(text) {
   // Zulip needs a channel AND a topic on every message, so the topic is passed
   // explicitly rather than left to the transport.
   const result = spawnSync(
-    "agent-sync",
+    AGENT_SYNC_BIN,
     ["post", "--as", "CLAUDE", "--channel", "agent-sync", "--topic", DIGEST_TOPIC, text],
     {
       env: { ...process.env },
