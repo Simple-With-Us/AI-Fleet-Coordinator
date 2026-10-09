@@ -65,7 +65,7 @@ The owner rulings and defaults that shaped this rewrite, in one place so Jay can
 - No agent posts, DMs, or reacts through Jay's Zulip account (confirmed), in the same spirit as the [Outbound iMessage Boundary](#outbound-imessage-boundary).  Composio, or any connector bound to Jay's account, is never used for agent identity or chat.
 - CLAUDE is the only Claude seat.  MONET, RENOIR, HARNESS (replaced by CLUTCH), DSH, and KIMI are retired.  Active:  CLAUDE, CODEX, AG, CURSOR, GROK, GROK-WEB, CLUTCH, GROK-BOT (GB personas, owner-managed), FX, MM, MA, MC, plus the BotFleet `BF-<ROLE>` bots ([Seats and Identity](#seats-and-identity)).
 - Folders and anything else on disk use whole seat names (lane-map ruling).  Branch prefixes stay as the registry has them ([Seat Lanes and Branches](#seat-lanes-and-branches); see [Open for Jay](#open-for-jay)).
-- Two literal ASCII spaces render as the sentence gap in Zulip (owner-verified).
+- Zulip posts use a real U+00A0 plus a space as the sentence gap (owner ruling 2026-10-08, which supersedes the 2026-10-07 finding that two ASCII spaces rendered there).  [Sentence Gap](#sentence-gap) has the recipe.
 - The CLAUDE bot is a Zulip moderator, not an admin.  The always-on listener refuses admin keys.
 
 ### Defaults in Force
@@ -881,7 +881,7 @@ A hit is a lead to verify, not a verdict.  Open the board row, note, or doc it p
 
 ### Sentence Gap
 
-Two ASCII spaces after every sentence terminator (`.`, `!`, `?`) whenever a new sentence follows (owner 2026-08-08, reaffirmed 2026-08-10, strengthened 2026-08-14 after an App Store listing shipped with single spaces and a stale 1-month trial).  Binding on every agent, every app and every surface, forever.
+A visibly wider gap, two spaces, after every sentence terminator (`.`, `!`, `?`) whenever a new sentence follows (owner 2026-08-08, reaffirmed 2026-08-10, strengthened 2026-08-14 after an App Store listing shipped with single spaces and a stale 1-month trial).  Binding on every agent, every app and every surface, forever.
 
 - It is not optional, not web-only, not UI-only and not "nice to have".  It covers things you think of as metadata.
 - The owner strengthened it again (2026-08-19): "For any and all paragraphs in any context, always use 2 spaces to separate a period from the beginning of a new sentence."  The rule is not limited to product or user-facing copy.  It covers every paragraph an agent writes, on every seat and every platform.
@@ -897,13 +897,18 @@ The gap has to survive the renderer, so the mechanism depends on the destination
 
 | Destination | Use |
 | --- | --- |
-| Files read as source: repo Markdown and text, commit messages, PR titles and bodies, effort-board rows, code comments | Two literal ASCII spaces.  A literal `&nbsp;` would show as ugly text. |
-| Chat replies (Claude Code desktop, owner-verified 2026-09-04) and Zulip posts (owner-verified 2026-10-07) | Two literal ASCII spaces. |
-| HTML a renderer shows: Apple Notes `--html`, in-app HTML, JSX, SwiftUI | NBSP plus a space (`Sentence one.&nbsp; Sentence two.`, `{"\u00A0 "}`, `\u00A0 `) or a shared `SENTENCE_GAP` helper.  Raw double spaces collapse: Notes.app is an HTML renderer, so two ASCII spaces in a `<p>` become one. |
+| **Claude Code desktop app, Code tab: chat replies** (owner-verified 2026-10-08 with a screenshot) | Type the HTML entity `&nbsp;` followed by a normal space after each sentence, outside code spans: `End.&nbsp; Next.`  The renderer decodes it into a real gap.  A raw U+00A0 from the model arrives as a plain space (a verified reply contained 0 NBSPs), and two ASCII spaces collapse.  This supersedes the 2026-09-04 ASCII ruling. |
+| **Any other Markdown-rendering agent chat pane** (Codex, Cursor, Antigravity, Grok, Kimi, MiniMax, DeepSeek, Fx, Muse, and similar) | The same entity plus a space, by owner ruling 2026-10-08, because Markdown chat collapses ASCII doubles everywhere.  Only the Code tab is verified.  If the owner ever sees the six literal characters on a surface, stop using the entity there and report the surface in #agent-sync: it then needs a different mechanism, which is unknown until tested. |
+| **Terminal TUI chat** (Claude Code CLI, Grok TUI, Codex CLI, opencode, kimi-code, mcode) | Two literal ASCII spaces.  Unverified: a terminal would print the entity as literal text, which the owner must never see. |
+| **Cloud, BotFleet and OpenMausBot chat** | Two literal ASCII spaces.  The backend maps them to a real U+00A0 before paint (owner 2026-09-03). |
+| **GitHub PR and issue titles, bodies and comments, review comments; Zulip posts; any text a tool writes that a Markdown or HTML renderer then shows** | A real U+00A0 plus a space (owner ruling 2026-10-08).  Never the `&nbsp;` entity: GitHub can copy a PR body into a plain-text squash commit, where the entity would show literally.  You cannot type U+00A0 in chat, so write the text with two ASCII spaces and convert it with `perl -CSDA -pe 's/([.!?])  (?=\S)/$1\x{a0} /g' body.txt > body.nbsp.txt`, then check the result holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.  Keep PR titles to one sentence. |
+| **Plain-text surfaces and files read as source:** repo Markdown and text, commit messages, code comments, config, effort-board rows, terminal output, Slack posts | Two literal ASCII spaces.  A literal `&nbsp;` would show as ugly text. |
+| **HTML a renderer shows:** Apple Notes `--html`, in-app HTML, JSX, SwiftUI | NBSP plus a space (`Sentence one.&nbsp; Sentence two.`, `{"\u00A0 "}`, `\u00A0 `) or a shared `SENTENCE_GAP` helper.  Raw double spaces collapse: Notes.app is an HTML renderer, so two ASCII spaces in a `<p>` become one. |
 
 - Write `end.  Start`, two spaces, not one.
 - The Apple Notes helper converts leftover ASCII double spaces after `.`, `!` or `?` into `&nbsp; `.
-- The owner must never see the literal six characters `&nbsp;` as text.  A raw U+00A0 typed into chat is normalized away in the transcript view (tested 2026-08-19), even when copy-paste out of it looks right.
+- The owner must never see the literal six characters `&nbsp;` as text.  In a chat renderer that decodes entities they never do.  A raw U+00A0 typed into chat is normalized away in the transcript view (tested 2026-08-19, and again 2026-10-08 with 0 NBSPs in the reply), even when copy-paste out of it looks right.
+- Owner ruling 2026-10-08: when a surface needs any mechanism to show two spaces, use it without asking.  No per-surface confirmation round is needed.
 - A single space stays correct after a non-terminal abbreviation such as `e.g.`, and inside `v1.2.3`.
 - Never "fix" a brand period (`Congress.Trade`, `Socratic.Trade`), a URL, an email, or `U.S.`
 - The rule does not apply to identifiers, log lines, API enums, commit subjects, or bullet fragments with no terminator.
@@ -1348,7 +1353,9 @@ Known ladders, costly to cheap, at the time of writing.  They are a starting poi
 
 - **Cursor (always-on, 2026-08-21):** the Cursor Settings › Rules user rule "Sentence gap — two visible spaces" covers desktop and Cursor cloud / Grok Bot, because cloud agents inject User Rules, not `~/.cursor/rules`.
 - Local Cursor Agent and Cursor CLI also get `~/.cursor/rules/sentence-gap.mdc` (`alwaysApply: true`).  Skill: `~/.cursor/skills/sentence-gap/SKILL.md`.
+- **Cursor Settings user rule is an owner UI action.**  The "Sentence gap — two visible spaces" rule lives in Cursor Settings › Rules, not in a file, so an agent cannot edit it.  After the 2026-10-08 ruling it needs the new table pasted in by the owner (or the owner can delete it and rely on the file rule above).
 - **Grok and Shellular:** `~/.grok/GROK.md` plus `~/.grok/skills/sentence-gap/SKILL.md`.
+- **Everyone else:** each seat's home instruction file (`~/.codex/AGENTS.md`, `~/.gemini/config/AGENTS.md`, `~/.minimax/AGENTS.md`, `~/.fx/AGENTS.md`, and `~/AGENTS.md` or `~/.claude/CLAUDE.md` for the Claude seats) plus its `skills/sentence-gap/SKILL.md`, rendered from `docs/fleet-skills/sentence-gap/SKILL.md` by `scripts/install-fleet-skills.py`.
 
 ### Pin and Unpin Coding Note Shortcuts
 
@@ -1407,7 +1414,7 @@ Pending installer fixes: add a CLUTCH entry; render the shared `~/.claude/skills
 | `session-start` | Startup: chat catch-up, THE BOARD, a lane from `lane new`, then the claim.  Stale: the old poll pass is now `agent-sync inbox` and `agent-sync read`, and the shared Claude copy still speaks as Monet. |
 | `board-ops` | THE BOARD CLI (`board stats`, `board list`, `board claim`, `board file`) and its API. |
 | `secret-handoff` | Secret safety, the handoff-file grep-trap ban, and Infisical as the runtime source of truth. |
-| `sentence-gap` | Two spaces between sentences.  Stale: it still teaches Monet's old HTML-entity rule for chat.  Owner-verified: two literal ASCII spaces in Claude Code desktop and in Zulip, and the entity never shows as text. |
+| `sentence-gap` | Two spaces between sentences, with the mechanism per surface.  Current as of 2026-10-08: the Claude Code Code tab and other Markdown chat panes use `&nbsp;` plus a space, GitHub and Zulip use U+00A0 plus a space, and files, commits, terminals and Slack use two ASCII spaces. |
 | `owner-copy` | User-facing copy, Title Case headings, and no agent names in App Store Connect release notes. |
 | `apple-notes` | Authoring, styling and pinning owner-facing docs in the `Coding` folder, local on this Mac. |
 | `land-lane` | App-specific verification gates, PR creation, arming auto-merge, and production deploy triggers. |
@@ -1582,6 +1589,7 @@ Why the rules exist.  One line each; none of this is binding text.
 - **Timestamps (owner 2026-08-09).**  Broadened 2026-08-11, amended 2026-08-12, strengthened 2026-08-22, amended 2026-10-05.
 - **Two spaces.**  The 2026-08-14 strengthening followed an App Store listing that shipped with single spaces and a stale 1-month trial.
 - **Making the gap visible (2026-08-19).**  Verified on Socratic.Trade PR #2893, superseding an earlier same-day note that suggested a raw NBSP character.  Intent is not enough; the gap has to survive the renderer.
+- **Chat entity again (2026-10-08).**  The owner verified in the Claude Code Code tab that `&nbsp;` plus a space renders as a real gap, reversing the 2026-09-04 ASCII ruling.  GitHub and Zulip text uses U+00A0 plus a space, and the owner asked for every agent chat on every platform to follow suit.  Rollout: [2026-10-08-sentence-gap-chat-entity.md](docs/rollouts/2026-10-08-sentence-gap-chat-entity.md).
 - **Allow Once forever (2026-08-19).**  The owner hit the "Allow Once forever" problem exactly as [Using the Board](#using-the-board) describes it.
 - **Two-way board sync (2026-08-22).**  The effort-board, GitHub-issue and THE BOARD sync became two-way, and was hardened the same day after the first writeback loop.
 - **Restricted toolsets are possible (owner 2026-09-04).**  Grok Bot's agent-start path launches agents inside Grok, which is not how Grok is natively designed, and lets a spawned agent run with a reduced toolset relative to Grok's own configuration.  That path was built, not shipped.
