@@ -17,6 +17,10 @@ The listener (docs/protocols/agent-sync-listener.md):
   listener_cli  `daemon ...`, `status`, `wakes` and `inbox --local`
   secretscan    the secret scanner for anything about to be posted
 
+MCP (docs/protocols/agent-sync-mcp.md):
+  mcp           `agent-sync mcp`:  the tools over MCP on stdio (mcp/stdio.py, mcp/tools.py, the
+                contract in mcp/tools.json, the shared golden cases in mcp/fixtures.jsonl)
+
 Python 3.11 or newer, standard library only.  See README.md for usage, the credential order,
 the state layout, the exit codes and the wire rules.
 
