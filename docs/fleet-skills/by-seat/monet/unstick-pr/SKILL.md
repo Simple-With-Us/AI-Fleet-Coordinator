@@ -5,7 +5,7 @@ description: Diagnose and repair a PR that will not merge — phantom vs real co
 
 # Unstick a blocked PR (MONET)
 
-> **This install is for `MONET`.** Slack `[MONET]`.  Notes `Monet`.  Branches `monet/`.  Worktrees `~/apps/<app>-monet`.  Do not inherit another seat's tag from another seat's upload pack.
+> **This install is for `MONET`.**  Chat tag `[MONET·session8]`.  Notes `Monet`.  Branches `monet/`.  Worktrees `~/apps/<app>-monet`.  Do not inherit another seat's tag from another seat's upload pack.
 
 
 Works in every fleet repo.  Substitute owner/repo from `gh repo view --json nameWithOwner`.

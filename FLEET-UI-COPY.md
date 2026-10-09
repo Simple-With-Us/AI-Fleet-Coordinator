@@ -77,7 +77,7 @@ when the string is not a full sentence — not Title Case:
   - **Market-session times** are the market's, not the viewer's: say `9:30 AM ET`, labeled.
 - Label a zone in product UI only when the time is not the viewer's clock
   (`9:30 AM ET` for a market bell).  Relative times (`3m ago`) need no label.
-- Owner-facing agent writing (chat, boards, rollouts, Slack, Notes, release notes,
+- Owner-facing agent writing (chat, boards, rollouts, Zulip, Notes, release notes,
   bot-to-bot) is the owner's clock: **12-hour, with am or pm**, on every agent, bot,
   and platform.  That clock is Central.  Do not type CDT, CST, or CT.  Write `3:15am`,
   not `3:15am CDT` and not `08:15Z`.  When the day matters, write
@@ -159,7 +159,7 @@ class, not a style preference.
   `Tooltip` primitive.
 - **Never put a secret in a hover title.**  No API key, token, password, session
   cookie, signed URL, or `Authorization` value goes into a `title`, a tooltip,
-  or an expanded error.  Titles get copied, screenshotted, pasted into Slack,
+  or an expanded error.  Titles get copied, screenshotted, pasted into Zulip,
   and read aloud by screen readers.  Redact and keep the shape (`sk-…4f2a`), or
   surface a request id the owner can hand to an agent instead.
 
@@ -181,7 +181,7 @@ submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
 any context, always use 2 spaces to separate a period from the beginning of a new sentence."
 This closes the last loophole -- the rule is NOT limited to product/user-facing copy.  It
 covers every paragraph an agent writes anywhere: **chat replies to the owner**, PR titles and
-bodies, commit messages, Slack posts to #agent-sync, Apple Notes, effort-board rows, rollout
+bodies, commit messages, Zulip posts to #agent-sync, Apple Notes, effort-board rows, rollout
 notes, review reports and design docs.  If it is prose, it gets two spaces.  (Single space
 remains correct after a non-terminal abbreviation -- "e.g.", "v1.2.3".  In HTML preserve the
 gap with NBSP+space or SENTENCE_GAP, since raw double spaces collapse.  In Markdown, note that
@@ -207,7 +207,7 @@ other HTML a renderer will show.**  Notes.app is an HTML renderer, so write
   chat; any plain-text chat with no Markdown rendering): two literal ASCII spaces —
   owner-verified 2026-09-04.  Superseded 2026-09-04 (owner-verified): earlier advice from
   2026-08-19 to use the entity in agent chat replies is withdrawn.
-- **Files** -- repo markdown/text, commit messages, PR titles and bodies, Slack posts,
+- **Files** -- repo markdown/text, commit messages, PR titles and bodies, Zulip posts,
   effort-board rows, code comments: two LITERAL spaces.  These are read as source; an
   entity would appear as literal text.
 - **HTML/JSX that a renderer will show** (Apple Notes `--html`, in-app HTML/JSX):
@@ -251,7 +251,7 @@ not.
 - **App Store Connect — all of it:** description, promotional text, What’s New,
   **App Review notes**, **subscription / IAP review notes**, subscription
   localization descriptions, support/marketing blurbs
-- Push / email / Slack-to-owner product copy / help / privacy / terms prose
+- Push / email / Zulip-to-owner product copy / help / privacy / terms prose
 - Apple Notes completion notes, rollouts meant for the owner, README user prose
 - Marketing, screenshot captions, TestFlight “What to Test”
 

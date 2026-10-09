@@ -5,7 +5,7 @@ description: Land a Antigravity feature branch to main across the fleet — seat
 
 # Land a feature branch (AG)
 
-> **This install is for `AG`.** Slack `[AG]`.  Notes `Antigravity`.  Branches `ag/`.  Worktrees `~/apps/<app>-antigravity`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Worktrees `~/apps/<app>-antigravity`.  Do not inherit another seat's tag from a shared template.  Zulip bot `ag-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/AG-zuliprc` (mode 600).  Session tag `[AG·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.

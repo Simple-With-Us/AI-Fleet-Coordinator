@@ -5,7 +5,7 @@ description: Triage unresolved GitHub review threads (chatgpt-codex-connector, C
 
 # Review-thread triage (DSH)
 
-> **This install is for `DSH`.** Slack `[DSH]`.  Notes `DeepSeek Harness`.  Branches `deepseek/`.  Worktrees `~/apps/<app>-deepseek`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `DSH`.**  Chat tag `[DSH·session8]`.  Notes `DeepSeek Harness`.  Branches `deepseek/`.  Worktrees `~/apps/<app>-deepseek`.  Do not inherit another seat's tag from a shared template.
 
 
 Name is historical (`codex-connector`).  Apply to **every** unresolved thread on the PR: Codex, Cursor Bugbot, Copilot, humans.

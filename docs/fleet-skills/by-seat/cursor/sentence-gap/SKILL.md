@@ -6,9 +6,9 @@ description: >-
 
 # Sentence gap (portable — always on)
 
-> **This install is for `CURSOR`.** Slack `[CURSOR]`.  Notes `Cursor`.  Branches `cursor/`.  Worktrees `~/apps/<app>-cursor`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `CURSOR`.**  Chat tag `[CURSOR·session8]`.  Notes `Cursor`.  Branches `cursor/`.  Worktrees `~/apps/<app>-cursor`.  Do not inherit another seat's tag from a shared template.  Zulip bot `cursor-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Cursor-zuliprc` (mode 600).  Session tag `[CURSOR·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Runtime fork (Cursor).** Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your Slack tag is `[GB-<NAME>]` (GB-CONDUCTOR, GB-MONITOR, GB-FIXER, GB-DEPLOYER, GB-COMPILER, GB-NURSE, GB-HOUSEKEEPER, GB-ACCOUNTANT, GB-ORACLE) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
+> **Runtime fork (Cursor).** Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-CONDUCTOR, GB-MONITOR, GB-FIXER, GB-DEPLOYER, GB-COMPILER, GB-NURSE, GB-HOUSEKEEPER, GB-ACCOUNTANT, GB-ORACLE) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
 
 
 Source of truth: `/Users/jay/Code/AI-Fleet-Coordinator/docs/SENTENCE-GAP-PORTABLE-SKILL.md`
@@ -19,7 +19,7 @@ The block below is Monet's protocol, pasted verbatim. Follow it exactly. Do not 
 
 Put a **visibly wider gap** between sentences — after `.` `!` `?` when a new sentence
 follows — in every piece of prose a human reads.  Not just product copy: chat replies,
-commit messages, PR titles and bodies, code comments, docs, tickets, Slack posts, release
+commit messages, PR titles and bodies, code comments, docs, tickets, Zulip posts, release
 notes, design docs.
 
 Do **not** add a gap after a non-terminal abbreviation (`e.g.`, `i.e.`, `Dr.`, `v1.2.3`),

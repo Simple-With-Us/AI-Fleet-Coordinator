@@ -5,7 +5,7 @@ description: Diagnose and repair a PR that will not merge — phantom vs real co
 
 # Unstick a blocked PR (DSH)
 
-> **This install is for `DSH`.** Slack `[DSH]`.  Notes `DeepSeek Harness`.  Branches `deepseek/`.  Worktrees `~/apps/<app>-deepseek`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `DSH`.**  Chat tag `[DSH·session8]`.  Notes `DeepSeek Harness`.  Branches `deepseek/`.  Worktrees `~/apps/<app>-deepseek`.  Do not inherit another seat's tag from a shared template.
 
 
 Works in every fleet repo.  Substitute owner/repo from `gh repo view --json nameWithOwner`.

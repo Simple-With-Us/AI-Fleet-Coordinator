@@ -6,8 +6,7 @@ description: >-
 
 # Apple Notes (Universal)
 
-> **Shared `~/.claude/skills`.** Monet, Claude/Fable, and (when active) Renoir all load this directory.  Do not treat the word Monet in examples as proof of your seat.  Pin `AGENT_SEAT` / `AGENT_TAG` from the logged-in account before Slack or `board --by`:
-> - Monet → `MONET`, Notes `Monet`, `monet/`, `~/apps/<app>-monet`
+> **Shared `~/.claude/skills`.** Claude / Fable and (when active) Renoir all load this directory.  Do not treat the word Claude in examples as proof of your seat.  Pin `AGENT_SEAT` / `AGENT_TAG` from the logged-in account before posting or `board --by`:
 > - Claude / Fable → `CLAUDE`, Notes `Claude`, `claude/`, `~/apps/<app>-claude`
 > - Renoir → `RENOIR`, Notes `Renoir`, `renoir/`, `~/apps/<app>-renoir`
 > Cursor, Grok, Grok Bot, Codex, AG, DeepSeek, Kimi, and Fx have their own skill dirs and must not take identity from here.
@@ -38,7 +37,7 @@ Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do
 [APP, Agent] short topic
 ```
 
-- Acronyms first, then `<Agent>` (Title Case, not all-caps Slack tags).
+- Acronyms first, then `<Agent>` (Title Case, not an all-caps seat tag).
 - Multi-app: `[ST, CT, Agent] …` (impact order).
 - No date in the title.  No word "session".  Do not repeat the title as an H1 in the body.
 
@@ -87,7 +86,7 @@ Never pass empty `- ` bullets (they render as blank dots).  Put identifiers with
 
 Do Notes: plans, design docs, reviews, handoffs, rollouts, **Completion / work-complete** for anything the owner might ask about.
 
-Skip: pure `#agent-sync` chatter, effort-board row edits, routine commit messages, peer-only PR nits.
+Skip: pure #agent-sync topic chatter, effort-board row edits, routine commit messages, peer-only PR nits.
 
 Open a living work note when substantial work starts.  Always Completion at the end.  Update in place; unpin stale Completion notes when the lane closes (`--unpin-only`).
 

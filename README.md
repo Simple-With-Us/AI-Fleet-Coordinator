@@ -7,11 +7,11 @@ GitHub About should match this file.  Do not invent seats, hosts, or jobs that a
 ## How the fleet works now
 
 1. **THE BOARD first** — `https://mac.jays.services/board` (pm2 `mac-collab` on the Mac, public via Jay's Tunnel; short link `https://board.jays.services`).  Identify, claim, resolve, and comment here before guessing from six effort-log files.  Cloud agents use the same board.  Canonical: `AGENT-SYNC.md` § THE BOARD.
-2. **`#agent-sync`** — Slack realtime claims and closeouts (channel id `C0BEZDJDNKV`).  Shared Mac relay is pm2 `agent-sync-push`.  Remote/cloud post: `POST https://agent-sync.jays.services/post`.  Canonical: `AGENT-SYNC.md`.
+2. **Zulip `#agent-sync`** — realtime claims and closeouts, realm `https://simplewithus.zulipchat.com`.  Every post is channel + topic, and the topic is the thread.  Post with the `agent-sync` CLI (`~/.local/bin/agent-sync`):  `post` for a new topic, `reply` inside one.  Credentials: `~/.secrets/Zulip/<file code>-zuliprc`, mode 600 (cloud seats use env `ZULIP_EMAIL` / `ZULIP_API_KEY` / `ZULIP_SITE`).  Slack, the pm2 `agent-sync-push` relay, and `POST https://agent-sync.jays.services/post` are retired (owner 2026-10-07).  Canonical: `AGENT-SYNC.md`; mechanics in `docs/protocols/zulip-fleet-guide.md` and at https://fleetlink.online/zulip/zulip-fleet-guide.md.
 3. **Per-app effort boards** — live Mac copies (`~/apps/*-EFFORT-LOG.md`) plus each repo's `docs/EFFORT-LOG.md` and GitHub Issues.  Two-way with THE BOARD: `mac-collab-sync` (files+issues → board) and `mac-collab-writeback` (board writes → live files + Issues).  Writeback does not push git; land `docs/EFFORT-LOG.md` in the app PR.  Protocol: `EFFORT-LOG-PROTOCOL.md` and `docs/BOARD-WRITEBACK-PROTOCOL.md`.
-4. **Mac always-on** — Shellular (phone → this Mac), `agent-sync-push`, `mac-collab`, `grok-leader` / `grok-acp`, scout, and the rest of the inventory.  Master list: [`docs/MAC-LOCAL-PROCESSES.md`](docs/MAC-LOCAL-PROCESSES.md).  Do not invent LaunchAgents from a cloud session.
+4. **Mac always-on** — Shellular (phone → this Mac), `mac-collab`, `grok-leader` / `grok-acp`, scout, and the rest of the inventory.  Master list: [`docs/MAC-LOCAL-PROCESSES.md`](docs/MAC-LOCAL-PROCESSES.md).  Do not invent LaunchAgents from a cloud session.
 5. **Seat worktrees** — each coding seat works in `~/apps/<prefix>-<suffix>` on its own branch prefix.  Never edit in `~/Code/<App>` (the human integration tree).
-6. **No app-specific Grok Bot seats.**  Grok Bot seats implement through **Cursor cloud agents**.  Slack tags are `[GB-<NAME>]` (`GB-CONDUCTOR`, `GB-MONITOR`, `GB-FIXER`, `GB-DEPLOYER`, `GB-COMPILER`, `GB-NURSE`, `GB-HOUSEKEEPER`, `GB-ACCOUNTANT`, `GB-ORACLE`) — not `[GROK-BOT]`, not `[CURSOR]`, not `[GROK]`, not `[GB-FLEET]`.  Never `GB-COMPILE`.  This coordinator/ops system self-id is **`AFC`**.  `FLEET` is a Slack wake meaning every Grok Bot seat must spend time.  It is not Mac Grok (`GROK`), not Grok Build (`GROK-BUILD`), and it is not a per-app lane in `fleet-apps.json`.  Do not add `~/apps/<app>-grok-bot` seats.
+6. **No app-specific Grok Bot seats.**  Grok Bot seats implement through **Cursor cloud agents**.  Their tags are `[GB-<NAME>]` — never `[GROK-BOT]`, `[CURSOR]`, or `[GROK]`, and never `GB-COMPILE`.  The live persona roster is the guide's *Who's Here*; GB personas are owner-managed, hold no fleet zuliprc, and post through the Grok Bot platform, so do not assume one is listening.  This coordinator/ops system self-id is **`AFC`**.  A fleet-wide wake is a post in `#agent-sync` › `fleet` that @-mentions each bot that must act; it is not Mac Grok (`GROK`), not Grok Build (`GROK-BUILD`), and not a per-app lane in `fleet-apps.json`.  Do not add `~/apps/<app>-grok-bot` seats.
 
 ## Apps and coding seats
 
@@ -27,12 +27,12 @@ Inventory: [`fleet-apps.json`](fleet-apps.json).  After any join, `python3 scrip
 | Personal-Site | PS | product |
 | AI-Fleet-Coordinator | AFC | infra |
 
-Coding seats in that file: `CLAUDE`, `MONET`, `CODEX`, `AG`, `CURSOR`, `GROK`, `GROK-BUILD`, `DSH` (DeepSeek Harness), `MM` (MiniMax).  Roles: `AGENT-SYNC.md` § Agent Seat Specifics.
+Active coding seats in that file: `CLAUDE`, `CODEX`, `AG`, `CURSOR`, `GROK`, `CLUTCH`, `FX`, `MM`, `MA`, `MC`.  It also carries retired entries (`MONET`, `DSH`, `HARNESS`, `RENOIR`, `KIMI`) and the `GROK-BUILD` alias, a retired alias of `GROK` (owner 2026-10-08).  The live seat list, with each seat's Zulip bot, is `AGENT-SYNC.md` § Seats and Identity and the guide's *Who's Here*.
 
 ## Core protocols (still binding)
 
 1. **Agent lanes:** dedicated persistent git worktrees.  They never overwrite each other's uncommitted work.
-2. **Triple claim / triple closeout:** THE BOARD + effort-board/GitHub issue + `#agent-sync` at start and end of every real unit.
+2. **Triple claim / triple closeout:** THE BOARD + effort-board/GitHub issue + a Zulip post in the `#agent-sync` work topic at start and end of every real unit.
 3. **Safe landings:** do not push directly to `main`.  Feature branch → verify → PR → merge when CI is green (`scripts/land.sh` where the app uses it).
 4. **Fleet daily digest + calendars:** day-by-day HTML/Markdown of public-repo merged PRs and issue churn, plus two ICS feeds.  Hosted on GitHub Pages (see below).
 5. **Apple Notes for owner review:** plans, designs, reviews, and completion notes go in folder **`Coding`** (local folder on this Mac, intentionally non-iCloud), pinned.  Title `[APP, Agent] short topic`.  Helper: `scripts/apple-notes-coding.sh`.  Full rule in `AGENT-SYNC.md`.
@@ -46,10 +46,10 @@ Coding seats in that file: `CLAUDE`, `MONET`, `CODEX`, `AG`, `CURSOR`, `GROK`, `
 
 1. **Create the Agent Lanes:**
    Run `./scripts/setup-agent-lanes.sh <base_path>` to create the isolated Git worktrees for your agents.
-2. **Initialize Slack Sync:**
-   Run `./scripts/setup-slack-sync.sh` and provide a Slack Bot Token to allow agents to coordinate.
+2. **Initialize Zulip Chat:**
+   Put each seat's bot credential at `~/.secrets/Zulip/<file code>-zuliprc`, mode 600, then subscribe the bot once:  `agent-sync subscribe --channel agent-sync --channel builds --must-exist`.  Cloud seats use env `ZULIP_EMAIL`, `ZULIP_API_KEY`, `ZULIP_SITE` instead.  Slack Sync (`./scripts/setup-slack-sync.sh`) is retired (owner 2026-10-07); do not run it.
 3. **Install Fleet Skills:**
-   Run `python3 scripts/install-fleet-skills.py` to sync the catalog into Cursor, Antigravity, Claude Code, Codex, Grok, Grok Build, Renoir, DeepSeek, Kimi (retired), Desktop Monet, and `docs/fleet-skills/by-seat/` (Claude/Grok Bot upload packs).  Each copy is rewritten to that seat's Slack tag, Notes name, branch prefix, and worktree.  Grok Bot copies use `[GB-<NAME>]` role tags, not `[GROK-BOT]`.  Omit a skill on a seat when it is not appropriate.  Do not leave Monet identity in another seat's folder.
+   Run `python3 scripts/install-fleet-skills.py` to sync the catalog into Cursor, Antigravity, Claude Code, Codex, Grok, Grok Build, Renoir, DeepSeek, Kimi (retired), Desktop Monet, and `docs/fleet-skills/by-seat/` (Claude/Grok Bot upload packs).  Each copy is rewritten to that seat's tag, Notes name, branch prefix, and worktree.  Grok Bot copies use `[GB-<NAME>]` role tags, not `[GROK-BOT]`.  Omit a skill on a seat when it is not appropriate.  Do not leave Monet identity in another seat's folder.
 4. **Apply the Rules:**
    Copy `TEMPLATE-AGENTS.md` to your own project's `AGENTS.md` and customize it.  Ensure all agents are instructed to read it.
 5. **Setup GitHub Actions:**
@@ -68,7 +68,7 @@ Standing procedure (policy + checklist + scripts).  Do not invent a one-off join
 | New GitHub repo / `~/Code` folder joining the fleet | [`docs/ONBOARDING-NEW-APP.md`](docs/ONBOARDING-NEW-APP.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md)) | `scripts/onboard-new-app.sh` |
 | DNS / registrars (new app zone on **account** Usage.Jays.Services, not hostname `usage.jays.services`) | [`docs/DNS-AND-REGISTRARS.md`](docs/DNS-AND-REGISTRARS.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/DNS-AND-REGISTRARS.md)) | — |
 | New coding seat (Claude, Grok, Codex, …) | [`docs/ONBOARDING-NEW-AGENT.md`](docs/ONBOARDING-NEW-AGENT.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md)) | `scripts/onboard-new-agent.sh` |
-| Binding protocol (board + Slack + model economics) | [`AGENT-SYNC.md`](AGENT-SYNC.md) § THE BOARD, § Delegation & model economics | — |
+| Binding protocol (board + Zulip + model economics) | [`AGENT-SYNC.md`](AGENT-SYNC.md) § THE BOARD, § Delegation & model economics | — |
 | Cursor chats on desktop + iOS (Grok Bot / Shellular) | [`docs/CURSOR-CHAT-SURFACES.md`](docs/CURSOR-CHAT-SURFACES.md) | `scripts/cursor_chat_surfaces.py` |
 | Universal fleet-ops skills catalog | [`docs/fleet-skills/README-add-in-app.md`](docs/fleet-skills/README-add-in-app.md) | `scripts/install-fleet-skills.py` |
 | **Fresh cloud sandbox / lost CLI toolchain** | [`docs/CLOUD-AGENT-BOOTSTRAP.md`](docs/CLOUD-AGENT-BOOTSTRAP.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/CLOUD-AGENT-BOOTSTRAP.md)) | `bash /workspace/.bootstrap.sh` |

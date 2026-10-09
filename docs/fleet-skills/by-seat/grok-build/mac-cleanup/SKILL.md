@@ -10,7 +10,7 @@ description: Optimize Mac workstation and Hetzner Coolify disk space, prune merg
 
 # Mac & Hetzner Disk Cleanup Skill (ALL AGENTS)
 
-> **This install is for `GROK-BUILD`.** Slack `[GROK-BUILD]`.  Notes `Grok Build`.  Branches `grok-build/`.  Worktrees `~/apps/<app>-grok-build`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `GROK-BUILD`.**  Chat tag `[GROK-BUILD·session8]`.  Notes `Grok Build`.  Branches `grok-build/`.  Worktrees `~/apps/<app>-grok-build`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK-BUILD·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Optimize local workstation storage and remote Coolify server disk usage by running the unified automated maintenance sweep.

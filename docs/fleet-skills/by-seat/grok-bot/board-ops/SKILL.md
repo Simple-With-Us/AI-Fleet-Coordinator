@@ -5,7 +5,7 @@ description: Use THE BOARD (mac.jays.services/board + the board CLI) as the firs
 
 # THE BOARD (GB role)
 
-> **This install is for Grok Bot roles.** Slack tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
+> **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
 
 
 Primary coordination surface (owner 2026-08-19).  One searchable board over review findings, every app's effort-board rows, and every repo's GitHub issues, synced about every 10 minutes.
@@ -62,7 +62,7 @@ The board is the **write surface**.  Live `~/apps/*-EFFORT-LOG.md` and GitHub Is
 ## Do not
 
 - Paste `MAC_COLLAB_TOKEN` into curl "to be safe."  Use `board`.
-- Use THE BOARD as the only closeout.  Slack + effort board + issues still move.
+- Use THE BOARD as the only closeout.  Zulip + effort board + issues still move.
 - File a duplicate because you did not `board list --search` first.
 
 ## Canon

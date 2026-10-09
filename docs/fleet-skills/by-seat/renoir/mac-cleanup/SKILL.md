@@ -10,7 +10,7 @@ description: Optimize Mac workstation and Hetzner Coolify disk space, prune merg
 
 # Mac & Hetzner Disk Cleanup Skill (ALL AGENTS)
 
-> **This install is for `RENOIR`.** Slack `[RENOIR]`.  Notes `Renoir`.  Branches `renoir/`.  Worktrees `~/apps/<app>-renoir`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `RENOIR`.**  Chat tag `[RENOIR·session8]`.  Notes `Renoir`.  Branches `renoir/`.  Worktrees `~/apps/<app>-renoir`.  Do not inherit another seat's tag from a shared template.
 
 > **Inactive seat.** Renoir is not yet active.  Do not install to `~/.renoir/skills`.  Do not take fleet work until the owner opens the seat.
 

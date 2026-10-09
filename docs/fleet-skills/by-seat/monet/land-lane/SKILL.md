@@ -5,7 +5,7 @@ description: Land a Monet feature branch to main across the fleet — seat workt
 
 # Land a feature branch (MONET)
 
-> **This install is for `MONET`.** Slack `[MONET]`.  Notes `Monet`.  Branches `monet/`.  Worktrees `~/apps/<app>-monet`.  Do not inherit another seat's tag from another seat's upload pack.
+> **This install is for `MONET`.**  Chat tag `[MONET·session8]`.  Notes `Monet`.  Branches `monet/`.  Worktrees `~/apps/<app>-monet`.  Do not inherit another seat's tag from another seat's upload pack.
 
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.
