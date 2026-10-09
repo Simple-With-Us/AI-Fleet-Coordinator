@@ -1,0 +1,87 @@
+{
+  // Hosted agent-sync MCP server, Phase 0 stub (docs/protocols/agent-sync-mcp.md).
+  // Account Usage.Jays.Services, hostname agent-sync.jays.services (decision D1).
+  // Deploy by hand from DEPLOY-PHASE0.md.  Never from CI and never on merge:
+  // agents auto-merge to main, so a merge must not be a deploy (spec 3.2).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agent-sync-mcp",
+  "main": "src/index.js",
+  "account_id": "3a9368057468d0909cafaa85df12d1b7",
+  "compatibility_date": "2026-09-24",
+  // nodejs_compat:  agents imports node:async_hooks.
+  // global_fetch_strictly_public:  the OAuth library advertises and fetches
+  // client metadata documents only with this flag, and it keeps those fetches
+  // off private addresses.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+
+  // Only the custom domain.  workers.dev and preview URLs would bypass the
+  // path-scoped Access app and keep old versions callable (spec 3.2).
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "agent-sync.jays.services", "custom_domain": true }
+  ],
+
+  // Our own console.log lines are the audit trail.  The automatic per-request
+  // invocation logs are off, because nothing proves they omit the
+  // Cf-Access-Jwt-Assertion header or cookies (spec 3.9 never-logged list).
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false } },
+
+  "kv_namespaces": [
+    // Grants, hashed tokens and encrypted props (the OAuth library's store).
+    // DEPLOY-PHASE0.md step 3 creates it and fills in the id.
+    { "binding": "OAUTH_KV", "id": "REPLACE_WITH_OAUTH_KV_ID" }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      // One per seat:  arming window, grant epoch, pause flag, audit tail.
+      { "name": "SEAT_GATE", "class_name": "SeatGate" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SeatGate"] }
+  ],
+
+  // Per-IP cap on /oauth/token (spec 3.3).  The namespace id is any integer
+  // unique to this account's rate limiters.
+  "ratelimits": [
+    { "name": "TOKEN_RATE_LIMITER", "namespace_id": "4711", "simple": { "limit": 30, "period": 60 } }
+  ],
+
+  "vars": {
+    // Must equal the compiled hostname;  the Worker refuses to start otherwise.
+    "PUBLIC_HOST": "agent-sync.jays.services",
+    // Phase 0 seats (owner decisions D1, D2).
+    "HOSTED_SEATS": "JET,GROK-WEB",
+    // Redirect and client allowlist per seat.  A redirect URI belongs to
+    // exactly one seat, and that is the only seat a consent can bind it to.
+    // GROK-WEB uses Grok's published client metadata document (fetched
+    // 2026-10-09:  token_endpoint_auth_method "none", two redirect URIs).  Its
+    // second redirect, https://console.x.ai/connectors-oauth-exchange-code/, is
+    // left out until Jay's xAI account is Business or Enterprise (spec 4).
+    // A manual Grok form still works through the /admin fallback client, which
+    // takes the redirect URIs listed here (ARMING-JAY.md).
+    "SEATS": {
+      "JET": {
+        "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+        "cimd_client_ids": ["https://chatgpt.com/oauth/client.json"]
+      },
+      "GROK-WEB": {
+        "redirect_uris": ["https://grok.com/connectors-oauth-exchange-code/"],
+        "cimd_client_ids": ["https://grok.com/oauth/mcp-client.json"]
+      }
+    },
+    // Cloudflare Access, re-verified by the Worker on /authorize and /admin.
+    // ACCESS_AUD comes from the Access app infra_phase0.py creates.  Until it
+    // is set, /authorize and /admin answer 403 (fail closed).
+    "ACCESS_TEAM_DOMAIN": "silent-frost-37e0.cloudflareaccess.com",
+    "ACCESS_AUD": "REPLACE_WITH_ACCESS_AUD",
+    // Must match the Access policy's emails exactly.  Spec 3.3:  mail@jays.services
+    // only.  The identity provider is One-time PIN, so a second address would make
+    // that inbox a full admin credential for this server.
+    "OWNER_EMAILS": "mail@jays.services",
+    // Kill switch step 4:  "1" makes /mcp answer 503.
+    "MCP_DISABLED": "0"
+  }
+}
