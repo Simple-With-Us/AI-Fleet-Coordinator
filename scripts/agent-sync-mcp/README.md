@@ -1,6 +1,6 @@
 # agent-sync MCP Worker
 
-The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at `https://agent-sync.jays.services/mcp` that cloud-only seats add as a custom MCP connector.  It serves the same seven tools as the stdio server (`agent-sync mcp`), from the same `scripts/agent_sync/mcp/tools.json`, and each seat posts as its own Zulip bot.
+The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at `https://agent-sync.jays.services/mcp` that cloud-only seats add as a custom MCP connector.  It serves the same seven tools as the stdio server (`agent-sync mcp`), from the same `scripts/agent_sync/mcp/tools.json`, and each seat posts as its own Zulip bot.  It also serves three hosted-only fleet recall tools (`recall_search`, `recall_stats`, `recall_contribute`;  spec 1.1).
 
 | Seat | Bot | State |
 | --- | --- | --- |
@@ -38,10 +38,11 @@ OAuth 2.1 with CIMD for ChatGPT and Grok, DCR off, a hand-registered public clie
 | `src/index.js` | entry:  Host check, routing, token gate, provider, `/mcp`, `/authorize`, `/admin`, the refresh-mismatch pause |
 | `src/config.js` | constants, `SEAT_SECRETS`, `PROPS_PHASE` and `loadConfig(env)` (fails closed) |
 | `src/contract.js` | the shared contract, ported from the stdio server:  schema check, fence, error model, secret scan, mentions, tags, the Central clock |
-| `src/hosted-tools.js` | the seven tools for one seat |
+| `src/hosted-tools.js` | the seven tools, plus the recall tools, for one seat |
+| `src/recall.js` | fleet recall:  the three hosted-only tool specs, the recall REST client (exact origin, no redirects, 10-second timeout), error mapping and the recall fence |
 | `src/zulip.js` | Zulip egress:  the compiled realm only, no redirects, 15-second timeout, the 429 budget |
 | `src/textfmt.js` | the outbound sentence gap (port of `scripts/agent_sync/textfmt.py`) |
-| `src/mcp.js` | a low-level SDK `Server` per request:  `tools/list` from `tools.json`, `tools/call` to the hosted tools |
+| `src/mcp.js` | a low-level SDK `Server` per request:  `tools/list` from `tools.json` plus the recall tools, `tools/call` to the hosted tools |
 | `src/seat-state.js`, `src/seat-gate.js` | the `SeatGate` Durable Object:  arming, epoch, pause, spacing, budgets, cooldown, idempotency, role cache, audit |
 | `src/policy.js`, `src/forms.js`, `src/access.js`, `src/pages.js` | the OAuth gates, strict forms, Access JWT check, consent and admin HTML |
 | `install_seat_key.py` | puts a seat's key into the Worker's secrets from Infisical, after the 3.6 checks |

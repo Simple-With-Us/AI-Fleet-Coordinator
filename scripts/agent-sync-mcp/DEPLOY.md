@@ -44,6 +44,27 @@ For each seat the script reads `ZULIP_<SEAT>_EMAIL` and `ZULIP_<SEAT>_API_KEY` (
 
 Spec 3.6 wants Infisical's Cloudflare Workers sync to push the key, from a location no agent identity can read.  Neither exists yet (owner items A1 and A4), and D8 accepts that:  this script is the sync, run by hand, and the key stays in `/zulip` where the automation identity can read it.  When Jay sets up the sync with "Disable Secret Deletion", stop using the script for that seat.
 
+## Step 2b:  Fleet recall secrets (once)
+
+The recall tools (spec 1.1) need three Worker secrets.  Without them they answer `not_configured` and everything else works.  Run from this directory, with the Step 1 credentials exported in the same subshell.  Each value goes to wrangler on stdin and is never printed:
+
+```bash
+(
+  set +x
+  export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
+  CLOUDFLARE_EMAIL="$(grep -m1 '^CLOUDFLARE_JAY_ACCOUNT_EMAIL=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
+  CLOUDFLARE_API_KEY="$(grep -m1 '^CLOUDFLARE_JAY_API_KEY=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
+  export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
+  put() { [ -n "$2" ] || { echo "missing $1" >&2; return 1; }; printf %s "$2" | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put "$1" >/dev/null && echo "set $1"; }
+  put RECALL_API_TOKEN "$(grep -m1 '^RECALL_API_TOKEN=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
+  ACCESS=~/.secrets/agents-jays-services-access-service-token.env
+  put RECALL_ACCESS_CLIENT_ID "$(grep -m1 '^CF_ACCESS_CLIENT_ID=' "$ACCESS" | cut -d= -f2- | tr -d '"')"
+  put RECALL_ACCESS_CLIENT_SECRET "$(grep -m1 '^CF_ACCESS_CLIENT_SECRET=' "$ACCESS" | cut -d= -f2- | tr -d '"')"
+)
+```
+
+`RECALL_API_TOKEN` is the recall service's bearer (Infisical shared/prod).  The Access service token is the one on the `agents.jays.services` Access app, which also covers `recall.jays.services`.  Rotating either means running the matching `put` line again.  Check with a `recall_search` call from Grok or Jet (ARMING-JAY.md, "Fleet recall"), or look for `"tool":"recall_search"` lines in the Worker log:  `outcome` `ok` means the Worker reached recall, `not_authorized` means a credential is wrong, and `not_configured` means a secret is missing.
+
 ## Step 3:  The tunnel rule (once)
 
 Phase 0 moved the hostname's DNS to the Worker, but "Jay's Tunnel" still carried an ingress rule `agent-sync.jays.services -> http://localhost:8787` (the retired relay's port).  The tunnel runs with `--token-file`, so its configuration is remote, in the Cloudflare API, not in `~/.cloudflared`.

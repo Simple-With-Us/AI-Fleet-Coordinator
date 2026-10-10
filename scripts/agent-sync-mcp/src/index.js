@@ -48,6 +48,7 @@ import { verifyAccessJwt } from "./access.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy } from "./pages.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
+import { recallClientFromEnv } from "./recall.js";
 import { ZulipClient } from "./zulip.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 
@@ -200,6 +201,9 @@ async function serveMcp(request, env, ctx) {
     key,
     gate: seatGate,
     cf: { asn: request.cf?.asn, country: request.cf?.country },
+    // Null when any recall secret is missing:  the recall tools then answer
+    // not_configured and every other tool works as before (spec 1.1).
+    recall: recallClientFromEnv(env),
   });
   const authInfo = {
     token: auth.token,

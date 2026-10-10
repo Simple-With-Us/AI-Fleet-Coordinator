@@ -19,6 +19,8 @@ import { ROOT, wranglerConfig, testEnv, browserPostOrigin, CHATGPT_CLIENT, CHATG
 import { FakeZulip, REALM, STREAMS, zulipShapedKey } from "./fake-zulip.mjs";
 
 const TOOLS = CONTRACT.tools;
+// The hosted server lists tools.json, then the hosted-only recall tools (src/recall.js).
+const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute"];
 const JET_KEY = zulipShapedKey(11);
 const zulip = new FakeZulip({ bots: [{ email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet", key: JET_KEY }] });
 
@@ -380,7 +382,7 @@ try {
     assert.equal(tokens.scope, "zulip:read");
   });
 
-  await step("tools/list is tools.json, and whoami shows JET with a read-only grant", async () => {
+  await step("tools/list is tools.json plus recall, and whoami shows JET with a read-only grant", async () => {
     const init = await mcp(tokens.access_token, "initialize", INIT);
     assert.equal(init.status, 200, JSON.stringify(init.json));
     assert.match(init.json.result.instructions, /one bot, JET\./);
@@ -389,7 +391,7 @@ try {
     const list = await mcp(tokens.access_token, "tools/list");
     assert.equal(list.status, 200);
     const tools = list.json.result.tools;
-    assert.deepEqual(tools.map((t) => t.name), TOOLS.map((t) => t.name));
+    assert.deepEqual(tools.map((t) => t.name), HOSTED_NAMES);
     for (const t of TOOLS) {
       // Era fields aside, every tool is exactly the stdio server's contract.
       assert.deepEqual(Object.fromEntries(Object.keys(t).map((k) => [k, tools.find((x) => x.name === t.name)[k]])), t, t.name);
@@ -414,6 +416,20 @@ try {
     assert.equal(w2.json.result.structuredContent, undefined);
     assert.ok(w2.json.result._meta["mcp/www_authenticate"][0].includes('error="insufficient_scope"'));
     assert.equal(zulip.requestsTo("POST", "messages").length, before);
+  });
+
+  await step("recall without its secrets:  a read-only grant reaches recall_search, which says not_configured;  contribute needs zulip:write", async () => {
+    const init = await mcp(tokens.access_token, "initialize", INIT);
+    assert.match(init.json.result.instructions, /BEGIN_UNTRUSTED_RECALL and END_UNTRUSTED_RECALL/);
+    const r = await call(tokens.access_token, "recall_search", { query: "agent-sync bridge" });
+    assert.equal(r.json.result.isError, true, JSON.stringify(r.json));
+    assert.equal(r.json.result._meta["agent-sync/error"].code, "not_configured");
+    const w = await call(tokens.access_token, "recall_contribute", { text: "x".repeat(50), category: "lesson" });
+    assert.equal(w.json.result.isError, true);
+    assert.ok(w.json.result._meta["mcp/www_authenticate"][0].includes('scope="zulip:write"'));
+    // The Zulip tools are untouched by recall's missing config.
+    const who = await call(tokens.access_token, "whoami");
+    assert.equal(who.json.result.structuredContent.seat, "JET");
   });
 
   await step("pause:  tools say paused, refresh is temporarily_unavailable, and the grant survives", async () => {
@@ -632,7 +648,7 @@ try {
     await client.connect(transport);
     try {
       const listed = await client.listTools();
-      assert.deepEqual(listed.tools.map((t) => t.name), TOOLS.map((t) => t.name));
+      assert.deepEqual(listed.tools.map((t) => t.name), HOSTED_NAMES);
       const refused = await client.callTool({ name: "read_topic", arguments: { channel: "general", topic: "t" } });
       assert.equal(refused.isError, true);
       assert.equal(JSON.parse(refused.content[0].text).code, "channel_not_allowed");

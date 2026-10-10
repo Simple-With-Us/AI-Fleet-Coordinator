@@ -157,20 +157,25 @@ export const CALL_RETENTION_DAYS = 90; // spec 3.9
 const CALLS_PER_DAY_CAP = 5000;
 const GEO_CAP = 50;
 
-// D5 budgets, per seat.  `write` is post and reply, `react` is reactions.
+// D5 budgets, per seat.  `write` is post and reply, `react` is reactions,
+// `recall` is recall_contribute (spec 1.1;  it takes the write spacing too).
 export const BUDGETS = Object.freeze({
   write: Object.freeze([
     { windowMs: HOUR_MS, limit: 20 },
     { windowMs: DAY_MS, limit: 120 },
   ]),
   react: Object.freeze([{ windowMs: HOUR_MS, limit: 60 }]),
+  recall: Object.freeze([
+    { windowMs: HOUR_MS, limit: 10 },
+    { windowMs: DAY_MS, limit: 40 },
+  ]),
   read: Object.freeze([{ windowMs: HOUR_MS, limit: 300 }]),
 });
 
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
 
 /**
- * Take a slot for one tool call of `kind` ("read", "write" or "react").
+ * Take a slot for one tool call of `kind` ("read", "write", "react" or "recall").
  * Returns {ok: true, waitMs} (the caller sleeps that long, at most 6 seconds,
  * then calls Zulip), or {ok: false, code, retryAfterS?, resetAt?}.  The slot
  * and the budget entry are written before this returns, and the method does no
