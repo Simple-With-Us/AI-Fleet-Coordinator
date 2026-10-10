@@ -9,9 +9,9 @@
 The default set is MINIMAL on purpose (each registered server is a process per session, and this Mac has been
 through an MCP fan-out overload):  `fleet-recall` only, which is the stdio server that
 `scripts/install-fleet-rag.sh` installs under ~/apps/fleet-rag.  `--with-agent-sync` also registers
-`agent-sync mcp --default-seat <SEAT>` for the targets that have a FIXED seat (muse MC, minimax MM, fx FX,
-clutch CLUTCH).  A tool with no default seat (OpenCode, Kimi, Copilot CLI) never gets it: the registration has
-to name a seat, and these tools have none.  Never a pinned AGENT_SEAT in env (a launcher's seat must still win,
+`agent-sync mcp --default-seat <SEAT>` for the targets that have a FIXED seat (opencode OPENCODE, muse MC,
+minimax MM, fx FX, clutch CLUTCH).  A tool with no default seat (Kimi, Copilot CLI) never gets it: the
+registration has to name a seat, and these tools have none.  Never a pinned AGENT_SEAT in env (a launcher's seat must still win,
 AGENT-SYNC § Identity Rules), and never a token anywhere.
 
 TARGET is opencode, kimi, copilot, muse, minimax, fx or clutch.  `install-fleet-rag.sh` already registers
@@ -185,8 +185,11 @@ class JsonTarget:
 JSON_TARGETS: Tuple[JsonTarget, ...] = (
     JsonTarget("opencode", "OpenCode v2", ".config/opencode", ".config/opencode/opencode.json", ("mcp", "servers"),
                _build_opencode, _command_list_of,
-               note="engine-only CLI with no default seat: fleet-recall only.  OpenCode also reads a project "
-                    ".opencode/opencode.json; this is the global file"),
+               seat="OPENCODE",
+               note="the OPENCODE seat since Sat, Oct 10, 2026 (owner, #440), so agent-sync gets --default-seat OPENCODE; "
+                    "a launcher's seat still wins.  A session inside Conductor has no default (open question in "
+                    "AGENT-SYNC) and shares this global file.  OpenCode also reads a project .opencode/opencode.json; "
+                    "this is the global file"),
     JsonTarget("kimi", "Kimi Code", ".kimi-code", ".kimi-code/mcp.json", ("mcpServers",),
                _build_kimi, _command_args_of,
                note="engine-only CLI with no default seat: fleet-recall only"),

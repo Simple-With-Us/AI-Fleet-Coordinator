@@ -295,7 +295,8 @@ class AgentSyncTests(HomeCase):
         keys = [k for k in M.TARGET_KEYS if k != "clutch"]
         code, out, _ = self.run_cli("apply", *keys, "--with-agent-sync")
         self.assertEqual(code, M.EXIT_OK, out)
-        seats = {"muse": ("MC", ".config/muse/settings.json", ("mcpServers",)),
+        seats = {"opencode": ("OPENCODE", ".config/opencode/opencode.json", ("mcp", "servers")),
+                 "muse": ("MC", ".config/muse/settings.json", ("mcpServers",)),
                  "minimax": ("MM", ".minimax/mcp.json", ("mcpServers",)),
                  "fx": ("FX", ".fx/mcp.json", ("mcp",))}
         for key, (seat, rel, path) in seats.items():
@@ -308,8 +309,7 @@ class AgentSyncTests(HomeCase):
                 argv = ([entry["command"]] + entry["args"]) if isinstance(entry["command"], str) else entry["command"]
                 self.assertEqual(argv, [self.agent_sync, "mcp", "--default-seat", seat])
                 self.assertNotIn("env", entry, "never a pinned AGENT_SEAT")
-        for key, rel in (("opencode", ".config/opencode/opencode.json"), ("kimi", ".kimi-code/mcp.json"),
-                         ("copilot", ".copilot/mcp-config.json")):
+        for key, rel in (("kimi", ".kimi-code/mcp.json"), ("copilot", ".copilot/mcp-config.json")):
             with self.subTest(key=key):
                 self.assertNotIn("agent-sync", self.read(rel), "a tool with no default seat has no seat to register")
 

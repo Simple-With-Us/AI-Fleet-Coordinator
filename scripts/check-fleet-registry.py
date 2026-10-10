@@ -108,6 +108,29 @@ def zulip_errors(data: dict) -> list[str]:
     return errors
 
 
+def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
+    """No live seat may sit in AGENT-SYNC.md's "Engine-only CLIs" row (Platform Defaults).
+
+    That row lists the CLIs that are not seats.  Owner 2026-10-10 made OpenCode a seat, and a merge that
+    keeps the old row would put it back (two PRs edit that row).  A retired seat may be listed.
+    """
+    row = re.search(r"\*\*Engine-only CLIs\*\*\s*\(([^)]*)\)", agent_sync)
+    if not row:
+        return []
+    errors: list[str] = []
+    for seat in data.get("seats", []):
+        if not isinstance(seat, dict) or seat.get("retired"):
+            continue
+        for name in sorted({seat.get("tag") or "", seat.get("notesName") or ""} - {""}):
+            if re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", row.group(1), re.IGNORECASE):
+                errors.append(
+                    f"AGENT-SYNC.md lists live seat {seat.get('tag')} ({name}) in its Engine-only CLIs row; "
+                    "a seat is not an engine-only CLI"
+                )
+                break
+    return errors
+
+
 def main() -> int:
     data = load()
     apps = data.get("apps", [])
@@ -173,6 +196,7 @@ def main() -> int:
                 errors.append(f"missing app icon {icon}")
 
     errors.extend(zulip_errors(data))
+    errors.extend(engine_only_errors(data, agent_sync))
 
     colors: dict[str, str] = {}
     for app in apps:

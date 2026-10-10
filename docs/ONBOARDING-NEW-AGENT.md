@@ -109,6 +109,7 @@ per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
    | Grok | Grok user rules (already point at `AGENT-SYNC.md`) |
    | MiniMax (MiniMax Code / Mavis) | `~/.minimax/memory/user.md` — see "MiniMax has no rules file" below |
    | Muse Code (`[MC]`) | `~/.config/muse/settings.json`, trusted paths in `~/.config/muse/trust.json`, loads project `AGENTS.md` and `CLAUDE.md`, skills in `~/.config/muse/skills` |
+   | OpenCode (`[OPENCODE]`) | `~/.config/opencode/AGENTS.md` (OpenCode 2.x reads `<config dir>/AGENTS.md`;  `opencode debug paths` prints the config dir);  paste-in prompt `docs/OPENCODE-ONBOARDING-PROMPT.md` |
 
    The pointer is the Inter-agent coordination stanza plus "read
    `~/apps/AGENT-SYNC.md` before your first message."
