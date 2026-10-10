@@ -361,6 +361,11 @@ ROUTINE_RETRIES = 3  # retries after the first request:  at most 4 requests per 
 ROUTINE_BACKOFF = (2.0, 5.0, 10.0)
 ROUTINE_EXCERPT_LIMIT = 2000
 ROUTINE_RESPONSE_CAP = 65536
+# The hosted MCP Worker refuses a wake body over 64 KiB (src/wake.js WAKE_MAX_BODY).  A body with
+# `held_back` stays far below it;  run_routine lists fewer items rather than ever cross it.
+ROUTINE_MAX_BODY = 64 * 1024
+# The hosted Worker's settled outcomes (docs/protocols/agent-sync-mcp.md section 3.12, item 12).
+WORKER_OUTCOMES = frozenset({"delivered", "no_subscriber", "channel_refused", "rejected", "gone", "not_live"})
 
 
 class RoutineTarget:
@@ -473,6 +478,48 @@ class RoutineResult:
         self.secs = 0.0
         self.response_len = 0
         self.response_sha = ""
+        # The hosted MCP Worker's answer to an accepted wake, reduced to what says whether anything
+        # reached the seat (routine_answer); None for any other answer.  The body itself is never kept.
+        self.answer: dict[str, Any] | None = None
+
+
+def routine_answer(data: bytes) -> dict[str, Any] | None:
+    """The hosted MCP Worker's 2xx answer (spec 3.12, item 12) reduced to {delivered, paused,
+    disabled, duplicate, outcome}, or None when the body is not that answer (a Grok Bot routine's,
+    or anything else), which is then not read further.  Only an integer, booleans and one of the
+    Worker's fixed outcome codes are kept, so nothing a routine writes reaches the ledger or a log."""
+    try:
+        obj = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(obj, dict) or not isinstance(obj.get("ok"), bool):
+        return None
+    if not any(key in obj for key in ("delivered", "paused", "disabled", "duplicate")):
+        return None
+    delivered = obj.get("delivered")
+    outcome = obj.get("outcome")
+    return {"delivered": delivered if isinstance(delivered, int) and not isinstance(delivered, bool) and delivered >= 0
+            else None,
+            "paused": obj.get("paused") is True, "disabled": obj.get("disabled") is True,
+            "duplicate": obj.get("duplicate") is True,
+            "outcome": outcome if isinstance(outcome, str) and outcome in WORKER_OUTCOMES else None}
+
+
+def routine_surfaced(result: "RoutineResult") -> bool:
+    """Did this wake reach the seat, so the held-back items it listed count as surfaced?  Not when
+    the routine did not take it.  A 2xx from a routine that is not the hosted Worker counts.  The
+    Worker answers 202 for several outcomes that reached nobody (no subscriber, a channel off its
+    allowlist, a refused or lapsed subscription, a paused seat, MCP_DISABLED), so from it only
+    `delivered` of at least 1 counts.  A `duplicate` does not:  that wake was settled before, which
+    does not say it was delivered, and listing an item twice is better than losing it."""
+    if not result.accepted:
+        return False
+    answer = result.answer
+    if answer is None:
+        return True
+    if answer["paused"] or answer["disabled"] or answer["duplicate"]:
+        return False
+    return isinstance(answer["delivered"], int) and answer["delivered"] >= 1
 
 
 class RoutineRunner:
@@ -532,6 +579,7 @@ class RoutineRunner:
                 if 200 <= status < 300:
                     out.accepted = True
                     out.error = None
+                    out.answer = routine_answer(data)
                     break
                 if status >= 500:
                     out.error, retry = "HTTP %d" % status, True
@@ -582,7 +630,7 @@ def routine_excerpt(text: str, limit: int = ROUTINE_EXCERPT_LIMIT, nonce: str | 
 
 def routine_body(*, seat: str, wake_id: str, trigger_ids: Iterable[int], row: Mapping[str, Any], bot_user_id: int | None,
                  realm: str, now: float, scrub: Callable[[str], str] = lambda text: text,
-                 nonce: str | None = None) -> dict[str, Any]:
+                 nonce: str | None = None, held_back: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The fixed contract (agent-sync-wake/1) for one wake.  `row` is the trigger's seat-inbox
     row:  its owner flag is the daemon's (the owner's user id from a human Zulip app).  A DM
     trigger is marked `dm: true` and its `reply_to` is that DM's other members only, never a
@@ -590,7 +638,10 @@ def routine_body(*, seat: str, wake_id: str, trigger_ids: Iterable[int], row: Ma
     `channel`, `topic` and `sender_full_name` are escaped display copies, and only `reply_to`
     carries the exact names, for addressing.  `stream_id` is the trigger's Zulip stream id (an int;
     None for a DM or a row without one), so a receiver can hold the channel to its own allowlist by
-    id, never by name:  the hosted MCP Worker refuses a channel wake without an allowlisted one."""
+    id, never by name:  the hosted MCP Worker refuses a channel wake without an allowlisted one.
+    `held_back` (heldback.wake_summary) is added only when its count is above 0:  how many wakes
+    the seat's budget held back, and the newest as metadata only, never a body (an additive field,
+    so a body without it is unchanged)."""
     dm = row.get("type") == "private"
     message_id = int(row["id"])
     members = sorted(i for i in row.get("recipients") or [] if isinstance(i, int) and not isinstance(i, bool))
@@ -604,7 +655,7 @@ def routine_body(*, seat: str, wake_id: str, trigger_ids: Iterable[int], row: Ma
     topic = None if dm else L.escape_line(raw_topic, 100)
     sender_id = row.get("sender_id")
     stream_id = row.get("stream_id")
-    return {
+    body = {
         "contract": ROUTINE_CONTRACT,
         "seat": seat,
         "wake_id": wake_id,
@@ -627,6 +678,9 @@ def routine_body(*, seat: str, wake_id: str, trigger_ids: Iterable[int], row: Ma
         "reply_prefix": "[%s·wake] re=%d" % (seat, message_id),
         "sent_at": int(now),
     }
+    if held_back and int(held_back.get("count") or 0) > 0:
+        body["held_back"] = held_back
+    return body
 
 
 def routine_bytes(body: Mapping[str, Any]) -> bytes:
