@@ -2595,7 +2595,8 @@ class MuseBundleTests(World):
         hooks = doc["capabilities"]["hooks"]
         self.assertEqual(len(hooks), 1)
         hook = hooks[0]
-        self.assertEqual((hook["id"], hook["event"], hook["timeoutMs"]), ("lane-guard", "PreToolUse", 5000))
+        self.assertEqual((hook["id"], hook["event"], hook["timeoutMs"]), ("lane-guard", "PreToolUse", T.MUSE_HOOK_TIMEOUT_MS))
+        self.assertEqual(T.MUSE_HOOK_TIMEOUT_MS, 15000)
         self.assertNotIn("matcher", hook)                                          # Muse rejects it
         self.assertEqual(hook["command"], ["/bin/sh", "/stable dir/lane-tools/muse-plugin/fleet-lane-guard/hooks/lane-guard.sh"])
         self.assertTrue(all(os.path.isabs(a) for a in hook["command"]))
@@ -3379,6 +3380,166 @@ class MusePlanApplyVerifyTests(World):
 
 # --------------------------------------------------------------------------- the fleet hook: lane guard plus secret guard
 
+def _load_secret_guard_module():
+    import importlib.util
+    path = Path(T.__file__).resolve().parents[1] / "hooks" / "secret-guard-pretooluse.py"
+    spec = importlib.util.spec_from_file_location("secret_guard_under_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# Commands the real secret guard denies, one family per rule (A dump of a secret file, B an authorization value in
+# arguments, C ps, C2 pgrep -l, D stderr merged into a secret path, E byte-dump or cut of a key variable).
+SECRET_DENY_CORPUS = (
+    "cat ~/.secrets/global-api-keys", "head -3 /x/credentials.json", "xxd client_info.json", "tail ~/proj/.env",
+    "bat ~/.ssh/id_rsa", "less server.pem", "base64 cert.p12", "strings server.key", "cut -c1-5 ~/.secrets/x",
+    "od -c ~/.secrets/x | head", "/usr/bin/xxd ~/.secrets/x",
+    "curl -H 'Authorization: Bearer abc' https://example.invalid", "curl -H 'Authorization:token' https://example.invalid",
+    "ps aux", "ps -ef | grep x", "(ps -o comm= -p 1)", "x=$(ps -p 1)", "/bin/ps aux", "exec ps aux", "echo a\nps aux",
+    "ps\taux", "ps aux", "ps　aux", "ps aux", "ps\x0baux",
+    "pgrep -fl node", "pgrep -l x", "pgrep -lf y",
+    "source ~/.secrets/global-api-keys 2>&1", "grep -c foo ~/.secrets/x 2>&1", "ls credentials.json 2>&1",
+    'od -c <<< "$MY_API_KEY"', 'xxd <<< "${GH_TOKEN}"', "printf %s \"$DB_PASSWORD\"", 'cut -c1-4 <<< "$X_SECRET"',
+    'hexdump -C <<< "$SENTRY_DSN"', 'strings <<< "$LOGIN_PASSWD"', 'base64 <<< "$APIKEY"', 'od -c <<< "$KEY"',
+)
+ORDINARY_COMMANDS = (
+    "git status", "ls -la ~/apps", "python3 -m unittest fleet_lanes.tests.test_x", "cd /Users/jay/apps/lanes && ls",
+    "echo hi && pwd", "cat README.md", "gh pr merge 5 --squash --auto", "grep -rn foo scripts | head -20",
+    "sed -n 1,20p scripts/fleet_lanes/layout.py", "xcodebuild -scheme App build",
+    "npm run build && npm test", "printf '%s' hello", "find . -name '*.py' -newer x",
+)
+
+
+def _payload(command: str, ascii_only: bool) -> bytes:
+    return json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": "/Users/jay/apps/lanes/X/y",
+                       "session_id": "s1", "hook_event_name": "PreToolUse"}, ensure_ascii=ascii_only).encode("utf-8")
+
+
+class FleetShimPrefilterTests(World):
+    """fleet-guard-hook starts Python only for a call one of its two guards could deny, and never skips one it could.
+
+    The shim's `sh` prefilter is the one place where a secret-guard rule could be switched off by a mistake, so every
+    rule of the real secret guard is run through it, in both JSON spellings, and the words are checked against the
+    guard's own tables."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.sg = _load_secret_guard_module()
+        self.bin = self.tmp / "fake-bin"
+        self.bin.mkdir()
+        self.marker = self.tmp / "python-started"
+        py = self.bin / "python3"
+        py.write_text(f"#!/bin/sh\ncat >/dev/null\ntouch {shlex.quote(str(self.marker))}\nexit 0\n")
+        os.chmod(py, 0o755)
+        self.shim = self.tmp / "fleet-guard-hook"
+        self.shim.write_text(T.render_fleet_hook_shim())
+        os.chmod(self.shim, 0o755)
+
+    def starts_python(self, command: str, ascii_only: bool = True) -> bool:
+        if self.marker.exists():
+            self.marker.unlink()
+        subprocess.run([str(self.shim), "--format", "claude"], input=_payload(command, ascii_only),
+                       env={"PATH": f"{self.bin}:/usr/bin:/bin"}, check=False, capture_output=True)
+        return self.marker.exists()
+
+    def test_the_corpus_is_denied_by_the_real_secret_guard(self) -> None:
+        """So the corpus stays honest: a case the guard allows would prove nothing about the prefilter."""
+        for cmd in SECRET_DENY_CORPUS:
+            with self.subTest(cmd=cmd):
+                self.assertIsNotNone(self.sg.check_command(cmd))
+        for cmd in ORDINARY_COMMANDS:
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.sg.check_command(cmd))
+
+    def test_every_secret_guard_deny_reaches_python_in_both_json_spellings(self) -> None:
+        for cmd in SECRET_DENY_CORPUS:
+            for ascii_only in (True, False):
+                with self.subTest(cmd=cmd, ascii_only=ascii_only):
+                    self.assertTrue(self.starts_python(cmd, ascii_only), "the prefilter let a denied command through")
+
+    def test_ordinary_shell_calls_never_start_python(self) -> None:
+        for cmd in ORDINARY_COMMANDS:
+            with self.subTest(cmd=cmd):
+                self.assertFalse(self.starts_python(cmd), "an ordinary call cost a Python start")
+
+    def test_the_lane_guards_own_words_still_reach_python(self) -> None:
+        for cmd in ("git clone https://example.invalid/x.git", "git worktree add ../x", "curl -L codeload.github.com/x",
+                    "git fetch origin", "gh api repos/x/y/tarball"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(self.starts_python(cmd))
+
+    def test_a_json_escape_anywhere_reaches_python(self) -> None:
+        raw = b'{"tool_name":"Bash","tool_input":{"command":"\\u0070s aux"}}'
+        if self.marker.exists():
+            self.marker.unlink()
+        subprocess.run([str(self.shim), "--format", "claude"], input=raw, env={"PATH": f"{self.bin}:/usr/bin:/bin"},
+                       check=False, capture_output=True)
+        self.assertTrue(self.marker.exists())
+
+    def test_the_words_cover_the_secret_guards_own_tables(self) -> None:
+        words = T.SECRET_WORDS
+
+        def covered(text: str) -> bool:
+            return any(w in text.lower() for w in words)
+        for pat in self.sg.SECRET_FILE_PATTERNS:
+            literal = re.sub(r"\(\?!.*?\)|\\b", "", pat).replace("\\", "")
+            with self.subTest(pattern=pat):
+                self.assertTrue(covered(literal), f"no prefilter word appears in {literal!r}")
+        for part in tuple(self.sg._SECRET_PARTS) + tuple(self.sg._SECRET_SUFFIXES):
+            with self.subTest(part=part):
+                self.assertTrue(covered(part), f"no prefilter word appears in {part!r}")
+        for needle in ("bearer", "authorization", "pgrep"):
+            self.assertIn(needle, words)
+        self.assertEqual(len(set(words)), len(words))
+
+    def test_ps_followed_by_every_kind_of_white_space_reaches_python(self) -> None:
+        space = re.compile(r"\s")
+        for c in range(0x80, 0x10000):
+            if 0xD800 <= c < 0xE000 or not space.fullmatch(chr(c)):
+                continue
+            with self.subTest(codepoint=hex(c)):
+                cmd = f"ps{chr(c)}aux"
+                self.assertIsNotNone(self.sg.check_command(cmd))
+                self.assertTrue(self.starts_python(cmd, False))
+        for esc in ("t", "n", "r", "f", "v"):
+            raw = ('{"tool_name":"Bash","tool_input":{"command":"ps\\%saux"}}' % esc).encode()
+            if self.marker.exists():
+                self.marker.unlink()
+            subprocess.run([str(self.shim)], input=raw, env={"PATH": f"{self.bin}:/usr/bin:/bin"}, check=False,
+                           capture_output=True)
+            self.assertTrue(self.marker.exists(), esc)
+
+    def test_the_installed_shim_denies_the_whole_corpus_end_to_end(self) -> None:
+        self.install(())
+        for cmd in SECRET_DENY_CORPUS:
+            with self.subTest(cmd=cmd):
+                res = subprocess.run([self.paths.fleet_shim, "--format", "claude"], input=_payload(cmd, True),
+                                     capture_output=True, timeout=60)
+                self.assertEqual(res.returncode, 0)
+                self.assertIn(b'"permissionDecision": "deny"', res.stdout)
+        for cmd in ORDINARY_COMMANDS:
+            with self.subTest(cmd=cmd):
+                res = subprocess.run([self.paths.fleet_shim, "--format", "claude"], input=_payload(cmd, True),
+                                     capture_output=True, timeout=60)
+                self.assertEqual((res.returncode, res.stdout), (0, b""))
+
+    def test_emptying_the_prefilter_makes_verify_fail(self) -> None:
+        self.install(())
+        shim = Path(self.paths.fleet_shim)
+        shim.write_text(T.empty_prefilter(shim.read_text()))
+        failed = {c.name for c in T.verify_tools(self.paths, timeout=TIMEOUT) if c.status == "FAIL"}
+        self.assertIn("shim fleet-guard-hook", failed)
+
+    def test_a_shim_made_with_lane_words_only_is_not_the_installed_one(self) -> None:
+        """verify compares the installed bytes with what this tool would write, so dropping the secret words fails."""
+        self.install(())
+        lane_only = T.render_hook_shim(T.read_guard_facts(), module="fleet_lanes.fleet_guard_hook", purpose=T.FLEET_SHIM_PURPOSE)
+        self.assertNotEqual(lane_only, T.render_fleet_hook_shim())
+        Path(self.paths.fleet_shim).write_text(lane_only)
+        self.assertFails(T.verify_tools(self.paths, timeout=TIMEOUT), "shim fleet-guard-hook")
+
+
 class FleetHookStableCopyTests(World):
     """fleet-guard-hook, the secret guard copy and Clutch's hooks.json travel in the stable dir with everything else."""
 
@@ -3399,9 +3560,13 @@ class FleetHookStableCopyTests(World):
             T.build_files(self.source, self.paths)
         self.assertIn("secret guard", str(cm.exception))
 
-    def test_the_fleet_shim_has_no_prefilter_and_runs_the_fleet_module(self) -> None:
+    def test_the_fleet_shim_has_a_prefilter_and_runs_the_fleet_module(self) -> None:
         text = T.render_fleet_hook_shim()
-        self.assertNotIn("case $_lg_in", text)
+        self.assertIn("case $_lg_in", text)
+        self.assertEqual(text, T.render_fleet_hook_shim(T.read_guard_facts()))
+        no_lane_words = T.render_fleet_hook_shim(T.GuardFacts())
+        self.assertNotIn("case $_lg_in", no_lane_words, "without the lane guard's words there is no prefilter at all")
+        self.assertIn("fleet_lanes.fleet_guard_hook", no_lane_words)
         self.assertIn("fleet_lanes.fleet_guard_hook", text)
         self.assertNotIn("fleet_lanes.lane_guard_hook", text)
         self.assertIn(T.GENERATED_MARK, text)
@@ -3542,7 +3707,9 @@ class ClutchBlockTests(World):
         web = self.home / ".clutch" / "dsh" / "profiles" / "web"
         web.mkdir(parents=True)
         (web / "cordis.yml").write_text("plugins: []\n")
-        (self.home / ".clutch" / "dsh" / "profiles" / "node_modules").mkdir()
+        (web / "package.json").write_text('{"dsh": {"profile": {"bundles": [], "patchReload": "live"}}}')
+        self.plugin_dir = self.home / ".clutch" / "dsh" / "profiles" / "node_modules" / "@deepseek-ai" / "dsh-hooks-claude-code"
+        self.plugin_dir.mkdir(parents=True)
         self.plat = T.PLATFORMS["clutch"]
         self.install(())
 
@@ -3577,7 +3744,8 @@ class ClutchBlockTests(World):
         self.assertTrue(text.startswith("# Home-level cordis patch"))
         self.assertEqual(text.count("# fleet:begin hooks-fleet-guards"), 1)
         self.assertIn("- insert:\n    - id: fleet-hooks-guards\n", text)
-        self.assertIn("mount", r.detail)
+        self.assertIn("the dump names @deepseek-ai/dsh-hooks-claude-code", r.detail)
+        self.assertIn("patchReload: web live", r.detail)
         hooks = json.loads(Path(self.paths.clutch_hooks).read_text())
         entry = hooks["hooks"]["PreToolUse"][0]
         self.assertEqual(entry["matcher"], "bash")
@@ -3596,8 +3764,11 @@ class ClutchBlockTests(World):
         checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertAllPass([c for c in checks if c.status != "SKIP"])
         names = {c.name for c in checks}
-        self.assertTrue({"block", "hooks.json", "hook command", "dsh --dump-config", "secret/login-PATH"} <= names, names)
-        self.assertEqual([c.status for c in checks if c.name == "engine restart"], ["SKIP"])
+        self.assertTrue({"block", "hooks.json", "hook command", "dsh --dump-config", "secret/login-PATH", "patch reload"} <= names, names)
+        reload_check = [c for c in checks if c.name == "patch reload"]
+        self.assertEqual([c.status for c in reload_check], ["SKIP"])
+        self.assertIn("patchReload: web live", reload_check[0].detail)
+        self.assertNotIn("read once", reload_check[0].detail)
 
     def test_the_owners_patch_entries_survive_and_a_backup_is_made(self) -> None:
         mine = "# my layer\n- id: typert-gateway\n  config:\n    websocketHeartbeatIntervalMs: 15000\n"
@@ -3611,13 +3782,45 @@ class ClutchBlockTests(World):
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), mine)
 
+    def test_a_plugin_link_that_dangles_refuses_the_write_and_fails_verify(self) -> None:
+        self.plugin_dir.rmdir()
+        os.symlink(self.tmp / "gone" / "dsh-hooks-claude-code", self.plugin_dir)
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("no longer exists", r.detail)
+        self.assertIn("Restart clutch-web first", r.detail)
+        self.assertFalse(self.patch.exists())
+        r = self.apply(check_dsh=False)
+        self.assertEqual(r.status, "added", r)
+        checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
+        failed = [c for c in checks if c.status == "FAIL"]
+        self.assertEqual([c.name for c in failed], ["dsh --dump-config"], "the plugin cannot load, so verify says so")
+        self.assertIn("no longer exists", failed[0].detail)
+
+    def test_a_plugin_that_is_not_linked_at_all_refuses_the_write(self) -> None:
+        self.plugin_dir.rmdir()
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("is not linked under", r.detail)
+
+    def test_apply_reports_when_each_profile_reads_the_patch(self) -> None:
+        headless = self.home / ".clutch" / "dsh" / "profiles" / "headless"
+        headless.mkdir()
+        (headless / "cordis.yml").write_text("plugins: []\n")
+        (headless / "package.json").write_text('{"dsh": {"profile": {"patchReload": "startup"}}}')
+        r = self.apply()
+        self.assertEqual(r.status, "added", r)
+        self.assertIn("patchReload: headless startup, web live", r.detail)
+        self.assertIn("reaches the running web engine at once", r.detail)
+        self.assertIn("headless read it at their next start", r.detail)
+
     def test_the_engine_rejecting_the_patch_refuses_the_write(self) -> None:
         mine = "- id: a\n"
         self.patch.write_text(mine)
         self.flag.write_text("x")
         r = self.apply()
         self.assertEqual(r.status, "refused", r)
-        self.assertIn("pinned engine does not accept", r.detail)
+        self.assertIn("Clutch check does not accept", r.detail)
         self.assertEqual(self.patch.read_text(), mine)
         self.assertEqual(self.backups(self.patch.parent), [])
 
@@ -3713,7 +3916,8 @@ class ClutchBlockTests(World):
         self.assertRegex(out, r"INSTALLED\s+tools")
         self.assertRegex(out, r"ADDED\s+clutch")
         self.assertIn("NEXT       clutch", out)
-        self.assertIn("pm2 restart clutch-web", out)
+        self.assertIn("no restart for a `patchReload: live` profile", out)
+        self.assertNotIn("pm2 restart clutch-web", out)
         self.assertIn("verify: ", out)
         self.assertTrue(self.patch.is_file())
 
@@ -3749,13 +3953,27 @@ class KimiBlockTests(World):
         (self.home / ".kimi-code").mkdir()
         self.plat = T.PLATFORMS["kimi"]
         self.install(())
+        self.fake_kimi("All checked config files are valid.", 0)      # a machine without kimi is tested on its own below
 
     @property
     def cfg(self) -> Path:
         return Path(self.paths.kimi_config)
 
-    def apply(self):
-        return T.apply_platform(self.plat, self.paths, now=lambda: STAMP, timeout=TIMEOUT, minimal_path=False)
+    def apply(self, **kw):
+        return T.apply_platform(self.plat, self.paths, now=lambda: STAMP, timeout=TIMEOUT, minimal_path=False, **kw)
+
+    def verify(self):
+        return T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
+
+    @staticmethod
+    def without_comments(text: str) -> str:
+        """What Kimi Code's own TOML writer leaves of a file: every comment line gone, the tables kept."""
+        return "\n".join(ln for ln in text.split("\n") if not ln.lstrip().startswith("#"))
+
+    def fleet_entries(self, text: str | None = None) -> list:
+        import tomllib
+        hooks = tomllib.loads(text if text is not None else self.cfg.read_text()).get("hooks", [])
+        return [h for h in hooks if T.is_ours(h.get("command"))]
 
     def fake_kimi(self, body: str, rc: int = 0, log: Path | None = None) -> Path:
         d = self.tmp / "fake-kimi-bin"
@@ -3785,6 +4003,15 @@ class KimiBlockTests(World):
         self.assertTrue(mine["command"].endswith("--format kimi"))
         backups = self.backups(self.cfg.parent)
         self.assertEqual([b.read_text() for b in backups], [KIMI_CONFIG])
+
+    def test_the_backup_of_a_world_readable_config_is_owner_only(self) -> None:
+        self.cfg.write_text(KIMI_CONFIG)
+        os.chmod(self.cfg, 0o644)
+        self.apply()
+        (backup,) = self.backups(self.cfg.parent)
+        self.assertEqual(stat.S_IMODE(backup.stat().st_mode), T.BACKUP_MODE)
+        self.assertEqual(T.BACKUP_MODE, 0o600)
+        self.assertEqual(stat.S_IMODE(self.cfg.stat().st_mode), 0o644, "the config itself keeps its mode")
 
     def test_a_missing_config_is_created(self) -> None:
         r = self.apply()
@@ -3851,6 +4078,120 @@ class KimiBlockTests(World):
         self.assertEqual(r.status, "refused", r)
         self.assertIn("doctor rejects", r.detail)
         self.assertEqual(self.cfg.read_text(), KIMI_CONFIG)
+
+    # ---- Kimi Code rewrites config.toml through its own TOML writer, which drops every comment (so the markers)
+
+    def test_a_kimi_rewrite_that_strips_the_markers_is_still_found_and_not_doubled(self) -> None:
+        self.cfg.write_text(KIMI_CONFIG)
+        self.apply()
+        stripped = self.without_comments(self.cfg.read_text())
+        self.assertNotIn("fleet:begin", stripped)
+        self.cfg.write_text(stripped)
+        before = snapshot(self.tmp)
+        r = self.apply()
+        self.assertEqual(r.status, "unchanged", r)
+        self.assertIn("lost its markers", r.detail)
+        self.assertEqual(snapshot(self.tmp), before, "nothing is rewritten or backed up")
+        self.assertEqual(len(self.fleet_entries()), 1, "no second entry")
+
+    def test_verify_passes_with_a_warn_when_the_markers_were_stripped(self) -> None:
+        self.cfg.write_text(KIMI_CONFIG)
+        self.apply()
+        self.cfg.write_text(self.without_comments(self.cfg.read_text()))
+        checks = self.verify()
+        self.assertAllPass([c for c in checks if c.status != "SKIP"])
+        block = [c for c in checks if c.name == "block"]
+        self.assertEqual([c.status for c in block], ["WARN"])
+        self.assertIn("markers are gone", block[0].detail)
+        self.assertEqual([c.status for c in checks if c.name == "hook command"], ["PASS"])
+        self.assertTrue({"deny/login-PATH", "secret/login-PATH", "allow/login-PATH"} <= {c.name for c in checks})
+
+    def test_a_stale_entry_without_markers_is_replaced_in_place_by_one_marked_block(self) -> None:
+        self.cfg.write_text(KIMI_CONFIG)
+        self.apply()
+        stale = self.without_comments(self.cfg.read_text()).replace('matcher = "Bash"', 'matcher = "Nothing"')
+        self.cfg.write_text(stale)
+        self.assertFails(self.verify(), "not what this install_tools writes")
+        r = self.apply()
+        self.assertEqual(r.status, "updated", r)
+        text = self.cfg.read_text()
+        self.assertEqual(text.count("# fleet:begin hooks-fleet-guards"), 1)
+        self.assertEqual(len(self.fleet_entries(text)), 1)
+        self.assertEqual(self.fleet_entries(text)[0]["matcher"], "Bash")
+        self.assertIn('command = "terminal-notifier -message done"', text, "the owner's own entry is untouched")
+        self.assertEqual(self.apply().status, "unchanged")
+        self.assertAllPass([c for c in self.verify() if c.status != "SKIP"])
+
+    def test_duplicate_entries_collapse_into_one(self) -> None:
+        self.cfg.write_text(KIMI_CONFIG)
+        self.apply()
+        one = self.without_comments(self.cfg.read_text())
+        entry = "[[hooks]]\nevent = \"PreToolUse\"\nmatcher = \"Bash\"\ncommand = " + json.dumps(T.fleet_hook_command(self.paths, "kimi")) + "\ntimeout = 5\n"
+        self.cfg.write_text(one.rstrip("\n") + "\n\n" + entry)          # what a second unmarked apply used to append
+        self.assertEqual(len(self.fleet_entries()), 2)
+        r = self.apply()
+        self.assertEqual(r.status, "updated", r)
+        self.assertEqual(len(self.fleet_entries()), 1)
+        self.assertEqual(self.cfg.read_text().count("[[hooks]]"), 2, "the owner's entry and ours")
+
+    def test_a_duplicate_outside_an_intact_block_is_removed_and_verify_warns_first(self) -> None:
+        self.cfg.write_text(KIMI_CONFIG)
+        self.apply()
+        entry = "[[hooks]]\nevent = \"PreToolUse\"\nmatcher = \"Bash\"\ncommand = " + json.dumps(T.fleet_hook_command(self.paths, "kimi")) + "\ntimeout = 5\n"
+        self.cfg.write_text(self.cfg.read_text() + "\n" + entry)
+        self.assertIn("duplicate", {c.name for c in self.verify() if c.status == "WARN"})
+        r = self.apply()
+        self.assertEqual(r.status, "updated", r)
+        self.assertEqual(len(self.fleet_entries()), 1)
+        self.assertEqual(self.cfg.read_text().count("# fleet:begin"), 1)
+        self.assertNotIn("duplicate", {c.name for c in self.verify() if c.status == "WARN"})
+
+    def test_the_fleet_hook_in_a_form_that_is_not_edited_is_refused_never_appended(self) -> None:
+        for text in ('hooks = [{ event = "PreToolUse", matcher = "Bash", command = "%s" }]\n' % T.fleet_hook_command(self.paths, "kimi"),
+                     '[[hooks]]\nevent = "PreToolUse"\ncommand = """\n%s\n"""\n' % T.fleet_hook_command(self.paths, "kimi"),
+                     '[x]\nnote = "%s"\n' % T.fleet_hook_command(self.paths, "kimi")):
+            with self.subTest(text=text):
+                self.cfg.write_text(text)
+                r = self.apply()
+                self.assertEqual(r.status, "refused", r)
+                self.assertEqual(self.cfg.read_text(), text)
+
+    def test_literal_strings_and_a_changed_key_order_are_read_the_way_kimi_writes_them(self) -> None:
+        cmd = T.fleet_hook_command(self.paths, "kimi")
+        self.cfg.write_text(KIMI_CONFIG + "\n[[hooks]]\ntimeout = 5\ncommand = '" + cmd + "'\nmatcher = \"Bash\"\nevent = \"PreToolUse\"\n")
+        r = self.apply()
+        self.assertEqual(r.status, "unchanged", r)
+        self.assertAllPass([c for c in self.verify() if c.status != "SKIP"])
+
+    # ---- finding the kimi binary, and what happens when there is none
+
+    def test_kimi_doctor_falls_back_to_the_binary_under_kimi_code_home(self) -> None:
+        keep = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d and not os.path.exists(os.path.join(d, "kimi"))]
+        with mock.patch.dict(os.environ, {"PATH": os.pathsep.join(keep)}):
+            self.assertIsNone(T.find_kimi(str(self.home)))
+            binary = self.home / ".kimi-code" / "bin" / "kimi"
+            binary.parent.mkdir()
+            binary.write_text("#!/bin/sh\necho 'All checked config files are valid.'\nexit 0\n")
+            os.chmod(binary, 0o755)
+            self.assertEqual(T.find_kimi(str(self.home)), str(binary))
+            self.cfg.write_text(KIMI_CONFIG)
+            r = self.apply()
+            self.assertEqual(r.status, "added", r)
+            self.assertIn(f"{binary} doctor accepts", r.detail)
+
+    def test_no_kimi_binary_refuses_the_write_unless_the_check_is_switched_off(self) -> None:
+        keep = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d and not os.path.exists(os.path.join(d, "kimi"))]
+        with mock.patch.dict(os.environ, {"PATH": os.pathsep.join(keep)}):
+            self.cfg.write_text(KIMI_CONFIG)
+            r = self.apply()
+            self.assertEqual(r.status, "refused", r)
+            self.assertIn("--no-kimi-check", r.detail)
+            self.assertEqual(self.cfg.read_text(), KIMI_CONFIG)
+            r = self.apply(check_kimi=False)
+            self.assertEqual(r.status, "added", r)
+            self.assertIn("NOT checked", r.detail)
+            rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "kimi")
+            self.assertRegex(out, r"SKIP\s+kimi\s+kimi doctor")
 
     def test_kimi_not_installed_is_skipped(self) -> None:
         shutil.rmtree(self.home / ".kimi-code")

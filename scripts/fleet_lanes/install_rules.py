@@ -40,13 +40,14 @@ block's lines, and collapses every other line into a count; a contradiction show
 kind and the matched text only (the path, the temp directory and checkout words, the legacy prefix).
 Whatever is printed still goes through a credential redactor, as a second layer.
 
-Fleet Basics.  Five platforms have no other fleet instruction file (Clutch, Kimi, Vibe, Copilot CLI, OpenCode), so
-their block also carries the Fleet Basics (AGENT-SYNC pointer, seat identity, coordination, secrets, writing)
-ahead of the Lane Map.  Clutch has a fixed default seat (CLUTCH, a launcher's seat wins); the other three are
-engine-only CLIs with NO default seat and say so.  The marker family is the same `fleet-lane-map` block.
-OpenCode is a no-default platform like those three (the row is the owner's, #438).  Conductor and Muse Code are
-listed as unsupported with the reason (see PLATFORMS): each already reads a file this tool maintains, or has no
-instruction file of its own.
+Fleet Basics.  Four platforms have no other fleet instruction file (Clutch, Kimi, Vibe, Copilot CLI), so their block
+also carries the Fleet Basics (AGENT-SYNC pointer, seat identity, coordination, secrets, writing) ahead of the Lane Map.
+Clutch has a fixed default seat (CLUTCH, a launcher's seat wins); the other three are engine-only CLIs with NO default
+seat and say so.  The marker family is the same `fleet-lane-map` block.  OpenCode (the row is the owner's, #438) keeps
+the Lane Map alone:  its live file already carries hand-written Fleet Basics, a session under $HOME may load that file
+and ~/AGENTS.md together, and whether OpenCode is a seat of its own is the owner's call (board 87ca50fa), so this tool
+writes no seat text there.  Conductor and Muse Code are listed as unsupported with the reason (see PLATFORMS): each
+already reads a file this tool maintains, or has no instruction file of its own.
 
 The Codex cap.  Codex reads the first 32 KiB of AGENTS.md.  The block counts only if it ENDS inside those
 bytes: `verify` fails, and `apply` is refused (exit 2) instead of reporting `unchanged`, for a block that
@@ -169,9 +170,10 @@ PLATFORMS: tuple[Platform, ...] = (
                     "binary was not exercised with a model; start a Copilot session and ask what it loaded"),
     # OpenCode 2.x (bundled with Conductor) reads `<config dir>/AGENTS.md` as its global instruction file;
     # `opencode debug paths` prints the config dir (~/.config/opencode).  Found in the binary, not yet exercised
-    # (the platform row is the owner's, #438).  It is an engine-only CLI with no default seat, so it gets the
-    # no-default Fleet Basics ahead of the Lane Map, not the Lane Map alone.
-    Platform("opencode", ".config/opencode/AGENTS.md", "nodefault", "OpenCode (bundled with Conductor)",
+    # (the platform row is the owner's, #438).  The Lane Map block alone, on purpose:  the live file already holds
+    # hand-written Fleet Basics, and a seat statement for OpenCode (no default, or its own OPENCODE seat) is the
+    # owner's decision, not this tool's.
+    Platform("opencode", ".config/opencode/AGENTS.md", "full", "OpenCode (bundled with Conductor)",
              tool_dir=".config/opencode", caveat="UNVERIFIED: OpenCode also walks AGENTS.md up from the session directory to $HOME (read from the "
                     "binary, not run with a model), so a session under $HOME may load this file and ~/AGENTS.md, "
                     "which is the same Lane Map twice; it does not read ~/.claude/CLAUDE.md as rules"),

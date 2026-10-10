@@ -5,7 +5,8 @@ marked block (`mcp-agent-sync` from install_mcp, `hooks-fleet-guards` from insta
 anything outside its block.
 
 One fact shapes everything here, measured with the pinned engine on 2026-10-10:  an EMPTY patch file, or one that
-holds only comments, makes `dsh --profile <name> --dump-config` exit 1, so the next start of `clutch-web` would fail.
+holds only comments, makes `dsh --profile <name> --dump-config` exit 1, so the engine would reject it (at once for a
+`patchReload: live` profile such as clutch-web's `web`, at the next start for a `startup` one).
 `[]` is accepted.  So a patch the fleet creates always carries a block, and when the last block goes and nothing but
 comments is left, the file is deleted (the backup keeps its text) instead of being left to break the engine.
 

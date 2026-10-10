@@ -86,18 +86,98 @@ class FindTests(World):
         self.assertEqual(DC.profile_names(str(self.tmp / "missing")), [])
 
 
+def link_plugin(profiles: Path, package: str, target: Path | None = None) -> Path:
+    """<profiles>/node_modules/<package> as a link to a real folder (or to `target`, which may not exist)."""
+    link = profiles / "node_modules" / Path(*package.split("/"))
+    link.parent.mkdir(parents=True, exist_ok=True)
+    real = target or (profiles.parent / "pkgs" / package.replace("/", "__"))
+    if target is None:
+        real.mkdir(parents=True, exist_ok=True)
+    os.symlink(real, link)
+    return link
+
+
+class ResolveAndReloadTests(World):
+    def set_reload(self, name: str, value) -> None:
+        pkg = {"name": "dsh-profile-" + name, "dsh": {"profile": {"bundles": []}}}
+        if value is not None:
+            pkg["dsh"]["profile"]["patchReload"] = value
+        (self.profiles / name / "package.json").write_text(json.dumps(pkg))
+
+    def test_a_plugin_must_resolve_under_the_real_profiles_node_modules(self) -> None:
+        self.assertEqual(len(DC.unresolved(str(self.profiles), [PLUGIN])), 1)
+        self.assertIn("not linked under", DC.unresolved(str(self.profiles), [PLUGIN])[0])
+        link_plugin(self.profiles, PLUGIN)
+        self.assertEqual(DC.unresolved(str(self.profiles), [PLUGIN]), [])
+
+    def test_a_link_to_a_path_that_is_gone_is_named_as_such(self) -> None:
+        link_plugin(self.profiles, PLUGIN, self.tmp / "gone" / "pnpm" / "dsh-hooks-claude-code")
+        (line,) = DC.unresolved(str(self.profiles), [PLUGIN])
+        self.assertIn("no longer exists", line)
+        self.assertIn(str(self.tmp / "gone"), line)
+
+    def test_every_expected_plugin_is_checked(self) -> None:
+        link_plugin(self.profiles, PLUGIN)
+        other = "@deepseek-ai/dsh-mcp-client"
+        self.assertEqual(len(DC.unresolved(str(self.profiles), [PLUGIN, other])), 1)
+
+    def test_patch_reload_is_read_from_each_profile(self) -> None:
+        self.set_reload("web", "live")
+        self.set_reload("headless", "startup")
+        self.assertEqual(DC.patch_reload_modes(str(self.profiles)), {"headless": "startup", "web": "live"})
+        self.set_reload("web", None)
+        (self.profiles / "headless" / "package.json").write_text("{not json")
+        self.assertEqual(DC.patch_reload_modes(str(self.profiles)), {"headless": "unknown", "web": "live (default)"})
+        self.set_reload("web", "sometimes")
+        self.assertEqual(DC.patch_reload_modes(str(self.profiles))["web"], "unknown")
+
+    def test_the_note_says_which_engine_gets_the_write_at_once(self) -> None:
+        self.set_reload("web", "live")
+        self.set_reload("headless", "startup")
+        note = DC.reload_note(str(self.profiles))
+        self.assertIn("headless startup, web live", note)
+        self.assertIn("reaches the running web engine at once", note)
+        self.assertIn("headless read it at their next start", note)
+        self.assertNotIn("read once", note)
+        self.assertIn("unknown", DC.reload_note(str(self.tmp / "none")))
+
+    def test_check_patch_refuses_an_unresolved_plugin_without_starting_the_engine(self) -> None:
+        link_plugin(self.profiles, PLUGIN, self.tmp / "gone")
+        ok, detail = DC.check_patch(self.stub(), PATCH, str(self.profiles), [PLUGIN], timeout=60)
+        self.assertFalse(ok)
+        self.assertIn("no longer exists", detail)
+        self.assertIn("Restart clutch-web first", detail)
+        self.assertEqual(self.calls(), [], "the engine was not run")
+
+    def test_check_patch_passes_when_the_plugin_resolves_and_reports_when_the_patch_is_read(self) -> None:
+        link_plugin(self.profiles, PLUGIN)
+        self.set_reload("web", "live")
+        self.set_reload("headless", "startup")
+        ok, detail = DC.check_patch(self.stub(), PATCH, str(self.profiles), [PLUGIN], timeout=60)
+        self.assertTrue(ok, detail)
+        self.assertIn("merge-and-parse", detail)
+        self.assertIn("patchReload: headless startup, web live", detail)
+
+    def test_check_patch_still_fails_a_patch_the_engine_rejects(self) -> None:
+        link_plugin(self.profiles, PLUGIN)
+        ok, detail = DC.check_patch(self.stub(), "# only a comment\n", str(self.profiles), [PLUGIN], timeout=60)
+        self.assertFalse(ok)
+        self.assertIn("exited 1", detail)
+
+
 class DumpConfigTests(World):
     def test_every_profile_must_mount_the_plugin(self) -> None:
         ok, detail = DC.dump_config(self.stub(), PATCH, str(self.profiles), [PLUGIN], timeout=60)
         self.assertTrue(ok, detail)
-        self.assertEqual(detail, f"headless, web mount {PLUGIN}")
+        self.assertEqual(detail, f"headless, web: the patch merges and the dump names {PLUGIN} "
+                                 "(a merge-and-parse check, not a plugin load)")
         self.assertEqual([c["argv"] for c in self.calls()],
                          [["--profile", "headless", "--dump-config"], ["--profile", "web", "--dump-config"]])
 
     def test_a_patch_without_the_plugin_fails(self) -> None:
         ok, detail = DC.dump_config(self.stub(), "- id: other\n", str(self.profiles), [PLUGIN], timeout=60)
         self.assertFalse(ok)
-        self.assertIn("does not mount", detail)
+        self.assertIn("does not name", detail)
 
     def test_an_engine_that_exits_nonzero_fails_with_its_last_stderr_line(self) -> None:
         ok, detail = DC.dump_config(self.stub("crash"), PATCH, str(self.profiles), [PLUGIN], timeout=60)

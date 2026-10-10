@@ -34,8 +34,9 @@ and kimi, and `verify` the same.
 The fleet hook.  `fleet-guard-hook` (fleet_lanes/fleet_guard_hook.py) is the lane guard AND the secret guard in one
 command:  the lane guard, then the secret guard (scripts/hooks/secret-guard-pretooluse.py, copied into the stable dir
 as fleet_lanes/secret_guard.py: any `ps`, a dump of a secret-bearing file, an authorization value in arguments, a
-byte-dump of a key variable), and the first deny wins.  It has no prefilter, because the secret guard reads every
-shell call.  The harnesses that were added after the first five use it: Muse Code (its plugin wrapper runs it), and
+byte-dump of a key variable), and the first deny wins.  Its shell prefilter is the lane guard's trigger words plus the
+words without which no secret-guard rule can fire (SECRET_WORDS, and a `ps` followed by white space), so an ordinary
+shell call is answered in `sh` without starting Python.  The harnesses that were added after the first five use it: Muse Code (its plugin wrapper runs it), and
 clutch and kimi, which are marked blocks in a file this tool does not own.  Claude Code and Codex already run the
 secret guard as a hook of their own, so they keep `lane-guard-hook` alone.
 
@@ -43,12 +44,17 @@ clutch and kimi.  Each is ONE marked block (`# fleet:begin hooks-fleet-guards` .
 and nothing outside it is touched:
     clutch  ~/.clutch/dsh/cordis.patch.yml   an `- insert:` entry that mounts @deepseek-ai/dsh-hooks-claude-code with
             configPath = <stable>/clutch/hooks.json (a fleet-only hooks.json, matcher `bash`; never ~/.claude/settings.json,
-            which carries Claude-only hooks).  The engine reads the patch once, at start, and an empty or comment-only
-            patch makes it exit, so before it writes, `apply clutch` runs the pinned `dsh --profile P --dump-config` on a
-            scratch copy of the profiles (dsh_check) and refuses unless every profile mounts the plugin.
+            which carries Claude-only hooks).  A profile with `patchReload: live` (clutch-web's `web`) watches this file,
+            so every write is a live deploy into the running engine; a `startup` profile reads it at its next start.  An
+            empty or comment-only patch makes the engine exit, so before it writes, `apply clutch` (1) refuses unless each
+            plugin package resolves under the real ~/.clutch/dsh/profiles/node_modules (the engine repairs a dangling link
+            only when it boots: restart clutch-web first), and (2) runs the pinned `dsh --profile P --dump-config` on a
+            scratch copy of the profiles (dsh_check), a merge-and-parse check, not a plugin load.
     kimi    ~/.kimi-code/config.toml          a `[[hooks]]` entry (event PreToolUse, matcher Bash, the fleet hook with
-            `--format kimi`: exit code 2 with the reason on stderr, which Kimi Code documents).  When tomllib exists the new
-            file must parse, and when `kimi` is on PATH `kimi doctor` must accept a scratch copy of it.
+            `--format kimi`: exit code 2 with the reason on stderr, which Kimi Code documents).  Kimi rewrites its own
+            config without comments, so the entry is found by its content, never by the markers (toml_hooks).  When tomllib
+            exists the new file must parse, and `kimi doctor` (on PATH, else ~/.kimi-code/bin/kimi) must accept a scratch
+            copy of it; with no kimi binary the write is refused unless --no-kimi-check is given.
 Neither is in `all`, because each belongs to a tool the owner may not run.  `apply clutch` and `apply kimi` run
 `apply tools` first, like muse.  Whether the tool then FIRES the hook is not visible from here (UNVERIFIED): the live
 proof is to ask the tool for a `ps` in a new session.
@@ -199,6 +205,7 @@ from typing import Callable, Mapping, Sequence
 from . import cordis_patch as CP
 from . import dsh_check as DC
 from . import marked_block as MB
+from . import toml_hooks as TH
 
 __all__ = [
     "EXIT_OK", "EXIT_FAIL", "EXIT_USAGE", "HOOK_NAME", "PLATFORMS", "SUPPORTED_KEYS",
@@ -244,9 +251,11 @@ _MUSE_FILES = (MUSE_SEAT_NAME, MUSE_MANIFEST, MUSE_WRAPPER)
 MUSE_EXPERIMENTAL_ENV = "MUSE_EXPERIMENTAL_PLUGINS"
 
 HOOK_TIMEOUT_S = 5            # timeout written into each platform config (seconds)
+MUSE_HOOK_TIMEOUT_MS = 15000  # Muse runs the wrapper on EVERY tool call; three times the others, because a timeout's outcome is unknown
 PROBE_TIMEOUT_S = 5.0         # per probe subprocess
 MINIMAL_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"   # what a GUI-launched app typically has
 BACKUP_TAG = "bak-lane-guard"
+BACKUP_MODE = 0o600           # a backup is owner-only whatever the original's mode
 
 # The probe commands.  They are the fixture rows `spec-gh-hoghunter` (deny) and `spec-third-party`
 # (allow) of tests/fixtures_guard.py, copied here because the stable dir has no tests.  The test
@@ -575,7 +584,8 @@ def _lower_lookalikes(letters: str) -> tuple:
 
 
 def render_hook_shim(facts: GuardFacts | None = None, *, module: str | None = None,
-                     purpose: Sequence[str] | None = None) -> str:
+                     purpose: Sequence[str] | None = None, extra_words: Sequence[str] = (),
+                     extra_globs: Sequence[str] = ()) -> str:
     """lane-guard-hook.  Relocatable: it derives its directory from $0, so a staged copy runs itself.
     `module` and `purpose` make the same script for another hook module (fleet-guard-hook); with empty
     GuardFacts there is no prefilter.
@@ -587,7 +597,11 @@ def render_hook_shim(facts: GuardFacts | None = None, *, module: str | None = No
     of the guard's: every word in any ASCII letter case, a JSON \\u escape (it can spell any letter), and the few
     non-ASCII letters that re.IGNORECASE folds onto them.  A payload over the guard's own size cap skips the match.
     Whatever is not provably free of a trigger goes to Python as the original bytes, and the guard decides exactly
-    as it would have without the shell."""
+    as it would have without the shell.
+
+    `extra_words` (matched in any ASCII letter case) and `extra_globs` (case patterns, used as given) widen the match
+    for a hook that runs a second guard (fleet-guard-hook adds the secret guard's).  They change nothing when the
+    lane guard's own words are unknown: `facts.words` empty means no prefilter at all."""
     facts = read_guard_facts() if facts is None else facts
     boot = _PY_BOOT.format(module=module or f"{PACKAGE}.lane_guard_hook")
     out = [
@@ -630,8 +644,10 @@ def render_hook_shim(facts: GuardFacts | None = None, *, module: str | None = No
         out.append(f'  if [ "${{#_lg_in}}" -le {facts.max_chars} ]; then')
         indent = "    "
     out.append(f"{indent}case $_lg_in in")
-    for word in facts.words:
+    for word in tuple(facts.words) + tuple(w for w in extra_words if w not in facts.words):
         out.append(f"{indent}  {_ci_glob(word)}) ;;")
+    for glob in extra_globs:
+        out.append(f"{indent}  {glob}) ;;")
     out.append(f"{indent}  {_JSON_U_ESCAPE}) ;;")
     for ch in facts.lookalikes:
         out.append(f"{indent}  *{ch}*) ;;")
@@ -645,14 +661,42 @@ def render_hook_shim(facts: GuardFacts | None = None, *, module: str | None = No
 FLEET_SHIM_PURPOSE = (
     "# Runs the lane guard and then the secret guard from THIS directory's copy of fleet_lanes, never from the",
     "# caller's working directory (-I).  The first deny wins.  Both allow on any internal error, so `install_tools",
-    "# verify` is the proof that it denies.  There is no prefilter: the secret guard reads every shell call.",
+    "# verify` is the proof that it denies.  The prefilter below is the lane guard's trigger words plus the words",
+    "# without which no secret-guard rule can fire.",
     "# Arguments (--format FMT, --exit2) pass through.",
 )
 
+# The words without which no rule of the secret guard (scripts/hooks/secret-guard-pretooluse.py) can fire, so a shell
+# call with none of them (and no `ps` followed by white space, and no JSON \u escape) cannot be denied by it.  Matched
+# in any ASCII letter case, which is a superset of the guard's case-sensitive patterns.  Rule A (a dump of a secret
+# file) and rule D (stderr merged into one) need a secret path:  .secrets, credentials, client_info, .env, id_rsa,
+# .pem, .p12, .key.  Rule B needs Bearer or Authorization.  Rule C2 needs pgrep.  Rule E needs a variable whose name
+# holds KEY, TOKEN, SECRET, PASSWORD, PASSWD, DSN (APIKEY and API_KEY hold KEY).  Rule C is `ps` followed by white space:
+# SECRET_PS_GLOBS.  The tests check these against the guard's own tables and run every rule through the shim.
+SECRET_WORDS = ("bearer", "authorization", "pgrep", ".secrets", "credentials", "client_info", ".env", "id_rsa",
+                ".pem", ".p12", "key", "token", "secret", "passw", "dsn")
 
-def render_fleet_hook_shim() -> str:
-    """fleet-guard-hook: the same script as lane-guard-hook, for fleet_lanes.fleet_guard_hook, with no prefilter."""
-    return render_hook_shim(GuardFacts(), module=f"{PACKAGE}.fleet_guard_hook", purpose=FLEET_SHIM_PURPOSE)
+
+def _secret_ps_globs() -> tuple:
+    """`ps` followed by white space, as Python's \\s reads it:  an ASCII space, a backslash (a JSON \\t, \\n, \\r, \\f or
+    \\v escape; a \\u escape is caught by the general rule), or a non-ASCII white-space character."""
+    space = re.compile(r"\s")
+    wide = [chr(c) for c in range(0x80, 0x10000) if not 0xD800 <= c < 0xE000 and space.fullmatch(chr(c))]
+    return ("*[pP][sS]' '*", "*[pP][sS]'\\'*") + tuple(f"*[pP][sS]{ch}*" for ch in wide)
+
+
+SECRET_PS_GLOBS = _secret_ps_globs()
+
+
+def render_fleet_hook_shim(facts: GuardFacts | None = None) -> str:
+    """fleet-guard-hook: the same script as lane-guard-hook, for fleet_lanes.fleet_guard_hook.  Its prefilter is the
+    lane guard's (`facts`, read from the guard) widened by the secret guard's words (SECRET_WORDS, SECRET_PS_GLOBS), so
+    an ordinary shell call exits 0 in `sh` without starting Python, and every call either guard could deny reaches it.
+    With no lane facts there is no prefilter at all."""
+    facts = read_guard_facts() if facts is None else facts
+    return render_hook_shim(GuardFacts(facts.words, facts.lookalikes, facts.max_chars, (), facts.problems),
+                            module=f"{PACKAGE}.fleet_guard_hook", purpose=FLEET_SHIM_PURPOSE,
+                            extra_words=SECRET_WORDS, extra_globs=SECRET_PS_GLOBS)
 
 
 def render_clutch_hooks(stable: str) -> str:
@@ -701,7 +745,7 @@ def render_muse_manifest(stable: str) -> str:
                 "id": "lane-guard",
                 "event": "PreToolUse",
                 "command": ["/bin/sh", os.path.join(stable, *MUSE_WRAPPER.split("/"))],
-                "timeoutMs": 5000,
+                "timeoutMs": MUSE_HOOK_TIMEOUT_MS,
                 "statusMessage": "Checking fleet guards",
             }],
             "mcpServers": [],
@@ -937,7 +981,7 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
     files[REGISTRY_NAME] = reg_bytes
     facts = read_guard_facts(src.scripts_dir)
     files[HOOK_NAME] = render_hook_shim(facts).encode("utf-8")
-    files[FLEET_HOOK_NAME] = render_fleet_hook_shim().encode("utf-8")
+    files[FLEET_HOOK_NAME] = render_fleet_hook_shim(facts).encode("utf-8")
     secret_src = os.path.join(src.scripts_dir, *SECRET_GUARD_SOURCE)
     try:
         files[f"{PACKAGE}/{SECRET_GUARD_MODULE}"] = _read_bytes(secret_src)
@@ -1495,7 +1539,11 @@ PLATFORMS: dict[str, Platform] = {p.key: p for p in (
                     "Whether `muse plugins install` keeps the absolute hook command (it copies the bundle into its "
                     "cache), and whether an edited wrapper in the stable dir needs a re-approval.",
                     "That Muse names its only shell tool bash (lower case); the wrapper also accepts the other shell "
-                    "tool words the guard knows."),
+                    "tool words the guard knows.",
+                    "What Muse does when the hook times out or crashes (`timeoutMs` is 15000 here): fail-closed would "
+                    "block shell calls under load, fail-open would switch the guards off exactly then.  The binary's "
+                    "strings did not settle it.  The wrapper and fleet-guard-hook answer an ordinary call in `sh` "
+                    "without starting Python, so a timeout is rare."),
     ),
     Platform(
         "clutch", "Clutch (DSH engine, cordis patch)", "claude", "dsh", "claude", "PreToolUse", "bash",
@@ -1504,12 +1552,15 @@ PLATFORMS: dict[str, Platform] = {p.key: p for p in (
                "profile.  It mounts @deepseek-ai/dsh-hooks-claude-code with a fleet-only hooks.json in the stable dir "
                "(matcher `bash`, the engine's shell tool).  It never points the bridge at ~/.claude/settings.json: that "
                "file carries Claude-only hooks, such as the session-start seat hook.",
-               "Before it writes, `apply clutch` runs the pinned `dsh --profile P --dump-config` for every profile on a "
-               "scratch copy of the profiles and refuses unless each one mounts the plugin.  An empty or comment-only "
-               "patch makes the engine exit, so the file this tool creates always holds a block, and removing the last "
-               "block removes the file.",
-               "The engine reads the patch once, at start.  Restart clutch-web afterwards (pm2 restart clutch-web, yours "
-               "to run)."),
+               "Before it writes, `apply clutch` refuses unless the plugin package resolves under the real "
+               "~/.clutch/dsh/profiles/node_modules (the engine repairs a dangling link only when it boots, so restart "
+               "clutch-web first), then runs the pinned `dsh --profile P --dump-config` for every profile on a scratch "
+               "copy of the profiles: a merge-and-parse check, not a plugin load.  An empty or comment-only patch makes "
+               "the engine exit, so the file this tool creates always holds a block, and removing the last block removes "
+               "the file.",
+               "A profile with `patchReload: live` (clutch-web's `web`) watches this file, so the write reaches the "
+               "running engine at once;  a `startup` profile reads it at its next start.  `apply` prints each profile's "
+               "mode."),
         unverified=("That a tool call made through the web UI or the ACP bridge reaches the hook with `command` in "
                     "tool_input (the README says the payload is Claude's; the live proof is a `ps` in a new Clutch "
                     "session).",
@@ -1524,7 +1575,12 @@ PLATFORMS: dict[str, Platform] = {p.key: p for p in (
                "kimi` (exit 2, reason on stderr, nothing on stdout).  Any other exit, a crash or a timeout allows "
                "(fail-open).",
                "The block is checked before it is written: the new file must parse as TOML when tomllib exists, and "
-               "`kimi doctor` must accept a scratch copy of it (the real config is never passed to the real home)."),
+               "`kimi doctor` (on PATH, else ~/.kimi-code/bin/kimi) must accept a scratch copy of it (the real config is "
+               "never passed to the real home); with no kimi binary the write is refused unless --no-kimi-check.",
+               "Kimi Code rewrites its own config.toml without comments, which deletes the markers.  The entry is "
+               "therefore found by its content (a [[hooks]] table whose command is the fleet hook), never by the "
+               "markers: a current entry that lost them is left as it is, a stale one is replaced where it stands, "
+               "duplicates collapse into one, and the hook named in any other form (an inline hooks array) is refused."),
         unverified=("That Kimi names its shell tool Bash (its hooks page uses Bash in the example, and the matcher is a "
                     "regex on the tool name).",
                     "That a running session picks up the new block: start a new session."),
@@ -1534,8 +1590,8 @@ PLATFORMS: dict[str, Platform] = {p.key: p for p in (
 NEXT_STEPS: dict[str, str] = {
     "codex": "review and trust the new hook with /hooks in Codex; until then it is probably inactive",
     "claude": "start a new Claude Code session (a running one may keep the hooks it started with)",
-    "clutch": "restart the engine so it re-reads its patch (pm2 restart clutch-web, yours to run); then ask a new "
-              "Clutch session to run `ps` and expect a refusal",
+    "clutch": "no restart for a `patchReload: live` profile (clutch-web's web: it watches the file);  a `startup` "
+              "profile reads it at its next start.  Ask a new Clutch session to run `ps` and expect a refusal",
     "kimi": "start a new Kimi Code session, ask it to run `ps`, and expect a refusal",
 }
 PLATFORM_ORDER: tuple[str, ...] = tuple(PLATFORMS)
@@ -2268,8 +2324,7 @@ def _make_backup(real: str, raw: bytes, mode: int | None, stamp: str) -> str:
                 fh.write(raw)
                 fh.flush()
                 os.fsync(fh.fileno())
-            if mode is not None:
-                os.chmod(name, mode)
+            os.chmod(name, BACKUP_MODE)     # owner-only whatever the original's mode (a settings file may hold a token)
         except BaseException:
             try:
                 os.unlink(name)
@@ -2282,7 +2337,8 @@ def _make_backup(real: str, raw: bytes, mode: int | None, stamp: str) -> str:
 
 def apply_platform(plat: Platform, paths: Paths, *, now: Callable[[], float] = time.time,
                    timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True, shim_proven: bool = False,
-                   follow_symlinks: bool = False, dsh_bin: str | None = None, check_dsh: bool = True) -> Result:
+                   follow_symlinks: bool = False, dsh_bin: str | None = None, check_dsh: bool = True,
+                   check_kimi: bool = True) -> Result:
     """Merge the hook into the platform's config, but only if the installed shim passes the probes for this
     platform's own format right now.  The `apply` command never sets `shim_proven` (it skips those probes):
     `apply tools` proves a staged copy, and an `unchanged` tools result proves nothing about this run.  Only
@@ -2291,7 +2347,7 @@ def apply_platform(plat: Platform, paths: Paths, *, now: Callable[[], float] = t
         return apply_muse(paths)
     if plat.kind == "block":
         return apply_block(plat, paths, now=now, timeout=timeout, minimal_path=minimal_path, dsh_bin=dsh_bin,
-                           check_dsh=check_dsh)
+                           check_dsh=check_dsh, check_kimi=check_kimi)
     plan = plan_platform(plat, paths, follow_symlinks=follow_symlinks)
     if plan.action == "unsupported":
         return Result(plat.key, "unsupported", plan.reason)
@@ -2403,7 +2459,7 @@ def verify_tools(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S) -> list[Chec
                                                  "lookalikes and the \\u escape, all from the installed guard.py"))
     else:
         out.append(Check(t, "prefilter", "WARN", "; ".join(facts.problems) or "the installed guard has no trigger words"))
-    out.append(_check_shim(t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim()))
+    out.append(_check_shim(t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim(facts)))
     if f"{PACKAGE}/{SECRET_GUARD_MODULE}" in have:
         out.append(Check(t, "secret guard", "PASS", f"{PACKAGE}/{SECRET_GUARD_MODULE} is in the stable copy"))
     else:
@@ -2718,7 +2774,7 @@ def verify_muse(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path:
     facts = read_guard_facts(paths.stable)
     out.append(_check_text(t, "plugin.json", paths.muse_manifest, render_muse_manifest(paths.stable), False))
     out.append(_check_text(t, "hooks/lane-guard.sh", paths.muse_wrapper, render_muse_wrapper(paths.stable, facts), True))
-    out.append(_check_shim(t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim()))
+    out.append(_check_shim(t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim(facts)))
     out.append(_check_text(t, "shim muse-seat", paths.muse_seat, render_muse_seat(), True))
     argv: list | None = None
     try:
@@ -2816,6 +2872,11 @@ def block_body(plat: Platform, paths: Paths) -> list[str]:
             f"timeout = {HOOK_TIMEOUT_S}"]
 
 
+def kimi_fields(plat: Platform, paths: Paths) -> dict:
+    """The four fields of the Kimi `[[hooks]]` entry this tool writes, as values (what a parse of the file gives)."""
+    return {"event": "PreToolUse", "matcher": "Bash", "command": block_command(plat, paths), "timeout": HOOK_TIMEOUT_S}
+
+
 @dataclass
 class BlockPlan:
     key: str
@@ -2881,7 +2942,9 @@ def plan_block(plat: Platform, paths: Paths) -> BlockPlan:
                 return bp
             new, bp.action = CP.upsert(text, BLOCK_NAME, BLOCK_TOOL, bp.body)
         else:
-            new, bp.action = MB.upsert_block(text, BLOCK_NAME, BLOCK_TOOL, bp.body)
+            # Kimi rewrites its config.toml without comments, so the entry is found by what it says, not by markers
+            new, bp.action, extra = TH.plan(text, BLOCK_NAME, BLOCK_TOOL, bp.body, kimi_fields(plat, paths), is_ours)
+            bp.notes.extend(extra)
     except MB.BlockError as exc:
         bp.state, bp.reason = "refuse", f"{path}: {exc}"
         return bp
@@ -2895,12 +2958,23 @@ def plan_block(plat: Platform, paths: Paths) -> BlockPlan:
     return bp
 
 
-def _kimi_doctor(text: str, timeout: float) -> tuple[str, str]:
+def find_kimi(home: str) -> str | None:
+    """The `kimi` binary: the one on PATH, else the one Kimi Code installs under its own home (a clean shell or a
+    launchd job has no ~/.local/bin on PATH, and ~/.local/bin/kimi is only a link to this file).  The home under
+    test, never the real $KIMI_CODE_HOME."""
+    found = shutil.which("kimi")
+    if found:
+        return found
+    cand = os.path.join(home, ".kimi-code", "bin", "kimi")
+    return cand if os.path.isfile(cand) and os.access(cand, os.X_OK) else None
+
+
+def _kimi_doctor(text: str, timeout: float, home: str) -> tuple[str, str]:
     """(PASS | FAIL | WARN | SKIP, detail): `kimi doctor` on a scratch copy of config.toml, in a scratch home, with
     auto-install off, so the real config and the real binary are never touched."""
-    kimi = shutil.which("kimi")
+    kimi = find_kimi(home)
     if not kimi:
-        return "SKIP", "kimi is not on PATH, so `kimi doctor` was not run"
+        return "SKIP", "kimi was not found (not on PATH, not at ~/.kimi-code/bin/kimi), so `kimi doctor` was not run"
     with tempfile.TemporaryDirectory(prefix="fleet-kimi-doctor-") as scratch:
         kh = os.path.join(scratch, "kh")
         os.makedirs(kh, mode=0o700)
@@ -2925,14 +2999,14 @@ def _clutch_dsh(new_text: str, paths: Paths, dsh_bin: str | None, timeout: float
     binary = dsh_bin or DC.find_dsh(paths.home)
     if not binary:
         return "SKIP", ("the pinned dsh was not found at ~/apps/clutch-runtime/node_modules/.bin/dsh (pass --dsh PATH)")
-    ok, detail = DC.dump_config(binary, new_text, os.path.join(paths.home, ".clutch", "dsh", "profiles"),
+    ok, detail = DC.check_patch(binary, new_text, os.path.join(paths.home, ".clutch", "dsh", "profiles"),
                                 ("@deepseek-ai/dsh-hooks-claude-code",), timeout=max(timeout, DC.DEFAULT_TIMEOUT))
     return ("PASS" if ok else "FAIL"), detail
 
 
 def apply_block(plat: Platform, paths: Paths, *, now: Callable[[], float] = time.time,
                 timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True, dsh_bin: str | None = None,
-                check_dsh: bool = True) -> Result:
+                check_dsh: bool = True, check_kimi: bool = True) -> Result:
     """Write this platform's marked block.  The fleet shim is probed right now (deny, allow and a `ps`), the new text
     is validated by the tool's own checker, a backup comes first, and the write is atomic."""
     bp = plan_block(plat, paths)
@@ -2954,24 +3028,30 @@ def apply_block(plat: Platform, paths: Paths, *, now: Callable[[], float] = time
         return Result(plat.key, "refused", "the installed fleet hook shim fails its probes, so it will not be wired in: "
                                            + bad[0].detail)
     if bp.action == "none":
-        return Result(plat.key, "unchanged", f"{bp.path} already has the block")
+        return Result(plat.key, "unchanged", f"{bp.path} already has the " + ("entry" if bp.notes else "block")
+                      + "".join("; " + n for n in bp.notes))
     assert bp.new_text is not None
     notes: list[str] = []
     if plat.key == "clutch":
         if check_dsh:
             status, detail = _clutch_dsh(bp.new_text, paths, dsh_bin, timeout)
             if status == "FAIL":
-                return Result(plat.key, "refused", f"the pinned engine does not accept the new patch: {detail}")
+                return Result(plat.key, "refused", f"the Clutch check does not accept the new patch: {detail}")
             if status == "SKIP":
                 return Result(plat.key, "refused", f"{detail}; or pass --no-dsh-check to write the patch unproven")
             notes.append(detail)
         else:
             notes.append("the patch was NOT checked with the engine (--no-dsh-check)")
     else:
-        status, detail = _kimi_doctor(bp.new_text, timeout)
-        if status == "FAIL":
-            return Result(plat.key, "refused", detail)
-        notes.append(detail)
+        if check_kimi:
+            status, detail = _kimi_doctor(bp.new_text, timeout, paths.home)
+            if status == "FAIL":
+                return Result(plat.key, "refused", detail)
+            if status == "SKIP":
+                return Result(plat.key, "refused", f"{detail}; or pass --no-kimi-check to write the entry unproven")
+            notes.append(detail)
+        else:
+            notes.append("config.toml was NOT checked with `kimi doctor` (--no-kimi-check)")
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
     backup: str | None = None
     try:
@@ -2997,6 +3077,7 @@ def apply_block(plat: Platform, paths: Paths, *, now: Callable[[], float] = time
             pass
         return Result(plat.key, "failed", f"{bp.path} failed validation after the write; the original was restored", backup)
     detail = bp.path + (f" (backup {backup})" if backup else " (new file)")
+    notes = bp.notes + notes
     if notes:
         detail += "; " + "; ".join(notes)
     return Result(plat.key, "added" if bp.action in ("create", "append") else "updated", detail, backup)
@@ -3012,15 +3093,14 @@ def _block_command_from_file(plat: Platform, paths: Paths, text: str) -> tuple[s
         except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
             return None, f"cannot read the hook command from {paths.clutch_hooks}: {exc}"
         return (cmd, "") if isinstance(cmd, str) else (None, f"{paths.clutch_hooks} has no command string")
-    body = MB.block_body(text, BLOCK_NAME) or ()
-    for line in body:
-        m = re.match(r'^command = (".*")\s*$', line)
-        if m:
-            try:
-                return json.loads(m.group(1)), ""
-            except ValueError as exc:
-                return None, f"the block's command line is not a string literal ({exc})"
-    return None, "the block has no command line"
+    try:
+        info = TH.inspect(text, BLOCK_NAME, kimi_fields(plat, paths), is_ours)
+    except MB.BlockError as exc:
+        return None, str(exc)
+    if not info.ours:
+        return None, "no [[hooks]] entry of ours has a command line"
+    cmd = info.ours[0].command
+    return (cmd, "") if cmd else (None, "the fleet [[hooks]] entry has no readable command string")
 
 
 def verify_block(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True,
@@ -3037,19 +3117,43 @@ def verify_block(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIMEOUT
         return [Check(t, "block", "SKIP", f"not wired: {path} does not exist, so there is no `{BLOCK_NAME}` block; run `apply {t}`")]
     except (OSError, UnicodeDecodeError) as exc:
         return [Check(t, "block", "FAIL", f"{path} cannot be read ({exc}); no `{BLOCK_NAME}` block installed")]
+    info: TH.Inspection | None = None
     try:
-        body = MB.block_body(text, BLOCK_NAME)
+        if plat.key == "kimi":
+            # Kimi rewrites config.toml without comments, so the markers can be gone while the hook is still wired:
+            # the entry is found by what it says (see toml_hooks)
+            info = TH.inspect(text, BLOCK_NAME, kimi_fields(plat, paths), is_ours)
+            body = MB.block_body(text, BLOCK_NAME) if info.state == "block" else None
+            not_wired = info.state == "none"
+        else:
+            body = MB.block_body(text, BLOCK_NAME)
+            not_wired = body is None
     except MB.BlockError as exc:
         return [Check(t, "block", "FAIL", f"{path}: {exc}")]
-    if body is None:
+    if not_wired:
         # Opt-in, like muse: the tool is installed but nobody ran `apply {t}`, which is not a broken install.  A bare
         # verify reads it as a skip; naming the platform turns that lone SKIP into a FAIL (see _verify_targets).
         return [Check(t, "block", "SKIP", f"not wired: no `{BLOCK_NAME}` block in {path}; run `apply {t}`")]
     out: list[Check] = []
-    if tuple(body) != tuple(block_body(plat, paths)):
+    if info is not None and info.state == "stripped":
+        if info.current:
+            out.append(Check(t, "block", "WARN", f"{path} holds the current fleet [[hooks]] entry, but its `{BLOCK_NAME}` "
+                                                 "markers are gone (Kimi Code rewrites config.toml without comments); "
+                                                 "the hook is still wired"))
+        else:
+            out.append(Check(t, "block", "FAIL", f"the fleet [[hooks]] entr{'y' if len(info.ours) == 1 else 'ies'} in {path} "
+                                                 f"({len(info.ours)}) is not what this install_tools writes; re-run `apply {t}`"))
+    elif tuple(body or ()) != tuple(block_body(plat, paths)):
         out.append(Check(t, "block", "FAIL", f"the block in {path} is not what this install_tools writes; re-run `apply {t}`"))
     else:
         out.append(Check(t, "block", "PASS", f"{path} holds the current `{BLOCK_NAME}` block"))
+    if info is not None and info.state == "block" and info.outside:
+        out.append(Check(t, "duplicate", "WARN", f"{len(info.outside)} more fleet [[hooks]] entr"
+                                                 f"{'y' if len(info.outside) == 1 else 'ies'} outside the block in {path}; "
+                                                 f"re-run `apply {t}` to remove them"))
+    if info is not None and info.other_refs:
+        out.append(Check(t, "duplicate", "WARN", f"{path} names the fleet hook again on line "
+                                                 + ", ".join(str(n) for n in info.other_refs) + " outside any [[hooks]] entry"))
     if plat.key == "clutch":
         want = render_clutch_hooks(paths.stable).encode("utf-8")
         have = _read_regular(paths.clutch_hooks)
@@ -3065,12 +3169,12 @@ def verify_block(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIMEOUT
     if plat.key == "clutch":
         status, detail = _clutch_dsh(text, paths, dsh_bin, timeout)
         out.append(Check(t, "dsh --dump-config", status if status != "SKIP" else "SKIP", detail))
-        out.append(Check(t, "engine restart", "SKIP", "the engine reads its patch once, at start; whether clutch-web was "
-                                                       "restarted since is not visible from here"))
+        out.append(Check(t, "patch reload", "SKIP", DC.reload_note(os.path.join(paths.home, ".clutch", "dsh", "profiles"))
+                         + "; whether the running engine has loaded the plugin is not visible from here"))
     else:
         problem = _toml_problem(text)
         out.append(Check(t, "config.toml", "FAIL" if problem else "PASS", problem or "parses (or no tomllib to ask)"))
-        status, detail = _kimi_doctor(text, timeout)
+        status, detail = _kimi_doctor(text, timeout, paths.home)
         out.append(Check(t, "kimi doctor", status, detail))
         out.append(Check(t, "fires", "SKIP", "whether Kimi Code fires the hook is not visible from here; ask a new "
                                               "session to run `ps` and expect a refusal"))
@@ -3118,6 +3222,8 @@ def _build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--no-dsh-check", action="store_true",
                         help="clutch: write the patch without the engine proof (an empty or broken patch stops the "
                              "engine at its next start)")
+        sp.add_argument("--no-kimi-check", action="store_true",
+                        help="kimi: write the entry without `kimi doctor` (needed only when no kimi binary is found)")
 
     sp = sub.add_parser("plan", help="read-only: show the files, shims, and the JSON merge as a diff")
     common(sp)
@@ -3264,9 +3370,11 @@ def _emit_block_plan(plat: Platform, paths: Paths, emit: Callable[[str], None], 
         emit(f"   {'REFUSE' if bp.state == 'refuse' else 'SKIP'}: {bp.reason}")
     else:
         emit(f"   command: {bp.command}")
-        emit(f"   the block `{BLOCK_NAME}` ({bp.action}); nothing outside it is touched:")
+        emit(f"   the block `{BLOCK_NAME}` ({bp.action}); " + ("nothing outside it is touched:" if not bp.notes else "see the notes:"))
         for ln in MB.render_block(BLOCK_NAME, BLOCK_TOOL, bp.body):
             emit(f"     + {ln}")
+        for n in bp.notes:
+            emit(f"   note: {n}")
         if plat.key == "clutch":
             emit(f"   hooks file {paths.clutch_hooks} (written by `apply tools`):")
             for ln in render_clutch_hooks(paths.stable).splitlines():
@@ -3320,6 +3428,10 @@ def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
                      f"the JSON \\u escape and {len(tp.facts.lookalikes)} non-ASCII lookalike letter(s); a payload over "
                      f"{tp.facts.max_chars or 'any size'} characters skips it.  A benign Bash call exits in the shell, "
                      "without starting Python")
+            if tp.facts.words:
+                emit(f"   fleet-guard-hook prefilter: the same words plus the secret guard's ({len(SECRET_WORDS)} words: "
+                     f"{', '.join(SECRET_WORDS)}; and a `ps` followed by white space), so an ordinary Bash call exits in the "
+                     "shell for both guards")
             for w in tp.warnings:
                 emit(f"   WARNING: {w}")
             emit(f"   Muse Code files (written with the rest, swapped in atomically): {MUSE_SEAT_NAME}, "
@@ -3390,7 +3502,8 @@ def _cmd_apply(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
             # Never `shim_proven`: each platform's own command is probed right now, in every run.
             res = apply_platform(PLATFORMS[tgt], paths, timeout=args.timeout, minimal_path=minimal,
                                  follow_symlinks=args.follow_symlinks, dsh_bin=getattr(args, "dsh", None),
-                                 check_dsh=not getattr(args, "no_dsh_check", False))
+                                 check_dsh=not getattr(args, "no_dsh_check", False),
+                                 check_kimi=not getattr(args, "no_kimi_check", False))
         results.append(res)
         emit(res.line())
     failed = [r for r in results if not r.ok and not (r.status == "skipped" and r.target not in explicit)]
@@ -3538,6 +3651,21 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
         finally:
             with open(paths.fleet_shim, "wb") as fh:
                 fh.write(fleet_bytes)
+        # ...and so must a fleet shim whose prefilter patterns were emptied: it would allow every call in `sh`
+        emptied = empty_prefilter(fleet_bytes.decode("utf-8"))
+        if emptied.encode("utf-8") == fleet_bytes:
+            failures.append("the fleet hook shim has no prefilter to empty, so that phase could not run")
+        else:
+            with open(paths.fleet_shim, "wb") as fh:
+                fh.write(emptied.encode("utf-8"))
+            try:
+                _fails, checks = run_verify("with the fleet hook prefilter emptied, expect FAIL on muse", ("FAIL",))
+                if not any(c.target == "muse" and c.name.startswith("deny/") and c.status == "FAIL" for c in checks):
+                    failures.append("verify did NOT fail muse with the fleet hook prefilter emptied: a shim that allows "
+                                    "everything would read as healthy")
+            finally:
+                with open(paths.fleet_shim, "wb") as fh:
+                    fh.write(fleet_bytes)
         secret = os.path.join(paths.package_dir, SECRET_GUARD_MODULE)
         os.rename(secret, secret + ".disabled")
         try:

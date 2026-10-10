@@ -1,20 +1,31 @@
-"""dsh_check: prove that a home-level cordis patch mounts what we think, with the pinned `dsh`, on a scratch copy.
+"""dsh_check: prove, with the pinned `dsh` and on a scratch copy, that a home-level cordis patch MERGES and PARSES, and
+that the plugins it names resolve.
 
-Clutch's engine reads `$DSH_HOME/cordis.patch.yml` once, at start, and applies it to every profile.  A bad patch
-therefore breaks the NEXT restart of `clutch-web`, not the running one, so the proof has to come before the write:
+    check_patch(dsh_bin, patch_text, profiles_dir, expect=("@deepseek-ai/dsh-hooks-claude-code",))
 
-    dump_config(dsh_bin, patch_text, profiles_dir, expect=("@deepseek-ai/dsh-hooks-claude-code",))
+Two checks, in this order:
 
-copies ONLY `<DSH_HOME>/profiles` (the profile definitions and their plugin links; never settings.yaml or the
-credentials file) into a throwaway DSH_HOME, writes the patch there, and runs `dsh --profile <name> --dump-config`
-for each profile.  It passes when every run exits 0 and its output names every expected plugin.  The output is
-searched in memory and never printed, saved or returned.  Nothing under the real DSH_HOME is read except the
-profile folders, and nothing there is written.
+  1. `unresolved`: each plugin package must resolve under the REAL `<DSH_HOME>/profiles/node_modules` (a link that
+     points at a path that is gone does not).  The engine repairs those links only when it boots, and the home-level
+     patch is read by the profiles that run: a `patchReload: live` profile (clutch-web's `web`) re-applies it on every
+     write, a `startup` profile at its next start.  A plugin whose link dangles is therefore loaded into a process
+     that cannot find it.
+  2. `dump_config`: copies ONLY `<DSH_HOME>/profiles` (the profile definitions and their plugin links; never
+     settings.yaml or the credentials file) into a throwaway DSH_HOME, writes the patch there, and runs
+     `dsh --profile <name> --dump-config` for each profile.  It passes when every run exits 0 and its output names every
+     expected plugin.  This is a MERGE-AND-PARSE check:  `--dump-config` composes the patch layers without booting or
+     evaluating `!!js` and never resolves a package, so the plugin name appears in the dump whenever the patch under test
+     contains it.  It catches a patch the engine would reject (an empty or comment-only patch exits 1); it does not
+     prove the plugin loads.
+
+The output is searched in memory and never printed, saved or returned.  Nothing under the real DSH_HOME is read except
+the profile folders and their `package.json`, and nothing there is written.
 
 Python 3.9 safe.  Tests: fleet_lanes/tests/test_dsh_check.py.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -40,6 +51,65 @@ def profile_names(profiles_dir: str) -> List[str]:
     return [n for n in names if n != "node_modules" and os.path.isfile(os.path.join(profiles_dir, n, "cordis.yml"))]
 
 
+def patch_reload_modes(profiles_dir: str) -> Dict[str, str]:
+    """Profile name -> its `dsh.profile.patchReload` (`live` or `startup`; `live (default)` when the profile does not
+    say, because dsh documents live as the default for a custom profile; `unknown` when package.json cannot be read)."""
+    modes: Dict[str, str] = {}
+    for name in profile_names(profiles_dir):
+        try:
+            with open(os.path.join(profiles_dir, name, "package.json"), encoding="utf-8") as fh:
+                doc = json.load(fh)
+            mode = doc["dsh"]["profile"].get("patchReload")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            modes[name] = "unknown"
+            continue
+        modes[name] = mode if mode in ("live", "startup") else ("live (default)" if mode is None else "unknown")
+    return modes
+
+
+def reload_note(profiles_dir: str) -> str:
+    """One sentence on when each profile reads the home-level patch."""
+    modes = patch_reload_modes(profiles_dir)
+    if not modes:
+        return "no profile found, so when the patch is read is unknown"
+    live = [n for n, m in modes.items() if m.startswith("live")]
+    other = [n for n, m in modes.items() if not m.startswith("live")]
+    parts = ["patchReload: " + ", ".join("%s %s" % (n, m) for n, m in modes.items())]
+    if live:
+        parts.append("this write reaches the running %s engine at once (it watches the file)" % "/".join(live))
+    if other:
+        parts.append("%s read it at their next start" % "/".join(other))
+    return "; ".join(parts)
+
+
+def unresolved(profiles_dir: str, packages: Sequence[str]) -> List[str]:
+    """One line per plugin package that does not resolve under `<profiles>/node_modules` (a missing link, or a link
+    to a path that is gone).  Empty means every one resolves."""
+    root = os.path.join(profiles_dir, "node_modules")
+    out: List[str] = []
+    for pkg in packages:
+        path = os.path.join(root, *pkg.split("/"))
+        if os.path.exists(path):
+            continue
+        if os.path.islink(path):
+            out.append("%s is a link to %s, which no longer exists" % (pkg, os.readlink(path)))
+        else:
+            out.append("%s is not linked under %s" % (pkg, root))
+    return out
+
+
+def check_patch(dsh_bin: str, patch_text: str, profiles_dir: str, expect: Sequence[str],
+                timeout: float = DEFAULT_TIMEOUT) -> Tuple[bool, str]:
+    """(ok, detail): the plugins must resolve under the real profiles' node_modules, then the patch must merge and
+    parse (dump_config).  The detail of a pass ends with when each profile reads the patch."""
+    bad = unresolved(profiles_dir, expect)
+    if bad:
+        return False, ("%s.  Restart clutch-web first (the engine repairs these links when it starts), check that the "
+                       "links resolve, then run this again" % "; ".join(bad))
+    ok, detail = dump_config(dsh_bin, patch_text, profiles_dir, expect, timeout=timeout)
+    return (True, detail + "; " + reload_note(profiles_dir)) if ok else (False, detail)
+
+
 def _env(scratch: str, dsh_home: str) -> Dict[str, str]:
     """The environment of the scratch run: PATH (node is found through it), a scratch HOME and DSH_HOME, and nothing
     else, so no inherited DSH_*, CLUTCH_* or credential variable reaches the engine."""
@@ -49,7 +119,8 @@ def _env(scratch: str, dsh_home: str) -> Dict[str, str]:
 
 def dump_config(dsh_bin: str, patch_text: str, profiles_dir: str, expect: Sequence[str],
                 timeout: float = DEFAULT_TIMEOUT) -> Tuple[bool, str]:
-    """(ok, detail).  `detail` names the profiles that passed, or the first thing that failed (no engine output)."""
+    """(ok, detail).  `detail` names the profiles that passed, or the first thing that failed (no engine output).
+    Merge-and-parse only:  see the module docstring."""
     profiles = profile_names(profiles_dir)
     if not profiles:
         return False, "no profile with a cordis.yml under %s, so there is nothing to dump" % profiles_dir
@@ -77,8 +148,9 @@ def dump_config(dsh_bin: str, patch_text: str, profiles_dir: str, expect: Sequen
             text = proc.stdout.decode("utf-8", "replace")
             missing = [e for e in expect if e not in text]
             if missing:
-                return False, "profile %s: the dump does not mount %s" % (name, ", ".join(missing))
+                return False, "profile %s: the dump does not name %s" % (name, ", ".join(missing))
             passed.append(name)
-        return True, "%s mount%s %s" % (", ".join(passed), "" if len(passed) != 1 else "s", ", ".join(expect))
+        return True, "%s: the patch merges and the dump names %s (a merge-and-parse check, not a plugin load)" % (
+            ", ".join(passed), ", ".join(expect))
     finally:
         shutil.rmtree(scratch, ignore_errors=True)

@@ -1146,8 +1146,7 @@ class FleetBasicsTests(HomeCase):
     """Clutch, Kimi, Vibe and Copilot CLI get the Fleet Basics ahead of the Lane Map in one marker block."""
 
     NEW = {"clutch": (".clutch/dsh/AGENTS.md", "clutch"), "kimi": (".kimi-code/AGENTS.md", "nodefault"),
-           "vibe": (".vibe/AGENTS.md", "nodefault"), "copilot": (".copilot/copilot-instructions.md", "nodefault"),
-           "opencode": (".config/opencode/AGENTS.md", "nodefault")}
+           "vibe": (".vibe/AGENTS.md", "nodefault"), "copilot": (".copilot/copilot-instructions.md", "nodefault")}
 
     def test_the_new_platforms_name_their_file_and_variant(self) -> None:
         for name, (rel, variant) in self.NEW.items():
@@ -1222,6 +1221,7 @@ class FleetBasicsTests(HomeCase):
                 self.assertIn("does not look installed", out)
         self.assertEqual(os.listdir(self.home), [])
         # ~/.config is shared, so it proves nothing about OpenCode: its own folder has to be there
+        self.assertEqual(IR.PLATFORM_BY_NAME["opencode"].root_dir, ".config/opencode")
         os.makedirs(self.path(".config/muse"))
         code, out, _ = self.run_cli("apply", "opencode", "--create")
         self.assertEqual(code, IR.EXIT_REFUSED)
@@ -1262,7 +1262,27 @@ class FleetBasicsTests(HomeCase):
         _, out, _ = self.run_cli("plan", "opencode", "--create")
         self.assertIn("WARNING: UNVERIFIED: OpenCode also walks AGENTS.md up", out)
         self.assertIn("the same Lane Map twice", out)
-        self.assertIn("## Fleet Basics", out)
+
+    def test_opencode_gets_the_lane_map_alone_and_no_statement_about_its_seat(self) -> None:
+        """A seat statement for OpenCode (no default, or a seat of its own) is the owner's call, and the live file
+        already holds hand-written Fleet Basics: the block this tool writes there must not repeat or contradict them."""
+        p = IR.PLATFORM_BY_NAME["opencode"]
+        self.assertEqual((p.rel_path, p.variant), (".config/opencode/AGENTS.md", "full"))
+        body = IR.body_text(p.variant)
+        self.assertNotIn("## Fleet Basics", body)
+        self.assertNotIn("not a seat", body)
+        self.assertNotIn("no default seat", body.lower())
+        os.makedirs(self.path(".config/opencode"))
+        code, out, err = self.run_cli("apply", "opencode", "--create")
+        self.assertEqual(code, IR.EXIT_OK, out + err)
+        text = self.read(".config/opencode/AGENTS.md")
+        self.assertIn("## Lane Map", text)
+        self.assertNotIn("## Fleet Basics", text)
+        self.assertEqual(self.run_cli("verify", "opencode")[0], IR.EXIT_OK)
+
+    def test_no_default_text_does_not_list_opencode(self) -> None:
+        """OpenCode may become a seat (board 87ca50fa), so the text that says what is not a seat must not name it."""
+        self.assertNotIn("OpenCode", IR.body_text("nodefault"))
 
     def test_conductor_and_muse_code_are_explained_not_written(self) -> None:
         for name, needle in (("conductor", "Prompts"),

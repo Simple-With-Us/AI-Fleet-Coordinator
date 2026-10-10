@@ -342,7 +342,8 @@ CLUTCH_IDENTITY = (
     "`[CLUTCH·session8]`.  Notes name `Clutch`.  Branches `clutch/<slug>` only.  "
     "Lanes `~/apps/lanes/Clutch/clutch-<slug>`.  One seat for every model run "
     "through Clutch (owner 2026-10-07: no per-model split).  Replaces HARNESS and "
-    "DSH.  Never sign as Monet.  Pin `AGENT_SEAT=CLUTCH`."
+    "DSH.  Never sign as Monet.  Default seat `CLUTCH` unless Jay names another or a launcher "
+    "set `AGENT_LAUNCH_SEAT`;  never overwrite an `AGENT_SEAT` that is already set."
 )
 
 CLUTCH_EXTRA = (

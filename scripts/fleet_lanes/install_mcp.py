@@ -36,19 +36,25 @@ Rules for a config this tool does not own:
   - an entry with the same name and the same command is `present` and is never rewritten (a hand-registered one
     often has extra keys, such as timeouts); an entry with the same name and a different command is
     `skipped-foreign`; a file that is not a JSON object is `skipped-invalid-json`.  Nothing foreign is ever edited
-  - one backup per file, `<file>.bak-fleet-mcp-<UTC stamp>` (original bytes and mode), then an atomic replace;
+  - one backup per file, `<file>.bak-fleet-mcp-<UTC stamp>` (the original bytes, always mode 0600), then an atomic
+    replace;
     a second apply changes nothing and writes no backup
   - an env block that pins AGENT_SEAT on a server we manage is reported, never edited
   - `remove` deletes only an entry that is exactly what `apply` writes
 
-Clutch's patch is proven before it is written:  `apply clutch` runs the pinned `dsh --profile P --dump-config` for every
-profile on a scratch copy of `~/.clutch/dsh/profiles` and refuses unless each one mounts `@deepseek-ai/dsh-mcp-client`
-(`--dsh PATH` names another engine binary, `--no-dsh-check` skips the proof).  `--dump-config` proves the config
-merges; it does not prove the plugin package loads, so `python3 -m fleet_lanes.install_tools verify clutch` on the final
-file, and a restart of clutch-web by the owner, come after.
+Clutch's patch is checked before it is written:  `apply clutch` refuses unless `@deepseek-ai/dsh-mcp-client` resolves
+under the real `~/.clutch/dsh/profiles/node_modules` (the engine repairs a dangling link only when it boots, so restart
+clutch-web first), then runs the pinned `dsh --profile P --dump-config` for every profile on a scratch copy of the
+profiles (`--dsh PATH` names another engine binary, `--no-dsh-check` skips both).  `--dump-config` is a merge-and-parse
+check: it never resolves a package, so it does not prove the plugin loads.  A profile with `patchReload: live` (clutch-web's
+`web`) watches the patch, so the write reaches the running engine at once; a `startup` profile reads it at its next start,
+and `apply` prints each profile's mode.  `python3 -m fleet_lanes.install_tools verify clutch` on the final file comes next.
 
 `verify --probe` also starts each registered command and sends it MCP `initialize` and `tools/list` (stdio, one
-JSON object per line).  Nothing is called, so nothing reaches Zulip or the recall service.
+JSON object per line).  Nothing is called, so nothing reaches Zulip or the recall service.  The probe's environment
+has no seat, launcher or Zulip credential variable.  An `agent-sync` entry is probed only from a session that IS its
+seat (`AGENT_SEAT`, or a launcher's seat, equals the registration's); from any other session that probe is a SKIP,
+because `--default-seat S` reads S's credential file and acts as S's bot.
 
 Exit codes: 0 ok, 1 a write or a verify failed, 64 usage error.  Python 3.9 safe.
 Tests: cd scripts && python3 -m unittest fleet_lanes.tests.test_install_mcp -v
@@ -80,6 +86,7 @@ EXIT_FAILED = 1
 EXIT_USAGE = 64
 
 BACKUP_TAG = ".bak-fleet-mcp-"
+BACKUP_MODE = 0o600
 TOOL = "fleet_lanes.install_mcp"
 FLEET_RECALL = "fleet-recall"
 AGENT_SYNC = "agent-sync"
@@ -454,12 +461,32 @@ def plan_target(key: str, home: str, action: str, with_agent_sync: bool,
     t = JSON_BY_KEY[key]
     pairs = [(n, server_argv(n, home, t.seat, env)) for n in names]
     plan.outcomes, plan.new_text = edit_json_target(t, text, pairs, action)
+    if plan.new_text is not None and plan.existed:
+        hint = credential_hint(raw)
+        if hint:
+            plan.notes.append("WARNING: %s %s" % (path, hint))
     if not os.path.isfile(os.path.join(fleet_rag_home(home, env), "fleet-recall-mcp.py")) and FLEET_RECALL in names:
         plan.notes.append("%s does not exist yet (scripts/install-fleet-rag.sh creates it)" %
                           os.path.join(fleet_rag_home(home, env), "fleet-recall-mcp.py"))
     if with_agent_sync and AGENT_SYNC in names and not os.path.exists(os.path.join(home, ".local", "bin", "agent-sync")):
         plan.notes.append("~/.local/bin/agent-sync does not exist; the registration would start nothing")
     return plan
+
+
+# A literal credential in a config this tool is about to back up:  an Authorization or Bearer value, or a JSON string
+# under a key named token, api key, password, secret or authorization.  A whole-value ${VAR} (or $VAR) is not one.
+_CREDENTIAL = re.compile(
+    rb"(?i)(?:bearer[ \t]+(?![$]\{?[A-Za-z_])[A-Za-z0-9._~+/=-]{12,}"
+    rb"|\"[A-Za-z_]*(?:token|api_?key|password|secret|authorization)\"[ \t]*:[ \t]*\"(?![^\"\n]*[$]\{?[A-Za-z_])[^\"\n]{12,}\")")
+
+
+def credential_hint(raw: Optional[bytes]) -> Optional[str]:
+    """A warning (never the value) when `raw` looks like it holds a literal credential, else None."""
+    if raw and _CREDENTIAL.search(raw):
+        return ("this file holds what looks like a literal credential (an Authorization or Bearer value, or a token, key, "
+                "password or secret string).  The backup is written owner-only (0600), but rotate the credential and "
+                "use the client's whole-value ${VAR} form so no plaintext copy is left behind")
+    return None
 
 
 def _utc_stamp() -> str:
@@ -490,7 +517,7 @@ def write_plan(plan: TargetPlan, stamp: Optional[str] = None) -> Optional[str]:
                 fh.write(plan.old_raw or b"")
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.chmod(cand, plan.mode)
+            os.chmod(cand, BACKUP_MODE)     # owner-only whatever the original's mode: a backup of a 0644 file with a token is a second readable copy
             backup = cand
             break
         else:
@@ -537,6 +564,30 @@ class Check:
 
     def line(self) -> str:
         return ("%-5s %-9s %-12s %s" % (self.status, self.target, self.server, self.detail)).rstrip()
+
+
+# What a probe must not inherit.  A caller's seat variables would make `agent-sync mcp --default-seat S` serve the
+# CALLER's seat (AGENT_SEAT beats --default-seat), and a launcher variable can make it refuse to start; a Zulip
+# credential variable would send it to another bot's account.  The server then resolves its seat the way the client
+# that registered it would.
+PROBE_STRIPPED_ENV = ("AGENT_SEAT", "AGENT_TAG", "AGENT_SESSION", "AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT",
+                      "ZULIP_RC", "ZULIP_EMAIL", "ZULIP_API_KEY")
+
+
+def probe_environment(environ: Dict[str, str]) -> Dict[str, str]:
+    """The caller's environment without the seat and credential variables (PROBE_STRIPPED_ENV)."""
+    return {k: v for k, v in environ.items() if k not in PROBE_STRIPPED_ENV}
+
+
+def caller_seat(environ: Dict[str, str]) -> Optional[str]:
+    """The seat this session runs as, upper case, or None: a launcher's AGENT_LAUNCH_SEAT (with AGENT_LAUNCHER) first,
+    else AGENT_SEAT, else AGENT_TAG."""
+    if environ.get("AGENT_LAUNCHER", "").strip() and environ.get("AGENT_LAUNCH_SEAT", "").strip():
+        return environ["AGENT_LAUNCH_SEAT"].strip().upper()
+    for name in ("AGENT_SEAT", "AGENT_TAG"):
+        if environ.get(name, "").strip():
+            return environ[name].strip().upper()
+    return None
 
 
 def probe_stdio(argv: Sequence[str], timeout: float = 15.0, env: Optional[Dict[str, str]] = None) -> Tuple[bool, str]:
@@ -627,7 +678,19 @@ def verify_target(key: str, home: str, with_agent_sync: bool, *, probe: bool = F
             if probe and key != CLUTCH_KEY:
                 t = JSON_BY_KEY[key]
                 argv = server_argv(o.server, home, t.seat, env)
-                ok, detail = probe_stdio(argv)
+                probe_env = probe_environment(os.environ)
+                if o.server == AGENT_SYNC:
+                    # `agent-sync mcp --default-seat S` reads S's credential file and calls the realm as S's bot.  A
+                    # probe is allowed only from a session that IS that seat, never as another seat's bot.
+                    mine = caller_seat(os.environ)
+                    if mine != (t.seat or "").upper():
+                        checks.append(Check(key, o.server, "SKIP",
+                                            "probe: not run.  It would use the %s seat's credential, and this session is %s;"
+                                            "  run `verify --probe --with-agent-sync` from a %s session"
+                                            % (t.seat, ("the %s seat" % mine) if mine else "no seat", t.seat)))
+                        continue
+                    probe_env["AGENT_SEAT"] = t.seat or ""
+                ok, detail = probe_stdio(argv, env=probe_env)
                 checks.append(Check(key, o.server, "PASS" if ok else "FAIL", "probe: " + detail))
         elif o.status == "added":
             checks.append(Check(key, o.server, "FAIL", "not registered yet (apply would add it)"))
@@ -759,11 +822,11 @@ def main(argv: Optional[Sequence[str]] = None, out: Optional[TextIO] = None, err
                       "or --no-dsh-check to write the patch unproven)", file=out)
                 print(file=out)
                 continue
-            ok, detail = DC.dump_config(binary, plan.new_text or "", os.path.join(home, ".clutch", "dsh", "profiles"),
+            ok, detail = DC.check_patch(binary, plan.new_text or "", os.path.join(home, ".clutch", "dsh", "profiles"),
                                         (MCP_CLIENT_PLUGIN,))
             if not ok:
                 failed = True
-                print("   REFUSED: the pinned engine does not accept the new patch: %s" % detail, file=out)
+                print("   REFUSED: the Clutch check does not accept the new patch: %s" % detail, file=out)
                 print(file=out)
                 continue
             print("   engine check: %s" % detail, file=out)

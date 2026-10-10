@@ -288,6 +288,7 @@ else:
 os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 if existed:
     shutil.copy2(path, f"{path}.bak-fleet-rag-{ts}")
+    os.chmod(f"{path}.bak-fleet-rag-{ts}", 0o600)    # a backup is never more readable than owner-only
 fd, tmp = tempfile.mkstemp(prefix=".fleet-rag.", dir=os.path.dirname(path) or ".")
 with os.fdopen(fd, "w", encoding="utf-8") as fh:
     json.dump(data, fh, indent=2, ensure_ascii=False)
@@ -370,6 +371,7 @@ else:
     if not new.endswith("\n"):
         new += "\n"
 shutil.copy2(path, f"{path}.bak-fleet-rag-{ts}")
+os.chmod(f"{path}.bak-fleet-rag-{ts}", 0o600)    # a backup is never more readable than owner-only
 tmp = f"{path}.fleet-rag.tmp"
 with open(tmp, "w", encoding="utf-8") as fh:
     fh.write(new)
@@ -548,6 +550,7 @@ else:
 os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 if existed:
     shutil.copy2(path, f"{path}.bak-fleet-rag-{ts}")
+    os.chmod(f"{path}.bak-fleet-rag-{ts}", 0o600)    # a backup is never more readable than owner-only
 fd, tmp = tempfile.mkstemp(prefix=".fleet-rag.", dir=os.path.dirname(path) or ".")
 with os.fdopen(fd, "w", encoding="utf-8") as fh:
     json.dump(data, fh, indent=2, ensure_ascii=False)

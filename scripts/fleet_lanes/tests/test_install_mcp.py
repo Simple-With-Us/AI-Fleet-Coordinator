@@ -161,7 +161,53 @@ class ExistingConfigTests(HomeCase):
         self.assertEqual(len(names), 1)
         self.assertEqual(self.read(".config/muse/" + names[0]), original)
         self.assertEqual(stat.S_IMODE(os.stat(self.path(".config/muse/settings.json")).st_mode), 0o640)
-        self.assertEqual(stat.S_IMODE(os.stat(self.path(".config/muse/" + names[0])).st_mode), 0o640)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path(".config/muse/" + names[0])).st_mode), 0o600,
+                         "a backup is owner-only whatever the original's mode")
+
+    def test_a_backup_of_a_world_readable_file_is_never_world_readable(self) -> None:
+        original = '{"mcpServers": {"x": {"command": "sh"}}}\n'
+        for rel, key, mode in ((".config/muse/settings.json", "muse", 0o644), (".kimi-code/mcp.json", "kimi", 0o666)):
+            with self.subTest(rel=rel):
+                self.write(rel, original, mode=mode)
+                code, out, _ = self.run_cli("apply", key)
+                self.assertEqual(code, M.EXIT_OK, out)
+                (name,) = self.backups(os.path.dirname(rel))
+                self.assertEqual(stat.S_IMODE(os.stat(self.path(os.path.join(os.path.dirname(rel), name))).st_mode), 0o600)
+
+    def test_a_literal_credential_in_the_file_is_warned_about_without_printing_it(self) -> None:
+        secret = "ghp_" + "a1B2c3D4e5F6g7H8"
+        doc = {"mcpServers": {"github": {"type": "http", "url": "https://example.invalid/mcp",
+                                         "headers": {"Authorization": "Bearer " + secret}}}}
+        self.write(".config/muse/settings.json", json.dumps(doc, indent=2) + "\n", mode=0o644)
+        code, out, _ = self.run_cli("plan", "muse")
+        self.assertEqual(code, M.EXIT_OK, out)
+        self.assertIn("WARNING", out)
+        self.assertIn("literal credential", out)
+        self.assertIn("owner-only (0600)", out)
+        self.assertNotIn(secret, out)
+        code, out, _ = self.run_cli("apply", "muse")
+        self.assertIn("literal credential", out)
+        self.assertNotIn(secret, out)
+
+    def test_a_whole_value_variable_or_a_clean_file_is_not_warned_about(self) -> None:
+        for text in ('{"mcpServers": {"github": {"headers": {"Authorization": "Bearer ${GITHUB_TOKEN}"}}}}\n',
+                     '{"mcpServers": {"x": {"env": {"API_TOKEN": "${API_TOKEN}"}}}}\n',
+                     '{"mcpServers": {"x": {"command": "sh"}}}\n'):
+            with self.subTest(text=text):
+                self.write(".config/muse/settings.json", text)
+                code, out, _ = self.run_cli("plan", "muse")
+                self.assertEqual(code, M.EXIT_OK, out)
+                self.assertNotIn("literal credential", out)
+
+    def test_credential_shapes(self) -> None:
+        for raw in (b'{"token": "abcdefghijklmnop"}', b'{"my_api_key": "abcdefghijklmnop"}', b'{"password": "correct horse battery"}',
+                    b'{"a": "Authorization: Bearer abcdefghijklmnop"}', b'{"Authorization": "abcdefghijklmnop"}'):
+            with self.subTest(raw=raw):
+                self.assertIsNotNone(M.credential_hint(raw))
+        for raw in (b"", None, b'{"token": "short"}', b'{"command": "python3"}', b'{"token": "${TOKEN_VALUE}"}',
+                    b'{"token": "$TOKEN_VALUE"}', b'{"note": "Bearer ${X}"}'):
+            with self.subTest(raw=raw):
+                self.assertIsNone(M.credential_hint(raw))
 
     def test_four_space_indent_is_kept(self) -> None:
         self.write(".minimax/mcp.json", json.dumps({"mcpServers": {}}, indent=4) + "\n")
@@ -320,20 +366,45 @@ class ClutchTests(HomeCase):
         os.chmod(binary, 0o755)
         os.makedirs(self.path(".clutch/dsh/profiles/web"))
         Path(self.path(".clutch/dsh/profiles/web/cordis.yml")).write_text("plugins: []\n")
+        Path(self.path(".clutch/dsh/profiles/web/package.json")).write_text(
+            '{"dsh": {"profile": {"bundles": [], "patchReload": "live"}}}')
+        os.makedirs(self.path(".clutch/dsh/profiles/node_modules/@deepseek-ai/dsh-mcp-client"))
         return flag
 
     def test_the_patch_is_proven_with_the_engine_before_it_is_written(self) -> None:
         flag = self.with_engine()
         code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
         self.assertEqual(code, M.EXIT_OK, out)
-        self.assertIn("engine check: web mounts @deepseek-ai/dsh-mcp-client", out)
+        self.assertIn("engine check: web: the patch merges and the dump names @deepseek-ai/dsh-mcp-client", out)
         self.assertTrue(os.path.exists(self.path(self.patch())))
         os.unlink(self.path(self.patch()))
         Path(flag).write_text("x")
         code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
         self.assertEqual(code, M.EXIT_FAILED, out)
-        self.assertIn("REFUSED: the pinned engine does not accept the new patch", out)
+        self.assertIn("REFUSED: the Clutch check does not accept the new patch", out)
         self.assertFalse(os.path.exists(self.path(self.patch())))
+
+    def test_a_plugin_link_that_dangles_refuses_the_write_and_says_to_restart_first(self) -> None:
+        self.with_engine()
+        link = self.path(".clutch/dsh/profiles/node_modules/@deepseek-ai/dsh-mcp-client")
+        os.rmdir(link)
+        os.symlink(self.path("apps/clutch-runtime/node_modules/.pnpm/gone"), link)
+        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        self.assertEqual(code, M.EXIT_FAILED, out)
+        self.assertIn("REFUSED: the Clutch check does not accept the new patch", out)
+        self.assertIn("no longer exists", out)
+        self.assertIn("Restart clutch-web first", out)
+        self.assertFalse(os.path.exists(self.path(self.patch())))
+        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
+        self.assertEqual(code, M.EXIT_OK, out)
+
+    def test_the_apply_says_when_each_profile_reads_the_patch(self) -> None:
+        self.with_engine()
+        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        self.assertEqual(code, M.EXIT_OK, out)
+        self.assertIn("patchReload: web live", out)
+        self.assertIn("reaches the running web engine at once", out)
+        self.assertNotIn("read once", out)
 
     def test_without_an_engine_the_write_is_refused_unless_the_owner_says_so(self) -> None:
         self.mkdir(".clutch/dsh")
@@ -540,6 +611,84 @@ class ProbeTests(unittest.TestCase):
         code = M.main(["verify", "fx", "--probe", "--home", home], out=out, err=err, env=env)
         self.assertEqual(code, M.EXIT_OK, out.getvalue())
         self.assertIn("probe: initialize ok, 2 tools listed", out.getvalue())
+
+
+class ProbeSeatTests(HomeCase):
+    """`verify --probe` never acts as a seat the session is not, and never inherits seat or credential variables."""
+
+    SERVER = """
+        import json, os, sys
+        with open(%r, "a") as fh:
+            fh.write(json.dumps({"seat": os.environ.get("AGENT_SEAT"), "names": sorted(os.environ)}) + "\\n")
+        for line in sys.stdin:
+            m = json.loads(line)
+            if m.get("method") == "initialize":
+                print(json.dumps({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": "2025-06-18", "capabilities": {}, "serverInfo": {"name": "x", "version": "1"}}}), flush=True)
+            elif m.get("method") == "tools/list":
+                print(json.dumps({"jsonrpc": "2.0", "id": m["id"], "result": {"tools": [{"name": "a"}]}}), flush=True)
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.log = self.path("probe.log")
+        body = textwrap.dedent(self.SERVER % self.log)
+        # agent-sync is a script that ignores its arguments; fleet-recall-mcp.py is the same server under python3
+        self.write(".local/bin/agent-sync", "#!%s\n%s" % (sys.executable, body), mode=0o755)
+        self.write("apps/fleet-rag/fleet-recall-mcp.py", body)
+        self.mkdir(".minimax")
+        code, out, _ = self.run_cli("apply", "minimax", "--with-agent-sync")
+        self.assertEqual(code, M.EXIT_OK, out)
+
+    def calls(self) -> list:
+        return [json.loads(ln) for ln in Path(self.log).read_text().splitlines()] if os.path.exists(self.log) else []
+
+    def verify(self, environ: dict):
+        from unittest import mock
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, environ, clear=False):
+            code = M.main(["verify", "minimax", "--with-agent-sync", "--probe", "--home", self.home], out=out, err=err, env=self.env)
+        return code, out.getvalue()
+
+    def test_from_another_seat_the_agent_sync_probe_is_skipped_and_never_started(self) -> None:
+        code, out = self.verify({"AGENT_SEAT": "CLAUDE"})
+        self.assertEqual(code, M.EXIT_OK, out)
+        line = [ln for ln in out.splitlines() if "agent-sync" in ln and "probe" in ln][0]
+        self.assertTrue(line.startswith("SKIP"), out)
+        self.assertIn("this session is the CLAUDE seat", line)
+        self.assertIn("run `verify --probe --with-agent-sync` from a MM session", line)
+        self.assertEqual([c["seat"] for c in self.calls()], [None], "only fleet-recall was started")
+
+    def test_from_no_seat_at_all_it_is_skipped_too(self) -> None:
+        from unittest import mock
+        out, err = io.StringIO(), io.StringIO()
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_")}
+        with mock.patch.dict(os.environ, clean, clear=True):
+            code = M.main(["verify", "minimax", "--with-agent-sync", "--probe", "--home", self.home], out=out, err=err, env=self.env)
+        self.assertEqual(code, M.EXIT_OK, out.getvalue())
+        self.assertIn("this session is no seat", out.getvalue())
+
+    def test_from_the_seat_itself_it_runs_with_that_seat_and_no_credential_or_launcher_variables(self) -> None:
+        code, out = self.verify({"AGENT_SEAT": "mm", "AGENT_TAG": "OTHER", "ZULIP_RC": "/x/zuliprc", "ZULIP_EMAIL": "a@b",
+                                 "ZULIP_API_KEY": "k", "AGENT_SESSION": "s", "KEEP_ME": "yes"})
+        self.assertEqual(code, M.EXIT_OK, out)
+        probes = [ln for ln in out.splitlines() if "probe: initialize ok" in ln]
+        self.assertEqual(len(probes), 2, out)
+        sync = [c for c in self.calls() if c["seat"] == "MM"]
+        self.assertEqual(len(sync), 1)
+        for call in self.calls():
+            for name in ("ZULIP_RC", "ZULIP_EMAIL", "ZULIP_API_KEY", "AGENT_TAG", "AGENT_SESSION", "AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT"):
+                self.assertNotIn(name, call["names"])
+            self.assertIn("KEEP_ME", call["names"], "the rest of the environment is kept")
+        recall = [c for c in self.calls() if c["seat"] is None]
+        self.assertEqual(len(recall), 1, "fleet-recall is not given a seat")
+
+    def test_a_launcher_seat_counts_as_the_session_seat(self) -> None:
+        self.assertEqual(M.caller_seat({"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "mm", "AGENT_SEAT": "CLAUDE"}), "MM")
+        self.assertEqual(M.caller_seat({"AGENT_LAUNCH_SEAT": "MM", "AGENT_SEAT": "CLAUDE"}), "CLAUDE", "a launch seat without a launcher is ignored")
+        self.assertEqual(M.caller_seat({"AGENT_TAG": " fx "}), "FX")
+        self.assertIsNone(M.caller_seat({}))
+        self.assertNotIn("AGENT_SEAT", M.probe_environment({"AGENT_SEAT": "X", "PATH": "/bin"}))
+        self.assertEqual(M.probe_environment({"AGENT_SEAT": "X", "PATH": "/bin"}), {"PATH": "/bin"})
 
 
 class CliTests(HomeCase):

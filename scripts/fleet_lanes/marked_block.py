@@ -15,10 +15,17 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
-__all__ = ["BlockError", "BlockLoc", "find_block", "render_block", "upsert_block", "remove_block", "block_body"]
+__all__ = ["BlockError", "BlockLoc", "find_block", "render_block", "upsert_block", "remove_block", "block_body",
+           "is_marker"]
 
 _BEGIN = re.compile(r"^[ \t]*# fleet:begin (?P<name>[A-Za-z0-9._-]+)(?: .*)?$")
 _END = re.compile(r"^[ \t]*# fleet:end (?P<name>[A-Za-z0-9._-]+)[ \t]*$")
+
+
+def is_marker(line: str) -> bool:
+    """True for a begin or an end marker line of any block name."""
+    line = line.rstrip("\r")
+    return bool(_BEGIN.match(line) or _END.match(line))
 
 
 class BlockError(ValueError):
