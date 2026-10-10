@@ -64,7 +64,7 @@ The owner rulings and defaults that shaped this rewrite, in one place so Jay can
 - The `agent-sync` CLI (`scripts/agent_sync`, on PATH as `~/.local/bin/agent-sync`) replaces `agent-sync-websocket.py`, `agent-sync-poll.py`, pm2 `agent-sync-push`, `consumer.mjs`, `slack-sync.sh`, and the `slack-collab` MCP.  The always-on listener is specified in [agent-sync-listener.md](docs/protocols/agent-sync-listener.md) (being built).
 - One Zulip bot per seat, never per session.  Sessions are tagged `[SEAT·session8]`, with one topic per unit of work.  Only Jay creates bot users; agents never create accounts.
 - No agent posts, DMs, or reacts through Jay's Zulip account (confirmed), in the same spirit as the [Outbound iMessage Boundary](#outbound-imessage-boundary).  Composio, or any connector bound to Jay's account, is never used for agent identity or chat.
-- CLAUDE is the only Claude seat.  MONET, RENOIR, HARNESS (replaced by CLUTCH), DSH, and KIMI are retired.  Active:  CLAUDE, CODEX, AG, CURSOR, GROK, GROK-WEB, CLUTCH, GROK-BOT (GB personas, owner-managed), FX, MM, MA, MC, plus the BotFleet `BF-<ROLE>` bots ([Seats and Identity](#seats-and-identity)).
+- CLAUDE is the only Claude seat.  MONET, RENOIR, HARNESS (replaced by CLUTCH), DSH, and KIMI are retired.  Active:  CLAUDE, CODEX, AG, CURSOR, GROK, GROK-WEB, CLUTCH, GROK-BOT (GB personas, owner-managed), FX, MM, MA, MC, OPENCODE, plus the BotFleet `BF-<ROLE>` bots ([Seats and Identity](#seats-and-identity)).
 - Folders and anything else on disk use whole seat names (lane-map ruling).  Branch prefixes stay as the registry has them ([Seat Lanes and Branches](#seat-lanes-and-branches); see [Open for Jay](#open-for-jay)).
 - Zulip posts use a real U+00A0 plus a space as the sentence gap (owner ruling 2026-10-08, which supersedes the 2026-10-07 finding that two ASCII spaces rendered there).  [Sentence Gap](#sentence-gap) has the recipe.
 - Every fleet bot, the CLAUDE bot included, is a Zulip member (role 400), and Jay is the only owner and admin (owner 2026-10-09).  The always-on listener refuses admin and owner keys.
@@ -101,6 +101,7 @@ Each point stays as this document states it until Jay rules.
 - **Cursor background agents.**  The old tag registry said CURSOR means Cursor background agents; the old seat table said CURSOR is local Mac IDE/Auto only.  A Cursor cloud agent that Grok Bot drives signs `GB-<NAME>`.  Until Jay rules, any other Cursor background or cloud agent signs CURSOR, because location never changes the seat ([Identity Rules](#identity-rules)).
 - **Hosted iOS ship owner.**  The old text says Compiler (`GB-COMPILER`) owns iOS ship on hosted `macos-latest`, but GB personas are mostly idle and BotFleet carries most Grok Bot duty.  Whether BF-Compiler, which owns BF builds, now carries it is open ([CI Runners](#ci-runners-strict-all-repos)).
 - **MA coordination threshold.**  The old seat table says MA follows "the 2x coordination threshold rule", which no version of this document defines.  It is left out until Jay defines it.
+- **OpenCode inside Conductor.**  Conductor bundles OpenCode, sets no `AGENT_LAUNCHER`, and runs several seats' tools.  Whether an OpenCode session started from a Conductor workspace is OPENCODE or has no default is not ruled.  Until Jay rules, an OpenCode session Jay opens himself in a terminal is OPENCODE, and one inside Conductor asks Jay.
 - **Clutch `repo:` value.**  The old text wrote `repo: clutch` (the registry's former `slackRepo` value).  This document writes `repo:  Clutch`, the GitHub repo name, per the rule in [App Acronyms and Repos](#app-acronyms-and-repos).
 
 ## Absolute Rules and Authority
@@ -179,9 +180,9 @@ Never leave a discovered problem as a throwaway comment in chat or prose.
 - **Verify before acting.**  Before your first fleet action, confirm the authenticated Zulip bot maps to your seat (`agent-sync whoami --as <SEAT>`; the CLI also refuses on its own).  On a mismatch, or with no credential for your seat, stop and report.  Never fall back to another seat's credential, an environment triple left by someone else, or Jay's account.  The board token and the GitHub login are shared and carry no seat, so the `--by` label and branch prefix you write must be the seat you verified.
 - **Never infer it.**  No observed state is a seat signal:  not a worktree path, a folder or branch name, `~/.claude.json` session values, the CLI login, or the model.  Local `~/.claude` hooks and memory load for every local session, so they cannot tell seats apart either.  The old derivations (a cloud seat equals the account's Claude app branch-prefix setting; the shared Mac login switching between accounts) existed to tell CLAUDE from MONET and are void now that MONET is retired.  Two things are not inference.  A launcher's `AGENT_LAUNCH_SEAT` is an assignment made by owner-run software, and it is the only environment signal besides `AGENT_SEAT`.  The platform Jay opened the session in selects the platform default (precedence item 3), and nothing else observed does:  not the login, the folder, the branch, or the model.
 - **Never flip on inference.**  Do not rewrite seat hooks, rename branches, or re-attribute board rows by deduction.  Change a seat only on an explicit owner statement or `AGENT_SEAT`.  Local hooks never rebrand another seat's prefix onto a worktree.
-- **Identity, not model or location.**  A seat may run locally or in the cloud, on any session, with any underlying model.  The model never changes the seat:  Grok inside fx is FX, never GROK or GROK-WEB; the Codex provider inside fx is FX, never CODEX; MiniMax inside fx is FX, never MM; a DeepSeek model inside Cursor is CURSOR.  A BotFleet bot keeps its `BF-<ROLE>` seat on every engine:  Plumber on the claude engine is BF-PLUMBER, never CLAUDE; on codex it is never CODEX; on grok it is never GROK.
+- **Identity, not model or location.**  A seat may run locally or in the cloud, on any session, with any underlying model.  The model never changes the seat:  Grok inside fx is FX, never GROK or GROK-WEB; the Codex provider inside fx is FX, never CODEX; MiniMax inside fx is FX, never MM; a DeepSeek model inside Cursor is CURSOR; whatever provider or model OpenCode runs, an OpenCode session Jay opens himself is OPENCODE.  A BotFleet bot keeps its `BF-<ROLE>` seat on every engine:  Plumber on the claude engine is BF-PLUMBER, never CLAUDE; on codex it is never CODEX; on grok it is never GROK; on the opencode engine it is never OPENCODE.
 - **Sub-agents inherit.**  A sub-agent takes its parent's seat, a launcher-assigned one included, and posts, if at all, through the parent's bot.  It never gets its own bot or identity.
-- **No sandbox, own pause.**  MM ships `permissionMode: bypassPermissions` in `config.yaml`, so nothing prompts, and FX runs full-access with no sandbox.  On those seats the destructive-op pause is yours to hold.
+- **No sandbox, own pause.**  MM ships `permissionMode: bypassPermissions` in `config.yaml`, so nothing prompts, FX runs full-access with no sandbox, and OpenCode has no deny hook installed.  On those seats the destructive-op pause is yours to hold.
 
 #### Platform Defaults
 
@@ -197,11 +198,12 @@ Never leave a discovered problem as a throwaway comment in chat or prose.
 | MiniMax Code | MM | mm-bot@ | |
 | fx | FX | fx-bot@ | Whatever provider fx is logged into. |
 | Muse Code (`muse` CLI) | MC | mc-bot@ | The `muse-seat` wrapper keeps an assigned seat. |
+| OpenCode (`opencode` CLI) | OPENCODE | opencode-bot@ | A seat since Sat, Oct 10, 2026 (owner).  The default is for a session Jay opens himself in a terminal, whatever provider or model OpenCode runs.  A headless `opencode run` or cron job, and a session inside a shared app such as Conductor (an open question below), have no default (the rows below).  A launcher's `AGENT_LAUNCH_SEAT` still wins, so a BotFleet bot on the opencode engine stays `BF-<ROLE>`. |
 | Muse Assist (cloud VM) | MA | muse-assist-bot@ | |
 | Jet (ChatGPT, OpenAI dot) | JET, its own identity | openai-dot-bot@ | Not a Codex default:  an ordinary Codex thread never signs JET, and Jet never signs CODEX (guide `:192`). |
 | **Any session BotFleet launched, on any engine** | **No default** | the role's own bot | The engine is not the bot's identity.  Only BotFleet assigns `BF-<ROLE>`.  Unassigned means no fleet action. |
 | **A Cursor cloud agent Grok Bot drives** | **No default** | the GB persona's bot | Grok Bot assigns `GB-<NAME>`. |
-| **Engine-only CLIs** (OpenCode, Droid, Hermes, Qwen, Kimi, DeepSeek, Pi, any other ACP engine) | **No default** | none | Not seats.  Outside a launcher they have no fleet identity, so ask. |
+| **Engine-only CLIs** (Droid, Hermes, Qwen, Kimi, DeepSeek, Pi, any other ACP engine) | **No default** | none | Not seats.  Outside a launcher they have no fleet identity, so ask. |
 | **Headless runs** (`claude -p`, `codex exec`, an SDK call, cron) | **No default** | none | A script that wants a seat is a launcher and sets one.  The listener's `claude -p` wake sets the seat it wakes. |
 | **An app several seats share** | **No default** | none | None today.  The Mac Claude app was that case (CLAUDE, MONET, RENOIR), and with MONET and RENOIR retired it is single-seat.  If a second seat ever shares an app, that app loses its default and goes back to ask. |
 
@@ -221,6 +223,7 @@ What a launcher sets and clears in each child's environment (`AGENT_LAUNCHER`, `
 | MM | `MiniMax` | `minimax/` | `minimax` | mm-bot@ |
 | FX | `Fx` | `fx/` | `fx` | fx-bot@ |
 | MC | `Muse Code` | `muse-code/` | `muse-code` | mc-bot@ |
+| OPENCODE | `OpenCode` | `opencode/` | `opencode` | opencode-bot@ |
 | MA | `Muse Assist` | `muse-assist/` (historical `muse/`) | `muse-assist` | muse-assist-bot@ |
 
 - **Tags.**  The seat column is the tag:  `[CLAUDE]`, `[AG]`, `[MM]`, and so on.  Mention names and credential file codes are in the guide's [Who's Here](docs/protocols/zulip-fleet-guide.md#whos-here); take them from there.
@@ -238,6 +241,7 @@ Seat by seat:
 - **MM** (MiniMax Code desktop app on the Mavis local runtime, `~/.minimax`; opened 2026-09-03 as a seat and a selectable engine):  bounded implementation and code review, sourced deep research with citations, document generation (docx / pdf / pptx / xlsx), static-site deploy, Computer Use desktop control and in-app browser driving, plus text / image / video / speech generation and web search through the `mmx` CLI.  Pin `AGENT_SEAT=MM` / `AGENT_TAG=MM`.  No global rules file exists on this platform:  the fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt), and fleet skills install to `~/.minimax/skills`.  Built-in sub-agents `explore` / `worker` / `verifier` inherit MM.
 - **FX** (fx by Vercel Labs):  a terminal coding agent whose model is whatever provider it is logged into (a Grok subscription today; the Codex provider or a MiniMax endpoint later).  Implementation, repo audits, PR drafting, and ACP engine for BotFleet-style hosts.  Pin `AGENT_SEAT=FX` / `AGENT_TAG=FX`.  Rules home:  `~/.fx/AGENTS.md`.  Skills live in `~/.fx/skills` only.  fx also scans the Claude and Codex packs; never inherit their tags or identity.
 - **MC** (Muse Code, Meta AI's interactive terminal coding agent, `muse` CLI):  bounded implementation, local TUI/CLI execution, git worktree workflows, sub-agent delegation, task execution.  Distinct from MA.  Pin `AGENT_SEAT=MC` / `AGENT_TAG=MC` by starting Muse through the `muse-seat` wrapper (`~/apps/lane-tools/muse-seat`); start `muse` inside a lane and never use `muse -w`.  New lanes are `~/apps/lanes/<Repo>/muse-code-<slug>` (`~/apps/lane new`); an old flat `~/apps/<prefix>-muse-code` lane is not moved by the layout migration; it stays where it is and retires normally.  Rules home:  project `AGENTS.md` and `CLAUDE.md` in trusted workspaces (`~/.config/muse/trust.json`), with the user-level `~/.claude/CLAUDE.md` as a fallback, which carries the Lane Map block.  The temp-checkout deny hook is a user-scope plugin the owner installs and approves.  Dedicated fleet skills install to `~/.config/muse/skills`, shadowing any unspecialized foreign skills.  Setup checklist:  `docs/MUSE-ONBOARDING.md`.
+- **OPENCODE** (OpenCode, the `opencode` CLI, `~/.local/bin/opencode`; a seat since Sat, Oct 10, 2026, owner:  "opencode as a seat"):  an open-source terminal coding agent whose model is whatever provider it is logged into.  Bounded implementation, repo audits, PR drafting, and an ACP engine under launchers such as BotFleet.  No wrapper pins the seat for it (Muse Code has `muse-seat`), so pass `--as OPENCODE` on every `agent-sync` call and `--by OPENCODE` on every `board` call.  Before the first command, check that no launcher seat and no other `AGENT_SEAT` is set in its environment.  The credential file is `~/.secrets/Zulip/OpenCode-zuliprc` (a name the file-name rule alone would not give, so `SEAT_FILE_OVERRIDES` carries it).  New lanes are `~/apps/lanes/<Repo>/opencode-<slug>` on `opencode/<slug>` (`~/apps/lane new`).  Rules home:  `~/.config/opencode/AGENTS.md`.  Hooks:  none is installed, so the destructive-operation pause is yours to hold.  Skills:  none yet.  Which skill folders it loads is not proven (PR #439's lane-map notes say `~/.claude/skills` and `~/.agents/skills`, read from the binary and not yet run with a model), and `~/.agents/skills` carries no seat banner.  So judge a skill by what it tells you to do:  one that tells you to sign, claim, `--by`, branch, lane or use a credential as a seat other than OPENCODE is not yours, whatever its banner says, and a banner naming another seat settles it at once.  fx scans `~/.config/opencode/skills` (`FX_SCAN_ROOTS` in `scripts/install-fleet-skills.py`), so a future OpenCode pack must not carry FX text.  Paste-in onboarding prompt:  `docs/OPENCODE-ONBOARDING-PROMPT.md`.
 - **MA** (Muse Assist, Meta Muse cloud VM batch compute and creative assistant, dispatched from the Mac and iOS apps):  multi-day or multi-week heavy background compute (video transcoding, large media migrations, iCloud Photos sync) on unmetered VM runtime hours, without ongoing AI token burn.  Runs on a dedicated cloud VM with pre-authenticated `infisical`, `gh`, and `sentry`.  A cloud seat:  its Zulip credentials come from env, not a zuliprc.  The former tag `MUSE` migrated to MA (owner 2026-10-04) to tell it apart from MC.  No lane:  it runs on a cloud VM and has no checkout on this Mac.  It cannot see local files and has no hooks, so its rules home is its Soul.md, into which the owner pastes the rules card in `docs/MUSE-ONBOARDING.md`.
 
 ### Platform Bots
@@ -247,7 +251,7 @@ Seat by seat:
 
 ### Availability
 
-- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (terminal), GROK-WEB (cloud), CLUTCH, MM, FX, MC, MA, and the BotFleet role bots.  Track outages and down seats in [Outages, Handoffs, and Substitute Seats](#outages-handoffs-and-substitute-seats).
+- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (terminal), GROK-WEB (cloud), CLUTCH, MM, FX, MC, OPENCODE, MA, and the BotFleet role bots.  Track outages and down seats in [Outages, Handoffs, and Substitute Seats](#outages-handoffs-and-substitute-seats).
 - **Retired.**  Never assign work to these seats, accept work from them, leave them In Progress, reserve Planned or future work for them, or wait on them.  Unclaim any leftover lanes.
   - MONET (owner 2026-10-07):  the Monet Claude account and app are no longer used.
   - RENOIR (owner 2026-10-07):  the seat never opened; the Renoir Claude account and app are no longer used.
@@ -1435,7 +1439,7 @@ python3 /Users/jay/Code/AI-Fleet-Coordinator/scripts/install-fleet-skills.py
 
 ### Skill Homes (Active Seats)
 
-From `scripts/fleet_skill_identity.py`, checked Wed, Oct 7, 2026.
+From `scripts/fleet_skill_identity.py`, checked Wed, Oct 7, 2026 (the OPENCODE row added Sat, Oct 10, 2026).
 
 | Seat | Skill home |
 | --- | --- |
@@ -1447,6 +1451,7 @@ From `scripts/fleet_skill_identity.py`, checked Wed, Oct 7, 2026.
 | FX | `~/.fx/skills` |
 | MM | `~/.minimax/skills` |
 | MC | `~/.config/muse/skills` |
+| OPENCODE | None yet.  The installer has no OpenCode pack, and a skill that tells OpenCode to act as another seat is not OpenCode's to use, banner or not |
 | MA | `by-seat/muse-assist` pack only |
 | CLUTCH | None yet |
 

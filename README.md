@@ -27,7 +27,7 @@ Inventory: [`fleet-apps.json`](fleet-apps.json).  After any join, `python3 scrip
 | Personal-Site | PS | product |
 | AI-Fleet-Coordinator | AFC | infra |
 
-Active coding seats in that file: `CLAUDE`, `CODEX`, `AG`, `CURSOR`, `GROK`, `CLUTCH`, `FX`, `MM`, `MA`, `MC`.  It also carries retired entries (`MONET`, `DSH`, `HARNESS`, `RENOIR`, `KIMI`) and the `GROK-BUILD` alias, a retired alias of `GROK` (owner 2026-10-08).  The live seat list, with each seat's Zulip bot, is `AGENT-SYNC.md` § Seats and Identity and the guide's *Who's Here*.
+Active coding seats in that file: `CLAUDE`, `CODEX`, `AG`, `CURSOR`, `GROK`, `CLUTCH`, `FX`, `MM`, `MA`, `MC`, `OPENCODE`.  It also carries retired entries (`MONET`, `DSH`, `HARNESS`, `RENOIR`, `KIMI`) and the `GROK-BUILD` alias, a retired alias of `GROK` (owner 2026-10-08).  The live seat list, with each seat's Zulip bot, is `AGENT-SYNC.md` § Seats and Identity and the guide's *Who's Here*.
 
 ## Core protocols (still binding)
 

@@ -52,7 +52,7 @@ WAKE_MAX_BUDGET_USD = 0.25
 # Seat tags whose bots are always eligible senders, on top of every tag the seat partition lists
 # (fleet_tags).  Owner 2026-10-09:  "everyone should be able to DM to wake anyone else or tag to wake
 # anyone else", so every fleet bot (Mac and cloud seats, GB personas, BF role bots) is eligible.
-FLEET_SEATS = ("CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "MA", "JET")
+FLEET_SEATS = ("CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "MA", "JET", "OPENCODE")
 DEFAULT_SITE_ENV = "ZULIP_SITE"
 # The CLI's single-seat triple.  A listener seat never reads it, so two seats cannot alias one bot.
 GENERIC_ENV = frozenset({"ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_RC"})

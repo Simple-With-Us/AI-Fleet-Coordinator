@@ -374,6 +374,17 @@
       "notes": "Meta AI interactive terminal coding agent (muse CLI / Muse Code). Distinct from Muse Assist ([MA]).",
       "zulipBotEmail": "mc-bot@simplewithus.zulipchat.com",
       "zulipFileCode": "MC"
+    },
+    {
+      "tag": "OPENCODE",
+      "notesName": "OpenCode",
+      "worktreeSuffix": "opencode",
+      "branchPrefixes": [
+        "opencode/"
+      ],
+      "notes": "OpenCode (opencode CLI, ~/.local/bin/opencode, global rules file ~/.config/opencode/AGENTS.md).  A seat since the owner's decision of Sat, Oct 10, 2026 (\"opencode as a seat\"); before that OpenCode was an engine-only CLI with no default seat.  Any provider or model OpenCode runs is still OPENCODE.  A BotFleet bot that runs on the opencode engine keeps its BF-<ROLE> seat, and a launcher's AGENT_LAUNCH_SEAT wins over the platform default.",
+      "zulipBotEmail": "opencode-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "OpenCode"
     }
   ]
 }
