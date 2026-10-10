@@ -15,6 +15,7 @@ The allowlist is built from the seat partition (every seat it gives to "server")
     ZULIP_<CODE>_EMAIL, ZULIP_<CODE>_API_KEY            a seat's Zulip pair
     ZULIP_ALERT_<CODE>_ENDPOINT, ZULIP_ALERT_<CODE>_KEY  a Grok Bot routine webhook (URL and bare key)
     <CODE>_ROUTINE_URL, <CODE>_ROUTINE_KEY               the listener's default routine names
+    SENTRY_FLEET_DSN, AGENT_SYNC_SENTRY_DSN              the Sentry Crons heartbeat's DSN (heartbeat.py); not per seat
 
 CODE is the seat with hyphens as underscores.  An Infisical value wins over a container variable of the same
 name, so a rotation in Infisical takes effect on the next restart even if Coolify still holds an old copy.
@@ -44,6 +45,7 @@ TIMEOUT_SECONDS = 8.0
 ATTEMPTS = 2                      # per request; worst case stays well inside the 60-second health start period
 PARTITION_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "docs",
                                  "protocols", "agent-sync-partition.toml")
+SHARED_NAMES = frozenset({"SENTRY_FLEET_DSN", "AGENT_SYNC_SENTRY_DSN"})  # the heartbeat's DSN;  the first of the two wins
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*$")
 
 
@@ -63,7 +65,7 @@ def server_codes(partition_file: str) -> set[str]:
 
 
 def allowed_names(codes: set[str]) -> set[str]:
-    names: set[str] = set()
+    names: set[str] = set(SHARED_NAMES)
     for code in codes:
         names |= {"ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code,
                   "ZULIP_ALERT_%s_ENDPOINT" % code, "ZULIP_ALERT_%s_KEY" % code,
@@ -159,11 +161,12 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         return out, "Infisical not used (%s not set); starting with the container environment" % ", ".join(missing)
     partition = env.get("AGENT_SYNC_PARTITION") or PARTITION_DEFAULT
     try:
-        allowed = allowed_names(server_codes(partition))
+        codes = server_codes(partition)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         return out, ("Infisical load skipped (cannot read the seat partition: %s); starting with the container "
                      "environment" % type(exc).__name__)
-    if not allowed:
+    allowed = allowed_names(codes)
+    if not codes:
         return out, "Infisical load skipped (the seat partition gives no seat to server); starting with the container environment"
     try:
         found = fetch(env, **kw)

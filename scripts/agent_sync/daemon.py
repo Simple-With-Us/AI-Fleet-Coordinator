@@ -39,6 +39,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from . import __version__
 from . import adapters as A
 from . import config as C
+from . import heartbeat as HB
 from . import live as L
 from . import router as R
 from . import secretscan
@@ -412,6 +413,9 @@ class Daemon:
         self.config_notified = False
         self.reload_requested = False
         self.acronyms = A.fleet_acronyms()
+        # Reports to Sentry Crons that this instance is running (heartbeat.py);  off with no DSN.
+        self.heartbeat = HB.SentryHeartbeat(env=self.env, home=self.home, clock=self.clock.time, log=self.log.write,
+                                            scrub=self.scrub, hide=self.hide_values)
         self._apply_config()
         # A listener that already holds the state directory owns its ledgers and cursors:  a
         # second daemon (a container waiting to take over on a redeploy, or a stray manual run)
@@ -1463,6 +1467,11 @@ class Daemon:
         if now - self.last_tick["status"] >= 2:
             self.last_tick["status"] = now
             self.write_status()
+        try:
+            self.heartbeat.tick(self.status)
+        except Exception as exc:  # noqa: BLE001 - a monitoring report must never stop the router
+            self.heartbeat.next_at = now + 60.0
+            self.log.write("sentry-heartbeat-error", error=self.scrub(type(exc).__name__))
 
     def _requeue(self, runner: SeatRunner, items: list[dict[str, Any]], source: str, lease_id: str) -> None:
         """Items a dead or silent lease never took go back through steps 6 and 7."""

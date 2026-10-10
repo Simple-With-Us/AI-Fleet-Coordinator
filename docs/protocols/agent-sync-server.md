@@ -163,6 +163,7 @@ These are optional, and best left unset:
 - `AGENT_SYNC_REALM`, which defaults to the fleet realm
 - `AGENT_SYNC_HEALTH_MAX_AGE`, which defaults to 60
 - `AGENT_SYNC_PARTITION`, which defaults to the copy in the image
+- `SENTRY_FLEET_DSN` (or `AGENT_SYNC_SENTRY_DSN`), the Sentry Crons heartbeat's DSN.  It is in Infisical `prod` `/zulip` and `infisical_env.py` loads it at start;  without it the heartbeat is off (see [Sentry Heartbeat](#sentry-heartbeat))
 - `INFISICAL_API_URL` (default `https://app.infisical.com/api`), `INFISICAL_ENVIRONMENT` (default `prod`) and `INFISICAL_SECRET_PATH` (default `/zulip`)
 
 ## Coolify Setup
@@ -287,6 +288,15 @@ One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting a
    It backs up `/data/listener.toml` to `/data/listener.toml.bak-<UTC stamp>` (mode 600), checks the result with the listener's own parser and the partition, and refuses on any problem.  A second run prints `no changes`.
 5. **Restart** the app in Coolify (the new sections name variables the running daemon has not read).
 6. **Check** `docker exec "$C" agent-sync status`:  `listener: running`, `instance server; owner pinned: yes`, no `RED` line, the nine personas and JET `connected` with `wake http (routine ready, <host>)`, MA, GROK-WEB, INSTINCT and ECHO `connected` with `wake inbox`, and `disabled seats (enabled = false, no queue): GB-COMPILER, GB-DIRECTOR`.  Any persona that is red for a credential reason:  set `enabled = false` in its section with the scoped `sed` above, restart, and note it under Open Questions.
+
+## Sentry Heartbeat
+
+Added Sat, Oct 10 (CLAUDE, board `1d688c1d`).  The server instance reports to Sentry that it is running, as the cron monitor `agent-sync-listener-server` in the `fleet-infra` project of org `simple-with-us` (Crons).  The full design, the degraded rules and the Mac side are in [agent-sync-listener.md](agent-sync-listener.md#sentry-heartbeat).
+
+- **Variable.**  `SENTRY_FLEET_DSN`, in Infisical `prod` `/zulip` (created Sat, Oct 10).  `infisical_env.py` allowlists it and `AGENT_SYNC_SENTRY_DSN` alongside the seat names, so the machine identity of [Infisical at Start](#infisical-at-start) delivers it at the next restart.  Without that identity, add `SENTRY_FLEET_DSN` to the Coolify app as a runtime-only variable.  Nothing else about the app changes, and no port opens:  the container only makes outbound HTTPS calls to Sentry.
+- **After a restart** the monitor appears in Sentry Crons with its first check-in within a minute (the first tick).  `status` stays the same;  look for `sentry-heartbeat-ok` in `logs/listener.log`, or `sentry-heartbeat-off` if the DSN did not arrive.
+- **Degraded on the server** is the same rule as on the Mac:  an enabled seat is red, `owner_user_id` is not pinned (the `init` step of the Activation Checklist), or the config has errors.  An unpinned owner therefore shows the server monitor as `error` until `init` has run.
+- **Silence** (the container stopped or in a restart loop) opens a Sentry issue after two missed 5-minute intervals.
 
 ## Cloud Seats
 
