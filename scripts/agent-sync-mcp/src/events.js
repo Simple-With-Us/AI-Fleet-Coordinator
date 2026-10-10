@@ -447,8 +447,7 @@ export async function deliverEvent(
       if (deadline - now() - pause < MIN_ATTEMPT_MS) break;
       await sleep(pause);
     }
-    const timeoutMs = Math.min(DELIVERY_TIMEOUT_MS, deadline - now());
-    if (!(timeoutMs >= MIN_ATTEMPT_MS)) break;
+    if (!(deadline - now() >= MIN_ATTEMPT_MS)) break;
     if (isLive) {
       let live;
       try {
@@ -459,6 +458,9 @@ export async function deliverEvent(
       if (!live) return { outcome: "failed", status: null, error: "live_check_failed", attempts: attempt - 1 };
       if (live.live !== true) return { outcome: "not_live", reason: String(live.reason ?? "unknown"), status: null, attempts: attempt - 1 };
     }
+    // Measured after the check, so the attempt still ends by the deadline.
+    const timeoutMs = Math.min(DELIVERY_TIMEOUT_MS, deadline - now());
+    if (!(timeoutMs >= MIN_ATTEMPT_MS)) break;
     // A fresh timestamp and signature on every attempt, the same event id.
     const result = await signedPost(fetchFn, { url: sub.url, subId: sub.id, secrets: signingSecrets(sub, now()), webhookId: event.eventId, body, timeoutMs, now });
     if (result.response) await result.response.body?.cancel().catch(() => {});
