@@ -739,6 +739,7 @@ class RunCase(unittest.TestCase):
         stub.write_text(
             "#!/bin/bash\n"
             'while [ $# -gt 0 ]; do [ "$1" = "-r" ] && rep="$2"; [ "$1" = dir ] && root="$2"; shift; done\n'
+            '[ -z "$root" ] && { echo stub-1.0; exit 0; }\n'
             'find "$root" -type f | sed "s|^$root/||" >> "$STUB_DIR/gl-files.log"\n'
             'echo run >> "$STUB_DIR/gl-runs.log"\nprintf "[]" > "$rep"\nexit 0\n')
         stub.chmod(0o755)
@@ -790,6 +791,9 @@ class RunCase(unittest.TestCase):
         self.assertIn("files/apps/rule.md", stage.items)
         self.assertEqual(stage.allowed, [src])
         self.assertNotIn("files/apps/prod.env", stage.items)
+        (self.cfg.state_dir / "allow.txt").write_text("# the owner took the line out\n")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertNotIn("files/apps/rule.md", stage.items)   # an allowed hit is never cached as clean
 
     def test_an_unpushed_bundle_with_a_content_hit_is_dropped_unless_allowed(self):
         r = self.home / "Code" / "r"
@@ -824,6 +828,43 @@ class RunCase(unittest.TestCase):
         self.assertIn("refs/heads/main", heads)
         self.assertNotIn("leaky-branch", heads)
         self.assertEqual([d["path"].split(" ref ")[1] for d in stage.dropped if " ref " in d["path"]], ["refs/heads/leaky-branch"])
+
+    def test_a_new_pattern_or_scanner_version_discards_the_scan_cache(self):
+        stage, *_, gate1, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        stage, *_, gate2, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertEqual(gate2["scanned"], 0)
+        with mock.patch.dict(fwb.CONTENT_PATTERNS, {"new-pattern": fwb.re.compile(rb"zzz-never-matches")}):
+            fwb.PREFILTER["new-pattern"] = (b"zzz",)
+            try:
+                stage, *_, gate3, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+            finally:
+                fwb.PREFILTER.pop("new-pattern", None)
+        self.assertGreater(gate3["scanned"], 0)
+        self.assertEqual(gate3["cached"], 0)
+
+    def test_an_unexpected_error_still_leaves_a_log_line_and_no_stage(self):
+        with mock.patch.object(fwb, "discover", side_effect=RuntimeError("boom with /some/path")):
+            self.assertEqual(fwb.cmd_run(self.cfg, self.args), 5)
+        line = self.log().splitlines()[-1]
+        self.assertIn("status=error reason=exception:RuntimeError", line)
+        self.assertNotIn("boom", line)
+        self.assertFalse(self.cfg.stage.exists())
+        self.assertIn("RuntimeError", self.cfg.detail_log_path.read_text())
+        self.assertEqual(self.argv(), [])
+
+    def test_restic_rc3_with_a_snapshot_is_partial_not_an_error(self):
+        stub = self.stubdir / "restic"
+        text = stub.read_text()
+        stub.write_text(text.replace("fi\nexit 0\n", "fi\nif [ \"$1\" = backup ] && [ -n \"$STUB_RC3\" ]; then exit 3; fi\nexit 0\n"))
+        os.environ["STUB_RC3"] = "1"
+        try:
+            self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        finally:
+            os.environ.pop("STUB_RC3", None)
+        line = self.log().splitlines()[-1]
+        self.assertIn("status=partial", line)
+        self.assertIn("warn=restic-unreadable-files", line)
+        self.assertTrue(any(a.startswith("forget") for a in self.argv()))
 
     def test_a_changed_file_is_rescanned_and_a_new_secret_is_caught(self):
         stage, *_ , gate1, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)

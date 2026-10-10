@@ -50,6 +50,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -758,6 +759,7 @@ def stream_scan(git: Git, cwd: str, args: list[str], cap: int) -> tuple[Optional
     finally:
         proc.kill()
         proc.wait()
+        proc.stdout.close()
     return hit, read >= cap and hit is None
 
 
@@ -767,7 +769,7 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
     res = GroupResult(slug=slug, name=name, common_dir=common_dir, worktrees=len(wts))
     base = f"git/{slug}"
     cwd = wts[0].path
-    scratch = tempfile.mkdtemp(prefix="fwb-objs-")
+    scratch = tempfile.mkdtemp(prefix="objs-", dir=str(cfg.cache_dir))
     try:
         # Remotes (credentials stripped from URLs) and the no-remote flag.
         rc, out, _ = git.run(cwd, "remote", "-v")
@@ -1056,19 +1058,34 @@ def load_allow(cfg: Config) -> set[str]:
     return {l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")}
 
 
-def load_scan_cache(cfg: Config) -> dict:
+def scanner_fingerprint(cfg: Config) -> str:
+    """Identifies the scanners that produced a cache entry:  the patterns, their prefilters and
+    placeholder marks, this tool's version, and gitleaks' own version.  A change discards the cache,
+    so a pattern added later runs over files an older pattern set had passed."""
+    gl = ""
+    if cfg.gitleaks_bin and shutil.which(cfg.gitleaks_bin):
+        try:
+            gl = subprocess.run([cfg.gitleaks_bin, "version"], capture_output=True, text=True, timeout=30).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            gl = "?"
+    blob = repr(({k: (v.pattern, v.flags) for k, v in CONTENT_PATTERNS.items()}, PREFILTER, PLACEHOLDER_MARKS,
+                 sorted(PLACEHOLDER_CHECKED), sorted(ENTROPY_GATED), VERSION, gl))
+    return hashlib.sha1(blob.encode()).hexdigest()
+
+
+def load_scan_cache(cfg: Config, fingerprint: str) -> dict:
     try:
         data = json.loads((cfg.state_dir / "scan-cache.json").read_text())
-        return data.get("files", {}) if data.get("v") == 1 else {}
+        return data.get("files", {}) if data.get("v") == 1 and data.get("fp") == fingerprint else {}
     except (OSError, ValueError, AttributeError):
         return {}
 
 
-def save_scan_cache(cfg: Config, files: dict) -> None:
+def save_scan_cache(cfg: Config, files: dict, fingerprint: str) -> None:
     try:
         cfg.state_dir.mkdir(parents=True, exist_ok=True)
         tmp = cfg.state_dir / f"scan-cache.json.tmp{os.getpid()}"
-        tmp.write_text(json.dumps({"v": 1, "files": files}))
+        tmp.write_text(json.dumps({"v": 1, "fp": fingerprint, "files": files}))
         os.replace(tmp, cfg.state_dir / "scan-cache.json")
     except OSError:
         pass
@@ -1127,7 +1144,8 @@ def run_gate(cfg: Config, stage: Stage, progress: Optional[Callable[[str], None]
     on the stage;  content is never echoed."""
     info = {"regex": True, "gitleaks": False, "gitleaks_error": "", "scanned": 0, "cached": 0,
             "gitleaks_files": 0, "gitleaks_pending": 0}
-    cache = load_scan_cache(cfg)
+    fingerprint = scanner_fingerprint(cfg)
+    cache = load_scan_cache(cfg, fingerprint)
     new_cache: dict = {}
     regex_todo: list[tuple[str, list]] = []
     for rel, item in list(stage.items.items()):
@@ -1151,9 +1169,8 @@ def run_gate(cfg: Config, stage: Stage, progress: Optional[Callable[[str], None]
         info["scanned"] += 1
         src = stage.items[rel].src
         if hit and src in stage.allow:
-            stage.allowed.append(src)
-            hit = None
-        if hit:
+            stage.allowed.append(src)    # not cached:  removing the allow.txt line must take effect next run
+        elif hit:
             stage.drop(rel, f"content:{hit}")
         else:
             new_cache[rel] = [key[0], key[1], False]
@@ -1181,7 +1198,7 @@ def run_gate(cfg: Config, stage: Stage, progress: Optional[Callable[[str], None]
             for rel in batch:
                 if rel in flagged and stage.items[rel].src in stage.allow:
                     stage.allowed.append(stage.items[rel].src)
-                    new_cache[rel][2] = True
+                    new_cache.pop(rel, None)
                 elif rel in flagged:
                     stage.drop(rel, flagged[rel])
                     new_cache.pop(rel, None)
@@ -1191,7 +1208,7 @@ def run_gate(cfg: Config, stage: Stage, progress: Optional[Callable[[str], None]
             if progress:
                 progress(f"gitleaks {info['gitleaks_files']}/{len(pending)} files")
         info["gitleaks_pending"] = len(pending) - i
-    save_scan_cache(cfg, {rel: ent for rel, ent in new_cache.items() if rel in stage.items})
+    save_scan_cache(cfg, {rel: ent for rel, ent in new_cache.items() if rel in stage.items}, fingerprint)
     return info
 
 
@@ -1263,6 +1280,12 @@ def detail_log(cfg: Config, lines: list[str]) -> None:
         return
     try:
         cfg.detail_log_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if cfg.detail_log_path.stat().st_size > 8 * 1024 * 1024:   # keep the newest 4 MB
+                data = cfg.detail_log_path.read_bytes()[-4 * 1024 * 1024:]
+                cfg.detail_log_path.write_bytes(data[data.find(b"\n") + 1:])
+        except OSError:
+            pass
         with open(cfg.detail_log_path, "a", encoding="utf-8") as fh:
             fh.write(f"--- {stamp(cfg.now())} ---\n")
             fh.writelines(l + "\n" for l in lines)
@@ -1539,6 +1562,15 @@ def build_stage(cfg: Config, stage_root: Path, progress: Optional[Callable[[str]
     if stage_root.exists():
         shutil.rmtree(stage_root, ignore_errors=True)
     stage_root.mkdir(parents=True, exist_ok=True)
+    # A killed run can leave hard-linked batches and scratch object folders behind.
+    # (Only ones over an hour old:  a dry run must not pull scratch out from under a live run.)
+    for stale in list(cfg.cache_dir.glob("gl-*")) + list(cfg.cache_dir.glob("objs-*")):
+        try:
+            if time.time() - stale.stat().st_mtime < 3600:
+                continue
+            shutil.rmtree(stale, ignore_errors=True) if stale.is_dir() else stale.unlink(missing_ok=True)
+        except OSError:
+            pass
     stage = Stage(stage_root)
     stage.allow = load_allow(cfg)
     git = Git(cfg)
@@ -1575,6 +1607,13 @@ def cmd_run(cfg: Config, args) -> int:
     held: list[int] = []
     try:
         return _run(cfg, args, held)
+    except Exception as exc:  # never a silent run:  one log line, the stage removed, a traceback in the detail log
+        if args.dry_run:
+            raise
+        log_line(cfg, status="error", reason=f"exception:{type(exc).__name__}")
+        detail_log(cfg, ["exception " + line for line in traceback.format_exc().splitlines()])
+        shutil.rmtree(cfg.stage, ignore_errors=True)
+        return 5
     finally:
         for fd in held:
             try:
@@ -1674,7 +1713,8 @@ def _run(cfg: Config, args, held: list[int]) -> int:
         if cfg.max_runtime:
             signal.alarm(0)
     state = read_state(cfg)
-    if res["rc"] != 0:
+    unreadable = res["rc"] == 3 and bool(res["snapshot"])   # restic made the snapshot but could not read some files
+    if res["rc"] != 0 and not unreadable:
         log_line(cfg, status="error", reason="restic-backup-failed", detail=res.get("error", "")[:120], **common)
         shutil.rmtree(stage_root, ignore_errors=True)
         return 4
@@ -1687,7 +1727,9 @@ def _run(cfg: Config, args, held: list[int]) -> int:
     state["last_success"] = cfg.now()
     state["last_success_text"] = stamp(cfg.now())
     write_state(cfg, state)
-    status = "partial" if blocked else "ok"
+    status = "partial" if (blocked or unreadable) else "ok"
+    if unreadable and not warn:
+        warn = "restic-unreadable-files"
     log_line(cfg, status=status, snapshot=res["snapshot"] or "?", added=fmt_bytes(res["added"]),
              forget=maint["forget"], prune=maint["prune"], check=maint["check"], elapsed=f"{time.time() - t0:.0f}s",
              warn=warn, grant=grant, **common)
