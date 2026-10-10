@@ -80,14 +80,15 @@ def resolve_claude(explicit: str | None, wake_path: str) -> str | None:
     return os.path.abspath(found) if found else None
 
 
-def claude_argv(claude: str, model: str) -> list[str]:
+def claude_argv(claude: str, model: str, seats: Iterable[str] | None = None) -> list[str]:
     """The fixed wake argv.  `claude` should be the pinned realpath (binary_pin), so the binary
-    that runs is the one that was checked, even if a symlink moves in between."""
+    that runs is the one that was checked, even if a symlink moves in between.  `seats` is the live
+    fleet tag set, the enum of the schema's route seat (wakes.schema_text)."""
     return [claude, "-p", "--safe-mode", "--restricted", "--settings", NO_HOOKS_SETTINGS, "--model", model,
             "--tools", "", "--strict-mcp-config", "--disallowedTools", "mcp__*",
             "--permission-mode", "dontAsk", "--permission-prompts", "none",
             "--no-session-persistence", "--max-turns", str(MAX_TURNS), "--max-budget-usd", "%.2f" % WAKE_MAX_BUDGET_USD,
-            "--output-format", "stream-json", "--verbose", "--json-schema", schema_text(),
+            "--output-format", "stream-json", "--verbose", "--json-schema", schema_text(seats),
             "--append-system-prompt-file", CONTRACT_PATH]
 
 

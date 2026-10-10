@@ -12,3 +12,6 @@
 d8ba0dab24f7925c0c84e5a9dd8a42e8fe9e6889:scripts/fleet_lanes/tests/test_install_rules.py:generic-api-key:334
 # Heartbeat test fixture (PR #441): the squash commit on main carries a fixed made-up DSN key;  now generated per run.
 be0df36c940b30a8bb2e75750ba34a1eebeaa222:scripts/agent_sync/tests/test_heartbeat.py:generic-api-key:16
+# Route suggestion PR (#452), first commit:  the loop-guard note call in daemon.py is code, not a key
+# (generic-api-key misread its keyword arguments); the line is split from the next commit on.
+04a98dc842e64cf9d326a1296f42ca973a4c6f8d:scripts/agent_sync/daemon.py:generic-api-key:841

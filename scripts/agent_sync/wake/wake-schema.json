@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["action", "reply", "board", "owner_note", "risk"],
+  "required": ["action", "reply", "board", "owner_note", "risk", "route"],
   "properties": {
     "action": {"enum": ["none", "reply", "board", "escalate"]},
     "reply": {"type": ["string", "null"]},
@@ -16,6 +16,15 @@
       }
     },
     "owner_note": {"type": ["string", "null"]},
-    "risk": {"enum": ["low", "uncertain", "high", null]}
+    "risk": {"enum": ["low", "uncertain", "high", null]},
+    "route": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["seat", "reason"],
+      "properties": {
+        "seat": {"type": "string"},
+        "reason": {"type": "string"}
+      }
+    }
   }
 }

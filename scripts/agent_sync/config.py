@@ -47,6 +47,10 @@ DEFAULT_OWNER_CLIENTS = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectro
 BUDGET_DEFAULTS: dict[str, float] = {
     "wakes_per_hour": 6, "wakes_per_day": 40, "per_topic_per_hour": 2, "owner_per_day": 20,
     "owner_per_topic_per_hour": 6, "usd_per_day": 2.0, "board_per_day": 0,
+    # Route suggestions (owner 2026-10-10):  what one routing seat (today only CLAUDE, the one claude
+    # wake) may page on the owner's behalf, counted from that seat's own ledger.  A route also needs
+    # route_topic_minutes since the last route posted in the same topic.
+    "routes_per_hour": 3, "routes_per_day": 10, "route_topic_minutes": 30,
 }
 WAKE_MAX_BUDGET_USD = 0.25
 # Seat tags whose bots are always eligible senders, on top of every tag the seat partition lists
@@ -98,7 +102,8 @@ class SeatConfig:
     def __init__(self, seat: str, bot: str, wake: str, model: str, budget: dict[str, float],
                  live: dict[str, int], claude: str | None, *, instance: str = "mac", enabled: bool = True,
                  creds: str = "file", email_env: str | None = None, key_env: str | None = None,
-                 site_env: str = DEFAULT_SITE_ENV, routine: RoutineConfig | None = None) -> None:
+                 site_env: str = DEFAULT_SITE_ENV, routine: RoutineConfig | None = None,
+                 route_enabled: bool = True) -> None:
         self.seat = seat
         self.bot = bot
         self.wake = wake
@@ -113,6 +118,7 @@ class SeatConfig:
         self.key_env = key_env
         self.site_env = site_env
         self.routine = routine
+        self.route_enabled = route_enabled  # the per-seat kill switch for wake route suggestions
 
     @property
     def wake_max_usd(self) -> float:
@@ -148,6 +154,7 @@ class Config:
         self.disabled: dict[str, SeatConfig] = {}  # parsed and checked, but no queue (enabled = false)
         self.seat_instances: dict[str, str | None] = {}  # every [seat.X] section:  its own instance key, if any
         self.notify_banners = True
+        self.route_enabled = True  # daemon.route_enabled:  the listener-wide kill switch for route suggestions
 
     @property
     def ok(self) -> bool:
@@ -250,6 +257,11 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                 setattr(cfg, attr, value * scale)
     # macOS banners on the Mac; the server has no display, so it keeps only the owner queue.
     cfg.notify_banners = daemon["notify_banners"] is True if "notify_banners" in daemon else cfg.instance == "mac"
+    route_on = daemon.get("route_enabled", True)
+    if not isinstance(route_on, bool):
+        errors.append("daemon.route_enabled must be true or false")
+    else:
+        cfg.route_enabled = route_on
     cfg.presence = L.presence_topics(raw)
     platform = ((raw.get("platform") or {}).get("claude-code") or {}) if isinstance(raw.get("platform"), dict) else {}
     seat = platform.get("seat") if isinstance(platform, dict) else None
@@ -278,6 +290,10 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if not isinstance(enabled, bool):
             problems.append("seat.%s.enabled must be true or false" % seat_name)
             enabled = True
+        route_enabled = section.get("route_enabled", True)
+        if not isinstance(route_enabled, bool):
+            problems.append("seat.%s.route_enabled must be true or false" % seat_name)
+            route_enabled = True
         creds = section.get("creds", "file")
         if creds not in ("file", "env"):
             problems.append("seat.%s.creds must be \"file\" (a zuliprc) or \"env\" (environment variables)" % seat_name)
@@ -351,7 +367,8 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             continue
         seat_cfg = SeatConfig(seat_name, bot, wake, model, budget, L.live_limits(raw, seat_name), claude,
                               instance=seat_instance or cfg.instance, enabled=enabled, creds=creds,
-                              email_env=email_env, key_env=key_env, site_env=site_env, routine=routine)
+                              email_env=email_env, key_env=key_env, site_env=site_env, routine=routine,
+                              route_enabled=route_enabled)
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg
     _refuse_shared_env(cfg)
     return cfg
