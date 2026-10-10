@@ -532,16 +532,20 @@ janitor_lane_report_refresh() {
 # 0 = `git worktree prune` is safe in repo $1.  Prune deletes the registry entry (and so the private index and HEAD) of
 # every worktree whose folder is missing, and a lane on an unmounted disk is a missing folder.  An external disk that is
 # unplugged, asleep or not yet mounted at the 30-minute tick must not cost its lanes their repository link, so prune is
-# skipped (and logged) when a lanes/<Repo> folder is a symlink to a place that is not there, or when the external lanes
-# root is not a directory while the repo lists a worktree under it.  Fail closed: this only ever skips a tidy-up.
+# skipped (and logged) when a lanes/<Repo> symlink that points onto the external lanes root leads nowhere, or when the
+# external lanes root is not a directory while the repo lists a worktree under it.  Off (empty root) = always safe, as
+# before.  Fail closed: this only ever skips a tidy-up.  Other dangling links in the lanes root are not this script's.
 janitor_prune_safe() {
-  local r="$1" link wt ext_lc
+  local r="$1" link tgt wt ext ext_lc
+  ext="${LANES_EXTERNAL_ROOT%/}"
+  [ -n "$ext" ] || return 0
+  ext_lc=$(printf '%s' "$ext" | tr '[:upper:]' '[:lower:]')
   for link in "$LANES_ROOT"/*; do
-    [ -L "$link" ] && [ ! -d "$link" ] && return 1
+    [ -L "$link" ] && [ ! -d "$link" ] || continue
+    tgt=$(readlink "$link" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    case "$tgt" in "$ext_lc"|"$ext_lc"/*) return 1 ;; esac
   done
-  [ -n "${LANES_EXTERNAL_ROOT%/}" ] || return 0
-  [ -d "${LANES_EXTERNAL_ROOT%/}" ] && return 0
-  ext_lc=$(printf '%s' "${LANES_EXTERNAL_ROOT%/}" | tr '[:upper:]' '[:lower:]')
+  [ -d "$ext" ] && return 0
   while IFS= read -r wt; do
     case "$(printf '%s' "$wt" | tr '[:upper:]' '[:lower:]')" in "$ext_lc"/*) return 1 ;; esac
   done < <(git -C "$r" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')

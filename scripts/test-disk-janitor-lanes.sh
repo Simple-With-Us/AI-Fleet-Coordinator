@@ -379,6 +379,11 @@ janitor_dep_reap_worktrees >/dev/null 2>&1; present "$L_XB" || fail "dep-reap mu
 # git worktree prune deletes the registry entry of every worktree whose folder is missing: an unmounted external disk
 # must never reach it (janitor_prune_safe), while a mounted one, or no external lanes at all, prunes as before.
 janitor_prune_safe "$FH/Code/BotFleet" || fail "mounted disk: prune is safe"
+ln -s "$T/nowhere-at-all" "$LANES/Unrelated"        # a dangling link that has nothing to do with the external disk
+janitor_prune_safe "$FH/Code/BotFleet" || fail "a dangling link that does not point at the external disk must not stop prune"
+rm "$LANES/Unrelated"
+( LANES_EXTERNAL_ROOT=""; mv "$T/ext/Lanes" "$T/ext/Lanes.off"; janitor_prune_safe "$FH/Code/BotFleet"; rc=$?; mv "$T/ext/Lanes.off" "$T/ext/Lanes"; exit $rc ) \
+  || fail "with the external root off prune is always safe"
 mv "$T/ext/Lanes" "$T/ext/Lanes.off"
 janitor_prune_safe "$FH/Code/BotFleet" && fail "a lanes/Ext symlink that leads nowhere (disk not mounted): prune must be skipped"
 rm "$LANES/Ext"
