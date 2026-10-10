@@ -62,7 +62,7 @@ import { HostedTools } from "./hosted-tools.js";
 import { recallClientFromEnv } from "./recall.js";
 import { ZulipClient } from "./zulip.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
-import { SeatEvents, fanOut } from "./events.js";
+import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS } from "./events.js";
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
 
 export { SeatGate };
@@ -260,17 +260,21 @@ function safeHost(origin) {
 
 // ---------------------------------------------------------------- /internal/wake/<SEAT>
 
-function jsonResponse(body, status) {
-  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
+function jsonResponse(body, status, headers = {}) {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...headers } });
 }
 
 /**
  * The listener's wake (src/wake.js):  signature, freshness and shape first,
- * then a wake_id claim in the seat's SeatGate, then 202 at once while the
- * signed deliveries run in ctx.waitUntil.  A repeat of a claimed wake_id is a
- * 200, so the listener's retry after a lost response never wakes Jet twice.
+ * then a wake_id claim in the seat's SeatGate, then the signed deliveries
+ * inside this request (at most WAKE_BUDGET_MS from its arrival), and an answer
+ * that says how they went (events.js wakeReply).  A wake every delivery of
+ * which failed in a way worth retrying is forgotten and answered 503, so the
+ * listener sends it again.  A settled wake_id is a 200 duplicate, so the
+ * listener's retry after a lost response never wakes Jet twice.
  */
 async function serveWake(request, env, ctx, config) {
+  const started = Date.now();
   const seat = wakePathSeat(new URL(request.url).pathname);
   if (!seat || !config.hostedSeats.includes(seat) || !Object.hasOwn(WAKE_SECRETS, seat)) return notFound();
   const rawKey = env[WAKE_SECRETS[seat]];
@@ -293,18 +297,18 @@ async function serveWake(request, env, ctx, config) {
     return jsonResponse({ ok: true, disabled: true, subscribers: 0 }, 202);
   }
   const seatGate = gate(env, seat);
-  const claim = await seatGate.eventClaimWake({ wakeId: wake.wake_id });
-  console.log(JSON.stringify({ event: "wake", seat, verdict: claim.verdict, subscribers: claim.subs?.length ?? 0, message_id: wake.message_id }));
-  if (claim.verdict === "duplicate") return jsonResponse({ ok: true, duplicate: true }, 200);
-  if (claim.verdict === "paused") return jsonResponse({ ok: true, paused: true, subscribers: 0 }, 202);
-  if (claim.subs.length > 0) {
-    ctx.waitUntil(
-      fanOut({ gate: seatGate, wake, subs: claim.subs, fetchFn: (...a) => fetch(...a) }).catch(() => {
-        console.log(JSON.stringify({ event: "wake_fanout_failed", seat }));
-      }),
-    );
+  const claim = await seatGate.eventClaimWake({ wakeId: wake.wake_id, messageId: wake.message_id });
+  let result = claim;
+  if (claim.verdict === "go") {
+    // The answer waits for the deliveries, and waitUntil keeps them (and the
+    // settle that ends the claim) running if the listener hangs up first.
+    const work = deliverWake({ gate: seatGate, wake, claim, config, fetchFn: (...a) => fetch(...a), deadline: started + WAKE_BUDGET_MS });
+    ctx.waitUntil(work.catch(() => {}));
+    result = await work;
   }
-  return jsonResponse({ ok: true, subscribers: claim.subs.length }, 202);
+  console.log(JSON.stringify({ event: "wake", seat, verdict: claim.verdict, outcome: result.outcome ?? null, subscribers: claim.subs?.length ?? 0, delivered: result.delivered ?? 0, message_id: wake.message_id }));
+  const reply = wakeReply(result);
+  return jsonResponse(reply.body, reply.status, reply.retryAfterS ? { "Retry-After": String(reply.retryAfterS) } : {});
 }
 
 // ---------------------------------------------------------------- /authorize and /admin

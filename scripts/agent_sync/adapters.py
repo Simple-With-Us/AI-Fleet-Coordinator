@@ -587,7 +587,9 @@ def routine_body(*, seat: str, wake_id: str, trigger_ids: Iterable[int], row: Ma
     trigger is marked `dm: true` and its `reply_to` is that DM's other members only, never a
     channel.  Channel, topic and sender name are Zulip data too, not instructions:  the top-level
     `channel`, `topic` and `sender_full_name` are escaped display copies, and only `reply_to`
-    carries the exact names, for addressing."""
+    carries the exact names, for addressing.  `stream_id` is the trigger's Zulip stream id (an int;
+    None for a DM or a row without one), so a receiver can hold the channel to its own allowlist by
+    id, never by name:  the hosted MCP Worker refuses a channel wake without an allowlisted one."""
     dm = row.get("type") == "private"
     message_id = int(row["id"])
     members = sorted(i for i in row.get("recipients") or [] if isinstance(i, int) and not isinstance(i, bool))
@@ -600,6 +602,7 @@ def routine_body(*, seat: str, wake_id: str, trigger_ids: Iterable[int], row: Ma
     channel = None if dm else L.escape_line(raw_channel, 100)
     topic = None if dm else L.escape_line(raw_topic, 100)
     sender_id = row.get("sender_id")
+    stream_id = row.get("stream_id")
     return {
         "contract": ROUTINE_CONTRACT,
         "seat": seat,
@@ -609,6 +612,8 @@ def routine_body(*, seat: str, wake_id: str, trigger_ids: Iterable[int], row: Ma
         "dm": dm,
         "channel": channel,
         "topic": topic,
+        "stream_id": (stream_id if not dm and isinstance(stream_id, int) and not isinstance(stream_id, bool)
+                      and stream_id > 0 else None),
         "dm_recipient_ids": others if dm else [],
         "sender_user_id": sender_id if isinstance(sender_id, int) and not isinstance(sender_id, bool) else None,
         "sender_full_name": L.escape_line(str(row.get("sender") or ""), 100),

@@ -8,6 +8,9 @@
 // The signature is checked over the raw bytes before any JSON parse.  A body
 // whose `sent_at` is more than five minutes old or one minute in the future is
 // refused, so the wake_id dedupe in SeatGate only has to remember a few minutes.
+// `stream_id` (the trigger's Zulip stream id, null for a DM) is optional here
+// so an older listener's body still parses;  events.js then refuses a channel
+// wake that lacks it.
 //
 // Pure module:  WebCrypto only, so `node --test` loads it.
 
@@ -101,10 +104,15 @@ export async function verifyWake({ bytes, signature, key, seat, now = Date.now()
   if (!isInt(wake.message_id) || wake.message_id <= 0) return { ok: false, status: 400, reason: "bad_message_id" };
   if (typeof wake.dm !== "boolean") return { ok: false, status: 400, reason: "bad_dm" };
   if (!isStrOrNull(wake.channel) || !isStrOrNull(wake.topic)) return { ok: false, status: 400, reason: "bad_where" };
+  if (wake.stream_id !== undefined && wake.stream_id !== null && !(isInt(wake.stream_id) && wake.stream_id > 0)) {
+    return { ok: false, status: 400, reason: "bad_stream_id" };
+  }
   if (typeof wake.excerpt !== "string" || typeof wake.zulip_link !== "string") return { ok: false, status: 400, reason: "bad_fields" };
   const replyTo = wake.reply_to;
   if (!replyTo || typeof replyTo !== "object" || (replyTo.type !== "stream" && replyTo.type !== "direct")) {
     return { ok: false, status: 400, reason: "bad_reply_to" };
   }
+  // A DM is a DM in both places, or the channel rule (events.js) and the payload could disagree.
+  if ((replyTo.type === "direct") !== wake.dm) return { ok: false, status: 400, reason: "bad_reply_to" };
   return { ok: true, wake };
 }
