@@ -188,7 +188,8 @@ JSON_TARGETS: Tuple[JsonTarget, ...] = (
                seat="OPENCODE",
                note="the OPENCODE seat since Sat, Oct 10, 2026 (owner, #440), so agent-sync gets --default-seat OPENCODE; "
                     "a launcher's seat still wins.  A session inside Conductor has no default (open question in "
-                    "AGENT-SYNC) and shares this global file.  OpenCode also reads a project .opencode/opencode.json; "
+                    "AGENT-SYNC) and shares this global file, so do not add --with-agent-sync for opencode until the owner "
+                    "has answered it.  OpenCode also reads a project .opencode/opencode.json; "
                     "this is the global file"),
     JsonTarget("kimi", "Kimi Code", ".kimi-code", ".kimi-code/mcp.json", ("mcpServers",),
                _build_kimi, _command_args_of,
