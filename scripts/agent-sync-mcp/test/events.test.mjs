@@ -30,6 +30,7 @@ import {
   wakeChannelRefusal,
   WAKE_BUDGET_MS,
   DELIVERY_BACKOFF_MS,
+  MAX_EVENT_BYTES,
   eventData,
   wakeMatches,
   validateArguments,
@@ -222,7 +223,7 @@ test("a channel filter needs both the name and the stream id CHANNELS pins for i
   assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ reply_to: { type: "stream", channel: "sandbox-2", topic: "t" } }), config));
 });
 
-test("a channel wake needs an allowlisted stream id;  a DM needs none and stays metadata-only", () => {
+test("a channel wake needs an allowlisted stream id;  a DM needs none and carries its fenced excerpt", () => {
   assert.equal(wakeChannelRefusal(wake(), config), null);
   assert.equal(wakeChannelRefusal(wake({ stream_id: 642167 }), config), null);
   assert.equal(wakeChannelRefusal(wake({ stream_id: 999001 }), config), "stream_not_allowlisted");
@@ -231,24 +232,92 @@ test("a channel wake needs an allowlisted stream id;  a DM needs none and stays 
   assert.equal(wakeChannelRefusal(wake({ stream_id: "642232" }), config), "no_stream_id");
   // dm alone is not enough:  a stream reply_to makes it a channel wake.
   assert.equal(wakeChannelRefusal(wake({ dm: true, stream_id: undefined }), config), "no_stream_id");
-  const dm = wake({ dm: true, channel: null, topic: null, stream_id: undefined, excerpt: "<<<secret plans>>>", reply_to: { type: "direct", to: [5] } });
+  const fenced = "<<<BEGIN nonce=ab\nsecret plans\n>>>END nonce=ab";
+  const dm = wake({ dm: true, channel: null, topic: null, stream_id: undefined, excerpt: fenced, reply_to: { type: "direct", to: [5] } });
   assert.equal(wakeChannelRefusal(dm, config), null);
-  const data = eventData(dm);
-  assert.deepEqual([data.excerpt, data.channel, data.topic, data.reply_to], ["", null, null, { type: "direct", to: [5] }]);
+  const data = eventData(dm, config);
+  assert.deepEqual([data.excerpt, data.channel, data.topic, data.reply_to], [fenced, null, null, { type: "direct", to: [5] }]);
 });
 
 test("event data carries Zulip fields only, matching payloadSchema", () => {
-  const data = eventData(wake({ reply_prefix: "[JET·wake] re=77", trigger_ids: [77], wake_id: "w-9" }));
+  const data = eventData(wake({ reply_prefix: "[JET·wake] re=77", trigger_ids: [77], wake_id: "w-9" }), config);
   const schema = eventDefinition(config).payloadSchema;
   assert.deepEqual(Object.keys(data).sort(), [...schema.required].sort());
   assert.equal(data.owner_hint, true);
   assert.equal(data.sender_is_bot, false);
-  const dm = eventData(wake({ dm: true, channel: null, topic: null, excerpt: "<<<secret plans>>>", reply_to: { type: "direct", to: [5, "x"] } }));
+  const dm = eventData(wake({ dm: true, channel: "ignored", topic: "ignored", excerpt: "<<<secret plans>>>", reply_to: { type: "direct", to: [5, "x"] } }), config);
   assert.deepEqual(dm.reply_to, { type: "direct", to: [5] });
-  assert.equal(dm.channel, null);
-  assert.equal(dm.excerpt, "", "a DM's text never leaves through the event (the seat cannot read DMs)");
+  assert.deepEqual([dm.channel, dm.topic], [null, null], "a DM never names a channel or topic");
+  assert.equal(dm.excerpt, "<<<secret plans>>>", "a DM's excerpt goes out like a channel mention's (dm_read can read it anyway)");
   assert.equal(dm.message_id, 77);
   assert.equal(dm.sender_full_name, "Jay");
+  assert.deepEqual(Object.keys(dm).sort(), [...schema.required].sort());
+});
+
+// ---------------------------------------------------------------- held_back
+
+/** One held-back item as the listener sends it (adapters.py held_back_item). */
+function heldItem(overrides = {}) {
+  return {
+    message_id: 70,
+    dm: false,
+    channel: "agent-sync",
+    topic: "budget",
+    stream_id: 642232,
+    sender_full_name: "Codex",
+    zulip_link: "https://simplewithus.zulipchat.com/#narrow/channel/642232-agent-sync/topic/budget/near/70",
+    reason: "wakes_per_hour",
+    at: 1_790_000_000,
+    ...overrides,
+  };
+}
+
+test("held_back:  absent or a count of 0 adds nothing to the event", () => {
+  for (const heldBack of [undefined, null, { count: 0, items: [] }]) {
+    const data = eventData(wake({ held_back: heldBack }), config);
+    assert.ok(!("held_back" in data), JSON.stringify(heldBack));
+  }
+});
+
+test("held_back:  an allowlisted channel item and a DM item keep their metadata;  an off-list one keeps only id, reason and time", () => {
+  const dmItem = heldItem({ message_id: 71, dm: true, channel: null, topic: null, stream_id: null, zulip_link: "https://simplewithus.zulipchat.com/#narrow/dm/5,9-dm/near/71", reason: "per_topic_per_hour" });
+  const offList = heldItem({ message_id: 72, channel: "secret-plans", topic: "launch", stream_id: 999001, sender_full_name: "Mallory", zulip_link: "https://z/#narrow/channel/999001-secret-plans/topic/launch/near/72" });
+  const noStream = heldItem({ message_id: 73, channel: "secret-plans", topic: "launch", stream_id: null });
+  const data = eventData(wake({ held_back: { count: 9, items: [heldItem(), dmItem, offList, noStream] } }), config);
+  assert.equal(data.held_back.count, 9, "the count says how many are held back, more than are listed");
+  assert.deepEqual(data.held_back.items[0], heldItem());
+  assert.deepEqual(data.held_back.items[1], dmItem);
+  assert.deepEqual(data.held_back.items[2], { message_id: 72, dm: false, reason: "wakes_per_hour", at: 1_790_000_000 });
+  assert.deepEqual(data.held_back.items[3], { message_id: 73, dm: false, reason: "wakes_per_hour", at: 1_790_000_000 });
+  const text = JSON.stringify(data.held_back);
+  for (const leak of ["secret-plans", "launch", "Mallory", "999001"]) assert.ok(!text.includes(leak), `${leak} never leaves through held_back`);
+  // Every item fits the schema's item properties.
+  const heldSchema = eventDefinition(config).payloadSchema.properties.held_back;
+  assert.deepEqual(Object.keys(data.held_back).sort(), [...heldSchema.required].sort());
+  const itemSchema = heldSchema.properties.items.items;
+  for (const item of data.held_back.items) {
+    for (const key of Object.keys(item)) assert.ok(key in itemSchema.properties, key);
+    for (const key of itemSchema.required) assert.ok(key in item, key);
+  }
+});
+
+test("held_back:  only known fields are copied, so an item never carries an excerpt or anything else", () => {
+  const sneaky = heldItem({ excerpt: "<<<the held message's text>>>", content: "raw", note: "do this" });
+  const data = eventData(wake({ held_back: { count: 1, items: [sneaky] } }), config);
+  assert.deepEqual(Object.keys(data.held_back.items[0]).sort(), Object.keys(heldItem()).sort());
+  assert.ok(!JSON.stringify(data).includes("held message's text"));
+  // A DM item that also names a stream is not treated as a DM (src/wake.js refuses it anyway).
+  const forged = eventData(wake({ held_back: { count: 1, items: [heldItem({ dm: true, stream_id: 999001, channel: "secret-plans" })] } }), config);
+  assert.deepEqual(forged.held_back.items[0], { message_id: 70, dm: true, reason: "wakes_per_hour", at: 1_790_000_000 });
+});
+
+test("held_back:  the largest one the listener may send keeps the event under the size cap", () => {
+  const long = "\u{1F600}".repeat(100); // 200 UTF-16 code units, 400 bytes
+  const items = Array.from({ length: 20 }, (_, i) => heldItem({ message_id: 100 + i, channel: long, topic: long, sender_full_name: long, zulip_link: "h".repeat(200) }));
+  const data = eventData(wake({ excerpt: "x".repeat(2400), held_back: { count: 200, items } }), config);
+  assert.equal(data.held_back.items.length, 20);
+  const event = { eventId: "evt_x", name: EVENT_NAME, timestamp: "2026-10-10T15:00:00Z", data, cursor: null };
+  assert.ok(new TextEncoder().encode(JSON.stringify(event)).byteLength < MAX_EVENT_BYTES);
 });
 
 // ---------------------------------------------------------------- verification
@@ -585,14 +654,31 @@ test("finding 2:  a mention outside the allowlist is settled as refused and noth
   assert.equal(deliveries.length, 0);
 });
 
-test("finding 2:  a DM wake still reaches an unfiltered subscription with no text, channel or topic", async () => {
+test("a DM wake reaches an unfiltered subscription with its fenced excerpt and no channel or topic", async () => {
   const { gate, deliveries, fetchFn } = await wakeSetup();
-  const dm = wake({ wake_id: "w-dm", dm: true, channel: null, topic: null, stream_id: null, excerpt: "<<<private>>>", reply_to: { type: "direct", to: [1211974] } });
+  const fenced = "<<<BEGIN nonce=cd\nthe DM's text\n>>>END nonce=cd";
+  const dm = wake({ wake_id: "w-dm", dm: true, channel: null, topic: null, stream_id: null, excerpt: fenced, reply_to: { type: "direct", to: [1211974] } });
   const { reply } = await listenerPost(gate, dm, fetchFn);
   assert.equal(reply.status, 202);
   assert.equal(deliveries.length, 1);
   const { data } = deliveries[0].body;
-  assert.deepEqual([data.dm, data.excerpt, data.channel, data.topic, data.reply_to], [true, "", null, null, { type: "direct", to: [1211974] }]);
+  assert.deepEqual([data.dm, data.excerpt, data.channel, data.topic, data.reply_to], [true, fenced, null, null, { type: "direct", to: [1211974] }]);
+  // Still one destination:  a channel-filtered subscription gets no DM at all.
+  const filtered = await wakeSetup({ args: { channel: "sandbox" } });
+  assert.equal((await listenerPost(filtered.gate, dm, filtered.fetchFn)).reply.body.outcome, "no_subscriber");
+  assert.equal(filtered.deliveries.length, 0);
+});
+
+test("a wake that carries held_back delivers it reduced to the allowlist, and nothing about it is audited", async () => {
+  const { gate, deliveries, fetchFn } = await wakeSetup();
+  const offList = heldItem({ message_id: 72, channel: "secret-plans", topic: "launch", stream_id: 999001 });
+  const w = wake({ wake_id: "w-held", held_back: { count: 2, items: [heldItem(), offList] } });
+  const { reply } = await listenerPost(gate, w, fetchFn);
+  assert.deepEqual(reply, { status: 202, body: { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" } });
+  const { data } = deliveries[0].body;
+  assert.deepEqual(data.held_back, { count: 2, items: [heldItem(), { message_id: 72, dm: false, reason: "wakes_per_hour", at: 1_790_000_000 }] });
+  const audit = JSON.stringify(await gate.tail(20));
+  for (const leak of ["secret-plans", "launch", "budget"]) assert.ok(!audit.includes(leak), `${leak} is not in the audit`);
 });
 
 test("finding 3:  an unsubscribe, a revoke or a pause during the backoff stops the next attempt", async () => {
