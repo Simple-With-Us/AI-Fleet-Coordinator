@@ -33,6 +33,101 @@ export function strictRedirectProblem(value) {
   return "";
 }
 
+// RFC 8252 section 7.3 loopback callback, the one exception to "https only".
+// The host must be the IPv4 literal 127.0.0.1 itself:  not `localhost` (a name
+// a hosts file or DNS can point elsewhere), not [::1], not another 127/8
+// address.  The port must be explicit, because the redirect allowlist is an
+// exact string and the OAuth library accepts any port on a loopback host.
+export const LOOPBACK_HOST = "127.0.0.1";
+
+/**
+ * Why `value` is not an acceptable redirect URI, or "" when it is.  Every rule
+ * of `strictRedirectProblem` applies, except that `http` is allowed when the
+ * host is exactly 127.0.0.1 with an explicit port (a native app's loopback
+ * listener, RFC 8252).  https keeps "no explicit port".  CIMD client ids still
+ * use `strictRedirectProblem`, which never accepts http.
+ */
+export function redirectUriProblem(value) {
+  const strict = strictRedirectProblem(value);
+  if (strict !== "not https") return strict;
+  if (!isLoopbackRedirect(value)) return "not https";
+  return "";
+}
+
+/**
+ * True for an http redirect on 127.0.0.1 with an explicit port, a path, no
+ * userinfo, query or fragment, in canonical form.  Used for config validation,
+ * the gates, and the consent page wording.
+ */
+export function isLoopbackRedirect(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_PARAM_LENGTH) return false;
+  if (/[\u0000-\u0020\u007f-\uffff#?\\@]/.test(value) || /%2f|%5c|%2e/i.test(value)) return false;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" || url.hostname !== LOOPBACK_HOST) return false;
+  if (url.username || url.password || url.search || url.hash) return false;
+  if (!/^[1-9][0-9]{0,4}$/.test(url.port)) return false;
+  if (url.pathname === "/" && !value.endsWith("/")) return false;
+  return url.href === value;
+}
+
+/** Every seat whose SEATS entry lists this exact redirect URI (empty when none). */
+export function redirectSeats(config, redirectUri) {
+  return config.redirectSeats.get(redirectUri) ?? [];
+}
+
+/**
+ * Pick the seat for a redirect URI listed under one or more seats (a loopback
+ * callback can be shared, spec 3.3).  `armed` is the set of seats whose
+ * arming window is open.  Exactly one listed, hosted seat must be armed:
+ *   - none armed      -> { ok: false, reason: "not_armed" }
+ *   - more than one   -> { ok: false, reason: "ambiguous_armed_seats" }
+ *   - exactly one     -> { ok: true, seat }
+ * Resolution runs over every listed seat before any client binding is checked,
+ * so "both armed" is refused even when the client is bound to one of them.
+ */
+export function resolveArmedSeat(candidates, armed) {
+  const live = candidates.filter((seat) => armed.has(seat));
+  if (live.length === 0) return { ok: false, reason: "not_armed" };
+  if (live.length > 1) return { ok: false, reason: "ambiguous_armed_seats" };
+  return { ok: true, seat: live[0] };
+}
+
+// The seat tag a hand-registered client carries in its name, set only by
+// /admin:  "Grok (manual form, GROK-WEB)".  Anchored at the end.
+const MANUAL_TAG = /\(manual form, ([A-Z][A-Z-]{1,31})\)$/;
+
+/**
+ * The seat a hand-registered client is bound to, from its /admin name tag, or
+ * "" when it has none.  Only hand-shaped ids are read:  a CIMD document can set
+ * its own client_name to anything, so a CIMD client never has a manual tag.
+ */
+export function manualClientSeat(client) {
+  if (!client || typeof client.clientId !== "string" || !HAND_CLIENT_ID.test(client.clientId)) return "";
+  const match = MANUAL_TAG.exec(String(client.clientName ?? ""));
+  return match ? match[1] : "";
+}
+
+/**
+ * Whether `client` may mint a grant for `seat` through `redirectUri`.  A CIMD
+ * client must be allowlisted under that seat.  A hand-registered client tagged
+ * for a seat must be tagged for this one;  an untagged hand client is allowed
+ * only on a redirect that a single seat lists (the pre-tag Grok fallback).
+ */
+export function clientBoundToSeat(client, seat, redirectUri, config) {
+  if (!client || typeof client.clientId !== "string") return false;
+  const verdict = clientIdVerdict(client.clientId, config);
+  if (!verdict.ok) return false;
+  if (verdict.seat) return verdict.seat === seat;
+  const tagged = manualClientSeat(client);
+  if (tagged) return tagged === seat;
+  return redirectSeats(config, redirectUri).length === 1;
+}
+
 /**
  * Host check (spec 3.2):  only the D1 hostname, on the default port.  Both the
  * URL the runtime built and the raw Host header must name it.
@@ -136,7 +231,7 @@ function single(params, name) {
 /**
  * Gate an /authorize request on its raw query, before `parseAuthRequest`
  * (which is what fetches a CIMD document).  Returns
- * `{ ok: true, seat, clientId, redirectUri, scopes }` or
+ * `{ ok: true, seat, seats, cimdSeat, clientId, redirectUri, scopes }` or
  * `{ ok: false, reason, clientId, redirectUri, resource }`.  The reason is a short slug
  * that is safe to log;  the raw ids are returned for the refusal log only.
  */
@@ -157,16 +252,20 @@ export function preGateAuthorize(params, config) {
 
   // Redirect allowlist:  exact string equality, then the strict parse as a
   // second line of defense in case the allowlist ever holds a loose value.
-  const seat = config.redirectOwner.get(redirectUri);
-  if (!seat) return refuse("redirect_not_allowlisted");
-  if (strictRedirectProblem(redirectUri)) return refuse("redirect_not_strict");
-  if (!config.hostedSeats.includes(seat)) return refuse("seat_not_hosted");
+  // A loopback redirect may be listed under more than one seat;  the caller
+  // picks among `seats` by arming state (`resolveArmedSeat`).
+  const listed = redirectSeats(config, redirectUri);
+  if (listed.length === 0) return refuse("redirect_not_allowlisted");
+  if (redirectUriProblem(redirectUri)) return refuse("redirect_not_strict");
+  const seats = listed.filter((s) => config.hostedSeats.includes(s));
+  if (seats.length === 0) return refuse("seat_not_hosted");
 
-  // A client_id is an allowlisted CIMD id of the same seat, or the shape of a
-  // hand-registered id.  Anything else could make the library fetch a document.
+  // A client_id is an allowlisted CIMD id of one of these seats, or the shape
+  // of a hand-registered id.  Anything else could make the library fetch a
+  // document.  The caller re-checks a CIMD owner against the resolved seat.
   const verdict = clientIdVerdict(clientId, config);
   if (!verdict.ok) return refuse(verdict.reason);
-  if (verdict.seat && verdict.seat !== seat) return refuse("cimd_client_not_allowlisted");
+  if (verdict.seat && !seats.includes(verdict.seat)) return refuse("cimd_client_not_allowlisted");
 
   // PKCE S256 for every client, confidential ones included.
   if (fields.code_challenge_method !== "S256") return refuse("pkce_method_not_s256");
@@ -178,25 +277,33 @@ export function preGateAuthorize(params, config) {
   const scopes = (fields.scope ?? "").split(" ").filter(Boolean);
   if (scopes.some((s) => !config.scopes.includes(s))) return refuse("scope_not_supported");
 
-  return { ok: true, seat, clientId, redirectUri, scopes };
+  // `seat` is set only when one hosted seat lists this redirect.
+  return { ok: true, seat: seats.length === 1 ? seats[0] : "", seats, cimdSeat: verdict.seat, clientId, redirectUri, scopes };
 }
 
 /**
  * Re-check a request the library parsed (or restored from its consent
- * transaction) against the same allowlist.  `authRequest` is the library's
- * AuthRequest.  Returns the seat whose redirect family it belongs to, or null.
+ * transaction) against the same allowlist, for one seat.  `authRequest` is the
+ * library's AuthRequest.  Returns true when `seat` is hosted, lists this exact
+ * redirect, and the client id is not an allowlisted CIMD id of another seat.
+ * Which seat (for a shared loopback redirect) is decided by arming, never here.
  */
-export function postGateAuthRequest(authRequest, config) {
-  if (!authRequest || typeof authRequest !== "object") return null;
-  const seat = config.redirectOwner.get(authRequest.redirectUri);
-  if (!seat || strictRedirectProblem(authRequest.redirectUri)) return null;
-  if (!config.hostedSeats.includes(seat)) return null;
+export function postGateAuthRequest(authRequest, config, seat) {
+  if (!authRequest || typeof authRequest !== "object") return false;
+  if (typeof seat !== "string" || !config.hostedSeats.includes(seat)) return false;
+  if (!redirectSeats(config, authRequest.redirectUri).includes(seat) || redirectUriProblem(authRequest.redirectUri)) return false;
   const verdict = clientIdVerdict(authRequest.clientId, config);
-  if (!verdict.ok || (verdict.seat && verdict.seat !== seat)) return null;
-  if (authRequest.codeChallengeMethod !== "S256" || !authRequest.codeChallenge) return null;
-  if (authRequest.resource !== config.resource) return null;
-  if ((authRequest.scope ?? []).some((s) => !config.scopes.includes(s))) return null;
-  return seat;
+  if (!verdict.ok || (verdict.seat && verdict.seat !== seat)) return false;
+  if (authRequest.codeChallengeMethod !== "S256" || !authRequest.codeChallenge) return false;
+  if (authRequest.resource !== config.resource) return false;
+  if ((authRequest.scope ?? []).some((s) => !config.scopes.includes(s))) return false;
+  return true;
+}
+
+/** The hosted seats that list a parsed request's redirect URI. */
+export function hostedRedirectSeats(authRequest, config) {
+  if (!authRequest || typeof authRequest !== "object") return [];
+  return redirectSeats(config, authRequest.redirectUri).filter((s) => config.hostedSeats.includes(s));
 }
 
 /**

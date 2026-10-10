@@ -14,12 +14,19 @@ test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", (
   // realm administrator (hosted seats accept member (400) only, spec 3.6);  Jay
   // demoted it on Fri, Oct 9, and JET was deployed with its key at about 8:10am
   // (DEPLOY.md, "Re-enable JET").
-  assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB"]);
+  // ECHO and INSTINCT (the Instinct app) were added on Fri, Oct 9.
+  assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB", "ECHO", "INSTINCT"]);
   assert.deepEqual([...loadConfig(testEnv()).hostedSeats], ["JET", "GROK-WEB"]);
   assert.deepEqual(Object.fromEntries(cfg.channels), { "agent-sync": 642232, sandbox: 642167 }, "D4:  #agent-sync and #sandbox, by stream id");
   assert.equal(cfg.ownerUserId, 1211974);
   assert.equal(cfg.botEmails["GROK-WEB"], "grok-web-bot@simplewithus.zulipchat.com");
   assert.equal(cfg.redirectOwner.get(CHATGPT_REDIRECT), "JET");
+  assert.equal(cfg.botEmails.ECHO, "instinct-bat-bot@simplewithus.zulipchat.com");
+  assert.equal(cfg.botEmails.INSTINCT, "instinct-owl-bot@simplewithus.zulipchat.com");
+  // The Instinct app's loopback callback is shared by its two seats, and only
+  // a loopback redirect may be.
+  assert.deepEqual([...cfg.redirectSeats.get("http://127.0.0.1:8737/callback")], ["ECHO", "INSTINCT"]);
+  assert.equal(cfg.redirectOwner.has("http://127.0.0.1:8737/callback"), false, "a shared redirect has no single owner");
   // Before DEPLOY-PHASE0.md step 3 the file holds the placeholder;  after it, a real tag.
   if (vars.ACCESS_AUD === "REPLACE_WITH_ACCESS_AUD") {
     assert.equal(cfg.access.configured, false);
@@ -75,6 +82,18 @@ test("config refuses loose or ambiguous allowlists", () => {
   const bad = [
     [{ SEATS: seats({ redirect_uris: ["https://chatgpt.com/cb?x=1"], cimd_client_ids: [] }) }, /not strict/],
     [{ SEATS: seats({ redirect_uris: ["http://chatgpt.com/cb"], cimd_client_ids: [] }) }, /not strict/],
+    // The loopback exception is 127.0.0.1 with an explicit port, nothing looser.
+    [{ SEATS: seats({ redirect_uris: ["http://localhost:8737/cb"], cimd_client_ids: [] }) }, /not strict/],
+    [{ SEATS: seats({ redirect_uris: ["http://127.0.0.1/cb"], cimd_client_ids: [] }) }, /not strict/],
+    [{ SEATS: seats({ redirect_uris: ["http://[::1]:8737/cb"], cimd_client_ids: [] }) }, /not strict/],
+    [{ SEATS: seats({ redirect_uris: ["http://127.0.0.2:8737/cb"], cimd_client_ids: [] }) }, /not strict/],
+    [{ SEATS: seats({ redirect_uris: ["http://127.0.0.1:8737/cb?x=1"], cimd_client_ids: [] }) }, /not strict/],
+    [{ SEATS: seats({ redirect_uris: ["https://127.0.0.1:8737/cb"], cimd_client_ids: [] }) }, /not strict/],
+    // A CIMD client id is never http, loopback or not.
+    [{ SEATS: seats({ redirect_uris: [], cimd_client_ids: ["http://127.0.0.1:8737/client.json"] }) }, /not a strict https URL/],
+    // Only a loopback redirect may be shared;  a shared https redirect is refused.
+    [{ SEATS: seats({ redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }, { redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }) }, /two seats/],
+    [{ SEATS: seats({ redirect_uris: ["http://127.0.0.1:8737/callback", "http://127.0.0.1:8737/callback"], cimd_client_ids: [] }) }, /twice/],
     [{ SEATS: seats({ redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }, { redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }) }, /two seats/],
     [{ SEATS: { CLAUDE: { redirect_uris: [], cimd_client_ids: [] } } }, /unknown seat/],
     [{ HOSTED_SEATS: "JET,CLAUDE" }, /unknown hosted seat/],
@@ -92,6 +111,14 @@ test("config refuses loose or ambiguous allowlists", () => {
     [{ ZULIP_EMAIL_JET: "jay@simplewithus.zulipchat.com" }, /ZULIP_EMAIL_JET/],
   ];
   for (const [over, re] of bad) assert.throws(() => loadConfig(testEnv(over)), re, JSON.stringify(over));
+});
+
+test("config accepts the loopback callback, shared by two seats", () => {
+  const loop = "http://127.0.0.1:8737/callback";
+  const cfg = loadConfig(testEnv({ SEATS: { JET: { redirect_uris: [loop], cimd_client_ids: [] }, ECHO: { redirect_uris: [loop], cimd_client_ids: [] } } }));
+  assert.deepEqual([...cfg.redirectSeats.get(loop)], ["JET", "ECHO"]);
+  const solo = loadConfig(testEnv({ SEATS: { ECHO: { redirect_uris: [loop], cimd_client_ids: [] }, INSTINCT: { redirect_uris: [], cimd_client_ids: [] } } }));
+  assert.equal(solo.redirectOwner.get(loop), "ECHO");
 });
 
 test("every known seat has its own key secret and email var, and the realm is compiled in", () => {

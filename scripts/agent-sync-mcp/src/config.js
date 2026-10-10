@@ -5,7 +5,7 @@
 // or malformed value makes `loadConfig` throw, and the Worker then answers 500
 // for every request (fail closed) rather than guessing.
 
-import { strictRedirectProblem } from "./policy.js";
+import { strictRedirectProblem, redirectUriProblem, isLoopbackRedirect } from "./policy.js";
 
 // D1:  the only hostname this Worker answers on.  It is a constant, not a var,
 // so a config edit cannot widen the Host check.
@@ -17,7 +17,9 @@ export const RESOURCE_METADATA_URL = `${ISSUER}/.well-known/oauth-protected-reso
 export const SCOPES = Object.freeze(["zulip:read", "zulip:write"]);
 
 // Seats this Worker can ever serve.  HOSTED_SEATS (a var) narrows it further.
-export const KNOWN_SEATS = Object.freeze(["JET", "GROK-WEB"]);
+// ECHO and INSTINCT are two identities of one third-party app (Instinct), each
+// with its own Zulip bot (instinct-bat-bot and instinct-owl-bot).
+export const KNOWN_SEATS = Object.freeze(["JET", "GROK-WEB", "ECHO", "INSTINCT"]);
 
 // Phase 0 durations.
 export const ARM_WINDOW_MS = 10 * 60 * 1000;
@@ -41,7 +43,12 @@ export const PROPS_PHASE = 2;
 export const SEAT_SECRETS = Object.freeze({
   JET: Object.freeze({ key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" }),
   "GROK-WEB": Object.freeze({ key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" }),
+  ECHO: Object.freeze({ key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" }),
+  INSTINCT: Object.freeze({ key: "ZULIP_KEY_INSTINCT", email: "ZULIP_EMAIL_INSTINCT" }),
 });
+
+// What /admin and a manual client's name call each seat's app.
+export const SEAT_LABELS = Object.freeze({ JET: "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", INSTINCT: "Instinct" });
 
 const BOT_EMAIL_RE = /^[a-z0-9-]+-bot@simplewithus\.zulipchat\.com$/;
 const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9 _-]{0,59}$/;
@@ -83,6 +90,12 @@ export function loadConfig(env) {
   const seatsRaw = parseJsonVar(env, "SEATS");
   if (typeof seatsRaw !== "object" || Array.isArray(seatsRaw)) throw new Error("config: SEATS must be an object");
   const seats = {};
+  // Redirect URI -> every seat that lists it.  An https redirect belongs to
+  // exactly one seat.  A loopback redirect (http://127.0.0.1:<port>/<path>)
+  // may be listed under several seats of one native app;  /authorize then
+  // picks the one seat that is armed (policy.js resolveArmedSeat).
+  const redirectSeats = new Map();
+  // Redirect URI -> its seat, for redirects that exactly one seat lists.
   const redirectOwner = new Map();
   const cimdOwner = new Map();
   for (const [seat, entry] of Object.entries(seatsRaw)) {
@@ -90,10 +103,12 @@ export function loadConfig(env) {
     const redirectUris = (entry?.redirect_uris ?? []).map(String);
     const cimdClientIds = (entry?.cimd_client_ids ?? []).map(String);
     for (const uri of redirectUris) {
-      const problem = strictRedirectProblem(uri);
+      const problem = redirectUriProblem(uri);
       if (problem) throw new Error(`config: ${seat} redirect is not strict (${problem})`);
-      if (redirectOwner.has(uri)) throw new Error("config: a redirect URI is listed under two seats");
-      redirectOwner.set(uri, seat);
+      const listed = redirectSeats.get(uri) ?? [];
+      if (listed.includes(seat)) throw new Error(`config: ${seat} lists a redirect URI twice`);
+      if (listed.length > 0 && !isLoopbackRedirect(uri)) throw new Error("config: a redirect URI is listed under two seats (only a 127.0.0.1 loopback redirect may be shared)");
+      redirectSeats.set(uri, [...listed, seat]);
     }
     for (const id of cimdClientIds) {
       const problem = strictRedirectProblem(id);
@@ -102,6 +117,11 @@ export function loadConfig(env) {
       cimdOwner.set(id, seat);
     }
     seats[seat] = Object.freeze({ redirectUris: Object.freeze(redirectUris), cimdClientIds: Object.freeze(cimdClientIds) });
+  }
+
+  for (const [uri, listed] of redirectSeats) {
+    Object.freeze(listed);
+    if (listed.length === 1) redirectOwner.set(uri, listed[0]);
   }
 
   // D4:  the channel allowlist, pinned name to stream id.  Tools use the id,
@@ -144,6 +164,7 @@ export function loadConfig(env) {
     scopes: SCOPES,
     hostedSeats: Object.freeze(hostedSeats),
     seats: Object.freeze(seats),
+    redirectSeats,
     redirectOwner,
     cimdOwner,
     access: Object.freeze({

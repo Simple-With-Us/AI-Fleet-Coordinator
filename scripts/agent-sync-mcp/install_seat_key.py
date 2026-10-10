@@ -4,6 +4,7 @@
     python3 -I install_seat_key.py GROK-WEB            # checks only, changes nothing
     python3 -I install_seat_key.py GROK-WEB --apply    # wrangler secret put ZULIP_KEY_GROK_WEB
     python3 -I install_seat_key.py GROK-WEB --delete --apply   # remove it (kill switch)
+    python3 -I install_seat_key.py ECHO --zuliprc ~/.secrets/Zulip/Echo-zuliprc --apply
 
 The key never touches a file, a command line, a log or this process's output.
 It is read from Infisical (project "AI Fleet Coordinator", environment prod,
@@ -18,6 +19,11 @@ checks the Worker repeats every 10 minutes:  the seat is in HOSTED_SEATS, the
 Infisical email equals the ZULIP_EMAIL_<SEAT> var, and Zulip's users/me for the
 key is that bot, a bot, and a member (role 400), never an administrator or
 owner.  So an admin key (openai-dot-bot until Fri, Oct 9) is refused and never installed.
+
+`--zuliprc PATH` reads the email and key from a seat's zuliprc file instead of
+Infisical (for a seat whose key is not in Infisical yet, like ECHO and
+INSTINCT).  The file must be mode 600 and its `site` must be this realm.  No
+field of it is ever printed.
 
 Standard library only.  Python 3.11+.  Run from scripts/agent-sync-mcp/.
 """
@@ -51,9 +57,12 @@ MEMBER_ROLE = 400
 SEATS = {
     "JET": ("ZULIP_JET", "ZULIP_KEY_JET", "ZULIP_EMAIL_JET"),
     "GROK-WEB": ("ZULIP_GROK_WEB", "ZULIP_KEY_GROK_WEB", "ZULIP_EMAIL_GROK_WEB"),
+    "ECHO": ("ZULIP_ECHO", "ZULIP_KEY_ECHO", "ZULIP_EMAIL_ECHO"),
+    "INSTINCT": ("ZULIP_INSTINCT", "ZULIP_KEY_INSTINCT", "ZULIP_EMAIL_INSTINCT"),
 }
-# Bot email local parts whose seat tag is not the upper-cased local part (cli.py EMAIL_TAG_OVERRIDES).
-TAG_OVERRIDES = {"openai-dot": "JET"}
+# Bot email local parts whose seat tag is not the upper-cased local part
+# (cli.py EMAIL_TAG_OVERRIDES, src/contract.js EMAIL_TAG_OVERRIDES).
+TAG_OVERRIDES = {"openai-dot": "JET", "instinct-bat": "ECHO", "instinct-owl": "INSTINCT"}
 
 
 def fail(message: str) -> "NoReturn":  # type: ignore[name-defined]
@@ -133,6 +142,33 @@ def infisical_pair(prefix: str) -> tuple[str, str]:
     return email.strip(), key.strip()
 
 
+def zuliprc_pair(path: str) -> tuple[str, str]:
+    """(email, key) from a zuliprc file.  Neither is printed, nor any other field."""
+    import configparser
+    import stat
+    rc = pathlib.Path(path).expanduser()
+    try:
+        mode = stat.S_IMODE(rc.stat().st_mode)
+    except OSError:
+        fail("the zuliprc file does not exist or cannot be read")
+    if mode & 0o077:
+        fail("the zuliprc file must be mode 600 (it is readable by others)")
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(rc, encoding="utf-8")
+    except configparser.Error:
+        fail("the zuliprc file is not a valid ini file")
+    if not parser.has_section("api"):
+        fail("the zuliprc file has no [api] section")
+    api = parser["api"]
+    email, key, site = api.get("email", "").strip(), api.get("key", "").strip(), api.get("site", "").strip().rstrip("/")
+    if not email or not key:
+        fail("the zuliprc file has no email or key in [api]")
+    if site != REALM:
+        fail("the zuliprc file's site is not this realm")
+    return email, key
+
+
 def seat_tag(user: dict) -> str:
     local = str(user.get("email") or "").split("@", 1)[0].lower()
     if local.endswith("-bot"):
@@ -168,6 +204,7 @@ def main() -> int:
     parser.add_argument("seat", choices=sorted(SEATS))
     parser.add_argument("--apply", action="store_true", help="write the Worker secret (default:  checks only)")
     parser.add_argument("--delete", action="store_true", help="remove the Worker secret instead (with --apply)")
+    parser.add_argument("--zuliprc", metavar="PATH", help="read the email and key from this zuliprc file instead of Infisical")
     args = parser.parse_args()
 
     prefix, secret_name, email_var = SEATS[args.seat]
@@ -183,9 +220,10 @@ def main() -> int:
     if args.seat not in hosted:
         fail(f"{args.seat} is not in HOSTED_SEATS ({', '.join(hosted) or 'none'}) in wrangler.jsonc;  add it there first (DEPLOY.md)")
     expected_email = str(vars_.get(email_var, "")).strip().lower()
-    email, key = infisical_pair(prefix)
+    source = "zuliprc" if args.zuliprc else "Infisical"
+    email, key = zuliprc_pair(args.zuliprc) if args.zuliprc else infisical_pair(prefix)
     checks = []
-    checks.append(("Infisical email equals " + email_var, email.lower() == expected_email))
+    checks.append((f"{source} email equals {email_var}", email.lower() == expected_email))
     checks.append(("key is 32 letters and digits", bool(re.fullmatch(r"[A-Za-z0-9]{32}", key))))
     me = zulip_me(email, key)
     role = me.get("role")

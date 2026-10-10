@@ -99,7 +99,7 @@ export function errorPage(title, message, status = 400) {
  * The consent page (spec 3.4 step 5).  `facts` come from the library's parsed
  * request and client lookup;  every string is escaped here.
  */
-export function consentPage({ clientName, clientDomain, clientId, redirectHost, scopes, seat, handle, replacing }, headers) {
+export function consentPage({ clientName, clientDomain, clientId, redirectHost, loopback = false, scopes, seat, handle, replacing }, headers) {
   const verified = clientDomain
     ? `Published by <strong>${escapeHtml(clientDomain)}</strong> (a client metadata document on that domain).`
     : `Registered by hand in Agent-Sync Admin.${SENTENCE_GAP}Its name is not verified.`;
@@ -115,7 +115,14 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
 <table>
 <tr><th>App</th><td>${escapeHtml(clientName)}<br><small>${verified}</small></td></tr>
 <tr><th>Client ID</th><td><code>${escapeHtml(clientId)}</code></td></tr>
-<tr><th>Tokens Go To</th><td><strong>${escapeHtml(redirectHost)}</strong></td></tr>
+<tr><th>Tokens Go To</th><td>${
+    loopback
+      ? `<strong>A program on the computer running this browser (${escapeHtml(redirectHost)})</strong><br><small class="warn">${sentences(
+          "127.0.0.1 always means this same computer.",
+          "Approve only if you opened this page on the app's own computer, right after starting the connection there.",
+        )}</small>`
+      : `<strong>${escapeHtml(redirectHost)}</strong>`
+  }</td></tr>
 <tr><th>Seat</th><td><label><input type="radio" name="seat" value="${escapeHtml(seat)}" form="consent" checked required> <strong>${escapeHtml(seat)}</strong></label> (the armed seat for this app)</td></tr>
 </table>
 ${replaceLine}
@@ -143,7 +150,7 @@ function actionButton(csrf, action, label, fields = {}) {
 }
 
 /** /admin (spec 3.9):  seat state, keys, grants, clients, refusals, tool calls, audit. */
-export function adminPage({ email, seats, clients, refusals, tokenRefusals = [], audits, calls = [], csrf, notice, grokRedirectsConfigured }, headers) {
+export function adminPage({ email, seats, clients, refusals, tokenRefusals = [], audits, calls = [], csrf, notice, manualSeats = [] }, headers) {
   const seatRows = seats
     .map((s) => {
       const grants = s.grants.length
@@ -164,10 +171,22 @@ export function adminPage({ email, seats, clients, refusals, tokenRefusals = [],
     ? clients
         .map(
           (c) =>
-            `<tr><td><code>${escapeHtml(c.clientId)}</code></td><td>${escapeHtml(c.clientName ?? "")}</td><td>${escapeHtml((c.redirectUris ?? []).join(" "))}</td><td>${actionButton(csrf, "update_grok_client", "Sync Grok Redirects", { client_id: c.clientId })}</td></tr>`,
+            `<tr><td><code>${escapeHtml(c.clientId)}</code></td><td>${escapeHtml(c.clientName ?? "")}</td><td>${c.seat ? escapeHtml(c.seat) : `<span class="warn">none</span>`}</td><td>${escapeHtml((c.redirectUris ?? []).join(" "))}</td><td>${c.seat ? actionButton(csrf, "sync_manual_client", "Sync Redirects", { client_id: c.clientId }) : ""}</td></tr>`,
         )
         .join("")
-    : `<tr><td colspan="4">No hand-registered clients.</td></tr>`;
+    : `<tr><td colspan="5">No hand-registered clients.</td></tr>`;
+  const manualRows = manualSeats
+    .map(
+      (m) =>
+        `<tr><td><strong>${escapeHtml(m.seat)}</strong></td><td>${escapeHtml(
+          m.redirectsConfigured
+            ? m.shared
+              ? "Configured, shared with another seat of the same app"
+              : "Configured"
+            : "None yet (a new client gets a placeholder, so the first attempt is refused and logged below)",
+        )}</td><td>${actionButton(csrf, "create_manual_client", `Create Manual Client For ${m.seat}`, { seat: m.seat })}</td></tr>`,
+    )
+    .join("");
   const refusalRows = refusals.length
     ? refusals
         .map(
@@ -202,16 +221,15 @@ export function adminPage({ email, seats, clients, refusals, tokenRefusals = [],
 ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
 <h2>Seats</h2>
 <table><tr><th>Seat</th><th>Arming</th><th>State</th><th>Epoch</th><th>Zulip Key</th><th>Grants</th><th>Actions</th></tr>${seatRows}</table>
-<h2>Hand-Registered Clients (Grok Manual Form)</h2>
+<h2>Hand-Registered Clients (Manual Forms)</h2>
 <p>${sentences(
-    grokRedirectsConfigured
-      ? "GROK-WEB redirect URIs are configured, so a new manual client gets them."
-      : "GROK-WEB has no redirect URI yet, so a new manual client gets a placeholder redirect and Grok's first attempt is refused and logged below.",
-    "Grok normally connects with its published client metadata document and needs no manual client.",
-    "This button is the fallback for a Grok form that asks for a client ID.",
+    "ChatGPT and Grok normally connect with a published client metadata document and need no manual client.",
+    "Create one only for an app that asks for a client ID, or that cannot register itself.",
+    "Each manual client is bound to one seat and gets that seat's redirect URIs.",
+    "On a callback two seats share, the client's seat must also be the armed seat.",
   )}</p>
-<p>${actionButton(csrf, "create_grok_client", "Create Grok Manual Client")}</p>
-<table><tr><th>Client ID</th><th>Name</th><th>Redirect URIs</th><th></th></tr>${clientRows}</table>
+<table><tr><th>Seat</th><th>Redirect URIs</th><th></th></tr>${manualRows}</table>
+<table><tr><th>Client ID</th><th>Name</th><th>Seat</th><th>Redirect URIs</th><th></th></tr>${clientRows}</table>
 <h2>Refused Authorize Requests</h2>
 <p>${sentences("Each row is a request that passed Cloudflare Access, so the signed-in email is shown.", "Only copy a redirect URI from here if the time matches your own attempt.")}</p>
 <table><tr><th>When</th><th>Signed In As</th><th>Reason</th><th>Client ID</th><th>Redirect URI</th><th>Resource</th></tr>${refusalRows}</table>

@@ -63,7 +63,7 @@ test("admin page renders state and escapes refusal-log values", async () => {
       audits: [],
       csrf: "c".repeat(64),
       notice: "Armed for 10 minutes.  Start the connection from the app now.",
-      grokRedirectsConfigured: false,
+      manualSeats: [{ seat: "ECHO", label: "Echo", redirectsConfigured: true, shared: true }, { seat: "GROK-WEB", label: "Grok", redirectsConfigured: false, shared: false }],
     },
     { "Set-Cookie": "__Host-agent-sync-csrf=x; Path=/; Secure; HttpOnly; SameSite=Strict" },
   );
@@ -76,7 +76,7 @@ test("admin page renders state and escapes refusal-log values", async () => {
 });
 
 const consentFacts = { clientName: "ChatGPT", clientDomain: "chatgpt.com", clientId: "https://chatgpt.com/oauth/client.json", redirectHost: "chatgpt.com", scopes: ["zulip:read"], seat: "JET", handle: "h", replacing: [] };
-const adminFacts = { email: "mail@jays.services", seats: [], clients: [], refusals: [], audits: [], csrf: "c".repeat(64), notice: "", grokRedirectsConfigured: true };
+const adminFacts = { email: "mail@jays.services", seats: [], clients: [], refusals: [], audits: [], csrf: "c".repeat(64), notice: "", manualSeats: [] };
 
 test("P1:  every page that posts a form keeps Origin, so Approve and Arm work in a real browser", async () => {
   // Before the fix every page sent Referrer-Policy: no-referrer, browsers sent
@@ -124,4 +124,31 @@ test("admin page keeps authorize and token refusals apart and shows the Access e
   assert.ok(authorizePart.includes("<th>Resource</th>") && authorizePart.includes("https://x.example/&#60;mcp&#62;"), "the resource the client sent, escaped");
   assert.ok(!authorizePart.includes("&#60;evil&#62;"), "token rows are not in the authorize table");
   assert.ok(tokenPart.includes("&#60;evil&#62;") && tokenPart.includes(">41<"));
+});
+
+test("consent for a loopback callback says the tokens go to a program on this computer", async () => {
+  const html = await consentPage({ ...consentFacts, clientName: "Echo (manual form, ECHO)", clientDomain: "", clientId: "AbCdEf1234567890", redirectHost: "127.0.0.1:8737", loopback: true, seat: "ECHO" }).text();
+  assert.match(html, /A program on the computer running this browser \(127\.0\.0\.1:8737\)/);
+  assert.match(html, /Approve only if you opened this page on the app/);
+  assert.match(html, /Connect Echo \(manual form, ECHO\) as ECHO\?/);
+  assert.match(html, /name="seat" value="ECHO"/);
+  const https = await consentPage(consentFacts).text();
+  assert.doesNotMatch(https, /A program on the computer/);
+  assert.match(https, /<strong>chatgpt\.com<\/strong>/);
+});
+
+test("admin page offers a manual client per hosted seat and shows each client's seat", async () => {
+  const html = await adminPage({
+    ...adminFacts,
+    manualSeats: [{ seat: "ECHO", label: "Echo", redirectsConfigured: true, shared: true }, { seat: "INSTINCT", label: "Instinct", redirectsConfigured: true, shared: true }],
+    clients: [
+      { clientId: "AbCdEf1234567890", clientName: "Echo (manual form, ECHO)", seat: "ECHO", redirectUris: ["http://127.0.0.1:8737/callback"] },
+      { clientId: "QqQqQqQq12345678", clientName: "Old", seat: "", redirectUris: [] },
+    ],
+  }).text();
+  assert.match(html, /Create Manual Client For ECHO/);
+  assert.match(html, /Create Manual Client For INSTINCT/);
+  assert.match(html, /name="action" value="create_manual_client"><input type="hidden" name="seat" value="ECHO">/);
+  assert.match(html, /shared with another seat of the same app/);
+  assert.equal((html.match(/Sync Redirects/g) ?? []).length, 1, "an untagged client gets no sync button");
 });

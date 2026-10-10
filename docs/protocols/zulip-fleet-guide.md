@@ -208,8 +208,8 @@ One Instinct, shown as two bots that talk to each other.  They are to be merged 
 
 | Name | Bot email | File code | Status |
 | --- | --- | --- | --- |
-| Echo | instinct-bat-bot@ | Echo | Live.  Member (it showed admin until Fri, Oct 9). |
-| Instinct | instinct-owl-bot@ | Instinct | Live.  Member (it showed admin until Fri, Oct 9). |
+| Echo | instinct-bat-bot@ | Echo | Live.  Member (it showed admin until Fri, Oct 9).  Hosted seat ECHO on the Agent-Sync MCP bridge (`https://agent-sync.jays.services/mcp`) from Fri, Oct 9, through the app's loopback callback `http://127.0.0.1:8737/callback`. |
+| Instinct | instinct-owl-bot@ | Instinct | Live.  Member (it showed admin until Fri, Oct 9).  Hosted seat INSTINCT on the same bridge from Fri, Oct 9, sharing Echo's callback:  arm only one of the two at a time (`scripts/agent-sync-mcp/ARMING-JAY.md`). |
 
 ### Assistant Bots
 

@@ -1,6 +1,7 @@
 // Hosted agent-sync MCP Worker (docs/protocols/agent-sync-mcp.md section 3):
-// OAuth 2.1 with CIMD for ChatGPT and Grok and a hand-registered public PKCE
-// client for Grok's manual form, arming, a consent page behind Cloudflare
+// OAuth 2.1 with CIMD for ChatGPT and Grok, hand-registered public PKCE
+// clients bound to one seat each (manual forms, the Instinct app's loopback
+// callback), arming, a consent page behind Cloudflare
 // Access, a per-seat epoch and pause switch (Phase 0), and the seven agent-sync
 // tools from tools.json, each seat posting as its own Zulip bot (Phase 2).
 //
@@ -29,12 +30,18 @@ import {
   KNOWN_SEATS,
   PROPS_PHASE,
   SEAT_SECRETS,
+  SEAT_LABELS,
 } from "./config.js";
 import {
   hostAllowed,
   classifyPath,
   preGateAuthorize,
   postGateAuthRequest,
+  hostedRedirectSeats,
+  resolveArmedSeat,
+  clientBoundToSeat,
+  manualClientSeat,
+  isLoopbackRedirect,
   gateTokenForm,
   isFormContentType,
   readLimited,
@@ -56,7 +63,10 @@ export { SeatGate };
 
 const MAX_TOKEN_BODY = 16 * 1024;
 const CSRF_COOKIE = "__Host-agent-sync-csrf";
-const GROK_PLACEHOLDER_REDIRECT = `${ISSUER}/oauth/no-redirect-yet`;
+// A manual client for a seat with no redirect URI yet gets this one, which no
+// seat lists, so the app's first attempt is refused and its real callback is
+// logged on /admin.
+const MANUAL_PLACEHOLDER_REDIRECT = `${ISSUER}/oauth/no-redirect-yet`;
 
 function textResponse(body, status, headers = {}) {
   return new Response(body, { status, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", ...headers } });
@@ -256,11 +266,23 @@ async function authorizeGet(request, env, config, oauth, email) {
     await logRefusal(env, { where: "authorize", ...pre, by: email });
     return errorPage("Request Refused", `This app and redirect are not on the allowlist (${pre.reason}).`, 400);
   }
-  // Arming first, so an unarmed request never makes the library fetch a CIMD document.
-  const seatState = await gate(env, pre.seat).getState();
-  if (!seatState.armed) {
-    await logRefusal(env, { where: "authorize", reason: "not_armed", clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
-    return noConnectionPage();
+  // Arming first, so an unarmed request never makes the library fetch a CIMD
+  // document.  It also picks the seat:  a loopback redirect may be listed under
+  // several seats of one app, and exactly one of them must be armed.  The
+  // choice runs over every listed seat before the client binding is checked,
+  // so "both armed" is refused even for a client bound to one of them.
+  const pick = resolveArmedSeat(pre.seats, await armedSeats(env, pre.seats));
+  if (!pick.ok) {
+    await logRefusal(env, { where: "authorize", reason: pick.reason, clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
+    if (pick.reason === "not_armed") return noConnectionPage();
+    return errorPage("More Than One Seat Armed", `These seats share this app's callback:  ${pre.seats.join(", ")}.  More than one is armed, so the connection cannot tell which one you meant.  Disarm all but one in Agent-Sync Admin, then start the connection again.`, 409);
+  }
+  const seat = pick.seat;
+  // An allowlisted CIMD id names its seat;  it must be the armed one.  Checked
+  // before the library parses the request, so a mismatch fetches nothing.
+  if (pre.cimdSeat && pre.cimdSeat !== seat) {
+    await logRefusal(env, { where: "authorize", reason: "client_seat_mismatch", clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
+    return errorPage("Request Refused", `This app is allowlisted for ${pre.cimdSeat}, but ${seat} is the armed seat.`, 400);
   }
 
   let authRequest;
@@ -273,13 +295,18 @@ async function authorizeGet(request, env, config, oauth, email) {
     }
     throw error;
   }
-  const seat = postGateAuthRequest(authRequest, config);
-  if (seat !== pre.seat) {
+  if (!postGateAuthRequest(authRequest, config, seat)) {
     await logRefusal(env, { where: "authorize", reason: "post_gate", clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
     return errorPage("Request Refused", "This request does not match the allowlist.", 400);
   }
   const client = await oauth.lookupClient(authRequest.clientId);
   if (!client) return errorPage("Request Refused", "Unknown client.", 400);
+  // A hand-registered client tagged for another seat (or untagged, on a shared
+  // callback) cannot mint a grant for this one.
+  if (!clientBoundToSeat(client, seat, authRequest.redirectUri, config)) {
+    await logRefusal(env, { where: "authorize", reason: "client_seat_mismatch", clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
+    return errorPage("Request Refused", `This client is not bound to ${seat}.  Create a manual client for ${seat} in Agent-Sync Admin and use its client ID.`, 400);
+  }
 
   const consent = await oauth.beginConsent(authRequest);
   const grants = await listAllGrants(oauth, seat);
@@ -288,7 +315,8 @@ async function authorizeGet(request, env, config, oauth, email) {
       clientName: client.clientName ?? client.clientId,
       clientDomain: cimdHostname(client.clientId),
       clientId: client.clientId,
-      redirectHost: new URL(authRequest.redirectUri).hostname,
+      redirectHost: new URL(authRequest.redirectUri).host,
+      loopback: isLoopbackRedirect(authRequest.redirectUri),
       scopes: [...config.scopes],
       seat,
       handle: consent.handle,
@@ -296,6 +324,15 @@ async function authorizeGet(request, env, config, oauth, email) {
     },
     consent.headers,
   );
+}
+
+/** The seats in `seats` whose arming window is open now. */
+async function armedSeats(env, seats) {
+  const armed = new Set();
+  for (const seat of seats) {
+    if ((await gate(env, seat).getState()).armed) armed.add(seat);
+  }
+  return armed;
 }
 
 function toMs(value) {
@@ -329,8 +366,11 @@ async function authorizePost(request, env, config, oauth, email) {
       if (error instanceof AuthorizationError) return expiredPage();
       throw error;
     }
-    const seat = postGateAuthRequest(denied.request, config);
-    if (seat) await gate(env, seat).disarm({ by: email, reason: "denied" });
+    // Disarm the seat the page showed;  if the form named none of the listed
+    // seats, disarm every listed seat that is armed.
+    const listed = hostedRedirectSeats(denied.request, config);
+    const targets = listed.includes(postedSeat) ? [postedSeat] : [...(await armedSeats(env, listed))];
+    for (const seat of targets) await gate(env, seat).disarm({ by: email, reason: "denied" });
     const headers = withReferrerPolicy(denied.headers);
     if (!headers.has("Location")) headers.set("Location", denied.redirectTo);
     return new Response(null, { status: 302, headers });
@@ -346,21 +386,37 @@ async function authorizePost(request, env, config, oauth, email) {
     if (error instanceof AuthorizationError) return expiredPage();
     throw error;
   }
-  // The stored request, never the form, decides the seat family.
-  const seat = postGateAuthRequest(approved.request, config);
-  if (!seat || seat !== postedSeat) {
+  // The stored request decides which seats are possible;  the arming state,
+  // re-read now, decides which one.  It must be the seat the page showed:  if
+  // the window lapsed or another seat sharing this callback was armed since,
+  // nothing is minted.
+  const seat = postedSeat;
+  const listed = hostedRedirectSeats(approved.request, config);
+  if (!seat || !postGateAuthRequest(approved.request, config, seat)) {
     await logRefusal(env, { where: "consent", reason: "seat_family_mismatch", clientId: approved.request.clientId, redirectUri: approved.request.redirectUri, by: email });
     return errorPage("Request Refused", "That seat cannot be bound to this app.", 400);
+  }
+  const pick = resolveArmedSeat(listed, await armedSeats(env, listed));
+  if (!pick.ok || pick.seat !== seat) {
+    const reason = pick.ok ? "seat_family_mismatch" : pick.reason;
+    await logRefusal(env, { where: "consent", reason, clientId: approved.request.clientId, redirectUri: approved.request.redirectUri, by: email });
+    if (reason === "not_armed") return errorPage("Arming Window Closed", "The 10-minute window closed or was already used.  Arm the seat again in Agent-Sync Admin.", 409);
+    return errorPage("Request Refused", `The armed seat is no longer ${seat}, or more than one seat sharing this app's callback is armed.  Leave exactly one armed and start the connection again.`, 409);
   }
   // Resolve the display name first:  it may fetch a CIMD document, and a failure
   // there must not come after the arming window is spent and the epoch bumped.
   // The only awaited external call after `approve` is completeAuthorization.
   let clientName = logSafe(approved.request.clientId, 120);
+  let client = null;
   try {
-    const client = await oauth.lookupClient(approved.request.clientId);
+    client = await oauth.lookupClient(approved.request.clientId);
     if (client?.clientName) clientName = logSafe(client.clientName, 120);
   } catch {
     console.log(JSON.stringify({ event: "client_lookup_failed", where: "consent" }));
+  }
+  if (!clientBoundToSeat(client ?? { clientId: approved.request.clientId }, seat, approved.request.redirectUri, config)) {
+    await logRefusal(env, { where: "consent", reason: "client_seat_mismatch", clientId: approved.request.clientId, redirectUri: approved.request.redirectUri, by: email });
+    return errorPage("Request Refused", `This client is not bound to ${seat}.`, 400);
   }
   const seatGate = gate(env, seat);
   const won = await seatGate.approve({ by: email });
@@ -430,8 +486,8 @@ const DONE_NOTICES = {
   pause: "Paused.  Tools return paused and token refreshes fail until you unpause.",
   unpause: "Unpaused.",
   revoke: "Every grant for that seat is revoked and its epoch is bumped.",
-  create_grok_client: "Grok manual client created.  Its client ID is in the table below.",
-  update_grok_client: "Grok client redirect URIs synced from SEATS.",
+  create_manual_client: "Manual client created.  Its client ID is in the table below.",
+  sync_manual_client: "Manual client redirect URIs synced from SEATS.",
 };
 
 async function serveAdmin(request, env, config, oauth, email) {
@@ -469,14 +525,17 @@ async function serveAdmin(request, env, config, oauth, email) {
       {
         email,
         seats,
-        clients: clients.filter((c) => !isUrlShapedClientId(c.clientId)),
+        clients: clients.filter((c) => !isUrlShapedClientId(c.clientId)).map((c) => ({ ...c, seat: manualClientSeat(c) })),
         refusals,
         tokenRefusals,
         audits: audits.slice(0, 40),
         calls: calls.slice(0, 40),
         csrf,
         notice: DONE_NOTICES[done] ?? "",
-        grokRedirectsConfigured: (config.seats["GROK-WEB"]?.redirectUris ?? []).length > 0,
+        manualSeats: config.hostedSeats.map((seat) => {
+          const uris = config.seats[seat]?.redirectUris ?? [];
+          return { seat, label: SEAT_LABELS[seat] ?? seat, redirectsConfigured: uris.length > 0, shared: uris.some((u) => (config.redirectSeats.get(u) ?? []).length > 1) };
+        }),
       },
       { "Set-Cookie": `${CSRF_COOKIE}=${csrf}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=3600` },
     );
@@ -487,7 +546,7 @@ async function serveAdmin(request, env, config, oauth, email) {
     if (!parsed.ok) return errorPage("Request Refused", "That form was not valid.  Reload Agent-Sync Admin and try again.", 400);
     if (!safeEqual(parsed.data.csrf, readCookie(request, CSRF_COOKIE))) return errorPage("Request Refused", "The admin form expired.  Reload Agent-Sync Admin and try again.", 403);
     const { action, seat = "" } = parsed.data;
-    const needsSeat = ["arm", "disarm", "pause", "unpause", "revoke"].includes(action);
+    const needsSeat = ["arm", "disarm", "pause", "unpause", "revoke", "create_manual_client"].includes(action);
     if (needsSeat && !config.hostedSeats.includes(seat)) return errorPage("Request Refused", "Unknown seat.", 400);
     switch (action) {
       case "arm":
@@ -513,26 +572,34 @@ async function serveAdmin(request, env, config, oauth, email) {
         await gate(env, seat).audit({ event: "revoke_all", by: email, revoked: n });
         break;
       }
-      case "create_grok_client": {
-        if (!config.hostedSeats.includes("GROK-WEB")) return errorPage("Request Refused", "GROK-WEB is not a hosted seat.", 400);
-        const configured = config.seats["GROK-WEB"]?.redirectUris ?? [];
+      case "create_manual_client": {
+        // A public PKCE client bound to one seat:  its name carries the seat
+        // tag (policy.js manualClientSeat) and it gets that seat's redirects.
+        // The GROK-WEB name is unchanged from the Grok-only button.
+        const configured = config.seats[seat]?.redirectUris ?? [];
         const client = await oauth.createClient({
-          clientName: "Grok (manual form, GROK-WEB)",
-          redirectUris: configured.length ? [...configured] : [GROK_PLACEHOLDER_REDIRECT],
+          clientName: `${SEAT_LABELS[seat] ?? seat} (manual form, ${seat})`,
+          redirectUris: configured.length ? [...configured] : [MANUAL_PLACEHOLDER_REDIRECT],
           tokenEndpointAuthMethod: "none",
           grantTypes: ["authorization_code", "refresh_token"],
           responseTypes: ["code"],
         });
-        await gate(env, "GROK-WEB").audit({ event: "client_created", by: email, client_id: client.clientId, placeholder: configured.length === 0 });
+        await gate(env, seat).audit({ event: "client_created", by: email, client_id: client.clientId, placeholder: configured.length === 0 });
         break;
       }
-      case "update_grok_client": {
+      case "sync_manual_client": {
+        // The seat comes from the client's own tag, never from the form, so a
+        // sync cannot rebind a client to another seat.
         const clientId = parsed.data.client_id ?? "";
-        const configured = config.seats["GROK-WEB"]?.redirectUris ?? [];
-        if (isUrlShapedClientId(clientId) || configured.length === 0) return errorPage("Nothing To Sync", "Add Grok's redirect URI to SEATS in wrangler.jsonc and redeploy first.", 400);
+        if (isUrlShapedClientId(clientId)) return errorPage("Request Refused", "Unknown client.", 400);
+        const client = await oauth.lookupClient(clientId);
+        const bound = manualClientSeat(client);
+        if (!client || !bound || !config.hostedSeats.includes(bound)) return errorPage("Request Refused", "This client has no hosted seat tag, so it cannot be synced.  Create a new manual client for the seat instead.", 400);
+        const configured = config.seats[bound]?.redirectUris ?? [];
+        if (configured.length === 0) return errorPage("Nothing To Sync", `Add ${bound}'s redirect URI to SEATS in wrangler.jsonc and redeploy first.`, 400);
         const updated = await oauth.updateClient(clientId, { redirectUris: [...configured] });
         if (!updated) return errorPage("Request Refused", "Unknown client.", 400);
-        await gate(env, "GROK-WEB").audit({ event: "client_redirects_synced", by: email, client_id: clientId });
+        await gate(env, bound).audit({ event: "client_redirects_synced", by: email, client_id: clientId });
         break;
       }
       default:

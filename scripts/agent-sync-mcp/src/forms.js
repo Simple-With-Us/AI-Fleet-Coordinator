@@ -29,7 +29,7 @@ export const ConsentForm = z.strictObject({
   scope: z.array(scope).max(SCOPES.length).optional(),
 });
 
-export const ADMIN_ACTIONS = Object.freeze(["arm", "disarm", "pause", "unpause", "revoke", "create_grok_client", "update_grok_client"]);
+export const ADMIN_ACTIONS = Object.freeze(["arm", "disarm", "pause", "unpause", "revoke", "create_manual_client", "sync_manual_client"]);
 
 export const AdminForm = z.strictObject({
   csrf: z.string().regex(/^[0-9a-f]{64}$/),
