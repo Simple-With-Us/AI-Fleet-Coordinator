@@ -207,8 +207,9 @@ def cmd_access(cf: Cloudflare, apply: bool) -> None:
         "type": "self_hosted",
         "domain": ACCESS_PATHS[0],
         "destinations": [{"type": "public", "uri": uri} for uri in ACCESS_PATHS],
-        # Spec 3.3:  a 15-minute session for the consent and admin paths.
-        "session_duration": "15m",
+        # Spec 3.3 said 15 minutes.  The owner ruled "30 days for all" on Fri, Oct 9, 2026, so the
+        # consent and admin paths now use a 30-day session (720h), matching the Access organization.
+        "session_duration": "720h",
         "allowed_idps": mirror.get("allowed_idps") or [],
         "auto_redirect_to_identity": bool(mirror.get("auto_redirect_to_identity")),
         "app_launcher_visible": False,
