@@ -460,7 +460,7 @@ class ClaudeRunnerTests(ListenerHarness):
         self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "0.25")
         self.assertEqual(argv[argv.index("--output-format") + 1], "stream-json")
         self.assertEqual(json.loads(argv[argv.index("--json-schema") + 1])["required"],
-                         ["action", "reply", "board", "owner_note", "risk"])
+                         ["action", "reply", "board", "owner_note", "risk", "route"])
         self.assertTrue(argv[argv.index("--append-system-prompt-file") + 1].endswith("wake/wake-contract.md"))
         env = seen["env"]
         for name in ("ZULIP_API_KEY", "CLAUDE_CODE_SSE_PORT", "AGENT_SEAT", "ANTHROPIC_API_KEY"):

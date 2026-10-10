@@ -390,6 +390,7 @@ class Daemon:
         # Eligible senders' tags (owner 2026-10-09):  every partition seat plus FLEET_SEATS, refreshed
         # with the partition on every check, so a seat added to the partition is eligible without a re-init.
         self.fleet_tags: frozenset[str] = C.fleet_tags(None)
+        self.partition: dict[str, str] = {}  # seat -> instance, from the last partition check (route checks)
         self.config = C.load(self.root, self.config_path)
         # The seat partition:  a config that holds a seat this instance may not hold never gets a
         # queue; run() refuses to start (no flock, no thread, no register).
@@ -470,6 +471,7 @@ class Daemon:
         if error:
             return [error + "; cannot check the seat partition, so no seat is held"]
         self.fleet_tags = C.fleet_tags(partition)
+        self.partition = dict(partition or {})
         env_instance = (self.env.get(C.ENV_INSTANCE) or "").strip().casefold() or None
         return C.partition_errors(cfg, partition, partition_file=self.partition_file, env_instance=env_instance)
 
@@ -835,7 +837,8 @@ class Daemon:
             # failure never counts the same wake reply twice.
             # A DM thread without the owner can never be reset by him, so its count is rolling.
             rolling = c.dm and str(self.config.owner_user_id) not in c.topic.split(",")
-            self.loopguard.note(c.key, wake_reply=c.wake_tag, owner=c.owner, rolling=rolling, now=now)
+            # A `·route` post counts like a wake reply (owner 2026-10-10), though it still wakes its target.
+            self.loopguard.note(c.key, wake_reply=c.wake_tag or c.route_tag, owner=c.owner, rolling=rolling, now=now)
             self.global_ring.add(message["id"])
             if c.owner_api:
                 self.notifier.notify(self.config.claude_seat or runner.seat, "agent-sync: owner account",
@@ -1187,9 +1190,10 @@ class Daemon:
         prompt = W.build_prompt(seat=runner.seat, pending=pending, history=history,
                                 owner_user_id=self.config.owner_user_id,
                                 is_bot=lambda uid: bool(users.get(uid, {}).get("is_bot", True)),
-                                owner_of=self.owner_of, format_time=format_time, board_enabled=board_on)
+                                owner_of=self.owner_of, format_time=format_time, board_enabled=board_on,
+                                route=self.route_gate(runner, pending))
         runner.ledger.append(pending.row("started", now, reserved_usd=C.WAKE_MAX_BUDGET_USD, adapter="claude"))
-        argv = A.claude_argv(claude, runner.cfg.model)
+        argv = A.claude_argv(claude, runner.cfg.model, self.fleet_tags)
         result = self.claude_runner.run(argv, A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat),
                                         runner.paths.wake_dir, prompt)
         self.log.write("wake-run", seat=runner.seat, wake_id=pending.wake_id, exit=result.exit, secs=result.secs,
@@ -1326,10 +1330,199 @@ class Daemon:
                                  note=note if isinstance(note, str) else None, trigger_ids=pending.trigger_ids,
                                  owner=pending.owner, risk=risk)
             if not pending.owner or risk in ("uncertain", "high"):
-                outcome.update(self.dm_owner(runner, pending, note if isinstance(note, str) else "", risk, history))
+                dm_note = note if isinstance(note, str) else ""
+                route = obj.get("route")
+                gate = self.route_gate(runner, pending) if isinstance(route, dict) else None
+                if gate:  # a route that can never pass (a peer-only batch, a DM) is named in the note too
+                    dm_note = ("%s  (Route to %s dropped: %s.)" % (dm_note.strip(), route.get("seat"), gate)).strip()
+                outcome.update(self.dm_owner(runner, pending, dm_note, risk, history))
             if pending.owner and not outcome["posted_id"] and not lease_id:
                 outcome["posted_id"] = self.post(runner, pending, W.compose_reply(runner.seat, trigger, W.OWNER_ACK))
+        # The route comes last, after the reply:  two posts, because a `·wake`-tagged post never wakes
+        # anyone and the route post must wake its target.
+        route = obj.get("route")
+        if isinstance(route, dict):
+            outcome["route"] = self.handle_route(runner, pending, obj, route, history=history, lease_id=lease_id)
+        elif obj.get("route_invalid"):
+            outcome["route"] = {"seat": None, "status": "dropped", "why": str(obj["route_invalid"])}
+            self.note_route_dropped(runner, pending, None, outcome["route"]["why"])
         return outcome
+
+    # ---- route suggestions (owner 2026-10-10) ---------------------------------------------------
+    def route_gate(self, runner: SeatRunner, pending: W.Pending) -> str | None:
+        """Why this wake may not route at all, or None.  Known before the run, so the prompt header
+        tells the model, and checked again after it.  Only an owner trigger (Jay, from a human Zulip
+        app) in a channel topic can route:  a peer-only batch never can, so no peer fans out through
+        the seat, and a DM never can."""
+        if not (self.config.route_enabled and runner.cfg.route_enabled):
+            return "disabled"
+        if pending.type == "private":
+            return "dm_trigger"
+        if not pending.owner_ids:
+            return "no_owner_trigger"
+        if pending.route_tagged:
+            return "route_trigger"  # a `·route` post never leads to another route
+        return None
+
+    def route_mode(self, seat: str) -> tuple[str | None, str | None]:
+        """(how the target hears the page, why it cannot).  A seat this listener holds:  live session
+        (a live lease), headless wake, routine wake, or inbox only.  A seat the other listener
+        instance holds:  that listener (its config is not visible here; it captures the page in the
+        seat inbox at least).  A seat no listener holds (`none` in the partition, or not listed) has
+        no wake path the daemon can vouch for, so it is refused."""
+        cfg = self.config.seats.get(seat)
+        if cfg is not None:
+            target = self.seats.get(seat)
+            if target is not None and self.lease_views(target):
+                return "live session", None
+            return {"claude": "headless wake", "http": "routine wake"}.get(cfg.wake, "inbox only"), None
+        assigned = self.partition.get(seat)
+        if assigned in C.INSTANCES and assigned != self.config.instance:
+            return "%s listener" % assigned, None
+        if assigned == self.config.instance:
+            return None, "not_held"  # this instance's seat, but its config holds no queue for it
+        return None, "no_listener"
+
+    def trigger_messages(self, runner: SeatRunner, pending: W.Pending,
+                         history: Iterable[Mapping[str, Any]]) -> dict[int, Mapping[str, Any]]:
+        """Trigger id -> its message (content and sender), from the seat inbox first, then history."""
+        found: dict[int, Mapping[str, Any]] = dict(self._seat_inbox_rows(runner, pending.trigger_ids))
+        for message in history:
+            if isinstance(message, Mapping) and message.get("id") in pending.trigger_ids:
+                found.setdefault(int(message["id"]), message)
+        return found
+
+    def route_check(self, runner: SeatRunner, pending: W.Pending, obj: Mapping[str, Any], seat: str,
+                    triggers: Mapping[int, Mapping[str, Any]], lease_id: str | None,
+                    ) -> tuple[str | None, dict[str, Any] | None, str | None]:
+        """(why the route is dropped, the target bot, how it hears the page).  Deterministic:  the gate,
+        no live session took the wake over, no risky screen, a known fleet seat that is not this seat,
+        an active fleet bot, a wake path, not a trigger's sender, not already @-mentioned in a trigger,
+        and the route budget."""
+        gate = self.route_gate(runner, pending)
+        if gate:
+            return gate, None, None
+        if lease_id:
+            return "live_session", None, None  # the session holds the draft and can page the seat itself
+        if obj.get("risk") in ("high", "uncertain"):
+            return "risk_screened", None, None
+        if seat not in self.fleet_tags:
+            return "unknown_seat", None, None
+        if seat == runner.seat:
+            return "self", None, None
+        bots = R.fleet_bots_by_seat(runner.users, self.fleet_tags, self.config.owner_user_id).get(seat) or []
+        if not bots:
+            return "bot_inactive", None, None
+        mode, why = self.route_mode(seat)
+        if why:
+            return why, None, None
+        if any(i not in triggers for i in pending.trigger_ids):
+            return "trigger_unreadable", None, None
+        bot_ids = {int(b["user_id"]) for b in bots}
+        for message in triggers.values():
+            if message.get("sender_id") in bot_ids:
+                return "sender", None, None
+            visible = R.outside_code(str(message.get("content") or ""))
+            for bot in bots:
+                name = str(bot.get("full_name") or "")
+                if name and ("@**%s**" % name in visible or "@**%s|%d**" % (name, int(bot["user_id"])) in visible):
+                    return "already_mentioned", None, None
+        block = W.route_budget_block(runner.ledger.wakes(), runner.cfg.budget, key=pending.key, now=self.clock.time())
+        if block:
+            return block, None, None
+        return None, bots[0], mode
+
+    def handle_route(self, runner: SeatRunner, pending: W.Pending, obj: Mapping[str, Any], route: Mapping[str, Any],
+                     *, history: Iterable[Mapping[str, Any]], lease_id: str | None) -> dict[str, Any]:
+        """Check a route suggestion and, when it passes, post `[SEAT·route→TARGET]` in the trigger's
+        topic with one live mention (the daemon's, of the target bot), then tell the owner who was
+        paged and why.  A dropped route is recorded and reaches the owner as a note."""
+        seat = str(route.get("seat") or "").upper()
+        reason = str(route.get("reason") or "")
+        info: dict[str, Any] = {"seat": seat, "status": "dropped", "why": None}
+        history = list(history)
+        triggers = self.trigger_messages(runner, pending, history)
+        why, bot, mode = self.route_check(runner, pending, obj, seat, triggers, lease_id)
+        if why is None and bot is not None:
+            owner_trigger = pending.owner_ids[-1]
+            owner_text = str((triggers.get(owner_trigger) or {}).get("content") or "")
+            link = A.zulip_link(self.realm, {"id": owner_trigger, "type": pending.type, "recipients": pending.recipients,
+                                             "channel": pending.channel, "topic": pending.topic,
+                                             "stream_id": pending.stream_id})
+            text = W.compose_route(runner.seat, seat, str(bot.get("full_name") or seat), int(bot["user_id"]),
+                                   owner_trigger, reason, owner_text, link)
+            found = secretscan.scan(text, self.hidden)
+            if W.loud_mentions(text) != 1:
+                why = "mention_check"  # never reached:  the composer neutralizes every other mention
+            elif found:
+                why = "secret_scanner"
+            else:
+                posted = self.post(runner, pending, text)
+                if posted is None:
+                    info.update(status="failed", why="post_failed", mode=mode)
+                    self.log.write("route-failed", seat=runner.seat, wake_id=pending.wake_id, target=seat)
+                    return info
+                info.update(status="posted", why=None, mode=mode, posted_id=posted, target_id=int(bot["user_id"]),
+                            re=owner_trigger)
+                self.log.write("route-posted", seat=runner.seat, wake_id=pending.wake_id, target=seat, mode=mode,
+                               posted_id=posted)
+                info.update(self.note_route_posted(runner, pending, seat, mode or "", reason, owner_trigger, posted))
+                return info
+        info["why"] = why
+        self.log.write("route-dropped", seat=runner.seat, wake_id=pending.wake_id, target=seat, reason=why)
+        self.note_route_dropped(runner, pending, seat, why or "dropped")
+        return info
+
+    def note_route_dropped(self, runner: SeatRunner, pending: W.Pending, seat: str | None, why: str) -> None:
+        """A dropped route reaches the owner queue (and a Mac banner) as a note, never as a Zulip post."""
+        where = "a DM" if pending.type == "private" else "#%s > %s" % (pending.channel, pending.topic)
+        target = A.clean_banner(seat or "an invalid route", 40)
+        self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
+                             "a route to %s was dropped (%s) in %s" % (target, A.clean_banner(why, 40), where),
+                             kind="route_dropped", key="route:%s" % pending.wake_id, once_per=0,
+                             note="route to %s dropped: %s" % (target, A.clean_banner(why, 60)),
+                             trigger_ids=pending.trigger_ids, owner=pending.owner)
+
+    def note_route_posted(self, runner: SeatRunner, pending: W.Pending, seat: str, mode: str, reason: str,
+                          owner_trigger: int, posted: int) -> dict[str, Any]:
+        """Tell the owner who was paged and why:  a `[SEAT·note]` DM from the seat's own bot (the same
+        channel as escalation notes) and the owner queue.  Never raises; a failure is recorded."""
+        where = "#%s > %s" % (A.clean_banner(pending.channel, 60), A.clean_banner(pending.topic, 80))
+        self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat, "paged %s for you in %s" % (seat, where),
+                             kind="route", key="route:%s" % pending.wake_id, once_per=0,
+                             note="routed to %s (%s): %s" % (seat, mode, A.clean_banner(reason, W.LIMITS["route_reason"])),
+                             trigger_ids=pending.trigger_ids, owner=pending.owner)
+        owner_id = self.config.owner_user_id
+        if owner_id <= 0 or runner.client is None or runner.fatal:
+            return {"owner_dm": None, "owner_dm_error": "owner dm skipped"}
+        link = A.zulip_link(self.realm, {"id": posted, "type": pending.type, "recipients": pending.recipients,
+                                         "channel": pending.channel, "topic": pending.topic,
+                                         "stream_id": pending.stream_id})
+        text = W.neutralize_mentions("\n".join([
+            "[%s\u00b7note] re=%d" % (runner.seat, owner_trigger),
+            "Routed: %s (%s)" % (seat, mode),
+            "Where: %s" % where,
+            "```quote",
+            A.clean_banner(reason.replace("`", "'"), W.LIMITS["route_reason"]),
+            "```",
+            "Route post: %s" % link,
+        ]))
+        if secretscan.scan(text, self.hidden):
+            self.log.write("owner-dm-refused", seat=runner.seat, wake_id=pending.wake_id, reason="secret scanner")
+            return {"owner_dm": None, "owner_dm_error": "secret scanner"}
+        wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
+        if wait > 0:
+            self.clock.sleep(wait)
+        try:
+            result = runner.client.post("messages", {"type": "direct", "to": [owner_id], "content": text})
+        except Z.AgentSyncError as exc:
+            reason_text = self.scrub(str(exc))
+            self.log.write("owner-dm-failed", seat=runner.seat, wake_id=pending.wake_id, error=reason_text)
+            return {"owner_dm": None, "owner_dm_error": reason_text}
+        finally:
+            runner.last_post = self.clock.monotonic()
+        message_id = result.get("id")
+        return {"owner_dm": int(message_id) if isinstance(message_id, int) else None}
 
     def owner_dm_text(self, runner: SeatRunner, pending: W.Pending, note: str, risk: str | None,
                       history: Iterable[Mapping[str, Any]]) -> str:
@@ -1590,6 +1783,8 @@ class Daemon:
                 "last_event": runner.last_event_wall, "wake": runner.cfg.wake, "routine": routine,
                 "pinned": A.pinned(runner.paths, claude) if claude else None, "claude": claude,
                 "wakes_24h": len(day), "cost_24h": W.spent_today(views.values(), now),
+                "routes_24h": W.routes_in(views.values(), now),
+                "route_enabled": bool(self.config.route_enabled and runner.cfg.route_enabled),
                 "usd_per_day": runner.cfg.budget["usd_per_day"], "budget": runner.cfg.budget, "live": runner.cfg.live,
                 "jobs": len(runner.jobs), "running": runner.running.wake_id if runner.running else None,
                 "paused": L.paused(self.root, seat), "wakes_paused": L.paused(self.root, seat, wakes=True),
