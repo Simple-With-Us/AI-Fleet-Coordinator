@@ -15,6 +15,14 @@ review-pr-<n>, a second seat gets review-pr-<n>-<seat>.  A lane that still sits 
 (lanes/fleet/claude-x) is found and printed, not duplicated, until the migration moves it; so is a flat
 ~/apps/<prefix>-<seat>-<slug> lane, which the migration does not move.
 
+External lanes (owner 2026-10-10).  ~/apps/lanes/<Repo> may be a symlink onto the external disk
+(/Volumes/External/Lanes/<Repo>, FLEET_LANES_EXTERNAL_ROOT).  `lane new` then makes the lane there without
+anyone noticing: it prints the ~/apps/lanes path, git records the real one, and every "inside the lanes root"
+check (the allowlist, the destination guard, the parent folders) holds for both spellings because they go
+through layout.resolve_path / layout.logical_fold.  A lanes/<Repo> link that leads nowhere (the disk is not
+mounted) or anywhere but the external disk is refused in words before anything is written, so a folder is
+never made through a broken link.
+
 `bin/lane` in this package is the shell shim that runs this module with `python3 -I` from its own
 checkout, so a fleet_lanes package in the caller's working directory never shadows it.
 
@@ -462,7 +470,9 @@ class Ctx:
             self.err.write(f"lane: {line}\n")
 
     def fold(self) -> Callable[[str], str]:
-        return str.casefold if self.roots.case_insensitive else (lambda s: s)
+        # Case-fold, and spell a path on the external lanes disk (a lanes/<Repo> symlink target) as its place
+        # under the lanes root, so the runner's "inside the write root" test holds for a lane stored there.
+        return L.logical_fold(self.roots)
 
     def key(self, path: "str | os.PathLike[str]") -> str:
         return L.real_key(path, self.roots)
@@ -502,6 +512,54 @@ def _in_tree(ctx: Ctx, path: "str | os.PathLike[str]", root: "str | os.PathLike[
     return a == b or a.startswith(b.rstrip(os.sep) + os.sep)
 
 
+def _external_note(ctx: Ctx) -> str:
+    roots = ctx.roots.external_lanes_roots
+    return ", ".join(str(r) for r in roots) if roots else "nowhere (FLEET_LANES_EXTERNAL_ROOT is off)"
+
+
+def _link_between(path: "str | os.PathLike[str]", write_root: "str | os.PathLike[str]") -> "list[str]":
+    """The symlinks among the folders between `write_root` and `path` (the lane itself is not one), outermost first.
+    Lexical, so it names the spelling the caller used."""
+    root = os.fspath(write_root)
+    try:
+        rel = os.path.relpath(os.fspath(path), root)
+    except ValueError:
+        return []
+    if rel == os.curdir or rel.split(os.sep, 1)[0] == os.pardir:
+        return []
+    cur, found = root, []
+    for part in Path(rel).parts[:-1]:
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur):
+            found.append(cur)
+    return found
+
+
+def _link_hint(ctx: Ctx, path: "str | os.PathLike[str]", write_root: "str | os.PathLike[str]") -> str:
+    """One extra sentence when a symlinked folder is why a path is outside the map; empty otherwise."""
+    for link in _link_between(path, write_root):
+        real = os.path.realpath(link)
+        return (f"  {link} is a symlink to {real}; a lanes folder may be a symlink only onto the external lanes "
+                f"disk ({_external_note(ctx)}).")
+    return ""
+
+
+def _check_links(ctx: Ctx, path: "str | os.PathLike[str]", write_root: "str | os.PathLike[str]") -> None:
+    """Refuse, in words, when a folder between the write root and the lane is a symlink that cannot hold a
+    lane: dangling (the external disk is not mounted, or the folder is gone: lane would create folders on the
+    wrong disk or fail halfway) or pointing anywhere but the external lanes disk."""
+    for link in _link_between(path, write_root):
+        real = os.path.realpath(link)
+        if not os.path.exists(real):
+            raise Refusal(f"{link} is a symlink to {os.readlink(link)}, which does not exist.  Is the external disk "
+                          f"mounted?  Lane does not create folders through a broken link; mount the disk (or fix "
+                          f"the link) and run lane again.")
+        key, root = ctx.key(real), ctx.key(write_root)
+        if not (key == root or key.startswith(root + os.sep)):
+            raise Refusal(f"{link} is a symlink to {real}, which is not under the lanes root or the external lanes "
+                          f"disk ({_external_note(ctx)}).")
+
+
 def _plan_path(ctx: Ctx, app: L.App, seat: L.Seat, slug: str, branch: str) -> "tuple[Path, Path]":
     """(lane path, write root).  Refuses a path that is not a conforming spot in the map."""
     roots, registry = ctx.roots, ctx.registry
@@ -512,10 +570,10 @@ def _plan_path(ctx: Ctx, app: L.App, seat: L.Seat, slug: str, branch: str) -> "t
     flat = roots.layout_mode == L.LAYOUT_FLAT
     want = L.LocationClass.LANE_FLAT if flat else L.LocationClass.LANE_NESTED
     got = L.classify_location(path, roots)
+    write_root = roots.apps_root if flat else roots.lanes_root
     if got is not want:
         raise Refusal(f"{path} is outside the lane map (it classifies as {got}, a new lane must be {want}); "
-                      "check FLEET_LANES_ROOT and FLEET_LAYOUT.")
-    write_root = roots.apps_root if flat else roots.lanes_root
+                      "check FLEET_LANES_ROOT and FLEET_LAYOUT." + _link_hint(ctx, path, write_root))
     if _in_tree(ctx, write_root, roots.code_root):
         raise Refusal(f"the lanes folder {write_root} is inside {roots.code_root}; nothing new may be added "
                       "under ~/Code, so check FLEET_LANES_ROOT.")
@@ -545,7 +603,8 @@ def _plan_review_path(ctx: Ctx, app: L.App, seat: L.Seat, pr: int, *, own: bool 
         raise Refusal(str(exc))
     got = L.classify_location(path, roots)
     if got is not L.LocationClass.REVIEW:
-        raise Refusal(f"{path} is outside the lanes root (it classifies as {got}); check FLEET_LANES_ROOT.")
+        raise Refusal(f"{path} is outside the lanes root (it classifies as {got}); check FLEET_LANES_ROOT."
+                      + _link_hint(ctx, path, roots.lanes_root))
     if _in_tree(ctx, roots.lanes_root, roots.code_root):
         raise Refusal(f"the lanes folder {roots.lanes_root} is inside {roots.code_root}; check FLEET_LANES_ROOT.")
     return path, Path(roots.lanes_root)
@@ -587,6 +646,7 @@ def _check_tree(ctx: Ctx, run: Runner, tree: Path) -> None:
 def _guard_destination(ctx: Ctx, tree: Path, path: Path, write_root: Path) -> None:
     if _in_tree(ctx, path, tree):
         raise Refusal(f"{path} is inside the integration tree {tree}.")
+    _check_links(ctx, path, write_root)
     if not write_root.is_dir() and not write_root.parent.is_dir():
         raise Refusal(f"{write_root.parent} does not exist.  Lane creates folders only at or below {write_root}, "
                       "so create the parent first.")
@@ -1150,7 +1210,7 @@ def _utc_now() -> _dt.datetime:
 def main(argv: "Sequence[str] | None" = None, *, env: "Mapping[str, str] | None" = None,
          clock: "Callable[[], _dt.datetime] | None" = None, exec_fn: "ExecFn | None" = None,
          stdout=None, stderr=None) -> int:
-    """CLI entry.  `env` carries AGENT_SEAT, HOME, FLEET_LAYOUT, FLEET_LANES_ROOT, FLEET_APPS_JSON
+    """CLI entry.  `env` carries AGENT_SEAT, HOME, FLEET_LAYOUT, FLEET_LANES_ROOT, FLEET_LANES_EXTERNAL_ROOT, FLEET_APPS_JSON
     and the base environment for git and gh; nothing is read from os.environ when it is given.
     `exec_fn(argv, cwd, env, timeout)` replaces the process starter (tests fake gh with it); it is
     only reached after the allowlist check."""

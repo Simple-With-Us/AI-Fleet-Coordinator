@@ -307,6 +307,34 @@ class ReasonTests(unittest.TestCase):
         self.assertEqual(G.redact_url("git@github.com:o/r.git"), "git@github.com:o/r.git")
 
 
+class ExternalLanesTests(unittest.TestCase):
+    """A lane stored on the external disk (lanes/<Repo> is a symlink there) is a fleet checkout at its real path,
+    which is where git and lsof name it: cloning it into temp is the same offence as cloning its lanes path."""
+
+    def _decide(self, command: str, **env: str) -> G.Decision:
+        return G.evaluate(_payload(command), _ctx(dict(F.BASE_ENV, **env)))
+
+    def test_cloning_an_external_lane_into_temp_is_denied_like_its_lanes_path(self) -> None:
+        via_link = self._decide("git clone /Users/jay/apps/lanes/DealDex/claude-x /tmp/y")
+        real = self._decide("git clone /Volumes/External/Lanes/DealDex/claude-x /tmp/y")
+        self.assertEqual((via_link.action, via_link.rule_id), ("deny", G.RULE_CLONE))
+        self.assertEqual((real.action, real.rule_id), ("deny", G.RULE_CLONE))
+        self.assertIn("DealDex", real.reason)
+
+    def test_only_the_external_lanes_root_counts_and_the_setting_can_turn_it_off(self) -> None:
+        self.assertEqual(self._decide("git clone /Volumes/External/Other/claude-x /tmp/y").action, "allow")
+        self.assertEqual(self._decide("git clone /Volumes/External/Lanes/DealDex/claude-x /tmp/y",
+                                      FLEET_LANES_EXTERNAL_ROOT="").action, "allow")
+        self.assertEqual(self._decide("git clone /mnt/lanes/DealDex/claude-x /tmp/y",
+                                      FLEET_LANES_EXTERNAL_ROOT="/mnt/lanes").rule_id, G.RULE_CLONE)
+
+    def test_the_hook_context_carries_the_external_root(self) -> None:
+        ctx = _ctx(dict(F.BASE_ENV, FLEET_LANES_EXTERNAL_ROOT="/mnt/lanes"))
+        self.assertEqual(ctx.roots.external_lanes_roots, (Path("/mnt/lanes"),))
+        self.assertIn("/mnt/lanes", ctx.lanes_roots_f)
+        self.assertIn("/mnt/lanes", ctx.fleet_roots_f)
+
+
 class LaneNewAgreementTests(unittest.TestCase):
     """Whatever `lane new` command a deny reason names, the CLI accepts it with the same seat and
     prints the same lane path; and when the reason shows a placeholder, the CLI refuses that seat

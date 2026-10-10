@@ -74,4 +74,27 @@ tagged lanes/AI-Fleet-Coordinator/claude-real || fail "--all tags the real lane"
 [ -L "$APPS/lanes/fleet/claude-old" ] || fail "the symlink must still be a symlink"
 [ "$(attrs lanes/AI-Fleet-Coordinator/claude-real)" = "seat=claude,lane=fleet-claude-real,project=AI-Fleet-Coordinator,repo=AI-Fleet-Coordinator" ] \
   || fail "the real lane keeps its own tag, not the symlink's"
+# External lanes: lanes/<Repo> is a symlink onto the external disk.  The lane tags the same through the symlink
+# and through its real path, and the sweep reaches it.
+EXT="$T/ext/Lanes"
+mkdir -p "$EXT/Socratic-Trade/claude-ext" "$EXT/Socratic-Trade/review-pr-9" "$EXT/_codex/slug/BotFleet"
+git init -q "$EXT/Socratic-Trade/claude-ext"; git init -q "$EXT/Socratic-Trade/review-pr-9"
+ln -s "$EXT/Socratic-Trade" "$APPS/lanes/Socratic-Trade"
+want="seat=claude,lane=trading-claude-ext,project=Socratic-Trade,repo=Socratic-Trade"
+run "$APPS/lanes/Socratic-Trade/claude-ext" >/dev/null
+[ "$(attrs lanes/Socratic-Trade/claude-ext)" = "$want" ] || fail "a lane behind a symlink: $(attrs lanes/Socratic-Trade/claude-ext)"
+rm -rf "$EXT/Socratic-Trade/claude-ext/.claude"
+out="$(FLEET_LANES_EXTERNAL_ROOT="$EXT" run "$EXT/Socratic-Trade/claude-ext")"
+case "$out" in *"trading-claude-ext"*created*|*"trading-claude-ext"*) ;; *) fail "real path: $out" ;; esac
+[ "$(attrs lanes/Socratic-Trade/claude-ext)" = "$want" ] || fail "the real path tags the same lane: $(attrs lanes/Socratic-Trade/claude-ext)"
+out="$(FLEET_LANES_EXTERNAL_ROOT="$EXT" run "$EXT/Socratic-Trade/review-pr-9")"
+case "$out" in *"review checkout"*) ;; *) fail "a review on the external disk is still a review: $out" ;; esac
+out="$(FLEET_LANES_EXTERNAL_ROOT="$EXT" run "$EXT/_codex/slug/BotFleet")"
+case "$out" in *"tool-managed"*) ;; *) fail "a Codex folder on the external disk is still a tool folder: $out" ;; esac
+rm -rf "$EXT/Socratic-Trade/claude-ext/.claude"
+out="$(run "$EXT/Socratic-Trade/claude-ext")"
+case "$out" in *"not under ~/apps"*) ;; *) fail "without the setting the real path is outside the map: $out" ;; esac
+rm -rf "$EXT/Socratic-Trade/claude-ext/.claude"
+run --all >/dev/null
+tagged lanes/Socratic-Trade/claude-ext || fail "--all reaches a lane behind a symlinked repo folder"
 echo OK

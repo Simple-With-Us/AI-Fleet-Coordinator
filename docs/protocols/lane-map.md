@@ -109,6 +109,28 @@ Facts verified 2026-10-07 unless the row says otherwise; the OpenCode, Conductor
 | BotFleet bots | `~/.botfleet/workspaces/<uuid>` (nested clones); leases at `~/.botfleet/worktrees` (feature off) | Only `OMB_DATA_DIR` | `server/command-guard.ts` (backstop, BotFleet repo) | `bots/_shared.md` |
 | Cloud agents (Cursor cloud, Codex cloud; Muse Assist has its own row) | Remote VMs | Local rules cannot apply | Project-level hooks only | Each repo's `AGENTS.md` |
 
+## External Lanes
+
+Owner decision 2026-10-10: the internal disk is nearly full, so lanes may be stored on the external disk.  **The path agents use never changes.**  A repo folder moves by turning `~/apps/lanes/<Repo>` into a symlink to `/Volumes/External/Lanes/<Repo>` (the folder keeps exactly the name `<Repo>`), and every lane, review checkout and desktop worktree in it is still `~/apps/lanes/<Repo>/<name>` to an agent.  A repo with no link keeps its lanes on the internal disk.  `lane new` needs nothing different: it prints the `~/apps/lanes` path and makes the lane on the disk through the link.
+
+The catch is that git, `lsof` and `os.path.realpath` report the real path.  `git worktree add` through a link records `/Volumes/External/Lanes/<Repo>/<name>`, `git worktree list` and `git rev-parse --show-toplevel` print it, and a shell parked in a lane has it as its cwd.  Without help, every tool would call that lane `UNSANCTIONED` (outside the map) and the janitor would stop treating it as a lane.  So the lane tools treat the two spellings as ONE place:
+
+| Setting | Meaning |
+|---|---|
+| `FLEET_LANES_EXTERNAL_ROOT` | The external lanes root.  Unset means `/Volumes/External/Lanes`; set but empty switches the feature off; otherwise an absolute path (or `~/...`).  A root is refused, with a warning and never an error, when it is not absolute, when it is or holds the home, `~/apps`, `~/Code` or the lanes root, when it sits inside the lanes root or `~/Code`, or when it is inside a temp directory (a setting must not become a way round the temp ban). |
+
+| Tool | What it does with an external lane |
+|---|---|
+| `layout.py` (every classification) | `resolve_path` re-spells a path under the external root as the same path under `~/apps/lanes`, so `classify_location`, `lane_root`, the name and layout checks and `real_key` give the same answer for both spellings: `LANE_NESTED`, layout status `correct`, not `wrong-place`. |
+| `lane new` / `lane path` | Creates the lane inside the link and prints the lanes path.  It refuses, in words and before anything is written, when `lanes/<Repo>` is a symlink that leads nowhere (the disk is not mounted: no folder is ever made through a broken link) or leads anywhere but the external root. |
+| `lane ls` / `lane doctor` | Follows each `lanes/<Repo>` link in the scan (the scan never follows symlinks otherwise), shows every external lane at its lanes path, and matches a process cwd given as the real path.  `warnings` names a link whose target is missing, one that points outside the external root, one whose folder has another name than the link (the lanes are judged by the folder's name), and, once any link is in use, a folder on the disk that no link reaches.  `path` and `realpath` in the JSON are the lanes spelling, so the cleaner contract is unchanged. |
+| `disk-janitor.sh` | Counts the external root as a lanes root, so an external lane stays doctor-gated like any lane under `~/apps/lanes` and never retires on the legacy tests.  **It skips `git worktree prune` while the disk is missing**: prune deletes the registry entry (and with it the private index and HEAD) of every worktree whose folder is missing, and the lanes of an unplugged or unmounted disk are exactly that.  The skip is logged as `PRUNE-SKIPPED`.  Any other cleaner, and any agent told to tidy worktrees, follows the same rule: never run `git worktree prune` unless the disk is mounted. |
+| `lanes-v2-migrate.py` | Reads a linked folder like any other (its lanes report `already-correct`).  It never moves a lane across disks: `git worktree move` and a rename are rename(2), which cannot cross volumes, so a legacy lane that would land on the external disk is skipped with the reason and stays where it is until it retires (make the replacement with `lane new`). |
+| `otel-lane-tag.sh` | Reads a real path on the external disk at its `~/apps/lanes` spelling before it judges the lane. |
+| The temp-checkout guard | A `git clone` of an external lane into temp is denied exactly like a clone of its lanes path. |
+
+**Moving a repo folder to the disk** is a separate, owner-approved step and not something the tools do.  Nothing running in the folder (`lane ls` shows process cwds), the cleaners paused as in `docs/protocols/lanes-v2-migration.md` (a prune that lands while the folder is between paths deletes its lanes' registry entries), then: copy with `ditto ~/apps/lanes/<Repo> /Volumes/External/Lanes/<Repo>`, check the file count and size, rename the original out of the way, make the symlink with the original name, run `lane ls` and `git -C ~/Code/<Repo> worktree list` to see every lane still listed and `correct`, and delete the renamed original only after that.  The registry entries keep their old (lanes) spelling and keep working through the link; new lanes record the real one.  If the disk is gone when a tool runs, lanes in linked folders cannot be seen: `lane ls` says so in `warnings`, `lane new` refuses, and the janitor changes nothing.
+
 ## Existing Lanes And The Migration
 
 Owner decision 2026-10-09: the existing lanes move to the v2 tree in one pass, after this layout merges and the live tools are refreshed.  The plan, the order and the checks that decide what is skipped are in `docs/protocols/lanes-v2-migration.md`; the script is `scripts/lanes-v2-migrate.py` (a dry run unless given `--apply`).
@@ -138,7 +160,7 @@ Anything that removes a checkout (the disk janitor, `mac-auto-cleanup`, a housek
 4. **Remove with `git worktree remove`**, never `rm -rf`, and never anything outside the map.
 5. **Never create a `.janitor-keep` file** as protection.  It makes the doctor say `NEEDS-REVIEW` forever, and the dependency reaper ignores it.
 
-The live `disk-janitor` asks the doctor and acts only on `cleaner_candidates`, and its layout test is "anything under the lanes root", so it needs no functional change for v2.  Claude desktop worktrees in `lanes/<Repo>/<slug>-<hex>` and Codex worktrees in `lanes/_codex` are classified as harness-managed on purpose: HogHunter's dependency step leaves harness-managed worktrees alone, and it would otherwise start clearing their `node_modules`.
+The live `disk-janitor` asks the doctor and acts only on `cleaner_candidates`, and its layout test is "anything under the lanes root, or under the external lanes root" (see External Lanes), so it needs no functional change for v2.  Claude desktop worktrees in `lanes/<Repo>/<slug>-<hex>` and Codex worktrees in `lanes/_codex` are classified as harness-managed on purpose: HogHunter's dependency step leaves harness-managed worktrees alone, and it would otherwise start clearing their `node_modules`.
 
 ## Open Questions For The Owner
 

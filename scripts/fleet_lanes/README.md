@@ -66,7 +66,7 @@ Manifest: `lane.json` lives in the new worktree's private git dir, `<tree>/.git/
 
 Process rules: every process starts in one runner that checks an allowlist first (`git fetch --no-tags origin <ref>`, `git worktree list --porcelain`, `git worktree add` in exactly three shapes with an absolute path strictly inside the lanes root, `git rev-parse`, `git show-ref --verify`, `git for-each-ref`, `git config --get remote.origin.url`, and `gh pr view` for four JSON fields).  Anything else raises before a process exists.  Credentials in git and gh error text are redacted.  Concurrent fetches into the same `~/Code` tree can fail on a ref lock (exit 69); rerun.  Repo hooks such as `post-checkout` run during `git worktree add`, as they would by hand.
 
-Environment read: `AGENT_SEAT`, `HOME`, `FLEET_LAYOUT` (`nested` default or `flat`), `FLEET_LANES_ROOT`, `FLEET_APPS_JSON` (the registry; the installed shim pins it to `~/apps/lane-tools/fleet-apps.json`).  A brand-new app or seat is refused until its row is in the registry the shim reads, so the first lane for a new app comes from a checkout of this repo: `cd scripts && FLEET_APPS_JSON=../fleet-apps.json python3 -m fleet_lanes.lane new <app> <slug>`.  After the row merges, `install_tools apply tools` refreshes the stable copy.
+Environment read: `AGENT_SEAT`, `HOME`, `FLEET_LAYOUT` (`nested` default or `flat`), `FLEET_LANES_ROOT`, `FLEET_LANES_EXTERNAL_ROOT` (where lanes may physically live when `~/apps/lanes/<Repo>` is a symlink onto the external disk; unset means `/Volumes/External/Lanes`, empty means off; see External Lanes in `docs/protocols/lane-map.md`), `FLEET_APPS_JSON` (the registry; the installed shim pins it to `~/apps/lane-tools/fleet-apps.json`).  A brand-new app or seat is refused until its row is in the registry the shim reads, so the first lane for a new app comes from a checkout of this repo: `cd scripts && FLEET_APPS_JSON=../fleet-apps.json python3 -m fleet_lanes.lane new <app> <slug>`.  After the row merges, `install_tools apply tools` refreshes the stable copy.
 
 ## doctor
 
@@ -111,6 +111,7 @@ Discovery is the union of two methods, deduplicated by real path (so `~/Code/Soc
 | `/tmp`, `/private/tmp`, `/var/tmp`, `/private/var/tmp`, `$TMPDIR` | 4 |
 | `~/apps` | 2 (every top-level entry, plus one level into non-git folders such as `mkt/`) |
 | `~/apps/lanes` | 4 (reaches `lanes/<Repo>/<lane>` and `lanes/_codex/<slug>/<Repo>`) |
+| each `~/apps/lanes/<Name>` that is a symlink onto the external lanes disk | 3, rooted at the link (so hits keep their `~/apps/lanes` spelling; the scan does not follow symlinks otherwise) |
 | `~/Code` | 1, plus each `~/Code/<App>/.claude/worktrees` and each `~/Code/<App>/.muse/worktrees` at 1 |
 | `~/.codex/worktrees`, `~/.cursor/worktrees`, `~/.ag/worktrees` | 3 |
 | `~/.grok`, `~/.fx` | 4 |
@@ -118,6 +119,8 @@ Discovery is the union of two methods, deduplicated by real path (so `~/Code/Soc
 | `~/.buzz` | 3 |
 | `~` | 3 (skipping Documents, Desktop, Downloads, Pictures, Movies, Music, Public, Applications, and the tool caches `.cache`, `.npm`, `.cargo`, `.rustup`, `.nvm`, `.pyenv`, `.rbenv`, `.volta`, `.pnpm-store`, `.yarn`, `.bun`, `.gradle`, `.m2`) |
 | `~/Documents`, `~/Desktop`, `~/Downloads` | 4, only with `--deep` |
+
+Lanes stored on the external disk read the same on both spellings: git and `lsof` print `/Volumes/External/Lanes/<Repo>/<lane>`, and `layout.resolve_path` reports it as `~/apps/lanes/<Repo>/<lane>`, so `path`, `realpath`, `lane_root`, the cleaner list and the process-cwd match all use the lanes spelling.  `warnings` names a `lanes/<Repo>` link whose target is missing (the disk is not mounted), one that points outside the external root, one whose folder has another name, and a folder on the disk that no link reaches.
 
 A registered worktree whose directory is gone is reported as PRUNABLE, not as a checkout.  A `.git` file whose gitdir target is missing is an ORPHAN.  Each checkout carries `found_by` so you can see which method found it.
 

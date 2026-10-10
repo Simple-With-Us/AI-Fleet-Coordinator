@@ -1340,6 +1340,181 @@ class LayoutStatusTests(HomeCase):
         self.assertEqual(L.STATUS_LABELS["codex-managed"], "Codex-managed")
 
 
+class ExternalLanesTests(HomeCase):
+    """Lanes stored on an external disk (owner 2026-10-10): ~/apps/lanes/<Repo> is a symlink onto
+    <external root>/<Repo>.  git and lsof report the real path, so a lane must read the same on either
+    spelling.  The fake disk sits inside the fake home, because a sibling in temp would be forbidden temp."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ext = self.mkdir("ExternalDisk", "Lanes")
+        self.lanes = self.mkdir("apps", "lanes")
+        self.env = {"FLEET_LANES_EXTERNAL_ROOT": str(self.ext)}
+
+    def link(self, repo: str) -> pathlib.Path:
+        """lanes/<repo> as a symlink onto <ext>/<repo>; returns the physical folder."""
+        target = self.ext / repo
+        target.mkdir(parents=True, exist_ok=True)
+        os.symlink(target, self.lanes / repo)
+        return target
+
+    def test_the_default_root_is_the_external_disk_and_an_empty_setting_turns_it_off(self) -> None:
+        self.assertEqual(L.make_roots(self.home, {}, registry=self.reg).external_lanes_roots,
+                         (pathlib.Path("/Volumes/External/Lanes"),))
+        off = L.make_roots(self.home, {"FLEET_LANES_EXTERNAL_ROOT": ""}, registry=self.reg)
+        self.assertEqual(off.external_lanes_roots, ())
+        self.assertEqual(self.roots(self.env).external_lanes_roots, (self.ext,))
+        self.assertEqual(L.DEFAULT_EXTERNAL_LANES_ROOT, "/Volumes/External/Lanes")
+
+    def test_a_lane_reads_the_same_through_the_link_and_at_its_real_path(self) -> None:
+        phys = self.link("DealDex") / "claude-fix-thing"
+        phys.mkdir()
+        logical = self.lanes / "DealDex" / "claude-fix-thing"
+        r = self.roots(self.env)
+        self.assertEqual(os.path.realpath(logical), str(phys), "fixture: the link leads to the disk")
+        for path in (logical, phys):
+            with self.subTest(path=str(path)):
+                self.assertEqual(L.classify_location(path, r), LC.LANE_NESTED)
+                self.assertEqual(L.resolve_path(path, r), str(logical))
+                self.assertEqual(L.lane_root(path, r), logical)
+                self.assertEqual(L.check_lane_name(path, self.reg, r), NV.CONFORMING)
+                res = L.explain_layout(path, self.reg, r)
+                self.assertEqual((res.status, res.app.name), (L.LayoutStatus.CORRECT, "DealDex"))
+        self.assertEqual(L.real_key(logical, r), L.real_key(phys, r))
+        self.assertEqual(L.dedupe_paths([phys, logical], r), [phys])
+        deep = phys / "src" / "deep"
+        deep.mkdir(parents=True)
+        self.assertEqual(L.lane_root(deep, r), logical, "a folder inside a lane belongs to the lane")
+
+    def test_reviews_desktop_worktrees_and_codex_folders_on_the_disk_keep_their_class(self) -> None:
+        r = self.roots(self.env)
+        for rel, cls, status in (
+                (("DealDex", "review-pr-7"), LC.REVIEW, L.LayoutStatus.CORRECT),
+                (("DealDex", "fix-it-a1b2c3"), LC.MANAGED, L.LayoutStatus.CORRECT),
+                (("_codex", "slug", "DealDex"), LC.MANAGED, L.LayoutStatus.CODEX_MANAGED),
+                (("_conductor", "DealDex", "oslo"), LC.MANAGED, L.LayoutStatus.TOOL_MANAGED)):
+            with self.subTest(rel=rel):
+                path = self.ext.joinpath(*rel)
+                self.assertEqual(L.classify_location(path, r), cls)
+                self.assertEqual(L.explain_layout(path, self.reg, r).status, status)
+
+    def test_a_lane_folder_without_its_link_still_reads_as_a_lane(self) -> None:
+        # a half-finished move: the folder is on the disk, the link is not made yet
+        phys = self.ext / "DealDex" / "claude-fix-thing"
+        phys.mkdir(parents=True)
+        r = self.roots(self.env)
+        self.assertEqual(L.classify_location(phys, r), LC.LANE_NESTED)
+        self.assertEqual(L.display_path(phys, r), str(phys), "no link, so the real path is all there is to show")
+
+    def test_other_places_on_the_disk_are_not_lanes(self) -> None:
+        r = self.roots(self.env)
+        other = self.mkdir("ExternalDisk", "Other", "claude-x")
+        near = self.mkdir("ExternalDisk", "Lanes-extra", "DealDex", "claude-x")
+        self.assertEqual(L.classify_location(other, r), LC.UNSANCTIONED)
+        self.assertEqual(L.classify_location(near, r), LC.UNSANCTIONED, "sharing a name prefix is not being inside")
+        self.assertEqual(L.explain_layout(near, self.reg, r).status, L.LayoutStatus.UNSANCTIONED)
+        self.assertEqual(L.classify_location(self.ext, r), LC.UNSANCTIONED, "the root itself is not a lane")
+        off = self.roots({"FLEET_LANES_EXTERNAL_ROOT": ""})
+        self.assertEqual(L.classify_location(self.ext / "DealDex" / "claude-x", off), LC.UNSANCTIONED,
+                         "with the setting off the disk is just a folder")
+
+    def test_letter_case_is_folded_for_the_root_and_kept_for_the_rest(self) -> None:
+        r = self.roots(self.env, ci=True)
+        path = self.home / "externaldisk" / "LANES" / "DealDex" / "claude-Fix"
+        self.assertEqual(L.to_logical(path, r), str(self.lanes / "DealDex" / "claude-Fix"))
+        self.assertEqual(L.classify_location(path, r), LC.LANE_NESTED)
+        cs = self.roots(self.env, ci=False)
+        self.assertEqual(L.to_logical(path, cs), str(path), "a case-sensitive volume does not fold")
+
+    def test_to_logical_leaves_everything_else_alone_and_is_idempotent(self) -> None:
+        r = self.roots(self.env)
+        mine = str(self.lanes / "DealDex" / "claude-x")
+        for text in (mine, str(self.home / "Code" / "DealDex"), "/tmp/x", "relative/path", str(self.ext) + "-extra/x"):
+            with self.subTest(text=text):
+                self.assertEqual(L.to_logical(text, r), text)
+        once = L.to_logical(str(self.ext / "DealDex" / "claude-x"), r)
+        self.assertEqual(once, mine)
+        self.assertEqual(L.to_logical(once, r), once)
+        self.assertEqual(L.to_logical(str(self.ext), r), str(self.lanes))
+
+    def test_display_path_uses_the_lanes_spelling_only_when_it_leads_to_the_same_folder(self) -> None:
+        r = self.roots(self.env)
+        phys = self.link("DealDex") / "claude-x"
+        phys.mkdir()
+        logical = str(self.lanes / "DealDex" / "claude-x")
+        self.assertEqual(L.display_path(phys, r), logical)
+        self.assertEqual(L.display_path(logical, r), logical)
+        # a link that leads somewhere else is not the same folder
+        elsewhere = self.mkdir("Elsewhere")
+        os.symlink(elsewhere, self.lanes / "Beta")
+        beta = self.mkdir("ExternalDisk", "Lanes", "Beta", "claude-y")
+        self.assertEqual(L.display_path(beta, r), str(beta))
+
+    def test_is_external_path_follows_links(self) -> None:
+        r = self.roots(self.env)
+        phys = self.link("DealDex") / "claude-x"
+        phys.mkdir()
+        self.assertTrue(L.is_external_path(self.lanes / "DealDex" / "claude-x", r))
+        self.assertTrue(L.is_external_path(phys, r))
+        local = self.mkdir("apps", "lanes", "Beta", "claude-y")
+        self.assertFalse(L.is_external_path(local, r))
+
+    def test_external_links_say_ok_dangling_or_elsewhere(self) -> None:
+        r = self.roots(self.env)
+        self.link("DealDex")
+        os.symlink(self.ext / "Gone", self.lanes / "Gone")
+        elsewhere = self.mkdir("Elsewhere")
+        os.symlink(elsewhere, self.lanes / "Stray")
+        os.symlink(self.mkdir("ExternalDisk", "Lanes", "other-name"), self.lanes / "Beta")
+        self.mkdir("apps", "lanes", "RealFolder")
+        (self.lanes / "afile").write_text("x")
+        links = {link.name: link for link in L.external_links(r)}
+        self.assertEqual(sorted(links), ["Beta", "DealDex", "Gone", "Stray"], "only symlinks are listed")
+        self.assertEqual({n: link.status for n, link in links.items()},
+                         {"DealDex": "ok", "Gone": "dangling", "Stray": "elsewhere", "Beta": "renamed"})
+        self.assertEqual(links["Gone"].target, str(self.ext / "Gone"))
+        self.assertEqual(links["DealDex"].real, str(self.ext / "DealDex"))
+        self.assertEqual(L.external_links(L.make_roots(self.home / "nowhere", {}, registry=self.reg)), [])
+
+    def test_a_dangling_link_still_classifies_so_a_missing_disk_is_not_called_wrong_place(self) -> None:
+        r = self.roots(self.env)
+        os.symlink(self.ext / "DealDex", self.lanes / "DealDex")      # the folder on the disk is not there
+        path = self.lanes / "DealDex" / "claude-x"
+        self.assertEqual(L.classify_location(path, r), LC.LANE_NESTED)
+        self.assertEqual(L.explain_layout(path, self.reg, r).status, L.LayoutStatus.CORRECT)
+
+    def test_a_bad_setting_is_refused_with_a_warning_and_never_raises(self) -> None:
+        sibling = pathlib.Path(tempfile.mkdtemp())          # temp, next to the fake home: forbidden temp
+        self.addCleanup(sibling.rmdir)
+        for value, words in (
+                (str(self.home), "is or holds"), (str(self.home.parent), "is or holds"),
+                (str(self.lanes), None), (str(self.lanes / "inside"), "inside the lanes root"),
+                (str(self.home / "Code" / "Lanes"), "inside the lanes root or ~/Code"),
+                (str(self.home / "apps"), "is or holds"), ("relative/lanes", "absolute"),
+                (str(sibling), "temp directory"), ("/", "is or holds")):
+            with self.subTest(value=value):
+                r = self.roots({"FLEET_LANES_EXTERNAL_ROOT": value})
+                self.assertEqual(r.external_lanes_roots, ())
+                if words:
+                    self.assertTrue(any(words in w and "FLEET_LANES_EXTERNAL_ROOT" in w for w in r.warnings), r.warnings)
+                else:
+                    self.assertEqual(r.warnings, (), "the lanes root itself needs no mapping and no warning")
+
+    def test_a_root_in_temp_cannot_hide_a_temp_checkout(self) -> None:
+        sibling = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(sibling.rmdir)
+        r = self.roots({"FLEET_LANES_EXTERNAL_ROOT": str(sibling)})
+        self.assertEqual(L.classify_location(sibling / "DealDex" / "claude-x", r), LC.FORBIDDEN_TMP)
+
+    def test_a_tilde_root_expands_against_the_home(self) -> None:
+        r = self.roots({"FLEET_LANES_EXTERNAL_ROOT": "~/ExternalDisk/Lanes"})
+        self.assertEqual(r.external_lanes_roots, (self.ext,))
+
+    def test_the_guard_roots_carry_the_external_root_too(self) -> None:
+        r = L.make_guard_roots(self.home, self.env)
+        self.assertEqual(r.external_lanes_roots, (self.ext,))
+
+
 class BranchNameTests(unittest.TestCase):
     def setUp(self) -> None:
         self.reg = _registry()

@@ -40,6 +40,12 @@ What it refuses (skip, with the reason in the plan; run again when the cause is 
   read-only commands, and every path it writes is checked to be inside the lanes root (or, for Codex,
   ~/.codex/worktrees on the way out).
 
+External lanes (docs/protocols/lane-map.md): a lanes/<Repo> folder may be a symlink onto the external disk
+(/Volumes/External/Lanes/<Repo>, FLEET_LANES_EXTERNAL_ROOT).  Such a folder is read like any other, so its lanes
+report already-correct.  A move INTO one from a folder on the internal disk is planned as a skip: git and rename(2)
+cannot move a worktree across disks, so that lane stays where it is until it retires.  A link whose target is missing
+(the disk is not mounted) or that points anywhere but the external disk is noted and its folder is not read.
+
 Default is a dry run.  The log (`<lanes root>/.lanes-v2-migration.json`) records every link made and every
 step taken.  With --json the one JSON document is the only thing on stdout; progress goes to stderr.
 Exit codes: 0 ok (skips are not failures), 2 a step failed with --apply or the plan could not be read,
@@ -461,13 +467,23 @@ def plan_lanes(ctx: Ctx) -> "list[Item]":
         top = sorted(os.scandir(lanes), key=lambda e: e.name)
     except OSError as exc:
         raise MigrateError(f"cannot read {lanes}: {exc}")
+    links = {link.name: link for link in L.external_links(ctx.roots)}
     for entry in top:
         name = entry.name
         path = entry.path
-        if entry.is_symlink():
-            items.append(Item(NOTE, path, kind="folder", reasons=["a symlink at the top of the lanes root; not touched"]))
+        link = links.get(name)
+        if entry.is_symlink() and not (link is not None and link.status in ("ok", "renamed")):
+            if link is not None and link.status == "dangling":
+                why = (f"a symlink to {link.target}, which does not exist (is the external disk mounted?); "
+                       "its lanes are not read")
+            elif link is not None:
+                why = f"a symlink to {link.real}, which is not on the external lanes disk; not touched"
+            else:
+                why = "a symlink at the top of the lanes root; not touched"
+            items.append(Item(NOTE, path, kind="folder", reasons=[why]))
             continue
-        if not entry.is_dir(follow_symlinks=False) or name.startswith("."):
+        # a symlink that is left here is a lanes/<Repo> folder stored on the external disk: read it like a folder
+        if not (entry.is_dir(follow_symlinks=False) or link is not None) or name.startswith("."):
             continue
         if name == L.CODEX_DIR:
             continue
@@ -713,9 +729,37 @@ def plan_codex(ctx: Ctx) -> "list[Item]":
     return out
 
 
+def cross_disk_reason(ctx: Ctx, old: str, new: str) -> "str | None":
+    """Why `old` cannot be moved to `new` with a rename, or None.  `git worktree move` and a clone's rename are
+    rename(2), which cannot cross disks (EXDEV), and a lanes/<Repo> symlink onto the external disk puts `new`
+    on another disk than a lane in an old internal folder.  A link in the way that leads nowhere is the other
+    case: the disk is not mounted, and a folder made through it would land on the wrong disk or fail halfway."""
+    probe = os.path.dirname(new)
+    while probe and probe != os.path.dirname(probe):
+        if os.path.islink(probe) and not os.path.exists(probe):
+            return (f"{probe} is a symlink to {os.readlink(probe)}, which does not exist (is the external disk "
+                    "mounted?), so the lane cannot be moved there")
+        if os.path.exists(probe):
+            break
+        probe = os.path.dirname(probe)
+    try:
+        if os.stat(old).st_dev != os.stat(probe).st_dev:
+            return (f"{new} is on another disk (the external lanes disk) than {old}, and git cannot move a worktree "
+                    "across disks, so it stays where it is until it retires (a new lane there is made with `lane new`)")
+    except OSError:
+        return None
+    return None
+
+
 def build_plan(ctx: Ctx) -> "list[Item]":
     items = plan_lanes(ctx)
     items.extend(plan_codex(ctx))
+    for it in items:
+        if it.action in (MOVE, CODEX) and it.new:
+            why = cross_disk_reason(ctx, it.old, it.new)
+            if why:
+                it.action = SKIP
+                it.reasons.append(why)
     # order: lane moves, then folder renames, then empty-folder removal
     rank = {MOVE: 0, CODEX: 0, BUCKET: 1, RMDIR: 2}
     return sorted(items, key=lambda i: rank.get(i.action, 3))
@@ -773,6 +817,9 @@ def apply_move(ctx: Ctx, item: Item, log: dict) -> None:
         raise Skipped("; ".join(blockers))
     if os.path.lexists(new):
         raise Skipped(f"the target {new} appeared")
+    why = cross_disk_reason(ctx, old, new)
+    if why:
+        raise Skipped(why)
     os.makedirs(os.path.dirname(new), exist_ok=True)
     if facts.is_clone:
         os.rename(old, new)

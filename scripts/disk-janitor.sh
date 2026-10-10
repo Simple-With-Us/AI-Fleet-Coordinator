@@ -338,6 +338,11 @@ wt_blocking_dirt() {
 # own birth, dirt, idle, inner-checkout and live lsof gates.  A missing, stale, future-dated, malformed or schema-1
 # report, or a failed lsof, means KEEP (fail closed).
 LANES_ROOT=${LANES_ROOT:-/Users/jay/apps/lanes}
+# 2026-10-10 (external lanes, owner): ~/apps/lanes/<Repo> may be a symlink onto the external disk, and git then lists the lane
+# at its REAL path (/Volumes/External/Lanes/<Repo>/<lane>), which is not under $LANES_ROOT.  That real place is a lanes root
+# too: without it such a lane would not read as "nested", skip the doctor gate and retire on the legacy tests (0-ahead
+# ancestry, [gone] upstream).  Unset = the default; set but empty = off.  The doctor reads the same variable.
+LANES_EXTERNAL_ROOT=${FLEET_LANES_EXTERNAL_ROOT-/Volumes/External/Lanes}
 FLEET_APPS_JSON=${FLEET_APPS_JSON:-/Users/jay/Code/AI-Fleet-Coordinator/fleet-apps.json}
 FLEET_APPS_CACHE="$DIR/fleet-apps.json.cache"
 AFC_SCRIPTS=${AFC_SCRIPTS:-/Users/jay/Code/AI-Fleet-Coordinator/scripts}
@@ -358,9 +363,12 @@ janitor_canon() { ( cd -- "$1" 2>/dev/null && /bin/pwd -P ); }
 # volume ~/Apps/lanes IS ~/apps/lanes, and a false "nested" only adds protection).
 janitor_is_nested_lane() {
   local p root
-  if [ "${LANES_ROOT_CANON_FOR:-}" != "$LANES_ROOT" ]; then
-    LANES_ROOT_CANON_FOR=$LANES_ROOT
+  if [ "${LANES_ROOT_CANON_FOR:-}" != "$LANES_ROOT|$LANES_EXTERNAL_ROOT" ]; then
+    LANES_ROOT_CANON_FOR="$LANES_ROOT|$LANES_EXTERNAL_ROOT"
     LANES_ROOT_LC=$(printf '%s\n%s\n' "${LANES_ROOT%/}" "$(janitor_canon "$LANES_ROOT")" | tr '[:upper:]' '[:lower:]')
+    if [ -n "${LANES_EXTERNAL_ROOT%/}" ]; then
+      LANES_ROOT_LC=$(printf '%s\n%s\n%s\n' "$LANES_ROOT_LC" "${LANES_EXTERNAL_ROOT%/}" "$(janitor_canon "$LANES_EXTERNAL_ROOT")" | tr '[:upper:]' '[:lower:]')
+    fi
   fi
   while IFS= read -r p; do
     [ -n "$p" ] || continue
@@ -517,9 +525,31 @@ janitor_lane_report_refresh() {
     janitor_heartbeat "lane-doctor"
     # -B: never write __pycache__ into the human integration tree.
     # shellcheck disable=SC2086
-    janitor_watchdog 300 "lane-doctor" -- bash -c "cd '$AFC_SCRIPTS' && exec python3 -B -m fleet_lanes.doctor --json --gh-limit 1000 --write '$LANE_REPORT' $LANE_DOCTOR_EXTRA_ARGS >/dev/null" >/dev/null 2>&1
+    janitor_watchdog 300 "lane-doctor" -- bash -c "cd '$AFC_SCRIPTS' && FLEET_LANES_EXTERNAL_ROOT='$LANES_EXTERNAL_ROOT' exec python3 -B -m fleet_lanes.doctor --json --gh-limit 1000 --write '$LANE_REPORT' $LANE_DOCTOR_EXTRA_ARGS >/dev/null" >/dev/null 2>&1
     if [ "$?" = 0 ]; then rm -f "$LANE_DOCTOR_FAIL"; else : > "$LANE_DOCTOR_FAIL"; fi
   fi
+}
+# 0 = `git worktree prune` is safe in repo $1.  Prune deletes the registry entry (and so the private index and HEAD) of
+# every worktree whose folder is missing, and a lane on an unmounted disk is a missing folder.  An external disk that is
+# unplugged, asleep or not yet mounted at the 30-minute tick must not cost its lanes their repository link, so prune is
+# skipped (and logged) when a lanes/<Repo> symlink that points onto the external lanes root leads nowhere, or when the
+# external lanes root is not a directory while the repo lists a worktree under it.  Off (empty root) = always safe, as
+# before.  Fail closed: this only ever skips a tidy-up.  Other dangling links in the lanes root are not this script's.
+janitor_prune_safe() {
+  local r="$1" link tgt wt ext ext_lc
+  ext="${LANES_EXTERNAL_ROOT%/}"
+  [ -n "$ext" ] || return 0
+  ext_lc=$(printf '%s' "$ext" | tr '[:upper:]' '[:lower:]')
+  for link in "$LANES_ROOT"/*; do
+    [ -L "$link" ] && [ ! -d "$link" ] || continue
+    tgt=$(readlink "$link" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    case "$tgt" in "$ext_lc"|"$ext_lc"/*) return 1 ;; esac
+  done
+  [ -d "$ext" ] && return 0
+  while IFS= read -r wt; do
+    case "$(printf '%s' "$wt" | tr '[:upper:]' '[:lower:]')" in "$ext_lc"/*) return 1 ;; esac
+  done < <(git -C "$r" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+  return 0
 }
 # 0 = the saved doctor report lets this lane under $LANES_ROOT retire NOW.  Usage: janitor_lane_may_retire <wt> <sha>.
 # The cleaner contract (scripts/fleet_lanes/README.md): schema >= 2, lsof "ok", generated_at within
@@ -901,7 +931,13 @@ janitor_extend_repos      # REPOS = legacy list UNION fleet-apps.json (realpath 
 janitor_protect_primaries # every repo root, as typed and as git reports it, joins KEEP_RE
 # --- ALWAYS: tidy stale worktree registry ---
 janitor_heartbeat "wtprune"
-for r in "${REPOS[@]}"; do git -C "$r" worktree prune 2>/dev/null; done
+for r in "${REPOS[@]}"; do
+  if janitor_prune_safe "$r"; then
+    git -C "$r" worktree prune 2>/dev/null
+  else
+    printf '%s  PRUNE-SKIPPED %s (the external lanes disk is not mounted: its lanes look missing, and prune would delete their registry entries)\n' "$now" "$r" >> "$LOG"
+  fi
+done
 
 # --- ALWAYS: retire OLD, fully-merged, CLEAN, idle worktrees (removes the checkout dir only) ---
 # `git worktree remove` deletes ONLY the working directory. The branch ref and every commit it

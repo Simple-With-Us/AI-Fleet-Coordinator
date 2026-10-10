@@ -643,6 +643,11 @@ def scan_plan(roots: L.Roots, tmp_scan_roots: Iterable[str | os.PathLike[str]], 
         specs.append(ScanSpec("tmp", os.path.realpath(os.fspath(t)), 4, True))
     specs.append(ScanSpec("apps", os.fspath(roots.apps_root), 2, False))
     specs.append(ScanSpec("lanes", os.fspath(roots.lanes_root), 4, False))
+    # The scan never follows symlinks, and a lanes/<Repo> folder stored on the external disk is one.  Each such
+    # link gets its own scan, rooted at the link (so hits keep their ~/apps/lanes spelling), one level shallower.
+    for link in L.external_links(roots):
+        if link.status in ("ok", "renamed"):
+            specs.append(ScanSpec(f"lanes/{link.name}", link.path, 3, False))
     specs.append(ScanSpec("code", os.fspath(roots.code_root), 1, False))
     try:
         with os.scandir(roots.code_root) as it:
@@ -1113,6 +1118,7 @@ def infer_tool(real: str, roots: L.Roots, branch: str | None, seat: str | None,
     branch prefix.  The basis says which evidence was used so a reader can discount it."""
     home = os.fspath(roots.home)
     fold = (lambda s: s.casefold()) if roots.case_insensitive else (lambda s: s)
+    real = L.to_logical(real, roots)          # a lane stored on the external disk is judged at its lanes-root place
     r = fold(real)
 
     def under(rel: str) -> bool:
@@ -1456,6 +1462,43 @@ def _anomalies_for(co: Checkout) -> list[dict]:
     return out
 
 
+def external_lane_warnings(roots: L.Roots) -> list[str]:
+    """What is wrong with lanes stored on the external disk (docs/protocols/lane-map.md, "External lanes").
+
+    A lanes/<Repo> symlink whose target is missing (the disk is not mounted, so none of its lanes can be seen),
+    one that points somewhere that is not lanes storage, and, once any link is in use, a folder on the external
+    lanes disk that no link under the lanes root leads to (its lanes are invisible at their ~/apps/lanes path).
+    Empty when no lanes folder is a symlink."""
+    links = L.external_links(roots)
+    out: list[str] = []
+    for link in links:
+        if link.status == "dangling":
+            out.append(f"{link.path} is a symlink to {link.target}, which does not exist; is the external disk mounted?  "
+                       "Its lanes are not listed until it is.")
+        elif link.status == "renamed":
+            out.append(f"{link.path} is a symlink to {link.real}, a folder with another name; the lanes in it are judged "
+                       f"by that name ({os.path.basename(link.real)}), not by {link.name}.  Name the folder on the disk "
+                       f"{link.name}.")
+        elif link.status == "elsewhere":
+            ext = ", ".join(str(r) for r in roots.external_lanes_roots) or "off"
+            out.append(f"{link.path} is a symlink to {link.real}, which is not on the external lanes disk ({ext}); "
+                       "its lanes are reported as unsanctioned.")
+    if any(link.status in ("ok", "renamed") for link in links):
+        fold = str.casefold if roots.case_insensitive else str
+        linked = {fold(os.path.basename(link.real)) for link in links if link.status in ("ok", "renamed")}
+        for ext in roots.external_lanes_roots:
+            try:
+                with os.scandir(ext) as it:
+                    stray = sorted(e.name for e in it if not e.name.startswith(".") and e.is_dir()
+                                   and fold(e.name) not in linked and not os.path.lexists(os.path.join(roots.lanes_root, e.name)))
+            except OSError:
+                continue
+            if stray:
+                out.append(f"{ext} holds {', '.join(stray[:6])}{' ...' if len(stray) > 6 else ''} with no symlink under "
+                           f"{roots.lanes_root}; its lanes are not at their ~/apps/lanes path.")
+    return out
+
+
 def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = None, *,
                  cwd: str | os.PathLike[str] | None = None,
                  tmp_scan_roots: Iterable[str | os.PathLike[str]] | None = None,
@@ -1488,6 +1531,7 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
             warnings.append(f"registry unreadable ({type(exc).__name__}); app and seat names are partial")
     roots = L.make_roots(home, env, registry=registry, case_insensitive=case_insensitive)
     warnings.extend(roots.warnings)
+    warnings.extend(external_lane_warnings(roots))
     ctx = _Ctx(roots, registry, run, now, sizes)
     fold = str.casefold if roots.case_insensitive else str
 
@@ -1544,7 +1588,9 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
                     if rec.bare or k in checkouts or any(c.key == k for c in pending):
                         continue
                     if os.path.lexists(os.path.join(rec.path, ".git")):
-                        pending.append(_Cand(rec.path, k, [f"worktree-list:{parent}"]))
+                        # git prints the real path of a worktree; a lane stored on the external disk is shown at
+                        # the ~/apps/lanes spelling the agents use.
+                        pending.append(_Cand(L.display_path(rec.path, roots), k, [f"worktree-list:{parent}"]))
                         found_fold.add(fold(rec.path))
     anomalies: list[dict] = []
     prunable_seen: set[tuple[str, str]] = set()
@@ -1568,7 +1614,8 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
                 if dedupe not in prunable_seen:
                     prunable_seen.add(dedupe)
                     why = rec.prunable or "registered path no longer exists"
-                    anomalies.append({"type": "PRUNABLE", "path": rec.path, "realpath": rec.path,
+                    shown = L.display_path(rec.path, roots)
+                    anomalies.append({"type": "PRUNABLE", "path": shown, "realpath": shown,
                                       "detail": f"{why} (parent {parent_of_list[pk]})"})
             else:
                 live += 1

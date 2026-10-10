@@ -1,8 +1,9 @@
 """Lane layout core: where fleet checkouts may live, what they are called, and what they are.
 
 Everything here is pure.  There is no subprocess and no network.  The only filesystem access is
-`os.path.realpath` (symlink resolution) and one `.git` existence probe for direct children of
-~/Code, and both work from an explicit home path carried by `Roots`, so tests can use a fake home.
+`os.path.realpath` (symlink resolution), one `.git` existence probe for direct children of ~/Code,
+and `external_links`, which lists the lanes root once.  All of it works from an explicit home path
+carried by `Roots`, so tests can use a fake home.
 
 Layout v2 (owner decision 2026-10-09).  Sanctioned places for checkouts:
   1. Integration trees at ~/Code/<Repo> (main only, human use).  Nothing else belongs inside them,
@@ -27,6 +28,13 @@ codex-managed, tool-managed, human, wrong, unsanctioned) and where a legacy lane
 LocationClass VALUES are unchanged on purpose: HogHunter's vacuum and the doctor's JSON consumers
 hard-code them.
 
+External lanes (owner 2026-10-10).  The folders under ~/apps/lanes may be symlinks into an external disk
+(~/apps/lanes/<Repo> -> /Volumes/External/Lanes/<Repo>).  The path agents use never changes, but git and
+lsof report the resolved path, and a resolved path outside ~/apps/lanes would read as UNSANCTIONED.  So
+`Roots.external_lanes_roots` (FLEET_LANES_EXTERNAL_ROOT, default /Volumes/External/Lanes) names the places
+that are lanes storage, and `resolve_path` reports a path under one at its ~/apps/lanes spelling.  Every
+classification, key and name check goes through `resolve_path`, so a lane reads the same on either spelling.
+
 Forbidden for any checkout: /tmp, /private/tmp, /var/tmp, /private/var/tmp, the per-user macOS
 temp dir (/private/var/folders/*/*/T) and the TMPDIR directory.  macOS /tmp is a symlink to
 /private/tmp, so every comparison is made on resolved real paths.
@@ -46,9 +54,9 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 try:
     from enum import StrEnum
@@ -74,6 +82,8 @@ __all__ = [
     "seat_alias_map", "canonical_seat_set", "normalize_seat", "is_alias_only", "is_known_seat",
     "HarnessLocation", "Roots", "make_roots", "make_guard_roots", "make_tmp_roots", "is_forbidden_tmp",
     "resolve_path", "real_key", "dedupe_paths", "classify_location", "lane_root",
+    "ENV_LANES_EXTERNAL_ROOT", "DEFAULT_EXTERNAL_LANES_ROOT", "to_logical", "display_path", "logical_fold",
+    "is_external_path", "external_links", "ExternalLink",
     "validate_slug", "is_valid_slug", "is_valid_repo_dir", "validate_repo_dir",
     "lane_dir_name", "nested_dir_name", "branch_name",
     "review_dir_name", "is_review_dir_name", "is_desktop_dir_name", "review_lane_path",
@@ -92,6 +102,10 @@ DEFAULT_LAYOUT = LAYOUT_NESTED
 ENV_LAYOUT = "FLEET_LAYOUT"
 ENV_LANES_ROOT = "FLEET_LANES_ROOT"
 ENV_APPS_JSON = "FLEET_APPS_JSON"
+# Where lanes may physically live when ~/apps/lanes/<Repo> is a symlink onto an external disk (owner 2026-10-10).
+# Unset means the default below; set but empty turns the feature off; anything else must be an absolute path.
+ENV_LANES_EXTERNAL_ROOT = "FLEET_LANES_EXTERNAL_ROOT"
+DEFAULT_EXTERNAL_LANES_ROOT = "/Volumes/External/Lanes"
 
 # Layout v2: Codex desktop nests <root>/<slug>/<Repo>, so its worktree root is lanes/_codex.  The old
 # `_managed` and `_review` folders are the pre-v2 homes of harness worktrees and PR checks.  They are
@@ -567,6 +581,7 @@ class Roots:
     warnings: tuple[str, ...] = ()
     seat_tokens: tuple[str, ...] = ()
     conductor_root: Path | None = None
+    external_lanes_roots: tuple[Path, ...] = ()
 
 
 def _real(path: str | os.PathLike[str]) -> str:
@@ -612,7 +627,7 @@ def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = Non
                registry: Registry | None = None, case_insensitive: bool | None = None) -> Roots:
     """Resolve every root under `home`.
 
-    `env` is read for FLEET_LAYOUT, FLEET_LANES_ROOT and TMPDIR only; pass an explicit dict in
+    `env` is read for FLEET_LAYOUT, FLEET_LANES_ROOT, FLEET_LANES_EXTERNAL_ROOT and TMPDIR only; pass an explicit dict in
     tests so the process environment never leaks in.  FLEET_LAYOUT other than nested or flat falls
     back to nested and is recorded in `warnings` (it never raises, so forbidden-tmp detection stays
     on).  `registry` defaults to `load_registry(env=env)`, which can raise if the file is
@@ -646,7 +661,7 @@ def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = Non
     if registry is None:
         registry = load_registry(env=env)
     tmp_roots, tmp_globs = make_tmp_roots(env, real_home)
-    return Roots(
+    roots = Roots(
         home=Path(real_home),
         code_root=Path(code_root),
         apps_root=Path(apps_root),
@@ -667,6 +682,45 @@ def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = Non
         seat_tokens=tuple(sorted(canonical_seat_set(registry) | set(seat_alias_map(registry)) | ROLE_TOKENS)),
         conductor_root=Path(lanes_root) / CONDUCTOR_DIR,
     )
+    external, ext_warnings = _external_lanes_roots(env, roots, real_home)
+    if external or ext_warnings:
+        roots = _dc_replace(roots, external_lanes_roots=external, warnings=roots.warnings + ext_warnings)
+    return roots
+
+
+def _external_lanes_roots(env: Mapping[str, str], roots: Roots, real_home: str) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+    """The external lanes root, checked, and the warnings for a setting that was refused.
+
+    FLEET_LANES_EXTERNAL_ROOT unset means the default (/Volumes/External/Lanes); set but empty switches the
+    feature off.  A root is refused (never raised, so a bad setting cannot switch the temp guard off) when
+    it is not absolute, when it is the lanes root or holds the home, ~/apps, ~/Code or the lanes root (every
+    path under it would be re-spelled as a lane), when it sits inside the lanes root or ~/Code, or when it
+    is inside a forbidden temp directory (the setting would be a way round the temp guard).  A root that
+    is the lanes root itself is not a warning: there is nothing to map.
+    """
+    raw = env.get(ENV_LANES_EXTERNAL_ROOT)
+    raw = DEFAULT_EXTERNAL_LANES_ROOT if raw is None else raw.strip()
+    if not raw:
+        return (), ()
+    if raw == "~" or raw.startswith("~/"):
+        raw = os.path.join(real_home, raw[2:])
+    if not os.path.isabs(raw):
+        return (), (f"{ENV_LANES_EXTERNAL_ROOT} must be an absolute path, got {raw!r}; no external lanes root is used",)
+    ext = _real(raw)
+    ep = _parts(ext, roots)
+    lanes_p = _parts(roots.lanes_root, roots)
+    if ep == lanes_p:
+        return (), ()
+    for label, other in (("the lanes root", roots.lanes_root), ("the home folder", roots.home),
+                         ("~/apps", roots.apps_root), ("~/Code", roots.code_root)):
+        if _under(_parts(other, roots), ep):
+            return (), (f"{ENV_LANES_EXTERNAL_ROOT} {ext} is or holds {label}; no external lanes root is used",)
+    if _under(ep, lanes_p) or _under(ep, _parts(roots.code_root, roots)):
+        return (), (f"{ENV_LANES_EXTERNAL_ROOT} {ext} is inside the lanes root or ~/Code; no external lanes root is used",)
+    if _tmp_hit(ep, roots):
+        return (), (f"{ENV_LANES_EXTERNAL_ROOT} {ext} is inside a temp directory, where no checkout may live; "
+                    "no external lanes root is used",)
+    return (Path(ext),), ()
 
 
 def make_guard_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = None) -> Roots:
@@ -706,13 +760,110 @@ def _glob_match(parts: tuple[str, ...], pattern: str, roots: Roots) -> int:
     return len(pat)
 
 
-def resolve_path(path: str | os.PathLike[str], roots: Roots) -> str:
-    """Absolute real path.  `~` and `~/x` expand against `roots.home`; symlinks are resolved, so
-    /tmp/x becomes /private/tmp/x on macOS.  Relative paths resolve against the process cwd."""
+def to_logical(path: str | os.PathLike[str], roots: Roots) -> str:
+    """Spell a path on the external lanes disk the way agents write it: `<external root>/<rel>` becomes
+    `<lanes root>/<rel>`.  Textual (no filesystem access) and idempotent; any other path is returned as
+    given.  Pass a real path (git, lsof and `os.path.realpath` all report one): a lane stored on the
+    external disk is a symlink under ~/apps/lanes, so its real path is on the disk and not under the
+    lanes root, and without this it would read as UNSANCTIONED."""
+    s = os.fspath(path)
+    if not roots.external_lanes_roots:
+        return s
+    parts = _parts(s, roots)
+    orig = Path(s).parts
+    for ext in roots.external_lanes_roots:
+        ep = _parts(ext, roots)
+        if _under(parts, ep):
+            return os.path.join(os.fspath(roots.lanes_root), *orig[len(ep):])
+    return s
+
+
+def is_external_path(path: str | os.PathLike[str], roots: Roots) -> bool:
+    """True when the real path of `path` is on the external lanes disk (under an external lanes root)."""
+    real = _real(_expand_home(path, roots))
+    return to_logical(real, roots) != real
+
+
+def display_path(path: str | os.PathLike[str], roots: Roots) -> str:
+    """`path` spelled as an agent would write it: a path on the external disk gets its ~/apps/lanes
+    spelling when that place exists and is the same folder, otherwise it is returned unchanged.  Use it
+    for what is shown or stored (git prints the real path of a worktree), not for classification."""
+    s = os.fspath(path)
+    logical = to_logical(s, roots)
+    if logical == s:
+        return s
+    fold = _fold(roots)
+    try:
+        same = fold(_real(logical)) == fold(_real(s))
+    except OSError:
+        same = False
+    return logical if same else s
+
+
+def logical_fold(roots: Roots) -> Callable[[str], str]:
+    """A comparison key for real paths: the external disk re-spelled as the lanes root, then case-folded
+    when the volume is case-insensitive.  `lane` hands it to its allowlist so a lane that lives on the
+    external disk counts as inside the lanes root."""
+    fold = _fold(roots)
+    return lambda text: fold(to_logical(text, roots))
+
+
+@dataclass(frozen=True)
+class ExternalLink:
+    """A symlink directly under the lanes root.  `status` is `ok` (a folder on the external lanes disk with the
+    link's own name), `renamed` (a folder on that disk under another name: its lanes are judged by the folder's
+    name, not the link's), `dangling` (its target does not exist: the disk is not mounted, or the folder was
+    removed) or `elsewhere` (it points somewhere that is not lanes storage)."""
+
+    name: str
+    path: str
+    target: str
+    real: str
+    status: str
+
+
+def external_links(roots: Roots) -> list[ExternalLink]:
+    """The symlinks directly under the lanes root, sorted by name.  Reads one directory listing and the
+    link targets; an unreadable lanes root gives an empty list."""
+    out: list[ExternalLink] = []
+    try:
+        with os.scandir(roots.lanes_root) as it:
+            entries = sorted(it, key=lambda e: e.name)
+    except OSError:
+        return out
+    for entry in entries:
+        try:
+            if not entry.is_symlink():
+                continue
+            target = os.readlink(entry.path)
+        except OSError:
+            continue
+        real = _real(entry.path)
+        if not os.path.exists(real):
+            status = "dangling"
+        elif os.path.isdir(real) and to_logical(real, roots) != real:
+            status = "ok" if os.path.basename(real) == entry.name else "renamed"
+        else:
+            status = "elsewhere"
+        out.append(ExternalLink(entry.name, entry.path, target, real, status))
+    return out
+
+
+def _expand_home(path: str | os.PathLike[str], roots: Roots) -> str:
     s = os.fspath(path)
     if s == "~" or s.startswith("~/"):
         s = os.path.join(os.fspath(roots.home), s[2:])
-    return _real(s)
+    return s
+
+
+def resolve_path(path: str | os.PathLike[str], roots: Roots) -> str:
+    """Absolute real path.  `~` and `~/x` expand against `roots.home`; symlinks are resolved, so
+    /tmp/x becomes /private/tmp/x on macOS.  Relative paths resolve against the process cwd.
+
+    One exception: a path on the external lanes disk comes back at its ~/apps/lanes spelling (see
+    `to_logical`), so ~/apps/lanes/<Repo>/<lane> and /Volumes/External/Lanes/<Repo>/<lane> resolve to
+    the same string, and every key, classification and name check treats them alike."""
+    return to_logical(_real(_expand_home(path, roots)), roots)
 
 
 def real_key(path: str | os.PathLike[str], roots: Roots) -> str:
@@ -784,6 +935,7 @@ def _harness_for(parts: tuple[str, ...], roots: Roots) -> tuple[int, HarnessLoca
 
 def _classify(real: str, roots: Roots, is_checkout: bool | None) -> tuple[LocationClass, str | None]:
     """(class, lane directory or None) for an already-resolved path."""
+    real = to_logical(real, roots)      # a path on the external lanes disk is judged at its lanes-root place
     orig = Path(real).parts
     parts = _parts(real, roots)
     fold = _fold(roots)

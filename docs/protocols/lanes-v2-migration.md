@@ -42,6 +42,8 @@ Each step that touches a live file or setting needs the owner's go-ahead (owner 
 
 Run it from outside the lanes tree (`cd ~`).  A lane with a process in it is skipped, and so is the lane the script itself lives in.  Ask the seats to commit, push and close their shells first; every lane left dirty or open is skipped, not lost.
 
+**Lanes on the external disk.**  A `lanes/<Repo>` that is a symlink onto the external disk is read like any folder, and a lane that would move INTO one from an old internal folder is skipped with the reason: `git worktree move` cannot cross disks (External Lanes in `docs/protocols/lane-map.md`).
+
 **Pause the cleaners for the `--apply` window.**  `com.jay.disk-janitor` (every 30 minutes) runs `git worktree prune`, and a prune that lands while a folder is between paths deletes the admin entries of every lane in it, which `git worktree repair` cannot bring back.  The script renames a case-only folder with a single `rename(2)`, so the folder never leaves its path, and goes through a temporary name only if the volume refuses that; the pause covers the refusal case and every other moment of the run.  Boot the janitor out first (`launchctl bootout gui/$(id -u)/com.jay.disk-janitor`, the switch its own header documents) and `com.jay.mac-cleanup` with it, and bring both back when the run ends (`launchctl bootstrap gui/$(id -u) <their plists>`).  `com.jay.mac-process-watch` re-bootstraps scheduled jobs that are not loaded, within 2 minutes, unless it runs with `MAC_PROCESS_WATCH_RESTART=0`, so set that for the window too.
 
 ```bash
