@@ -178,6 +178,8 @@ class SeatRunner:
         self.cursor_flushed_at = 0.0
         self.ring = Ring()
         self.users: dict[int, dict[str, Any]] = {}
+        self.users_version = 0  # bumped on every change to `users`, so the fleet-bot set is cached
+        self.fleet_cache: tuple[Any, set[int]] | None = None
         self.streams: dict[int, str] = {}
         self.muted: set[str] = set()
         self.followed: set[str] = set()
@@ -248,6 +250,7 @@ class SeatRunner:
         for person in state.get("realm_users") or []:
             if isinstance(person, dict) and isinstance(person.get("user_id"), int):
                 self.users[person["user_id"]] = person
+        self.users_version += 1
         self.muted.clear()
         self.followed.clear()
         for entry in state.get("user_topics") or []:
@@ -383,6 +386,9 @@ class Daemon:
                                                                 should_stop=self.stop.is_set)
         self.config_path = L.config_path(self.root, self.env)
         self.partition_file = partition_file or C.partition_path(self.env)
+        # Eligible senders' tags (owner 2026-10-09):  every partition seat plus FLEET_SEATS, refreshed
+        # with the partition on every check, so a seat added to the partition is eligible without a re-init.
+        self.fleet_tags: frozenset[str] = C.fleet_tags(None)
         self.config = C.load(self.root, self.config_path)
         # The seat partition:  a config that holds a seat this instance may not hold never gets a
         # queue; run() refuses to start (no flock, no thread, no register).
@@ -459,6 +465,7 @@ class Daemon:
         partition, error = C.load_partition(self.partition_file)
         if error:
             return [error + "; cannot check the seat partition, so no seat is held"]
+        self.fleet_tags = C.fleet_tags(partition)
         env_instance = (self.env.get(C.ENV_INSTANCE) or "").strip().casefold() or None
         return C.partition_errors(cfg, partition, partition_file=self.partition_file, env_instance=env_instance)
 
@@ -702,10 +709,19 @@ class Daemon:
         return list(found.values())
 
     # ---- routing -------------------------------------------------------------------------------
+    def eligible_ids(self, runner: SeatRunner) -> set[int]:
+        """The eligible senders besides the owner:  every fleet bot in the seat's realm user list
+        (router.fleet_bot_ids over the partition's tags, owned by the owner), plus the optional
+        eligible_user_ids pins.  Cached until the user list, the tags or the owner pin changes."""
+        key = (runner.users_version, self.fleet_tags, self.config.owner_user_id)
+        if runner.fleet_cache is None or runner.fleet_cache[0] != key:
+            runner.fleet_cache = (key, R.fleet_bot_ids(runner.users, self.fleet_tags, self.config.owner_user_id))
+        return set(self.config.eligible_user_ids) | runner.fleet_cache[1]
+
     def context(self, runner: SeatRunner) -> R.Context:
         cfg = self.config
         return R.Context(owner_user_id=cfg.owner_user_id, owner_clients=cfg.owner_clients,
-                         eligible_user_ids=cfg.eligible_user_ids, is_bot=runner.is_bot_map(), now=self.clock.time(),
+                         eligible_user_ids=self.eligible_ids(runner), is_bot=runner.is_bot_map(), now=self.clock.time(),
                          stale_after=cfg.stale_after, presence=cfg.presence, muted=runner.muted,
                          followed=runner.followed)
 
@@ -723,6 +739,7 @@ class Daemon:
                     person = event.get("person") or {}
                     uid = person.get("user_id")
                     if isinstance(uid, int):
+                        runner.users_version += 1
                         if event.get("op") == "remove":
                             runner.users.pop(uid, None)
                         else:
@@ -812,7 +829,9 @@ class Daemon:
         if first_seen:
             # The note comes before the ring mark:  a note that raises is retried, and a later
             # failure never counts the same wake reply twice.
-            self.loopguard.note(c.key, wake_reply=c.wake_tag, owner=c.owner)
+            # A DM thread without the owner can never be reset by him, so its count is rolling.
+            rolling = c.dm and str(self.config.owner_user_id) not in c.topic.split(",")
+            self.loopguard.note(c.key, wake_reply=c.wake_tag, owner=c.owner, rolling=rolling, now=now)
             self.global_ring.add(message["id"])
             if c.owner_api:
                 self.notifier.notify(self.config.claude_seat or runner.seat, "agent-sync: owner account",
@@ -936,7 +955,7 @@ class Daemon:
                                      "a message from you is waiting in the %s seat inbox (no headless wake)" % runner.seat,
                                      kind="inbox-owner", key="inbox-owner:%s:%s" % (runner.seat, key), once_per=3600)
             return
-        if self.loopguard.blocked(key):
+        if self.loopguard.blocked(key, now):
             self.log.write("wake-blocked", seat=runner.seat, id=item.get("id"), reason="loop_guard")
             return
         if owner and item.get("stale"):
@@ -1015,7 +1034,7 @@ class Daemon:
                 return why
         else:
             return "inbox_only"
-        if self.loopguard.blocked(pending.key):
+        if self.loopguard.blocked(pending.key, now):
             return "loop_guard"
         if not pending.owner and pending.trigger_ts is not None and now - pending.trigger_ts > self.config.stale_after:
             return "stale"  # a stale non-owner item never wakes, even after a restart

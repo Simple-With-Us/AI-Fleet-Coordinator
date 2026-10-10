@@ -18,6 +18,7 @@ import json
 import os
 import re
 import threading
+import time
 from typing import Any, Callable, Iterable, Mapping
 
 from . import live as L
@@ -313,28 +314,51 @@ class Coalescer:
 
 class LoopGuard:
     """After 3 wake replies in a topic with no owner post in between, the topic stops waking.  Only
-    a post by the owner (owner_user_id from a human Zulip app) resets it; a content tag never does."""
+    a post by the owner (owner_user_id from a human Zulip app) resets it; a content tag never does.
+
+    A DM thread the owner is not in (bots only, `rolling`) can never get an owner post, so a fixed
+    count would block that pair for good.  There the count is rolling:  3 wake replies within
+    DM_WINDOW stop the thread waking, and it wakes again once the oldest of them is DM_WINDOW old.
+    That bounds bot-to-bot DM ping-pong (owner 2026-10-09 made bot DMs wake) without a permanent
+    block.  What counts is unchanged:  `·wake`-tagged replies, never other posts."""
 
     LIMIT = 3
+    DM_WINDOW = 6 * HOUR
 
     def __init__(self, path: str) -> None:
         self.path = path
         self.lock = threading.Lock()
 
-    def note(self, key: str, *, wake_reply: bool, owner: bool) -> None:
+    @staticmethod
+    def _recent(value: Any, now: float) -> list[float]:
+        if not isinstance(value, list):
+            return []
+        return [float(t) for t in value if isinstance(t, (int, float)) and not isinstance(t, bool)
+                and 0 <= now - float(t) < LoopGuard.DM_WINDOW]
+
+    def note(self, key: str, *, wake_reply: bool, owner: bool, rolling: bool = False,
+             now: float | None = None) -> None:
         if not wake_reply and not owner:
             return
+        at = time.time() if now is None else float(now)
         with self.lock:
             def mutate(data: dict[str, Any]) -> None:
                 if owner:
                     data.pop(key, None)
-                elif wake_reply:
-                    data[key] = int(data.get(key) or 0) + 1
+                elif rolling:
+                    data[key] = (self._recent(data.get(key), at) + [at])[-self.LIMIT * 4:]
+                else:
+                    value = data.get(key)
+                    count = len(value) if isinstance(value, list) else int(value or 0)
+                    data[key] = count + 1
 
             L.update_json(self.path, mutate)
 
-    def blocked(self, key: str) -> bool:
-        return int(L.read_json(self.path).get(key) or 0) >= self.LIMIT
+    def blocked(self, key: str, now: float | None = None) -> bool:
+        value = L.read_json(self.path).get(key)
+        if isinstance(value, list):
+            return len(self._recent(value, time.time() if now is None else float(now))) >= self.LIMIT
+        return int(value or 0) >= self.LIMIT
 
 
 # --------------------------------------------------------------------------------------------

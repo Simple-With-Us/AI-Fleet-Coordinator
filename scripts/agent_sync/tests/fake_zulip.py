@@ -60,10 +60,14 @@ class Queue:
     event_types: tuple[str, ...] = ("message",)
 
 
+FAKE_OWNER_ID = 12  # the realm owner (Jay); every fake bot is his, like the real fleet's
+
+
 def user(user_id: int, email: str, full_name: str, is_bot: bool, role: int | None = None) -> dict[str, Any]:
     return {"user_id": user_id, "email": email, "delivery_email": email, "full_name": full_name,
             "is_bot": is_bot, "is_active": True, "role": role if role is not None else 400,
-            "is_admin": role in (100, 200), "is_owner": role == 100}
+            "is_admin": role in (100, 200), "is_owner": role == 100,
+            **({"bot_type": 1, "bot_owner_id": FAKE_OWNER_ID} if is_bot else {})}
 
 
 _CODE_BLOCK_RE = re.compile(r"(?ms)^(```|~~~).*?(^\1\s*$|\Z)")
