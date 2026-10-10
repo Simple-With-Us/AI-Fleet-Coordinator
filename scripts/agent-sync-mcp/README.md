@@ -44,9 +44,9 @@ OAuth 2.1 with CIMD for ChatGPT and Grok, DCR off, a hand-registered public clie
 | `src/zulip.js` | Zulip egress:  the compiled realm only, no redirects, 15-second timeout, the 429 budget |
 | `src/textfmt.js` | the outbound sentence gap (port of `scripts/agent_sync/textfmt.py`) |
 | `src/mcp.js` | a low-level SDK `Server` per request:  `tools/list` from `tools.json` plus the recall and DM tools, `tools/call` to the hosted tools |
-| `src/seat-state.js`, `src/seat-gate.js` | the `SeatGate` Durable Object:  arming, epoch, pause, spacing, budgets, cooldown, idempotency, role cache, audit, MCP Events subscriptions and the wake_id dedupe |
-| `src/events.js` | MCP Events (spec 3.12):  the `zulip.mention` definition, events/list, subscribe and unsubscribe, callback verification, the callback host guard, Standard Webhooks signing, delivery with retries and 410 handling |
-| `src/wake.js` | the server listener's signed wake (`POST /internal/wake/<SEAT>`, `agent-sync-wake/1`, hex HMAC-SHA256 in `X-Agent-Sync-Signature`, 5-minute window) |
+| `src/seat-state.js`, `src/seat-gate.js` | the `SeatGate` Durable Object:  arming, epoch, pause, spacing, budgets, cooldown, idempotency, role cache, audit, MCP Events subscriptions, the access re-check before each delivery attempt, and the wake_id claims (claimed with a 15-second lease, then settled or handed back) |
+| `src/events.js` | MCP Events (spec 3.12):  the `zulip.mention` definition, events/list, subscribe and unsubscribe, callback verification, the callback host guard, Standard Webhooks signing, the channel allowlist for wakes, delivery inside the listener's request with retries and 410 handling, and the answer to the listener (503 asks it to retry) |
+| `src/wake.js` | the server listener's signed wake (`POST /internal/wake/<SEAT>`, `agent-sync-wake/1`, hex HMAC-SHA256 in `X-Agent-Sync-Signature`, 5-minute window, optional `stream_id`) |
 | `src/policy.js`, `src/forms.js`, `src/access.js`, `src/pages.js` | the OAuth gates, strict forms, Access JWT check, consent and admin HTML |
 | `install_seat_key.py` | puts a seat's key into the Worker's secrets from Infisical, after the 3.6 checks |
 | `infra_phase0.py` | Cloudflare API steps and the read-only `check` |

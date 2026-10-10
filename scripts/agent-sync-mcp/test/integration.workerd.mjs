@@ -87,11 +87,13 @@ async function accessJwt(email = "mail@jays.services") {
 
 // A fake ChatGPT MCP Events receiver on chatgpt.com:  it echoes verification
 // challenges, records deliveries, and answers each delivery with the next
-// status in `callbackStatuses` (200 when empty).
+// status in `callbackStatuses` (200 when empty).  `onDelivery`, when set, runs
+// once while the next delivery is still waiting for its answer.
 const CALLBACK = "https://chatgpt.com/backend-api/mcp-events/cb_workerd";
 const CALLBACK_SECRET = `whsec_${Buffer.alloc(32, 5).toString("base64")}`;
 const callbackCalls = [];
 const callbackStatuses = [];
+let onDelivery = null;
 const WAKE_KEY_JET = randomBytes(32).toString("hex");
 
 const outbound = [];
@@ -115,7 +117,13 @@ async function outboundFetch(request) {
     const body = JSON.parse(raw);
     callbackCalls.push({ url: request.url, headers, raw, body });
     if (body.type === "verification") return Response.json({ challenge: body.challenge });
-    return new Response("", { status: callbackStatuses.length ? callbackStatuses.shift() : 200 });
+    const status = callbackStatuses.length ? callbackStatuses.shift() : 200;
+    if (onDelivery) {
+      const hook = onDelivery;
+      onDelivery = null;
+      await hook(body);
+    }
+    return new Response("", { status });
   }
   return new Response("blocked in test", { status: 599 });
 }
@@ -282,7 +290,7 @@ async function mcpModern(accessToken, method, params = {}) {
 function wakeBytes(overrides = {}) {
   const body = {
     contract: "agent-sync-wake/1", seat: "JET", wake_id: `w-${randomBytes(6).toString("hex")}`, message_id: 9001, trigger_ids: [9001],
-    dm: false, channel: "sandbox", topic: "jet hello", dm_recipient_ids: [], sender_user_id: 1211974, sender_full_name: "Jay",
+    dm: false, channel: "sandbox", topic: "jet hello", stream_id: STREAMS.sandbox, dm_recipient_ids: [], sender_user_id: 1211974, sender_full_name: "Jay",
     is_bot: false, owner: true, excerpt: "<<<BEGIN nonce=n1\n@**Jet** ping\n>>>END nonce=n1",
     zulip_link: `${REALM}/#narrow/channel/642167-sandbox/topic/jet.20hello/near/9001`,
     reply_to: { type: "stream", channel: "sandbox", topic: "jet hello" }, reply_prefix: "[JET·wake] re=9001",
@@ -296,14 +304,6 @@ function wakePost(seat, bytes, { key = WAKE_KEY_JET, method = "POST", signature 
     headers: { "Content-Type": "application/json; charset=utf-8", "X-Agent-Sync-Signature": signature ?? createHmac("sha256", Buffer.from(key, "utf8")).update(bytes).digest("hex"), "Idempotency-Key": "x" },
     body: method === "POST" ? bytes : undefined,
   });
-}
-async function waitFor(predicate, what, ms = 8000) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    if (predicate()) return;
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  assert.fail(`timed out waiting for ${what}`);
 }
 
 const INIT = { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "workerd-test", version: "0" } };
@@ -525,8 +525,8 @@ try {
     const bytes = wakeBytes();
     const res = await wakePost("JET", bytes);
     assert.equal(res.status, 202, await res.clone().text());
-    assert.deepEqual(await res.json(), { ok: true, subscribers: 1 });
-    await waitFor(() => callbackCalls.length > before, "the event delivery");
+    assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" });
+    assert.equal(callbackCalls.length, before + 1, "delivered before the answer, inside the listener's request");
     const delivery = callbackCalls[callbackCalls.length - 1];
     const event = new Webhook(CALLBACK_SECRET).verify(delivery.raw, delivery.headers);
     assert.equal(event.name, "zulip.mention");
@@ -538,23 +538,61 @@ try {
     assert.ok(!delivery.raw.includes(WAKE_KEY_JET) && !delivery.raw.includes(JET_KEY), "no key in the payload");
 
     // A DM wakes too, but its text stays in Zulip.  (The sandbox filter leaves DMs out, so
-    // this one is checked through the claim count only:  0 matching deliveries.)
+    // this one is checked through the answer only:  no matching subscription.)
     const dmBefore = callbackCalls.length;
-    const dm = await wakePost("JET", wakeBytes({ dm: true, channel: null, topic: null, dm_recipient_ids: [1211974], reply_to: { type: "direct", to: [1211974] } }));
+    const dm = await wakePost("JET", wakeBytes({ dm: true, channel: null, topic: null, stream_id: null, dm_recipient_ids: [1211974], reply_to: { type: "direct", to: [1211974] } }));
     assert.equal(dm.status, 202);
-    await dm.arrayBuffer();
-    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(await dm.json(), { ok: true, subscribers: 1, delivered: 0, outcome: "no_subscriber" });
     assert.equal(callbackCalls.length, dmBefore, "a channel-filtered subscription gets no DM");
 
     const replay = await wakePost("JET", bytes);
     assert.equal(replay.status, 200);
     assert.deepEqual(await replay.json(), { ok: true, duplicate: true });
-    // An agent-sync mention does not match the sandbox-only subscription.
-    const other = await wakePost("JET", wakeBytes({ channel: "agent-sync", reply_to: { type: "stream", channel: "agent-sync", topic: "x" } }));
+    // An agent-sync mention (an allowlisted stream) does not match the sandbox-only subscription.
+    const other = await wakePost("JET", wakeBytes({ channel: "agent-sync", stream_id: STREAMS["agent-sync"], reply_to: { type: "stream", channel: "agent-sync", topic: "x" } }));
     assert.equal(other.status, 202);
-    await other.arrayBuffer();
-    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(await other.json(), { ok: true, subscribers: 1, delivered: 0, outcome: "no_subscriber" });
     assert.equal(callbackCalls.length, before + 1, "no delivery for a non-matching channel");
+  });
+
+  await step("wake:  a failed delivery is 503 so the listener retries;  the retry delivers (202);  one more is a duplicate;  a copy mid-delivery is 503 in_flight", async () => {
+    const before = callbackCalls.length;
+    const bytes = wakeBytes();
+    callbackStatuses.push(503, 502);
+    let concurrent = null;
+    onDelivery = async () => {
+      const res = await wakePost("JET", bytes);
+      concurrent = { status: res.status, retryAfter: res.headers.get("retry-after"), body: await res.json() };
+    };
+    let res = await wakePost("JET", bytes);
+    assert.equal(res.status, 503, await res.clone().text());
+    assert.deepEqual(await res.json(), { ok: false, retry: true, subscribers: 1, delivered: 0 });
+    assert.equal(callbackCalls.length, before + 2, "two attempts inside the request");
+    assert.deepEqual(concurrent, { status: 503, retryAfter: concurrent.retryAfter, body: { ok: false, in_flight: true } });
+    assert.match(concurrent.retryAfter, /^\d+$/);
+    // The listener's retry sends the identical bytes.
+    res = await wakePost("JET", bytes);
+    assert.equal(res.status, 202, await res.clone().text());
+    assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" });
+    assert.equal(callbackCalls.length, before + 3);
+    assert.equal(new Set(callbackCalls.slice(before).map((c) => c.headers["webhook-id"])).size, 1, "one event id across attempts and retries");
+    res = await wakePost("JET", bytes);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, duplicate: true });
+    assert.equal(callbackCalls.length, before + 3);
+  });
+
+  await step("wake:  a mention in a stream off the allowlist, or with no stream id, is settled with no callback hit", async () => {
+    const before = callbackCalls.length;
+    for (const overrides of [{ stream_id: STREAMS.other }, { stream_id: undefined }]) {
+      const res = await wakePost("JET", wakeBytes(overrides));
+      assert.equal(res.status, 202, await res.clone().text());
+      assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 0, outcome: "channel_refused" });
+    }
+    assert.equal(callbackCalls.length, before, "no callback hit");
+    const admin = await (await browser("/admin")).text();
+    assert.match(admin, /event_wake_channel_refused/);
+    assert.match(admin, new RegExp(`stream_id&#34;:${STREAMS.other}`), "the audit shows the numeric stream id");
   });
 
   await step("wake:  bad signature, stale, wrong seat, unkeyed seat, wrong method and oversize are refused", async () => {
@@ -590,14 +628,38 @@ try {
     callbackStatuses.push(410);
     let res = await wakePost("JET", wakeBytes());
     assert.equal(res.status, 202);
-    await res.arrayBuffer();
-    await waitFor(() => callbackCalls.length > before, "the 410 delivery");
-    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 0, outcome: "gone" });
+    assert.equal(callbackCalls.length, before + 1, "the 410 delivery");
     res = await wakePost("JET", wakeBytes());
-    assert.deepEqual(await res.json(), { ok: true, subscribers: 0 });
+    assert.deepEqual(await res.json(), { ok: true, subscribers: 0, delivered: 0, outcome: "no_subscriber" });
     const unsub = await mcpModern(tokens.access_token, "events/unsubscribe", { name: "zulip.mention", arguments: { channel: "sandbox" }, delivery: { mode: "webhook", url: CALLBACK } });
     assert.equal(unsub.status, 200, JSON.stringify(unsub.json));
     assert.deepEqual(Object.keys(unsub.json.result).filter((k) => k !== "_meta" && k !== "resultType"), []);
+  });
+
+  await step("wake:  a pause or an unsubscribe while the first attempt is out stops the retry (202 not_live, one callback hit)", async () => {
+    const params = { name: "zulip.mention", arguments: { channel: "sandbox" }, delivery: { mode: "webhook", url: CALLBACK, secret: CALLBACK_SECRET }, cursor: null };
+    const sub = await mcpModern(tokens.access_token, "events/subscribe", params);
+    assert.equal(sub.status, 200, JSON.stringify(sub.json));
+    const flips = {
+      pause: async () => assert.equal((await adminAction("pause", { seat: "JET" })).status, 303),
+      unsubscribe: async () => {
+        const unsub = await mcpModern(tokens.access_token, "events/unsubscribe", { name: "zulip.mention", arguments: { channel: "sandbox" }, delivery: { mode: "webhook", url: CALLBACK } });
+        assert.equal(unsub.status, 200, JSON.stringify(unsub.json));
+      },
+    };
+    for (const [name, flip] of Object.entries(flips)) {
+      const before = callbackCalls.length;
+      callbackStatuses.push(503);
+      onDelivery = flip;
+      const res = await wakePost("JET", wakeBytes());
+      assert.equal(res.status, 202, `${name}:  ${await res.clone().text()}`);
+      assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 0, outcome: "not_live" }, name);
+      assert.equal(callbackCalls.length, before + 1, `${name}:  no attempt after it`);
+      if (name === "pause") assert.equal((await adminAction("unpause", { seat: "JET" })).status, 303);
+    }
+    const res = await wakePost("JET", wakeBytes());
+    assert.deepEqual(await res.json(), { ok: true, subscribers: 0, delivered: 0, outcome: "no_subscriber" });
   });
 
   await step("a seat argument is a tool error, an unknown tool a protocol error, and a missing scope names the challenge", async () => {

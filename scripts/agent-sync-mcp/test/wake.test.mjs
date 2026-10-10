@@ -21,6 +21,7 @@ export function wakeBody(overrides = {}) {
     dm: false,
     channel: "agent-sync",
     topic: "AFC Jet Zulip bridge",
+    stream_id: 642232,
     dm_recipient_ids: [],
     sender_user_id: 1211974,
     sender_full_name: "Jay",
@@ -81,6 +82,33 @@ test("the body's seat must be the path's seat, and the contract must match", asy
   assert.equal((await verifyWake({ bytes: badId, signature: pySig(KEY, badId), key: KEY, seat: "JET", now: NOW })).reason, "bad_wake_id");
   const badReply = wakeBody({ reply_to: { type: "everyone" } });
   assert.equal((await verifyWake({ bytes: badReply, signature: pySig(KEY, badReply), key: KEY, seat: "JET", now: NOW })).reason, "bad_reply_to");
+});
+
+test("stream_id is a positive safe integer or null, and may be absent (an older listener)", async () => {
+  const check = async (overrides) => {
+    const bytes = wakeBody(overrides);
+    return verifyWake({ bytes, signature: pySig(KEY, bytes), key: KEY, seat: "JET", now: NOW });
+  };
+  for (const ok of [642232, 1, Number.MAX_SAFE_INTEGER, null, undefined]) {
+    assert.equal((await check({ stream_id: ok })).ok, true, String(ok));
+  }
+  const dm = await check({ dm: true, channel: null, topic: null, stream_id: null, reply_to: { type: "direct", to: [1211974] } });
+  assert.equal(dm.ok, true);
+  for (const bad of ["642232", 642232.5, true, false, 0, -7, 2 ** 53, 1e300, [642232], { id: 642232 }]) {
+    assert.deepEqual(await check({ stream_id: bad }), { ok: false, status: 400, reason: "bad_stream_id" }, JSON.stringify(bad));
+  }
+  // A huge integer in the raw JSON parses to an unsafe number and is refused too.
+  const raw = new TextEncoder().encode(new TextDecoder().decode(wakeBody()).replace('"stream_id":642232', '"stream_id":123456789012345678901'));
+  assert.equal((await verifyWake({ bytes: raw, signature: pySig(KEY, raw), key: KEY, seat: "JET", now: NOW })).reason, "bad_stream_id");
+});
+
+test("dm and reply_to must agree on whether a wake is a DM", async () => {
+  const check = async (overrides) => {
+    const bytes = wakeBody(overrides);
+    return (await verifyWake({ bytes, signature: pySig(KEY, bytes), key: KEY, seat: "JET", now: NOW })).reason ?? "ok";
+  };
+  assert.equal(await check({ dm: true, channel: null, topic: null, stream_id: null }), "bad_reply_to", "dm with a stream reply_to");
+  assert.equal(await check({ reply_to: { type: "direct", to: [1211974] } }), "bad_reply_to", "a channel wake with a direct reply_to");
 });
 
 test("a short or missing key means not configured (404), and an oversized body is 413", async () => {

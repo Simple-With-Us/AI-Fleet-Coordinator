@@ -367,12 +367,21 @@ export async function callTail(store, limit = 40) {
 
 // ---------------------------------------------------------------- MCP Events (src/events.js)
 //
-// Subscriptions, the callback verification cache and the wake dedupe.  Storage
+// Subscriptions, the callback verification cache and the wake claims.  Storage
 // only, like everything above:  the verification and delivery fetches run in
 // the Worker, which hands the results back here.
 
 export const WAKE_SEEN_MS = 15 * MINUTE_MS; // > the wake's 5-minute sent_at window
+// How long one request holds a wake it claimed.  Longer than the Worker's
+// inline delivery (WAKE_BUDGET_MS in events.js, 10 seconds from the request's
+// arrival), so a live delivery is never claimed twice.  Shorter than the
+// listener's retry span (2, 5 and 10 seconds of backoff after its first
+// failure), so the listener's last retry claims again a wake whose isolate died
+// mid-delivery.
+export const WAKE_LEASE_MS = 15 * 1000;
 const WAKE_SEEN_CAP = 500;
+// Every way a claim can end (eventSettleWake).  "retry" forgets the wake;  the rest settle it.
+export const WAKE_OUTCOMES = Object.freeze(["delivered", "no_subscriber", "rejected", "gone", "not_live", "channel_refused", "retry"]);
 const VERIFIED_CAP = 20;
 const subRef = (id) => String(id ?? "").slice(0, 16);
 
@@ -486,36 +495,128 @@ export async function eventVerifiedSet(store, { ref, ttlMs }, now = Date.now()) 
   await store.put("event_verified", cache);
 }
 
+const wakeRefOf = (wakeId) => String(wakeId ?? "").slice(0, 40);
+
 /**
- * Claim one wake for fan-out.  The first claim of a wake_id wins;  a repeat
- * (the listener retrying after a lost response) is "duplicate".  A paused seat
- * delivers nothing.  Subscriptions past refresh_before, from a grant epoch
- * that is no longer current (Revoke All And Bump Epoch), or from a grant past
- * its 90-day age are dropped here (liveSubs):
- * access is re-checked on every delivery, not only at subscribe.
- * Returns {verdict: "go", subs}, {verdict: "duplicate"} or {verdict: "paused"}.
+ * One `wake_seen` entry:  {s: "claimed", at, until, token} while a request
+ * delivers the wake, {s: "settled", at, outcome} once it is done.  A bare
+ * number (what the Worker wrote before claims had a lease) counts as settled.
+ * Anything else is null.
  */
-export async function eventClaimWake(store, { wakeId }, now = Date.now()) {
+function wakeEntry(value) {
+  if (Number.isFinite(value)) return { s: "settled", at: value, outcome: "legacy" };
+  if (!value || typeof value !== "object" || !Number.isFinite(value.at)) return null;
+  return value.s === "claimed" || value.s === "settled" ? value : null;
+}
+
+/** The claims of the last WAKE_SEEN_MS, oldest first. */
+async function wakeSeen(store, now) {
   const seen = (await store.get("wake_seen")) ?? {};
-  for (const [k, ts] of Object.entries(seen)) if (!(Number.isFinite(ts) && ts > now - WAKE_SEEN_MS && ts <= now + MINUTE_MS)) delete seen[k];
-  if (Object.hasOwn(seen, wakeId)) return { verdict: "duplicate" };
-  seen[wakeId] = now;
+  for (const [k, value] of Object.entries(seen)) {
+    const entry = wakeEntry(value);
+    if (!entry || !(entry.at > now - WAKE_SEEN_MS && entry.at <= now + MINUTE_MS)) delete seen[k];
+  }
+  return seen;
+}
+
+async function putWakeSeen(store, seen) {
   const keys = Object.keys(seen);
   while (keys.length > WAKE_SEEN_CAP) delete seen[keys.shift()];
   await store.put("wake_seen", seen);
+}
 
+/**
+ * Claim one wake for delivery.  A settled wake_id (the listener retrying after
+ * a lost response) is "duplicate".  A claim whose lease is still running is
+ * "in_flight":  another request is delivering it, and the listener retries
+ * later.  A claim whose lease ran out (that request died mid-delivery) is
+ * claimed again.  The claim holds until eventSettleWake, which only its
+ * `token` may call, so a wake is remembered once it was delivered or dropped,
+ * never merely because it arrived.
+ * A paused seat delivers nothing:  its wake settles at once.  Subscriptions
+ * past refresh_before, from a grant epoch that is no longer current (Revoke
+ * All And Bump Epoch), or from a grant past its 90-day age are dropped here
+ * (liveSubs), and eventSubLive checks each one again before every attempt.
+ * Returns {verdict: "go", subs, token}, {verdict: "duplicate"},
+ * {verdict: "in_flight", retryAfterS} or {verdict: "paused"}.
+ */
+export async function eventClaimWake(store, { wakeId, messageId = null }, now = Date.now()) {
+  const seen = await wakeSeen(store, now);
+  const prior = wakeEntry(seen[wakeId]);
+  if (prior?.s === "settled") return { verdict: "duplicate" };
+  if (prior && Number.isFinite(prior.until) && prior.until > now) {
+    return { verdict: "in_flight", retryAfterS: Math.max(1, Math.ceil((prior.until - now) / 1000)) };
+  }
+  delete seen[wakeId]; // written again last, so the cap trims older wakes first
+  const wakeRef = wakeRefOf(wakeId);
   const s = await read(store);
   if (s.paused) {
-    await audit(store, { event: "event_wake_paused", wake_ref: String(wakeId).slice(0, 40) }, now);
+    seen[wakeId] = { s: "settled", at: now, outcome: "paused" };
+    await putWakeSeen(store, seen);
+    await audit(store, { event: "event_wake_paused", wake_ref: wakeRef }, now);
     return { verdict: "paused" };
   }
   const { subs, dropped } = await liveSubs(store, now);
   await persistDropped(store, subs, dropped, now);
-  return { verdict: "go", subs: Object.values(subs).map((sub) => ({ ...sub })) };
+  const token = crypto.randomUUID();
+  seen[wakeId] = { s: "claimed", at: now, until: now + WAKE_LEASE_MS, token };
+  await putWakeSeen(store, seen);
+  await audit(store, { event: "event_wake_captured", wake_ref: wakeRef, message_id: messageId ?? null, subscribers: Object.keys(subs).length, ...(prior ? { reclaimed: true } : {}) }, now);
+  return { verdict: "go", token, subs: Object.values(subs).map((sub) => ({ ...sub })) };
+}
+
+/**
+ * End a claim (WAKE_OUTCOMES).  Only the request that holds it (`token`) may:
+ * one whose lease ran out and was claimed again changes nothing.
+ * "retry" (no delivery, and one failed in a way worth retrying) forgets the
+ * wake, so the listener's retry claims it again.  Every other outcome settles
+ * it, and a repeat is "duplicate" from then on.  "channel_refused" is audited
+ * with the stream's numeric id only.
+ * Returns {ok: true}, or {ok: false} when the claim is no longer this one's.
+ */
+export async function eventSettleWake(store, { wakeId, token, outcome, delivered = 0, streamId = null }, now = Date.now()) {
+  if (!WAKE_OUTCOMES.includes(outcome)) throw new Error("unknown wake outcome");
+  const seen = await wakeSeen(store, now);
+  const entry = wakeEntry(seen[wakeId]);
+  const wakeRef = wakeRefOf(wakeId);
+  if (!entry || entry.s !== "claimed" || typeof token !== "string" || entry.token !== token) {
+    await audit(store, { event: "event_wake_settle_stale", wake_ref: wakeRef, outcome }, now);
+    return { ok: false };
+  }
+  if (outcome === "retry") {
+    delete seen[wakeId];
+    await putWakeSeen(store, seen);
+    await audit(store, { event: "event_wake_released", wake_ref: wakeRef }, now);
+    return { ok: true };
+  }
+  delete seen[wakeId];
+  seen[wakeId] = { s: "settled", at: now, outcome };
+  await putWakeSeen(store, seen);
+  if (outcome === "channel_refused") {
+    await audit(store, { event: "event_wake_channel_refused", wake_ref: wakeRef, stream_id: Number.isSafeInteger(streamId) ? streamId : null }, now);
+  } else {
+    await audit(store, { event: "event_wake_settled", wake_ref: wakeRef, outcome, delivered: Number.isSafeInteger(delivered) ? delivered : 0 }, now);
+  }
+  return { ok: true };
+}
+
+/**
+ * May subscription `subId` still receive an event?  The Worker asks before
+ * every delivery attempt, the first included, so a pause, Revoke All And Bump
+ * Epoch, an unsubscribe, a lapsed refresh_before or a grant past its 90-day
+ * age also stops the retries of a wake claimed before it.
+ * Returns {live: true} or {live: false, reason}.
+ */
+export async function eventSubLive(store, { subId }, now = Date.now()) {
+  if ((await store.get("paused")) === true) return { live: false, reason: "paused" };
+  const { subs, dropped } = await liveSubs(store, now);
+  await persistDropped(store, subs, dropped, now);
+  if (Object.hasOwn(subs, subId)) return { live: true };
+  return { live: false, reason: dropped[subId] ?? "removed" };
 }
 
 /** Record one delivery.  410 Gone drops the subscription;  nothing else does. */
-export async function eventDeliveryResult(store, { subId, outcome, status, attempts, wakeRef, messageId }, now = Date.now()) {
+export async function eventDeliveryResult(store, { subId, outcome, status, attempts, reason, wakeRef, messageId }, now = Date.now()) {
   const subs = (await store.get("event_subs")) ?? {};
   const sub = subs[subId];
   if (sub) {
@@ -523,7 +624,7 @@ export async function eventDeliveryResult(store, { subId, outcome, status, attem
     else Object.assign(sub, { last_outcome: outcome, last_status: status ?? null, last_at: now });
     await store.put("event_subs", subs);
   }
-  await audit(store, { event: "event_delivery", sub_ref: subRef(subId), outcome, status: status ?? null, attempts: attempts ?? 0, wake_ref: wakeRef ?? "", message_id: messageId ?? null }, now);
+  await audit(store, { event: "event_delivery", sub_ref: subRef(subId), outcome, status: status ?? null, attempts: attempts ?? 0, ...(reason ? { reason: String(reason).slice(0, 40) } : {}), wake_ref: wakeRef ?? "", message_id: messageId ?? null }, now);
   if (sub && outcome === "gone") await audit(store, { event: "event_sub_dropped", sub_ref: subRef(subId), reason: "gone_410" }, now);
 }
 
