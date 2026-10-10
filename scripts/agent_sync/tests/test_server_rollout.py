@@ -144,6 +144,17 @@ class InfisicalEnvTests(unittest.TestCase):
         for value in list(self.values.values()) + [self.csecret, fake.token]:
             self.assertNotIn(value, line)
 
+    def test_the_sentry_dsn_is_loaded_and_other_sentry_names_are_not(self) -> None:
+        values = dict(self.values, SENTRY_FLEET_DSN="https://k@o1.ingest.us.sentry.io/1",
+                      SENTRY_API_TOKEN="sntrys_never", AGENT_SYNC_SENTRY_DSN_OTHER="never")
+        with FakeInfisical(self.cid, self.csecret, values) as fake:
+            out, line = IE.build_env(self.env(fake))
+        self.assertEqual(out["SENTRY_FLEET_DSN"], "https://k@o1.ingest.us.sentry.io/1")
+        self.assertNotIn("SENTRY_API_TOKEN", out)
+        self.assertNotIn("AGENT_SYNC_SENTRY_DSN_OTHER", out)
+        self.assertIn("loaded 6 variables", line)
+        self.assertNotIn("k@o1", line)
+
     def test_a_refused_login_falls_back_to_the_container_environment_without_a_body(self) -> None:
         with FakeInfisical(self.cid, "other-secret", self.values) as fake:
             out, line = IE.build_env(self.env(fake, ZULIP_GB_FIXER_API_KEY="coolify-copy"))
@@ -291,7 +302,7 @@ class ApplyLiveConfigTests(unittest.TestCase):
             self.assertEqual(new["seat." + seat], sample["seat." + seat], seat)
         cfg = C.from_dict(tomllib.loads(after))
         self.assertEqual(cfg.errors, [])
-        self.assertEqual(sorted(cfg.disabled), ["GB-COMPILER", "GB-DIRECTOR"])
+        self.assertEqual(sorted(cfg.disabled), [], "all eleven personas are enabled")
         self.assertEqual(AL.problems(after), [])
         code, out = self.run_main("--apply")
         self.assertEqual(code, 0, out)
