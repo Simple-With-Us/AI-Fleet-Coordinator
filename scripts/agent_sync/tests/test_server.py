@@ -890,10 +890,9 @@ class PartitionTests(ServerHarness):
         self.assertEqual(server.errors, [])
         self.assertEqual(server.instance, "server")
         self.assertEqual(C.partition_errors(server, partition, env_instance="server"), [])
-        self.assertEqual(sorted(server.seats), sorted([SEAT] + list(CLOUD_SEATS)),
-                         "the enabled seats are GB-COMPILER and the five cloud seats")
-        self.assertEqual(server.seats[SEAT].wake, "http")
-        self.assertEqual(server.seats[SEAT].creds, "env")
+        self.assertEqual(sorted(server.seats), sorted([s for s in gb if s not in ("GB-COMPILER", "GB-DIRECTOR")]
+                                                      + list(CLOUD_SEATS)),
+                         "the enabled seats are nine GB personas and the five cloud seats")
         for seat in CLOUD_SEATS:
             seat_cfg = server.seats[seat]
             code = C.env_code(seat)
@@ -908,11 +907,19 @@ class PartitionTests(ServerHarness):
                                  ("inbox", "env", "server", None), "%s has capture only, no wake adapter" % seat)
             self.assertEqual((seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
                              ("ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"), seat)
-        self.assertEqual(sorted(server.disabled), [s for s in gb if s != SEAT],
-                         "every other persona is present but disabled")
-        for seat, seat_cfg in server.disabled.items():
-            self.assertEqual((seat_cfg.wake, seat_cfg.routine.url_env, seat_cfg.routine.key_env),
-                             ("http", C.env_code(seat) + "_ROUTINE_URL", C.env_code(seat) + "_ROUTINE_KEY"), seat)
+        self.assertEqual(sorted(server.disabled), ["GB-COMPILER", "GB-DIRECTOR"],
+                         "only the two personas whose Infisical entries failed the Sat, Oct 10 inventory are disabled")
+        for seat in gb:
+            seat_cfg = server.seats.get(seat) or server.disabled[seat]
+            code = C.env_code(seat)
+            r = seat_cfg.routine
+            self.assertEqual((seat_cfg.wake, seat_cfg.creds, seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
+                             ("http", "env", "ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"), seat)
+            self.assertEqual((r.url_env, r.key_env, r.method, r.auth, r.header),
+                             ("ZULIP_ALERT_%s_ENDPOINT" % code, "ZULIP_ALERT_%s_KEY" % code, "POST", "bearer",
+                              "Authorization"), seat)
+            names = {seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env, r.url_env, r.key_env}
+            self.assertEqual(len(names), 5, "%s reads five different variables" % seat)
         self.assertFalse(server.notify_banners)
         for seat in list(server.seats) + list(server.disabled):
             self.assertEqual(partition.get(seat), "server", seat)
@@ -1004,6 +1011,30 @@ class CloudSeatTests(ServerHarness):
         self.assertEqual((body["contract"], body["seat"], body["topic"]), ("agent-sync-wake/1", "JET", "jet wake"))
         self.assertEqual(got.header("Idempotency-Key"), body["wake_id"])
 
+    def test_a_gb_persona_from_the_sample_wakes_its_routine_with_the_infisical_webhook_names(self) -> None:
+        # The sample reads Infisical's own webhook names (ZULIP_ALERT_GB_<ROLE>_ENDPOINT and _KEY, a bare
+        # crsr_ key) and sends the key as a bearer token, never the ZULIP_ALERT_GB_<ROLE>_HEADER entry.
+        fixer_key = secrets.token_hex(16)
+        self.extra_keys.append(("fixer-grok-bot@zulip.test", fixer_key))
+        self.fake.add_bot("fixer-grok-bot@zulip.test", "GB-Fixer", fixer_key)
+        hook_key = "crsr_" + secrets.token_hex(24)
+        env = {**self.cloud_env(), "ZULIP_GB_FIXER_EMAIL": "fixer-grok-bot@zulip.test", "ZULIP_GB_FIXER_API_KEY": fixer_key,
+               "ZULIP_ALERT_GB_FIXER_ENDPOINT": "%s/hooks/fixer" % self.routine.url, "ZULIP_ALERT_GB_FIXER_KEY": hook_key}
+        daemon = self.server_daemon(env=env)
+        self.assertEqual(daemon.config.errors, [])
+        self.assertTrue(daemon.connect_seat("GB-FIXER"), daemon.seats["GB-FIXER"].error)
+        self.assertIn(hook_key, daemon.hidden, "the routine key is scrubbed like a bot key")
+        self.fake.add_message("Codex", "agent-sync", "fixer wake", "@**GB-Fixer** main is red, please look")
+        self.pump_until(daemon, lambda: len(self.ledger("GB-FIXER")) >= 1, seat="GB-FIXER")
+        self.clock.advance(25.0)
+        daemon.tick()
+        daemon.run_jobs("GB-FIXER")
+        self.assertEqual(len(self.routine.received), 1)
+        got = self.routine.received[0]
+        self.assertEqual(got.path, "/hooks/fixer")
+        self.assertEqual(got.header("Authorization"), "Bearer " + hook_key)
+        self.assertEqual((got.json()["seat"], got.json()["topic"]), ("GB-FIXER", "fixer wake"))
+
     def test_a_cloud_bot_that_is_still_an_admin_is_refused_while_the_others_run(self) -> None:
         self.fake.set_role(self.cloud["JET"]["user_id"], 200)
         daemon = self.server_daemon(env=self.cloud_env())
@@ -1040,10 +1071,17 @@ class ServerInitTests(ServerHarness):
         self.config_file.unlink()
         # Without --seat the reader is the first enabled seat in name order, which is ECHO now that the
         # sample holds the cloud seats, so the runbook always names one.
-        result = self.run_cli("daemon", "init", "--yes", "--seat", SEAT, env=self.server_env())
+        # GB-COMPILER is disabled in the sample (its Infisical pair is another bot's), so it is only the
+        # reader here; GB-FIXER is an enabled persona whose credentials init checks.
+        fixer_key = secrets.token_hex(16)
+        self.extra_keys.append(("fixer-grok-bot@zulip.test", fixer_key))
+        self.fake.add_bot("fixer-grok-bot@zulip.test", "GB-Fixer", fixer_key)
+        fixer_env = {"ZULIP_GB_FIXER_EMAIL": "fixer-grok-bot@zulip.test", "ZULIP_GB_FIXER_API_KEY": fixer_key}
+        result = self.run_cli("daemon", "init", "--yes", "--seat", SEAT, env=self.server_env(**fixer_env))
         self.assertEqual(result.code, 0, result.err + result.out)
         self.assertIn("wrote the sample config %s" % self.config_file, result.out)
-        self.assertIn("GB-COMPILER: environment credentials ok, role 400", result.out)
+        self.assertIn("GB-FIXER: environment credentials ok, role 400", result.out)
+        self.assertNotIn("  GB-COMPILER:", result.out, "a disabled persona is not checked")
         cfg = C.load(self.root, str(self.config_file))
         self.assertEqual(cfg.instance, "server")
         self.assertEqual(cfg.owner_user_id, 12)
