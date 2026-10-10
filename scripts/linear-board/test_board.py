@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for scripts/linear-board/board against a local mock of Linear.
 
-Run:  python3 scripts/linear-board/test_board.py   (stdlib only, about 20 seconds)
+Run:  python3 scripts/linear-board/test_board.py   (stdlib only, about a minute)
 
 Every CLI run is a subprocess with HOME, the credentials file, the token cache
 and the id caches in a temporary directory, and the GraphQL and OAuth URLs on
@@ -9,8 +9,10 @@ and the id caches in a temporary directory, and the GraphQL and OAuth URLs on
 dispatches on the GraphQL operation name, serves pages of at most two nodes
 (so every list must follow the cursor), and records a violation when a query
 names a connection without an explicit first:, when issueUpdate sends
-labelIds (which would replace every label), or when anything writes an issue
-straight into the Duplicate state.
+labelIds (which would replace every label), when issueUpdate removes a seat:
+attribution label, or when anything writes an issue straight into the
+Duplicate state.  It can also rate-limit single operations (limit_ops), to
+stop a verb part way between two of its requests.
 """
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 CLI = HERE / "board"
+RELABEL = HERE / "relabel_claims.py"
 PY = sys.executable
 CLIENT_ID = "mock-client-id"
 CLIENT_SECRET = "mock-client-secret-value"
@@ -84,6 +87,7 @@ class MockLinear:
         self.scopes: list[str] = []
         self.tokens: set[str] = set()
         self.ratelimit400 = 0
+        self.limit_ops: dict = {}       # operation name -> requests to rate-limit (400 RATELIMITED)
         self.http429 = 0
         self.reset_in_ms = 50
         self.revoke_all_tokens = False
@@ -101,7 +105,7 @@ class MockLinear:
             self._label(g, None)
             for k in kids:
                 self._label(k, g)
-        for name in ("seat:CLAUDE", "seat:CODEX", "stale-claim", "imported", "app:agent-bar"):
+        for name in ("seat:CLAUDE", "seat:CODEX", "claimed:CODEX", "stale-claim", "imported", "app:agent-bar"):
             self._label(name, None)
         self.issues: dict = {}
         self.comments: dict = {}
@@ -153,7 +157,8 @@ class MockLinear:
         self.add_comment(a["id"], "**Resolution, by CLAUDE** · Thu, Oct 2, 2026, 9:00am\n\nOld resolution.",
                          "2026-10-02T15:00:00Z")
         self.add_issue(hy(B_B), "OPS", "In Progress", "Listener work", 1,
-                       ["Severity/P0", "Kind/agent-report", "seat:CODEX", "Env/Mac"], "2026-10-03T12:00:00Z")
+                       ["Severity/P0", "Kind/agent-report", "seat:CODEX", "claimed:CODEX", "Env/Mac"],
+                       "2026-10-03T12:00:00Z")
         self.add_issue(hy(B_C), "ST", "Todo", "Socratic chart bug", 3, ["Severity/P2", "Kind/review-finding"],
                        "2026-10-04T12:00:00Z")
         self.teams["CT"]["n"] = 6
@@ -293,7 +298,7 @@ class MockLinear:
                         key=lambda c: c["createdAt"], reverse=True)
             nodes = [{"id": c["id"], "body": c["body"], "createdAt": c["createdAt"], "user": c["user"]} for c in cs]
             return {"issue": {"comments": self.page(nodes, v.get("first"), v.get("after"))}}, None
-        if op in ("BoardList", "BoardCount"):
+        if op in ("BoardList", "BoardCount", "BoardRelabel"):
             hits = [i for i in self.issues.values() if self.match(i, v.get("filter"))]
             hits.sort(key=lambda i: i["createdAt"], reverse=True)
             nodes = [self.node(i) for i in hits]
@@ -338,6 +343,8 @@ class MockLinear:
                     return {"issueUpdate": None}, [{"message": "invalid state"}]
                 iss["state"] = st["name"]
             for lid in inp.get("removedLabelIds") or []:
+                if self.labels[lid]["name"].startswith("seat:"):
+                    self.violations.append("issueUpdate removed a seat: attribution label")
                 if lid in iss["labels"]:
                     iss["labels"].remove(lid)
             for lid in inp.get("addedLabelIds") or []:
@@ -424,6 +431,11 @@ def make_handler(mock: MockLinear):
                     return self._send(400, {"errors": [{"message": "Rate limit exceeded",
                                                         "extensions": {"code": "RATELIMITED"}}]},
                                       {"X-RateLimit-Requests-Reset": reset})
+                if mock.limit_ops.get(op, 0) > 0:
+                    mock.limit_ops[op] -= 1
+                    return self._send(400, {"errors": [{"message": "Rate limit exceeded",
+                                                        "extensions": {"code": "RATELIMITED"}}]},
+                                      {"X-RateLimit-Requests-Reset": reset})
                 if mock.http429 > 0:
                     mock.http429 -= 1
                     return self._send(429, {"errors": [{"message": "Too many requests"}]},
@@ -490,11 +502,25 @@ class BoardTest(unittest.TestCase):
 
 
 class SafetyTests(BoardTest):
-    def test_requires_agent_seat(self):
-        p = self.board("list", drop=("AGENT_SEAT",), code=2)
-        self.assertIn("AGENT_SEAT is not set", p.stderr)
+    def test_writes_require_agent_seat(self):
+        for args in (["file", "--title", "x"], ["claim", B_A[:8], "--by", "CLAUDE"],
+                     ["status", B_A[:8], "completed"], ["comment", B_A[:8], "--by", "CLAUDE", "--text", "x"]):
+            p = self.board(*args, drop=("AGENT_SEAT",), code=2)
+            self.assertIn("AGENT_SEAT is not set", p.stderr)
         self.assertEqual(self.mock.ops, [])
         self.assertEqual(self.mock.mints, 0)
+
+    def test_reads_work_without_agent_seat(self):
+        """AGENT_SEAT is unset in plain shells, `zsh -lic` and the listener's `env -i`; the skills' reads
+        (`board stats`, `board list --status open,in_progress --severity P0,P1 --limit 25`) must still run."""
+        p = self.board("list", "--status", "open,in_progress", "--severity", "P0,P1", "--limit", "25",
+                       drop=("AGENT_SEAT",))
+        self.assertIn("2 shown of", p.stdout)
+        self.board("show", "OPS-10", drop=("AGENT_SEAT",))
+        self.assertIn("total 9", self.board("stats", drop=("AGENT_SEAT",)).stdout)
+        p = self.board("whoami", drop=("AGENT_SEAT",))
+        self.assertIn("AGENT_SEAT is not set", p.stdout)
+        self.assertIn("viewer:      Fleet (app user)", p.stdout)
 
     def test_missing_credentials(self):
         self.creds.unlink()
@@ -540,9 +566,10 @@ class SafetyTests(BoardTest):
         self.assertEqual(self.mock.ops, [])
 
     def test_source_never_reads_admin_or_personal_keys(self):
-        src = CLI.read_text()
-        for needle in ("LINEAR_API" + "_KEY", "ADMIN" + "_TOKEN", "global" + "-api"):
-            self.assertNotIn(needle, src)
+        for path in (CLI, RELABEL):
+            src = path.read_text()
+            for needle in ("LINEAR_API" + "_KEY", "ADMIN" + "_TOKEN", "global" + "-api"):
+                self.assertNotIn(needle, src, path.name)
 
 
 class AuthTests(BoardTest):
@@ -622,7 +649,9 @@ class ReadTests(BoardTest):
         rows = json.loads(self.board("list", "--json", "--status", "open,in_progress", "--severity", "P0,P1").stdout)
         self.assertEqual([r["identifier"] for r in rows], ["OPS-11", "OPS-10"])
         self.assertEqual(rows[0]["addressed_by"], "CODEX")
+        self.assertEqual(rows[0]["seats"], ["CODEX"])
         self.assertEqual(rows[1]["status"], "open")
+        self.assertIsNone(rows[1]["addressed_by"])
         rows = json.loads(self.board("list", "--json", "--app", "socratic-trade").stdout)
         self.assertEqual([r["identifier"] for r in rows], ["ST-1"])
         rows = json.loads(self.board("list", "--json", "--app", "st").stdout)
@@ -774,6 +803,7 @@ class WriteTests(BoardTest):
                          f"claimed {B_A[:8]} by CLAUDE -> in_progress  (sessions: b854d9ad-1111-2222-3333-444455556666)  OPS-10")
         iss = self.mock.issues[hy(B_A)]
         self.assertEqual(iss["state"], "In Progress")
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
         self.assertIn("seat:CLAUDE", self.label_names(iss))
         self.assertIn("Env/Mac", self.label_names(iss))
         body = self.comments_of(iss)[-1]
@@ -789,12 +819,14 @@ class WriteTests(BoardTest):
         self.assertIn("claimed by CODEX", p.stderr)
         p = self.board("claim", "OPS-11", "--by", "CLAUDE", "--steal", code=2)
         self.assertIn("--reason", p.stderr)
-        self.assertEqual(self.mock.issues[hy(B_B)]["labels"].count(self.mock.lid("seat:CODEX")), 1)
+        self.assertEqual(self.mock.issues[hy(B_B)]["labels"].count(self.mock.lid("claimed:CODEX")), 1)
         self.board("claim", "OPS-11", "--by", "CLAUDE", "--steal", "--reason", "CODEX is capped out", "--env", "cloud")
         iss = self.mock.issues[hy(B_B)]
         names = self.label_names(iss)
+        self.assertIn("claimed:CLAUDE", names)
+        self.assertNotIn("claimed:CODEX", names)
+        self.assertIn("seat:CODEX", names)      # attribution survives a steal
         self.assertIn("seat:CLAUDE", names)
-        self.assertNotIn("seat:CODEX", names)
         self.assertIn("Env/Cloud", names)
         self.assertNotIn("Env/Mac", names)
         self.assertIn("CLAIMED from CODEX: CODEX is capped out", self.comments_of(iss)[-1])
@@ -802,7 +834,9 @@ class WriteTests(BoardTest):
 
     def test_claim_creates_missing_seat_label(self):
         self.board("claim", "ST-1", "--by", "GROK-WEB", extra={"AGENT_SEAT": "GROK-WEB"})
-        self.assertIn("seat:GROK-WEB", self.label_names(self.mock.issues[hy(B_C)]))
+        names = self.label_names(self.mock.issues[hy(B_C)])
+        self.assertIn("seat:GROK-WEB", names)
+        self.assertIn("claimed:GROK-WEB", names)
 
     def test_status_values_and_resolution(self):
         p = self.board("status", "OPS-10", "completed", "--resolution", "Landed in #2894.")
@@ -842,6 +876,300 @@ class WriteTests(BoardTest):
         self.assertEqual(body, "[CLAUDE·s1] Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: s-1, s-2")
         p = self.board("show", "OPS-10")
         self.assertIn("CLAUDE (Mac, ~/apps/lanes/A @ b): Verified on main.", p.stdout)
+
+
+def footer(line: str) -> str:
+    """A description shaped like the importer's, as Linear hands it back."""
+    return linear_markdown(
+        "Body of the imported issue.\n\n---\n\n**Provenance (migrated from the fleet board and GitHub)**\n\n"
+        "- Migration key: `board:x`\n- Board row: `x` (kind agent-report, app usage-monitor, status in_progress)\n"
+        f"  - {line}\n  - Env mac, location sat, oct 3, 2026; ~/apps/x @ y\n\n<!-- migrated-from: board:x -->")
+
+
+class ClaimModelTests(BoardTest):
+    """seat:<TAG> labels are attribution (the import put them on reporters too); a claim is a claimed:<TAG>
+    label, or for an imported In Progress issue without one, the provenance footer's "addressed by"."""
+
+    def legacy(self, title, line, state="In Progress", labels=("seat:CLAUDE", "seat:CODEX"), team="AFC"):
+        return self.mock.add_issue(str(uuid.uuid4()), team, state, title, 3,
+                                   ["Severity/P2", "Kind/agent-report", "imported", *labels],
+                                   "2026-10-05T12:00:00Z", footer(line))
+
+    def holder(self, iss):
+        return json.loads(self.board("show", iss["identifier"], "--json").stdout)["addressed_by"]
+
+    def test_um_1447_shape_reporter_and_claimant_labels(self):
+        """Reported by CLAUDE, claimed by CODEX, both labelled:  CODEX may claim it, CLAUDE may not."""
+        iss = self.legacy("UM-1447 shape", "Reported by claude, addressed by codex")
+        d = json.loads(self.board("show", iss["identifier"], "--json").stdout)
+        self.assertEqual((d["addressed_by"], d["seats"]), ("CODEX", ["CLAUDE", "CODEX"]))
+        before = list(iss["labels"])
+        p = self.board("claim", iss["identifier"], "--by", "CLAUDE", code=3)
+        self.assertIn("claimed by CODEX", p.stderr)
+        self.assertEqual((iss["labels"], iss["state"]), (before, "In Progress"))   # a refusal changes nothing
+        self.board("claim", iss["identifier"], "--by", "CODEX", extra={"AGENT_SEAT": "CODEX"})
+        names = self.label_names(iss)
+        self.assertEqual([n for n in names if n.startswith(("seat:", "claimed:"))],
+                         ["claimed:CODEX", "seat:CLAUDE", "seat:CODEX"])
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", code=3)         # still refused, by the marker now
+        self.board("claim", iss["identifier"], "--by", "CODEX", extra={"AGENT_SEAT": "CODEX"})   # own claim again
+
+    def test_steal_keeps_every_attribution_label(self):
+        iss = self.legacy("Stolen", "Reported by claude, addressed by codex")
+        p = self.board("claim", iss["identifier"], "--by", "CLAUDE", "--steal", code=2)
+        self.assertIn("--reason", p.stderr)
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", "--steal", "--reason", "CODEX is capped out")
+        names = self.label_names(iss)
+        self.assertEqual([n for n in names if n.startswith(("seat:", "claimed:"))],
+                         ["claimed:CLAUDE", "seat:CLAUDE", "seat:CODEX"])
+        self.assertIn("CLAIMED from CODEX: CODEX is capped out", self.comments_of(iss)[-1])
+        self.assertEqual(self.holder(iss), "CLAUDE")      # the marker wins over the old footer
+        self.board("claim", iss["identifier"], "--by", "CODEX", extra={"AGENT_SEAT": "CODEX"}, code=3)
+
+    def test_footer_forms_aliases_and_unmapped_claimants(self):
+        cases = [("Addressed by designer", "BF-DESIGNER"),            # no reporter, role word, lower case
+                 ("Reported by claude, codex, addressed by minimax", "MM"),
+                 ("Reported by x, addressed by harness", "CLUTCH"),
+                 ("Reported by x, addressed by grok-build", "GROK"),
+                 ("Reported by claude, addressed by codex, cursor", "CODEX,CURSOR"),
+                 ("Reported by claude, addressed by jay", None)]      # not a seat: nobody holds it
+        for i, (line, want) in enumerate(cases):
+            iss = self.legacy(f"Footer {i}", line)
+            self.assertEqual(self.holder(iss), want, line)
+        free = self.legacy("Unmapped claimant", "Reported by claude, addressed by jay")
+        self.board("claim", free["identifier"], "--by", "CLAUDE")      # no holder, so no refusal
+
+    def test_reporter_only_label_is_attribution_not_a_claim(self):
+        """296 imported Todo/Backlog issues carry a reporter's seat label:  no @SEAT, not in --mine."""
+        todo = self.legacy("Reported only", "Reported by codex", state="Todo", labels=("seat:CODEX",))
+        p = self.board("list", "--search", "Reported only")
+        self.assertNotIn("@", p.stdout)
+        rows = json.loads(self.board("list", "--json", "--mine", "CODEX").stdout)
+        self.assertEqual([r["identifier"] for r in rows], ["OPS-11"])
+        rows = json.loads(self.board("list", "--json", "--search", "Reported only").stdout)
+        self.assertEqual((rows[0]["addressed_by"], rows[0]["seats"]), (None, ["CODEX"]))
+        self.board("claim", todo["identifier"], "--by", "CLAUDE")
+        self.assertIn("seat:CODEX", self.label_names(todo))
+        rows = json.loads(self.board("list", "--json", "--mine", "CODEX").stdout)
+        self.assertEqual([r["identifier"] for r in rows], ["OPS-11"])
+
+    def test_mine_follows_the_marker_not_the_reporter(self):
+        iss = self.legacy("Mine?", "Reported by claude, addressed by codex")
+        self.assertEqual(json.loads(self.board("list", "--json", "--mine", "CLAUDE").stdout), [])
+        self.board("claim", iss["identifier"], "--by", "CODEX", extra={"AGENT_SEAT": "CODEX"})
+        mine = json.loads(self.board("list", "--json", "--mine", "CODEX").stdout)
+        self.assertEqual(sorted(r["identifier"] for r in mine), sorted(["OPS-11", iss["identifier"]]))
+        self.assertEqual(json.loads(self.board("list", "--json", "--mine", "CLAUDE").stdout), [])
+
+    def test_list_says_when_in_progress_rows_have_no_marker(self):
+        iss = self.legacy("Unmarked", "Reported by claude, addressed by codex")
+        p = self.board("list", "--status", "in_progress")
+        self.assertIn("no claim marker", p.stderr)
+        self.assertEqual(self.board("list", "--status", "in_progress", "--json").stderr, "")
+        self.board("claim", iss["identifier"], "--by", "CODEX", extra={"AGENT_SEAT": "CODEX"})
+        self.assertNotIn("no claim marker", self.board("list", "--status", "in_progress").stderr)
+
+    def test_open_releases_the_claim(self):
+        self.board("claim", "OPS-10", "--by", "CLAUDE")
+        self.assertEqual(self.holder(self.issue_by_ident("OPS-10")), "CLAUDE")
+        self.board("status", "OPS-10", "open")
+        names = self.label_names(self.issue_by_ident("OPS-10"))
+        self.assertNotIn("claimed:CLAUDE", names)
+        self.assertIn("seat:CLAUDE", names)
+        self.assertEqual(json.loads(self.board("list", "--json", "--mine", "CLAUDE").stdout), [])
+        self.board("claim", "OPS-10", "--by", "CODEX", extra={"AGENT_SEAT": "CODEX"})
+        self.board("status", "OPS-10", "completed")           # closing keeps who addressed it
+        self.assertIn("claimed:CODEX", self.label_names(self.issue_by_ident("OPS-10")))
+
+    def test_claiming_a_closed_issue_replaces_the_old_marker(self):
+        self.board("claim", "ST-1", "--by", "CODEX", extra={"AGENT_SEAT": "CODEX"})
+        self.board("status", "ST-1", "completed")
+        self.board("claim", "ST-1", "--by", "CLAUDE")          # not In Progress, so no refusal
+        names = [n for n in self.label_names(self.issue_by_ident("ST-1")) if n.startswith("claimed:")]
+        self.assertEqual(names, ["claimed:CLAUDE"])
+
+
+class PartialWriteTests(BoardTest):
+    """A verb with several requests that stops part way says what landed, and a rerun finishes it."""
+
+    SESSION = {"CLAUDE_CODE_SESSION_ID": "5e55105a-0000-4000-8000-000000000000"}
+
+    def stop(self, op, **extra):
+        self.mock.limit_ops[op] = 50
+        self.mock.reset_in_ms = 600000
+        return dict(self.SESSION, LINEAR_BOARD_MAX_WAIT="1", **extra)
+
+    def claimed_comments(self, ident):
+        return [b for b in self.comments_of(self.issue_by_ident(ident)) if "CLAIMED" in b]
+
+    def test_claim_stopped_before_its_comment(self):
+        p = self.board("claim", "OPS-10", "--by", "CLAUDE", extra=self.stop("BoardComment"), code=5)
+        self.assertIn("stopped part way", p.stderr)
+        self.assertIn("OPS-10 is In Progress with CLAUDE's claim label", p.stderr)
+        self.assertNotIn("was not applied", p.stderr)
+        iss = self.issue_by_ident("OPS-10")
+        self.assertEqual((iss["state"], "claimed:CLAUDE" in self.label_names(iss)), ("In Progress", True))
+        self.assertEqual(self.claimed_comments("OPS-10"), [])
+        self.mock.limit_ops.clear()
+        p = self.board("claim", "OPS-10", "--by", "CLAUDE", extra=self.SESSION)       # the rerun finishes it
+        self.assertTrue(p.stdout.startswith("claimed "), p.stdout)
+        self.assertEqual(len(self.claimed_comments("OPS-10")), 1)
+        p = self.board("claim", "OPS-10", "--by", "CLAUDE", extra=self.SESSION)       # and a third run adds nothing
+        self.assertEqual(len(self.claimed_comments("OPS-10")), 1)
+        self.assertIn("already on OPS-10", p.stderr)
+
+    def test_status_stopped_before_its_comment(self):
+        p = self.board("status", "OPS-10", "completed", "--resolution", "Landed in #5.",
+                       extra=self.stop("BoardComment"), code=5)
+        self.assertIn("OPS-10 moved to Done", p.stderr)
+        self.assertEqual(self.issue_by_ident("OPS-10")["state"], "Done")
+        self.mock.limit_ops.clear()
+        for _ in range(2):
+            self.board("status", "OPS-10", "completed", "--resolution", "Landed in #5.", extra=self.SESSION)
+        done = [b for b in self.comments_of(self.issue_by_ident("OPS-10")) if "Landed in #5." in b]
+        self.assertEqual(len(done), 1)
+
+    def test_file_prints_the_id_before_its_attachments(self):
+        n = len(self.mock.issues)
+        p = self.board("file", "--title", "Needs an attachment", "--url", "https://github.com/o/r/issues/9",
+                       extra=self.stop("BoardAttach"), code=5)
+        m = re.match(r"filed ([0-9a-f-]{36})  \(-- OPS\)  (OPS-\d+)$", p.stdout.strip())
+        self.assertTrue(m, p.stdout)
+        self.assertEqual(len(self.mock.issues), n + 1)
+        self.assertIn(f"filed {m.group(2)} ({m.group(1)})", p.stderr)
+        self.assertIn("do not file it again", p.stderr)
+        self.assertNotIn("was not applied", p.stderr)
+
+    def test_comment_rerun_is_a_no_op_and_other_words_post(self):
+        args = ("comment", "OPS-10", "--by", "CLAUDE", "--text", "Verified on main.")
+        before = len(self.comments_of(self.issue_by_ident("OPS-10")))
+        self.board(*args, extra=self.SESSION)
+        p = self.board(*args, extra=self.SESSION)
+        self.assertEqual(p.stdout.strip(), f"commented on {B_A[:8]} as CLAUDE  (sessions: {self.SESSION['CLAUDE_CODE_SESSION_ID']})  OPS-10")
+        self.assertIn("not posting it again", p.stderr)
+        self.assertEqual(len(self.comments_of(self.issue_by_ident("OPS-10"))), before + 1)
+        self.board(*args, extra={"CLAUDE_CODE_SESSION_ID": "0ther000-0000-4000-8000-000000000000"})   # new session
+        self.board("comment", "OPS-10", "--by", "CLAUDE", "--text", "Different words.", extra=self.SESSION)
+        self.assertEqual(len(self.comments_of(self.issue_by_ident("OPS-10"))), before + 3)
+
+    def test_comment_ids_are_fixed_per_issue_seat_verb_and_text(self):
+        cli = load_cli()
+        a = cli.comment_id("i1", "CLAUDE", "comment", "body", ["s1"])
+        self.assertEqual(a, cli.comment_id("i1", "CLAUDE", "comment", "body", ["s1"]))
+        for other in (cli.comment_id("i2", "CLAUDE", "comment", "body", ["s1"]),
+                      cli.comment_id("i1", "CODEX", "comment", "body", ["s1"]),
+                      cli.comment_id("i1", "CLAUDE", "status", "body", ["s1"]),
+                      cli.comment_id("i1", "CLAUDE", "comment", "other", ["s1"]),
+                      cli.comment_id("i1", "CLAUDE", "comment", "body", ["s2"])):
+            self.assertNotEqual(a, other)
+        self.assertEqual(str(uuid.UUID(a)), a)
+
+
+class DuplicateTargetTests(BoardTest):
+    def test_duplicate_without_a_target_is_refused_with_the_way_out(self):
+        p = self.board("status", "ST-1", "duplicate", code=2)
+        self.assertIn("needs --of", p.stderr)
+        self.assertIn("wontfix", p.stderr)
+        p = self.board("status", "ST-1", "duplicate", "--resolution", "same bug as the commit deadbeef", code=2)
+        self.assertIn("needs --of", p.stderr)
+        self.assertEqual(self.mock.relations, [])
+
+    def test_target_named_in_the_resolution(self):
+        p = self.board("status", "ST-1", "duplicate", "--resolution", "Dup of ops-10: same digest bug.")
+        self.assertEqual(p.stdout.strip(), f"{B_C[:8]} -> duplicate  ST-1")
+        self.assertIn("taking --of OPS-10", p.stderr)
+        rel = self.mock.relations[-1]
+        self.assertEqual((rel["issue"], rel["related"]), (hy(B_C), hy(B_A)))
+        self.assertIn("Resolution (duplicate of OPS-10): Dup of ops-10: same digest bug.",
+                      self.comments_of(self.issue_by_ident("ST-1"))[-1])
+
+    def test_target_forms(self):
+        cli = load_cli()
+        for text, want in (("duplicate of AFC-3", "AFC-3"), ("DUP OF CT-7.", "CT-7"), ("dup: `OPS-10`", "OPS-10"),
+                           ("dupe of ST-1 (see PR)", "ST-1"), (f"duplicate of {hy(B_A)}", hy(B_A)),
+                           (hy(B_A), hy(B_A)), ("OPS-10", "OPS-10"), ("dup of OPS-10, dup of OPS-10", "OPS-10"),
+                           ("duplicate of 236a2fa7e2ab4d24be03b0414750e0d8", B_A)):
+            self.assertEqual(cli.duplicate_target(text), want, text)
+        for text in ("", "deadbeef", "duplicate of deadbeef", "fixed in a1b2c3d4", "duplicated by OPS-10",
+                     "dup of OPS-10 and dup of ST-1", "dup of PR-123", "see OPS-10", "same as OPS-10",
+                     "dupont-5"):
+            self.assertIsNone(cli.duplicate_target(text), text)
+
+
+class RelabelTests(BoardTest):
+    """relabel_claims.py:  the owner-approved cutover step that gives imported live claims their marker."""
+
+    def setUp(self):
+        super().setUp()
+        mk = lambda t, line, st, labels: self.mock.add_issue(     # noqa: E731
+            str(uuid.uuid4()), "AFC", st, t, 3, ["Kind/agent-report", "imported", *labels], "2026-10-05T12:00:00Z",
+            footer(line))
+        self.a = mk("Claimed by codex", "Reported by claude, addressed by codex", "In Progress", ("seat:CLAUDE", "seat:CODEX"))
+        self.b = mk("In review by claude", "Addressed by claude", "In Review", ("seat:CLAUDE",))
+        self.c = mk("Nobody", "Reported by claude, addressed by jay", "In Progress", ("seat:CLAUDE",))
+        self.d = mk("Done long ago", "Reported by claude, addressed by codex", "Done", ("seat:CLAUDE", "seat:CODEX"))
+        self.labels_before = {i["id"]: list(i["labels"]) for i in self.mock.issues.values()}
+
+    def relabel(self, *args, extra=None, drop=(), code=0):
+        e = dict(self.env, **(extra or {}))
+        for k in drop:
+            e.pop(k, None)
+        p = subprocess.run([PY, str(RELABEL), *args], env=e, capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, code, f"exit {p.returncode}\nstdout:\n{p.stdout}\nstderr:\n{p.stderr}")
+        for tok in self.mock.tokens:
+            self.assertNotIn(tok, p.stdout + p.stderr)
+        return p
+
+    def test_dry_run_writes_nothing(self):
+        p = self.relabel(drop=("LINEAR_BOARD_WRITES",))
+        self.assertIn("2 issue(s) to mark, 1 already marked, 1 with no claimant", p.stdout)
+        self.assertIn(f"{self.a['identifier']}", p.stdout)
+        self.assertIn("claimed:CODEX", p.stdout)
+        self.assertIn("dry run: nothing written", p.stdout)
+        self.assertEqual({i["id"]: i["labels"] for i in self.mock.issues.values()}, self.labels_before)
+        self.assertNotIn("BoardUpdate", self.mock.ops)
+
+    def test_apply_needs_writes_on(self):
+        p = self.relabel("--apply", drop=("LINEAR_BOARD_WRITES",), code=7)
+        self.assertIn("writes to Linear are off", p.stderr)
+        self.assertEqual(self.mock.ops, [])
+
+    def test_apply_is_additive_idempotent_and_resumable(self):
+        p = self.relabel("--apply", "--limit", "1")
+        self.assertIn("stopped at --limit 1", p.stdout)
+        self.assertEqual(self.mock.ops.count("BoardUpdate"), 1)
+        p = self.relabel("--apply")
+        self.assertIn("1 issue(s) to mark, 2 already marked", p.stdout)
+        names = lambda i: self.label_names(i)       # noqa: E731
+        self.assertIn("claimed:CODEX", names(self.a))
+        self.assertIn("claimed:CLAUDE", names(self.b))
+        self.assertEqual([n for n in names(self.c) if n.startswith("claimed:")], [])
+        self.assertEqual([n for n in names(self.d) if n.startswith("claimed:")], [])    # closed rows are not touched
+        for i in (self.a, self.b, self.c):
+            self.assertTrue(set(self.labels_before[i["id"]]) <= set(i["labels"]))        # nothing removed
+        n_updates = self.mock.ops.count("BoardUpdate")
+        self.relabel("--apply")
+        self.assertEqual(self.mock.ops.count("BoardUpdate"), n_updates)
+        # the board now sees the claim without reading any footer
+        rows = json.loads(self.board("list", "--json", "--mine", "CODEX").stdout)
+        self.assertEqual(sorted(r["identifier"] for r in rows), sorted(["OPS-11", self.a["identifier"]]))
+
+    def test_uses_the_fleet_credentials_only(self):
+        self.creds.unlink()
+        p = self.relabel(code=4)
+        self.assertIn("no Fleet credentials", p.stderr)
+        self.assertEqual((self.mock.mints, self.mock.ops), (0, []))
+
+
+def load_cli():
+    """The CLI as a module, for unit checks of its pure functions."""
+    import importlib.machinery
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader("board_cli_under_test", str(CLI))
+    spec = importlib.util.spec_from_loader("board_cli_under_test", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
 
 
 if __name__ == "__main__":

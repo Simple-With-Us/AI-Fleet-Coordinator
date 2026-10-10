@@ -24,11 +24,14 @@ Ids: a full board id (32 hex, with or without hyphens), a prefix of 8 or more
 hex characters, or a Linear identifier such as AFC-123.
 
 Identity: one shared Linear app, "Fleet", that mints its own token by OAuth
-client credentials (design section 2).  The seat comes from AGENT_SEAT.  The
-shared app cannot tell seats apart, so every issue and comment this CLI writes
-starts with a seat tag line ([CLAUDE·6db9ee77]) and a claim carries a
-seat:<TAG> label.  Writes are off unless LINEAR_BOARD_WRITES=1.
-BOARD_BACKEND=mac-collab runs the old board CLI instead (rollback).
+client credentials (design section 2).  The seat comes from AGENT_SEAT, which
+the four write verbs require and the read verbs do not.  The shared app cannot
+tell seats apart, so every issue and comment this CLI writes starts with a seat
+tag line ([CLAUDE·6db9ee77]).  A claim is a claimed:<TAG> label on the issue;
+seat:<TAG> labels only say who reported or touched it (the import put them on
+reporters too), so they are never read as a claim.  Writes are off unless
+LINEAR_BOARD_WRITES=1.  BOARD_BACKEND=mac-collab runs the old board CLI
+instead (rollback).
 
 Stdlib only, so cloud seats, the Grok Bot VM and BotFleet containers can run
 it from any AI-Fleet-Coordinator checkout: python3 scripts/linear-board/board.
@@ -80,6 +83,32 @@ EXIT_WRITES_OFF = 7     # a write verb without LINEAR_BOARD_WRITES=1
 WRITE_VERBS = ("file", "claim", "status", "comment")
 SESSION_ENV_VAR = "CLAUDE_CODE_SESSION_ID"
 
+# A claim is a `claimed:<SEAT>` label; `seat:<SEAT>` is attribution only.  The
+# import put seat labels on reporters as well as claimants (build_plan.seats),
+# so a seat label alone never says who holds an issue.
+CLAIM_PREFIX = "claimed:"
+SEAT_PREFIX = "seat:"
+# Imported claims that have no marker yet are read from the provenance footer's
+# "addressed by" line, normalized as the importer did (lm_common.normalize_seat,
+# design section 6; roster and aliases copied, read Sat, Oct 10, 2026).
+SEAT_ROSTER = {
+    "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "GROK-WEB", "CLUTCH", "FX", "MM", "MA", "MC",
+    "GROK-BOT", "INSTINCT",
+    "GB-HOUSEKEEPER", "GB-MONITOR", "GB-COMPILER", "GB-PLUMBER",
+    "BF-FIXER", "BF-DIRECTOR", "BF-COMPILER", "BF-DESIGNER", "BF-PUBLISHER", "BF-PLUMBER",
+    "BF-ORACLE", "BF-MONITOR", "BF-HOUSEKEEPER", "BF-DEPLOYER", "BF-BUILDER", "BF-PRODUCER",
+}
+BF_ROLES = {"DIRECTOR", "COMPILER", "FIXER", "DESIGNER", "PLUMBER", "PUBLISHER", "PRODUCER",
+            "DEPLOYER", "MONITOR", "HOUSEKEEPER", "ORACLE", "BUILDER"}
+SEAT_ALIASES = {"MINIMAX": "MM", "MUSE": "MA", "GROK-BUILD": "GROK", "ANTIGRAVITY": "AG",
+                "MUSE-ASSIST": "MA", "MUSE-CODE": "MC"}
+CLUTCH_LINEAGE = {"DSH", "DEEPSEEK", "HARNESS"}
+# The importer writes "Reported by x, addressed by y" through str.capitalize(),
+# so the line is lower case after its first letter; "Addressed by y" when there
+# was no reporter.  Linear hands bullets back as `*`.
+FOOTER_ADDRESSED_RE = re.compile(
+    r"(?im)^[ \t]*[*\-+][ \t]+(?:[^\n]*?,[ \t]+)?addressed by[ \t]+([^\n]+?)[ \t]*$")
+
 # Team routing, copied from the importer (lm_common.load_team_routing over
 # fleet-apps.json plus BOARD_SLUG_OVERRIDES, read Sat, Oct 10, 2026).  A slug
 # that matches nothing goes to AFC with an app:<slug> label, as the import did.
@@ -122,7 +151,7 @@ SEV_PRIORITY = {"P0": 1, "P1": 2, "P2": 3, "P3": 4, "P4": 4}
 PRIORITY_ORDER = (1, 2, 3, 4, 0)  # Urgent, High, Medium, Low, none: the board's order
 KINDS = ("agent-report", "review-finding", "effort-row", "github-issue", "sentry")
 ENVS = {"mac": "Mac", "cloud": "Cloud"}
-LABEL_COLORS = {"seat": "#0284c7", "app": "#7c3aed"}
+LABEL_COLORS = {"seat": "#0284c7", "claimed": "#d97706", "app": "#7c3aed"}
 
 OPEN_STATES = ("Todo", "Backlog", "In Progress")
 DONE_STATES = ("Done", "Deployed", "In Review")
@@ -265,11 +294,18 @@ def opener():
 
 # ----------------------------------------------------------------- seat
 
-def current_seat() -> str:
+def current_seat(required: bool = True) -> str:
+    """The seat in AGENT_SEAT.  The four write verbs require it, because every
+    write is signed with it and the CLI never guesses.  Reads (list, show,
+    stats, whoami) do not: they write nothing, and AGENT_SEAT is unset in plain
+    shells, in `zsh -lic`, and under the listener's `env -i`."""
     seat = norm_seat(os.environ.get("AGENT_SEAT"))
     if not seat:
+        if not required:
+            return ""
         die("AGENT_SEAT is not set.  The board CLI writes as the seat in AGENT_SEAT and refuses to "
-            "guess it; export AGENT_SEAT=<your seat tag> (AGENT-SYNC Identity Rules).", EXIT_USAGE)
+            "guess it; export AGENT_SEAT=<your seat tag> (AGENT-SYNC Identity Rules).  Reads "
+            "(list, show, stats, whoami) work without it.", EXIT_USAGE)
     if not re.fullmatch(r"[A-Z][A-Z0-9-]{0,31}", seat):
         die(f"AGENT_SEAT={seat!r} is not a seat tag", EXIT_USAGE)
     return seat
@@ -476,6 +512,21 @@ class Linear:
         self.base_delay = env_float("LINEAR_BOARD_BACKOFF_BASE", 2.0)
         self.max_wait = env_float("LINEAR_BOARD_MAX_WAIT", 90.0)
         self.requests = 0
+        # Mutations of the running verb that already landed, so a give-up part
+        # way through a multi-step verb says what was applied instead of
+        # "not applied".  `rerun` is the advice that goes with them.
+        self.landed: list[str] = []
+        self.rerun = "Rerunning the same command is safe and finishes the rest."
+
+    def partial(self) -> str:
+        if not self.landed:
+            return ""
+        return ("  The command stopped part way.  Already applied: " + "; ".join(self.landed) + ".  "
+                + self.rerun)
+
+    def fail(self, msg: str, code: int = EXIT_ERROR) -> "NoReturn":  # noqa: F821
+        """die(), naming any mutation of this verb that already landed."""
+        die(msg + self.partial(), code)
 
     def _post(self, body: bytes, token: str):
         req = urllib.request.Request(self.url, data=body, method="POST", headers={
@@ -523,8 +574,8 @@ class Linear:
                 status, js, hdrs = self._post(body, token)
             except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
                 if time.time() + delay > deadline:
-                    die(f"no usable response from Linear ({type(e).__name__}); the last request was not "
-                        "confirmed.  Raise LINEAR_BOARD_TIMEOUT or LINEAR_BOARD_MAX_WAIT on a loaded host.")
+                    self.fail(f"no usable response from Linear ({type(e).__name__}); the last request was not "
+                              "confirmed.  Raise LINEAR_BOARD_TIMEOUT or LINEAR_BOARD_MAX_WAIT on a loaded host.")
                 time.sleep(delay)
                 delay = min(delay * 2, 30)
                 continue
@@ -534,8 +585,9 @@ class Linear:
                 wait = max((reset - time.time()) if reset else 0, delay)
                 if time.time() + wait > deadline:
                     when = central(reset) if reset else "within the hour"
-                    die(f"Linear rate limit: the shared Fleet app's budget resets {when}.  This request was "
-                        "not applied; rerun it after the reset.", EXIT_RATE_LIMIT)
+                    die(f"Linear rate limit: the shared Fleet app's budget resets {when}."
+                        + (self.partial() or "  This request was not applied; rerun it after the reset."),
+                        EXIT_RATE_LIMIT)
                 time.sleep(wait)
                 delay = min(delay * 2, 30)
                 continue
@@ -550,7 +602,7 @@ class Linear:
                 die("Linear answered 403: the Fleet app may not do this (scope or team access)", EXIT_AUTH)
             if status >= 500:
                 if time.time() + delay > deadline:
-                    die(f"Linear answered HTTP {status} until LINEAR_BOARD_MAX_WAIT ran out")
+                    self.fail(f"Linear answered HTTP {status} until LINEAR_BOARD_MAX_WAIT ran out")
                 time.sleep(delay)
                 delay = min(delay * 2, 30)
                 continue
@@ -558,7 +610,7 @@ class Linear:
             if errs or data is None:
                 raise GqlError(errs or [{"message": f"HTTP {status} with no data"}], data)
             return data
-        die("gave up after repeated retries against Linear")
+        self.fail("gave up after repeated retries against Linear")
 
     def paginate(self, query: str, variables: dict, path: tuple, page: int, limit: int | None = None):
         """Yield nodes of the connection at `path`, following endCursor."""
@@ -844,7 +896,57 @@ def group_value(n: dict, group: str) -> str | None:
 
 
 def seats_of(n: dict) -> list[str]:
-    return [k.split(":", 1)[1] for k in labels_of(n) if k.startswith("seat:")]
+    """Attribution only:  seats that reported or touched the issue.  Never a claim."""
+    return [k[len(SEAT_PREFIX):] for k in labels_of(n) if k.startswith(SEAT_PREFIX)]
+
+
+def claim_markers(n: dict) -> list[str]:
+    """The seats holding a `claimed:<SEAT>` label, the only claim record `list`
+    and `--mine` can see (they fetch no description or comments)."""
+    return sorted(k[len(CLAIM_PREFIX):] for k in labels_of(n) if k.startswith(CLAIM_PREFIX))
+
+
+def roster_seat(raw: str | None) -> str | None:
+    """One raw attribution token from an imported footer -> roster tag or None
+    (the importer's lm_common.normalize_seat, live claim)."""
+    s = re.sub(r"\(.*?\)", "", str(raw or ""))
+    s = s.strip().strip("@[]<>`'\" \t").split("·")[0].strip()
+    if not s:
+        return None
+    s = re.split(r"\s+", s)[0].strip("@[]<>`'\"").upper()
+    s = SEAT_ALIASES.get(s, s)
+    if s in BF_ROLES:
+        s = "BF-" + s
+    if s in CLUTCH_LINEAGE:
+        return "CLUTCH"
+    return s if s in SEAT_ROSTER else None
+
+
+def footer_claimants(description: str | None) -> list[str]:
+    """Seats named on an "addressed by" line of an imported issue's provenance
+    footer, normalized as the importer did.  Only the footer is read, never
+    the body."""
+    out: list[str] = []
+    for m in FOOTER_ADDRESSED_RE.finditer(split_description(description)["footer"]):
+        for part in re.split(r"[,/&+;]| and ", m.group(1)):
+            seat = roster_seat(part)
+            if seat and seat not in out:
+                out.append(seat)
+    return out
+
+
+def holders_of(n: dict) -> list[str]:
+    """Who holds the claim on `n`.  The claimed:<SEAT> labels when there are
+    any (the CLI writes them, one holder at a time).  Otherwise, for an In
+    Progress issue whose description is loaded, the imported footer's
+    "addressed by" seats, which is how the board recorded claims.  seat:<SEAT>
+    labels are never read as a claim."""
+    marks = claim_markers(n)
+    if marks:
+        return marks
+    if (n.get("state") or {}).get("name") == "In Progress":
+        return footer_claimants(n.get("description"))
+    return []
 
 
 def severity_of(n: dict) -> str | None:
@@ -875,8 +977,8 @@ def row_dict(n: dict) -> dict:
         "title": n.get("title"), "severity": severity_of(n), "status": status_of(n),
         "state": (n.get("state") or {}).get("name"), "app": app_of(n),
         "team": (n.get("team") or {}).get("key"), "source_kind": group_value(n, "Kind"),
-        "env": group_value(n, "Env"), "addressed_by": ",".join(seats) or None,
-        "labels": labels_of(n), "priority": n.get("priority"),
+        "env": group_value(n, "Env"), "addressed_by": ",".join(claim_markers(n)) or None,
+        "seats": seats, "labels": labels_of(n), "priority": n.get("priority"),
         "created_at": n.get("createdAt"), "updated_at": n.get("updatedAt"),
     }
 
@@ -1041,7 +1143,7 @@ def list_filter(a) -> tuple[list[dict], list[str] | None]:
     if a.search:
         parts.append({"title": {"containsIgnoreCase": a.search}})
     if a.mine:
-        parts.append(label_cond(f"seat:{norm_seat(a.mine)}"))
+        parts.append(label_cond(f"{CLAIM_PREFIX}{norm_seat(a.mine)}"))
     return parts, sevs
 
 
@@ -1083,6 +1185,11 @@ def cmd_list(L: Linear, a) -> int:
     for r in out:
         print(fmt_row(r))
         print()
+    unmarked = sum(1 for r in out if r["state"] == "In Progress" and not r["addressed_by"] and r["seats"])
+    if unmarked:
+        warn(f"{unmarked} In Progress row(s) above have no claim marker, so no claimant is shown.  Imported "
+             "claims get a claimed:<SEAT> label in the cutover relabel (README); `board show <id>` reads the "
+             "claimant from the import footer meanwhile.")
     return 0
 
 
@@ -1110,6 +1217,7 @@ def cmd_show(L: Linear, ids: IdIndex, a) -> int:
     comments = all_comments(L, n["id"])
     parts = split_description(n.get("description"))
     r = row_dict(n)
+    r["addressed_by"] = ",".join(holders_of(n)) or None
     r.update({
         "description": parts["description"], "recommended_fix": parts["recommended_fix"],
         "resolution": resolution_of(comments), "reported_by": parts["reported_by"],
@@ -1270,6 +1378,12 @@ def cmd_file(L: Linear, a, seat: str) -> int:
             die(f"Linear refused the new issue: {e}")
     if not issue:
         issue = fetch_issue(L, iid, iid)
+    remember([issue])
+    # Say what was filed before the attachments, so a rate limit that stops the
+    # attach step cannot leave the caller without the id (and refiling it).
+    print(f"filed {issue['id']}  ({sev or '--'} {app_display})  {issue.get('identifier') or ''}", flush=True)
+    L.landed.append(f"filed {issue.get('identifier') or issue['id']} ({issue['id']})")
+    L.rerun = "The issue exists; do not file it again.  Only its attachments are missing."
     for url, label in ((url_for_uid, f"board uid {a.external_uid}"), (a.source_url, "Source")):
         if not url:
             continue
@@ -1277,22 +1391,34 @@ def cmd_file(L: Linear, a, seat: str) -> int:
             L.call(M_ATTACH, {"input": {"issueId": issue["id"], "url": url, "title": label}})
         except GqlError as e:
             warn(f"filed, but attaching {url} failed ({e}); the footer still carries it")
-    remember([issue])
-    print(f"filed {issue['id']}  ({sev or '--'} {app_display})  {issue.get('identifier') or ''}")
     return 0
 
 
-def post_comment(L: Linear, issue_id: str, body: str) -> None:
-    cid = str(uuid.uuid4())
+def comment_id(issue_id: str, seat: str, verb: str, body: str, sessions: list[str] | None) -> str:
+    """Fixed id for a comment, from the issue, seat, verb, text and session (the
+    Central day when there is none), so rerunning a verb that stopped part way
+    cannot post it twice, while the same words next week still post."""
+    when = ",".join(sessions) if sessions else dt.datetime.now(CENTRAL or dt.timezone.utc).strftime("%Y-%m-%d")
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return det_uuid("comment", f"{issue_id}:{seat}:{verb}:{digest}:{when}")
+
+
+def post_comment(L: Linear, n: dict, body: str, seat: str, verb: str, sessions: list[str] | None) -> bool:
+    """Post `body` on issue `n` under a fixed id.  True when posted, False when
+    this exact comment is already there (an earlier run of the same command)."""
+    cid = comment_id(n["id"], seat, verb, body, sessions)
     try:
-        L.call(M_COMMENT, {"input": {"id": cid, "issueId": issue_id, "body": body}})
+        L.call(M_COMMENT, {"input": {"id": cid, "issueId": n["id"], "body": body}})
     except GqlError as e:
         try:
             if L.call(Q_COMMENT_ONE, {"id": cid}).get("comment"):
-                return
+                warn(f"the same {verb} comment from {seat} is already on {n['identifier']} (an earlier run "
+                     "of this command); not posting it again")
+                return False
         except GqlError:
             pass
-        die(f"Linear refused the comment: {e}")
+        L.fail(f"Linear refused the comment: {e}")
+    return True
 
 
 def comment_body(seat: str, sessions: list[str] | None, text: str, where: str | None = None,
@@ -1314,7 +1440,9 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
     env_label = norm_env(a.env)
     n = fetch_issue(L, ids.resolve(a.id), a.id)
     team = n["team"]["key"]
-    holders = [s for s in seats_of(n) if s != by]
+    # Who holds it: claimed:<SEAT> labels, else (In Progress) the import footer.
+    # seat:<SEAT> labels are attribution (reporters carry them too), never a claim.
+    holders = [s for s in holders_of(n) if s != by]
     in_progress = (n.get("state") or {}).get("name") == "In Progress"
     stolen = []
     if in_progress and holders:
@@ -1324,8 +1452,11 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
         stolen = holders
     ws = Workspace(L)
     current = {label_key(x): x["id"] for x in (n.get("labels") or {}).get("nodes") or []}
-    added = [ws.label_id(f"seat:{by}", create=True)]
-    removed = [current[f"seat:{s}"] for s in holders if f"seat:{s}" in current]
+    # One holder: add this seat's marker, drop every other seat's.  Attribution
+    # (seat:) labels are only ever added, so a claim or a steal never erases
+    # who reported or worked the issue.
+    added = [ws.label_id(f"{CLAIM_PREFIX}{by}", create=True), ws.label_id(f"{SEAT_PREFIX}{by}", create=True)]
+    removed = [lid for k, lid in current.items() if k.startswith(CLAIM_PREFIX) and k != f"{CLAIM_PREFIX}{by}"]
     if "stale-claim" in current:
         removed.append(current["stale-claim"])
     if env_label:
@@ -1337,15 +1468,44 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
     try:
         L.call(M_UPDATE, {"id": n["id"], "input": inp})
     except GqlError as e:
-        die(f"Linear refused the claim: {e}")
+        L.fail(f"Linear refused the claim: {e}")
+    L.landed.append(f"{n['identifier']} is In Progress with {by}'s claim label")
     sessions = auto_sessions(a.session_ids)
     text = "CLAIMED"
     if stolen:
         text += f" from {', '.join(stolen)}: {a.reason.strip()}"
-    post_comment(L, n["id"], comment_body(by, sessions, text, a.location, env_label))
+    post_comment(L, n, comment_body(by, sessions, text, a.location, env_label), by, "claim", sessions)
     remember([n])
     print(f"claimed {short_id(n['id'])} by {by} -> in_progress{session_tail(sessions)}  {n['identifier']}")
     return 0
+
+
+_REF = (r"([A-Za-z]{2,4}-\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})")
+DUP_PHRASE_RE = re.compile(r"(?i)\bdup(?:e|licate)?\b(?:\s+(?:of|with))?\s*[:#]?\s*`?" + _REF + r"`?(?![\w-])")
+LONE_REF_RE = re.compile(r"(?i)^\s*`?" + _REF + r"`?\s*$")
+TEAM_IDENT_RE = re.compile(r"(?i)^([A-Za-z]{2,4})-\d+$")
+
+
+def _canon_ref(tok: str) -> str | None:
+    m = TEAM_IDENT_RE.match(tok)
+    if m:
+        return tok.upper() if m.group(1).upper() in TEAM_KEYS else None
+    return tok.lower()
+
+
+def duplicate_target(resolution: str | None) -> str | None:
+    """The canonical issue a `status duplicate` names in --resolution, when it
+    names exactly one.  Only after a "dup of" / "duplicate of" phrase, or when
+    the whole text is one id: a stray 8-hex word (a commit sha) is never taken."""
+    text = (resolution or "").strip()
+    if not text:
+        return None
+    toks = [m.group(1) for m in DUP_PHRASE_RE.finditer(text)]
+    lone = LONE_REF_RE.match(text)
+    if lone:
+        toks.append(lone.group(1))
+    found = {c for c in (_canon_ref(t) for t in toks) if c}
+    return next(iter(found)) if len(found) == 1 else None
 
 
 def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
@@ -1353,14 +1513,21 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
     value = a.value.strip().lower()
     if value not in STATUS_WORDS:
         die(f"unknown status {a.value!r}; use {', '.join(STATUS_WORDS)}", EXIT_USAGE)
-    if value == "duplicate" and not a.of:
-        die("status duplicate needs --of <id of the issue it duplicates>", EXIT_USAGE)
     if a.of and value != "duplicate":
         die("--of only goes with status duplicate", EXIT_USAGE)
+    of = a.of
+    if value == "duplicate" and not of:
+        of = duplicate_target(a.resolution)
+        if not of:
+            die("status duplicate needs --of <id of the issue it duplicates>: Linear only makes a Duplicate "
+                "through a relation to a canonical issue (the mac-collab board took a bare `duplicate`).  Name "
+                "it with --of, or write `dup of <id>` as the --resolution.  If the original is unknown, use "
+                "`status wontfix --resolution \"duplicate, original unknown\"`.", EXIT_USAGE)
+        warn(f"taking --of {of} from the --resolution text")
     n = fetch_issue(L, ids.resolve(a.id), a.id)
     sessions = auto_sessions(a.session_ids)
     if value == "duplicate":
-        canon = fetch_issue(L, ids.resolve(a.of), a.of)
+        canon = fetch_issue(L, ids.resolve(of), of)
         if canon["id"] == n["id"]:
             die("an issue cannot duplicate itself", EXIT_USAGE)
         # Linear refuses a direct move to Duplicate; the relation moves it.
@@ -1373,6 +1540,7 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
             if not any(x.get("type") == "duplicate" and (x.get("relatedIssue") or {}).get("id") == canon["id"]
                        for x in (back.get("relations") or {}).get("nodes") or []):
                 die(f"Linear refused the duplicate relation: {e}")
+        L.landed.append(f"{n['identifier']} marked a duplicate of {canon['identifier']}")
         state = (fetch_issue(L, n["id"], a.id).get("state") or {}).get("name")
         if state != "Duplicate":
             time.sleep(env_float("LINEAR_BOARD_DUP_WAIT", 3))
@@ -1380,7 +1548,7 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
         text = f"Duplicate of {canon['identifier']}"
         if a.resolution:
             text = f"Resolution (duplicate of {canon['identifier']}): {a.resolution.strip()}"
-        post_comment(L, n["id"], comment_body(by, sessions, text))
+        post_comment(L, n, comment_body(by, sessions, text), by, "status", sessions)
         if state != "Duplicate":
             warn(f"the duplicate relation to {canon['identifier']} exists, but Linear left "
                  f"{n['identifier']} in {state}.  It was not forced: Linear refuses a direct move to Duplicate.")
@@ -1391,15 +1559,24 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
         return 0
     ws = Workspace(L)
     state_name = STATUS_TO_STATE[value]
+    inp = {"stateId": ws.state_id(n["team"]["key"], state_name)}
+    if value in ("open", "backlog"):
+        # Todo means unclaimed (design section 3): releasing drops the claim
+        # marker so a later move back to In Progress cannot inherit it.
+        released = [x["id"] for x in (n.get("labels") or {}).get("nodes") or []
+                    if label_key(x).startswith(CLAIM_PREFIX)]
+        if released:
+            inp["removedLabelIds"] = released
     try:
-        L.call(M_UPDATE, {"id": n["id"], "input": {"stateId": ws.state_id(n["team"]["key"], state_name)}})
+        L.call(M_UPDATE, {"id": n["id"], "input": inp})
     except GqlError as e:
         die(f"Linear refused the status change: {e}")
+    L.landed.append(f"{n['identifier']} moved to {state_name}")
     if a.resolution:
         text = f"Resolution ({value}): {a.resolution.strip()}"
     else:
         text = f"Status: {value}"
-    post_comment(L, n["id"], comment_body(by, sessions, text))
+    post_comment(L, n, comment_body(by, sessions, text), by, "status", sessions)
     print(f"{short_id(n['id'])} -> {value}{session_tail(sessions)}  {n['identifier']}")
     return 0
 
@@ -1411,7 +1588,7 @@ def cmd_comment(L: Linear, ids: IdIndex, a, seat: str) -> int:
     env_label = norm_env(a.env)
     n = fetch_issue(L, ids.resolve(a.id), a.id)
     sessions = auto_sessions(a.session_ids)
-    post_comment(L, n["id"], comment_body(by, sessions, a.text, a.location, env_label))
+    post_comment(L, n, comment_body(by, sessions, a.text, a.location, env_label), by, "comment", sessions)
     print(f"commented on {short_id(n['id'])} as {by}{session_tail(sessions)}  {n['identifier']}")
     return 0
 
@@ -1460,7 +1637,8 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
     expected = env("LINEAR_FLEET_APP_NAME", "Fleet")
     writes = "enabled" if env("LINEAR_BOARD_WRITES") == "1" else "disabled (LINEAR_BOARD_WRITES=1 turns them on at cutover)"
     info = auth.info or {}
-    print(f"seat:        {seat} (AGENT_SEAT)")
+    print(f"seat:        {seat} (AGENT_SEAT)" if seat else
+          "seat:        (AGENT_SEAT is not set: reads work, the four write verbs refuse)")
     print(f"backend:     linear ({L.url})")
     print(f"writes:      {writes}")
     print(f"viewer:      {v.get('name')} ({'app user' if v.get('app') else 'NOT an app user'})  id {v.get('id')}")
@@ -1493,7 +1671,7 @@ def build_parser() -> argparse.ArgumentParser:
     lp.add_argument("--severity")
     lp.add_argument("--kind", dest="source_kind")
     lp.add_argument("--search")
-    lp.add_argument("--mine", help="only items claimed by this seat (seat:<TAG> label)")
+    lp.add_argument("--mine", help="only items claimed by this seat (claimed:<TAG> label)")
     lp.add_argument("--limit", default="60")
     lp.add_argument("--json", action="store_true")
 
@@ -1554,7 +1732,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.flush()
         os.execv(sys.executable, [sys.executable, str(old), *argv])
     a = build_parser().parse_args(argv)
-    seat = current_seat()
+    seat = current_seat(required=a.cmd in WRITE_VERBS)
     if a.cmd in WRITE_VERBS and env("LINEAR_BOARD_WRITES") != "1":
         die(f"`board {a.cmd}` is a write, and writes to Linear are off until cutover.  Use the mac-collab "
             "board for writes until then; at cutover the CLI runs with LINEAR_BOARD_WRITES=1.", EXIT_WRITES_OFF)

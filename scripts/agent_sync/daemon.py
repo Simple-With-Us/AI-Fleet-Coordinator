@@ -1750,7 +1750,9 @@ class Daemon:
         url = "%s/#narrow/channel/%s/near/%d" % (self.realm, int(pending.stream_id or 0), int(trigger))
         argv = A.board_argv(self.board_bin, seat=runner.seat, title=str(board["title"]), desc=str(board["desc"]),
                             severity=str(board["severity"]), app=app, trigger_id=trigger, url=url)
-        ok, detail = A.run_board(argv, A.claude_env(self.env, self.home, self.wake_path), self.board_runner)
+        # AGENT_SEAT: the Linear board CLI refuses a write without it, and `env -i` drops the inherited one.
+        ok, detail = A.run_board(argv, A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat),
+                                 self.board_runner)
         return {"board_uid": "zulip:%s:%d" % (runner.seat, trigger) if ok else None, "board_detail": detail,
                 "board": dict(board) if ok else None}
 
