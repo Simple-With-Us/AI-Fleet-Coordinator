@@ -1606,6 +1606,148 @@ class UnknownPrStateTests(GitCase):
         self.assertNotIn("PR state unknown", " ".join(co["safety_reasons"]))
 
 
+class ExternalLanesReportTests(GitCase):
+    """lanes/<Repo> is a symlink onto an external disk (owner 2026-10-10).  git and lsof name a lane at its real
+    path, the scan never follows symlinks, and a lane there must still read as a correct lane at the
+    ~/apps/lanes path agents use.  The fake disk is inside the fake home (a sibling would be forbidden temp)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.parent = self.integration()
+        self.ext = self.home / "ExternalDisk" / "Lanes"
+        self.phys_repo = self.ext / "DealDex"
+        self.phys_repo.mkdir(parents=True)
+        self.lanes = self.home / "apps" / "lanes"
+        self.lanes.mkdir(parents=True)
+        os.symlink(self.phys_repo, self.lanes / "DealDex")
+        self.env = {**self.env, "FLEET_LANES_EXTERNAL_ROOT": str(self.ext)}
+
+    def lane_here(self, name: str = "claude-fix-thing", branch: str = "claude/fix-thing", **kw) -> pathlib.Path:
+        """A linked worktree made through the link: git records the real path on the disk."""
+        return self.add_worktree(self.parent, self.lanes / "DealDex" / name, branch, **kw)
+
+    def co(self, rep: dict, name: str = "claude-fix-thing") -> dict:
+        found = self.by_path(rep)
+        key = str(self.lanes / "DealDex" / name)
+        self.assertIn(key, found, sorted(found))
+        return found[key]
+
+    def test_a_lane_behind_the_link_is_one_correct_lane_at_the_lanes_path(self) -> None:
+        lane = self.lane_here()
+        listed = self.git(self.parent, "worktree", "list", "--porcelain")
+        self.assertIn(f"worktree {self.phys_repo / 'claude-fix-thing'}", listed, "fixture: git records the real path")
+        rep = self.report(env=self.env)
+        paths = [c["realpath"] for c in rep["checkouts"]]
+        self.assertEqual(len(paths), len(set(paths)), "one entry, not one per spelling")
+        co = self.co(rep)
+        self.assertEqual(co["path"], str(lane), "shown the way agents write it")
+        self.assertEqual(co["location_class"], "LANE_NESTED")
+        self.assertEqual((co["layout_status"], co["name_verdict"]), ("correct", "CONFORMING"))
+        self.assertEqual(co["lane_root"], str(lane))
+        self.assertEqual(co["creating_tool"], "claude-cli")
+        self.assertIn("scan:lanes/DealDex", co["found_by"], "the scan follows the link, which it never does by itself")
+        kinds = {a["type"] for a in rep["anomalies"] if a["realpath"] == co["realpath"]}
+        self.assertFalse(kinds & {"WRONG-PLACE", "UNSANCTIONED", "NAME-DRIFT", "NON-LANE", "PRUNABLE", "ORPHAN"}, kinds)
+        self.assertEqual(rep["summary"]["strict_violations"], 0)
+        self.assertEqual(rep["warnings"], [])
+
+    def test_with_the_setting_off_the_same_lane_is_outside_the_map(self) -> None:
+        self.lane_here()
+        rep = self.report(env={**self.env, "FLEET_LANES_EXTERNAL_ROOT": ""})
+        classes = {c["location_class"] for c in rep["checkouts"] if "claude-fix-thing" in c["path"]}
+        self.assertEqual(classes, {"UNSANCTIONED"}, "this is the failure the setting prevents")
+
+    def test_a_process_whose_cwd_is_the_real_path_makes_the_lane_active(self) -> None:
+        lane = self.lane_here()
+        real = self.phys_repo / "claude-fix-thing"
+        for label, cwd in (("real path", str(real / "src")), ("lanes path", str(lane / "src")), ("the root", str(real))):
+            with self.subTest(cwd=label):
+                rep = self.report(env=self.env, lsof_cwds=lambda cwd=cwd: [(4242, "zsh", cwd)])
+                co = self.co(rep)
+                self.assertTrue(co["active"], label)
+                self.assertEqual(co["cwd_procs"], ["4242:zsh"])
+        quiet = self.co(self.report(env=self.env, lsof_cwds=lambda: [(4242, "zsh", str(self.home))]))
+        self.assertFalse(quiet["active"])
+
+    def test_a_worktree_only_git_lists_is_shown_at_the_lanes_path_too(self) -> None:
+        # deeper than the scan goes, so only `git worktree list` (which prints the real path) can find it
+        deep = self.add_worktree(self.parent, self.lanes / "DealDex" / "a" / "b" / "c" / "d" / "claude-deep", "claude/deep")
+        rep = self.report(env=self.env)
+        found = self.by_path(rep)
+        self.assertIn(str(deep), found, sorted(found))
+        co = found[str(deep)]
+        self.assertEqual(co["path"], str(deep))
+        self.assertTrue(any(s.startswith("worktree-list:") for s in co["found_by"]), co["found_by"])
+        self.assertFalse([c for c in rep["checkouts"] if c["path"].startswith(str(self.ext))], "no real-path spelling")
+
+    def test_a_clone_behind_the_link_is_found_by_the_scan_and_flagged_as_a_clone_in_a_lane(self) -> None:
+        clone = self.make_repo(self.lanes / "DealDex" / "claude-clone")
+        rep = self.report(env=self.env)
+        co = self.co(rep, "claude-clone")
+        self.assertEqual((co["kind"], co["path"]), ("FULL-CLONE", str(clone)))
+        self.assertIn("scan:lanes/DealDex", co["found_by"])
+        self.assertIn("FULL-CLONE-IN-LANE", {a["type"] for a in rep["anomalies"] if a["realpath"] == co["realpath"]})
+
+    def test_an_old_merged_lane_behind_the_link_is_a_cleaner_candidate_at_the_lanes_path(self) -> None:
+        lane = self.lane_here(pushed=False)
+        self.commit(lane)
+        pr = {"number": 33, "state": "MERGED", "headRefName": "claude/fix-thing",
+              "headRefOid": self.git(lane, "rev-parse", "HEAD"), "mergedAt": "2026-10-01T00:00:00Z"}
+        rep = self.report(env=self.env, gh_prs=FakeGh({DEALDEX_REPO: [pr]}))
+        self.assertEqual(rep["cleaner_candidates"], [str(lane)])
+        # the janitor joins the candidate to its own checkout by device and inode, so the spelling is free
+        self.assertEqual(os.stat(rep["cleaner_candidates"][0]).st_ino, os.stat(self.phys_repo / "claude-fix-thing").st_ino)
+
+    def test_a_link_that_leads_nowhere_is_a_warning_and_never_a_crash(self) -> None:
+        os.symlink(self.ext / "Gone", self.lanes / "Gone")
+        rep = self.report(env=self.env)
+        text = "\n".join(rep["warnings"])
+        self.assertIn(f"{self.lanes / 'Gone'} is a symlink to", text)
+        self.assertIn("mounted", text)
+        self.assertEqual(rep["summary"]["strict_violations"], 0)
+
+    def test_a_link_to_another_place_and_a_renamed_folder_are_warnings(self) -> None:
+        elsewhere = self.home / "Elsewhere"
+        elsewhere.mkdir()
+        os.symlink(elsewhere, self.lanes / "Stray")
+        other = self.ext / "other-name"
+        other.mkdir()
+        os.symlink(other, self.lanes / "Beta")
+        text = "\n".join(self.report(env=self.env)["warnings"])
+        self.assertIn(f"{self.lanes / 'Stray'} is a symlink to {elsewhere}", text)
+        self.assertIn("not on the external lanes disk", text)
+        self.assertIn(f"{self.lanes / 'Beta'} is a symlink to {other}", text)
+        self.assertIn("another name", text)
+
+    def test_a_folder_on_the_disk_with_no_link_is_a_warning_once_links_are_in_use(self) -> None:
+        (self.ext / "Orphaned").mkdir()
+        text = "\n".join(self.report(env=self.env)["warnings"])
+        self.assertIn("Orphaned", text)
+        self.assertIn("no symlink", text)
+        # no links at all (the feature is not in use): nothing to say about the disk
+        os.unlink(self.lanes / "DealDex")
+        self.assertEqual(self.report(env=self.env)["warnings"], [])
+
+    def test_the_scan_plan_has_a_scan_for_each_link_and_none_without(self) -> None:
+        roots = L.make_roots(self.home, self.env, registry=self.registry, case_insensitive=False)
+        plan = {(s.label, s.path, s.depth) for s in doctor.scan_plan(roots, [], deep=False)}
+        self.assertIn(("lanes/DealDex", str(self.lanes / "DealDex"), 3), plan)
+        os.unlink(self.lanes / "DealDex")
+        labels = {s.label for s in doctor.scan_plan(roots, [], deep=False)}
+        self.assertFalse([name for name in labels if name.startswith("lanes/")])
+
+    def test_the_doctor_runs_only_its_allowlisted_commands_for_a_lane_on_the_disk(self) -> None:
+        self.lane_here()
+        seen: list[list[str]] = []
+
+        def recording(argv, cwd=None, timeout=None):
+            seen.append(list(argv))
+            return doctor.run_cmd(argv, cwd, timeout)
+        self.report(env=self.env, run=recording)
+        self.assertTrue(seen)
+        self.assertFalse([a for a in seen if a[:3] in (["git", "worktree", "prune"], ["git", "worktree", "remove"])])
+
+
 class DiscoveryGapTests(GitCase):
     def test_checkouts_in_the_blind_spots_the_review_found_are_reported(self) -> None:
         buzz = self.make_repo(self.home / ".buzz" / "REPOS" / "congress-trade", remote=None)

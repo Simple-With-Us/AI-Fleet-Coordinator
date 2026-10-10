@@ -242,10 +242,14 @@ class GuardContext:
         # stay temp, so a temp-dir home cannot switch a whole temp root off.
         self.home_f = home_f
         self.home_in_temp = self._raw_remainder(home_f) is not None
+        # Lanes stored on the external disk (lanes/<Repo> is a symlink there) are lanes: a clone of one into
+        # temp is as much a fleet clone as a clone of the same lane at its ~/apps/lanes spelling.
         self.fleet_roots_f = tuple(dict.fromkeys(
-            fold(str(p)) for p in (roots.lanes_root, roots.code_root, roots.apps_root)))
+            fold(str(p)) for p in (roots.lanes_root, roots.code_root, roots.apps_root, *roots.external_lanes_roots)))
         self.code_root_f = fold(str(roots.code_root))
         self.lanes_root_f = fold(str(roots.lanes_root))
+        self.lanes_roots_f = tuple(dict.fromkeys(
+            fold(str(p)) for p in (roots.lanes_root, *roots.external_lanes_roots)))
         self.harness_f = tuple(
             tuple(fold(loc.glob_or_prefix).split("/"))
             for loc in roots.harness_locations if loc.name != "documents")
@@ -332,7 +336,7 @@ def make_context(env: Mapping[str, str] | None = None, *, home: str | os.PathLik
     """Resolve the roots and load the registry once.  This is the only filesystem work.
 
     `env` defaults to the process environment and is read for HOME, TMPDIR, FLEET_LAYOUT,
-    FLEET_LANES_ROOT, FLEET_APPS_JSON, AGENT_SEAT and FLEET_LANE_GUARD.  A registry that cannot
+    FLEET_LANES_ROOT, FLEET_LANES_EXTERNAL_ROOT, FLEET_APPS_JSON, AGENT_SEAT and FLEET_LANE_GUARD.  A registry that cannot
     be read falls back to the EXTRA_APPS rows; owner-based detection still works without it.
     `case_insensitive` defaults to true on macOS.
     """
@@ -1357,7 +1361,7 @@ class _Evaluator:
                     continue
                 app = None
                 if first and (k < 0 or len(rel) > len(first)):
-                    if root == self.ctx.lanes_root_f:
+                    if root in self.ctx.lanes_roots_f:
                         reg = self.ctx.registry
                         app = (reg.app_by_lane_dir(first, case_insensitive=self.ctx.case_insensitive)
                                or reg.app_by_prefix(first) or self._app_from_name(first))

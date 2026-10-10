@@ -193,13 +193,14 @@ PY
 }
 
 # ---- source the janitor in library mode with the fake home --------------------------------------------------------
+EXT="$T/ext/Lanes"; mkdir -p "$EXT"      # the fake external lanes disk (FLEET_LANES_EXTERNAL_ROOT); lanes/Ext is a symlink onto it
 export HOME="$FH" LANES_ROOT="$LANES" FLEET_APPS_JSON="$T/fleet-apps.json" AFC_SCRIPTS="$T/afc" \
-  STALE_DAYS=7 REAP_WORKTREES=1 WT_REAP_DRYRUN=0 LANE_DOCTOR_RETRY_MIN=360
+  STALE_DAYS=7 REAP_WORKTREES=1 WT_REAP_DRYRUN=0 LANE_DOCTOR_RETRY_MIN=360 FLEET_LANES_EXTERNAL_ROOT="$EXT"
 JANITOR_LIB_ONLY=1
 # shellcheck source=disk-janitor.sh
 source "$JANITOR"
 export PATH="$BIN:$PATH"   # the janitor re-exports PATH with /opt/homebrew/bin first: shims go in front again
-for v in DIR LOCK LOG STATE FLEET_APPS_CACHE LANE_REPORT LANE_DOCTOR_FAIL LANES_ROOT AFC_SCRIPTS FLEET_APPS_JSON; do
+for v in DIR LOCK LOG STATE FLEET_APPS_CACHE LANE_REPORT LANE_DOCTOR_FAIL LANES_ROOT LANES_EXTERNAL_ROOT AFC_SCRIPTS FLEET_APPS_JSON; do
   case "${!v}" in "$T"/*) ;; *) fail "$v=${!v} is outside the fake root $T" ;; esac
 done
 [ "$(command -v lsof)" = "$BIN/lsof" ] && [ "$(command -v gh)" = "$BIN/gh" ] || fail "shims are not first on PATH"
@@ -230,6 +231,13 @@ janitor_is_nested_lane "$FH/Apps/LANES/botfleet/case-probe" || fail "a case vari
 ln -s "$LANES" "$T/lanes-link"
 janitor_is_nested_lane "$T/lanes-link/BotFleet/case-probe" || fail "a symlinked spelling of LANES_ROOT is still a nested lane"
 janitor_is_nested_lane "$FH/apps/botfleet-claude-x" && fail "a flat lane is not nested"
+# external lanes (owner 2026-10-10): git lists a lane behind a lanes/<Repo> symlink at its REAL path on the external disk,
+# which is not under LANES_ROOT; it is a nested lane all the same, and so is a case variant of it
+janitor_is_nested_lane "$EXT/BotFleet/claude-x" || fail "a lane at its real path on the external lanes disk is a nested lane"
+janitor_is_nested_lane "$T/EXT/lanes/BotFleet/claude-x" || fail "a case variant of the external lanes root is still a nested lane"
+janitor_is_nested_lane "$T/ext/Lanes-extra/BotFleet/claude-x" && fail "a sibling that only shares the prefix is not an external lane"
+janitor_is_nested_lane "$T/ext/Other/claude-x" && fail "another folder on the external disk is not a lane"
+( LANES_EXTERNAL_ROOT=""; janitor_is_nested_lane "$EXT/BotFleet/claude-x" ) && fail "an empty FLEET_LANES_EXTERNAL_ROOT switches the external root off"
 # layout v2 (owner 2026-10-09): the janitor tests only "under the lanes root", so every v2 shape is a nested lane and
 # stays doctor-gated; a legacy prefix folder, a review checkout, a Claude desktop folder and a Codex folder all count
 for shape in "BotFleet/review-pr-482" "BotFleet/review-pr-482-codex" "BotFleet/active-engines-display-e380b8" \
@@ -349,6 +357,39 @@ janitor_retire_worktrees
 gone "$TC_DISK" || fail "control: the approved typed-case lane with no cwd retires"
 
 drop_lanes "$LANES/BotFleet"
+
+# ---- external lanes: lanes/Ext is a symlink onto the external disk; git lists its lanes at the REAL path ---------
+# Without the external root in janitor_is_nested_lane such a lane is not "nested", skips the doctor gate and retires on
+# the legacy tests (here: 0 commits ahead of origin/main).  It must stay doctor-gated like any lane under the lanes root.
+mkdir -p "$EXT/Ext" && ln -s "$EXT/Ext" "$LANES/Ext"
+L_XA="$LANES/Ext/claude-listed"; mk_lane "$L_XA" claude/x-listed; commit_in "$L_XA" a; age "$L_XA"
+L_XB="$LANES/Ext/claude-unlisted"; mk_lane "$L_XB" claude/x-unlisted; age "$L_XB"
+L_XC="$LANES/Ext/claude-cwd"; mk_lane "$L_XC" claude/x-cwd; commit_in "$L_XC" a; mkdir -p "$L_XC/src"; age "$L_XC"
+git -C "$FH/Code/BotFleet" worktree list --porcelain | grep -q "^worktree $EXT/Ext/claude-unlisted$" \
+  || fail "fixture: git must record the real path on the external disk"
+echo ok > "$T/lsof.mode"; echo "$EXT/Ext/claude-cwd/src" > "$T/lsof.cwds"        # lsof prints the real path, too
+write_report "$LANE_REPORT" "$L_XA" "$L_XC"                                       # the doctor lists two of the three
+janitor_retire_worktrees
+present "$L_XB" || fail "an external lane the doctor did not list must be kept, however merged it looks (it is nested)"
+present "$L_XC" || fail "a process cwd at the real external path must keep an approved external lane"
+gone "$L_XA" || fail "an approved external lane with no cwd must retire (log: $(tail -2 "$LOG"))"
+: > "$T/lsof.cwds"
+janitor_dep_reap_worktrees >/dev/null 2>&1; present "$L_XB" || fail "dep-reap must not remove an external lane"
+
+# git worktree prune deletes the registry entry of every worktree whose folder is missing: an unmounted external disk
+# must never reach it (janitor_prune_safe), while a mounted one, or no external lanes at all, prunes as before.
+janitor_prune_safe "$FH/Code/BotFleet" || fail "mounted disk: prune is safe"
+mv "$T/ext/Lanes" "$T/ext/Lanes.off"
+janitor_prune_safe "$FH/Code/BotFleet" && fail "a lanes/Ext symlink that leads nowhere (disk not mounted): prune must be skipped"
+rm "$LANES/Ext"
+janitor_prune_safe "$FH/Code/BotFleet" && fail "disk not mounted and the repo still lists lanes under it: prune must be skipped"
+janitor_prune_safe "$FH/Code/fleet-ops" || fail "disk not mounted but this repo lists nothing under it: prune is safe"
+mv "$T/ext/Lanes.off" "$T/ext/Lanes"; ln -s "$EXT/Ext" "$LANES/Ext"
+janitor_prune_safe "$FH/Code/BotFleet" || fail "remounted: prune is safe again"
+drop_lanes "$EXT"; rm -f "$LANES/Ext"
+mv "$T/ext/Lanes" "$T/ext/Lanes.off"
+janitor_prune_safe "$FH/Code/BotFleet" || fail "no external lanes registered and no link: an absent disk costs nothing, prune"
+mv "$T/ext/Lanes.off" "$T/ext/Lanes"
 
 # ---- janitor_pr_merged: by head sha, never by a reused branch name -----------------------------------------------
 P="$T/prrepo"; git "${GA[@]}" init -q "$P"; ( cd "$P" && echo a > a && git add a && git "${GA[@]}" commit -qm one ) || fail "pr repo"

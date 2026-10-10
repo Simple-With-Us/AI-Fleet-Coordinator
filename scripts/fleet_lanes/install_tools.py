@@ -275,7 +275,7 @@ EXIT2_FORMATS = ("kimi",)
 _SCRUB_ENV = (
     "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONSAFEPATH", "PYTHONUSERBASE", "PYTHONUTF8",
     "PYTHONDONTWRITEBYTECODE", "VIRTUAL_ENV", "FLEET_APPS_JSON", "FLEET_LAYOUT", "FLEET_LANES_ROOT",
-    "FLEET_LANE_GUARD", "AGENT_SEAT",
+    "FLEET_LANES_EXTERNAL_ROOT", "FLEET_LANE_GUARD", "AGENT_SEAT",
 )
 
 # The guard's own kill switch (guard.py: Owner-only note).  Imported from guard.py when that works, so the

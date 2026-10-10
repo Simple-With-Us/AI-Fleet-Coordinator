@@ -1254,6 +1254,138 @@ class LaneNewTests(WorldCase):
         self.assertIn("cannot read the registry", res.err)
 
 
+class ExternalLanesTests(WorldCase):
+    """lanes/<Repo> is a symlink onto an external disk (owner 2026-10-10).  `lane new` must make the lane there
+    without anyone noticing: the path it prints is the ~/apps/lanes one, git records the real one, and every
+    check that says "inside the lanes root" has to hold for both.  The fake disk sits inside the fake home,
+    because a folder next to the home would be forbidden temp."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        w = self.w
+        self.ext = w.home / "ExternalDisk" / "Lanes"
+        self.phys_repo = self.ext / "DealDex"
+        self.phys_repo.mkdir(parents=True)
+        self.lanes = w.roots.lanes_root
+        self.lanes.mkdir(parents=True, exist_ok=True)
+        os.symlink(self.phys_repo, self.lanes / "DealDex")
+        self.env = {"FLEET_LANES_EXTERNAL_ROOT": str(self.ext)}
+
+    def test_lane_new_through_the_link_prints_the_lanes_path_and_git_records_the_real_one(self) -> None:
+        w = self.w
+        res = w.lane("new", "DealDex", "fix-thing", env=self.env)
+        path = w.lane_path()
+        self.assertEqual((res.rc, res.out), (0, f"{path}\n"), res.err)
+        self.assertIn("created", res.err)
+        self.assertEqual(os.path.realpath(path), str(self.phys_repo / "claude-fix-thing"))
+        self.assertTrue((self.phys_repo / "claude-fix-thing" / ".git").exists(), "the lane is on the external disk")
+        self.assertEqual(w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "claude/fix-thing")
+        self.assertEqual(w.git(["status", "--porcelain"], cwd=path), "")
+        listed = w.git(["worktree", "list", "--porcelain"], cwd=w.tree)
+        self.assertIn(f"worktree {self.phys_repo / 'claude-fix-thing'}", listed, "git records the real path")
+        roots = L.make_roots(w.home, {**w.env, **self.env}, registry=REGISTRY)
+        for p in (path, self.phys_repo / "claude-fix-thing"):
+            self.assertEqual(L.classify_location(p, roots), L.LocationClass.LANE_NESTED, str(p))
+        git_dir = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=path))
+        self.assertTrue((git_dir / "lane.json").is_file(), "the manifest is written")
+        self.assertEqual(json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))["branch"], "claude/fix-thing")
+
+    def test_a_second_run_finds_the_lane_it_made_and_changes_nothing(self) -> None:
+        w = self.w
+        self.assertEqual(w.lane("new", "DealDex", "fix-thing", env=self.env).rc, 0)
+        before = w.everything_hash()
+        res = w.lane("new", "DealDex", "fix-thing", env=self.env)
+        self.assertEqual((res.rc, res.out), (0, f"{w.lane_path()}\n"), res.err)
+        self.assertIn("already exists", res.err)
+        self.assertEqual(w.everything_hash(), before)
+        self.assertFalse(res.has("worktree", "add"))
+
+    def test_lane_path_and_dry_run_print_the_lanes_path_and_change_nothing(self) -> None:
+        w = self.w
+        before = w.everything_hash()
+        shown = w.lane("path", "DealDex", "fix-thing", env=self.env)
+        self.assertEqual((shown.rc, shown.out), (0, f"{w.lane_path()}\n"), shown.err)
+        dry = w.lane("new", "DealDex", "fix-thing", "--dry-run", env=self.env)
+        self.assertEqual((dry.rc, dry.out), (0, f"{w.lane_path()}\n"), dry.err)
+        self.assertFalse((self.phys_repo / "claude-fix-thing").exists())
+        self.assertEqual(w.everything_hash(), before)
+
+    def test_a_review_checkout_is_made_on_the_disk_too(self) -> None:
+        w = self.w
+        res = w.lane("new", "DealDex", "--review", "--pr", "7", env=self.env)
+        self.assertEqual((res.rc, res.out), (0, f"{w.review_path()}\n"), res.err)
+        self.assertTrue((self.phys_repo / "review-pr-7" / ".git").exists())
+        self.assertEqual(w.git(["rev-parse", "HEAD"], cwd=w.review_path()), SHAS["pr"])
+        again = w.lane("new", "DealDex", "--review", "--pr", "7", env=self.env)
+        self.assertEqual((again.rc, again.out), (0, f"{w.review_path()}\n"), again.err)
+
+    def test_a_new_repo_folder_is_made_in_the_lanes_root_when_there_is_no_link(self) -> None:
+        # the link is per repo folder: a repo without one keeps its lanes on the internal disk, as before
+        w = self.w
+        os.unlink(self.lanes / "DealDex")
+        res = w.lane("new", "DealDex", "fix-thing", env=self.env)
+        self.assertEqual((res.rc, res.out), (0, f"{w.lane_path()}\n"), res.err)
+        self.assertFalse(w.lane_path().is_symlink() or (self.lanes / "DealDex").is_symlink())
+        self.assertEqual(os.path.realpath(w.lane_path()), str(w.lane_path()))
+
+    def test_the_allowlist_treats_a_path_on_the_disk_as_inside_the_lanes_root(self) -> None:
+        w = self.w
+        roots = L.make_roots(w.home, {**w.env, **self.env}, registry=REGISTRY)
+        argv = ["git", "worktree", "add", "-b", "claude/x", str(self.lanes / "DealDex" / "claude-x"), SHAS["main"]]
+        K.check_allowed(argv, write_root=roots.lanes_root, fold=L.logical_fold(roots))
+        with self.assertRaises(K.CommandRefused):
+            K.check_allowed(argv, write_root=roots.lanes_root, fold=str.casefold)    # the old comparison would refuse
+        outside = ["git", "worktree", "add", "-b", "claude/x", str(self.ext / "Other" / "claude-x"), SHAS["main"]]
+        K.check_allowed(outside, write_root=roots.lanes_root, fold=L.logical_fold(roots))   # on the disk, so fine
+        elsewhere = ["git", "worktree", "add", "-b", "claude/x", str(w.home / "Elsewhere" / "claude-x"), SHAS["main"]]
+        with self.assertRaises(K.CommandRefused):
+            K.check_allowed(elsewhere, write_root=roots.lanes_root, fold=L.logical_fold(roots))
+
+    def test_without_the_setting_the_link_is_refused_in_words(self) -> None:
+        w = self.w
+        before = w.everything_hash()
+        res = w.lane("new", "DealDex", "fix-thing", env={"FLEET_LANES_EXTERNAL_ROOT": ""})
+        self.assertEqual((res.rc, res.out), (64, ""), res.err)
+        self.assertIn("is a symlink to", res.err)
+        self.assertIn(str(self.phys_repo), res.err)
+        self.assertEqual(w.everything_hash(), before)
+
+    def test_a_link_to_another_place_is_refused_and_nothing_is_made(self) -> None:
+        w = self.w
+        elsewhere = w.home / "Elsewhere"
+        elsewhere.mkdir()
+        os.unlink(self.lanes / "DealDex")
+        os.symlink(elsewhere, self.lanes / "DealDex")
+        before = w.everything_hash()
+        res = w.lane("new", "DealDex", "fix-thing", env=self.env)
+        self.assertEqual((res.rc, res.out), (64, ""), res.err)
+        self.assertIn("is a symlink to", res.err)
+        self.assertIn("external lanes disk", res.err)
+        self.assertEqual(w.everything_hash(), before)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_an_unmounted_disk_is_a_clear_refusal_and_creates_nothing(self) -> None:
+        w = self.w
+        shutil.rmtree(self.ext)                      # the disk is gone: lanes/DealDex now leads nowhere
+        before = w.everything_hash()
+        res = w.lane("new", "DealDex", "fix-thing", env=self.env)
+        self.assertEqual((res.rc, res.out), (64, ""), res.err)
+        self.assertIn("does not exist", res.err)
+        self.assertIn("mounted", res.err)
+        self.assertFalse(self.ext.exists(), "lane must not recreate the disk's folders on the wrong volume")
+        self.assertEqual(w.everything_hash(), before)
+        review = w.lane("new", "DealDex", "--review", "--pr", "7", env=self.env)
+        self.assertEqual((review.rc, review.out), (64, ""), review.err)
+        self.assertFalse(self.ext.exists())
+
+    def test_the_default_root_does_not_change_a_plain_lane_new(self) -> None:
+        # no external setting at all and no link: exactly the old behaviour
+        w = self.w
+        os.unlink(self.lanes / "DealDex")
+        res = w.lane("new", "DealDex", "fix-thing")
+        self.assertEqual((res.rc, res.out), (0, f"{w.lane_path()}\n"), res.err)
+
+
 class PathCommandTests(WorldCase):
     def test_prints_the_would_be_path_without_side_effects(self) -> None:
         w = self.w
