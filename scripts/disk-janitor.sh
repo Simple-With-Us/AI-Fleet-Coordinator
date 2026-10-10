@@ -532,22 +532,35 @@ janitor_lane_report_refresh() {
 # 0 = `git worktree prune` is safe in repo $1.  Prune deletes the registry entry (and so the private index and HEAD) of
 # every worktree whose folder is missing, and a lane on an unmounted disk is a missing folder.  An external disk that is
 # unplugged, asleep or not yet mounted at the 30-minute tick must not cost its lanes their repository link, so prune is
-# skipped (and logged) when a lanes/<Repo> symlink that points onto the external lanes root leads nowhere, or when the
-# external lanes root is not a directory while the repo lists a worktree under it.  Off (empty root) = always safe, as
-# before.  Fail closed: this only ever skips a tidy-up.  Other dangling links in the lanes root are not this script's.
+# skipped (and logged) when ANY of these holds:
+#   * a lanes/<Repo> symlink that points onto the external lanes root leads nowhere (an absolute link);
+#   * the repo lists a worktree under the lanes root whose top folder lanes/<Repo> is a symlink that leads nowhere,
+#     whatever the link's target says (a relative link, or a lane whose registered path is still its lanes spelling,
+#     which is what a lane moved to the disk keeps);
+#   * the repo lists a worktree under the external lanes root while that root is not a directory.
+# Off (empty root) = always safe, as before.  Fail closed: this only ever skips a tidy-up.  A dangling link in the lanes
+# root that no listed worktree is under is not this script's business and does not stop prune.
 janitor_prune_safe() {
-  local r="$1" link tgt wt ext ext_lc
+  local r="$1" link tgt wt wt_lc ext ext_lc root root_lc rel
   ext="${LANES_EXTERNAL_ROOT%/}"
   [ -n "$ext" ] || return 0
   ext_lc=$(printf '%s' "$ext" | tr '[:upper:]' '[:lower:]')
+  root="${LANES_ROOT%/}"
+  root_lc=$(printf '%s' "$root" | tr '[:upper:]' '[:lower:]')
   for link in "$LANES_ROOT"/*; do
     [ -L "$link" ] && [ ! -d "$link" ] || continue
     tgt=$(readlink "$link" 2>/dev/null | tr '[:upper:]' '[:lower:]')
     case "$tgt" in "$ext_lc"|"$ext_lc"/*) return 1 ;; esac
   done
-  [ -d "$ext" ] && return 0
   while IFS= read -r wt; do
-    case "$(printf '%s' "$wt" | tr '[:upper:]' '[:lower:]')" in "$ext_lc"/*) return 1 ;; esac
+    wt_lc=$(printf '%s' "$wt" | tr '[:upper:]' '[:lower:]')
+    case "$wt_lc" in
+      "$ext_lc"/*) [ -d "$ext" ] || return 1 ;;
+      "$root_lc"/*)
+        rel=${wt:$(( ${#root} + 1 ))}
+        link="$root/${rel%%/*}"
+        [ -L "$link" ] && [ ! -d "$link" ] && return 1 ;;
+    esac
   done < <(git -C "$r" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
   return 0
 }

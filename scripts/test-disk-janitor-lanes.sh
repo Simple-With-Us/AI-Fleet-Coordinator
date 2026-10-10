@@ -396,6 +396,19 @@ mv "$T/ext/Lanes" "$T/ext/Lanes.off"
 janitor_prune_safe "$FH/Code/BotFleet" || fail "no external lanes registered and no link: an absent disk costs nothing, prune"
 mv "$T/ext/Lanes.off" "$T/ext/Lanes"
 
+# A lane moved to the disk keeps its OLD registered path (its lanes spelling), and a mover may make the link relative.
+# Neither names the external root, so the guard has to look at the listed worktree's top folder instead.
+mkdir -p "$LANES/Moved"; mk_lane "$LANES/Moved/claude-moved" claude/moved-to-disk
+mv "$LANES/Moved" "$EXT/Moved" && ln -s "../../../ext/Lanes/Moved" "$LANES/Moved"
+[ -d "$LANES/Moved/claude-moved" ] || fail "fixture: the relative link must work while the disk is there"
+git -C "$FH/Code/BotFleet" worktree list --porcelain | grep -q "^worktree $LANES/Moved/claude-moved$" || fail "fixture: git must still list the lanes spelling"
+janitor_prune_safe "$FH/Code/BotFleet" || fail "relative link, disk mounted: prune is safe"
+mv "$T/ext/Lanes" "$T/ext/Lanes.off"
+janitor_prune_safe "$FH/Code/BotFleet" && fail "a relative dangling link over a lane registered at its lanes path: prune must be skipped"
+mv "$T/ext/Lanes.off" "$T/ext/Lanes"
+janitor_prune_safe "$FH/Code/BotFleet" || fail "relative link, remounted: prune is safe again"
+drop_lanes "$LANES/Moved"; rm -f "$LANES/Moved"; rm -rf "$EXT/Moved"
+
 # ---- janitor_pr_merged: by head sha, never by a reused branch name -----------------------------------------------
 P="$T/prrepo"; git "${GA[@]}" init -q "$P"; ( cd "$P" && echo a > a && git add a && git "${GA[@]}" commit -qm one ) || fail "pr repo"
 git -C "$P" remote add origin git@github.com:Test/PrRepo.git
