@@ -11,6 +11,11 @@
 // `stream_id` (the trigger's Zulip stream id, null for a DM) is optional here
 // so an older listener's body still parses;  events.js then refuses a channel
 // wake that lacks it.
+// `held_back` is optional too:  the listener's summary of wakes it held back
+// for its budget, `{count, items}`, with at most 20 items of metadata and no
+// message text.  When present it is checked strictly (heldBackProblem), and a
+// malformed one is 400 `bad_held_back`.  Keys an item does not know are
+// ignored, never forwarded:  events.js copies only the fields it knows.
 //
 // Pure module:  WebCrypto only, so `node --test` loads it.
 
@@ -23,8 +28,15 @@ export const WAKE_MAX_AGE_S = 5 * 60;
 export const WAKE_MAX_SKEW_S = 60;
 // The shortest key the Worker accepts.  `openssl rand -hex 32` gives 64.
 export const WAKE_MIN_KEY_LEN = 32;
+// `held_back` limits:  at most 20 items, and every string in an item at most
+// 200 UTF-16 code units (the listener sends at most 100 characters of a name
+// and drops a link longer than 200 rather than cut it).
+export const HELD_BACK_MAX_ITEMS = 20;
+export const HELD_BACK_MAX_STRING = 200;
 
 const HEX64_RE = /^[0-9a-f]{64}$/;
+// A held-back reason is a budget's name (wakes_per_hour, usd_per_day, ...) or overflow.
+const REASON_RE = /^[a-z][a-z0-9_]{0,63}$/;
 const WAKE_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 const PATH_RE = /^\/internal\/wake\/([A-Z][A-Z0-9-]{0,31})$/;
 
@@ -71,6 +83,45 @@ export async function wakeSignature(key, bytes) {
 
 const isInt = (v) => Number.isSafeInteger(v);
 const isStrOrNull = (v) => v === null || typeof v === "string";
+const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const isShortStr = (v) => typeof v === "string" && v.length <= HELD_BACK_MAX_STRING;
+const isShortStrOrNull = (v) => v === null || isShortStr(v);
+
+/**
+ * Is one held-back item well formed?  Every known field is required with its
+ * exact type:  message_id a positive integer, dm a boolean, channel and topic
+ * a short string or null, stream_id a positive integer or null, sender and
+ * link short strings, reason a slug and at whole seconds.  A DM names no
+ * stream, so a DM item with a channel, topic or stream id is refused, the same
+ * rule as `dm` and `reply_to` at the top level.
+ */
+function heldBackItemOk(item) {
+  if (!isObject(item)) return false;
+  if (!(isInt(item.message_id) && item.message_id > 0)) return false;
+  if (typeof item.dm !== "boolean") return false;
+  if (!isShortStrOrNull(item.channel) || !isShortStrOrNull(item.topic)) return false;
+  if (!(item.stream_id === null || (isInt(item.stream_id) && item.stream_id > 0))) return false;
+  if (!isShortStr(item.sender_full_name) || !isShortStr(item.zulip_link)) return false;
+  if (typeof item.reason !== "string" || !REASON_RE.test(item.reason)) return false;
+  if (!(isInt(item.at) && item.at >= 0)) return false;
+  if (item.dm && (item.channel !== null || item.topic !== null || item.stream_id !== null)) return false;
+  return true;
+}
+
+/**
+ * True when `held_back` is present and malformed.  Absent or null is fine.
+ * Present, it is `{count, items}`:  count an integer of at least 0 and at
+ * least the number of items (the listener may hold back more than it lists),
+ * items an array of at most HELD_BACK_MAX_ITEMS well-formed items.
+ */
+export function heldBackProblem(heldBack) {
+  if (heldBack === undefined || heldBack === null) return false;
+  if (!isObject(heldBack)) return true;
+  const { count, items } = heldBack;
+  if (!(isInt(count) && count >= 0)) return true;
+  if (!Array.isArray(items) || items.length > HELD_BACK_MAX_ITEMS || items.length > count) return true;
+  return !items.every(heldBackItemOk);
+}
 
 /**
  * Check one wake request.  `bytes` is the raw body (at most WAKE_MAX_BODY),
@@ -114,5 +165,6 @@ export async function verifyWake({ bytes, signature, key, seat, now = Date.now()
   }
   // A DM is a DM in both places, or the channel rule (events.js) and the payload could disagree.
   if ((replyTo.type === "direct") !== wake.dm) return { ok: false, status: 400, reason: "bad_reply_to" };
+  if (heldBackProblem(wake.held_back)) return { ok: false, status: 400, reason: "bad_held_back" };
   return { ok: true, wake };
 }
