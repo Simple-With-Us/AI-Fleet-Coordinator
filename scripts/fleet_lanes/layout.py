@@ -13,6 +13,7 @@ Layout v2 (owner decision 2026-10-09).  Sanctioned places for checkouts:
        ~/apps/lanes/<Repo>/<slug>-<hex>       made by Claude desktop (its worktree location is ~/apps/lanes)
        ~/apps/lanes/<Repo>/review-pr-<n>      read-only PR check (-<seat> is added when another seat has it)
        ~/apps/lanes/_codex/<slug>/<Repo>      Codex desktop, the one tool that nests the other way round
+       ~/apps/lanes/_conductor/<Repo>/<city>  Conductor, which names its own workspaces with city names
      The FLEET_LAYOUT variable can still say `flat` (~/apps/<prefix>-<seat>-<slug>); that is a legacy
      opt-out and is no longer documented as a way to create lanes.
   3. Harness-managed worktree locations (~/.codex/worktrees, .cursor/worktrees and friends).
@@ -79,7 +80,7 @@ __all__ = [
     "expected_lane_path", "LaneNameResult", "explain_lane_name", "check_lane_name",
     "LayoutStatus", "LayoutResult", "STATUS_LABELS", "explain_layout",
     "check_branch_name", "seat_from_branch", "upgrade_with_branch",
-    "CODEX_DIR", "LEGACY_MANAGED_DIR", "LEGACY_REVIEW_DIR", "REVIEW_PREFIX",
+    "CODEX_DIR", "CONDUCTOR_DIR", "LEGACY_MANAGED_DIR", "LEGACY_REVIEW_DIR", "REVIEW_PREFIX",
 ]
 
 DEFAULT_OWNER = "Simple-With-Us"
@@ -96,6 +97,10 @@ ENV_APPS_JSON = "FLEET_APPS_JSON"
 # `_managed` and `_review` folders are the pre-v2 homes of harness worktrees and PR checks.  They are
 # still recognised (MANAGED and REVIEW) so the fleet can migrate, and layout status calls them legacy.
 CODEX_DIR = "_codex"
+# Conductor (conductor.build) files a workspace at <location>/<Repo>/<city> with a city name it picks itself, so it can
+# never be <seat>-<slug> or <slug>-<hex>.  Like _codex it gets a reserved root of its own, and everything below it is
+# harness-managed.  The app's default location (~/conductor/workspaces) is a sanctioned harness location too.
+CONDUCTOR_DIR = "_conductor"
 LEGACY_MANAGED_DIR = "_managed"
 LEGACY_REVIEW_DIR = "_review"
 REVIEW_PREFIX = "review-pr-"
@@ -529,6 +534,7 @@ _HARNESS_SPECS: tuple[tuple[str, str, bool], ...] = (
     ("claude-repo", "Code/*/.claude/worktrees", True),
     ("muse-repo", "Code/*/.muse/worktrees", True),
     ("codex", ".codex/worktrees", True),
+    ("conductor", "conductor/workspaces", True),
     ("cursor", ".cursor/worktrees", True),
     ("grok", ".grok/worktrees", True),
     ("antigravity", ".gemini/antigravity/worktrees", True),
@@ -560,6 +566,7 @@ class Roots:
     integration_names: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     seat_tokens: tuple[str, ...] = ()
+    conductor_root: Path | None = None
 
 
 def _real(path: str | os.PathLike[str]) -> str:
@@ -658,6 +665,7 @@ def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = Non
         integration_names=registry.integration_names(),
         warnings=tuple(warnings),
         seat_tokens=tuple(sorted(canonical_seat_set(registry) | set(seat_alias_map(registry)) | ROLE_TOKENS)),
+        conductor_root=Path(lanes_root) / CONDUCTOR_DIR,
     )
 
 
@@ -793,6 +801,8 @@ def _classify(real: str, roots: Roots, is_checkout: bool | None) -> tuple[Locati
         # <slug>/<Repo> (layout v2).  _managed and _review are the pre-v2 homes of harness worktrees
         # and PR checks, still recognised so the fleet can migrate.  Any other one is unsanctioned.
         if _under(parts, _parts(roots.codex_root, roots)) or _under(parts, _parts(roots.legacy_managed_root, roots)):
+            return LocationClass.MANAGED, None
+        if roots.conductor_root is not None and _under(parts, _parts(roots.conductor_root, roots)):
             return LocationClass.MANAGED, None
         if _under(parts, _parts(roots.legacy_review_root, roots)):
             return LocationClass.REVIEW, None
@@ -1268,6 +1278,8 @@ def explain_layout(path: str | os.PathLike[str], registry: Registry, roots: Root
         orig_rel = orig[len(lanes_p):]
         if rel and rel[0] == CODEX_DIR:
             return done(LayoutStatus.CODEX_MANAGED, "lanes/_codex")
+        if rel and rel[0] == CONDUCTOR_DIR:
+            return done(LayoutStatus.TOOL_MANAGED, "lanes/_conductor")
         if rel and rel[0] in (LEGACY_MANAGED_DIR, LEGACY_REVIEW_DIR):
             return done(LayoutStatus.LEGACY, f"legacy-folder:{orig_rel[0]}")
         if cls is LocationClass.UNSANCTIONED or len(orig_rel) < 2:

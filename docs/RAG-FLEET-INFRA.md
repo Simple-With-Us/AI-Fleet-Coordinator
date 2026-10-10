@@ -160,7 +160,10 @@ a rare infra/policy scan of owner rulings only.
 
 The `fleet-recall` MCP server is registered in every CLI's global MCP config by
 `scripts/install-fleet-rag.sh` (stdio, `python3 ~/apps/fleet-rag/fleet-recall-mcp.py`, no
-tokens in any config file).  Tools:
+tokens in any config file).  OpenCode, Kimi Code, Copilot CLI, Muse Code, MiniMax and fx have their own formats, so the same script
+calls `python3 -m fleet_lanes.install_mcp` for them (each tool's native shape, a tool that is not installed is skipped, a
+hand-registered entry is left alone).  Clutch is not in the list: it carries `fleet-recall` as a native agent preset
+(`~/.clutch/dsh/.agent-presets/fleet-recall`), and a second copy would double the tools.  Tools:
 
 - `recall_search(query, limit=5, category?, app?, source?, seat?, since_days?)`
 - `recall_contribute(text, category, app="fleet", seat, title?, url?)`

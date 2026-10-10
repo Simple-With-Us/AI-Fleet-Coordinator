@@ -65,6 +65,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, TextIO, Tuple
 
+from . import cordis_patch as CP
 from . import marked_block as MB
 
 EXIT_OK = 0
@@ -337,40 +338,29 @@ def clutch_block_body(argv: List[str]) -> List[str]:
     return lines
 
 
-def _patch_is_a_list(text: str) -> bool:
-    """A cordis patch is a top-level YAML array: every column-0 line is a comment, blank, or starts with `- `."""
-    for line in text.split("\n"):
-        line = line.rstrip("\r")
-        if not line or line[0] in (" ", "\t", "#"):
-            continue
-        if not (line.startswith("- ") or line == "-"):
-            return False
-    return True
-
-
-def edit_clutch_patch(text: Optional[str], argv: List[str], action: str) -> Tuple[Outcome, Optional[str]]:
+def edit_clutch_patch(text: Optional[str], argv: List[str], action: str) -> Tuple[Outcome, Optional[str], bool]:
+    """(outcome, new text, delete).  `delete` means the last block went and only comments were left, so the file
+    goes (a comment-only patch crashes the engine; see cordis_patch)."""
     name = AGENT_SYNC
     try:
-        if text is not None and text.strip() and not _patch_is_a_list(text):
+        if text is not None and text.strip() and not CP.is_list_patch(text):
             return Outcome(CLUTCH_KEY, name, "skipped-bad-shape",
-                           "the cordis patch is not a top-level list; left alone"), None
+                           "the cordis patch is not a top-level list; left alone"), None, False
         if action == "add":
-            new, act = MB.upsert_block(text, CLUTCH_BLOCK, TOOL, clutch_block_body(argv))
+            new, act = CP.upsert(text, CLUTCH_BLOCK, TOOL, clutch_block_body(argv))
             if act == "none":
-                return Outcome(CLUTCH_KEY, name, "unchanged"), None
-            if text is None or not text.strip():
-                new = ("# Home-level cordis patch for the Clutch engine, applied to every profile after the profile's\n"
-                       "# own patch.  A top-level YAML array of patch entries.  Blocks below are managed by the fleet\n"
-                       "# installers; edit outside them.\n" + new)
-            return Outcome(CLUTCH_KEY, name, "added" if act in ("create", "append") else "added",
-                           "block replaced in place" if act == "replace" else ""), new
+                return Outcome(CLUTCH_KEY, name, "unchanged"), None, False
+            return Outcome(CLUTCH_KEY, name, "added", "block replaced in place" if act == "replace" else ""), new, False
         if text is None:
-            return Outcome(CLUTCH_KEY, name, "absent"), None
-        new, act = MB.remove_block(text, CLUTCH_BLOCK)
-        return (Outcome(CLUTCH_KEY, name, "removed" if act == "remove" else "absent"),
-                None if act == "none" else new)
+            return Outcome(CLUTCH_KEY, name, "absent"), None, False
+        new, act = CP.remove(text, CLUTCH_BLOCK)
+        if act == "none":
+            return Outcome(CLUTCH_KEY, name, "absent"), None, False
+        if new is None:
+            return Outcome(CLUTCH_KEY, name, "removed", "nothing else was in the patch, so the file is removed"), None, True
+        return Outcome(CLUTCH_KEY, name, "removed"), new, False
     except MB.BlockError as exc:
-        return Outcome(CLUTCH_KEY, name, "skipped-bad-markers", str(exc)), None
+        return Outcome(CLUTCH_KEY, name, "skipped-bad-markers", str(exc)), None, False
 
 
 # --------------------------------------------------------------------------- planning and applying
@@ -386,11 +376,12 @@ class TargetPlan:
     old_raw: Optional[bytes] = None
     mode: int = 0o600
     existed: bool = False
+    delete: bool = False
     notes: List[str] = field(default_factory=list)
 
     @property
     def will_write(self) -> bool:
-        return self.state == "ok" and self.new_text is not None
+        return self.state == "ok" and (self.new_text is not None or self.delete)
 
 
 def wanted_servers(key: str, with_agent_sync: bool) -> List[str]:
@@ -449,8 +440,8 @@ def plan_target(key: str, home: str, action: str, with_agent_sync: bool,
         return plan
     if key == CLUTCH_KEY:
         argv = server_argv(AGENT_SYNC, home, CLUTCH_SEAT, env)
-        outcome, new = edit_clutch_patch(text, argv, action)
-        plan.outcomes, plan.new_text = [outcome], new
+        outcome, new, delete = edit_clutch_patch(text, argv, action)
+        plan.outcomes, plan.new_text, plan.delete = [outcome], new, delete
         return plan
     t = JSON_BY_KEY[key]
     pairs = [(n, server_argv(n, home, t.seat, env)) for n in names]
@@ -468,9 +459,9 @@ def _utc_stamp() -> str:
 
 
 def write_plan(plan: TargetPlan, stamp: Optional[str] = None) -> Optional[str]:
-    """Write plan.new_text.  Returns the backup path (None for a new file).  Backs up first, replaces atomically,
-    and refuses when the file changed since it was planned."""
-    assert plan.new_text is not None
+    """Write plan.new_text, or delete the file when plan.delete.  Returns the backup path (None for a new file).
+    Backs up first, replaces atomically, and refuses when the file changed since it was planned."""
+    assert plan.new_text is not None or plan.delete
     path = plan.path
     directory = os.path.dirname(path)
     os.makedirs(directory, exist_ok=True)
@@ -496,6 +487,15 @@ def write_plan(plan: TargetPlan, stamp: Optional[str] = None) -> Optional[str]:
             break
         else:
             raise OSError("99 backups with stamp %s already exist" % (stamp or "now"))
+    if plan.delete:
+        try:
+            os.unlink(path)
+        except OSError:
+            if backup:
+                os.unlink(backup)
+            raise
+        return backup
+    assert plan.new_text is not None
     fd, tmp = tempfile.mkstemp(dir=directory, prefix="." + os.path.basename(path) + ".", suffix=".fleet-mcp.tmp")
     try:
         with os.fdopen(fd, "wb") as fh:
@@ -740,7 +740,8 @@ def main(argv: Optional[Sequence[str]] = None, out: Optional[TextIO] = None, err
             try:
                 backup = write_plan(plan)
                 changed += 1
-                print("   wrote %s%s" % (plan.path, ("; backup " + backup) if backup else "; new file, no backup"), file=out)
+                verb = "removed" if plan.delete else "wrote"
+                print("   %s %s%s" % (verb, plan.path, ("; backup " + backup) if backup else "; new file, no backup"), file=out)
             except OSError as exc:
                 failed = True
                 print("   FAILED: %s" % exc, file=out)

@@ -1106,6 +1106,8 @@ class DiscoveryTests(GitCase):
             (home / "Code" / "DealDex", "main", None, None, "human"),
             # layout v2: Codex nests lanes/_codex/<slug>/<Repo>; the desktop app files lanes/<Repo>/<slug>-<hex>
             (home / "apps" / "lanes" / "_codex" / "ab12" / "DealDex", None, None, None, "codex"),
+            (home / "apps" / "lanes" / "_conductor" / "DealDex" / "lagos", None, None, None, "conductor"),
+            (home / "conductor" / "workspaces" / "DealDex" / "oslo", "claude/x", None, "claude", "conductor"),
             (home / "apps" / "lanes" / "DealDex" / "fix-bug-a1b2c3", "claude/fix-bug-a1b2c3", None, None, "claude-desktop"),
             (home / "apps" / "lanes" / "DealDex" / "fix-bug-a1b2c3" / "src", None, None, None, "claude-desktop"),
             (home / "apps" / "lanes" / "DealDex" / "claude-fix-a1b2c3", None, "claude", None, "claude-cli"),

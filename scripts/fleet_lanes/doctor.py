@@ -606,7 +606,7 @@ STATIC_TMP_SCAN = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp")
 # (relative path under ~, depth)
 _HARNESS_SCANS = (
     (".codex/worktrees", 3), (".cursor/worktrees", 3), (".ag/worktrees", 3), (".grok", 4),
-    (".fx", 4), (".botfleet", 5), (".gemini/antigravity", 5), (".buzz", 3),
+    (".fx", 4), (".botfleet", 5), (".gemini/antigravity", 5), (".buzz", 3), ("conductor/workspaces", 3),
 )
 
 
@@ -1124,6 +1124,8 @@ def infer_tool(real: str, roots: L.Roots, branch: str | None, seat: str | None,
     lanes = fold(os.fspath(roots.lanes_root))
     if r == lanes + os.sep + L.CODEX_DIR or r.startswith(lanes + os.sep + L.CODEX_DIR + os.sep):
         return "codex", f"path:lanes/{L.CODEX_DIR}"
+    if r == lanes + os.sep + L.CONDUCTOR_DIR or r.startswith(lanes + os.sep + L.CONDUCTOR_DIR + os.sep):
+        return "conductor", f"path:lanes/{L.CONDUCTOR_DIR}"
     if r.startswith(lanes + os.sep):
         rel = real[len(os.fspath(roots.lanes_root)) + 1:].split(os.sep)
         if len(rel) >= 2 and L.is_desktop_dir_name(rel[1], roots.seat_tokens):
@@ -1131,7 +1133,7 @@ def infer_tool(real: str, roots: L.Roots, branch: str | None, seat: str | None,
 
     for rel, tool in ((".codex", "codex"), (".cursor", "cursor"), (".grok", "grok"), (".fx", "fx"),
                       (".gemini", "antigravity"), (".ag", "antigravity"), (".botfleet", "botfleet"),
-                      (".buzz", "buzz"), (".claude", "claude-cli")):
+                      ("conductor/workspaces", "conductor"), (".buzz", "buzz"), (".claude", "claude-cli")):
         if under(rel):
             return tool, f"path:~/{rel}"
     if re.search(r"/\.muse/worktrees(/|$)", real):

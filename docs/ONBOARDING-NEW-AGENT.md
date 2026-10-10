@@ -249,6 +249,25 @@ Then, by hand and with the owner's approval of each live install (read the `plan
    `--i-own-this-file` for the owner's `~/.claude/CLAUDE.md`).  A new platform needs an
    entry in `scripts/fleet_lanes/install_rules.py` and `install_tools.py` first.
 3. Every command and option is in `scripts/fleet_lanes/README.md`.
+4. **Which installer reaches which tool** (checked Sat, Oct 10, 2026).  A tool that is not in this table has no installer yet:
+   decide first whether it has a fixed default seat (AGENT-SYNC § Identity Rules, Platform Defaults) or none, because that
+   decides its rules text and whether it may get `agent-sync mcp`.
+
+   | Tool | Seat | Rules (`install_rules`) | Skills (`install-fleet-skills.py`) | MCP (`install_mcp`) | Deny hook (`install_tools`) |
+   |---|---|---|---|---|---|
+   | Clutch | CLUTCH, a launcher's seat wins | `clutch`, `~/.clutch/dsh/AGENTS.md` | `~/.clutch/dsh/skills` | `agent-sync` only (`fleet-recall` is a native preset) | `clutch`, a bridge plugin in the cordis patch |
+   | Muse Code | MC | covered by `claude` (its fallback) | `~/.config/muse/skills` | `muse`: `fleet-recall`, `agent-sync` | `muse`, a plugin the owner installs |
+   | Kimi Code | none | `kimi`, `~/.kimi-code/AGENTS.md` | none (reads the shared `~/.agents/skills`) | `kimi`: `fleet-recall` | `kimi`, a `[[hooks]]` block |
+   | Mistral Vibe | none | `vibe`, `~/.vibe/AGENTS.md` | none | none (its `config.toml` holds `mcp_servers = []`) | none |
+   | Copilot CLI | none | `copilot`, `~/.copilot/copilot-instructions.md` (UNVERIFIED) | none | `copilot`: `fleet-recall` | none (its hook is fail-closed) |
+   | OpenCode | none | none: `~/AGENTS.md` is read by walking up | none | `opencode`: `fleet-recall` | none (plugin API unproven) |
+   | Conductor | none | none: its Claude Code and Codex read theirs | none | none: each harness inside reads its own | none: the Claude and Codex guards fire inside it |
+   | MiniMax Code | MM | `minimax` (`memory/user.md`) | `~/.minimax/skills` | `minimax`: `fleet-recall`, `agent-sync` | none |
+   | fx | FX | `fx` | `~/.fx/skills` | `fx`: `fleet-recall`, `agent-sync` | none |
+
+   Not tools to wire: Muse Assist (a cloud assistant, the card in `docs/MUSE-ONBOARDING.md`), BotFleet and Grok Bot (launchers: they
+   pass their own seat, so nothing user-level may pin one), `~/.dsh` (BotFleet owns it), Cherry Studio, OpenClaw (not configured), and
+   the wrappers over Claude Code or Codex (Happy, Omnara, Shellular, CCPocket), which inherit `~/.claude` and `~/.codex`.
 
 ---
 

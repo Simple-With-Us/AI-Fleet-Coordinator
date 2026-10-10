@@ -354,6 +354,31 @@ class ClutchTests(HomeCase):
         self.assertIn("removed", out)
         self.assertEqual(self.read(self.patch()), mine)
 
+    def test_removing_the_last_block_deletes_the_file_because_a_comment_only_patch_crashes_the_engine(self) -> None:
+        self.mkdir(".clutch/dsh")
+        self.run_cli("apply", "clutch", "--with-agent-sync")
+        code, out, _ = self.run_cli("remove", "clutch", "--with-agent-sync")
+        self.assertEqual(code, M.EXIT_OK, out)
+        self.assertIn("so the file is removed", out)
+        self.assertFalse(os.path.exists(self.path(self.patch())))
+        names = self.backups(".clutch/dsh")
+        self.assertEqual(len(names), 1)
+        self.assertIn("# fleet:begin mcp-agent-sync", self.read(".clutch/dsh/" + names[0]))
+
+    def test_another_installers_block_in_the_same_patch_is_untouched(self) -> None:
+        from fleet_lanes import cordis_patch as CP
+        self.mkdir(".clutch/dsh")
+        self.run_cli("apply", "clutch", "--with-agent-sync")
+        text, _ = CP.upsert(self.read(self.patch()), "hooks-fleet-guards", "other", ["- id: fleet-hooks-guards"])
+        self.write(self.patch(), text)
+        self.run_cli("remove", "clutch", "--with-agent-sync")
+        left = self.read(self.patch())
+        self.assertIn("# fleet:begin hooks-fleet-guards (managed by other)", left)
+        self.assertNotIn("mcp-agent-sync", left)
+        self.run_cli("apply", "clutch", "--with-agent-sync")
+        self.assertIn("# fleet:begin hooks-fleet-guards", self.read(self.patch()))
+        self.assertIn("# fleet:begin mcp-agent-sync", self.read(self.patch()))
+
     def test_a_patch_that_is_not_a_list_is_left_alone(self) -> None:
         text = "plugins:\n  - a\n"
         self.write(self.patch(), text)

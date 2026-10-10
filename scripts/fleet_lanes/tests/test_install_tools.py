@@ -201,6 +201,9 @@ class World(unittest.TestCase):
         if with_lane:
             (pkg / "lane.py").write_text(LANE_STUB, encoding="utf-8")
         shutil.copy(REGISTRY_FILE, self.tmp / name / "fleet-apps.json")
+        hooks = self.tmp / name / "scripts" / "hooks"
+        hooks.mkdir(parents=True)
+        shutil.copy(SCRIPTS_DIR / "hooks" / "secret-guard-pretooluse.py", hooks / "secret-guard-pretooluse.py")
         return T.Source(str(self.tmp / name / "scripts"), str(self.tmp / name / "fleet-apps.json"), sha)
 
     def seed(self, *rels: str) -> None:
@@ -688,7 +691,7 @@ class ToolsTests(World):
         self.assertEqual(res.status, "installed", res)
         s = self.stable()
         names = sorted(p.name for p in (s / "fleet_lanes").iterdir())
-        self.assertEqual(names, sorted(list(T.REQUIRED_MODULES) + ["lane.py"]))        # no tests, no __pycache__
+        self.assertEqual(names, sorted(list(T.REQUIRED_MODULES) + ["lane.py", T.SECRET_GUARD_MODULE]))        # no tests, no __pycache__
         self.assertFalse((s / "fleet_lanes" / "tests").exists())
         self.assertTrue((s / "fleet-apps.json").is_file())
         ver = T.parse_version((s / "VERSION").read_text())
@@ -1298,7 +1301,7 @@ class StableDirOwnershipTests(World):
         res = T.apply_tools(self.source, self.paths, probes=False, replace_extra=True)
         self.assertEqual(res.status, "installed", res)
         self.assertEqual(sorted(p.name for p in stable.iterdir()),
-                         ["VERSION", "fleet-apps.json", "fleet_lanes", "lane-guard-hook", "muse-plugin", "muse-seat"])
+                         ["VERSION", "clutch", "fleet-apps.json", "fleet-guard-hook", "fleet_lanes", "lane-guard-hook", "muse-plugin", "muse-seat"])
 
     def test_leftovers_this_tool_makes_itself_are_not_extras(self) -> None:
         self.install(())
@@ -2600,7 +2603,7 @@ class MuseBundleTests(World):
 
     def test_the_wrapper_has_absolute_paths_only(self) -> None:
         text = T.render_muse_wrapper("/stable dir/it's")
-        self.assertIn("_lg_guard='/stable dir/it'\"'\"'s/lane-guard-hook'", text)
+        self.assertIn("_lg_guard='/stable dir/it'\"'\"'s/fleet-guard-hook'", text)
         self.assertNotIn("$HOME", text)
         self.assertNotIn("$PATH", text)
 
@@ -2684,7 +2687,7 @@ class MuseWrapperTests(World):
         self.stable.mkdir()
         self.calls = self.tmp / "guard-calls.log"
         self.stdin_copy = self.tmp / "guard-stdin.bin"
-        fake = self.stable / "lane-guard-hook"
+        fake = self.stable / "fleet-guard-hook"
         fake.write_text("#!/bin/sh\n"
                         f"echo \"$@\" >> {shlex.quote(str(self.calls))}\n"
                         f"cat > {shlex.quote(str(self.stdin_copy))}\n"
@@ -2818,7 +2821,7 @@ class MuseWrapperTests(World):
 
     def test_the_guard_gets_the_callers_locale_unchanged(self) -> None:
         env_log = self.tmp / "guard-env.log"
-        (self.stable / "lane-guard-hook").write_text(f"#!/bin/sh\nenv > {shlex.quote(str(env_log))}\ncat >/dev/null\n",
+        (self.stable / "fleet-guard-hook").write_text(f"#!/bin/sh\nenv > {shlex.quote(str(env_log))}\ncat >/dev/null\n",
                                                      encoding="utf-8")
         for given, line in (({"LC_ALL": "ja_JP.SJIS"}, "LC_ALL=ja_JP.SJIS"), ({"LC_ALL": ""}, "LC_ALL="), ({}, None)):
             with self.subTest(given=given):
@@ -2833,7 +2836,7 @@ class MuseWrapperTests(World):
             self.assertTrue(self.reached(raw))                                     # exit 0 either way (asserted inside)
 
     def test_a_missing_guard_is_an_allow(self) -> None:
-        (self.stable / "lane-guard-hook").unlink()
+        (self.stable / "fleet-guard-hook").unlink()
         rc, out = self.run_wrapper(self.payload("bash"))
         self.assertEqual((rc, out), (0, b""))
         rc, out = self.run_wrapper(b"")
@@ -3270,7 +3273,8 @@ class MusePlanApplyVerifyTests(World):
         with mock.patch.object(T, "run_argv", side_effect=spy):
             T.verify_muse(self.paths, timeout=TIMEOUT)                                 # the default: an empty environment
         hook_runs = [s for s in seen if s[0][:1] == ["/bin/sh"]]
-        self.assertEqual(len(hook_runs), 4)
+        self.assertEqual(len(hook_runs), len(T._muse_cases()))                          # six: two deny, a ps, an allow, two other tools
+        self.assertEqual(len(hook_runs), 6)
         for argv, env, cwd in hook_runs:
             self.assertEqual((argv, env, cwd), (T.muse_hook_argv(self.paths.stable), {}, "/"))
 
@@ -3369,6 +3373,522 @@ class MusePlanApplyVerifyTests(World):
         text = "\n".join(lines)
         self.assertEqual(rc, 0, text)
         self.assertIn("FAIL  muse", text)
+
+
+# --------------------------------------------------------------------------- the fleet hook: lane guard plus secret guard
+
+class FleetHookStableCopyTests(World):
+    """fleet-guard-hook, the secret guard copy and Clutch's hooks.json travel in the stable dir with everything else."""
+
+    def test_build_files_carries_the_fleet_hook_the_secret_guard_and_the_clutch_hooks_file(self) -> None:
+        files = T.build_files(self.source, self.paths)
+        self.assertIn("fleet-guard-hook", files)
+        self.assertEqual(files["fleet_lanes/secret_guard.py"],
+                         (Path(self.source.scripts_dir) / "hooks" / "secret-guard-pretooluse.py").read_bytes())
+        self.assertEqual(files["clutch/hooks.json"].decode(), T.render_clutch_hooks(self.paths.stable))
+        self.assertEqual(files["fleet-guard-hook"].decode(), T.render_fleet_hook_shim())
+        for rel in ("fleet-guard-hook", "lane-guard-hook"):
+            self.assertEqual(T.file_mode(rel), 0o755)
+        self.assertEqual(T.file_mode("clutch/hooks.json"), 0o644)
+
+    def test_a_source_without_the_secret_guard_is_refused(self) -> None:
+        (Path(self.source.scripts_dir) / "hooks" / "secret-guard-pretooluse.py").unlink()
+        with self.assertRaises(T.Refused) as cm:
+            T.build_files(self.source, self.paths)
+        self.assertIn("secret guard", str(cm.exception))
+
+    def test_the_fleet_shim_has_no_prefilter_and_runs_the_fleet_module(self) -> None:
+        text = T.render_fleet_hook_shim()
+        self.assertNotIn("case $_lg_in", text)
+        self.assertIn("fleet_lanes.fleet_guard_hook", text)
+        self.assertNotIn("fleet_lanes.lane_guard_hook", text)
+        self.assertIn(T.GENERATED_MARK, text)
+        self.assertEqual(T.render_hook_shim(), T.render_hook_shim(T.read_guard_facts()))      # the lane shim is unchanged
+
+    def test_both_names_are_ours_and_lookalikes_are_not(self) -> None:
+        for cmd in ("/h/apps/lane-tools/fleet-guard-hook --format kimi", "'/h x/fleet-guard-hook' --format claude"):
+            self.assertTrue(T.is_ours(cmd), cmd)
+        for cmd in ("fleet-guard-hooks-extra", "my-fleet-guard-hook-2", "ps aux"):
+            self.assertFalse(T.is_ours(cmd), cmd)
+
+    def test_the_installed_tree_has_the_new_files_and_stays_owned(self) -> None:
+        self.install(())
+        for rel in ("fleet-guard-hook", "clutch/hooks.json", "fleet_lanes/secret_guard.py", "fleet_lanes/fleet_guard_hook.py"):
+            self.assertTrue((Path(self.paths.stable) / rel).is_file(), rel)
+        self.assertTrue(os.access(self.paths.fleet_shim, os.X_OK))
+        plan = T.plan_tools(self.source, self.paths)
+        self.assertEqual(plan.problems, [])
+        self.assertEqual(plan.state, "current")
+        self.assertAllPass(T.verify_tools(self.paths, timeout=TIMEOUT))
+
+    def test_verify_tools_fails_when_the_fleet_shim_or_the_secret_guard_is_gone(self) -> None:
+        self.install(())
+        Path(self.paths.fleet_shim).write_text("#!/bin/sh\nexit 0\n")
+        self.assertFails(T.verify_tools(self.paths, timeout=TIMEOUT), "fleet-guard-hook")
+        self.install(())
+        os.unlink(os.path.join(self.paths.package_dir, T.SECRET_GUARD_MODULE))
+        checks = T.verify_tools(self.paths, timeout=TIMEOUT)
+        self.assertTrue(any(c.name == "secret guard" and c.status == "FAIL" for c in checks), [c.line() for c in checks])
+
+    def test_the_staged_copy_is_probed_with_the_secret_case(self) -> None:
+        calls: list = []
+        real = T.probe_command
+
+        def spy(command, **kw):
+            calls.append((command, kw.get("secret", False), kw["fmt"]))
+            return real(command, **kw)
+        with mock.patch.object(T, "probe_command", side_effect=spy):
+            r = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, minimal_path=False)
+        self.assertTrue(r.ok, r)
+        fleet = [c for c in calls if "fleet-guard-hook" in c[0]]
+        self.assertEqual({c[2] for c in fleet}, {"muse", "claude", "kimi"})
+        self.assertTrue(all(c[1] for c in fleet))
+
+    def test_a_staged_fleet_shim_that_cannot_deny_a_ps_is_never_swapped_in(self) -> None:
+        guard_hook = Path(self.source.scripts_dir) / "fleet_lanes" / "fleet_guard_hook.py"
+        guard_hook.write_text("import sys\nsys.exit(0)\n")
+        r = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, minimal_path=False)
+        self.assertEqual(r.status, "refused", r)
+        self.assertFalse(os.path.exists(self.paths.stable))
+
+    def test_probe_command_secret_case_fails_a_lane_only_command(self) -> None:
+        self.install(())
+        lane_only = T.hook_command(self.paths, "claude")
+        checks = T.probe_command(lane_only, target="t", fmt="claude", shape="claude", home=str(self.home),
+                                 timeout=TIMEOUT, minimal_path=False, secret=True)
+        self.assertEqual([c.name for c in checks if c.status == "FAIL"], ["secret/login-PATH"])
+        both = T.probe_command(T.fleet_hook_command(self.paths, "claude"), target="t", fmt="claude", shape="claude",
+                               home=str(self.home), timeout=TIMEOUT, minimal_path=False, secret=True)
+        self.assertEqual({c.status for c in both}, {"PASS"})
+
+    def test_the_exit2_contract_is_checked_as_exit_two_with_stderr(self) -> None:
+        ok = T.RunResult(2, b"", b"blocked `ps` here")
+        self.assertIsNone(T.check_exit2_output(ok, "`ps`"))
+        self.assertIn("expected 2", T.check_exit2_output(T.RunResult(0, b"", b""), "`ps`"))
+        self.assertIn("stdout is not empty", T.check_exit2_output(T.RunResult(2, b"{}", b"`ps`"), "`ps`"))
+        self.assertIn("stderr does not name", T.check_exit2_output(T.RunResult(2, b"", b"nope"), "`ps`"))
+
+
+class MuseFleetGuardTests(World):
+    """Muse Code's plugin runs the fleet hook, so it denies a ps as well as a temp checkout."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.install(())
+
+    def test_the_wrapper_hands_shell_calls_to_the_fleet_hook(self) -> None:
+        text = Path(self.paths.muse_wrapper).read_text()
+        self.assertIn(f"_lg_guard={shlex.quote(self.paths.fleet_shim)}", text)
+        self.assertNotIn("lane-guard-hook", text)
+
+    def test_the_manifest_names_both_guards(self) -> None:
+        doc = json.loads(Path(self.paths.muse_manifest).read_text())
+        self.assertEqual(doc["displayName"], "Fleet Guards")
+        self.assertIn("secret guard", doc["description"])
+        self.assertEqual(doc["name"], T.MUSE_PLUGIN_ID, "the plugin id is unchanged, so an approval is not lost")
+
+    def test_verify_muse_runs_the_secret_and_the_other_tool_probes(self) -> None:
+        checks = T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=False)
+        self.assertAllPass([c for c in checks if c.status != "SKIP"])
+        names = {c.name for c in checks}
+        self.assertTrue({"secret/hook-env", "other-tool-ps/hook-env", "shim fleet-guard-hook"} <= names, names)
+
+    def test_a_muse_install_whose_fleet_hook_allows_everything_fails_verify(self) -> None:
+        Path(self.paths.fleet_shim).write_text("#!/bin/sh\nexit 0\n")
+        checks = T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=False)
+        failed = {c.name for c in checks if c.status == "FAIL"}
+        self.assertTrue({"deny/hook-env", "secret/hook-env", "shim fleet-guard-hook"} <= failed, failed)
+
+    def test_a_missing_secret_guard_fails_only_the_secret_probe(self) -> None:
+        os.unlink(os.path.join(self.paths.package_dir, T.SECRET_GUARD_MODULE))
+        checks = T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=False)
+        failed = {c.name for c in checks if c.status == "FAIL"}
+        self.assertEqual(failed, {"secret/hook-env"})
+
+
+# --------------------------------------------------------------------------- clutch and kimi: a marked block
+
+FAKE_DSH = '''#!{python}
+import os, sys
+home = os.environ["DSH_HOME"]
+path = os.path.join(home, "cordis.patch.yml")
+patch = open(path).read() if os.path.exists(path) else ""
+if os.path.exists({flag!r}):
+    sys.stderr.write("boom: broken on purpose\\n")
+    sys.exit(1)
+if not any(line.startswith("- ") for line in patch.splitlines()):
+    sys.exit(1)                      # the real engine exits on an empty or comment-only patch
+if not os.path.isdir(os.path.join(home, "profiles")):
+    sys.exit(2)
+print("@deepseek-ai/dsh-base")
+if "dsh-hooks-claude-code" in patch:
+    print("@deepseek-ai/dsh-hooks-claude-code")
+if "profile" in sys.argv:
+    pass
+'''
+
+
+class ClutchBlockTests(World):
+    def setUp(self) -> None:
+        super().setUp()
+        self.flag = self.tmp / "dsh-fail-flag"
+        self.dsh_dir = self.home / "apps" / "clutch-runtime" / "node_modules" / ".bin"
+        self.dsh_dir.mkdir(parents=True)
+        dsh = self.dsh_dir / "dsh"
+        dsh.write_text(FAKE_DSH.format(python=sys.executable, flag=str(self.flag)))
+        os.chmod(dsh, 0o755)
+        web = self.home / ".clutch" / "dsh" / "profiles" / "web"
+        web.mkdir(parents=True)
+        (web / "cordis.yml").write_text("plugins: []\n")
+        (self.home / ".clutch" / "dsh" / "profiles" / "node_modules").mkdir()
+        self.plat = T.PLATFORMS["clutch"]
+        self.install(())
+
+    @property
+    def patch(self) -> Path:
+        return Path(self.paths.clutch_patch)
+
+    def apply(self, **kw):
+        return T.apply_platform(self.plat, self.paths, now=lambda: STAMP, timeout=TIMEOUT, minimal_path=False, **kw)
+
+    def test_the_platform_is_not_part_of_all_or_the_config_platforms(self) -> None:
+        self.assertNotIn("clutch", T.SUPPORTED_KEYS)
+        self.assertEqual(self.plat.kind, "block")
+        self.assertIn("clutch", T.PLATFORM_ORDER)
+
+    def test_plan_is_read_only_and_shows_the_block(self) -> None:
+        before = snapshot(self.tmp)
+        rc, out, err = run_main("plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA, "clutch")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertEqual(snapshot(self.tmp), before)
+        self.assertIn("# fleet:begin hooks-fleet-guards (managed by fleet_lanes.install_tools)", out)
+        self.assertIn("name: '@deepseek-ai/dsh-hooks-claude-code'", out)
+        self.assertIn(f"configPath: {json.dumps(self.paths.clutch_hooks)}", out)
+        self.assertIn("matcher", out)                                       # the hooks.json is shown too
+        self.assertIn("UNVERIFIED", out)
+        self.assertTrue(all(ord(c) < 128 for c in out))
+
+    def test_apply_creates_the_patch_with_a_header_and_one_block(self) -> None:
+        r = self.apply()
+        self.assertEqual(r.status, "added", r)
+        text = self.patch.read_text()
+        self.assertTrue(text.startswith("# Home-level cordis patch"))
+        self.assertEqual(text.count("# fleet:begin hooks-fleet-guards"), 1)
+        self.assertIn("- insert:\n    - id: fleet-hooks-guards\n", text)
+        self.assertIn("mount", r.detail)
+        hooks = json.loads(Path(self.paths.clutch_hooks).read_text())
+        entry = hooks["hooks"]["PreToolUse"][0]
+        self.assertEqual(entry["matcher"], "bash")
+        self.assertEqual(entry["hooks"][0]["command"], T.fleet_hook_command(self.paths, "claude"))
+        self.assertEqual(stat.S_IMODE(self.patch.stat().st_mode), 0o600)
+
+    def test_a_second_apply_changes_nothing(self) -> None:
+        self.apply()
+        before = snapshot(self.tmp)
+        r = self.apply()
+        self.assertEqual(r.status, "unchanged", r)
+        self.assertEqual(snapshot(self.tmp), before)
+
+    def test_verify_passes_and_names_the_engine_proof(self) -> None:
+        self.apply()
+        checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
+        self.assertAllPass([c for c in checks if c.status != "SKIP"])
+        names = {c.name for c in checks}
+        self.assertTrue({"block", "hooks.json", "hook command", "dsh --dump-config", "secret/login-PATH"} <= names, names)
+        self.assertEqual([c.status for c in checks if c.name == "engine restart"], ["SKIP"])
+
+    def test_the_owners_patch_entries_survive_and_a_backup_is_made(self) -> None:
+        mine = "# my layer\n- id: typert-gateway\n  config:\n    websocketHeartbeatIntervalMs: 15000\n"
+        self.patch.write_text(mine)
+        os.chmod(self.patch, 0o640)
+        r = self.apply()
+        self.assertEqual(r.status, "added", r)
+        self.assertTrue(self.patch.read_text().startswith(mine + "\n# fleet:begin"))
+        self.assertEqual(stat.S_IMODE(self.patch.stat().st_mode), 0o640)
+        backups = self.backups(self.patch.parent)
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(), mine)
+
+    def test_the_engine_rejecting_the_patch_refuses_the_write(self) -> None:
+        mine = "- id: a\n"
+        self.patch.write_text(mine)
+        self.flag.write_text("x")
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("pinned engine does not accept", r.detail)
+        self.assertEqual(self.patch.read_text(), mine)
+        self.assertEqual(self.backups(self.patch.parent), [])
+
+    def test_without_the_engine_the_write_is_refused_unless_the_owner_says_so(self) -> None:
+        os.unlink(self.dsh_dir / "dsh")
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("--no-dsh-check", r.detail)
+        self.assertFalse(self.patch.exists())
+        r = self.apply(check_dsh=False)
+        self.assertEqual(r.status, "added", r)
+        self.assertIn("NOT checked with the engine", r.detail)
+
+    def test_an_explicit_engine_path_is_used(self) -> None:
+        other = self.tmp / "other-dsh"
+        other.write_text(FAKE_DSH.format(python=sys.executable, flag=str(self.flag)))
+        os.chmod(other, 0o755)
+        os.unlink(self.dsh_dir / "dsh")
+        self.assertEqual(self.apply(dsh_bin=str(other)).status, "added")
+
+    def test_a_clutch_that_is_not_installed_is_skipped(self) -> None:
+        shutil.rmtree(self.home / ".clutch")
+        r = self.apply()
+        self.assertEqual(r.status, "skipped", r)
+        self.assertFalse((self.home / ".clutch").exists())
+
+    def test_a_missing_hooks_file_or_shim_means_run_apply_tools_first(self) -> None:
+        Path(self.paths.clutch_hooks).write_text("{}\n")
+        self.assertIn("apply tools", self.apply().detail)
+        self.install(())
+        os.chmod(self.paths.fleet_shim, 0o644)
+        r = self.apply()
+        self.assertEqual(r.status, "refused")
+        self.assertIn("apply tools", r.detail)
+
+    def test_a_patch_that_is_not_a_list_or_has_broken_markers_is_refused(self) -> None:
+        self.patch.write_text("plugins:\n  - a\n")
+        self.assertIn("not a top-level YAML list", self.apply().detail)
+        self.patch.write_text("- id: a\n# fleet:begin hooks-fleet-guards (managed by x)\n- insert: []\n")
+        self.assertEqual(self.apply().status, "refused")
+
+    def test_a_lane_only_shim_is_refused_because_it_cannot_deny_a_ps(self) -> None:
+        shutil.copy(self.paths.hook_shim, self.paths.fleet_shim)
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("fails its probes", r.detail)
+
+    def test_verify_fails_without_the_block_and_with_an_edited_hooks_file(self) -> None:
+        self.assertFails(T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False), "no `hooks-fleet-guards` block")
+        self.apply()
+        Path(self.paths.clutch_hooks).write_text('{"hooks": {}}\n')
+        checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
+        self.assertTrue(any(c.name == "hooks.json" and c.status == "FAIL" for c in checks))
+        self.assertTrue(any(c.name == "hook command" and c.status == "FAIL" for c in checks))
+
+    def test_verify_fails_when_the_shim_allows_everything(self) -> None:
+        self.apply()
+        Path(self.paths.fleet_shim).write_text("#!/bin/sh\nexit 0\n")
+        checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
+        failed = {c.name for c in checks if c.status == "FAIL"}
+        self.assertTrue({"deny/login-PATH", "secret/login-PATH"} <= failed, failed)
+
+    def test_verify_fails_when_the_engine_stops_accepting_the_file(self) -> None:
+        self.apply()
+        self.flag.write_text("x")
+        checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
+        self.assertTrue(any(c.name == "dsh --dump-config" and c.status == "FAIL" for c in checks))
+
+    def test_verify_skips_a_tool_that_is_not_installed(self) -> None:
+        shutil.rmtree(self.home / ".clutch")
+        self.assertEqual([c.status for c in T.verify_block(self.plat, self.paths)], ["SKIP"])
+
+    def test_the_command_line_applies_tools_first_and_wires_clutch(self) -> None:
+        shutil.rmtree(self.paths.stable)
+        base = ["--home", str(self.home), "--source", self.source.scripts_dir, "--registry", self.source.registry,
+                "--sha", SHA, "--timeout", str(TIMEOUT), "--no-minimal-path"]
+        rc, out, err = run_main("apply", *base, "clutch")
+        self.assertEqual(rc, 0, out + err)
+        self.assertRegex(out, r"INSTALLED\s+tools")
+        self.assertRegex(out, r"ADDED\s+clutch")
+        self.assertIn("NEXT       clutch", out)
+        self.assertIn("pm2 restart clutch-web", out)
+        self.assertIn("verify: ", out)
+        self.assertTrue(self.patch.is_file())
+
+    def test_the_command_line_honours_no_dsh_check(self) -> None:
+        os.unlink(self.dsh_dir / "dsh")
+        base = ["--home", str(self.home), "--source", self.source.scripts_dir, "--registry", self.source.registry,
+                "--sha", SHA, "--timeout", str(TIMEOUT), "--no-minimal-path", "--no-verify"]
+        rc, out, _ = run_main("apply", *base, "clutch")
+        self.assertEqual(rc, 1, out)
+        rc, out, _ = run_main("apply", *base, "--no-dsh-check", "clutch")
+        self.assertEqual(rc, 0, out)
+
+
+KIMI_CONFIG = '''default_model = "k2"
+
+[providers.kimi]
+type = "kimi"
+base_url = "https://api.example.invalid/v1"
+
+[[hooks]]
+event = "Notification"
+command = "terminal-notifier -message done"
+'''
+
+
+class KimiBlockTests(World):
+    def setUp(self) -> None:
+        super().setUp()
+        keep = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d and not os.path.exists(os.path.join(d, "kimi"))]
+        scrub = mock.patch.dict(os.environ, {"PATH": os.pathsep.join(keep)})      # never reach the real kimi
+        scrub.start()
+        self.addCleanup(scrub.stop)
+        (self.home / ".kimi-code").mkdir()
+        self.plat = T.PLATFORMS["kimi"]
+        self.install(())
+
+    @property
+    def cfg(self) -> Path:
+        return Path(self.paths.kimi_config)
+
+    def apply(self):
+        return T.apply_platform(self.plat, self.paths, now=lambda: STAMP, timeout=TIMEOUT, minimal_path=False)
+
+    def fake_kimi(self, body: str, rc: int = 0, log: Path | None = None) -> Path:
+        d = self.tmp / "fake-kimi-bin"
+        d.mkdir(exist_ok=True)
+        k = d / "kimi"
+        record = f"echo \"$@\" >> {shlex.quote(str(log))}; env | sort >> {shlex.quote(str(log) + '.env')}\n" if log else ""
+        k.write_text("#!/bin/sh\n" + record + f"echo {shlex.quote(body)}\nexit {rc}\n")
+        os.chmod(k, 0o755)
+        patcher = mock.patch.dict(os.environ, {"PATH": f"{d}:{os.environ.get('PATH', '/usr/bin:/bin')}"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return k
+
+    def test_apply_appends_one_hooks_block_that_parses(self) -> None:
+        self.cfg.write_text(KIMI_CONFIG)
+        r = self.apply()
+        self.assertEqual(r.status, "added", r)
+        text = self.cfg.read_text()
+        self.assertTrue(text.startswith(KIMI_CONFIG + "\n# fleet:begin hooks-fleet-guards"))
+        import tomllib
+        hooks = tomllib.loads(text)["hooks"]
+        self.assertEqual(len(hooks), 2, "the owner's [[hooks]] entry is still there")
+        mine = hooks[1]
+        self.assertEqual(sorted(mine), ["command", "event", "matcher", "timeout"], "Kimi allows exactly these four fields")
+        self.assertEqual((mine["event"], mine["matcher"], mine["timeout"]), ("PreToolUse", "Bash", 5))
+        self.assertEqual(mine["command"], T.fleet_hook_command(self.paths, "kimi"))
+        self.assertTrue(mine["command"].endswith("--format kimi"))
+        backups = self.backups(self.cfg.parent)
+        self.assertEqual([b.read_text() for b in backups], [KIMI_CONFIG])
+
+    def test_a_missing_config_is_created(self) -> None:
+        r = self.apply()
+        self.assertEqual(r.status, "added", r)
+        self.assertIn("(new file)", r.detail)
+        self.assertEqual(self.cfg.read_text().count("[[hooks]]"), 1)
+        self.assertEqual(self.backups(self.cfg.parent), [])
+
+    def test_a_second_apply_changes_nothing(self) -> None:
+        self.cfg.write_text(KIMI_CONFIG)
+        self.apply()
+        before = snapshot(self.tmp)
+        self.assertEqual(self.apply().status, "unchanged")
+        self.assertEqual(snapshot(self.tmp), before)
+
+    def test_a_changed_command_is_replaced_in_place(self) -> None:
+        self.cfg.write_text(KIMI_CONFIG)
+        self.apply()
+        self.cfg.write_text(self.cfg.read_text().replace(self.paths.fleet_shim, "/old/fleet-guard-hook") + "tail = 1\n")
+        r = self.apply()
+        self.assertEqual(r.status, "updated", r)
+        text = self.cfg.read_text()
+        self.assertNotIn("/old/fleet-guard-hook", text)
+        self.assertTrue(text.endswith("tail = 1\n"))
+
+    def test_a_top_level_hooks_key_is_refused_because_the_file_would_not_load(self) -> None:
+        text = 'hooks = []\n'
+        self.cfg.write_text(text)
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertEqual(self.cfg.read_text(), text)
+
+    def test_read_only_symlinked_and_non_text_configs_are_refused(self) -> None:
+        self.cfg.write_text(KIMI_CONFIG)
+        os.chmod(self.cfg, 0o444)
+        self.assertIn("read-only", self.apply().detail)
+        os.chmod(self.cfg, 0o644)
+        self.cfg.unlink()
+        target = self.tmp / "elsewhere.toml"
+        target.write_text("x = 1\n")
+        os.symlink(target, self.cfg)
+        self.assertIn("symlink", self.apply().detail)
+        self.cfg.unlink()
+        self.cfg.write_bytes(b"\xff\xfe\x00")
+        self.assertEqual(self.apply().status, "refused")
+
+    def test_kimi_doctor_runs_on_a_scratch_copy_with_auto_install_off(self) -> None:
+        log = self.tmp / "kimi-calls.log"
+        self.fake_kimi("All checked config files are valid.", 0, log)
+        self.cfg.write_text(KIMI_CONFIG)
+        r = self.apply()
+        self.assertEqual(r.status, "added", r)
+        self.assertIn("doctor accepts", r.detail)
+        self.assertEqual(log.read_text().strip(), "doctor")
+        env = (Path(str(log) + ".env")).read_text()
+        kh = [ln for ln in env.splitlines() if ln.startswith("KIMI_CODE_HOME=")][0].split("=", 1)[1]
+        self.assertNotEqual(os.path.realpath(kh), os.path.realpath(self.home / ".kimi-code"))
+        self.assertNotIn(f"HOME={self.home}\n", env + "\n")
+
+    def test_kimi_doctor_rejecting_the_new_file_refuses_the_write(self) -> None:
+        self.fake_kimi("config.toml: unknown field", 1)
+        self.cfg.write_text(KIMI_CONFIG)
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("doctor rejects", r.detail)
+        self.assertEqual(self.cfg.read_text(), KIMI_CONFIG)
+
+    def test_kimi_not_installed_is_skipped(self) -> None:
+        shutil.rmtree(self.home / ".kimi-code")
+        self.assertEqual(self.apply().status, "skipped")
+        self.assertFalse((self.home / ".kimi-code").exists())
+
+    def test_verify_proves_the_exit2_contract_and_the_secret_case(self) -> None:
+        self.apply()
+        checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
+        self.assertAllPass([c for c in checks if c.status != "SKIP"])
+        names = {c.name for c in checks}
+        self.assertTrue({"block", "hook command", "deny/login-PATH", "secret/login-PATH", "allow/login-PATH", "config.toml"} <= names, names)
+        self.assertEqual([c.status for c in checks if c.name == "fires"], ["SKIP"])
+
+    def test_verify_fails_when_the_hook_stops_blocking(self) -> None:
+        self.apply()
+        Path(self.paths.fleet_shim).write_text("#!/bin/sh\nexit 0\n")
+        failed = {c.name for c in T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False) if c.status == "FAIL"}
+        self.assertTrue({"deny/login-PATH", "secret/login-PATH"} <= failed, failed)
+
+    def test_verify_fails_without_the_block_and_with_an_edited_block(self) -> None:
+        self.cfg.write_text(KIMI_CONFIG)
+        self.assertFails(T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False), "no `hooks-fleet-guards` block")
+        self.apply()
+        self.cfg.write_text(self.cfg.read_text().replace('matcher = "Bash"', 'matcher = "Nothing"'))
+        self.assertFails(T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False), "not what this install_tools writes")
+
+    def test_the_command_line_wires_kimi_after_apply_tools(self) -> None:
+        shutil.rmtree(self.paths.stable)
+        base = ["--home", str(self.home), "--source", self.source.scripts_dir, "--registry", self.source.registry,
+                "--sha", SHA, "--timeout", str(TIMEOUT), "--no-minimal-path"]
+        rc, out, err = run_main("apply", *base, "kimi")
+        self.assertEqual(rc, 0, out + err)
+        self.assertRegex(out, r"ADDED\s+kimi")
+        self.assertIn("NEXT       kimi", out)
+
+    def test_plan_shows_the_block_and_writes_nothing(self) -> None:
+        before = snapshot(self.tmp)
+        rc, out, err = run_main("plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA, "kimi")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertEqual(snapshot(self.tmp), before)
+        self.assertIn("[[hooks]]", out)
+        self.assertIn("--format kimi", out)
+        self.assertIn("UNVERIFIED", out)
+
+    def test_default_plan_and_verify_list_both_block_platforms_without_failing_on_absent_tools(self) -> None:
+        shutil.rmtree(self.home / ".kimi-code")
+        rc, out, _ = run_main("plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("== clutch", out)
+        self.assertIn("== kimi", out)
+        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path")
+        self.assertRegex(out, r"SKIP\s+clutch\s+platform")
+        self.assertRegex(out, r"SKIP\s+kimi\s+platform")
 
 
 if __name__ == "__main__":
