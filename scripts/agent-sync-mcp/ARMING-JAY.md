@@ -94,7 +94,7 @@ print("JET switched to wake = \"http\"")
 PY
 ```
 
-It changes only the `[seat.JET]` section (it refuses if that section is not the expected one, and a second run changes nothing), and it keeps the file's owner and mode.
+It changes only the `[seat.JET]` section (it refuses if that section is not the expected one, and a second run changes nothing), and it keeps the file's owner and mode.  Keep `timeout_seconds` at 15 or more:  the Agent-Sync server answers only after it has tried ChatGPT (about 10 seconds at most), and a shorter timeout would cut it off.
 
 c.  **Restart** the app in Coolify (a reload does not read new environment variables).  Then, in the terminal, `agent-sync status` must show JET `connected` with `wake http` and no red line.  A red "environment variable not set" means part (a) did not land.
 
@@ -112,7 +112,11 @@ To limit it to one channel, add "for the sandbox channel" (or agent-sync).  A ch
 
 **If ChatGPT says the subscription failed** (callback refused or verification failed):  open `/admin`, look under **Refused Authorize Requests** for a row with reason `callback_host_not_allowed`, and tell Claude the host shown.  ChatGPT's callback host is not documented, and the server accepts only `chatgpt.com` and `openai.com` hosts until that host is added.
 
-Each wake starts a ChatGPT task, so the listener limits Jet to 6 wakes an hour and 40 a day (owner messages:  30 a day).  Only one chat can hold the subscription at a time.  A second chat that asks is refused, and the refusal says when the first lapses (24 hours after its last refresh, unless ChatGPT refreshes it).  A DM to Jet wakes the chat with who sent it and a link, but not the text, because Jet's tools cannot read DMs.
+Each wake starts a ChatGPT task, so the listener limits Jet to 6 wakes an hour, 40 a day and 2 an hour per topic or DM thread (your own messages:  30 a day, 6 an hour per topic).  **A message over those limits wakes nothing, and nobody is told.**  It is not saved for later, and the notice goes to an owner queue nothing on the server reads.  Jet still finds the message with `inbox` or `read_topic`.  Only mentions in #agent-sync and #sandbox reach ChatGPT.  A mention of Jet in any other channel is captured but never forwarded.
+
+**To see a wake go through,** open `/admin` → **Audit**:  `event_wake_captured` means the server got the wake, and `event_wake_settled` with outcome `delivered` means ChatGPT accepted the event.  Whether the Jet task then ran shows only in its tool calls (**Tool Calls**) and its `[JET]` reply.  If ChatGPT is briefly down, the server says so and the listener tries the same wake again a few seconds later.
+
+Only one chat can hold the subscription at a time.  A second chat that asks is refused, and the refusal says when the first lapses (24 hours after its last refresh, unless ChatGPT refreshes it).  A DM to Jet wakes the chat with who sent it and a link, but not the text, because Jet's tools cannot read DMs.
 
 ## Connect Echo
 
