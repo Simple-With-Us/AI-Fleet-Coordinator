@@ -70,7 +70,11 @@ for integration trees only"* (owner ruling 2026-09-25).
 4. **Do not wait for the owner to say commit.** Feature branch → PR → merge
    when CI is green.
 5. **Never paste secrets.** Handoff files live in `~/.secrets/` (`chmod 600`).
-   Runtime secrets go to Infisical (the app's own project, prod env).
+   Runtime secrets go to Infisical (the app's own project, prod env).  **`prod` is the
+   only Infisical environment** (owner decision 2026-10-10):  a new project is created with
+   dev and staging, so delete both right away (Project Settings, Environments), and never set
+   `INFISICAL_ENV` or `INFISICAL_ENVIRONMENT` to anything but `prod`, in a repo file or a script
+   fallback.  `python3 scripts/check-infisical-env.py` flags the common mistakes and CI runs it.
    Never `grep` / `rg` a handoff file without `-o` — `grep '^[A-Z0-9_]+='`
    prints **values**.  Names only: `grep -oE '^[A-Z][A-Z0-9_]*'`.  Never
    `cat` or Read `~/.secrets/global-api-keys`.  Never `od` / `xxd` /
@@ -290,7 +294,7 @@ Do **not** invent these. Ask the owner or stop after listing them.
 
 | Surface | When |
 |---------|------|
-| Infisical project (prod env) | Before any deployed secret |
+| Infisical project (prod is the only env:  delete the new project's dev and staging at creation) | Before any deployed secret |
 | Coolify app + domain | Before production web |
 | DNS zone (new DNS-only) | New zone for the app apex on Cloudflare **account** Usage.Jays.Services — not on `usage.jays.services`.  See [DNS-AND-REGISTRARS.md](DNS-AND-REGISTRARS.md) |
 | `SENTRY_FLEET_DSN` repo secret | Before sentry-ci-report is useful |
