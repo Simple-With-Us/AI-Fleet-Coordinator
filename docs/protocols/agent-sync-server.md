@@ -203,7 +203,7 @@ These are optional, and best left unset:
    - no line that starts with `RED` (config, partition, credential or role problems)
    - each enabled GB persona (FIXER, DESIGNER, HOUSEKEEPER, PUBLISHER, DEPLOYER, MONITOR, PLUMBER, ORACLE, TRADER) `connected`, with `wake http (routine ready, api2.cursor.sh)` on the same line
    - each cloud seat (MA, GROK-WEB, INSTINCT, ECHO) `connected`, with `wake inbox`, and JET `connected` with `wake http (routine ready, agent-sync.jays.services)`
-   - GB-COMPILER and GB-DIRECTOR absent from the seat list (disabled)
+   - `disabled seats (enabled = false, no queue): GB-COMPILER, GB-DIRECTOR`, and neither in the connected seat list
    - no `routine NOT ready` and no `DOWN` for any enabled seat
 
    `LaunchAgent: not installed` is expected in the container.  A fresh or lost volume reseeds the sample with `owner_user_id = 0`, so after one, run step 6 again.
@@ -286,7 +286,7 @@ One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting a
    ```
    It backs up `/data/listener.toml` to `/data/listener.toml.bak-<UTC stamp>` (mode 600), checks the result with the listener's own parser and the partition, and refuses on any problem.  A second run prints `no changes`.
 5. **Restart** the app in Coolify (the new sections name variables the running daemon has not read).
-6. **Check** `docker exec "$C" agent-sync status`:  `listener: running`, `instance server; owner pinned: yes`, no `RED` line, the nine personas and JET `connected` with `wake http (routine ready, <host>)`, MA, GROK-WEB, INSTINCT and ECHO `connected` with `wake inbox`.  Any persona that is red for a credential reason:  set `enabled = false` in its section with the scoped `sed` above, restart, and note it under Open Questions.
+6. **Check** `docker exec "$C" agent-sync status`:  `listener: running`, `instance server; owner pinned: yes`, no `RED` line, the nine personas and JET `connected` with `wake http (routine ready, <host>)`, MA, GROK-WEB, INSTINCT and ECHO `connected` with `wake inbox`, and `disabled seats (enabled = false, no queue): GB-COMPILER, GB-DIRECTOR`.  Any persona that is red for a credential reason:  set `enabled = false` in its section with the scoped `sed` above, restart, and note it under Open Questions.
 
 ## Cloud Seats
 
