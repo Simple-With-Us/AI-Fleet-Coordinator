@@ -4,8 +4,10 @@
   // Deploy by hand from DEPLOY.md.  Never from CI and never on merge:  agents
   // auto-merge to main, so a merge must not be a deploy (spec 3.2).
   //
-  // Secrets (never in this file):  ZULIP_KEY_GROK_WEB and ZULIP_KEY_JET.
-  // install_seat_key.py puts them in from Infisical.
+  // Secrets (never in this file):  ZULIP_KEY_GROK_WEB and ZULIP_KEY_JET
+  // (install_seat_key.py puts them in from Infisical), and the three recall
+  // secrets RECALL_API_TOKEN, RECALL_ACCESS_CLIENT_ID and
+  // RECALL_ACCESS_CLIENT_SECRET (DEPLOY.md, "Fleet recall").
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "agent-sync-mcp",
   "main": "src/index.js",
@@ -111,6 +113,11 @@
     // only.  The identity provider is One-time PIN, so a second address would make
     // that inbox a full admin credential for this server.
     "OWNER_EMAILS": "mail@jays.services",
+    // Fleet recall (spec 1.1):  the recall service's REST twin.  The Worker
+    // accepts exactly this origin.  Its three secrets are RECALL_API_TOKEN,
+    // RECALL_ACCESS_CLIENT_ID and RECALL_ACCESS_CLIENT_SECRET (DEPLOY.md);
+    // without them the recall tools answer not_configured and the rest works.
+    "RECALL_BASE_URL": "https://recall.jays.services",
     // Kill switch step 4:  "1" makes /mcp answer 503.
     "MCP_DISABLED": "0"
   }
