@@ -897,8 +897,15 @@ class PartitionTests(ServerHarness):
         for seat in CLOUD_SEATS:
             seat_cfg = server.seats[seat]
             code = C.env_code(seat)
-            self.assertEqual((seat_cfg.wake, seat_cfg.creds, seat_cfg.instance, seat_cfg.routine),
-                             ("inbox", "env", "server", None), "%s has capture only, no wake adapter" % seat)
+            if seat == "JET":
+                # JET is woken through the hosted MCP Worker's MCP Events (agent-sync-mcp, "Wake Jet").
+                r = seat_cfg.routine
+                self.assertEqual((seat_cfg.wake, seat_cfg.creds, seat_cfg.instance), ("http", "env", "server"))
+                self.assertEqual((r.url_env, r.key_env, r.method, r.auth, r.header, r.signature_prefix),
+                                 ("JET_ROUTINE_URL", "JET_ROUTINE_KEY", "POST", "hmac-sha256", "X-Agent-Sync-Signature", ""))
+            else:
+                self.assertEqual((seat_cfg.wake, seat_cfg.creds, seat_cfg.instance, seat_cfg.routine),
+                                 ("inbox", "env", "server", None), "%s has capture only, no wake adapter" % seat)
             self.assertEqual((seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
                              ("ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"), seat)
         self.assertEqual(sorted(server.disabled), [s for s in gb if s != SEAT],
@@ -966,10 +973,36 @@ class CloudSeatTests(ServerHarness):
         for seat in CLOUD_SEATS:
             self.pump_until(daemon, lambda seat=seat: len(self.inbox(seat)) >= 1, seat=seat)
             self.assertEqual([row["id"] for row in self.inbox(seat)], [sent[seat]], seat)
-            self.assertEqual(self.ledger(seat), [], "%s has no wake adapter, so nothing is ever woken" % seat)
+            if seat != "JET":
+                self.assertEqual(self.ledger(seat), [], "%s has no wake adapter, so nothing is ever woken" % seat)
+        # JET's wake is http, but without JET_ROUTINE_URL and JET_ROUTINE_KEY nothing is sent.
+        self.clock.advance(25.0)
+        daemon.tick()
+        daemon.run_jobs("JET")
         self.assertEqual(self.routine.received, [])
         self.assertEqual([m for m in self.fake.messages if m["sender_id"] in {b["user_id"] for b in self.cloud.values()}],
                          [], "the daemon never posts for a cloud seat")
+
+    def test_a_jet_mention_wakes_the_hosted_worker_with_an_hmac_signed_body(self) -> None:
+        jet_key = secrets.token_hex(32)
+        jet_url = "%s/internal/wake/JET" % self.routine.url
+        daemon = self.server_daemon(env={**self.cloud_env(), "JET_ROUTINE_URL": jet_url, "JET_ROUTINE_KEY": jet_key})
+        self.assertTrue(daemon.connect_seat("JET"), daemon.seats["JET"].error)
+        self.assertIn(jet_key, daemon.hidden)
+        self.fake.add_message("Codex", "agent-sync", "jet wake", "@**%s** please look" % CLOUD_SEATS["JET"][1])
+        self.pump_until(daemon, lambda: len(self.ledger("JET")) >= 1, seat="JET")
+        self.clock.advance(25.0)
+        daemon.tick()
+        daemon.run_jobs("JET")
+        self.assertEqual(len(self.routine.received), 1)
+        got = self.routine.received[0]
+        self.assertEqual(got.path, "/internal/wake/JET")
+        expected = hmac.new(jet_key.encode("utf-8"), got.body, hashlib.sha256).hexdigest()
+        self.assertTrue(hmac.compare_digest(got.header("X-Agent-Sync-Signature"), expected))
+        self.assertNotIn(jet_key, json.dumps(got.headers), "hmac mode never sends the key itself")
+        body = got.json()
+        self.assertEqual((body["contract"], body["seat"], body["topic"]), ("agent-sync-wake/1", "JET", "jet wake"))
+        self.assertEqual(got.header("Idempotency-Key"), body["wake_id"])
 
     def test_a_cloud_bot_that_is_still_an_admin_is_refused_while_the_others_run(self) -> None:
         self.fake.set_role(self.cloud["JET"]["user_id"], 200)

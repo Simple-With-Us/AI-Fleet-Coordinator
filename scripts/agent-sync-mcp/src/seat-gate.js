@@ -109,4 +109,36 @@ export class SeatGate extends DurableObject {
   callTail(limit) {
     return state.callTail(this.store, limit);
   }
+
+  eventSubRoom(options) {
+    return state.eventSubRoom(this.store, options);
+  }
+
+  eventSubUpsert(options) {
+    return state.eventSubUpsert(this.store, options);
+  }
+
+  eventSubDelete(options) {
+    return state.eventSubDelete(this.store, options);
+  }
+
+  eventVerifiedGet(options) {
+    return state.eventVerifiedGet(this.store, options);
+  }
+
+  eventVerifiedSet(options) {
+    return state.eventVerifiedSet(this.store, options);
+  }
+
+  eventClaimWake(options) {
+    return state.eventClaimWake(this.store, options);
+  }
+
+  eventDeliveryResult(options) {
+    return state.eventDeliveryResult(this.store, options);
+  }
+
+  eventSubsSummary() {
+    return state.eventSubsSummary(this.store);
+  }
 }

@@ -90,6 +90,17 @@ It covers the metadata documents (`issuer` equal to `authorization_servers[0]`, 
 
 What only Jay can verify, because it needs his Access sign-in and consent:  the full OAuth round trip and the first real post.  [ARMING-JAY.md](ARMING-JAY.md) has the steps;  the workerd flow proves the same path against a fake Zulip.
 
+## Wake Jet (MCP Events, once)
+
+The Worker answers `POST /internal/wake/<SEAT>` from the server listener and fans each wake out as an MCP event (spec section 3.12).  A seat's wake works only once its shared HMAC key is a Worker secret.  The key lives in `~/.secrets/jet-wake-hmac.env` (chmod 600, one line `JET_ROUTINE_KEY=<64 hex>`), made with `openssl rand -hex 32`.  It is installed without printing it (same environment as Step 1):
+
+```bash
+umask 077; [ -s ~/.secrets/jet-wake-hmac.env ] || printf 'JET_ROUTINE_KEY=%s\n' "$(openssl rand -hex 32)" > ~/.secrets/jet-wake-hmac.env
+grep -m1 '^JET_ROUTINE_KEY=' ~/.secrets/jet-wake-hmac.env | cut -d= -f2- | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
+```
+
+The listener half is two Coolify variables and a restart, which is Jay's step (ARMING-JAY.md, "Wake Jet"):  `JET_ROUTINE_URL=https://agent-sync.jays.services/internal/wake/JET` and `JET_ROUTINE_KEY` set to the same key.  Rotating the key means rerunning both.  Check:  `POST /internal/wake/JET` with no signature answers 401 (not 404, which would mean the secret is missing), and `infra_phase0.py check` probes it.  `EVENT_CALLBACK_HOSTS` in `wrangler.jsonc` lists the hosts ChatGPT may give as a callback.  A refused one shows on `/admin` as `callback_host_not_allowed`, and adding it is a var change and a deploy.
+
 ## Re-enable JET
 
 JET was left out of Phase 2 because `openai-dot-bot` was a realm administrator (role 200) and hosted seats accept member (400) only (spec 3.6;  the listener refuses admin keys too).  Jay demoted every bot to member on Fri, Oct 9, and steps 1 to 3 are done.  Only step 4, Jay's ChatGPT connection, is left.  The same steps re-enable any seat that was taken out.

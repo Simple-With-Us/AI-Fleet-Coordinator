@@ -10,7 +10,8 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import { Webhook } from "standardwebhooks";
 import path from "node:path";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -84,6 +85,15 @@ async function accessJwt(email = "mail@jays.services") {
   return `${head}.${body}.${b64url(new Uint8Array(sig))}`;
 }
 
+// A fake ChatGPT MCP Events receiver on chatgpt.com:  it echoes verification
+// challenges, records deliveries, and answers each delivery with the next
+// status in `callbackStatuses` (200 when empty).
+const CALLBACK = "https://chatgpt.com/backend-api/mcp-events/cb_workerd";
+const CALLBACK_SECRET = `whsec_${Buffer.alloc(32, 5).toString("base64")}`;
+const callbackCalls = [];
+const callbackStatuses = [];
+const WAKE_KEY_JET = randomBytes(32).toString("hex");
+
 const outbound = [];
 // A countdown of ChatGPT document fetches that fail with 503 before it recovers.
 let failChatgptCimd = 0;
@@ -99,6 +109,14 @@ async function outboundFetch(request) {
   }
   if (request.url === GROK_CLIENT) return Response.json(GROK_CIMD);
   if (request.url.startsWith(`${REALM}/`)) return zulip.fetch(request);
+  if (request.url.startsWith(CALLBACK)) {
+    const raw = await request.text();
+    const headers = Object.fromEntries(request.headers);
+    const body = JSON.parse(raw);
+    callbackCalls.push({ url: request.url, headers, raw, body });
+    if (body.type === "verification") return Response.json({ challenge: body.challenge });
+    return new Response("", { status: callbackStatuses.length ? callbackStatuses.shift() : 200 });
+  }
   return new Response("blocked in test", { status: 599 });
 }
 
@@ -125,7 +143,7 @@ function startWorker(upstream) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT", ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT", ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET }),
         outboundService: outboundFetch,
       },
     ],
@@ -239,6 +257,53 @@ async function mcp(accessToken, method, params = {}) {
     } catch {}
   }
   return { status: res.status, headers: res.headers, json };
+}
+
+/** A 2026-07-28 request:  the per-request _meta envelope plus the standard headers. */
+async function mcpModern(accessToken, method, params = {}) {
+  const envelope = { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}, "io.modelcontextprotocol/clientInfo": { name: "workerd-test", version: "0" } };
+  const res = await mf.dispatchFetch(`${HOST}/mcp`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "MCP-Protocol-Version": "2026-07-28",
+      "Mcp-Method": method,
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params: { ...params, _meta: envelope } }),
+  });
+  const text = await res.text();
+  const line = text.split("\n").find((l) => l.startsWith("data:"));
+  return { status: res.status, json: line ? JSON.parse(line.slice(5)) : text ? JSON.parse(text) : null };
+}
+
+/** The listener's wake POST (adapters.py):  sorted compact JSON, hex HMAC of the raw bytes. */
+function wakeBytes(overrides = {}) {
+  const body = {
+    contract: "agent-sync-wake/1", seat: "JET", wake_id: `w-${randomBytes(6).toString("hex")}`, message_id: 9001, trigger_ids: [9001],
+    dm: false, channel: "sandbox", topic: "jet hello", dm_recipient_ids: [], sender_user_id: 1211974, sender_full_name: "Jay",
+    is_bot: false, owner: true, excerpt: "<<<BEGIN nonce=n1\n@**Jet** ping\n>>>END nonce=n1",
+    zulip_link: `${REALM}/#narrow/channel/642167-sandbox/topic/jet.20hello/near/9001`,
+    reply_to: { type: "stream", channel: "sandbox", topic: "jet hello" }, reply_prefix: "[JET·wake] re=9001",
+    sent_at: Math.floor(Date.now() / 1000), ...overrides,
+  };
+  return Buffer.from(JSON.stringify(Object.fromEntries(Object.keys(body).sort().map((k) => [k, body[k]]))));
+}
+function wakePost(seat, bytes, { key = WAKE_KEY_JET, method = "POST", signature } = {}) {
+  return mf.dispatchFetch(`${HOST}/internal/wake/${seat}`, {
+    method,
+    headers: { "Content-Type": "application/json; charset=utf-8", "X-Agent-Sync-Signature": signature ?? createHmac("sha256", Buffer.from(key, "utf8")).update(bytes).digest("hex"), "Idempotency-Key": "x" },
+    body: method === "POST" ? bytes : undefined,
+  });
+}
+async function waitFor(predicate, what, ms = 8000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.fail(`timed out waiting for ${what}`);
 }
 
 const INIT = { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "workerd-test", version: "0" } };
@@ -387,7 +452,7 @@ try {
     assert.equal(init.status, 200, JSON.stringify(init.json));
     assert.match(init.json.result.instructions, /one bot, JET\./);
     assert.match(init.json.result.instructions, /BEGIN_UNTRUSTED_ZULIP and END_UNTRUSTED_ZULIP/);
-    assert.deepEqual(init.json.result.capabilities, { tools: {} });
+    assert.deepEqual(init.json.result.capabilities, { tools: {}, events: {} });
     const list = await mcp(tokens.access_token, "tools/list");
     assert.equal(list.status, 200);
     const tools = list.json.result.tools;
@@ -400,6 +465,132 @@ try {
     assert.equal(who.json.result.structuredContent.seat, "JET");
     assert.equal(who.json.result.structuredContent.transport, "hosted");
     assert.equal(who.json.result.structuredContent.email, "openai-dot-bot@simplewithus.zulipchat.com");
+  });
+
+  await step("MCP Events:  server/discover advertises events at 2026-07-28, and events/list offers zulip.mention", async () => {
+    const discover = await mcpModern(tokens.access_token, "server/discover");
+    assert.equal(discover.status, 200, JSON.stringify(discover.json));
+    assert.deepEqual(discover.json.result.supportedVersions, ["2026-07-28"]);
+    assert.deepEqual(discover.json.result.capabilities, { tools: {}, events: {} });
+    const list = await mcpModern(tokens.access_token, "events/list");
+    assert.equal(list.status, 200, JSON.stringify(list.json));
+    const [ev] = list.json.result.events;
+    assert.equal(ev.name, "zulip.mention");
+    assert.deepEqual(ev.delivery, ["webhook"]);
+    assert.deepEqual(ev.inputSchema.properties.channel.enum, ["agent-sync", "sandbox"]);
+  });
+
+  let subId;
+  await step("MCP Events:  subscribe verifies the callback with a signed challenge;  a foreign host is -32015 and logged", async () => {
+    const params = { name: "zulip.mention", arguments: { channel: "sandbox" }, delivery: { mode: "webhook", url: CALLBACK, secret: CALLBACK_SECRET }, cursor: null };
+    const sub = await mcpModern(tokens.access_token, "events/subscribe", params);
+    assert.equal(sub.status, 200, JSON.stringify(sub.json));
+    subId = sub.json.result.id;
+    assert.match(subId, /^sub_[0-9a-f]{32}$/);
+    assert.equal(sub.json.result.cursor, null);
+    assert.equal(sub.json.result.truncated, false);
+    assert.ok(Date.parse(sub.json.result.refreshBefore) > Date.now());
+    const verification = callbackCalls.find((c) => c.body.type === "verification");
+    assert.ok(verification, "a verification request reached the callback");
+    assert.equal(verification.headers["x-mcp-subscription-id"], subId);
+    assert.ok(new Webhook(CALLBACK_SECRET).verify(verification.raw, verification.headers), "the challenge is Standard Webhooks signed");
+    // A refresh is the same subscription, and is not re-verified.
+    const again = await mcpModern(tokens.access_token, "events/subscribe", { ...params, ttlMs: 7_200_000 });
+    assert.equal(again.json.result.id, subId);
+    assert.equal(callbackCalls.filter((c) => c.body.type === "verification").length, 1);
+
+    const evil = await mcpModern(tokens.access_token, "events/subscribe", { ...params, delivery: { ...params.delivery, url: "https://evil.example.org/cb" } });
+    assert.equal(evil.json.error.code, -32015);
+    assert.equal(evil.json.error.data.reason, "callback_url_refused");
+    const admin = await (await browser("/admin")).text();
+    assert.match(admin, /callback_host_not_allowed/);
+    assert.match(admin, /evil\.example\.org/);
+    assert.ok(!outbound.some((u) => u.startsWith("https://evil.example.org")), "no fetch to a refused host");
+
+    // One live destination:  a second chat is refused and the first stays.
+    const second = await mcpModern(tokens.access_token, "events/subscribe", { ...params, delivery: { ...params.delivery, url: `${CALLBACK}_second` } });
+    assert.equal(second.json.error.code, -32600, JSON.stringify(second.json));
+    assert.match(second.json.error.message, /another chat/);
+  });
+
+  await step("wake:  a signed listener POST is 202 and delivers one Standard Webhooks event;  a replay is a duplicate", async () => {
+    const before = callbackCalls.length;
+    const bytes = wakeBytes();
+    const res = await wakePost("JET", bytes);
+    assert.equal(res.status, 202, await res.clone().text());
+    assert.deepEqual(await res.json(), { ok: true, subscribers: 1 });
+    await waitFor(() => callbackCalls.length > before, "the event delivery");
+    const delivery = callbackCalls[callbackCalls.length - 1];
+    const event = new Webhook(CALLBACK_SECRET).verify(delivery.raw, delivery.headers);
+    assert.equal(event.name, "zulip.mention");
+    assert.equal(delivery.headers["webhook-id"], event.eventId);
+    assert.equal(delivery.headers["x-mcp-subscription-id"], subId);
+    assert.equal(event.data.message_id, 9001);
+    assert.equal(event.data.owner_hint, true);
+    assert.deepEqual(event.data.reply_to, { type: "stream", channel: "sandbox", topic: "jet hello" });
+    assert.ok(!delivery.raw.includes(WAKE_KEY_JET) && !delivery.raw.includes(JET_KEY), "no key in the payload");
+
+    // A DM wakes too, but its text stays in Zulip.  (The sandbox filter leaves DMs out, so
+    // this one is checked through the claim count only:  0 matching deliveries.)
+    const dmBefore = callbackCalls.length;
+    const dm = await wakePost("JET", wakeBytes({ dm: true, channel: null, topic: null, dm_recipient_ids: [1211974], reply_to: { type: "direct", to: [1211974] } }));
+    assert.equal(dm.status, 202);
+    await dm.arrayBuffer();
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(callbackCalls.length, dmBefore, "a channel-filtered subscription gets no DM");
+
+    const replay = await wakePost("JET", bytes);
+    assert.equal(replay.status, 200);
+    assert.deepEqual(await replay.json(), { ok: true, duplicate: true });
+    // An agent-sync mention does not match the sandbox-only subscription.
+    const other = await wakePost("JET", wakeBytes({ channel: "agent-sync", reply_to: { type: "stream", channel: "agent-sync", topic: "x" } }));
+    assert.equal(other.status, 202);
+    await other.arrayBuffer();
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(callbackCalls.length, before + 1, "no delivery for a non-matching channel");
+  });
+
+  await step("wake:  bad signature, stale, wrong seat, unkeyed seat, wrong method and oversize are refused", async () => {
+    const bytes = wakeBytes();
+    let res = await wakePost("JET", bytes, { key: "f".repeat(64) });
+    assert.equal(res.status, 401);
+    await res.arrayBuffer();
+    res = await wakePost("JET", wakeBytes({ sent_at: Math.floor(Date.now() / 1000) - 600 }));
+    assert.equal(res.status, 401);
+    await res.arrayBuffer();
+    res = await wakePost("JET", wakeBytes({ seat: "GROK-WEB" }));
+    assert.equal(res.status, 400);
+    await res.arrayBuffer();
+    res = await wakePost("GROK-WEB", wakeBytes({ seat: "GROK-WEB" }));
+    assert.equal(res.status, 404, "a seat without a wake key is not there");
+    await res.arrayBuffer();
+    res = await wakePost("NOPE", bytes);
+    assert.equal(res.status, 404);
+    await res.arrayBuffer();
+    res = await wakePost("JET", bytes, { method: "GET" });
+    assert.equal(res.status, 405);
+    await res.arrayBuffer();
+    res = await wakePost("JET", Buffer.alloc(70 * 1024, 32));
+    assert.equal(res.status, 413);
+    await res.arrayBuffer();
+    // The Worker answers 413 without reading the body, which leaves the test
+    // client's pooled socket reset;  one throwaway request absorbs that.
+    await mf.dispatchFetch(`${HOST}/health`).then((r) => r.arrayBuffer()).catch(() => {});
+  });
+
+  await step("wake:  410 from the callback drops the subscription;  unsubscribe is idempotent", async () => {
+    const before = callbackCalls.length;
+    callbackStatuses.push(410);
+    let res = await wakePost("JET", wakeBytes());
+    assert.equal(res.status, 202);
+    await res.arrayBuffer();
+    await waitFor(() => callbackCalls.length > before, "the 410 delivery");
+    await new Promise((r) => setTimeout(r, 300));
+    res = await wakePost("JET", wakeBytes());
+    assert.deepEqual(await res.json(), { ok: true, subscribers: 0 });
+    const unsub = await mcpModern(tokens.access_token, "events/unsubscribe", { name: "zulip.mention", arguments: { channel: "sandbox" }, delivery: { mode: "webhook", url: CALLBACK } });
+    assert.equal(unsub.status, 200, JSON.stringify(unsub.json));
+    assert.deepEqual(Object.keys(unsub.json.result).filter((k) => k !== "_meta" && k !== "resultType"), []);
   });
 
   await step("a seat argument is a tool error, an unknown tool a protocol error, and a missing scope names the challenge", async () => {

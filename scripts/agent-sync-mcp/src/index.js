@@ -15,6 +15,9 @@
 //   4. /mcp:  seat, phase, epoch and grant age re-checked in the seat's
 //      SeatGate, then the tools run with that seat's key only.
 //      /authorize and /admin:  Access JWT re-verified, then our gates.
+//   5. /internal/wake/<SEAT>:  the server listener's signed wake (src/wake.js),
+//      handled before the OAuth library and outside Cloudflare Access.  It
+//      fans out an MCP event to that seat's subscriptions (src/events.js).
 
 import { OAuthProvider, OAuthError, AuthorizationError, CimdFetchError } from "@cloudflare/workers-oauth-provider";
 import { SeatGate } from "./seat-gate.js";
@@ -31,6 +34,7 @@ import {
   PROPS_PHASE,
   SEAT_SECRETS,
   SEAT_LABELS,
+  WAKE_SECRETS,
 } from "./config.js";
 import {
   hostAllowed,
@@ -58,6 +62,8 @@ import { HostedTools } from "./hosted-tools.js";
 import { recallClientFromEnv } from "./recall.js";
 import { ZulipClient } from "./zulip.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
+import { SeatEvents, fanOut } from "./events.js";
+import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
 
 export { SeatGate };
 
@@ -222,7 +228,18 @@ async function serveMcp(request, env, ctx) {
     ...(Number.isFinite(auth.expiresAt) ? { expiresAt: auth.expiresAt } : {}),
     extra: { seat },
   };
-  const response = await serveMcpRequest(request, tools, authInfo);
+  const events = new SeatEvents({
+    seat,
+    scopes,
+    epoch: props.epoch,
+    approvedAt: props.approved_at,
+    paused: result.code === "paused",
+    gate: seatGate,
+    config,
+    clientId: typeof auth.clientId === "string" ? auth.clientId : "",
+    logRefusal: (row) => logRefusal(env, row),
+  });
+  const response = await serveMcpRequest(request, tools, authInfo, events);
   if (response.status === 403 && request.headers.has("origin")) {
     // Records whether any client sends a browser Origin (spec 3.2).
     console.log(JSON.stringify({ event: "mcp_origin_refused", origin_host: logSafe(safeHost(request.headers.get("origin")), 120) }));
@@ -236,6 +253,55 @@ function safeHost(origin) {
   } catch {
     return "unparseable";
   }
+}
+
+// ---------------------------------------------------------------- /internal/wake/<SEAT>
+
+function jsonResponse(body, status) {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
+}
+
+/**
+ * The listener's wake (src/wake.js):  signature, freshness and shape first,
+ * then a wake_id claim in the seat's SeatGate, then 202 at once while the
+ * signed deliveries run in ctx.waitUntil.  A repeat of a claimed wake_id is a
+ * 200, so the listener's retry after a lost response never wakes Jet twice.
+ */
+async function serveWake(request, env, ctx, config) {
+  const seat = wakePathSeat(new URL(request.url).pathname);
+  if (!seat || !config.hostedSeats.includes(seat) || !Object.hasOwn(WAKE_SECRETS, seat)) return notFound();
+  const rawKey = env[WAKE_SECRETS[seat]];
+  const key = typeof rawKey === "string" ? rawKey.trim() : "";
+  if (!key) return notFound();
+  if (request.method !== "POST") return textResponse("Method Not Allowed", 405, { Allow: "POST" });
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > WAKE_MAX_BODY) return textResponse("Payload Too Large", 413);
+  const bytes = await readBodyBytes(request, WAKE_MAX_BODY);
+  if (bytes === null) return textResponse("Payload Too Large", 413);
+  const checked = await verifyWake({ bytes, signature: request.headers.get(WAKE_SIGNATURE_HEADER), key, seat });
+  if (!checked.ok) {
+    console.log(JSON.stringify({ event: "wake_refused", seat, reason: checked.reason }));
+    return checked.status === 404 ? notFound() : textResponse(checked.status === 401 ? "Unauthorized" : "Bad Request", checked.status);
+  }
+  const wake = checked.wake;
+  if (config.mcpDisabled) {
+    // The MCP kill switch stops events too.  Not 5xx:  the listener would retry for nothing.
+    console.log(JSON.stringify({ event: "wake", seat, verdict: "mcp_disabled", message_id: wake.message_id }));
+    return jsonResponse({ ok: true, disabled: true, subscribers: 0 }, 202);
+  }
+  const seatGate = gate(env, seat);
+  const claim = await seatGate.eventClaimWake({ wakeId: wake.wake_id });
+  console.log(JSON.stringify({ event: "wake", seat, verdict: claim.verdict, subscribers: claim.subs?.length ?? 0, message_id: wake.message_id }));
+  if (claim.verdict === "duplicate") return jsonResponse({ ok: true, duplicate: true }, 200);
+  if (claim.verdict === "paused") return jsonResponse({ ok: true, paused: true, subscribers: 0 }, 202);
+  if (claim.subs.length > 0) {
+    ctx.waitUntil(
+      fanOut({ gate: seatGate, wake, subs: claim.subs, fetchFn: (...a) => fetch(...a) }).catch(() => {
+        console.log(JSON.stringify({ event: "wake_fanout_failed", seat }));
+      }),
+    );
+  }
+  return jsonResponse({ ok: true, subscribers: claim.subs.length }, 202);
 }
 
 // ---------------------------------------------------------------- /authorize and /admin
@@ -695,6 +761,7 @@ export default {
       return new Response(request.method === "HEAD" ? null : '{"ok":true}', { status: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
     }
     if (route === "mcp" && config.mcpDisabled) return textResponse("The agent-sync MCP server is turned off.", 503, { "Retry-After": "3600" });
+    if (route === "wake") return serveWake(request, env, ctx, config);
     if (route === "token") {
       const gated = await gateToken(request, env, config);
       if (gated instanceof Response) return gated;

@@ -7,7 +7,7 @@ CLAUDE seat, Thu, Oct 8.  Deployed on Thu, Oct 8 as the Coolify application "age
 The listener runs as two instances of the same package (`scripts/agent_sync`), by owner decision on Thu, Oct 8.
 
 - **mac** is the LaunchAgent on the owner's Mac.  It holds the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM):  live delivery into Claude sessions and the tool-less `claude -p` wake for CLAUDE, and inbox capture for the other eight.
-- **server** is a container on the Coolify box (Hetzner).  It holds the Grok Bot (GB) personas and the five cloud seats (MA, JET, GROK-WEB, INSTINCT and ECHO).  A cloud seat has a queue and inbox capture and no wake.  A GB persona is woken on an @-mention or a DM by calling its Grok Bot routine webhook.  The routine then replies in Zulip with the persona's own key.
+- **server** is a container on the Coolify box (Hetzner).  It holds the Grok Bot (GB) personas and the five cloud seats (MA, JET, GROK-WEB, INSTINCT and ECHO).  A cloud seat has a queue and inbox capture and no wake, except JET, which is woken through the hosted MCP Worker (see [Cloud Seats](#cloud-seats)).  A GB persona is woken on an @-mention or a DM by calling its Grok Bot routine webhook.  The routine then replies in Zulip with the persona's own key.
 
 BotFleet (BF) bots are handled natively by BotFleet, not by either instance.
 
@@ -15,7 +15,7 @@ The server instance reuses everything in the listener:  the router, dedupe, the 
 
 ## Seat Partition
 
-[`agent-sync-partition.toml`](agent-sync-partition.toml) gives each seat to one instance:  `mac`, `server`, or `none` (no listener holds it).  Today the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM) are `mac`, and the eleven GB personas plus MA, JET, GROK-WEB, INSTINCT and ECHO are `server`.  The BF role bots and GROK-BUILD (the older code of the GROK seat) are `none`.  The server sample enables the five cloud seats with `wake = "inbox"` (since Fri, Oct 9).
+[`agent-sync-partition.toml`](agent-sync-partition.toml) gives each seat to one instance:  `mac`, `server`, or `none` (no listener holds it).  Today the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM) are `mac`, and the eleven GB personas plus MA, JET, GROK-WEB, INSTINCT and ECHO are `server`.  The BF role bots and GROK-BUILD (the older code of the GROK seat) are `none`.  The server sample enables the five cloud seats (since Fri, Oct 9), MA, GROK-WEB, INSTINCT and ECHO with `wake = "inbox"` and JET with `wake = "http"` into the hosted MCP Worker.
 
 **A seat must never be configured in both instances.**  If it were, two listeners would each hold a queue for the same bot and each wake it, so one message could be answered twice.  The partition fails closed, and it is enforced at start, at connect and on reload.
 
@@ -124,7 +124,7 @@ routine = { url_env = "GB_COMPILER_ROUTINE_URL", key_env = "GB_COMPILER_ROUTINE_
 | `Dockerfile.dockerignore` | Keeps only those paths in the build context (BuildKit); the tests stay out |
 | `entrypoint.sh` | On first start, copies the sample config onto the volume as `$AGENT_SYNC_CONFIG`, never overwriting one, then execs `agent-sync` (exec form, so SIGTERM reaches the daemon, which deletes its queues) |
 | `healthcheck.py` | Unhealthy when `/data/listener/status.json` is missing or older than 60 seconds.  The daemon rewrites it every 2 seconds; a refused start never writes it |
-| `listener.toml` | The server sample:  GB-COMPILER enabled with `wake = "http"`, and the five cloud seats (MA, JET, GROK-WEB, INSTINCT and ECHO) enabled with `wake = "inbox"`.  The other ten personas are present with `enabled = false`, each with `wake = "http"` and a `routine` block that names its default variables (their routines do not exist yet) |
+| `listener.toml` | The server sample:  GB-COMPILER enabled with `wake = "http"`, the cloud seats MA, GROK-WEB, INSTINCT and ECHO enabled with `wake = "inbox"`, and JET enabled with `wake = "http"` (its routine is the hosted MCP Worker).  The other ten personas are present with `enabled = false`, each with `wake = "http"` and a `routine` block that names its default variables (their routines do not exist yet) |
 
 **Environment the container expects.**  The image sets these:
 
@@ -139,7 +139,8 @@ Infisical (project "AI Fleet Coordinator", environment `prod`, folder `/zulip`) 
 - `ZULIP_SITE` (Coolify only)
 - `ZULIP_GB_COMPILER_EMAIL` and `ZULIP_GB_COMPILER_API_KEY`
 - `GB_COMPILER_ROUTINE_URL` and `GB_COMPILER_ROUTINE_KEY`
-- For each cloud seat, `ZULIP_<CODE>_EMAIL` and `ZULIP_<CODE>_API_KEY`, with CODE `MA`, `JET`, `GROK_WEB`, `INSTINCT` or `ECHO` (ten variables, no routine)
+- For each cloud seat, `ZULIP_<CODE>_EMAIL` and `ZULIP_<CODE>_API_KEY`, with CODE `MA`, `JET`, `GROK_WEB`, `INSTINCT` or `ECHO` (ten variables)
+- For JET's wake:  `JET_ROUTINE_URL` (`https://agent-sync.jays.services/internal/wake/JET`) and `JET_ROUTINE_KEY` (the shared HMAC key, kept in `~/.secrets/jet-wake-hmac.env` on Jay's Mac and installed as the Worker secret `WAKE_HMAC_KEY_JET`).  Until both are set, each JET wake is logged as `routine-unready` and dropped, and capture is unchanged
 - For each persona enabled later:  `ZULIP_GB_<ROLE>_EMAIL`, `ZULIP_GB_<ROLE>_API_KEY`, `GB_<ROLE>_ROUTINE_URL` and `GB_<ROLE>_ROUTINE_KEY`, or the names its section sets
 
 These are optional, and best left unset:
@@ -184,7 +185,7 @@ These are optional, and best left unset:
    - `instance server; owner pinned: yes`
    - no line that starts with `RED` (config, partition, credential or role problems)
    - `GB-COMPILER  connected`, with `wake http (routine ready, <host>)` on the same line (while its credentials are the wrong bot's, expect it red instead, and read the rest of the list without it)
-   - each cloud seat (MA, JET, GROK-WEB, INSTINCT, ECHO) `connected`, with `wake inbox`
+   - each cloud seat (MA, JET, GROK-WEB, INSTINCT, ECHO) `connected`, with `wake inbox` (JET:  `wake http`)
    - no `routine NOT ready` and no `DOWN` for any enabled seat
 
    `LaunchAgent: not installed` is expected in the container.  A fresh or lost volume reseeds the sample with `owner_user_id = 0`, so after one, run step 6 again.
@@ -245,7 +246,9 @@ wake = "inbox"
 - It checks the key at connect.  The bot's role must be member or moderator, and the key's own bot must be the seat (the tag derived from the bot's email must equal the seat).  A wrong key shows `seat-refused` in the log and red in `agent-sync status`, and the other seats keep running.
 - It makes the bot visible in `agent-sync status` (connected or red, last event, cursor).
 
-**What it does not do.**  No wake adapter exists for these seats, so nothing is woken.  Nothing reads their inboxes either:  the hosted MCP `inbox` tool (`docs/protocols/agent-sync-mcp.md`) is stateless and queries Zulip itself, one `is:mentioned` search per allowlisted channel, with no DMs.  It never reads these files.  The only reader today is an operator inside the container (`agent-sync inbox --local --as MA`, or `--as JET`, and so on).  A cloud seat is therefore captured, not served.  The real consumers, a wake adapter for a seat that can take one, or an MCP tool that reads this inbox, are Open Questions below.
+**JET is woken (Fri, Oct 9).**  JET's section has `wake = "http"` with `auth = "hmac-sha256"` (header `X-Agent-Sync-Signature`, no prefix) and an explicit budget (6 wakes an hour, 40 a day, owner 30 a day).  Its routine is the hosted MCP Worker's `/internal/wake/JET`, which checks the signature and a 5-minute `sent_at` window, dedupes `wake_id`, and sends a signed MCP Events `zulip.mention` to every ChatGPT chat or dot that subscribed (`docs/protocols/agent-sync-mcp.md` section 3.12, and `ARMING-JAY.md` "Wake Jet" for Jay's steps).  The capture below is unchanged.
+
+**What it does not do.**  No wake adapter exists for the other cloud seats, so nothing wakes them.  Nothing reads their inboxes either:  the hosted MCP `inbox` tool (`docs/protocols/agent-sync-mcp.md`) is stateless and queries Zulip itself, one `is:mentioned` search per allowlisted channel, with no DMs.  It never reads these files.  The only reader today is an operator inside the container (`agent-sync inbox --local --as MA`, or `--as JET`, and so on).  A cloud seat is therefore captured, not served.  The real consumers, a wake adapter for a seat that can take one, or an MCP tool that reads this inbox, are Open Questions below.
 
 **Not eligible senders.**  `daemon init` pins `eligible_user_ids` from `FLEET_SEATS` (`scripts/agent_sync/listener_cli.py`).  That list holds MA and JET but not GROK-WEB, INSTINCT or ECHO, so a message from one of those three is captured and never triggers a wake on another seat.  This changes only if the list changes.
 
