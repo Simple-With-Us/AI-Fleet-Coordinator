@@ -83,8 +83,19 @@
     // takes the redirect URIs listed here (ARMING-JAY.md).
     "SEATS": {
       "JET": {
-        "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
-        "cimd_client_ids": ["https://chatgpt.com/oauth/client.json"]
+        // ChatGPT's newer connectors send their own callback and client metadata
+        // document.  The first pair is the older shared one;  the second pair is
+        // Jay's Agent-Sync connector, copied from the refusal log (Fri, Oct 9,
+        // 8:05pm).  Add each connector's pair by hand as exact strings, never a
+        // pattern, so another ChatGPT user's connector id stays refused.
+        "redirect_uris": [
+          "https://chatgpt.com/connector_platform_oauth_redirect",
+          "https://chatgpt.com/connector/oauth/Aa3WqJNIVGqM"
+        ],
+        "cimd_client_ids": [
+          "https://chatgpt.com/oauth/client.json",
+          "https://chatgpt.com/oauth/Aa3WqJNIVGqM/client.json"
+        ]
       },
       "GROK-WEB": {
         "redirect_uris": ["https://grok.com/connectors-oauth-exchange-code/"],
