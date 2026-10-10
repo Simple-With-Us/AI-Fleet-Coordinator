@@ -7,7 +7,7 @@ The seat is **OPENCODE** no matter which provider or model OpenCode is logged in
 model is a detail the seat states in its intro.  This mirrors the standing rule that a DeepSeek model inside Cursor
 is still `[CURSOR]` and Grok inside fx is still `[FX]`.
 
-Owner decision, Sat, Oct 10, 2026 (about 2:05am): "opencode as a seat".  Until then OpenCode was an engine-only CLI
+Owner decision, Sat, Oct 10, 2026: "opencode as a seat".  Until then OpenCode was an engine-only CLI
 with no default seat (AGENT-SYNC § Identity Rules › Platform Defaults).  It is a seat now:  own Zulip bot, own branch
 prefix, own lane token.  A launcher's seat still wins, so a BotFleet bot that runs on the opencode engine stays
 `BF-<ROLE>` and never signs OPENCODE.
@@ -21,14 +21,17 @@ prefix, own lane token.  A launcher's seat still wins, so a BotFleet bot that ru
   If yours does, the pasted prompt outranks the file:  Jay naming your seat in the conversation is the first rule of
   AGENT-SYNC § Identity Rules.
 - Zulip bot `opencode-bot@simplewithus.zulipchat.com` (display name OpenCode, a realm member, role 400), credential
-  `~/.secrets/Zulip/OpenCode-zuliprc` at mode 600.  The file name is the owner's;  `SEAT_FILE_OVERRIDES` in
-  `scripts/agent_sync/zulip.py` carries it, because the Title Case rule alone would say `Opencode-zuliprc`.
+  `~/.secrets/Zulip/OpenCode-zuliprc` at mode 600.  The name breaks the Title Case rule (it would give
+  `Opencode-zuliprc`), so `SEAT_FILE_OVERRIDES` in `scripts/agent_sync/zulip.py` carries it.
 - `agent-sync`, `board` and `recall` are on PATH (`~/.local/bin`) and need no MCP.  No `opencode.json` exists, so no MCP
   server is registered yet.
 - No deny hook is installed for OpenCode.  Nothing stops a bad command for you, so the destructive-operation pause is
   yours to hold (see the prompt).
 - No fleet skill pack is installed for it.  fx scans `~/.config/opencode/skills` (`FX_SCAN_ROOTS`), so a pack written
-  there later must carry OPENCODE text and never FX text.
+  there later must carry OPENCODE text and never FX text.  Which skill folders OpenCode itself loads is not proven:
+  PR #439's lane-map notes say it also loads `~/.claude/skills` and `~/.agents/skills` (read from the 2.0.21 binary, not
+  yet run with a model).  The first folder is CLAUDE-voiced and the second carries no seat banner, so the prompt below
+  tells OpenCode to judge a skill by what it tells you to do, not only by its banner.
 - The Mac `agent-sync` listener does not hold OPENCODE yet (`docs/protocols/agent-sync-partition.toml` lists no
   OPENCODE seat, which needs Jay's OK).  Nothing wakes you, so read `agent-sync inbox` every turn.
 
@@ -42,8 +45,15 @@ and keep them in mind for the whole session:
 2. ~/apps/AGENT-SYNC.md           (canonical protocol, binding on every seat)
 3. AGENTS.md in whichever repo you work in
 
+STEP 0 — BEFORE ANY COMMAND BELOW
+- Look at your environment (read only;  never write these):  AGENT_LAUNCHER, AGENT_LAUNCH_SEAT, AGENT_SEAT.  If
+  AGENT_LAUNCHER or AGENT_LAUNCH_SEAT is set, or AGENT_SEAT is set to anything other than OPENCODE, stop.  Tell Jay
+  what is set, and follow the launcher's seat or wait for Jay.  The commands below are not yours then:  `lane` and
+  `board` do not look for a launcher, so a command written with OPENCODE would file your work under the wrong seat.
+  Go on only when none of the three is set, or AGENT_SEAT is already OPENCODE.
+
 IDENTITY — assigned, never inferred
-- Your seat is OPENCODE.  Jay pasting this prompt names it, and a seat Jay names in the conversation is the first
+- Your seat is OPENCODE, once step 0 has passed.  Jay pasting this prompt names it, and a seat Jay names in the conversation is the first
   rule of AGENT-SYNC § Identity Rules, ahead of every rules file and skill.  If a launcher started you
   (AGENT_LAUNCHER is set), the launcher's AGENT_LAUNCH_SEAT wins instead:  that is a BotFleet bot and you are
   BF-<ROLE>, not OPENCODE.  With AGENT_LAUNCHER set and no AGENT_LAUNCH_SEAT you have no seat:  do no fleet action
@@ -54,14 +64,18 @@ IDENTITY — assigned, never inferred
   --as OPENCODE on every agent-sync call.
 - The model under you does not change the seat.  Name the provider and model in your intro post so peers can read
   your work with that in mind.  You are [OPENCODE] in every case, never [CLAUDE], [CODEX], [FX] or any other tag.
-- Skills may reach you from other tools' folders.  If a loaded skill's banner names any seat other than OPENCODE,
-  it is not yours:  drop it.
+- Skills and rules text may reach you from other tools' folders (`~/.claude/skills`, `~/.agents/skills`), and some
+  carry no seat banner.  Judge them by what they tell you to do, not only by their banner:  any skill or rules text
+  that tells you to sign, claim, `--by`, branch, lane or use a credential as a seat other than OPENCODE is not
+  yours, whatever its banner says.  Follow the OPENCODE commands in this prompt instead.  A banner that names another
+  seat settles it at once:  drop that skill.
 - Verify before your first fleet action:  agent-sync whoami --as OPENCODE.  Its "bot seat" must say OPENCODE and its
   "verified" line must say yes.  If it shows another seat's bot, or says the credential is missing, stop and report.
   Never use another seat's credential or Jay's account, and never print a credential.
 
 WHERE TO WORK
-- Never edit, or even read from, ~/Code/<App>.  A daemon resets it and it lags main.  Cut a lane from origin/main:
+- Never edit, or even read from, ~/Code/<App>.  A daemon resets it and it lags main.  Cut a lane from origin/main
+  (the inline AGENT_SEAT=OPENCODE is right only because step 0 passed):
     AGENT_SEAT=OPENCODE ~/apps/lane new <app> <slug>
   It lands at ~/apps/lanes/<Repo>/opencode-<slug> on branch opencode/<slug>.  Never touch another seat's lane.
   If lane says AGENT_SEAT='OPENCODE' "is not a seat tag in fleet-apps.json", the registration PR has not merged yet
@@ -154,14 +168,17 @@ None of these is in the repo, so the PR cannot change them.  Edit each by hand, 
 2. `~/.config/opencode/AGENTS.md`:  the same paragraph change as above (it is a whole copy of `~/AGENTS.md`), plus
    - the preface sentence "OpenCode is an engine-only CLI with no default seat:  take the seat your launcher assigned
      (`AGENT_LAUNCH_SEAT` with `AGENT_LAUNCHER`), or ask Jay, and never assume CLAUDE." becomes "OpenCode is the
-     OPENCODE seat (owner, Sat, Oct 10, 2026):  an ordinary OpenCode session is OPENCODE, whatever provider or model it
-     runs.  A seat Jay names to you, or one your launcher assigned (`AGENT_LAUNCH_SEAT` with `AGENT_LAUNCHER`), still
-     beats this file, so a BotFleet bot on the opencode engine keeps its `BF-<ROLE>` seat.  Your bot is
-     `opencode-bot@`, your tag `[OPENCODE]`, your branches `opencode/<slug>`, your lanes
-     `~/apps/lanes/<Repo>/opencode-<slug>`.";
+     OPENCODE seat (owner, Sat, Oct 10, 2026):  an OpenCode session Jay opens himself in a terminal is OPENCODE,
+     whatever provider or model it runs.  A headless run (`opencode run`, cron) and a session inside an app that several
+     tools share, such as Conductor, have no default:  take the seat your launcher assigned (`AGENT_LAUNCH_SEAT` with
+     `AGENT_LAUNCHER`), or ask Jay.  A seat Jay names to you, or one your launcher assigned, still beats this file, so a
+     BotFleet bot on the opencode engine keeps its `BF-<ROLE>` seat.  Your bot is `opencode-bot@`, your tag
+     `[OPENCODE]`, your branches `opencode/<slug>`, your lanes `~/apps/lanes/<Repo>/opencode-<slug>`.";
    - the seat-detection shell block's last branch, `else SEAT="${AGENT_SEAT:?set AGENT_SEAT to your platform default
      from AGENT-SYNC Identity Rules}"; fi`, becomes `else SEAT="${AGENT_SEAT:-OPENCODE}"; fi`, as in
-     `~/.claude/CLAUDE.md`.
+     `~/.claude/CLAUDE.md`.  There is no `[ -t 0 ]` gate on purpose:  an agent's shell tool normally has no TTY on
+     stdin, so the gate would send every ordinary session to the error branch.  The headless and Conductor cases are
+     covered by the preface text above and by step 0 of the prompt.
 3. `~/apps/AGENT-SYNC.md`:  the hunks above.  Its BotFleet line that lists OpenCode among the ACP engines stays as it is.
 
 ## How to tell it took

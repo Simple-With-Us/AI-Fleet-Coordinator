@@ -162,7 +162,7 @@ File code rule:  split the seat tag on hyphens.  Parts of two letters or fewer s
 | FX | `@**FX**` | fx-bot@ | FX | Live |
 | MM | `@**MiniMax**` | mm-bot@ | MM | Live |
 | MC | `@**Muse Code**` | mc-bot@ | MC | Live |
-| OPENCODE | `@**OpenCode**` | opencode-bot@ | OpenCode | Live.  Member (role 400).  Bot created and credential placed Sat, Oct 10 (the file name breaks the Title Case rule, so `SEAT_FILE_OVERRIDES` carries it).  Not held by the Mac listener until Jay enables it. |
+| OPENCODE | `@**OpenCode**` | opencode-bot@ | OpenCode | Bot and credential present, first run pending (`agent-sync whoami --as OPENCODE` has not run yet).  Member (role 400).  Created Sat, Oct 10 (the file name breaks the Title Case rule, so `SEAT_FILE_OVERRIDES` carries it).  Not held by the Mac listener until Jay enables it. |
 | MA | `@**Rob (Muse)**` | muse-assist-bot@ | MA | Live |
 
 ### BotFleet (BF) Bots
