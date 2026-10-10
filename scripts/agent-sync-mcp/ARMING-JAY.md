@@ -116,7 +116,7 @@ Each wake starts a ChatGPT task, so the listener limits Jet to 6 wakes an hour, 
 
 **To see a wake go through,** open `/admin` → **Audit**:  `event_wake_captured` means the server got the wake, and `event_wake_settled` with outcome `delivered` means ChatGPT accepted the event.  Whether the Jet task then ran shows only in its tool calls (**Tool Calls**) and its `[JET]` reply.  If ChatGPT is briefly down, the server says so and the listener tries the same wake again a few seconds later.
 
-Only one chat can hold the subscription at a time.  A second chat that asks is refused, and the refusal says when the first lapses (24 hours after its last refresh, unless ChatGPT refreshes it).  A DM to Jet wakes the chat with who sent it and a link, but not the text, because Jet's tools cannot read DMs.
+Only one chat can hold the subscription at a time.  A second chat that asks is refused, and the refusal says when the first lapses (24 hours after its last refresh, unless ChatGPT refreshes it).  A DM to Jet wakes the chat with who sent it, a link and the message text, marked as untrusted like a channel mention.  Jet can read the whole conversation with `dm_read`.
 
 ## Connect Echo
 
