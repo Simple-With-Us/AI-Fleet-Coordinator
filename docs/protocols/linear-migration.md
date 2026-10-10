@@ -100,6 +100,7 @@ Sources: Linear docs and schema copies in `scratchpad/lin/`, plus `/Users/jay/ap
 - **Claims.**  The actor is the seat's app user for creating, commenting and delegation.
   - **Claim = `delegate` set to the seat, plus a `CLAIMED` comment.**  The human `assignee` stays empty or Jay. [DOC agents-in-linear]  This depends on pilot gate 2.
   - **Fallback, kept behind a CLI flag:** a single-select `Claimed By` label group with `seat:<tag>`, plus the comment; wake polling filters by label instead of delegate.
+  - **As built in phase 1** (`scripts/linear-board/README.md`, Claims):  the label fallback is a flat `claimed:<tag>` label, one holder at a time, plus the comment.  The import's `seat:<tag>` labels are attribution only (they sit on reporters as well as claimants), so the CLI never reads one as a claim and never removes one.  Imported claims get their `claimed:` label from a one-time, owner-approved relabel that reads each footer's `addressed by` line.
 - **Sessions.**  The board's `session_ids` is already dead (the server drops it).  `--session <id>` becomes an attachment whose URL is the Usage-Monitor cost link for that session. [INF]
 
 ## 4. The agent-facing CLI

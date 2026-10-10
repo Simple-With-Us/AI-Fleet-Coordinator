@@ -740,9 +740,11 @@ class WakeTests(DaemonHarness):
 
     def test_board_filing_is_off_by_default_and_a_list_argv_when_on(self) -> None:
         board_calls = []
+        board_envs = []
 
         def board_runner(argv, **kw):
             board_calls.append(argv)
+            board_envs.append(kw.get("env"))
             return subprocess.CompletedProcess(argv, 0, "", "")
 
         self.set_claude(mode="ok", output={"action": "board", "reply": None, "owner_note": None, "risk": None,
@@ -764,6 +766,8 @@ class WakeTests(DaemonHarness):
         self.assertIn("--app=CT", argv)
         self.assertIn("zulip:CLAUDE:%d" % mid, argv)
         self.assertEqual(self.ledger()[-1]["board_uid"], "zulip:CLAUDE:%d" % mid)
+        # `env -i` drops the inherited seat, and the Linear board CLI refuses a write without AGENT_SEAT.
+        self.assertEqual(board_envs[0].get("AGENT_SEAT"), "CLAUDE")
 
     def test_the_loop_guard_resets_only_on_an_owner_post(self) -> None:
         daemon = self.started()
