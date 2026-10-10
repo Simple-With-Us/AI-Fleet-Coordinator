@@ -99,7 +99,7 @@ umask 077; [ -s ~/.secrets/jet-wake-hmac.env ] || printf 'JET_ROUTINE_KEY=%s\n' 
 grep -m1 '^JET_ROUTINE_KEY=' ~/.secrets/jet-wake-hmac.env | cut -d= -f2- | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
 ```
 
-The listener half is two Coolify variables and a restart, which is Jay's step (ARMING-JAY.md, "Wake Jet"):  `JET_ROUTINE_URL=https://agent-sync.jays.services/internal/wake/JET` and `JET_ROUTINE_KEY` set to the same key.  Rotating the key means rerunning both.  Check:  `POST /internal/wake/JET` with no signature answers 401 (not 404, which would mean the secret is missing), and `infra_phase0.py check` probes it.  `EVENT_CALLBACK_HOSTS` in `wrangler.jsonc` lists the hosts ChatGPT may give as a callback.  A refused one shows on `/admin` as `callback_host_not_allowed`, and adding it is a var change and a deploy.
+The listener half is Jay's step (ARMING-JAY.md, "Wake Jet", step 1):  two Coolify variables (`JET_ROUTINE_URL=https://agent-sync.jays.services/internal/wake/JET`, and `JET_ROUTINE_KEY` set to the same key), a scoped edit of the **live** `/data/listener.toml` (the volume keeps the copy seeded on first start, so the repo sample's new JET section never reaches it), and a restart.  Rotating the key means rerunning both.  Check:  `POST /internal/wake/JET` with no signature answers 401 (not 404, which would mean the secret is missing), and `infra_phase0.py check` probes it.  `EVENT_CALLBACK_HOSTS` in `wrangler.jsonc` lists the hosts ChatGPT may give as a callback.  A refused one shows on `/admin` as `callback_host_not_allowed`, and adding it is a var change and a deploy.
 
 ## Re-enable JET
 

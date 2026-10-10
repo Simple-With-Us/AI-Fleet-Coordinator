@@ -771,6 +771,9 @@ try {
     assert.equal(t.status, 200, JSON.stringify(t.body));
     grokCimdTokens = t.body;
     assert.equal(await seatOf(t.body.access_token), "GROK-WEB");
+    // No WAKE_HMAC_KEY_GROK_WEB, so no events:  Grok never lists an event that cannot fire.
+    const grokDiscover = await mcpModern(t.body.access_token, "server/discover");
+    assert.deepEqual(grokDiscover.json.result.capabilities, { tools: {} });
     const write = await call(t.body.access_token, "post", { channel: "sandbox", topic: "hosted smoke", text: "Hello from Grok.  Two sentences." });
     assert.equal(write.status, 200, JSON.stringify(write.json));
     const posted = zulip.messages.at(-1);

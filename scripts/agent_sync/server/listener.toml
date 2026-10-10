@@ -60,7 +60,8 @@ wake = "inbox"
 # is that URL;  JET_ROUTINE_KEY is the shared HMAC key, the same value as the Worker secret WAKE_HMAC_KEY_JET
 # (kept in ~/.secrets/jet-wake-hmac.env on Jay's Mac).  Until both are set and the container restarts, each wake
 # is logged as routine-unready and dropped;  the inbox still captures everything.  The budget is explicit
-# because every wake starts a ChatGPT task.
+# because every wake starts a ChatGPT task.  A volume seeded before this change keeps JET on "inbox":  switch
+# it with the scoped edit in ARMING-JAY.md "Wake Jet", step 1b.
 [seat.JET]
 instance = "server"
 creds = "env"                     # ZULIP_JET_EMAIL, ZULIP_JET_API_KEY (openai-dot-bot@)

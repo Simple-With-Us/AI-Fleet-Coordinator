@@ -228,7 +228,10 @@ async function serveMcp(request, env, ctx) {
     ...(Number.isFinite(auth.expiresAt) ? { expiresAt: auth.expiresAt } : {}),
     extra: { seat },
   };
-  const events = new SeatEvents({
+  // Events only for a seat the listener can wake (its WAKE_HMAC_KEY_<SEAT> is
+  // set):  any other seat would list an event that never fires.
+  const wakeSecret = env[WAKE_SECRETS[seat]];
+  const events = typeof wakeSecret === "string" && wakeSecret.trim() ? new SeatEvents({
     seat,
     scopes,
     epoch: props.epoch,
@@ -238,7 +241,7 @@ async function serveMcp(request, env, ctx) {
     config,
     clientId: typeof auth.clientId === "string" ? auth.clientId : "",
     logRefusal: (row) => logRefusal(env, row),
-  });
+  }) : null;
   const response = await serveMcpRequest(request, tools, authInfo, events);
   if (response.status === 403 && request.headers.has("origin")) {
     // Records whether any client sends a browser Origin (spec 3.2).
