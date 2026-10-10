@@ -49,6 +49,10 @@ BUDGET_DEFAULTS: dict[str, float] = {
     "owner_per_topic_per_hour": 6, "usd_per_day": 2.0, "board_per_day": 0,
 }
 WAKE_MAX_BUDGET_USD = 0.25
+# Seat tags whose bots are always eligible senders, on top of every tag the seat partition lists
+# (fleet_tags).  Owner 2026-10-09:  "everyone should be able to DM to wake anyone else or tag to wake
+# anyone else", so every fleet bot (Mac and cloud seats, GB personas, BF role bots) is eligible.
+FLEET_SEATS = ("CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "MA", "JET")
 DEFAULT_SITE_ENV = "ZULIP_SITE"
 # The CLI's single-seat triple.  A listener seat never reads it, so two seats cannot alias one bot.
 GENERIC_ENV = frozenset({"ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_RC"})
@@ -434,6 +438,12 @@ def load_partition(path: str) -> tuple[dict[str, str] | None, str | None]:
                 path, name, ", ".join(PARTITION_VALUES))
         found[seat] = value
     return found, None
+
+
+def fleet_tags(partition: Mapping[str, str] | None) -> frozenset[str]:
+    """Every seat tag whose bot is an eligible sender:  each seat the partition lists, whatever its
+    instance (`none` seats such as the BF role bots and GROK-BUILD count too), plus FLEET_SEATS."""
+    return frozenset(FLEET_SEATS) | frozenset(str(seat).upper() for seat in (partition or {}))
 
 
 _DEFAULT_ENV_RE = re.compile(r"^ZULIP_([A-Z0-9_]+)_(EMAIL|API_KEY)$")

@@ -364,6 +364,32 @@ class LedgerAndGuardTests(unittest.TestCase):
         guard.note("k", wake_reply=False, owner=True)
         self.assertFalse(guard.blocked("k"))
 
+    def test_a_topic_count_never_decays(self) -> None:
+        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"))
+        for n in range(3):
+            guard.note("k", wake_reply=True, owner=False, now=1000.0 + n)
+        self.assertTrue(guard.blocked("k", now=1000.0 + 30 * W.DAY), "a topic waits for the owner, however long")
+
+    def test_a_bot_only_dm_count_is_rolling(self) -> None:
+        """Owner 2026-10-09 made bot DMs wake.  The owner can never post in a DM between two bots, so a
+        fixed count would block that pair for good:  there 3 wake replies within DM_WINDOW stop it, and it
+        wakes again once the oldest of them ages out."""
+        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"))
+        window = W.LoopGuard.DM_WINDOW
+        for at in (1000.0, 1100.0):
+            guard.note("dm", wake_reply=True, owner=False, rolling=True, now=at)
+        self.assertFalse(guard.blocked("dm", now=1200.0))
+        guard.note("dm", wake_reply=False, owner=False, rolling=True, now=1150.0)
+        self.assertFalse(guard.blocked("dm", now=1200.0), "only wake replies count, never other posts")
+        guard.note("dm", wake_reply=True, owner=False, rolling=True, now=1200.0)
+        self.assertTrue(guard.blocked("dm", now=1201.0), "the third wake reply stops the ping-pong")
+        self.assertTrue(guard.blocked("dm", now=1000.0 + window - 1))
+        self.assertFalse(guard.blocked("dm", now=1000.0 + window + 1), "the oldest reply aged out")
+        guard.note("dm", wake_reply=True, owner=False, rolling=True, now=1000.0 + window + 2)
+        self.assertTrue(guard.blocked("dm", now=1000.0 + window + 3), "a fresh reply inside the window blocks again")
+        guard.note("dm", wake_reply=False, owner=True, rolling=True, now=1000.0 + window + 4)
+        self.assertFalse(guard.blocked("dm", now=1000.0 + window + 5), "an owner post still resets it")
+
 
 class NotifyAndBoardTests(unittest.TestCase):
     def setUp(self) -> None:

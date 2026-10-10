@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 
+from agent_sync import config as C
 from agent_sync import router as R
 from agent_sync.live import topic_key
 
@@ -132,6 +133,54 @@ class ClassifyTests(unittest.TestCase):
         self.assertFalse(c.eligible)
 
 
+def realm_bot(uid, email, *, bot_type=1, active=True, is_bot=True):
+    return {"user_id": uid, "email": email, "full_name": email, "is_bot": is_bot, "is_active": active,
+            "bot_type": bot_type}
+
+
+class FleetBotIdsTests(unittest.TestCase):
+    """Owner 2026-10-09:  every fleet bot is an eligible sender, computed at runtime from the realm user
+    list and the partition's tags, so a new seat needs no re-init.  Integrations stay out."""
+
+    def setUp(self) -> None:
+        partition, error = C.load_partition(C.partition_path({}))
+        self.assertIsNone(error)
+        self.tags = C.fleet_tags(partition)
+
+    def test_every_kind_of_fleet_bot_counts(self) -> None:
+        users = {
+            10: realm_bot(10, "claude-bot@zulip.test"),
+            21: realm_bot(21, "compiler-grok-bot@zulip.test"),   # GB-COMPILER
+            22: realm_bot(22, "instinct-bat-bot@zulip.test"),    # ECHO
+            23: realm_bot(23, "instinct-owl-bot@zulip.test"),    # INSTINCT
+            24: realm_bot(24, "bf-fixer-bot@zulip.test"),        # BF-FIXER (partition: none)
+            25: realm_bot(25, "grok-web-bot@zulip.test"),        # GROK-WEB
+            26: realm_bot(26, "openai-dot-bot@zulip.test"),      # JET
+            27: realm_bot(27, "muse-assist-bot@zulip.test"),     # MA
+            28: realm_bot(28, "grok-build-bot@zulip.test"),      # GROK
+        }
+        self.assertEqual(R.fleet_bot_ids(users, self.tags), set(users))
+
+    def test_integrations_people_unknown_and_inactive_bots_do_not(self) -> None:
+        users = {
+            40: realm_bot(40, "sentry-bot@zulip.test", bot_type=2),
+            41: realm_bot(41, "pagerduty-bot@zulip.test", bot_type=2),
+            42: realm_bot(42, "linear-bot@zulip.test", bot_type=2),
+            43: realm_bot(43, "codex-bot@zulip.test", bot_type=2),       # a webhook bot never counts, whatever its email
+            44: realm_bot(44, "cursor-bot@zulip.test", bot_type=3),
+            45: realm_bot(45, "mystery-bot@zulip.test"),                 # a generic bot with no fleet tag
+            46: realm_bot(46, "mm-bot@zulip.test", active=False),
+            12: realm_bot(12, "codex@zulip.test", is_bot=False),         # a person, even with a seat-like name
+        }
+        self.assertEqual(R.fleet_bot_ids(users, self.tags), set())
+
+    def test_the_tags_cover_the_partition_and_the_fleet_seats(self) -> None:
+        for tag in ("CLAUDE", "JET", "GB-DIRECTOR", "BF-BUILDER", "ECHO", "INSTINCT", "GROK-WEB", "GROK-BUILD", "MA"):
+            with self.subTest(tag=tag):
+                self.assertIn(tag, self.tags)
+        self.assertEqual(C.fleet_tags(None), frozenset(C.FLEET_SEATS), "no partition, only the fixed seats")
+
+
 class PrefilterTests(unittest.TestCase):
     """Every row of the wake prefilter table (design section 2, step 7)."""
 
@@ -170,7 +219,8 @@ class PrefilterTests(unittest.TestCase):
         # Only a direct mention wakes:  every other Jet post behaves like any other peer's.
         self.assertEqual(self.wake(msg(sender=JET, content="@**all** standup", **FLEET_KW), **pinned),
                          (True, None, "group_or_wildcard"))
-        self.assertEqual(self.wake(msg(sender=JET, dm=True), **pinned), (True, None, "dm_from_bot"))
+        # Owner 2026-10-09:  an eligible bot's DM wakes like a direct mention.
+        self.assertEqual(self.wake(msg(sender=JET, dm=True), **pinned), (True, "peer", None))
         self.assertEqual(self.wake(msg(sender=JET, content="[JET·wake] re=1 @**Claude** hi", flags=["mentioned"]), **pinned),
                          (True, None, "wake_tag"))
         self.assertEqual(self.wake(msg(sender=JET, content=DIRECT[0], flags=DIRECT[1], ts=NOW - 9000), **pinned),
@@ -203,11 +253,28 @@ class PrefilterTests(unittest.TestCase):
         self.assertEqual(self.wake(msg(content="chatter"), followed=[topic_key("agent-sync", "t")]),
                          (True, None, "not_a_mention"))
 
-    def test_wake_tag_dm_from_a_bot_and_stale_peer_direct_do_not_wake(self) -> None:
+    def test_wake_tag_and_stale_peer_direct_do_not_wake(self) -> None:
         self.assertEqual(self.wake(msg(content="[CODEX·wake] re=1 @**Claude** hi", flags=["mentioned"])),
                          (True, None, "wake_tag"))
-        self.assertEqual(self.wake(msg(dm=True)), (True, None, "dm_from_bot"))
         self.assertEqual(self.wake(msg(content=DIRECT[0], flags=DIRECT[1], ts=NOW - 9000)), (True, None, "stale"))
+
+    def test_an_eligible_bot_dm_wakes_as_a_peer(self) -> None:
+        """Owner 2026-10-09:  "everyone should be able to DM to wake anyone else".  A DM from an eligible bot
+        wakes like a direct mention, within the peer budgets, and never as the owner."""
+        self.assertEqual(self.wake(msg(dm=True)), (True, "peer", None))
+        c = R.classify(msg(dm=True), ME, ctx())
+        self.assertTrue(c.dm and c.eligible and c.sender_is_bot and not c.owner)
+
+    def test_a_dm_keeps_every_other_rail(self) -> None:
+        self.assertEqual(self.wake(msg(dm=True, content="[CODEX·wake] re=7\nthanks")), (True, None, "wake_tag"),
+                         "a wake reply by DM never wakes, so two bots cannot ping-pong on wake replies")
+        self.assertEqual(self.wake(msg(dm=True, ts=NOW - 9000)), (True, None, "stale"))
+        for sender in (SENTRY, NEW_BOT, 999):
+            with self.subTest(sender=sender):
+                self.assertEqual(self.wake(msg(sender=sender, dm=True)), (True, None, "not_eligible"))
+        self.assertEqual(self.wake(msg(sender=OWNER, client="ZulipPython", dm=True)), (True, None, "owner_api"))
+        self.assertEqual(self.wake(msg(sender=10, dm=True)), (False, None, None), "a seat's own DM never wakes it")
+        self.assertEqual(R.route(msg(sender=10, dm=True), ME, ctx(), [])[1].drop_reason, "own")
 
     def test_plain_chatter_is_dropped(self) -> None:
         c, d = R.route(msg(content="just talking"), ME, ctx(), [])

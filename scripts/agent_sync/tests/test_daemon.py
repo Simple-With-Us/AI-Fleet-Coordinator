@@ -800,13 +800,13 @@ class JetWakeTests(DaemonHarness):
         self.assertEqual((row["state"], row["owner"], row["trigger_ids"]), ("queued", False, [mid]))
         self.assertFalse(row["owner_ids"])
 
-    def test_without_the_pin_the_same_mention_is_captured_and_never_wakes(self) -> None:
+    def test_without_the_pin_the_same_mention_still_wakes(self) -> None:
+        """Owner 2026-10-09:  every fleet bot is eligible at runtime, so the pin is only an optional extra."""
         self.write_config()
         daemon = self.started()
-        self.fake.add_message(self.jet, "agent-sync", "t", MENTION)
-        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
-        daemon.pump("CLAUDE", timeout=0.5)
-        self.assertEqual(self.ledger(), [])
+        mid = self.fake.add_message(self.jet, "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.assertEqual((self.ledger()[0]["trigger_ids"], self.ledger()[0]["owner"]), ([mid], False))
 
     def test_the_loop_guard_blocks_jet_wakes_until_an_owner_post(self) -> None:
         daemon = self.started()
@@ -823,6 +823,109 @@ class JetWakeTests(DaemonHarness):
         self.fake.add_message(self.jet, "agent-sync", "t", MENTION + " now")
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.assertFalse(self.ledger()[0]["owner"])
+
+
+class EveryoneWakesTests(DaemonHarness):
+    """Owner, Fri, Oct 9, 2026:  "everyone should be able to DM to wake anyone else or tag to wake anyone
+    else".  Every fleet bot (GB personas, ECHO, BF role bots and the rest) wakes a seat by mention or DM
+    without a pin, inside the peer budgets and the loop guard.  Integrations, API posts from the owner's
+    account and a seat's own posts still never wake."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.write_config(eligible=[])  # no pins at all:  eligibility comes from the realm user list
+        self.gb = self.fake.add_user("compiler-grok-bot@zulip.test", "GB-Compiler", is_bot=True, user_id=21)
+        self.echo = self.fake.add_user("instinct-bat-bot@zulip.test", "Echo", is_bot=True, user_id=22)
+        self.bf = self.fake.add_user("bf-fixer-bot@zulip.test", "BF Fixer", is_bot=True, user_id=23)
+        self.sentry = self.fake.add_user("sentry-bot@zulip.test", "Sentry", is_bot=True, user_id=40)
+        self.sentry["bot_type"] = 2  # an incoming-webhook integration
+        self.dm_key = L.topic_key("DM", "10,22")
+
+    def now(self) -> int:
+        return int(self.clock.time())
+
+    def test_a_gb_persona_mention_wakes_claude(self) -> None:
+        daemon = self.started()
+        mid = self.fake.add_message(self.gb, "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        row = self.ledger()[0]
+        self.assertEqual((row["state"], row["owner"], row["trigger_ids"]), ("queued", False, [mid]))
+
+    def test_a_bf_bot_mention_wakes_claude(self) -> None:
+        daemon = self.started()
+        mid = self.fake.add_message(self.bf, "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.assertEqual(self.ledger()[0]["trigger_ids"], [mid])
+
+    def test_an_echo_dm_wakes_claude_and_is_answered_by_dm(self) -> None:
+        daemon = self.started()
+        dm = self.fake.add_direct_message(self.echo, "can you look at the CT build?", deliver=True)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        row = self.ledger()[0]
+        self.assertEqual((row["state"], row["owner"], row["type"], row["trigger_ids"]), ("queued", False, "private", [dm]))
+        self.assertEqual(row["topic_key"], self.dm_key)
+        self.assertIn("dm", self.inbox()[0]["classes"])
+        self.assertIn("eligible", self.inbox()[0]["classes"])
+
+    def test_sentry_never_wakes_by_mention_or_dm(self) -> None:
+        daemon = self.started()
+        self.fake.add_message(self.sentry, "agent-sync", "t", MENTION)
+        self.fake.add_direct_message(self.sentry, "error spike", deliver=True)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 2)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertEqual(self.ledger(), [])
+        self.assertTrue(all("eligible" not in r["classes"] for r in self.inbox()))
+
+    def test_an_api_post_from_the_owner_account_never_wakes(self) -> None:
+        daemon = self.started()
+        jay = self.fake.user_named("Jay Wedgeworth")
+        self.fake.add_message(jay, "agent-sync", "t", MENTION, client="ZulipPython")
+        self.fake.add_direct_message(jay, "deploy now", deliver=True, client="ZulipPython")
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 2)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertEqual(self.ledger(), [])
+        self.assertTrue(all(r["owner_api"] and not r["owner"] for r in self.inbox()))
+
+    def test_a_seats_own_message_never_wakes_it(self) -> None:
+        daemon = self.started()
+        self.fake.add_message(self.fake.me, "agent-sync", "t", MENTION)
+        self.fake.add_direct_message(self.fake.me, "note to self", recipients=[self.echo], deliver=True)
+        marker = self.fake.add_message(self.gb, "agent-sync", "other", "@**Claude** marker")
+        self.pump_until(daemon, lambda: any(r["id"] == marker for r in self.inbox()))
+        self.assertEqual([r["trigger_ids"] for r in self.ledger()], [[marker]], "only the peer's mention woke")
+
+    def test_bot_to_bot_dm_ping_pong_stops_at_the_cap_and_recovers(self) -> None:
+        """Each side's wake reply is `·wake`-tagged, so it never wakes the other.  However the thread goes,
+        3 wake replies within the DM window stop it waking; the owner is not in it, so the count is rolling
+        and the pair wakes again once the oldest reply ages out."""
+        daemon = self.started()
+        for n in range(3):
+            sender = self.fake.me if n % 2 else self.echo
+            tag = "CLAUDE" if n % 2 else "ECHO"
+            self.fake.add_direct_message(sender, "[%s·wake] re=%d\nreply" % (tag, n),
+                                         recipients=[self.echo if n % 2 else self.fake.me], deliver=True,
+                                         timestamp=self.now())
+        last = self.fake.add_direct_message(self.echo, "and another thing", deliver=True, timestamp=self.now())
+        self.pump_until(daemon, lambda: any(r["id"] == last for r in self.inbox()))
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertTrue(daemon.loopguard.blocked(self.dm_key, self.clock.time()))
+        self.assertEqual(self.ledger(), [], "the loop guard stops the DM ping-pong at the cap")
+        self.assertFalse(daemon.loopguard.blocked(TOPIC_KEY, self.clock.time()), "only that DM thread is held")
+        self.clock.advance(W.LoopGuard.DM_WINDOW + 60)
+        self.assertFalse(daemon.loopguard.blocked(self.dm_key, self.clock.time()))
+        again = self.fake.add_direct_message(self.echo, "back after a quiet spell", deliver=True, timestamp=self.now())
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.assertEqual(self.ledger()[0]["trigger_ids"], [again])
+
+    def test_a_topic_loop_guard_still_waits_for_the_owner(self) -> None:
+        daemon = self.started()
+        for n in range(3):
+            self.fake.add_message(self.gb, "agent-sync", "t", "[GB-COMPILER·wake] re=%d\nreply" % n,
+                                  timestamp=self.now())
+        mid = self.fake.add_message(self.gb, "agent-sync", "t", MENTION, timestamp=self.now())
+        self.pump_until(daemon, lambda: any(r["id"] == mid for r in self.inbox()))
+        self.clock.advance(W.LoopGuard.DM_WINDOW + 60)
+        self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY, self.clock.time()), "a topic never decays")
 
 
 class PeerScreenTests(DaemonHarness):

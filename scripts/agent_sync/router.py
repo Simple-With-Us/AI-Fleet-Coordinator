@@ -18,6 +18,16 @@ Steps (design section 2), for each (seat, message) pair:
   6. Otherwise the seat inbox, if direct, dm, fleet, owner, wildcard or a followed topic.
   7. The wake prefilter, for seat-inbox items only.
 
+Eligible senders (owner 2026-10-09:  "everyone should be able to DM to wake anyone else or tag to
+wake anyone else"):  the owner, plus every fleet bot, which is an active generic bot in the realm
+user list whose email maps (seat_tag_for) to a fleet tag:  a seat in the partition file (Mac and
+cloud seats, GB personas, BF role bots, GROK-BUILD) or config.FLEET_SEATS.  The daemon computes the
+set at runtime (fleet_bot_ids) and adds the optional `eligible_user_ids` pins, so a new seat needs
+no re-init.  Integration and webhook bots (Sentry, PagerDuty, Linear), unknown senders, API posts
+from the owner's account and a seat's own posts are never eligible.  An eligible bot's DM wakes the
+seat like a direct mention:  peer budgets, the loop guard and the stale rule all apply.  A peer wake
+is still peer data, never owner authority.
+
 Owner (decision 5, confirmed 2026-10-07):  the sender is `owner_user_id` AND the message's
 `client` is a human Zulip app.  A post with the owner's account from any other client (an API
 key) is not the owner, not eligible, and flagged `owner_api`.  The `client` is what the sending
@@ -30,6 +40,7 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable, Mapping
 
+from .identity import seat_tag_for
 from .live import is_presence, topic_key
 
 INTERRUPT = "interrupt"
@@ -64,6 +75,25 @@ def outside_code(content: str) -> str:
     text = _CODE_BLOCK_RE.sub("", content)
     text = _CODE_SPAN_RE.sub("", text)
     return _QUOTE_LINE_RE.sub("", text)
+
+
+GENERIC_BOT = 1  # Zulip bot_type:  2 incoming webhook, 3 outgoing webhook, 4 embedded
+
+
+def fleet_bot_ids(users: Mapping[int, Mapping[str, Any]], tags: Iterable[str]) -> set[int]:
+    """User ids of the fleet bots in a realm user list:  active generic bots whose email maps to one
+    of `tags` (config.fleet_tags).  Webhook and embedded bots never count, whatever their email, and
+    neither does a person."""
+    wanted = set(tags)
+    found: set[int] = set()
+    for uid, user in users.items():
+        if not isinstance(uid, int) or isinstance(uid, bool) or user.get("is_bot") is not True:
+            continue
+        if user.get("is_active", True) is False or user.get("bot_type", GENERIC_BOT) != GENERIC_BOT:
+            continue
+        if seat_tag_for(user) in wanted:
+            found.add(uid)
+    return found
 
 
 class SeatIdentity:
@@ -196,9 +226,8 @@ def prefilter(c: Classes) -> tuple[str | None, str | None]:
         return None, "wake_tag"
     if c.owner and (c.direct or c.dm or c.fleet):
         return "owner", None
-    if c.dm and c.sender_is_bot:
-        return None, "dm_from_bot"
-    if c.direct:
+    if c.direct or c.dm:
+        # An eligible bot's DM wakes like a direct mention (owner 2026-10-09).
         return (None, "stale") if c.stale else ("peer", None)
     if c.fleet or c.wildcard:
         return None, "group_or_wildcard"
