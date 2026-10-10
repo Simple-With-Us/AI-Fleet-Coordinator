@@ -65,7 +65,11 @@ SKIP_DIR_NAMES = {
     "node_modules", ".venv", "venv", "__pycache__", ".cache", "Caches", ".pytest_cache", ".mypy_cache",
     ".ruff_cache", ".tox", ".nox", "site-packages", "dist", "build", ".next", ".turbo", ".parcel-cache",
     "DerivedData", "Pods", ".gradle", ".idea", ".git", ".Trash", "logs", "coverage", ".dart_tool",
+    # Downloaded or generated, never work:  Playwright browsers, Xcode index stores and local builds, SwiftPM.
+    ".pw-browsers", "ms-playwright", "Index.noindex", "build-local", "build-local-ios", ".build", "SourcePackages",
 }
+# Extra names an owner adds without a code change:  FLEET_WORK_BACKUP_EXTRA_SKIP_DIRS=name1,name2
+SKIP_DIR_NAMES |= {n.strip() for n in os.environ.get("FLEET_WORK_BACKUP_EXTRA_SKIP_DIRS", "").split(",") if n.strip()}
 # File names never staged (logs, caches, build debris, live-DB sidecars).
 SKIP_FILE_GLOBS = (
     "*.log", "*.log.*", "*.pyc", "*.pyo", ".DS_Store", "*.swp", "*.swo", "*.tmp", "*.sock", "*.pid",
@@ -108,6 +112,16 @@ CONTENT_PATTERNS: dict[str, re.Pattern[bytes]] = {
         rb"['\"]?([A-Za-z0-9/+=_\-.]{20,})['\"]?[ \t]*$"),
 }
 ENTROPY_GATED = {"env-assignment"}
+# Token-shaped matches that are examples in documentation do not count:  too few distinct characters,
+# the word EXAMPLE, runs of x or 0, or an alphabet or digit run.
+PLACEHOLDER_CHECKED = {"aws-access-key-id", "github-token", "slack-token", "stripe-key", "google-api-key",
+                       "anthropic-key", "openai-key"}
+PLACEHOLDER_MARKS = (b"example", b"xxxxxx", b"000000", b"abcdefgh", b"12345678", b"your", b"redacted", b"placeholder")
+
+
+def is_placeholder(match: bytes) -> bool:
+    low = match.lower()
+    return len(set(match)) < 10 or any(m in low for m in PLACEHOLDER_MARKS)
 # A pattern runs only when one of its literals is present:  a substring test is orders of magnitude
 # cheaper than a regex over gigabytes.
 PREFILTER: dict[str, tuple[bytes, ...]] = {
@@ -306,6 +320,9 @@ def scan_bytes(data: bytes) -> Optional[str]:
                 val = m.group(1)
                 if entropy(val) >= 3.3 and any(48 <= c <= 57 for c in val) and not val.lower().startswith(b"your"):
                     return pid
+        elif pid in PLACEHOLDER_CHECKED:
+            if any(not is_placeholder(m.group(0)) for m in rx.finditer(data)):
+                return pid
         elif rx.search(data):
             return pid
     return None
@@ -546,6 +563,8 @@ class Stage:
         self.large: list[dict] = []
         self.notes: list[str] = []
         self.blocked: list[dict] = []
+        self.allow: set[str] = set()     # content-gate exceptions the owner reviewed (allow.txt)
+        self.allowed: list[str] = []
 
     def path(self, rel: str) -> Path:
         return self.root / rel
@@ -633,11 +652,17 @@ def stage_patches(cfg: Config, git: Git, stage: Stage, cwd: str, diff_args: list
         if cp and is_secret_name(cp, tracked):
             stage.dropped.append({"path": f"{src_label}:{cp}", "stage": "", "reason": "secret-name"})
             continue
-        hit = scan_bytes(chunk)
-        if hit:
-            stage.dropped.append({"path": f"{src_label}:{cp or idx}", "stage": "", "reason": f"content:{hit}"})
+        label = f"{src_label}:{cp or idx}"
+        if len(chunk) > cfg.max_file_bytes:
+            stage.large.append({"path": label, "size": len(chunk)})
             continue
-        stage.write(f"{rel_dir}/{patch_name(chunk, idx)}", chunk, f"{src_label}:{cp}", "patch")
+        hit = scan_bytes(chunk)
+        if hit and label not in stage.allow:
+            stage.dropped.append({"path": label, "stage": "", "reason": f"content:{hit}"})
+            continue
+        if hit:
+            stage.allowed.append(label)
+        stage.write(f"{rel_dir}/{patch_name(chunk, idx)}", chunk, label, "patch")
         written += 1
     return written
 
@@ -645,10 +670,10 @@ def stage_patches(cfg: Config, git: Git, stage: Stage, cwd: str, diff_args: list
 def stage_untracked(cfg: Config, stage: Stage, root: str, names: list[str], rel_dir: str) -> int:
     count = 0
     for name in names:
+        if is_skipped_file(os.path.basename(name)) or any(p in SKIP_DIR_NAMES for p in name.split("/")[:-1]):
+            continue
         if is_secret_name(name):
             stage.dropped.append({"path": os.path.join(root, name), "stage": "", "reason": "secret-name"})
-            continue
-        if is_skipped_file(os.path.basename(name)) or any(p in SKIP_DIR_NAMES for p in name.split("/")[:-1]):
             continue
         src = os.path.join(root, name)
         try:
@@ -793,8 +818,12 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
         if pending:
             ref_names = [r for r, _ in pending]
             hit, truncated = stream_scan(git, cwd, [*ref_names, "--not", "--remotes"], cfg.bundle_scan_cap)
+            label = f"{common_dir} (unpushed commits)"
+            if hit and label in stage.allow:
+                stage.allowed.append(label)
+                hit = None
             if hit:
-                stage.dropped.append({"path": f"{common_dir} (unpushed commits)", "stage": "", "reason": f"content:{hit}"})
+                stage.dropped.append({"path": label, "stage": "", "reason": f"content:{hit}"})
             else:
                 if truncated:
                     stage.notes.append(f"bundle-scan-partial {common_dir}")
@@ -985,6 +1014,17 @@ def collect_files(cfg: Config, stage: Stage) -> int:
 
 
 # --------------------------------------------------------------------------------- secret gate
+def load_allow(cfg: Config) -> set[str]:
+    """``allow.txt`` in the state folder:  one dropped path per line, exactly as the detail log prints it,
+    that the owner has reviewed (a rule file quoting an example key).  Only content matches can be
+    allowed;  a secret name never can."""
+    try:
+        text = (cfg.state_dir / "allow.txt").read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    return {l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")}
+
+
 def load_scan_cache(cfg: Config) -> dict:
     try:
         data = json.loads((cfg.state_dir / "scan-cache.json").read_text())
@@ -1076,6 +1116,10 @@ def run_gate(cfg: Config, stage: Stage, progress: Optional[Callable[[str], None]
     for rel, key in regex_todo:
         hit = scan_file(stage.path(rel), cfg.scan_cap_bytes)
         info["scanned"] += 1
+        src = stage.items[rel].src
+        if hit and src in stage.allow:
+            stage.allowed.append(src)
+            hit = None
         if hit:
             stage.drop(rel, f"content:{hit}")
         else:
@@ -1396,6 +1440,7 @@ def build_report(cfg: Config, disc: Discovery, wts: list[Worktree], groups: list
         "top_units": sorted(({"unit": k, "size": v} for k, v in units.items()), key=lambda d: d["size"], reverse=True)[:15],
         "large_skipped": stage.large,
         "dropped": stage.dropped,
+        "allowed": stage.allowed,
         "blocked": disc.blocked + stage.blocked,
         "notes": disc.notes + stage.notes,
         "gate": gate,
@@ -1424,7 +1469,7 @@ def print_report(rep: dict) -> None:
     print(f"  large files skipped      {len(rep['large_skipped'])}")
     for f in rep["large_skipped"][:10]:
         print(f"    {fmt_bytes(f['size']):>10}  {f['path']}")
-    print(f"  dropped by the gate      {len(rep['dropped'])} (paths only)")
+    print(f"  dropped by the gate      {len(rep['dropped'])} (paths only;  {len(rep['allowed'])} content hits allowed by allow.txt)")
     for d in rep["dropped"][:20]:
         print(f"    {d['reason']:<28} {d['path']}")
     if rep["groups_no_remote"]:
@@ -1459,6 +1504,7 @@ def build_stage(cfg: Config, stage_root: Path, progress: Optional[Callable[[str]
         shutil.rmtree(stage_root, ignore_errors=True)
     stage_root.mkdir(parents=True, exist_ok=True)
     stage = Stage(stage_root)
+    stage.allow = load_allow(cfg)
     git = Git(cfg)
     disc = discover(cfg)
     phase(f"discovered {len(disc.checkouts)} checkouts ({len(disc.blocked)} blocked)")

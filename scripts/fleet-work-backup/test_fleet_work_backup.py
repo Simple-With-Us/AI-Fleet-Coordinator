@@ -43,7 +43,7 @@ sys.modules["fleet_work_backup"] = fwb
 spec.loader.exec_module(fwb)
 
 # Secret-shaped strings, assembled so no literal secret sits in this file.
-AWS = "AKIA" + "ABCDEFGHIJKLMNOP"
+AWS = "AKIA" + "Q7ZP3KM9TX2WJ4HB"
 PEM = "-----BEGIN " + "RSA PRIVATE KEY-----"
 HIGH = "".join(["aB3dE5", "gH7jK9", "mN1pQ3", "sT5v7x", "Zq2"])
 PW = "".join(["pw-", "Zx9Qw3", "Er5Ty7", "Ui1Op"])
@@ -446,11 +446,17 @@ class NameAndContentCase(unittest.TestCase):
         self.assertTrue(fwb.is_secret_name("src/tokenizer.py", tracked=False))
 
     def test_content_patterns(self):
-        for text in (AWS, PEM, "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8", "xoxb-" + "1234567890-abcdefghij",
-                     "sk-ant-" + "api03-abcdefghijklmnopqrstuvwxyz",
+        for text in (AWS, PEM, "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8", "xoxb-" + "8271936450-Qm7ZkP3tXw",
+                     "sk-ant-" + "api03-Zq8Lm2Vx7Rt4Yp9Kd3Hs",
                      "eyJhbGciOiJIUzI1NiJ9." + "eyJzdWIiOiIxMjM0NTY3ODkwIn0." + "abcdefghijk1234567",
                      f"SERVICE_API_KEY={HIGH}", f'export DB_PASSWORD="{HIGH}"'):
             self.assertIsNotNone(fwb.scan_bytes(text.encode()), text[:12])
+
+    def test_documentation_placeholders_are_not_secrets(self):
+        for text in ("AKIA" + "IOSFODNN7EXAMPLE", "sk_live_" + "x" * 24, "sk_test_" + "0" * 24,
+                     "ghp_" + "a" * 36, "AKIA" + "ABCDEFGHIJKLMNOP"):
+            self.assertIsNone(fwb.scan_bytes(text.encode()), text)
+        self.assertIsNotNone(fwb.scan_bytes(("sk_live_" + "9f2b7c41d8e3a605b2c7f914").encode()))
 
     def test_content_patterns_leave_ordinary_text_alone(self):
         for text in ("API_KEY=changeme-changeme-changeme", "TOKEN=${TOKEN}", "const token = getToken();",
@@ -738,6 +744,33 @@ class RunCase(unittest.TestCase):
         self.assertGreater(gate["gitleaks_pending"], 0)
         self.assertFalse((self.stubdir / "gl-runs.log").exists())
         self.assertIn("files/apps/doc.md", stage.items)  # regex-scanned, still staged
+
+    def test_allow_list_lets_a_reviewed_content_hit_through_but_never_a_secret_name(self):
+        write(self.home / "apps" / "rule.md", f"bad example: {AWS}\n")
+        write(self.home / "apps" / "prod.env", "A=1\n")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertNotIn("files/apps/rule.md", stage.items)
+        src = str(self.home / "apps" / "rule.md")
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.state_dir / "allow.txt").write_text(f"# reviewed\n{src}\n{self.home / 'apps' / 'prod.env'}\n")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertIn("files/apps/rule.md", stage.items)
+        self.assertEqual(stage.allowed, [src])
+        self.assertNotIn("files/apps/prod.env", stage.items)
+
+    def test_an_unpushed_bundle_with_a_content_hit_is_dropped_unless_allowed(self):
+        r = self.home / "Code" / "r"
+        write(r / "doc.md", f"example {AWS}\n")
+        git(r, "add", "-A")
+        git(r, "commit", "-q", "-m", "doc with a key-shaped string")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertFalse(any(k.endswith("unpushed.bundle") for k in stage.items))
+        label = os.path.realpath(r / ".git") + " (unpushed commits)"
+        self.assertEqual([d["path"] for d in stage.dropped if "unpushed commits" in d["path"]], [label])
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.state_dir / "allow.txt").write_text(label + "\n")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertTrue(any(k.endswith("unpushed.bundle") for k in stage.items))
 
     def test_a_changed_file_is_rescanned_and_a_new_secret_is_caught(self):
         stage, *_ , gate1, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
