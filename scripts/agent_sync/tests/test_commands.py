@@ -273,12 +273,103 @@ class DmTests(Harness):
         self.assertEqual((out["type"], out["to"]), ("direct", [self.OWNER_ID]))
         self.assertEqual(self.last_post().form["content"], "Heads up.\nSecond line.")
 
-    def test_owner_is_required_and_no_other_recipient_can_be_named(self) -> None:
+    def test_a_bare_dm_goes_to_the_owner_and_still_refuses_nothing_to_send(self) -> None:
         self.pin_owner()
-        for argv in (("dm", "hello"), ("dm", "--owner", "--to", "Codex", "hello"), ("dm", "--owner")):
-            with self.subTest(argv=argv):
-                self.assertEqual(self.run_cli(*argv).code, 2)
+        result = self.run_cli("dm", "hello")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(json.loads(self.last_post().form["to"]), [self.OWNER_ID])
+        self.assertEqual(self.run_cli("dm").code, 2)
+        self.assertEqual(self.run_cli("dm", "--owner").code, 2)
+        self.assertEqual(len(self.fake.requests_to("POST", "messages")), 1)
+
+    def users_with_extras(self) -> None:
+        webhook = self.fake.add_user("sentry-bot@zulip.test", "Sentry", is_bot=True)
+        webhook["bot_type"] = 2
+        gone = self.fake.add_user("gone@zulip.test", "Gone Person", is_bot=False)
+        gone["is_active"] = False
+        gone_bot = self.fake.add_user("old-bot@zulip.test", "Old Bot", is_bot=True)
+        gone_bot["is_active"] = False
+        self.fake.add_user("twin-a@zulip.test", "Twin", is_bot=False)
+        self.fake.add_user("twin-b@zulip.test", "Twin", is_bot=False)
+
+    def test_dm_to_a_peer_by_name_tag_email_or_user_id(self) -> None:
+        for raw, uid in (("Codex", 11), ("CODEX", 11), ("codex-bot@zulip.test", 11), ("11", 11), ("Cursor", 13)):
+            with self.subTest(raw=raw):
+                before = len(self.fake.requests_to("POST", "messages"))
+                result = self.run_cli("dm", "--to", raw, "--", "Review is up.  Please look.")
+                self.assertEqual(result.code, 0, result.err)
+                form = self.fake.requests_to("POST", "messages")[-1].form
+                self.assertEqual(len(self.fake.requests_to("POST", "messages")), before + 1)
+                self.assertEqual((form["type"], json.loads(form["to"])), ("direct", [uid]))
+                label = "CODEX" if uid == 11 else "CURSOR"
+                self.assertEqual(form["content"], "[CLAUDE\u00b7%s\u2192%s] Review is up.\u00a0 Please look." % (TAG, label))
+                self.assertIn("sent id", result.out)
+                self.assertNotIn("the owner", result.out)
+
+    def test_dm_to_a_peer_needs_no_pinned_owner(self) -> None:
+        self.assertEqual(self.run_cli("dm", "--to", "Codex", "hi").code, 0)
+        self.assertEqual(json.loads(self.last_post().form["to"]), [11])
+
+    def test_dm_group_is_one_conversation_with_every_label(self) -> None:
+        result = self.run_cli("dm", "--to", "Codex", "--to", "Grok", "--to", "codex-bot@zulip.test", "--json", "sync up")
+        self.assertEqual(result.code, 0, result.err)
+        out = json.loads(result.out)
+        self.assertEqual(out["to"], [11, 14], "a repeated recipient is sent once")
+        self.assertEqual(self.last_post().form["content"], "[CLAUDE\u00b7%s\u2192CODEX,GROK] sync up" % TAG)
+        self.assertEqual(len([m for m in self.fake.messages if m["type"] == "private"]), 1)
+
+    def test_dm_owner_plus_peers_makes_a_group_with_the_owner_label(self) -> None:
+        self.pin_owner()
+        result = self.run_cli("dm", "--owner", "--to", "Codex", "--no-tag", "hello")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(json.loads(self.last_post().form["to"]), [self.OWNER_ID, 11])
+        self.assertEqual(self.last_post().form["content"], "hello")
+        self.assertEqual(self.run_cli("dm", "--to", "Jay Wedgeworth", "hello").code, 0)
+        self.assertIn("\u2192OWNER]", self.last_post().form["content"])
+
+    def test_dm_refuses_webhook_bots_deactivated_users_self_and_unknowns_before_sending(self) -> None:
+        self.users_with_extras()
+        cases = (("Sentry", "webhook or integration bot"), ("sentry-bot@zulip.test", "webhook or integration bot"),
+                 ("Gone Person", "deactivated"), ("Old Bot", "deactivated"), ("Claude", "this bot itself"),
+                 ("10", "this bot itself"), ("Nobody Here", "no user or bot named"), ("Twin", "matches 2 users"))
+        for raw, fragment in cases:
+            with self.subTest(raw=raw):
+                result = self.run_cli("dm", "--to", raw, "hello")
+                self.assertEqual(result.code, 2)
+                self.assertIn(fragment, result.err)
+        # one bad name in a group refuses the whole message
+        self.assertEqual(self.run_cli("dm", "--to", "Codex", "--to", "Sentry", "hello").code, 2)
         self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+
+    def test_dm_cap_is_eight_other_people(self) -> None:
+        for n in range(9):
+            self.fake.add_user("peer%d-bot@zulip.test" % n, "Peer %d" % n, is_bot=True)
+        names = ["Peer %d" % n for n in range(9)]
+        args = [x for n in names[:8] for x in ("--to", n)]
+        ok = self.run_cli("dm", *args, "eight is fine")
+        self.assertEqual(ok.code, 0, ok.err)
+        self.assertEqual(len(json.loads(self.last_post().form["to"])), 8)
+        over = self.run_cli("dm", *[x for n in names for x in ("--to", n)], "nine is not")
+        self.assertEqual(over.code, 2)
+        self.assertIn("at most 8", over.err)
+        self.assertEqual(len(self.fake.requests_to("POST", "messages")), 1)
+        self.pin_owner()
+        over_with_owner = self.run_cli("dm", "--owner", *args, "owner makes nine")
+        self.assertEqual(over_with_owner.code, 2)
+        self.assertEqual(len(self.fake.requests_to("POST", "messages")), 1)
+
+    def test_dm_to_a_peer_scans_for_secrets_and_a_gateway_error_names_the_recipient_check(self) -> None:
+        leaked = "AK" + "IA" + "ABCDEFGHIJ012345"
+        refused = self.run_cli("dm", "--to", "Codex", "key is %s" % leaked)
+        self.assertEqual(refused.code, 2)
+        self.assertNotIn(leaked, refused.err)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+        self.fake.inject("POST", "messages", status=502, body={"result": "error", "msg": "bad gateway"})
+        result = self.run_cli("dm", "--to", "Codex", "hello")
+        self.assertEqual(result.code, 5)
+        self.assertIn("not retried", result.err)
+        self.assertIn("dm-read", result.err)
+
 
     def test_no_pinned_owner_is_refused_before_any_message(self) -> None:
         for toml in (None, "[daemon]\nowner_user_id = 0\n"):
@@ -321,6 +412,64 @@ class DmTests(Harness):
         result = self.run_cli("dm", "--owner", "hello", timeout=0.4)
         self.assertEqual(result.code, 6)
         self.assertIn("not retried", result.err)
+
+
+class DmReadAndInboxTests(Harness):
+    def setUp(self) -> None:
+        super().setUp()
+        self.codex = self.fake.user_named("Codex")
+        self.grok = self.fake.user_named("Grok")
+
+    def test_dm_read_shows_the_one_to_one_conversation_with_untrusted_bodies(self) -> None:
+        first = self.fake.add_direct_message("Codex", "can you take AFC 1234?")
+        self.assertEqual(self.run_cli("dm", "--to", "Codex", "yes").code, 0)
+        mine = self.fake.messages[-1]["id"]
+        self.fake.add_direct_message("Cursor", "unrelated")
+        self.fake.add_direct_message("Codex", "group", recipients=[self.fake.me, self.grok])
+        result = self.run_cli("dm-read", "--with", "Codex", "--json")
+        self.assertEqual(result.code, 0, result.err)
+        rows = [json.loads(line) for line in result.out.splitlines()]
+        self.assertEqual([r["id"] for r in rows if r["content"].endswith(("AFC 1234?", "] yes"))], [first, mine])
+        self.assertTrue(all(r["dm"] for r in rows))
+        text = self.run_cli("dm-read", "--with", "Codex", "--exclude-self")
+        self.assertIn("DM with Codex", text.out)
+        self.assertNotIn("] yes", text.out)
+
+    def test_dm_read_new_advances_a_per_conversation_cursor(self) -> None:
+        self.fake.add_direct_message("Codex", "one")
+        self.assertIn("one", self.run_cli("dm-read", "--with", "Codex", "--new").out)
+        self.assertEqual(self.run_cli("dm-read", "--with", "Codex", "--new").out, "")
+        self.fake.add_direct_message("Codex", "two")
+        again = self.run_cli("dm-read", "--with", "Codex", "--new")
+        self.assertIn("two", again.out)
+        self.assertNotIn("one", again.out)
+
+    def test_dm_read_refuses_self_and_too_many_people(self) -> None:
+        self.assertEqual(self.run_cli("dm-read", "--with", "Claude").code, 2)
+        self.assertEqual(self.run_cli("dm-read", "--with", "Nobody Here").code, 2)
+        many = [x for n in range(9) for x in ("--with", str(11 + n))]
+        self.assertEqual(self.run_cli("dm-read", *many).code, 2)
+        self.assertEqual(self.run_cli("dm-read").code, 2)
+
+    def test_inbox_lists_dms_to_the_bot_with_mentions_but_not_its_own_dms(self) -> None:
+        mention = self.fake.add_message("Codex", "agent-sync", "ask", "@**Claude** look")
+        dm = self.fake.add_direct_message("Codex", "psst, in a DM")
+        self.fake.add_direct_message(self.fake.me, "my own DM", recipients=[self.codex])
+        result = self.run_cli("inbox", "--json")
+        self.assertEqual(result.code, 0, result.err)
+        rows = [json.loads(line) for line in result.out.splitlines()]
+        self.assertEqual([r["id"] for r in rows], [mention, dm])
+        self.assertEqual([r["dm"] for r in rows], [False, True])
+        later = self.fake.add_direct_message("Grok", "second DM")
+        again = self.run_cli("inbox", "--json")
+        self.assertEqual([json.loads(line)["id"] for line in again.out.splitlines()], [later])
+
+    def test_inbox_text_marks_a_dm_and_peek_does_not_advance(self) -> None:
+        self.fake.add_direct_message("Codex", "ping")
+        peek = self.run_cli("inbox", "--peek")
+        self.assertIn("DM with Codex", peek.out)
+        self.assertIn("ping", self.run_cli("inbox").out)
+        self.assertEqual(self.run_cli("inbox").out, "")
 
 
 class ReplyTests(Harness):
