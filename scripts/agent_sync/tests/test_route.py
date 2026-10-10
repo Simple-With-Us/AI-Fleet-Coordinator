@@ -168,6 +168,7 @@ class RouteDroppedTests(RouteHarness):
             ("self", "CLAUDE", OWNER_ASK),
             ("already_mentioned", "CODEX", "@**Claude** and @**Codex** look at the CT build"),
             ("already_mentioned", "CODEX", "@**Claude** and @**Codex|11** look at the CT build"),
+            ("already_mentioned", "CODEX", "@**Claude** and @**codex** look at the CT build"),
         ]
         daemon = self.start()
         for n, (why, seat, content) in enumerate(cases):

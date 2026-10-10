@@ -838,7 +838,8 @@ class Daemon:
             # A DM thread without the owner can never be reset by him, so its count is rolling.
             rolling = c.dm and str(self.config.owner_user_id) not in c.topic.split(",")
             # A `·route` post counts like a wake reply (owner 2026-10-10), though it still wakes its target.
-            self.loopguard.note(c.key, wake_reply=c.wake_tag or c.route_tag, owner=c.owner, rolling=rolling, now=now)
+            counts = c.wake_tag or c.route_tag
+            self.loopguard.note(c.key, wake_reply=counts, owner=c.owner, rolling=rolling, now=now)
             self.global_ring.add(message["id"])
             if c.owner_api:
                 self.notifier.notify(self.config.claude_seat or runner.seat, "agent-sync: owner account",
@@ -1422,9 +1423,9 @@ class Daemon:
         for message in triggers.values():
             if message.get("sender_id") in bot_ids:
                 return "sender", None, None
-            visible = R.outside_code(str(message.get("content") or ""))
+            visible = R.outside_code(str(message.get("content") or "")).casefold()  # Zulip matches names without case
             for bot in bots:
-                name = str(bot.get("full_name") or "")
+                name = str(bot.get("full_name") or "").casefold()
                 if name and ("@**%s**" % name in visible or "@**%s|%d**" % (name, int(bot["user_id"])) in visible):
                     return "already_mentioned", None, None
         block = W.route_budget_block(runner.ledger.wakes(), runner.cfg.budget, key=pending.key, now=self.clock.time())
