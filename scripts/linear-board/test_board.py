@@ -43,6 +43,22 @@ STATES = [("Backlog", "backlog"), ("Todo", "unstarted"), ("In Progress", "starte
           ("Duplicate", "duplicate"), ("Parked", "backlog")]
 
 
+def linear_markdown(text: str) -> str:
+    """What Linear hands back for a description it stored (observed on
+    imported issues, Sat, Oct 10, 2026):  [ ] and ~ escaped outside code
+    spans, and - bullets turned into * bullets.  Comment bodies come back as
+    sent, so the mock stores those unchanged."""
+    def esc(seg):
+        return re.sub(r"([\[\]~])", r"\\\1", seg)
+    out, pos = [], 0
+    for m in re.finditer(r"(`+)(.+?)\1", text, re.S):
+        out.append(esc(text[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(esc(text[pos:]))
+    return re.sub(r"(?m)^(\s*)- ", r"\1* ", "".join(out))
+
+
 def hy(h: str) -> str:
     return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
 
@@ -305,7 +321,7 @@ class MockLinear:
             self.issues[iid] = {"id": iid, "identifier": f"{team}-{t['n']}", "team": team, "state": st["name"],
                                 "title": inp["title"], "priority": inp.get("priority", 0),
                                 "labels": list(inp.get("labelIds") or []), "createdAt": now, "updatedAt": now,
-                                "description": inp.get("description") or ""}
+                                "description": linear_markdown(inp.get("description") or "")}
             for lid in self.issues[iid]["labels"]:
                 if lid not in self.labels:
                     self.violations.append(f"unknown label id {lid}")
@@ -699,11 +715,24 @@ class WriteTests(BoardTest):
         iss = self.mock.issues[m.group(1)]
         self.assertEqual((iss["state"], iss["priority"], iss["team"]), ("Todo", 2, "CT"))
         self.assertEqual(self.label_names(iss), ["Env/Cloud", "Kind/agent-report", "Severity/P1"])
-        self.assertTrue(iss["description"].startswith("[CLAUDE] Filed with the board CLI."))
+        self.assertTrue(iss["description"].startswith("\\[CLAUDE\\] Filed with the board CLI."), iss["description"])
         self.assertIn("## Recommended fix\n\nRetry.", iss["description"])
         self.assertEqual([a["url"] for a in self.mock.attachments], ["https://github.com/o/r/issues/1"])
         d = json.loads(self.board("show", "CT-9", "--json").stdout)
         self.assertEqual((d["description"], d["recommended_fix"], d["reported_by"]), ("Details.", "Retry.", "CLAUDE"))
+
+    def test_file_round_trips_through_linear_markdown(self):
+        p = self.board("file", "--title", "Brackets", "--desc", "[note] see ~/x and `[code]`", "--fix",
+                       "- step one\n- step two", "--where", "~/apps/lanes/X @ b", "--env", "Mac",
+                       extra={"CLAUDE_CODE_SESSION_ID": "6db9ee77-0000"})
+        iss = self.issue_by_ident(p.stdout.split()[-1])
+        self.assertIn("\\[note\\] see \\~/x", iss["description"])        # the mock escaped it, as Linear does
+        d = json.loads(self.board("show", iss["identifier"], "--json").stdout)
+        self.assertEqual(d["description"], "[note] see ~/x and `[code]`")
+        self.assertEqual(d["recommended_fix"], "* step one\n* step two")
+        self.assertEqual((d["reported_by"], d["location"]), ("CLAUDE", "~/apps/lanes/X @ b"))
+        out = self.board("show", iss["identifier"]).stdout
+        self.assertNotIn("\\[", out)
 
     def test_file_default_app_and_fallback_slug(self):
         p = self.board("file", "--title", "infra thing")
@@ -810,7 +839,7 @@ class WriteTests(BoardTest):
                        "--where", "~/apps/lanes/A @ b", "--session", "s-1", "--session", "s-2")
         self.assertEqual(p.stdout.strip(), f"commented on {B_A[:8]} as CLAUDE  (sessions: s-1, s-2)  OPS-10")
         body = self.comments_of(self.mock.issues[hy(B_A)])[-1]
-        self.assertEqual(body, "[CLAUDE·s1] Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\nSessions: s-1, s-2")
+        self.assertEqual(body, "[CLAUDE·s1] Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: s-1, s-2")
         p = self.board("show", "OPS-10")
         self.assertIn("CLAUDE (Mac, ~/apps/lanes/A @ b): Verified on main.", p.stdout)
 

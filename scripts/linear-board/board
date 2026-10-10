@@ -130,6 +130,12 @@ DONE_STATES = ("Done", "Deployed", "In Review")
 TAG_RE = re.compile(r"^\[([A-Z][A-Z0-9-]*)(?:·([0-9A-Za-z-]+))?\]\s*")
 MIGRATED_COMMENT_RE = re.compile(r"^\*\*(.+?)\*\* · ([^\n]*?)(?: \(([^\n]*)\))?\s*\n\n", re.S)
 HTML_COMMENT_RE = re.compile(r"\s*<!--.*?-->\s*", re.S)
+# Linear stores descriptions as rich text and hands back re-serialized
+# markdown:  `[CLAUDE]` comes back as `\[CLAUDE\]`, `~/x` as `\~/x` (seen on
+# imported issues, Sat, Oct 10, 2026).  Comment bodies come back as sent, but
+# both are unescaped before parsing, outside code spans only.
+CODE_SPAN_RE = re.compile(r"(`+)(.+?)\1", re.S)
+MD_ESCAPE_RE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!~|>])")
 IDENT_RE = re.compile(r"^[A-Za-z]{1,8}-\d+$")
 HEX_RE = re.compile(r"^[0-9a-f]+$")
 
@@ -887,8 +893,18 @@ def fmt_row(r: dict) -> str:
     return f"{line.rstrip()}\n     {title}" + (f"\n     {tail}" if tail else "")
 
 
+def md_unescape(s: str) -> str:
+    out, pos = [], 0
+    for m in CODE_SPAN_RE.finditer(s):
+        out.append(MD_ESCAPE_RE.sub(r"\1", s[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(MD_ESCAPE_RE.sub(r"\1", s[pos:]))
+    return "".join(out)
+
+
 def split_description(desc: str | None) -> dict:
-    body = (desc or "").replace("\r\n", "\n")
+    body = md_unescape((desc or "").replace("\r\n", "\n"))
     out = {"description": "", "recommended_fix": "", "footer": "", "reported_by": None}
     i = body.rfind("\n---\n")
     if i >= 0:
@@ -915,7 +931,7 @@ def split_description(desc: str | None) -> dict:
 
 
 def parse_comment(c: dict) -> dict:
-    body = (c.get("body") or "").replace("\r\n", "\n")
+    body = md_unescape((c.get("body") or "").replace("\r\n", "\n"))
     author = ((c.get("user") or {}).get("name")) or "unknown"
     where = ""
     sessions = ""
@@ -925,8 +941,10 @@ def parse_comment(c: dict) -> dict:
         author = tm.group(1)
         body = body[tm.end():]
         lines = body.rstrip().split("\n")
-        while lines and re.match(r"^(Where|Sessions): ", lines[-1]):
+        while lines and (not lines[-1].strip() or re.match(r"^(Where|Sessions): ", lines[-1])):
             k, _, v = lines.pop().partition(": ")
+            if not v:
+                continue
             if k == "Where":
                 where = v.strip()
             else:
@@ -957,7 +975,7 @@ def location_of(comments: list[dict], footer: str) -> str:
         if c["text"].startswith("CLAIMED") and c["where"]:
             return c["where"]
     m = re.search(r"[Ll]ocation:? ([^\n]+)", footer or "")
-    return m.group(1).strip().replace("\\~", "~") if m else ""
+    return m.group(1).strip() if m else ""
 
 
 def all_comments(L: Linear, issue_id: str) -> list[dict]:
@@ -1286,7 +1304,7 @@ def comment_body(seat: str, sessions: list[str] | None, text: str, where: str | 
         extra.append(f"Where: {loc}")
     if sessions:
         extra.append(f"Sessions: {', '.join(sessions)}")
-    return body + ("\n\n" + "\n".join(extra) if extra else "")
+    return body + "".join("\n\n" + x for x in extra)
 
 
 def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
