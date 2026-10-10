@@ -137,7 +137,7 @@ function single(params, name) {
  * Gate an /authorize request on its raw query, before `parseAuthRequest`
  * (which is what fetches a CIMD document).  Returns
  * `{ ok: true, seat, clientId, redirectUri, scopes }` or
- * `{ ok: false, reason, clientId, redirectUri }`.  The reason is a short slug
+ * `{ ok: false, reason, clientId, redirectUri, resource }`.  The reason is a short slug
  * that is safe to log;  the raw ids are returned for the refusal log only.
  */
 export function preGateAuthorize(params, config) {
@@ -149,7 +149,8 @@ export function preGateAuthorize(params, config) {
   }
   const clientId = fields.client_id ?? "";
   const redirectUri = fields.redirect_uri ?? "";
-  const refuse = (reason) => ({ ok: false, reason, clientId, redirectUri });
+  const resource = logSafe(fields.resource, 200);
+  const refuse = (reason) => ({ ok: false, reason, clientId, redirectUri, resource });
 
   if (!clientId || clientId.length > MAX_PARAM_LENGTH) return refuse("client_id_missing_or_long");
   if (fields.response_type !== "code") return refuse("response_type_not_code");

@@ -87,8 +87,8 @@ function gate(env, name) {
  * Refusals go to one SeatGate instance.  `by` is the Access email, present only
  * on /authorize rows (those requests passed Access);  token rows are anonymous.
  */
-async function logRefusal(env, { where, reason, clientId, redirectUri, by }) {
-  const row = { where, reason: logSafe(reason, 80), client_id: logSafe(clientId), redirect_uri: logSafe(redirectUri), ...(by ? { by: logSafe(by, 120) } : {}) };
+async function logRefusal(env, { where, reason, clientId, redirectUri, resource, by }) {
+  const row = { where, reason: logSafe(reason, 80), client_id: logSafe(clientId), redirect_uri: logSafe(redirectUri), ...(resource ? { resource: logSafe(resource, 200) } : {}), ...(by ? { by: logSafe(by, 120) } : {}) };
   console.log(JSON.stringify({ event: "refused", ...row }));
   try {
     await gate(env, GATE_LOG_NAME).logRefusal(row);
