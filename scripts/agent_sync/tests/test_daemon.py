@@ -523,7 +523,7 @@ class WakeTests(DaemonHarness):
         self.fake.add_direct_message("Jay Wedgeworth", "please answer", deliver=True)
         self.pump_until(daemon, lambda: any(r["state"] == "queued" for r in self.ledger()))
         self.wake_cycle(daemon, 6)
-        self.assertEqual(self.ledger()[-1]["reason"], "usd_per_day")
+        self.assertEqual((self.ledger()[-1]["state"], self.ledger()[-1]["reason"]), ("held_back", "usd_per_day"))
         self.assertEqual(self.dumps(), [])
 
     def test_usd_per_day_counts_waiting_wakes_so_two_owner_wakes_cannot_overshoot(self) -> None:
@@ -535,7 +535,8 @@ class WakeTests(DaemonHarness):
         self.pump_until(daemon, lambda: sum(1 for r in self.ledger() if r["state"] == "queued") >= 2)
         self.wake_cycle(daemon, 6)
         self.assertEqual(len(self.dumps()), 1)
-        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "dropped"], ["usd_per_day"])
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], ["usd_per_day"])
+        self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
 
     def test_a_restored_accepted_wake_is_checked_again_before_it_runs(self) -> None:
         now = self.clock.time()
@@ -553,7 +554,7 @@ class WakeTests(DaemonHarness):
         self.assertEqual(len(daemon.seats["CLAUDE"].jobs), 2)
         daemon.run_jobs("CLAUDE")
         self.assertEqual(len(self.dumps()), 1, "1.70 spent + 0.25 waiting + 0.25 is over 2.00, so only one runs")
-        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "dropped"], ["usd_per_day"])
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], ["usd_per_day"])
 
     def test_the_wake_runs_the_pinned_realpath_not_the_symlink(self) -> None:
         versions = self.tmp / "versions"
@@ -600,8 +601,9 @@ class WakeTests(DaemonHarness):
             self.fake.add_message("Codex", "agent-sync", "t", MENTION + " %d" % n)
             self.pump_until(daemon, lambda n=n: sum(1 for r in self.ledger() if r["state"] == "queued") >= n + 1)
             self.wake_cycle(daemon, 95)
-        reasons = [r.get("reason") for r in self.ledger() if r["state"] == "dropped"]
-        self.assertEqual(reasons, ["per_topic_per_hour"])
+        reasons = [r.get("reason") for r in self.ledger() if r["state"] == "held_back"]
+        self.assertEqual(reasons, ["per_topic_per_hour"], "held back, not dropped (owner, Sat, Oct 10)")
+        self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
         self.assertEqual(len(self.dumps()), 2)
 
     def test_the_kill_switch_and_the_owner_dm_pause(self) -> None:
@@ -631,7 +633,7 @@ class WakeTests(DaemonHarness):
         daemon.tick()
         states = [r["state"] for r in self.ledger() if r["state"] != "queued"]
         self.assertEqual(states.count("accepted"), 5)
-        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "dropped"], ["overflow", "overflow"])
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], ["overflow", "overflow"])
         self.assertEqual(daemon.run_jobs("CLAUDE", limit=1), 1)
         self.assertEqual(len(daemon.seats["CLAUDE"].jobs), 4)
 

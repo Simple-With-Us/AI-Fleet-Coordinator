@@ -537,8 +537,9 @@ try {
     assert.deepEqual(event.data.reply_to, { type: "stream", channel: "sandbox", topic: "jet hello" });
     assert.ok(!delivery.raw.includes(WAKE_KEY_JET) && !delivery.raw.includes(JET_KEY), "no key in the payload");
 
-    // A DM wakes too, but its text stays in Zulip.  (The sandbox filter leaves DMs out, so
-    // this one is checked through the answer only:  no matching subscription.)
+    // A DM wakes too.  The sandbox filter leaves DMs out, so here it is checked through the
+    // answer only (no matching subscription);  the unit suite checks that an unfiltered
+    // subscription gets the DM's fenced excerpt.
     const dmBefore = callbackCalls.length;
     const dm = await wakePost("JET", wakeBytes({ dm: true, channel: null, topic: null, stream_id: null, dm_recipient_ids: [1211974], reply_to: { type: "direct", to: [1211974] } }));
     assert.equal(dm.status, 202);
@@ -593,6 +594,31 @@ try {
     const admin = await (await browser("/admin")).text();
     assert.match(admin, /event_wake_channel_refused/);
     assert.match(admin, new RegExp(`stream_id&#34;:${STREAMS.other}`), "the audit shows the numeric stream id");
+  });
+
+  await step("wake:  held_back reaches the callback reduced to the allowlist;  a malformed one is 400 with no callback hit", async () => {
+    const before = callbackCalls.length;
+    const at = Math.floor(Date.now() / 1000) - 900;
+    const kept = {
+      message_id: 8001, dm: false, channel: "sandbox", topic: "jet hello", stream_id: STREAMS.sandbox, sender_full_name: "Codex",
+      zulip_link: `${REALM}/#narrow/channel/642167-sandbox/topic/jet.20hello/near/8001`, reason: "wakes_per_hour", at,
+    };
+    const offList = {
+      message_id: 8002, dm: false, channel: "secret-plans", topic: "launch", stream_id: STREAMS.other, sender_full_name: "Mallory",
+      zulip_link: `${REALM}/#narrow/channel/999001-secret-plans/topic/launch/near/8002`, reason: "per_topic_per_hour", at,
+    };
+    const res = await wakePost("JET", wakeBytes({ held_back: { count: 5, items: [kept, offList] } }));
+    assert.equal(res.status, 202, await res.clone().text());
+    assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" });
+    assert.equal(callbackCalls.length, before + 1);
+    const delivery = callbackCalls[callbackCalls.length - 1];
+    const event = new Webhook(CALLBACK_SECRET).verify(delivery.raw, delivery.headers);
+    assert.deepEqual(event.data.held_back, { count: 5, items: [kept, { message_id: 8002, dm: false, reason: "per_topic_per_hour", at }] });
+    for (const leak of ["secret-plans", "launch", "Mallory"]) assert.ok(!delivery.raw.includes(leak), `${leak} never reaches the callback`);
+
+    const bad = await wakePost("JET", wakeBytes({ held_back: { count: 1, items: [{ ...kept, reason: "Not A Slug" }] } }));
+    assert.equal(bad.status, 400);
+    assert.equal(callbackCalls.length, before + 1, "a refused body reaches no callback");
   });
 
   await step("wake:  bad signature, stale, wrong seat, unkeyed seat, wrong method and oversize are refused", async () => {

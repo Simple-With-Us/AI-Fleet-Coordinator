@@ -679,8 +679,9 @@ class LedgerAndSecrecyTests(ServerHarness):
             self.pump_until(daemon, lambda: sum(1 for r in self.ledger(SEAT) if r["state"] == "queued")
                             >= ("a", "b", "c").index(topic) + 1, seat=SEAT)
             self.wake_cycle(daemon)
-        states = [(r["topic"], r["state"], r.get("reason")) for r in self.ledger(SEAT) if r["state"] in ("done", "dropped")]
-        self.assertEqual(states, [("a", "done", None), ("b", "done", None), ("c", "dropped", "wakes_per_hour")])
+        states = [(r["topic"], r["state"], r.get("reason")) for r in self.ledger(SEAT)
+                  if r["state"] in ("done", "dropped", "held_back")]
+        self.assertEqual(states, [("a", "done", None), ("b", "done", None), ("c", "held_back", "wakes_per_hour")])
         started = [r for r in self.ledger(SEAT) if r["state"] == "started"]
         self.assertEqual({r["reserved_usd"] for r in started}, {0.0})
         accepted = [r for r in self.ledger(SEAT) if r["state"] == "accepted"]
@@ -976,7 +977,7 @@ class PartitionTests(ServerHarness):
 # The cloud seats (MA, JET, GROK-WEB, INSTINCT and ECHO)
 # --------------------------------------------------------------------------------------------
 
-class CloudSeatTests(ServerHarness):
+class CloudSeatHarness(ServerHarness):
     """The shipped sample config holds the five cloud seats with inbox capture.  Each test starts from
     that file itself (only the owner and eligible pins differ), so a change to the sample is tested."""
 
@@ -1002,6 +1003,8 @@ class CloudSeatTests(ServerHarness):
             variables["ZULIP_%s_API_KEY" % C.env_code(seat)] = self.cloud_keys[seat]
         return self.server_env(**variables)
 
+
+class CloudSeatTests(CloudSeatHarness):
     def test_the_sample_starts_with_every_cloud_seat_connected_on_its_own_queue(self) -> None:
         daemon = self.server_daemon(env=self.cloud_env())
         self.assertEqual(daemon.refusal, [], "the partition gives the server all five")

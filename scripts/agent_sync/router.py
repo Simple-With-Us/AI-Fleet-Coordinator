@@ -52,6 +52,9 @@ FLEET_WAKE_TOPIC = "fleet"
 FLEET_WAKE_KEY = topic_key(FLEET_WAKE_CHANNEL, FLEET_WAKE_TOPIC)
 _FLEET_WAKE_RE = re.compile(r"(?<![\\\w])@\*\*all\*\*")
 _WAKE_TAG_RE = re.compile(r"^\s*\[[A-Za-z0-9_-]+·wake\b")
+# A route post (`[CLAUDE·route→CODEX] re=N`):  a wake seat paged another seat on the owner's behalf.  It
+# counts on the loop guard like a wake reply, but it never blocks the wake of the seat it mentions.
+_ROUTE_TAG_RE = re.compile(r"^\s*\[[A-Za-z0-9_-]+·route\b")
 _REPLY_TO_RE = re.compile(r"(?:^|\s)re=(\d+)\b")
 _CODE_BLOCK_RE = re.compile(r"(?ms)^(```|~~~).*?(^\1\s*$|\Z)")
 _CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
@@ -78,6 +81,26 @@ def outside_code(content: str) -> str:
 
 
 GENERIC_BOT = 1  # Zulip bot_type:  2 incoming webhook, 3 outgoing webhook, 4 embedded
+
+
+def fleet_bots_by_seat(users: Mapping[int, Mapping[str, Any]], tags: Iterable[str],
+                       owner_user_id: int) -> dict[str, list[dict[str, Any]]]:
+    """seat tag -> the fleet bots (as fleet_bot_ids decides) that sign as it, canonical email first:
+    the bot whose email local part is the seat's own (`codex-bot@` for CODEX), then by user id.  One
+    seat can have two bots (`grok-build-bot@` also signs as GROK)."""
+    ids = fleet_bot_ids(users, tags, owner_user_id)
+    found: dict[str, list[dict[str, Any]]] = {}
+    for uid in sorted(ids):
+        user = dict(users[uid], user_id=uid)
+        found.setdefault(seat_tag_for(user), []).append(user)
+
+    def canonical(seat: str, user: Mapping[str, Any]) -> tuple[int, int]:
+        local = str(user.get("email") or "").split("@", 1)[0].lower()
+        return (0 if local in (seat.lower() + "-bot", seat.lower()) else 1, int(user["user_id"]))
+
+    for seat, bots in found.items():
+        bots.sort(key=lambda u, seat=seat: canonical(seat, u))
+    return found
 
 
 def fleet_bot_ids(users: Mapping[int, Mapping[str, Any]], tags: Iterable[str], owner_user_id: int) -> set[int]:
@@ -159,6 +182,7 @@ class Classes:
     def __init__(self) -> None:
         self.own = self.owner = self.owner_api = self.eligible = self.direct = False
         self.fleet = self.wildcard = self.dm = self.wake_tag = self.stale = self.sender_is_bot = False
+        self.route_tag = False
         self.reply_to: int | None = None
         self.channel = ""
         self.topic = ""
@@ -166,7 +190,7 @@ class Classes:
 
     def labels(self) -> list[str]:
         return [name for name in ("own", "owner", "owner_api", "eligible", "direct", "fleet", "wildcard", "dm",
-                                  "wake_tag", "stale") if getattr(self, name)]
+                                  "wake_tag", "route_tag", "stale") if getattr(self, name)]
 
 
 def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Classes:
@@ -196,6 +220,7 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     c.fleet = c.key == FLEET_WAKE_KEY and fleet_wake_mention(visible, flags)
     c.wildcard = any(f in flags for f in WILDCARD_FLAGS)
     c.wake_tag = bool(_WAKE_TAG_RE.match(content))
+    c.route_tag = bool(_ROUTE_TAG_RE.match(content))
     ts = message.get("timestamp")
     c.stale = isinstance(ts, (int, float)) and ctx.now - float(ts) > ctx.stale_after
     first_line = content.split("\n", 1)[0]

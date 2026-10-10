@@ -126,6 +126,10 @@ Owner ruling, Sat, Oct 10 ("all should have DM tools"), spec section 1.2:  `dm_l
 
 Clients that cache `tools/list` (Grok on the web, ChatGPT) must refresh the connector's tools to see the new ones.  No reconnect and no new consent:  the tools use the two existing scopes.
 
+## DM text and held-back wakes in events
+
+Owner decisions, Sat, Oct 10:  a DM event carries its fenced excerpt ("yes"), and wakes the listener held back for its budget are surfaced ("surface all");  spec section 3.12, items 2, 9 and 14.  The Worker now forwards a DM's excerpt and accepts an optional `held_back` in the wake body (400 `bad_held_back` when malformed), forwarding it reduced to the channel allowlist.  No secret, scope or var changes, and no migration:  step 1 is the whole deploy.  **Deploy it before the listener that sends `held_back`:**  this Worker version must be live first, or that listener counts items as surfaced that never reached Jet.  ChatGPT may need a rescan of the plugin to see the new `held_back` field in the event's payload schema;  nothing else changes for the subscription.
+
 ## Rotate a key
 
 Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULIP_<SEAT>_API_KEY` in Infisical `prod` `/zulip`, and anyone with deploy rights reruns `install_seat_key.py <SEAT> --apply`.  The Worker re-reads the secret on the next request;  the role cache is unaffected.
