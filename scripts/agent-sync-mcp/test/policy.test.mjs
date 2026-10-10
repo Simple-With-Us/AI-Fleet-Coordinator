@@ -12,6 +12,13 @@ import {
   classifyPath,
   preGateAuthorize,
   postGateAuthRequest,
+  hostedRedirectSeats,
+  redirectUriProblem,
+  isLoopbackRedirect,
+  resolveArmedSeat,
+  manualClientSeat,
+  clientBoundToSeat,
+  redirectSeats,
   gateTokenForm,
   basicClientId,
   sameOriginPost,
@@ -121,14 +128,14 @@ test("client id verdict:  exact allowlisted CIMD id or the library's hand-client
 
 test("pre-gate admits ChatGPT for JET", () => {
   const got = preGateAuthorize(authorizeParams(), config);
-  assert.deepEqual(got, { ok: true, seat: "JET", clientId: CHATGPT_CLIENT, redirectUri: CHATGPT_REDIRECT, scopes: ["zulip:read", "zulip:write"] });
+  assert.deepEqual(got, { ok: true, seat: "JET", seats: ["JET"], cimdSeat: "JET", clientId: CHATGPT_CLIENT, redirectUri: CHATGPT_REDIRECT, scopes: ["zulip:read", "zulip:write"] });
 });
 
 test("pre-gate admits Jay's ChatGPT connector as an exact pair, and no sibling connector", () => {
   const redirect = "https://chatgpt.com/connector/oauth/Aa3WqJNIVGqM";
   const client = "https://chatgpt.com/oauth/Aa3WqJNIVGqM/client.json";
   const got = preGateAuthorize(authorizeParams({ client_id: client, redirect_uri: redirect }), config);
-  assert.deepEqual(got, { ok: true, seat: "JET", clientId: client, redirectUri: redirect, scopes: ["zulip:read", "zulip:write"] });
+  assert.deepEqual(got, { ok: true, seat: "JET", seats: ["JET"], cimdSeat: "JET", clientId: client, redirectUri: redirect, scopes: ["zulip:read", "zulip:write"] });
   const siblingClient = "https://chatgpt.com/oauth/Zz9XyWvUtSrQ/client.json";
   const siblingRedirect = "https://chatgpt.com/connector/oauth/Zz9XyWvUtSrQ";
   assert.equal(preGateAuthorize(authorizeParams({ client_id: siblingClient, redirect_uri: siblingRedirect }), config).reason, "redirect_not_allowlisted");
@@ -177,7 +184,7 @@ test("Grok's published client metadata document binds only to GROK-WEB", () => {
   const grokClient = "https://grok.com/oauth/mcp-client.json";
   const grokRedirect = "https://grok.com/connectors-oauth-exchange-code/";
   const got = preGateAuthorize(authorizeParams({ client_id: grokClient, redirect_uri: grokRedirect }), config);
-  assert.deepEqual(got, { ok: true, seat: "GROK-WEB", clientId: grokClient, redirectUri: grokRedirect, scopes: ["zulip:read", "zulip:write"] });
+  assert.deepEqual(got, { ok: true, seat: "GROK-WEB", seats: ["GROK-WEB"], cimdSeat: "GROK-WEB", clientId: grokClient, redirectUri: grokRedirect, scopes: ["zulip:read", "zulip:write"] });
   // Cross-family in both directions.
   assert.equal(preGateAuthorize(authorizeParams({ client_id: CHATGPT_CLIENT, redirect_uri: grokRedirect }), config).reason, "cimd_client_not_allowlisted");
   assert.equal(preGateAuthorize(authorizeParams({ client_id: grokClient, redirect_uri: CHATGPT_REDIRECT }), config).reason, "cimd_client_not_allowlisted");
@@ -206,18 +213,21 @@ test("a resource_mismatch refusal carries the resource the client sent, capped f
   assert.equal(preGateAuthorize(authorizeParams(), config).ok, true);
 });
 
-test("post-gate re-checks the library's parsed request", () => {
+test("post-gate re-checks the library's parsed request for one seat", () => {
   const good = { clientId: CHATGPT_CLIENT, redirectUri: CHATGPT_REDIRECT, codeChallenge: CHALLENGE, codeChallengeMethod: "S256", resource: RESOURCE, scope: ["zulip:read"] };
-  assert.equal(postGateAuthRequest(good, config), "JET");
-  assert.equal(postGateAuthRequest({ ...good, codeChallengeMethod: "plain" }, config), null);
-  assert.equal(postGateAuthRequest({ ...good, codeChallenge: undefined }, config), null);
-  assert.equal(postGateAuthRequest({ ...good, resource: "https://x.example/mcp" }, config), null);
-  assert.equal(postGateAuthRequest({ ...good, redirectUri: "https://evil.example/cb" }, config), null);
-  assert.equal(postGateAuthRequest({ ...good, clientId: "https://evil.example/c.json" }, config), null);
-  assert.equal(postGateAuthRequest({ ...good, clientId: " https://chatgpt.com/oauth/client.json" }, config), null);
-  assert.equal(postGateAuthRequest({ ...good, clientId: "AbCdEf1234567890" }, config), "JET", "a hand client id passes the shape check");
-  assert.equal(postGateAuthRequest({ ...good, clientId: "https://grok.com/oauth/mcp-client.json" }, config), null, "Grok's id with ChatGPT's redirect is cross-family");
-  assert.equal(postGateAuthRequest({ ...good, scope: ["admin"] }, config), null);
+  assert.equal(postGateAuthRequest(good, config, "JET"), true);
+  assert.equal(postGateAuthRequest(good, config, "GROK-WEB"), false, "the redirect is not GROK-WEB's");
+  assert.equal(postGateAuthRequest(good, config, ""), false);
+  assert.equal(postGateAuthRequest({ ...good, codeChallengeMethod: "plain" }, config, "JET"), false);
+  assert.equal(postGateAuthRequest({ ...good, codeChallenge: undefined }, config, "JET"), false);
+  assert.equal(postGateAuthRequest({ ...good, resource: "https://x.example/mcp" }, config, "JET"), false);
+  assert.equal(postGateAuthRequest({ ...good, redirectUri: "https://evil.example/cb" }, config, "JET"), false);
+  assert.equal(postGateAuthRequest({ ...good, clientId: "https://evil.example/c.json" }, config, "JET"), false);
+  assert.equal(postGateAuthRequest({ ...good, clientId: " https://chatgpt.com/oauth/client.json" }, config, "JET"), false);
+  assert.equal(postGateAuthRequest({ ...good, clientId: "AbCdEf1234567890" }, config, "JET"), true, "a hand client id passes the shape check");
+  assert.equal(postGateAuthRequest({ ...good, clientId: "https://grok.com/oauth/mcp-client.json" }, config, "JET"), false, "Grok's id with ChatGPT's redirect is cross-family");
+  assert.equal(postGateAuthRequest({ ...good, scope: ["admin"] }, config, "JET"), false);
+  assert.deepEqual(hostedRedirectSeats(good, config), ["JET"]);
 });
 
 const basic = (id, secret = "") => `Basic ${btoa(`${encodeURIComponent(id)}:${secret}`)}`;
@@ -334,4 +344,104 @@ test("refusal log values are truncated and de-controlled", () => {
   assert.equal(logSafe("a\nb\u2028c"), "a?b?c");
   assert.equal(logSafe("x".repeat(500)).length, 300);
   assert.equal(logSafe(undefined), "");
+});
+
+// ---------------------------------------------------------------- loopback callback (ECHO and INSTINCT)
+
+const LOOP = "http://127.0.0.1:8737/callback";
+const instinctConfig = loadConfig(testEnv({ HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT" }));
+
+test("loopback redirect:  only http://127.0.0.1 with an explicit port, a path, canonical", () => {
+  assert.equal(redirectUriProblem(LOOP), "");
+  assert.equal(isLoopbackRedirect(LOOP), true);
+  assert.equal(redirectUriProblem(CHATGPT_REDIRECT), "", "https rules unchanged");
+  const refused = [
+    "http://localhost:8737/callback",
+    "http://[::1]:8737/callback",
+    "http://127.0.0.2:8737/callback",
+    "http://127.1:8737/callback",
+    "http://0x7f.0.0.1:8737/callback",
+    "http://2130706433:8737/callback",
+    "http://127.0.0.1/callback",
+    "http://127.0.0.1:80/callback",
+    "http://127.0.0.1:8737",
+    "http://user@127.0.0.1:8737/callback",
+    "http://127.0.0.1:8737/callback?x=1",
+    "http://127.0.0.1:8737/callback#f",
+    "http://127.0.0.1:8737/a%2Fb",
+    "http://127.0.0.1:8737/./callback",
+    "HTTP://127.0.0.1:8737/callback",
+    "http://127.0.0.1.:8737/callback",
+    "http://chatgpt.com/connector_platform_oauth_redirect",
+  ];
+  for (const uri of refused) {
+    assert.notEqual(redirectUriProblem(uri), "", uri);
+    assert.equal(isLoopbackRedirect(uri), false, uri);
+  }
+  assert.equal(redirectUriProblem("http://chatgpt.com/cb"), "not https", "non-loopback http keeps its reason");
+  assert.equal(strictRedirectProblem(LOOP), "not https", "CIMD ids still use the https-only parse");
+});
+
+test("the shared loopback redirect lists ECHO and INSTINCT, and the pre-gate leaves the choice to arming", () => {
+  assert.deepEqual([...redirectSeats(instinctConfig, LOOP)], ["ECHO", "INSTINCT"]);
+  const got = preGateAuthorize(authorizeParams({ client_id: "AbCdEf1234567890", redirect_uri: LOOP }), instinctConfig);
+  assert.equal(got.ok, true);
+  assert.equal(got.seat, "", "no single seat until arming picks one");
+  assert.deepEqual(got.seats, ["ECHO", "INSTINCT"]);
+  assert.equal(got.cimdSeat, "");
+  // The library lets any port through on a loopback host, so this exact-string
+  // pre-gate is the only port pin.
+  assert.equal(preGateAuthorize(authorizeParams({ client_id: "AbCdEf1234567890", redirect_uri: "http://127.0.0.1:9999/callback" }), instinctConfig).reason, "redirect_not_allowlisted");
+  assert.equal(preGateAuthorize(authorizeParams({ client_id: "AbCdEf1234567890", redirect_uri: "http://localhost:8737/callback" }), instinctConfig).reason, "redirect_not_allowlisted");
+  // A CIMD id of another family is refused before any fetch.
+  assert.equal(preGateAuthorize(authorizeParams({ redirect_uri: LOOP }), instinctConfig).reason, "cimd_client_not_allowlisted");
+  // Only one of the two hosted:  the other is filtered out.
+  const echoOnly = loadConfig(testEnv({ HOSTED_SEATS: "ECHO" }));
+  assert.deepEqual(preGateAuthorize(authorizeParams({ client_id: "AbCdEf1234567890", redirect_uri: LOOP }), echoOnly).seats, ["ECHO"]);
+  assert.equal(preGateAuthorize(authorizeParams({ client_id: "AbCdEf1234567890", redirect_uri: LOOP }), loadConfig(testEnv({ HOSTED_SEATS: "JET" }))).reason, "seat_not_hosted");
+});
+
+test("arming picks the seat for a shared redirect:  exactly one armed, else refused", () => {
+  const seats = ["ECHO", "INSTINCT"];
+  assert.deepEqual(resolveArmedSeat(seats, new Set(["ECHO"])), { ok: true, seat: "ECHO" });
+  assert.deepEqual(resolveArmedSeat(seats, new Set(["INSTINCT"])), { ok: true, seat: "INSTINCT" });
+  assert.deepEqual(resolveArmedSeat(seats, new Set(["ECHO", "INSTINCT"])), { ok: false, reason: "ambiguous_armed_seats" });
+  assert.deepEqual(resolveArmedSeat(seats, new Set()), { ok: false, reason: "not_armed" });
+  assert.deepEqual(resolveArmedSeat(seats, new Set(["JET"])), { ok: false, reason: "not_armed" }, "an unrelated armed seat does not count");
+  assert.deepEqual(resolveArmedSeat(["JET"], new Set(["JET", "ECHO"])), { ok: true, seat: "JET" });
+});
+
+test("a manual client's seat comes only from its /admin name tag on a hand-shaped id", () => {
+  assert.equal(manualClientSeat({ clientId: "AbCdEf1234567890", clientName: "Echo (manual form, ECHO)" }), "ECHO");
+  assert.equal(manualClientSeat({ clientId: "AbCdEf1234567890", clientName: "Grok (manual form, GROK-WEB)" }), "GROK-WEB");
+  assert.equal(manualClientSeat({ clientId: "AbCdEf1234567890", clientName: "Echo (manual form, ECHO) x" }), "", "anchored at the end");
+  assert.equal(manualClientSeat({ clientId: "AbCdEf1234567890", clientName: "Untagged" }), "");
+  assert.equal(manualClientSeat({ clientId: "https://evil.example/c.json", clientName: "x (manual form, ECHO)" }), "", "a CIMD document names itself, so it never has a tag");
+});
+
+test("client binding:  a client bound to ECHO cannot mint an INSTINCT grant", () => {
+  const echoClient = { clientId: "AbCdEf1234567890", clientName: "Echo (manual form, ECHO)" };
+  const instinctClient = { clientId: "ZyXwVu9876543210", clientName: "Instinct (manual form, INSTINCT)" };
+  const untagged = { clientId: "QqQqQqQq12345678", clientName: "Old client" };
+  assert.equal(clientBoundToSeat(echoClient, "ECHO", LOOP, instinctConfig), true);
+  assert.equal(clientBoundToSeat(echoClient, "INSTINCT", LOOP, instinctConfig), false);
+  assert.equal(clientBoundToSeat(instinctClient, "INSTINCT", LOOP, instinctConfig), true);
+  assert.equal(clientBoundToSeat(instinctClient, "ECHO", LOOP, instinctConfig), false);
+  assert.equal(clientBoundToSeat(untagged, "ECHO", LOOP, instinctConfig), false, "an untagged client on a shared redirect is refused");
+  assert.equal(clientBoundToSeat(untagged, "JET", CHATGPT_REDIRECT, instinctConfig), true, "an untagged client on a one-seat redirect still works");
+  assert.equal(clientBoundToSeat({ clientId: CHATGPT_CLIENT, clientName: "ChatGPT (manual form, ECHO)" }, "ECHO", LOOP, instinctConfig), false, "a CIMD id binds by the allowlist only");
+  assert.equal(clientBoundToSeat({ clientId: CHATGPT_CLIENT }, "JET", CHATGPT_REDIRECT, instinctConfig), true);
+  // A CIMD id listed under ECHO only is refused for INSTINCT.
+  const seats = { ...testEnv().SEATS, ECHO: { redirect_uris: [LOOP], cimd_client_ids: ["https://instinct.com/oauth/echo.json"] } };
+  const cfg = loadConfig(testEnv({ HOSTED_SEATS: "ECHO,INSTINCT", SEATS: seats }));
+  const echoCimd = { clientId: "https://instinct.com/oauth/echo.json" };
+  assert.equal(clientBoundToSeat(echoCimd, "ECHO", LOOP, cfg), true);
+  assert.equal(clientBoundToSeat(echoCimd, "INSTINCT", LOOP, cfg), false);
+  const pre = preGateAuthorize(authorizeParams({ client_id: echoCimd.clientId, redirect_uri: LOOP }), cfg);
+  assert.equal(pre.ok, true);
+  assert.equal(pre.cimdSeat, "ECHO");
+  const parsed = { clientId: echoCimd.clientId, redirectUri: LOOP, codeChallenge: CHALLENGE, codeChallengeMethod: "S256", resource: RESOURCE, scope: ["zulip:read"] };
+  assert.equal(postGateAuthRequest(parsed, cfg, "ECHO"), true);
+  assert.equal(postGateAuthRequest(parsed, cfg, "INSTINCT"), false);
+  assert.deepEqual(hostedRedirectSeats(parsed, cfg), ["ECHO", "INSTINCT"]);
 });

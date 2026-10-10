@@ -38,7 +38,11 @@ python3 -I install_seat_key.py GROK-WEB            # checks only
 python3 -I install_seat_key.py GROK-WEB --apply    # wrangler secret put ZULIP_KEY_GROK_WEB, value on stdin
 python3 -I install_seat_key.py JET                 # checks only
 python3 -I install_seat_key.py JET --apply         # wrangler secret put ZULIP_KEY_JET, value on stdin
+python3 -I install_seat_key.py ECHO --zuliprc ~/.secrets/Zulip/Echo-zuliprc --apply
+python3 -I install_seat_key.py INSTINCT --zuliprc ~/.secrets/Zulip/Instinct-zuliprc --apply
 ```
+
+ECHO's and INSTINCT's keys are not in Infisical, so `--zuliprc` reads the email and key from the seat's mode-600 zuliprc instead (its `site` must be this realm).  The same checks run, and no field of the file is printed.
 
 For each seat the script reads `ZULIP_<SEAT>_EMAIL` and `ZULIP_<SEAT>_API_KEY` (`ZULIP_GROK_WEB_*`, `ZULIP_JET_*`) from Infisical (project "AI Fleet Coordinator", `prod`, `/zulip`) through the INFISICAL_AUTOMATION identity, and refuses unless the seat is in `HOSTED_SEATS`, the email equals `ZULIP_EMAIL_<SEAT>`, and Zulip's `users/me` for the key is that bot, a bot, and a member (role 400).  The value goes to wrangler on stdin and is never printed, logged or written to a file.  `wrangler secret put` deploys a new version at once.
 
@@ -94,6 +98,14 @@ JET was left out of Phase 2 because `openai-dot-bot` was a realm administrator (
 2. Put the seat in `HOSTED_SEATS` in `wrangler.jsonc` (`"JET,GROK-WEB"`), open a PR, merge.  Done on Fri, Oct 9.
 3. Deploy (step 1), then `python3 -I install_seat_key.py JET --apply`.  The script refuses while the live role is not 400.  Done on Fri, Oct 9, at about 8:10am:  version `068c2953` is live, `ZULIP_KEY_JET` is installed, and `infra_phase0.py check` reports 0 failures.
 4. Jay arms JET and connects ChatGPT (ARMING-JAY.md).  Still open.
+
+## Add ECHO and INSTINCT
+
+Two identities of the Instinct app (instinct.com), added on Fri, Oct 9:  ECHO posts as `instinct-bat-bot@`, INSTINCT as `instinct-owl-bot@`, both members (role 400).  They share the app's loopback callback `http://127.0.0.1:8737/callback`, the one kind of redirect two seats may share (spec 3.4).
+
+1. Both seats are in `HOSTED_SEATS`, `ZULIP_EMAIL_ECHO` and `ZULIP_EMAIL_INSTINCT` are set, and `SEATS` lists the callback under both.
+2. Deploy (step 1), then install both keys with `--zuliprc` (step 2).
+3. Jay connects one seat at a time (ARMING-JAY.md, "Connect Echo" and "Connect Instinct").  The client id is unknown until the first attempt:  a manual client from `/admin`, or a CIMD id from the refusal log, added to `SEATS.<seat>.cimd_client_ids`.  One CIMD id cannot be listed under both seats yet (`cimdOwner` maps an id to one seat), so if Instinct uses one client document for both identities, that needs a code change first.
 
 ## Rotate a key
 

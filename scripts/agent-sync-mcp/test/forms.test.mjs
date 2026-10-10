@@ -58,13 +58,15 @@ test("consent form:  extra keys, repeated scalars, bad enums and bad handles are
 test("admin form:  every action the admin page posts is accepted, anything else is refused", { skip }, () => {
   for (const action of forms.ADMIN_ACTIONS) assert.equal(admin([["csrf", CSRF], ["action", action]]).ok, true, action);
   assert.equal(admin([["csrf", CSRF], ["action", "arm"], ["seat", "JET"]]).ok, true);
-  assert.equal(admin([["csrf", CSRF], ["action", "update_grok_client"], ["client_id", "AbCdEf1234567890"]]).ok, true);
+  assert.equal(admin([["csrf", CSRF], ["action", "sync_manual_client"], ["client_id", "AbCdEf1234567890"]]).ok, true);
+  assert.equal(admin([["csrf", CSRF], ["action", "create_manual_client"], ["seat", "ECHO"]]).ok, true);
+  assert.equal(admin([["csrf", CSRF], ["action", "create_manual_client"], ["seat", "INSTINCT"]]).ok, true);
   const bad = {
     "bad csrf shape": [["csrf", "short"], ["action", "arm"]],
     "uppercase csrf": [["csrf", "C".repeat(64)], ["action", "arm"]],
     "unknown action": [["csrf", CSRF], ["action", "delete_everything"]],
     "unknown seat": [["csrf", CSRF], ["action", "arm"], ["seat", "CLAUDE"]],
-    "url client id": [["csrf", CSRF], ["action", "update_grok_client"], ["client_id", "https://evil.example/c.json"]],
+    "url client id": [["csrf", CSRF], ["action", "sync_manual_client"], ["client_id", "https://evil.example/c.json"]],
     "extra key": [["csrf", CSRF], ["action", "arm"], ["seat", "JET"], ["note", "x"]],
     "repeated action": [["csrf", CSRF], ["action", "arm"], ["action", "revoke"]],
     "no csrf": [["action", "arm"]],
