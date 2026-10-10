@@ -20,7 +20,7 @@ Steps (design section 2), for each (seat, message) pair:
 
 Eligible senders (owner 2026-10-09:  "everyone should be able to DM to wake anyone else or tag to
 wake anyone else"):  the owner, plus every fleet bot, which is an active generic bot in the realm
-user list whose email maps (seat_tag_for) to a fleet tag:  a seat in the partition file (Mac and
+user list, owned by the owner (bot_owner_id), whose email maps (seat_tag_for) to a fleet tag:  a seat in the partition file (Mac and
 cloud seats, GB personas, BF role bots, GROK-BUILD) or config.FLEET_SEATS.  The daemon computes the
 set at runtime (fleet_bot_ids) and adds the optional `eligible_user_ids` pins, so a new seat needs
 no re-init.  Integration and webhook bots (Sentry, PagerDuty, Linear), unknown senders, API posts
@@ -80,16 +80,22 @@ def outside_code(content: str) -> str:
 GENERIC_BOT = 1  # Zulip bot_type:  2 incoming webhook, 3 outgoing webhook, 4 embedded
 
 
-def fleet_bot_ids(users: Mapping[int, Mapping[str, Any]], tags: Iterable[str]) -> set[int]:
-    """User ids of the fleet bots in a realm user list:  active generic bots whose email maps to one
-    of `tags` (config.fleet_tags).  Webhook and embedded bots never count, whatever their email, and
-    neither does a person."""
+def fleet_bot_ids(users: Mapping[int, Mapping[str, Any]], tags: Iterable[str], owner_user_id: int) -> set[int]:
+    """User ids of the fleet bots in a realm user list:  active generic bots that the owner owns
+    (`bot_owner_id`) and whose email maps to one of `tags` (config.fleet_tags).  Webhook and embedded
+    bots never count, whatever their email, and neither does a person.  The owner check is the trust
+    anchor:  a bot someone else creates under a fleet-looking email is not a fleet bot, and with no
+    owner pinned there are none."""
     wanted = set(tags)
     found: set[int] = set()
+    if not isinstance(owner_user_id, int) or owner_user_id <= 0:
+        return found
     for uid, user in users.items():
         if not isinstance(uid, int) or isinstance(uid, bool) or user.get("is_bot") is not True:
             continue
         if user.get("is_active", True) is False or user.get("bot_type", GENERIC_BOT) != GENERIC_BOT:
+            continue
+        if user.get("bot_owner_id") != owner_user_id:
             continue
         if seat_tag_for(user) in wanted:
             found.add(uid)

@@ -178,6 +178,8 @@ class SeatRunner:
         self.cursor_flushed_at = 0.0
         self.ring = Ring()
         self.users: dict[int, dict[str, Any]] = {}
+        self.users_version = 0  # bumped on every change to `users`, so the fleet-bot set is cached
+        self.fleet_cache: tuple[Any, set[int]] | None = None
         self.streams: dict[int, str] = {}
         self.muted: set[str] = set()
         self.followed: set[str] = set()
@@ -248,6 +250,7 @@ class SeatRunner:
         for person in state.get("realm_users") or []:
             if isinstance(person, dict) and isinstance(person.get("user_id"), int):
                 self.users[person["user_id"]] = person
+        self.users_version += 1
         self.muted.clear()
         self.followed.clear()
         for entry in state.get("user_topics") or []:
@@ -708,8 +711,12 @@ class Daemon:
     # ---- routing -------------------------------------------------------------------------------
     def eligible_ids(self, runner: SeatRunner) -> set[int]:
         """The eligible senders besides the owner:  every fleet bot in the seat's realm user list
-        (router.fleet_bot_ids over the partition's tags), plus the optional eligible_user_ids pins."""
-        return set(self.config.eligible_user_ids) | R.fleet_bot_ids(runner.users, self.fleet_tags)
+        (router.fleet_bot_ids over the partition's tags, owned by the owner), plus the optional
+        eligible_user_ids pins.  Cached until the user list, the tags or the owner pin changes."""
+        key = (runner.users_version, self.fleet_tags, self.config.owner_user_id)
+        if runner.fleet_cache is None or runner.fleet_cache[0] != key:
+            runner.fleet_cache = (key, R.fleet_bot_ids(runner.users, self.fleet_tags, self.config.owner_user_id))
+        return set(self.config.eligible_user_ids) | runner.fleet_cache[1]
 
     def context(self, runner: SeatRunner) -> R.Context:
         cfg = self.config
@@ -732,6 +739,7 @@ class Daemon:
                     person = event.get("person") or {}
                     uid = person.get("user_id")
                     if isinstance(uid, int):
+                        runner.users_version += 1
                         if event.get("op") == "remove":
                             runner.users.pop(uid, None)
                         else:

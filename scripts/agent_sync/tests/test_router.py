@@ -133,9 +133,9 @@ class ClassifyTests(unittest.TestCase):
         self.assertFalse(c.eligible)
 
 
-def realm_bot(uid, email, *, bot_type=1, active=True, is_bot=True):
+def realm_bot(uid, email, *, bot_type=1, active=True, is_bot=True, bot_owner=OWNER):
     return {"user_id": uid, "email": email, "full_name": email, "is_bot": is_bot, "is_active": active,
-            "bot_type": bot_type}
+            "bot_type": bot_type, "bot_owner_id": bot_owner}
 
 
 class FleetBotIdsTests(unittest.TestCase):
@@ -159,7 +159,7 @@ class FleetBotIdsTests(unittest.TestCase):
             27: realm_bot(27, "muse-assist-bot@zulip.test"),     # MA
             28: realm_bot(28, "grok-build-bot@zulip.test"),      # GROK
         }
-        self.assertEqual(R.fleet_bot_ids(users, self.tags), set(users))
+        self.assertEqual(R.fleet_bot_ids(users, self.tags, OWNER), set(users))
 
     def test_integrations_people_unknown_and_inactive_bots_do_not(self) -> None:
         users = {
@@ -172,7 +172,18 @@ class FleetBotIdsTests(unittest.TestCase):
             46: realm_bot(46, "mm-bot@zulip.test", active=False),
             12: realm_bot(12, "codex@zulip.test", is_bot=False),         # a person, even with a seat-like name
         }
-        self.assertEqual(R.fleet_bot_ids(users, self.tags), set())
+        self.assertEqual(R.fleet_bot_ids(users, self.tags, OWNER), set())
+
+    def test_a_bot_the_owner_does_not_own_is_not_a_fleet_bot(self) -> None:
+        """The trust anchor:  a bot someone else created under a fleet-looking email never counts, and with no
+        owner pinned nothing counts."""
+        users = {
+            30: realm_bot(30, "gb-spoof-grok-bot@zulip.test", bot_owner=CODEX),
+            31: realm_bot(31, "codex-bot@zulip.test", bot_owner=None),
+            32: realm_bot(32, "codex-bot@zulip.test"),
+        }
+        self.assertEqual(R.fleet_bot_ids(users, self.tags, OWNER), {32})
+        self.assertEqual(R.fleet_bot_ids(users, self.tags, 0), set(), "no owner pinned, no fleet bots")
 
     def test_the_tags_cover_the_partition_and_the_fleet_seats(self) -> None:
         for tag in ("CLAUDE", "JET", "GB-DIRECTOR", "BF-BUILDER", "ECHO", "INSTINCT", "GROK-WEB", "GROK-BUILD", "MA"):

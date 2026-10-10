@@ -867,6 +867,23 @@ class EveryoneWakesTests(DaemonHarness):
         self.assertIn("dm", self.inbox()[0]["classes"])
         self.assertIn("eligible", self.inbox()[0]["classes"])
 
+    def test_a_bot_someone_else_owns_never_wakes_even_with_a_fleet_email(self) -> None:
+        spoof = self.fake.add_user("fixer-grok-bot@zulip.test", "GB-Fixer?", is_bot=True, user_id=41)
+        spoof["bot_owner_id"] = 11  # created by another account, not the owner
+        daemon = self.started()
+        self.fake.add_message(spoof, "agent-sync", "t", MENTION)
+        self.fake.add_direct_message(spoof, "wake up", deliver=True)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 2)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertEqual(self.ledger(), [])
+
+    def test_the_fleet_set_follows_realm_user_changes(self) -> None:
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        self.assertIn(21, daemon.eligible_ids(runner))
+        daemon.handle_events(runner, [{"type": "realm_user", "op": "update", "person": {"user_id": 21, "is_active": False}}])
+        self.assertNotIn(21, daemon.eligible_ids(runner), "a deactivated bot drops out at once, cache or not")
+
     def test_sentry_never_wakes_by_mention_or_dm(self) -> None:
         daemon = self.started()
         self.fake.add_message(self.sentry, "agent-sync", "t", MENTION)
