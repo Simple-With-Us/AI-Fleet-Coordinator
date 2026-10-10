@@ -4,7 +4,7 @@ Owner directive (2026-10-03): **Infisical is the sole source of truth** for this
 secrets, env variables, and tunable settings knobs.  Per-user settings stay in the app's
 own store and never go in Infisical.
 
-- Infisical project: **AI Fleet Coordinator** (`9bf7417a-fbbb-42ca-870c-2b45207233f5`), jays-services org, envs dev/staging/prod.
+- Infisical project: **AI Fleet Coordinator** (`9bf7417a-fbbb-42ca-870c-2b45207233f5`), jays-services org.  **`prod` is the only environment** (owner decision 2026-10-10, new projects delete the default dev and staging at creation):  the service reads and writes prod, `INFISICAL_ENVIRONMENT` defaults to `prod`, and any other slug is refused.
 - Migrated surface (this PR): `scripts/fleet-recall-service/server.py` — the fleet's shared vector memory HTTP front (the deployable Python service with the admin surface).  Settings module: `scripts/fleet_rag/infisical_settings.py` (stdlib only).
 - Machine identity: the shared automation identity (Admin on this project).  The service reads `INFISICAL_AUTOMATION_CLIENT_ID` / `INFISICAL_AUTOMATION_CLIENT_SECRET` (fallback `INFISICAL_SHARED_*`) from the environment, or the chmod-600 JSON handoff file (`INFISICAL_MACHINE_IDENTITY`, default `~/.secrets/infisical-machine-identity.json`).  With no identity configured, managed keys fall back to the process environment and the service keeps its old env-only behavior.
 
@@ -12,17 +12,17 @@ own store and never go in Infisical.
 
 | Key | Kind | Status |
 |---|---|---|
-| `QDRANT_URL` | env config | seeded in dev |
+| `QDRANT_URL` | env config | set in prod |
 | `QDRANT_API_KEY` | secret | **to be filled by admin** |
-| `QDRANT_FLEET_COLLECTION` | env config | seeded in dev |
-| `TEI_URL` | env config | seeded in dev |
+| `QDRANT_FLEET_COLLECTION` | env config | set in prod |
+| `TEI_URL` | env config | set in prod |
 | `TEI_API_KEY` | secret | **to be filled by admin** |
 | `QDRANT_READONLY_API_KEY` | secret (optional) | **to be filled by admin** |
-| `TEI_EMBED_MODEL` | env config | seeded in dev |
+| `TEI_EMBED_MODEL` | env config | set in prod |
 | `RECALL_API_TOKEN` | secret | **to be filled by admin** (required; the service refuses to start without it) |
 | `RECALL_ADMIN_TOKEN` | secret | **to be filled by admin** (the admin settings surface answers 403 until it is set) |
-| `RECALL_SOCKET_TIMEOUT` | tunable knob | seeded in dev |
-| `SETTINGS_REFRESH_SECONDS` | tunable knob | seeded in dev (controls the background refresh cadence) |
+| `RECALL_SOCKET_TIMEOUT` | tunable knob | set in prod |
+| `SETTINGS_REFRESH_SECONDS` | tunable knob | set in prod (controls the background refresh cadence) |
 | `HOST`, `PORT` | env config | managed keys; currently supplied by the container env |
 
 Secret values are NEVER invented, guessed, or copied from anywhere: the five secret keys above are not yet created in the project and are documented here as "to be filled by admin".  (The Infisical CLI rejects empty values, so they cannot exist as empty placeholders.)
@@ -55,6 +55,10 @@ This service has no per-user settings: seat identity is passed per-request by th
 
 Set a new value in the Infisical UI/API, or `POST /admin/settings` (write-through, immediate).  Background refresh picks UI/API changes up within `SETTINGS_REFRESH_SECONDS`; `POST /admin/reload-settings` or `SIGHUP` forces it now.  Rotating `RECALL_API_TOKEN` requires distributing the new bearer to the seats (coordinate via the board) — the old token stops working as soon as the refresh lands.  Never print, echo, or log a value; verify with key names and the `set`/`empty` flags from `GET /admin/settings` only.
 
+## Prod-only lint
+
+`python3 scripts/check-infisical-env.py` (CI step "Infisical environment lint") fails on anything that would select a non-prod environment:  `INFISICAL_ENV` / `INFISICAL_ENVIRONMENT` set to `dev` or `staging` in an env file (`.cursor/infisical.env`, `.env.example`), a `:-dev` / `:=dev` fallback or `--env=dev` in a `cursor-cloud-start.sh`, and a `.infisical.json` whose `defaultEnvironment` is not `prod`.  `--fleet` lints every repo under `~/Code` as it is on `origin/main` (add `--fetch` to refresh first).  A line that truly needs the word carries `infisical-env: allow` with a reason.  This repo does not call the Infisical CLI, so it has no `.infisical.json`;  a repo that does gets one with `"defaultEnvironment": "prod"`, because the CLI's own default is `dev`.
+
 ## Local dev
 
-Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or point `INFISICAL_MACHINE_IDENTITY` at your handoff file and set `INFISICAL_ENVIRONMENT=dev`.  Never commit real values.
+Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or point `INFISICAL_MACHINE_IDENTITY` at your handoff file and leave `INFISICAL_ENVIRONMENT` unset (it is `prod`).  Local runs read prod, so treat the secrets there as live.  Any other slug is refused:  `init()`, `set()` and every fetch raise `SettingsError` before the network, `refresh()` logs the refusal and keeps the last-known-good cache, and `configure()` leaves the previous settings in place.  Never commit real values.
