@@ -75,7 +75,8 @@ leak from.  Two layers:
    `secrets.yaml` or `service_token.txt` is dropped.  `.env.example`, `.env.sample` and `.env.template`
    pass the name filter and still get scanned.
 2. **Content scan, over the staged set.**  The regex scan always runs (private key blocks, AWS, GitHub,
-   Slack, Stripe, Google, Anthropic, OpenAI, JWT, bearer headers, and `*_KEY` / `*_SECRET` /
+   Slack, Stripe, Google, Anthropic, OpenAI, JWT, bearer headers, a JSON credential field such as
+   `"refresh_token": "..."` with a high-entropy value, and `*_KEY` / `*_SECRET` /
    `*_TOKEN` / `*_PASSWORD` assignments with a high-entropy value);  `gitleaks dir` runs as well when it
    is installed.  A match drops the file (or, for a tracked file's diff, that file's patch alone) and the
    path goes to the detail log with a reason.  The values are never logged.
@@ -93,8 +94,9 @@ leak from.  Two layers:
    them (`regex_only=N`).  A changed binary file in a worktree or a stash is staged as the raw new content,
    never as git's binary patch, for exactly that reason.
 
-   Unpushed commits are scanned with the same regex over `git log -p --cc` (first 128 MB, the
-   exact range the bundle holds) before they are bundled.  A hit is then isolated ref by ref (10 minute
+   Unpushed commits are scanned with the same regex over `git log -p --cc` (first 512 MB per scan, the
+   exact range the bundle holds;  a longer history is bundled anyway and the run line says
+   `warn=bundle-scan-partial`) before they are bundled.  A hit is then isolated ref by ref (10 minute
    budget), so one branch holding a key-shaped string costs only that branch:  the clean refs are still
    bundled and each dropped ref is named.  Not covered:  gitleaks does not run over history, and a secret
    in a pushed commit that a bundle carries along is already on GitHub.

@@ -136,8 +136,12 @@ CONTENT_PATTERNS: dict[str, re.Pattern[bytes]] = {
     "env-assignment": re.compile(
         rb"(?m)^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD)[A-Z0-9_]*[ \t]*=[ \t]*"
         rb"['\"]?([A-Za-z0-9/+=_\-.]{20,})['\"]?[ \t]*$"),
+    # A JSON field that carries a credential under its usual name (an OAuth refresh token in a CLI's auth file).
+    "json-secret-field": re.compile(
+        rb'"(?:access_token|refresh_token|id_token|client_secret|api_key|apikey|secret_key|private_key|password)"'
+        rb'\s*:\s*"([A-Za-z0-9._~+/=\-]{24,})"'),
 }
-ENTROPY_GATED = {"env-assignment"}
+ENTROPY_GATED = {"env-assignment", "json-secret-field"}
 # Token-shaped matches that are examples in documentation do not count:  too few distinct characters,
 # the word EXAMPLE, runs of x or 0, or an alphabet or digit run.
 PLACEHOLDER_CHECKED = {"aws-access-key-id", "github-token", "slack-token", "stripe-key", "google-api-key",
@@ -162,6 +166,7 @@ PREFILTER: dict[str, tuple[bytes, ...]] = {
     "jwt": (b"eyJ",),
     "bearer-header": (b"earer", b"EARER"),
     "env-assignment": (b"KEY", b"SECRET", b"TOKEN", b"PASSWORD", b"PASSWD"),
+    "json-secret-field": (b"_token", b"client_secret", b"api_key", b"apikey", b"secret_key", b"private_key", b"password"),
 }
 
 # macOS clonefile(2), loaded lazily.  A clone is instant, free until written and a point-in-time
@@ -187,7 +192,7 @@ class Config:
     min_free_bytes: int = 5 * 1024 ** 3
     workers: int = 4
     scan_cap_bytes: int = 256 * 1024 ** 2
-    bundle_scan_cap: int = 128 * 1024 ** 2
+    bundle_scan_cap: int = 512 * 1024 ** 2
     host: str = "jay-mac"
     s3_endpoint: str = "s3.eu-central-003.backblazeb2.com"
     check_landed: bool = True
@@ -2195,6 +2200,7 @@ def build_stage(cfg: Config, stage_root: Path, progress: Optional[Callable[[str]
 
 def cmd_run(cfg: Config, args) -> int:
     held: list[int] = []
+    prev_alarm = signal.getsignal(signal.SIGALRM)
     try:
         return _run(cfg, args, held)
     except Exception as exc:  # never a silent run:  one log line, the stage removed, a traceback in the detail log
@@ -2205,6 +2211,9 @@ def cmd_run(cfg: Config, args) -> int:
         shutil.rmtree(cfg.stage, ignore_errors=True)
         return 5
     finally:
+        if cfg.max_runtime and not args.dry_run:
+            signal.alarm(0)                      # a return path that never reached the restic step
+            signal.signal(signal.SIGALRM, prev_alarm)
         for fd in held:
             try:
                 os.close(fd)

@@ -20,6 +20,7 @@ import os
 import plistlib
 import re
 import shutil
+import signal
 import sqlite3
 import stat
 import subprocess
@@ -481,6 +482,15 @@ class NameAndContentCase(unittest.TestCase):
                      "eyJhbGciOiJIUzI1NiJ9." + "eyJzdWIiOiIxMjM0NTY3ODkwIn0." + "abcdefghijk1234567",
                      f"SERVICE_API_KEY={HIGH}", f'export DB_PASSWORD="{HIGH}"'):
             self.assertIsNotNone(fwb.scan_bytes(text.encode()), text[:12])
+
+    def test_a_json_credential_field_is_a_secret_but_a_placeholder_is_not(self):
+        token = "Zq8Lm2Vx7Rt4Yp9Kd3Hs" + "1Wb6Nc0Fj5Gu" * 3
+        for text in (json.dumps({"refresh_token": token}), json.dumps({"client_secret": token}),
+                     '{\n  "api_key" : "' + token + '"\n}'):
+            self.assertEqual(fwb.scan_bytes(text.encode()), "json-secret-field", text[:30])
+        for text in (json.dumps({"access_token": "changeme"}), json.dumps({"password": "x" * 30}),
+                     json.dumps({"api_key": "${API_KEY_FROM_THE_ENVIRONMENT}"}), json.dumps({"token_type": "Bearer"})):
+            self.assertIsNone(fwb.scan_bytes(text.encode()), text[:30])
 
     def test_a_pem_header_without_a_body_is_not_a_key(self):
         for text in ("-----BEGIN " + "PRIVATE KEY-----", "'-----BEGIN " + "RSA PRIVATE KEY-----\\n...\\n-----END RSA PRIVATE KEY-----'"):
@@ -1405,6 +1415,13 @@ class RunBehaviourCase(RunBase):
         self.assertEqual(fwb.cmd_run(self.cfg, self.args), 2)
         self.assertIn("reason=skip-gitleaks-is-for-a-dry-run", self.log())
         self.assertEqual(self.argv(), [])
+
+    def test_the_alarm_handler_is_restored_after_a_run(self):
+        self.cfg.max_runtime = 3600
+        before = signal.getsignal(signal.SIGALRM)
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        self.assertEqual(signal.getsignal(signal.SIGALRM), before)
+        self.assertEqual(signal.alarm(0), 0)           # and no alarm is left armed
 
     def test_a_timeout_removes_the_stage(self):
         with mock.patch.object(fwb, "build_stage", side_effect=fwb.Timeout()):
