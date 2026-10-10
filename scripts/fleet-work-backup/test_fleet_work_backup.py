@@ -18,6 +18,7 @@ import importlib.util
 import json
 import os
 import plistlib
+import re
 import shutil
 import sqlite3
 import stat
@@ -1147,6 +1148,31 @@ class BinaryCase(RunBase):
         self.assertTrue(any("#stash0:data.bin" in f["path"] and f["size"] > 1000 for f in stage.large))
         self.assertFalse([k for k in stage.items if "/stashes/" in k and "data.bin" in k])
 
+    def test_the_restore_md_steps_bring_back_text_binary_and_deleted_files(self):
+        """RESTORE.md's apply_all, run as written, against a fresh clone of the pushed state."""
+        md = (HERE / "RESTORE.md").read_text()
+        m = re.search(r"(?ms)^    apply_all\(\) \{[^\n]*\n.*?^    \}\n", md)
+        self.assertIsNotNone(m)
+        func = "\n".join(l[4:] for l in m.group(0).splitlines())
+        (self.r / "gone.bin").write_bytes(b"\0 to be deleted\n")
+        git(self.r, "add", "gone.bin")
+        git(self.r, "commit", "-q", "-m", "add gone.bin")
+        git(self.r, "push", "-q")
+        write(self.r / "a.txt", "edited text\n")
+        (self.r / "data.bin").write_bytes(b"\0\1 changed binary \xff\n")
+        os.unlink(self.r / "gone.bin")
+        stage = self.build()
+        patches = next(self.cfg.dry_stage / k for k in stage.items if k.endswith(".patch")).parent
+        fresh = self.tmp / "fresh"
+        git(self.tmp, "clone", "-q", f"file://{self.home / 'remotes' / 'r.git'}", str(fresh))
+        out = subprocess.run(["bash", "-c", f'set -e\n{func}\ncd "{fresh}"\napply_all "{patches}"\n'],
+                             capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertNotIn("NEEDS HAND", out.stdout)
+        self.assertEqual((fresh / "a.txt").read_text(), "edited text\n")
+        self.assertEqual((fresh / "data.bin").read_bytes(), b"\0\1 changed binary \xff\n")
+        self.assertFalse((fresh / "gone.bin").exists())
+
     def test_a_text_file_still_gets_a_patch_that_applies(self):
         write(self.r / "a.txt", "edited\n")
         stage = self.build()
@@ -1538,9 +1564,8 @@ class RealResticCase(RunBase):
         target = self.tmp / "restored"
         ns = argparse.Namespace(restic_args=["--", "restore", "latest", "--tag", "fleet-work", "--target", str(target)])
         self.assertEqual(fwb.cmd_restic(self.cfg, ns), 0)
-        stage = target / str(self.cfg.stage).lstrip("/")
+        stage = next(target.rglob("MANIFEST.json")).parent     # restic keeps the absolute path it was given
         self.assertEqual((stage / "files/apps/doc.md").read_text(), "doc\n")
-        self.assertTrue((stage / "MANIFEST.json").exists())
         (b,) = sorted(stage.glob("git/*/bundles/*.bundle"))
         fresh = self.tmp / "fresh"
         git(self.tmp, "clone", "-q", f"file://{self.home / 'remotes' / 'r.git'}", str(fresh))

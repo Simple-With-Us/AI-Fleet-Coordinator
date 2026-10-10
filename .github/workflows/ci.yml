@@ -46,6 +46,10 @@ jobs:
       run: python3 scripts/test_sim_idle_reaper.py
     # Fleet work backup (restic to B2):  temp repos and a temp home, stub restic and gitleaks, git
     # with no user config.  Nothing is uploaded and no real path is read.
+    # restic is installed so the init, backup, check and restore round trip runs for real against a
+    # local repository (the test skips itself where restic is missing).
+    - name: Install restic
+      run: sudo apt-get update -qq && sudo apt-get install -y -qq restic
     - name: Fleet work backup tests
       run: python3 scripts/fleet-work-backup/test_fleet_work_backup.py
     - name: Verify public activity boundary

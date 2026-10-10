@@ -872,16 +872,16 @@ def stage_patches(cfg: Config, git: Git, stage: Stage, cwd: str, diff_args: list
             stage.dropped.append({"path": f"{src_label}:{cp}", "stage": "", "reason": "secret-name"})
             continue
         label = f"{src_label}:{cp or idx}"
-        digest = hashlib.sha1(chunk).hexdigest()[:12]
+        digest = hashlib.sha1(chunk).hexdigest()
         if BINARY_PATCH_RX.search(chunk):   # the file changed kind between two git calls:  cannot be read, so not kept
-            stage.dropped.append({"path": label, "stage": "", "reason": "unscannable-binary-patch", "digest": digest})
+            stage.dropped.append({"path": label, "stage": "", "reason": "unscannable-binary-patch", "digest": digest[:12]})
             continue
         if len(chunk) > cfg.max_file_bytes:
             stage.large.append({"path": label, "size": len(chunk)})
             continue
         hit = scan_bytes(chunk)
         if hit and not stage.permit(label, digest):
-            stage.dropped.append({"path": label, "stage": "", "reason": f"content:{hit}", "digest": digest})
+            stage.dropped.append({"path": label, "stage": "", "reason": f"content:{hit}", "digest": digest[:12]})
             continue
         stage.write(f"{rel_dir}/{patch_name(chunk, idx)}", chunk, label, "patch")
         written += 1

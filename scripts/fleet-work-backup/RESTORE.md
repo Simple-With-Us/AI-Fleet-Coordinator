@@ -12,19 +12,23 @@ If the Mac itself is gone, the password is in Infisical (project `AI Fleet Coord
 `B2_FLEET_WORK_APPLICATION_KEY`;  put them in the environment as `RESTIC_PASSWORD`,
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION=eu-central-003` and
 `RESTIC_REPOSITORY=s3:https://s3.eu-central-003.backblazeb2.com/<B2_FLEET_BUCKET_NAME>/fleet-work-backup`,
-then call `restic` directly.
+then call `restic` directly.  If Infisical is out of reach too, use the recovery key the owner keeps
+outside Infisical (`restic key add` at init, README section Credentials):  its password opens the same
+repository.
 
 ## 1. Pull a snapshot into a scratch folder
 
 Never restore over live folders.  Restore to a scratch target and copy out what you need.
 
+    $FWB snapshots                       # note the id;  a snapshot tagged "partial" was missing something (see the run log)
     $FWB restic -- restore latest --tag fleet-work --target /Users/jay/restore-fwb
     export STAGE=/Users/jay/restore-fwb/Users/jay/Library/Caches/fleet-work-backup/stage
     ls $STAGE            # MANIFEST.json  README-RESTORE.txt  files/  git/
 
 A smaller pull:  `... restore latest --tag fleet-work --target ... --include '*/stage/files/apps/mac-collab'`,
 or an older snapshot id from `snapshots` in place of `latest`.  `$FWB restic -- ls latest --tag
-fleet-work` lists what a snapshot holds.
+fleet-work` lists what a snapshot holds.  `latest` can be a partial snapshot;  when the work you want
+is older, name the snapshot id.
 
 ## 2. Non-git files
 
@@ -39,59 +43,91 @@ fleet-work` lists what a snapshot holds.
 
 ## 3. Git work
 
-Find the repository.  Each `git/<repo>-<hash>/group.json` names the original common dir:
+Find the repository.  Each `git/<repo>-<hash>/group.json` names the original common dir, the remotes,
+the bound the bundles were cut against (the default branch of the network remote) and the bundles:
 
     python3 - <<'EOF'
     import glob, json, os
     for g in sorted(glob.glob(os.environ["STAGE"] + "/git/*/group.json")):
-        d = json.load(open(g)); print(os.path.basename(os.path.dirname(g)), d["common_dir"], len(d["unpushed"]), "refs", len(d["stashes"]), "stashes")
+        d = json.load(open(g))
+        print(os.path.basename(os.path.dirname(g)), d["common_dir"], "bound", d["bound"]["ref"] or "-",
+              len(d["bundles"]), "bundles", len(d["unpushed"]), "refs", len(d["stashes"]), "stashes")
     EOF
 
-Use `G=$STAGE/git/<repo>-<hash>` below.
+Use `G=$STAGE/git/<repo>-<hash>` below.  This helper applies a folder of patches one at a time, so one
+patch that no longer fits does not stop the others:
 
-### Unpushed commits (`unpushed.bundle`)
+    apply_all() {   # apply_all <folder>;  3-way merge first, then leave .rej files for a patch that still fails
+      for p in "$1"/*.patch; do
+        [ -e "$p" ] || continue
+        git apply -3 "$p" || git apply --reject "$p" || echo "NEEDS HAND: $p"
+      done
+      [ -d "$1/binary" ] && cp -Rp "$1/binary/." .          # a binary file is stored whole, not as a patch
+      [ -f "$1/binary-deleted.txt" ] && while IFS= read -r f; do rm -f -- "$f"; done < "$1/binary-deleted.txt"
+    }
 
-Work in a clone that has the remote's history, because the bundle lists remote commits as
-prerequisites.
+### Unpushed commits (`bundles/*.bundle`)
+
+Each bundle holds one group of branches that share commits, and every commit that group has which the
+network remote's default branch does not (so also the commits of a pushed branch that was later deleted
+on GitHub).  Its prerequisites are commits on the default branch, which GitHub keeps.  Work in a fresh
+clone of the remote:
 
     git clone <remote url from group.json> /Users/jay/restore/<repo> && cd /Users/jay/restore/<repo>
-    git bundle verify $G/unpushed.bundle
-    git fetch $G/unpushed.bundle 'refs/heads/*:refs/restored/heads/*' 'refs/tags/*:refs/restored/tags/*'
-    git branch restored-main refs/restored/heads/main      # one per branch you want back
+    git fetch origin '+refs/pull/*/head:refs/remotes/origin/pr/*'    # belt and braces:  GitHub keeps pull request heads
+    for b in $G/bundles/*.bundle; do
+      git bundle verify "$b" && git fetch "$b" 'refs/heads/*:refs/restored/heads/*' 'refs/tags/*:refs/restored/tags/*'
+    done
+    git for-each-ref refs/restored/                                   # every branch that was only on this Mac
+    git branch restored-main refs/restored/heads/main                 # one per branch you want back
 
-A repository with no remote (`"no_remote": true` in `group.json`) has the whole history in the
-bundle:  `git clone $G/unpushed.bundle /Users/jay/restore/<repo>`.
+`bundle verify` names the missing commit when a prerequisite is not in the clone.  A repository whose
+only remotes are local paths or bundle files (`"network_remotes": []` in `group.json`, and a
+`local-only-remotes` note in the detail log) has its whole history in the bundle:
+`git clone $G/bundles/<file>.bundle /Users/jay/restore/<repo>`.  A repository with no remote at all
+(`"no_remote": true`) is the same.
 
 ### A stash (`stashes/NN/`, NN is the `stash@{N}` index)
 
-`stash.json` holds the base sha the stash was made on.  Tracked changes are in `tracked/`, files the
-stash had untracked (`git stash -u`) in `untracked/`.
+`stash.json` holds the base sha the stash was made on.  Tracked text changes are in `tracked/*.patch`,
+tracked binary files whole in `tracked/binary/`, and files the stash had untracked (`git stash -u`) in
+`untracked/`.
 
     cd /Users/jay/restore/<repo>
-    git checkout <base from stash.json>              # the commit must be in the clone or the bundle
-    git apply $G/stashes/01/tracked/*.patch
-    git apply $G/stashes/01/untracked/*.patch 2>/dev/null || true
-    git stash push -u -m "restored stash 01"          # optional:  put it back on the stash list
+    git checkout <base from stash.json> || git checkout origin/main    # the base may be gone from GitHub, then 3-way does the work
+    D=$G/stashes/01
+    apply_all $D/tracked
+    apply_all $D/untracked
+    git stash push -u -m "restored stash 01"                           # optional:  put it back on the stash list
 
 ### Uncommitted work in a worktree (`worktrees/<name>-<hash>/`)
 
-`worktree.json` records `path`, `head` and `branch`.
+`worktree.json` records `path`, `head` and `branch`.  Text changes are `patches/*.patch`, a changed binary
+file is stored whole in `patches/binary/` (a deleted one is listed in `patches/binary-deleted.txt`), and
+untracked files are in `untracked/`.
 
     cd /Users/jay/restore/<repo>
-    git worktree add /Users/jay/restore/<name> <head from worktree.json>
+    git worktree add /Users/jay/restore/<name> <head from worktree.json> || git worktree add /Users/jay/restore/<name> origin/main
     cd /Users/jay/restore/<name>
-    git apply $G/worktrees/<name>-<hash>/patches/*.patch
+    apply_all $G/worktrees/<name>-<hash>/patches
     cp -Rp $G/worktrees/<name>-<hash>/untracked/. .
 
-A detached `HEAD` that no remote had is in `head.bundle` beside `worktree.json`:  fetch it the same
-way as the main bundle (`git fetch head.bundle HEAD:refs/restored/detached-head`).
+The recorded `head` can be a commit GitHub no longer serves (a branch deleted after a squash merge);
+the pull request refs fetched above usually still have it, and otherwise `git apply -3` rebuilds the
+change on top of `origin/main`.
+
+A detached `HEAD` that no network remote had is in `head.bundle` beside `worktree.json`:  fetch it the
+same way (`git fetch head.bundle HEAD:refs/restored/detached-head`).
 
 ## 4. What is not in the backup
 
-Secrets, by design:  anything with a strict secret name (`.env`, keys, `zuliprc`), any file the
-content scan matched, and the handoff file.  Re-create those from Infisical.  Git-ignored files
-(`node_modules`, build output) are rebuilt from the checkout.  The detail log
-(`~/Library/Logs/fleet-work-backup.detail.log`) lists, per run, every path the gate dropped.
+Secrets, by design:  anything with a strict secret name (`.env`, keys, `zuliprc`, `auth.json`, `.dev.vars`,
+`*.tfstate`), any file the content scan matched, and the handoff file.  Re-create those from Infisical.
+Git-ignored files (`node_modules`, build output) are rebuilt from the checkout.  Runtime session stores
+(`acp-home/sessions`, `acp-home/memtrace`, `fleet-rag/mined/chat`) are skipped by default, and a file over
+200 MB is listed instead of copied.  The detail log (`~/Library/Logs/fleet-work-backup.detail.log`) lists,
+per run, every path the gate dropped, every file it left out for a later run (`deferred`), and the large
+files.
 
 ## 5. Verify
 
