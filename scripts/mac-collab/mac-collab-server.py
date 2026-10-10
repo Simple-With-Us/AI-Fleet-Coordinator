@@ -116,6 +116,10 @@ APP_CANONICAL: dict[str, str] = {
     "fleet-ops": "fleet-ops",
     "fleet ops": "fleet-ops",
     "ops": "fleet-ops",
+    "fleetlink": "fleetlink",
+    "fleetlink.online": "fleetlink",
+    "fleet link": "fleetlink",
+    "fl": "fleetlink",
 }
 
 
@@ -1666,6 +1670,7 @@ const APP_DISPLAY_NAMES = {
   'AI-Fleet-Coordinator': 'AI Fleet Coordinator',
   'botfleet': 'BotFleet.app',
   'fleet-ops': 'Fleet Ops',
+  'fleetlink': 'FleetLink',
 };
 function appLabel(a){ return APP_DISPLAY_NAMES[a] || a; }
 
@@ -1682,6 +1687,7 @@ const KNOWN_APPS = [
   'fleet-infra',
   'botfleet',
   'fleet-ops',
+  'fleetlink',
 ];
 
 const TAPE_TILES = [
