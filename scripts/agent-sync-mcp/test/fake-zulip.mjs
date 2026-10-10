@@ -2,7 +2,12 @@
 // dependencies, so it runs under CI's plain `node --test` and as the workerd
 // flow's outbound service.  It implements only what the seven tools call:
 // users/me, users, users/me/<stream>/topics, messages (GET with narrow and
-// anchor, POST), messages/<id> and messages/<id>/reactions.
+// anchor, POST), messages/<id> and messages/<id>/reactions.  Direct messages
+// are real-Zulip shaped:  `display_recipient` lists every person in the
+// conversation, the sender included;  `is:dm` and `dm:[ids]` narrows work;  a
+// caller sees only the DMs it is in;  a POST of type direct takes a JSON array
+// of user ids;  a message carries the "read" flag once read (a bot's own sends
+// are born read).
 
 export const REALM = "https://simplewithus.zulipchat.com";
 export const STREAMS = { "agent-sync": 642232, sandbox: 642167, other: 999001 };
@@ -59,9 +64,19 @@ export class FakeZulip {
     return user;
   }
 
-  /** A message from `sender` (a full name or a user object);  `channel` "DM" for a direct message to the bot. */
-  addMessage(sender, channel, topic, content, { client = "website", dm = false } = {}) {
-    const user = typeof sender === "string" ? this.users.find((u) => u.full_name === sender) ?? this.addUser(`${sender.toLowerCase().replace(/\W+/g, "")}@zulip.test`, sender) : sender;
+  /** A user object from a full name (created when unknown) or a user object. */
+  person(who) {
+    return typeof who === "string" ? this.users.find((u) => u.full_name === who) ?? this.addUser(`${who.toLowerCase().replace(/\W+/g, "")}@zulip.test`, who) : who;
+  }
+
+  /**
+   * A direct message from `sender` to `others` (names or user objects;  the bot when
+   * none), group or 1:1.  Unread unless `read`, and born read when the bot sent it.
+   */
+  addDm(sender, others, content, { client = "website", read = false } = {}) {
+    const user = this.person(sender);
+    const people = [user, ...(others && others.length ? others : [this.me]).map((o) => this.person(o))];
+    const unique = [...new Map(people.map((p) => [p.user_id, p])).values()];
     const mentioned = content.includes(`@**${this.me.full_name}**`);
     const message = {
       id: this.nextId++,
@@ -71,9 +86,32 @@ export class FakeZulip {
       client,
       timestamp: this.time++,
       content,
-      type: dm ? "private" : "stream",
-      ...(dm ? { display_recipient: [{ id: this.me.user_id, email: this.me.email }] } : { stream_id: STREAMS[channel], display_recipient: channel }),
-      subject: dm ? "" : topic,
+      type: "private",
+      display_recipient: unique.map((p) => ({ id: p.user_id, email: p.email, full_name: p.full_name })),
+      subject: "",
+      flags: [...(mentioned ? ["mentioned"] : []), ...(read || user === this.me ? ["read"] : [])],
+    };
+    this.messages.push(message);
+    return message;
+  }
+
+  /** A message from `sender` (a full name or a user object);  `channel` "DM" for a direct message to the bot. */
+  addMessage(sender, channel, topic, content, { client = "website", dm = false } = {}) {
+    if (dm) return this.addDm(sender, [], content, { client });
+    const user = this.person(sender);
+    const mentioned = content.includes(`@**${this.me.full_name}**`);
+    const message = {
+      id: this.nextId++,
+      sender_id: user.user_id,
+      sender_email: user.email,
+      sender_full_name: user.full_name,
+      client,
+      timestamp: this.time++,
+      content,
+      type: "stream",
+      stream_id: STREAMS[channel],
+      display_recipient: channel,
+      subject: topic,
       flags: mentioned ? ["mentioned"] : [],
     };
     this.messages.push(message);
@@ -134,11 +172,23 @@ export class FakeZulip {
       }
       return this.ok({ topics: [...byName].map(([name, max_id]) => ({ name, max_id })) });
     }
-    if (method === "GET" && path === "messages") return this.ok({ messages: this.select(params).map((x) => ({ ...x })) });
+    if (method === "GET" && path === "messages") return this.ok({ messages: this.select(params, caller).map((x) => ({ ...x })) });
     m = /^messages\/(\d+)$/.exec(path);
     if (method === "GET" && m) {
       const msg = this.messages.find((x) => x.id === Number(m[1]));
       return msg ? this.ok({ message: { ...msg } }) : this.error(400, "BAD_REQUEST");
+    }
+    if (method === "POST" && path === "messages" && (params.type === "direct" || params.type === "private")) {
+      let ids;
+      try {
+        ids = JSON.parse(params.to);
+      } catch {
+        return this.error(400, "BAD_REQUEST");
+      }
+      const to = Array.isArray(ids) ? ids.map((id) => this.users.find((u) => u.user_id === id && u.is_active)) : [];
+      if (!to.length || to.some((u) => !u)) return this.error(400, "BAD_REQUEST");
+      const msg = this.addDm(caller, to, params.content, { client: "agent-sync-mcp" });
+      return this.ok({ id: msg.id });
     }
     if (method === "POST" && path === "messages") {
       const sid = Number(params.to);
@@ -157,15 +207,16 @@ export class FakeZulip {
     return this.error(404, "NOT_FOUND");
   }
 
-  select(params) {
+  select(params, caller = this.me) {
     const narrow = JSON.parse(params.narrow ?? "[]");
-    let rows = this.messages.filter((msg) =>
-      narrow.every(({ operator, operand }) => {
-        if (operator === "channel") return msg.type === "stream" && (msg.stream_id === operand || msg.display_recipient === operand);
-        if (operator === "topic") return msg.type === "stream" && String(msg.subject).toLowerCase() === String(operand).toLowerCase();
-        if (operator === "is" && operand === "mentioned") return msg.flags.includes("mentioned");
-        throw new Error(`fake zulip:  unsupported narrow ${operator}`);
-      }),
+    const inConversation = (msg) => msg.type !== "private" || msg.display_recipient.some((p) => p.id === caller.user_id);
+    let rows = this.messages.filter(
+      (msg) =>
+        inConversation(msg) &&
+        narrow.every(({ operator, operand, negated }) => {
+          const hit = this.matches(msg, operator, operand, caller);
+          return negated ? !hit : hit;
+        }),
     );
     rows.sort((a, b) => a.id - b.id);
     const before = Number(params.num_before ?? 0);
@@ -177,5 +228,20 @@ export class FakeZulip {
       rows = rows.filter((x) => x.id > anchor || (include && x.id === anchor)).slice(0, after);
     }
     return rows;
+  }
+
+  /** One narrow term against one message. */
+  matches(msg, operator, operand, caller) {
+    if (operator === "sender") return String(msg.sender_email).toLowerCase() === String(operand).toLowerCase();
+    if (operator === "is" && operand === "dm") return msg.type === "private";
+    if (operator === "dm") {
+      const want = new Set([caller.user_id, ...operand]);
+      const have = new Set(msg.type === "private" ? msg.display_recipient.map((p) => p.id) : []);
+      return msg.type === "private" && want.size === have.size && [...want].every((id) => have.has(id));
+    }
+    if (operator === "channel") return msg.type === "stream" && (msg.stream_id === operand || msg.display_recipient === operand);
+    if (operator === "topic") return msg.type === "stream" && String(msg.subject).toLowerCase() === String(operand).toLowerCase();
+    if (operator === "is" && operand === "mentioned") return msg.flags.includes("mentioned");
+    throw new Error(`fake zulip:  unsupported narrow ${operator}`);
   }
 }

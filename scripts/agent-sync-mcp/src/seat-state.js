@@ -301,7 +301,7 @@ export async function roleSet(store, entry, now = Date.now()) {
 // ---- per-call audit (spec 3.9), kept 90 days
 
 const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10);
-const CALL_FIELDS = ["seat", "grant_ref", "client_id", "tool", "channel_id", "topic", "message_id", "outcome", "error_code", "latency_ms", "body_len", "idem_ref", "asn", "country"];
+const CALL_FIELDS = ["seat", "grant_ref", "client_id", "tool", "channel_id", "topic", "message_id", "outcome", "error_code", "latency_ms", "body_len", "idem_ref", "recipient_ids", "asn", "country"];
 
 /**
  * One row per tool call.  Only the spec 3.9 fields are kept (never a body, a
@@ -313,6 +313,12 @@ export async function auditCall(store, row, now = Date.now()) {
   for (const field of CALL_FIELDS) {
     const value = row[field];
     if (value === undefined || value === null) continue;
+    if (field === "recipient_ids") {
+      // The user ids a DM tool addressed (spec 1.2):  integers only, at most 8.  Never a name or a body.
+      const ids = Array.isArray(value) ? value.filter((v) => Number.isSafeInteger(v)).slice(0, 8) : [];
+      if (ids.length) clean[field] = ids;
+      continue;
+    }
     clean[field] = typeof value === "string" ? value.slice(0, 120) : value;
   }
   const day = dayKey(now);

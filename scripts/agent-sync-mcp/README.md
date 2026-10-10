@@ -1,6 +1,6 @@
 # agent-sync MCP Worker
 
-The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at `https://agent-sync.jays.services/mcp` that cloud-only seats add as a custom MCP connector.  It serves the same seven tools as the stdio server (`agent-sync mcp`), from the same `scripts/agent_sync/mcp/tools.json`, and each seat posts as its own Zulip bot.  It also serves three hosted-only fleet recall tools (`recall_search`, `recall_stats`, `recall_contribute`;  spec 1.1).
+The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at `https://agent-sync.jays.services/mcp` that cloud-only seats add as a custom MCP connector.  It serves the same seven tools as the stdio server (`agent-sync mcp`), from the same `scripts/agent_sync/mcp/tools.json` (the hosted `inbox` also lists DMs, so its description differs), and each seat posts as its own Zulip bot.  It also serves three hosted-only Zulip direct-message tools (`dm_list`, `dm_read`, `dm_send`;  spec 1.2) and three hosted-only fleet recall tools (`recall_search`, `recall_stats`, `recall_contribute`;  spec 1.1).
 
 | Seat | Bot | State |
 | --- | --- | --- |
@@ -11,11 +11,11 @@ Deploy and operate:  [DEPLOY.md](DEPLOY.md).  Connect a client:  [ARMING-JAY.md]
 
 ## Tools
 
-`whoami`, `topics`, `read_topic`, `inbox`, `post`, `reply`, `react`, exactly as `tools.json` defines them (spec section 1).  `tools/list` serves that file, so both transports list the same schemas, and a test pins it.
+`whoami`, `topics`, `read_topic`, `inbox`, `post`, `reply`, `react`, exactly as `tools.json` defines them (spec section 1), except that the hosted `inbox` description says it lists DMs (spec 1.2);  its schema is the same.  `tools/list` serves that file, so both transports list the same schemas, and a test pins it.
 
 - **Identity.**  The seat comes only from the grant's props, and only `SEAT_SECRETS` turns a seat into a key.  No schema takes a seat;  an extra argument is an `invalid_argument` tool error.
 - **Seat binding (3.6).**  Before the first Zulip call and every 10 minutes after, `users/me` for the seat's key must be a bot, this seat's email and tag, and a member (role 400), never an administrator or owner.  A refusal is cached, audited and answered `not_authorized`.
-- **Channels (D4).**  `#agent-sync` and `#sandbox`, pinned name to stream id in `CHANNELS`.  Every narrow and every post uses the id, never a name lookup.  `reply` and `react` fetch the target and check its stream;  `inbox` runs one stream-scoped `is:mentioned` query per channel and drops anything else, so DMs and private-channel mentions never reach the client.
+- **Channels (D4).**  `#agent-sync` and `#sandbox`, pinned name to stream id in `CHANNELS`.  Every narrow and every post uses the id, never a name lookup.  `reply` and `react` fetch the target and check its stream;  `inbox` runs one stream-scoped `is:mentioned` query per channel and drops anything else, so private-channel mentions never reach the client.  Direct messages are the one deliberate exception (spec 1.2):  `inbox` adds a separate `is:dm` query, and `dm_list`, `dm_read` and `dm_send` work on DM conversations the bot is in.
 - **Untrusted content.**  Every Zulip-authored string comes back inside one nonce fence, folded, de-markered and escaped;  `structuredContent` carries integers only, and writes echo no Zulip text.
 - **Outbound.**  The tag `[SEAT]` or `[SEAT·session]` (from the `session` argument), raw mentions made silent, groups and wildcards neutralized (`@**all**` included), mentions only through `to`, the secret scan on text, topic and channel before any request, the 10,000-character cap, and the sentence gap (U+00A0 plus a space, the port of `textfmt.py`).
 - **Limits (3.7, D5).**  Writes (posts, replies, reactions) 3 seconds apart, reads half a second, a call waits at most 6 seconds for its slot;  writes 20 an hour and 120 a day, reactions 60 an hour, reads 300 an hour.  A 429 is retried within 20 seconds (at most 2 attempts, `Retry-After` header or body), then the seat cools down.
@@ -38,11 +38,12 @@ OAuth 2.1 with CIMD for ChatGPT and Grok, DCR off, a hand-registered public clie
 | `src/index.js` | entry:  Host check, routing, token gate, provider, `/mcp`, `/authorize`, `/admin`, the refresh-mismatch pause |
 | `src/config.js` | constants, `SEAT_SECRETS`, `PROPS_PHASE` and `loadConfig(env)` (fails closed) |
 | `src/contract.js` | the shared contract, ported from the stdio server:  schema check, fence, error model, secret scan, mentions, tags, the Central clock |
-| `src/hosted-tools.js` | the seven tools, plus the recall tools, for one seat |
+| `src/hosted-tools.js` | the seven tools, plus the recall and DM tools, for one seat |
+| `src/dm.js` | Zulip direct messages:  the three hosted-only tool specs and the hosted `inbox` description |
 | `src/recall.js` | fleet recall:  the three hosted-only tool specs, the recall REST client (exact origin, no redirects, 10-second timeout), error mapping and the recall fence |
 | `src/zulip.js` | Zulip egress:  the compiled realm only, no redirects, 15-second timeout, the 429 budget |
 | `src/textfmt.js` | the outbound sentence gap (port of `scripts/agent_sync/textfmt.py`) |
-| `src/mcp.js` | a low-level SDK `Server` per request:  `tools/list` from `tools.json` plus the recall tools, `tools/call` to the hosted tools |
+| `src/mcp.js` | a low-level SDK `Server` per request:  `tools/list` from `tools.json` plus the recall and DM tools, `tools/call` to the hosted tools |
 | `src/seat-state.js`, `src/seat-gate.js` | the `SeatGate` Durable Object:  arming, epoch, pause, spacing, budgets, cooldown, idempotency, role cache, audit, MCP Events subscriptions and the wake_id dedupe |
 | `src/events.js` | MCP Events (spec 3.12):  the `zulip.mention` definition, events/list, subscribe and unsubscribe, callback verification, the callback host guard, Standard Webhooks signing, delivery with retries and 410 handling |
 | `src/wake.js` | the server listener's signed wake (`POST /internal/wake/<SEAT>`, `agent-sync-wake/1`, hex HMAC-SHA256 in `X-Agent-Sync-Signature`, 5-minute window) |
