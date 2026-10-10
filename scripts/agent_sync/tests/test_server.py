@@ -317,7 +317,7 @@ class DmTests(ServerHarness):
         self.assertEqual(len(self.routine.received), 1)
         body = self.routine.received[0].json()
         self.assertTrue(body["dm"])
-        self.assertEqual((body["channel"], body["topic"]), (None, None))
+        self.assertEqual((body["channel"], body["topic"], body["stream_id"]), (None, None, None))
         self.assertEqual(body["dm_recipient_ids"], [12])
         self.assertEqual(body["reply_to"], {"type": "direct", "to": [12]})
         self.assertEqual((body["message_id"], body["trigger_ids"], body["sender_user_id"]), (dm, [dm], 12))
@@ -385,6 +385,7 @@ class DmTests(ServerHarness):
         body = self.routine.received[0].json()
         self.assertFalse(body["dm"])
         self.assertEqual((body["channel"], body["topic"], body["dm_recipient_ids"]), ("agent-sync", "CT build red", []))
+        self.assertEqual(body["stream_id"], self.fake.streams["agent-sync"])
         self.assertEqual(body["reply_to"], {"type": "stream", "channel": "agent-sync", "topic": "CT build red"})
         self.assertEqual((body["sender_user_id"], body["is_bot"], body["owner"]), (11, True, False))
         self.assertEqual(body["zulip_link"], "%s/#narrow/channel/7-agent-sync/topic/CT.20build.20red/near/%d"
@@ -439,9 +440,27 @@ class RoutineBodyTests(unittest.TestCase):
         self.assertEqual(body["reply_to"], {"type": "stream", "channel": channel, "topic": topic})
         self.assertEqual(body["trigger_ids"], [4, 5])
         self.assertEqual(body["sent_at"], 1790000000)
+        self.assertEqual(body["stream_id"], 3)
         self.assertEqual(set(body), {"contract", "seat", "wake_id", "message_id", "trigger_ids", "dm", "channel",
-                                     "topic", "dm_recipient_ids", "sender_user_id", "sender_full_name", "is_bot",
-                                     "owner", "excerpt", "zulip_link", "reply_to", "reply_prefix", "sent_at"})
+                                     "topic", "stream_id", "dm_recipient_ids", "sender_user_id", "sender_full_name",
+                                     "is_bot", "owner", "excerpt", "zulip_link", "reply_to", "reply_prefix",
+                                     "sent_at"})
+
+    def test_the_stream_id_is_a_positive_int_or_none(self) -> None:
+        """The hosted MCP Worker holds a channel wake to its allowlist by this id, so only a real id goes out."""
+        def body(row: dict) -> dict:
+            base = {"id": 9, "type": "stream", "channel": "agent-sync", "topic": "t", "sender_id": 11, "content": "x"}
+            return A.routine_body(seat="JET", wake_id="w9", trigger_ids=[9], row={**base, **row}, bot_user_id=16,
+                                  realm="https://z.test", now=1790000000.0)
+        self.assertEqual(body({"stream_id": 642232})["stream_id"], 642232)
+        for bad in (True, False, "642232", 642232.0, 0, -4, None, [642232]):
+            with self.subTest(stream_id=bad):
+                self.assertIsNone(body({"stream_id": bad})["stream_id"])
+        self.assertIsNone(body({})["stream_id"], "a row without one (a quarantined item) sends null")
+        dm = body({"type": "private", "stream_id": 642232, "recipients": [11, 16]})
+        self.assertIsNone(dm["stream_id"], "a DM never carries a stream id")
+        self.assertIs(type(body({"stream_id": 7})["stream_id"]), int)
+        self.assertIn(b'"stream_id":7', A.routine_bytes(body({"stream_id": 7})))
 
     def test_routine_url_rules(self) -> None:
         good = ["https://routines.grok.example/hooks/abc?token=1", "http://127.0.0.1:8080/x", "http://localhost/x"]
@@ -1035,6 +1054,8 @@ class CloudSeatTests(ServerHarness):
         body = got.json()
         self.assertEqual((body["contract"], body["seat"], body["topic"]), ("agent-sync-wake/1", "JET", "jet wake"))
         self.assertEqual(got.header("Idempotency-Key"), body["wake_id"])
+        # The Worker delivers a channel wake only from an allowlisted stream id, so the listener sends it.
+        self.assertEqual(body["stream_id"], self.fake.streams["agent-sync"])
 
     def test_a_gb_persona_from_the_sample_wakes_its_routine_with_the_infisical_webhook_names(self) -> None:
         # The sample reads Infisical's own webhook names (ZULIP_ALERT_GB_<ROLE>_ENDPOINT and _KEY, a bare

@@ -62,6 +62,8 @@ wake = "inbox"
 instance = "server"
 creds = "env"                     # ZULIP_JET_EMAIL, ZULIP_JET_API_KEY (openai-dot-bot@)
 wake = "http"
+# timeout_seconds stays at 15 or more:  the Worker answers only after it tried ChatGPT (about 10 seconds at
+# most), and its 503 asks for this daemon's retry (docs/protocols/agent-sync-mcp.md section 3.12, item 11).
 routine = { url_env = "JET_ROUTINE_URL", key_env = "JET_ROUTINE_KEY", method = "POST", auth = "hmac-sha256", header = "X-Agent-Sync-Signature", timeout_seconds = 15 }
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 30, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 
