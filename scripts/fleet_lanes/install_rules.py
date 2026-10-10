@@ -40,6 +40,14 @@ block's lines, and collapses every other line into a count; a contradiction show
 kind and the matched text only (the path, the temp directory and checkout words, the legacy prefix).
 Whatever is printed still goes through a credential redactor, as a second layer.
 
+Fleet Basics.  Five platforms have no other fleet instruction file (Clutch, Kimi, Vibe, Copilot CLI, OpenCode), so
+their block also carries the Fleet Basics (AGENT-SYNC pointer, seat identity, coordination, secrets, writing)
+ahead of the Lane Map.  Clutch has a fixed default seat (CLUTCH, a launcher's seat wins); the other three are
+engine-only CLIs with NO default seat and say so.  The marker family is the same `fleet-lane-map` block.
+OpenCode is a no-default platform like those three (the row is the owner's, #438).  Conductor and Muse Code are
+listed as unsupported with the reason (see PLATFORMS): each already reads a file this tool maintains, or has no
+instruction file of its own.
+
 The Codex cap.  Codex reads the first 32 KiB of AGENTS.md.  The block counts only if it ENDS inside those
 bytes: `verify` fails, and `apply` is refused (exit 2) instead of reporting `unchanged`, for a block that
 ends beyond the cap.  A refresh of a block near the top of a longer file is allowed.
@@ -88,8 +96,15 @@ TEMPLATE_FILES = {
     "full": "lane-map.full.md",
     "minimal": "lane-map.minimal.md",
     "cursor": "lane-map.cursor.mdc",
+    "clutch": "fleet-basics.clutch.md",          # Fleet Basics, fixed default seat CLUTCH, then the Lane Map
+    "nodefault": "fleet-basics.nodefault.md",    # Fleet Basics, no default seat, then the Lane Map
 }
+# Pieces a template pulls in by placeholder.  The Lane Map body is the `full` variant's text.
 BODY_PLACEHOLDER = "{{LANE_MAP_BODY}}"
+PART_FILES = {
+    "{{FLEET_INTRO}}": "fleet-intro.md",
+    "{{FLEET_COMMON}}": "fleet-common.md",
+}
 
 CODEX_CAP = 32 * 1024     # Codex reads at most 32 KiB of AGENTS.md
 CODEX_WARN = 30 * 1024
@@ -112,6 +127,7 @@ class Platform:
     size_cap: int | None = None    # apply refuses a result over this many bytes
     size_warn: int | None = None   # plan warns above this many bytes
     note: str = ""
+    caveat: str = ""               # an UNVERIFIED fact about this tool: plan and apply print it as a warning
 
     @property
     def root_dir(self) -> str:
@@ -120,6 +136,11 @@ class Platform:
         rel = self.rel_path or ""
         return rel.split("/", 1)[0] if "/" in rel else ""
 
+
+# The Clutch engine (DSH) loads $DSH_HOME/AGENTS.md first, then the project chain, and caps the WHOLE rendered
+# baseline at 64 KiB, dropping the broadest file (this one) before it truncates the most specific.  So the cap
+# is a real limit and the file stays small.
+CLUTCH_CAP = 64 * 1024
 
 PLATFORMS: tuple[Platform, ...] = (
     Platform("claude", ".claude/CLAUDE.md", "full", "Claude Code (CLI and desktop)", owner_file=True),
@@ -133,15 +154,38 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform("antigravity", ".gemini/config/AGENTS.md", "full", "Antigravity"),
     Platform("minimax", ".minimax/memory/user.md", "minimal", "MiniMax (user.md goes into every prompt)"),
     Platform("cursor", ".cursor/rules/fleet-lane-map.mdc", "cursor", "Cursor", own_file=True),
+    # Clutch (DSH engine).  ~/AGENTS.md and ~/.claude/CLAUDE.md are NOT read: the engine's project chain starts
+    # at the nearest .git root, and $DSH_HOME is forced to ~/.clutch/dsh by Clutch's own launcher.
+    Platform("clutch", ".clutch/dsh/AGENTS.md", "clutch", "Clutch (DSH engine, $DSH_HOME/AGENTS.md)",
+             size_cap=CLUTCH_CAP),
+    # Engine-only CLIs: no default seat, so the block says to take a launcher's seat or ask Jay.
+    Platform("kimi", ".kimi-code/AGENTS.md", "nodefault", "Kimi Code ($KIMI_CODE_HOME/AGENTS.md)"),
+    Platform("vibe", ".vibe/AGENTS.md", "nodefault", "Mistral Vibe ({VIBE_HOME}/AGENTS.md)"),
+    Platform("copilot", ".copilot/copilot-instructions.md", "nodefault", "GitHub Copilot CLI (user-level instructions)",
+             caveat="UNVERIFIED on this Mac: the file name comes from GitHub's documentation, and the 1.0.68 "
+                    "binary was not exercised with a model; start a Copilot session and ask what it loaded"),
     # OpenCode 2.x (bundled with Conductor) reads `<config dir>/AGENTS.md` as its global instruction file;
-    # `opencode debug paths` prints the config dir (~/.config/opencode).  Found in the binary, not yet exercised.
-    Platform("opencode", ".config/opencode/AGENTS.md", "full", "OpenCode (bundled with Conductor)"),
+    # `opencode debug paths` prints the config dir (~/.config/opencode).  Found in the binary, not yet exercised
+    # (the platform row is the owner's, #438).  It is an engine-only CLI with no default seat, so it gets the
+    # no-default Fleet Basics ahead of the Lane Map, not the Lane Map alone.
+    Platform("opencode", ".config/opencode/AGENTS.md", "nodefault", "OpenCode (bundled with Conductor)",
+             caveat="UNVERIFIED: OpenCode also walks AGENTS.md up from the session directory to $HOME (read from the "
+                    "binary, not run with a model), so a session under $HOME may load this file and ~/AGENTS.md, "
+                    "which is the same Lane Map twice; it does not read ~/.claude/CLAUDE.md as rules"),
+    Platform("conductor", None, None, "Conductor (conductor.build)",
+             note="not a target: Conductor has no instruction file of its own, and its Claude Code and Codex read "
+                  "the claude and codex platforms.  The only Conductor lever is the owner's setting Prompts, "
+                  "General (docs/protocols/lane-map.md, Conductor row, has the text)"),
     Platform("muse-code", None, None, "Muse Code",
-             note="no known user-level rules file (UNVERIFIED); carry the rule in each project's "
-                  "AGENTS.md instead (docs/protocols/lane-map.md, platform table)"),
+             note="no known user-level rules file (UNVERIFIED); Muse Code reads ~/.claude/CLAUDE.md as its Personal "
+                  "rules fallback, which carries the MC default and the Lane Map, so the claude platform covers it, "
+                  "and a native user rules file would probably replace that fallback; project AGENTS.md carries "
+                  "the rule otherwise (docs/protocols/lane-map.md, platform table)"),
 )
 PLATFORM_BY_NAME = {p.name: p for p in PLATFORMS}
-PLATFORM_ALIASES = {"ag": "antigravity", "gemini": "antigravity", "mm": "minimax", "grok-build": "grok"}
+PLATFORM_ALIASES = {"ag": "antigravity", "gemini": "antigravity", "mm": "minimax", "grok-build": "grok",
+                    "mc": "muse-code", "muse": "muse-code", "kimi-code": "kimi", "mistral-vibe": "vibe",
+                    "copilot-cli": "copilot", "dsh": "clutch"}
 
 
 def resolve_platform_names(names: Iterable[str]) -> list[Platform]:
@@ -184,9 +228,13 @@ def body_text(variant: str) -> str:
     """The rule text of a variant, without markers and without surrounding blank lines."""
     text = _read_template(variant)
     _, rest = _split_frontmatter(text)
-    if variant == "cursor":
+    if BODY_PLACEHOLDER in rest:
         full = _split_frontmatter(_read_template("full"))[1]
         rest = rest.replace(BODY_PLACEHOLDER, full.strip("\n"))
+    for placeholder, filename in PART_FILES.items():
+        if placeholder in rest:
+            part = (RULES_DIR / filename).read_text(encoding="utf-8").replace("\r\n", "\n")
+            rest = rest.replace(placeholder, part.strip("\n"))
     return rest.strip("\n")
 
 
@@ -636,6 +684,8 @@ def build_entry(platform: Platform, home: str | os.PathLike[str], *, create: boo
         problem = frontmatter_problem(comp.new_text)
         if problem:
             entry.warnings.append(problem)
+    if platform.caveat:
+        entry.warnings.append(platform.caveat)
     if comp.action != "none" and state.exists:
         if not state.mode & 0o200:
             entry.refusals.append(
