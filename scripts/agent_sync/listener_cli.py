@@ -20,6 +20,7 @@ from typing import Any
 
 from . import adapters as A
 from . import config as C
+from . import heldback as HELD
 from . import identity as I
 from . import launchd
 from . import live as L
@@ -219,6 +220,9 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                 routes))
             for red in s.get("red") or []:
                 lines.append("  RED %s" % red)
+            held = _held_line(s.get("held_back"))
+            if held:
+                lines.append("  " + held)
             for lease in s.get("leases") or []:
                 lines.append("  lease %s  %s  topics %s  watcher %s  pending %s" % (
                     lease.get("lease_id"), "live" if lease.get("alive") else "dead (%s)" % lease.get("why"),
@@ -462,29 +466,56 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
 # wakes and inbox --local
 # --------------------------------------------------------------------------------------------
 
+def _age(seconds: Any) -> str:
+    if not isinstance(seconds, (int, float)) or seconds < 60:
+        return "under a minute"
+    minutes = int(seconds // 60)
+    return "%dm" % minutes if minutes < 60 else "%dh%02dm" % (minutes // 60, minutes % 60)
+
+
+def _held_line(summary: Any) -> str | None:
+    """`held back 3 (oldest 42m; per_topic_per_hour 1, wakes_per_hour 2)`, or None when nothing is
+    held back (heldback.summary)."""
+    if not isinstance(summary, dict) or not (summary.get("count") or summary.get("evicted")):
+        return None
+    reasons = ", ".join("%s %d" % (k, v) for k, v in sorted((summary.get("reasons") or {}).items()))
+    parts = ["oldest %s" % _age(summary.get("oldest_age"))] if summary.get("count") else []
+    if reasons:
+        parts.append(reasons)
+    if summary.get("evicted"):
+        parts.append("%d more evicted" % summary["evicted"])
+    return "held back %d (%s)" % (int(summary.get("count") or 0), "; ".join(parts))
+
+
 def cmd_wakes(rt: Any, args: argparse.Namespace) -> int:
     root = _root(rt)
     seat = _seat(rt, args)
     if not seat:
         raise Z.UsageError("no seat; pass --seat or set AGENT_SEAT")
-    views = W.Ledger(L.SeatPaths(root, seat).wakes).wakes()
+    paths = L.SeatPaths(root, seat)
+    views = W.Ledger(paths.wakes).wakes()
     since = time.time() - float(args.since) * 3600 if args.since else 0
     rows = sorted((v for v in views.values() if float(v.get("ts") or 0) >= since), key=lambda v: float(v.get("ts") or 0))
     if getattr(args, "json", False):
         for view in rows:
             rt.out(json.dumps(view, ensure_ascii=False, default=str) + "\n")
         return 0
+    held = _held_line(HELD.summary(paths, time.time()))
     if not rows:
-        rt.out("no wakes for %s\n" % seat)
+        rt.out("no wakes for %s\n%s" % (seat, held + "\n" if held else ""))
         return 0
     for view in rows:
         where = "DM" if view.get("type") == "private" else "#%s > %s" % (
             L.escape_line(str(view.get("channel") or "")), L.escape_line(str(view.get("topic") or "")))
-        rt.out("%s  %-8s %s  triggers %s%s  %s%s%s\n" % (
+        notes = (" catch-up" if view.get("catch_up") else "") + (
+            " by %s" % view["by"] if view.get("state") == "surfaced" and view.get("by") else "")
+        rt.out("%s  %-9s %s  triggers %s%s%s  %s%s%s\n" % (
             _when(view.get("ts")), view.get("state"), where, ",".join(str(i) for i in view.get("trigger_ids") or []),
-            " (owner)" if view.get("owner") else "", "action %s " % view["action"] if view.get("action") else "",
+            " (owner)" if view.get("owner") else "", notes, "action %s " % view["action"] if view.get("action") else "",
             "$%.3f " % float(view["cost_usd"]) if isinstance(view.get("cost_usd"), (int, float)) else "",
             "(%s)" % view["reason"] if view.get("reason") else ""))
+    if held:
+        rt.out("%s now:  %s\n" % (seat, held))
     return 0
 
 

@@ -40,6 +40,7 @@ from . import __version__
 from . import adapters as A
 from . import config as C
 from . import heartbeat as HB
+from . import heldback as HELD
 from . import live as L
 from . import router as R
 from . import secretscan
@@ -63,6 +64,7 @@ LIVE_DIR_KEEP = 86400.0
 AGENTS_CACHE_SECONDS = 30.0
 LEASE_HEARTBEAT_LIMIT = 15 * 60.0
 POST_SPACING = 3.0
+HELD_TICK_SECONDS = 30.0  # held-back upkeep:  expiry, the owner digest and the catch-up check
 SEAT_INBOX_ROTATE_BYTES = 1 << 20
 SEAT_INBOX_ROTATE_SECONDS = 7 * 86400
 LOG_ROTATE_BYTES = 5 << 20
@@ -410,7 +412,7 @@ class Daemon:
         self.router_queue: queue.Queue[tuple[str, str, Any]] = queue.Queue()
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
-        self.last_tick = {"reap": -1e9, "status": -1e9, "grace": -1e9, "prune": -1e9}
+        self.last_tick = {"reap": -1e9, "status": -1e9, "grace": -1e9, "prune": -1e9, "held": -1e9}
         self.config_notified = False
         self.reload_requested = False
         self.acronyms = A.fleet_acronyms()
@@ -984,7 +986,7 @@ class Daemon:
             return
         reason = self._wake_block(runner, pending, now)
         if reason:
-            self._drop(runner, pending, reason, now)
+            self._not_run(runner, pending, reason, now)
             return
         lease_id = self.takeover(runner, pending)
         if lease_id:
@@ -1001,9 +1003,76 @@ class Daemon:
                 runner.jobs.append(pending)
                 runner.jobs_cond.notify_all()
         if overflow:
-            runner.ledger.append(pending.row("dropped", now, reason="overflow"))
-            self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat, "wake queue full; the message is in the "
-                                 "seat inbox", kind="wake-overflow", key="wake:%s:overflow" % runner.seat)
+            self._hold(runner, pending, "overflow", now)
+
+    def _not_run(self, runner: SeatRunner, pending: W.Pending, reason: str, now: float) -> None:
+        """A wake that will not run now:  held back when its budget (or a full FIFO) refused it, else
+        dropped.  The table is in docs/protocols/agent-sync-server.md (Cloud Seats)."""
+        if reason in HELD.HOLD_REASONS:
+            self._hold(runner, pending, reason, now)
+        else:
+            self._drop(runner, pending, reason, now)
+
+    def _hold(self, runner: SeatRunner, pending: W.Pending, reason: str, now: float) -> None:
+        """Hold a wake back instead of dropping it (owner, Sat, Oct 10:  "surface all").  The record goes
+        to held-back.json before the ledger's `held_back` row, so a crash between them loses nothing:
+        the wake is then still `queued` or `accepted` and is checked again after the restart.  No banner
+        per wake:  the owner digest (held_tick) reports them at most once per owner_digest_minutes."""
+        record = self._held_record(runner, pending, reason, now)
+        # An inbox seat never wakes, so no budget ever refuses it and its inbox already is the queue
+        # (_wake_block says inbox_only first):  it can never get a held-back record.
+        if record is None or runner.cfg.wake not in C.WORKER_WAKES:
+            self._drop(runner, pending, reason, now)
+            return
+        added, evicted = HELD.hold(runner.paths, record, cap=int(runner.cfg.held_back["max"]), now=now)
+        for old in evicted:
+            self._held_rows(runner, old, "evicted", now)
+        runner.ledger.append(pending.row("held_back", now, reason=reason, message_id=record["message_id"]))
+        self.log.write("wake-held-back", seat=runner.seat, wake_id=pending.wake_id, reason=reason,
+                       message_id=record["message_id"], new=added, evicted=len(evicted))
+
+    def _held_record(self, runner: SeatRunner, pending: W.Pending, reason: str, now: float) -> dict[str, Any] | None:
+        """One held-back record:  the trigger a wake would have named (the newest owner trigger, else
+        the newest, as trigger_row picks it) with display copies escaped and cut like the wake body's,
+        so every string fits the hosted Worker's held_back rules.  Never a message body:  the id is the
+        reference to the seat-inbox row a catch-up wake rebuilds the excerpt from."""
+        ids = pending.owner_ids or pending.trigger_ids
+        if not ids:
+            return None
+        message_id = ids[-1]
+        row = self._seat_inbox_rows(runner, [message_id]).get(message_id) or {}
+        dm = pending.type == "private"
+        stream_id = pending.stream_id
+        link = A.zulip_link(self.realm, {"id": message_id, "type": pending.type, "recipients": pending.recipients,
+                                         "channel": pending.channel, "topic": pending.topic, "stream_id": stream_id})
+        return {
+            "wake_ids": [pending.wake_id], "message_id": message_id, "trigger_ids": list(pending.trigger_ids),
+            "owner": message_id in pending.owner_ids, "topic_key": pending.key, "dm": dm,
+            "channel": None if dm else L.escape_line(pending.channel, HELD.NAME_LIMIT),
+            "topic": None if dm else L.escape_line(pending.topic, HELD.NAME_LIMIT),
+            "stream_id": (stream_id if not dm and isinstance(stream_id, int) and not isinstance(stream_id, bool)
+                          and stream_id > 0 else None),
+            "sender_full_name": L.escape_line(str(row.get("sender") or ""), HELD.NAME_LIMIT),
+            "zulip_link": HELD.display_link(link), "reason": reason, "at": int(now),
+            # A batch with a `·route` post never routes, and neither does its catch-up (route_gate).
+            "route_tagged": bool(pending.route_tagged),
+        }
+
+    def _held_rows(self, runner: SeatRunner, record: Mapping[str, Any], state: str, now: float, **extra: Any) -> None:
+        """The ledger row that ends a held-back wake (surfaced, expired or evicted), one per wake id."""
+        for wake_id in HELD.wake_ids(record):
+            runner.ledger.append(dict({"ts": now, "wake_id": wake_id, "seat": runner.seat, "state": state,
+                                       "message_id": record.get("message_id")}, **extra))
+
+    def _surface(self, runner: SeatRunner, pending: W.Pending, listed: Iterable[int], evicted: int, now: float) -> None:
+        """A wake reached the seat:  its own triggers and the held-back items it listed are surfaced,
+        and the evicted count it reported is cleared.  Records held back while it was out stay."""
+        records = HELD.surface(runner.paths, message_ids=set(pending.trigger_ids) | set(listed), evicted=evicted)
+        for record in records:
+            self._held_rows(runner, record, "surfaced", now, by=pending.wake_id)
+        if records or evicted:
+            self.log.write("held-back-surfaced", seat=runner.seat, wake_id=pending.wake_id, surfaced=len(records),
+                           evicted=evicted)
 
     def _drop(self, runner: SeatRunner, pending: W.Pending, reason: str, now: float) -> None:
         runner.ledger.append(pending.row("dropped", now, reason=reason))
@@ -1081,6 +1150,8 @@ class Daemon:
                 rows.append(row)
         L.append_live(runner.paths, lease_id, rows)
         self._mark_seat_inbox(runner, [r["id"] for r in rows], lease_id)
+        # A live session got the triggers, so any of them that was held back is surfaced.
+        self._surface(runner, pending, [], 0, now)
 
     def _seat_inbox_rows(self, runner: SeatRunner, ids: Iterable[int]) -> dict[int, dict[str, Any]]:
         """The newest seat-inbox message row for each wanted id:  the current file first, then the
@@ -1172,7 +1243,7 @@ class Daemon:
         # staleness, and the budgets with every other accepted wake reserved at its maximum.
         reason = self._wake_block(runner, pending, now)
         if reason:
-            self._drop(runner, pending, reason, now)
+            self._not_run(runner, pending, reason, now)
             return
         if runner.cfg.wake == "http":
             self.run_routine(runner, pending, now)
@@ -1188,12 +1259,18 @@ class Daemon:
             return
         board_on = runner.cfg.budget.get("board_per_day", 0) > 0
         users = runner.users
+        # The seat's held-back wakes ride along as a second untrusted block (metadata only), and count
+        # as surfaced once the run finished (a refused or failed run surfaces nothing).
+        held, listed, evicted = HELD.wake_summary(runner.paths, exclude=pending.trigger_ids,
+                                                  limit=int(runner.cfg.held_back["items_in_wake"]))
         prompt = W.build_prompt(seat=runner.seat, pending=pending, history=history,
                                 owner_user_id=self.config.owner_user_id,
                                 is_bot=lambda uid: bool(users.get(uid, {}).get("is_bot", True)),
                                 owner_of=self.owner_of, format_time=format_time, board_enabled=board_on,
-                                route=self.route_gate(runner, pending))
-        runner.ledger.append(pending.row("started", now, reserved_usd=C.WAKE_MAX_BUDGET_USD, adapter="claude"))
+                                route=self.route_gate(runner, pending), held_back=held)
+        held_count = held["count"] if held else 0
+        runner.ledger.append(pending.row("started", now, reserved_usd=C.WAKE_MAX_BUDGET_USD, adapter="claude",
+                                         held_back=held_count))
         argv = A.claude_argv(claude, runner.cfg.model, self.fleet_tags)
         result = self.claude_runner.run(argv, A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat),
                                         runner.paths.wake_dir, prompt)
@@ -1203,7 +1280,8 @@ class Daemon:
         done = self.clock.time()
         if result.refused or result.error:
             runner.ledger.append(pending.row("failed", done, reason=result.refused or result.error,
-                                             cost_usd=result.cost_usd, exit=result.exit, secs=result.secs))
+                                             cost_usd=result.cost_usd, exit=result.exit, secs=result.secs,
+                                             held_back=held_count))
             if result.refused or pending.owner:
                 self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
                                      "a wake %s: %s" % ("was refused" if result.refused else "failed",
@@ -1214,9 +1292,11 @@ class Daemon:
         if why:
             self.log.write("wake-invalid", seat=runner.seat, wake_id=pending.wake_id, reason=why)
         outcome = self.act(runner, pending, obj, history=history)
-        runner.ledger.append(pending.row("done", self.clock.time(), cost_usd=result.cost_usd, exit=result.exit,
+        finished = self.clock.time()
+        runner.ledger.append(pending.row("done", finished, cost_usd=result.cost_usd, exit=result.exit,
                                          secs=result.secs, action=obj["action"], risk=obj.get("risk"),
-                                         coerced=obj.get("coerced"), invalid=why, **outcome))
+                                         coerced=obj.get("coerced"), invalid=why, held_back=held_count, **outcome))
+        self._surface(runner, pending, listed, evicted, finished)
 
     def trigger_row(self, runner: SeatRunner, pending: W.Pending) -> dict[str, Any] | None:
         """The trigger a routine wake is about:  the newest owner trigger when the owner is among
@@ -1239,7 +1319,10 @@ class Daemon:
 
     def run_routine(self, runner: SeatRunner, pending: W.Pending, now: float) -> None:
         """The `http` wake:  one fixed JSON body to the seat's routine (a Grok Bot routine
-        webhook).  The routine replies in Zulip itself; the daemon posts nothing for this seat."""
+        webhook).  The routine replies in Zulip itself; the daemon posts nothing for this seat.
+        The body carries the seat's held-back wakes as `held_back` (heldback.wake_summary), and they
+        count as surfaced only once the routine took the wake and, for the hosted MCP Worker, said
+        it delivered it (adapters.routine_surfaced)."""
         target, why, detail = self.routine(runner)
         if target is None:
             self.log.write("routine-unready", seat=runner.seat, wake_id=pending.wake_id, reason=why, detail=detail)
@@ -1254,28 +1337,48 @@ class Daemon:
             return
         if row is None or not isinstance(row.get("id"), int):
             runner.ledger.append(pending.row("failed", now, reason="trigger not found", cost_usd=0.0, adapter="http"))
+            if pending.catch_up and pending.trigger_ids:
+                HELD.mark_no_primary(runner.paths, pending.trigger_ids[-1], "trigger_not_found")
             return
+        held, listed, evicted = HELD.wake_summary(runner.paths, exclude=pending.trigger_ids,
+                                                  limit=int(runner.cfg.held_back["items_in_wake"]))
         body = A.routine_body(seat=runner.seat, wake_id=pending.wake_id, trigger_ids=pending.trigger_ids, row=row,
                               bot_user_id=runner.me.user_id if runner.me else None, realm=self.realm, now=now,
-                              scrub=self.scrub)
+                              scrub=self.scrub, held_back=held)
         data = A.routine_bytes(body)
+        while held is not None and held["items"] and len(data) > A.ROUTINE_MAX_BODY:
+            held["items"].pop()  # the oldest listed goes first;  the count stays, and it stays held back
+            listed.pop()
+            data = A.routine_bytes(body)
+        held_count = held["count"] if held else 0
         runner.ledger.append(pending.row("started", now, reserved_usd=cost, adapter="http", message_id=row["id"],
-                                         dm=body["dm"]))
+                                         dm=body["dm"], held_back=held_count))
         result = self.routine_runner.deliver(target, data, idempotency_key=pending.wake_id)
         self.log.write("wake-routine", seat=runner.seat, wake_id=pending.wake_id, host=target.host,
                        method=target.method, auth=target.auth, accepted=result.accepted, status=result.status,
                        attempts=result.attempts, history=result.history, secs=result.secs, error=result.error,
-                       body_len=len(data), response_len=result.response_len, response_sha256=result.response_sha)
+                       body_len=len(data), response_len=result.response_len, response_sha256=result.response_sha,
+                       held_back=held_count)
         done = self.clock.time()
         if result.accepted:
+            surfaced = A.routine_surfaced(result)
+            answer = result.answer
+            worker = {"routine_delivered": answer["delivered"], "routine_outcome": answer["outcome"]} if answer else {}
             runner.ledger.append(pending.row("done", done, cost_usd=cost, adapter="http", action="routine",
                                              http_status=result.status, attempts=result.attempts, secs=result.secs,
-                                             message_id=row["id"], dm=body["dm"]))
+                                             message_id=row["id"], dm=body["dm"], held_back=held_count,
+                                             surfaced=surfaced, **worker))
+            if surfaced:
+                self._surface(runner, pending, listed, evicted, done)
+            elif pending.catch_up and answer and answer["outcome"] == "channel_refused" and pending.trigger_ids:
+                # The routine will never take this trigger (its channel is off the Worker's allowlist):
+                # another catch-up must not be built on it.  It stays held back and listed.
+                HELD.mark_no_primary(runner.paths, pending.trigger_ids[-1], "channel_refused")
             return
         reason = self.scrub(result.error or "not accepted")
         runner.ledger.append(pending.row("failed", done, reason=reason, cost_usd=cost, adapter="http",
                                          http_status=result.status, attempts=result.attempts, secs=result.secs,
-                                         message_id=row["id"], dm=body["dm"]))
+                                         message_id=row["id"], dm=body["dm"], held_back=held_count))
         status = result.status
         if status is not None and 400 <= status < 500:
             # A 4xx is a contract or key problem:  say so once a day, whoever triggered it.
@@ -1651,6 +1754,116 @@ class Daemon:
         return {"board_uid": "zulip:%s:%d" % (runner.seat, trigger) if ok else None, "board_detail": detail,
                 "board": dict(board) if ok else None}
 
+    # ---- held-back wakes ----------------------------------------------------------------------
+    def held_tick(self, runner: SeatRunner, now: float) -> None:
+        """Held-back upkeep for one seat, every HELD_TICK_SECONDS:  expire records past the TTL (a
+        ledger row each, and no wake), send the owner digest when new ones arrived, and start one
+        catch-up wake when the seat can take it."""
+        cfg = runner.cfg.held_back
+        for record in HELD.expire(runner.paths, ttl=float(cfg["ttl_hours"]) * W.HOUR, now=now):
+            self._held_rows(runner, record, "expired", now)
+            self.log.write("held-back-expired", seat=runner.seat, message_id=record.get("message_id"),
+                           reason=record.get("reason"))
+        data = HELD.load(runner.paths)
+        if not data["records"]:
+            return
+        self._held_digest(runner, data, now)
+        self._catch_up(runner, data, now)
+
+    def _held_digest(self, runner: SeatRunner, data: Mapping[str, Any], now: float) -> None:
+        """At most one owner digest per seat per owner_digest_minutes, and only when wakes were held
+        back since the last one:  the count, the reasons and the newest links.  It goes through
+        notify-owner:  a banner and the owner queue on the Mac, the owner queue only on the server,
+        where nothing reads it yet (docs/protocols/agent-sync-server.md, Open Questions)."""
+        every = float(runner.cfg.held_back["owner_digest_minutes"]) * 60.0
+        fresh = HELD.digest_due(data, every=every, now=now)
+        if not fresh:
+            return
+        records = data["records"]
+        reasons = collections.Counter(str(r.get("reason") or "?") for r in records)
+        evicted = int(data.get("evicted") or 0)
+        text = "%d wake%s held back for the budget (%s%s); the messages are in the seat inbox" % (
+            len(records), "" if len(records) == 1 else "s",
+            ", ".join("%s %d" % (reason, n) for reason, n in sorted(reasons.items())),
+            "; %d more evicted" % evicted if evicted else "")
+        newest = list(reversed(records))[:3]
+        note = "\n".join(str(r.get("zulip_link") or "message %d" % r["message_id"]) for r in newest)
+        sent = self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat, text, kind="held-back",
+                                    key="held-back:%s" % runner.seat, once_per=every, note=note,
+                                    trigger_ids=[r["message_id"] for r in newest])
+        HELD.note_digest(runner.paths, upto=max(int(r.get("seq") or 0) for r in fresh), now=now)
+        self.log.write("held-back-digest", seat=runner.seat, held=len(records), new=len(fresh), sent=sent)
+
+    def _catch_up(self, runner: SeatRunner, data: Mapping[str, Any], now: float) -> None:
+        """One catch-up wake for a seat whose adapter runs a turn (`http` or `claude`), when its
+        budget has room again and nothing for it is queued, waiting or running.  The newest
+        held-back record that can be a trigger becomes the wake's one trigger (run_routine rebuilds
+        the body from its seat-inbox row;  a claude wake reads its topic as usual), and the rest ride
+        along in band.  Each candidate is checked with _wake_block, the check finalize makes, so the
+        kill switch, the pin, a routine that is not ready, the loop guard and every budget
+        (usd_per_day with the run's maximum included) decide before anything is written;  a record
+        whose own topic or owner budget is closed is skipped for an older one.  The catch-up then goes
+        through finalize like any wake and is counted, so it never adds a wake the budgets would not
+        allow, and if a budget closed in between it is held back again, never run.  The stale rule
+        does not apply (trigger_ts None):  the record's TTL bounds its age.  A catch-up that surfaces
+        nothing waits before the next one (heldback.catch_up_due)."""
+        if runner.cfg.wake not in C.WORKER_WAKES or not runner.cfg.held_back.get("catch_up"):
+            return
+        if not HELD.catch_up_due(data, now):
+            return
+        if any(p.seat == runner.seat for p in self.coalescer.pending.values()):
+            return
+        with runner.jobs_cond:
+            if runner.jobs or runner.running is not None:
+                return
+        views = runner.ledger.wakes()
+        closed: set[tuple[bool, str]] = set()  # (owner, topic key) a budget or the loop guard closed in this pass
+        shut: set[bool] = set()  # owner flags a seat-wide budget closed in this pass
+        for record in reversed(data["records"]):
+            owner = record.get("owner") is True
+            key = str(record.get("topic_key") or "")
+            if record.get("no_primary") or owner in shut or (owner, key) in closed:
+                continue
+            pending = self._catch_up_pending(runner, record, views, now)
+            if pending is None:
+                HELD.mark_no_primary(runner.paths, record["message_id"], "trigger_not_found")
+                continue
+            reason = self._wake_block(runner, pending, now)
+            if reason in ("per_topic_per_hour", "owner_per_topic_per_hour", "loop_guard"):
+                closed.add((owner, key))
+                continue
+            if reason in ("wakes_per_hour", "wakes_per_day", "owner_per_day"):
+                shut.add(owner)
+                continue
+            if reason:
+                return  # the seat cannot wake at all now (paused, unpinned, usd_per_day, no routine, ...)
+            HELD.note_catch_up(runner.paths, now)
+            runner.ledger.append(pending.row("queued", now))
+            self.log.write("catch-up", seat=runner.seat, wake_id=pending.wake_id, message_id=record["message_id"],
+                           held=len(data["records"]))
+            self.finalize(pending)
+            return
+
+    def _catch_up_pending(self, runner: SeatRunner, record: Mapping[str, Any], views: Mapping[str, Mapping[str, Any]],
+                          now: float) -> W.Pending | None:
+        """The catch-up wake for one record:  where it was (from the held-back wake's ledger row, or
+        the seat-inbox row), its message as the only trigger, the record's owner flag, and the held
+        wake's route tag:  a batch that held a `·route` post never routes, caught up or not."""
+        source: Mapping[str, Any] | None = next((views[w] for w in HELD.wake_ids(record) if w in views), None)
+        if source is None:
+            source = self._seat_inbox_rows(runner, [record["message_id"]]).get(record["message_id"])
+        if source is None:
+            return None
+        item = {"channel": source.get("channel"), "topic": source.get("topic"), "type": source.get("type"),
+                "recipients": source.get("recipients"), "stream_id": source.get("stream_id")}
+        owner = record.get("owner") is True
+        pending = W.Pending(self._new_wake_id(), runner.seat, item, owner=owner, now=now, due=now)
+        pending.add({"id": record["message_id"]}, owner)
+        pending.route_tagged = (record.get("route_tagged") is True or source.get("route_tagged") is True
+                                or "route_tag" in (source.get("classes") or []))
+        pending.catch_up = True  # trigger_ts stays None:  no stale check
+        return pending
+
     # ---- periodic work -------------------------------------------------------------------------
     def tick(self) -> None:
         now = self.clock.time()
@@ -1671,6 +1884,14 @@ class Daemon:
             self.last_tick["prune"] = now
             for runner in self.seats.values():
                 runner.ledger.prune(now)
+        if now - self.last_tick["held"] >= HELD_TICK_SECONDS:
+            self.last_tick["held"] = now
+            for runner in list(self.seats.values()):
+                try:
+                    self.held_tick(runner, now)
+                except Exception as exc:  # noqa: BLE001 - held-back upkeep must never stop the router
+                    self.log.write("held-back-error", seat=runner.seat,
+                                   error=self.scrub(type(exc).__name__ + ": " + str(exc)))
         for runner in self.seats.values():
             runner.flush_cursor()
         if now - self.last_tick["status"] >= 2:
@@ -1804,7 +2025,7 @@ class Daemon:
                 "usd_per_day": runner.cfg.budget["usd_per_day"], "budget": runner.cfg.budget, "live": runner.cfg.live,
                 "jobs": len(runner.jobs), "running": runner.running.wake_id if runner.running else None,
                 "paused": L.paused(self.root, seat), "wakes_paused": L.paused(self.root, seat, wakes=True),
-                "leases": leases, "red": red}
+                "held_back": HELD.summary(runner.paths, now), "leases": leases, "red": red}
         return {"pid": os.getpid(), "version": __version__, "started": self.started_at, "updated": now,
                 "instance": self.config.instance, "disabled": sorted(self.config.disabled),
                 "config_errors": [self.scrub(e) for e in self.config.errors + self.refusal + self.reload_refused],
