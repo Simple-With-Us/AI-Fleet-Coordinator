@@ -154,6 +154,7 @@ expect_scheduled=(
   "com.jay.provider-knob-sync com.jay.provider-knob-sync.plist"
   "com.jay.fleet-gdrive-backup com.jay.fleet-gdrive-backup.plist"
   "com.jay.grok-idle-unload com.jay.grok-idle-unload.plist"
+  "com.jay.sim-idle-reaper com.jay.sim-idle-reaper.plist"
 )
 
 # Program paths that must exist for a trigger to succeed.
@@ -174,6 +175,7 @@ expect_files=(
   "${HOME}/apps/ios-fleet/ship-now-gui.sh"
   "${HOME}/apps/grok-acp-runtime/start.sh"
   "${HOME}/apps/grok-acp-runtime/grok-idle-unload.py"
+  "${HOME}/apps/sim-idle-reaper.py"
   "${HOME}/apps/clutch-runtime/scripts/start-web.sh"
   "${HOME}/apps/clutch-runtime/scripts/serve-tailscale.sh"
   "${HOME}/apps/fleet-gdrive-backup/run.sh"
