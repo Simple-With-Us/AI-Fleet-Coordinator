@@ -116,6 +116,10 @@ APP_CANONICAL: dict[str, str] = {
     "fleet-ops": "fleet-ops",
     "fleet ops": "fleet-ops",
     "ops": "fleet-ops",
+    "fleetlink": "fleetlink",
+    "fleetlink.online": "fleetlink",
+    "fleet link": "fleetlink",
+    "fl": "fleetlink",
 }
 
 
@@ -124,6 +128,24 @@ def normalize_app(app: str) -> str:
         return ""
     low = app.strip().lower()
     return APP_CANONICAL.get(low, APP_CANONICAL.get(app.strip(), low))
+
+
+def app_filter_variants(app: str) -> list[str]:
+    """Stored spellings that share one canonical app slug.
+
+    Create and the list filter both normalize new input, but rows written
+    before an alias was registered still say `fleetlink.online`, `fleet link`,
+    or `fl`.  The stats dropdown offers those raw values.  Selecting one sends
+    `?app=fleetlink.online`, which normalizes to `fleetlink` and used to miss
+    the legacy rows.  Match the whole alias family, plus the exact chip text.
+    """
+    raw = (app or "").strip()
+    wanted = normalize_app(app)
+    variants = {alias for alias, canonical in APP_CANONICAL.items() if canonical == wanted}
+    variants.add(wanted)
+    if raw:
+        variants.add(raw)
+    return sorted(variants)
 
 
 HANDOFF_NAMES_FILE = HOME / ".secrets" / "global-api-keys"
@@ -975,8 +997,9 @@ class Handler(BaseHTTPRequestHandler):
         clauses = []
         params: list = []
         if query.get("app"):
-            clauses.append("app = ?")
-            params.append(normalize_app(query["app"][0]))
+            variants = app_filter_variants(query["app"][0])
+            clauses.append(f"app IN ({','.join('?' for _ in variants)})")
+            params.extend(variants)
         if query.get("status"):
             statuses = [s for s in query["status"][0].split(",") if s]
             clauses.append(f"status IN ({','.join('?' for _ in statuses)})")
@@ -1666,6 +1689,7 @@ const APP_DISPLAY_NAMES = {
   'AI-Fleet-Coordinator': 'AI Fleet Coordinator',
   'botfleet': 'BotFleet.app',
   'fleet-ops': 'Fleet Ops',
+  'fleetlink': 'FleetLink',
 };
 function appLabel(a){ return APP_DISPLAY_NAMES[a] || a; }
 
@@ -1682,6 +1706,7 @@ const KNOWN_APPS = [
   'fleet-infra',
   'botfleet',
   'fleet-ops',
+  'fleetlink',
 ];
 
 const TAPE_TILES = [
