@@ -41,6 +41,12 @@ Rules for a config this tool does not own:
   - an env block that pins AGENT_SEAT on a server we manage is reported, never edited
   - `remove` deletes only an entry that is exactly what `apply` writes
 
+Clutch's patch is proven before it is written:  `apply clutch` runs the pinned `dsh --profile P --dump-config` for every
+profile on a scratch copy of `~/.clutch/dsh/profiles` and refuses unless each one mounts `@deepseek-ai/dsh-mcp-client`
+(`--dsh PATH` names another engine binary, `--no-dsh-check` skips the proof).  `--dump-config` proves the config
+merges; it does not prove the plugin package loads, so `python3 -m fleet_lanes.install_tools verify clutch` on the final
+file, and a restart of clutch-web by the owner, come after.
+
 `verify --probe` also starts each registered command and sends it MCP `initialize` and `tools/list` (stdio, one
 JSON object per line).  Nothing is called, so nothing reaches Zulip or the recall service.
 
@@ -66,6 +72,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, TextIO, Tuple
 
 from . import cordis_patch as CP
+from . import dsh_check as DC
 from . import marked_block as MB
 
 EXIT_OK = 0
@@ -194,6 +201,7 @@ CLUTCH_SEAT = "CLUTCH"
 CLUTCH_DIR = ".clutch/dsh"
 CLUTCH_PATCH = ".clutch/dsh/cordis.patch.yml"
 CLUTCH_BLOCK = "mcp-agent-sync"
+MCP_CLIENT_PLUGIN = "@deepseek-ai/dsh-mcp-client"
 TARGET_KEYS = tuple(t.key for t in JSON_TARGETS) + (CLUTCH_KEY,)
 ALIASES = {"muse-code": "muse", "mc": "muse", "mm": "minimax", "kimi-code": "kimi", "copilot-cli": "copilot",
            "dsh": "clutch"}
@@ -684,6 +692,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="also register agent-sync for targets with a fixed seat")
         if name in ("apply", "remove"):
             sp.add_argument("--dry-run", action="store_true", help="same as plan")
+        if name == "apply":
+            sp.add_argument("--dsh", default=None, metavar="PATH",
+                            help="clutch: the pinned engine binary for the --dump-config proof "
+                                 "(default ~/apps/clutch-runtime/node_modules/.bin/dsh)")
+            sp.add_argument("--no-dsh-check", action="store_true",
+                            help="clutch: write the patch without the engine proof")
         if name == "verify":
             sp.add_argument("--probe", action="store_true", help="also start each command and list its tools")
     return p
@@ -736,6 +750,23 @@ def main(argv: Optional[Sequence[str]] = None, out: Optional[TextIO] = None, err
                 print("   WARNING: %s" % w, file=out)
         for n in plan.notes:
             print("   note: %s" % n, file=out)
+        if plan.will_write and not dry and key == CLUTCH_KEY and ns.command == "apply" and not plan.delete \
+                and not getattr(ns, "no_dsh_check", False):
+            binary = getattr(ns, "dsh", None) or DC.find_dsh(home)
+            if binary is None:
+                failed = True
+                print("   REFUSED: the pinned dsh was not found at ~/apps/clutch-runtime/node_modules/.bin/dsh (pass --dsh PATH, "
+                      "or --no-dsh-check to write the patch unproven)", file=out)
+                print(file=out)
+                continue
+            ok, detail = DC.dump_config(binary, plan.new_text or "", os.path.join(home, ".clutch", "dsh", "profiles"),
+                                        (MCP_CLIENT_PLUGIN,))
+            if not ok:
+                failed = True
+                print("   REFUSED: the pinned engine does not accept the new patch: %s" % detail, file=out)
+                print(file=out)
+                continue
+            print("   engine check: %s" % detail, file=out)
         if plan.will_write and not dry:
             try:
                 backup = write_plan(plan)

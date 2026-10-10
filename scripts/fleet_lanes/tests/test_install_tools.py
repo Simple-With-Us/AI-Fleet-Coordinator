@@ -3663,8 +3663,22 @@ class ClutchBlockTests(World):
         self.assertEqual(r.status, "refused", r)
         self.assertIn("fails its probes", r.detail)
 
-    def test_verify_fails_without_the_block_and_with_an_edited_hooks_file(self) -> None:
-        self.assertFails(T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False), "no `hooks-fleet-guards` block")
+    def test_an_installed_but_unwired_clutch_is_a_skip_unless_named(self) -> None:
+        checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
+        self.assertEqual([c.status for c in checks], ["SKIP"])
+        self.assertIn("not wired", checks[0].detail)
+        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path")
+        self.assertRegex(out, r"SKIP\s+clutch\s+block\s+not wired")
+        self.assertRegex(out, r"SKIP\s+kimi\s+platform")
+        self.assertNotIn("NOT HEALTHY", out, "an opt-in platform nobody wired must not make a bare verify fail")
+        self.assertEqual(rc, 0, out)
+        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "clutch")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(named explicitly)", out)
+        self.patch.write_text("# no block here\n- id: a\n")
+        self.assertEqual([c.status for c in T.verify_block(self.plat, self.paths)], ["SKIP"])
+
+    def test_verify_fails_with_an_edited_hooks_file(self) -> None:
         self.apply()
         Path(self.paths.clutch_hooks).write_text('{"hooks": {}}\n')
         checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
@@ -3855,9 +3869,17 @@ class KimiBlockTests(World):
         failed = {c.name for c in T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False) if c.status == "FAIL"}
         self.assertTrue({"deny/login-PATH", "secret/login-PATH"} <= failed, failed)
 
-    def test_verify_fails_without_the_block_and_with_an_edited_block(self) -> None:
+    def test_an_installed_but_unwired_kimi_is_a_skip_unless_named(self) -> None:
         self.cfg.write_text(KIMI_CONFIG)
-        self.assertFails(T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False), "no `hooks-fleet-guards` block")
+        checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
+        self.assertEqual([c.status for c in checks], ["SKIP"])
+        self.assertIn("not wired", checks[0].detail)
+        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "kimi")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(named explicitly)", out)
+
+    def test_verify_fails_with_an_edited_block(self) -> None:
+        self.cfg.write_text(KIMI_CONFIG)
         self.apply()
         self.cfg.write_text(self.cfg.read_text().replace('matcher = "Bash"', 'matcher = "Nothing"'))
         self.assertFails(T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False), "not what this install_tools writes")

@@ -293,9 +293,76 @@ class AgentSyncTests(HomeCase):
         self.assertEqual(os.listdir(self.path(".fx")), [])
 
 
+FAKE_DSH = '''#!{python}
+import os, sys
+home = os.environ["DSH_HOME"]
+path = os.path.join(home, "cordis.patch.yml")
+text = open(path).read() if os.path.exists(path) else ""
+if os.path.exists({flag!r}) or not any(line.startswith("- ") for line in text.splitlines()):
+    sys.stderr.write("boom\\n")
+    sys.exit(1)
+print("@deepseek-ai/dsh-base")
+if "dsh-mcp-client" in text:
+    print("@deepseek-ai/dsh-mcp-client")
+'''
+
+
 class ClutchTests(HomeCase):
     def patch(self) -> str:
         return ".clutch/dsh/cordis.patch.yml"
+
+    def with_engine(self) -> str:
+        """A stub engine in the fake home's clone, and one profile; returns the flag file that makes it fail."""
+        flag = os.path.join(self.home, "dsh-fails")
+        binary = self.path("apps/clutch-runtime/node_modules/.bin/dsh")
+        os.makedirs(os.path.dirname(binary))
+        Path(binary).write_text(FAKE_DSH.format(python=sys.executable, flag=flag))
+        os.chmod(binary, 0o755)
+        os.makedirs(self.path(".clutch/dsh/profiles/web"))
+        Path(self.path(".clutch/dsh/profiles/web/cordis.yml")).write_text("plugins: []\n")
+        return flag
+
+    def test_the_patch_is_proven_with_the_engine_before_it_is_written(self) -> None:
+        flag = self.with_engine()
+        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        self.assertEqual(code, M.EXIT_OK, out)
+        self.assertIn("engine check: web mounts @deepseek-ai/dsh-mcp-client", out)
+        self.assertTrue(os.path.exists(self.path(self.patch())))
+        os.unlink(self.path(self.patch()))
+        Path(flag).write_text("x")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        self.assertEqual(code, M.EXIT_FAILED, out)
+        self.assertIn("REFUSED: the pinned engine does not accept the new patch", out)
+        self.assertFalse(os.path.exists(self.path(self.patch())))
+
+    def test_without_an_engine_the_write_is_refused_unless_the_owner_says_so(self) -> None:
+        self.mkdir(".clutch/dsh")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        self.assertEqual(code, M.EXIT_FAILED, out)
+        self.assertIn("--no-dsh-check", out)
+        self.assertFalse(os.path.exists(self.path(self.patch())))
+        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
+        self.assertEqual(code, M.EXIT_OK, out)
+        self.assertTrue(os.path.exists(self.path(self.patch())))
+
+    def test_an_explicit_engine_binary_is_used(self) -> None:
+        self.with_engine()
+        binary = self.path("apps/clutch-runtime/node_modules/.bin/dsh")
+        other = self.path("other-dsh")
+        os.rename(binary, other)
+        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--dsh", other)
+        self.assertEqual(code, M.EXIT_OK, out)
+        self.assertIn("engine check:", out)
+
+    def test_plan_and_remove_do_not_run_the_engine(self) -> None:
+        self.mkdir(".clutch/dsh")
+        code, out, _ = self.run_cli("plan", "clutch", "--with-agent-sync")
+        self.assertEqual(code, M.EXIT_OK, out)
+        self.assertNotIn("engine check", out)
+        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
+        code, out, _ = self.run_cli("remove", "clutch", "--with-agent-sync")
+        self.assertEqual(code, M.EXIT_OK, out)
+        self.assertNotIn("engine check", out)
 
     def test_without_the_flag_clutch_gets_nothing(self) -> None:
         self.mkdir(".clutch/dsh")
@@ -307,7 +374,7 @@ class ClutchTests(HomeCase):
 
     def test_the_agent_sync_block_is_created_with_a_header(self) -> None:
         self.mkdir(".clutch/dsh")
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
         self.assertEqual(code, M.EXIT_OK, out)
         text = self.read(self.patch())
         self.assertTrue(text.startswith("# Home-level cordis patch"))
@@ -320,7 +387,7 @@ class ClutchTests(HomeCase):
         self.assertNotIn("env:", text, "no env, so no pinned seat")
         self.assertEqual(M.MB.block_body(text, "mcp-agent-sync")[0], "- insert:")
         before = text
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
         self.assertIn("unchanged", out)
         self.assertEqual(self.read(self.patch()), before)
         self.assertEqual(self.backups(".clutch/dsh"), [])
@@ -328,7 +395,7 @@ class ClutchTests(HomeCase):
     def test_the_owners_patch_entries_survive_and_are_backed_up(self) -> None:
         mine = "# my layer\n- id: typert-gateway\n  config:\n    websocketHeartbeatIntervalMs: 15000\n"
         self.write(self.patch(), mine)
-        self.run_cli("apply", "clutch", "--with-agent-sync")
+        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
         text = self.read(self.patch())
         self.assertTrue(text.startswith(mine + "\n# fleet:begin"))
         names = self.backups(".clutch/dsh")
@@ -336,10 +403,10 @@ class ClutchTests(HomeCase):
 
     def test_a_changed_command_replaces_the_block_in_place(self) -> None:
         self.mkdir(".clutch/dsh")
-        self.run_cli("apply", "clutch", "--with-agent-sync")
+        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
         text = self.read(self.patch()).replace(self.agent_sync, "/old/agent-sync")
         self.write(self.patch(), text + "- id: tail\n")
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
         self.assertIn("block replaced in place", out)
         new = self.read(self.patch())
         self.assertIn(self.agent_sync, new)
@@ -349,14 +416,14 @@ class ClutchTests(HomeCase):
     def test_remove_deletes_only_the_block(self) -> None:
         mine = "- id: typert-gateway\n  config:\n    a: 1\n"
         self.write(self.patch(), mine)
-        self.run_cli("apply", "clutch", "--with-agent-sync")
+        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
         code, out, _ = self.run_cli("remove", "clutch", "--with-agent-sync")
         self.assertIn("removed", out)
         self.assertEqual(self.read(self.patch()), mine)
 
     def test_removing_the_last_block_deletes_the_file_because_a_comment_only_patch_crashes_the_engine(self) -> None:
         self.mkdir(".clutch/dsh")
-        self.run_cli("apply", "clutch", "--with-agent-sync")
+        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
         code, out, _ = self.run_cli("remove", "clutch", "--with-agent-sync")
         self.assertEqual(code, M.EXIT_OK, out)
         self.assertIn("so the file is removed", out)
@@ -368,28 +435,28 @@ class ClutchTests(HomeCase):
     def test_another_installers_block_in_the_same_patch_is_untouched(self) -> None:
         from fleet_lanes import cordis_patch as CP
         self.mkdir(".clutch/dsh")
-        self.run_cli("apply", "clutch", "--with-agent-sync")
+        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
         text, _ = CP.upsert(self.read(self.patch()), "hooks-fleet-guards", "other", ["- id: fleet-hooks-guards"])
         self.write(self.patch(), text)
         self.run_cli("remove", "clutch", "--with-agent-sync")
         left = self.read(self.patch())
         self.assertIn("# fleet:begin hooks-fleet-guards (managed by other)", left)
         self.assertNotIn("mcp-agent-sync", left)
-        self.run_cli("apply", "clutch", "--with-agent-sync")
+        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
         self.assertIn("# fleet:begin hooks-fleet-guards", self.read(self.patch()))
         self.assertIn("# fleet:begin mcp-agent-sync", self.read(self.patch()))
 
     def test_a_patch_that_is_not_a_list_is_left_alone(self) -> None:
         text = "plugins:\n  - a\n"
         self.write(self.patch(), text)
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
         self.assertIn("skipped-bad-shape", out)
         self.assertEqual(self.read(self.patch()), text)
 
     def test_broken_markers_are_refused(self) -> None:
         text = "- id: a\n# fleet:begin mcp-agent-sync (managed by x)\n- insert: []\n"
         self.write(self.patch(), text)
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
         self.assertIn("skipped-bad-markers", out)
         self.assertEqual(self.read(self.patch()), text)
 

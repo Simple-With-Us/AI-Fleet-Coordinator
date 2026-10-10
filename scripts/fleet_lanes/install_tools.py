@@ -3034,7 +3034,7 @@ def verify_block(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIMEOUT
     try:
         text = _read_bytes(path).decode("utf-8")
     except FileNotFoundError:
-        return [Check(t, "block", "FAIL", f"{path} does not exist, so there is no `{BLOCK_NAME}` block; run `apply {t}`")]
+        return [Check(t, "block", "SKIP", f"not wired: {path} does not exist, so there is no `{BLOCK_NAME}` block; run `apply {t}`")]
     except (OSError, UnicodeDecodeError) as exc:
         return [Check(t, "block", "FAIL", f"{path} cannot be read ({exc}); no `{BLOCK_NAME}` block installed")]
     try:
@@ -3042,7 +3042,9 @@ def verify_block(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIMEOUT
     except MB.BlockError as exc:
         return [Check(t, "block", "FAIL", f"{path}: {exc}")]
     if body is None:
-        return [Check(t, "block", "FAIL", f"no `{BLOCK_NAME}` block in {path}; run `apply {t}`")]
+        # Opt-in, like muse: the tool is installed but nobody ran `apply {t}`, which is not a broken install.  A bare
+        # verify reads it as a skip; naming the platform turns that lone SKIP into a FAIL (see _verify_targets).
+        return [Check(t, "block", "SKIP", f"not wired: no `{BLOCK_NAME}` block in {path}; run `apply {t}`")]
     out: list[Check] = []
     if tuple(body) != tuple(block_body(plat, paths)):
         out.append(Check(t, "block", "FAIL", f"the block in {path} is not what this install_tools writes; re-run `apply {t}`"))
