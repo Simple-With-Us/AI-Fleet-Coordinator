@@ -52,6 +52,10 @@ jobs:
       uses: actions/setup-node@v7
       with:
         node-version: '24'
+    - name: Verify board new-item composer
+      run: |
+        node --test scripts/mac-collab/test_board_composer.cjs
+        python3 scripts/mac-collab/test_app_normalization.py
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
     # Pure-logic suites of the hosted agent-sync MCP Worker (allowlists, Host
