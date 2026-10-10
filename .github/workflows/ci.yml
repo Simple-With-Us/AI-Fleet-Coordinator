@@ -44,6 +44,10 @@ jobs:
     # temp state dir;  xcrun, simctl and pgrep are patched, so nothing is booted or shut down.
     - name: Simulator idle reaper tests
       run: python3 scripts/test_sim_idle_reaper.py
+    # Fleet work backup (restic to B2):  temp repos and a temp home, stub restic and gitleaks, git
+    # with no user config.  Nothing is uploaded and no real path is read.
+    - name: Fleet work backup tests
+      run: python3 scripts/fleet-work-backup/test_fleet_work_backup.py
     - name: Verify public activity boundary
       run: python3 scripts/test-public-activity.py
     # The admin panel inlines its own copy of the app registry because the Worker

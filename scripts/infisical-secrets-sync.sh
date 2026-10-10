@@ -21,6 +21,13 @@ FILE="${SYNC_FILE:-$HOME/.secrets/global-api-keys}"
 LOG="${SYNC_LOG:-$HOME/.secrets/infisical-sync.log}"
 MAP=(
   "CLOUDFLARE_API_TOKEN|18f563a3-9c88-454c-96eb-28fc9678f3ba|prod|CLOUDFLARE_API_TOKEN"
+  # fleet-work-backup (scripts/fleet-work-backup):  the restic password and a bucket-scoped B2 key,
+  # all in project "AI Fleet Coordinator".  Values must be 16+ characters with no whitespace and no
+  # backslash (the plausibility check below, and awk -v, need that);  a urlsafe token satisfies it.
+  # Until a secret exists in Infisical the tick logs one WARN for it and changes nothing.
+  "RESTIC_FLEET_WORK_PASSWORD|9bf7417a-fbbb-42ca-870c-2b45207233f5|prod|RESTIC_FLEET_WORK_PASSWORD"
+  "B2_FLEET_WORK_KEY_ID|9bf7417a-fbbb-42ca-870c-2b45207233f5|prod|B2_FLEET_WORK_KEY_ID"
+  "B2_FLEET_WORK_APPLICATION_KEY|9bf7417a-fbbb-42ca-870c-2b45207233f5|prod|B2_FLEET_WORK_APPLICATION_KEY"
 )
 log() { printf "%s %s\n" "$(date "+%F %T")" "$*" >> "$LOG"; }
 strip_ansi() { sed "s/$(printf "\033")\[[0-9;?]*[a-zA-Z]//g"; }

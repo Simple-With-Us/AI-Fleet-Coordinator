@@ -34,10 +34,15 @@ printf 'OTHER_KEY=keep-me\n' > "$SYNC_FILE"; chmod 600 "$SYNC_FILE"
 check "map names prod and never dev or staging" \
   bash -c "grep -q '|prod|CLOUDFLARE_API_TOKEN\"' '$script' && ! grep -E '^ +\"[A-Z_]+\\|[^|]+\\|(dev|staging)\\|' '$script'"
 
+check "map carries the fleet-work-backup keys, all prod" bash -c \
+  "for k in RESTIC_FLEET_WORK_PASSWORD B2_FLEET_WORK_KEY_ID B2_FLEET_WORK_APPLICATION_KEY; do grep -q \"|prod|\$k\\\"\" '$script' || exit 1; done"
+
 bash "$script"
 check "reads with --env=prod --plain --silent" grep -q -- '--env=prod --plain --silent' "$STUB_ARGS"
 check "never asks for dev" bash -c "! grep -q -- '--env=dev' '$STUB_ARGS'"
 check "writes the value from the plain output" grep -q '^CLOUDFLARE_API_TOKEN=stub-token-0123456789abcdefghij$' "$SYNC_FILE"
+check "writes the fleet-work-backup keys too" bash -c \
+  "grep -q '^RESTIC_FLEET_WORK_PASSWORD=stub-token-0123456789abcdefghij$' '$SYNC_FILE' && grep -q '^B2_FLEET_WORK_KEY_ID=stub-token-0123456789abcdefghij$' '$SYNC_FILE' && grep -q '^B2_FLEET_WORK_APPLICATION_KEY=stub-token-0123456789abcdefghij$' '$SYNC_FILE'"
 check "keeps other keys" grep -q '^OTHER_KEY=keep-me$' "$SYNC_FILE"
 check "logs the update by length only" grep -q 'updated CLOUDFLARE_API_TOKEN (new_len=31)' "$SYNC_LOG"
 check "handoff file stays mode 600" test "$(stat -c %a "$SYNC_FILE" 2>/dev/null || stat -f %Lp "$SYNC_FILE")" = 600
