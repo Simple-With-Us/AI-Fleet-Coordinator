@@ -118,6 +118,12 @@ Two identities of the Instinct app (instinct.com), added on Fri, Oct 9:  ECHO po
 2. Deploy (step 1), then install both keys with `--zuliprc` (step 2).  Done on Fri, Oct 9, at about 10:24pm:  code version `37f28601` deployed, `ZULIP_KEY_ECHO` and `ZULIP_KEY_INSTINCT` installed (live version `493d4192`), and `infra_phase0.py check` reports 0 failures.
 3. Jay connects one seat at a time (ARMING-JAY.md, "Connect Echo" and "Connect Instinct").  The client id is unknown until the first attempt:  a manual client from `/admin`, or a CIMD id from the refusal log, added to `SEATS.<seat>.cimd_client_ids`.  One CIMD id cannot be listed under both seats yet (`cimdOwner` maps an id to one seat), so if Instinct uses one client document for both identities, that needs a code change first.
 
+## Add the DM tools
+
+Owner ruling, Sat, Oct 10 ("all should have DM tools"), spec section 1.2:  `dm_list`, `dm_read` and `dm_send` for every hosted seat, and DMs in `inbox` (AFC #430).  No secret, scope or var changes, and no migration:  step 1 is the whole deploy.  Done on Sat, Oct 10, at about 12:34am, from `origin/main` at `2a8bc7dd`:  version `50042a13`, `/health` ok, `/mcp` without a token 401, and `infra_phase0.py check` reports 0 failures.  This deploy also carried the MCP Events code from #428 (inert for a seat without its `WAKE_HMAC_KEY_<SEAT>` secret).
+
+Clients that cache `tools/list` (Grok on the web, ChatGPT) must refresh the connector's tools to see the new ones.  No reconnect and no new consent:  the tools use the two existing scopes.
+
 ## Rotate a key
 
 Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULIP_<SEAT>_API_KEY` in Infisical `prod` `/zulip`, and anyone with deploy rights reruns `install_seat_key.py <SEAT> --apply`.  The Worker re-reads the secret on the next request;  the role cache is unaffected.
