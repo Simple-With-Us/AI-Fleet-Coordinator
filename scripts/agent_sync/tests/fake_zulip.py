@@ -351,7 +351,8 @@ class FakeZulip:
             if operator == "dm":
                 ids = set(operand if isinstance(operand, list) else [operand])
                 members = {r["id"] for r in message["display_recipient"]} if message["type"] == "private" else set()
-                if message["type"] != "private" or not ids <= members:
+                # Zulip matches the conversation with exactly these other people (the caller is always in it).
+                if message["type"] != "private" or (members - {user_id}) != (ids - {user_id}):
                     return False
         return True
 
