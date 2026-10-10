@@ -17,11 +17,11 @@ import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import CONTRACT from "../../agent_sync/mcp/tools.json" with { type: "json" };
 import { ROOT, wranglerConfig, testEnv, browserPostOrigin, CHATGPT_CLIENT, CHATGPT_REDIRECT, RESOURCE } from "./helpers.mjs";
-import { FakeZulip, REALM, STREAMS, zulipShapedKey } from "./fake-zulip.mjs";
+import { FakeZulip, REALM, STREAMS, OWNER_ID, zulipShapedKey } from "./fake-zulip.mjs";
 
 const TOOLS = CONTRACT.tools;
-// The hosted server lists tools.json, then the hosted-only recall tools (src/recall.js).
-const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute"];
+// The hosted server lists tools.json, then the hosted-only recall tools (src/recall.js), then the DM tools (src/dm.js).
+const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send"];
 const JET_KEY = zulipShapedKey(11);
 const zulip = new FakeZulip({ bots: [{ email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet", key: JET_KEY }] });
 
@@ -447,7 +447,7 @@ try {
     assert.equal(tokens.scope, "zulip:read");
   });
 
-  await step("tools/list is tools.json plus recall, and whoami shows JET with a read-only grant", async () => {
+  await step("tools/list is tools.json plus recall plus DMs, and whoami shows JET with a read-only grant", async () => {
     const init = await mcp(tokens.access_token, "initialize", INIT);
     assert.equal(init.status, 200, JSON.stringify(init.json));
     assert.match(init.json.result.instructions, /one bot, JET\./);
@@ -458,9 +458,16 @@ try {
     const tools = list.json.result.tools;
     assert.deepEqual(tools.map((t) => t.name), HOSTED_NAMES);
     for (const t of TOOLS) {
-      // Era fields aside, every tool is exactly the stdio server's contract.
-      assert.deepEqual(Object.fromEntries(Object.keys(t).map((k) => [k, tools.find((x) => x.name === t.name)[k]])), t, t.name);
+      // Era fields aside, every tool is exactly the stdio server's contract, except that the
+      // hosted inbox says it lists DMs (spec 1.2) where the stdio one says they are left out.
+      const served = Object.fromEntries(Object.keys(t).map((k) => [k, tools.find((x) => x.name === t.name)[k]]));
+      if (t.name === "inbox") {
+        assert.match(served.description, /direct messages sent to it/);
+        assert.deepEqual({ ...served, description: null }, { ...t, description: null });
+      } else assert.deepEqual(served, t, t.name);
     }
+    for (const name of ["dm_list", "dm_read", "dm_send"]) assert.ok(tools.find((x) => x.name === name).outputSchema, name);
+    assert.match(init.json.result.instructions, /Direct messages \(dm_list, dm_read, dm_send/);
     const who = await call(tokens.access_token, "whoami");
     assert.equal(who.json.result.structuredContent.seat, "JET");
     assert.equal(who.json.result.structuredContent.transport, "hosted");
@@ -621,6 +628,23 @@ try {
     // The Zulip tools are untouched by recall's missing config.
     const who = await call(tokens.access_token, "whoami");
     assert.equal(who.json.result.structuredContent.seat, "JET");
+  });
+
+  await step("DMs with a read-only grant:  dm_list and dm_read answer fenced, dm_send names the zulip:write challenge and sends nothing", async () => {
+    const list = await call(tokens.access_token, "dm_list");
+    assert.equal(list.json.result.isError, undefined, JSON.stringify(list.json));
+    assert.deepEqual(list.json.result.structuredContent, { count: 0, ids: [], unread_total: 0 });
+    assert.match(list.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
+    const read = await call(tokens.access_token, "dm_read", { user_ids: [OWNER_ID] });
+    assert.deepEqual(read.json.result.structuredContent, { count: 0, ids: [], next_since_id: null });
+    const before = zulip.requestsTo("POST", "messages").length;
+    const send = await call(tokens.access_token, "dm_send", { user_ids: [OWNER_ID], text: "x" });
+    assert.equal(send.json.result.isError, true);
+    assert.equal(send.json.result.structuredContent, undefined);
+    assert.ok(send.json.result._meta["mcp/www_authenticate"][0].includes('scope="zulip:write"'));
+    assert.equal(zulip.requestsTo("POST", "messages").length, before);
+    const bad = await call(tokens.access_token, "dm_read", {});
+    assert.equal(bad.json.result._meta["agent-sync/error"].code, "invalid_argument");
   });
 
   await step("pause:  tools say paused, refresh is temporarily_unavailable, and the grant survives", async () => {
@@ -786,10 +810,27 @@ try {
     assert.match(read.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
     const off = await call(t.body.access_token, "post", { channel: "general", topic: "t", text: "x" });
     assert.equal(off.json.result._meta["agent-sync/error"].code, "channel_not_allowed");
+    // Direct messages through the Worker:  send as Grok's own bot, read the conversation back, see Jay's answer in inbox.
+    const dmSent = await call(t.body.access_token, "dm_send", { user_ids: [OWNER_ID], text: "Direct note from Grok.  Please read." });
+    assert.equal(dmSent.status, 200, JSON.stringify(dmSent.json));
+    const dm = zulip.messages.at(-1);
+    assert.deepEqual(dmSent.json.result.structuredContent, { id: dm.id, user_ids: [OWNER_ID], duplicate: false });
+    assert.equal(dm.type, "private");
+    assert.equal(dm.sender_email, "grok-web-bot@simplewithus.zulipchat.com");
+    assert.equal(dm.content, "[GROK-WEB→JAY] Direct note from Grok.\u00a0 Please read.");
+    const answer = zulip.addDm("Jay Wedgeworth", [], "Got it, thanks");
+    const dmRead = await call(t.body.access_token, "dm_read", { emails: ["jay@zulip.test"] });
+    assert.deepEqual(dmRead.json.result.structuredContent.ids, [dm.id, answer.id]);
+    assert.match(dmRead.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
+    const dmList = await call(t.body.access_token, "dm_list", {});
+    assert.deepEqual(dmList.json.result.structuredContent, { count: 1, ids: [answer.id], unread_total: 1 });
+    const inboxDm = await call(t.body.access_token, "inbox", {});
+    assert.deepEqual(inboxDm.json.result.structuredContent.ids, [answer.id]);
+    assert.match(inboxDm.json.result.content[0].text, /"dm":true/);
     // The admin page shows the call rows and the role check, never a body.
     const admin = await (await browser("/admin")).text();
     assert.match(admin, /role 400, checked/);
-    assert.ok(admin.includes("hosted smoke") && !admin.includes("Two sentences"));
+    assert.ok(admin.includes("hosted smoke") && !admin.includes("Two sentences") && !admin.includes("Direct note"));
     const refreshed = await token({ grant_type: "refresh_token", refresh_token: t.body.refresh_token, client_id: GROK_CLIENT });
     assert.equal(refreshed.status, 200, JSON.stringify(refreshed.body));
     grokCimdTokens = refreshed.body;

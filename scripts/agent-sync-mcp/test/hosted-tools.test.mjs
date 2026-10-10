@@ -228,17 +228,19 @@ test("fixtures:  error_map (CLI exception classes to error codes)", () => {
   }
 });
 
-test("fixtures:  inbox drops DMs, and the hosted allowlist drops off-list channels", async () => {
+test("fixtures:  inbox (hosted lists DMs to the bot, stdio does not), and the hosted allowlist drops off-list channels", async () => {
   for (const c of [...fixtures("inbox"), ...fixtures("allowlist").filter((x) => x.tool === "inbox")]) {
     const { fake, tools } = harness({ fakeOptions: { me: { full_name: "Claude" } } });
     const ids = c.messages.map((m) => fake.addMessage(m.from, m.dm ? "DM" : m.channel, m.topic ?? "", m.content, { dm: m.dm === true }).id);
     const data = structured(await tools.call("inbox", {}), "inbox");
     assert.deepEqual(data.ids, c.expect_indexes.map((i) => ids[i]), c.case);
-    // One stream-scoped query per allowlisted channel, never `is:mentioned` alone.
+    // One stream-scoped query per allowlisted channel, never `is:mentioned` alone;  DMs come from one `is:dm` query.
     for (const r of fake.requestsTo("GET", "messages")) {
       const narrow = JSON.parse(r.params.narrow);
-      assert.ok(narrow.some((o) => o.operator === "channel" && config.channelIds.includes(o.operand)), r.params.narrow);
+      const isDm = narrow.length === 2 && narrow[0].operator === "is" && narrow[0].operand === "dm" && narrow[1].operator === "sender" && narrow[1].negated === true;
+      assert.ok(isDm || (narrow.some((o) => o.operator === "channel" && config.channelIds.includes(o.operand)) && narrow.some((o) => o.operator === "is" && o.operand === "mentioned")), r.params.narrow);
     }
+    assert.equal(fake.requestsTo("GET", "messages").filter((r) => r.params.narrow.includes('"dm"')).length, 1, c.case);
   }
 });
 
