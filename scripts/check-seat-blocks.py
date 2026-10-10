@@ -37,7 +37,7 @@ HOME_FILES = (
     "~/.claude/CLAUDE.md", "~/AGENTS.md", "~/.codex/AGENTS.md", "~/.cursor/rules/agent-sync-zulip.mdc",
     "~/.gemini/config/AGENTS.md", "~/.grok/GROK.md", "~/.fx/AGENTS.md", "~/.minimax/AGENTS.md",
     "~/.minimax/memory/user.md", "~/.clutch/dsh/AGENTS.md", "~/.kimi-code/AGENTS.md", "~/.vibe/AGENTS.md",
-    "~/.copilot/copilot-instructions.md",
+    "~/.copilot/copilot-instructions.md", "~/.config/opencode/AGENTS.md",
 )
 HOME_TREES = (
     "~/.claude/skills", "~/.codex/skills", "~/.cursor/skills", "~/.gemini/skills", "~/.grok/skills",

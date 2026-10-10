@@ -260,7 +260,7 @@ Then, by hand and with the owner's approval of each live install (read the `plan
    | Kimi Code | none | `kimi`, `~/.kimi-code/AGENTS.md` | none (reads the shared `~/.agents/skills`) | `kimi`: `fleet-recall` | `kimi`, a `[[hooks]]` block |
    | Mistral Vibe | none | `vibe`, `~/.vibe/AGENTS.md` | none | none (its `config.toml` holds `mcp_servers = []`) | none |
    | Copilot CLI | none | `copilot`, `~/.copilot/copilot-instructions.md` (UNVERIFIED) | none | `copilot`: `fleet-recall` | none (its hook is fail-closed) |
-   | OpenCode | none | none: `~/AGENTS.md` is read by walking up | none | `opencode`: `fleet-recall` | none (plugin API unproven) |
+   | OpenCode | none | `opencode`, `~/.config/opencode/AGENTS.md` (the owner's row, #438; it may also read `~/AGENTS.md`) | none | `opencode`: `fleet-recall` | none (plugin API unproven) |
    | Conductor | none | none: its Claude Code and Codex read theirs | none | none: each harness inside reads its own | none: the Claude and Codex guards fire inside it |
    | MiniMax Code | MM | `minimax` (`memory/user.md`) | `~/.minimax/skills` | `minimax`: `fleet-recall`, `agent-sync` | none |
    | fx | FX | `fx` | `~/.fx/skills` | `fx`: `fleet-recall`, `agent-sync` | none |

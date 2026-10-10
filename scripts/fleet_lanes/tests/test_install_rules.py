@@ -1146,7 +1146,8 @@ class FleetBasicsTests(HomeCase):
     """Clutch, Kimi, Vibe and Copilot CLI get the Fleet Basics ahead of the Lane Map in one marker block."""
 
     NEW = {"clutch": (".clutch/dsh/AGENTS.md", "clutch"), "kimi": (".kimi-code/AGENTS.md", "nodefault"),
-           "vibe": (".vibe/AGENTS.md", "nodefault"), "copilot": (".copilot/copilot-instructions.md", "nodefault")}
+           "vibe": (".vibe/AGENTS.md", "nodefault"), "copilot": (".copilot/copilot-instructions.md", "nodefault"),
+           "opencode": (".config/opencode/AGENTS.md", "nodefault")}
 
     def test_the_new_platforms_name_their_file_and_variant(self) -> None:
         for name, (rel, variant) in self.NEW.items():
@@ -1197,7 +1198,7 @@ class FleetBasicsTests(HomeCase):
 
     def test_apply_creates_each_file_once_and_verify_passes(self) -> None:
         for name, (rel, _variant) in self.NEW.items():
-            root = rel.split("/", 1)[0]
+            root = IR.PLATFORM_BY_NAME[name].root_dir
             os.makedirs(self.path(root), exist_ok=True)
             with self.subTest(name=name):
                 code, out, err = self.run_cli("plan", name)
@@ -1220,6 +1221,12 @@ class FleetBasicsTests(HomeCase):
                 self.assertEqual(code, IR.EXIT_REFUSED)
                 self.assertIn("does not look installed", out)
         self.assertEqual(os.listdir(self.home), [])
+        # ~/.config is shared, so it proves nothing about OpenCode: its own folder has to be there
+        os.makedirs(self.path(".config/muse"))
+        code, out, _ = self.run_cli("apply", "opencode", "--create")
+        self.assertEqual(code, IR.EXIT_REFUSED)
+        self.assertIn("~/.config/opencode does not exist", out)
+        self.assertFalse(os.path.exists(self.path(".config/opencode")))
 
     def test_the_owners_own_text_survives_and_a_backup_is_made(self) -> None:
         owner = "# My Vibe notes\n\nKeep answers short.\n"
@@ -1250,8 +1257,15 @@ class FleetBasicsTests(HomeCase):
         self.assertEqual(code, IR.EXIT_OK)
         self.assertIn("warning: UNVERIFIED on this Mac", out)
 
-    def test_opencode_conductor_and_muse_code_are_explained_not_written(self) -> None:
-        for name, needle in (("opencode", "~/AGENTS.md"), ("conductor", "Prompts"),
+    def test_opencode_prints_its_double_load_caveat(self) -> None:
+        os.makedirs(self.path(".config/opencode"))
+        _, out, _ = self.run_cli("plan", "opencode", "--create")
+        self.assertIn("WARNING: UNVERIFIED: OpenCode also walks AGENTS.md up", out)
+        self.assertIn("the same Lane Map twice", out)
+        self.assertIn("## Fleet Basics", out)
+
+    def test_conductor_and_muse_code_are_explained_not_written(self) -> None:
+        for name, needle in (("conductor", "Prompts"),
                              ("muse-code", "~/.claude/CLAUDE.md")):
             with self.subTest(name=name):
                 code, out, _ = self.run_cli("plan", name)

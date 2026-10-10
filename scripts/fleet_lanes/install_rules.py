@@ -128,11 +128,14 @@ class Platform:
     size_warn: int | None = None   # plan warns above this many bytes
     note: str = ""
     caveat: str = ""               # an UNVERIFIED fact about this tool: plan and apply print it as a warning
+    tool_dir: str = ""             # the tool's own folder under the home, when its file sits below a shared one (.config)
 
     @property
     def root_dir(self) -> str:
         """First folder below the home (".cursor"); it must exist before --create works.  A file straight in
-        the home (AGENTS.md) has none, so the home itself is the folder."""
+        the home (AGENTS.md) has none, so the home itself is the folder.  `tool_dir` names the folder when the first component is shared (.config)."""
+        if self.tool_dir:
+            return self.tool_dir
         rel = self.rel_path or ""
         return rel.split("/", 1)[0] if "/" in rel else ""
 
@@ -169,7 +172,7 @@ PLATFORMS: tuple[Platform, ...] = (
     # (the platform row is the owner's, #438).  It is an engine-only CLI with no default seat, so it gets the
     # no-default Fleet Basics ahead of the Lane Map, not the Lane Map alone.
     Platform("opencode", ".config/opencode/AGENTS.md", "nodefault", "OpenCode (bundled with Conductor)",
-             caveat="UNVERIFIED: OpenCode also walks AGENTS.md up from the session directory to $HOME (read from the "
+             tool_dir=".config/opencode", caveat="UNVERIFIED: OpenCode also walks AGENTS.md up from the session directory to $HOME (read from the "
                     "binary, not run with a model), so a session under $HOME may load this file and ~/AGENTS.md, "
                     "which is the same Lane Map twice; it does not read ~/.claude/CLAUDE.md as rules"),
     Platform("conductor", None, None, "Conductor (conductor.build)",
