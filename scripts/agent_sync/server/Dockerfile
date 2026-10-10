@@ -6,9 +6,10 @@
 # Build context is the repo root:
 #   docker build -f scripts/agent_sync/server/Dockerfile -t agent-sync-server .
 #
-# No secrets are baked in.  Bot emails and keys, ZULIP_SITE and the routine URLs and keys arrive as
-# environment variables at run time (Infisical -> Coolify).  State, the config and the logs live
-# on the /data volume.
+# No secrets are baked in.  Bot emails and keys and the routine URLs and keys arrive at run time:
+# loaded from Infisical by the entrypoint when Coolify sets the INFISICAL_* machine identity
+# (server/infisical_env.py), else as runtime-only Coolify variables.  ZULIP_SITE is a Coolify
+# variable either way.  State, the config and the logs live on the /data volume.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -33,7 +34,8 @@ COPY scripts/agent_sync /app/scripts/agent_sync
 # The seat partition, read by the daemon at start (it refuses a seat of the Mac instance).
 COPY docs/protocols/agent-sync-partition.toml /app/docs/protocols/agent-sync-partition.toml
 RUN chmod 0755 /app/scripts/agent-sync /app/scripts/agent_sync/server/entrypoint.sh \
-        /app/scripts/agent_sync/server/healthcheck.py \
+        /app/scripts/agent_sync/server/healthcheck.py /app/scripts/agent_sync/server/infisical_env.py \
+        /app/scripts/agent_sync/server/apply_live_config.py \
  && ln -s /app/scripts/agent-sync /usr/local/bin/agent-sync
 
 USER agentsync
