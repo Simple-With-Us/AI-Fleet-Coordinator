@@ -104,7 +104,7 @@ JET was left out of Phase 2 because `openai-dot-bot` was a realm administrator (
 Two identities of the Instinct app (instinct.com), added on Fri, Oct 9:  ECHO posts as `instinct-bat-bot@`, INSTINCT as `instinct-owl-bot@`, both members (role 400).  They share the app's loopback callback `http://127.0.0.1:8737/callback`, the one kind of redirect two seats may share (spec 3.4).
 
 1. Both seats are in `HOSTED_SEATS`, `ZULIP_EMAIL_ECHO` and `ZULIP_EMAIL_INSTINCT` are set, and `SEATS` lists the callback under both.
-2. Deploy (step 1), then install both keys with `--zuliprc` (step 2).
+2. Deploy (step 1), then install both keys with `--zuliprc` (step 2).  Done on Fri, Oct 9, at about 10:24pm:  code version `37f28601` deployed, `ZULIP_KEY_ECHO` and `ZULIP_KEY_INSTINCT` installed (live version `493d4192`), and `infra_phase0.py check` reports 0 failures.
 3. Jay connects one seat at a time (ARMING-JAY.md, "Connect Echo" and "Connect Instinct").  The client id is unknown until the first attempt:  a manual client from `/admin`, or a CIMD id from the refusal log, added to `SEATS.<seat>.cimd_client_ids`.  One CIMD id cannot be listed under both seats yet (`cimdOwner` maps an id to one seat), so if Instinct uses one client document for both identities, that needs a code change first.
 
 ## Rotate a key
@@ -128,4 +128,5 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 - **A4:**  Infisical's Cloudflare Workers sync for the hosted keys, with "Disable Secret Deletion" (replaces step 2).
 - **A5:**  a per-Worker deploy token, kept out of agents' reach (replaces the Global key in step 1).
 - **A1 and D8:**  a key location no agent identity can read.  Until then the INFISICAL_AUTOMATION identity and the Global key can both reach GROK-WEB's key, which D8 accepts.
+- **ECHO and INSTINCT:**  connect one at a time from the Instinct app's own computer ([ARMING-JAY.md](ARMING-JAY.md), "Connect Echo" and "Connect Instinct").  The Worker serves both and both keys are installed (Fri, Oct 9, about 10:24pm);  the client id comes from the first attempt.
 - **JET:**  arm it and connect ChatGPT ([ARMING-JAY.md](ARMING-JAY.md)).  The bot is a member, the Worker serves JET and its key is installed (Fri, Oct 9, about 8:10am), so nothing else blocks it.
