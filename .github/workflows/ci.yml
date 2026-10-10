@@ -40,6 +40,10 @@ jobs:
       run: |
         python3 scripts/test_grok_idle_unload.py
         python3 scripts/test_mac_process_watch_shellular.py
+    # Simulator idle reaper and the Claude turn-end hook:  fake device.plist files and a
+    # temp state dir;  xcrun, simctl and pgrep are patched, so nothing is booted or shut down.
+    - name: Simulator idle reaper tests
+      run: python3 scripts/test_sim_idle_reaper.py
     - name: Verify public activity boundary
       run: python3 scripts/test-public-activity.py
     # The admin panel inlines its own copy of the app registry because the Worker

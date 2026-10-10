@@ -1129,6 +1129,7 @@ Binding on all seats and all apps (owner 2026-08-13).
 - Never stand up, debug, or narrate Xcode MCP.
 - `xcodebuild` and `xcrun simctl` via bash are pre-approved.  Run them without asking.
 - Screenshot the simulator before claiming a user-visible iOS change.
+- Shut a simulator down as soon as the screenshot or test run ends;  never end a turn with one booted.  Enforced:  Claude Code's `sim-session-hook` shuts down what a turn booted, and `com.jay.sim-idle-reaper` shuts down any simulator idle for an hour (`docs/MAC-LOCAL-PROCESSES.md`).
 - Never hand-edit `.pbxproj`, entitlements, or xibs.
 - Full binding text:  `docs/protocols/ios-agent-build-loop.md` in AI-Fleet-Coordinator, or `recall "iOS agent build loop"`.  It moved out of the always-loaded doc on 2026-09-01 (Plan B slice 2), and the corpus ingests the full file nightly.
 
