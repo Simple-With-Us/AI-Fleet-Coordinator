@@ -172,10 +172,10 @@ export function adminPage({ email, seats, clients, refusals, tokenRefusals = [],
     ? refusals
         .map(
           (r) =>
-            `<tr><td>${escapeHtml(ownerTime(r.ts))}</td><td>${escapeHtml(r.by ?? "")}</td><td>${escapeHtml(r.reason)}</td><td><code>${escapeHtml(r.client_id)}</code></td><td><code>${escapeHtml(r.redirect_uri)}</code></td></tr>`,
+            `<tr><td>${escapeHtml(ownerTime(r.ts))}</td><td>${escapeHtml(r.by ?? "")}</td><td>${escapeHtml(r.reason)}</td><td><code>${escapeHtml(r.client_id)}</code></td><td><code>${escapeHtml(r.redirect_uri)}</code></td><td><code>${escapeHtml(r.resource ?? "")}</code></td></tr>`,
         )
         .join("")
-    : `<tr><td colspan="5">No refusals logged.</td></tr>`;
+    : `<tr><td colspan="6">No refusals logged.</td></tr>`;
   const tokenRefusalRows = tokenRefusals.length
     ? tokenRefusals
         .map(
@@ -214,7 +214,7 @@ ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
 <table><tr><th>Client ID</th><th>Name</th><th>Redirect URIs</th><th></th></tr>${clientRows}</table>
 <h2>Refused Authorize Requests</h2>
 <p>${sentences("Each row is a request that passed Cloudflare Access, so the signed-in email is shown.", "Only copy a redirect URI from here if the time matches your own attempt.")}</p>
-<table><tr><th>When</th><th>Signed In As</th><th>Reason</th><th>Client ID</th><th>Redirect URI</th></tr>${refusalRows}</table>
+<table><tr><th>When</th><th>Signed In As</th><th>Reason</th><th>Client ID</th><th>Redirect URI</th><th>Resource</th></tr>${refusalRows}</table>
 <h2>Refused Token Requests (Unauthenticated, Counted)</h2>
 <p>${sentences("Anyone on the internet can send these, so they are counted per reason and client ID and kept apart from the authorize log.")}</p>
 <table><tr><th>Last Seen</th><th>Count</th><th>Reason</th><th>Client ID</th></tr>${tokenRefusalRows}</table>

@@ -114,13 +114,14 @@ test("redirects carry the page Referrer-Policy too, and keep the headers they ha
 test("admin page keeps authorize and token refusals apart and shows the Access email", async () => {
   const res = adminPage({
     ...adminFacts,
-    refusals: [{ ts: 0, where: "authorize", by: "mail@jays.services", reason: "redirect_not_allowlisted", client_id: "https://grok.com/oauth/mcp-client.json", redirect_uri: "https://grok.com/cb" }],
+    refusals: [{ ts: 0, where: "authorize", by: "mail@jays.services", reason: "redirect_not_allowlisted", client_id: "https://grok.com/oauth/mcp-client.json", redirect_uri: "https://grok.com/cb", resource: "https://x.example/<mcp>" }],
     tokenRefusals: [{ ts: 0, where: "token", reason: "cimd_client_not_allowlisted", client_id: "https://<evil>/c.json", count: 41 }],
   });
   const html = await res.text();
   const [authorizePart, tokenPart] = html.split("Refused Token Requests");
   assert.ok(authorizePart.includes("Refused Authorize Requests"));
   assert.ok(authorizePart.includes("mail@jays.services") && authorizePart.includes("https://grok.com/cb"));
+  assert.ok(authorizePart.includes("<th>Resource</th>") && authorizePart.includes("https://x.example/&#60;mcp&#62;"), "the resource the client sent, escaped");
   assert.ok(!authorizePart.includes("&#60;evil&#62;"), "token rows are not in the authorize table");
   assert.ok(tokenPart.includes("&#60;evil&#62;") && tokenPart.includes(">41<"));
 });

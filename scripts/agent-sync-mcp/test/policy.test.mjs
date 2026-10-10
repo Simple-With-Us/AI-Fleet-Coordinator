@@ -196,6 +196,16 @@ test("a hand-registered client may use a seat's configured redirect", () => {
   assert.equal(preGateAuthorize(authorizeParams({ redirect_uri: grok }), cfg).reason, "cimd_client_not_allowlisted");
 });
 
+test("a resource_mismatch refusal carries the resource the client sent, capped for the log", () => {
+  const sent = "https://agent-sync.jays.services/";
+  const got = preGateAuthorize(authorizeParams({ resource: sent }), config);
+  assert.equal(got.reason, "resource_mismatch");
+  assert.equal(got.resource, sent);
+  assert.equal(preGateAuthorize(authorizeParams({ resource: undefined }), config).resource, "");
+  assert.equal(preGateAuthorize(authorizeParams({ resource: `https://x.example/${"a".repeat(600)}` }), config).resource.length, 200);
+  assert.equal(preGateAuthorize(authorizeParams(), config).ok, true);
+});
+
 test("post-gate re-checks the library's parsed request", () => {
   const good = { clientId: CHATGPT_CLIENT, redirectUri: CHATGPT_REDIRECT, codeChallenge: CHALLENGE, codeChallengeMethod: "S256", resource: RESOURCE, scope: ["zulip:read"] };
   assert.equal(postGateAuthRequest(good, config), "JET");
