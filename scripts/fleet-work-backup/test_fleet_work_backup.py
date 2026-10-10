@@ -13,9 +13,11 @@ from __future__ import annotations
 import argparse
 import errno
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
+import plistlib
 import shutil
 import sqlite3
 import stat
@@ -44,6 +46,7 @@ spec.loader.exec_module(fwb)
 
 # Secret-shaped strings, assembled so no literal secret sits in this file.
 AWS = "AKIA" + "Q7ZP3KM9TX2WJ4HB"
+AWS2 = "AKIA" + "Z8Y7X6W5V4U3T2S1"
 PEM = "-----BEGIN " + "RSA PRIVATE KEY-----\n" + "MIIEowIBAAKCAQEA" + "q7Zp3Km9Tx2Wj4Hb" + "Lm8Vc5Rn1Yd6Fs0Gt"
 HIGH = "".join(["aB3dE5", "gH7jK9", "mN1pQ3", "sT5v7x", "Zq2"])
 PW = "".join(["pw-", "Zx9Qw3", "Er5Ty7", "Ui1Op"])
@@ -79,7 +82,11 @@ def make_repo(home: Path, path: Path, remote: str | None = "origin") -> Path:
         bare = home / "remotes" / f"{path.name}.git"
         bare.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "-c", "init.defaultBranch=main", "init", "-q", "--bare", str(bare)], env=GENV, check=True)
-        git(path, "remote", "add", remote, str(bare))
+        # The tool must see a network remote (a local-path remote is the same disk and does not count as
+        # pushed);  insteadOf lets git serve that URL from the local bare repo.
+        url = f"https://example.invalid/{path.name}.git"
+        git(path, "remote", "add", remote, url)
+        git(path, "config", f"url.{bare}.insteadOf", url)
         git(path, "push", "-q", "-u", remote, "main")
     return path
 
@@ -254,23 +261,36 @@ class StageCase(unittest.TestCase):
         self.assertEqual(g.worktrees, 2)
 
     # (a) unpushed refs --------------------------------------------------------------------
-    def test_one_bundle_per_repository_not_per_worktree(self):
-        bundles = [r for r in self.rels("git/") if r.endswith("unpushed.bundle") and f"/{self.group('unpushed').slug}/" in r]
-        self.assertEqual(len(bundles), 1)
+    def bundles_of(self, name):
+        slug = self.group(name).slug
+        return sorted(self.root / r for r in self.stage.items if r.startswith(f"git/{slug}/bundles/"))
 
-    def test_bundle_holds_unpushed_branches_and_verifies(self):
-        b = self.root / f"git/{self.group('unpushed').slug}/unpushed.bundle"
+    def test_bundles_belong_to_the_repository_not_to_a_worktree(self):
+        g = self.group("unpushed")
+        self.assertEqual(len(self.bundles_of("unpushed")), 1)   # main, claude/feature and claude/wt share a commit
+        self.assertFalse(any(r.endswith(".bundle") and "/worktrees/" in r and f"/{g.slug}/" in r for r in self.stage.items))
+
+    def test_bundle_holds_unpushed_branches_and_restores_through_a_real_clone(self):
+        (b,) = self.bundles_of("unpushed")
         heads = subprocess.run(["git", "bundle", "list-heads", str(b)], env=GENV, capture_output=True, text=True).stdout
         for ref in ("refs/heads/main", "refs/heads/claude/feature", "refs/heads/claude/wt"):
-            if ref == "refs/heads/claude/wt":
-                continue  # the lane branch points at pushed history
             self.assertIn(ref, heads)
         fresh = Path(self.fx.tmp) / "restore-unpushed"
-        git(Path(self.fx.tmp), "clone", "-q", str(self.fx.home / "remotes" / "unpushed.git"), str(fresh))
+        # file:// goes through the transport like GitHub does:  only reachable objects arrive
+        git(Path(self.fx.tmp), "clone", "-q", f"file://{self.fx.home / 'remotes' / 'unpushed.git'}", str(fresh))
         git(fresh, "bundle", "verify", str(b))
         git(fresh, "fetch", "-q", str(b), "refs/heads/*:refs/restored/*")
         self.assertEqual(git(fresh, "show", "refs/restored/claude/feature:feature.txt"), "feature")
         self.assertEqual(git(fresh, "show", "refs/restored/main:a.txt"), "a2")
+
+    def test_group_metadata_names_the_bound_and_the_bundles(self):
+        g = self.group("unpushed")
+        meta = json.loads((self.root / f"git/{g.slug}/group.json").read_text())
+        self.assertEqual(meta["bound"]["ref"], "refs/remotes/origin/main")
+        self.assertEqual(meta["bound"]["sha"], git(self.fx.unpushed, "rev-parse", "refs/remotes/origin/main"))
+        self.assertEqual(meta["network_remotes"], ["origin"])
+        self.assertEqual(len(meta["bundles"]), 1)
+        self.assertEqual(sorted(r["ref"] for r in meta["bundles"][0]["refs"]), ["refs/heads/claude/feature", "refs/heads/claude/wt", "refs/heads/main"])
 
     def test_clean_pushed_repo_stages_nothing(self):
         self.assertEqual(self.rels(f"git/{self.group('pushed-clean').slug}/"), [])
@@ -299,7 +319,7 @@ class StageCase(unittest.TestCase):
         patches = [r for r in patches if "/patches/" in r]
         self.assertEqual(len(patches), 1, patches)  # a.txt only:  leaky.py was dropped alone
         fresh = Path(self.fx.tmp) / "restore-dirty"
-        git(Path(self.fx.tmp), "clone", "-q", str(self.fx.home / "remotes" / "flat-dirty.git"), str(fresh))
+        git(Path(self.fx.tmp), "clone", "-q", f"file://{self.fx.home / 'remotes' / 'flat-dirty.git'}", str(fresh))
         git(fresh, "apply", str(self.root / patches[0]))
         self.assertEqual((fresh / "a.txt").read_text(), "a changed\n")
 
@@ -345,7 +365,7 @@ class StageCase(unittest.TestCase):
         self.assertEqual(g.stashes, 2)
         base = git(self.fx.stash, "rev-parse", "HEAD")
         fresh = Path(self.fx.tmp) / "restore-stash"
-        git(Path(self.fx.tmp), "clone", "-q", str(self.fx.home / "remotes" / "stash-repo.git"), str(fresh))
+        git(Path(self.fx.tmp), "clone", "-q", f"file://{self.fx.home / 'remotes' / 'stash-repo.git'}", str(fresh))
         sdir = self.root / f"git/{g.slug}/stashes"
         meta0 = json.loads((sdir / "00/stash.json").read_text())
         meta1 = json.loads((sdir / "01/stash.json").read_text())
@@ -431,19 +451,28 @@ class NameAndContentCase(unittest.TestCase):
     def test_secret_names(self):
         yes = [".env", ".env.local", "prod.env", "a/b/.env.production", "x.pem", "AuthKey_AB12.p8", "k.key", "id_rsa",
                "id_ed25519.pub", "my-zuliprc", "global-api-keys", "a/.secrets/x", "a/.ssh/config", "credentials.json",
-               "mytoken.txt", "app-secret.yml", "Foo.KEYCHAIN-DB", "infisical-machine-identity.json"]
-        no = [".env.example", "src/app.py", "README.md", "a/b/c.txt", "environment.md"]
+               "mytoken.txt", "app-secret.yml", "Foo.KEYCHAIN-DB", "infisical-machine-identity.json",
+               ".dev.vars", ".dev.vars.production", "a/auth.json", "oauth_creds.json", "x/.envrc", "infra/prod.tfstate",
+               "infra/terraform.tfstate.backup", "vars.tfvars", ".config/gh/hosts.yml", "gh/hosts.yml"]
+        no = [".env.example", "src/app.py", "README.md", "a/b/c.txt", "environment.md", "ansible/hosts.yml", "hosts.yml",
+              "src/authors.json"]
         for p in yes:
             self.assertTrue(fwb.is_secret_name(p), p)
         for p in no:
             self.assertFalse(fwb.is_secret_name(p), p)
 
-    def test_tracked_patches_skip_only_the_broad_globs(self):
+    def test_tracked_patches_skip_the_broad_globs_for_source_and_prose_only(self):
         self.assertTrue(fwb.is_secret_name("src/.env", tracked=True))
         self.assertTrue(fwb.is_secret_name("deploy/server.pem", tracked=True))
+        self.assertTrue(fwb.is_secret_name("src/auth.json", tracked=True))
         self.assertFalse(fwb.is_secret_name("src/tokenizer.py", tracked=True))
         self.assertFalse(fwb.is_secret_name("src/secrets_policy.md", tracked=True))
+        self.assertFalse(fwb.is_secret_name("src/secrets/policy.py", tracked=True))
         self.assertTrue(fwb.is_secret_name("src/tokenizer.py", tracked=False))
+        # data and config files named like a secret are dropped even when git tracks them
+        for name in ("config/client_secret.json", "src/service_token.txt", "deploy/secrets.yaml", "config/secrets/prod.yaml",
+                     "db/credentials.sqlite", "x/passwd.conf"):
+            self.assertTrue(fwb.is_secret_name(name, tracked=True), name)
 
     def test_content_patterns(self):
         for text in (AWS, PEM, "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8", "xoxb-" + "8271936450-Qm7ZkP3tXw",
@@ -482,8 +511,8 @@ class NameAndContentCase(unittest.TestCase):
         self.assertEqual(fwb.strip_url_credentials("https://user:tok@github.com/a/b.git"), "https://github.com/a/b.git")
 
 
-class RunCase(unittest.TestCase):
-    """cmd_run end to end against a stub restic."""
+class RunBase(unittest.TestCase):
+    """A temp home with one repository (an unpushed commit), a doc, credentials and a stub restic."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="fwb-run-"))
@@ -500,6 +529,7 @@ class RunCase(unittest.TestCase):
         self.cfg.max_runtime = 0
         self.cfg.load_fn = lambda: 1.0
         self.cfg.swap_fn = lambda: 0.1
+        self.cfg.pressure_fn = lambda: None     # as on a Mac without the sysctl:  the swap rule stands alone
         self.cfg.now_fn = lambda: 1_800_000_000.0
         self.stubdir = self.tmp / "stub"
         self.stubdir.mkdir()
@@ -511,6 +541,7 @@ class RunCase(unittest.TestCase):
             ' echo "SKLEN=${#AWS_SECRET_ACCESS_KEY}"; echo "REGION=${AWS_DEFAULT_REGION:-}"; } >> "$STUB_DIR/env.log"\n'
             'if [ "$1" = backup ]; then\n'
             '  [ -n "$STUB_FAIL" ] && { echo "boom" >&2; exit 1; }\n'
+            '  [ -n "$STUB_WRONG_PW" ] && { echo "Fatal: wrong password or no key found" >&2; exit 1; }\n'
             '  ls "${@: -1}" > "$STUB_DIR/stage-listing.txt"\n'
             '  echo \'{"message_type":"status"}\'\n'
             '  echo \'{"message_type":"summary","snapshot_id":"abcdef0123456789","data_added":4096,"total_files_processed":3}\'\n'
@@ -543,6 +574,24 @@ class RunCase(unittest.TestCase):
     def argv(self) -> list[str]:
         p = self.stubdir / "argv.log"
         return p.read_text().splitlines() if p.exists() else []
+
+    def stub_gitleaks(self, body: str, name: str = "gitleaks-stub") -> Path:
+        """A gitleaks stub:  answers 'version', and otherwise runs ``body`` with $root (the batch folder) and
+        $rep (the report path) set.  Every call's arguments go to $STUB_DIR/gl-argv.log."""
+        stub = self.tmp / name
+        stub.write_text(
+            "#!/bin/bash\n"
+            'echo "$@" >> "$STUB_DIR/gl-argv.log"\n'
+            'while [ $# -gt 0 ]; do [ "$1" = "-r" ] && rep="$2"; [ "$1" = dir ] && root="$2"; shift; done\n'
+            '[ -z "$root" ] && { echo stub-1.0; exit 0; }\n'
+            'find "$root" -type f | sed "s|^$root/||" >> "$STUB_DIR/gl-files.log"\n'
+            + body)
+        stub.chmod(0o755)
+        return stub
+
+
+class RunCase(RunBase):
+    """cmd_run end to end against a stub restic."""
 
     def test_dry_run_uploads_nothing_and_reports(self):
         out = self.tmp / "report.json"
@@ -728,11 +777,12 @@ class RunCase(unittest.TestCase):
         stub.chmod(0o755)
         self.cfg.gitleaks_bin = str(stub)
         self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
-        (self.cfg.state_dir / "allow.txt").write_text(str(self.home / "apps" / "doc.md") + "\n")
+        src = str(self.home / "apps" / "doc.md")
+        (self.cfg.state_dir / "allow.txt").write_text(f"{src} @ {hashlib.sha1(b'doc' + bytes([10])).hexdigest()[:12]}\n")
         stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
         self.assertIn("files/apps/doc.md", stage.items)
         self.assertEqual(stage.dropped, [])
-        self.assertEqual(stage.allowed, [str(self.home / "apps" / "doc.md")])
+        self.assertEqual(stage.allowed, [src])
 
     def counting_gitleaks(self) -> Path:
         stub = self.tmp / "gitleaks-count"
@@ -771,13 +821,92 @@ class RunCase(unittest.TestCase):
         stage, *_, gate3, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
         self.assertEqual(gate3["scanned"], 1)
 
-    def test_gitleaks_budget_leaves_the_rest_pending_not_lost(self):
+    def test_gitleaks_budget_spent_defers_the_files_it_did_not_clear(self):
         self.cfg.gitleaks_bin = str(self.counting_gitleaks())
         self.cfg.gitleaks_budget_s = 0
-        stage, *_ , gate, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
-        self.assertGreater(gate["gitleaks_pending"], 0)
+        stage, *_, gate, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertGreater(gate["deferred"], 0)
+        self.assertEqual(gate["gitleaks_pending"], gate["deferred"])
         self.assertFalse((self.stubdir / "gl-runs.log").exists())
-        self.assertIn("files/apps/doc.md", stage.items)  # regex-scanned, still staged
+        self.assertNotIn("files/apps/doc.md", stage.items)              # fail closed:  not uploaded unscanned
+        self.assertTrue(any(d["path"].endswith("doc.md") and d["reason"] == "gitleaks-budget" for d in stage.deferred))
+        self.assertEqual(stage.dropped, [])                             # a deferral is not a secret finding
+        self.assertTrue(any(k.endswith(".bundle") for k in stage.items))   # bundles were scanned before they were made
+        self.cfg.gitleaks_budget_s = 1500                               # the next run picks the file up
+        stage, *_, gate, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertIn("files/apps/doc.md", stage.items)
+        self.assertEqual(gate["deferred"], 0)
+
+    def test_a_gitleaks_failure_defers_instead_of_uploading(self):
+        stub = self.stub_gitleaks('echo "boom" >&2\nexit 2\n')
+        self.cfg.gitleaks_bin = str(stub)
+        stage, *_, gate, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertNotIn("files/apps/doc.md", stage.items)
+        self.assertEqual(gate["deferred"], len(stage.deferred))
+        self.assertTrue(all(d["reason"] == "gitleaks-unreadable" for d in stage.deferred))
+        self.assertIn("unreadable", gate["gitleaks_error"])
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        line = self.log().splitlines()[-1]
+        self.assertIn("status=partial", line)
+        self.assertIn("gate=gitleaks-error", line)
+        self.assertIn("warn=gitleaks-error", line)
+        self.assertIn("--tag fleet-work --tag partial", " ".join(a for a in self.argv() if a.startswith("backup")))
+
+    def test_one_unreadable_file_does_not_block_the_files_around_it(self):
+        write(self.home / "apps" / "poison.md", "p\n")
+        write(self.home / "apps" / "zz-later.md", "later\n")
+        stub = self.stub_gitleaks('find "$root" -name poison.md | grep -q . && exit 2\nprintf "[]" > "$rep"\nexit 0\n')
+        self.cfg.gitleaks_bin = str(stub)
+        stage, *_, gate, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertIn("files/apps/doc.md", stage.items)
+        self.assertIn("files/apps/zz-later.md", stage.items)
+        self.assertNotIn("files/apps/poison.md", stage.items)
+        self.assertEqual([d["path"].rsplit("/", 1)[-1] for d in stage.deferred], ["poison.md"])
+        self.assertEqual(gate["gitleaks_unreadable"], 1)
+
+    def test_a_finding_that_maps_to_no_staged_file_is_an_error_not_a_pass(self):
+        stub = self.stub_gitleaks('printf \'[{"RuleID":"r","File":"/nowhere/else.txt"}]\' > "$rep"\nexit 0\n')
+        self.cfg.gitleaks_bin = str(stub)
+        stage, *_, gate, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertEqual(gate["gitleaks_error"], "unmapped-finding")
+        self.assertNotIn("files/apps/doc.md", stage.items)
+
+    def test_gitleaks_is_told_to_read_every_staged_size_and_is_not_given_binary_files(self):
+        write(self.home / "apps" / "blob.bin", "\0\1\2 binary\n")
+        con = sqlite3.connect(self.home / "apps" / "x.db")
+        con.execute("create table t(x)")
+        con.commit()
+        con.close()
+        stub = self.stub_gitleaks('printf "[]" > "$rep"\nexit 0\n')
+        self.cfg.gitleaks_bin = str(stub)
+        stage, *_, gate, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        seen = (self.stubdir / "gl-files.log").read_text().split()
+        self.assertIn("files/apps/doc.md", seen)
+        self.assertNotIn("files/apps/blob.bin", seen)           # gitleaks does not read binary content
+        self.assertNotIn("files/apps/x.db", seen)
+        self.assertIn("files/apps/blob.bin", stage.items)       # regex-scanned, kept, and counted
+        self.assertIn("files/apps/x.db", stage.items)
+        self.assertEqual(gate["regex_only"], 2)
+        self.assertEqual(gate["deferred"], 0)
+        limit = (self.stubdir / "gl-argv.log").read_text().split("--max-target-megabytes ")[1].split()[0]
+        self.assertEqual(int(limit), self.cfg.max_file_bytes // (1024 * 1024) + 1)    # nothing staged is skipped for size
+
+    def test_a_binary_file_with_a_key_is_still_dropped_by_the_regex(self):
+        write(self.home / "apps" / "blob.bin", "\0\1\2 " + AWS + "\n")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertNotIn("files/apps/blob.bin", stage.items)
+        self.assertEqual([d["reason"] for d in stage.dropped if d["path"].endswith("blob.bin")], ["content:aws-access-key-id"])
+
+    def test_a_reviewed_regex_hit_still_goes_through_gitleaks(self):
+        write(self.home / "apps" / "rule.md", f"bad example: {AWS}\n")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        digest = next(d["digest"] for d in stage.dropped if d["path"].endswith("rule.md"))
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.state_dir / "allow.txt").write_text(f"{self.home / 'apps' / 'rule.md'} @ {digest}\n")
+        self.cfg.gitleaks_bin = str(self.stub_gitleaks('printf "[]" > "$rep"\nexit 0\n'))
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertIn("files/apps/rule.md", stage.items)
+        self.assertIn("files/apps/rule.md", (self.stubdir / "gl-files.log").read_text().split())
 
     def test_allow_list_lets_a_reviewed_content_hit_through_but_never_a_secret_name(self):
         write(self.home / "apps" / "rule.md", f"bad example: {AWS}\n")
@@ -785,29 +914,76 @@ class RunCase(unittest.TestCase):
         stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
         self.assertNotIn("files/apps/rule.md", stage.items)
         src = str(self.home / "apps" / "rule.md")
+        digest = next(d["digest"] for d in stage.dropped if d["path"] == src)
+        self.assertRegex(digest, r"^[0-9a-f]{12}$")
         self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
-        (self.cfg.state_dir / "allow.txt").write_text(f"# reviewed\n{src}\n{self.home / 'apps' / 'prod.env'}\n")
+        (self.cfg.state_dir / "allow.txt").write_text(
+            f"# reviewed\n{src} @ {digest}\n{self.home / 'apps' / 'prod.env'} @ {'0' * 12}\n")
         stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
         self.assertIn("files/apps/rule.md", stage.items)
         self.assertEqual(stage.allowed, [src])
         self.assertNotIn("files/apps/prod.env", stage.items)
-        (self.cfg.state_dir / "allow.txt").write_text("# the owner took the line out\n")
+        # a real key pasted into the file after the review:  the pin no longer matches
+        write(self.home / "apps" / "rule.md", f"bad example: {AWS}\nand now {AWS2}\n")
         stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
-        self.assertNotIn("files/apps/rule.md", stage.items)   # an allowed hit is never cached as clean
+        self.assertNotIn("files/apps/rule.md", stage.items)
+        self.assertEqual(stage.allow_stale, [src])
+        # the owner took the line out
+        (self.cfg.state_dir / "allow.txt").write_text("# nothing allowed\n")
+        write(self.home / "apps" / "rule.md", f"bad example: {AWS}\n")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertNotIn("files/apps/rule.md", stage.items)    # an allowed hit is never cached as clean
 
-    def test_an_unpushed_bundle_with_a_content_hit_is_dropped_unless_allowed(self):
+    def test_an_allow_line_without_a_digest_is_ignored_and_reported(self):
+        write(self.home / "apps" / "rule.md", f"bad example: {AWS}\n")
+        src = str(self.home / "apps" / "rule.md")
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.state_dir / "allow.txt").write_text(f"{src}\n")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertNotIn("files/apps/rule.md", stage.items)
+        self.assertEqual(stage.allow_unpinned, [src])
+
+    def test_the_detail_log_prints_the_exact_line_to_paste_into_allow_txt(self):
+        write(self.home / "apps" / "rule.md", f"bad example: {AWS}\n")
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        detail = self.cfg.detail_log_path.read_text()
+        src = str(self.home / "apps" / "rule.md")
+        m = [l.strip() for l in detail.splitlines() if l.strip().startswith("allow-line ") and src in l]
+        self.assertEqual(len(m), 1)
+        self.assertNotIn(AWS, detail)
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.state_dir / "allow.txt").write_text(m[0][len("allow-line "):] + "\n")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertIn("files/apps/rule.md", stage.items)
+
+    def bundle_heads(self, stage):
+        out = ""
+        for k in stage.items:
+            if k.endswith(".bundle"):
+                out += subprocess.run(["git", "bundle", "list-heads", str(self.cfg.dry_stage / k)], env=GENV,
+                                      capture_output=True, text=True).stdout
+        return out
+
+    def test_an_unpushed_bundle_with_a_content_hit_is_dropped_unless_pinned_in_allow_txt(self):
         r = self.home / "Code" / "r"
         write(r / "doc.md", f"example {AWS}\n")
         git(r, "add", "-A")
         git(r, "commit", "-q", "-m", "doc with a key-shaped string")
         stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
-        self.assertFalse(any(k.endswith("unpushed.bundle") for k in stage.items))
+        self.assertFalse(any(k.endswith(".bundle") for k in stage.items))
         label = os.path.realpath(r / ".git") + " ref refs/heads/main"
-        self.assertEqual([d["path"] for d in stage.dropped if " ref " in d["path"]], [label])
+        tip = git(r, "rev-parse", "HEAD")
+        self.assertEqual([(d["path"], d["digest"]) for d in stage.dropped if " ref " in d["path"]], [(label, tip[:12])])
         self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
-        (self.cfg.state_dir / "allow.txt").write_text(label + "\n")
+        (self.cfg.state_dir / "allow.txt").write_text(f"{label} @ {tip[:12]}\n")
         stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
-        self.assertTrue(any(k.endswith("unpushed.bundle") for k in stage.items))
+        self.assertTrue(any(k.endswith(".bundle") for k in stage.items))
+        write(r / "more.txt", "the branch moved on\n")           # a new commit:  the reviewed tip is gone
+        git(r, "add", "-A")
+        git(r, "commit", "-q", "-m", "more")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertFalse(any(k.endswith(".bundle") for k in stage.items))
+        self.assertEqual(stage.allow_stale, [label])
 
     def test_one_dirty_branch_costs_only_that_branch_not_the_repository(self):
         r = self.home / "Code" / "r"
@@ -822,8 +998,7 @@ class RunCase(unittest.TestCase):
         git(r, "commit", "-q", "-m", "leaky work")
         git(r, "checkout", "-q", "main")
         stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
-        bundle = next(self.cfg.dry_stage / k for k in stage.items if k.endswith("unpushed.bundle"))
-        heads = subprocess.run(["git", "bundle", "list-heads", str(bundle)], env=GENV, capture_output=True, text=True).stdout
+        heads = self.bundle_heads(stage)
         self.assertIn("refs/heads/clean-branch", heads)
         self.assertIn("refs/heads/main", heads)
         self.assertNotIn("leaky-branch", heads)
@@ -863,8 +1038,9 @@ class RunCase(unittest.TestCase):
             os.environ.pop("STUB_RC3", None)
         line = self.log().splitlines()[-1]
         self.assertIn("status=partial", line)
-        self.assertIn("warn=restic-unreadable-files", line)
+        self.assertIn("restic-unreadable-files", line)
         self.assertTrue(any(a.startswith("forget") for a in self.argv()))
+        self.assertIn("tag --add partial abcdef0123456789", self.argv())   # kept out of the good snapshots' retention
 
     def test_a_changed_file_is_rescanned_and_a_new_secret_is_caught(self):
         stage, *_ , gate1, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
@@ -883,6 +1059,496 @@ class RunCase(unittest.TestCase):
         self.assertTrue(rep["gate"]["gitleaks"])
         self.assertEqual(rep["gate"]["gitleaks_error"], "")
         self.assertEqual(rep["dropped"], [])
+
+
+class BinaryCase(RunBase):
+    """A binary change is never staged as git's binary patch (zlib and base85, unreadable to both scanners):
+    the raw new content is staged instead, so the gate reads it."""
+
+    def setUp(self):
+        super().setUp()
+        self.r = self.home / "Code" / "r"
+        (self.r / "data.bin").write_bytes(b"\0\1\2 original\n")
+        git(self.r, "add", "data.bin")
+        git(self.r, "commit", "-q", "-m", "add a binary file")
+        git(self.r, "push", "-q")
+        self.cfg.max_file_bytes = 1024 * 1024
+
+    def build(self):
+        stage, disc, wts, groups, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.group = groups[0]
+        self.base = f"git/{self.group.slug}"
+        return stage
+
+    def staged_bytes(self, stage):
+        return b"".join(p.read_bytes() for p in self.cfg.dry_stage.rglob("*") if p.is_file())
+
+    def test_a_modified_tracked_binary_is_staged_raw_and_restorable(self):
+        new = b"\0\1\2 new content \xff\xfe\n"
+        (self.r / "data.bin").write_bytes(new)
+        stage = self.build()
+        raw = [k for k in stage.items if k.endswith("/binary/data.bin")]
+        self.assertEqual(len(raw), 1)
+        self.assertEqual(stage.items[raw[0]].kind, "binary")
+        self.assertEqual((self.cfg.dry_stage / raw[0]).read_bytes(), new)
+        self.assertFalse([k for k in stage.items if k.endswith(".patch")])       # no unreadable binary patch
+        self.assertEqual(stage.items[raw[0]].src, str(self.r / "data.bin"))
+        meta = json.loads((self.cfg.dry_stage / f"{self.base}/worktrees").glob("*/worktree.json").__next__().read_text())
+        self.assertEqual(meta["head"], git(self.r, "rev-parse", "HEAD"))
+
+    def test_a_key_inside_a_modified_binary_is_caught_by_the_regex(self):
+        (self.r / "data.bin").write_bytes(b"\0" + AWS.encode() + b"\n")
+        stage = self.build()
+        self.assertFalse([k for k in stage.items if "data.bin" in k])
+        self.assertEqual([d["reason"] for d in stage.dropped if d["path"].endswith("data.bin")], ["content:aws-access-key-id"])
+        self.assertNotIn(AWS.encode(), self.staged_bytes(stage))
+
+    def test_binary_files_in_a_stash_and_a_stash_u_are_scanned_too(self):
+        (self.r / "data.bin").write_bytes(b"\0 clean stash content\n")
+        (self.r / "new.bin").write_bytes(b"\0 clean untracked\n")
+        git(self.r, "stash", "push", "-q", "-u", "-m", "clean")
+        (self.r / "data.bin").write_bytes(b"\0" + AWS.encode() + b"\n")
+        (self.r / "leak.bin").write_bytes(b"\0" + AWS2.encode() + b"\n")
+        git(self.r, "stash", "push", "-q", "-u", "-m", "leaky")
+        stage = self.build()
+        blob = self.staged_bytes(stage)
+        self.assertNotIn(AWS.encode(), blob)
+        self.assertNotIn(AWS2.encode(), blob)
+        keys = sorted(k.split(f"{self.base}/stashes/", 1)[1] for k in stage.items if "/stashes/" in k and "/binary/" in k)
+        self.assertEqual(keys, ["01/tracked/binary/data.bin", "01/untracked/binary/new.bin"])    # the clean stash (index 1)
+        got = (self.cfg.dry_stage / f"{self.base}/stashes/01/tracked/binary/data.bin").read_bytes()
+        self.assertEqual(got, b"\0 clean stash content\n")
+        dropped = sorted(d["path"].rsplit(":", 1)[1] for d in stage.dropped if "#stash0" in d["path"])
+        self.assertEqual(dropped, ["data.bin", "leak.bin"])
+
+    def test_a_deleted_tracked_binary_is_listed_not_patched(self):
+        os.unlink(self.r / "data.bin")
+        stage = self.build()
+        lst = [k for k in stage.items if k.endswith("binary-deleted.txt")]
+        self.assertEqual(len(lst), 1)
+        self.assertEqual((self.cfg.dry_stage / lst[0]).read_text().split(), ["data.bin"])
+        self.assertFalse([k for k in stage.items if k.endswith(".patch")])
+
+    def test_a_tracked_binary_with_a_secret_name_is_dropped_by_name(self):
+        (self.r / "client_secret.bin").write_bytes(b"\0 v1\n")
+        git(self.r, "add", "client_secret.bin")
+        git(self.r, "commit", "-q", "-m", "add")
+        git(self.r, "push", "-q")
+        (self.r / "client_secret.bin").write_bytes(b"\0 v2 not matched by any pattern\n")
+        stage = self.build()
+        self.assertFalse([k for k in stage.items if "client_secret" in k])
+        self.assertIn("secret-name", [d["reason"] for d in stage.dropped if d["path"].endswith("client_secret.bin")])
+
+    def test_an_oversize_stash_entry_is_skipped_before_git_produces_it(self):
+        (self.r / "data.bin").write_bytes(b"\0" + b"x" * 5000)
+        git(self.r, "stash", "push", "-q", "-m", "big")
+        self.cfg.max_file_bytes = 1000
+        stage = self.build()
+        self.assertTrue(any("#stash0:data.bin" in f["path"] and f["size"] > 1000 for f in stage.large))
+        self.assertFalse([k for k in stage.items if "/stashes/" in k and "data.bin" in k])
+
+    def test_a_text_file_still_gets_a_patch_that_applies(self):
+        write(self.r / "a.txt", "edited\n")
+        stage = self.build()
+        patches = [k for k in stage.items if k.endswith(".patch")]
+        self.assertEqual(len(patches), 1)
+        fresh = self.tmp / "fresh"
+        git(self.tmp, "clone", "-q", f"file://{self.home / 'remotes' / 'r.git'}", str(fresh))
+        git(fresh, "apply", str(self.cfg.dry_stage / patches[0]))
+        self.assertEqual((fresh / "a.txt").read_text(), "edited\n")
+
+
+class BundleCase(RunBase):
+    def setUp(self):
+        super().setUp()
+        self.r = self.home / "Code" / "r"
+
+    def build(self):
+        stage, disc, wts, groups, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.groups = groups
+        self.disc = disc
+        return stage
+
+    def bundles(self, stage):
+        return sorted(self.cfg.dry_stage / k for k in stage.items if k.endswith(".bundle"))
+
+    def heads(self, bundle):
+        out = subprocess.run(["git", "bundle", "list-heads", str(bundle)], env=GENV, capture_output=True, text=True).stdout
+        return sorted(l.split()[1] for l in out.splitlines())
+
+    def test_a_restore_still_works_after_github_deletes_a_pushed_branch(self):
+        # A local branch stacked on a pushed feature branch.  GitHub deletes the feature branch after a
+        # squash merge and a later clone cannot fetch its commits:  the bundle must not need them.
+        git(self.r, "checkout", "-q", "-b", "feat", "origin/main")
+        write(self.r / "feat.txt", "feat\n")
+        git(self.r, "add", "-A")
+        git(self.r, "commit", "-q", "-m", "feat")
+        git(self.r, "push", "-q", "origin", "feat")
+        git(self.r, "checkout", "-q", "-b", "local-on-feat")
+        write(self.r / "local.txt", "local\n")
+        git(self.r, "add", "-A")
+        git(self.r, "commit", "-q", "-m", "local only")
+        git(self.r, "checkout", "-q", "main")
+        stage = self.build()
+        bare = self.home / "remotes" / "r.git"
+        git(bare, "branch", "-D", "feat")
+        git(bare, "gc", "-q", "--prune=now")
+        fresh = self.tmp / "fresh"
+        git(self.tmp, "clone", "-q", f"file://{bare}", str(fresh))
+        self.assertEqual(git(fresh, "branch", "-r", "--list", "origin/feat"), "")
+        bundles = self.bundles(stage)
+        self.assertEqual(len(bundles), 2)        # main's own commit, and the feat-based branch
+        for b in bundles:
+            git(fresh, "bundle", "verify", str(b))
+            git(fresh, "fetch", "-q", str(b), "refs/heads/*:refs/restored/*")
+        self.assertEqual(git(fresh, "show", "refs/restored/local-on-feat:local.txt"), "local")
+        self.assertEqual(git(fresh, "show", "refs/restored/local-on-feat:feat.txt"), "feat")   # the deleted branch's commit travels along
+        self.assertEqual(git(fresh, "show", "refs/restored/main:a.txt"), "changed and committed, not pushed")
+
+    def test_independent_branches_get_their_own_bundle_and_overlapping_ones_share(self):
+        for name in ("a", "b"):
+            git(self.r, "checkout", "-q", "-b", name, "origin/main")
+            write(self.r / f"branch-{name}.txt", name + "\n")
+            git(self.r, "add", "-A")
+            git(self.r, "commit", "-q", "-m", name)
+        git(self.r, "checkout", "-q", "main")
+        git(self.r, "branch", "c")                 # same commit as main:  overlaps it
+        stage = self.build()
+        by = {tuple(self.heads(b)): b for b in self.bundles(stage)}
+        self.assertEqual(sorted(by), [("refs/heads/a",), ("refs/heads/b",), ("refs/heads/c", "refs/heads/main")])
+
+    def test_bundles_are_byte_identical_between_runs(self):
+        git(self.r, "checkout", "-q", "-b", "other", "origin/main")
+        write(self.r / "o.txt", "o\n")
+        git(self.r, "add", "-A")
+        git(self.r, "commit", "-q", "-m", "other")
+        git(self.r, "checkout", "-q", "main")
+        stage = self.build()
+        first = {b.name: hashlib.sha1(b.read_bytes()).hexdigest() for b in self.bundles(stage)}
+        stage = self.build()
+        second = {b.name: hashlib.sha1(b.read_bytes()).hexdigest() for b in self.bundles(stage)}
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), 2)     # so restic stores an unchanged branch once
+
+    def test_a_remote_that_is_a_local_path_does_not_count_as_pushed(self):
+        lo = make_repo(self.home, self.home / "Code" / "local-origin", remote=None)
+        bare = self.home / "remotes" / "local-origin.git"
+        subprocess.run(["git", "-c", "init.defaultBranch=main", "init", "-q", "--bare", str(bare)], env=GENV, check=True)
+        git(lo, "remote", "add", "origin", str(bare))
+        git(lo, "push", "-q", "-u", "origin", "main")
+        stage = self.build()
+        g = next(g for g in self.groups if g.name == "local-origin")
+        self.assertEqual(g.unpushed_refs, 1)              # on the same disk is not a backup
+        self.assertFalse(g.no_remote)
+        (b,) = [self.cfg.dry_stage / k for k in stage.items if k.endswith(".bundle") and f"/{g.slug}/" in k]
+        fresh = self.tmp / "from-bundle"
+        git(self.tmp, "clone", "-q", str(b), str(fresh))     # whole history, no prerequisites
+        self.assertEqual((fresh / "a.txt").read_text(), "a\n")
+        self.assertTrue(any(n.startswith("local-only-remotes") for n in stage.notes))
+
+    def test_network_urls(self):
+        for url in ("https://github.com/a/b.git", "git@github.com:a/b.git", "ssh://git@github.com/a/b",
+                    "github.com:a/b", "git://example.org/x.git", "HTTPS://GITHUB.COM/a/b"):
+            self.assertTrue(fwb.is_network_url(url), url)
+        for url in ("/Users/jay/Code/BotFleet", "file:///tmp/x.git", "../x", "./x", "~/x",
+                    "/Volumes/External/Autorotate.bundle"):
+            self.assertFalse(fwb.is_network_url(url), url)
+
+    def test_a_detached_head_bundle_is_scanned_like_a_branch(self):
+        d = make_repo(self.home, self.home / "Code" / "det")
+        git(d, "checkout", "-q", "--detach")
+        write(d / "k.md", f"example {AWS}\n")
+        git(d, "add", "-A")
+        git(d, "commit", "-q", "-m", "leaky detached")
+        stage = self.build()
+        self.assertFalse([k for k in stage.items if k.endswith("head.bundle")])
+        self.assertEqual([x["path"] for x in stage.dropped if "detached HEAD" in x["path"]], [f"{d} (detached HEAD)"])
+        git(d, "checkout", "-q", "main")
+        git(d, "checkout", "-q", "--detach")
+        write(d / "k2.md", "fine\n")
+        git(d, "add", "-A")
+        git(d, "commit", "-q", "-m", "clean detached")
+        stage = self.build()
+        self.assertTrue([k for k in stage.items if k.endswith("head.bundle")])
+
+    def test_a_linked_worktree_outside_the_scanned_folders_is_found_through_git(self):
+        away = self.home / "elsewhere" / "wt"
+        away.parent.mkdir(parents=True)
+        git(self.r, "worktree", "add", "-q", "-b", "away", str(away))
+        write(away / "a.txt", "dirty far away\n")
+        gone = self.home / "elsewhere" / "gone"
+        git(self.r, "worktree", "add", "-q", "-b", "gone", str(gone))
+        shutil.rmtree(gone)
+        stage = self.build()
+        self.assertTrue([k for k in stage.items if "/patches/" in k and k.endswith(".patch")])
+        self.assertTrue(any(n.startswith("worktree-missing") and str(gone) in n for n in self.disc.notes))
+
+    def test_a_dangling_worktree_folder_is_kept_as_plain_files(self):
+        pruned = self.home / "apps" / "pruned"
+        pruned.mkdir(parents=True)
+        (pruned / ".git").write_text("gitdir: /nonexistent/gone/.git/worktrees/x\n")
+        write(pruned / "notes.txt", "work that was in a pruned worktree\n")
+        stage = self.build()
+        self.assertIn("files/apps/pruned/notes.txt", stage.items)
+
+    def test_runtime_session_stores_are_skipped_by_default(self):
+        a = self.home / "apps"
+        write(a / "grok-acp-runtime" / "acp-home" / "sessions" / "s1.json", "{}\n")
+        write(a / "grok-acp-runtime" / "acp-home" / "memtrace" / "m.json", "{}\n")
+        write(a / "grok-acp-runtime" / "acp-home" / "config.toml", "x=1\n")
+        write(a / "fleet-rag" / "mined" / "chat" / "x.jsonl", "{}\n")
+        write(a / "fleet-rag" / "mined" / "keep.json", "{}\n")
+        write(a / "grok-acp-runtime" / "acp-home" / "auth.json", '{"k": 1}\n')
+        stage = self.build()
+        got = sorted(k for k in stage.items if k.startswith("files/apps/") and ("acp-home" in k or "mined" in k))
+        self.assertEqual(got, ["files/apps/fleet-rag/mined/keep.json", "files/apps/grok-acp-runtime/acp-home/config.toml"])
+        self.assertTrue(any(n.startswith("skipped-by-default") for n in stage.notes))
+        self.assertIn("secret-name", [d["reason"] for d in stage.dropped if d["path"].endswith("auth.json")])
+
+
+class RunBehaviourCase(RunBase):
+    def test_a_full_swap_alone_does_not_skip_a_quiet_mac(self):
+        self.cfg.swap_fn = lambda: 0.97
+        self.cfg.pressure_fn = lambda: 1
+        self.assertIsNone(fwb.pressure_reason(self.cfg))
+        self.cfg.pressure_fn = lambda: 2
+        self.assertEqual(fwb.pressure_reason(self.cfg), "swap=97%>=95%,pressure=2")
+        self.cfg.swap_fn = lambda: 0.1
+        self.cfg.pressure_fn = lambda: 4
+        self.assertEqual(fwb.pressure_reason(self.cfg), "memory-pressure=4")
+        self.cfg.pressure_fn = lambda: None            # no sysctl:  the swap rule alone
+        self.cfg.swap_fn = lambda: 0.96
+        self.assertTrue(fwb.pressure_reason(self.cfg).startswith("swap=96%"))
+
+    def test_the_gate_fields_are_in_the_run_line(self):
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        line = self.log().splitlines()[-1]
+        self.assertIn("gate=regex-only", line)
+        self.assertIn("warn=gitleaks-missing", line)
+        self.assertIn("deferred=0", line)
+        self.assertRegex(line, r"regex_only=\d+")
+        self.cfg.gitleaks_bin = str(self.stub_gitleaks('printf "[]" > "$rep"\nexit 0\n'))
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        line = self.log().splitlines()[-1]
+        self.assertIn("gate=gitleaks", line)
+        self.assertNotIn("gate=gitleaks-error", line)
+        self.assertNotIn("gitleaks-missing", line)
+        self.assertIn("status=ok", line)
+
+    def test_a_lane_link_onto_an_unmounted_volume_makes_the_run_partial(self):
+        lanes = self.home / "apps" / "lanes"
+        lanes.mkdir(parents=True)
+        (lanes / "Repo").symlink_to("/Volumes/fwb-test-not-mounted/Lanes/Repo")
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        line = self.log().splitlines()[-1]
+        self.assertIn("status=partial", line)
+        self.assertIn("warn=volume-missing", line)
+        backup = next(a for a in self.argv() if a.startswith("backup"))
+        self.assertIn("--tag fleet-work --tag partial", backup)      # kept out of the good snapshots' retention
+        forget = next(a for a in self.argv() if a.startswith("forget"))
+        self.assertIn("--group-by host,tags", forget)
+        self.assertIn("not mounted", self.cfg.detail_log_path.read_text())
+
+    def test_a_good_run_carries_no_partial_tag(self):
+        fwb.cmd_run(self.cfg, self.args)
+        self.assertNotIn("partial", next(a for a in self.argv() if a.startswith("backup")))
+
+    def test_a_wrong_password_is_its_own_reason(self):
+        os.environ["STUB_WRONG_PW"] = "1"
+        try:
+            self.assertEqual(fwb.cmd_run(self.cfg, self.args), 4)
+        finally:
+            os.environ.pop("STUB_WRONG_PW", None)
+        self.assertIn("status=error reason=wrong-password", self.log())
+
+    def test_runs_that_are_not_ok_are_counted_and_warn_after_a_day(self):
+        os.environ["STUB_FAIL"] = "1"
+        for _ in range(8):
+            fwb.cmd_run(self.cfg, self.args)
+        lines = self.log().splitlines()
+        self.assertNotIn("warn=", lines[6])
+        self.assertIn("not_ok_in_a_row=8", lines[7])
+        self.assertIn("warn=no-complete-backup-for-about-24h", lines[7])
+        self.assertIn("last_ok=never", lines[7])
+        os.environ.pop("STUB_FAIL")
+        fwb.cmd_run(self.cfg, self.args)
+        self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 0)
+
+    def test_skip_gitleaks_is_refused_outside_a_dry_run(self):
+        self.args.skip_gitleaks = True
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 2)
+        self.assertIn("reason=skip-gitleaks-is-for-a-dry-run", self.log())
+        self.assertEqual(self.argv(), [])
+
+    def test_a_timeout_removes_the_stage(self):
+        with mock.patch.object(fwb, "build_stage", side_effect=fwb.Timeout()):
+            self.cfg.stage.mkdir(parents=True)
+            self.assertEqual(fwb.cmd_run(self.cfg, self.args), 3)
+        self.assertFalse(self.cfg.stage.exists())
+
+    def test_a_restic_timeout_sends_sigint_first_so_the_lock_is_released(self):
+        stub = self.tmp / "slow-restic"
+        stub.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, signal, sys, time\n"
+            "def h(*_):\n"
+            "    open(os.environ['STUB_DIR'] + '/sig.log', 'a').write('got-int\\n')\n"
+            "    sys.exit(130)\n"
+            "signal.signal(signal.SIGINT, h)\n"
+            "time.sleep(30)\n")
+        stub.chmod(0o755)
+        self.cfg.restic_bin = str(stub)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            fwb.run_restic(self.cfg, dict(os.environ), "backup", timeout=1)
+        self.assertEqual((self.stubdir / "sig.log").read_text().split(), ["got-int"])
+
+    def test_restic_runs_at_low_priority_with_two_threads(self):
+        stub = self.tmp / "env-restic"
+        stub.write_text("#!/bin/bash\necho \"GOMAXPROCS=$GOMAXPROCS nice=$(ps -o nice= -p $$ | tr -d ' ')\" >> \"$STUB_DIR/prio.log\"\nexit 0\n")
+        stub.chmod(0o755)
+        self.cfg.restic_bin = str(stub)
+        fwb.run_restic(self.cfg, dict(os.environ), "snapshots")
+        out = (self.stubdir / "prio.log").read_text()
+        self.assertIn("GOMAXPROCS=2", out)
+        self.assertRegex(out, r"nice=(1[0-9]|[2-9][0-9])")
+
+    def test_a_repository_override_needs_only_the_password(self):
+        self.cfg.repository = str(self.tmp / "repo")
+        self.set_creds(names=("RESTIC_FLEET_WORK_PASSWORD",))
+        env, missing = fwb.restic_env(self.cfg)
+        self.assertEqual(missing, [])
+        self.assertEqual(env["RESTIC_REPOSITORY"], str(self.tmp / "repo"))
+        self.assertNotIn("AWS_ACCESS_KEY_ID", {k for k in env if k not in os.environ})
+
+
+class LaunchdCase(RunBase):
+    """check-access --launchd:  a one-shot launchd job reports what the schedule can read.  launchctl is a stub
+    that runs the job's command directly, so the plumbing is covered;  whether macOS grants the volume to a
+    launchd job is only known on the Mac itself."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg.check_wait_s = 20
+        stub = self.tmp / "launchctl"
+        stub.write_text(
+            "#!/bin/bash\n"
+            'echo "$@" >> "$STUB_DIR/launchctl.log"\n'
+            'if [ "$1" = bootstrap ]; then\n'
+            '  [ -n "$STUB_BOOTSTRAP_FAIL" ] && exit 1\n'
+            '  cp "$3" "$STUB_DIR/seen.plist"\n'
+            '  [ -n "$STUB_NO_RESULT" ] && exit 0\n'
+            "  python3 -c 'import plistlib,subprocess,sys; d=plistlib.load(open(sys.argv[1],\"rb\")); "
+            "subprocess.run(d[\"ProgramArguments\"], env=d[\"EnvironmentVariables\"], check=False)' \"$3\"\n"
+            "fi\nexit 0\n")
+        stub.chmod(0o755)
+        self.cfg.launchctl_bin = str(stub)
+
+    def run_check(self) -> tuple[int, str]:
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = fwb.check_via_launchd(self.cfg)
+        return rc, buf.getvalue()
+
+    def test_the_job_is_one_shot_separately_labelled_and_removed_afterwards(self):
+        rc, out = self.run_check()
+        self.assertEqual(rc, 0, out)
+        log = (self.stubdir / "launchctl.log").read_text().splitlines()
+        target = f"gui/{os.getuid()}/com.jay.fleet-work-backup.check"
+        self.assertEqual(log[0], f"bootout {target}")
+        self.assertTrue(log[1].startswith(f"bootstrap gui/{os.getuid()} "))
+        self.assertEqual(log[-1], f"bootout {target}")
+        seen = plistlib.loads((self.stubdir / "seen.plist").read_bytes())
+        self.assertEqual(seen["Label"], "com.jay.fleet-work-backup.check")
+        self.assertTrue(seen["RunAtLoad"])
+        self.assertEqual(seen["ProgramArguments"][0], "/usr/bin/python3")
+        self.assertEqual(seen["ProgramArguments"][2:4], ["check-access", "--result"])
+        self.assertNotIn("run", seen["ProgramArguments"])         # it can never start a backup
+        self.assertEqual(seen["EnvironmentVariables"]["HOME"], str(self.home))
+        self.assertFalse(self.cfg.check_plist_path.exists())
+        self.assertIn("launchd job ran as:", out)
+        self.assertEqual(self.argv(), [])
+
+    def test_an_unmounted_volume_is_reported_from_the_job(self):
+        lanes = self.home / "apps" / "lanes"
+        lanes.mkdir(parents=True)
+        (lanes / "Repo").symlink_to("/Volumes/fwb-test-not-mounted/Lanes/Repo")
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("not mounted", out)
+
+    def test_a_bootstrap_failure_and_a_silent_job_are_errors(self):
+        os.environ["STUB_BOOTSTRAP_FAIL"] = "1"
+        try:
+            rc, out = self.run_check()
+        finally:
+            os.environ.pop("STUB_BOOTSTRAP_FAIL")
+        self.assertEqual(rc, 2)
+        self.assertIn("bootstrap failed", out)
+        self.cfg.check_wait_s = 1
+        os.environ["STUB_NO_RESULT"] = "1"
+        try:
+            rc, out = self.run_check()
+        finally:
+            os.environ.pop("STUB_NO_RESULT")
+        self.assertEqual(rc, 2)
+        self.assertIn("no result from the launchd job", out)
+        self.assertFalse(self.cfg.check_plist_path.exists())
+
+    def test_a_plain_check_says_it_reflects_the_terminal(self):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), mock.patch.dict(os.environ, {"XPC_SERVICE_NAME": "0"}):
+            fwb.cmd_check_access(self.cfg, argparse.Namespace(launchd=False, result=None))
+        self.assertIn("check-access --launchd", buf.getvalue())
+        self.assertIn("privacy grants of the terminal", buf.getvalue())
+
+    def test_the_image_is_the_running_executable_not_the_launcher(self):
+        img = fwb.process_image()
+        self.assertTrue(os.path.exists(img))
+        self.assertEqual(fwb.app_bundle("/x/Python.framework/Resources/Python.app/Contents/MacOS/Python"),
+                         "/x/Python.framework/Resources/Python.app")
+        self.assertEqual(fwb.app_bundle("/usr/bin/python3"), "")
+        self.assertEqual(fwb.app_bundle("/Applications/Xcode.app/Contents/Developer/Library/Python3.framework/Versions/3.9/"
+                                        "Resources/Python.app/Contents/MacOS/Python"),
+                         "/Applications/Xcode.app/Contents/Developer/Library/Python3.framework/Versions/3.9/Resources/Python.app")
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(fwb.cmd_image(self.cfg, None), 0)
+        self.assertEqual(buf.getvalue().splitlines()[0], img)
+
+
+@unittest.skipUnless(shutil.which("restic"), "restic not installed")
+class RealResticCase(RunBase):
+    """init, backup, check and restore against a real restic and a local repository (CI installs restic)."""
+
+    def test_a_backup_round_trips_and_the_restored_bundle_verifies(self):
+        self.cfg.restic_bin = "restic"
+        self.cfg.repository = str(self.tmp / "repo")
+        self.set_creds(names=("RESTIC_FLEET_WORK_PASSWORD",))
+        self.assertEqual(fwb.cmd_init(self.cfg, self.args), 0)
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        line = self.log().splitlines()[-1]
+        self.assertIn("status=ok", line, line)
+        self.assertFalse(self.cfg.stage.exists())
+        target = self.tmp / "restored"
+        ns = argparse.Namespace(restic_args=["--", "restore", "latest", "--tag", "fleet-work", "--target", str(target)])
+        self.assertEqual(fwb.cmd_restic(self.cfg, ns), 0)
+        stage = target / str(self.cfg.stage).lstrip("/")
+        self.assertEqual((stage / "files/apps/doc.md").read_text(), "doc\n")
+        self.assertTrue((stage / "MANIFEST.json").exists())
+        (b,) = sorted(stage.glob("git/*/bundles/*.bundle"))
+        fresh = self.tmp / "fresh"
+        git(self.tmp, "clone", "-q", f"file://{self.home / 'remotes' / 'r.git'}", str(fresh))
+        git(fresh, "bundle", "verify", str(b))
+        git(fresh, "fetch", "-q", str(b), "refs/heads/*:refs/restored/*")
+        self.assertEqual(git(fresh, "show", "refs/restored/main:a.txt"), "changed and committed, not pushed")
+        self.assertEqual(fwb.cmd_restic(self.cfg, argparse.Namespace(restic_args=["--", "check"])), 0)
+        self.assertEqual(fwb.cmd_snapshots(self.cfg, self.args), 0)
 
 
 class AccessCase(unittest.TestCase):
@@ -914,8 +1580,8 @@ class AccessCase(unittest.TestCase):
         with mock.patch.object(fwb.os, "listdir", fake):
             res = fwb.probe_external(self.cfg)
         self.assertEqual(res["denied"], 1)
-        self.assertEqual(res["binary"], os.path.realpath(sys.executable))
-        self.assertIn(os.path.realpath(sys.executable), fwb.removable_hint(self.cfg))
+        self.assertEqual(res["binary"], fwb.process_image())
+        self.assertIn(fwb.process_image(), fwb.removable_hint(self.cfg))
 
 
 class MiscCase(unittest.TestCase):
@@ -939,6 +1605,9 @@ class MiscCase(unittest.TestCase):
         self.assertIn("<key>ProcessType</key>\n  <string>Standard</string>", plist)
         self.assertNotIn("Background", plist.replace("Standard, not Background", ""))
         self.assertIn("fleet_work_backup.py", plist)
+        self.assertIn("<string>/usr/bin/python3</string>", plist)       # Apple-signed:  a privacy grant survives updates
+        self.assertIn("<key>Nice</key>", plist)
+        self.assertIn("<key>LowPriorityIO</key>", plist)
         self.assertIn("fleet-work-backup.out.log", plist)
 
 

@@ -5,17 +5,21 @@ Two things are staged into one fixed directory and sent to an encrypted restic r
 Backblaze B2 (prefix ``fleet-work-backup/`` in the bucket named by ``B2_FLEET_BUCKET_NAME``):
 
   (a) Git work.  For every checkout the fleet uses (lanes under ~/apps/lanes, flat ~/apps/<x>
-      lanes, other clones under ~/apps, and the human trees under ~/Code):  the commits that no
-      remote has (one ``git bundle`` per repository, shared by all of its worktrees), every
-      stash (as per-file patches), and per worktree the uncommitted work (one patch per tracked
-      file against HEAD, plus the untracked files git does not ignore).  A checkout with nothing
-      unpushed and nothing dirty adds nothing.
+      lanes, other clones under ~/apps, the human trees under ~/Code, and any linked worktree
+      ``git worktree list`` names):  the commits no network remote has (``git bundle`` files, one per
+      group of overlapping refs, each bounded by the remote's default branch so its prerequisites
+      stay fetchable), every stash (as per-file patches), and per worktree the uncommitted work (one
+      patch per tracked text file against HEAD, the raw new content of a tracked binary file, and the
+      untracked files git does not ignore).  A checkout with nothing unpushed and nothing dirty
+      adds nothing.
   (b) Non-git files under ~/apps that sit outside any checkout (protocol docs, effort logs,
       helper scripts, the board database, runtime configs).
 
-Never staged:  secrets.  A name filter runs before anything is copied, a content scan (gitleaks
-when installed, always a regex scan) runs over the staged set, and a match drops the file and
-logs its path only.  Infisical is the source of truth for secrets.
+Never staged:  secrets.  A name filter runs before anything is copied, a content scan runs over
+the staged set (always the regex scan, which also reads binary files;  gitleaks too when it is
+installed), and a match drops the file and logs its path only.  The gate fails closed:  with
+gitleaks installed, a text file it has not cleared (budget spent, gitleaks failed) is left out of
+this run and retried next run.  Infisical is the source of truth for secrets.
 
 All git access is read-only (GIT_OPTIONAL_LOCKS=0, no fetch, no gc, no ref writes).
 
@@ -23,6 +27,8 @@ All git access is read-only (GIT_OPTIONAL_LOCKS=0, no fetch, no gc, no ref write
   fleet_work_backup.py run --dry-run        # stage, list sizes, upload nothing, no lock, no gate
   fleet_work_backup.py init                 # restic init (explicit;  a scheduled run never inits)
   fleet_work_backup.py check-access         # can this process read /Volumes/External?
+  fleet_work_backup.py check-access --launchd   # ask a one-shot launchd job (the scheduled job's own grants)
+  fleet_work_backup.py image                # the executable macOS privacy settings see for this interpreter
   fleet_work_backup.py snapshots            # restic snapshots for this job's tag
   fleet_work_backup.py restic -- <args>     # restic with this job's repo and credentials (restores)
 
@@ -42,10 +48,12 @@ import hashlib
 import json
 import math
 import os
+import plistlib
 import re
 import shutil
 import signal
 import sqlite3
+import stat as stat_mod
 import subprocess
 import sys
 import tempfile
@@ -54,7 +62,7 @@ import traceback
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
-VERSION = "1"
+VERSION = "2"
 TAG = "fleet-work"
 RETENTION = (("--keep-hourly", "24"), ("--keep-daily", "14"), ("--keep-weekly", "8"), ("--keep-monthly", "6"))
 PRUNE_EVERY = 24 * 3600
@@ -76,17 +84,32 @@ SKIP_FILE_GLOBS = (
     "*.log", "*.log.*", "*.pyc", "*.pyo", ".DS_Store", "*.swp", "*.swo", "*.tmp", "*.sock", "*.pid",
     "*-wal", "*-shm", "*.db-journal", "*.sqlite-journal", "*.db-wal", "*.db-shm",
 )
+# Runtime homes and transcript stores that hold session text (tool output routinely carries credentials
+# in shapes no scanner knows) and are rebuilt by the tool.  Matched as a run of path components under
+# the walked roots.  FLEET_WORK_BACKUP_NO_DEFAULT_PATH_SKIPS=1 turns the built-in list off.
+SKIP_PATH_PARTS = (("acp-home", "sessions"), ("acp-home", "memtrace"), ("fleet-rag", "mined", "chat"))
+if os.environ.get("FLEET_WORK_BACKUP_NO_DEFAULT_PATH_SKIPS") == "1":
+    SKIP_PATH_PARTS = ()
 # Secret-looking names, matched case-insensitively against a file's base name.  STRICT names are key
 # and credential material:  they are dropped everywhere, tracked-file patches included.  BROAD names
 # (secret, token, credential, passwd) are dropped for untracked and non-git files;  for the patch of
 # a tracked file they are not, because that file is source already in git (tokenizer.py, auth/
-# credentials.ts) and the content scan still guards it.
+# credentials.ts) and the content scan still guards it.  Only code and prose extensions get that
+# exemption (TRACKED_EXEMPT_EXTS);  a modified client_secret.json or service_token.txt is dropped.
 SECRET_STRICT_GLOBS = (
     ".env", ".env.*", "*.env", "*.env.*", "*zuliprc*", "*.pem", "*.p8", "*.p12", "*.pfx", "*.key", "*.keystore",
     "*.jks", "*.keychain", "*.keychain-db", "*.kdbx", "*.pkcs12", "id_rsa*", "id_dsa*", "id_ecdsa*",
     "id_ed25519*", "id_xmss*", ".netrc", ".npmrc", ".pypirc", ".pgpass", ".htpasswd", "global-api-keys*",
     "infisical-machine-identity*", "service-account*.json", "*serviceaccount*.json", "credentials.json",
+    ".dev.vars", ".dev.vars.*", "auth.json", "*creds*.json", ".envrc", "*.tfstate", "*.tfstate.*", "*.tfvars",
+    "*.tfvars.json", "*.mobileprovision", "*.ovpn",
 )
+# A path that ends like one of these is a secret file whatever its base name (a bare hosts.yml is an
+# Ansible inventory, gh/hosts.yml holds the GitHub CLI token).
+SECRET_PATH_SUFFIXES = ("gh/hosts.yml", "gh/hosts.yaml", ".config/gh/hosts.yml")
+TRACKED_EXEMPT_EXTS = (".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".swift", ".go", ".rs", ".rb", ".java",
+                       ".kt", ".c", ".h", ".m", ".mm", ".cpp", ".hpp", ".cs", ".php", ".sh", ".bash", ".zsh", ".sql",
+                       ".md", ".mdx", ".rst")
 SECRET_BROAD_GLOBS = ("*secret*", "*token*", "*credential*", "*passwd*")
 # A name that matches a secret glob but is a documented template.  Content is still scanned.
 SECRET_NAME_ALLOW = (".env.example", ".env.sample", ".env.template", ".env.dist", ".env.defaults",
@@ -174,8 +197,12 @@ class Config:
     gitleaks_ignore_rules: tuple = ()
     gitleaks_budget_s: int = 1500
     isolate_budget_s: int = 600
+    repository: str = ""            # a restic repository to use instead of B2 (tests, a local mirror)
+    launchctl_bin: str = "launchctl"
+    check_wait_s: int = 90
     load_fn: Optional[Callable[[], float]] = None
     swap_fn: Optional[Callable[[], Optional[float]]] = None
+    pressure_fn: Optional[Callable[[], Optional[int]]] = None
     now_fn: Optional[Callable[[], float]] = None
 
     @property
@@ -219,6 +246,14 @@ class Config:
         return self.home / "Library" / "Logs" / "fleet-work-backup.detail.log"
 
     @property
+    def check_plist_path(self) -> Path:
+        return self.state_dir / "check-access.plist"
+
+    @property
+    def check_result_path(self) -> Path:
+        return self.state_dir / "check-access.json"
+
+    @property
     def handoff(self) -> Path:
         return self.home / ".secrets" / "global-api-keys"
 
@@ -235,6 +270,8 @@ def config_from_env() -> Config:
     cfg.gitleaks_bin = gl or None
     cfg.host = os.environ.get("FLEET_WORK_BACKUP_HOST", cfg.host)
     cfg.s3_endpoint = os.environ.get("FLEET_WORK_BACKUP_S3_ENDPOINT", cfg.s3_endpoint)
+    cfg.repository = os.environ.get("FLEET_WORK_BACKUP_REPOSITORY", cfg.repository)
+    cfg.launchctl_bin = os.environ.get("FLEET_WORK_BACKUP_LAUNCHCTL", cfg.launchctl_bin)
     for env, attr, cast in (("FLEET_WORK_BACKUP_LOAD_LIMIT", "load_limit", float),
                             ("FLEET_WORK_BACKUP_SWAP_LIMIT", "swap_limit", float),
                             ("FLEET_WORK_BACKUP_WORKERS", "workers", int),
@@ -293,21 +330,27 @@ def _glob_hit(name: str, globs: Iterable[str]) -> bool:
 
 def is_secret_name(rel: str, tracked: bool = False) -> bool:
     """True when a relative path looks like a secret by name.  Runs before anything is copied.
-    ``tracked`` is the patch of a file git already tracks:  only the strict names apply."""
+    ``tracked`` is the patch of a file git already tracks:  the broad names (secret, token, credential,
+    passwd) are waived for source and prose files only;  the strict names always apply."""
     parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."]
     if not parts:
         return False
-    for comp in parts[:-1]:
-        if comp in SECRET_DIR_NAMES or (not tracked and "secret" in comp.lower()):
-            return True
     base = parts[-1]
+    # The broad-name exemption for a tracked file covers source and prose only.
+    exempt = tracked and base.lower().endswith(TRACKED_EXEMPT_EXTS)
+    for comp in parts[:-1]:
+        if comp in SECRET_DIR_NAMES or (not exempt and "secret" in comp.lower()):
+            return True
     if base in SECRET_DIR_NAMES:
         return True
     if _glob_hit(base, SECRET_NAME_ALLOW):
         return False
+    low = "/".join(parts).lower()
+    if any(low == suf or low.endswith("/" + suf) for suf in SECRET_PATH_SUFFIXES):
+        return True
     if _glob_hit(base, SECRET_STRICT_GLOBS):
         return True
-    return not tracked and _glob_hit(base, SECRET_BROAD_GLOBS)
+    return not exempt and _glob_hit(base, SECRET_BROAD_GLOBS)
 
 
 def is_skipped_file(name: str) -> bool:
@@ -379,7 +422,8 @@ class Git:
     """Read-only git runner.  Never writes a ref, fetches, or garbage-collects."""
 
     BASE = ("-c", "safe.directory=*", "-c", "core.quotepath=false", "-c", "core.fsmonitor=false",
-            "-c", "gc.auto=0", "-c", "advice.detachedHead=false")
+            "-c", "gc.auto=0", "-c", "advice.detachedHead=false",
+            "-c", "pack.threads=1")
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -418,6 +462,7 @@ class Discovery:
     checkouts: list[str] = dataclasses.field(default_factory=list)
     blocked: list[dict] = dataclasses.field(default_factory=list)
     notes: list[str] = dataclasses.field(default_factory=list)
+    missing_volumes: list[str] = dataclasses.field(default_factory=list)   # symlinks onto an unmounted /Volumes disk
 
 
 def git_root_state(path: str) -> str:
@@ -488,6 +533,11 @@ def discover(cfg: Config) -> Discovery:
                         children.append(e.path)
                     elif e.is_symlink() and not os.path.exists(e.path):
                         d.notes.append(f"dangling-symlink {e.path}")
+                        try:
+                            if os.readlink(e.path).startswith("/Volumes/"):
+                                d.missing_volumes.append(e.path)
+                        except OSError:
+                            pass
                 except PermissionError as exc:
                     d.blocked.append({"path": e.path, "errno": exc.errno, "via": "stat"})
                 except OSError:
@@ -550,6 +600,28 @@ def inspect_worktree(cfg: Config, git: Git, path: str) -> Worktree:
     return wt
 
 
+def linked_worktrees(git: Git, cwd: str) -> tuple[list[str], list[str]]:
+    """Worktrees ``git worktree list`` names for the repository at ``cwd``:  (existing paths, missing paths).
+    A linked worktree can live anywhere (~/.codex/worktrees), so discovery by folder walk is not enough."""
+    rc, out, _ = git.run(cwd, "worktree", "list", "--porcelain", "-z")
+    found: list[str] = []
+    gone: list[str] = []
+    if rc != 0:
+        return found, gone
+    for rec in out.decode("utf-8", "surrogateescape").split("\0\0"):
+        fields = [f for f in rec.split("\0") if f]
+        if not fields or not fields[0].startswith("worktree "):
+            continue
+        path = fields[0][len("worktree "):]
+        if any(f == "bare" for f in fields):
+            continue
+        if any(f.startswith("prunable") for f in fields) or not os.path.isdir(path):
+            gone.append(path)
+        else:
+            found.append(path)
+    return found, gone
+
+
 # ------------------------------------------------------------------------------------- the stage
 @dataclasses.dataclass
 class Item:
@@ -563,11 +635,14 @@ class Stage:
     def __init__(self, root: Path):
         self.root = root
         self.items: dict[str, Item] = {}
-        self.dropped: list[dict] = []
+        self.dropped: list[dict] = []     # secret names and content hits:  never uploaded
+        self.deferred: list[dict] = []    # not cleared by gitleaks this run:  left out, retried next run
         self.large: list[dict] = []
         self.notes: list[str] = []
         self.blocked: list[dict] = []
-        self.allow: set[str] = set()     # content-gate exceptions the owner reviewed (allow.txt)
+        self.allow: dict[str, str] = {}   # label -> content digest prefix the owner reviewed (allow.txt)
+        self.allow_unpinned: list[str] = []
+        self.allow_stale: list[str] = []
         self.allowed: list[str] = []
 
     def path(self, rel: str) -> Path:
@@ -583,12 +658,39 @@ class Stage:
         self.add(rel, src, len(data), kind)
 
     def drop(self, rel: str, reason: str) -> None:
+        digest = ""
+        try:
+            digest = file_digest(self.path(rel))[:12]
+        except OSError:
+            pass
         it = self.items.pop(rel, None)
         try:
             os.unlink(self.path(rel))
         except OSError:
             pass
-        self.dropped.append({"path": it.src if it and it.src else rel, "stage": rel, "reason": reason})
+        self.dropped.append({"path": it.src if it and it.src else rel, "stage": rel, "reason": reason, "digest": digest})
+
+    def defer(self, rel: str, reason: str) -> None:
+        it = self.items.pop(rel, None)
+        try:
+            os.unlink(self.path(rel))
+        except OSError:
+            pass
+        self.deferred.append({"path": it.src if it and it.src else rel, "stage": rel, "reason": reason})
+
+    def permit(self, label: str, digest: str) -> bool:
+        """True when allow.txt pins ``label`` to this exact content (or ref tip).  An entry whose content
+        changed since the owner reviewed it no longer applies and is reported."""
+        want = self.allow.get(label)
+        if not want:
+            return False
+        if digest and digest.startswith(want):
+            if label not in self.allowed:
+                self.allowed.append(label)
+            return True
+        if label not in self.allow_stale:
+            self.allow_stale.append(label)
+        return False
 
     def total(self) -> int:
         return sum(i.size for i in self.items.values())
@@ -609,33 +711,24 @@ def chunk_path(chunk: bytes) -> str:
     return m.group(2).decode("utf-8", "replace") if m else ""
 
 
-def stage_patches(cfg: Config, git: Git, stage: Stage, cwd: str, diff_args: list[str], names: list[str],
-                  rel_dir: str, src_label: str, check_size_in: Optional[str], tracked: bool = True) -> int:
-    """Write one patch file per changed path.  Returns the number written.  Names that look secret,
-    or that are bigger than the size cap, are never diffed;  a chunk whose content matches a
-    pattern is dropped alone."""
-    allowed: list[str] = []
-    for name in names:
-        if is_secret_name(name, tracked):
-            stage.dropped.append({"path": f"{src_label}:{name}", "stage": "", "reason": "secret-name"})
-            continue
-        if check_size_in:
-            try:
-                size = os.lstat(os.path.join(check_size_in, name)).st_size
-            except OSError:
-                size = 0
-            if size > cfg.max_file_bytes:
-                stage.large.append({"path": os.path.join(check_size_in, name), "size": size})
-                continue
-        allowed.append(name)
-    if not allowed:
-        return 0
-    # git diff takes no --pathspec-from-file, so the paths go on the command line in batches.
-    out = b""
+# A line of a text patch always starts with a space, + or -, so this marks a binary patch exactly.
+BINARY_PATCH_RX = re.compile(rb"(?m)^GIT binary patch$")
+
+
+def is_binary_file(path: str | Path) -> bool:
+    """git's own test:  a NUL byte in the first 8000 bytes."""
+    try:
+        with open(path, "rb") as fh:
+            return b"\0" in fh.read(8000)
+    except OSError:
+        return False
+
+
+def _name_batches(names: list[str]) -> list[list[str]]:
+    batches: list[list[str]] = []
     batch: list[str] = []
     size = 0
-    batches: list[list[str]] = []
-    for name in allowed:
+    for name in names:
         if batch and (size + len(name) > 100_000 or len(batch) >= 1500):
             batches.append(batch)
             batch, size = [], 0
@@ -643,29 +736,153 @@ def stage_patches(cfg: Config, git: Git, stage: Stage, cwd: str, diff_args: list
         size += len(name) + 1
     if batch:
         batches.append(batch)
-    for b in batches:
+    return batches
+
+
+def binary_names(git: Git, cwd: str, diff_args: list[str], names: list[str]) -> Optional[set[str]]:
+    """Names git treats as binary in this diff (numstat prints '-' for both counts).  None on a git error."""
+    found: set[str] = set()
+    for b in _name_batches(names):
+        rc, out, _ = git.run(cwd, "diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--no-renames",
+                             "--ignore-submodules=all", *diff_args, "--", *b)
+        if rc != 0:
+            return None
+        for rec in out.decode("utf-8", "surrogateescape").split("\0"):
+            if rec.startswith("-\t-\t"):
+                found.add(rec[4:])
+    return found
+
+
+def blob_sizes(git: Git, cwd: str, rev: str, names: list[str]) -> dict[str, Optional[int]]:
+    """Size of ``rev:path`` for each name;  None when the path is not in that tree (a deletion)."""
+    sizes: dict[str, Optional[int]] = {}
+    for b in _name_batches(names):
+        stdin = "".join(f"{rev}:{n}\n" for n in b).encode("utf-8", "surrogateescape")
+        rc, out, _ = git.run(cwd, "cat-file", "--batch-check=%(objectsize)", stdin=stdin)
+        lines = out.decode("utf-8", "replace").splitlines() if rc == 0 else []
+        for n, line in zip(b, lines):
+            sizes[n] = int(line) if line.strip().isdigit() else None
+    return sizes
+
+
+def stage_patches(cfg: Config, git: Git, stage: Stage, cwd: str, diff_args: list[str], names: list[str],
+                  rel_dir: str, src_label: str, check_size_in: Optional[str], tracked: bool = True,
+                  post_rev: Optional[str] = None) -> int:
+    """Stage the changes to ``names``.  Returns the number of files written.
+
+    A text change becomes one patch file (``git diff --binary``), scanned as written.  A binary change
+    is never staged as a patch:  git's binary patch is zlib-deflated base85, which neither scanner can
+    read, so the raw new content is staged instead (``<rel_dir>/binary/<path>``, from the worktree or,
+    for a stash, ``post_rev:<path>``) and the gate scans that.  A binary deletion is listed in
+    ``binary-deleted.txt``.  A name that looks secret, or content over the size cap, is never read."""
+    kept: list[str] = []
+    for name in names:
+        if "\n" in name:
+            stage.notes.append(f"newline-in-name {src_label}")
+            continue
+        if is_secret_name(name, tracked):
+            stage.dropped.append({"path": f"{src_label}:{name}", "stage": "", "reason": "secret-name"})
+            continue
+        kept.append(name)
+    sizes: dict[str, Optional[int]] = blob_sizes(git, cwd, post_rev, kept) if post_rev else {}
+    sized: list[str] = []
+    for name in kept:
+        if check_size_in:
+            try:
+                size = os.lstat(os.path.join(check_size_in, name)).st_size
+            except OSError:
+                size = 0
+            label = os.path.join(check_size_in, name)
+        else:
+            size = sizes.get(name) or 0
+            label = f"{src_label}:{name}"
+        if size > cfg.max_file_bytes:
+            stage.large.append({"path": label, "size": size})
+            continue
+        sized.append(name)
+    if not sized:
+        return 0
+    bins = binary_names(git, cwd, diff_args, sized)
+    if bins is None:
+        stage.notes.append(f"diff-failed {src_label}")
+        return 0
+    written = 0
+    deleted: list[str] = []
+    for name in sorted(bins):
+        rel = f"{rel_dir}/binary/{name}"
+        label = f"{src_label}:{name}" if post_rev else os.path.join(cwd, name)
+        dst = stage.path(rel)
+        if post_rev:
+            if name not in sizes:
+                stage.notes.append(f"binary-size-unknown {label}")
+                continue
+            if sizes[name] is None:
+                deleted.append(name)
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with open(dst, "wb") as fh:
+                    p = subprocess.run([cfg.git_bin, *Git.BASE, "-C", cwd, "cat-file", "blob", f"{post_rev}:{name}"],
+                                       stdout=fh, stderr=subprocess.DEVNULL, env=git.env, timeout=cfg.git_timeout)
+            except (OSError, subprocess.TimeoutExpired):
+                stage.notes.append(f"binary-read-failed {label}")
+                continue
+            if p.returncode != 0:
+                stage.notes.append(f"binary-read-failed {label}")
+                try:
+                    os.unlink(dst)
+                except OSError:
+                    pass
+                continue
+            stage.add(rel, label, dst.stat().st_size, "binary")
+            written += 1
+            continue
+        src = os.path.join(cwd, name)
+        try:
+            st = os.lstat(src)
+        except OSError:
+            deleted.append(name)
+            continue
+        if not stat_mod.S_ISREG(st.st_mode):
+            stage.notes.append(f"binary-not-a-file {label}")
+            continue
+        try:
+            clone_or_copy(src, str(dst))
+        except OSError as exc:
+            stage.notes.append(f"copy-failed {src} ({errno.errorcode.get(exc.errno or 0, exc.errno)})")
+            continue
+        stage.add(rel, label, st.st_size, "binary")
+        written += 1
+    if deleted:
+        stage.write(f"{rel_dir}/binary-deleted.txt", ("\n".join(sorted(deleted)) + "\n").encode("utf-8", "surrogateescape"),
+                    "", "meta")
+    text_names = [n for n in sized if n not in bins]
+    # git diff takes no --pathspec-from-file, so the paths go on the command line in batches.
+    out = b""
+    for b in _name_batches(text_names):
         rc, part, err = git.run(cwd, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--binary",
                                 "--ignore-submodules=all", *diff_args, "--", *b)
         if rc != 0:
             stage.notes.append(f"diff-failed {src_label}")
-            return 0
+            return written
         out += part
-    written = 0
     for idx, chunk in enumerate(split_diff(out), 1):
         cp = chunk_path(chunk)
         if cp and is_secret_name(cp, tracked):
             stage.dropped.append({"path": f"{src_label}:{cp}", "stage": "", "reason": "secret-name"})
             continue
         label = f"{src_label}:{cp or idx}"
+        digest = hashlib.sha1(chunk).hexdigest()[:12]
+        if BINARY_PATCH_RX.search(chunk):   # the file changed kind between two git calls:  cannot be read, so not kept
+            stage.dropped.append({"path": label, "stage": "", "reason": "unscannable-binary-patch", "digest": digest})
+            continue
         if len(chunk) > cfg.max_file_bytes:
             stage.large.append({"path": label, "size": len(chunk)})
             continue
         hit = scan_bytes(chunk)
-        if hit and label not in stage.allow:
-            stage.dropped.append({"path": label, "stage": "", "reason": f"content:{hit}"})
+        if hit and not stage.permit(label, digest):
+            stage.dropped.append({"path": label, "stage": "", "reason": f"content:{hit}", "digest": digest})
             continue
-        if hit:
-            stage.allowed.append(label)
         stage.write(f"{rel_dir}/{patch_name(chunk, idx)}", chunk, label, "patch")
         written += 1
     return written
@@ -724,6 +941,7 @@ class GroupResult:
     untracked_files: int = 0
     patch_files: int = 0
     bundle: bool = False
+    bundles: int = 0
     head_bundles: int = 0
     notes: list[str] = dataclasses.field(default_factory=list)
 
@@ -738,8 +956,9 @@ def repo_name(common_dir: str) -> str:
 
 
 def stream_scan(git: Git, cwd: str, args: list[str], cap: int) -> tuple[Optional[str], bool]:
-    """Scan ``git log -p`` output for secret patterns.  Returns (hit, truncated)."""
-    cmd = [git.cfg.git_bin, *Git.BASE, "-C", cwd, "log", "-p", "--no-color", "--no-ext-diff", "--no-textconv",
+    """Scan ``git log -p`` output for secret patterns.  Returns (hit, truncated).  ``--cc`` makes a
+    merge commit show what its resolution added."""
+    cmd = [git.cfg.git_bin, *Git.BASE, "-C", cwd, "log", "-p", "--cc", "--no-color", "--no-ext-diff", "--no-textconv",
            "--format=%H", *args]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=git.env)
@@ -763,6 +982,100 @@ def stream_scan(git: Git, cwd: str, args: list[str], cap: int) -> tuple[Optional
     return hit, read >= cap and hit is None
 
 
+def is_network_url(url: str) -> bool:
+    """True for a remote GitHub-like host.  A local path, file:// URL or bundle file is the same disk."""
+    if re.match(r"^(?:https?|ssh|git|ftps?|git\+ssh|ssh\+git)://", url, re.I):
+        return True
+    if url.startswith(("file://", "/", "./", "../", "~")):
+        return False
+    return bool(re.match(r"^(?:[\w.\-]+@)?[\w.\-]+:(?!//)", url))
+
+
+def remote_info(git: Git, cwd: str) -> tuple[list[str], list[str]]:
+    """(``name url`` lines with credentials stripped, names of remotes whose configured URL is on the network).
+    The URL is read from the config as written, so an ``insteadOf`` rewrite cannot turn a GitHub remote into a path."""
+    rc, out, _ = git.run(cwd, "config", "-z", "--get-regexp", r"^remote\..*\.url$")
+    meta: set[str] = set()
+    urls: dict[str, str] = {}
+    for rec in out.decode("utf-8", "replace").split("\0") if rc == 0 else []:
+        key, _, val = rec.partition("\n")
+        m = re.fullmatch(r"remote\.(.+)\.url", key, re.I)
+        if not m or not val.strip():
+            continue
+        urls.setdefault(m.group(1), val.strip())
+        meta.add(strip_url_credentials(f"{m.group(1)} {val.strip()}"))
+    net = sorted((n for n, u in urls.items() if is_network_url(u)), key=lambda n: (n != "origin", n))
+    return sorted(meta), net
+
+
+def resolve_bound(git: Git, cwd: str, net: list[str]) -> tuple[str, str]:
+    """The default branch of the first network remote:  (ref name, commit sha), or ('', '').  A bundle bounded
+    by it has prerequisites that sit on that branch, which GitHub keeps for good;  bounded by every
+    remote-tracking tip it would also need branches that are later deleted or force-pushed."""
+    for r in net:
+        cands = []
+        head = git.text(cwd, "symbolic-ref", "-q", f"refs/remotes/{r}/HEAD")
+        if head:
+            cands.append(head)
+        cands += [f"refs/remotes/{r}/main", f"refs/remotes/{r}/master"]
+        for c in cands:
+            sha = git.text(cwd, "rev-parse", "-q", "--verify", f"{c}^{{commit}}")
+            if sha:
+                return c, sha
+    return "", ""
+
+
+def overlap_components(git: Git, cwd: str, refs: list[str], not_bound: list[str], limit: int = 200_000) -> list[list[str]]:
+    """Group refs whose commit ranges share a commit, so a commit is bundled once per group instead of once
+    per branch.  Independent branches get their own bundle:  a restore of one does not depend on another."""
+    if not refs:
+        return []
+    parent = {r: r for r in refs}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    owner: dict[str, str] = {}
+    for r in refs:
+        rc, out, _ = git.run(cwd, "rev-list", r, *not_bound)
+        commits = out.decode().split() if rc == 0 else []
+        if len(commits) > limit:
+            return [sorted(refs)]
+        for c in commits:
+            if c in owner:
+                parent[find(r)] = find(owner[c])
+            else:
+                owner[c] = r
+    comps: dict[str, list[str]] = {}
+    for r in refs:
+        comps.setdefault(find(r), []).append(r)
+    return sorted((sorted(v) for v in comps.values()), key=lambda v: v[0])
+
+
+def make_bundle(cfg: Config, git: Git, stage: Stage, cwd: str, rel: str, src: str, args: list[str]) -> bool:
+    """git bundle create into the stage.  A bundle over the size cap is listed and not kept."""
+    out_path = stage.path(rel)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    rc, _, err = git.run(cwd, "bundle", "create", str(out_path), *args, timeout=cfg.bundle_timeout)
+    if rc != 0 or not out_path.exists():
+        stage.notes.append(f"bundle-failed {src}: {err.decode('utf-8', 'replace').strip()[:120]}")
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+        return False
+    size = out_path.stat().st_size
+    if size > cfg.max_file_bytes:
+        stage.large.append({"path": f"{src} bundle {rel.rsplit('/', 1)[-1]}", "size": size})
+        out_path.unlink()
+        return False
+    stage.add(rel, src, size, "bundle")
+    return True
+
+
 def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: list[Worktree]) -> GroupResult:
     name = repo_name(common_dir)
     slug = f"{slugify(name, 40)}-{short_hash(common_dir)}"
@@ -771,43 +1084,49 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
     cwd = wts[0].path
     scratch = tempfile.mkdtemp(prefix="objs-", dir=str(cfg.cache_dir))
     try:
-        # Remotes (credentials stripped from URLs) and the no-remote flag.
-        rc, out, _ = git.run(cwd, "remote", "-v")
-        remotes = sorted({strip_url_credentials(" ".join(line.split()[:2]))
-                          for line in out.decode("utf-8", "replace").splitlines() if line.strip()}) if rc == 0 else []
+        # Pushed means "a network remote has it".  A remote that is a local path, a file:// URL or a bundle
+        # file is the same disk, so what it holds is not backed up by it.
+        remotes, net = remote_info(git, cwd)
         res.no_remote = not remotes
-        # Unpushed refs:  tips that git rev-list finds outside every remote-tracking ref.
-        rc, out, _ = git.run(cwd, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(*objectname)",
-                             "refs/heads", "refs/tags")
+        net_args = [f"--remotes={n}" for n in net]
+        not_net = ["--not", *net_args] if net_args else []
+        bound_ref, bound_sha = resolve_bound(git, cwd, net) if net else ("", "")
+        bound_args = [bound_sha] if bound_sha else net_args
+        not_bound = ["--not", *bound_args] if bound_args else []
+        if net and not bound_sha:
+            stage.notes.append(f"bundle-bound-fallback {common_dir} (no default branch found;  bounded by every network remote ref)")
+        if remotes and not net:
+            stage.notes.append(f"local-only-remotes {common_dir} (full history bundled)")
+        # Unpushed refs:  tips that git rev-list finds outside every network remote's refs.
+        rc, out, err = git.run(cwd, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(*objectname)",
+                               "refs/heads", "refs/tags")
         refs: list[tuple[str, str]] = []
+        if rc != 0:
+            stage.notes.append(f"refs-unreadable {common_dir}: {err.decode('utf-8', 'replace').strip()[:100]}")
         for line in out.decode("utf-8", "replace").splitlines() if rc == 0 else []:
             parts = line.split("\0")
             if len(parts) >= 2:
                 refs.append((parts[0], (parts[2] if len(parts) > 2 and parts[2] else parts[1])))
         unpushed: set[str] = set()
         if refs:
-            rc, out, _ = git.run(cwd, "rev-list", "--branches", "--tags", "--not", "--remotes")
+            rc, out, err = git.run(cwd, "rev-list", "--branches", "--tags", *not_net)
             if rc == 0:
                 unpushed = set(out.decode().split())
+            else:
+                stage.notes.append(f"rev-list-failed {common_dir}: {err.decode('utf-8', 'replace').strip()[:100]}")
         pending = [(r, s) for r, s in refs if s in unpushed]
         # Branches whose merge into the default branch is a no-op are already on GitHub.
         landed = 0
-        if pending and cfg.check_landed and len(pending) <= 400:
-            default = git.text(cwd, "symbolic-ref", "-q", "refs/remotes/origin/HEAD")
-            if not default:
-                for cand in ("refs/remotes/origin/main", "refs/remotes/origin/master"):
-                    if git.run(cwd, "rev-parse", "-q", "--verify", cand)[0] == 0:
-                        default = cand
-                        break
-            dtree = git.text(cwd, "rev-parse", f"{default}^{{tree}}") if default else None
-            if default and dtree:
+        if pending and cfg.check_landed and len(pending) <= 400 and bound_ref:
+            dtree = git.text(cwd, "rev-parse", f"{bound_ref}^{{tree}}")
+            if dtree:
                 objenv = {"GIT_OBJECT_DIRECTORY": os.path.join(scratch, "objects"),
                           "GIT_ALTERNATE_OBJECT_DIRECTORIES": os.path.join(common_dir, "objects")}
                 os.makedirs(objenv["GIT_OBJECT_DIRECTORY"], exist_ok=True)
                 keep = []
                 for ref, sha in pending:
                     if ref.startswith("refs/heads/"):
-                        rc, out, _ = git.run(cwd, "merge-tree", "--write-tree", "--no-messages", default, ref,
+                        rc, out, _ = git.run(cwd, "merge-tree", "--write-tree", "--no-messages", bound_ref, ref,
                                              env=objenv, timeout=120)
                         if rc == 0 and out.split()[:1] == [dtree.encode()]:
                             landed += 1
@@ -817,51 +1136,44 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
         res.landed_refs = landed
         res.unpushed_refs = len(pending)
         group_meta: dict = {"tool": VERSION, "common_dir": common_dir, "name": name, "remotes": remotes,
-                            "no_remote": res.no_remote, "unpushed": [], "landed_skipped": landed,
-                            "worktrees": [], "stashes": []}
-        # One bundle for the repository, shared by every worktree.
+                            "no_remote": res.no_remote, "network_remotes": net,
+                            "bound": {"ref": bound_ref, "sha": bound_sha}, "unpushed": [], "bundles": [],
+                            "landed_skipped": landed, "worktrees": [], "stashes": []}
+        # Bundles:  one per group of overlapping refs, shared by every worktree of the repository.  The scan
+        # covers exactly the range each bundle holds (the refs, less the bound).
         if pending:
+            tips = dict(pending)
             ref_names = [r for r, _ in pending]
-            hit, truncated = stream_scan(git, cwd, [*ref_names, "--not", "--remotes"], cfg.bundle_scan_cap)
-            label = f"{common_dir} (unpushed commits)"
-            if hit and label in stage.allow:
-                stage.allowed.append(label)
-                hit = None
+            hit, truncated = stream_scan(git, cwd, [*ref_names, *not_bound], cfg.bundle_scan_cap)
             if hit:
                 # One key-shaped string in some branch must not cost the repository its whole backup:
-                # scan ref by ref and bundle only the refs whose own unpushed history is clean.
+                # scan ref by ref and bundle only the refs whose own range is clean.
                 clean: list[str] = []
                 deadline = time.time() + cfg.isolate_budget_s
                 for ref in ref_names:
                     rl = f"{common_dir} ref {ref}"
                     if time.time() > deadline:
-                        stage.dropped.append({"path": rl, "stage": "", "reason": "scan-budget"})
+                        stage.dropped.append({"path": rl, "stage": "", "reason": "scan-budget", "digest": tips[ref][:12]})
                         continue
-                    rhit, _ = stream_scan(git, cwd, [ref, "--not", "--remotes"], cfg.bundle_scan_cap)
-                    if rhit and rl in stage.allow:
-                        stage.allowed.append(rl)
+                    rhit, _ = stream_scan(git, cwd, [ref, *not_bound], cfg.bundle_scan_cap)
+                    if rhit and stage.permit(rl, tips[ref]):
                         rhit = None
                     if rhit:
-                        stage.dropped.append({"path": rl, "stage": "", "reason": f"content:{rhit}"})
+                        stage.dropped.append({"path": rl, "stage": "", "reason": f"content:{rhit}", "digest": tips[ref][:12]})
                     else:
                         clean.append(ref)
                 ref_names = clean
                 pending = [(r, sha) for r, sha in pending if r in clean]
                 res.unpushed_refs = len(pending)
-                hit = None
-            if ref_names:
-                if truncated:
-                    stage.notes.append(f"bundle-scan-partial {common_dir}")
-                out_path = stage.path(f"{base}/unpushed.bundle")
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                rc, _, err = git.run(cwd, "bundle", "create", str(out_path), *ref_names, "--not", "--remotes",
-                                     timeout=cfg.bundle_timeout)
-                if rc == 0 and out_path.exists():
-                    stage.add(f"{base}/unpushed.bundle", common_dir, out_path.stat().st_size, "bundle")
+            if ref_names and truncated:
+                stage.notes.append(f"bundle-scan-partial {common_dir}")
+            for comp in overlap_components(git, cwd, ref_names, not_bound):
+                rel = f"{base}/bundles/{short_hash(chr(0).join(comp))}-{slugify(comp[0].rsplit('/', 1)[-1], 40)}.bundle"
+                if make_bundle(cfg, git, stage, cwd, rel, common_dir, [*comp, *not_bound]):
                     res.bundle = True
-                    group_meta["unpushed"] = [{"ref": r, "sha": s} for r, s in pending]
-                else:
-                    stage.notes.append(f"bundle-failed {common_dir}: {err.decode('utf-8', 'replace').strip()[:120]}")
+                    res.bundles += 1
+                    group_meta["bundles"].append({"file": rel.rsplit("/", 1)[-1], "refs": [{"ref": r, "sha": tips[r]} for r in comp]})
+            group_meta["unpushed"] = [{"ref": r, "sha": s} for r, s in pending]
         # Every stash, as per-file patches (no refs are created in the repository).
         rc, out, _ = git.run(cwd, "stash", "list", "--format=%H%x00%gs")
         empty_tree = git.text(cwd, "hash-object", "-t", "tree", "/dev/null") or "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -874,18 +1186,19 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
             tracked_names = git.run(cwd, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z",
                                     base_sha, sha, "--")[1].decode("utf-8", "surrogateescape").split("\0")
             wrote = stage_patches(cfg, git, stage, cwd, [base_sha, sha], [p for p in tracked_names if p],
-                                  f"{sdir}/tracked", f"{common_dir}#stash{n}", None)
+                                  f"{sdir}/tracked", f"{common_dir}#stash{n}", None, post_rev=sha)
             untracked_commit = git.text(cwd, "rev-parse", "-q", "--verify", f"{sha}^3")
             if untracked_commit:
                 un_names = git.run(cwd, "ls-tree", "-r", "--name-only", "-z", untracked_commit)[1]
                 wrote += stage_patches(cfg, git, stage, cwd, [empty_tree, untracked_commit],
                                        [p for p in un_names.decode("utf-8", "surrogateescape").split("\0") if p],
-                                       f"{sdir}/untracked", f"{common_dir}#stash{n}", None, tracked=False)
+                                       f"{sdir}/untracked", f"{common_dir}#stash{n}", None, tracked=False,
+                                       post_rev=untracked_commit)
             meta = {"index": n, "sha": sha, "base": base_sha, "subject": subject, "patches": wrote}
             stage.write(f"{sdir}/stash.json", json.dumps(meta, indent=2).encode(), "", "meta")
             group_meta["stashes"].append(meta)
             res.stashes += 1
-        # Per worktree:  uncommitted work and a detached HEAD no remote has.
+        # Per worktree:  uncommitted work and a detached HEAD no network remote has.
         for wt in wts:
             wslug = f"{slugify(os.path.basename(wt.path), 40)}-{short_hash(os.path.realpath(wt.path))}"
             wdir = f"{base}/worktrees/{wslug}"
@@ -896,14 +1209,15 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
                 wrote = stage_patches(cfg, git, stage, wt.path, ["HEAD"], wt.changed, f"{wdir}/patches", wt.path, wt.path)
             un = stage_untracked(cfg, stage, wt.path, wt.untracked, f"{wdir}/untracked") if wt.untracked else 0
             if wt.head and not wt.branch:
-                rc, out, _ = git.run(wt.path, "rev-list", "-1", "HEAD", "--not", "--remotes")
+                rc, out, _ = git.run(wt.path, "rev-list", "-1", "HEAD", *not_net)
                 if rc == 0 and out.strip():
-                    hp = stage.path(f"{wdir}/head.bundle")
-                    hp.parent.mkdir(parents=True, exist_ok=True)
-                    rc, _, _ = git.run(wt.path, "bundle", "create", str(hp), "HEAD", "--not", "--remotes",
-                                       timeout=cfg.bundle_timeout)
-                    if rc == 0 and hp.exists():
-                        stage.add(f"{wdir}/head.bundle", wt.path, hp.stat().st_size, "bundle")
+                    label = f"{wt.path} (detached HEAD)"
+                    hhit, _ = stream_scan(git, wt.path, ["HEAD", *not_bound], cfg.bundle_scan_cap)
+                    if hhit and stage.permit(label, wt.head):
+                        hhit = None
+                    if hhit:
+                        stage.dropped.append({"path": label, "stage": "", "reason": f"content:{hhit}", "digest": wt.head[:12]})
+                    elif make_bundle(cfg, git, stage, wt.path, f"{wdir}/head.bundle", wt.path, ["HEAD", *not_bound]):
                         wmeta["detached_head_bundle"] = True
                         res.head_bundles += 1
             if wrote or un or wmeta.get("detached_head_bundle"):
@@ -1020,7 +1334,13 @@ def collect_files(cfg: Config, stage: Stage) -> int:
                         continue
                     if os.path.realpath(e.path) in skip_real:
                         continue
-                    if git_root_state(e.path):
+                    # A checkout is backed up as git work;  a folder whose .git points nowhere (a pruned worktree)
+                    # is not one, so its files are kept here as ordinary files.
+                    if git_root_state(e.path) == "ok":
+                        continue
+                    parts = tuple(os.path.relpath(e.path, cfg.home).split(os.sep))
+                    if any(parts[-len(sk):] == sk for sk in SKIP_PATH_PARTS):
+                        stage.notes.append(f"skipped-by-default {e.path} (runtime session store)")
                         continue
                     stack.append(e.path)
                 else:
@@ -1047,15 +1367,29 @@ def file_digest(path: Path) -> str:
     return h.hexdigest()
 
 
-def load_allow(cfg: Config) -> set[str]:
-    """``allow.txt`` in the state folder:  one dropped path per line, exactly as the detail log prints it,
-    that the owner has reviewed (a rule file quoting an example key).  Only content matches can be
-    allowed;  a secret name never can."""
+def load_allow(cfg: Config) -> tuple[dict[str, str], list[str]]:
+    """``allow.txt`` in the state folder:  one reviewed hit per line, ``<path> @ <digest>``, exactly as the
+    detail log prints it (``allow-line``).  The digest pins the line to the content the owner looked at (a
+    file's sha1, a branch's tip sha), so a real key pasted into an allowed file later is not waved through.
+    Only content hits can be allowed;  a secret name never can.  A line with no ``@ digest`` is ignored and
+    reported.  Returns ({label: digest}, unpinned lines)."""
     try:
         text = (cfg.state_dir / "allow.txt").read_text(encoding="utf-8")
     except OSError:
-        return set()
-    return {l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")}
+        return {}, []
+    allow: dict[str, str] = {}
+    unpinned: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        label, sep, digest = line.rpartition(" @ ")
+        digest = digest.strip().lower()
+        if sep and label.strip() and re.fullmatch(r"[0-9a-f]{8,40}", digest):
+            allow[label.strip()] = digest
+        else:
+            unpinned.append(line)
+    return allow, unpinned
 
 
 def scanner_fingerprint(cfg: Config) -> str:
@@ -1069,14 +1403,14 @@ def scanner_fingerprint(cfg: Config) -> str:
         except (OSError, subprocess.TimeoutExpired):
             gl = "?"
     blob = repr(({k: (v.pattern, v.flags) for k, v in CONTENT_PATTERNS.items()}, PREFILTER, PLACEHOLDER_MARKS,
-                 sorted(PLACEHOLDER_CHECKED), sorted(ENTROPY_GATED), VERSION, gl))
+                 sorted(PLACEHOLDER_CHECKED), sorted(ENTROPY_GATED), VERSION, gl, cfg.max_file_bytes))
     return hashlib.sha1(blob.encode()).hexdigest()
 
 
 def load_scan_cache(cfg: Config, fingerprint: str) -> dict:
     try:
         data = json.loads((cfg.state_dir / "scan-cache.json").read_text())
-        return data.get("files", {}) if data.get("v") == 1 and data.get("fp") == fingerprint else {}
+        return data.get("files", {}) if data.get("v") == 2 and data.get("fp") == fingerprint else {}
     except (OSError, ValueError, AttributeError):
         return {}
 
@@ -1085,15 +1419,19 @@ def save_scan_cache(cfg: Config, files: dict, fingerprint: str) -> None:
     try:
         cfg.state_dir.mkdir(parents=True, exist_ok=True)
         tmp = cfg.state_dir / f"scan-cache.json.tmp{os.getpid()}"
-        tmp.write_text(json.dumps({"v": 1, "fp": fingerprint, "files": files}))
+        tmp.write_text(json.dumps({"v": 2, "fp": fingerprint, "files": files}))
         os.replace(tmp, cfg.state_dir / "scan-cache.json")
     except OSError:
         pass
 
 
-def gitleaks_batch(cfg: Config, stage: Stage, rels: list[str]) -> tuple[Optional[dict], str]:
+def gitleaks_batch(cfg: Config, stage: Stage, rels: list[str], deadline: float) -> tuple[Optional[dict], str]:
     """Run gitleaks over a batch of staged files (hard-linked into a scratch folder).  Returns
-    ({rel: reason} for flagged files, '') or (None, error)."""
+    ({rel: reason} for flagged files, '') or (None, error).  Every finding must map back to a file of
+    the batch:  one that does not is an error, never a pass."""
+    remaining = deadline - time.time()
+    if remaining < 1:
+        return None, "budget"
     batch = Path(tempfile.mkdtemp(prefix="gl-", dir=str(cfg.cache_dir)))
     report = batch.with_suffix(".json")
     try:
@@ -1104,27 +1442,35 @@ def gitleaks_batch(cfg: Config, stage: Stage, rels: list[str]) -> tuple[Optional
                 os.link(stage.path(rel), dst)
             except OSError:
                 shutil.copy2(stage.path(rel), dst)
-        # Throttled:  gitleaks is parallel and this Mac runs hot, so two threads at low priority.
+        # Throttled:  gitleaks is parallel and this Mac runs hot, so two threads at low priority.  The size
+        # limit is the staging cap, so nothing that is staged is skipped for being large.
+        limit_mb = max(1, cfg.max_file_bytes // (1024 * 1024)) + 1
         p = subprocess.run([cfg.gitleaks_bin, "dir", str(batch), "--no-banner", "--redact", "-f", "json",
                             "-r", str(report), "--exit-code", "0", "--log-level", "error",
-                            "--max-target-megabytes", "50"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=cfg.gitleaks_budget_s,
+                            "--max-target-megabytes", str(limit_mb)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=remaining,
                            cwd=str(cfg.cache_dir), env={**os.environ, "GOMAXPROCS": "2"},
                            preexec_fn=lambda: os.nice(10))
         if p.returncode != 0 or not report.exists():
             return None, f"rc={p.returncode}"
         findings = json.loads(report.read_text() or "[]")
+        known = set(rels)
+        base = os.path.realpath(batch)
         flagged: dict[str, str] = {}
         for f in findings if isinstance(findings, list) else []:
-            if f.get("RuleID") in cfg.gitleaks_ignore_rules:
-                continue
             try:
-                rel = os.path.relpath(f.get("File") or "", batch)
+                rel = os.path.relpath(os.path.realpath(f.get("File") or ""), base)
             except ValueError:
+                return None, "unmapped-finding"
+            if rel not in known:
+                return None, "unmapped-finding"
+            if f.get("RuleID") in cfg.gitleaks_ignore_rules:
                 continue
             flagged.setdefault(rel, f"gitleaks:{f.get('RuleID', '?')}")
         return flagged, ""
-    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+    except subprocess.TimeoutExpired:
+        return None, "budget"
+    except (OSError, ValueError) as exc:
         return None, type(exc).__name__
     finally:
         shutil.rmtree(batch, ignore_errors=True)
@@ -1138,77 +1484,118 @@ def run_gate(cfg: Config, stage: Stage, progress: Optional[Callable[[str], None]
              use_gitleaks: bool = True) -> dict:
     """Content scan over the staged set.  Bundles were scanned before they were made.
 
-    Every staged file gets the regex scan;  gitleaks runs too when installed, in batches within a
-    wall-clock budget.  A file that passed is remembered by (path, size, mtime) in
-    ``scan-cache.json``, so a steady-state run scans only what changed.  Dropped paths are recorded
-    on the stage;  content is never echoed."""
+    Every staged file gets the regex scan, which reads binary content too.  gitleaks runs as well when it
+    is installed, and then the gate fails closed:  a text file gitleaks has not cleared (the wall-clock
+    budget ran out, gitleaks failed on it) is taken out of this run and retried the next one.  Binary
+    files (a NUL byte, SQLite) are the exception, because gitleaks does not read them;  the regex scan
+    is their gate and the run log counts them (``regex_only``).  A file that passed is remembered by
+    (path, size, mtime or content hash) in ``scan-cache.json``, so a steady-state run scans only what
+    changed.  Dropped paths are recorded on the stage;  content is never echoed."""
     info = {"regex": True, "gitleaks": False, "gitleaks_error": "", "scanned": 0, "cached": 0,
-            "gitleaks_files": 0, "gitleaks_pending": 0}
+            "gitleaks_files": 0, "gitleaks_pending": 0, "deferred": 0, "regex_only": 0, "gitleaks_unreadable": 0}
     fingerprint = scanner_fingerprint(cfg)
     cache = load_scan_cache(cfg, fingerprint)
-    new_cache: dict = {}
-    regex_todo: list[tuple[str, list]] = []
+    state: dict[str, dict] = {}
+    todo: list[tuple[str, list]] = []
     for rel, item in list(stage.items.items()):
         if item.kind in ("bundle", "symlink", "meta"):
             continue
         try:
             st = os.stat(stage.path(rel))
-            # A patch is regenerated every run (new mtime), so it is keyed by content;  a cloned or
-            # snapshotted file keeps its mtime, so (size, mtime) is enough.
-            key = [st.st_size, "h:" + file_digest(stage.path(rel))] if item.kind == "patch" else [st.st_size, st.st_mtime_ns]
+            # A patch (or a binary read from git) is regenerated every run with a new mtime, so it is keyed by
+            # content;  a cloned or snapshotted file keeps its mtime, so (size, mtime) is enough.
+            key = [st.st_size, "h:" + file_digest(stage.path(rel))] if item.kind in ("patch", "binary") \
+                else [st.st_size, st.st_mtime_ns]
         except OSError:
             continue
         ent = cache.get(rel)
-        if ent and ent[:2] == key:
-            new_cache[rel] = ent
+        if isinstance(ent, list) and len(ent) == 4 and ent[:2] == key:
+            state[rel] = {"key": key, "cacheable": True, "binary": bool(ent[3]), "gl": bool(ent[2])}
             info["cached"] += 1
         else:
-            regex_todo.append((rel, key))
-    for rel, key in regex_todo:
-        hit = scan_file(stage.path(rel), cfg.scan_cap_bytes)
+            todo.append((rel, key))
+    for rel, key in todo:
+        path = stage.path(rel)
+        item = stage.items[rel]
+        hit = scan_file(path, cfg.scan_cap_bytes)
         info["scanned"] += 1
-        src = stage.items[rel].src
-        if hit and src in stage.allow:
-            stage.allowed.append(src)    # not cached:  removing the allow.txt line must take effect next run
-        elif hit:
-            stage.drop(rel, f"content:{hit}")
-        else:
-            new_cache[rel] = [key[0], key[1], False]
+        cacheable = True
+        if hit:
+            if stage.permit(item.src, file_digest(path)):
+                cacheable = False     # reviewed, so kept;  not cached, so taking the line out of allow.txt takes effect
+            else:
+                stage.drop(rel, f"content:{hit}")
+                continue
+        state[rel] = {"key": key, "cacheable": cacheable, "binary": item.kind == "sqlite" or is_binary_file(path),
+                      "gl": False}
     if progress:
         progress(f"regex scan done:  {info['scanned']} scanned, {info['cached']} cached")
     gl = shutil.which(cfg.gitleaks_bin) if (use_gitleaks and cfg.gitleaks_bin) else None
+    deferred_rels: set[str] = set()
     if gl:
         info["gitleaks"] = True
-        pending = sorted(rel for rel, ent in new_cache.items() if not ent[2] and rel in stage.items)
+        info["regex_only"] = sum(1 for rel, s in state.items() if rel in stage.items and s["binary"])
+        need = sorted(rel for rel, s in state.items() if rel in stage.items and not s["binary"] and not s["gl"])
+        batches: list[list[str]] = []
+        cur: list[str] = []
+        size = 0
+        for rel in need:
+            cur.append(rel)
+            size += stage.items[rel].size
+            if len(cur) >= 3000 or size >= 256 * 1024 * 1024:
+                batches.append(cur)
+                cur, size = [], 0
+        if cur:
+            batches.append(cur)
         deadline = time.time() + cfg.gitleaks_budget_s
-        i = 0
-        while i < len(pending):
-            if time.time() >= deadline:
+        cleared: set[str] = set()
+        flagged_all: dict[str, str] = {}
+        failed: dict[str, str] = {}
+        aborted = ""
+        work = list(reversed(batches))
+        while work:
+            batch = work.pop()
+            flagged, err = gitleaks_batch(cfg, stage, batch, deadline)
+            if flagged is not None:
+                cleared.update(batch)
+                flagged_all.update(flagged)
+                info["gitleaks_files"] += len(batch)
+                if progress:
+                    progress(f"gitleaks {info['gitleaks_files']}/{len(need)} files")
+                continue
+            if err in ("budget", "unmapped-finding"):
+                aborted = err
                 break
-            batch, size = [], 0
-            while i < len(pending) and len(batch) < 3000 and size < 256 * 1024 * 1024:
-                batch.append(pending[i])
-                size += stage.items[pending[i]].size
-                i += 1
-            flagged, err = gitleaks_batch(cfg, stage, batch)
-            if flagged is None:
-                info["gitleaks_error"] = err
-                i -= len(batch)
-                break
-            for rel in batch:
-                if rel in flagged and stage.items[rel].src in stage.allow:
-                    stage.allowed.append(stage.items[rel].src)
-                    new_cache.pop(rel, None)
-                elif rel in flagged:
-                    stage.drop(rel, flagged[rel])
-                    new_cache.pop(rel, None)
-                elif rel in new_cache:
-                    new_cache[rel][2] = True
-            info["gitleaks_files"] += len(batch)
-            if progress:
-                progress(f"gitleaks {info['gitleaks_files']}/{len(pending)} files")
-        info["gitleaks_pending"] = len(pending) - i
-    save_scan_cache(cfg, {rel: ent for rel, ent in new_cache.items() if rel in stage.items}, fingerprint)
+            if len(batch) == 1:       # gitleaks cannot read this one file:  it alone is left out
+                failed[batch[0]] = err
+                continue
+            mid = len(batch) // 2     # bisect, so one bad file does not block every file after it
+            work.append(batch[mid:])
+            work.append(batch[:mid])
+        for rel, reason in flagged_all.items():
+            if rel not in stage.items:
+                continue
+            if stage.permit(stage.items[rel].src, file_digest(stage.path(rel))):
+                state[rel]["cacheable"] = False
+            else:
+                stage.drop(rel, reason)
+                state.pop(rel, None)
+        for rel in cleared:
+            if rel in state:
+                state[rel]["gl"] = True
+        for rel in need:
+            if rel in stage.items and rel not in cleared:
+                reason = "gitleaks-unreadable" if rel in failed else ("gitleaks-" + (aborted or "pending"))
+                stage.defer(rel, reason)
+                deferred_rels.add(rel)
+        info["deferred"] = len(deferred_rels)
+        info["gitleaks_pending"] = len(deferred_rels) if aborted == "budget" else 0
+        info["gitleaks_unreadable"] = len(failed)
+        info["gitleaks_error"] = aborted if aborted not in ("", "budget") else (f"{len(failed)}-files-unreadable" if failed else "")
+    else:
+        info["regex_only"] = sum(1 for rel in state if rel in stage.items)
+    save_scan_cache(cfg, {rel: [s["key"][0], s["key"][1], s["gl"], s["binary"]] for rel, s in state.items()
+                          if s["cacheable"] and (rel in stage.items or rel in deferred_rels)}, fingerprint)
     return info
 
 
@@ -1235,13 +1622,34 @@ def swap_ratio(cfg: Config) -> Optional[float]:
     return float(m.group(2)) / float(m.group(1))
 
 
+def pressure_level(cfg: Config) -> Optional[int]:
+    """macOS memory pressure:  1 normal, 2 warning, 4 critical.  None where the sysctl does not exist."""
+    if cfg.pressure_fn:
+        return cfg.pressure_fn()
+    if sys.platform != "darwin":
+        return None
+    try:
+        out = subprocess.run(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"], capture_output=True,
+                             text=True, timeout=5).stdout.strip()
+        return int(out)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+
+
 def pressure_reason(cfg: Config) -> Optional[str]:
+    """Why this run should wait, or None.  Swap use alone is a poor signal on macOS (swap grows on demand and
+    sat at 95% on an idle Mac), so a full swap counts only when memory pressure is at least warning.  Where
+    the pressure sysctl does not exist, the swap rule stands alone."""
     la = load1(cfg)
     if la > cfg.load_limit:
         return f"load1={la:.1f}>{cfg.load_limit:g}"
     sw = swap_ratio(cfg)
-    if sw is not None and sw >= cfg.swap_limit:
-        return f"swap={sw * 100:.0f}%>={cfg.swap_limit * 100:.0f}%"
+    lvl = pressure_level(cfg)
+    if lvl is not None and lvl >= 4:
+        return f"memory-pressure={lvl}"
+    swap_full = sw is not None and sw >= cfg.swap_limit
+    if swap_full and (lvl is None or lvl >= 2):
+        return f"swap={sw * 100:.0f}%>={cfg.swap_limit * 100:.0f}%" + (f",pressure={lvl}" if lvl is not None else "")
     return None
 
 
@@ -1294,8 +1702,34 @@ def detail_log(cfg: Config, lines: list[str]) -> None:
 
 
 # ------------------------------------------------------------------------------ removable volumes
-def python_binary() -> str:
+CHECK_LABEL = "com.jay.fleet-work-backup.check"
+JOB_LABEL = "com.jay.fleet-work-backup"
+DEFAULT_INTERPRETER = "/usr/bin/python3"
+
+
+def process_image() -> str:
+    """The executable macOS privacy (TCC) sees for this process.  ``sys.executable`` is not it:  Homebrew's
+    python3.14 is a small launcher that execs Python.app/Contents/MacOS/Python, and that is the image a
+    Removable Volumes grant has to name."""
+    if sys.platform == "darwin":
+        try:
+            lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+            buf = ctypes.create_string_buffer(4096)
+            if lib.proc_pidpath(os.getpid(), buf, 4096) > 0:
+                return os.fsdecode(buf.value)
+        except (OSError, AttributeError):
+            pass
     return os.path.realpath(sys.executable)
+
+
+def app_bundle(path: str) -> str:
+    """The innermost .app that contains ``path`` ('' when none):  System Settings lists a bundle by that name,
+    and the helper app inside Xcode.app is its own bundle with its own grant."""
+    m = re.match(r"^(.*\.app)(?:/|$)", path)
+    return m.group(1) if m else ""
+
+
+python_binary = process_image
 
 
 def first_checkout_under(root: Path) -> str:
@@ -1320,7 +1754,7 @@ def probe_external(cfg: Config) -> dict:
                     targets[tgt] = e.name
     except OSError:
         pass
-    result = {"targets": [], "denied": 0, "missing": 0, "ok": 0, "binary": python_binary(), "git": cfg.git_bin}
+    result = {"targets": [], "denied": 0, "missing": 0, "ok": 0, "binary": process_image(), "git": cfg.git_bin}
     for tgt in sorted(targets):
         entry = {"path": tgt, "python": "", "git": ""}
         try:
@@ -1346,9 +1780,105 @@ def probe_external(cfg: Config) -> dict:
 
 
 def removable_hint(cfg: Config) -> str:
-    return (f"grant Removable Volumes (or Full Disk Access) to {python_binary()} in System Settings > Privacy & "
-            f"Security, then rerun 'fleet_work_backup.py check-access';  git children inherit the grant, or set "
-            f"FLEET_WORK_BACKUP_GIT to a git binary that has it")
+    img = process_image()
+    app = app_bundle(img)
+    who = f"{app} (the running executable is {img})" if app else img
+    return (f"grant Removable Volumes (or Full Disk Access) to {who} in System Settings > Privacy & Security, "
+            f"then run 'fleet_work_backup.py check-access --launchd' to see what a launchd job itself can read;  "
+            f"git children inherit the grant, or set FLEET_WORK_BACKUP_GIT to a git binary that has it")
+
+
+def job_command(cfg: Config) -> tuple[str, str]:
+    """(interpreter, script) the scheduled job runs:  read from the installed LaunchAgent when there is one."""
+    try:
+        with open(cfg.home / "Library" / "LaunchAgents" / f"{JOB_LABEL}.plist", "rb") as fh:
+            args = plistlib.load(fh).get("ProgramArguments") or []
+        if len(args) >= 2:
+            return str(args[0]), str(args[1])
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        pass
+    installed = cfg.install_dir / "fleet_work_backup.py"
+    return DEFAULT_INTERPRETER, str(installed if installed.exists() else Path(__file__).resolve())
+
+
+def launchctl(cfg: Config, *args: str) -> int:
+    try:
+        return subprocess.run([cfg.launchctl_bin, *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=60).returncode
+    except (OSError, subprocess.TimeoutExpired):
+        return 127
+
+
+def check_via_launchd(cfg: Config) -> int:
+    """Run ``check-access`` as a one-shot launchd job and report ITS result.  A command typed in Terminal
+    inherits Terminal's privacy grants, so only a job launchd starts shows what the schedule can read.  The
+    job uses a separate label, runs once, and is booted out again;  it never starts a backup."""
+    if sys.platform != "darwin" and cfg.launchctl_bin == "launchctl":
+        say("check-access --launchd is macOS only")
+        return 2
+    interp, script = job_command(cfg)
+    domain = f"gui/{os.getuid()}"
+    target = f"{domain}/{CHECK_LABEL}"
+    result = cfg.check_result_path
+    out_log, err_log = cfg.state_dir / "check-access.out", cfg.state_dir / "check-access.err"
+    cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    for p in (result, out_log, err_log):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    plist = {"Label": CHECK_LABEL, "ProgramArguments": [interp, script, "check-access", "--result", str(result)],
+             "RunAtLoad": True, "ProcessType": "Standard", "StandardOutPath": str(out_log),
+             "StandardErrorPath": str(err_log),
+             "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                                      "HOME": str(cfg.home)}}
+    with open(cfg.check_plist_path, "wb") as fh:
+        plistlib.dump(plist, fh)
+    launchctl(cfg, "bootout", target)   # a leftover from an interrupted check
+    say(f"starting a one-shot launchd job ({CHECK_LABEL}) with {interp}")
+    rc = launchctl(cfg, "bootstrap", domain, str(cfg.check_plist_path))
+    data = None
+    if rc != 0:
+        say(f"launchctl bootstrap failed (rc={rc})")
+    else:
+        deadline = time.time() + cfg.check_wait_s
+        while time.time() < deadline:
+            if result.exists() and result.stat().st_size:
+                try:
+                    data = json.loads(result.read_text())
+                    break
+                except ValueError:
+                    pass
+            time.sleep(0.5)
+    launchctl(cfg, "bootout", target)
+    try:
+        cfg.check_plist_path.unlink()
+    except OSError:
+        pass
+    if data is None:
+        tail = ""
+        try:
+            tail = err_log.read_text().strip().splitlines()[-1][:160]
+        except (OSError, IndexError):
+            pass
+        say(f"no result from the launchd job within {cfg.check_wait_s}s" + (f";  its stderr ends: {tail}" if tail else ""))
+        return 2
+    say(f"launchd job ran as: {data.get('binary')}")
+    if data.get("image_app"):
+        say(f"grant this bundle if a volume is denied: {data['image_app']}")
+    for t in data.get("targets", []):
+        say(f"{t['path']}: python={t['python']} git={t['git'] or '-'}")
+    if not data.get("targets"):
+        say("no lane symlinks point at /Volumes: nothing to check")
+        return 0
+    if data.get("denied"):
+        say("DENIED under launchd: " + removable_hint(cfg))
+        return 1
+    if data.get("missing"):
+        say("a volume is not mounted: its lanes will be skipped until it is")
+        return 1
+    say("ok under launchd:  the scheduled job can read the lanes")
+    return 0
 
 
 # ------------------------------------------------------------------------------------------ restic
@@ -1377,24 +1907,32 @@ def read_handoff(path: Path) -> dict[str, str]:
 
 def restic_env(cfg: Config) -> tuple[Optional[dict], list[str]]:
     """Return (env for the restic subprocess, missing key NAMES).  Values never leave this process
-    except in that env."""
+    except in that env.  ``cfg.repository`` (FLEET_WORK_BACKUP_REPOSITORY) points restic at another
+    repository, a local one for a test or a mirror, and then only the password is needed."""
     src = dict(read_handoff(cfg.handoff))
     for name in list(CRED_NAMES.values()) + list(MASTER_NAMES.values()):
         if os.environ.get(name):
             src[name] = os.environ[name]
+    password = src.get(CRED_NAMES["password"], "")
+    env = dict(os.environ)
+    for var in ("RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND", "RESTIC_REPOSITORY_FILE"):
+        env.pop(var, None)
+    if cfg.repository:
+        if not password:
+            return None, [CRED_NAMES["password"]]
+        env.update({"RESTIC_REPOSITORY": cfg.repository, "RESTIC_PASSWORD": password})
+        return env, []
     key_id = src.get(CRED_NAMES["key_id"], "")
     app_key = src.get(CRED_NAMES["app_key"], "")
     if (not key_id or not app_key) and os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
         key_id = key_id or src.get(MASTER_NAMES["key_id"], "")
         app_key = app_key or src.get(MASTER_NAMES["app_key"], "")
     bucket = src.get(CRED_NAMES["bucket"], "")
-    password = src.get(CRED_NAMES["password"], "")
     missing = [CRED_NAMES[k] for k, v in (("bucket", bucket), ("key_id", key_id), ("app_key", app_key),
                                           ("password", password)) if not v]
     if missing:
         return None, missing
     region = re.sub(r"^s3\.|\.backblazeb2\.com$", "", cfg.s3_endpoint)
-    env = dict(os.environ)
     env.update({
         "RESTIC_REPOSITORY": f"s3:https://{cfg.s3_endpoint}/{bucket}/fleet-work-backup",
         "RESTIC_PASSWORD": password,
@@ -1402,8 +1940,6 @@ def restic_env(cfg: Config) -> tuple[Optional[dict], list[str]]:
         "AWS_SECRET_ACCESS_KEY": app_key,
         "AWS_DEFAULT_REGION": region,
     })
-    for var in ("RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND", "RESTIC_REPOSITORY_FILE"):
-        env.pop(var, None)
     return env, []
 
 
@@ -1411,31 +1947,54 @@ def restic_path(cfg: Config) -> Optional[str]:
     return shutil.which(cfg.restic_bin)
 
 
+def _lower_priority() -> None:
+    os.nice(10)
+
+
 def run_restic(cfg: Config, env: dict, *args: str, timeout: int = 7200) -> subprocess.CompletedProcess:
-    return subprocess.run([cfg.restic_bin, *args], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          timeout=timeout)
+    """restic at low CPU priority and two threads.  On a timeout, or when this process is interrupted, restic
+    gets SIGINT first and a minute to release its repository lock;  a SIGKILL would leave a stale one."""
+    env = {**env, "GOMAXPROCS": env.get("GOMAXPROCS", "2")}
+    proc = subprocess.Popen([cfg.restic_bin, *args], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            preexec_fn=_lower_priority)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except BaseException:
+        try:
+            proc.send_signal(signal.SIGINT)
+            proc.communicate(timeout=60)
+        except BaseException:
+            proc.kill()
+            proc.communicate()
+        raise
+    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
 
-def restic_backup(cfg: Config, env: dict, stage_root: Path) -> dict:
-    p = run_restic(cfg, env, "backup", "--json", "--tag", TAG, "--host", cfg.host, "--ignore-inode",
+def restic_backup(cfg: Config, env: dict, stage_root: Path, partial: bool = False) -> dict:
+    tags = ["--tag", TAG] + (["--tag", "partial"] if partial else [])
+    p = run_restic(cfg, env, "backup", "--json", *tags, "--host", cfg.host, "--ignore-inode",
                    "--ignore-ctime", str(stage_root))
-    out = {"rc": p.returncode, "snapshot": "", "added": 0, "files": 0}
+    out = {"rc": p.returncode, "snapshot": "", "snapshot_full": "", "added": 0, "files": 0}
     for line in p.stdout.decode("utf-8", "replace").splitlines():
         try:
             msg = json.loads(line)
         except ValueError:
             continue
         if msg.get("message_type") == "summary":
-            out["snapshot"] = str(msg.get("snapshot_id", ""))[:8]
+            out["snapshot_full"] = str(msg.get("snapshot_id", ""))
+            out["snapshot"] = out["snapshot_full"][:8]
             out["added"] = int(msg.get("data_added", 0) or 0)
             out["files"] = int(msg.get("total_files_processed", 0) or 0)
     if p.returncode != 0:
         out["error"] = (p.stderr.decode("utf-8", "replace").strip().splitlines() or ["restic backup failed"])[-1][:160]
+        out["wrong_password"] = b"wrong password" in p.stderr.lower()
     return out
 
 
 def restic_maintenance(cfg: Config, env: dict, state: dict) -> dict:
-    """forget on every run;  prune at most daily, check at most weekly (B2 transactions cost money)."""
+    """forget on every run;  prune at most daily, check at most weekly (B2 transactions cost money).  Groups are
+    host+tags, so partial snapshots (tagged ``partial``) are kept apart and never push complete ones out of
+    the retention slots."""
     now = cfg.now()
     res = {"forget": "ok", "prune": "-", "check": "-"}
     args = ["forget", "--tag", TAG, "--group-by", "host,tags", *[a for kv in RETENTION for a in kv]]
@@ -1487,6 +2046,7 @@ def build_report(cfg: Config, disc: Discovery, wts: list[Worktree], groups: list
         "groups_with_work": sum(1 for g in groups if g.has_work),
         "groups_no_remote": [g.name for g in groups if g.no_remote],
         "unpushed_refs": sum(g.unpushed_refs for g in groups),
+        "bundle_files": sum(g.bundles + g.head_bundles for g in groups),
         "landed_refs_skipped": sum(g.landed_refs for g in groups),
         "stashes": sum(g.stashes for g in groups),
         "patch_files": sum(g.patch_files for g in groups),
@@ -1499,7 +2059,11 @@ def build_report(cfg: Config, disc: Discovery, wts: list[Worktree], groups: list
         "top_units": sorted(({"unit": k, "size": v} for k, v in units.items()), key=lambda d: d["size"], reverse=True)[:15],
         "large_skipped": stage.large,
         "dropped": stage.dropped,
+        "deferred": stage.deferred,
         "allowed": stage.allowed,
+        "allow_stale": stage.allow_stale,
+        "allow_unpinned": stage.allow_unpinned,
+        "missing_volumes": disc.missing_volumes,
         "blocked": disc.blocked + stage.blocked,
         "notes": disc.notes + stage.notes,
         "gate": gate,
@@ -1511,10 +2075,10 @@ def print_report(rep: dict) -> None:
     say("dry run report")
     print(f"  checkouts discovered     {rep['checkouts']}  (unreadable {rep['checkouts_unreadable']})")
     print(f"  repo groups (git dirs)   {rep['repo_groups']}  with work {rep['groups_with_work']}")
-    print(f"  groups with unpushed     {rep['groups_with_unpushed']}  ({rep['unpushed_refs']} refs;  "
+    print(f"  groups with unpushed     {rep['groups_with_unpushed']}  ({rep['unpushed_refs']} refs in {rep['bundle_files']} bundles;  "
           f"{rep['landed_refs_skipped']} landed refs skipped)")
     print(f"  groups with stashes      {rep['groups_with_stashes']}  ({rep['stashes']} stashes)")
-    print(f"  dirty worktrees          {rep['worktrees_dirty']}  ({rep['patch_files']} patches, {rep['untracked_files']} untracked files)")
+    print(f"  dirty worktrees          {rep['worktrees_dirty']}  ({rep['patch_files']} patches or binary files, {rep['untracked_files']} untracked files)")
     print(f"  non-git files            {rep['non_git_files']}")
     print(f"  staged                   {rep['staged_files']} files, {fmt_bytes(rep['staged_bytes'])}")
     for kind, v in sorted(rep["by_kind"].items()):
@@ -1531,13 +2095,20 @@ def print_report(rep: dict) -> None:
     print(f"  dropped by the gate      {len(rep['dropped'])} (paths only;  {len(rep['allowed'])} content hits allowed by allow.txt)")
     for d in rep["dropped"][:20]:
         print(f"    {d['reason']:<28} {d['path']}")
+    print(f"  deferred (not cleared by gitleaks, retried next run)  {len(rep['deferred'])}")
+    for d in rep["deferred"][:5]:
+        print(f"    {d['reason']:<28} {d['path']}")
+    if rep["allow_stale"] or rep["allow_unpinned"]:
+        print(f"  allow.txt                {len(rep['allow_stale'])} entries stale (content changed), {len(rep['allow_unpinned'])} unpinned (ignored)")
     if rep["groups_no_remote"]:
         print(f"  repos with no remote (full history bundled): {', '.join(rep['groups_no_remote'][:10])}")
+    if rep["missing_volumes"]:
+        print(f"  lane links onto an unmounted volume: {len(rep['missing_volumes'])}")
     print(f"  blocked paths            {len(rep['blocked'])}")
     g = rep["gate"]
     print(f"  gate: regex scanned {g.get('scanned', 0)} files ({g.get('cached', 0)} cached);  gitleaks "
-          f"{'on' if g.get('gitleaks') else 'off'}, {g.get('gitleaks_files', 0)} files, {g.get('gitleaks_pending', 0)} pending "
-          f"{g.get('gitleaks_error', '')}")
+          f"{'on' if g.get('gitleaks') else 'off'}, {g.get('gitleaks_files', 0)} files cleared, {g.get('deferred', 0)} deferred, "
+          f"{g.get('regex_only', 0)} regex-only {g.get('gitleaks_error', '')}")
     print(f"  elapsed                  {rep['elapsed_s']}s")
 
 
@@ -1572,12 +2143,31 @@ def build_stage(cfg: Config, stage_root: Path, progress: Optional[Callable[[str]
         except OSError:
             pass
     stage = Stage(stage_root)
-    stage.allow = load_allow(cfg)
+    stage.allow, stage.allow_unpinned = load_allow(cfg)
     git = Git(cfg)
     disc = discover(cfg)
     phase(f"discovered {len(disc.checkouts)} checkouts ({len(disc.blocked)} blocked)")
     with cf.ThreadPoolExecutor(max_workers=max(1, cfg.workers)) as pool:
         wts = list(pool.map(lambda p: inspect_worktree(cfg, git, p), disc.checkouts))
+        # A linked worktree can live anywhere (~/.codex/worktrees);  git knows where, so ask it.
+        known = {os.path.realpath(w.path) for w in wts}
+        first_of: dict[str, str] = {}
+        for w in wts:
+            if not w.error and w.common_dir:
+                first_of.setdefault(w.common_dir, w.path)
+        extra: list[str] = []
+        for common_dir, first in sorted(first_of.items()):
+            found, gone = linked_worktrees(git, first)
+            for path in gone:
+                disc.notes.append(f"worktree-missing {path} (listed by {common_dir})")
+            for path in found:
+                real = os.path.realpath(path)
+                if real not in known:
+                    known.add(real)
+                    extra.append(path)
+        if extra:
+            wts += list(pool.map(lambda p: inspect_worktree(cfg, git, p), extra))
+            phase(f"found {len(extra)} linked worktrees outside the scanned folders")
     phase(f"inspected {len(wts)} worktrees, {sum(1 for w in wts if w.dirty)} dirty")
     for w in wts:
         if w.error:
@@ -1599,7 +2189,7 @@ def build_stage(cfg: Config, stage_root: Path, progress: Optional[Callable[[str]
     file_count = collect_files(cfg, stage)
     phase(f"staged {file_count} non-git files, {fmt_bytes(stage.total())} total")
     gate = run_gate(cfg, stage, progress, use_gitleaks)
-    phase(f"gate done, {len(stage.dropped)} dropped, {fmt_bytes(stage.total())} left")
+    phase(f"gate done, {len(stage.dropped)} dropped, {len(stage.deferred)} deferred, {fmt_bytes(stage.total())} left")
     return stage, disc, wts, groups, file_count, gate, started
 
 
@@ -1610,7 +2200,7 @@ def cmd_run(cfg: Config, args) -> int:
     except Exception as exc:  # never a silent run:  one log line, the stage removed, a traceback in the detail log
         if args.dry_run:
             raise
-        log_line(cfg, status="error", reason=f"exception:{type(exc).__name__}")
+        log_not_ok(cfg, status="error", reason=f"exception:{type(exc).__name__}")
         detail_log(cfg, ["exception " + line for line in traceback.format_exc().splitlines()])
         shutil.rmtree(cfg.stage, ignore_errors=True)
         return 5
@@ -1622,9 +2212,28 @@ def cmd_run(cfg: Config, args) -> int:
                 pass
 
 
+def log_not_ok(cfg: Config, **fields) -> str:
+    """A log line for a run that produced no good snapshot, with the running count and the last good one."""
+    state = read_state(cfg)
+    n = int(state.get("consecutive_not_ok", 0)) + 1
+    state["consecutive_not_ok"] = n
+    try:
+        write_state(cfg, state)
+    except OSError:
+        pass
+    warn = [w for w in str(fields.pop("warn", "") or "").split(",") if w]
+    if n >= SKIP_WARN_AFTER:
+        warn.append("no-complete-backup-for-about-24h")
+    return log_line(cfg, **fields, not_ok_in_a_row=n if n > 1 else "", warn=",".join(warn),
+                    last_ok=state.get("last_ok_text", "never"))
+
+
 def _run(cfg: Config, args, held: list[int]) -> int:
     t0 = time.time()
     dry = args.dry_run
+    if getattr(args, "skip_gitleaks", False) and not dry:
+        log_not_ok(cfg, status="error", reason="skip-gitleaks-is-for-a-dry-run")
+        return 2
     if not dry:
         cfg.state_dir.mkdir(parents=True, exist_ok=True)
         lock_fd = os.open(str(cfg.state_dir / "lock"), os.O_CREAT | os.O_RDWR, 0o600)
@@ -1641,17 +2250,18 @@ def _run(cfg: Config, args, held: list[int]) -> int:
             write_state(cfg, state)
             warn = "no-backup-for-about-24h" if state["consecutive_skips"] >= SKIP_WARN_AFTER else ""
             log_line(cfg, status="skip", reason=why, consecutive=state["consecutive_skips"], warn=warn,
-                     last_success=state.get("last_success_text", "never"))
+                     last_ok=state.get("last_ok_text", "never"))
             return 0
         if not restic_path(cfg):
-            log_line(cfg, status="error", reason="restic-missing", hint="brew install restic")
+            log_not_ok(cfg, status="error", reason="restic-missing", hint="brew install restic")
             return 2
         env, missing = restic_env(cfg)
         if env is None:
-            log_line(cfg, status="error", reason="missing-credentials", names=",".join(missing))
+            log_not_ok(cfg, status="error", reason="missing-credentials", names=",".join(missing))
             return 2
         if not disk_ok(cfg):
-            log_line(cfg, status="skip", reason="low-disk", need=fmt_bytes(cfg.min_free_bytes))
+            log_line(cfg, status="skip", reason="low-disk", need=fmt_bytes(cfg.min_free_bytes),
+                     last_ok=state.get("last_ok_text", "never"))
             return 0
         if cfg.max_runtime:
             def _alarm(*_):
@@ -1664,7 +2274,8 @@ def _run(cfg: Config, args, held: list[int]) -> int:
             cfg, stage_root, progress=(lambda m: say(m)) if dry else None,
             use_gitleaks=not getattr(args, "skip_gitleaks", False))
     except Timeout:
-        log_line(cfg, status="error", reason="timeout", limit_s=cfg.max_runtime)
+        shutil.rmtree(stage_root, ignore_errors=True)
+        log_not_ok(cfg, status="error", reason="timeout", limit_s=cfg.max_runtime)
         return 3
     rep = build_report(cfg, disc, wts, groups, stage, file_count, gate, t0)
     manifest = {k: rep[k] for k in ("tool_version", "checkouts", "repo_groups", "groups_with_work", "unpushed_refs",
@@ -1672,12 +2283,20 @@ def _run(cfg: Config, args, held: list[int]) -> int:
                                     "staged_bytes", "by_kind")}
     manifest["created"] = stamp(cfg.now())
     manifest["dropped_count"] = len(stage.dropped)
+    manifest["deferred_count"] = len(stage.deferred)
     (stage_root / "MANIFEST.json").write_text(json.dumps(manifest, indent=2))
     (stage_root / "README-RESTORE.txt").write_text(
         "Restore runbook: scripts/fleet-work-backup/RESTORE.md in AI-Fleet-Coordinator.\n"
         "files/ mirrors absolute paths (copy files/Users/jay back to /Users/jay).  git/<repo>/ holds\n"
-        "unpushed.bundle, stashes/<n>/ and worktrees/<name>/ (patches/, untracked/, head.bundle).\n")
-    detail = [f"dropped {d['reason']} {d['path']}" for d in stage.dropped]
+        "bundles/*.bundle, stashes/<n>/ and worktrees/<name>/ (patches/, binary/, untracked/, head.bundle).\n")
+    detail = []
+    for d in stage.dropped:
+        detail.append(f"dropped {d['reason']} {d['path']}")
+        if d.get("digest") and not d["reason"].startswith("secret-name"):
+            detail.append(f"  allow-line {d['path']} @ {d['digest']}")
+    detail += [f"deferred {d['reason']} {d['path']}" for d in stage.deferred]
+    detail += [f"allow-stale {p} (its content changed since it was reviewed;  not applied)" for p in stage.allow_stale]
+    detail += [f"allow-unpinned {l} (no '@ digest';  ignored)" for l in stage.allow_unpinned]
     detail += [f"large {f['size']} {f['path']}" for f in stage.large]
     detail += [f"blocked errno={b.get('errno')} {b['via']} {b['path']}" for b in rep["blocked"]]
     detail += [f"note {n}" for n in rep["notes"]]
@@ -1691,22 +2310,45 @@ def _run(cfg: Config, args, held: list[int]) -> int:
             say(f"stage kept at {stage_root}")
         return 0
     blocked = len(rep["blocked"])
+    deferred = len(stage.deferred)
+    if not gate.get("gitleaks"):
+        gate_name = "regex-only"
+    else:
+        gate_name = "gitleaks-error" if gate.get("gitleaks_error") else "gitleaks"
     common = dict(checkouts=rep["checkouts"], groups=rep["repo_groups"], work=rep["groups_with_work"],
                   unpushed=rep["unpushed_refs"], stashes=rep["stashes"], dirty=rep["worktrees_dirty"],
                   files=rep["staged_files"], staged=fmt_bytes(rep["staged_bytes"]), dropped=len(stage.dropped),
+                  deferred=deferred, regex_only=gate.get("regex_only", 0), gate=gate_name,
                   large=len(stage.large), blocked=blocked)
-    warn, grant = "", ""
+    warns: list[str] = []
+    grant = ""
     if blocked:
         if any(b.get("errno") in (errno.EPERM, errno.EACCES) for b in rep["blocked"]):
-            warn, grant = "removable-volumes-denied", python_binary()
+            warns.append("removable-volumes-denied")
+            grant = process_image()
             detail.append("hint " + removable_hint(cfg))
         else:
-            warn = "paths-unreadable"
+            warns.append("paths-unreadable")
+    if disc.missing_volumes:
+        warns.append("volume-missing")
+        detail.append(f"hint {len(disc.missing_volumes)} lane links point onto a volume that is not mounted:  "
+                      f"{disc.missing_volumes[0]}, ...  Their work is not in this snapshot.")
+    if deferred:
+        warns.append("gitleaks-error" if gate.get("gitleaks_error") else "gitleaks-deferred")
+    if gate_name == "regex-only":
+        warns.append("gitleaks-missing")
+    if any(n.startswith("bundle-scan-partial") for n in rep["notes"]):
+        warns.append("bundle-scan-partial")
+    if stage.allow_stale:
+        warns.append("allow-entry-stale")
+    if stage.allow_unpinned:
+        warns.append("allow-entry-unpinned")
+    partial = bool(blocked or disc.missing_volumes or deferred)
     detail_log(cfg, detail)
     try:
-        res = restic_backup(cfg, env, stage_root)
+        res = restic_backup(cfg, env, stage_root, partial=partial)
     except (OSError, subprocess.TimeoutExpired, Timeout) as exc:
-        log_line(cfg, status="error", reason=f"restic-{type(exc).__name__}", **common)
+        log_not_ok(cfg, status="error", reason=f"restic-{type(exc).__name__}", **common)
         shutil.rmtree(stage_root, ignore_errors=True)
         return 4
     finally:
@@ -1715,24 +2357,38 @@ def _run(cfg: Config, args, held: list[int]) -> int:
     state = read_state(cfg)
     unreadable = res["rc"] == 3 and bool(res["snapshot"])   # restic made the snapshot but could not read some files
     if res["rc"] != 0 and not unreadable:
-        log_line(cfg, status="error", reason="restic-backup-failed", detail=res.get("error", "")[:120], **common)
+        log_not_ok(cfg, status="error", reason="wrong-password" if res.get("wrong_password") else "restic-backup-failed",
+                   detail=res.get("error", "")[:120], **common)
         shutil.rmtree(stage_root, ignore_errors=True)
         return 4
+    if unreadable and not partial:
+        warns.append("restic-unreadable-files")
+        try:
+            run_restic(cfg, env, "tag", "--add", "partial", res["snapshot_full"], timeout=300)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     maint = {"forget": "-", "prune": "-", "check": "-"}
     try:
         maint = restic_maintenance(cfg, env, state)
     except (OSError, subprocess.TimeoutExpired):
         maint["forget"] = "fail"
+    status = "partial" if (partial or unreadable) else "ok"
     state["consecutive_skips"] = 0
     state["last_success"] = cfg.now()
     state["last_success_text"] = stamp(cfg.now())
+    if status == "ok":
+        state["consecutive_not_ok"] = 0
+        state["last_ok"] = cfg.now()
+        state["last_ok_text"] = stamp(cfg.now())
+    else:
+        state["consecutive_not_ok"] = int(state.get("consecutive_not_ok", 0)) + 1
+        if state["consecutive_not_ok"] >= SKIP_WARN_AFTER:
+            warns.append("no-complete-backup-for-about-24h")
     write_state(cfg, state)
-    status = "partial" if (blocked or unreadable) else "ok"
-    if unreadable and not warn:
-        warn = "restic-unreadable-files"
     log_line(cfg, status=status, snapshot=res["snapshot"] or "?", added=fmt_bytes(res["added"]),
              forget=maint["forget"], prune=maint["prune"], check=maint["check"], elapsed=f"{time.time() - t0:.0f}s",
-             warn=warn, grant=grant, **common)
+             warn=",".join(warns), grant=grant, last_ok=(state.get("last_ok_text", "never") if status != "ok" else ""),
+             **common)
     shutil.rmtree(stage_root, ignore_errors=True)
     return 0
 
@@ -1770,10 +2426,37 @@ def cmd_restic(cfg: Config, args) -> int:
     return subprocess.call([cfg.restic_bin, *rest], env=env)
 
 
+def cmd_image(cfg: Config, args) -> int:
+    """Print the executable macOS privacy settings see for this interpreter (what a grant has to name)."""
+    img = process_image()
+    print(img)
+    app = app_bundle(img)
+    if app:
+        print(f"app bundle: {app}")
+    print(f"sys.executable: {sys.executable}")
+    return 0
+
+
 def cmd_check_access(cfg: Config, args) -> int:
+    if getattr(args, "launchd", False):
+        return check_via_launchd(cfg)
     res = probe_external(cfg)
-    say(f"interpreter: {res['binary']}")
+    res["image"] = process_image()
+    res["image_app"] = app_bundle(res["image"])
+    res["xpc_service"] = os.environ.get("XPC_SERVICE_NAME", "")
+    if getattr(args, "result", None):
+        try:
+            tmp = Path(args.result + ".tmp")
+            tmp.write_text(json.dumps(res))
+            os.replace(tmp, args.result)
+        except OSError:
+            pass
+    say(f"interpreter image: {res['image']}")
     say(f"git: {res['git']}")
+    from_terminal = res["xpc_service"] in ("", "0") or sys.stdin.isatty()
+    if from_terminal:
+        say("note: this command runs with the privacy grants of the terminal you typed it in, so 'ok' here does not "
+            "show what the scheduled job can read;  use 'check-access --launchd' for that")
     if not res["targets"]:
         say("no lane symlinks point at /Volumes: nothing to check")
         return 0
@@ -1785,7 +2468,7 @@ def cmd_check_access(cfg: Config, args) -> int:
     if res["missing"]:
         say("a volume is not mounted: its lanes will be skipped until it is")
         return 1
-    say("ok")
+    say("ok" + (" (as this terminal)" if from_terminal else ""))
     return 0
 
 
@@ -1797,9 +2480,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     run.add_argument("--json", help="write the report as JSON to this path")
     run.add_argument("--keep-stage", action="store_true", help="dry run: leave the staged tree in place")
     run.add_argument("--ignore-pressure", action="store_true", help="run even when load or swap is high")
-    run.add_argument("--skip-gitleaks", action="store_true", help="regex scan only (a faster dry run)")
+    run.add_argument("--skip-gitleaks", action="store_true", help="dry run only:  regex scan alone (a faster report)")
     sub.add_parser("init", help="restic init (never done by a scheduled run)")
-    sub.add_parser("check-access", help="report whether /Volumes lanes are readable here")
+    ca = sub.add_parser("check-access", help="report whether /Volumes lanes are readable here")
+    ca.add_argument("--launchd", action="store_true", help="run the check as a one-shot launchd job and report its result")
+    ca.add_argument("--result", help=argparse.SUPPRESS)
+    sub.add_parser("image", help="print the executable macOS privacy settings see for this interpreter")
     sub.add_parser("snapshots", help="list this job's snapshots")
     rs = sub.add_parser("restic", help="run restic against this job's repository (restores, checks)")
     rs.add_argument("restic_args", nargs=argparse.REMAINDER)
@@ -1810,7 +2496,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             args = ap.parse_args(["run"])
         return cmd_run(cfg, args)
     return {"init": cmd_init, "check-access": cmd_check_access, "snapshots": cmd_snapshots,
-            "restic": cmd_restic}[args.cmd](cfg, args)
+            "restic": cmd_restic, "image": cmd_image}[args.cmd](cfg, args)
 
 
 if __name__ == "__main__":
