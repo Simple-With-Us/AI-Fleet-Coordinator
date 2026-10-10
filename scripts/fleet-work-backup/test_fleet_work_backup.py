@@ -759,6 +759,17 @@ class RunCase(unittest.TestCase):
         self.assertIn("files/apps/added.md", again)
         self.assertNotIn("files/apps/doc.md", again)
 
+    def test_regenerated_patches_hit_the_scan_cache_by_content(self):
+        r = self.home / "Code" / "r"
+        write(r / "b.txt", "b edited\n")
+        stage, *_, gate1, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertTrue(any(i.kind == "patch" for i in stage.items.values()))
+        stage, *_, gate2, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertEqual(gate2["scanned"], 0)
+        write(r / "b.txt", "b edited again\n")
+        stage, *_, gate3, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertEqual(gate3["scanned"], 1)
+
     def test_gitleaks_budget_leaves_the_rest_pending_not_lost(self):
         self.cfg.gitleaks_bin = str(self.counting_gitleaks())
         self.cfg.gitleaks_budget_s = 0
@@ -787,12 +798,32 @@ class RunCase(unittest.TestCase):
         git(r, "commit", "-q", "-m", "doc with a key-shaped string")
         stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
         self.assertFalse(any(k.endswith("unpushed.bundle") for k in stage.items))
-        label = os.path.realpath(r / ".git") + " (unpushed commits)"
-        self.assertEqual([d["path"] for d in stage.dropped if "unpushed commits" in d["path"]], [label])
+        label = os.path.realpath(r / ".git") + " ref refs/heads/main"
+        self.assertEqual([d["path"] for d in stage.dropped if " ref " in d["path"]], [label])
         self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
         (self.cfg.state_dir / "allow.txt").write_text(label + "\n")
         stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
         self.assertTrue(any(k.endswith("unpushed.bundle") for k in stage.items))
+
+    def test_one_dirty_branch_costs_only_that_branch_not_the_repository(self):
+        r = self.home / "Code" / "r"
+        git(r, "checkout", "-q", "-b", "clean-branch")
+        write(r / "clean.txt", "fine\n")
+        git(r, "add", "-A")
+        git(r, "commit", "-q", "-m", "clean work")
+        git(r, "checkout", "-q", "main")
+        git(r, "checkout", "-q", "-b", "leaky-branch")
+        write(r / "leak.md", f"example {AWS}\n")
+        git(r, "add", "-A")
+        git(r, "commit", "-q", "-m", "leaky work")
+        git(r, "checkout", "-q", "main")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        bundle = next(self.cfg.dry_stage / k for k in stage.items if k.endswith("unpushed.bundle"))
+        heads = subprocess.run(["git", "bundle", "list-heads", str(bundle)], env=GENV, capture_output=True, text=True).stdout
+        self.assertIn("refs/heads/clean-branch", heads)
+        self.assertIn("refs/heads/main", heads)
+        self.assertNotIn("leaky-branch", heads)
+        self.assertEqual([d["path"].split(" ref ")[1] for d in stage.dropped if " ref " in d["path"]], ["refs/heads/leaky-branch"])
 
     def test_a_changed_file_is_rescanned_and_a_new_secret_is_caught(self):
         stage, *_ , gate1, _ = fwb.build_stage(self.cfg, self.cfg.dry_stage)

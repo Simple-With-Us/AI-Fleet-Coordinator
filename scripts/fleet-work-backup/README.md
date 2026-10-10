@@ -66,8 +66,9 @@ leak from.  Two layers:
    is installed.  Binary files are scanned too (a SQLite page holds plain text).  A match drops the
    file (or, for a tracked file's diff, that file's patch alone) and the path goes to the detail log
    with a reason.  The values are never logged.  Unpushed commits are scanned with the same regex
-   over `git log -p` (first 128 MB) before they are bundled;  a hit drops the bundle and names the
-   repository.
+   over `git log -p` (first 128 MB) before they are bundled.  A hit is then isolated ref by ref (10 minute
+   budget), so one branch holding a key-shaped string costs only that branch:  the clean refs are still
+   bundled and each dropped ref is named.
 
 A key-shaped string that is plainly an example (`sk_live_xxxxxxxx`, `AKIA...EXAMPLE`, a PEM header with
 no key body after it) does not count.  The scan is cached by (path, size, mtime) in
@@ -78,10 +79,10 @@ budget per run, and whatever it does not reach is retried next run (the regex sc
 **Reviewing what the gate dropped.**  The detail log lists every drop with a reason (`secret-name`,
 `content:<pattern>`, `gitleaks:<rule>`).  The first dry run over the real machine dropped files that
 are only documentation (a rule file quoting an example Stripe key, Cloudflare skill references with
-bearer-header examples) and, because the unit of a bundle is the whole bundle, the unpushed commits of
-a few repositories.  When you have looked and the match is harmless, put the path exactly as the log
-prints it, one per line, in `~/Library/Application Support/fleet-work-backup/allow.txt` (for a bundle,
-`<common dir>/.git (unpushed commits)`).  A content or gitleaks hit on a listed path is kept and counted
+bearer-header examples), and it dropped some unpushed branches.  When you have looked and the match is
+harmless, put the path exactly as the log prints it, one per line, in
+`~/Library/Application Support/fleet-work-backup/allow.txt` (for a branch,
+`<common dir>/.git ref refs/heads/<name>`;  `<common dir>/.git (unpushed commits)` allows them all).  A content or gitleaks hit on a listed path is kept and counted
 as `allowed`;  a **secret name is never allowed**.
 
 If the gate drops `mac-collab/findings.db` or its backups, that shows in the detail log too;  the

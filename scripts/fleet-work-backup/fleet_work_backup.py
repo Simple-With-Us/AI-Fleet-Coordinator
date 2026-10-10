@@ -172,6 +172,7 @@ class Config:
     max_runtime: int = 2 * 3600
     gitleaks_ignore_rules: tuple = ()
     gitleaks_budget_s: int = 1500
+    isolate_budget_s: int = 600
     load_fn: Optional[Callable[[], float]] = None
     swap_fn: Optional[Callable[[], Optional[float]]] = None
     now_fn: Optional[Callable[[], float]] = None
@@ -825,8 +826,28 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
                 stage.allowed.append(label)
                 hit = None
             if hit:
-                stage.dropped.append({"path": label, "stage": "", "reason": f"content:{hit}"})
-            else:
+                # One key-shaped string in some branch must not cost the repository its whole backup:
+                # scan ref by ref and bundle only the refs whose own unpushed history is clean.
+                clean: list[str] = []
+                deadline = time.time() + cfg.isolate_budget_s
+                for ref in ref_names:
+                    rl = f"{common_dir} ref {ref}"
+                    if time.time() > deadline:
+                        stage.dropped.append({"path": rl, "stage": "", "reason": "scan-budget"})
+                        continue
+                    rhit, _ = stream_scan(git, cwd, [ref, "--not", "--remotes"], cfg.bundle_scan_cap)
+                    if rhit and rl in stage.allow:
+                        stage.allowed.append(rl)
+                        rhit = None
+                    if rhit:
+                        stage.dropped.append({"path": rl, "stage": "", "reason": f"content:{rhit}"})
+                    else:
+                        clean.append(ref)
+                ref_names = clean
+                pending = [(r, sha) for r, sha in pending if r in clean]
+                res.unpushed_refs = len(pending)
+                hit = None
+            if ref_names:
                 if truncated:
                     stage.notes.append(f"bundle-scan-partial {common_dir}")
                 out_path = stage.path(f"{base}/unpushed.bundle")
@@ -1016,6 +1037,14 @@ def collect_files(cfg: Config, stage: Stage) -> int:
 
 
 # --------------------------------------------------------------------------------- secret gate
+def file_digest(path: Path) -> str:
+    h = hashlib.sha1()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
 def load_allow(cfg: Config) -> set[str]:
     """``allow.txt`` in the state folder:  one dropped path per line, exactly as the detail log prints it,
     that the owner has reviewed (a rule file quoting an example key).  Only content matches can be
@@ -1106,9 +1135,11 @@ def run_gate(cfg: Config, stage: Stage, progress: Optional[Callable[[str], None]
             continue
         try:
             st = os.stat(stage.path(rel))
+            # A patch is regenerated every run (new mtime), so it is keyed by content;  a cloned or
+            # snapshotted file keeps its mtime, so (size, mtime) is enough.
+            key = [st.st_size, "h:" + file_digest(stage.path(rel))] if item.kind == "patch" else [st.st_size, st.st_mtime_ns]
         except OSError:
             continue
-        key = [st.st_size, st.st_mtime_ns]
         ent = cache.get(rel)
         if ent and ent[:2] == key:
             new_cache[rel] = ent
