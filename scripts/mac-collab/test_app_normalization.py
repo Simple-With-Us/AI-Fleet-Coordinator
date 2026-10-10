@@ -45,6 +45,45 @@ class AppNormalizationTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(body["apps"], ["fleetlink"])
 
+    def test_filter_matches_legacy_alias_family(self):
+        # Rows stored before the alias map existed keep their original spelling.
+        # The stats chip sends that spelling; the list must return the family.
+        stored = ("fleetlink", "fleetlink.online", "fleet link", "fl")
+        with tempfile.TemporaryDirectory() as temp, patch.object(server, "authorized", return_value="OWNER"):
+            with patch.object(server, "DB_PATH", Path(temp) / "findings.db"):
+                server.init_db()
+                conn = server.get_conn()
+                try:
+                    now = "2026-10-10T06:00:00Z"
+                    for index, app in enumerate(stored):
+                        conn.execute(
+                            "INSERT INTO findings (id, app, title, status, created_at, updated_at) "
+                            "VALUES (?, ?, ?, 'open', ?, ?)",
+                            (f"legacy{index}", app, f"Legacy {app}", now, now),
+                        )
+                    conn.execute(
+                        "INSERT INTO findings (id, app, title, status, created_at, updated_at) "
+                        "VALUES (?, ?, ?, 'open', ?, ?)",
+                        ("other", "botfleet", "Other app", now, now),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                handler = object.__new__(server.Handler)
+                handler._send = lambda status, body: (status, body)
+                for query in ("fleetlink", "fleetlink.online", "FleetLink.Online", "fleet link", "fl", "FL"):
+                    status, body = handler._handle_findings_list({"app": [query]})
+                    self.assertEqual(status, 200, query)
+                    self.assertEqual(body["total_matching"], len(stored), query)
+                    self.assertEqual({row["app"] for row in body["findings"]}, set(stored), query)
+                status, body = handler._handle_findings_list({"app": ["botfleet"]})
+                self.assertEqual(status, 200)
+                self.assertEqual({row["app"] for row in body["findings"]}, {"botfleet"})
+                self.assertEqual(
+                    set(server.app_filter_variants("FleetLink.Online")),
+                    {"fleetlink", "fleetlink.online", "fleet link", "fl", "FleetLink.Online"},
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
