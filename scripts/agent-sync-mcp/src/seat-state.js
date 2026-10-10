@@ -359,6 +359,182 @@ export async function callTail(store, limit = 40) {
   return out;
 }
 
+// ---------------------------------------------------------------- MCP Events (src/events.js)
+//
+// Subscriptions, the callback verification cache and the wake dedupe.  Storage
+// only, like everything above:  the verification and delivery fetches run in
+// the Worker, which hands the results back here.
+
+export const WAKE_SEEN_MS = 15 * MINUTE_MS; // > the wake's 5-minute sent_at window
+const WAKE_SEEN_CAP = 500;
+const VERIFIED_CAP = 20;
+const subRef = (id) => String(id ?? "").slice(0, 16);
+
+/**
+ * The seat's subscriptions that may still receive events.  `dropped` maps an
+ * id to why it may not:  past refresh_before ("expired"), made under an older
+ * grant epoch ("stale_epoch", Revoke All And Bump Epoch), or made by a grant
+ * past GRANT_MAX_AGE_MS ("grant_too_old").  The caller persists the removal.
+ */
+async function liveSubs(store, now) {
+  const subs = (await store.get("event_subs")) ?? {};
+  const { epoch } = await read(store);
+  const dropped = {};
+  for (const [id, sub] of Object.entries(subs)) {
+    let why = null;
+    if (!sub || !Number.isFinite(sub.refresh_before) || sub.refresh_before <= now) why = "expired";
+    else if (sub.epoch !== epoch) why = "stale_epoch";
+    else if (!Number.isFinite(sub.approved_at) || !(now - sub.approved_at < GRANT_MAX_AGE_MS)) why = "grant_too_old";
+    if (why) {
+      dropped[id] = why;
+      delete subs[id];
+    }
+  }
+  return { subs, dropped };
+}
+
+async function persistDropped(store, subs, dropped, now) {
+  const ids = Object.keys(dropped);
+  if (ids.length === 0) return;
+  await store.put("event_subs", subs);
+  for (const id of ids) await audit(store, { event: "event_sub_dropped", sub_ref: subRef(id), reason: dropped[id] }, now);
+}
+
+/**
+ * Is there room for subscription `id`?  It exists already (a refresh), or the
+ * seat is under the cap.  With a cap of one, a second chat is refused rather
+ * than replacing the first (`until` says when the live one lapses).
+ */
+export async function eventSubRoom(store, { id, max = 1 }, now = Date.now()) {
+  const { subs, dropped } = await liveSubs(store, now);
+  await persistDropped(store, subs, dropped, now);
+  if (Object.hasOwn(subs, id) || Object.keys(subs).length < max) return { ok: true };
+  return { ok: false, until: Math.min(...Object.values(subs).map((sub) => sub.refresh_before)) };
+}
+
+/**
+ * Create or refresh a subscription (idempotent by its deterministic id).  A
+ * refresh with a new secret keeps the old one for `rotationMs` so deliveries
+ * carry both signatures.  Returns {ok: true, refreshBefore, refreshed} or
+ * {ok: false, reason: "cap"}.
+ */
+export async function eventSubUpsert(store, { sub, ttlMs, rotationMs = 10 * MINUTE_MS, max = 1 }, now = Date.now()) {
+  const { subs, dropped } = await liveSubs(store, now);
+  await persistDropped(store, subs, dropped, now);
+  const prior = subs[sub.id];
+  if (!prior && Object.keys(subs).length >= max) {
+    await audit(store, { event: "event_subscribe_refused", sub_ref: subRef(sub.id), reason: "cap" }, now);
+    return { ok: false, reason: "cap" };
+  }
+  const row = {
+    id: sub.id,
+    name: sub.name,
+    arguments: sub.arguments ?? {},
+    url: sub.url,
+    host: sub.host,
+    secret: sub.secret,
+    epoch: sub.epoch,
+    approved_at: sub.approved_at,
+    client_id: sub.client_id ?? "",
+    created_at: prior?.created_at ?? now,
+    refresh_before: now + ttlMs,
+    last_outcome: prior?.last_outcome ?? null,
+    last_status: prior?.last_status ?? null,
+    last_at: prior?.last_at ?? null,
+  };
+  if (prior && prior.secret !== sub.secret) {
+    row.prev_secret = prior.secret;
+    row.prev_until = now + rotationMs;
+  } else if (prior && Number.isFinite(prior.prev_until) && prior.prev_until > now) {
+    row.prev_secret = prior.prev_secret;
+    row.prev_until = prior.prev_until;
+  }
+  subs[sub.id] = row;
+  await store.put("event_subs", subs);
+  await audit(store, { event: prior ? "event_refresh" : "event_subscribe", sub_ref: subRef(sub.id), host: sub.host, ttl_s: Math.round(ttlMs / 1000), ...(row.prev_secret && !prior?.prev_secret ? { rotated: true } : {}) }, now);
+  return { ok: true, refreshBefore: row.refresh_before, refreshed: Boolean(prior) };
+}
+
+/** Remove a subscription.  Idempotent. */
+export async function eventSubDelete(store, { id, reason = "unsubscribe" }, now = Date.now()) {
+  const subs = (await store.get("event_subs")) ?? {};
+  if (!Object.hasOwn(subs, id)) return { removed: false };
+  delete subs[id];
+  await store.put("event_subs", subs);
+  await audit(store, { event: reason === "unsubscribe" ? "event_unsubscribe" : "event_sub_dropped", sub_ref: subRef(id), reason }, now);
+  return { removed: true };
+}
+
+export async function eventVerifiedGet(store, { ref }, now = Date.now()) {
+  const cache = (await store.get("event_verified")) ?? {};
+  return Number.isFinite(cache[ref]) && cache[ref] > now;
+}
+
+export async function eventVerifiedSet(store, { ref, ttlMs }, now = Date.now()) {
+  const cache = (await store.get("event_verified")) ?? {};
+  for (const [k, until] of Object.entries(cache)) if (!(until > now)) delete cache[k];
+  delete cache[ref];
+  cache[ref] = now + ttlMs;
+  const keys = Object.keys(cache);
+  while (keys.length > VERIFIED_CAP) delete cache[keys.shift()];
+  await store.put("event_verified", cache);
+}
+
+/**
+ * Claim one wake for fan-out.  The first claim of a wake_id wins;  a repeat
+ * (the listener retrying after a lost response) is "duplicate".  A paused seat
+ * delivers nothing.  Subscriptions past refresh_before, from a grant epoch
+ * that is no longer current (Revoke All And Bump Epoch), or from a grant past
+ * its 90-day age are dropped here (liveSubs):
+ * access is re-checked on every delivery, not only at subscribe.
+ * Returns {verdict: "go", subs}, {verdict: "duplicate"} or {verdict: "paused"}.
+ */
+export async function eventClaimWake(store, { wakeId }, now = Date.now()) {
+  const seen = (await store.get("wake_seen")) ?? {};
+  for (const [k, ts] of Object.entries(seen)) if (!(Number.isFinite(ts) && ts > now - WAKE_SEEN_MS && ts <= now + MINUTE_MS)) delete seen[k];
+  if (Object.hasOwn(seen, wakeId)) return { verdict: "duplicate" };
+  seen[wakeId] = now;
+  const keys = Object.keys(seen);
+  while (keys.length > WAKE_SEEN_CAP) delete seen[keys.shift()];
+  await store.put("wake_seen", seen);
+
+  const s = await read(store);
+  if (s.paused) {
+    await audit(store, { event: "event_wake_paused", wake_ref: String(wakeId).slice(0, 40) }, now);
+    return { verdict: "paused" };
+  }
+  const { subs, dropped } = await liveSubs(store, now);
+  await persistDropped(store, subs, dropped, now);
+  return { verdict: "go", subs: Object.values(subs).map((sub) => ({ ...sub })) };
+}
+
+/** Record one delivery.  410 Gone drops the subscription;  nothing else does. */
+export async function eventDeliveryResult(store, { subId, outcome, status, attempts, wakeRef, messageId }, now = Date.now()) {
+  const subs = (await store.get("event_subs")) ?? {};
+  const sub = subs[subId];
+  if (sub) {
+    if (outcome === "gone") delete subs[subId];
+    else Object.assign(sub, { last_outcome: outcome, last_status: status ?? null, last_at: now });
+    await store.put("event_subs", subs);
+  }
+  await audit(store, { event: "event_delivery", sub_ref: subRef(subId), outcome, status: status ?? null, attempts: attempts ?? 0, wake_ref: wakeRef ?? "", message_id: messageId ?? null }, now);
+  if (sub && outcome === "gone") await audit(store, { event: "event_sub_dropped", sub_ref: subRef(subId), reason: "gone_410" }, now);
+}
+
+/** Live subscriptions for /admin:  never the URL path or the secret. */
+export async function eventSubsSummary(store, now = Date.now()) {
+  const { subs } = await liveSubs(store, now);
+  return Object.values(subs).map((sub) => ({
+    sub_ref: subRef(sub.id),
+    host: sub.host,
+    arguments: sub.arguments,
+    refresh_before: sub.refresh_before,
+    last_outcome: sub.last_outcome,
+    last_status: sub.last_status,
+    last_at: sub.last_at,
+  }));
+}
+
 /** A Map-backed store for tests. */
 export function memoryStore() {
   const map = new Map();

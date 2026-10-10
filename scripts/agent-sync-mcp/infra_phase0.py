@@ -379,9 +379,15 @@ def cmd_check(cf: Cloudflare | None, _apply: bool) -> None:
     status, _, body = _http("GET", f"{ISSUER}/health")
     expect("/health is the static 200 the fleet admin panel probes", status == 200 and body.strip() == b'{"ok":true}', str(status))
 
-    for path in ("/", "/oauth/register", "/post"):
+    for path in ("/", "/oauth/register", "/post", "/internal/wake/NOPE"):
         status, _, _ = _http("GET", f"{ISSUER}{path}")
         expect(f"{path} is 404", status == 404, str(status))
+
+    # The listener's wake (spec 3.12) is outside Access:  an unsigned POST is the
+    # Worker's own 401 once WAKE_HMAC_KEY_JET is set (404 before), never Access.
+    status, headers, _ = _http("POST", f"{ISSUER}/internal/wake/JET", b"{}", {"Content-Type": "application/json"})
+    location = next((v for k, v in headers.items() if k.lower() == "location"), "")
+    expect("/internal/wake/JET refuses an unsigned POST itself (401), outside Access", status == 401 and TEAM_DOMAIN not in location, str(status))
 
     if cf is not None:
         sub = (cf.call("GET", f"/accounts/{ACCOUNT_ID}/workers/subdomain").get("result") or {}).get("subdomain")

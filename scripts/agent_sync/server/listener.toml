@@ -41,7 +41,8 @@ wake = "http"
 routine = { url_env = "GB_COMPILER_ROUTINE_URL", key_env = "GB_COMPILER_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 
-# Cloud seats (MA, JET, GROK-WEB, INSTINCT and ECHO):  enabled with wake = "inbox".  Each holds a queue,
+# Cloud seats (MA, GROK-WEB, INSTINCT and ECHO):  enabled with wake = "inbox".  JET is the same, but its
+# wake is "http" (see its block).  Each holds a queue,
 # so its @-mentions and DMs are captured at zero tokens under /data/<SEAT>/, and its key is checked at
 # connect (a member or moderator bot, and the key's own bot must be the seat).  They have no wake
 # adapter, so nothing is woken, and nothing reads those inboxes yet:  the hosted MCP inbox tool asks
@@ -53,10 +54,20 @@ instance = "server"
 creds = "env"                     # ZULIP_MA_EMAIL, ZULIP_MA_API_KEY (muse-assist-bot@)
 wake = "inbox"
 
+# JET (ChatGPT) is woken through OpenAI MCP Events:  the http wake POSTs agent-sync-wake/1 to the hosted
+# MCP Worker (https://agent-sync.jays.services/internal/wake/JET), which sends a signed `zulip.mention` event to
+# every ChatGPT chat or dot that subscribed (scripts/agent-sync-mcp/ARMING-JAY.md, "Wake Jet").  JET_ROUTINE_URL
+# is that URL;  JET_ROUTINE_KEY is the shared HMAC key, the same value as the Worker secret WAKE_HMAC_KEY_JET
+# (kept in ~/.secrets/jet-wake-hmac.env on Jay's Mac).  Until both are set and the container restarts, each wake
+# is logged as routine-unready and dropped;  the inbox still captures everything.  The budget is explicit
+# because every wake starts a ChatGPT task.  A volume seeded before this change keeps JET on "inbox":  switch
+# it with the scoped edit in ARMING-JAY.md "Wake Jet", step 1b.
 [seat.JET]
 instance = "server"
 creds = "env"                     # ZULIP_JET_EMAIL, ZULIP_JET_API_KEY (openai-dot-bot@)
-wake = "inbox"
+wake = "http"
+routine = { url_env = "JET_ROUTINE_URL", key_env = "JET_ROUTINE_KEY", method = "POST", auth = "hmac-sha256", header = "X-Agent-Sync-Signature", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 30, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 
 [seat.GROK-WEB]
 instance = "server"
