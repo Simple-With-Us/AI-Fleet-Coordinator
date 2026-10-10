@@ -76,6 +76,10 @@
     // D4 channel allowlist, pinned name to stream id.  Every tool uses the id,
     // so a renamed or look-alike channel cannot widen it.
     "CHANNELS": { "agent-sync": 642232, "sandbox": 642167 },
+    // MCP Events callback hosts (src/events.js).  ChatGPT's real callback host
+    // is not documented;  a refused one shows on /admin under refusals as
+    // callback_host_not_allowed with its host, and is added here.
+    "EVENT_CALLBACK_HOSTS": "chatgpt.com,*.chatgpt.com,openai.com,*.openai.com",
     // Jay's Zulip user id and human clients (the listener's owner rule).  The
     // `owner` flag on a message is a routing hint, never authority.
     "OWNER_USER_ID": "1211974",

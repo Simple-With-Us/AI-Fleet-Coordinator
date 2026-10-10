@@ -22,6 +22,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "standardwebhooks": "1.1.1",
     "wrangler": "4.149.0"
   },
   "overrides": {

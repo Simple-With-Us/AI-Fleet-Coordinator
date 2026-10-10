@@ -6,6 +6,7 @@
 // for every request (fail closed) rather than guessing.
 
 import { strictRedirectProblem, redirectUriProblem, isLoopbackRedirect } from "./policy.js";
+import { DEFAULT_CALLBACK_HOSTS, isHostPattern } from "./events.js";
 
 // D1:  the only hostname this Worker answers on.  It is a constant, not a var,
 // so a config edit cannot widen the Host check.
@@ -45,6 +46,17 @@ export const SEAT_SECRETS = Object.freeze({
   "GROK-WEB": Object.freeze({ key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" }),
   ECHO: Object.freeze({ key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" }),
   INSTINCT: Object.freeze({ key: "ZULIP_KEY_INSTINCT", email: "ZULIP_EMAIL_INSTINCT" }),
+});
+
+// The shared HMAC key the server listener signs each seat's wake with
+// (POST /internal/wake/<SEAT>, src/wake.js).  Only this table turns a seat
+// from the path into a secret name, so a path can never pick another secret.
+// A seat whose secret is unset answers 404 there.
+export const WAKE_SECRETS = Object.freeze({
+  JET: "WAKE_HMAC_KEY_JET",
+  "GROK-WEB": "WAKE_HMAC_KEY_GROK_WEB",
+  ECHO: "WAKE_HMAC_KEY_ECHO",
+  INSTINCT: "WAKE_HMAC_KEY_INSTINCT",
 });
 
 // What /admin and a manual client's name call each seat's app.
@@ -152,6 +164,14 @@ export function loadConfig(env) {
     botEmails[seat] = email;
   }
 
+  // MCP Events callback hosts (src/events.js).  Unset means the compiled
+  // default;  a malformed entry fails closed like every other var.
+  const eventCallbackHosts = env.EVENT_CALLBACK_HOSTS === undefined || env.EVENT_CALLBACK_HOSTS === "" ? [...DEFAULT_CALLBACK_HOSTS] : parseList(env, "EVENT_CALLBACK_HOSTS").map((h) => h.toLowerCase());
+  for (const pattern of eventCallbackHosts) {
+    if (!isHostPattern(pattern)) throw new Error("config: EVENT_CALLBACK_HOSTS entries must be host names or *.host names");
+  }
+  if (eventCallbackHosts.length === 0) throw new Error("config: EVENT_CALLBACK_HOSTS is empty");
+
   const teamDomain = String(env.ACCESS_TEAM_DOMAIN ?? "").trim();
   const accessAud = String(env.ACCESS_AUD ?? "").trim();
   const ownerEmails = parseList(env, "OWNER_EMAILS").map((e) => e.toLowerCase());
@@ -181,6 +201,7 @@ export function loadConfig(env) {
     ownerUserId,
     ownerClients: Object.freeze(ownerClients),
     botEmails: Object.freeze(botEmails),
+    eventCallbackHosts: Object.freeze(eventCallbackHosts),
   });
 }
 

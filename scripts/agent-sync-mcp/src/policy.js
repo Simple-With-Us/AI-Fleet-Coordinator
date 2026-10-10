@@ -218,6 +218,9 @@ export function classifyPath(pathname) {
       return "admin";
     default:
       if (pathname.startsWith("/admin/")) return "admin";
+      // The listener's wake (src/wake.js).  Outside Cloudflare Access, which
+      // covers /authorize and /admin only;  its own HMAC is the gate.
+      if (/^\/internal\/wake\/[A-Z][A-Z0-9-]{0,31}$/.test(pathname)) return "wake";
       return null;
   }
 }
