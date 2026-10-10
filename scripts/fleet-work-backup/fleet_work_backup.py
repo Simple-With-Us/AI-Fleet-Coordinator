@@ -96,7 +96,9 @@ SQLITE_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".db3")
 
 # Content patterns (bytes).  High confidence only:  a match drops the whole file or patch.
 CONTENT_PATTERNS: dict[str, re.Pattern[bytes]] = {
-    "private-key-block": re.compile(rb"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----"),
+    # A header alone is a fixture or a doc example;  a key has a base64 body right after it (raw or as \n in JSON).
+    "private-key-block": re.compile(
+        rb"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----(?:\\n|\\r|\s)*(?:[A-Za-z0-9+/]{40,}|[A-Za-z0-9+/]{20,}=)"),
     "aws-access-key-id": re.compile(rb"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     "github-token": re.compile(rb"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,})\b"),
     "slack-token": re.compile(rb"\bxox[abprso]-[A-Za-z0-9-]{10,}"),
@@ -1146,7 +1148,10 @@ def run_gate(cfg: Config, stage: Stage, progress: Optional[Callable[[str], None]
                 i -= len(batch)
                 break
             for rel in batch:
-                if rel in flagged:
+                if rel in flagged and stage.items[rel].src in stage.allow:
+                    stage.allowed.append(stage.items[rel].src)
+                    new_cache[rel][2] = True
+                elif rel in flagged:
                     stage.drop(rel, flagged[rel])
                     new_cache.pop(rel, None)
                 elif rel in new_cache:

@@ -44,7 +44,7 @@ spec.loader.exec_module(fwb)
 
 # Secret-shaped strings, assembled so no literal secret sits in this file.
 AWS = "AKIA" + "Q7ZP3KM9TX2WJ4HB"
-PEM = "-----BEGIN " + "RSA PRIVATE KEY-----"
+PEM = "-----BEGIN " + "RSA PRIVATE KEY-----\n" + "MIIEowIBAAKCAQEA" + "q7Zp3Km9Tx2Wj4Hb" + "Lm8Vc5Rn1Yd6Fs0Gt"
 HIGH = "".join(["aB3dE5", "gH7jK9", "mN1pQ3", "sT5v7x", "Zq2"])
 PW = "".join(["pw-", "Zx9Qw3", "Er5Ty7", "Ui1Op"])
 KEYID = "".join(["005", "abcdef0123", "456789012"])
@@ -452,6 +452,13 @@ class NameAndContentCase(unittest.TestCase):
                      f"SERVICE_API_KEY={HIGH}", f'export DB_PASSWORD="{HIGH}"'):
             self.assertIsNotNone(fwb.scan_bytes(text.encode()), text[:12])
 
+    def test_a_pem_header_without_a_body_is_not_a_key(self):
+        for text in ("-----BEGIN " + "PRIVATE KEY-----", "'-----BEGIN " + "RSA PRIVATE KEY-----\\n...\\n-----END RSA PRIVATE KEY-----'"):
+            self.assertIsNone(fwb.scan_bytes(text.encode()), text)
+        self.assertEqual(fwb.scan_bytes(PEM.encode()), "private-key-block")
+        as_json = PEM.replace("\n", "\\n")
+        self.assertEqual(fwb.scan_bytes(as_json.encode()), "private-key-block")
+
     def test_documentation_placeholders_are_not_secrets(self):
         for text in ("AKIA" + "IOSFODNN7EXAMPLE", "sk_live_" + "x" * 24, "sk_test_" + "0" * 24,
                      "ghp_" + "a" * 36, "AKIA" + "ABCDEFGHIJKLMNOP"):
@@ -711,6 +718,21 @@ class RunCase(unittest.TestCase):
         self.assertEqual([d["reason"] for d in rep["dropped"]], ["gitleaks:stub-rule"])
         self.assertEqual(rep["non_git_files"], 1)
         self.assertNotIn("files/apps/doc.md", [f["rel"] for f in rep["top_files"]])
+
+    def test_allow_list_also_covers_a_gitleaks_finding(self):
+        stub = self.tmp / "gitleaks"
+        stub.write_text(
+            "#!/bin/bash\n"
+            'while [ $# -gt 0 ]; do [ "$1" = "-r" ] && rep="$2"; [ "$1" = dir ] && root="$2"; shift; done\n'
+            'printf \'[{"RuleID":"stub-rule","File":"%s/files/apps/doc.md"}]\' "$root" > "$rep"\nexit 0\n')
+        stub.chmod(0o755)
+        self.cfg.gitleaks_bin = str(stub)
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.state_dir / "allow.txt").write_text(str(self.home / "apps" / "doc.md") + "\n")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertIn("files/apps/doc.md", stage.items)
+        self.assertEqual(stage.dropped, [])
+        self.assertEqual(stage.allowed, [str(self.home / "apps" / "doc.md")])
 
     def counting_gitleaks(self) -> Path:
         stub = self.tmp / "gitleaks-count"

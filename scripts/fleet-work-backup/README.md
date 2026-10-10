@@ -39,9 +39,11 @@ are copied with the online backup API (a live WAL-mode database is never torn;  
 sidecars are skipped).  Symlinks are stored as symlinks, never followed.
 
 **Skipped on purpose:**  `node_modules`, `.venv`, `venv`, `__pycache__`, caches, `dist`, `build`,
-`.next`, `Pods`, `DerivedData`, `logs/` and `*.log`, `*.pyc`, `.DS_Store`, `*.sock`, `*.pid`, the
-`~/apps/lanes` folder itself, this job's install and staging folders, and any file over 200 MB
-(listed in the dry run and the detail log instead).
+`.next`, `Pods`, `DerivedData`, Playwright browsers (`.pw-browsers`), Xcode index stores and
+`build-local*`, `logs/` and `*.log`, `*.pyc`, `.DS_Store`, `*.sock`, `*.pid`, the `~/apps/lanes` folder
+itself, this job's install and staging folders, and any file over 200 MB (also a single patch over
+200 MB;  listed in the dry run and the detail log instead).  `FLEET_WORK_BACKUP_EXTRA_SKIP_DIRS=name1,name2`
+adds directory names without a code change.
 
 ## What is never backed up
 
@@ -67,8 +69,23 @@ leak from.  Two layers:
    over `git log -p` (first 128 MB) before they are bundled;  a hit drops the bundle and names the
    repository.
 
-If the gate drops `mac-collab/findings.db` or its backups, that is reported in the detail log under
-`dropped`;  the board's database not being backed up is not something to leave silent.
+A key-shaped string that is plainly an example (`sk_live_xxxxxxxx`, `AKIA...EXAMPLE`, a PEM header with
+no key body after it) does not count.  The scan is cached by (path, size, mtime) in
+`~/Library/Application Support/fleet-work-backup/scan-cache.json`, so a steady-state run scans only what
+changed;  gitleaks runs in 256 MB batches, throttled (two threads, low priority), inside a 25 minute
+budget per run, and whatever it does not reach is retried next run (the regex scan has already covered it).
+
+**Reviewing what the gate dropped.**  The detail log lists every drop with a reason (`secret-name`,
+`content:<pattern>`, `gitleaks:<rule>`).  The first dry run over the real machine dropped files that
+are only documentation (a rule file quoting an example Stripe key, Cloudflare skill references with
+bearer-header examples) and, because the unit of a bundle is the whole bundle, the unpushed commits of
+a few repositories.  When you have looked and the match is harmless, put the path exactly as the log
+prints it, one per line, in `~/Library/Application Support/fleet-work-backup/allow.txt` (for a bundle,
+`<common dir>/.git (unpushed commits)`).  A content or gitleaks hit on a listed path is kept and counted
+as `allowed`;  a **secret name is never allowed**.
+
+If the gate drops `mac-collab/findings.db` or its backups, that shows in the detail log too;  the
+board's database not being backed up is not something to leave silent.
 
 ## Where it goes
 
