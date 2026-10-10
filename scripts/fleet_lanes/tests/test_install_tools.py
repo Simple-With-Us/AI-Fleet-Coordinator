@@ -2510,7 +2510,9 @@ class PrefilterShimTests(World):
                 checks = self.verify(key)
                 self.assertFails(checks, "no output")
                 self.assertTrue(any(c.name == "deny/login-PATH" and c.status == "FAIL" for c in checks))
-        self.assertFails(T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL), "no output")      # the Muse wrapper calls the same shim
+        # Muse Code's wrapper runs the fleet hook now, not this shim, so this edit leaves it passing (its own tests
+        # break the fleet shim instead: MuseFleetGuardTests)
+        self.assertAllPass([c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL) if c.status != "SKIP"])
         # and verify tools sees the edit twice: the digest and the shim text
         tools = T.verify_tools(self.paths, timeout=TIMEOUT)
         self.assertFails(tools, "differs")
