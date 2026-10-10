@@ -1,0 +1,15 @@
+{
+  "name": "afc",
+  "owner": {"name": "Jay Wedgeworth"},
+  "metadata": {
+    "description": "Local Claude Code plugins from AI-Fleet-Coordinator."
+  },
+  "plugins": [
+    {
+      "name": "agent-sync",
+      "source": "./plugins/agent-sync",
+      "description": "Zulip listener hooks for Claude Code sessions (leases, passive headlines, rewake for interrupts).",
+      "version": "1.0.0"
+    }
+  ]
+}

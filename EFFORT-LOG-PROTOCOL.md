@@ -7,7 +7,7 @@ effort-log system in EVERY app, current and future.
 **Look first at THE BOARD** (`https://mac.jays.services/board`, short link `https://board.jays.services`).  Per-app effort boards
 remain the durable Mac copies (`~/apps/*-EFFORT-LOG.md`) plus git mirrors and GitHub
 Issues.  THE BOARD is the write surface; `mac-collab-writeback` copies board writes
-to the live files and Issues.  `#agent-sync` is the realtime layer on top — never a
+to the live files and Issues.  Zulip `#agent-sync` is the realtime layer on top — never a
 substitute for either surface.
 
 `GROK-BOT` is a fleet-wide identity (Cursor cloud), not a per-app coding seat.
@@ -23,10 +23,11 @@ messages add work unless the owner explicitly cancels or redirects. Full rule:
    visible to every agent regardless of worktree/branch state. Update FIRST.
 2. **Repo mirror** — `docs/EFFORT-LOG.md` inside the app's repo. Tracked in git so history,
    PRs, and remote/cloud sessions see it. Mirror the relevant state BEFORE every commit/push.
-   Sessions without Mac filesystem access update the mirror and say so in #agent-sync; the
-   next Mac-side agent reconciles the live board (note "mirrored by <TAG>, board pending").
+   Sessions without Mac filesystem access update the mirror and say so in their Zulip
+   `#agent-sync` work topic; the next Mac-side agent reconciles the live board
+   (note "mirrored by <SEAT>, board pending").
 
-Cloud / no-Mac agents can **read** the live boards at `https://mac.jays.services` (pm2 `mac-collab`, Jay's Tunnel). `GET /health` is public. `GET /files` and `GET /files/<name>` need `Authorization: Bearer $MAC_COLLAB_TOKEN` (Mac: `~/.secrets/mac-collab.env`; never print; never commit). Allowlist only — not a general Mac share. Writes still happen on the Mac or via the repo mirror + Slack, per the rest of this protocol.
+Cloud / no-Mac agents can **read** the live boards at `https://mac.jays.services` (pm2 `mac-collab`, Jay's Tunnel). `GET /health` is public. `GET /files` and `GET /files/<name>` need `Authorization: Bearer $MAC_COLLAB_TOKEN` (Mac: `~/.secrets/mac-collab.env`; never print; never commit). Allowlist only — not a general Mac share. Writes still happen on the Mac or via the repo mirror + a Zulip post, per the rest of this protocol.
 
 ### Board registry
 
@@ -43,6 +44,7 @@ Cloud / no-Mac agents can **read** the live boards at `https://mac.jays.services
 | BotFleet | `/Users/jay/apps/BOTFLEET-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
 | Clutch | `/Users/jay/apps/CLUTCH-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
 | HogHunter | `/Users/jay/apps/HOGHUNTER-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
+| CodeCaps | `/Users/jay/apps/CODECAPS-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
 | fleet-ops | `/Users/jay/apps/FLEET-OPS-EFFORT-LOG.md` | `docs/EFFORT-LOG.md` |
 | fleet-infra (machine-side) | `/Users/jay/apps/FLEET-INFRA-EFFORT-LOG.md` | (none — not a repo; no issues mirror) |
 
@@ -61,11 +63,12 @@ Cloud / no-Mac agents can **read** the live boards at `https://mac.jays.services
 1. **Claim at start of ANY work; complete at end (binding — 2026-08-05).**  Before substantial
    work: put/move the row to **In Progress** on the live board **and** repo mirror, with your
    tag + **claim date** + branch/worktree + one-line status, and ensure the matching **GitHub issue(s)** show
-   claimed/in-progress.  Slack claims include `claimed: Sat, Aug 22, 2026`.  Board `--where`
+   claimed/in-progress.  Zulip claims include `claimed: Sat, Aug 22, 2026`.  Board `--where`
    starts with that same date.  When finished: move to **Completed** (merged) or **Deployed** (prod
    verified) and close/complete the matching issue state.  Do not start silent; do not leave
-   rows or issues open after you are done.  Also claim/closeout on `#agent-sync` (see
-   AGENT-SYNC Message Structure).
+   rows or issues open after you are done.  The triple claim/closeout is THE BOARD + the
+   GitHub issue + a Zulip post: claim and close out in the work topic in `#agent-sync` (see
+   AGENT-SYNC § Chat: The Zulip Contract and § Posting).
 
    **Shortcut (2026-08-22 — bidirectional sync live):** `board claim <id>` / `board status <id>
    completed` are now sufficient.  `mac-collab-writeback` (pm2, 10-min cycle) propagates every
@@ -92,8 +95,8 @@ Cloud / no-Mac agents can **read** the live boards at `https://mac.jays.services
    (and update ST `docs/FEATURE-ENABLEMENT-BACKLOG.md` when the flag lives in Socratic.Trade)
    so shipped-but-off switches are not forgotten.
 7. Cross-app efforts get a row on EACH affected app's board, cross-referencing the other.
-8. A row is not a lock on files — keepouts/filesets are negotiated in #agent-sync; the board
-   records the claim.
+8. A row is not a lock on files — keepouts/filesets are negotiated in the `#agent-sync`
+   work topic; the board records the claim.
 9. Owner directives supersede board state; a stale board is corrected, not obeyed.
 
 ## Issues mirror (standard)
@@ -151,7 +154,7 @@ Minimum first-commit set:
    template below, and `docs/EFFORT-LOG.md` in the repo with the same content.
 2. Add the app to the Board registry table above **and** `fleet-apps.json`.
 3. Add the standard coordination stanza to the app's `AGENTS.md` (see AGENT-SYNC.md's
-   onboarding section) — it covers both the channel and this protocol.
+   onboarding section) — it covers both the Zulip work topic and this protocol.
 4. Copy `scripts/sync-effort-issues.py` and `.github/workflows/effort-issues-sync.yml` from any
    already-bootstrapped app (verbatim, no edits) — see "Issues mirror (standard)" above.
 5. Run `python3 scripts/check-fleet-registry.py` from an AI-Fleet-Coordinator worktree.
@@ -176,7 +179,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - (none)
 
 ## Changelog of this log
-- <date> — bootstrapped by <TAG>.
+- <date> — bootstrapped by <SEAT>.
 ```
 
 ## Apple Notes close-out (all agents, all apps — 2026-08-09; shortcuts 2026-08-10)
@@ -184,7 +187,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 **Title:** `[APP, Agent] short topic` — app acronym(s) + agent **first**.
 Examples: `[UM, Grok] TestFlight first ship` · `[ST, CT, Monet] R2 peer digests`.
 Acronyms: `UM` `ST` `CT` `CTS` `FLEET`. Multi-app: list each (`[ST, CT, Grok] …`).
-Agent display Title Case (`Grok`/`Monet`/`Claude`/`Codex`/`AG`/…), not ALL-CAPS Slack tags.
+Agent display Title Case (`Grok`/`Claude`/`Codex`/`AG`/…), not ALL-CAPS seat tags.
 
 **Second body row:** local stamp + optional PR numbers `Sun, Aug 9, 3:52pm · PR #18` (create **or** last update — refresh on every change; pass `--pr "18"` to helper). Helper auto-injects/refreshes it.
 

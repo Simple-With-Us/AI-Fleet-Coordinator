@@ -5,7 +5,7 @@ description: Land a DeepSeek Harness feature branch to main across the fleet —
 
 # Land a feature branch (DSH)
 
-> **This install is for `DSH`.** Slack `[DSH]`.  Notes `DeepSeek Harness`.  Branches `deepseek/`.  Worktrees `~/apps/<app>-deepseek`.  Do not inherit another seat's tag from a shared template.
+> **Retired seat.**  DSH (DeepSeek Harness) is retired (2026-09-19): use `CLUTCH` for `Simple-With-Us/Clutch`.  Do not take work as DSH and do not install this pack to `~/.deepseek/skills`.  This catalog copy is inactive.
 
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.
@@ -14,7 +14,7 @@ Seat: **DSH**.  Branch: `deepseek/<slug>`.  Never `claude/`.  Never `monet/`.  N
 
 ## Preconditions
 
-1. You are in your DeepSeek Harness worktree (`~/apps/<prefix>-deepseek` or `~/apps/<prefix>-deepseek-<lane>`).  See `session-start`.
+1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, made with `~/apps/lane new`; a lane in an old place (`~/apps/lanes/<prefix>/`, which the migration moves, or a flat `~/apps/<prefix>-<seat>[-<lane>]`, which retires where it is) that already exists is fine).  See `session-start`.
 2. `git status` is clean except `.env.local` / `.dev.vars` (never commit those).
 3. `git config user.email` is `12656028+jaywedgeworth22@users.noreply.github.com`.
 
@@ -29,7 +29,7 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
 4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[APP, DeepSeek Harness] …`.
 
-Prose (commit body, PR body, rollout, Notes): two ASCII spaces between sentences.  Chat replies to the owner use `&nbsp;` plus a space.  See `owner-copy`.
+Prose: commit body, rollout docs and Notes source take two ASCII spaces between sentences.  PR titles, bodies and comments take a real U+00A0 plus a space (convert with the `perl` recipe in `sentence-gap`; never the `&nbsp;` entity there).  Chat replies to the owner use `&nbsp;` plus a space in a Markdown chat pane and two ASCII spaces in a terminal.  See `owner-copy`.
 
 ## Gate
 
@@ -87,7 +87,7 @@ gh pr merge <N> --squash --auto
 
 Not `--admin`.  Branch protection is `enforce_admins: true` plus conversation resolution.  Unresolved review threads block forever.  Use `codex-triage` / `unstick-pr`.
 
-If the box is gating several lanes, post `[DSH] gating now` with `repo:` (not `->FLEET` unless every listening seat on every platform must spend time).  Coordinator/ops self-id is `AFC`.
+If the box is gating several lanes, announce the full gate in #builds topic `gates`:  `agent-sync post --channel builds --topic gates "gating now (<repo>, <branch or purpose>)"`, then post `gate clear` in the same topic when it finishes.  The CLI writes the tag.  Wait on a peer's open `gating now` with `agent-sync wait --channel builds --topic gates --timeout 900`.  Use the fleet wake (`@**all**` in #agent-sync topic `fleet`) only when every listening seat on every platform must spend time.  Coordinator/ops self-id is `AFC`.
 
 ## After merge
 

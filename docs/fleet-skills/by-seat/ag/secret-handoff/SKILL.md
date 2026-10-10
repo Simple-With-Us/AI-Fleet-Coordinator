@@ -1,12 +1,12 @@
 ---
 name: secret-handoff
 description: >-
-  Fleet secret handling — handoff file, Infisical, Coolify token split, grep trap, leak response. Load BEFORE any command that might touch a credential, before reading ~/.secrets, Infisical, .env, or vault output, and before debugging auth. Trigger even when the user does not say "secret."
+  Fleet secret handling — handoff file, Zulip bot credentials, Infisical, Coolify token split, grep trap, leak response. Load BEFORE any command that might touch a credential, before reading ~/.secrets, Infisical, .env, or vault output, and before debugging auth. Trigger even when the user does not say "secret."
 ---
 
 # Secret handoff (AG)
 
-> **This install is for `AG`.** Slack `[AG]`.  Notes `Antigravity`.  Branches `ag/`.  Worktrees `~/apps/<app>-antigravity`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `ag-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/AG-zuliprc` (mode 600).  Session tag `[AG·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Load `~/.gemini/skills/secret-safety/SKILL.md` as well when that file exists.  This skill is the fleet overlay.
@@ -31,6 +31,12 @@ Cloud: `GET https://mac.jays.services/files/key-names` with the same Bearer as `
 Infisical (the app's own project, prod) is the source of truth for **deployed app runtime** secrets.  The handoff file is operator convenience and may go stale.  Copy cross-app keys into the consuming Infisical project (store-to-store), do not teach the app to read the handoff file.
 
 Owner drops a `chmod 600` file and gives you the path.  Never print the value.  Prefer scoped, revocable credentials.  Remind the owner they can revoke when the task is done.
+
+## Zulip bot credentials
+
+Each seat bot's key is its own credential and nobody else's.  Mac seats:  `~/.secrets/Zulip/<file code>-zuliprc`, mode 600 (`Claude-zuliprc`, `Codex-zuliprc`, `MM-zuliprc`, …).  Cloud seats with no Mac filesystem:  env `ZULIP_EMAIL`, `ZULIP_API_KEY`, `ZULIP_SITE`.  `agent-sync` picks the source:  `--rc PATH`, then `ZULIP_RC`, then the seat file, then the env triple; `agent-sync whoami` shows which source it used, never the key.
+
+Never print, `cat`, echo, or paste a zuliprc or a key, never put one in a message, a DM, a commit, or a log, and never type one literally on a command line.  Never use another seat's key, and never handle Jay's personal API key.  If a key ever lands in a message:  delete the message (do not edit — Zulip keeps edit history), have the owner rotate it in Settings → Bots, update Infisical first, then the seat file, and note the leak on THE BOARD without the value.
 
 ## Handoff-file grep trap (2026-08-14)
 
@@ -122,7 +128,7 @@ Empty `success:true` on a filtered Bearer call means "valid, not scoped to that 
 1. Stop.
 2. Name exactly which credential (the owner already has it).
 3. Tell the owner to rotate.
-4. Delete scratch files / Slack / GitHub comments you can still edit.  Do **not** force-push git history.  You cannot edit a prior chat turn — say so.
+4. Delete scratch files / Zulip messages / GitHub comments you can still edit.  In Zulip, delete rather than edit — edit history is kept.  Do **not** force-push git history.  You cannot edit a prior chat turn — say so.
 5. Change the technique, not "be more careful."
 
 ## Canon

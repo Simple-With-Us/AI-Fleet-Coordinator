@@ -83,8 +83,9 @@ FLEET_ICON_AUDIT=off     # skip the check
 the Icon Audit tab until somebody deliberately re-approves.  That is what stops the slow
 rot: a rebrand that changes the icon can no longer land silently.
 
-The audit also compares lane worktrees under `~/apps/*` against the canonical tree, which
-is how the unlanded Hog Hunter icon branches were found.
+The audit also compares lane worktrees under `~/apps` (`~/apps/lanes/<Repo>/<seat>-<slug>`, and the older
+locations until the migration moves them) against the canonical tree, which is how the unlanded Hog Hunter
+icon branches were found.  It asks `git worktree list` for them, so it does not depend on folder names.
 
 ## Scan hygiene
 

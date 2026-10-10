@@ -1,0 +1,147 @@
+{
+  // Hosted agent-sync MCP server (docs/protocols/agent-sync-mcp.md section 3).
+  // Account Usage.Jays.Services, hostname agent-sync.jays.services (decision D1).
+  // Deploy by hand from DEPLOY.md.  Never from CI and never on merge:  agents
+  // auto-merge to main, so a merge must not be a deploy (spec 3.2).
+  //
+  // Secrets (never in this file):  ZULIP_KEY_GROK_WEB, ZULIP_KEY_JET,
+  // ZULIP_KEY_ECHO and ZULIP_KEY_INSTINCT (install_seat_key.py puts them in,
+  // from Infisical or the seat's zuliprc), and the three recall secrets
+  // RECALL_API_TOKEN, RECALL_ACCESS_CLIENT_ID and RECALL_ACCESS_CLIENT_SECRET
+  // (DEPLOY.md, "Fleet recall").
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agent-sync-mcp",
+  "main": "src/index.js",
+  "account_id": "3a9368057468d0909cafaa85df12d1b7",
+  "compatibility_date": "2026-09-24",
+  // nodejs_compat:  agents imports node:async_hooks.
+  // global_fetch_strictly_public:  the OAuth library advertises and fetches
+  // client metadata documents only with this flag, and it keeps those fetches
+  // off private addresses.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+
+  // Only the custom domain.  workers.dev and preview URLs would bypass the
+  // path-scoped Access app and keep old versions callable (spec 3.2).
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "agent-sync.jays.services", "custom_domain": true }
+  ],
+
+  // Our own console.log lines are the audit trail.  The automatic per-request
+  // invocation logs are off, because nothing proves they omit the
+  // Cf-Access-Jwt-Assertion header or cookies (spec 3.9 never-logged list).
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false } },
+
+  "kv_namespaces": [
+    // Grants, hashed tokens and encrypted props (the OAuth library's store).
+    // DEPLOY-PHASE0.md step 3 creates it and fills in the id.
+    { "binding": "OAUTH_KV", "id": "877c08ea88a847dfa080a7d55db00f52" }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      // One per seat:  arming window, grant epoch, pause flag, spacing,
+      // budgets, idempotency, role cache and the audit logs.
+      { "name": "SEAT_GATE", "class_name": "SeatGate" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SeatGate"] }
+  ],
+
+  // Per-IP cap on /oauth/token (spec 3.3).  The namespace id is any integer
+  // unique to this account's rate limiters.
+  "ratelimits": [
+    { "name": "TOKEN_RATE_LIMITER", "namespace_id": "4711", "simple": { "limit": 30, "period": 60 } }
+  ],
+
+  "vars": {
+    // Must equal the compiled hostname;  the Worker refuses to start otherwise.
+    "PUBLIC_HOST": "agent-sync.jays.services",
+    // Seats this deploy serves (owner decisions D1, D2).  JET was left out while
+    // openai-dot-bot was a realm administrator, because hosted seats accept
+    // member (400) only (spec 3.6).  Jay demoted every bot to member on Fri,
+    // Oct 9, so JET is served again, with its key installed (deployed at about
+    // 8:10am;  DEPLOY.md, "Re-enable JET").
+    // ECHO and INSTINCT (Fri, Oct 9) are two identities of the Instinct app
+    // (instinct.com), each posting as its own member bot.
+    "HOSTED_SEATS": "JET,GROK-WEB,ECHO,INSTINCT",
+    // Bot emails (plain vars, spec 3.6).  The keys are Worker secrets.  A key
+    // whose users/me is not this bot, not a bot, or not a member is refused.
+    "ZULIP_EMAIL_GROK_WEB": "grok-web-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_JET": "openai-dot-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_ECHO": "instinct-bat-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_INSTINCT": "instinct-owl-bot@simplewithus.zulipchat.com",
+    // D4 channel allowlist, pinned name to stream id.  Every tool uses the id,
+    // so a renamed or look-alike channel cannot widen it.
+    "CHANNELS": { "agent-sync": 642232, "sandbox": 642167 },
+    // MCP Events callback hosts (src/events.js).  ChatGPT's real callback host
+    // is not documented;  a refused one shows on /admin under refusals as
+    // callback_host_not_allowed with its host, and is added here.
+    "EVENT_CALLBACK_HOSTS": "chatgpt.com,*.chatgpt.com,openai.com,*.openai.com",
+    // Jay's Zulip user id and human clients (the listener's owner rule).  The
+    // `owner` flag on a message is a routing hint, never authority.
+    "OWNER_USER_ID": "1211974",
+    "OWNER_CLIENTS": "website,ZulipMobile,ZulipFlutter,ZulipElectron,ZulipDesktop",
+    // Redirect and client allowlist per seat.  A redirect URI belongs to
+    // exactly one seat, and that is the only seat a consent can bind it to.
+    // GROK-WEB uses Grok's published client metadata document (fetched
+    // 2026-10-09:  token_endpoint_auth_method "none", two redirect URIs).  Its
+    // second redirect, https://console.x.ai/connectors-oauth-exchange-code/, is
+    // left out until Jay's xAI account is Business or Enterprise (spec 4).
+    // A manual Grok form still works through the /admin fallback client, which
+    // takes the redirect URIs listed here (ARMING-JAY.md).
+    "SEATS": {
+      "JET": {
+        // ChatGPT's newer connectors send their own callback and client metadata
+        // document.  The first pair is the older shared one;  the second pair is
+        // Jay's Agent-Sync connector, copied from the refusal log (Fri, Oct 9,
+        // 8:05pm).  Add each connector's pair by hand as exact strings, never a
+        // pattern, so another ChatGPT user's connector id stays refused.
+        "redirect_uris": [
+          "https://chatgpt.com/connector_platform_oauth_redirect",
+          "https://chatgpt.com/connector/oauth/Aa3WqJNIVGqM"
+        ],
+        "cimd_client_ids": [
+          "https://chatgpt.com/oauth/client.json",
+          "https://chatgpt.com/oauth/Aa3WqJNIVGqM/client.json"
+        ]
+      },
+      "GROK-WEB": {
+        "redirect_uris": ["https://grok.com/connectors-oauth-exchange-code/"],
+        "cimd_client_ids": ["https://grok.com/oauth/mcp-client.json"]
+      },
+      // ECHO and INSTINCT run inside one Instinct app on its own computer and
+      // share its loopback callback (RFC 8252), as Echo told Jay on Fri, Oct 9.
+      // A loopback redirect is the only kind two seats may share:  /authorize
+      // binds it to whichever of them is armed, and refuses when both are.
+      // The client id is not known yet:  add a CIMD id here when the refusal
+      // log shows one, or create a manual client for the seat on /admin.
+      "ECHO": {
+        "redirect_uris": ["http://127.0.0.1:8737/callback"],
+        "cimd_client_ids": []
+      },
+      "INSTINCT": {
+        "redirect_uris": ["http://127.0.0.1:8737/callback"],
+        "cimd_client_ids": []
+      }
+    },
+    // Cloudflare Access, re-verified by the Worker on /authorize and /admin.
+    // ACCESS_AUD comes from the Access app infra_phase0.py creates.  Until it
+    // is set, /authorize and /admin answer 403 (fail closed).
+    "ACCESS_TEAM_DOMAIN": "silent-frost-37e0.cloudflareaccess.com",
+    "ACCESS_AUD": "ccc199b875e1695813415fad65b550627345d8f632e6aff0144e6f18f6c7951e",
+    // Must match the Access policy's emails exactly.  Spec 3.3:  mail@jays.services
+    // only.  The identity provider is One-time PIN, so a second address would make
+    // that inbox a full admin credential for this server.
+    "OWNER_EMAILS": "mail@jays.services",
+    // Fleet recall (spec 1.1):  the recall service's REST twin.  The Worker
+    // accepts exactly this origin.  Its three secrets are RECALL_API_TOKEN,
+    // RECALL_ACCESS_CLIENT_ID and RECALL_ACCESS_CLIENT_SECRET (DEPLOY.md);
+    // without them the recall tools answer not_configured and the rest works.
+    "RECALL_BASE_URL": "https://recall.jays.services",
+    // Kill switch step 4:  "1" makes /mcp answer 503.
+    "MCP_DISABLED": "0"
+  }
+}

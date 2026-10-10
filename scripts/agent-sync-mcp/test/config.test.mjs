@@ -1,0 +1,155 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRESH_TOKEN_TTL_S, ACCESS_TOKEN_TTL_S, GATE_LOG_NAME, KNOWN_SEATS, SEAT_SECRETS, PROPS_PHASE } from "../src/config.js";
+import { REALM } from "../src/zulip.js";
+import { ROOT, wranglerConfig, testEnv, CHATGPT_REDIRECT } from "./helpers.mjs";
+
+test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", () => {
+  const vars = wranglerConfig().vars;
+  const cfg = loadConfig(vars);
+  assert.equal(cfg.host, "agent-sync.jays.services");
+  // Production serves both seats.  JET was held back while openai-dot-bot was a
+  // realm administrator (hosted seats accept member (400) only, spec 3.6);  Jay
+  // demoted it on Fri, Oct 9, and JET was deployed with its key at about 8:10am
+  // (DEPLOY.md, "Re-enable JET").
+  // ECHO and INSTINCT (the Instinct app) were added on Fri, Oct 9.
+  assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB", "ECHO", "INSTINCT"]);
+  assert.deepEqual([...loadConfig(testEnv()).hostedSeats], ["JET", "GROK-WEB"]);
+  assert.deepEqual(Object.fromEntries(cfg.channels), { "agent-sync": 642232, sandbox: 642167 }, "D4:  #agent-sync and #sandbox, by stream id");
+  assert.equal(cfg.ownerUserId, 1211974);
+  assert.equal(cfg.botEmails["GROK-WEB"], "grok-web-bot@simplewithus.zulipchat.com");
+  assert.equal(cfg.redirectOwner.get(CHATGPT_REDIRECT), "JET");
+  assert.equal(cfg.botEmails.ECHO, "instinct-bat-bot@simplewithus.zulipchat.com");
+  assert.equal(cfg.botEmails.INSTINCT, "instinct-owl-bot@simplewithus.zulipchat.com");
+  // The Instinct app's loopback callback is shared by its two seats, and only
+  // a loopback redirect may be.
+  assert.deepEqual([...cfg.redirectSeats.get("http://127.0.0.1:8737/callback")], ["ECHO", "INSTINCT"]);
+  assert.equal(cfg.redirectOwner.has("http://127.0.0.1:8737/callback"), false, "a shared redirect has no single owner");
+  // Before DEPLOY-PHASE0.md step 3 the file holds the placeholder;  after it, a real tag.
+  if (vars.ACCESS_AUD === "REPLACE_WITH_ACCESS_AUD") {
+    assert.equal(cfg.access.configured, false);
+  } else {
+    assert.match(vars.ACCESS_AUD, /^[0-9a-f]{64}$/);
+    assert.equal(cfg.access.configured, true);
+  }
+  assert.equal(loadConfig(testEnv({ ACCESS_AUD: "REPLACE_WITH_ACCESS_AUD" })).access.configured, false, "placeholder AUD fails closed");
+  assert.equal(loadConfig(testEnv({ ACCESS_AUD: "" })).access.configured, false, "empty AUD fails closed");
+  assert.equal(loadConfig(testEnv({ ACCESS_TEAM_DOMAIN: "" })).access.configured, false, "empty team domain fails closed");
+  assert.equal(loadConfig(testEnv({ OWNER_EMAILS: "" })).access.configured, false, "no owner email fails closed");
+  assert.equal(loadConfig(testEnv()).access.configured, true);
+});
+
+test("Access email list is mail@jays.services only, in the Worker and in the Access policy", () => {
+  // Spec 3.3.  The identity provider is One-time PIN, so every extra address is an admin credential.
+  const cfg = loadConfig(wranglerConfig().vars);
+  assert.deepEqual([...cfg.access.ownerEmails], ["mail@jays.services"]);
+  const infra = readFileSync(path.join(ROOT, "infra_phase0.py"), "utf8");
+  assert.match(infra, /^OWNER_EMAILS = \["mail@jays\.services"\]$/m, "infra_phase0.py must list the same single address");
+  assert.ok(!/jaywedgeworth22/.test(infra) && !/jaywedgeworth22/.test(readFileSync(path.join(ROOT, "wrangler.jsonc"), "utf8")));
+});
+
+test("GROK-WEB uses Grok's published client metadata document, and both ids pass the strict parse", () => {
+  const cfg = loadConfig(wranglerConfig().vars);
+  assert.deepEqual([...cfg.seats["GROK-WEB"].cimdClientIds], ["https://grok.com/oauth/mcp-client.json"]);
+  assert.deepEqual([...cfg.seats["GROK-WEB"].redirectUris], ["https://grok.com/connectors-oauth-exchange-code/"]);
+  assert.equal(cfg.cimdOwner.get("https://grok.com/oauth/mcp-client.json"), "GROK-WEB");
+  // console.x.ai is added only for a Business or Enterprise xAI account (spec 4).
+  assert.equal(cfg.redirectOwner.has("https://console.x.ai/connectors-oauth-exchange-code/"), false);
+});
+
+test("issuer, resource and metadata URL are fixed to the D1 hostname", () => {
+  assert.equal(PUBLIC_HOST, "agent-sync.jays.services");
+  assert.equal(ISSUER, "https://agent-sync.jays.services");
+  assert.equal(RESOURCE, "https://agent-sync.jays.services/mcp");
+  assert.ok(!KNOWN_SEATS.includes(GATE_LOG_NAME));
+});
+
+test("token lifetimes are explicit integers the library accepts", () => {
+  assert.equal(ACCESS_TOKEN_TTL_S, 3600);
+  assert.equal(REFRESH_TOKEN_TTL_S, 90 * 86400);
+  const src = readFileSync(path.join(ROOT, "src/index.js"), "utf8");
+  assert.match(src, /refreshTokenTTL: REFRESH_TOKEN_TTL_S,/);
+  // DCR stays off:  no registration endpoint is configured.
+  assert.doesNotMatch(src, /clientRegistrationEndpoint:/);
+  assert.match(src, /clientIdMetadataDocumentEnabled: true/);
+  assert.match(src, /allowPlainPKCE: false/);
+});
+
+test("config refuses loose or ambiguous allowlists", () => {
+  const seats = (jet, grok = { redirect_uris: [], cimd_client_ids: [] }) => ({ JET: jet, "GROK-WEB": grok });
+  const bad = [
+    [{ SEATS: seats({ redirect_uris: ["https://chatgpt.com/cb?x=1"], cimd_client_ids: [] }) }, /not strict/],
+    [{ SEATS: seats({ redirect_uris: ["http://chatgpt.com/cb"], cimd_client_ids: [] }) }, /not strict/],
+    // The loopback exception is 127.0.0.1 with an explicit port, nothing looser.
+    [{ SEATS: seats({ redirect_uris: ["http://localhost:8737/cb"], cimd_client_ids: [] }) }, /not strict/],
+    [{ SEATS: seats({ redirect_uris: ["http://127.0.0.1/cb"], cimd_client_ids: [] }) }, /not strict/],
+    [{ SEATS: seats({ redirect_uris: ["http://[::1]:8737/cb"], cimd_client_ids: [] }) }, /not strict/],
+    [{ SEATS: seats({ redirect_uris: ["http://127.0.0.2:8737/cb"], cimd_client_ids: [] }) }, /not strict/],
+    [{ SEATS: seats({ redirect_uris: ["http://127.0.0.1:8737/cb?x=1"], cimd_client_ids: [] }) }, /not strict/],
+    [{ SEATS: seats({ redirect_uris: ["https://127.0.0.1:8737/cb"], cimd_client_ids: [] }) }, /not strict/],
+    // A CIMD client id is never http, loopback or not.
+    [{ SEATS: seats({ redirect_uris: [], cimd_client_ids: ["http://127.0.0.1:8737/client.json"] }) }, /not a strict https URL/],
+    // Only a loopback redirect may be shared;  a shared https redirect is refused.
+    [{ SEATS: seats({ redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }, { redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }) }, /two seats/],
+    [{ SEATS: seats({ redirect_uris: ["http://127.0.0.1:8737/callback", "http://127.0.0.1:8737/callback"], cimd_client_ids: [] }) }, /twice/],
+    [{ SEATS: seats({ redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }, { redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }) }, /two seats/],
+    [{ SEATS: { CLAUDE: { redirect_uris: [], cimd_client_ids: [] } } }, /unknown seat/],
+    [{ HOSTED_SEATS: "JET,CLAUDE" }, /unknown hosted seat/],
+    [{ PUBLIC_HOST: "evil.example" }, /PUBLIC_HOST/],
+    [{ SEATS: "{not json" }, /not valid JSON/],
+    [{ SEATS: "" }, /not set/],
+    [{ CHANNELS: {} }, /CHANNELS is empty/],
+    [{ CHANNELS: { "agent-sync": "642232" } }, /stream id/],
+    [{ CHANNELS: { "agent-sync": 1, sandbox: 1 } }, /listed twice/],
+    [{ CHANNELS: { "Agent Sync!": 1 } }, /plain lowercase/],
+    [{ OWNER_USER_ID: "" }, /OWNER_USER_ID/],
+    [{ OWNER_CLIENTS: "" }, /OWNER_CLIENTS/],
+    [{ ZULIP_EMAIL_GROK_WEB: "" }, /ZULIP_EMAIL_GROK_WEB/],
+    [{ ZULIP_EMAIL_GROK_WEB: "grok-web-bot@evil.example" }, /ZULIP_EMAIL_GROK_WEB/],
+    [{ ZULIP_EMAIL_JET: "jay@simplewithus.zulipchat.com" }, /ZULIP_EMAIL_JET/],
+  ];
+  for (const [over, re] of bad) assert.throws(() => loadConfig(testEnv(over)), re, JSON.stringify(over));
+});
+
+test("config accepts the loopback callback, shared by two seats", () => {
+  const loop = "http://127.0.0.1:8737/callback";
+  const cfg = loadConfig(testEnv({ SEATS: { JET: { redirect_uris: [loop], cimd_client_ids: [] }, ECHO: { redirect_uris: [loop], cimd_client_ids: [] } } }));
+  assert.deepEqual([...cfg.redirectSeats.get(loop)], ["JET", "ECHO"]);
+  const solo = loadConfig(testEnv({ SEATS: { ECHO: { redirect_uris: [loop], cimd_client_ids: [] }, INSTINCT: { redirect_uris: [], cimd_client_ids: [] } } }));
+  assert.equal(solo.redirectOwner.get(loop), "ECHO");
+});
+
+test("every known seat has its own key secret and email var, and the realm is compiled in", () => {
+  assert.deepEqual(Object.keys(SEAT_SECRETS).sort(), [...KNOWN_SEATS].sort());
+  const keys = Object.values(SEAT_SECRETS).map((s) => s.key);
+  assert.equal(new Set(keys).size, keys.length);
+  const w = wranglerConfig();
+  for (const { key } of Object.values(SEAT_SECRETS)) assert.ok(!(key in w.vars), `${key} is a secret, never a var`);
+  assert.equal(REALM, "https://simplewithus.zulipchat.com");
+  assert.ok(!("REALM" in w.vars) && !("ZULIP_SITE" in w.vars), "a config edit cannot move Zulip egress");
+  assert.equal(PROPS_PHASE, 2);
+});
+
+test("wrangler.jsonc keeps every hostname but the custom domain off", () => {
+  const w = wranglerConfig();
+  assert.equal(w.workers_dev, false);
+  assert.equal(w.preview_urls, false);
+  assert.deepEqual(w.routes, [{ pattern: "agent-sync.jays.services", custom_domain: true }]);
+  assert.equal(w.account_id, "3a9368057468d0909cafaa85df12d1b7");
+  assert.ok(w.compatibility_flags.includes("nodejs_compat"));
+  assert.ok(w.compatibility_flags.includes("global_fetch_strictly_public"));
+  assert.deepEqual(w.migrations, [{ tag: "v1", new_sqlite_classes: ["SeatGate"] }]);
+  // The automatic per-request logs are off:  nothing proves they omit the Access JWT header or cookies.
+  assert.equal(w.observability.enabled, true);
+  assert.equal(w.observability.logs.invocation_logs, false);
+  assert.equal(w.kv_namespaces[0].binding, "OAUTH_KV");
+  assert.equal(w.durable_objects.bindings[0].class_name, "SeatGate");
+});
+
+test("package.json pins exact versions (fleet two-week rule, see README)", () => {
+  const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const all = { ...pkg.dependencies, ...pkg.devDependencies };
+  for (const [name, version] of Object.entries(all)) assert.match(version, /^\d+\.\d+\.\d+$/, `${name} must be pinned exactly`);
+});

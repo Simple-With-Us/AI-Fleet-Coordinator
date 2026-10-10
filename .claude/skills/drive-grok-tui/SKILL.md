@@ -5,11 +5,7 @@ description: Drive a live Mac Grok TUI session from any local or cloud agent (Cl
 
 # Drive a live Grok TUI
 
-> **Shared `~/.claude/skills`.** Monet, Claude/Fable, and (when active) Renoir all load this directory.  Do not treat the word Monet in examples as proof of your seat.  Pin `AGENT_SEAT` / `AGENT_TAG` from the logged-in account before Slack or `board --by`:
-> - Monet → `MONET`, Notes `Monet`, `monet/`, `~/apps/<app>-monet`
-> - Claude / Fable → `CLAUDE`, Notes `Claude`, `claude/`, `~/apps/<app>-claude`
-> - Renoir → `RENOIR`, Notes `Renoir`, `renoir/`, `~/apps/<app>-renoir`
-> Cursor, Grok, Grok Bot, Codex, AG, DeepSeek, Kimi, and Fx have their own skill dirs and must not take identity from here.
+> **Shared `~/.claude/skills`.**  This directory is the `CLAUDE` seat's skill home, and other tools scan it too.  Other seats (Codex, Cursor, Grok, Grok-Web, AG, Clutch, FX, MM, MC, MA) must take identity from their own pack, never from here.
 
 
 The Mac Grok TUI joins `~/.grok/leader.sock`.  Any agent can attach through
@@ -44,7 +40,7 @@ python3 ~/apps/grok-acp-runtime/grok-idle-unload.py --dry-run
 - Peek/tail/await never `session/load` a live chat (load hangs ~45s).
 - `cancel` is a `session/cancel` **notification** after `session/resume`.  Best-effort.  Idle chats ignore it.
 - `close` is `session/close`: unload that chat's MCP tools and keep the transcript on disk.  Refuses `$GROK_SESSION_ID` unless `--self`.  Refuses working / needs-input unless `--force`.
-- Hourly `com.jay.grok-idle-unload` closes **live** chats idle >12h.  It does not `/delete`.  `/resume` or `grok --resume ID` reloads tools.  `GROK_IDLE_UNLOAD_HOURS` overrides the threshold.
+- Hourly `com.jay.grok-idle-unload` closes chats that hold MCP processes and sit idle: 30 minutes for a zero-turn stub with no attached client, 4 hours for the rest.  It does not `/delete`.  `/resume` or `grok --resume ID` reloads tools.  `GROK_IDLE_UNLOAD_STUB_MINUTES` and `GROK_IDLE_UNLOAD_HOURS` override the thresholds.
 
 ## MCP (local or cloud)
 

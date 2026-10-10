@@ -6,7 +6,7 @@ description: >-
 
 # Apple Notes (Universal)
 
-> **This install is for `DSH`.** Slack `[DSH]`.  Notes `DeepSeek Harness`.  Branches `deepseek/`.  Worktrees `~/apps/<app>-deepseek`.  Do not inherit another seat's tag from a shared template.
+> **Retired seat.**  DSH (DeepSeek Harness) is retired (2026-09-19): use `CLUTCH` for `Simple-With-Us/Clutch`.  Do not take work as DSH and do not install this pack to `~/.deepseek/skills`.  This catalog copy is inactive.
 
 
 Mac only.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
@@ -34,7 +34,7 @@ Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do
 [APP, Agent] short topic
 ```
 
-- Acronyms first, then `<Agent>` (Title Case, not all-caps Slack tags).
+- Acronyms first, then `<Agent>` (Title Case, not an all-caps seat tag).
 - Multi-app: `[ST, CT, Agent] …` (impact order).
 - No date in the title.  No word "session".  Do not repeat the title as an H1 in the body.
 
@@ -83,7 +83,7 @@ Never pass empty `- ` bullets (they render as blank dots).  Put identifiers with
 
 Do Notes: plans, design docs, reviews, handoffs, rollouts, **Completion / work-complete** for anything the owner might ask about.
 
-Skip: pure `#agent-sync` chatter, effort-board row edits, routine commit messages, peer-only PR nits.
+Skip: pure #agent-sync topic chatter, effort-board row edits, routine commit messages, peer-only PR nits.
 
 Open a living work note when substantial work starts.  Always Completion at the end.  Update in place; unpin stale Completion notes when the lane closes (`--unpin-only`).
 

@@ -6,6 +6,9 @@ description: >-
 
 # Fleet recall
 
+> **Retired seat.**  Owner directive 2026-10-07: the Monet Claude account and app are no longer used, and `CLAUDE` is the only Claude seat.  Do not take work as MONET, do not leave MONET In Progress, and do not install this pack anywhere.  This catalog copy is inactive.
+
+
 The fleet has one shared memory: the `fleet-agents` collection in the self-hosted Qdrant on the
 Hetzner box, embedded by the self-hosted bge-m3 endpoint.  It holds every board row with its
 resolution, the Apple Notes archive, every effort log, the fleet protocol docs, the skills, and

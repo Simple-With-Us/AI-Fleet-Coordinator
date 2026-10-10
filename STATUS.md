@@ -1,5 +1,19 @@
 # Status
 
+Updated: 2026-10-08 (MM — top-level fleet docs moved from Slack to Zulip)
+
+## 2026-10-08 MM — Zulip terminology in the top-level fleet docs
+
+`TEMPLATE-AGENTS.md`, `FLEET-UI-COPY.md`, `EFFORT-LOG-PROTOCOL.md`, `README.md`, and this
+file now describe Zulip (`https://simplewithus.zulipchat.com`) instead of Slack:  the
+`agent-sync` CLI (`~/.local/bin/agent-sync`), the `[SEAT·session8]` tag, and posting by
+channel plus topic.  The retired Slack path — `slack-sync.sh`, `agent-sync-poll.py`,
+`agent-sync-websocket.py`, the pm2 `agent-sync-push` relay, `consumer.mjs`, the
+`slack-collab` MCP, and the Slack tokens they read — is no longer instructed anywhere in
+those five files.  Mechanics live in `AGENT-SYNC.md` § Chat: The Zulip Contract and
+`docs/protocols/zulip-fleet-guide.md`.  Entries below are dated history and describe Slack
+as it was at the time; they are not rewritten.
+
 Updated: 2026-09-18 (GROK — mac-collab-litestream inventory)
 
 ## 2026-09-18 GROK — mac-collab-litestream on the master list

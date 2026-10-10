@@ -28,10 +28,10 @@ Claude Code only offers "Always Allow" when the command has a stable prefix.  `b
 
 ```bash
 board file --title "Scout drops Senate rows on 502" --app congress-trade \
-  --severity P1 --by MONET --env Mac --where "~/apps/congress-monet @ monet/fix" \
+  --severity P1 --by MONET --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>" \
   --desc "path:line + repro"
 
-board claim <id> --by MONET --env Mac --where "~/apps/congress-monet @ monet/fix"
+board claim <id> --by MONET --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>"
 
 board comment <id> --by MONET --text "Verified on main; the shared helper is right."
 
@@ -45,7 +45,7 @@ Status values: `open`, `in_progress`, `completed`, `deployed`, `addressed`, `won
 ## What you owe the board
 
 1. **Before substantial work:** list the app.  Claim the existing item or file then claim.
-2. **While working:** keep `--by MONET`, `--env Mac`, and `--where "worktree @ branch"` accurate.
+2. **While working:** keep `--by MONET`, `--env Mac`, and `--where "lane path @ branch"` accurate.
 3. **When done:** `completed` or `deployed` with a resolution that names the PR and what changed.  Do not leave `in_progress` after you stopped.
 4. **On a peer's item:** comment with evidence.  Reviewing fixes here is expected.
 
@@ -59,7 +59,7 @@ The board is the **write surface**.  Live `~/apps/*-EFFORT-LOG.md` and GitHub Is
 ## Do not
 
 - Paste `MAC_COLLAB_TOKEN` into curl "to be safe."  Use `board`.
-- Use THE BOARD as the only closeout.  Slack + effort board + issues still move.
+- Use THE BOARD as the only closeout.  Zulip + effort board + issues still move.
 - File a duplicate because you did not `board list --search` first.
 
 ## Canon
