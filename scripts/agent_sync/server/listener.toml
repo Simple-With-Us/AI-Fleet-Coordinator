@@ -16,7 +16,7 @@
 # other names.
 #
 # The container copies this file onto its volume (AGENT_SYNC_CONFIG) on first start.  Then
-# `agent-sync daemon init` pins owner_user_id and eligible_user_ids in that copy, and
+# `agent-sync daemon init` pins owner_user_id (and the optional eligible_user_ids) in that copy, and
 # `agent-sync daemon reload` (or a restart) applies it.  Until then nothing is treated as the
 # owner and nothing wakes.  A reload re-reads only this file:  a new or changed environment
 # variable reaches the listener only when the container restarts.  A section changed here never reaches a live
@@ -28,7 +28,7 @@
 [daemon]
 instance = "server"
 owner_user_id = 0                 # pinned by `agent-sync daemon init`, never derived at runtime
-eligible_user_ids = []            # fleet seat bots, pinned by `agent-sync daemon init`
+eligible_user_ids = []            # optional extra pins:  every fleet bot is eligible at runtime (owner 2026-10-09)
 owner_clients = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]
 stale_after_minutes = 120
 coalesce_seconds = 20

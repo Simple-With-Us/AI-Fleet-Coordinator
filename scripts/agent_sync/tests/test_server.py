@@ -339,13 +339,39 @@ class DmTests(ServerHarness):
         self.assertEqual(body["reply_to"], {"type": "direct", "to": [11, 12]})
         self.assertEqual(body["message_id"], dm)
 
-    def test_a_dm_from_a_peer_bot_is_captured_but_never_wakes(self) -> None:
+    def test_a_dm_from_a_peer_bot_wakes_the_routine_and_is_answered_by_dm(self) -> None:
+        """Owner 2026-10-09:  an eligible bot's DM wakes like a direct mention.  The routine replies in the DM."""
         daemon = self.started()
         dm = self.fake.add_direct_message("Codex", "ping from codex", recipients=[self.gb], deliver=True)
+        self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 1, seat=SEAT)
+        self.assertEqual([r["id"] for r in self.inbox(SEAT)], [dm])
+        self.wake_cycle(daemon)
+        self.assertEqual(len(self.routine.received), 1)
+        body = self.routine.received[0].json()
+        self.assertTrue(body["dm"])
+        self.assertEqual(body["reply_to"], {"type": "direct", "to": [11]})
+        self.assertEqual((body["is_bot"], body["owner"], body["message_id"]), (True, False, dm))
+        self.assertEqual(body["reply_prefix"], "[GB-COMPILER·wake] re=%d" % dm)
+        self.assertEqual(self.gb_posts(), [], "the daemon never posts for a routine seat")
+
+    def test_a_bf_bot_mention_wakes_the_gb_routine(self) -> None:
+        bf = self.fake.add_user("bf-builder-bot@zulip.test", "BF Builder", is_bot=True, user_id=31)
+        daemon = self.started()
+        mid = self.fake.add_message(bf, "agent-sync", "CT build red", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 1, seat=SEAT)
+        self.wake_cycle(daemon)
+        body = self.routine.received[0].json()
+        self.assertEqual((body["message_id"], body["sender_user_id"], body["owner"]), (mid, 31, False))
+
+    def test_a_webhook_integration_dm_never_wakes(self) -> None:
+        sentry = self.fake.add_user("sentry-bot@zulip.test", "Sentry", is_bot=True, user_id=40)
+        sentry["bot_type"] = 2
+        daemon = self.started()
+        dm = self.fake.add_direct_message(sentry, "error spike", recipients=[self.gb], deliver=True)
         self.pump_until(daemon, lambda: len(self.inbox(SEAT)) >= 1, seat=SEAT)
         self.assertEqual([r["id"] for r in self.inbox(SEAT)], [dm])
         self.wake_cycle(daemon)
-        self.assertEqual(self.ledger(SEAT), [], "the prefilter keeps a DM from a bot inbox-only")
+        self.assertEqual(self.ledger(SEAT), [])
         self.assertEqual(self.routine.received, [])
 
     def test_a_channel_mention_wakes_with_dm_false(self) -> None:
