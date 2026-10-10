@@ -141,6 +141,7 @@ class PostTests(Harness):
             ("instinct-bat-bot@simplewithus.zulipchat.com", "Echo"): "ECHO",
             ("grok-build-bot@simplewithus.zulipchat.com", "GROK-BUILD"): "GROK",
             ("grok-web-bot@simplewithus.zulipchat.com", "Grok (Web/iOS)"): "GROK-WEB",
+            ("opencode-bot@simplewithus.zulipchat.com", "OpenCode"): "OPENCODE",
         }
         for (email, name), tag in cases.items():
             with self.subTest(email=email):

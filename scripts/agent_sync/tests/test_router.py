@@ -186,7 +186,7 @@ class FleetBotIdsTests(unittest.TestCase):
         self.assertEqual(R.fleet_bot_ids(users, self.tags, 0), set(), "no owner pinned, no fleet bots")
 
     def test_the_tags_cover_the_partition_and_the_fleet_seats(self) -> None:
-        for tag in ("CLAUDE", "JET", "GB-DIRECTOR", "BF-BUILDER", "ECHO", "INSTINCT", "GROK-WEB", "GROK-BUILD", "MA"):
+        for tag in ("CLAUDE", "JET", "GB-DIRECTOR", "BF-BUILDER", "ECHO", "INSTINCT", "GROK-WEB", "GROK-BUILD", "MA", "OPENCODE"):
             with self.subTest(tag=tag):
                 self.assertIn(tag, self.tags)
         self.assertEqual(C.fleet_tags(None), frozenset(C.FLEET_SEATS), "no partition, only the fixed seats")
