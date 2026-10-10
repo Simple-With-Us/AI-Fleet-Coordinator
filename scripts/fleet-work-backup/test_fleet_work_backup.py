@@ -52,6 +52,7 @@ AWS2 = "AKIA" + "Z8Y7X6W5V4U3T2S1"
 PEM = "-----BEGIN " + "RSA PRIVATE KEY-----\n" + "MIIEowIBAAKCAQEA" + "q7Zp3Km9Tx2Wj4Hb" + "Lm8Vc5Rn1Yd6Fs0Gt"
 HIGH = "".join(["aB3dE5", "gH7jK9", "mN1pQ3", "sT5v7x", "Zq2"])
 PW = "".join(["pw-", "Zx9Qw3", "Er5Ty7", "Ui1Op"])
+OPAQUE = "".join(["Zq8Lm", "2Vx7R", "t4Yp9", "Kd3Hs", "1Wb6N", "c0Fj5", "Gu1Wb", "6Nc0F", "p2Qa7"])
 KEYID = "".join(["005", "abcdef0123", "456789012"])
 APPKEY = "".join(["K005", "AbCdEfGhIjKlMn", "OpQrStUvWx1"])
 
@@ -484,9 +485,8 @@ class NameAndContentCase(unittest.TestCase):
             self.assertIsNotNone(fwb.scan_bytes(text.encode()), text[:12])
 
     def test_a_json_credential_field_is_a_secret_but_a_placeholder_is_not(self):
-        token = "Zq8Lm2Vx7Rt4Yp9Kd3Hs" + "1Wb6Nc0Fj5Gu" * 3
-        for text in (json.dumps({"refresh_token": token}), json.dumps({"client_secret": token}),
-                     '{\n  "api_key" : "' + token + '"\n}'):
+        for text in (json.dumps({"refresh_token": OPAQUE}), json.dumps({"client_secret": OPAQUE}),
+                     '{\n  "api_key" : "' + OPAQUE + '"\n}'):
             self.assertEqual(fwb.scan_bytes(text.encode()), "json-secret-field", text[:30])
         for text in (json.dumps({"access_token": "changeme"}), json.dumps({"password": "x" * 30}),
                      json.dumps({"api_key": "${API_KEY_FROM_THE_ENVIRONMENT}"}), json.dumps({"token_type": "Bearer"})):
