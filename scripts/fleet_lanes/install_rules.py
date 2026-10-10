@@ -133,6 +133,9 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform("antigravity", ".gemini/config/AGENTS.md", "full", "Antigravity"),
     Platform("minimax", ".minimax/memory/user.md", "minimal", "MiniMax (user.md goes into every prompt)"),
     Platform("cursor", ".cursor/rules/fleet-lane-map.mdc", "cursor", "Cursor", own_file=True),
+    # OpenCode 2.x (bundled with Conductor) reads `<config dir>/AGENTS.md` as its global instruction file;
+    # `opencode debug paths` prints the config dir (~/.config/opencode).  Found in the binary, not yet exercised.
+    Platform("opencode", ".config/opencode/AGENTS.md", "full", "OpenCode (bundled with Conductor)"),
     Platform("muse-code", None, None, "Muse Code",
              note="no known user-level rules file (UNVERIFIED); carry the rule in each project's "
                   "AGENTS.md instead (docs/protocols/lane-map.md, platform table)"),
