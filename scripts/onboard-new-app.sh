@@ -2,7 +2,8 @@
 # onboard-new-app.sh — join a GitHub repo to the fleet.
 #
 # Mechanical half of docs/ONBOARDING-NEW-APP.md. Does not touch Infisical,
-# Coolify, ASC, or any secret value.
+# Coolify, ASC, or any secret value.  Infisical's only environment is prod:  the closing
+# checklist reminds the owner to delete a new project's dev and staging at creation.
 #
 # Usage:
 #   ./scripts/onboard-new-app.sh --repo DealDex --acronym DD \
@@ -198,3 +199,7 @@ echo "     If the app's PR numbers should link in Zulip, ask Jay about a linkifi
 echo "     Current Linkifiers table lists the acronyms that have one, and an unlisted \`$ACRONYM#n\` falls through"
 echo "     to the generic repo pattern.  Never change a linkifier without Jay's OK."
 echo "  5. Owner dashboards (Infisical / Coolify / ASC) stay on the checklist."
+echo "     Infisical: prod is the only environment.  Right after the owner creates the app's project,"
+echo "     delete its default dev and staging environments (this script calls no Infisical API and deletes nothing)."
+echo "     Never set INFISICAL_ENV / INFISICAL_ENVIRONMENT to anything but prod;"
+echo "     python3 $here/scripts/check-infisical-env.py checks a repo for that."

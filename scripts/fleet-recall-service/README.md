@@ -71,7 +71,7 @@ Configuration is **Infisical-first** (see `INFISICAL.md` at the repo root): on s
 | `PORT` / `HOST` | no | default `8080` / `0.0.0.0` |
 | `RECALL_SOCKET_TIMEOUT` | no | per-connection socket timeout in seconds (default `15`); a stalled body is answered and closed instead of parking a thread.  Empty / unparsable / non-positive values fall back to the default |
 | `SETTINGS_REFRESH_SECONDS` | no | background settings-refresh interval in seconds (default `300`); itself tunable in Infisical |
-| `INFISICAL_ENVIRONMENT` | no | which Infisical env the service reads: `dev` / `staging` / `prod` (default `dev`) |
+| `INFISICAL_ENVIRONMENT` | no | the Infisical env the service reads.  `prod` is the only environment (default `prod`);  unset or empty means prod and any other slug is refused (the service exits 2) |
 | `RECALL_REF` | no | git ref the bootstrap fetches (default `main`) |
 | `RECALL_FAKE` | no | `1` serves the in-process fake corpus (tests, smoke) |
 | `GITLEAKS_VERSION` | no | gitleaks release the bootstrap / image installs (default `8.30.1`) |

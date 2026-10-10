@@ -101,7 +101,8 @@ SECRET_KEYS = frozenset({
 # Infisical cache into os.environ for them at startup and on every refresh.
 BACKEND_ENV_KEYS = REQUIRED_ENV + OPTIONAL_ENV
 # The "AI Fleet Coordinator" Infisical project.  FLEET_RAG_INFISICAL_PROJECT overrides it
-# (fleet convention, see fleet_rag/core.py); INFISICAL_ENVIRONMENT picks dev/staging/prod.
+# (fleet convention, see fleet_rag/core.py).  The environment is prod, the only one Infisical
+# keeps; INFISICAL_ENVIRONMENT may name it but any other slug is refused (INFISICAL.md).
 AFC_INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
 
 JsonDict = dict[str, Any]
@@ -734,12 +735,16 @@ def main(argv: list[str] | None = None) -> int:
     # (INFISICAL_AUTOMATION_CLIENT_ID/SECRET in the environment, or the handoff file)
     # authorizes the fetch.  With no identity, managed keys fall back to the process
     # environment and the old env-only behavior is preserved.
-    infisical_settings.configure(
-        project_id=os.environ.get("FLEET_RAG_INFISICAL_PROJECT") or AFC_INFISICAL_PROJECT,
-        environment=os.environ.get("INFISICAL_ENVIRONMENT", "dev"),
-        managed_keys=MANAGED_KEYS, required_keys=("RECALL_API_TOKEN",),
-        secret_keys=tuple(SECRET_KEYS))
+    # The environment is prod.  An unset or empty INFISICAL_ENVIRONMENT means prod and any
+    # other slug is refused, so a stale dev/staging override exits 2 with a clear log line.
+    environment = ((os.environ.get("INFISICAL_ENVIRONMENT") or "").strip()
+                   or infisical_settings.PROD_ENVIRONMENT)
     try:
+        infisical_settings.configure(
+            project_id=os.environ.get("FLEET_RAG_INFISICAL_PROJECT") or AFC_INFISICAL_PROJECT,
+            environment=environment,
+            managed_keys=MANAGED_KEYS, required_keys=("RECALL_API_TOKEN",),
+            secret_keys=tuple(SECRET_KEYS))
         infisical_settings.init_settings()
     except _SettingsError as e:
         log(f"settings init failed: {e}")

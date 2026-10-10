@@ -48,6 +48,13 @@ jobs:
     # Worker will not follow).  This now fails the build instead.
     - name: Verify fleet registry (incl. admin-panel APPS copy)
       run: python3 scripts/check-fleet-registry.py
+    # Infisical's only environment is prod (owner 2026-10-10).  The lint fails on a dev or
+    # staging INFISICAL_ENV in an env file or cursor-cloud-start.sh fallback, and on a
+    # non-prod .infisical.json default;  `--fleet` runs it over every ~/Code repo on origin/main.
+    - name: Infisical environment lint (prod only)
+      run: |
+        python3 scripts/test_check_infisical_env.py
+        python3 scripts/check-infisical-env.py
     - name: Set up Node
       uses: actions/setup-node@v7
       with:
@@ -66,3 +73,7 @@ jobs:
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
     - name: Mac ledger mirror tests
       run: bash scripts/test-mac-ledger-mirror.sh
+    # The LaunchAgent script that copies a Cloudflare token from Infisical prod into the handoff
+    # file.  A stub CLI and a temp dir stand in for the real ones.
+    - name: Infisical secrets sync tests
+      run: bash scripts/test-infisical-secrets-sync.sh
