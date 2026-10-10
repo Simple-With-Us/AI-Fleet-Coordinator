@@ -916,9 +916,8 @@ class PartitionTests(ServerHarness):
         self.assertEqual(server.errors, [])
         self.assertEqual(server.instance, "server")
         self.assertEqual(C.partition_errors(server, partition, env_instance="server"), [])
-        self.assertEqual(sorted(server.seats), sorted([s for s in gb if s not in ("GB-COMPILER", "GB-DIRECTOR")]
-                                                      + list(CLOUD_SEATS)),
-                         "the enabled seats are nine GB personas and the five cloud seats")
+        self.assertEqual(sorted(server.seats), sorted(list(gb) + list(CLOUD_SEATS)),
+                         "the enabled seats are all eleven GB personas and the five cloud seats")
         for seat in CLOUD_SEATS:
             seat_cfg = server.seats[seat]
             code = C.env_code(seat)
@@ -933,8 +932,8 @@ class PartitionTests(ServerHarness):
                                  ("inbox", "env", "server", None), "%s has capture only, no wake adapter" % seat)
             self.assertEqual((seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
                              ("ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"), seat)
-        self.assertEqual(sorted(server.disabled), ["GB-COMPILER", "GB-DIRECTOR"],
-                         "only the two personas whose Infisical entries failed the Sat, Oct 10 inventory are disabled")
+        self.assertEqual(sorted(server.disabled), [],
+                         "no persona is disabled:  GB-COMPILER and GB-DIRECTOR were fixed in Infisical on Sat, Oct 10")
         for seat in gb:
             seat_cfg = server.seats.get(seat) or server.disabled[seat]
             code = C.env_code(seat)
@@ -1097,8 +1096,7 @@ class ServerInitTests(ServerHarness):
         self.config_file.unlink()
         # Without --seat the reader is the first enabled seat in name order, which is ECHO now that the
         # sample holds the cloud seats, so the runbook always names one.
-        # GB-COMPILER is disabled in the sample (its Infisical pair is another bot's), so it is only the
-        # reader here; GB-FIXER is an enabled persona whose credentials init checks.
+        # GB-COMPILER is the reader here, and like GB-FIXER an enabled persona whose credentials init checks.
         fixer_key = secrets.token_hex(16)
         self.extra_keys.append(("fixer-grok-bot@zulip.test", fixer_key))
         self.fake.add_bot("fixer-grok-bot@zulip.test", "GB-Fixer", fixer_key)
@@ -1107,7 +1105,7 @@ class ServerInitTests(ServerHarness):
         self.assertEqual(result.code, 0, result.err + result.out)
         self.assertIn("wrote the sample config %s" % self.config_file, result.out)
         self.assertIn("GB-FIXER: environment credentials ok, role 400", result.out)
-        self.assertNotIn("  GB-COMPILER:", result.out, "a disabled persona is not checked")
+        self.assertIn("GB-COMPILER: environment credentials ok, role 400", result.out)
         cfg = C.load(self.root, str(self.config_file))
         self.assertEqual(cfg.instance, "server")
         self.assertEqual(cfg.owner_user_id, 12)
