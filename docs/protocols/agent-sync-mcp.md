@@ -335,6 +335,7 @@ The stdio kill switch is to remove the config entry, or rotate the key.
 | CLAUDE | Claude Code on the Mac | stdio | v1 |
 | CODEX, CURSOR, AG, FX, MM | their Mac clients | stdio (section 2 table) | Phase 3 installer |
 | GROK (`grok-build-bot@`) | the `grok` CLI and the Mac TUI, one seat (D2) | stdio | Phase 3 |
+| OPENCODE (`opencode-bot@`) | the `opencode` CLI on the Mac, a seat since Sat, Oct 10, 2026 (owner) | stdio (section 2 table);  `install_mcp apply opencode --with-agent-sync` writes it | Held, not applied:  Conductor shares the global file and a session inside it has no default (AGENT-SYNC, open question), so it waits for the owner's answer |
 | CLUTCH, MC, MA | own apps | stdio only if the client takes MCP (unverified) | later |
 | JET (`openai-dot-bot@`) | ChatGPT dot, web, Codex app | hosted, OAuth | Built;  enabled Fri, Oct 9 now the bot is a member (3.11);  Jay's first connection is the live check |
 | GROK-WEB (`grok-web-bot@`) | grok.com connectors on Web, iOS and Android | hosted, OAuth | Built Fri, Oct 9 (3.11);  Jay's first connection is the live check |
