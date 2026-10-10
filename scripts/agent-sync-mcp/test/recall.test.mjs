@@ -121,10 +121,10 @@ const noSecrets = (text) => {
 
 // ---------------------------------------------------------------- the tool list
 
-test("the hosted list is tools.json, then the three recall tools, closed inputs, no identity arguments", () => {
+test("the hosted list is tools.json, then the three recall tools, then the three DM tools, closed inputs, no identity arguments", () => {
   assert.deepEqual(
     HOSTED_TOOL_LIST.map((t) => t.name),
-    [...TOOLS.tools.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute"],
+    [...TOOLS.tools.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send"],
   );
   // tools.json, the stdio contract, is untouched.
   const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/tools.json"), "utf8"));
