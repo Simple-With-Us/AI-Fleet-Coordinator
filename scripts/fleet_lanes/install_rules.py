@@ -44,10 +44,12 @@ Fleet Basics.  Four platforms have no other fleet instruction file (Clutch, Kimi
 also carries the Fleet Basics (AGENT-SYNC pointer, seat identity, coordination, secrets, writing) ahead of the Lane Map.
 Clutch has a fixed default seat (CLUTCH, a launcher's seat wins); the other three are engine-only CLIs with NO default
 seat and say so.  The marker family is the same `fleet-lane-map` block.  OpenCode (the row is the owner's, #438) is the
-OPENCODE seat since #440 but keeps the Lane Map alone:  the seat text in its live file is hand-written
-(docs/OPENCODE-ONBOARDING-PROMPT.md has it), and a session under $HOME may load that file and ~/AGENTS.md together,
-so this tool does not write a second copy.  Conductor and Muse Code are listed as unsupported with the reason (see PLATFORMS): each
-already reads a file this tool maintains, or has no instruction file of its own.
+OPENCODE seat since #440, so its block carries a fixed-seat Seat Identity (default OPENCODE for a session Jay opens in a
+terminal, a launcher's seat first, no default for a headless run or Conductor) ahead of the Lane Map, but not the rest
+of the Fleet Basics:  its live file is a whole copy of ~/AGENTS.md, which already holds coordination, landing, secrets and
+writing, and a session under $HOME may load that file and ~/AGENTS.md together.  Conductor and Muse Code are listed as
+unsupported with the reason (see PLATFORMS): each already reads a file this tool maintains, or has no instruction file of
+its own.
 
 The Codex cap.  Codex reads the first 32 KiB of AGENTS.md.  The block counts only if it ENDS inside those
 bytes: `verify` fails, and `apply` is refused (exit 2) instead of reporting `unchanged`, for a block that
@@ -99,6 +101,7 @@ TEMPLATE_FILES = {
     "cursor": "lane-map.cursor.mdc",
     "clutch": "fleet-basics.clutch.md",          # Fleet Basics, fixed default seat CLUTCH, then the Lane Map
     "nodefault": "fleet-basics.nodefault.md",    # Fleet Basics, no default seat, then the Lane Map
+    "opencode": "seat-identity.opencode.md",     # Seat Identity with the fixed default seat OPENCODE, then the Lane Map
 }
 # Pieces a template pulls in by placeholder.  The Lane Map body is the `full` variant's text.
 BODY_PLACEHOLDER = "{{LANE_MAP_BODY}}"
@@ -162,7 +165,7 @@ PLATFORMS: tuple[Platform, ...] = (
     # at the nearest .git root, and $DSH_HOME is forced to ~/.clutch/dsh by Clutch's own launcher.
     Platform("clutch", ".clutch/dsh/AGENTS.md", "clutch", "Clutch (DSH engine, $DSH_HOME/AGENTS.md)",
              size_cap=CLUTCH_CAP),
-    # Engine-only CLIs: no default seat, so the block says to take a launcher's seat or ask Jay.
+    # Engine-only CLIs: no default seat, so the block says to take a launcher's seat or ask Jay.  (OpenCode is not one: see below.)
     Platform("kimi", ".kimi-code/AGENTS.md", "nodefault", "Kimi Code ($KIMI_CODE_HOME/AGENTS.md)"),
     Platform("vibe", ".vibe/AGENTS.md", "nodefault", "Mistral Vibe ({VIBE_HOME}/AGENTS.md)"),
     Platform("copilot", ".copilot/copilot-instructions.md", "nodefault", "GitHub Copilot CLI (user-level instructions)",
@@ -170,10 +173,10 @@ PLATFORMS: tuple[Platform, ...] = (
                     "binary was not exercised with a model; start a Copilot session and ask what it loaded"),
     # OpenCode 2.x (bundled with Conductor) reads `<config dir>/AGENTS.md` as its global instruction file;
     # `opencode debug paths` prints the config dir (~/.config/opencode).  Found in the binary, not yet exercised
-    # (the platform row is the owner's, #438).  The Lane Map block alone, on purpose:  OpenCode is the OPENCODE seat
-    # (#440), and the seat text in the live file is hand-written (docs/OPENCODE-ONBOARDING-PROMPT.md), so a second
-    # copy here would only double what a session under $HOME may load twice.
-    Platform("opencode", ".config/opencode/AGENTS.md", "full", "OpenCode (bundled with Conductor)",
+    # (the platform row is the owner's, #438).  OpenCode is the OPENCODE seat (#440), so its block is a fixed-seat Seat
+    # Identity (a launcher's seat wins) plus the Lane Map, like Clutch but without the rest of the Fleet Basics:  the live
+    # file is a whole copy of ~/AGENTS.md (docs/OPENCODE-ONBOARDING-PROMPT.md), which already holds them.
+    Platform("opencode", ".config/opencode/AGENTS.md", "opencode", "OpenCode (bundled with Conductor)",
              tool_dir=".config/opencode", caveat="UNVERIFIED: OpenCode also walks AGENTS.md up from the session directory to $HOME (read from the "
                     "binary, not run with a model), so a session under $HOME may load this file and ~/AGENTS.md, "
                     "which is the same Lane Map twice; it does not read ~/.claude/CLAUDE.md as rules"),

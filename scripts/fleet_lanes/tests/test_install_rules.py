@@ -1263,22 +1263,47 @@ class FleetBasicsTests(HomeCase):
         self.assertIn("WARNING: UNVERIFIED: OpenCode also walks AGENTS.md up", out)
         self.assertIn("the same Lane Map twice", out)
 
-    def test_opencode_gets_the_lane_map_alone_and_no_statement_about_its_seat(self) -> None:
-        """A seat statement for OpenCode (no default, or a seat of its own) is the owner's call, and the live file
-        already holds hand-written Fleet Basics: the block this tool writes there must not repeat or contradict them."""
+    def test_opencode_gets_a_fixed_seat_identity_then_the_lane_map(self) -> None:
+        """OpenCode is the OPENCODE seat (owner, Sat, Oct 10, 2026), so its block names that default, puts a launcher's
+        seat first and says a headless run or Conductor has no default.  It is not the whole Fleet Basics:  the live
+        file is a whole copy of ~/AGENTS.md, which already holds those sections."""
         p = IR.PLATFORM_BY_NAME["opencode"]
-        self.assertEqual((p.rel_path, p.variant), (".config/opencode/AGENTS.md", "full"))
+        self.assertEqual((p.rel_path, p.variant), (".config/opencode/AGENTS.md", "opencode"))
         body = IR.body_text(p.variant)
+        self.assertIn("Your default seat is OPENCODE", body)
+        self.assertIn("opencode-bot@", body)
+        self.assertIn("`opencode/`", body)
+        self.assertIn("which beats this file whatever model you are", body)
+        self.assertIn("Never write `AGENT_LAUNCH_SEAT` or `AGENT_LAUNCHER`", body)
+        self.assertIn("have no default", body)
+        self.assertIn("Conductor", body)
         self.assertNotIn("## Fleet Basics", body)
+        self.assertNotIn("### Coordination", body)
+        self.assertNotIn("This tool has no default seat", body)
         self.assertNotIn("not a seat", body)
-        self.assertNotIn("no default seat", body.lower())
+        self.assertIn("## Lane Map", body)
+        self.assertLess(body.index("Your default seat is OPENCODE"), body.index("## Lane Map"))
+        self.assertLess(len(IR.block_text("opencode").encode("utf-8")), 8 * 1024)
         os.makedirs(self.path(".config/opencode"))
         code, out, err = self.run_cli("apply", "opencode", "--create")
         self.assertEqual(code, IR.EXIT_OK, out + err)
         text = self.read(".config/opencode/AGENTS.md")
+        self.assertIn("Your default seat is OPENCODE", text)
         self.assertIn("## Lane Map", text)
         self.assertNotIn("## Fleet Basics", text)
         self.assertEqual(self.run_cli("verify", "opencode")[0], IR.EXIT_OK)
+        self.assertEqual(self.run_cli("apply", "opencode")[0], IR.EXIT_OK)
+        self.assertEqual(self.read(".config/opencode/AGENTS.md"), text, "a second apply changes nothing")
+
+    def test_opencode_seat_text_names_no_other_seat_as_its_own(self) -> None:
+        """The check-seat-blocks rules for a rules file:  no bare export, no launcher write, a launcher clause."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "check_seat_blocks", os.path.join(os.path.dirname(__file__), "..", "..", "check-seat-blocks.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertEqual(mod.check_text("opencode", IR.block_text("opencode"), needs_clause=True), [])
+        self.assertEqual(mod.check_text("clutch", IR.block_text("clutch"), needs_clause=True), [])
 
     def test_no_default_text_does_not_list_opencode(self) -> None:
         """OpenCode may become a seat (board 87ca50fa), so the text that says what is not a seat must not name it."""
