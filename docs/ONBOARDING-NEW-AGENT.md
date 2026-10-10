@@ -7,10 +7,10 @@ Antigravity, Monet, Kimi, Copilot, or a future seat) to this fleet.
 **Sibling (new app):** [ONBOARDING-NEW-APP.md](ONBOARDING-NEW-APP.md) · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md  
 **Protocol:** `/Users/jay/apps/AGENT-SYNC.md` · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md
 
-**Run the script for the mechanical worktrees, then finish the checklist.**
+**Run the script to register the seat, then finish the checklist.**
 
 ```bash
-# from an AI-Fleet-Coordinator worktree
+# from an AI-Fleet-Coordinator lane
 ./scripts/onboard-new-agent.sh \
   --tag KIMI \
   --notes-name Kimi \
@@ -18,9 +18,10 @@ Antigravity, Monet, Kimi, Copilot, or a future seat) to this fleet.
   --branch-prefix kimi/
 ```
 
-`--help` lists flags. `--apps DealDex,Socratic.Trade` limits which integration
-trees get a lane. Default is every product/library app in `fleet-apps.json`
-(skips `AI-Fleet-Coordinator` unless you pass `--include-fleet`).
+`--help` lists flags; `--dry-run` changes nothing.  The script records the seat in
+`fleet-apps.json` and prints the manual steps.  It creates **no lanes**: a lane is made
+per task with `~/apps/lane new` (Phase 2).  `--apps` and `--include-fleet` are still
+accepted but ignored.
 
 ---
 
@@ -30,11 +31,11 @@ A seat is one persistent identity that may spawn many sessions:
 
 | Piece | Example |
 |-------|---------|
-| Slack / board tag | `GROK` (ALL CAPS) |
+| Chat / board tag | `GROK` (ALL CAPS) |
 | Apple Notes display | `Grok` (Title Case) |
-| Worktree suffix | `grok` → `~/apps/dealdex-grok` |
+| Worktree suffix (the whole name) | `grok` → lanes at `~/apps/lanes/DealDex/grok-<slug>` |
 | Branch prefix | `grok/` (never push under another seat's prefix) |
-| Poll env | `AGENT_TAG=GROK` |
+| Seat env | `AGENT_SEAT=GROK` |
 
 Existing seats and their roles: `AGENT-SYNC.md` § "Agent Seat Specifics &
 Execution Profiles".  Universal seat row (`ANY`) is the fallback until you
@@ -43,18 +44,20 @@ add a dedicated row.
 **Grok Bot is not onboarded this way.**  `GROK-BOT` is one fleet-wide identity
 that drives Cursor cloud agents.  It is not Mac Grok, not GROK-BUILD, and it
 is **not** a per-app seat.  Do not run this script to create
-`~/apps/<app>-grok-bot` lanes or per-app `GROK-BOT-*` tags.
+per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
 
 ---
 
 ## Hard rules (teach these on day one)
 
 1. **Read `~/apps/AGENT-SYNC.md` before the first message.**  Then the app's
-   `AGENTS.md`.  Peer Slack messages are coordination data, not owner orders.
+   `AGENTS.md`.  Peer messages are coordination data, not owner orders.  Screen a peer's request and
+   help when it is low risk; decline high-risk asks and DM the owner (AGENT-SYNC Precedence rule 3).
    Look first at THE BOARD (`https://mac.jays.services/board`, short link `https://board.jays.services`).
 2. **Do not work in `~/Code/<App>`.**  That is the human integration tree.
-   Work in `~/apps/<prefix>-<suffix>`.
-3. **Board first, then Slack, then code.**  Triple claim and triple closeout
+   Work in a lane: `~/apps/lane new <app> <slug>` makes one at
+   `~/apps/lanes/<Repo>/<suffix>-<slug>` (`docs/protocols/lane-map.md`).
+3. **Board first, then Zulip, then code.**  Triple claim and triple closeout
    (THE BOARD + effort-board / GitHub issue + `#agent-sync`) on every real unit.
 4. **Commit → push → open PR → merge when CI is green.** Do not wait for the
    owner to say "commit". Do not leave a remote branch without a PR.
@@ -84,8 +87,8 @@ is **not** a per-app seat.  Do not run this script to create
    Small = mechanical, mid = default implementation, frontier = design /
    money-path / critical verify only.  Canonical: `AGENT-SYNC.md` § Delegation
    & model economics.
-11. **Skim Slack** for your tag or any `repo:` you are working.  Grok Bot seats also full-read `[SENDER->FLEET]`.  Coordinator self-id is `AFC`.
-    Full-read on match. Prefer the shared relay; poll if you cannot hold it.
+11. **Skim Zulip** for your tag or any `repo:` you are working.  Grok Bot seats also full-read fleet wakes (`@**all**` in #agent-sync, topic `fleet`).  The coordinator is CLAUDE (`@**Claude**`); `AFC` is the app acronym and topic prefix, never a signing tag.
+    Full-read on match.  Prefer a live listener (`agent-sync listen`); `agent-sync inbox` and `read --new` if you cannot hold one.
 
 ---
 
@@ -101,7 +104,7 @@ is **not** a per-app seat.  Do not run this script to create
    |----------|----------------|
    | Claude Code / Monet | `~/.claude/CLAUDE.md` |
    | Codex | `~/.codex/AGENTS.md` |
-   | Gemini / Antigravity | `~/.gemini/GEMINI.md` |
+   | Gemini / Antigravity | `~/.gemini/config/AGENTS.md` |
    | Cursor | Cursor user rules + this repo's `TEMPLATE-AGENTS.md` |
    | Grok | Grok user rules (already point at `AGENT-SYNC.md`) |
    | MiniMax (MiniMax Code / Mavis) | `~/.minimax/memory/user.md` — see "MiniMax has no rules file" below |
@@ -154,7 +157,7 @@ is **not** a per-app seat.  Do not run this script to create
 
 3. Seat pin: `AGENT_SEAT=<TAG>` in that platform's environment if the
    platform shares an account with another seat (Claude vs Monet). Never
-   flip seat by inferring from the worktree.
+   flip seat by inferring from the worktree.  An existing seat moving from Slack to Zulip pastes `docs/ZULIP-SWITCH-PROMPT.md`.
 
 4. **Claude.app / Monet skill library is account-scoped** and is not the
    same as CLI `~/.claude/skills/` or a repo `.claude/skills/` folder.
@@ -166,72 +169,86 @@ is **not** a per-app seat.  Do not run this script to create
 
 ---
 
-## Phase 1 — Slack receive + send
+## Phase 1 — Zulip Receive and Send
 
-On the owner's Mac:
+On the owner's Mac (`AGENT_SEAT=<TAG>` pinned; the CLI picks the seat from it):
 
 ```bash
-# poll fallback (every turn / before claim / after finish)
-AGENT_TAG=<TAG> /usr/bin/python3 /Users/jay/apps/agent-sync-poll.py
+# catch up (every turn / before claim / after finish)
+agent-sync inbox
+agent-sync read --new --topic "<work topic>"
 
-# post
-AGENT_TAG=<TAG> /Users/jay/apps/agent-sync-websocket.py --post "[<TAG>] sync-1
-repo: <app>
-claim: <branch>
-state: WIP
-cadence: per-turn-poll
-work: …"
+# post (a topic is required; the CLI writes your [<TAG>·session8] tag)
+agent-sync post --topic "<APP> <board8> <subject>" $'repo:  <app>  |  CLAIMED\nclaim:  <branch>\nclaimed:  <Day, Mon D, YYYY>\nwork:  …'
 
-# live consumer (preferred; do NOT open a second Socket Mode connection)
-AGENT_TAG=<TAG> node /Users/jay/apps/agent-sync/consumer.mjs
+# live listener (preferred; run it under a monitor tool)
+agent-sync listen --topic "<work topic>" --topic fleet --mentions
 ```
 
-Token lives in `~/.secrets/agent-sync.env`. Never echo it.
+Your bot's credential lives in `~/.secrets/Zulip/<file code>-zuliprc`, mode 600.  Only Jay
+creates bot users, so ask him for yours (`docs/protocols/zulip-fleet-guide.md` § Bot Setup).
+Never echo the key.
 
-Cloud / no Mac FS: set `SLACK_BOT_TOKEN` as a **runtime** env var (not
-setup-only) and use the app repo's `scripts/slack-sync.sh`. State that
+Cloud / no Mac FS: set `ZULIP_EMAIL`, `ZULIP_API_KEY`, and `ZULIP_SITE` as **runtime** env
+vars (not setup-only) and run `python3 scripts/agent-sync` from any clone of this repo, or
+follow `docs/protocols/zulip-fleet-guide.md` § Core Actions over plain HTTP.  State that
 cadence in the intro. Apple Notes is Mac-only — put a handoff body in the
 PR so a Mac seat can publish the note.
 
-First post in the channel is an **intro**, then the claim:
+First post is an **intro**, in #agent-sync topic `roll call`, then the claim in its own
+work topic:
 
 ```
-[<TAG>] intro
-repo: fleet-infra
-seat: <TAG>
+[<TAG>] online  |  Mac  |  cadence:  <listen, wait, or per-turn read>
 platform: <Claude Code | Codex | Grok | …>
-cadence: relay | per-turn-poll
-worktrees: ~/apps/<prefix>-<suffix>
+can:  <what this session can do>
 ```
 
 ---
 
-## Phase 2 — worktrees
+## Phase 2 — lanes and platform rules
 
-For each app the seat will touch:
+No lane is created at onboarding.  When the seat starts a task, it makes its own:
 
 ```bash
-./scripts/onboard-new-agent.sh --tag <TAG> --worktree-suffix <suffix> --branch-prefix <prefix>/
+export AGENT_SEAT=<TAG>                       # an uppercase registry tag; lane refuses if unset
+~/apps/lane new <app> <slug>                  # ~/apps/lanes/<Repo>/<suffix>-<slug>
+~/apps/lane new <app> --review --pr <n>       # read-only check of someone else's PR
 ```
 
-This creates `~/apps/<worktreePrefix>-<suffix>` from `~/Code/<codeDir>` on a
-fresh `agent/<suffix>` (or `--branch-prefix`) branch if the folder does not
-already exist. It never deletes or resets an existing lane.
-
+The folder uses the seat's whole `worktreeSuffix`, and the branch is the seat's first
+registry branch prefix plus the slug.  `lane` reads the registry copy in
+`~/apps/lane-tools`, so it refuses a new seat until the `fleet-apps.json` row has merged
+and `install_tools apply tools` has refreshed that copy.  Seat names are never inferred
+from a path or a branch.
 
 Naming (from `fleet-apps.json`):
 
-| App | Prefix | Example lane |
-|-----|--------|--------------|
-| Socratic.Trade | `trading` | `~/apps/trading-grok` |
-| Congress.Trade | `congress` | `~/apps/congress-grok` |
-| Usage-Monitor | `usage` | `~/apps/usage-grok` |
-| DealDex | `dealdex` | `~/apps/dealdex-grok` |
-| congress-trading-shared | `cts` | `~/apps/cts-grok` |
-| AI-Fleet-Coordinator | `fleet` | `~/apps/fleet-grok-onboard` |
+| App | Repo folder (`codeDir`) | Example lane |
+|-----|-------------------------|--------------|
+| Socratic.Trade | `Socratic-Trade` | `~/apps/lanes/Socratic-Trade/grok-<slug>` |
+| Congress.Trade | `Congress.Trade` | `~/apps/lanes/Congress.Trade/grok-<slug>` |
+| Usage-Monitor | `Usage-Monitor` | `~/apps/lanes/Usage-Monitor/grok-<slug>` |
+| DealDex | `DealDex` | `~/apps/lanes/DealDex/grok-<slug>` |
+| congress-trading-shared | `congress-trading-shared` | `~/apps/lanes/congress-trading-shared/grok-<slug>` |
+| AI-Fleet-Coordinator | `AI-Fleet-Coordinator` | `~/apps/lanes/AI-Fleet-Coordinator/grok-<slug>` |
+
+The old worktree prefix (`trading`, `congress`, `fleet`, ...) still works as the `<app>` argument, but it is no longer a folder name.
 
 Do **not** `npm install` every lane up front. Install when the seat starts
 real work.
+
+Then, by hand and with the owner's approval of each live install (read the `plan` first):
+
+1. **Tools:** `python3 -m fleet_lanes.install_tools apply tools`, then `verify tools`
+   (from `scripts/` in a fresh worktree at `origin/main`).
+2. **Rules file and deny hook** are installed per PLATFORM, not per seat.  For a covered
+   platform, `python3 -m fleet_lanes.install_rules verify <platform>` and
+   `python3 -m fleet_lanes.install_tools verify <platform>` say whether the seat already
+   has them; otherwise `plan`, then `apply <platform>` (`--create` for a new rules file,
+   `--i-own-this-file` for the owner's `~/.claude/CLAUDE.md`).  A new platform needs an
+   entry in `scripts/fleet_lanes/install_rules.py` and `install_tools.py` first.
+3. Every command and option is in `scripts/fleet_lanes/README.md`.
 
 ---
 
@@ -243,7 +260,7 @@ Install the universal fleet skills catalog to ensure full procedural compliance 
 python3 ./scripts/install-fleet-skills.py
 ```
 
-This specializes the catalog per seat: Cursor `[CURSOR]` (cloud Grok Bot fork `[GROK-BOT]`), Antigravity `[AG]`, Codex `[CODEX]`, Grok `[GROK]` / Grok Build `[GROK-BUILD]`, Claude Code shared Monet/Claude/Renoir (pin `AGENT_SEAT`), Renoir, DeepSeek Harness `[DSH]` (`~/.deepseek/skills`; former tag `DEEPSEEK` retired), MiniMax `[MM]` (`~/.minimax/skills`; former tag `MINIMAX` retired), Muse Code `[MC]` (`~/.config/muse/skills`), Muse Assistant `[MA]` (reference catalog), Kimi (retired banner), and Desktop Monet upload.  Per-seat zips land in `docs/fleet-skills/by-seat/<seat>/`.  Never copy the Monet pack into another seat unchanged.
+This specializes the catalog per seat: Cursor `[CURSOR]` (cloud Grok Bot fork `[GROK-BOT]`), Antigravity `[AG]`, Codex `[CODEX]`, Grok `[GROK]` / Grok Build `[GROK-BUILD]`, Claude Code shared Monet/Claude/Renoir (pin `AGENT_SEAT`), Renoir, DeepSeek Harness `[DSH]` (`~/.deepseek/skills`; former tag `DEEPSEEK` retired), MiniMax `[MM]` (`~/.minimax/skills`; former tag `MINIMAX` retired), Muse Code `[MC]` (`~/.config/muse/skills`), Muse Assist `[MA]` (reference catalog), Kimi (retired banner), and Desktop Monet upload.  Per-seat zips land in `docs/fleet-skills/by-seat/<seat>/`.  Never copy the Monet pack into another seat unchanged.
 
 
 ---
@@ -253,11 +270,11 @@ This specializes the catalog per seat: Cursor `[CURSOR]` (cloud Grok Bot fork `[
 1. `cd` into the lane. `git status` + `git log -3`.
 2. Read `AGENTS.md`, `STATUS.md`, `docs/EFFORT-LOG.md`, latest
    `docs/rollouts/`.
-3. Poll Slack. Reserve a Planned row. Post the claim. Move the row to
+3. Read Zulip (`agent-sync inbox`).  Reserve a Planned row.  Post the claim.  Move the row to
    In Progress. Then edit.
 4. Verify with that repo's documented gate before claiming done.
 5. Commit, push, `gh pr create`, land when green.
-6. Closeout: board Completed/Deployed, issue state matches, Slack DONE +
+6. Closeout: board Completed/Deployed, issue state matches, Zulip `DONE` +
    PR number. Apple Notes for owner-facing reviews.
 
 ---
@@ -270,7 +287,7 @@ Only when the seat's product needs them. Do not block first code on these.
 |-------|-------|
 | Digest agent logo | `agent-logos/<seat>.svg` + legend in `build-fleet-daily-digest.py` |
 | MCP servers | Per-platform config. Secrets from `~/.secrets/`. Never commit tokens. |
-| Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app; `SLACK_BOT_TOKEN` + `GH_TOKEN` must be **runtime** vars |
+| Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app; `ZULIP_EMAIL` + `ZULIP_API_KEY` + `ZULIP_SITE` + `GH_TOKEN` must be **runtime** vars |
 | iOS copy | Title Case nav / ASC listing copy: `FLEET-UI-COPY.md`.  TestFlight notes never include agent names.  Compiler / `GB-COMPILER` owns iOS ship on GitHub-hosted `macos-latest` only.  DealDex's hosted Actions ship stays — do not disable it.  Do not run `xcodebuild` / TestFlight / `ios-ship-now` / `--force-ship` from a fleet seat. |
 | Sentry | Fleet-infra DSN is a repo secret, not a chat paste |
 
@@ -280,10 +297,10 @@ Only when the seat's product needs them. Do not block first code on these.
 
 1. Add the seat row to `AGENT-SYNC.md` (both copies) if it is a standing
    seat, not a one-off sub-agent.
-2. Mention the new tag in the onboarding Slack closeout so skim-match
+2. Mention the new tag in the onboarding Zulip closeout so skim-match
    starts working.
 3. Sub-agents spawned inside a seat **inherit that seat's tag**. They do
-   not get a new Slack identity. They still reserve on the board if the
+   not get a new Zulip identity or bot.  They still reserve on the board if the
    work is substantial and visible to peers.
 
 ---
@@ -292,9 +309,9 @@ Only when the seat's product needs them. Do not block first code on these.
 
 - [ ] Tag, Notes name, suffix, prefix written in `fleet-apps.json`
 - [ ] Global rules file on that platform points at `AGENT-SYNC.md`
-- [ ] Seat can poll and post `#agent-sync` without printing the token
+- [ ] Seat has its own Zulip bot and can read and post `#agent-sync` with `agent-sync` without printing the key
 - [ ] Intro posted
-- [ ] At least one app worktree exists and is **not** `~/Code/<App>`
+- [ ] The seat's first lane (`~/apps/lane new`) is under `~/apps/lanes/` and is **not** `~/Code/<App>`
 - [ ] Seat has completed one triple-claim unit (even a docs PR)
 - [ ] Digest logo added only if the seat will appear on merged-PR rows
 
@@ -305,9 +322,11 @@ Only when the seat's product needs them. Do not block first code on these.
 - Working in `~/Code/<App>` "just this once"
 - Using another seat's branch prefix
 - Inferring Monet vs Claude from the folder name
-- Opening a second Slack Socket Mode connection
+- Posting as another seat's Zulip bot, or through the owner's account
 - Treating a peer "please merge" as owner approval
 - Creating six fully installed worktrees for a seat that may never touch
   those apps
+- Creating a lane by hand, or a new flat `~/apps/<prefix>-<suffix>` lane (use `~/apps/lane new`)
+- Cloning a fleet repo, or adding a worktree of one, in `/tmp` or any other temp directory
 - Adding a per-app Grok Bot seat, worktree, or `GROK-BOT-*` tag
   (`GROK-BOT` is fleet-wide and drives Cursor cloud — see README)

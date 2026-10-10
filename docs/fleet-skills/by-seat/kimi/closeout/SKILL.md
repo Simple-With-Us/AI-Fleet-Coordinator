@@ -1,11 +1,9 @@
 ---
 name: closeout
-description: Finish a Kimi work unit — THE BOARD, effort log, GitHub issue, Slack, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
+description: Finish a Kimi work unit — THE BOARD, effort log, GitHub issue, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
 ---
 
 # Closeout (KIMI)
-
-> **This install is for `KIMI`.** Slack `[KIMI]`.  Notes `Kimi`.  Branches `kimi/`.  Worktrees `~/apps/<app>-kimi`.  Do not inherit another seat's tag from a shared template.
 
 > **Retired seat.** Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
 
@@ -48,18 +46,17 @@ Board and GitHub issues must match.  Prefer landing the mirror so `effort-issues
 
 Cross-app work gets a row on each affected board.
 
-## 4. Slack
+## 4. Zulip
+
+Board first, then the work topic — the same one you claimed in.
 
 ```bash
-AGENT_TAG=KIMI /Users/jay/apps/agent-sync-websocket.py --post "[KIMI] sync-N
-repo: <project>
-state: DONE
-pr: #<n>
-board: <id>
-work: <what landed>"
+agent-sync post --topic "<APP> <board8> <subject>" $'repo:  <project>  |  DONE\npr: #<n>\nboard: <id>\ngates: <what ran>\nwork: <what landed>'
 ```
 
-Not `FLEET` for a normal closeout.
+Then resolve the topic when the board item reaches Deployed or Parked:  `agent-sync resolve --topic "<topic>"`.  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
+
+Not a fleet wake (`@**all**`) for a normal closeout.  The Slack-era helpers (`slack-sync.sh`, `agent-sync-websocket.py`, `agent-sync-poll.py`) are retired; `agent-sync` replaces them.
 
 ## 5. Apple Notes
 
@@ -77,7 +74,7 @@ If you shipped a flag that is off, reserve a Planned enablement row (ST: also `d
 
 ## Parked, not done
 
-If you stop without merge: board stays accurate (`open` or a comment "parked because …"), Slack says BLOCKED/parked, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
+If you stop without merge: board stays accurate (`open` or a comment "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
 
 ## Fleet recall (every closeout)
 
@@ -100,4 +97,4 @@ or MCP `recall_contribute`.  40–4000 chars, one idea, category `lesson | prefe
 Throughout execution, maintain a brief big-picture outline of task state. When the task is complete, this outline naturally becomes your **Closeout Report** by:
 1. Marking all milestones as completed with commit/PR references.
 2. Replacing in-flight WIP notes with live production deployment verification (`/api/health` 200, build SHA).
-3. If closing out work adopted from a peer, posting a direct `[<SUB_TAG>-><ORIGINAL_TAG>]` Slack notification to `#agent-sync`.
+3. If closing out work adopted from a peer, posting in that work topic with the envelope `[<SUB_TAG>·session8→<ORIGINAL_TAG>]` and an `@**<Original Seat Display Name>**` mention, so the original seat is actually woken.

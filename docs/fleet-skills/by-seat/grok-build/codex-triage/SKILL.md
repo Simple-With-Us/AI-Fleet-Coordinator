@@ -5,7 +5,7 @@ description: Triage unresolved GitHub review threads (chatgpt-codex-connector, C
 
 # Review-thread triage (GROK-BUILD)
 
-> **This install is for `GROK-BUILD`.** Slack `[GROK-BUILD]`.  Notes `Grok Build`.  Branches `grok-build/`.  Worktrees `~/apps/<app>-grok-build`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `GROK-BUILD`.**  Chat tag `[GROK-BUILD·session8]`.  Notes `Grok Build`.  Branches `grok-build/`.  Lanes `~/apps/lanes/<Repo>/grok-build-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK-BUILD·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Name is historical (`codex-connector`).  Apply to **every** unresolved thread on the PR: Codex, Cursor Bugbot, Copilot, humans.
@@ -45,7 +45,7 @@ gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadR
 gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -F t=<threadId>
 ```
 
-Reply shape (file/PR text = two ASCII spaces between sentences):
+Reply shape (review-thread replies are PR text: a real U+00A0 plus a space between sentences, converted with the `perl` recipe in `sentence-gap`; files stay on two ASCII spaces):
 
 - **Real:** `Fixed in <short-sha>.  <function>.  Test: test/foo.test.ts.`
 - **False positive:** why the rule does not apply, then resolve.

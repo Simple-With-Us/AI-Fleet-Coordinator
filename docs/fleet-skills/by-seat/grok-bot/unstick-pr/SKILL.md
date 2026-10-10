@@ -5,7 +5,7 @@ description: Diagnose and repair a PR that will not merge — phantom vs real co
 
 # Unstick a blocked PR (GB role)
 
-> **This install is for Grok Bot roles.** Slack tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
+> **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
 
 
 Works in every fleet repo.  Substitute owner/repo from `gh repo view --json nameWithOwner`.
@@ -32,10 +32,10 @@ git merge-tree --write-tree origin/main origin/<branch>
 - Exit 0 = **PHANTOM**.  GitHub's mergeability cache stuck (common under concurrent push bursts).
 - Exit 1 with conflict markers = **REAL**.
 
-**Phantom fix:** merge `origin/main` in the Grok Bot worktree and push a fresh head SHA.
+**Phantom fix:** merge `origin/main` in your lane and push a fresh head SHA.
 
 ```bash
-cd ~/apps/<prefix>-cursor   # never ~/Code/<repo>
+cd "$(~/apps/lane path <app> <slug>)"   # your lane; never ~/Code/<repo>
 git fetch origin
 git merge origin/main --no-edit
 git push origin cursor/<slug>

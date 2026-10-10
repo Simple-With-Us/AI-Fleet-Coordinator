@@ -5,7 +5,7 @@ description: Diagnose and repair a PR that will not merge — phantom vs real co
 
 # Unstick a blocked PR (CLAUDE)
 
-> **This install is for `CLAUDE`.** Slack `[CLAUDE]`.  Notes `Claude`.  Branches `claude/`.  Worktrees `~/apps/<app>-claude`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Claude-zuliprc` (mode 600).  Session tag `[CLAUDE·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Works in every fleet repo.  Substitute owner/repo from `gh repo view --json nameWithOwner`.
@@ -32,10 +32,10 @@ git merge-tree --write-tree origin/main origin/<branch>
 - Exit 0 = **PHANTOM**.  GitHub's mergeability cache stuck (common under concurrent push bursts).
 - Exit 1 with conflict markers = **REAL**.
 
-**Phantom fix:** merge `origin/main` in the Claude worktree and push a fresh head SHA.
+**Phantom fix:** merge `origin/main` in your lane and push a fresh head SHA.
 
 ```bash
-cd ~/apps/<prefix>-claude   # never ~/Code/<repo>
+cd "$(~/apps/lane path <app> <slug>)"   # your lane; never ~/Code/<repo>
 git fetch origin
 git merge origin/main --no-edit
 git push origin claude/<slug>

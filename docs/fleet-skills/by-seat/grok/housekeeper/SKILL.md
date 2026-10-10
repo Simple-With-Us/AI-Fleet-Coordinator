@@ -5,16 +5,9 @@ description: Mac and Hetzner disk/RAM/CPU housekeeping. Run safe cleanup scripts
 
 # Housekeeper (disk, RAM, CPU)
 
-> **This install is for `GROK`.** Slack `[GROK]`.  Notes `Grok`.  Branches `grok/`.  Worktrees `~/apps/<app>-grok`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`.  If this session is **Grok Build**, pin `AGENT_SEAT=GROK-BUILD`, tag `[GROK-BUILD]`, branches `grok-build/`, worktrees `~/apps/<app>-grok-build`.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
-
-
-> **Shared `~/.claude/skills`.** Monet, Claude/Fable, and (when active) Renoir all load this directory.  Do not treat the word Monet in examples as proof of your seat.  Pin `AGENT_SEAT` / `AGENT_TAG` from the logged-in account before Slack or `board --by`:
-> - Monet → `MONET`, Notes `Monet`, `grok/`, `~/apps/<app>-grok`
-> - Claude / Fable → `CLAUDE`, Notes `Claude`, `claude/`, `~/apps/<app>-claude`
-> - Renoir → `RENOIR`, Notes `Renoir`, `renoir/`, `~/apps/<app>-renoir`
-> Cursor, Grok, Grok Bot, Codex, AG, DeepSeek, Kimi, and Fx have their own skill dirs and must not take identity from here.
+> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), so never sign `GROK-BUILD`, a retired alias the CLI refuses.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
 **Ownership split (2026-09-01).**  BF-Housekeeper (BotFleet) owns **this Mac**.  GB-HOUSEKEEPER (Grok Bot) owns the **Hetzner/Coolify host**.  Neither crosses.  During the Grok-Bot → BotFleet transition both must work, so they de-conflict through a shared lock rather than a schedule.
@@ -89,7 +82,7 @@ Bot id `d43849b8-5eeb-452b-ac4e-ed4724343838`.  Routines at 09:00 / 15:00 / 21:0
 
 When this wake includes a resource payload: start with that pressure.  Re-run the playbook.  Report before/after disk, swap, load, and what was deleted.
 
-Ask before: user Documents/photos, secrets, live dirty worktrees, CoreSimulator Devices, in-session `~/.grok/worktrees`, anything with `.janitor-keep`.  Do not persist TCPMSS.  Do not change sysctl or network settings.  Do not extra-ship.  Do not Slack unless kicking grok at a repo or after a completed app update.
+Ask before: user Documents/photos, secrets, live dirty worktrees, CoreSimulator Devices, in-session `~/.grok/worktrees`, anything with `.janitor-keep`.  Do not persist TCPMSS.  Do not change sysctl or network settings.  Do not extra-ship.  Do not post to Zulip unless kicking grok at a repo or after a completed app update.
 
 ## Grok Bot Housekeeper (`GB-HOUSEKEEPER`)
 

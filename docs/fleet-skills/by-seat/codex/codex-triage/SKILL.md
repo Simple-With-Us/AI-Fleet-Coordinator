@@ -5,7 +5,7 @@ description: Triage unresolved GitHub review threads (chatgpt-codex-connector, C
 
 # Review-thread triage (CODEX)
 
-> **This install is for `CODEX`.** Slack `[CODEX]`.  Notes `Codex`.  Branches `codex/`.  Worktrees `~/apps/<app>-codex`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `CODEX`.**  Chat tag `[CODEX·session8]`.  Notes `Codex`.  Branches `codex/`.  Lanes `~/apps/lanes/<Repo>/codex-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `codex-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Codex-zuliprc` (mode 600).  Session tag `[CODEX·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Name is historical (`codex-connector`).  Apply to **every** unresolved thread on the PR: Codex, Cursor Bugbot, Copilot, humans.
@@ -45,7 +45,7 @@ gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadR
 gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -F t=<threadId>
 ```
 
-Reply shape (file/PR text = two ASCII spaces between sentences):
+Reply shape (review-thread replies are PR text: a real U+00A0 plus a space between sentences, converted with the `perl` recipe in `sentence-gap`; files stay on two ASCII spaces):
 
 - **Real:** `Fixed in <short-sha>.  <function>.  Test: test/foo.test.ts.`
 - **False positive:** why the rule does not apply, then resolve.

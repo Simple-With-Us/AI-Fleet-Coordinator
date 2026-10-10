@@ -1,13 +1,13 @@
 ---
 name: land-lane
-description: Land a Muse Assistant feature branch to main across the fleet — seat worktree, docs, verification gate, PR, auto-merge, then closeout. Use when finishing a unit, opening a PR, merging, or when the owner says land/ship/commit/push. Never wait for the owner to ask. Covers apps with and without scripts/land.sh.
+description: Land a Muse Assist feature branch to main across the fleet — seat worktree, docs, verification gate, PR, auto-merge, then closeout. Use when finishing a unit, opening a PR, merging, or when the owner says land/ship/commit/push. Never wait for the owner to ask. Covers apps with and without scripts/land.sh.
 ---
 
 # Land a feature branch (MA)
 
-> **This install is for `MA`.** Slack `[MA]`.  Notes `Muse Assistant`.  Branches `muse-assist/`.  Worktrees `~/apps/<app>-muse-assist`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  Lanes `~/apps/lanes/<Repo>/muse-assist-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MA-zuliprc` (mode 600).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Cloud VM batch agent.** Muse Assistant (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
+> **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.
@@ -16,7 +16,7 @@ Seat: **MA**.  Branch: `muse-assist/<slug>`.  Never `claude/`.  Never `monet/`. 
 
 ## Preconditions
 
-1. You are in your Muse Assistant worktree (`~/apps/<prefix>-muse-assist` or `~/apps/<prefix>-muse-assist-<lane>`).  See `session-start`.
+1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, made with `~/apps/lane new`; a lane in an old place (`~/apps/lanes/<prefix>/`, which the migration moves, or a flat `~/apps/<prefix>-<seat>[-<lane>]`, which retires where it is) that already exists is fine).  See `session-start`.
 2. `git status` is clean except `.env.local` / `.dev.vars` (never commit those).
 3. `git config user.email` is `12656028+jaywedgeworth22@users.noreply.github.com`.
 
@@ -29,9 +29,9 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 1. Live effort board → In Progress with honest status; mirror `docs/EFFORT-LOG.md` in the same commit (fleet-infra has no mirror).
 2. `STATUS.md` stanza: what landed, next action.
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
-4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[APP, Muse Assistant] …`.
+4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[APP, Muse Assist] …`.
 
-Prose (commit body, PR body, rollout, Notes): two ASCII spaces between sentences.  Chat replies to the owner use `&nbsp;` plus a space.  See `owner-copy`.
+Prose: commit body, rollout docs and Notes source take two ASCII spaces between sentences.  PR titles, bodies and comments take a real U+00A0 plus a space (convert with the `perl` recipe in `sentence-gap`; never the `&nbsp;` entity there).  Chat replies to the owner use `&nbsp;` plus a space in a Markdown chat pane and two ASCII spaces in a terminal.  See `owner-copy`.
 
 ## Gate
 
@@ -89,7 +89,7 @@ gh pr merge <N> --squash --auto
 
 Not `--admin`.  Branch protection is `enforce_admins: true` plus conversation resolution.  Unresolved review threads block forever.  Use `codex-triage` / `unstick-pr`.
 
-If the box is gating several lanes, post `[MA] gating now` with `repo:` (not `->FLEET` unless every listening seat on every platform must spend time).  Coordinator/ops self-id is `AFC`.
+If the box is gating several lanes, announce the full gate in #builds topic `gates`:  `agent-sync post --channel builds --topic gates "gating now (<repo>, <branch or purpose>)"`, then post `gate clear` in the same topic when it finishes.  The CLI writes the tag.  Wait on a peer's open `gating now` with `agent-sync wait --channel builds --topic gates --timeout 900`.  Use the fleet wake (`@**all**` in #agent-sync topic `fleet`) only when every listening seat on every platform must spend time.  Coordinator/ops self-id is `AFC`.
 
 ## After merge
 

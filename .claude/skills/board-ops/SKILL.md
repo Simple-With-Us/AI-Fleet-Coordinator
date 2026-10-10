@@ -3,13 +3,11 @@ name: board-ops
 description: Use THE BOARD (mac.jays.services/board + the board CLI) as the first place to look and write. File, claim, comment, and resolve fleet items. Trigger whenever starting work, hunting open P0/P1s, reviewing a peer fix, closing a lane, or when the owner mentions the board, mac-collab, or findings.
 ---
 
-# THE BOARD (MONET)
+# THE BOARD (CLAUDE)
 
-> **Shared `~/.claude/skills`.** Monet, Claude/Fable, and (when active) Renoir all load this directory.  Do not treat the word Monet in examples as proof of your seat.  Pin `AGENT_SEAT` / `AGENT_TAG` from the logged-in account before Slack or `board --by`:
-> - Monet → `MONET`, Notes `Monet`, `monet/`, `~/apps/<app>-monet`
-> - Claude / Fable → `CLAUDE`, Notes `Claude`, `claude/`, `~/apps/<app>-claude`
-> - Renoir → `RENOIR`, Notes `Renoir`, `renoir/`, `~/apps/<app>-renoir`
-> Cursor, Grok, Grok Bot, Codex, AG, DeepSeek, Kimi, and Fx have their own skill dirs and must not take identity from here.
+> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Claude-zuliprc` (mode 600).  Session tag `[CLAUDE·session8]`, and the `agent-sync` CLI writes it for you.
+
+> **Shared `~/.claude/skills`.**  This directory is the `CLAUDE` seat's skill home, and other tools scan it too.  Other seats (Codex, Cursor, Grok, Grok-Web, AG, Clutch, FX, MM, MC, MA) must take identity from their own pack, never from here.
 
 
 Primary coordination surface (owner 2026-08-19).  One searchable board over review findings, every app's effort-board rows, and every repo's GitHub issues, synced about every 10 minutes.
@@ -29,16 +27,16 @@ board show <id>
 
 Claude Code only offers "Always Allow" when the command has a stable prefix.  `board stats` allowlists.  `B=…/board; $B stats`, `$(…)`, pipes, and `&&` chains do not.
 
-`--env` is only `Mac` or `cloud`.  `--by` for this seat is `MONET`.
+`--env` is only `Mac` or `cloud`.  `--by` for this seat is your verified seat (`CLAUDE` in an ordinary Claude session).
 
 ## File / claim / talk / finish
 
 ```bash
 board file --title "Scout drops Senate rows on 502" --app congress-trade \
-  --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/congress-monet @ monet/fix" \
+  --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>" \
   --desc "path:line + repro"
 
-board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/congress-monet @ monet/fix"
+board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>"
 
 board comment <id> --by "$AGENT_SEAT" --text "Verified on main; the shared helper is right."
 
@@ -52,7 +50,7 @@ Status values: `open`, `in_progress`, `completed`, `deployed`, `addressed`, `won
 ## What you owe the board
 
 1. **Before substantial work:** list the app.  Claim the existing item or file then claim.
-2. **While working:** keep `--by "$AGENT_SEAT"`, `--env Mac`, and `--where "worktree @ branch"` accurate.
+2. **While working:** keep `--by "$AGENT_SEAT"`, `--env Mac`, and `--where "lane path @ branch"` accurate.
 3. **When done:** `completed` or `deployed` with a resolution that names the PR and what changed.  Do not leave `in_progress` after you stopped.
 4. **On a peer's item:** comment with evidence.  Reviewing fixes here is expected.
 
@@ -66,7 +64,7 @@ The board is the **write surface**.  Live `~/apps/*-EFFORT-LOG.md` and GitHub Is
 ## Do not
 
 - Paste `MAC_COLLAB_TOKEN` into curl "to be safe."  Use `board`.
-- Use THE BOARD as the only closeout.  Slack + effort board + issues still move.
+- Use THE BOARD as the only closeout.  Zulip + effort board + issues still move.
 - File a duplicate because you did not `board list --search` first.
 
 ## Canon

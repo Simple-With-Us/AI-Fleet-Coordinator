@@ -10,14 +10,36 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v7
       with:
-        python-version: '3.12'
+        python-version: '3.14'
     - name: Run unittests
       run: |
         cd scripts && python3 -m unittest discover fleet_rag/tests/ -v
+    - name: Lane doctor and tmp guard tests
+      run: |
+        cd scripts && python3 -m unittest discover -s fleet_lanes/tests -t . -v
+    - name: agent-sync CLI tests
+      run: |
+        cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
+    # Fleet skills pack: canonical pin-or-fail identity block, every rendered
+    # tree equal to a fresh render, and the AGENT-SYNC roster the pack mirrors.
+    - name: Fleet skill identity tests
+      run: |
+        cd scripts && python3 -m unittest test_fleet_skill_identity -v
+    # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
+    # rendered skill may export a platform seat over a launcher's, write the
+    # launcher variables, or lack the launcher clause.
+    - name: Seat blocks in the rendered skill trees
+      run: python3 scripts/check-seat-blocks.py
+    # Mac watch and Grok idle-unload logic.  Both suites build their own temp
+    # HOME and fixture sessions, so they read no live state and kill nothing.
+    - name: Mac watch and Grok idle-unload tests
+      run: |
+        python3 scripts/test_grok_idle_unload.py
+        python3 scripts/test_mac_process_watch_shellular.py
     - name: Verify public activity boundary
       run: python3 scripts/test-public-activity.py
     # The admin panel inlines its own copy of the app registry because the Worker
@@ -27,10 +49,20 @@ jobs:
     - name: Verify fleet registry (incl. admin-panel APPS copy)
       run: python3 scripts/check-fleet-registry.py
     - name: Set up Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: '24'
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
+    # Pure-logic suites of the hosted agent-sync MCP Worker (allowlists, Host
+    # check, arming, epoch, Access JWT, pages, tools).  They import no package,
+    # so no npm ci.  The workerd flow (npm run test:workerd) runs in its own
+    # path-filtered workflow, agent-sync-mcp.yml.
+    - name: agent-sync MCP Worker unit tests
+      run: node --test scripts/agent-sync-mcp/test/*.test.mjs
     - name: Verify operator dashboard deployment boundary
       run: node --test tests/deployment-boundary.test.cjs
+    - name: Kody defer and deferred sweep tests
+      run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
+    - name: Mac ledger mirror tests
+      run: bash scripts/test-mac-ledger-mirror.sh

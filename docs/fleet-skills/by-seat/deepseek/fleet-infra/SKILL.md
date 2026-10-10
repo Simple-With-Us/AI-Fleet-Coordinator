@@ -5,7 +5,7 @@ description: Access private fleet infrastructure inventory (host IPs, Tailscale 
 
 # Fleet Infrastructure & Private Inventory Access (ALL AGENTS)
 
-> **This install is for `DSH`.** Slack `[DSH]`.  Notes `DeepSeek Harness`.  Branches `deepseek/`.  Worktrees `~/apps/<app>-deepseek`.  Do not inherit another seat's tag from a shared template.
+> **Retired seat.**  DSH (DeepSeek Harness) is retired (2026-09-19): use `CLUTCH` for `Simple-With-Us/Clutch`.  Do not take work as DSH and do not install this pack to `~/.deepseek/skills`.  This catalog copy is inactive.
 
 
 All fleet repositories except `fleet-ops` are **public**.  To protect origin infrastructure from direct attacks, scanning, and DDoS, production host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, and secret keys must **never** be committed to public repositories or printed to chat/logs.

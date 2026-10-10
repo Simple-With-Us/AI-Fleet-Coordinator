@@ -5,7 +5,7 @@ description: Diagnose and repair a PR that will not merge — phantom vs real co
 
 # Unstick a blocked PR (DSH)
 
-> **This install is for `DSH`.** Slack `[DSH]`.  Notes `DeepSeek Harness`.  Branches `deepseek/`.  Worktrees `~/apps/<app>-deepseek`.  Do not inherit another seat's tag from a shared template.
+> **Retired seat.**  DSH (DeepSeek Harness) is retired (2026-09-19): use `CLUTCH` for `Simple-With-Us/Clutch`.  Do not take work as DSH and do not install this pack to `~/.deepseek/skills`.  This catalog copy is inactive.
 
 
 Works in every fleet repo.  Substitute owner/repo from `gh repo view --json nameWithOwner`.
@@ -32,10 +32,10 @@ git merge-tree --write-tree origin/main origin/<branch>
 - Exit 0 = **PHANTOM**.  GitHub's mergeability cache stuck (common under concurrent push bursts).
 - Exit 1 with conflict markers = **REAL**.
 
-**Phantom fix:** merge `origin/main` in the DeepSeek Harness worktree and push a fresh head SHA.
+**Phantom fix:** merge `origin/main` in your lane and push a fresh head SHA.
 
 ```bash
-cd ~/apps/<prefix>-deepseek   # never ~/Code/<repo>
+cd "$(~/apps/lane path <app> <slug>)"   # your lane; never ~/Code/<repo>
 git fetch origin
 git merge origin/main --no-edit
 git push origin deepseek/<slug>

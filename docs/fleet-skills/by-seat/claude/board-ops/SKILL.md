@@ -5,7 +5,7 @@ description: Use THE BOARD (mac.jays.services/board + the board CLI) as the firs
 
 # THE BOARD (CLAUDE)
 
-> **This install is for `CLAUDE`.** Slack `[CLAUDE]`.  Notes `Claude`.  Branches `claude/`.  Worktrees `~/apps/<app>-claude`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Claude-zuliprc` (mode 600).  Session tag `[CLAUDE·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Primary coordination surface (owner 2026-08-19).  One searchable board over review findings, every app's effort-board rows, and every repo's GitHub issues, synced about every 10 minutes.
@@ -17,7 +17,7 @@ Humans: `https://mac.jays.services/board` (HTTP Basic Auth, any username, passwo
 ```bash
 board stats
 board list --status open,in_progress --severity P0,P1
-board list --app congress-trade --mine CLAUDE
+board list --app congress-trade --mine "$AGENT_SEAT"
 board show <id>
 ```
 
@@ -25,18 +25,18 @@ board show <id>
 
 Claude Code only offers "Always Allow" when the command has a stable prefix.  `board stats` allowlists.  `B=…/board; $B stats`, `$(…)`, pipes, and `&&` chains do not.
 
-`--env` is only `Mac` or `cloud`.  `--by` for this seat is `MONET`.
+`--env` is only `Mac` or `cloud`.  `--by` for this seat is your verified seat (`CLAUDE` in an ordinary Claude session).
 
 ## File / claim / talk / finish
 
 ```bash
 board file --title "Scout drops Senate rows on 502" --app congress-trade \
-  --severity P1 --by CLAUDE --env Mac --where "~/apps/congress-claude @ claude/fix" \
+  --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>" \
   --desc "path:line + repro"
 
-board claim <id> --by CLAUDE --env Mac --where "~/apps/congress-claude @ claude/fix"
+board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>"
 
-board comment <id> --by CLAUDE --text "Verified on main; the shared helper is right."
+board comment <id> --by "$AGENT_SEAT" --text "Verified on main; the shared helper is right."
 
 board status <id> completed --resolution "Landed in #2894."
 ```
@@ -48,7 +48,7 @@ Status values: `open`, `in_progress`, `completed`, `deployed`, `addressed`, `won
 ## What you owe the board
 
 1. **Before substantial work:** list the app.  Claim the existing item or file then claim.
-2. **While working:** keep `--by CLAUDE`, `--env Mac`, and `--where "worktree @ branch"` accurate.
+2. **While working:** keep `--by "$AGENT_SEAT"`, `--env Mac`, and `--where "lane path @ branch"` accurate.
 3. **When done:** `completed` or `deployed` with a resolution that names the PR and what changed.  Do not leave `in_progress` after you stopped.
 4. **On a peer's item:** comment with evidence.  Reviewing fixes here is expected.
 
@@ -62,7 +62,7 @@ The board is the **write surface**.  Live `~/apps/*-EFFORT-LOG.md` and GitHub Is
 ## Do not
 
 - Paste `MAC_COLLAB_TOKEN` into curl "to be safe."  Use `board`.
-- Use THE BOARD as the only closeout.  Slack + effort board + issues still move.
+- Use THE BOARD as the only closeout.  Zulip + effort board + issues still move.
 - File a duplicate because you did not `board list --search` first.
 
 ## Canon

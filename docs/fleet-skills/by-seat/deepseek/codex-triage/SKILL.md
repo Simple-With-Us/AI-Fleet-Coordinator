@@ -5,7 +5,7 @@ description: Triage unresolved GitHub review threads (chatgpt-codex-connector, C
 
 # Review-thread triage (DSH)
 
-> **This install is for `DSH`.** Slack `[DSH]`.  Notes `DeepSeek Harness`.  Branches `deepseek/`.  Worktrees `~/apps/<app>-deepseek`.  Do not inherit another seat's tag from a shared template.
+> **Retired seat.**  DSH (DeepSeek Harness) is retired (2026-09-19): use `CLUTCH` for `Simple-With-Us/Clutch`.  Do not take work as DSH and do not install this pack to `~/.deepseek/skills`.  This catalog copy is inactive.
 
 
 Name is historical (`codex-connector`).  Apply to **every** unresolved thread on the PR: Codex, Cursor Bugbot, Copilot, humans.
@@ -45,7 +45,7 @@ gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadR
 gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -F t=<threadId>
 ```
 
-Reply shape (file/PR text = two ASCII spaces between sentences):
+Reply shape (review-thread replies are PR text: a real U+00A0 plus a space between sentences, converted with the `perl` recipe in `sentence-gap`; files stay on two ASCII spaces):
 
 - **Real:** `Fixed in <short-sha>.  <function>.  Test: test/foo.test.ts.`
 - **False positive:** why the rule does not apply, then resolve.

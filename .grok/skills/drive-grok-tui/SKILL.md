@@ -5,7 +5,7 @@ description: Drive a live Mac Grok TUI session from any local or cloud agent (Cl
 
 # Drive a live Grok TUI
 
-> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`.  If this session is **Grok Build**, pin `AGENT_SEAT=GROK-BUILD`, tag `[GROK-BUILD]`, branches `grok-build/`, worktrees `~/apps/<app>-grok-build`.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
+> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), so never sign `GROK-BUILD`, a retired alias the CLI refuses.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
 The Mac Grok TUI joins `~/.grok/leader.sock`.  Any agent can attach through
@@ -40,7 +40,7 @@ python3 ~/apps/grok-acp-runtime/grok-idle-unload.py --dry-run
 - Peek/tail/await never `session/load` a live chat (load hangs ~45s).
 - `cancel` is a `session/cancel` **notification** after `session/resume`.  Best-effort.  Idle chats ignore it.
 - `close` is `session/close`: unload that chat's MCP tools and keep the transcript on disk.  Refuses `$GROK_SESSION_ID` unless `--self`.  Refuses working / needs-input unless `--force`.
-- Hourly `com.jay.grok-idle-unload` closes **live** chats idle >12h.  It does not `/delete`.  `/resume` or `grok --resume ID` reloads tools.  `GROK_IDLE_UNLOAD_HOURS` overrides the threshold.
+- Hourly `com.jay.grok-idle-unload` closes chats that hold MCP processes and sit idle: 30 minutes for a zero-turn stub with no attached client, 4 hours for the rest.  It does not `/delete`.  `/resume` or `grok --resume ID` reloads tools.  `GROK_IDLE_UNLOAD_STUB_MINUTES` and `GROK_IDLE_UNLOAD_HOURS` override the thresholds.
 
 ## MCP (local or cloud)
 

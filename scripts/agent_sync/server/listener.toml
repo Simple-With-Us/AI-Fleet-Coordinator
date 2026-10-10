@@ -1,0 +1,194 @@
+# agent-sync listener config for the SERVER instance (the Coolify container on the Hetzner box).
+# Design:  docs/protocols/agent-sync-server.md in AI-Fleet-Coordinator.
+#
+# It holds no secrets.  Each seat's Zulip email and API key, ZULIP_SITE, and each routine's URL and sender key reach
+# the container as environment variables, from one of two sources under the same names:
+#   - Infisical at start:  when Coolify sets INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET and INFISICAL_PROJECT_ID
+#     (a read-only machine identity), the entrypoint loads the listener's variables from Infisical (project
+#     "AI Fleet Coordinator", environment prod, folder /zulip) on every start (server/infisical_env.py), and an
+#     Infisical value wins over a Coolify one of the same name;
+#   - otherwise, runtime-only Coolify variables copied from that folder.
+# ZULIP_SITE is never in Infisical:  Coolify sets it.  The Zulip names are the defaults (ZULIP_<CODE>_EMAIL and
+# ZULIP_<CODE>_API_KEY, where CODE is the seat with hyphens as underscores).  A Grok Bot persona's routine reads
+# the webhook names Infisical already holds, ZULIP_ALERT_GB_<ROLE>_ENDPOINT (the https URL) and
+# ZULIP_ALERT_GB_<ROLE>_KEY (the bare crsr_ key, sent as Authorization: Bearer <key>).  The matching
+# ZULIP_ALERT_GB_<ROLE>_HEADER is never read.  Set email_env, key_env or the routine's url_env and key_env to use
+# other names.
+#
+# The container copies this file onto its volume (AGENT_SYNC_CONFIG) on first start.  Then
+# `agent-sync daemon init` pins owner_user_id and eligible_user_ids in that copy, and
+# `agent-sync daemon reload` (or a restart) applies it.  Until then nothing is treated as the
+# owner and nothing wakes.  A reload re-reads only this file:  a new or changed environment
+# variable reaches the listener only when the container restarts.  A section changed here never reaches a live
+# volume by itself:  server/apply_live_config.py copies the JET and GB sections into /data/listener.toml and leaves
+# [daemon] (the pins) untouched.  Never mount this file as a single file, because `daemon init` replaces it
+# atomically.  Every seat here must be "server" in docs/protocols/agent-sync-partition.toml:  a seat is never
+# configured in both instances.
+
+[daemon]
+instance = "server"
+owner_user_id = 0                 # pinned by `agent-sync daemon init`, never derived at runtime
+eligible_user_ids = []            # fleet seat bots, pinned by `agent-sync daemon init`
+owner_clients = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]
+stale_after_minutes = 120
+coalesce_seconds = 20
+coalesce_max_seconds = 90
+owner_coalesce_seconds = 5
+notify_banners = false            # no display here:  notify-owner writes only <seat>/owner-queue.jsonl
+presence_topics = [["agent-sync", "roll call"], ["agent-sync", "fleet"], ["builds", "gates"], ["alerts", "*"]]
+
+# Cloud seats (MA, GROK-WEB, INSTINCT and ECHO):  enabled with wake = "inbox".  JET is the same, but its
+# wake is "http" (see its block).  Each holds a queue,
+# so its @-mentions and DMs are captured at zero tokens under /data/<SEAT>/, and its key is checked at
+# connect (a member or moderator bot, and the key's own bot must be the seat).  They have no wake
+# adapter, so nothing is woken, and nothing reads those inboxes yet:  the hosted MCP inbox tool asks
+# Zulip itself.  Read one inside the container with `agent-sync inbox --local --as <SEAT>`.  Their
+# variables are ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY, and they reach the container only when the
+# app restarts (a reload does not read the environment).  The partition gives all five to "server".
+[seat.MA]
+instance = "server"
+creds = "env"                     # ZULIP_MA_EMAIL, ZULIP_MA_API_KEY (muse-assist-bot@)
+wake = "inbox"
+
+# JET (ChatGPT) is woken through OpenAI MCP Events:  the http wake POSTs agent-sync-wake/1 to the hosted
+# MCP Worker (https://agent-sync.jays.services/internal/wake/JET), which sends a signed `zulip.mention` event to
+# every ChatGPT chat or dot that subscribed (scripts/agent-sync-mcp/ARMING-JAY.md, "Wake Jet").  JET_ROUTINE_URL
+# is that URL;  JET_ROUTINE_KEY is the shared HMAC key, the same value as the Worker secret WAKE_HMAC_KEY_JET
+# (kept in ~/.secrets/jet-wake-hmac.env on Jay's Mac).  Until both are set and the container restarts, each wake
+# is logged as routine-unready and dropped;  the inbox still captures everything.  The budget is explicit
+# because every wake starts a ChatGPT task.  A volume seeded before this change keeps JET on "inbox":  switch
+# it with the scoped edit in ARMING-JAY.md "Wake Jet", step 1b.
+[seat.JET]
+instance = "server"
+creds = "env"                     # ZULIP_JET_EMAIL, ZULIP_JET_API_KEY (openai-dot-bot@)
+wake = "http"
+routine = { url_env = "JET_ROUTINE_URL", key_env = "JET_ROUTINE_KEY", method = "POST", auth = "hmac-sha256", header = "X-Agent-Sync-Signature", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 30, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+[seat.GROK-WEB]
+instance = "server"
+creds = "env"                     # ZULIP_GROK_WEB_EMAIL, ZULIP_GROK_WEB_API_KEY (grok-web-bot@)
+wake = "inbox"
+
+[seat.INSTINCT]
+instance = "server"
+creds = "env"                     # ZULIP_INSTINCT_EMAIL, ZULIP_INSTINCT_API_KEY (instinct-owl-bot@)
+wake = "inbox"
+
+# Echo is Instinct's partner bot and may be retired when the two merge.  Kept minimal on purpose.
+[seat.ECHO]
+instance = "server"
+creds = "env"                     # ZULIP_ECHO_EMAIL, ZULIP_ECHO_API_KEY (instinct-bat-bot@)
+wake = "inbox"
+
+# Grok Bot (GB) personas (Sat, Oct 10):  each is woken on an @-mention or a DM through its Grok Bot routine webhook,
+# POST agent-sync-wake/1 with Authorization: Bearer <ZULIP_ALERT_GB_<ROLE>_KEY>.  The routine replies in Zulip with the
+# persona's own key.  Each section reads five different variables:  the Zulip email, key and site, and the
+# routine URL and key.  Enabling or disabling one is the `enabled` line, then a restart.
+
+# GB-DIRECTOR (Routing, fleet sync, org help, director-grok-bot@).
+# Disabled (Sat, Oct 10):  ZULIP_ALERT_GB_DIRECTOR_KEY in Infisical holds the whole header line
+# ("Authorization: Bearer crsr_..."), not the bare key, so a wake would send a broken header.  Its Zulip pair is
+# fine.  To enable:  replace that secret with the bare crsr_ key in Infisical, set enabled = true here and in
+# /data/listener.toml, then restart the app.
+[seat.GB-DIRECTOR]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_GB_DIRECTOR_EMAIL, ZULIP_GB_DIRECTOR_API_KEY; the site from ZULIP_SITE
+wake = "http"
+routine = { url_env = "ZULIP_ALERT_GB_DIRECTOR_ENDPOINT", key_env = "ZULIP_ALERT_GB_DIRECTOR_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-FIXER (Bugs, regressions, hotfixes, fixer-grok-bot@).
+[seat.GB-FIXER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_GB_FIXER_EMAIL, ZULIP_GB_FIXER_API_KEY; the site from ZULIP_SITE
+wake = "http"
+routine = { url_env = "ZULIP_ALERT_GB_FIXER_ENDPOINT", key_env = "ZULIP_ALERT_GB_FIXER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-DESIGNER (UI / UX, designer-grok-bot@).
+[seat.GB-DESIGNER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_GB_DESIGNER_EMAIL, ZULIP_GB_DESIGNER_API_KEY; the site from ZULIP_SITE
+wake = "http"
+routine = { url_env = "ZULIP_ALERT_GB_DESIGNER_ENDPOINT", key_env = "ZULIP_ALERT_GB_DESIGNER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-COMPILER (Builds, compile and test gates, compiler-grok-bot@).
+# Disabled (Sat, Oct 10):  ZULIP_GB_COMPILER_EMAIL and ZULIP_GB_COMPILER_API_KEY in Infisical are not
+# GB-Compiler's (the email is Jet's openai-dot-bot@, and Zulip refuses the key with 401), so the seat would be
+# refused at connect.  The real bot is compiler-grok-bot@ (a member).  Its routine webhook is fine.  To enable:
+# put compiler-grok-bot@'s pair in Infisical, set enabled = true here and in /data/listener.toml, then restart.
+[seat.GB-COMPILER]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_GB_COMPILER_EMAIL, ZULIP_GB_COMPILER_API_KEY; the site from ZULIP_SITE
+wake = "http"
+routine = { url_env = "ZULIP_ALERT_GB_COMPILER_ENDPOINT", key_env = "ZULIP_ALERT_GB_COMPILER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-HOUSEKEEPER (Cron, Coolify, host hygiene, housekeeper-grok-bot@).
+[seat.GB-HOUSEKEEPER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_GB_HOUSEKEEPER_EMAIL, ZULIP_GB_HOUSEKEEPER_API_KEY; the site from ZULIP_SITE
+wake = "http"
+routine = { url_env = "ZULIP_ALERT_GB_HOUSEKEEPER_ENDPOINT", key_env = "ZULIP_ALERT_GB_HOUSEKEEPER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-PUBLISHER (Releases, changelogs, docs, publisher-grok-bot@).
+[seat.GB-PUBLISHER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_GB_PUBLISHER_EMAIL, ZULIP_GB_PUBLISHER_API_KEY; the site from ZULIP_SITE
+wake = "http"
+routine = { url_env = "ZULIP_ALERT_GB_PUBLISHER_ENDPOINT", key_env = "ZULIP_ALERT_GB_PUBLISHER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-DEPLOYER (Deploys, rollbacks, deployer-grok-bot@).
+[seat.GB-DEPLOYER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_GB_DEPLOYER_EMAIL, ZULIP_GB_DEPLOYER_API_KEY; the site from ZULIP_SITE
+wake = "http"
+routine = { url_env = "ZULIP_ALERT_GB_DEPLOYER_ENDPOINT", key_env = "ZULIP_ALERT_GB_DEPLOYER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-MONITOR (Uptime, probes, monitor-grok-bot@).
+[seat.GB-MONITOR]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_GB_MONITOR_EMAIL, ZULIP_GB_MONITOR_API_KEY; the site from ZULIP_SITE
+wake = "http"
+routine = { url_env = "ZULIP_ALERT_GB_MONITOR_ENDPOINT", key_env = "ZULIP_ALERT_GB_MONITOR_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-PLUMBER (Infra, tunnels, networking, plumber-grok-bot@).
+[seat.GB-PLUMBER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_GB_PLUMBER_EMAIL, ZULIP_GB_PLUMBER_API_KEY; the site from ZULIP_SITE
+wake = "http"
+routine = { url_env = "ZULIP_ALERT_GB_PLUMBER_ENDPOINT", key_env = "ZULIP_ALERT_GB_PLUMBER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-ORACLE (Research, deep answers, oracle-grok-bot@).
+[seat.GB-ORACLE]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_GB_ORACLE_EMAIL, ZULIP_GB_ORACLE_API_KEY; the site from ZULIP_SITE
+wake = "http"
+routine = { url_env = "ZULIP_ALERT_GB_ORACLE_ENDPOINT", key_env = "ZULIP_ALERT_GB_ORACLE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# GB-TRADER (Trading seat, trader-grok-bot@).
+[seat.GB-TRADER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_GB_TRADER_EMAIL, ZULIP_GB_TRADER_API_KEY; the site from ZULIP_SITE
+wake = "http"
+routine = { url_env = "ZULIP_ALERT_GB_TRADER_ENDPOINT", key_env = "ZULIP_ALERT_GB_TRADER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }

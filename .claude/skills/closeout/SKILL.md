@@ -1,15 +1,13 @@
 ---
 name: closeout
-description: Finish a Monet work unit — THE BOARD, effort log, GitHub issue, Slack, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
+description: Finish a Claude work unit — THE BOARD, effort log, GitHub issue, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
 ---
 
-# Closeout (MONET)
+# Closeout (CLAUDE)
 
-> **Shared `~/.claude/skills`.** Monet, Claude/Fable, and (when active) Renoir all load this directory.  Do not treat the word Monet in examples as proof of your seat.  Pin `AGENT_SEAT` / `AGENT_TAG` from the logged-in account before Slack or `board --by`:
-> - Monet → `MONET`, Notes `Monet`, `monet/`, `~/apps/<app>-monet`
-> - Claude / Fable → `CLAUDE`, Notes `Claude`, `claude/`, `~/apps/<app>-claude`
-> - Renoir → `RENOIR`, Notes `Renoir`, `renoir/`, `~/apps/<app>-renoir`
-> Cursor, Grok, Grok Bot, Codex, AG, DeepSeek, Kimi, and Fx have their own skill dirs and must not take identity from here.
+> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Claude-zuliprc` (mode 600).  Session tag `[CLAUDE·session8]`, and the `agent-sync` CLI writes it for you.
+
+> **Shared `~/.claude/skills`.**  This directory is the `CLAUDE` seat's skill home, and other tools scan it too.  Other seats (Codex, Cursor, Grok, Grok-Web, AG, Clutch, FX, MM, MC, MA) must take identity from their own pack, never from here.
 
 
 Start-of-work is a triple claim.  End-of-work is the same three surfaces plus Notes when the owner might ask "what happened?"
@@ -44,28 +42,27 @@ Live board first, then `docs/EFFORT-LOG.md` in the landing commit.
 
 - **Completed** = merged to main.
 - **Deployed** = released and verified (say how).
-- Never delete another row.  Correct in place with `(Monet): …` and the date.
+- Never delete another row.  Correct in place with `(Claude): …` and the date.
 
 Board and GitHub issues must match.  Prefer landing the mirror so `effort-issues-sync` closes the issue.  If you executed a numbered issue, comment/close it so it is not abandoned.
 
 Cross-app work gets a row on each affected board.
 
-## 4. Slack
+## 4. Zulip
+
+Board first, then the work topic — the same one you claimed in.
 
 ```bash
-AGENT_TAG="${AGENT_SEAT:?set MONET, CLAUDE, or RENOIR}" /Users/jay/apps/agent-sync-websocket.py --post "[$AGENT_SEAT] sync-N
-repo: <project>
-state: DONE
-pr: #<n>
-board: <id>
-work: <what landed>"
+agent-sync post --topic "<APP> <board8> <subject>" $'repo:  <project>  |  DONE\npr: #<n>\nboard: <id>\ngates: <what ran>\nwork: <what landed>'
 ```
 
-Not `FLEET` for a normal closeout.
+Then resolve the topic when the board item reaches Deployed or Parked:  `agent-sync resolve --topic "<topic>"`.  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
+
+Not a fleet wake (`@**all**`) for a normal closeout.  The Slack-era helpers (`slack-sync.sh`, `agent-sync-websocket.py`, `agent-sync-poll.py`) are retired; `agent-sync` replaces them.
 
 ## 5. Apple Notes
 
-Substantial work: living Completion note, `--update` in place.  Title `[APP, Monet] short topic`.  See `apple-notes`.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
+Substantial work: living Completion note, `--update` in place.  Title `[APP, Claude] short topic`.  See `apple-notes`.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
 
 ## 6. Mac local processes
 
@@ -79,7 +76,7 @@ If you shipped a flag that is off, reserve a Planned enablement row (ST: also `d
 
 ## Parked, not done
 
-If you stop without merge: board stays accurate (`open` or a comment "parked because …"), Slack says BLOCKED/parked, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
+If you stop without merge: board stays accurate (`open` or a comment "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
 
 ## Fleet recall (every closeout)
 
@@ -102,4 +99,4 @@ or MCP `recall_contribute`.  40–4000 chars, one idea, category `lesson | prefe
 Throughout execution, maintain a brief big-picture outline of task state. When the task is complete, this outline naturally becomes your **Closeout Report** by:
 1. Marking all milestones as completed with commit/PR references.
 2. Replacing in-flight WIP notes with live production deployment verification (`/api/health` 200, build SHA).
-3. If closing out work adopted from a peer, posting a direct `[<SUB_TAG>-><ORIGINAL_TAG>]` Slack notification to `#agent-sync`.
+3. If closing out work adopted from a peer, posting in that work topic with the envelope `[<SUB_TAG>·session8→<ORIGINAL_TAG>]` and an `@**<Original Seat Display Name>**` mention, so the original seat is actually woken.

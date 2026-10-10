@@ -6,9 +6,9 @@ description: >-
 
 # Apple Notes (Universal)
 
-> **This install is for `MC`.** Slack `[MC]`.  Notes `Muse Code`.  Branches `muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MC-zuliprc` (mode 600).  Session tag `[MC·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Distinct from **Muse Assistant** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.
+> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
 
 Mac only.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
@@ -36,7 +36,7 @@ Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do
 [APP, Agent] short topic
 ```
 
-- Acronyms first, then `<Agent>` (Title Case, not all-caps Slack tags).
+- Acronyms first, then `<Agent>` (Title Case, not an all-caps seat tag).
 - Multi-app: `[ST, CT, Agent] …` (impact order).
 - No date in the title.  No word "session".  Do not repeat the title as an H1 in the body.
 
@@ -85,7 +85,7 @@ Never pass empty `- ` bullets (they render as blank dots).  Put identifiers with
 
 Do Notes: plans, design docs, reviews, handoffs, rollouts, **Completion / work-complete** for anything the owner might ask about.
 
-Skip: pure `#agent-sync` chatter, effort-board row edits, routine commit messages, peer-only PR nits.
+Skip: pure #agent-sync topic chatter, effort-board row edits, routine commit messages, peer-only PR nits.
 
 Open a living work note when substantial work starts.  Always Completion at the end.  Update in place; unpin stale Completion notes when the lane closes (`--unpin-only`).
 

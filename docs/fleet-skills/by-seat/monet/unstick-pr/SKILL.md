@@ -5,7 +5,7 @@ description: Diagnose and repair a PR that will not merge — phantom vs real co
 
 # Unstick a blocked PR (MONET)
 
-> **This install is for `MONET`.** Slack `[MONET]`.  Notes `Monet`.  Branches `monet/`.  Worktrees `~/apps/<app>-monet`.  Do not inherit another seat's tag from another seat's upload pack.
+> **Retired seat.**  Owner directive 2026-10-07: the Monet Claude account and app are no longer used, and `CLAUDE` is the only Claude seat.  Do not take work as MONET, do not leave MONET In Progress, and do not install this pack anywhere.  This catalog copy is inactive.
 
 
 Works in every fleet repo.  Substitute owner/repo from `gh repo view --json nameWithOwner`.
@@ -32,10 +32,10 @@ git merge-tree --write-tree origin/main origin/<branch>
 - Exit 0 = **PHANTOM**.  GitHub's mergeability cache stuck (common under concurrent push bursts).
 - Exit 1 with conflict markers = **REAL**.
 
-**Phantom fix:** merge `origin/main` in the Monet worktree and push a fresh head SHA.
+**Phantom fix:** merge `origin/main` in your lane and push a fresh head SHA.
 
 ```bash
-cd ~/apps/<prefix>-monet   # never ~/Code/<repo>
+cd "$(~/apps/lane path <app> <slug>)"   # your lane; never ~/Code/<repo>
 git fetch origin
 git merge origin/main --no-edit
 git push origin monet/<slug>

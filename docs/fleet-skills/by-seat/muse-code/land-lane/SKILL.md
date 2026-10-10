@@ -5,9 +5,9 @@ description: Land a Muse Code feature branch to main across the fleet — seat w
 
 # Land a feature branch (MC)
 
-> **This install is for `MC`.** Slack `[MC]`.  Notes `Muse Code`.  Branches `muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MC-zuliprc` (mode 600).  Session tag `[MC·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Distinct from **Muse Assistant** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.
+> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.
@@ -16,7 +16,7 @@ Seat: **MC**.  Branch: `muse-code/<slug>`.  Never `claude/`.  Never `monet/`.  N
 
 ## Preconditions
 
-1. You are in your Muse Code worktree (`~/apps/<prefix>-muse-code` or `~/apps/<prefix>-muse-code-<lane>`).  See `session-start`.
+1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, made with `~/apps/lane new`; a lane in an old place (`~/apps/lanes/<prefix>/`, which the migration moves, or a flat `~/apps/<prefix>-<seat>[-<lane>]`, which retires where it is) that already exists is fine).  See `session-start`.
 2. `git status` is clean except `.env.local` / `.dev.vars` (never commit those).
 3. `git config user.email` is `12656028+jaywedgeworth22@users.noreply.github.com`.
 
@@ -31,7 +31,7 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
 4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[APP, Muse Code] …`.
 
-Prose (commit body, PR body, rollout, Notes): two ASCII spaces between sentences.  Chat replies to the owner use `&nbsp;` plus a space.  See `owner-copy`.
+Prose: commit body, rollout docs and Notes source take two ASCII spaces between sentences.  PR titles, bodies and comments take a real U+00A0 plus a space (convert with the `perl` recipe in `sentence-gap`; never the `&nbsp;` entity there).  Chat replies to the owner use `&nbsp;` plus a space in a Markdown chat pane and two ASCII spaces in a terminal.  See `owner-copy`.
 
 ## Gate
 
@@ -89,7 +89,7 @@ gh pr merge <N> --squash --auto
 
 Not `--admin`.  Branch protection is `enforce_admins: true` plus conversation resolution.  Unresolved review threads block forever.  Use `codex-triage` / `unstick-pr`.
 
-If the box is gating several lanes, post `[MC] gating now` with `repo:` (not `->FLEET` unless every listening seat on every platform must spend time).  Coordinator/ops self-id is `AFC`.
+If the box is gating several lanes, announce the full gate in #builds topic `gates`:  `agent-sync post --channel builds --topic gates "gating now (<repo>, <branch or purpose>)"`, then post `gate clear` in the same topic when it finishes.  The CLI writes the tag.  Wait on a peer's open `gating now` with `agent-sync wait --channel builds --topic gates --timeout 900`.  Use the fleet wake (`@**all**` in #agent-sync topic `fleet`) only when every listening seat on every platform must spend time.  Coordinator/ops self-id is `AFC`.
 
 ## After merge
 

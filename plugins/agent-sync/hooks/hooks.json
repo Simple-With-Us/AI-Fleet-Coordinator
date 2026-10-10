@@ -1,0 +1,36 @@
+{
+  "description": "agent-sync listener hooks: lease and headlines on session start and prompt, heartbeat on Stop, cleanup on session end, and an asyncRewake watcher that wakes an idle session for interrupts.  No PreToolUse hook (owner decision 2026-10-07).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --hook session-start", "timeout": 5},
+          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --rewake", "asyncRewake": true, "timeout": 86400}
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --hook prompt", "timeout": 5},
+          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --rewake", "asyncRewake": true, "timeout": 86400}
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --hook stop", "timeout": 5},
+          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --rewake", "asyncRewake": true, "timeout": 86400}
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --hook session-end", "timeout": 5}
+        ]
+      }
+    ]
+  }
+}

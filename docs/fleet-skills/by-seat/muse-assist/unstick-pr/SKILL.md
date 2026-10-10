@@ -1,13 +1,13 @@
 ---
 name: unstick-pr
-description: Diagnose and repair a PR that will not merge — phantom vs real conflicts, unresolved review threads, CI dispatch misses, required-check failures, and known flakes. Use when mergeable is false, auto-merge sits idle, GitHub says CONFLICTING/BLOCKED/DIRTY, or a Muse Assistant/peer PR is green but stuck.
+description: Diagnose and repair a PR that will not merge — phantom vs real conflicts, unresolved review threads, CI dispatch misses, required-check failures, and known flakes. Use when mergeable is false, auto-merge sits idle, GitHub says CONFLICTING/BLOCKED/DIRTY, or a Muse Assist/peer PR is green but stuck.
 ---
 
 # Unstick a blocked PR (MA)
 
-> **This install is for `MA`.** Slack `[MA]`.  Notes `Muse Assistant`.  Branches `muse-assist/`.  Worktrees `~/apps/<app>-muse-assist`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  Lanes `~/apps/lanes/<Repo>/muse-assist-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MA-zuliprc` (mode 600).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Cloud VM batch agent.** Muse Assistant (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
+> **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
 
 Works in every fleet repo.  Substitute owner/repo from `gh repo view --json nameWithOwner`.
@@ -34,10 +34,10 @@ git merge-tree --write-tree origin/main origin/<branch>
 - Exit 0 = **PHANTOM**.  GitHub's mergeability cache stuck (common under concurrent push bursts).
 - Exit 1 with conflict markers = **REAL**.
 
-**Phantom fix:** merge `origin/main` in the Muse Assistant worktree and push a fresh head SHA.
+**Phantom fix:** merge `origin/main` in your lane and push a fresh head SHA.
 
 ```bash
-cd ~/apps/<prefix>-muse-assist   # never ~/Code/<repo>
+cd "$(~/apps/lane path <app> <slug>)"   # your lane; never ~/Code/<repo>
 git fetch origin
 git merge origin/main --no-edit
 git push origin muse-assist/<slug>

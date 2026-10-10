@@ -5,7 +5,7 @@ description: Fleet DNS and registrar playbook.  Cloudflare is DNS for every flee
 
 # Fleet DNS and Registrars (ALL AGENTS)
 
-> **This install is for `AG`.** Slack `[AG]`.  Notes `Antigravity`.  Branches `ag/`.  Worktrees `~/apps/<app>-antigravity`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `ag-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/AG-zuliprc` (mode 600).  Session tag `[AG·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Cloudflare is the DNS manager for every fleet domain.  Registrar and Cloudflare account are separate.

@@ -1,0 +1,422 @@
+// Request gates for the hosted agent-sync MCP Worker.
+//
+// Pure module:  no `cloudflare:` imports, no I/O.  Every check here runs before
+// the OAuth library sees the request, so nothing here may fetch anything.
+// Spec:  docs/protocols/agent-sync-mcp.md sections 3.2 to 3.4.
+
+const MAX_PARAM_LENGTH = 512;
+
+/**
+ * Why `value` is not a strict https URL, or "" when it is.  Strict means:
+ * https, no userinfo, no explicit port, no query, no fragment, no encoded
+ * slash or backslash, and canonical serialization (what `URL` prints back is
+ * the input, byte for byte).  Used for redirect URIs and CIMD client ids.
+ */
+export function strictRedirectProblem(value) {
+  if (typeof value !== "string" || value.length === 0) return "empty";
+  if (value.length > MAX_PARAM_LENGTH) return "too long";
+  if (/[\u0000-\u0020\u007f-\uffff]/.test(value)) return "control, space or non-ASCII character";
+  if (value.includes("#")) return "fragment";
+  if (value.includes("?")) return "query";
+  if (value.includes("\\")) return "backslash";
+  if (/%2f|%5c|%2e/i.test(value)) return "encoded slash, backslash or dot";
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return "not a URL";
+  }
+  if (url.protocol !== "https:") return "not https";
+  if (url.username || url.password || value.includes("@")) return "userinfo";
+  if (url.port !== "") return "port";
+  if (url.href !== value) return "not canonical";
+  return "";
+}
+
+// RFC 8252 section 7.3 loopback callback, the one exception to "https only".
+// The host must be the IPv4 literal 127.0.0.1 itself:  not `localhost` (a name
+// a hosts file or DNS can point elsewhere), not [::1], not another 127/8
+// address.  The port must be explicit, because the redirect allowlist is an
+// exact string and the OAuth library accepts any port on a loopback host.
+export const LOOPBACK_HOST = "127.0.0.1";
+
+/**
+ * Why `value` is not an acceptable redirect URI, or "" when it is.  Every rule
+ * of `strictRedirectProblem` applies, except that `http` is allowed when the
+ * host is exactly 127.0.0.1 with an explicit port (a native app's loopback
+ * listener, RFC 8252).  https keeps "no explicit port".  CIMD client ids still
+ * use `strictRedirectProblem`, which never accepts http.
+ */
+export function redirectUriProblem(value) {
+  const strict = strictRedirectProblem(value);
+  if (strict !== "not https") return strict;
+  if (!isLoopbackRedirect(value)) return "not https";
+  return "";
+}
+
+/**
+ * True for an http redirect on 127.0.0.1 with an explicit port, a path, no
+ * userinfo, query or fragment, in canonical form.  Used for config validation,
+ * the gates, and the consent page wording.
+ */
+export function isLoopbackRedirect(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_PARAM_LENGTH) return false;
+  if (/[\u0000-\u0020\u007f-\uffff#?\\@]/.test(value) || /%2f|%5c|%2e/i.test(value)) return false;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" || url.hostname !== LOOPBACK_HOST) return false;
+  if (url.username || url.password || url.search || url.hash) return false;
+  if (!/^[1-9][0-9]{0,4}$/.test(url.port)) return false;
+  if (url.pathname === "/" && !value.endsWith("/")) return false;
+  return url.href === value;
+}
+
+/** Every seat whose SEATS entry lists this exact redirect URI (empty when none). */
+export function redirectSeats(config, redirectUri) {
+  return config.redirectSeats.get(redirectUri) ?? [];
+}
+
+/**
+ * Pick the seat for a redirect URI listed under one or more seats (a loopback
+ * callback can be shared, spec 3.3).  `armed` is the set of seats whose
+ * arming window is open.  Exactly one listed, hosted seat must be armed:
+ *   - none armed      -> { ok: false, reason: "not_armed" }
+ *   - more than one   -> { ok: false, reason: "ambiguous_armed_seats" }
+ *   - exactly one     -> { ok: true, seat }
+ * Resolution runs over every listed seat before any client binding is checked,
+ * so "both armed" is refused even when the client is bound to one of them.
+ */
+export function resolveArmedSeat(candidates, armed) {
+  const live = candidates.filter((seat) => armed.has(seat));
+  if (live.length === 0) return { ok: false, reason: "not_armed" };
+  if (live.length > 1) return { ok: false, reason: "ambiguous_armed_seats" };
+  return { ok: true, seat: live[0] };
+}
+
+// The seat tag a hand-registered client carries in its name, set only by
+// /admin:  "Grok (manual form, GROK-WEB)".  Anchored at the end.
+const MANUAL_TAG = /\(manual form, ([A-Z][A-Z-]{1,31})\)$/;
+
+/**
+ * The seat a hand-registered client is bound to, from its /admin name tag, or
+ * "" when it has none.  Only hand-shaped ids are read:  a CIMD document can set
+ * its own client_name to anything, so a CIMD client never has a manual tag.
+ */
+export function manualClientSeat(client) {
+  if (!client || typeof client.clientId !== "string" || !HAND_CLIENT_ID.test(client.clientId)) return "";
+  const match = MANUAL_TAG.exec(String(client.clientName ?? ""));
+  return match ? match[1] : "";
+}
+
+/**
+ * Whether `client` may mint a grant for `seat` through `redirectUri`.  A CIMD
+ * client must be allowlisted under that seat.  A hand-registered client tagged
+ * for a seat must be tagged for this one;  an untagged hand client is allowed
+ * only on a redirect that a single seat lists (the pre-tag Grok fallback).
+ */
+export function clientBoundToSeat(client, seat, redirectUri, config) {
+  if (!client || typeof client.clientId !== "string") return false;
+  const verdict = clientIdVerdict(client.clientId, config);
+  if (!verdict.ok) return false;
+  if (verdict.seat) return verdict.seat === seat;
+  const tagged = manualClientSeat(client);
+  if (tagged) return tagged === seat;
+  return redirectSeats(config, redirectUri).length === 1;
+}
+
+/**
+ * Host check (spec 3.2):  only the D1 hostname, on the default port.  Both the
+ * URL the runtime built and the raw Host header must name it.
+ */
+export function hostAllowed(request, host) {
+  let url;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return false;
+  }
+  if (url.hostname !== host || url.port !== "" || url.protocol !== "https:") return false;
+  const header = request.headers.get("host");
+  if (header !== null && header.toLowerCase() !== host) return false;
+  return true;
+}
+
+const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+
+/**
+ * Display predicate:  a client_id that names a URL in any way the library or a
+ * browser might read as one.  Broader than the library's own test on purpose
+ * (it parses after WHATWG URL normalization, which drops leading and trailing
+ * spaces and removes tabs and newlines).  Used to filter /admin and to decide
+ * whether the consent page shows a verified domain.  It is NOT the gate:  see
+ * `clientIdVerdict`.
+ */
+export function isUrlShapedClientId(clientId) {
+  if (typeof clientId !== "string") return false;
+  if (SCHEME.test(clientId) || SCHEME.test(clientId.replace(/[\u0000-\u0020]/g, ""))) return true;
+  try {
+    new URL(clientId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Hostname of an https CIMD client id, or "" for anything else. */
+export function cimdHostname(clientId) {
+  try {
+    const url = new URL(clientId);
+    return url.protocol === "https:" ? url.hostname : "";
+  } catch {
+    return "";
+  }
+}
+
+// What the OAuth library generates for a hand-registered client:  16 characters
+// of [A-Za-z0-9_-].  Anything outside this shape that is not an exact
+// allowlisted CIMD id never reaches the library, so no parser difference
+// between this file and the library can turn an id into a metadata fetch.
+const HAND_CLIENT_ID = /^[A-Za-z0-9_-]{8,64}$/;
+
+/**
+ * The gate for every client_id seen before the library runs (spec 3.3):
+ *   - an exact allowlisted CIMD id            -> { ok: true, seat }
+ *   - the shape of a hand-registered id       -> { ok: true, seat: "" }
+ *   - anything else, URL-shaped or not        -> { ok: false, reason }
+ * An empty id passes (the library answers "client id required" and fetches nothing).
+ */
+export function clientIdVerdict(clientId, config) {
+  if (clientId === "" || clientId === undefined || clientId === null) return { ok: true, seat: "" };
+  if (typeof clientId !== "string") return { ok: false, reason: "client_id_shape" };
+  const owner = config.cimdOwner.get(clientId);
+  if (owner) return { ok: true, seat: owner };
+  if (isUrlShapedClientId(clientId)) return { ok: false, reason: "cimd_client_not_allowlisted" };
+  if (HAND_CLIENT_ID.test(clientId)) return { ok: true, seat: "" };
+  return { ok: false, reason: "client_id_shape" };
+}
+
+/** Which route a path belongs to, or null for "404 before anything runs". */
+export function classifyPath(pathname) {
+  switch (pathname) {
+    case "/mcp":
+      return "mcp";
+    case "/oauth/token":
+      return "token";
+    case "/authorize":
+      return "authorize";
+    case "/.well-known/oauth-authorization-server":
+    case "/.well-known/oauth-protected-resource":
+    case "/.well-known/oauth-protected-resource/mcp":
+      return "metadata";
+    case "/health":
+      return "health";
+    case "/admin":
+      return "admin";
+    default:
+      if (pathname.startsWith("/admin/")) return "admin";
+      // The listener's wake (src/wake.js).  Outside Cloudflare Access, which
+      // covers /authorize and /admin only;  its own HMAC is the gate.
+      if (/^\/internal\/wake\/[A-Z][A-Z0-9-]{0,31}$/.test(pathname)) return "wake";
+      return null;
+  }
+}
+
+function single(params, name) {
+  const all = params.getAll(name);
+  if (all.length > 1) return { error: `repeated ${name}` };
+  return { value: all.length === 1 ? all[0] : undefined };
+}
+
+/**
+ * Gate an /authorize request on its raw query, before `parseAuthRequest`
+ * (which is what fetches a CIMD document).  Returns
+ * `{ ok: true, seat, seats, cimdSeat, clientId, redirectUri, scopes }` or
+ * `{ ok: false, reason, clientId, redirectUri, resource }`.  The reason is a short slug
+ * that is safe to log;  the raw ids are returned for the refusal log only.
+ */
+export function preGateAuthorize(params, config) {
+  const fields = {};
+  for (const name of ["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "resource", "scope", "state"]) {
+    const got = single(params, name);
+    if (got.error) return { ok: false, reason: got.error.replace(" ", "_") };
+    fields[name] = got.value;
+  }
+  const clientId = fields.client_id ?? "";
+  const redirectUri = fields.redirect_uri ?? "";
+  const resource = logSafe(fields.resource, 200);
+  const refuse = (reason) => ({ ok: false, reason, clientId, redirectUri, resource });
+
+  if (!clientId || clientId.length > MAX_PARAM_LENGTH) return refuse("client_id_missing_or_long");
+  if (fields.response_type !== "code") return refuse("response_type_not_code");
+
+  // Redirect allowlist:  exact string equality, then the strict parse as a
+  // second line of defense in case the allowlist ever holds a loose value.
+  // A loopback redirect may be listed under more than one seat;  the caller
+  // picks among `seats` by arming state (`resolveArmedSeat`).
+  const listed = redirectSeats(config, redirectUri);
+  if (listed.length === 0) return refuse("redirect_not_allowlisted");
+  if (redirectUriProblem(redirectUri)) return refuse("redirect_not_strict");
+  const seats = listed.filter((s) => config.hostedSeats.includes(s));
+  if (seats.length === 0) return refuse("seat_not_hosted");
+
+  // A client_id is an allowlisted CIMD id of one of these seats, or the shape
+  // of a hand-registered id.  Anything else could make the library fetch a
+  // document.  The caller re-checks a CIMD owner against the resolved seat.
+  const verdict = clientIdVerdict(clientId, config);
+  if (!verdict.ok) return refuse(verdict.reason);
+  if (verdict.seat && !seats.includes(verdict.seat)) return refuse("cimd_client_not_allowlisted");
+
+  // PKCE S256 for every client, confidential ones included.
+  if (fields.code_challenge_method !== "S256") return refuse("pkce_method_not_s256");
+  if (!/^[A-Za-z0-9_-]{43,128}$/.test(fields.code_challenge ?? "")) return refuse("pkce_challenge_missing");
+
+  // RFC 8707:  the token must be for this server's /mcp and nothing else.
+  if (fields.resource !== config.resource) return refuse("resource_mismatch");
+
+  const scopes = (fields.scope ?? "").split(" ").filter(Boolean);
+  if (scopes.some((s) => !config.scopes.includes(s))) return refuse("scope_not_supported");
+
+  // `seat` is set only when one hosted seat lists this redirect.
+  return { ok: true, seat: seats.length === 1 ? seats[0] : "", seats, cimdSeat: verdict.seat, clientId, redirectUri, scopes };
+}
+
+/**
+ * Re-check a request the library parsed (or restored from its consent
+ * transaction) against the same allowlist, for one seat.  `authRequest` is the
+ * library's AuthRequest.  Returns true when `seat` is hosted, lists this exact
+ * redirect, and the client id is not an allowlisted CIMD id of another seat.
+ * Which seat (for a shared loopback redirect) is decided by arming, never here.
+ */
+export function postGateAuthRequest(authRequest, config, seat) {
+  if (!authRequest || typeof authRequest !== "object") return false;
+  if (typeof seat !== "string" || !config.hostedSeats.includes(seat)) return false;
+  if (!redirectSeats(config, authRequest.redirectUri).includes(seat) || redirectUriProblem(authRequest.redirectUri)) return false;
+  const verdict = clientIdVerdict(authRequest.clientId, config);
+  if (!verdict.ok || (verdict.seat && verdict.seat !== seat)) return false;
+  if (authRequest.codeChallengeMethod !== "S256" || !authRequest.codeChallenge) return false;
+  if (authRequest.resource !== config.resource) return false;
+  if ((authRequest.scope ?? []).some((s) => !config.scopes.includes(s))) return false;
+  return true;
+}
+
+/** The hosted seats that list a parsed request's redirect URI. */
+export function hostedRedirectSeats(authRequest, config) {
+  if (!authRequest || typeof authRequest !== "object") return [];
+  return redirectSeats(config, authRequest.redirectUri).filter((s) => config.hostedSeats.includes(s));
+}
+
+/**
+ * The library's own test for a form body (workers-oauth-provider
+ * parseTokenEndpointRequest):  the media type, trimmed and lower-cased.  The
+ * gate uses the same expression, so a Content-Type the library would accept
+ * (a leading U+00A0 or U+FEFF, for example) can never skip the gate.
+ */
+export function isFormContentType(contentType) {
+  return String(contentType ?? "").split(";")[0].trim().toLowerCase() === "application/x-www-form-urlencoded";
+}
+
+// A Basic header the gate will forward:  one space, then plain base64.  The
+// library splits the scheme on a space or a tab only, while JS `\s` also
+// matches U+00A0, U+3000, U+FEFF, VT and FF.  Parsing such a header here would
+// disagree with the library about whether the request is Basic at all, so
+// anything else is refused instead of interpreted.
+const STRICT_BASIC = /^basic [A-Za-z0-9+/]+={0,2}$/i;
+
+/** The client_id inside a strict Basic header, "" when absent, or null when the header is refused. */
+export function basicClientId(header) {
+  if (header === null || header === undefined || header === "") return "";
+  if (typeof header !== "string" || !STRICT_BASIC.test(header)) return null;
+  try {
+    const decoded = atob(header.slice(6));
+    const idx = decoded.indexOf(":");
+    if (idx < 0) return null;
+    return decodeURIComponent(decoded.slice(0, idx).replace(/\+/g, " "));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Gate a token-endpoint form before the library sees it.  Every candidate
+ * client id (the Basic one and each form one) must pass `clientIdVerdict`, so
+ * no unlisted URL reaches the CIMD fetch whichever field the library reads.
+ * An empty `client_secret=` is dropped so a public client that sends a blank
+ * secret field authenticates as `none` (fixed upstream in 1.2.2, #405;  we pin
+ * 1.1.0).  `authorization` is the raw Authorization header.  Returns
+ * `{ ok: true, form }` where `form` is the URLSearchParams to forward (the
+ * caller forwards this, never the original body), or `{ ok: false, reason }`.
+ */
+export function gateTokenForm(form, authorization, config) {
+  const basicId = basicClientId(authorization);
+  if (basicId === null) return { ok: false, reason: "authorization_not_basic" };
+  const formIds = form.getAll("client_id");
+  if (formIds.length > 1) return { ok: false, reason: "repeated_client_id" };
+  for (const candidate of [basicId, ...formIds]) {
+    const verdict = clientIdVerdict(candidate, config);
+    if (!verdict.ok) return { ok: false, reason: verdict.reason, clientId: candidate };
+  }
+  const next = new URLSearchParams(form);
+  const secrets = next.getAll("client_secret");
+  if (secrets.length === 1 && secrets[0] === "") next.delete("client_secret");
+  return { ok: true, form: next };
+}
+
+/**
+ * Read at most `max` bytes of a request body as UTF-8 (BOM kept, like the form
+ * parser).  Returns null when the body is larger, so a chunked upload cannot
+ * fill memory before the size check.
+ */
+export async function readLimited(request, max) {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    all.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(all);
+}
+
+/** Truncate and de-control a value for the refusal log.  Never used on secrets. */
+export function logSafe(value, max = 300) {
+  if (value === undefined || value === null) return "";
+  return String(value).replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, "?").slice(0, max);
+}
+
+/**
+ * Same-origin check for state-changing POSTs (consent and /admin).  Requires
+ * an Origin equal to the issuer, and `Sec-Fetch-Site: same-origin` when the
+ * browser sends it (`requireFetchSite` makes it mandatory, for /admin).
+ */
+export function sameOriginPost(request, issuer, { requireFetchSite = false } = {}) {
+  if (request.method !== "POST") return false;
+  if (request.headers.get("origin") !== issuer) return false;
+  const site = request.headers.get("sec-fetch-site");
+  if (site === null) return !requireFetchSite;
+  return site === "same-origin";
+}
+
+/** Constant-time string compare for CSRF tokens. */
+export function safeEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length || a.length === 0) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}

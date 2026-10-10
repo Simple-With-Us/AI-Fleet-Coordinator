@@ -5,7 +5,7 @@ description: Use THE BOARD (mac.jays.services/board + the board CLI) as the firs
 
 # THE BOARD (MM)
 
-> **This install is for `MM`.** Slack `[MM]`.  Notes `MiniMax`.  Branches `minimax/`.  Worktrees `~/apps/<app>-minimax`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mm-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MM-zuliprc` (mode 600).  Session tag `[MM·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Runtime (MiniMax).** MiniMax Code has no global rules file.  The fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt); per-repo `AGENTS.md` is project memory.  Skills here are loaded on demand from `<available_skills>`, so read the one that matches before acting — nothing in this directory is auto-applied.  `config.yaml` ships `permissionMode: bypassPermissions`, so nothing prompts: hold the destructive-op pause yourself.
 
@@ -19,7 +19,7 @@ Humans: `https://mac.jays.services/board` (HTTP Basic Auth, any username, passwo
 ```bash
 board stats
 board list --status open,in_progress --severity P0,P1
-board list --app congress-trade --mine MM
+board list --app congress-trade --mine "$AGENT_SEAT"
 board show <id>
 ```
 
@@ -27,18 +27,18 @@ board show <id>
 
 Some agent CLIs only allowlist a stable command prefix.  `board stats` allowlists.  `B=…/board; $B stats`, `$(…)`, pipes, and `&&` chains do not.
 
-`--env` is only `Mac` or `cloud`.  `--by` for this seat is `MONET`.
+`--env` is only `Mac` or `cloud`.  `--by` for this seat is your verified seat (`MM` in an ordinary MiniMax session).
 
 ## File / claim / talk / finish
 
 ```bash
 board file --title "Scout drops Senate rows on 502" --app congress-trade \
-  --severity P1 --by MM --env Mac --where "~/apps/congress-minimax @ minimax/fix" \
+  --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>" \
   --desc "path:line + repro"
 
-board claim <id> --by MM --env Mac --where "~/apps/congress-minimax @ minimax/fix"
+board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>"
 
-board comment <id> --by MM --text "Verified on main; the shared helper is right."
+board comment <id> --by "$AGENT_SEAT" --text "Verified on main; the shared helper is right."
 
 board status <id> completed --resolution "Landed in #2894."
 ```
@@ -50,7 +50,7 @@ Status values: `open`, `in_progress`, `completed`, `deployed`, `addressed`, `won
 ## What you owe the board
 
 1. **Before substantial work:** list the app.  Claim the existing item or file then claim.
-2. **While working:** keep `--by MM`, `--env Mac`, and `--where "worktree @ branch"` accurate.
+2. **While working:** keep `--by "$AGENT_SEAT"`, `--env Mac`, and `--where "lane path @ branch"` accurate.
 3. **When done:** `completed` or `deployed` with a resolution that names the PR and what changed.  Do not leave `in_progress` after you stopped.
 4. **On a peer's item:** comment with evidence.  Reviewing fixes here is expected.
 
@@ -64,7 +64,7 @@ The board is the **write surface**.  Live `~/apps/*-EFFORT-LOG.md` and GitHub Is
 ## Do not
 
 - Paste `MAC_COLLAB_TOKEN` into curl "to be safe."  Use `board`.
-- Use THE BOARD as the only closeout.  Slack + effort board + issues still move.
+- Use THE BOARD as the only closeout.  Zulip + effort board + issues still move.
 - File a duplicate because you did not `board list --search` first.
 
 ## Canon
