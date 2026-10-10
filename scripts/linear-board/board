@@ -1,0 +1,1573 @@
+#!/usr/bin/env python3
+"""board -- the fleet work board CLI, backed by Linear.
+
+Same verbs, flags and text output lines as the mac-collab `board` it replaces,
+plus --json, `whoami`, `claim --steal --reason` and `status duplicate --of`.
+scripts/linear-board/README.md has the install steps, the frozen contract
+table and every environment variable.
+
+Usage:
+  board list [--app A] [--status S,S] [--severity P0,P1] [--kind K] [--mine SEAT]
+             [--search TEXT] [--limit N] [--json]
+  board show <id> [--json]
+  board file --title T [--app A] [--severity P0..P4] [--desc D] [--fix F]
+             [--by SEAT] [--where LOC] [--env Mac|cloud] [--kind K] [--uid U] [--url URL]
+  board claim <id> --by SEAT [--where LOC] [--env Mac|cloud] [--session ID ...]
+             [--steal --reason TEXT]
+  board status <id> <open|in_progress|addressed|completed|deployed|wontfix|duplicate|parked>
+             [--by SEAT] [--resolution TEXT] [--of <id>] [--session ID ...]
+  board comment <id> --by SEAT --text TEXT [--where LOC] [--env Mac|cloud] [--session ID ...]
+  board stats
+  board whoami
+
+Ids: a full board id (32 hex, with or without hyphens), a prefix of 8 or more
+hex characters, or a Linear identifier such as AFC-123.
+
+Identity: one shared Linear app, "Fleet", that mints its own token by OAuth
+client credentials (design section 2).  The seat comes from AGENT_SEAT.  The
+shared app cannot tell seats apart, so every issue and comment this CLI writes
+starts with a seat tag line ([CLAUDE·6db9ee77]) and a claim carries a
+seat:<TAG> label.  Writes are off unless LINEAR_BOARD_WRITES=1.
+BOARD_BACKEND=mac-collab runs the old board CLI instead (rollback).
+
+Stdlib only, so cloud seats, the Grok Bot VM and BotFleet containers can run
+it from any AI-Fleet-Coordinator checkout: python3 scripts/linear-board/board.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fcntl
+import hashlib
+import http.client
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from pathlib import Path
+
+try:
+    from zoneinfo import ZoneInfo
+    CENTRAL = ZoneInfo("America/Chicago")
+except Exception:  # pragma: no cover - zoneinfo data missing
+    CENTRAL = None
+
+# ----------------------------------------------------------------- constants
+
+GRAPHQL_URL = "https://api.linear.app/graphql"
+TOKEN_URL = "https://api.linear.app/oauth/token"
+# Design section 2: ONE scope string, fixed by the pilot.  Asking for a token
+# with a different string revokes every token the app holds, so it is a
+# constant here and is never read from the environment.
+SCOPE = "read,write,app:assignable,app:mentionable"
+WORKSPACE_URL_KEY = "simple-with-us"
+USER_AGENT = "swu-board-cli/1"
+LOOPBACK_RE = re.compile(r"http://127\.0\.0\.1:\d{1,5}(/[A-Za-z0-9._/-]*)?")
+
+EXIT_ERROR = 1
+EXIT_USAGE = 2          # bad flags, no AGENT_SEAT, --by mismatch, refused URL
+EXIT_CLAIM_HELD = 3     # another seat holds the claim
+EXIT_NO_CREDS = 4       # no Fleet credentials
+EXIT_RATE_LIMIT = 5     # Linear rate limit outlasted LINEAR_BOARD_MAX_WAIT
+EXIT_AUTH = 6           # token refused, mint refused, or whoami check failed
+EXIT_WRITES_OFF = 7     # a write verb without LINEAR_BOARD_WRITES=1
+
+WRITE_VERBS = ("file", "claim", "status", "comment")
+SESSION_ENV_VAR = "CLAUDE_CODE_SESSION_ID"
+
+# Team routing, copied from the importer (lm_common.load_team_routing over
+# fleet-apps.json plus BOARD_SLUG_OVERRIDES, read Sat, Oct 10, 2026).  A slug
+# that matches nothing goes to AFC with an app:<slug> label, as the import did.
+TEAM_KEYS = ("ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK")
+FALLBACK_TEAM = "AFC"
+DEFAULT_APP = "fleet-infra"  # routes to OPS (design section 3)
+BOARD_SLUG_TEAM = {
+    "ai-fleet-coordinator": "AFC", "fleet": "AFC",
+    "autorotate": "AR", "autorotate-codes": "AR",
+    "botfleet": "BF", "botfleet-app": "BF",
+    "clutch": "CK", "dsh-runtime": "CK", "harness": "CK",
+    "congress": "CT", "congress-trade": "CT",
+    "congress-trading-shared": "CTS", "cts": "CTS",
+    "contactlogo": "CL",
+    "dealdex": "DD", "dealdex-net": "DD",
+    "fleet-infra": "OPS", "fleet-ops": "OPS",
+    "hog-hunter": "HH", "hoghunter": "HH",
+    "personal": "PS", "personal-site": "PS",
+    "socratic": "ST", "socratic-trade": "ST", "trading": "ST",
+    "usage": "UM", "usage-monitor": "UM",
+}
+
+# Board status <-> Linear workflow state (design section 3).  duplicate is
+# never a state write: it is a duplicate relation, which moves the issue.
+STATUS_TO_STATE = {
+    "open": "Todo", "in_progress": "In Progress", "addressed": "In Review",
+    "completed": "Done", "deployed": "Deployed", "wontfix": "Won't Fix",
+    "parked": "Parked", "backlog": "Backlog", "canceled": "Canceled",
+}
+STATE_TO_STATUS = {v: k for k, v in STATUS_TO_STATE.items()}
+STATE_TO_STATUS["Duplicate"] = "duplicate"
+LIST_STATUS_STATES = dict((k, [v]) for k, v in STATUS_TO_STATE.items())
+LIST_STATUS_STATES["open"] = ["Todo", "Backlog"]
+LIST_STATUS_STATES["duplicate"] = ["Duplicate"]
+STATUS_WORDS = ("open", "in_progress", "addressed", "completed", "deployed", "wontfix",
+                "duplicate", "parked", "backlog", "canceled")
+
+SEVERITIES = ("P0", "P1", "P2", "P3", "P4")
+SEV_PRIORITY = {"P0": 1, "P1": 2, "P2": 3, "P3": 4, "P4": 4}
+PRIORITY_ORDER = (1, 2, 3, 4, 0)  # Urgent, High, Medium, Low, none: the board's order
+KINDS = ("agent-report", "review-finding", "effort-row", "github-issue", "sentry")
+ENVS = {"mac": "Mac", "cloud": "Cloud"}
+LABEL_COLORS = {"seat": "#0284c7", "app": "#7c3aed"}
+
+OPEN_STATES = ("Todo", "Backlog", "In Progress")
+DONE_STATES = ("Done", "Deployed", "In Review")
+
+TAG_RE = re.compile(r"^\[([A-Z][A-Z0-9-]*)(?:·([0-9A-Za-z-]+))?\]\s*")
+MIGRATED_COMMENT_RE = re.compile(r"^\*\*(.+?)\*\* · ([^\n]*?)(?: \(([^\n]*)\))?\s*\n\n", re.S)
+HTML_COMMENT_RE = re.compile(r"\s*<!--.*?-->\s*", re.S)
+IDENT_RE = re.compile(r"^[A-Za-z]{1,8}-\d+$")
+HEX_RE = re.compile(r"^[0-9a-f]+$")
+
+
+# ----------------------------------------------------------------- small helpers
+
+def die(msg: str, code: int = EXIT_ERROR) -> "NoReturn":  # noqa: F821
+    print(f"board: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def warn(msg: str) -> None:
+    print(f"board: warning: {msg}", file=sys.stderr)
+
+
+def env(name: str, default: str | None = None) -> str | None:
+    v = os.environ.get(name, "").strip()
+    return v if v else default
+
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(env(name, str(default)))
+    except ValueError:
+        die(f"{name} must be a number", EXIT_USAGE)
+
+
+def slugify(s: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
+
+
+def norm_seat(s: str | None) -> str:
+    return (s or "").strip().strip("@[]<>`'\" ").upper()
+
+
+def hyphenate(h32: str) -> str:
+    return f"{h32[:8]}-{h32[8:12]}-{h32[12:16]}-{h32[16:20]}-{h32[20:]}"
+
+
+def short_id(uid: str) -> str:
+    return (uid or "").replace("-", "")[:8]
+
+
+def det_uuid(kind: str, key: str) -> str:
+    """Deterministic, v4-shaped UUID, so a repeat create is idempotent."""
+    h = hashlib.sha256(f"linear-board:v1:{kind}:{key}".encode("utf-8")).digest()[:16]
+    return str(uuid.UUID(bytes=h, version=4))
+
+
+def parse_iso(s: str | None) -> dt.datetime | None:
+    if not s:
+        return None
+    try:
+        return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def central(when, with_day: bool = True) -> str:
+    """Owner clock: Central, 12-hour, am or pm, no zone name."""
+    if isinstance(when, (int, float)):
+        d = dt.datetime.fromtimestamp(when, dt.timezone.utc)
+    else:
+        d = parse_iso(when)
+        if d is None:
+            return str(when or "")
+    if CENTRAL is not None:
+        d = d.astimezone(CENTRAL)
+    hour = d.hour % 12 or 12
+    ampm = "am" if d.hour < 12 else "pm"
+    day = f"{d.strftime('%a')}, " if with_day else ""
+    return f"{day}{d.strftime('%b')} {d.day}, {hour}:{d.minute:02d}{ampm}"
+
+
+def auto_sessions(explicit: list[str] | None) -> list[str] | None:
+    if explicit:
+        return explicit
+    v = env(SESSION_ENV_VAR)
+    return [v] if v else None
+
+
+def session_tail(sessions: list[str] | None) -> str:
+    return f"  (sessions: {', '.join(sessions)})" if sessions else ""
+
+
+def endpoint(name: str, default: str) -> str:
+    """The production URL, or a loopback test mock.  Nothing else, so the
+    Fleet token and client secret can only ever go to Linear."""
+    v = env(name)
+    if not v:
+        return default
+    if LOOPBACK_RE.fullmatch(v):
+        return v
+    die(f"{name} may only point at http://127.0.0.1:<port>/... (a test mock); refusing {v!r}", EXIT_USAGE)
+
+
+def cache_dir() -> Path:
+    p = Path(env("LINEAR_BOARD_CACHE_DIR") or (Path.home() / ".cache" / "linear-board")).expanduser()
+    p.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return p
+
+
+def read_json_file(path: Path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def write_json_file(path: Path, obj) -> None:
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(obj))
+    os.replace(tmp, path)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect, so the Authorization header never follows a 3xx."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"redirect refused (HTTP {code})", headers, fp)
+
+
+def opener():
+    # ProxyHandler({}) ignores HTTP(S)_PROXY from the environment.
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
+
+# ----------------------------------------------------------------- seat
+
+def current_seat() -> str:
+    seat = norm_seat(os.environ.get("AGENT_SEAT"))
+    if not seat:
+        die("AGENT_SEAT is not set.  The board CLI writes as the seat in AGENT_SEAT and refuses to "
+            "guess it; export AGENT_SEAT=<your seat tag> (AGENT-SYNC Identity Rules).", EXIT_USAGE)
+    if not re.fullmatch(r"[A-Z][A-Z0-9-]{0,31}", seat):
+        die(f"AGENT_SEAT={seat!r} is not a seat tag", EXIT_USAGE)
+    return seat
+
+
+def check_by(by: str | None, seat: str, flag: str = "--by") -> str:
+    if by is None:
+        return seat
+    if norm_seat(by) != seat:
+        die(f"{flag} {by} does not match AGENT_SEAT={seat}.  --by is never the source of identity; "
+            "run as that seat or drop the flag.", EXIT_USAGE)
+    return seat
+
+
+def seat_tag(seat: str, sessions: list[str] | None) -> str:
+    s8 = (sessions[0].replace("-", "")[:8]) if sessions else ""
+    return f"[{seat}·{s8}]" if s8 else f"[{seat}]"
+
+
+# ----------------------------------------------------------------- credentials and token
+
+def cred_path() -> Path:
+    return Path(env("LINEAR_FLEET_ENV") or (Path.home() / ".secrets" / "Linear" / "Fleet.env")).expanduser()
+
+
+def token_cache_path() -> Path:
+    return Path(env("LINEAR_FLEET_TOKEN_CACHE")
+                or (Path.home() / ".secrets" / "Linear" / "cache" / "Fleet.token")).expanduser()
+
+
+ID_KEYS = ("LINEAR_CLIENT_ID", "LINEAR_FLEET_CLIENT_ID")
+SECRET_KEYS = ("LINEAR_CLIENT_SECRET", "LINEAR_FLEET_CLIENT_SECRET")
+
+
+def load_creds() -> tuple[str, str, str]:
+    """(client_id, client_secret, where).  Only the Fleet app's client
+    credentials: a personal or admin API key is never read, from any file or
+    variable, so the CLI cannot act as Jay."""
+    p = cred_path()
+    vals: dict[str, str] = {}
+    if p.suffix != ".env":
+        die(f"LINEAR_FLEET_ENV must name a .env file holding only the Fleet app's client credentials; "
+            f"refusing {p}", EXIT_USAGE)
+    if p.is_file():
+        try:
+            for line in p.read_text().splitlines():
+                s = line.strip()
+                if s.startswith("export "):
+                    s = s[7:].strip()
+                if "=" not in s or s.startswith("#"):
+                    continue
+                k, v = s.split("=", 1)
+                k = k.strip()
+                if k in ID_KEYS or k in SECRET_KEYS:
+                    vals[k] = v.strip().strip('"').strip("'")
+        except OSError as e:
+            die(f"cannot read {p} ({type(e).__name__})", EXIT_NO_CREDS)
+    cid = next((vals[k] for k in ID_KEYS if vals.get(k)), "")
+    sec = next((vals[k] for k in SECRET_KEYS if vals.get(k)), "")
+    if cid and sec:
+        return cid, sec, str(p)
+    # Cloud seats (design section 2): the two values in that seat's environment.
+    cid_e, sec_e = os.environ.get("LINEAR_CLIENT_ID", "").strip(), os.environ.get("LINEAR_CLIENT_SECRET", "").strip()
+    if cid_e and sec_e:
+        return cid_e, sec_e, "environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)"
+    state = "has no LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET" if p.is_file() else "is missing"
+    die(f"no Fleet credentials: {p} {state}, and LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET are not set.  "
+        "Jay creates the Fleet Linear app and its client credentials first (linear-migration design "
+        "section 2).  Until then use BOARD_BACKEND=mac-collab.", EXIT_NO_CREDS)
+
+
+class Auth:
+    """Fleet token from a flock-protected cache; mints at most once per 24
+    hours per host (design section 2).  The token is never printed."""
+
+    def __init__(self, token_url: str):
+        self.token_url = token_url
+        self.token: str | None = None
+        self.info: dict = {}
+        self.where = ""
+
+    @staticmethod
+    def _fingerprint(cid: str, sec: str) -> str:
+        return hashlib.sha256(f"linear-board:creds:{cid}:{sec}".encode()).hexdigest()[:16]
+
+    def get(self, failed: str | None = None) -> str:
+        if self.token and self.token != failed:
+            return self.token
+        cid, sec, self.where = load_creds()
+        fp = self._fingerprint(cid, sec)
+        path = token_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            os.fchmod(fd, 0o600)
+            raw = b""
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                raw += chunk
+            try:
+                cache = json.loads(raw) if raw.strip() else {}
+            except ValueError:
+                cache = {}
+            now = time.time()
+            tok = cache.get("access_token")
+            same = cache.get("cred_fp") == fp
+            if tok and same and tok != failed and float(cache.get("expires_at") or 0) - now > 3600:
+                self.token, self.info = tok, cache
+                return tok
+            minted = float(cache.get("minted_at") or 0)
+            if same and now - minted < 86400 and env("LINEAR_BOARD_REMINT") != "1":
+                why = "Linear refused the cached Fleet token" if tok and tok == failed else \
+                      "the cached Fleet token is unusable"
+                die(f"{why}, and this host minted it {central(minted)}, under 24 hours ago.  Not minting "
+                    "again (design section 2: at most one mint a day per host).  If the app was rotated, "
+                    "update its credentials file; to force one mint, rerun with LINEAR_BOARD_REMINT=1.",
+                    EXIT_AUTH)
+            new = self._mint(cid, sec)
+            cache = {
+                "access_token": new["access_token"],
+                "token_type": new.get("token_type") or "Bearer",
+                "scope": new.get("scope") or SCOPE,
+                "minted_at": now,
+                "expires_at": now + float(new.get("expires_in") or 30 * 86400),
+                "mint_count": int(cache.get("mint_count") or 0) + 1,
+                "cred_fp": fp,
+            }
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+            os.write(fd, json.dumps(cache).encode())
+            os.fsync(fd)
+            self.token, self.info = cache["access_token"], cache
+            return self.token
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    def _mint(self, cid: str, sec: str) -> dict:
+        body = urllib.parse.urlencode({
+            "grant_type": "client_credentials", "client_id": cid, "client_secret": sec, "scope": SCOPE,
+        }).encode()
+        req = urllib.request.Request(self.token_url, data=body, method="POST", headers={
+            "Content-Type": "application/x-www-form-urlencoded", "User-Agent": USER_AGENT})
+        timeout = env_float("LINEAR_BOARD_TIMEOUT", 60)
+        try:
+            with opener().open(req, timeout=timeout) as r:
+                js = json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            try:
+                js = json.loads(e.read() or b"{}")
+            except ValueError:
+                js = {}
+            err = str(js.get("error") or "")[:80]
+            desc = str(js.get("error_description") or "")[:200]
+            die(f"minting the Fleet token failed: HTTP {e.code} {err} {desc}".rstrip(), EXIT_AUTH)
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
+            die(f"cannot reach Linear to mint the Fleet token ({type(e).__name__})", EXIT_ERROR)
+        if not isinstance(js, dict) or not js.get("access_token"):
+            die("minting the Fleet token failed: Linear answered without an access token", EXIT_AUTH)
+        return js
+
+
+# ----------------------------------------------------------------- GraphQL client
+
+class GqlError(Exception):
+    def __init__(self, errors: list, data=None):
+        self.errors = [e for e in (errors or []) if isinstance(e, dict)] or [{"message": "unknown error"}]
+        self.data = data
+        super().__init__("; ".join((e.get("message") or "error")[:300] for e in self.errors))
+
+    def not_found(self) -> bool:
+        for e in self.errors:
+            code = str((e.get("extensions") or {}).get("code") or "").upper()
+            if code in ("NOT_FOUND", "ENTITY_NOT_FOUND") or \
+                    re.search(r"not found|could not find|does not exist", e.get("message") or "", re.I):
+                return True
+        return False
+
+
+def _err_code(e: dict) -> str:
+    ext = e.get("extensions") or {}
+    return str(ext.get("code") or ext.get("type") or "").upper().replace(" ", "_")
+
+
+def _is_ratelimit(e: dict) -> bool:
+    return _err_code(e) == "RATELIMITED" or "rate limit" in (e.get("message") or "").lower()
+
+
+def _is_auth_error(e: dict) -> bool:
+    return _err_code(e) in ("AUTHENTICATION_ERROR", "UNAUTHENTICATED")
+
+
+class Linear:
+    def __init__(self, auth: Auth, url: str):
+        self.auth = auth
+        self.url = url
+        self.opener = opener()
+        self.timeout = env_float("LINEAR_BOARD_TIMEOUT", 60)
+        self.base_delay = env_float("LINEAR_BOARD_BACKOFF_BASE", 2.0)
+        self.max_wait = env_float("LINEAR_BOARD_MAX_WAIT", 90.0)
+        self.requests = 0
+
+    def _post(self, body: bytes, token: str):
+        req = urllib.request.Request(self.url, data=body, method="POST", headers={
+            "Content-Type": "application/json", "Authorization": f"Bearer {token}",
+            "User-Agent": USER_AGENT})
+        self.requests += 1
+        try:
+            with self.opener.open(req, timeout=self.timeout) as r:
+                raw = r.read()
+                return r.status, (json.loads(raw) if raw else {}), {k.lower(): v for k, v in r.headers.items()}
+        except urllib.error.HTTPError as e:
+            if 300 <= e.code < 400:
+                die(f"Linear answered with a redirect (HTTP {e.code}); refusing to follow it")
+            raw = e.read() or b""
+            try:
+                js = json.loads(raw)
+            except ValueError:
+                js = {}
+            return e.code, (js if isinstance(js, dict) else {}), {k.lower(): v for k, v in (e.headers or {}).items()}
+
+    @staticmethod
+    def _reset_at(hdrs: dict) -> float | None:
+        stamps = []
+        for h in ("x-ratelimit-requests-reset", "x-ratelimit-complexity-reset",
+                  "x-ratelimit-endpoint-requests-reset"):
+            v = hdrs.get(h)
+            if v and v.isdigit():
+                stamps.append(int(v) / 1000.0)
+        ra = hdrs.get("retry-after")
+        if ra and re.fullmatch(r"\d+(\.\d+)?", ra):
+            stamps.append(time.time() + float(ra))
+        return max(stamps) if stamps else None
+
+    def call(self, query: str, variables: dict | None = None) -> dict:
+        """Data of one GraphQL operation.  Raises GqlError on GraphQL errors.
+        Retries Linear's rate limit (HTTP 400 RATELIMITED, or 429), 5xx and
+        transport errors with backoff, never past LINEAR_BOARD_MAX_WAIT."""
+        body = json.dumps({"query": query, "variables": variables or {}}).encode()
+        deadline = time.time() + self.max_wait
+        delay = self.base_delay
+        token = self.auth.get()
+        reminted = False
+        for _ in range(12):
+            try:
+                status, js, hdrs = self._post(body, token)
+            except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+                if time.time() + delay > deadline:
+                    die(f"no usable response from Linear ({type(e).__name__}); the last request was not "
+                        "confirmed.  Raise LINEAR_BOARD_TIMEOUT or LINEAR_BOARD_MAX_WAIT on a loaded host.")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            errs = js.get("errors") or []
+            if status == 429 or any(_is_ratelimit(e) for e in errs):
+                reset = self._reset_at(hdrs)
+                wait = max((reset - time.time()) if reset else 0, delay)
+                if time.time() + wait > deadline:
+                    when = central(reset) if reset else "within the hour"
+                    die(f"Linear rate limit: the shared Fleet app's budget resets {when}.  This request was "
+                        "not applied; rerun it after the reset.", EXIT_RATE_LIMIT)
+                time.sleep(wait)
+                delay = min(delay * 2, 30)
+                continue
+            if status == 401 or any(_is_auth_error(e) for e in errs):
+                if reminted:
+                    die("Linear refused a freshly minted Fleet token; check the app in Linear's API settings",
+                        EXIT_AUTH)
+                token = self.auth.get(failed=token)
+                reminted = True
+                continue
+            if status == 403:
+                die("Linear answered 403: the Fleet app may not do this (scope or team access)", EXIT_AUTH)
+            if status >= 500:
+                if time.time() + delay > deadline:
+                    die(f"Linear answered HTTP {status} until LINEAR_BOARD_MAX_WAIT ran out")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            data = js.get("data")
+            if errs or data is None:
+                raise GqlError(errs or [{"message": f"HTTP {status} with no data"}], data)
+            return data
+        die("gave up after repeated retries against Linear")
+
+    def paginate(self, query: str, variables: dict, path: tuple, page: int, limit: int | None = None):
+        """Yield nodes of the connection at `path`, following endCursor."""
+        after = None
+        got = 0
+        while True:
+            data = self.call(query, dict(variables, first=page, after=after))
+            conn = data
+            for k in path:
+                conn = (conn or {}).get(k)
+            if not conn:
+                return
+            for n in conn.get("nodes") or []:
+                yield n
+                got += 1
+                if limit is not None and got >= limit:
+                    return
+            info = conn.get("pageInfo") or {}
+            if not info.get("hasNextPage") or not info.get("endCursor"):
+                return
+            after = info["endCursor"]
+
+
+# ----------------------------------------------------------------- GraphQL text
+# Every connection names an explicit first:, and every list follows pageInfo.
+
+F_ISSUE = """
+fragment BoardIssue on Issue {
+  id identifier title url priority createdAt updatedAt
+  state { id name type }
+  team { id key name }
+  labels(first: 50) { nodes { id name parent { name } } }
+}"""
+Q_ISSUE = """query BoardIssue($id: String!) {
+  issue(id: $id) {
+    ...BoardIssue
+    description
+    attachments(first: 50) { nodes { url title } }
+    relations(first: 50) { nodes { type relatedIssue { id identifier } } }
+    inverseRelations(first: 50) { nodes { type issue { id identifier } } }
+  }
+}""" + F_ISSUE
+Q_COMMENTS = """query BoardComments($id: String!, $first: Int!, $after: String) {
+  issue(id: $id) {
+    comments(first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { id body createdAt user { name } }
+    }
+  }
+}"""
+Q_LIST = """query BoardList($filter: IssueFilter, $first: Int!, $after: String) {
+  issues(filter: $filter, first: $first, after: $after, orderBy: createdAt) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ...BoardIssue }
+  }
+}""" + F_ISSUE
+Q_COUNT = """query BoardCount($filter: IssueFilter, $first: Int!, $after: String) {
+  issues(filter: $filter, first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id }
+  }
+}"""
+Q_TEAMS = """query BoardTeams($first: Int!, $after: String) {
+  teams(first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id key name issueCount states(first: 50) { nodes { id name type } } }
+  }
+}"""
+Q_LABELS = """query BoardLabels($first: Int!, $after: String) {
+  issueLabels(first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id name isGroup parent { name } team { key } }
+  }
+}"""
+Q_WHOAMI = """query BoardWhoami {
+  viewer { id name displayName email app }
+  organization { name urlKey }
+}"""
+Q_UID_ATTACHMENT = """query BoardUidAttachment($url: String!, $first: Int!, $after: String) {
+  attachmentsForURL(url: $url, first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { issue { id identifier team { key } } }
+  }
+}"""
+Q_COMMENT_ONE = """query BoardCommentOne($id: String!) { comment(id: $id) { id } }"""
+M_CREATE = """mutation BoardFile($input: IssueCreateInput!) {
+  issueCreate(input: $input) { success issue { ...BoardIssue } }
+}""" + F_ISSUE
+M_UPDATE = """mutation BoardUpdate($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) { success issue { ...BoardIssue } }
+}""" + F_ISSUE
+M_COMMENT = """mutation BoardComment($input: CommentCreateInput!) {
+  commentCreate(input: $input) { success comment { id } }
+}"""
+M_RELATE = """mutation BoardRelate($input: IssueRelationCreateInput!) {
+  issueRelationCreate(input: $input) { success issueRelation { id } }
+}"""
+M_ATTACH = """mutation BoardAttach($input: AttachmentCreateInput!) {
+  attachmentCreate(input: $input) { success attachment { id } }
+}"""
+M_LABEL = """mutation BoardLabelCreate($input: IssueLabelCreateInput!) {
+  issueLabelCreate(input: $input) { success issueLabel { id name } }
+}"""
+
+
+# ----------------------------------------------------------------- workspace ids (non-secret cache)
+
+def label_key(node: dict) -> str:
+    parent = (node.get("parent") or {}).get("name")
+    return f"{parent}/{node['name']}" if parent else node["name"]
+
+
+class Workspace:
+    """Team, workflow-state and label ids, cached for a day in the
+    non-secret cache dir so each verb spends its requests on the work."""
+
+    TTL = 86400
+
+    def __init__(self, L: Linear):
+        self.L = L
+        self.teams: dict = {}
+        self.labels: dict = {}
+        self.fresh = False
+        self._load()
+
+    def _path(self) -> Path:
+        return cache_dir() / "workspace.json"
+
+    def _load(self, refresh: bool = False) -> None:
+        d = None if refresh else read_json_file(self._path())
+        if d and d.get("api") == self.L.url and time.time() - float(d.get("at") or 0) < self.TTL:
+            self.teams, self.labels = d.get("teams") or {}, d.get("labels") or {}
+            return
+        teams = {}
+        for t in self.L.paginate(Q_TEAMS, {}, ("teams",), 50):
+            teams[t["key"]] = {"id": t["id"], "name": t["name"],
+                               "states": {s["name"]: s["id"] for s in (t.get("states") or {}).get("nodes") or []}}
+        workspace_labels: dict = {}
+        team_labels: dict = {}
+        for lb in self.L.paginate(Q_LABELS, {}, ("issueLabels",), 250):
+            (team_labels if lb.get("team") else workspace_labels).setdefault(label_key(lb), lb["id"])
+        labels = dict(team_labels, **workspace_labels)  # a workspace label wins over a team label
+        self.teams, self.labels, self.fresh = teams, labels, True
+        write_json_file(self._path(), {"api": self.L.url, "at": time.time(), "teams": teams, "labels": labels})
+
+    def team(self, key: str) -> dict:
+        if key not in self.teams and not self.fresh:
+            self._load(refresh=True)
+        if key not in self.teams:
+            die(f"Linear has no team {key} visible to the Fleet app (teams must be public)")
+        return self.teams[key]
+
+    def state_id(self, team_key: str, name: str) -> str:
+        t = self.team(team_key)
+        if name not in t["states"] and not self.fresh:
+            self._load(refresh=True)
+            t = self.team(team_key)
+        if name not in t["states"]:
+            die(f"team {team_key} has no workflow state {name!r}")
+        return t["states"][name]
+
+    def label_id(self, key: str, create: bool = False) -> str | None:
+        if key not in self.labels and not self.fresh:
+            self._load(refresh=True)
+        if key in self.labels:
+            return self.labels[key]
+        if not create:
+            return None
+        group = key.split(":", 1)[0]
+        lid = det_uuid("label", key)
+        try:
+            self.L.call(M_LABEL, {"input": {"id": lid, "name": key, "color": LABEL_COLORS.get(group, "#6b7280")}})
+        except GqlError as e:
+            self._load(refresh=True)
+            if key in self.labels:
+                return self.labels[key]
+            die(f"could not create label {key!r}: {e}")
+        self.labels[key] = lid
+        d = read_json_file(self._path()) or {}
+        if d.get("api") == self.L.url:
+            d.setdefault("labels", {})[key] = lid
+            write_json_file(self._path(), d)
+        return lid
+
+
+# ----------------------------------------------------------------- ids
+
+class IdIndex:
+    """board-ids.txt: one imported board id per line, plus the Linear UUID
+    after a tab when the import merged that row into another issue.  Seen ids
+    (issues this host listed or showed) extend it, so a prefix printed by
+    `list` resolves even for issues created after the import."""
+
+    def __init__(self):
+        self.targets: dict[str, str] = {}
+        path = Path(env("LINEAR_BOARD_IDS") or (Path(__file__).resolve().parent / "board-ids.txt"))
+        self._read(path)
+        self._read(cache_dir() / "seen-ids.tsv")
+
+    def _read(self, path: Path) -> None:
+        try:
+            text = path.read_text()
+        except OSError:
+            return
+        for line in text.splitlines():
+            parts = line.strip().split("\t")
+            if not parts or not parts[0] or parts[0].startswith("#"):
+                continue
+            b = parts[0].replace("-", "").lower()
+            if not re.fullmatch(r"[0-9a-f]{32}", b):
+                continue
+            lin = parts[1].replace("-", "").lower() if len(parts) > 1 and parts[1] else b
+            if not re.fullmatch(r"[0-9a-f]{32}", lin):
+                continue
+            self.targets.setdefault(b, hyphenate(lin))
+            self.targets.setdefault(lin, hyphenate(lin))
+
+    def resolve(self, raw: str) -> str:
+        """The key for issue(id:): a Linear UUID or an identifier."""
+        s = (raw or "").strip()
+        if IDENT_RE.match(s):
+            return s.upper()
+        h = s.lower().replace("-", "")
+        if not HEX_RE.match(h or "x"):
+            die(f"{raw!r} is not a board id, a hex prefix of one, or an identifier like AFC-123", EXIT_USAGE)
+        if len(h) == 32:
+            return self.targets.get(h) or hyphenate(h)
+        if len(h) < 8:
+            die(f"id prefix {raw!r} is too short; use 8 or more hex characters or the identifier", EXIT_USAGE)
+        hits = sorted({v for k, v in self.targets.items() if k.startswith(h)})
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            shown = ", ".join(x.replace("-", "") for x in hits[:5])
+            die(f"id prefix {raw!r} is ambiguous ({len(hits)} issues: {shown}); give more characters", EXIT_USAGE)
+        die(f"no imported board id starts with {raw!r}.  Issues created in Linear have no board id: use the "
+            "identifier `board list` prints (AFC-123) or the full id.", EXIT_ERROR)
+
+
+def remember(issues: list[dict]) -> None:
+    """Record ids this host has shown, bounded to the newest 5,000."""
+    if not issues:
+        return
+    path = cache_dir() / "seen-ids.tsv"
+    try:
+        with open(path, "a") as f:
+            for n in issues:
+                if n.get("id"):
+                    f.write(f"{n['id']}\t{n['id']}\t{n.get('identifier') or ''}\n")
+        lines = path.read_text().splitlines()
+        if len(lines) > 6000:
+            write_tail = "\n".join(lines[-5000:]) + "\n"
+            tmp = path.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(write_tail)
+            os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def fetch_issue(L: Linear, key: str, raw: str) -> dict:
+    try:
+        d = L.call(Q_ISSUE, {"id": key})
+    except GqlError as e:
+        if e.not_found():
+            die(f"no issue {raw}", EXIT_ERROR)
+        raise
+    if not d.get("issue"):
+        die(f"no issue {raw}", EXIT_ERROR)
+    return d["issue"]
+
+
+# ----------------------------------------------------------------- mapping issues to board rows
+
+def labels_of(n: dict) -> list[str]:
+    return [label_key(x) for x in ((n.get("labels") or {}).get("nodes") or [])]
+
+
+def group_value(n: dict, group: str) -> str | None:
+    for k in labels_of(n):
+        if k.startswith(group + "/"):
+            return k.split("/", 1)[1]
+    return None
+
+
+def seats_of(n: dict) -> list[str]:
+    return [k.split(":", 1)[1] for k in labels_of(n) if k.startswith("seat:")]
+
+
+def severity_of(n: dict) -> str | None:
+    """Linear priority is the source (the UI edits it); the Severity label
+    only tells P3 from P4, which share priority Low."""
+    p = n.get("priority") or 0
+    if p == 4:
+        return "P4" if group_value(n, "Severity") == "P4" else "P3"
+    return {1: "P0", 2: "P1", 3: "P2"}.get(p)
+
+
+def status_of(n: dict) -> str:
+    name = (n.get("state") or {}).get("name") or ""
+    return STATE_TO_STATUS.get(name) or name.lower().replace(" ", "_").replace("'", "")
+
+
+def app_of(n: dict) -> str:
+    for k in labels_of(n):
+        if k.startswith("app:"):
+            return k.split(":", 1)[1]
+    return (n.get("team") or {}).get("key") or ""
+
+
+def row_dict(n: dict) -> dict:
+    seats = seats_of(n)
+    return {
+        "id": n.get("id"), "identifier": n.get("identifier"), "url": n.get("url"),
+        "title": n.get("title"), "severity": severity_of(n), "status": status_of(n),
+        "state": (n.get("state") or {}).get("name"), "app": app_of(n),
+        "team": (n.get("team") or {}).get("key"), "source_kind": group_value(n, "Kind"),
+        "env": group_value(n, "Env"), "addressed_by": ",".join(seats) or None,
+        "labels": labels_of(n), "priority": n.get("priority"),
+        "created_at": n.get("createdAt"), "updated_at": n.get("updatedAt"),
+    }
+
+
+def fmt_row(r: dict) -> str:
+    sev = r.get("severity") or "--"
+    who = r.get("addressed_by") or ""
+    where = r.get("env") or ""
+    line = f"{short_id(r['id'])}  {sev:<3} {r.get('status', ''):<12} {r.get('app', '')}  {r.get('identifier') or ''}"
+    tail = " ".join(x for x in (f"@{who}" if who else "", where) if x)
+    title = (r.get("title") or "").replace("\n", " ")
+    if len(title) > 88:
+        title = title[:85] + "..."
+    return f"{line.rstrip()}\n     {title}" + (f"\n     {tail}" if tail else "")
+
+
+def split_description(desc: str | None) -> dict:
+    body = (desc or "").replace("\r\n", "\n")
+    out = {"description": "", "recommended_fix": "", "footer": "", "reported_by": None}
+    i = body.rfind("\n---\n")
+    if i >= 0:
+        out["footer"] = HTML_COMMENT_RE.sub("\n", body[i + 5:]).strip()
+        body = body[:i]
+    m = re.search(r"(?m)^#{1,3} Recommended fix\s*$", body)
+    if m:
+        out["recommended_fix"] = body[m.end():].strip()
+        body = body[:m.start()]
+    body = body.strip()
+    tm = TAG_RE.match(body)
+    if tm:
+        out["reported_by"] = tm.group(1)
+        first, _, rest = body.partition("\n")
+        body = rest.strip()
+    if re.fullmatch(r"[_*]No description[^\n]*[_*]", body):
+        body = ""
+    out["description"] = body
+    if not out["reported_by"]:
+        rm = re.search(r"[Rr]eported by ([^,\n]+)", out["footer"])
+        if rm:
+            out["reported_by"] = rm.group(1).strip()
+    return out
+
+
+def parse_comment(c: dict) -> dict:
+    body = (c.get("body") or "").replace("\r\n", "\n")
+    author = ((c.get("user") or {}).get("name")) or "unknown"
+    where = ""
+    sessions = ""
+    tm = TAG_RE.match(body)
+    mm = MIGRATED_COMMENT_RE.match(body)
+    if tm:
+        author = tm.group(1)
+        body = body[tm.end():]
+        lines = body.rstrip().split("\n")
+        while lines and re.match(r"^(Where|Sessions): ", lines[-1]):
+            k, _, v = lines.pop().partition(": ")
+            if k == "Where":
+                where = v.strip()
+            else:
+                sessions = v.strip()
+        body = "\n".join(lines).strip()
+    elif mm:
+        author = mm.group(1)
+        where = mm.group(3) or ""
+        body = body[mm.end():]
+    body = HTML_COMMENT_RE.sub("\n", body).strip()
+    return {"id": c.get("id"), "author": author, "text": body, "where": where,
+            "sessions": sessions, "created_at": c.get("createdAt")}
+
+
+def resolution_of(comments: list[dict]) -> str:
+    for c in reversed(comments):
+        t = c["text"]
+        m = re.match(r"^Resolution(?: \([^)]*\))?: ?(.*)$", t, re.S)
+        if m:
+            return m.group(1).strip()
+        if c["author"].startswith("Resolution"):
+            return t
+    return ""
+
+
+def location_of(comments: list[dict], footer: str) -> str:
+    for c in reversed(comments):
+        if c["text"].startswith("CLAIMED") and c["where"]:
+            return c["where"]
+    m = re.search(r"[Ll]ocation:? ([^\n]+)", footer or "")
+    return m.group(1).strip().replace("\\~", "~") if m else ""
+
+
+def all_comments(L: Linear, issue_id: str) -> list[dict]:
+    nodes = list(L.paginate(Q_COMMENTS, {"id": issue_id}, ("issue", "comments"), 100))
+    nodes.sort(key=lambda c: c.get("createdAt") or "")
+    return [parse_comment(c) for c in nodes]
+
+
+# ----------------------------------------------------------------- routing and filters
+
+def route_app(app: str | None) -> tuple[str, str | None]:
+    """(team key, fallback slug).  Team keys and board slugs both work."""
+    a = (app or DEFAULT_APP).strip()
+    if a.upper() in TEAM_KEYS:
+        return a.upper(), None
+    t = BOARD_SLUG_TEAM.get(a.lower()) or BOARD_SLUG_TEAM.get(slugify(a))
+    if t:
+        return t, None
+    return FALLBACK_TEAM, slugify(a) or "unknown"
+
+
+def and_filter(parts: list[dict]) -> dict:
+    parts = [p for p in parts if p]
+    if not parts:
+        return {}
+    return parts[0] if len(parts) == 1 else {"and": parts}
+
+
+def label_cond(name: str, group: str | None = None, names: list[str] | None = None) -> dict:
+    cond: dict = {"name": {"in": names}} if names else {"name": {"eq": name}}
+    if group:
+        cond["parent"] = {"name": {"eq": group}}
+    return {"labels": {"some": cond}}
+
+
+def split_csv(v: str | None) -> list[str]:
+    return [x.strip() for x in (v or "").split(",") if x.strip()]
+
+
+def list_filter(a) -> tuple[list[dict], list[str] | None]:
+    parts: list[dict] = []
+    if a.app:
+        team, fslug = route_app(a.app)
+        parts.append({"team": {"key": {"eq": team}}})
+        if fslug:
+            parts.append(label_cond(f"app:{fslug}"))
+    if a.status:
+        states: list[str] = []
+        for s in split_csv(a.status.lower()):
+            if s not in LIST_STATUS_STATES:
+                die(f"unknown status {s!r}; use {', '.join(STATUS_WORDS)}", EXIT_USAGE)
+            states += [x for x in LIST_STATUS_STATES[s] if x not in states]
+        parts.append({"state": {"name": {"in": states}}})
+    sevs = None
+    if a.severity:
+        sevs = [s.upper() for s in split_csv(a.severity)]
+        bad = [s for s in sevs if s not in SEVERITIES]
+        if bad:
+            die(f"unknown severity {', '.join(bad)}; use P0 to P4", EXIT_USAGE)
+    if a.source_kind:
+        kinds = split_csv(a.source_kind)
+        parts.append(label_cond("", "Kind", kinds))
+    if a.search:
+        parts.append({"title": {"containsIgnoreCase": a.search}})
+    if a.mine:
+        parts.append(label_cond(f"seat:{norm_seat(a.mine)}"))
+    return parts, sevs
+
+
+# ----------------------------------------------------------------- verbs
+
+def cmd_list(L: Linear, a) -> int:
+    try:
+        limit = max(1, min(int(a.limit), 2000))
+    except ValueError:
+        die("--limit must be a number", EXIT_USAGE)
+    parts, sevs = list_filter(a)
+    prios = [p for p in PRIORITY_ORDER if not sevs or p in {SEV_PRIORITY[s] for s in sevs}]
+    rows: list[dict] = []
+    more = False
+    for p in prios:
+        filt = and_filter(parts + [{"priority": {"eq": p}}])
+        need = limit - len(rows) + 1
+        for n in L.paginate(Q_LIST, {"filter": filt}, ("issues",), min(50, max(need, 10))):
+            if sevs and severity_of(n) not in sevs:
+                continue
+            if len(rows) >= limit:
+                more = True
+                break
+            rows.append(n)
+        if more:
+            break
+    sev_rank = {s: i for i, s in enumerate(SEVERITIES)}
+    rows.sort(key=lambda n: n.get("createdAt") or "", reverse=True)
+    rows.sort(key=lambda n: sev_rank.get(severity_of(n) or "", 5))
+    remember(rows)
+    out = [row_dict(n) for n in rows]
+    if a.json:
+        print(json.dumps(out, indent=2))
+        return 0
+    total = str(len(out))
+    if more:
+        total = count_matching(L, parts, prios, sevs)
+    print(f"{len(out)} shown of {total} matching\n")
+    for r in out:
+        print(fmt_row(r))
+        print()
+    return 0
+
+
+def count_matching(L: Linear, parts: list[dict], prios: list[int], sevs: list[str] | None) -> str:
+    """Bounded count (the shared app has one request budget for the fleet):
+    exact up to LINEAR_BOARD_COUNT_CAP, then 'N+'."""
+    cap = int(env_float("LINEAR_BOARD_COUNT_CAP", 1000))
+    filt = and_filter(parts + ([{"priority": {"in": prios}}] if sevs else []))
+    exact_by_priority = not sevs or ("P3" in sevs) == ("P4" in sevs)
+    n = 0
+    if exact_by_priority:
+        it = L.paginate(Q_COUNT, {"filter": filt}, ("issues",), 250)
+    else:
+        it = (x for x in L.paginate(Q_LIST, {"filter": filt}, ("issues",), 50) if severity_of(x) in sevs)
+    for _ in it:
+        n += 1
+        if n >= cap:
+            return f"{cap}+"
+    return str(n)
+
+
+def cmd_show(L: Linear, ids: IdIndex, a) -> int:
+    n = fetch_issue(L, ids.resolve(a.id), a.id)
+    remember([n])
+    comments = all_comments(L, n["id"])
+    parts = split_description(n.get("description"))
+    r = row_dict(n)
+    r.update({
+        "description": parts["description"], "recommended_fix": parts["recommended_fix"],
+        "resolution": resolution_of(comments), "reported_by": parts["reported_by"],
+        "location": location_of(comments, parts["footer"]), "provenance": parts["footer"],
+        "attachments": [x.get("url") for x in (n.get("attachments") or {}).get("nodes") or []],
+        "relations": ([{"type": x["type"], "issue": (x.get("relatedIssue") or {}).get("identifier"),
+                        "direction": "outgoing"} for x in (n.get("relations") or {}).get("nodes") or []]
+                      + [{"type": x["type"], "issue": (x.get("issue") or {}).get("identifier"),
+                          "direction": "incoming"} for x in (n.get("inverseRelations") or {}).get("nodes") or []]),
+        "comments": comments,
+    })
+    if a.json:
+        print(json.dumps(r, indent=2))
+        return 0
+    print(f"{r['severity'] or '--'}  {r['status']}  {r['app']}  ({r['source_kind']})")
+    print(r["title"])
+    print()
+    for label, key in (("Description", "description"), ("Fix", "recommended_fix"), ("Resolution", "resolution")):
+        if r.get(key):
+            print(f"--- {label} ---")
+            print(r[key])
+            print()
+    print("--- meta ---")
+    meta = [("identifier", r["identifier"]), ("url", r["url"]), ("team", r["team"]), ("state", r["state"]),
+            ("reported_by", r["reported_by"]), ("addressed_by", r["addressed_by"]), ("env", r["env"]),
+            ("location", r["location"]), ("source_url", ", ".join(r["attachments"])),
+            ("created_at", central(r["created_at"]) if r["created_at"] else ""),
+            ("updated_at", central(r["updated_at"]) if r["updated_at"] else ""),
+            ("labels", ", ".join(r["labels"]))]
+    for k, v in meta:
+        if v:
+            print(f"  {k}: {v}")
+    for rel in r["relations"]:
+        if rel["type"] == "duplicate":
+            words = "duplicate of" if rel["direction"] == "outgoing" else "duplicated by"
+        else:
+            words = f"{rel['type']} ({rel['direction']})"
+        print(f"  {words}: {rel['issue']}")
+    if r["provenance"]:
+        print("  provenance:")
+        for line in r["provenance"].splitlines():
+            if line.strip():
+                print(f"    {line.rstrip()}")
+    if comments:
+        print("\n--- comments ---")
+        for c in comments:
+            where = f" ({c['where']})" if c["where"] else ""
+            stamp = central(c["created_at"], with_day=False) if c["created_at"] else ""
+            print(f"  [{stamp}] {c['author']}{where}: {c['text']}")
+    return 0
+
+
+def norm_env(v: str | None) -> str | None:
+    if not v:
+        return None
+    e = ENVS.get(v.strip().lower())
+    if not e:
+        die(f"--env must be Mac or cloud, not {v!r}", EXIT_USAGE)
+    return e
+
+
+def uid_url(app_key: str, uid: str) -> str:
+    if re.match(r"^https?://", uid):
+        return uid
+    return f"https://board.jays.services/uid/{urllib.parse.quote(app_key, safe='')}/{urllib.parse.quote(uid, safe='')}"
+
+
+def find_existing(L: Linear, iid: str, team: str, uid: str, url: str) -> dict | None:
+    """The issue a repeat `file --uid` must return: its derived id, an
+    attachment with the uid URL, or an imported footer naming the uid."""
+    try:
+        d = L.call(Q_ISSUE, {"id": iid})
+        if d.get("issue"):
+            return d["issue"]
+    except GqlError as e:
+        if not e.not_found():
+            raise
+    for node in L.paginate(Q_UID_ATTACHMENT, {"url": url}, ("attachmentsForURL",), 25):
+        iss = node.get("issue") or {}
+        if (iss.get("team") or {}).get("key") == team:
+            return fetch_issue(L, iss["id"], iss.get("identifier") or iss["id"])
+    filt = {"and": [{"team": {"key": {"eq": team}}},
+                    {"description": {"contains": f"External uid: `{uid}`"}}]}
+    for n in L.paginate(Q_LIST, {"filter": filt}, ("issues",), 5, limit=1):
+        return n
+    return None
+
+
+def cmd_file(L: Linear, a, seat: str) -> int:
+    by = check_by(a.reported_by, seat)
+    team, fslug = route_app(a.app)
+    app_display = fslug or team
+    sev = (a.severity or "").upper() or None
+    if sev and sev not in SEVERITIES:
+        die("--severity must be P0 to P4", EXIT_USAGE)
+    kind = a.source_kind or "agent-report"
+    if kind not in KINDS:
+        die(f"--kind must be one of {', '.join(KINDS)}", EXIT_USAGE)
+    env_label = norm_env(a.env)
+    title = a.title.strip()
+    if not title:
+        die("--title is empty", EXIT_USAGE)
+    ws = Workspace(L)
+    key_app = f"{team}:{fslug or ''}"
+    iid = det_uuid("issue", f"{key_app}:{a.external_uid}") if a.external_uid else str(uuid.uuid4())
+    url_for_uid = uid_url(app_display, a.external_uid) if a.external_uid else None
+    if a.external_uid:
+        found = find_existing(L, iid, team, a.external_uid, url_for_uid)
+        if found:
+            remember([found])
+            r = row_dict(found)
+            print(f"filed {found['id']}  ({r['severity'] or '--'} {r['app']})  {found.get('identifier') or ''}"
+                  f"  (already filed; unchanged)")
+            return 0
+    sessions = auto_sessions(None)
+    lines = [f"{seat_tag(by, sessions)} Filed with the board CLI.", ""]
+    full_title = title
+    if len(title) > 250:
+        title = title[:247] + "..."
+        lines += [f"**{full_title}**", ""]
+    lines.append((a.desc or "").strip() or "_No description given._")
+    if (a.fix or "").strip():
+        lines += ["", "## Recommended fix", "", a.fix.strip()]
+    foot = ["", "---", "", "**Filed with the board CLI**", "", f"- Reported by {by}",
+            f"- App: `{(a.app or DEFAULT_APP).strip()}` (team {team})", f"- Kind: {kind}"]
+    if env_label or a.location:
+        foot.append("- " + ", ".join(x for x in (f"Env {env_label}" if env_label else "",
+                                                  f"location {a.location}" if a.location else "") if x))
+    if a.external_uid:
+        foot.append(f"- External uid: `{a.external_uid}`")
+    if a.source_url:
+        foot.append(f"- Source URL: {a.source_url}")
+    foot += ["", f"<!-- board-cli: app={app_display} kind={kind} -->"]
+    label_ids = [ws.label_id(f"Kind/{kind}")]
+    if sev:
+        label_ids.append(ws.label_id(f"Severity/{sev}"))
+    if env_label:
+        label_ids.append(ws.label_id(f"Env/{env_label}"))
+    if fslug:
+        label_ids.append(ws.label_id(f"app:{fslug}", create=True))
+    inp = {
+        "id": iid, "teamId": ws.team(team)["id"], "title": title,
+        "description": "\n".join(lines + foot), "stateId": ws.state_id(team, "Todo"),
+        "labelIds": [x for x in label_ids if x],
+    }
+    if sev:
+        inp["priority"] = SEV_PRIORITY[sev]
+    try:
+        d = L.call(M_CREATE, {"input": inp})
+        issue = (d.get("issueCreate") or {}).get("issue")
+    except GqlError as e:
+        issue = None
+        try:
+            issue = L.call(Q_ISSUE, {"id": iid}).get("issue")
+        except GqlError:
+            pass
+        if not issue:
+            die(f"Linear refused the new issue: {e}")
+    if not issue:
+        issue = fetch_issue(L, iid, iid)
+    for url, label in ((url_for_uid, f"board uid {a.external_uid}"), (a.source_url, "Source")):
+        if not url:
+            continue
+        try:
+            L.call(M_ATTACH, {"input": {"issueId": issue["id"], "url": url, "title": label}})
+        except GqlError as e:
+            warn(f"filed, but attaching {url} failed ({e}); the footer still carries it")
+    remember([issue])
+    print(f"filed {issue['id']}  ({sev or '--'} {app_display})  {issue.get('identifier') or ''}")
+    return 0
+
+
+def post_comment(L: Linear, issue_id: str, body: str) -> None:
+    cid = str(uuid.uuid4())
+    try:
+        L.call(M_COMMENT, {"input": {"id": cid, "issueId": issue_id, "body": body}})
+    except GqlError as e:
+        try:
+            if L.call(Q_COMMENT_ONE, {"id": cid}).get("comment"):
+                return
+        except GqlError:
+            pass
+        die(f"Linear refused the comment: {e}")
+
+
+def comment_body(seat: str, sessions: list[str] | None, text: str, where: str | None = None,
+                 env_label: str | None = None) -> str:
+    body = f"{seat_tag(seat, sessions)} {text.strip()}"
+    loc = ", ".join(x for x in (env_label, where) if x)
+    extra = []
+    if loc:
+        extra.append(f"Where: {loc}")
+    if sessions:
+        extra.append(f"Sessions: {', '.join(sessions)}")
+    return body + ("\n\n" + "\n".join(extra) if extra else "")
+
+
+def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
+    by = check_by(a.addressed_by, seat)
+    if a.steal and not (a.reason or "").strip():
+        die("--steal needs --reason \"why you are taking it\"", EXIT_USAGE)
+    env_label = norm_env(a.env)
+    n = fetch_issue(L, ids.resolve(a.id), a.id)
+    team = n["team"]["key"]
+    holders = [s for s in seats_of(n) if s != by]
+    in_progress = (n.get("state") or {}).get("name") == "In Progress"
+    stolen = []
+    if in_progress and holders:
+        if not a.steal:
+            die(f"{short_id(n['id'])} ({n['identifier']}) is In Progress, claimed by {', '.join(holders)}.  "
+                "Ask that seat, or take it with --steal --reason \"...\".", EXIT_CLAIM_HELD)
+        stolen = holders
+    ws = Workspace(L)
+    current = {label_key(x): x["id"] for x in (n.get("labels") or {}).get("nodes") or []}
+    added = [ws.label_id(f"seat:{by}", create=True)]
+    removed = [current[f"seat:{s}"] for s in holders if f"seat:{s}" in current]
+    if "stale-claim" in current:
+        removed.append(current["stale-claim"])
+    if env_label:
+        added.append(ws.label_id(f"Env/{env_label}"))
+        removed += [lid for k, lid in current.items() if k.startswith("Env/") and k != f"Env/{env_label}"]
+    inp = {"stateId": ws.state_id(team, "In Progress"),
+           "addedLabelIds": [x for x in added if x and x not in current.values()],
+           "removedLabelIds": removed}
+    try:
+        L.call(M_UPDATE, {"id": n["id"], "input": inp})
+    except GqlError as e:
+        die(f"Linear refused the claim: {e}")
+    sessions = auto_sessions(a.session_ids)
+    text = "CLAIMED"
+    if stolen:
+        text += f" from {', '.join(stolen)}: {a.reason.strip()}"
+    post_comment(L, n["id"], comment_body(by, sessions, text, a.location, env_label))
+    remember([n])
+    print(f"claimed {short_id(n['id'])} by {by} -> in_progress{session_tail(sessions)}  {n['identifier']}")
+    return 0
+
+
+def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
+    by = check_by(a.addressed_by, seat)
+    value = a.value.strip().lower()
+    if value not in STATUS_WORDS:
+        die(f"unknown status {a.value!r}; use {', '.join(STATUS_WORDS)}", EXIT_USAGE)
+    if value == "duplicate" and not a.of:
+        die("status duplicate needs --of <id of the issue it duplicates>", EXIT_USAGE)
+    if a.of and value != "duplicate":
+        die("--of only goes with status duplicate", EXIT_USAGE)
+    n = fetch_issue(L, ids.resolve(a.id), a.id)
+    sessions = auto_sessions(a.session_ids)
+    if value == "duplicate":
+        canon = fetch_issue(L, ids.resolve(a.of), a.of)
+        if canon["id"] == n["id"]:
+            die("an issue cannot duplicate itself", EXIT_USAGE)
+        # Linear refuses a direct move to Duplicate; the relation moves it.
+        rid = det_uuid("relation", f"duplicate:{n['id']}:{canon['id']}")
+        try:
+            L.call(M_RELATE, {"input": {"id": rid, "type": "duplicate", "issueId": n["id"],
+                                        "relatedIssueId": canon["id"]}})
+        except GqlError as e:
+            back = fetch_issue(L, n["id"], a.id)
+            if not any(x.get("type") == "duplicate" and (x.get("relatedIssue") or {}).get("id") == canon["id"]
+                       for x in (back.get("relations") or {}).get("nodes") or []):
+                die(f"Linear refused the duplicate relation: {e}")
+        state = (fetch_issue(L, n["id"], a.id).get("state") or {}).get("name")
+        if state != "Duplicate":
+            time.sleep(env_float("LINEAR_BOARD_DUP_WAIT", 3))
+            state = (fetch_issue(L, n["id"], a.id).get("state") or {}).get("name")
+        text = f"Duplicate of {canon['identifier']}"
+        if a.resolution:
+            text = f"Resolution (duplicate of {canon['identifier']}): {a.resolution.strip()}"
+        post_comment(L, n["id"], comment_body(by, sessions, text))
+        if state != "Duplicate":
+            warn(f"the duplicate relation to {canon['identifier']} exists, but Linear left "
+                 f"{n['identifier']} in {state}.  It was not forced: Linear refuses a direct move to Duplicate.")
+            print(f"{short_id(n['id'])} -> {STATE_TO_STATUS.get(state, state)}{session_tail(sessions)}  "
+                  f"{n['identifier']}")
+            return 0
+        print(f"{short_id(n['id'])} -> duplicate{session_tail(sessions)}  {n['identifier']}")
+        return 0
+    ws = Workspace(L)
+    state_name = STATUS_TO_STATE[value]
+    try:
+        L.call(M_UPDATE, {"id": n["id"], "input": {"stateId": ws.state_id(n["team"]["key"], state_name)}})
+    except GqlError as e:
+        die(f"Linear refused the status change: {e}")
+    if a.resolution:
+        text = f"Resolution ({value}): {a.resolution.strip()}"
+    else:
+        text = f"Status: {value}"
+    post_comment(L, n["id"], comment_body(by, sessions, text))
+    print(f"{short_id(n['id'])} -> {value}{session_tail(sessions)}  {n['identifier']}")
+    return 0
+
+
+def cmd_comment(L: Linear, ids: IdIndex, a, seat: str) -> int:
+    by = check_by(a.author, seat)
+    if not a.text.strip():
+        die("--text is empty", EXIT_USAGE)
+    env_label = norm_env(a.env)
+    n = fetch_issue(L, ids.resolve(a.id), a.id)
+    sessions = auto_sessions(a.session_ids)
+    post_comment(L, n["id"], comment_body(by, sessions, a.text, a.location, env_label))
+    print(f"commented on {short_id(n['id'])} as {by}{session_tail(sessions)}  {n['identifier']}")
+    return 0
+
+
+def cmd_stats(L: Linear) -> int:
+    """Live counts, cached for LINEAR_BOARD_STATS_TTL seconds (default 600).
+    The design's counts snapshot (section 5) replaces this when it exists."""
+    path = cache_dir() / "stats.json"
+    ttl = env_float("LINEAR_BOARD_STATS_TTL", 600)
+    c = read_json_file(path)
+    if not (c and c.get("api") == L.url and time.time() - float(c.get("at") or 0) < ttl):
+        teams = list(L.paginate(Q_TEAMS, {}, ("teams",), 50))
+        total = sum(int(t.get("issueCount") or 0) for t in teams)
+        apps = sorted(t["key"] for t in teams if int(t.get("issueCount") or 0) > 0)
+        open_f = {"state": {"name": {"in": list(OPEN_STATES)}}}
+
+        def count(f: dict) -> int:
+            return sum(1 for _ in L.paginate(Q_COUNT, {"filter": f}, ("issues",), 250))
+
+        st = {
+            "total": total,
+            "open": count(open_f),
+            "p0p1_open": count({"and": [open_f, {"priority": {"in": [1, 2]}}]}),
+            "done": count({"state": {"name": {"in": list(DONE_STATES)}}}),
+            "by_kind": {k: count({"and": [open_f, label_cond(k, "Kind")]}) for k in KINDS},
+            "apps": apps,
+        }
+        c = {"api": L.url, "at": time.time(), "stats": st}
+        write_json_file(path, c)
+    d = c["stats"]
+    print(f"total {d['total']}   open {d['open']}   P0/P1 open {d['p0p1_open']}   done {d['done']}")
+    print("  open items by kind:")
+    for k, v in sorted(d.get("by_kind", {}).items()):
+        print(f"  {k:<16} {v}")
+    print("  apps: " + ", ".join(d.get("apps", [])))
+    return 0
+
+
+def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
+    try:
+        d = L.call(Q_WHOAMI)
+    except GqlError as e:
+        die(f"whoami failed: {e}", EXIT_AUTH)
+    v = d.get("viewer") or {}
+    org = d.get("organization") or {}
+    expected = env("LINEAR_FLEET_APP_NAME", "Fleet")
+    writes = "enabled" if env("LINEAR_BOARD_WRITES") == "1" else "disabled (LINEAR_BOARD_WRITES=1 turns them on at cutover)"
+    info = auth.info or {}
+    print(f"seat:        {seat} (AGENT_SEAT)")
+    print(f"backend:     linear ({L.url})")
+    print(f"writes:      {writes}")
+    print(f"viewer:      {v.get('name')} ({'app user' if v.get('app') else 'NOT an app user'})  id {v.get('id')}")
+    print(f"workspace:   {org.get('name')} ({org.get('urlKey')})")
+    print(f"credentials: {auth.where}")
+    if info.get("minted_at"):
+        print(f"token:       minted {central(info['minted_at'])}, expires {central(info.get('expires_at') or 0)}, "
+              f"mints on this host: {info.get('mint_count')}")
+    problems = []
+    if not v.get("app"):
+        problems.append("the viewer is a person, not the Fleet app; refusing to act as a human")
+    if v.get("name") != expected:
+        problems.append(f"the viewer is {v.get('name')!r}, not the {expected!r} app")
+    if org.get("urlKey") != WORKSPACE_URL_KEY:
+        problems.append(f"the workspace is {org.get('urlKey')!r}, not {WORKSPACE_URL_KEY!r}")
+    for p in problems:
+        print(f"board: {p}", file=sys.stderr)
+    return EXIT_AUTH if problems else 0
+
+
+# ----------------------------------------------------------------- main
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="board", description="Fleet work board (Linear backend).")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    lp = sub.add_parser("list", help="list/filter items")
+    lp.add_argument("--app")
+    lp.add_argument("--status")
+    lp.add_argument("--severity")
+    lp.add_argument("--kind", dest="source_kind")
+    lp.add_argument("--search")
+    lp.add_argument("--mine", help="only items claimed by this seat (seat:<TAG> label)")
+    lp.add_argument("--limit", default="60")
+    lp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("show", help="one item + comments")
+    sp.add_argument("id")
+    sp.add_argument("--json", action="store_true")
+
+    fp = sub.add_parser("file", help="file a new finding/issue")
+    fp.add_argument("--title", required=True)
+    fp.add_argument("--app", default=DEFAULT_APP)
+    fp.add_argument("--severity")
+    fp.add_argument("--desc")
+    fp.add_argument("--fix")
+    fp.add_argument("--by", dest="reported_by")
+    fp.add_argument("--where", dest="location")
+    fp.add_argument("--env")
+    fp.add_argument("--kind", dest="source_kind", default="agent-report")
+    fp.add_argument("--uid", dest="external_uid")
+    fp.add_argument("--url", dest="source_url")
+
+    session_help = f"session id to record (repeatable); ${SESSION_ENV_VAR} when omitted"
+    cp = sub.add_parser("claim", help="mark in_progress and put your seat on it")
+    cp.add_argument("id")
+    cp.add_argument("--by", dest="addressed_by", required=True)
+    cp.add_argument("--where", dest="location")
+    cp.add_argument("--env")
+    cp.add_argument("--session", dest="session_ids", action="append", help=session_help)
+    cp.add_argument("--steal", action="store_true", help="take a claim another seat holds (needs --reason)")
+    cp.add_argument("--reason")
+
+    stp = sub.add_parser("status", help="set status")
+    stp.add_argument("id")
+    stp.add_argument("value")
+    stp.add_argument("--by", dest="addressed_by")
+    stp.add_argument("--resolution")
+    stp.add_argument("--of", help="with duplicate: the id of the issue this one duplicates")
+    stp.add_argument("--session", dest="session_ids", action="append", help=session_help)
+
+    cmp_ = sub.add_parser("comment", help="comment on an item")
+    cmp_.add_argument("id")
+    cmp_.add_argument("--by", dest="author", required=True)
+    cmp_.add_argument("--text", required=True)
+    cmp_.add_argument("--where", dest="location")
+    cmp_.add_argument("--env")
+    cmp_.add_argument("--session", dest="session_ids", action="append", help=session_help)
+
+    sub.add_parser("stats", help="aggregate counts")
+    sub.add_parser("whoami", help="the Linear identity this CLI acts as")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if (env("BOARD_BACKEND") or "linear").lower() == "mac-collab":
+        old = Path(env("BOARD_MAC_COLLAB_CLI") or (Path.home() / "apps" / "mac-collab" / "board")).expanduser()
+        if not old.is_file():
+            die(f"BOARD_BACKEND=mac-collab, but the old board CLI is not at {old} (set BOARD_MAC_COLLAB_CLI)")
+        sys.stdout.flush()
+        os.execv(sys.executable, [sys.executable, str(old), *argv])
+    a = build_parser().parse_args(argv)
+    seat = current_seat()
+    if a.cmd in WRITE_VERBS and env("LINEAR_BOARD_WRITES") != "1":
+        die(f"`board {a.cmd}` is a write, and writes to Linear are off until cutover.  Use the mac-collab "
+            "board for writes until then; at cutover the CLI runs with LINEAR_BOARD_WRITES=1.", EXIT_WRITES_OFF)
+    for flag, val in (("--by", getattr(a, "reported_by", None)), ("--by", getattr(a, "addressed_by", None)),
+                      ("--by", getattr(a, "author", None))):
+        if val is not None:
+            check_by(val, seat, flag)
+    auth = Auth(endpoint("LINEAR_BOARD_TOKEN_URL", TOKEN_URL))
+    L = Linear(auth, endpoint("LINEAR_BOARD_API_URL", GRAPHQL_URL))
+    try:
+        if a.cmd == "whoami":
+            return cmd_whoami(L, auth, seat)
+        if a.cmd == "list":
+            return cmd_list(L, a)
+        if a.cmd == "stats":
+            return cmd_stats(L)
+        ids = IdIndex()
+        if a.cmd == "show":
+            return cmd_show(L, ids, a)
+        if a.cmd == "file":
+            return cmd_file(L, a, seat)
+        if a.cmd == "claim":
+            return cmd_claim(L, ids, a, seat)
+        if a.cmd == "status":
+            return cmd_status(L, ids, a, seat)
+        if a.cmd == "comment":
+            return cmd_comment(L, ids, a, seat)
+    except GqlError as e:
+        die(f"Linear error: {e}")
+    return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
