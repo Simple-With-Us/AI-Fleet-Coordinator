@@ -696,7 +696,8 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
                 self.assertNotIn(fragment, dest + "/", dest)
             self.assertNotIn("/by-seat/", dest)
         tags = {seat.tag for _dest, seat in platform_installs()}
-        self.assertFalse(tags & {"MONET", "RENOIR", "DSH", "KIMI", "CLUTCH"}, tags)
+        self.assertFalse(tags & {"MONET", "RENOIR", "DSH", "KIMI"}, tags)
+        self.assertIn("CLUTCH", tags)
 
     def test_retired_session_start_is_inert(self) -> None:
         for key in ("monet", "renoir", "deepseek", "kimi"):
@@ -741,17 +742,23 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
         self.assertNotIn(shared, catalog_seats())
         self.assertIn(SEATS["claude"], catalog_seats())
 
-    def test_clutch_is_catalog_only_with_its_own_identity(self) -> None:
+    def test_clutch_has_the_dsh_skill_home_and_its_own_identity(self) -> None:
         seat = SEATS["clutch"]
         self.assertEqual((seat.tag, seat.notes, seat.prefix, seat.suffix),
                          ("CLUTCH", "Clutch", "clutch", "clutch"))
-        self.assertFalse(seat.write_home)
+        self.assertTrue(seat.write_home)
+        self.assertEqual(seat.dest, "~/.clutch/dsh/skills")      # the engine's $DSH_HOME/skills, rank 400
+        self.assertIn((os.path.expanduser("~/.clutch/dsh/skills"), seat), platform_installs())
         self.assertFalse(seat.retired)
         self.assertIn(seat, catalog_seats())
         self.assertTrue(skill_allowed_for_seat("mac-cleanup", seat))
         out = specialize_from_monet(_session(), seat, skill_name="session-start")
         self.assertIn(_arm("CLUTCH"), out)
         self.assertIn(_ordinary("Clutch", "CLUTCH"), out)
+        self.assertIn("Runtime (Clutch)", out)
+        self.assertIn("beats the CLUTCH default", out)
+        self.assertNotIn("no skill home", out)
+        self.assertNotIn("Catalog copy", out)
         self.assertIn("clutch/<slug>", out)
         self.assertIn("clutch-bot@simplewithus.zulipchat.com", out)
         self.assertIn("~/.secrets/Zulip/Clutch-zuliprc", out)
@@ -1133,7 +1140,7 @@ class InstallerRepoOnlyTests(unittest.TestCase):
     def test_default_mode_never_writes_retired_or_catalog_only_homes(self) -> None:
         # Make every one of those homes' parent exist, so only the seat table,
         # not a missing folder, can keep the installer out of them.
-        for parent in (".deepseek", ".kimi", ".renoir", "Desktop", ".clutch"):
+        for parent in (".deepseek", ".kimi", ".renoir", "Desktop"):
             (self.home / parent).mkdir(parents=True)
         self._run([])
         wrote = [
@@ -1150,6 +1157,20 @@ class InstallerRepoOnlyTests(unittest.TestCase):
         self.assertIn(_arm("CLAUDE"), shared)
         self.assertIn(_ordinary("Claude", "CLAUDE"), shared)
         self.assertNotIn("MONET, CLAUDE, or RENOIR", shared)
+
+    def test_clutch_home_is_written_only_when_the_engine_home_exists(self) -> None:
+        # No ~/.clutch/dsh: Clutch is not installed, so no folder is made for it.
+        self._run([])
+        self.assertEqual([f for f in self._home_files() if f.startswith(".clutch/")], [])
+        # With the engine home present, the pack lands in its skill root and is Clutch's own voice.
+        (self.home / ".clutch" / "dsh").mkdir(parents=True)
+        out = self._run([])
+        self.assertIn(".clutch/dsh/skills", out)
+        got = (self.home / ".clutch" / "dsh" / "skills" / "session-start" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn(_arm("CLUTCH"), got)
+        self.assertIn("Runtime (Clutch)", got)
+        self.assertTrue(got.startswith("---\nname: session-start\n"))
+        self.assertFalse((self.home / ".clutch" / "dsh" / "skills" / "ios-ship").exists())
 
     def test_unchanged_pack_zip_is_not_rewritten(self) -> None:
         self._run(["--repo-only"])

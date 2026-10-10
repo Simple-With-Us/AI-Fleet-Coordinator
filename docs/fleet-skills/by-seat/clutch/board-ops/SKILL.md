@@ -7,7 +7,7 @@ description: Use THE BOARD (mac.jays.services/board + the board CLI) as the firs
 
 > **This install is for `CLUTCH`.**  Chat tag `[CLUTCH·session8]`.  Notes `Clutch`.  Branches `clutch/`.  Lanes `~/apps/lanes/<Repo>/clutch-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `clutch-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Clutch-zuliprc` (mode 600).  Session tag `[CLUTCH·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Catalog copy.**  The Clutch seat has no skill home yet, so this pack is not installed anywhere.  Do not copy it into another tool's skill directory.
+> **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
 
 
 Primary coordination surface (owner 2026-08-19).  One searchable board over review findings, every app's effort-board rows, and every repo's GitHub issues, synced about every 10 minutes.

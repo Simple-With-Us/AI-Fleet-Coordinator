@@ -342,13 +342,18 @@ CLUTCH_IDENTITY = (
     "`[CLUTCH·session8]`.  Notes name `Clutch`.  Branches `clutch/<slug>` only.  "
     "Lanes `~/apps/lanes/Clutch/clutch-<slug>`.  One seat for every model run "
     "through Clutch (owner 2026-10-07: no per-model split).  Replaces HARNESS and "
-    "DSH.  Never sign as Monet.  Pin `AGENT_SEAT=CLUTCH`."
+    "DSH.  Never sign as Monet.  Default seat `CLUTCH` unless Jay names another or a launcher "
+    "set `AGENT_LAUNCH_SEAT`;  never overwrite an `AGENT_SEAT` that is already set."
 )
 
-CLUTCH_CATALOG_BANNER = (
-    "> **Catalog copy.**  The Clutch seat has no skill home yet, so this pack is "
-    "not installed anywhere.  Do not copy it into another tool's skill "
-    "directory.\n\n"
+CLUTCH_EXTRA = (
+    "> **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the "
+    "Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared "
+    "`~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads "
+    "`~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither "
+    "`~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane "
+    "(`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) "
+    "beats the CLUTCH default.\n\n"
 )
 
 KIMI_IDENTITY = (
@@ -544,10 +549,9 @@ SEATS: dict[str, Seat] = {
     ),
     "clutch": Seat(
         "CLUTCH", "Clutch", "clutch", "clutch",
-        "docs/fleet-skills/by-seat/clutch", "exclusive",
+        "~/.clutch/dsh/skills", "exclusive",
         CLUTCH_IDENTITY,
-        extra_banner=CLUTCH_CATALOG_BANNER,
-        write_home=False,
+        extra_banner=CLUTCH_EXTRA,
         seat_key="clutch",
         zulip_bot="clutch-bot",
         zulip_rc="Clutch",

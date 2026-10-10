@@ -1198,6 +1198,25 @@ class V2ClassifyTests(HomeCase):
             for odd in ("_notes", "_archive", "_migration"):
                 self.assertEqual(L.classify_location(self.mkdir("apps", "lanes", odd, "x"), r), LC.UNSANCTIONED, odd)
 
+    def test_conductor_workspaces_are_harness_managed_in_both_homes(self) -> None:
+        self.assertEqual(self.roots().conductor_root, self.home / "apps" / "lanes" / "_conductor")
+        self.assertEqual(self.roots({"FLEET_LANES_ROOT": str(self.home / "elsewhere" / "lanes")}).conductor_root,
+                         self.home / "elsewhere" / "lanes" / "_conductor")
+        for r in self.both():
+            moved = self.checkout("apps", "lanes", "_conductor", "BotFleet", "lagos", git_file=True)
+            self.assertEqual(L.classify_location(moved, r), LC.MANAGED, "Conductor names its workspaces with city names")
+            self.assertEqual(L.classify_location(self.mkdir("apps", "lanes", "_conductor"), r), LC.MANAGED)
+            res = L.explain_layout(moved, self.reg, r)
+            self.assertEqual((res.status, res.reasons), (L.LayoutStatus.TOOL_MANAGED, ("lanes/_conductor",)))
+            default = self.checkout("conductor", "workspaces", "BotFleet", "oslo", git_file=True)
+            self.assertEqual(L.classify_location(default, r), LC.MANAGED, "the app's default location is sanctioned")
+            res = L.explain_layout(default, self.reg, r)
+            self.assertEqual((res.status, res.reasons), (L.LayoutStatus.TOOL_MANAGED, ("harness:conductor",)))
+            # a look-alike reserved name is still unsanctioned, and so is a city folder directly under the lanes root
+            self.assertEqual(L.classify_location(self.mkdir("apps", "lanes", "_conductors", "x"), r), LC.UNSANCTIONED)
+            self.assertEqual(L.classify_location(self.mkdir("apps", "lanes", "_conductor-old", "x"), r), LC.UNSANCTIONED)
+        self.assertEqual(L.CONDUCTOR_DIR, "_conductor")
+
     def test_class_values_are_unchanged(self) -> None:
         self.assertEqual({c.value for c in LC}, {
             "INTEGRATION_TREE", "LANE_NESTED", "LANE_FLAT_LEGACY", "LANE_FLAT", "REVIEW", "MANAGED",

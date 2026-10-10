@@ -171,7 +171,9 @@ class HomeCase(unittest.TestCase):
 
 class TemplateTests(unittest.TestCase):
     def texts(self) -> dict[str, str]:
-        return {v: (IR.RULES_DIR / f).read_text(encoding="utf-8") for v, f in IR.TEMPLATE_FILES.items()}
+        out = {v: (IR.RULES_DIR / f).read_text(encoding="utf-8") for v, f in IR.TEMPLATE_FILES.items()}
+        out.update({ph: (IR.RULES_DIR / f).read_text(encoding="utf-8") for ph, f in IR.PART_FILES.items()})
+        return out
 
     def test_templates_exist_and_are_plain_ascii(self) -> None:
         for variant, text in self.texts().items():
@@ -640,10 +642,11 @@ class PlanTests(HomeCase):
         self.assertEqual(entry.status, "refused")
         self.assertTrue(any("32768-byte cap" in r for r in entry.refusals))
 
-    def test_only_codex_has_a_cap(self) -> None:
+    def test_only_codex_and_clutch_have_a_cap(self) -> None:
         caps = {p.name: p.size_cap for p in IR.PLATFORMS}
         self.assertEqual(caps["codex"], 32 * 1024)
-        self.assertEqual([n for n, c in caps.items() if c is not None], ["codex"])
+        self.assertEqual(caps["clutch"], 64 * 1024)        # the engine caps the whole baseline at 64 KiB
+        self.assertEqual([n for n, c in caps.items() if c is not None], ["codex", "clutch"])
 
     def test_cursor_create_path(self) -> None:
         os.makedirs(self.path(".cursor"))
@@ -1125,6 +1128,178 @@ class VerifyTests(HomeCase):
         before = snapshot(self.home)
         self.run_cli("verify", "fx", "codex")
         self.assertEqual(snapshot(self.home), before)
+
+
+# --------------------------------------------------------------------------- fleet basics (more harnesses)
+
+def _load_seat_block_checker():
+    """scripts/check-seat-blocks.py has a hyphen in its name, so load it by path."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[2] / "check-seat-blocks.py"
+    spec = importlib.util.spec_from_file_location("check_seat_blocks", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class FleetBasicsTests(HomeCase):
+    """Clutch, Kimi, Vibe and Copilot CLI get the Fleet Basics ahead of the Lane Map in one marker block."""
+
+    NEW = {"clutch": (".clutch/dsh/AGENTS.md", "clutch"), "kimi": (".kimi-code/AGENTS.md", "nodefault"),
+           "vibe": (".vibe/AGENTS.md", "nodefault"), "copilot": (".copilot/copilot-instructions.md", "nodefault")}
+
+    def test_the_new_platforms_name_their_file_and_variant(self) -> None:
+        for name, (rel, variant) in self.NEW.items():
+            with self.subTest(name=name):
+                p = IR.PLATFORM_BY_NAME[name]
+                self.assertEqual((p.rel_path, p.variant), (rel, variant))
+                self.assertFalse(p.owner_file, "these files do not exist yet: nothing of the owner's to protect")
+
+    def test_each_block_carries_basics_then_the_lane_map(self) -> None:
+        for variant in ("clutch", "nodefault"):
+            body = IR.body_text(variant)
+            with self.subTest(variant=variant):
+                self.assertTrue(body.startswith("## Fleet Basics\n"))
+                for needle in ("/Users/jay/apps/AGENT-SYNC.md", "### Seat Identity", "## Lane Map: where every checkout lives",
+                               "~/apps/lanes/<Repo>/<seat>-<slug>", "### Coordination", "### Land Your Work",
+                               "### Secrets", "### Writing Anything a Human Reads", "sentence-gap", "`ps`",
+                               "Never write `AGENT_LAUNCH_SEAT` or `AGENT_LAUNCHER`"):
+                    self.assertIn(needle, body)
+                self.assertLess(body.index("### Seat Identity"), body.index("## Lane Map"))
+                self.assertLess(body.index("## Lane Map"), body.index("### Secrets"))
+                self.assertNotIn("{{", body, "every placeholder is filled")
+                self.assertTrue(IR.body_text("full") in body, "the Lane Map text is the shared full text")
+
+    def test_clutch_has_a_fixed_default_and_a_launcher_that_wins(self) -> None:
+        body = IR.body_text("clutch")
+        self.assertIn("Your default seat is CLUTCH", body)
+        self.assertIn("then a seat a launcher assigned", body)
+        self.assertIn("which beats this file whatever model you are", body)
+        self.assertIn("clutch/<slug>", body)
+        self.assertNotIn("no default seat", body.lower())
+
+    def test_the_no_default_text_never_assigns_a_seat(self) -> None:
+        body = IR.body_text("nodefault")
+        self.assertIn("This tool has no default seat.", body)
+        self.assertIn("ask Jay which seat you are", body)
+        self.assertIn("never infer one from the folder, the branch, the model, a skill or another tool's rules file", body)
+        for tag in ("CLAUDE", "CODEX", "CURSOR", "CLUTCH", "MONET", "RENOIR", "GROK", "AG", "MM", "FX", "MC"):
+            self.assertNotRegex(body, r"\b" + tag + r"\b", f"{tag} must not appear as anyone's seat")
+        self.assertNotIn("default seat is", body)
+
+    def test_every_new_block_passes_the_seat_block_checker(self) -> None:
+        checker = _load_seat_block_checker()
+        for variant in ("clutch", "nodefault"):
+            text = IR.block_text(variant)
+            with self.subTest(variant=variant):
+                self.assertEqual(checker.check_text(f"<{variant}>", text, needs_clause=True), [])
+                self.assertIn("AGENT_SEAT", text, "the checker only demands the clause of a file that names AGENT_SEAT")
+
+    def test_apply_creates_each_file_once_and_verify_passes(self) -> None:
+        for name, (rel, _variant) in self.NEW.items():
+            root = IR.PLATFORM_BY_NAME[name].root_dir
+            os.makedirs(self.path(root), exist_ok=True)
+            with self.subTest(name=name):
+                code, out, err = self.run_cli("plan", name)
+                self.assertIn("pass --create", out, out + err)
+                code, out, err = self.run_cli("apply", name, "--create")
+                self.assertEqual(code, IR.EXIT_OK, out + err)
+                self.assertIn(f"{name}: CREATED", out)
+                self.assertTrue(self.read(rel).startswith(IR.BEGIN_PREFIX + f"{IR.BLOCK_VERSION} -->\n## Fleet Basics\n"))
+                self.assertEqual(self.run_cli("verify", name)[0], IR.EXIT_OK)
+                before = snapshot(self.home)
+                code, out, _ = self.run_cli("apply", name, "--create")
+                self.assertEqual(code, IR.EXIT_OK)
+                self.assertIn(f"{name}: UNCHANGED", out)
+                self.assertEqual(snapshot(self.home), before, "a second apply writes nothing and makes no backup")
+
+    def test_a_tool_that_is_not_installed_is_not_given_a_folder(self) -> None:
+        for name in self.NEW:
+            with self.subTest(name=name):
+                code, out, _ = self.run_cli("apply", name, "--create")
+                self.assertEqual(code, IR.EXIT_REFUSED)
+                self.assertIn("does not look installed", out)
+        self.assertEqual(os.listdir(self.home), [])
+        # ~/.config is shared, so it proves nothing about OpenCode: its own folder has to be there
+        self.assertEqual(IR.PLATFORM_BY_NAME["opencode"].root_dir, ".config/opencode")
+        os.makedirs(self.path(".config/muse"))
+        code, out, _ = self.run_cli("apply", "opencode", "--create")
+        self.assertEqual(code, IR.EXIT_REFUSED)
+        self.assertIn("~/.config/opencode does not exist", out)
+        self.assertFalse(os.path.exists(self.path(".config/opencode")))
+
+    def test_the_owners_own_text_survives_and_a_backup_is_made(self) -> None:
+        owner = "# My Vibe notes\n\nKeep answers short.\n"
+        self.write(".vibe/AGENTS.md", owner)
+        code, out, err = self.run_cli("apply", "vibe")
+        self.assertEqual(code, IR.EXIT_OK, out + err)
+        text = self.read(".vibe/AGENTS.md")
+        self.assertTrue(text.startswith(owner + "\n" + IR.BEGIN_PREFIX))
+        backups = [n for n in self.files_in(".vibe") if ".bak-lane-map-" in n]
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(self.read(".vibe/" + backups[0]), owner)
+
+    def test_clutch_is_capped_at_64_kib_and_a_big_file_is_refused(self) -> None:
+        self.write(".clutch/dsh/AGENTS.md", "x" * (64 * 1024 + 10))
+        code, out, _ = self.run_cli("apply", "clutch")
+        self.assertEqual(code, IR.EXIT_REFUSED)
+        self.assertIn("65536-byte cap", out)
+
+    def test_clutch_block_is_small(self) -> None:
+        self.assertLess(len(IR.block_text("clutch").encode("utf-8")), 8 * 1024,
+                        "the engine drops the broadest file first when the 64 KiB baseline fills")
+
+    def test_copilot_prints_its_unverified_caveat(self) -> None:
+        os.makedirs(self.path(".copilot"))
+        _, out, _ = self.run_cli("plan", "copilot", "--create")
+        self.assertIn("WARNING: UNVERIFIED on this Mac", out)
+        code, out, _ = self.run_cli("apply", "copilot", "--create")
+        self.assertEqual(code, IR.EXIT_OK)
+        self.assertIn("warning: UNVERIFIED on this Mac", out)
+
+    def test_opencode_prints_its_double_load_caveat(self) -> None:
+        os.makedirs(self.path(".config/opencode"))
+        _, out, _ = self.run_cli("plan", "opencode", "--create")
+        self.assertIn("WARNING: UNVERIFIED: OpenCode also walks AGENTS.md up", out)
+        self.assertIn("the same Lane Map twice", out)
+
+    def test_opencode_gets_the_lane_map_alone_and_no_statement_about_its_seat(self) -> None:
+        """A seat statement for OpenCode (no default, or a seat of its own) is the owner's call, and the live file
+        already holds hand-written Fleet Basics: the block this tool writes there must not repeat or contradict them."""
+        p = IR.PLATFORM_BY_NAME["opencode"]
+        self.assertEqual((p.rel_path, p.variant), (".config/opencode/AGENTS.md", "full"))
+        body = IR.body_text(p.variant)
+        self.assertNotIn("## Fleet Basics", body)
+        self.assertNotIn("not a seat", body)
+        self.assertNotIn("no default seat", body.lower())
+        os.makedirs(self.path(".config/opencode"))
+        code, out, err = self.run_cli("apply", "opencode", "--create")
+        self.assertEqual(code, IR.EXIT_OK, out + err)
+        text = self.read(".config/opencode/AGENTS.md")
+        self.assertIn("## Lane Map", text)
+        self.assertNotIn("## Fleet Basics", text)
+        self.assertEqual(self.run_cli("verify", "opencode")[0], IR.EXIT_OK)
+
+    def test_no_default_text_does_not_list_opencode(self) -> None:
+        """OpenCode may become a seat (board 87ca50fa), so the text that says what is not a seat must not name it."""
+        self.assertNotIn("OpenCode", IR.body_text("nodefault"))
+
+    def test_conductor_and_muse_code_are_explained_not_written(self) -> None:
+        for name, needle in (("conductor", "Prompts"),
+                             ("muse-code", "~/.claude/CLAUDE.md")):
+            with self.subTest(name=name):
+                code, out, _ = self.run_cli("plan", name)
+                self.assertEqual(code, IR.EXIT_OK)
+                self.assertIn(f"== {name}", out)
+                self.assertIn("UNSUPPORTED:", out)
+                self.assertIn(needle, out)
+                code, out, _ = self.run_cli("apply", name)
+                self.assertEqual(code, IR.EXIT_REFUSED)
+                self.assertEqual(os.listdir(self.home), [])
+
+    def test_short_names_resolve(self) -> None:
+        names = [p.name for p in IR.resolve_platform_names(["mc", "muse", "kimi-code", "mistral-vibe", "copilot-cli", "dsh"])]
+        self.assertEqual(names, ["muse-code", "kimi", "vibe", "copilot", "clutch"])
 
 
 # --------------------------------------------------------------------------- command line

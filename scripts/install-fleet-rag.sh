@@ -14,6 +14,11 @@
 #        {command: "python3", args: ["<install root>/fleet-recall-mcp.py"]}
 #      in ~/.claude.json, ~/.cursor/mcp.json, ~/.gemini/config/mcp_config.json,
 #      ~/.codex/config.toml and ~/.grok/config.toml.  Never writes a token anywhere.
+#      The harnesses with a different config format (OpenCode, Kimi Code, Copilot CLI, Muse Code, MiniMax, fx)
+#      go through `python3 -m fleet_lanes.install_mcp`, which this script calls with --home "$HOME"; it writes
+#      each tool's native shape, skips a tool that is not installed, and leaves a hand-registered entry alone.
+#      Clutch is not touched here: it carries fleet-recall as a native agent preset.  agent-sync is not
+#      registered here (run install_mcp with --with-agent-sync; docs/protocols/agent-sync-mcp.md).
 #   4. With --with-seat-mcp, also copies seat_mcp/tools.py + recall_bridge.py into
 #      $HOME/apps/seat-mcp/seat_mcp/ and prints the pm2 restart command (does not run it).
 #   5. With --hooks, copies scripts/hooks/fleet-recall-session-start.sh and
@@ -48,7 +53,7 @@ for arg in "$@"; do
     --with-seat-mcp) WITH_SEAT=1 ;;
     --hooks) WITH_HOOKS=1 ;;
     -h|--help)
-      sed -n '2,36p' "$0"
+      sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d'
       exit 0
       ;;
     *)
@@ -283,6 +288,7 @@ else:
 os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 if existed:
     shutil.copy2(path, f"{path}.bak-fleet-rag-{ts}")
+    os.chmod(f"{path}.bak-fleet-rag-{ts}", 0o600)    # a backup is never more readable than owner-only
 fd, tmp = tempfile.mkstemp(prefix=".fleet-rag.", dir=os.path.dirname(path) or ".")
 with os.fdopen(fd, "w", encoding="utf-8") as fh:
     json.dump(data, fh, indent=2, ensure_ascii=False)
@@ -365,6 +371,7 @@ else:
     if not new.endswith("\n"):
         new += "\n"
 shutil.copy2(path, f"{path}.bak-fleet-rag-{ts}")
+os.chmod(f"{path}.bak-fleet-rag-{ts}", 0o600)    # a backup is never more readable than owner-only
 tmp = f"{path}.fleet-rag.tmp"
 with open(tmp, "w", encoding="utf-8") as fh:
     fh.write(new)
@@ -385,9 +392,31 @@ register_all() {
   r="$(toml_cfg "$CODEX_TOML" "$action" "")";  say "$CODEX_TOML: $r";  note "$CODEX_TOML" "$r"
   # Grok's existing [mcp_servers.X] blocks use command / args / enabled.
   r="$(toml_cfg "$GROK_TOML" "$action" "enabled = true")"; say "$GROK_TOML: $r"; note "$GROK_TOML" "$r"
-  # grok-acp stripped home (Conductor / Shellular).  Absent until grok-acp-runtime is installed.
+  # grok-acp stripped home (Shellular's Grok sessions; Conductor does not use Grok).  Absent until
+  # grok-acp-runtime is installed.
   r="$(toml_cfg "$ACP_TOML" "$action" "enabled = true")"; say "$ACP_TOML: $r"; note "$ACP_TOML" "$r"
 }
+
+# The harnesses whose MCP config is not the flat mcpServers JSON or an [mcp_servers.X] TOML table above.
+# fleet_lanes.install_mcp owns their formats and its own tests; this only runs it.  Its output is printed as is.
+MORE_TARGETS=(opencode kimi copilot muse minimax fx)
+
+register_more() {
+  local action="$1" cmd rc=0
+  case "$action" in
+    add) if [[ "$DRY" -eq 1 ]]; then cmd=plan; else cmd=apply; fi ;;
+    remove) if [[ "$DRY" -eq 1 ]]; then cmd=plan; else cmd=remove; fi ;;
+  esac
+  say "-- install_mcp ($cmd): ${MORE_TARGETS[*]}"
+  (cd "$SRC" && FLEET_RAG_HOME="$DST" "$PY" -m fleet_lanes.install_mcp "$cmd" "${MORE_TARGETS[@]}" --home "$HOME_DIR") || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    note "install_mcp: ${MORE_TARGETS[*]}" "$(mode_word) ok"
+  else
+    note "install_mcp: ${MORE_TARGETS[*]}" "FAILED (exit $rc)"
+    FAILED_MORE=1
+  fi
+}
+FAILED_MORE=0
 
 # ---------------------------------------------------------------- step 4: seat-mcp
 
@@ -521,6 +550,7 @@ else:
 os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 if existed:
     shutil.copy2(path, f"{path}.bak-fleet-rag-{ts}")
+    os.chmod(f"{path}.bak-fleet-rag-{ts}", 0o600)    # a backup is never more readable than owner-only
 fd, tmp = tempfile.mkstemp(prefix=".fleet-rag.", dir=os.path.dirname(path) or ".")
 with os.fdopen(fd, "w", encoding="utf-8") as fh:
     json.dump(data, fh, indent=2, ensure_ascii=False)
@@ -635,6 +665,7 @@ if [[ "$DRY" -eq 1 ]]; then say "== fleet-rag installer: DRY RUN (nothing writte
 if [[ "$UNINSTALL" -eq 1 ]]; then
   say "== fleet-rag installer: uninstall =="
   register_all remove
+  register_more remove
   uninstall_hooks
   uninstall_link
   uninstall_files
@@ -643,6 +674,7 @@ else
   install_files
   install_link
   register_all add
+  register_more add
   if [[ "$WITH_SEAT" -eq 1 ]]; then
     install_seat_mcp
   else
@@ -666,5 +698,9 @@ for row in "${SUMMARY[@]}"; do
 done
 if [[ "$UNINSTALL" -eq 0 && "$DRY" -eq 0 ]]; then
   say ""
-  say "next: restart Claude Code / Cursor / Gemini / Codex / Grok sessions so they pick up '$SERVER_NAME'."
+  say "next: restart Claude Code / Cursor / Gemini / Codex / Grok / OpenCode / Kimi / Copilot / Muse sessions so they pick up '$SERVER_NAME'."
+fi
+if [[ "$FAILED_MORE" -ne 0 ]]; then
+  say "install_mcp failed for at least one tool; its output is above" >&2
+  exit 1
 fi

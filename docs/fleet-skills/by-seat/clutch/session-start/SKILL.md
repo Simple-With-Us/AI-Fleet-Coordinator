@@ -8,10 +8,10 @@ description: >-
 
 > **This install is for `CLUTCH`.**  Chat tag `[CLUTCH·session8]`.  Notes `Clutch`.  Branches `clutch/`.  Lanes `~/apps/lanes/<Repo>/clutch-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `clutch-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Clutch-zuliprc` (mode 600).  Session tag `[CLUTCH·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Catalog copy.**  The Clutch seat has no skill home yet, so this pack is not installed anywhere.  Do not copy it into another tool's skill directory.
+> **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
 
 
-This pack is for **CLUTCH** (the Clutch seat, owner of `Simple-With-Us/Clutch`: the DSH and MiniMax drivers, ACP bridges, and cordis profiles).  Session tag `[CLUTCH·session8]`.  Notes name `Clutch`.  Branches `clutch/<slug>` only.  Lanes `~/apps/lanes/Clutch/clutch-<slug>`.  One seat for every model run through Clutch (owner 2026-10-07: no per-model split).  Replaces HARNESS and DSH.  Never sign as Monet.  `CLUTCH` is the default seat of an ordinary session; a launcher's seat wins (Identity).
+This pack is for **CLUTCH** (the Clutch seat, owner of `Simple-With-Us/Clutch`: the DSH and MiniMax drivers, ACP bridges, and cordis profiles).  Session tag `[CLUTCH·session8]`.  Notes name `Clutch`.  Branches `clutch/<slug>` only.  Lanes `~/apps/lanes/Clutch/clutch-<slug>`.  One seat for every model run through Clutch (owner 2026-10-07: no per-model split).  Replaces HARNESS and DSH.  Never sign as Monet.  Default seat `CLUTCH` unless Jay names another or a launcher set `AGENT_LAUNCH_SEAT`;  never overwrite an `AGENT_SEAT` that is already set.
 
 ## 1. Identity
 

@@ -851,6 +851,19 @@ class DiscoveryTests(GitCase):
         self.assertTrue(any(s.startswith("worktree-list:") for s in co["found_by"]), co["found_by"])
         self.assertEqual(co["location_class"], "UNSANCTIONED")
 
+    def test_a_fleet_repo_conductor_cloned_into_its_repos_folder_is_found_and_flagged(self) -> None:
+        # Conductor clones a repo it is given by URL into ~/conductor/repos/<Repo>: a full checkout outside ~/Code and
+        # the lane map.  Its workspaces (~/conductor/workspaces) are tool-managed;  this folder is not a workspace.
+        clone = self.make_repo(self.home / "conductor" / "repos" / "DealDex")
+        rep = self.report()
+        co = self.one(rep, clone)
+        self.assertEqual(co["location_class"], "UNSANCTIONED")
+        self.assertIn("UNSANCTIONED", {a["type"] for a in rep["anomalies"] if a["path"] == str(clone)})
+        self.assertEqual(co["layout_status"], "unsanctioned")
+        self.assertEqual(rep["summary"]["strict_violations"], 1, "--strict fails on it")
+        ws = self.make_repo(self.home / "conductor" / "workspaces" / "DealDex" / "oslo")
+        self.assertEqual(self.one(self.report(), ws)["location_class"], "MANAGED", "a workspace is still tool-managed")
+
     def test_the_parent_of_a_discovered_worktree_is_found_through_its_git_file(self) -> None:
         hidden_parent = self.make_repo(self.base / "elsewhere" / "parent")
         lane = self.add_worktree(hidden_parent, self.home / "apps" / "dealdex-claude-viaparent", "claude/viaparent")
@@ -1106,6 +1119,8 @@ class DiscoveryTests(GitCase):
             (home / "Code" / "DealDex", "main", None, None, "human"),
             # layout v2: Codex nests lanes/_codex/<slug>/<Repo>; the desktop app files lanes/<Repo>/<slug>-<hex>
             (home / "apps" / "lanes" / "_codex" / "ab12" / "DealDex", None, None, None, "codex"),
+            (home / "apps" / "lanes" / "_conductor" / "DealDex" / "lagos", None, None, None, "conductor"),
+            (home / "conductor" / "workspaces" / "DealDex" / "oslo", "claude/x", None, "claude", "conductor"),
             (home / "apps" / "lanes" / "DealDex" / "fix-bug-a1b2c3", "claude/fix-bug-a1b2c3", None, None, "claude-desktop"),
             (home / "apps" / "lanes" / "DealDex" / "fix-bug-a1b2c3" / "src", None, None, None, "claude-desktop"),
             (home / "apps" / "lanes" / "DealDex" / "claude-fix-a1b2c3", None, "claude", None, "claude-cli"),
