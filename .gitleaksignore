@@ -10,3 +10,5 @@
 24f41fe2df1660ce6b3fe36f3098f58f7dbbe63c:scripts/fleet_lanes/tests/test_install_rules.py:generic-api-key:334
 # Squash commit of PR #359 on main (it carries the same fixture line before the lines were stored reversed).
 d8ba0dab24f7925c0c84e5a9dd8a42e8fe9e6889:scripts/fleet_lanes/tests/test_install_rules.py:generic-api-key:334
+# Heartbeat test fixture (PR #441), first commit: a made-up DSN key, now generated per run.
+4fc173bbb808dbc9571a9a2b00f7785c8dc4d92b:scripts/agent_sync/tests/test_heartbeat.py:generic-api-key:16
