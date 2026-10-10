@@ -4,6 +4,7 @@ the status file or an error, backoff after a failure, and the heartbeat staying 
 from __future__ import annotations
 
 import json
+import secrets
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,7 +14,7 @@ from typing import Any
 from agent_sync import heartbeat as HB
 from agent_sync.tests.listener_harness import FakeClock, ListenerHarness
 
-KEY = "0123456789abcdef0123456789abcdef"
+KEY = secrets.token_hex(16)  # made up per run
 PROJECT = "4511678688854016"
 
 
