@@ -1,7 +1,8 @@
 // MCP Events (src/events.js) and its SeatGate storage (src/seat-state.js):
 // signing (checked against the standardwebhooks reference when installed),
 // the callback URL guard, subscribe verification, delivery retries and 410,
-// expiry, epoch revocation, pause, and the wake_id dedupe.
+// expiry, epoch revocation, pause, the wake_id claim, the channel allowlist,
+// the access re-check before every attempt, and the answer to the listener.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -23,6 +24,12 @@ import {
   verifyCallback,
   deliverEvent,
   fanOut,
+  deliverWake,
+  wakeReply,
+  wakeOutcome,
+  wakeChannelRefusal,
+  WAKE_BUDGET_MS,
+  DELIVERY_BACKOFF_MS,
   eventData,
   wakeMatches,
   validateArguments,
@@ -45,7 +52,7 @@ const config = loadConfig(testEnv());
 function memoryGate(now = () => Date.now()) {
   const store = state.memoryStore();
   const gate = { store };
-  for (const name of ["eventSubRoom", "eventSubUpsert", "eventSubDelete", "eventVerifiedGet", "eventVerifiedSet", "eventClaimWake", "eventDeliveryResult", "eventSubsSummary", "audit", "tail", "bumpEpoch", "setPaused"]) {
+  for (const name of ["eventSubRoom", "eventSubUpsert", "eventSubDelete", "eventVerifiedGet", "eventVerifiedSet", "eventClaimWake", "eventSettleWake", "eventSubLive", "eventDeliveryResult", "eventSubsSummary", "audit", "tail", "bumpEpoch", "setPaused"]) {
     gate[name] = (opts) => state[name](store, opts, now());
   }
   return gate;
@@ -60,6 +67,7 @@ function wake(overrides = {}) {
     dm: false,
     channel: "agent-sync",
     topic: "t",
+    stream_id: 642232,
     sender_full_name: "Jay",
     sender_user_id: 1211974,
     is_bot: false,
@@ -196,11 +204,37 @@ test("arguments:  only an allowlisted channel", () => {
 });
 
 test("the channel filter matches stream messages in that channel only", () => {
-  assert.ok(wakeMatches({}, wake()));
-  assert.ok(wakeMatches({}, wake({ dm: true, reply_to: { type: "direct", to: [1] } })));
-  assert.ok(wakeMatches({ channel: "agent-sync" }, wake()));
-  assert.ok(!wakeMatches({ channel: "sandbox" }, wake()));
-  assert.ok(!wakeMatches({ channel: "agent-sync" }, wake({ dm: true, reply_to: { type: "direct", to: [1] } })));
+  assert.ok(wakeMatches({}, wake(), config));
+  assert.ok(wakeMatches({}, wake({ dm: true, stream_id: null, reply_to: { type: "direct", to: [1] } }), config));
+  assert.ok(wakeMatches({ channel: "agent-sync" }, wake(), config));
+  assert.ok(!wakeMatches({ channel: "sandbox" }, wake(), config));
+  assert.ok(!wakeMatches({ channel: "agent-sync" }, wake({ dm: true, stream_id: null, reply_to: { type: "direct", to: [1] } }), config));
+});
+
+test("a channel filter needs both the name and the stream id CHANNELS pins for it", () => {
+  const sandbox = (over) => wake({ channel: "sandbox", reply_to: { type: "stream", channel: "sandbox", topic: "t" }, stream_id: 642167, ...over });
+  assert.ok(wakeMatches({ channel: "sandbox" }, sandbox(), config));
+  // The name says sandbox but the id is agent-sync's (or another stream's, or missing):  no match.
+  assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ stream_id: 642232 }), config));
+  assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ stream_id: 999001 }), config));
+  assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ stream_id: undefined }), config));
+  // The id is sandbox's but the name is not:  no match either.
+  assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ reply_to: { type: "stream", channel: "sandbox-2", topic: "t" } }), config));
+});
+
+test("a channel wake needs an allowlisted stream id;  a DM needs none and stays metadata-only", () => {
+  assert.equal(wakeChannelRefusal(wake(), config), null);
+  assert.equal(wakeChannelRefusal(wake({ stream_id: 642167 }), config), null);
+  assert.equal(wakeChannelRefusal(wake({ stream_id: 999001 }), config), "stream_not_allowlisted");
+  assert.equal(wakeChannelRefusal(wake({ stream_id: undefined }), config), "no_stream_id", "an older listener's body fails closed");
+  assert.equal(wakeChannelRefusal(wake({ stream_id: null }), config), "no_stream_id");
+  assert.equal(wakeChannelRefusal(wake({ stream_id: "642232" }), config), "no_stream_id");
+  // dm alone is not enough:  a stream reply_to makes it a channel wake.
+  assert.equal(wakeChannelRefusal(wake({ dm: true, stream_id: undefined }), config), "no_stream_id");
+  const dm = wake({ dm: true, channel: null, topic: null, stream_id: undefined, excerpt: "<<<secret plans>>>", reply_to: { type: "direct", to: [5] } });
+  assert.equal(wakeChannelRefusal(dm, config), null);
+  const data = eventData(dm);
+  assert.deepEqual([data.excerpt, data.channel, data.topic, data.reply_to], ["", null, null, { type: "direct", to: [5] }]);
 });
 
 test("event data carries Zulip fields only, matching payloadSchema", () => {
@@ -347,9 +381,12 @@ test("unsubscribe is idempotent and stops delivery", async () => {
 
 // ---------------------------------------------------------------- wake claim and delivery
 
-test("a wake_id is claimed once;  a repeat is a duplicate", async () => {
+test("a wake_id is claimed once;  a repeat is in flight until it settles, then a duplicate", async () => {
   const gate = memoryGate();
-  assert.equal((await gate.eventClaimWake({ wakeId: "w-1" })).verdict, "go");
+  const claim = await gate.eventClaimWake({ wakeId: "w-1" });
+  assert.equal(claim.verdict, "go");
+  assert.equal((await gate.eventClaimWake({ wakeId: "w-1" })).verdict, "in_flight");
+  await gate.eventSettleWake({ wakeId: "w-1", token: claim.token, outcome: "delivered", delivered: 1 });
   assert.equal((await gate.eventClaimWake({ wakeId: "w-1" })).verdict, "duplicate");
   assert.equal((await gate.eventClaimWake({ wakeId: "w-2" })).verdict, "go");
 });
@@ -412,21 +449,24 @@ test("delivery:  2xx once, 5xx retried with the same id and a fresh signature, 4
   assert.equal(ok.calls[0].headers["X-MCP-Subscription-Id"], "sub_a");
   assert.equal(ok.calls[0].headers["Content-Type"], "application/json");
 
-  const flaky = fakeCallback({ statuses: [503, 502, 200] });
+  // Two attempts, 1 second apart:  delivery runs inside the listener's request now,
+  // and the listener's own retries are the longer path.
+  assert.deepEqual([...DELIVERY_BACKOFF_MS], [1000]);
+  const flaky = fakeCallback({ statuses: [503, 200] });
   const r = await deliverEvent(flaky.fetchFn, sub, event, { sleep, now });
   assert.equal(r.outcome, "delivered");
-  assert.equal(r.attempts, 3);
-  assert.deepEqual(sleeps, [1000, 4000]);
+  assert.equal(r.attempts, 2);
+  assert.deepEqual(sleeps, [1000]);
   const ids = new Set(flaky.calls.map((c) => c.headers["webhook-id"]));
   const stamps = new Set(flaky.calls.map((c) => c.headers["webhook-timestamp"]));
   const sigs = new Set(flaky.calls.map((c) => c.headers["webhook-signature"]));
   assert.equal(ids.size, 1);
-  assert.equal(stamps.size, 3);
-  assert.equal(sigs.size, 3);
+  assert.equal(stamps.size, 2);
+  assert.equal(sigs.size, 2);
 
   const down = fakeCallback({ statuses: [500, 500, 500, 500] });
   assert.equal((await deliverEvent(down.fetchFn, sub, event, { sleep, now })).outcome, "failed");
-  assert.equal(down.calls.length, 3);
+  assert.equal(down.calls.length, 2);
 
   const gone = fakeCallback({ statuses: [410] });
   assert.equal((await deliverEvent(gone.fetchFn, sub, event, { sleep, now })).outcome, "gone");
@@ -458,7 +498,7 @@ test("fan-out:  matching subscriptions get one signed event each;  410 drops the
   };
   const w = wake();
   const claim = await gate.eventClaimWake({ wakeId: w.wake_id });
-  const results = await fanOut({ gate, wake: w, subs: claim.subs, fetchFn, sleep: async () => {} });
+  const results = await fanOut({ gate, wake: w, subs: claim.subs, config, fetchFn, sleep: async () => {} });
   assert.equal(results.length, 2, "the sandbox-only subscription does not match an agent-sync mention");
   assert.deepEqual(results.map((r) => r.outcome).sort(), ["delivered", "gone"]);
   const body = deliveries.find((d) => d.url === CALLBACK).body;
@@ -473,4 +513,157 @@ test("fan-out:  matching subscriptions get one signed event each;  410 drops the
   assert.ok(audit.some((r) => r.event === "event_sub_dropped" && r.reason === "gone_410"));
   assert.ok(!JSON.stringify(audit).includes(SECRET), "no secret in the audit");
   assert.ok(!JSON.stringify(audit).includes("callback_123"), "no callback path in the audit");
+});
+
+// ---------------------------------------------------------------- the listener's wake, end to end
+
+/** One seat with one live, unfiltered subscription, and a callback that answers `statuses` in turn. */
+async function wakeSetup({ statuses = [], args = {} } = {}) {
+  const gate = memoryGate();
+  const ev = seatEvents(gate, { fetchFn: fakeCallback().fetchFn });
+  await ev.subscribe(SUB({ arguments: args }));
+  const deliveries = [];
+  const fetchFn = async (url, init) => {
+    deliveries.push({ url, body: JSON.parse(init.body) });
+    return new Response("", { status: statuses.length ? statuses.shift() : 200 });
+  };
+  return { gate, ev, deliveries, fetchFn };
+}
+
+/** The listener's request:  claim, deliver inline, answer. */
+async function listenerPost(gate, w, fetchFn, sleep = async () => {}) {
+  const claim = await gate.eventClaimWake({ wakeId: w.wake_id, messageId: w.message_id });
+  const result = claim.verdict === "go" ? await deliverWake({ gate, wake: w, claim, config, fetchFn, sleep }) : claim;
+  return { result, reply: wakeReply(result) };
+}
+
+test("finding 1:  a wholly failed delivery is forgotten and answered 503;  the retry delivers;  a further retry is a duplicate", async () => {
+  const { gate, deliveries, fetchFn } = await wakeSetup({ statuses: [503, 500] });
+  const w = wake({ wake_id: "w-retry" });
+  const first = await listenerPost(gate, w, fetchFn);
+  assert.equal(deliveries.length, 2, "two attempts inside the request");
+  assert.deepEqual(first.reply, { status: 503, body: { ok: false, retry: true, subscribers: 1, delivered: 0 } });
+  const second = await listenerPost(gate, w, fetchFn);
+  assert.equal(deliveries.length, 3);
+  assert.deepEqual(second.reply, { status: 202, body: { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" } });
+  assert.equal(new Set(deliveries.map((d) => d.body.eventId)).size, 1, "every attempt and retry carries the same event id");
+  const third = await listenerPost(gate, w, fetchFn);
+  assert.deepEqual(third.reply, { status: 200, body: { ok: true, duplicate: true } });
+  assert.equal(deliveries.length, 3);
+  const events = (await gate.tail(20)).map((r) => r.event);
+  for (const name of ["event_wake_captured", "event_delivery", "event_wake_released", "event_wake_settled"]) assert.ok(events.includes(name), name);
+});
+
+test("finding 1:  a 4xx or a 410 is a permanent drop (202, delivered 0), never a retry", async () => {
+  for (const [status, outcome] of [[400, "rejected"], [413, "rejected"], [410, "gone"]]) {
+    const { gate, deliveries, fetchFn } = await wakeSetup({ statuses: [status] });
+    const w = wake({ wake_id: `w-${status}` });
+    const { reply } = await listenerPost(gate, w, fetchFn);
+    assert.deepEqual(reply, { status: 202, body: { ok: true, subscribers: 1, delivered: 0, outcome } }, String(status));
+    assert.equal(deliveries.length, 1, String(status));
+    assert.equal((await listenerPost(gate, w, fetchFn)).reply.status, 200, "settled:  a retry is a duplicate");
+  }
+});
+
+test("finding 2:  a mention outside the allowlist is settled as refused and nothing is sent", async () => {
+  for (const [streamId, audited] of [[999001, 999001], [undefined, null]]) {
+    const { gate, deliveries, fetchFn } = await wakeSetup();
+    const w = wake({ wake_id: `w-ch-${streamId}`, channel: "secret-plans", topic: "launch", stream_id: streamId, excerpt: "<<<the excerpt>>>", reply_to: { type: "stream", channel: "secret-plans", topic: "launch" } });
+    const { reply } = await listenerPost(gate, w, fetchFn);
+    assert.deepEqual(reply, { status: 202, body: { ok: true, subscribers: 1, delivered: 0, outcome: "channel_refused" } });
+    assert.equal(deliveries.length, 0, "no callback hit");
+    const row = (await gate.tail(1))[0];
+    assert.deepEqual([row.event, row.stream_id], ["event_wake_channel_refused", audited]);
+    const audit = JSON.stringify(await gate.tail(20));
+    for (const leak of ["secret-plans", "launch", "the excerpt"]) assert.ok(!audit.includes(leak), `${leak} is not in the audit`);
+    assert.equal((await listenerPost(gate, w, fetchFn)).reply.status, 200);
+  }
+  // fanOut refuses on its own too, whoever calls it.
+  const { gate, deliveries, fetchFn } = await wakeSetup();
+  const claim = await gate.eventClaimWake({ wakeId: "w-direct" });
+  assert.deepEqual(await fanOut({ gate, wake: wake({ stream_id: 999001 }), subs: claim.subs, config, fetchFn }), []);
+  assert.equal(deliveries.length, 0);
+});
+
+test("finding 2:  a DM wake still reaches an unfiltered subscription with no text, channel or topic", async () => {
+  const { gate, deliveries, fetchFn } = await wakeSetup();
+  const dm = wake({ wake_id: "w-dm", dm: true, channel: null, topic: null, stream_id: null, excerpt: "<<<private>>>", reply_to: { type: "direct", to: [1211974] } });
+  const { reply } = await listenerPost(gate, dm, fetchFn);
+  assert.equal(reply.status, 202);
+  assert.equal(deliveries.length, 1);
+  const { data } = deliveries[0].body;
+  assert.deepEqual([data.dm, data.excerpt, data.channel, data.topic, data.reply_to], [true, "", null, null, { type: "direct", to: [1211974] }]);
+});
+
+test("finding 3:  an unsubscribe, a revoke or a pause during the backoff stops the next attempt", async () => {
+  const flips = {
+    unsubscribe: ({ ev }) => ev.unsubscribe({ name: EVENT_NAME, arguments: {}, delivery: { mode: "webhook", url: CALLBACK } }),
+    revoke: ({ gate }) => gate.bumpEpoch({ by: "jay", reason: "revoke" }),
+    pause: ({ gate }) => gate.setPaused({ by: "jay", paused: true }),
+  };
+  for (const [name, flip] of Object.entries(flips)) {
+    const setup = await wakeSetup({ statuses: [503, 200] });
+    const w = wake({ wake_id: `w-${name}` });
+    const { result, reply } = await listenerPost(setup.gate, w, setup.fetchFn, async () => {
+      await flip(setup);
+    });
+    assert.equal(setup.deliveries.length, 1, `${name}:  no attempt after the flip`);
+    assert.equal(result.outcome, "not_live", name);
+    assert.deepEqual(reply, { status: 202, body: { ok: true, subscribers: 1, delivered: 0, outcome: "not_live" } }, `${name}:  settled, not released`);
+    const delivery = (await setup.gate.tail(5)).find((r) => r.event === "event_delivery");
+    assert.equal(delivery.outcome, "not_live", name);
+    assert.equal(delivery.reason, { unsubscribe: "removed", revoke: "stale_epoch", pause: "paused" }[name]);
+  }
+});
+
+test("finding 3:  the check runs before the first attempt too, and fails closed", async () => {
+  const sub = { id: "sub_a", url: CALLBACK, secret: SECRET };
+  const event = { eventId: "evt_1", name: EVENT_NAME, timestamp: "2026-10-09T15:00:00Z", data: {}, cursor: null };
+  const cb = fakeCallback({ statuses: [503, 200] });
+  const flips = [true, false];
+  const r = await deliverEvent(cb.fetchFn, sub, event, { sleep: async () => {}, isLive: async () => (flips.shift() ? { live: true } : { live: false, reason: "stale_epoch" }) });
+  assert.deepEqual([r.outcome, r.reason, r.attempts, cb.calls.length], ["not_live", "stale_epoch", 1, 1]);
+  const none = fakeCallback();
+  assert.equal((await deliverEvent(none.fetchFn, sub, event, { isLive: async () => ({ live: false, reason: "paused" }) })).outcome, "not_live");
+  assert.equal(none.calls.length, 0, "revoked after the claim, before the first attempt:  nothing is sent");
+  const broken = await deliverEvent(none.fetchFn, sub, event, { isLive: async () => { throw new Error("gate down"); } });
+  assert.deepEqual([broken.outcome, broken.error, none.calls.length], ["failed", "live_check_failed", 0], "an unanswered check sends nothing and asks for a retry");
+});
+
+test("the inline budget bounds the attempts and the answer comes in time", async () => {
+  const sub = { id: "sub_a", url: CALLBACK, secret: SECRET };
+  const event = { eventId: "evt_1", name: EVENT_NAME, timestamp: "2026-10-09T15:00:00Z", data: {}, cursor: null };
+  const run = async (fetchMs, deadline) => {
+    let t = 0;
+    const calls = [];
+    const fetchFn = async (_url, init) => {
+      calls.push(init.signal);
+      t += fetchMs;
+      return new Response("", { status: 503 });
+    };
+    const r = await deliverEvent(fetchFn, sub, event, { now: () => t, sleep: async (ms) => { t += ms; }, deadline });
+    return { r, calls: calls.length, t };
+  };
+  // Two fast failures fit;  a slow first one leaves no room for the second.
+  assert.deepEqual(await run(500, WAKE_BUDGET_MS).then(({ r, calls }) => [r.outcome, calls]), ["failed", 2]);
+  const slow = await run(8500, WAKE_BUDGET_MS);
+  assert.deepEqual([slow.r.outcome, slow.calls], ["failed", 1]);
+  assert.ok(slow.t <= WAKE_BUDGET_MS);
+  // Nothing starts with less than a second left.
+  assert.deepEqual(await run(100, 500).then(({ r, calls }) => [r.outcome, r.attempts, calls]), ["failed", 0, 0]);
+});
+
+test("the answer to the listener:  every verdict and outcome", () => {
+  assert.deepEqual(wakeReply({ verdict: "duplicate" }), { status: 200, body: { ok: true, duplicate: true } });
+  assert.deepEqual(wakeReply({ verdict: "in_flight", retryAfterS: 9 }), { status: 503, body: { ok: false, in_flight: true }, retryAfterS: 9 });
+  assert.deepEqual(wakeReply({ verdict: "paused" }), { status: 202, body: { ok: true, paused: true, subscribers: 0 } });
+  assert.deepEqual(wakeReply({ verdict: "go", outcome: "retry", subscribers: 1, delivered: 0 }), { status: 503, body: { ok: false, retry: true, subscribers: 1, delivered: 0 } });
+  for (const outcome of ["delivered", "no_subscriber", "rejected", "gone", "not_live", "channel_refused"]) {
+    assert.equal(wakeReply({ verdict: "go", outcome, subscribers: 1, delivered: outcome === "delivered" ? 1 : 0 }).status, 202, outcome);
+  }
+  assert.equal(wakeOutcome([]), "no_subscriber");
+  assert.equal(wakeOutcome([{ outcome: "failed" }, { outcome: "delivered" }]), "delivered");
+  assert.equal(wakeOutcome([{ outcome: "failed" }, { outcome: "rejected" }]), "retry");
+  assert.equal(wakeOutcome([{ outcome: "gone" }, { outcome: "not_live" }]), "gone");
+  assert.equal(wakeOutcome([{ outcome: "not_live" }]), "not_live");
 });

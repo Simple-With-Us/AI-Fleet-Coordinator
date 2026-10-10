@@ -20,15 +20,23 @@
 //     the resolved address the way the guide asks (resolve, check, then connect
 //     to that IP), so the host allowlist stands in for that check.  Redirects
 //     are never followed (`redirect: "manual"`, any 3xx is a failure).
-//   - Access is re-checked at delivery:  a paused seat delivers nothing, and a
-//     subscription from an older grant epoch (revoked) or past its
-//     refreshBefore is dropped (seat-state.js eventClaimWake).
+//   - Access is re-checked before every delivery attempt:  a paused seat
+//     delivers nothing, and a subscription that was removed, made under an
+//     older grant epoch (revoked) or is past its refreshBefore gets no
+//     further attempt (seat-state.js eventClaimWake and eventSubLive).
+//   - A channel wake reaches a subscription only from a stream on the CHANNELS
+//     allowlist, by its pinned numeric id (wakeChannelRefusal), the same check
+//     the read tools make.  A DM carries no text.
+//   - Delivery runs inside the listener's request, and the answer says how it
+//     went:  a 503 asks the listener to send the wake again (wakeReply).  The
+//     wake_id is remembered once it was delivered or dropped, not when it
+//     arrived (seat-state.js eventSettleWake).
 //   - The payload carries Zulip data only.  The excerpt keeps the listener's
 //     nonce fence, and nothing in `data` tells the model what to do.
 //
-// Outbound fetches happen here, in the Worker request (verification) or in
-// ctx.waitUntil (delivery), never inside SeatGate, whose methods stay
-// storage-only so its input gate keeps them atomic.
+// Outbound fetches happen here, in the Worker request (verification and
+// delivery), never inside SeatGate, whose methods stay storage-only so its
+// input gate keeps them atomic.
 
 import { logSafe, safeEqual } from "./policy.js";
 
@@ -44,9 +52,14 @@ export const ROTATION_WINDOW_MS = 10 * 60 * 1000;
 export const VERIFY_CACHE_MS = 6 * 60 * 60 * 1000;
 export const VERIFY_TIMEOUT_MS = 8000;
 export const DELIVERY_TIMEOUT_MS = 5000;
-// At most three attempts, 1s then 4s apart:  with a 5s timeout each, a whole
-// fan-out fits inside the ~30s ctx.waitUntil allows after the response.
-export const DELIVERY_BACKOFF_MS = Object.freeze([1000, 4000]);
+// Delivery runs inside the listener's request, which times out after 15
+// seconds, so it is short:  at most two attempts, 1 second apart, all within
+// WAKE_BUDGET_MS of the request's arrival.  The longer retry is the
+// listener's own (2, 5 and 10 seconds of backoff), which a 503 asks for.
+export const DELIVERY_BACKOFF_MS = Object.freeze([1000]);
+export const WAKE_BUDGET_MS = 10 * 1000;
+// No attempt starts with less than this left of the budget.
+export const MIN_ATTEMPT_MS = 1000;
 export const MAX_EVENT_BYTES = 256 * 1024;
 export const MAX_CALLBACK_URL = 2048;
 export const DEFAULT_CALLBACK_HOSTS = Object.freeze(["chatgpt.com", "*.chatgpt.com", "openai.com", "*.openai.com"]);
@@ -135,10 +148,38 @@ export function validateArguments(args, config) {
   return out;
 }
 
-/** Does this wake match a subscription's arguments? */
-export function wakeMatches(args, wake) {
+/** A direct message:  `dm` and a direct `reply_to` both say so (src/wake.js refuses a body where they disagree). */
+const isDirectWake = (wake) => wake.dm === true && wake.reply_to?.type === "direct";
+
+/**
+ * Why a wake may reach no subscription at all, or null.  A direct message
+ * carries no text (eventData), so it needs no channel.  Every other wake must
+ * name a stream on the CHANNELS allowlist by its pinned numeric id, the check
+ * the read tools make on `stream_id`:  a mention of the bot in any other
+ * channel never forwards its excerpt.  A wake without `stream_id` (a listener
+ * from before it sent one) is refused too.
+ */
+export function wakeChannelRefusal(wake, config) {
+  if (isDirectWake(wake)) return null;
+  if (!Number.isSafeInteger(wake.stream_id)) return "no_stream_id";
+  if (!config.channelIds.includes(wake.stream_id)) return "stream_not_allowlisted";
+  return null;
+}
+
+/**
+ * Does this wake match a subscription's arguments?  A `channel` filter needs
+ * both the name in `reply_to` and the stream id CHANNELS pins for that name,
+ * so a renamed or look-alike channel never matches.
+ */
+export function wakeMatches(args, wake, config) {
   if (args && typeof args.channel === "string") {
-    return wake.dm !== true && wake.reply_to?.type === "stream" && wake.reply_to.channel === args.channel;
+    return (
+      wake.dm !== true &&
+      wake.reply_to?.type === "stream" &&
+      wake.reply_to.channel === args.channel &&
+      Number.isSafeInteger(wake.stream_id) &&
+      config.channels.get(args.channel) === wake.stream_id
+    );
   }
   return true;
 }
@@ -383,48 +424,78 @@ export async function verifyCallback(fetchFn, { url, subId, secret, now = Date.n
  * Deliver one event to one subscription with bounded retries.  Returns
  * {outcome, status, attempts} where outcome is "delivered", "gone" (410:  drop
  * the subscription), "rejected" (413 or another 4xx, or a redirect:  not
- * retried) or "failed" (retries ran out).
+ * retried), "not_live" (`isLive` said no before an attempt, with its `reason`)
+ * or "failed" (retries or the budget ran out, or `isLive` could not answer:
+ * worth another try later).
+ * `isLive` runs before every attempt, the first included, and nothing is sent
+ * unless it answers {live: true}.  `deadline` bounds the whole loop:  each
+ * attempt's timeout is cut to what is left, and no attempt starts with less
+ * than MIN_ATTEMPT_MS left.
  */
-export async function deliverEvent(fetchFn, sub, event, { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), backoff = DELIVERY_BACKOFF_MS } = {}) {
+export async function deliverEvent(
+  fetchFn,
+  sub,
+  event,
+  { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), backoff = DELIVERY_BACKOFF_MS, deadline = Infinity, isLive = null } = {},
+) {
   const body = JSON.stringify(event);
   if (new TextEncoder().encode(body).byteLength > MAX_EVENT_BYTES) return { outcome: "rejected", status: 413, attempts: 0 };
   let last = { outcome: "failed", status: null, attempts: 0 };
   for (let attempt = 1; attempt <= backoff.length + 1; attempt++) {
+    if (attempt > 1) {
+      const pause = backoff[attempt - 2];
+      if (deadline - now() - pause < MIN_ATTEMPT_MS) break;
+      await sleep(pause);
+    }
+    const timeoutMs = Math.min(DELIVERY_TIMEOUT_MS, deadline - now());
+    if (!(timeoutMs >= MIN_ATTEMPT_MS)) break;
+    if (isLive) {
+      let live;
+      try {
+        live = await isLive();
+      } catch {
+        live = null;
+      }
+      if (!live) return { outcome: "failed", status: null, error: "live_check_failed", attempts: attempt - 1 };
+      if (live.live !== true) return { outcome: "not_live", reason: String(live.reason ?? "unknown"), status: null, attempts: attempt - 1 };
+    }
     // A fresh timestamp and signature on every attempt, the same event id.
-    const result = await signedPost(fetchFn, { url: sub.url, subId: sub.id, secrets: signingSecrets(sub, now()), webhookId: event.eventId, body, timeoutMs: DELIVERY_TIMEOUT_MS, now });
+    const result = await signedPost(fetchFn, { url: sub.url, subId: sub.id, secrets: signingSecrets(sub, now()), webhookId: event.eventId, body, timeoutMs, now });
     if (result.response) await result.response.body?.cancel().catch(() => {});
     const status = result.status ?? null;
     if (status !== null && status >= 200 && status < 300) return { outcome: "delivered", status, attempts: attempt };
     if (status === 410) return { outcome: "gone", status, attempts: attempt };
     if (status !== null && status >= 300 && status < 500 && status !== 408 && status !== 429) return { outcome: "rejected", status, attempts: attempt };
     last = { outcome: "failed", status, error: result.error, attempts: attempt };
-    if (attempt <= backoff.length) await sleep(backoff[attempt - 1]);
   }
   return last;
 }
 
 /**
- * Fan one wake out to the seat's live subscriptions (runs in ctx.waitUntil).
- * `subs` come from SeatGate.eventClaimWake, already filtered for epoch,
- * expiry and pause.  Each result goes back to SeatGate:  410 drops the
- * subscription, everything is audited without URLs or secrets.
+ * Fan one claimed wake out to the seat's matching subscriptions, inside the
+ * listener's request.  `subs` come from SeatGate.eventClaimWake, and
+ * SeatGate.eventSubLive checks each one again before every attempt.  A wake
+ * wakeChannelRefusal refuses reaches nobody.  Each result goes back to
+ * SeatGate:  410 drops the subscription, and everything is audited without
+ * URLs, secrets or excerpts.
  */
-export async function fanOut({ gate, wake, subs, fetchFn, now = Date.now, sleep }) {
+export async function fanOut({ gate, wake, subs, config, fetchFn, now = Date.now, sleep, deadline = Infinity }) {
+  if (wakeChannelRefusal(wake, config)) return [];
   const data = eventData(wake);
   const timestamp = iso(Number.isSafeInteger(wake.sent_at) ? wake.sent_at * 1000 : now());
   const results = await Promise.all(
     subs
-      .filter((sub) => wakeMatches(sub.arguments, wake))
+      .filter((sub) => wakeMatches(sub.arguments, wake, config))
       .map(async (sub) => {
         const event = { eventId: await eventIdFor(wake.wake_id, sub.id), name: EVENT_NAME, timestamp, data, cursor: null };
         let result;
         try {
-          result = await deliverEvent(fetchFn, sub, event, { now, ...(sleep ? { sleep } : {}) });
+          result = await deliverEvent(fetchFn, sub, event, { now, deadline, isLive: () => gate.eventSubLive({ subId: sub.id }), ...(sleep ? { sleep } : {}) });
         } catch {
           result = { outcome: "failed", status: null, attempts: 0 };
         }
         try {
-          await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, wakeRef: String(wake.wake_id).slice(0, 40), messageId: wake.message_id });
+          await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, reason: result.reason, wakeRef: String(wake.wake_id).slice(0, 40), messageId: wake.message_id });
         } catch {
           console.log(JSON.stringify({ event: "event_result_record_failed" }));
         }
@@ -432,6 +503,77 @@ export async function fanOut({ gate, wake, subs, fetchFn, now = Date.now, sleep 
       }),
   );
   return results;
+}
+
+/**
+ * One outcome for a whole wake from fanOut's results:  "no_subscriber" when
+ * nothing matched, "delivered" when any delivery got a 2xx, "retry" when none
+ * did and at least one failed in a way worth retrying (5xx, 408, 429, a
+ * timeout, a network error), else the permanent drop:  "rejected" (another
+ * 4xx or a redirect), "gone" (410) or "not_live" (paused, revoked,
+ * unsubscribed or lapsed since the claim).
+ */
+export function wakeOutcome(results) {
+  if (results.length === 0) return "no_subscriber";
+  if (results.some((r) => r.outcome === "delivered")) return "delivered";
+  if (results.some((r) => r.outcome === "failed")) return "retry";
+  return ["rejected", "gone", "not_live"].find((outcome) => results.some((r) => r.outcome === outcome)) ?? "rejected";
+}
+
+/**
+ * Deliver one claimed wake (`claim` from SeatGate.eventClaimWake) and end its
+ * claim with SeatGate.eventSettleWake:  "retry" forgets the wake so the
+ * listener's next attempt claims it again, any other outcome settles it.
+ * Never throws:  anything unexpected is a "retry".
+ * Returns {verdict: "go", outcome, subscribers, delivered} for wakeReply.
+ */
+export async function deliverWake({ gate, wake, claim, config, fetchFn, now = Date.now, sleep, deadline = now() + WAKE_BUDGET_MS }) {
+  const subscribers = claim.subs.length;
+  let outcome = "retry";
+  let delivered = 0;
+  let streamId = null;
+  try {
+    if (wakeChannelRefusal(wake, config)) {
+      outcome = "channel_refused";
+      streamId = Number.isSafeInteger(wake.stream_id) ? wake.stream_id : null;
+    } else {
+      const results = await fanOut({ gate, wake, subs: claim.subs, config, fetchFn, now, sleep, deadline });
+      outcome = wakeOutcome(results);
+      delivered = results.filter((r) => r.outcome === "delivered").length;
+    }
+  } catch {
+    console.log(JSON.stringify({ event: "wake_fanout_failed" }));
+    outcome = "retry";
+    delivered = 0;
+  }
+  try {
+    await gate.eventSettleWake({ wakeId: wake.wake_id, token: claim.token, outcome, delivered, streamId });
+  } catch {
+    // A delivered wake then stays claimed until its lease runs out;  a "retry"
+    // is answered 503 anyway, and the listener's retry claims it after that.
+    console.log(JSON.stringify({ event: "wake_settle_failed", outcome }));
+  }
+  return { verdict: "go", outcome, subscribers, delivered };
+}
+
+/**
+ * The answer to the listener for one wake (src/index.js serveWake).  The
+ * listener retries a 5xx or a network failure, at most 3 times, and never a
+ * 2xx, 3xx or 4xx, so a 503 is the Worker asking for the same wake again.
+ * `result` is a claim verdict or deliverWake's result.  Returns {status, body,
+ * retryAfterS}.
+ *   duplicate         200 {ok: true, duplicate: true}
+ *   in_flight         503 {ok: false, in_flight: true}, with Retry-After
+ *   paused            202 {ok: true, paused: true, subscribers: 0}
+ *   retry             503 {ok: false, retry: true, subscribers, delivered: 0}
+ *   anything settled  202 {ok: true, subscribers, delivered, outcome}
+ */
+export function wakeReply(result) {
+  if (result.verdict === "duplicate") return { status: 200, body: { ok: true, duplicate: true } };
+  if (result.verdict === "in_flight") return { status: 503, body: { ok: false, in_flight: true }, retryAfterS: Math.max(1, result.retryAfterS ?? 1) };
+  if (result.verdict === "paused") return { status: 202, body: { ok: true, paused: true, subscribers: 0 } };
+  if (result.outcome === "retry") return { status: 503, body: { ok: false, retry: true, subscribers: result.subscribers, delivered: 0 } };
+  return { status: 202, body: { ok: true, subscribers: result.subscribers, delivered: result.delivered, outcome: result.outcome } };
 }
 
 // ---------------------------------------------------------------- MCP methods
