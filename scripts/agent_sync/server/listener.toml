@@ -87,13 +87,9 @@ wake = "inbox"
 # routine URL and key.  Enabling or disabling one is the `enabled` line, then a restart.
 
 # GB-DIRECTOR (Routing, fleet sync, org help, director-grok-bot@).
-# Disabled (Sat, Oct 10):  ZULIP_ALERT_GB_DIRECTOR_KEY in Infisical holds the whole header line
-# ("Authorization: Bearer crsr_..."), not the bare key, so a wake would send a broken header.  Its Zulip pair is
-# fine.  To enable:  replace that secret with the bare crsr_ key in Infisical, set enabled = true here and in
-# /data/listener.toml, then restart the app.
 [seat.GB-DIRECTOR]
 instance = "server"
-enabled = false
+enabled = true
 creds = "env"                     # ZULIP_GB_DIRECTOR_EMAIL, ZULIP_GB_DIRECTOR_API_KEY; the site from ZULIP_SITE
 wake = "http"
 routine = { url_env = "ZULIP_ALERT_GB_DIRECTOR_ENDPOINT", key_env = "ZULIP_ALERT_GB_DIRECTOR_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
@@ -118,13 +114,9 @@ routine = { url_env = "ZULIP_ALERT_GB_DESIGNER_ENDPOINT", key_env = "ZULIP_ALERT
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 
 # GB-COMPILER (Builds, compile and test gates, compiler-grok-bot@).
-# Disabled (Sat, Oct 10):  ZULIP_GB_COMPILER_EMAIL and ZULIP_GB_COMPILER_API_KEY in Infisical are not
-# GB-Compiler's (the email is Jet's openai-dot-bot@, and Zulip refuses the key with 401), so the seat would be
-# refused at connect.  The real bot is compiler-grok-bot@ (a member).  Its routine webhook is fine.  To enable:
-# put compiler-grok-bot@'s pair in Infisical, set enabled = true here and in /data/listener.toml, then restart.
 [seat.GB-COMPILER]
 instance = "server"
-enabled = false
+enabled = true
 creds = "env"                     # ZULIP_GB_COMPILER_EMAIL, ZULIP_GB_COMPILER_API_KEY; the site from ZULIP_SITE
 wake = "http"
 routine = { url_env = "ZULIP_ALERT_GB_COMPILER_ENDPOINT", key_env = "ZULIP_ALERT_GB_COMPILER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
