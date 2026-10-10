@@ -1448,9 +1448,9 @@ From `scripts/fleet_skill_identity.py`, checked Wed, Oct 7, 2026.
 | MM | `~/.minimax/skills` |
 | MC | `~/.config/muse/skills` |
 | MA | `by-seat/muse-assist` pack only |
-| CLUTCH | None yet |
+| CLUTCH | `~/.clutch/dsh/skills`, the DSH engine's own skill root (it outranks the shared `~/.agents/skills`, which no installer writes) |
 
-The installer renders the shared `~/.claude/skills` as CLAUDE with the pin-or-fail seat block (#384, #405).  CLUTCH has no skill home yet, so it gets catalog and by-seat copies only, and the retired seats (MONET, RENOIR, DSH, KIMI) write no tool home.
+The installer renders the shared `~/.claude/skills` as CLAUDE with the pin-or-fail seat block (#384, #405).  CLUTCH renders to `~/.clutch/dsh/skills` and also keeps its by-seat copy, and the retired seats (MONET, RENOIR, DSH, KIMI) write no tool home.
 
 ### Catalog
 

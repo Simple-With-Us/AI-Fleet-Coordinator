@@ -16,7 +16,7 @@ Updated **2026-10-08**: the installer **specializes identity per seat** (Zulip b
 | Claude / Fable | `[CLAUDE]` | `docs/fleet-skills/by-seat/claude/` | `claude/` | Upload on **CLAUDE** login |
 | Renoir | `[RENOIR]` | `docs/fleet-skills/by-seat/renoir/` (catalog only) | `renoir/` | Retired 2026-10-07.  The seat never opened |
 | DeepSeek Harness | `[DSH]` | `docs/fleet-skills/by-seat/deepseek/` (catalog only) | `deepseek/` | Retired 2026-09-19, use Clutch.  Former Slack tag `DEEPSEEK` is retired.  A DeepSeek *model* in Cursor is still Cursor |
-| Clutch | `[CLUTCH]` | `docs/fleet-skills/by-seat/clutch/` (catalog only, no skill home yet) | `clutch/` | Replaces HARNESS and DSH.  One seat for every model run through Clutch |
+| Clutch | `[CLUTCH]` | `~/.clutch/dsh/skills` (the DSH engine's skill root; a by-seat copy is kept in `docs/fleet-skills/by-seat/clutch/`) | `clutch/` | Replaces HARNESS and DSH.  One seat for every model run through Clutch |
 | MiniMax Code / Mavis | `[MM]` | `~/.minimax/skills` | `minimax/` | Former Slack tag `MINIMAX` is retired.  Loaded on demand from `<available_skills>`, never auto-applied; the always-on fleet pointer is `~/.minimax/memory/user.md` |
 | Kimi | `[KIMI]` | `docs/fleet-skills/by-seat/kimi/` (catalog only) | `kimi/` | Retired — do not take work |
 
@@ -50,7 +50,7 @@ Having explicit fleet skills installed significantly improves agent compliance w
 | **`closeout`** | End-of-task closeout: effort board Deployed/Completed, GitHub Issue closed, a closeout post in the Zulip work topic under `#agent-sync`, Apple Notes stamp. |
 | **`fleet-recall`** | Search the shared `fleet-agents` corpus before re-deriving a lesson; contribute one after you learn it.  CLI `recall`, MCP `fleet-recall`, cloud via `agents.jays.services/mcp`. |
 
-**Per-seat install rule:** every listed skill is rewritten to that seat's chat tag, Zulip bot, Notes name, branch prefix, and worktree, then written to that seat's home / by-seat pack.  Retired seats (Monet, Renoir, DSH, Kimi) and Clutch have no skill home: they get an inert by-seat catalog copy only, and the installer never writes their homes.  A skill that cannot be made appropriate for a harness is omitted (prefer omit over a wrong-voiced copy).  `ios-ship` is omitted from every seat.  DealDex's hosted Actions ship stays — do not disable it.  `mac-cleanup` is omitted from Grok Bot (cloud).  `housekeeper` is on every seat including Grok Bot.  `drive-grok-tui` is on every seat.  `codex-triage` stays on every seat that lands PRs — the name is historical; the body is GitHub review-thread triage.
+**Per-seat install rule:** every listed skill is rewritten to that seat's chat tag, Zulip bot, Notes name, branch prefix, and worktree, then written to that seat's home / by-seat pack.  Retired seats (Monet, Renoir, DSH, Kimi) have no skill home: they get an inert by-seat catalog copy only, and the installer never writes their homes.  A skill that cannot be made appropriate for a harness is omitted (prefer omit over a wrong-voiced copy).  `ios-ship` is omitted from every seat.  DealDex's hosted Actions ship stays — do not disable it.  `mac-cleanup` is omitted from Grok Bot (cloud).  `housekeeper` is on every seat including Grok Bot.  `drive-grok-tui` is on every seat.  `codex-triage` stays on every seat that lands PRs — the name is historical; the body is GitHub review-thread triage.
 
 ---
 
