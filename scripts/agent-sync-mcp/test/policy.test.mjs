@@ -124,6 +124,18 @@ test("pre-gate admits ChatGPT for JET", () => {
   assert.deepEqual(got, { ok: true, seat: "JET", clientId: CHATGPT_CLIENT, redirectUri: CHATGPT_REDIRECT, scopes: ["zulip:read", "zulip:write"] });
 });
 
+test("pre-gate admits Jay's ChatGPT connector as an exact pair, and no sibling connector", () => {
+  const redirect = "https://chatgpt.com/connector/oauth/Aa3WqJNIVGqM";
+  const client = "https://chatgpt.com/oauth/Aa3WqJNIVGqM/client.json";
+  const got = preGateAuthorize(authorizeParams({ client_id: client, redirect_uri: redirect }), config);
+  assert.deepEqual(got, { ok: true, seat: "JET", clientId: client, redirectUri: redirect, scopes: ["zulip:read", "zulip:write"] });
+  const siblingClient = "https://chatgpt.com/oauth/Zz9XyWvUtSrQ/client.json";
+  const siblingRedirect = "https://chatgpt.com/connector/oauth/Zz9XyWvUtSrQ";
+  assert.equal(preGateAuthorize(authorizeParams({ client_id: siblingClient, redirect_uri: siblingRedirect }), config).reason, "redirect_not_allowlisted");
+  assert.equal(preGateAuthorize(authorizeParams({ client_id: client, redirect_uri: siblingRedirect }), config).reason, "redirect_not_allowlisted");
+  assert.equal(preGateAuthorize(authorizeParams({ client_id: siblingClient, redirect_uri: redirect }), config).reason, "cimd_client_not_allowlisted");
+});
+
 test("pre-gate refuses before any fetch", () => {
   const cases = [
     [{ client_id: "https://evil.example/oauth/client.json" }, "cimd_client_not_allowlisted"],
