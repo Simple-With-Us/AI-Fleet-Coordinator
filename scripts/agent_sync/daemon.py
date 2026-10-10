@@ -1343,7 +1343,12 @@ class Daemon:
         # anyone and the route post must wake its target.
         route = obj.get("route")
         if isinstance(route, dict):
-            outcome["route"] = self.handle_route(runner, pending, obj, route, history=history, lease_id=lease_id)
+            try:
+                outcome["route"] = self.handle_route(runner, pending, obj, route, history=history, lease_id=lease_id)
+            except Exception as exc:  # noqa: BLE001 - a route failure must never lose the wake's done row
+                error = self.scrub(type(exc).__name__ + ": " + str(exc))
+                self.log.write("route-error", seat=runner.seat, wake_id=pending.wake_id, error=error)
+                outcome["route"] = {"seat": route.get("seat"), "status": "error", "why": error[:200]}
         elif obj.get("route_invalid"):
             outcome["route"] = {"seat": None, "status": "dropped", "why": str(obj["route_invalid"])}
             self.note_route_dropped(runner, pending, None, outcome["route"]["why"])
@@ -1487,7 +1492,17 @@ class Daemon:
     def note_route_posted(self, runner: SeatRunner, pending: W.Pending, seat: str, mode: str, reason: str,
                           owner_trigger: int, posted: int) -> dict[str, Any]:
         """Tell the owner who was paged and why:  a `[SEAT·note]` DM from the seat's own bot (the same
-        channel as escalation notes) and the owner queue.  Never raises; a failure is recorded."""
+        channel as escalation notes) and the owner queue.  Never raises; a failure is recorded, because
+        the route post is already out and the wake's `done` row must still be written."""
+        try:
+            return self._note_route_posted(runner, pending, seat, mode, reason, owner_trigger, posted)
+        except Exception as exc:  # noqa: BLE001 - a note failure must never lose the ledger row
+            error = self.scrub(type(exc).__name__ + ": " + str(exc))
+            self.log.write("route-note-error", seat=runner.seat, wake_id=pending.wake_id, error=error)
+            return {"owner_dm": None, "owner_dm_error": error}
+
+    def _note_route_posted(self, runner: SeatRunner, pending: W.Pending, seat: str, mode: str, reason: str,
+                           owner_trigger: int, posted: int) -> dict[str, Any]:
         where = "#%s > %s" % (A.clean_banner(pending.channel, 60), A.clean_banner(pending.topic, 80))
         self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat, "paged %s for you in %s" % (seat, where),
                              kind="route", key="route:%s" % pending.wake_id, once_per=0,

@@ -135,6 +135,35 @@ class RouteHonoredTests(RouteHarness):
         guard = L.read_json(daemon.loopguard.path)
         self.assertEqual(guard.get(TOPIC_KEY), 2, "the wake reply and the route post both count")
 
+    def test_a_failing_note_or_check_never_loses_the_done_row(self) -> None:
+        self.set_claude(mode="ok", output=routed())
+        daemon = self.start()
+        real = daemon.notifier.notify
+
+        def notify(*args, **kw):
+            if kw.get("kind") == "route":
+                raise RuntimeError("notifier down")
+            return real(*args, **kw)
+
+        daemon.notifier.notify = notify
+        self.owner_says(daemon)
+        self.wake_cycle(daemon, 6)
+        route = self.done()["route"]
+        self.assertEqual(route["status"], "posted", "the post went out, so the route counts")
+        self.assertIn("notifier down", route["owner_dm_error"])
+        daemon.notifier.notify = real
+
+        def explode(*args, **kw):
+            raise RuntimeError("check broke")
+
+        daemon.route_check = explode
+        self.clock.advance(3600)
+        self.owner_says(daemon, topic="u")
+        self.wake_cycle(daemon, 6)
+        route = self.done()["route"]
+        self.assertEqual((route["status"], route["seat"]), ("error", "CODEX"))
+        self.assertEqual(self.done()["action"], "reply", "the wake still finished")
+
 
 class RouteDroppedTests(RouteHarness):
     def test_a_peer_only_trigger_never_routes(self) -> None:
