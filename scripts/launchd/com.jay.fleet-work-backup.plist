@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.fleet-work-backup</string>
+  <!-- Backs up the fleet work GitHub does not hold (unpushed commits, stashes, uncommitted work,
+       and non-git files under ~/apps) to restic on Backblaze B2.  Scheduled, not always-on.
+       Two things to know before loading it:
+       1. Privacy (TCC).  A LaunchAgent cannot read /Volumes/External (removable-volume privacy), and
+          the lanes are symlinks onto that disk.  Grant the interpreter below Removable Volumes (or
+          Full Disk Access) in System Settings > Privacy and Security, or the run is partial and logs
+          warn=removable-volumes-denied with the executable to grant.  What macOS checks is the
+          running image, not the launcher:  Apple's python3 runs
+          .../Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python, Homebrew's
+          python3.14 runs .../Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python.
+          Run 'python3 fleet_work_backup.py image' to print it.  Apple's interpreter is the default
+          because it is Apple-signed, so a grant survives updates;  Homebrew's is ad-hoc signed and
+          loses the grant on every brew upgrade.  (install.py --interpreter /opt/homebrew/bin/python3
+          switches it.)  Check what a launchd job itself can read, not Terminal, with:
+          python3 fleet_work_backup.py check-access --launchd
+       2. The script is standard library only and runs on Python 3.9 and later. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/jay/apps/fleet-work-backup/fleet_work_backup.py</string>
+    <string>run</string>
+  </array>
+  <!-- Every 3 hours.  Not RunAtLoad:  bootstrapping must not start a backup by itself.  A second
+       copy cannot overlap (the script holds a lock and exits), and a run skips itself when load1
+       is over 60 or memory pressure is critical (or swap is full while pressure is at warning). -->
+  <key>StartInterval</key>
+  <integer>10800</integer>
+  <key>RunAtLoad</key>
+  <false/>
+  <!-- Standard, not Background:  the background class starves jobs on this Mac under load (see
+       com.jay.grok-idle-unload and com.jay.sim-idle-reaper).  Nice and LowPriorityIO are the mild
+       knobs:  they yield the CPU and the disk to interactive work without the starvation. -->
+  <key>ProcessType</key>
+  <string>Standard</string>
+  <key>Nice</key>
+  <integer>5</integer>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/jay/Library/Logs/fleet-work-backup.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/Library/Logs/fleet-work-backup.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/jay</string>
+  </dict>
+</dict>
+</plist>
