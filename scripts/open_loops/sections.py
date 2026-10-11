@@ -38,7 +38,12 @@ def _hours(since: str | None, now: datetime) -> float | None:
 
 
 def decisions(linear: dict, view: dict | None, now: datetime, book: urls.UrlBook) -> dict:
-    """Linear needs-owner items, oldest first.  `view` is views.needs_owner_view (C6, Mac only) or None."""
+    """Linear needs-owner items, oldest first.  `view` is views.needs_owner_view (C6, Mac only) or None.
+
+    C6 is asked for every row (`needs-owner list --all`), so the C6 `state` decides what Linear cannot:  `replied`
+    (the owner answered, the filer has not closed it) is counted in `answered_awaiting_close` and not listed, and
+    `closed` is neither.  A Linear row that C6 does not know at all (a hand-labelled issue) is listed:  being absent
+    from a list is never proof that the owner answered."""
     block = _base(linear, items=[], answered_awaiting_close=None, low_stakes=None, over_five=None)
     data = linear.get("data")
     if not isinstance(data, dict):
@@ -50,6 +55,8 @@ def decisions(linear: dict, view: dict | None, now: datetime, book: urls.UrlBook
         if not ident or (row.get("status") or "").lower() in CLOSED:
             continue
         extra = view["by_ident"].get(ident) if known else None
+        if extra and extra.get("state") == "closed":
+            continue
         if extra and extra["replied"]:
             answered += 1
             continue

@@ -9,9 +9,10 @@ Read through the installed `agent-sync` (the running seat's own bot, read-only):
 
 An issue's topic is any topic whose name is the identifier or starts with `<identifier> `.  Only messages that
 name a seat count (a person's post is not the claimant's), and the activity function compares the seat.  The
-whole pass is bounded (80 topic reads, 5 minutes);  a claim that did not get a read is left out of the
-`zulip_topic` source and reported as unchecked, never as idle.  A read that failed makes that claim's band
-"unknown".  If the topic list is as long as the limit, a claim with no topic found is unknown too (its topic
+whole pass is bounded (80 topic reads, 5 minutes);  a claim that did not get a read is counted in `skipped`
+and left out of `by_ident`, and claims.py then marks it {"ok": False} so its band is "unknown", never idle.  A
+read that failed makes that claim's band "unknown" the same way, and so does a topic list that failed (status
+"failed").  Only a host with no agent-sync (status "absent") leaves the source unchecked.  If the topic list is as long as the limit, a claim with no topic found is unknown too (its topic
 may be past the limit).
 """
 from __future__ import annotations

@@ -54,6 +54,18 @@ def _dicts(value: Any) -> list[dict] | None:
     return [r for r in value if isinstance(r, dict)]
 
 
+DIVERGED_REASON = "diverged:  the remote has commits this lane does not (never forced)"
+
+
+def _refusal_reason(row: dict) -> str | None:
+    """Why C1 left a lane alone:  `blocked_reason`, `reason` or C1-5's `refused_reason`, else a bare `diverged`."""
+    for key in ("blocked_reason", "reason", "refused_reason"):
+        text = safety.clean(row.get(key), 160)
+        if text:
+            return text
+    return DIVERGED_REASON if row.get("diverged") is True else None
+
+
 def _lane(row: dict) -> dict:
     repo = row.get("repo") if isinstance(row.get("repo"), str) else row.get("owner_repo")
     branch, exact = safety.safe_ref(row.get("branch"))
@@ -73,7 +85,7 @@ def _lane(row: dict) -> dict:
         "armed_local_work": row.get("armed_local_work") is True or state == "armed_local_work",
         "pr_number": _int(row.get("pr_number")),
         "pr_is_auto_draft": row.get("pr_is_auto_draft") if isinstance(row.get("pr_is_auto_draft"), bool) else None,
-        "reason": safety.clean(row.get("blocked_reason") or row.get("reason"), 160) or None,
+        "reason": _refusal_reason(row),
     }
 
 
@@ -103,7 +115,7 @@ def autopush_view(data: Any) -> dict:
     seen: set[str] = set()
     for raw in refusals_raw or []:
         name = lane_name(raw)
-        reason = safety.clean(raw.get("reason") or raw.get("blocked_reason"), 160) or "no reason given"
+        reason = _refusal_reason(raw) or "no reason given"
         refusals.append({"lane": name, "reason": reason})
         if name:
             seen.add(name)

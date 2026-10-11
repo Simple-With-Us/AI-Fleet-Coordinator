@@ -8,7 +8,7 @@ from open_loops.lint import find_urls
 from open_loops.render import BRIEF_LIMIT, SECTION_TITLES, render_markdown
 
 from .builders import NOW, Sandbox, board_row
-from .scenes import standard_world
+from .scenes import lane, standard_world
 
 
 class Render(Sandbox):
@@ -49,6 +49,29 @@ class Render(Sandbox):
         text = render_markdown(self.facts())
         self.assertIn("on %s.  Sources ok" % re.search(r"built on `([^`]+)`", text).group(0).split("`")[1].join(["`", "`"]) if False else ".  Sources ok", text)
         self.assertNotRegex(text, r"[.!?]  [A-Z]")
+
+    def test_an_unpushed_section_that_could_not_age_a_lane_says_none_known_not_none(self):
+        world = standard_world(self.home, self.bin)
+        world.lane_report["checkouts"] = [lane("/work/lanes/Example/claude-unaged", unpushed=2, safety="NEEDS-REVIEW")]
+        f = self.facts(world)
+        self.assertEqual((f["unpushed_over_a_day"]["count"], f["unpushed_over_a_day"]["unknown_age"]), (0, 1))
+        text = render_markdown(f)
+        section = text.split("## 4.")[1].split("## 5.")[0]
+        self.assertIn("None known;  1 lane could not be aged.", section)
+        self.assertNotIn("\nNone.\n", section)
+        self.assertIn("Missing:  lanes (ages unavailable for 1 lane with unpushed or dirty work)", text)       # the DM must say so too
+
+    def test_an_unpushed_section_with_every_lane_aged_still_says_none(self):
+        world = standard_world(self.home, self.bin)
+        world.lane_report["checkouts"] = [lane("/work/lanes/Example/claude-clean")]
+        text = render_markdown(self.facts(world))
+        self.assertIn("\nNone.\n", text.split("## 4.")[1].split("## 5.")[0])
+        self.assertNotIn("ages unavailable", text)
+
+    def test_a_source_name_in_the_facts_cannot_mention_anyone(self):
+        f = self.facts()
+        f["sources"]["@**all** hi"] = {"status": "ok", "reason": None}
+        self.assertNotIn("@**", render_markdown(f))
 
     def test_stuck_prs_say_whose_age_it_is(self):
         text = render_markdown(self.facts())

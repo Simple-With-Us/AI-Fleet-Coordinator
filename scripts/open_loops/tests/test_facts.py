@@ -2,12 +2,17 @@
 import json
 import unittest
 from datetime import datetime, timezone
+from unittest import mock
 
-from open_loops import central, urls
+from fleet_facts.runner import Result
+
+from open_loops import central, urls, zulip_topics
 from open_loops.facts import build_facts
 
-from .builders import NOW, Sandbox, ago
-from .scenes import standard_world
+from .builders import NOW, SCRIPTS, Sandbox, ago, board_row
+from .scenes import lane, standard_world
+
+C6_GOLDEN = SCRIPTS / "needs_owner" / "tests" / "fixtures" / "list_golden.json"        # what C6's `list --json` really prints
 
 
 class Facts(Sandbox):
@@ -165,6 +170,61 @@ class Facts(Sandbox):
         self.assertEqual(d["over_five"], ["CLAUDE"])
         self.assertTrue(first["url"].startswith("https://linear.app/"))
 
+    def test_c6_is_asked_for_every_row_because_the_default_lists_only_the_open_ones(self):
+        self.facts()
+        asked = [c["argv"][1:] for c in self.world.calls if c["argv"][0].endswith("needs-owner")]
+        self.assertEqual(asked, [["list", "--all", "--json"]])
+
+    def test_an_answered_item_is_counted_from_the_c6_state_in_the_real_list_shape(self):
+        golden = json.loads(C6_GOLDEN.read_text(encoding="utf-8"))
+        replied = [r["identifier"] for r in golden if r["state"] == "replied"]
+        awaiting = sorted(r["identifier"] for r in golden if r["state"] != "replied")
+        self.assertTrue(replied and awaiting)
+        world = standard_world(self.home, self.bin)
+        world.needs_owner = [board_row(r["identifier"], seats=(), n=100 + i, title="OWNER DECISION:  " + r["question"], status="open")
+                             for i, r in enumerate(golden)]
+        world.docs["needs-owner"] = golden                                 # the very document C6's own golden test pins
+        d = self.facts(world)["decisions"]
+        self.assertEqual(d["answered_awaiting_close"], len(replied))
+        self.assertEqual(sorted(i["identifier"] for i in d["items"]), awaiting)
+        self.assertEqual(d["count"], len(awaiting))
+
+    def test_a_replied_item_whose_filer_has_not_closed_it_is_counted_not_listed(self):
+        d = self.facts()["decisions"]
+        self.assertEqual(d["answered_awaiting_close"], 1)                  # FFX-12:  state replied in the C6 list
+        self.assertNotIn("FFX-12", [i["identifier"] for i in d["items"]])
+
+    def test_a_c6_closed_item_is_neither_listed_nor_counted_even_with_a_reply_on_it(self):
+        world = standard_world(self.home, self.bin)
+        world.needs_owner.append(board_row("FFX-14", seats=("CODEX",), n=14, title="OWNER DECISION:  Closed in C6 first", status="open"))
+        world.docs["needs-owner"]["items"].append({"identifier": "FFX-14", "seat": "CODEX", "state": "closed", "replied": {"kind": "reaction", "id": "1", "option": 1}})
+        d = self.facts(world)["decisions"]
+        self.assertNotIn("FFX-14", [i["identifier"] for i in d["items"]])
+        self.assertEqual(d["answered_awaiting_close"], 1)                  # still only FFX-12
+
+    def test_an_item_missing_from_the_c6_list_is_listed_never_called_answered(self):
+        world = standard_world(self.home, self.bin)
+        world.needs_owner.append(board_row("FFX-15", seats=(), n=15, title="OWNER DECISION:  Labelled by hand", status="open"))
+        d = self.facts(world)["decisions"]
+        self.assertIn("FFX-15", [i["identifier"] for i in d["items"]])
+        hand = [i for i in d["items"] if i["identifier"] == "FFX-15"][0]
+        self.assertIsNone(hand["tap_to_answer"])                           # C6 knows nothing about it
+        self.assertEqual(d["answered_awaiting_close"], 1)
+
+    def test_lanes_whose_age_cannot_be_told_are_missing_not_none(self):
+        world = standard_world(self.home, self.bin)
+        world.lane_report["checkouts"].append(lane("/work/lanes/Example/claude-unaged", unpushed=2, safety="NEEDS-REVIEW"))
+        f = self.facts(world)
+        self.assertEqual(f["unpushed_over_a_day"]["unknown_age"], 1)
+        self.assertEqual(f["unpushed_over_a_day"]["count"], 2)             # the two lanes whose age is known are still listed
+        self.assertEqual([m for m in f["missing"] if m["source"] == "lanes"],
+                         [{"source": "lanes", "reason": "ages unavailable for 1 lane with unpushed or dirty work"}])
+        self.assertEqual(f["sources"]["lanes"]["status"], "ok")            # the source itself was read
+
+    def test_a_lanes_source_that_is_already_missing_is_not_listed_twice(self):
+        f = self.facts(no_mac=True)
+        self.assertEqual([m["source"] for m in f["missing"]].count("lanes"), 1)
+
     def test_without_c6_low_stakes_and_over_five_are_unknown_not_zero(self):
         world = standard_world(self.home, self.bin)
         (self.bin / "needs-owner").unlink()
@@ -275,6 +335,48 @@ class Zulip(Sandbox):
         world.agent_sync["read_rc"] = {"FFX-2 forty hours": 5}
         f = self.facts(world)
         self.assertEqual(self.band(f, "FFX-2")["band"], "unknown")
+
+    def breaking_topics(self, world, result):
+        original = world.handle
+        world.handle = lambda argv: result if len(argv) > 1 and argv[0].endswith("agent-sync") and argv[1] == "topics" else original(argv)
+
+    def idle_or_unknown(self, f):
+        return {c["identifier"]: c["band"] for key in ("idle_36h", "idle_48h", "unknown") for c in f["claims"][key]}
+
+    def test_a_topic_list_that_could_not_be_read_makes_idle_claims_unknown_never_idle(self):
+        world = self.world_with_topics()
+        self.breaking_topics(world, Result(3, "", "TLS handshake timeout"))
+        f = self.facts(world)
+        self.assertEqual(f["sources"]["zulip"]["status"], "failed")
+        self.assertEqual(f["claims"]["idle_36h"] + f["claims"]["idle_48h"], [])
+        bands = self.idle_or_unknown(f)
+        self.assertEqual((bands["FFX-2"], bands["FFX-5"]), ("unknown", "unknown"))
+        self.assertIn("zulip_topic", self.band(f, "FFX-2")["unknown_sources"])
+        self.assertNotIn("zulip_topic", self.band(f, "FFX-2")["unchecked"])
+
+    def test_a_topic_list_that_is_not_a_list_is_the_same_failure(self):
+        world = self.world_with_topics()
+        self.breaking_topics(world, Result(0, "{}", ""))
+        f = self.facts(world)
+        self.assertEqual(f["sources"]["zulip"]["status"], "failed")
+        self.assertEqual(self.band(f, "FFX-2")["band"], "unknown")
+        self.assertEqual(self.band(f, "FFX-5")["band"], "unknown")
+
+    def test_a_claim_the_read_budget_skipped_is_unknown_never_idle(self):
+        world = self.world_with_topics()
+        with mock.patch.object(zulip_topics, "MAX_READS", 1):
+            f = self.facts(world)
+        self.assertEqual(f["claims"]["zulip"]["skipped"], 1)
+        self.assertEqual(self.band(f, "FFX-2")["band"], "36h")             # it got its read
+        self.assertEqual(self.band(f, "FFX-5")["band"], "unknown")         # it did not
+        self.assertIn("zulip_topic", self.band(f, "FFX-5")["unknown_sources"])
+
+    def test_a_failed_zulip_source_does_not_touch_a_claim_that_is_plainly_moving(self):
+        world = self.world_with_topics()
+        self.breaking_topics(world, Result(3, "", "x"))
+        f = self.facts(world)
+        self.assertNotIn("FFX-3", self.idle_or_unknown(f))                 # five hours:  never needed a Zulip read
+        self.assertNotIn("FFX-1", self.idle_or_unknown(f))
 
     def test_a_claim_with_no_topic_is_checked_and_stays_idle(self):
         world = self.world_with_topics()

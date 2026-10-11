@@ -52,7 +52,7 @@ class Help(Cli):
     def test_help_runs_under_python_dash_I(self):
         proc = self.run_cli("--help")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        for word in ("gather", "render", "send"):
+        for word in ("gather", "render", "lint", "send"):
             self.assertIn(word, proc.stdout)
 
     def test_no_command_is_a_usage_error(self):
@@ -160,6 +160,35 @@ class Render(Cli):
         proc = self.run_cli("render", "--facts", str(path), "--markdown")
         self.assertEqual(proc.returncode, 2)
         self.assertIn("written by others", proc.stderr)
+
+
+class Lint(Cli):
+    def prepare(self):
+        facts, _ = self.facts_via_cli()
+        self.facts_file = self.write("facts.json", json.dumps(facts))
+        return facts
+
+    def test_lint_runs_for_any_seat_and_touches_neither_agent_sync_nor_the_c2_id(self):
+        facts = self.prepare()
+        self.scenario["agent-sync"]["whoami"]["seat"] = "CLAUDE"             # not BF-Deployer:  send would refuse, lint does not care
+        dm = self.write("dm.md", make_dm(facts))
+        before = len(self.calls())
+        proc = self.run_cli("lint", "--dm-file", str(dm), "--facts", str(self.facts_file))
+        self.assertEqual((proc.returncode, proc.stderr), (0, ""), proc.stdout)
+        self.assertIn("the DM passes the checks", proc.stdout)
+        self.assertEqual(len(self.calls()), before)                          # no program ran
+
+    def test_lint_names_each_problem_and_exits_4(self):
+        facts = self.prepare()
+        dm = self.write("dm.md", make_dm(facts, extra="@**all** look https://evil.test/x"))
+        proc = self.run_cli("lint", "--dm-file", str(dm), "--facts", str(self.facts_file))
+        self.assertEqual(proc.returncode, 4)
+        self.assertIn("hand-typed mention", proc.stdout)
+        self.assertIn("a link the gatherer did not make", proc.stdout)
+        self.assertIn("did not pass 2 checks", proc.stderr)
+
+    def test_lint_needs_both_files(self):
+        self.assertEqual(self.run_cli("lint", "--dm-file", "x").returncode, 2)
 
 
 class Send(Cli):

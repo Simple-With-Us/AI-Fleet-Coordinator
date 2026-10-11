@@ -10,6 +10,7 @@ this host could read, and only those:
   zulip_topic       the claimant's posts in the issue's topic (zulip_topics), for claims that need it
 
 A source that was tried and failed is passed as {"ok": False}, which makes the claim "unknown", never idle.
+That includes a Zulip topic list that could not be read and a claim the Zulip read budget skipped.
 A source that could not be tried here (no PR for the branch, no C1, no agent-sync) is not passed and is
 listed under the claim's `unchecked`:  it can only make a claim look MORE idle, so the digest may flag a
 claim that is in fact moving, but never hides one that is stuck.  Linear's `updated_at` is never read.
@@ -131,8 +132,18 @@ def build(linear: dict, github: dict, autopush: dict, autopush_rows: list[dict],
     if zulip is not None and wanted:
         result = zulip(wanted)
         block["zulip"] = {k: result.get(k) for k in ("status", "reason", "reads", "skipped")}
+        by_ident = result.get("by_ident") or {}
+        asked = {w["identifier"] for w in wanted}
         for index, (claim, signals, _) in enumerate(records):
-            seen = (result.get("by_ident") or {}).get(claim.get("identifier"))
+            ident = claim.get("identifier")
+            if ident not in asked:
+                continue
+            seen = by_ident.get(ident)
+            if seen is None and result.get("status") != "absent":
+                # The source was tried and gave this claim no answer:  the topic list failed, or the read budget ran
+                # out before the claim's turn.  That is "unknown", never idle.  Only a host with no agent-sync at all
+                # ("absent") could not try, and that stays "unchecked".
+                seen = {"ok": False}
             if seen is not None:
                 signals["zulip_topic"] = seen
                 records[index] = (claim, signals, _record(claim, signals, floor, now, book))

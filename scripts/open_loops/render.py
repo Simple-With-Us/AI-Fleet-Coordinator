@@ -145,7 +145,8 @@ def _unpushed(facts: Mapping, limit: int | None) -> list[str]:
     if block["count"] is None:
         return lines + [_missing("lanes", block), ""]
     if block["count"] == 0:
-        lines += ["None.", ""]
+        unaged = block.get("unknown_age") or 0
+        lines += ["None known;  %s could not be aged." % _n(unaged, "lane") if unaged else "None.", ""]
     shown, more = _shown(block["items"], limit)
     for item in shown:
         bits = ["%s old" % _age(item["age_hours"])]
@@ -219,7 +220,7 @@ def render_markdown(facts: Mapping, *, limit: int | None = None) -> str:
     """The list.  `limit` caps every list of items (None is the full list;  BRIEF_LIMIT is five)."""
     ok = [name for name, s in facts["sources"].items() if s["status"] == "ok"]
     lines = ["# Open Loops as of %s" % facts["built_at_local"], ""]
-    lines += ["Facts %s built on %s." % (_code(facts["facts_id"], 80), _code(facts["host"], 60)) + GAP + "Sources ok:  %s." % (", ".join(ok) or "none")]
+    lines += ["Facts %s built on %s." % (_code(facts["facts_id"], 80), _code(facts["host"], 60)) + GAP + "Sources ok:  %s." % (", ".join(_plain(n, 40) for n in ok) or "none")]
     for item in facts["missing"]:
         lines += ["", "Missing:  %s (%s)" % (_plain(item["source"], 40), _plain(item["reason"]))]
     lines.append("")

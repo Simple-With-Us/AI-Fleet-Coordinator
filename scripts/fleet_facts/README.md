@@ -17,7 +17,7 @@ fleet-facts gather [--part NAME]... [--no-mac] [--json]
 | `backup` | P1 `fleet_work_backup.py health --json` (`backup.py`) | yes |
 | `asks` | C3 `agent-sync asks status --json` | yes |
 | `report` | C4 `~/apps/claim-expiry/state/report-latest.json` | yes |
-| `needs_owner` | C6 `needs-owner list --json` | yes |
+| `needs_owner` | C6 `needs-owner list --all --json` (every labelled issue, answered and closed ones too) | yes |
 | `consult` | C7 `consult status --all --json` | yes |
 
 With no `--part` every part runs.  `--no-mac` is for a cloud host:  every Mac-only part is marked absent and is
@@ -129,6 +129,26 @@ exits 0.  F7 builds the command to this contract:
   without the command answers today), **3** the key is unavailable.
 * The key comes in the environment of the command, never on the command line, and is never printed.
 * The file is read once, from the path given.  The caller then uses the very bytes it handed over.
+
+### The signed Mac facts file (what F7 publishes as `gb/mac-facts.json`;  the shape C2-1 reads)
+
+A `fleet-facts gather` document restricted to its Mac parts, plus `sig`.  `open-loops gather --no-mac --mac-facts` uses
+it only when `fleet-facts verify` accepts the very bytes and it is fresh;  anything else is ignored and the Mac parts
+show as Missing.  Shape:
+
+* a JSON object with a time it was built in `generated_at` (or `published_at`, or `built_at`), ISO 8601 with a zone,
+  **less than 9 hours old** and not in the future (F7 publishes every 3 hours, so one missed run is still fresh);
+* `sources`: `{part: {"status": "ok" | "absent" | "failed", "reason": ...}}` for each part below;
+* `lanes`: the `lane doctor` report part, `{"attention": [...], "total": N}` (each record carries `repo`, `branch`,
+  `unpushed`, `dirty_tracked`, `dirty_untracked`, `never_pushed`, `safety` and, when the doctor has them,
+  `last_change_at`, `dirty_oldest_age_hours`, `never_pushed_age_hours`);  a record with none of the age fields cannot be
+  aged and the digest says so;
+* `autopush`: `{"document": <what fleet-autopush status --json prints>}`;
+* `needs_owner` (optional): `{"document": <what needs-owner list --all --json prints>}`;
+* `sig`: the HMAC-SHA256 above.
+
+A part whose `sources` status is `ok` must have its data key, or it is read as failed.  Missing parts are Missing in the
+digest, never zero.
 
 ## Tests
 

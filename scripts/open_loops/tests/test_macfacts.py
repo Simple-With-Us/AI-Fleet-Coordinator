@@ -169,6 +169,24 @@ class InBuild(Sandbox):
         self.assertIsNone(f["unpushed_over_a_day"]["count"])
         self.assertNotIn("claude-snap", json.dumps(f))
 
+    def test_c6_rides_in_the_file_when_f7_includes_it_and_separates_the_answered_from_the_waiting(self):
+        doc = mac_document()
+        doc["sources"]["needs_owner"] = {"status": "ok", "reason": None}
+        doc["needs_owner"] = {"document": [{"identifier": "FFX-10", "seat": "CLAUDE", "state": "notified", "low_stakes": [1]},
+                                           {"identifier": "FFX-12", "seat": "CODEX", "state": "replied", "replied": {"kind": "reaction"}}]}
+        f = self.facts(self.world, str(self.write("with-c6.json", json.dumps(doc))))
+        self.assertEqual(f["sources"]["needs_owner"]["status"], "ok")
+        self.assertEqual(f["decisions"]["answered_awaiting_close"], 1)
+        self.assertNotIn("FFX-12", [i["identifier"] for i in f["decisions"]["items"]])
+        names = [os.path.basename(c["argv"][0]) for c in self.world.calls]
+        self.assertNotIn("needs-owner", names)                                    # still nothing local
+
+    def test_a_file_without_c6_leaves_answered_unknown_and_is_not_missing(self):
+        f = self.facts(self.world, str(self.path))
+        self.assertEqual(f["sources"]["needs_owner"]["status"], "absent")
+        self.assertIsNone(f["decisions"]["answered_awaiting_close"])
+        self.assertNotIn("needs_owner", [m["source"] for m in f["missing"]])
+
     def test_a_signed_file_whose_own_source_failed_is_missing_too(self):
         doc = mac_document()
         doc["sources"]["autopush"] = {"status": "failed", "reason": "fleet-autopush exited 5"}

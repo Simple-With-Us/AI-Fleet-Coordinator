@@ -91,7 +91,7 @@ class Commands(Home):
         self.assertEqual(runner.argvs, [
             ["/x/fleet-autopush", "status", "--json"],
             ["/x/agent-sync", "asks", "status", "--json"],
-            ["/x/needs-owner", "list", "--json"],
+            ["/x/needs-owner", "list", "--all", "--json"],
             ["/x/consult", "status", "--all", "--json"]])
 
     def test_a_document_is_carried_through(self):

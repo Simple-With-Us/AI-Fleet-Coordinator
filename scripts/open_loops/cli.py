@@ -1,4 +1,4 @@
-"""`open-loops gather|render|send`.
+"""`open-loops gather|render|lint|send`.
 
   gather [--no-mac] [--mac-facts PATH|URL] [--launch-at TIME] --json [--out PATH]
       Run the read-only gatherers and print the facts (schema 1).  --out writes them to a 0600 file instead.
@@ -6,11 +6,14 @@
       (it is ignored, and reported as Missing, unless `fleet-facts verify` accepts it).
   render --facts PATH --markdown [--brief] [--out PATH]
       The facts as the full Markdown list (--brief: five items per list and "+ N more").
+  lint --dm-file PATH --facts PATH
+      Any seat:  run the same checks `send` runs on a DM and print the problems (exit 4 if any);  sends nothing, needs
+      no agent-sync and no C2 id, so the author of a routine text can check a DM before BF-Deployer exists.
   send --dm-file PATH --facts PATH [--c2-id ID] [--dry-run] [--again]
       BF-Deployer only:  lint the DM, skip a duplicate, send it to the owner, post the heartbeat.
 
 Exit status:  gather and render:  0 done, 2 usage, 3 an F3 helper is missing or Python is too old (nothing is
-printed), 1 an unexpected error.  send:  see send.py.
+printed), 1 an unexpected error.  lint:  0 passes, 4 a problem, 2 and 3 as above.  send:  see send.py.
 """
 from __future__ import annotations
 
@@ -24,10 +27,11 @@ from typing import Sequence
 from fleet_facts import safety
 
 from . import __version__
+from . import lint as lintmod
 from .facts import LAUNCH_ENV, build_facts
-from .files import EXIT_USAGE, Refusal, load_facts, write_private_file
+from .files import EXIT_USAGE, Refusal, load_facts, read_private_file, write_private_file
 from .render import BRIEF_LIMIT, render_markdown
-from .send import EXIT_REFUSED, run_send
+from .send import EXIT_LINT, EXIT_REFUSED, run_send
 
 C2_ENV = "OPEN_LOOPS_C2_ID"
 
@@ -51,7 +55,7 @@ def resolve_c2_id(flag: str | None, environ=os.environ) -> str | None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="open-loops", description="The fleet's daily open-loops digest:  gather, render, send.")
     parser.add_argument("--version", action="version", version="open-loops " + __version__)
-    sub = parser.add_subparsers(dest="command", metavar="{gather,render,send}")
+    sub = parser.add_subparsers(dest="command", metavar="{gather,render,lint,send}")
     g = sub.add_parser("gather", help="gather the facts", description="Gather read-only facts (schema 1).")
     g.add_argument("--no-mac", action="store_true", help="cloud host:  skip the Mac-only parts")
     g.add_argument("--mac-facts", metavar="PATH|URL", help="the signed gb/mac-facts.json (a path, or an https URL on api.github.com or "
@@ -64,6 +68,9 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--markdown", action="store_true", help="Markdown (the only format)")
     r.add_argument("--brief", action="store_true", help="at most 5 items per list and \"+ N more\":  what a routine reads to write the DM")
     r.add_argument("--out", metavar="PATH", help="write to this file (mode 0600) instead of printing")
+    k = sub.add_parser("lint", help="check a DM against its facts (any seat;  sends nothing)", description="The checks `send` runs, alone.")
+    k.add_argument("--dm-file", required=True, metavar="PATH", help="the DM the routine wrote")
+    k.add_argument("--facts", required=True, metavar="PATH", help="the facts file it was written from")
     s = sub.add_parser("send", help="lint, dedupe and send the digest DM (BF-Deployer only)", description="See send.py.")
     s.add_argument("--dm-file", required=True, metavar="PATH", help="the DM the routine wrote")
     s.add_argument("--facts", required=True, metavar="PATH", help="the facts file it was written from")
@@ -89,6 +96,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _gather(args)
         if args.command == "render":
             return _render(args)
+        if args.command == "lint":
+            return _lint(args)
         if args.command == "send":
             return run_send(args.dm_file, args.facts, c2_id=resolve_c2_id(args.c2_id), dry_run=args.dry_run, again=args.again)
     except Refusal as refusal:
@@ -119,6 +128,19 @@ def _gather(args: argparse.Namespace) -> int:
         for name, source in facts["sources"].items():
             tail = ("  (%s)" % source["reason"]) if source["reason"] else ""
             sys.stdout.write("%s: %s%s\n" % (name, source["status"], tail))
+    return 0
+
+
+def _lint(args: argparse.Namespace) -> int:
+    facts = load_facts(args.facts)
+    text = read_private_file(args.dm_file, "the DM file")
+    problems = lintmod.lint(text, facts)
+    for problem in problems:
+        sys.stdout.write("lint:  %s\n" % problem)
+    if problems:
+        sys.stderr.write("open-loops: the DM did not pass %d check%s\n" % (len(problems), "" if len(problems) == 1 else "s"))
+        return EXIT_LINT
+    sys.stdout.write("the DM passes the checks (%d characters)\n" % len(lintmod.prepare(text).strip()))
     return 0
 
 

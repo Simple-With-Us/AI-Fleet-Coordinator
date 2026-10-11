@@ -42,6 +42,9 @@ LAUNCH_ENV = "CLAIM_EXPIRY_LAUNCH_AT"
 LOCAL_MAC_PARTS = ("lanes", "autopush", "needs_owner", "asks", "report")
 REQUIRED_SOURCES = ("github", "linear", "lanes", "autopush")
 MAC_FILE_PARTS = ("lanes", "autopush")
+# C6's `needs-owner list --all` document may ride in the signed file too (F7 is asked to include it):  with it GB
+# can tell an answered decision from a waiting one.  Without it, GB's section 1 is as before (answered unknown).
+MAC_FILE_OPTIONAL = ("needs_owner",)
 
 
 def _answer(document: Mapping, name: str) -> dict:
@@ -79,13 +82,18 @@ def _launch(text: str | None, report: dict | None) -> datetime | None:
     return when
 
 
-def _missing(sources: Mapping[str, Mapping]) -> list[dict]:
+def _missing(sources: Mapping[str, Mapping], unpushed: Mapping | None = None) -> list[dict]:
     out = []
     for name, source in sources.items():
         status, reason = source["status"], source.get("reason") or "no reason given"
         if status == "failed" or (status == "absent" and name in REQUIRED_SOURCES) \
                 or (name == "mac_facts" and status == "absent" and reason.startswith("ignored")):
             out.append({"source": name, "reason": reason})
+    # "Unpushed Work Older Than a Day" cannot say "none" about lanes whose age nobody can tell (the installed lane
+    # doctor reports no last-change or dirty-age times yet):  that is Missing, so the DM has to say so.
+    unaged = (unpushed or {}).get("unknown_age") or 0
+    if unaged and sources.get("lanes", {}).get("status") == "ok":
+        out.append({"source": "lanes", "reason": "ages unavailable for %d lane%s with unpushed or dirty work" % (unaged, "" if unaged == 1 else "s")})
     return out
 
 
@@ -108,6 +116,9 @@ def build_facts(*, no_mac: bool = False, mac_facts: str | None = None, launch_at
             answers[name] = macfacts.part(mac["document"], name)
         elif mac is not None and mac["status"] != "ok" and name in MAC_FILE_PARTS:
             answers[name] = absent("Mac facts file ignored" if mac["status"] == "absent" else "Mac facts file failed")
+        elif mac is not None and mac["status"] == "ok" and name in MAC_FILE_OPTIONAL:
+            carried = macfacts.part(mac["document"], name)
+            answers[name] = carried if carried["status"] != "absent" else absent("Mac only")
         else:
             answers[name] = absent("--no-mac and no Mac facts file" if name in MAC_FILE_PARTS else "Mac only")
 
@@ -147,7 +158,7 @@ def build_facts(*, no_mac: bool = False, mac_facts: str | None = None, launch_at
         "built_at": current.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "built_at_local": central.stamp(current),
         "host": host, "no_mac": bool(no_mac),
-        "sources": sources, "missing": _missing(sources),
+        "sources": sources, "missing": _missing(sources, unpushed),
         "decisions": decisions, "stuck_prs": stuck, "not_on_github": off_github,
         "unpushed_over_a_day": unpushed, "claims": claim_block, "owner_asks": asks_block,
         "full_list_url": book.add(urls.FULL_LIST_URL),

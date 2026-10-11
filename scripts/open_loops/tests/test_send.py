@@ -68,6 +68,14 @@ class Sends(SendTest):
         self.assertRegex(out, r"sent id 4242 to the owner")
         self.assertIn("heartbeat posted in %s open-loops heartbeat" % C2, out)
 
+    def test_a_hostile_source_name_cannot_mention_anyone_in_the_heartbeat(self):
+        facts = dict(self.facts, sources=dict(self.facts["sources"], **{"@**all** hi": {"status": "ok", "reason": None}}),
+                     missing=[{"source": "@**all** gone", "reason": "x"}])
+        body = send.heartbeat_body(facts, 100)
+        self.assertNotIn("@**", body)
+        self.assertIn("hi", body)
+        self.assertIn("gone", body)
+
     def test_two_ascii_space_gaps_are_sent_as_nbsp_gaps(self):
         self.dm_file = self.write("dm2.md", make_dm(self.facts, spaces="  "))
         code, _, _ = self.send()

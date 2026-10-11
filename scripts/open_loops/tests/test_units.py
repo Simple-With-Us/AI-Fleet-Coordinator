@@ -60,8 +60,9 @@ class Urls(unittest.TestCase):
         self.assertEqual(urls.pr_url("Simple-With-Us/example-repo", 3), "https://github.com/Simple-With-Us/example-repo/pull/3")
         for repo, number in (("no-slash", 1), ("a/b c", 1), ("a/b", 0), ("a/b", True), (None, 1)):
             self.assertIsNone(urls.pr_url(repo, number))
-        good = "https://linear.app/example-workspace/issue/FFX-1/example"
-        self.assertEqual(urls.linear_url(good), good)
+        short = "https://linear.app/example-workspace/issue/FFX-1"
+        self.assertEqual(urls.linear_url(short), short)
+        self.assertEqual(urls.linear_url(short + "/example-issue-title-slug"), short)        # the title slug is cut off
         for bad in ("http://linear.app/x/issue/FFX-1", "https://evil.test/x/issue/FFX-1", "https://linear.app/x/issue/FFX-1 junk", None, 5):
             self.assertIsNone(urls.linear_url(bad), bad)
 
@@ -106,6 +107,24 @@ class Views(unittest.TestCase):
         self.assertNotIn("@**", reason)
         self.assertNotIn("://", reason)
         self.assertNotIn("`", reason)
+
+    def test_every_way_c1_says_why_a_lane_was_left_alone_is_a_reason(self):
+        rows = [{"path": "/w/a", "refused_reason": "public-inventory hit", "dirty_unsnapshotted": 1},
+                {"path": "/w/b", "diverged": True, "unpushed_commits": 2},
+                {"path": "/w/c", "diverged": True, "refused_reason": "gate failure", "unpushed_commits": 1},
+                {"path": "/w/d", "diverged": True},                                      # nothing at risk:  not a refusal
+                {"path": "/w/e", "diverged": False, "refused_reason": "", "dirty_unsnapshotted": 3}]
+        got = views.autopush_view({"document": {"lanes": rows, "refused": [{"path": "/w/f", "refused_reason": "TCC"}, {"path": "/w/g", "diverged": True}, {"path": "/w/h"}]}})
+        reasons = {r["lane"]: r["reason"] for r in got["refusals"]}
+        self.assertEqual(reasons["f"], "TCC")
+        self.assertEqual(reasons["g"], views.DIVERGED_REASON)
+        self.assertEqual(reasons["h"], "no reason given")
+        self.assertEqual(reasons["a"], "public-inventory hit")
+        self.assertEqual(reasons["b"], views.DIVERGED_REASON)
+        self.assertEqual(reasons["c"], "gate failure")
+        self.assertNotIn("d", reasons)
+        self.assertNotIn("e", reasons)
+        self.assertNotIn("no reason given", [reasons[k] for k in "abc"])
 
     def test_needs_owner_shapes(self):
         rows = [{"identifier": "FFX-1", "seat": "CLAUDE", "low_stakes": [2, 1, 2], "topic": "OWNER FFX-1 x", "state": "open", "over_five": True},

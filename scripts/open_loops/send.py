@@ -161,7 +161,7 @@ def _already_sent(run: Runner, exe: str, me: int, facts_id: str, again: bool) ->
 
 
 def heartbeat_body(facts: Mapping[str, Any], characters: int) -> str:
-    ok = [n for n, s in facts["sources"].items() if s.get("status") == "ok"]
+    ok = [safety.clean(n, 30) for n, s in facts["sources"].items() if s.get("status") == "ok"]
     missing = [m.get("source") for m in facts["missing"] if isinstance(m, dict)]
     text = "Heartbeat for %s.  The DM is %d characters.  Sources ok:  %s.  Missing:  %s." % (
         facts["facts_id"], characters, ", ".join(ok) or "none", ", ".join(safety.clean(m, 30) for m in missing) or "none")
