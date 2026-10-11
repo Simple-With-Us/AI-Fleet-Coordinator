@@ -16,7 +16,9 @@ What it does, from a checkout of AI-Fleet-Coordinator:
      holds no admin capability, and that a lifecycle rule deletes hidden versions there;
   3. copies scripts/launchd/com.jay.fleet-work-backup.plist to ~/Library/LaunchAgents/ and boots it
      out and in when it changed or is not loaded.  RunAtLoad is false, so loading never starts a
-     backup.  It refuses to load the agent while a prerequisite is missing, unless --force;
+     backup.  It refuses to load the agent while a prerequisite is missing, unless --force.  It records
+     the sha256 of the plist it installed in the state file (plist_sha256), so that 'repair --reload'
+     bootstraps that plist and never one that changed since;
   4. asks the plist's interpreter which executable macOS privacy settings see for it, and prints that
      (the bundle to grant Removable Volumes), then the command that verifies the grant under launchd.
 
@@ -34,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import hashlib
 import importlib.util
 import os
 import shutil
@@ -184,6 +187,27 @@ def launchd(changed: bool, dry: bool) -> int:
     return rc
 
 
+def record_plist_hash(fwb, dry: bool) -> None:
+    """Record the sha256 of the plist now at PLIST_DST in the state file, for ``repair --reload`` (it bootstraps the
+    installed plist only while the file still hashes to this).  ``plist_installed_at`` moves only when the hash does."""
+    cfg = fwb.config_from_env()
+    if dry:
+        say("would record the installed plist's sha256 in the state file")
+        return
+    try:
+        with open(PLIST_DST, "rb") as fh:
+            digest = hashlib.sha256(fh.read()).hexdigest()
+        state = fwb.read_state(cfg)
+        if state.get("plist_sha256") != digest or not state.get("plist_installed_at"):
+            state["plist_installed_at"] = cfg.now()
+        state["plist_sha256"] = digest
+        fwb.write_state(cfg, state)
+    except OSError as exc:      # the install goes on;  without a hash, repair --reload refuses (it fails safe)
+        say(f"could not record the installed plist's sha256 ({exc.__class__.__name__}):  repair --reload will refuse until install.py is run again")
+        return
+    say(f"recorded the installed plist's sha256 ({digest[:12]}...) for repair --reload")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Install fleet-work-backup.")
     ap.add_argument("--dry-run", action="store_true")
@@ -232,6 +256,7 @@ def main() -> int:
                 changed = copy(plist, PLIST_DST, 0o644, a.dry_run)
             finally:
                 shutil.rmtree(os.path.dirname(plist), ignore_errors=True)    # the temp copy with the chosen interpreter
+            record_plist_hash(fwb, a.dry_run)
             status = launchd(changed, a.dry_run)
             if status:
                 say(f"the LaunchAgent is NOT loaded (launchctl rc={status})")

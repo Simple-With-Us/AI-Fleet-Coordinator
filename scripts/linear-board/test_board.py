@@ -10,7 +10,8 @@ dispatches on the GraphQL operation name, serves pages of at most two nodes
 (so every list must follow the cursor), and records a violation when a query
 names a connection without an explicit first:, when issueUpdate sends
 labelIds (which would replace every label), when issueUpdate removes a seat:
-attribution label, or when anything writes an issue straight into the
+attribution label, when a label is created inside a team or a group (a flat
+label is workspace level), or when anything writes an issue straight into the
 Duplicate state.  It can also rate-limit single operations (limit_ops), to
 stop a verb part way between two of its requests.  It knows several apps by
 client id (the Fleet app plus any seat app a test adds), answers the viewer
@@ -19,6 +20,8 @@ each request, so a test can tell one seat's token from another's.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -29,6 +32,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -110,6 +114,8 @@ class MockLinear:
             self.teams[key] = {"id": f"team-{key}", "name": key + " team", "n": 0,
                                "states": {n: {"id": f"st-{key}-{j}", "name": n, "type": t}
                                           for j, (n, t) in enumerate(STATES)}}
+        self.label_creates: list = []   # every issueLabelCreate input, in order
+        self.updates: list = []         # (identifier, issueUpdate input), in order
         self.labels: dict = {}
         for g, kids in (("Severity", ["P0", "P1", "P2", "P3", "P4"]), ("Env", ["Mac", "Cloud"]),
                         ("Kind", ["agent-report", "review-finding", "effort-row", "github-issue", "sentry"])):
@@ -139,9 +145,9 @@ class MockLinear:
         return [CLIENT_SECRET] + [c["secret"] for c in self.clients.values()]
 
     # ----------------------------------------------------------- seed
-    def _label(self, name, parent, lid=None):
+    def _label(self, name, parent, lid=None, team=None):
         lid = lid or f"lbl-{(parent + '-') if parent else ''}{name}"
-        self.labels[lid] = {"id": lid, "name": name, "parent": parent, "team": None,
+        self.labels[lid] = {"id": lid, "name": name, "parent": parent, "team": team,
                             "isGroup": parent is None and name in ("Severity", "Env", "Kind")}
         return lid
 
@@ -309,7 +315,8 @@ class MockLinear:
             return {"teams": self.page(nodes, v.get("first"), v.get("after"))}, None
         if op == "BoardLabels":
             nodes = [{"id": lb["id"], "name": lb["name"], "isGroup": lb["isGroup"],
-                      "parent": {"name": lb["parent"]} if lb["parent"] else None, "team": None}
+                      "parent": {"name": lb["parent"]} if lb["parent"] else None,
+                      "team": {"key": lb["team"]} if lb["team"] else None}
                      for lb in self.labels.values()]
             return {"issueLabels": self.page(nodes, v.get("first"), v.get("after"))}, None
         if op == "BoardIssue":
@@ -363,6 +370,7 @@ class MockLinear:
         if op == "BoardUpdate":
             iss = self.find(v["id"])
             inp = v["input"]
+            self.updates.append((iss["identifier"], json.loads(json.dumps(inp))))
             if "labelIds" in inp:
                 self.violations.append("issueUpdate with labelIds (replaces every label)")
             if "stateId" in inp:
@@ -409,6 +417,9 @@ class MockLinear:
             return {"attachmentCreate": {"success": True, "attachment": {"id": "att"}}}, None
         if op == "BoardLabelCreate":
             inp = v["input"]
+            self.label_creates.append(dict(inp))
+            if "parentId" in inp or "teamId" in inp:
+                self.violations.append(f"label {inp['name']!r} created inside a team or a group")
             self._label(inp["name"], None, inp.get("id"))
             return {"issueLabelCreate": {"success": True, "issueLabel": {"id": inp.get("id"), "name": inp["name"]}}}, None
         self.violations.append(f"unknown operation {op}")
@@ -512,11 +523,19 @@ class BoardTest(unittest.TestCase):
         self.server.server_close()
         self.assertEqual(self.mock.violations, [], "mock recorded contract violations")
 
-    def board(self, *args, extra=None, drop=(), code=0):
+    def private(self, name, content, mode=0o600):
+        """A file in the test's temp directory with exactly `mode` (bytes or text content)."""
+        path = self.tmp / name
+        path.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+        os.chmod(path, mode)
+        return str(path)
+
+    def board(self, *args, extra=None, drop=(), code=0, stdin=None):
         e = dict(self.env, **(extra or {}))
         for k in drop:
             e.pop(k, None)
-        p = subprocess.run([PY, str(CLI), *args], env=e, capture_output=True, text=True, timeout=60)
+        kw = {} if stdin is None else {"input": stdin}
+        p = subprocess.run([PY, str(CLI), *args], env=e, capture_output=True, text=True, timeout=60, **kw)
         for tok in self.mock.tokens:
             self.assertNotIn(tok, p.stdout + p.stderr, "a token reached the output")
         for secret in self.mock.secrets():
@@ -577,7 +596,9 @@ class SeatAliasTests(unittest.TestCase):
 class SafetyTests(BoardTest):
     def test_writes_require_agent_seat(self):
         for args in (["file", "--title", "x"], ["claim", B_A[:8], "--by", "CLAUDE"],
-                     ["status", B_A[:8], "completed"], ["comment", B_A[:8], "--by", "CLAUDE", "--text", "x"]):
+                     ["status", B_A[:8], "completed"], ["comment", B_A[:8], "--by", "CLAUDE", "--text", "x"],
+                     ["comment", B_A[:8], "--by", "CLAUDE", "--text-file", "/nonexistent"],
+                     ["label", "add", B_A[:8], "needs-owner"]):
             p = self.board(*args, drop=("AGENT_SEAT",), code=2)
             self.assertIn("AGENT_SEAT is not set", p.stderr)
         self.assertEqual(self.mock.ops, [])
@@ -612,7 +633,10 @@ class SafetyTests(BoardTest):
 
     def test_writes_disabled_by_default(self):
         for args in (["file", "--title", "x"], ["claim", B_A[:8], "--by", "CLAUDE"],
-                     ["status", B_A[:8], "completed"], ["comment", B_A[:8], "--by", "CLAUDE", "--text", "x"]):
+                     ["status", B_A[:8], "completed"], ["comment", B_A[:8], "--by", "CLAUDE", "--text", "x"],
+                     ["file", "--title", "x", "--desc-file", "/nonexistent", "--label", "needs-owner"],
+                     ["comment", B_A[:8], "--by", "CLAUDE", "--text-file", "/nonexistent"],
+                     ["label", "add", B_A[:8], "needs-owner"], ["label", "remove", B_A[:8], "needs-owner"]):
             p = self.board(*args, drop=("LINEAR_BOARD_WRITES",), code=7)
             self.assertIn("writes to Linear are off", p.stderr)
         self.assertEqual((self.mock.mints, self.mock.ops), (0, []))
@@ -1553,6 +1577,379 @@ class SeatAppTests(BoardTest):
             tok = json.loads(self.cache("CLAUDE").read_text())["access_token"]
             for needle in (sec, claude, tok, CLIENT_SECRET):
                 self.assertNotIn(needle, p.stdout + p.stderr, args)
+
+
+class FileInputTests(BoardTest):
+    """--desc-file, --fix-file and --text-file keep free text out of argv.  A bad input exits 2 before any
+    credential is read or request is sent."""
+
+    def untouched(self):
+        self.assertEqual(self.mock.ops, [])
+        self.assertEqual(self.mock.mints, 0)
+
+    def test_description_and_fix_round_trip_from_files(self):
+        desc = self.private("desc.md", "First paragraph, with é and — marks.\n\nSecond paragraph.\n")
+        fix = self.private("fix.md", "Retry once, then give up.\n", mode=0o400)      # 0400 is accepted too
+        p = self.board("file", "--title", "From files", "--app", "AFC", "--desc-file", desc, "--fix-file", fix)
+        d = json.loads(self.board("show", p.stdout.split()[-1], "--json").stdout)
+        self.assertEqual(d["description"], "First paragraph, with é and — marks.\n\nSecond paragraph.")
+        self.assertEqual(d["recommended_fix"], "Retry once, then give up.")
+        self.assertEqual(d["reported_by"], "CLAUDE")
+
+    def test_description_and_fix_from_standard_input(self):
+        p = self.board("file", "--title", "From stdin", "--app", "AFC", "--desc-file", "-",
+                       stdin="Description from standard input.\n")
+        d = json.loads(self.board("show", p.stdout.split()[-1], "--json").stdout)
+        self.assertEqual(d["description"], "Description from standard input.")
+        desc = self.private("d.md", "Description from a file.\n")
+        p = self.board("file", "--title", "Fix from stdin", "--app", "AFC", "--desc-file", desc, "--fix-file", "-",
+                       stdin="Fix from standard input.\n")
+        d = json.loads(self.board("show", p.stdout.split()[-1], "--json").stdout)
+        self.assertEqual((d["description"], d["recommended_fix"]),
+                         ("Description from a file.", "Fix from standard input."))
+
+    def test_standard_input_cannot_feed_two_flags(self):
+        p = self.board("file", "--title", "x", "--desc-file", "-", "--fix-file", "-", stdin="text", code=2)
+        self.assertIn("only one", p.stderr)
+        self.untouched()
+
+    def test_exactly_64_kb_is_accepted_and_one_more_byte_is_not(self):
+        ok = self.private("ok.md", "a" * 65536)
+        self.board("file", "--title", "Full size", "--app", "AFC", "--desc-file", ok)
+        self.board("file", "--title", "Full size stdin", "--app", "AFC", "--desc-file", "-", stdin="a" * 65536)
+        n = len(self.mock.ops)
+        big = self.private("big.md", "a" * 65537)
+        p = self.board("file", "--title", "Too big", "--desc-file", big, code=2)
+        self.assertIn("more than 64 KB", p.stderr)
+        p = self.board("file", "--title", "Too big stdin", "--desc-file", "-", stdin="a" * 65537, code=2)
+        self.assertIn("more than 64 KB", p.stderr)
+        self.assertEqual(len(self.mock.ops), n)
+
+    def test_unsafe_or_unreadable_inputs_are_refused_before_any_request(self):
+        entry_points = (
+            lambda path: ["file", "--title", "x", "--desc-file", path],
+            lambda path: ["file", "--title", "x", "--fix-file", path],
+            lambda path: ["comment", B_A[:8], "--by", "CLAUDE", "--text-file", path],
+        )
+        real = self.private("real.md", "secret words")
+        link = self.tmp / "link.md"
+        link.symlink_to(real)
+        adir = self.tmp / "adir"
+        adir.mkdir(mode=0o700)
+        fifo = self.tmp / "fifo.md"
+        os.mkfifo(fifo, 0o600)
+        cases = [
+            (self.private("m644.md", "x", 0o644), "mode 0644"),
+            (self.private("m640.md", "x", 0o640), "mode 0640"),
+            (self.private("m660.md", "x", 0o660), "mode 0660"),
+            (self.private("m604.md", "x", 0o604), "mode 0604"),
+            (self.private("m666.md", "x", 0o666), "mode 0666"),
+            (self.private("m700.md", "x", 0o700), "mode 0700"),
+            (self.private("m200.md", "x", 0o200), "cannot open"),
+            (str(link), "symbolic link"),
+            (str(adir), "not a regular file"),
+            (str(fifo), "not a regular file"),
+            (str(self.tmp / "missing.md"), "cannot open"),
+            (self.private("big.md", b"a" * 65537), "more than 64 KB"),
+            (self.private("bad.md", b"caf\xe9 \xff\xfe"), "not valid UTF-8"),
+        ]
+        for make in entry_points:
+            for path, why in cases:
+                p = self.board(*make(path), code=2)
+                self.assertIn(why, p.stderr, (make(path)[0], path))
+                self.assertNotIn("secret words", p.stdout + p.stderr)
+        self.untouched()
+
+    def test_a_file_owned_by_someone_else_is_refused(self):
+        cli = load_cli()
+        path = self.private("mine.md", "text")
+        self.assertEqual(cli.read_private_file(path, "--desc-file"), b"text")
+        err = io.StringIO()
+        with unittest.mock.patch.object(cli.os, "geteuid", return_value=os.geteuid() + 1), \
+                contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            cli.read_private_file(path, "--desc-file")
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("not owned by you", err.getvalue())
+
+    def test_standard_input_that_is_not_utf8_is_refused(self):
+        p = subprocess.run([PY, str(CLI), "file", "--title", "x", "--desc-file", "-"], env=self.env,
+                           input=b"caf\xe9", capture_output=True, timeout=60)
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn(b"not valid UTF-8", p.stderr)
+        self.untouched()
+
+    def test_a_flag_and_its_file_form_are_exclusive(self):
+        f = self.private("f.md", "text")
+        for args in (["file", "--title", "x", "--desc", "a", "--desc-file", f],
+                     ["file", "--title", "x", "--fix", "a", "--fix-file", f],
+                     ["comment", B_A[:8], "--by", "CLAUDE", "--text", "a", "--text-file", f]):
+            p = self.board(*args, code=2)
+            self.assertIn("not allowed with", p.stderr)
+        p = self.board("comment", B_A[:8], "--by", "CLAUDE", code=2)
+        self.assertIn("one of the arguments --text --text-file is required", p.stderr)
+        self.untouched()
+
+    def test_comment_from_a_file_needs_no_text_but_still_needs_by(self):
+        f = self.private("c.md", "Checked on main.\n\nNo change needed.\n")
+        p = self.board("comment", "OPS-10", "--by", "CLAUDE", "--text-file", f)
+        self.assertEqual(p.stdout.strip(), f"commented on {B_A[:8]} as CLAUDE  OPS-10")
+        iss = self.mock.issues[hy(B_A)]
+        self.assertEqual(self.comments_of(iss)[-1], "[CLAUDE] Checked on main.\n\nNo change needed.")
+        n = len(self.mock.comments)
+        p = self.board("comment", "OPS-10", "--by", "CLAUDE", "--text-file", f)        # same words, same day
+        self.assertIn("already on", p.stderr)
+        self.assertEqual(len(self.mock.comments), n)
+        p = self.board("comment", "OPS-10", "--by", "CLAUDE", "--text-file", "-", "--session", "s-1",
+                       stdin="From standard input.\n")
+        self.assertEqual(self.comments_of(iss)[-1], "[CLAUDE·s1] From standard input.\n\nSessions: s-1")
+        ops = len(self.mock.ops)
+        p = self.board("comment", "OPS-10", "--text-file", f, code=2)
+        self.assertIn("--by", p.stderr)
+        self.assertEqual(len(self.mock.ops), ops)
+        p = self.board("comment", "OPS-10", "--by", "CODEX", "--text-file", f, code=2)
+        self.assertIn("does not match AGENT_SEAT=CLAUDE", p.stderr)
+
+    def test_an_empty_comment_file_is_refused(self):
+        p = self.board("comment", "OPS-10", "--by", "CLAUDE", "--text-file", self.private("e.md", " \n\n"), code=2)
+        self.assertIn("comment text is empty", p.stderr)
+        p = self.board("comment", "OPS-10", "--by", "CLAUDE", "--text-file", "-", stdin="\n", code=2)
+        self.assertIn("comment text is empty", p.stderr)
+        self.untouched()
+
+    def test_a_gated_write_never_reads_its_file(self):
+        """Writes off exits 7 and no seat exits 2, with the file untouched (a missing one would otherwise
+        be an exit 2 of its own)."""
+        for args in (["file", "--title", "x", "--desc-file", "/nonexistent", "--fix-file", "-"],
+                     ["comment", B_A[:8], "--by", "CLAUDE", "--text-file", "-"],
+                     ["label", "add", B_A[:8], "needs-owner"]):
+            self.board(*args, drop=("LINEAR_BOARD_WRITES",), code=7, stdin="")
+            self.board(*args, drop=("AGENT_SEAT",), code=2, stdin="")
+        self.untouched()
+
+
+class FlatLabelTests(BoardTest):
+    """needs-owner, ask-capture, fleet-report and stale-claim:  flat workspace labels, and nothing else."""
+
+    def file(self, title, *labels, uid=None, code=0):
+        args = ["file", "--title", title, "--app", "AFC"]
+        for name in labels:
+            args += ["--label", name]
+        if uid:
+            args += ["--uid", uid]
+        return self.board(*args, code=code)
+
+    def ident(self, p):
+        return p.stdout.split()[-1]
+
+    def test_the_label_set_and_kinds_are_fixed(self):
+        cli = load_cli()
+        self.assertEqual(cli.FLAT_LABELS, ("needs-owner", "ask-capture", "fleet-report", "stale-claim"))
+        self.assertEqual(cli.KINDS, ("agent-report", "review-finding", "effort-row", "github-issue", "sentry"))
+        self.assertEqual(cli.CLOSING_REMOVES, ("needs-owner", "ask-capture"))
+        self.assertEqual(cli.CLOSING_STATUSES, ("completed", "deployed", "wontfix", "duplicate", "canceled"))
+
+    def test_file_label_creates_one_flat_workspace_label_then_reuses_it(self):
+        p1 = self.file("Decision one", "needs-owner", uid="d1")
+        self.assertEqual(len(self.mock.label_creates), 1)
+        made = self.mock.label_creates[0]
+        self.assertEqual(made["name"], "needs-owner")
+        self.assertNotIn("parentId", made)
+        self.assertNotIn("teamId", made)
+        lb = self.mock.labels[made["id"]]
+        self.assertEqual((lb["parent"], lb["team"], lb["isGroup"]), (None, None, False))
+        p2 = self.file("Decision two", "needs-owner", uid="d2")
+        self.assertEqual(len(self.mock.label_creates), 1)           # created once, then found
+        for p in (p1, p2):
+            iss = self.issue_by_ident(self.ident(p))
+            self.assertEqual(self.label_names(iss), ["Kind/agent-report", "needs-owner"])
+            self.assertIn(made["id"], iss["labels"])
+            self.assertEqual(iss["state"], "Todo")
+        cache = json.loads((self.tmp / "cache" / "workspace.json").read_text())
+        self.assertEqual(cache["flat"]["needs-owner"], made["id"])
+
+    def test_labels_repeat_dedupe_and_ignore_case(self):
+        p = self.file("All four", "needs-owner", "ask-capture", "Fleet-Report", "needs-owner", " stale-claim ")
+        iss = self.issue_by_ident(self.ident(p))
+        self.assertEqual(self.label_names(iss), ["Kind/agent-report", "ask-capture", "fleet-report",
+                                                 "needs-owner", "stale-claim"])
+        self.assertEqual(sorted(c["name"] for c in self.mock.label_creates),
+                         ["ask-capture", "fleet-report", "needs-owner"])   # stale-claim already existed
+        self.assertEqual(self.mock.violations, [])
+
+    def test_a_repeat_uid_with_labels_changes_nothing(self):
+        p1 = self.file("Once only", "needs-owner", "ask-capture", uid="once")
+        before = {k: self.mock.ops.count(k) for k in ("BoardFile", "BoardUpdate", "BoardLabelCreate")}
+        p2 = self.file("Once only", "needs-owner", "ask-capture", uid="once")
+        self.assertIn("already filed", p2.stdout)
+        self.assertEqual(p1.stdout.split()[1], p2.stdout.split()[1])
+        self.assertEqual({k: self.mock.ops.count(k) for k in before}, before)
+        self.assertEqual(len([i for i in self.mock.issues.values() if i["title"] == "Once only"]), 1)
+
+    def test_other_labels_are_refused_with_no_request(self):
+        why = {"claimed:CODEX": "claim", "claimed:CLAUDE": "claim", "seat:CLAUDE": "attribution",
+               "Kind/agent-report": "--kind", "kind/review-finding": "--kind", "agent-report": "Kind",
+               "sentry": "Kind", "Severity/P1": "--severity", "P0": "Severity", "p3": "Severity",
+               "Env/Mac": "--env", "Mac": "Env", "cloud": "Env", "Kind": "--kind", "imported": "not one of",
+               "app:agent-bar": "not one of", "needs owner": "not one of", "needs-owner-2": "not one of",
+               "": "not one of"}
+        for name, words in why.items():
+            for args in (["file", "--title", "x", "--label", name], ["label", "add", B_A[:8], name],
+                         ["label", "remove", B_A[:8], name], ["list", "--label", name]):
+                p = self.board(*args, code=2)
+                self.assertIn("Allowed:  needs-owner, ask-capture, fleet-report, stale-claim", p.stderr, args)
+                self.assertIn(words, p.stderr, (name, p.stderr))
+        self.board("file", "--title", "x", "--label", "needs-owner", "--label", "Kind/sentry", code=2)
+        self.assertEqual(self.mock.ops, [])
+        self.assertEqual(self.mock.mints, 0)
+
+    def test_fleet_report_is_a_label_never_a_kind(self):
+        p = self.board("file", "--title", "x", "--kind", "fleet-report", code=2)
+        self.assertIn("--label fleet-report", p.stderr)
+        self.assertEqual(self.mock.ops, [])
+        p = self.file("A fleet report", "fleet-report")
+        iss = self.issue_by_ident(self.ident(p))
+        self.assertEqual(self.label_names(iss), ["Kind/agent-report", "fleet-report"])
+
+    def test_label_add_and_remove(self):
+        iss = self.mock.issues[hy(B_A)]
+        before = list(iss["labels"])
+        comments = len(self.mock.comments)
+        p = self.board("label", "add", "OPS-10", "needs-owner")
+        self.assertEqual(p.stdout.strip(), f"labeled {B_A[:8]} +needs-owner  OPS-10")
+        lid = self.mock.label_creates[0]["id"]
+        self.assertEqual(iss["labels"], before + [lid])
+        self.assertEqual(self.mock.updates[-1], ("OPS-10", {"addedLabelIds": [lid]}))
+        n = len(self.mock.updates)
+        p = self.board("label", "add", "OPS-10", "Needs-Owner")
+        self.assertEqual(p.stdout.strip(), f"{B_A[:8]} already has needs-owner  (unchanged)  OPS-10")
+        self.assertEqual(len(self.mock.updates), n)
+        p = self.board("label", "remove", "OPS-10", "needs-owner", "--by", "claude")
+        self.assertEqual(p.stdout.strip(), f"unlabeled {B_A[:8]} -needs-owner  OPS-10")
+        self.assertEqual(self.mock.updates[-1], ("OPS-10", {"removedLabelIds": [lid]}))
+        self.assertEqual(iss["labels"], before)               # every other label, seat: and Kind included, kept
+        n = len(self.mock.updates)
+        p = self.board("label", "remove", "OPS-10", "needs-owner")
+        self.assertEqual(p.stdout.strip(), f"{B_A[:8]} does not have needs-owner  (unchanged)  OPS-10")
+        self.assertEqual(len(self.mock.updates), n)
+        self.assertEqual(len(self.mock.comments), comments)    # a label change posts no comment
+        self.assertEqual(len(self.mock.label_creates), 1)
+
+    def test_label_remove_never_creates_a_label(self):
+        p = self.board("label", "remove", "OPS-10", "fleet-report")
+        self.assertIn("(unchanged)", p.stdout)
+        self.assertEqual(self.mock.label_creates, [])
+        self.assertEqual(self.mock.ops.count("BoardUpdate"), 0)
+
+    def test_label_by_must_match_the_seat(self):
+        p = self.board("label", "add", "OPS-10", "needs-owner", "--by", "CODEX", code=2)
+        self.assertIn("does not match AGENT_SEAT=CLAUDE", p.stderr)
+        self.assertEqual(self.mock.ops, [])
+
+    def test_a_team_scoped_label_of_the_same_name_is_not_used(self):
+        self.mock._label("needs-owner", None, "lbl-team-needs-owner", team="OPS")
+        self.board("label", "add", "ST-1", "needs-owner")
+        iss = self.mock.issues[hy(B_C)]
+        self.assertNotIn("lbl-team-needs-owner", iss["labels"])
+        self.assertEqual(len(self.mock.label_creates), 1)            # a workspace label was made instead
+        self.assertIn(self.mock.label_creates[0]["id"], iss["labels"])
+
+    def test_an_existing_workspace_label_is_found_not_recreated(self):
+        self.board("file", "--title", "Warm the cache", "--app", "AFC")   # writes the workspace cache
+        lid = self.mock._label("needs-owner", None)                    # made in Linear's UI since
+        self.board("label", "add", "ST-1", "needs-owner")
+        self.assertEqual(self.mock.label_creates, [])
+        self.assertIn(lid, self.mock.issues[hy(B_C)]["labels"])
+
+    def test_a_cache_from_before_flat_labels_is_read_again(self):
+        self.board("file", "--title", "Warm the cache", "--app", "AFC")
+        path = self.tmp / "cache" / "workspace.json"
+        d = json.loads(path.read_text())
+        d.pop("flat")
+        path.write_text(json.dumps(d))
+        n = self.mock.ops.count("BoardLabels")
+        self.board("label", "add", "ST-1", "stale-claim")
+        self.assertGreater(self.mock.ops.count("BoardLabels"), n)
+        self.assertEqual(self.mock.label_creates, [])
+        self.assertIn(self.mock.lid("stale-claim"), self.mock.issues[hy(B_C)]["labels"])
+
+    def test_list_label_filters_and_json_rows_carry_labels(self):
+        q1 = self.file("Q1", "needs-owner")
+        self.file("Q2", "needs-owner", "ask-capture")
+        self.file("Q3", "ask-capture")
+        self.file("Q4")
+        rows = json.loads(self.board("list", "--json", "--label", "needs-owner").stdout)
+        self.assertEqual(sorted(r["title"] for r in rows), ["Q1", "Q2"])
+        for r in rows:
+            self.assertIn("needs-owner", r["labels"])
+            self.assertIn("Kind/agent-report", r["labels"])
+        rows = json.loads(self.board("list", "--json", "--label", "needs-owner", "--label", "ask-capture").stdout)
+        self.assertEqual([r["title"] for r in rows], ["Q2"])
+        rows = json.loads(self.board("list", "--json", "--label", "ask-capture", "--status", "in_progress").stdout)
+        self.assertEqual(rows, [])
+        p = self.board("list", "--label", "needs-owner", "--app", "AFC")
+        self.assertIn("2 shown of 2 matching", p.stdout)
+        p = self.board("list", "--label", "ask-capture", "--limit", "1")
+        self.assertIn("1 shown of 2 matching", p.stdout)
+        self.board("list", "--label", "needs-owner", drop=("AGENT_SEAT",))     # a read needs no seat
+        d = json.loads(self.board("show", self.ident(q1), "--json").stdout)
+        self.assertEqual(sorted(d["labels"]), ["Kind/agent-report", "needs-owner"])
+
+    def issue_with(self, title, *labels):
+        """An open issue carrying the named labels, plus Kind/agent-report."""
+        iss = self.mock.add_issue(str(uuid.uuid4()), "AFC", "In Progress", title, 3, ["Kind/agent-report"])
+        for name in labels:
+            self.board("label", "add", iss["identifier"], name)
+        return iss
+
+    def test_closing_statuses_remove_needs_owner_and_ask_capture(self):
+        for value in ("completed", "deployed", "wontfix", "canceled"):
+            iss = self.issue_with(f"Close as {value}", "needs-owner", "ask-capture", "fleet-report", "stale-claim")
+            before = len(self.mock.updates)
+            self.board("status", iss["identifier"], value, "--resolution", "Answered.")
+            self.assertEqual(self.label_names(iss), ["Kind/agent-report", "fleet-report", "stale-claim"], value)
+            ident, inp = self.mock.updates[-1]
+            self.assertEqual(len(self.mock.updates), before + 1)             # one update:  state and labels
+            self.assertEqual(sorted(inp), ["removedLabelIds", "stateId"])
+            self.assertEqual(len(inp["removedLabelIds"]), 2)
+
+    def test_closing_without_those_labels_sends_no_label_change(self):
+        iss = self.issue_with("Plain", "fleet-report")
+        self.board("status", iss["identifier"], "completed")
+        self.assertEqual(sorted(self.mock.updates[-1][1]), ["stateId"])
+        self.assertIn("fleet-report", self.label_names(iss))
+
+    def test_duplicate_removes_them_with_a_label_only_update(self):
+        iss = self.issue_with("Dup with labels", "needs-owner", "ask-capture", "fleet-report")
+        before = len(self.mock.updates)
+        p = self.board("status", iss["identifier"], "duplicate", "--of", "OPS-10", "--resolution", "Same thing.")
+        self.assertEqual(iss["state"], "Duplicate")
+        self.assertEqual(self.label_names(iss), ["Kind/agent-report", "fleet-report"])
+        self.assertEqual(len(self.mock.updates), before + 1)
+        self.assertEqual(sorted(self.mock.updates[-1][1]), ["removedLabelIds"])    # the relation moved the state
+        self.assertIn("Resolution (duplicate of OPS-10): Same thing.", self.comments_of(iss)[-1])
+        self.assertIn("-> duplicate", p.stdout)
+
+    def test_other_statuses_keep_the_labels(self):
+        iss = self.issue_with("Keeps", "needs-owner", "ask-capture")
+        for value in ("in_progress", "addressed", "parked", "open", "backlog"):
+            self.board("status", iss["identifier"], value)
+            self.assertEqual(self.label_names(iss), ["Kind/agent-report", "ask-capture", "needs-owner"], value)
+
+    def test_mac_collab_backend_refuses_the_linear_only_flags(self):
+        old = self.tmp / "old-board"
+        old.write_text("import sys\nprint('OLD BOARD', sys.argv[1:])\n")
+        extra = {"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)}
+        for args in (["file", "--title", "x", "--desc-file", "/nonexistent"], ["file", "--title", "x", "--fix-file=f"],
+                     ["file", "--title", "x", "--label", "needs-owner"], ["file", "--title", "x", "--label=needs-owner"],
+                     ["comment", "OPS-10", "--by", "CLAUDE", "--text-file", "-"],
+                     ["list", "--label", "needs-owner"], ["label", "add", "OPS-10", "needs-owner"]):
+            p = self.board(*args, extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), code=2)
+            self.assertIn("Linear only", p.stderr, args)
+            self.assertNotIn("OLD BOARD", p.stdout, args)
+        p = self.board("file", "--title", "x", "--desc", "d", "--fix", "f", extra=extra,
+                       drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"))
+        self.assertEqual(p.stdout.strip(), "OLD BOARD ['file', '--title', 'x', '--desc', 'd', '--fix', 'f']")
+        self.assertEqual(self.mock.ops, [])
 
 
 def load_cli():

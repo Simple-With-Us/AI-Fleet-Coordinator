@@ -10,11 +10,50 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+    # Depth 2 keeps both parents of a pull request's merge commit, so the mirror check below can read the base
+    # side (HEAD^1) without a second fetch.  Nothing else in the job reads history.
     - uses: actions/checkout@v7
+      with:
+        fetch-depth: 2
     - name: Set up Python
       uses: actions/setup-python@v7
       with:
         python-version: '3.14'
+    # AGENT-SYNC.md is generated from Fleet-OPS handbook/ and mirrored here by the sync job's pull request from
+    # handbook-sync/mirror.  The mirror must start with the GENERATED header, its body must hash to the header, and
+    # only that branch may change it.  To change policy, open a PR to Fleet-OPS handbook/ (its README has the rules).
+    # `test` is a required status check on main (strict:  the branch must be up to date), so this step is a hard gate:
+    # a red result blocks the merge of every pull request here, and a bug in the check or a bad state on main blocks
+    # the whole repository.  Break-glass is an admin bypass (enforce_admins is false) or the sync job's own branch
+    # handbook-sync/mirror with a valid header and hash.  The Mac sync job is the authenticity enforcer, because a
+    # hash cannot tell a real build from a forged one.
+    # It runs first, on the untouched checkout, because it compares the base with the working tree and a
+    # later step that rewrote a tracked file would look like a change by the pull request.  A pull request is compared
+    # with the first parent of its merge commit, which is exactly the base GitHub merged against;  a fork's branch is
+    # tagged fork:, so it can never borrow the mirror branch name.  A push to main checks the header and hash only.
+    # The branch and its repo arrive through env, never spliced into the script.
+    - name: Generated mirror header, hash and author
+      env:
+        EVENT: ${{ github.event_name }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        THIS_REPO: ${{ github.repository }}
+      run: |
+        python3 scripts/test_check_generated_mirror.py
+        if [ "$EVENT" = "pull_request" ]; then
+          if git rev-parse --verify --quiet 'HEAD^2' >/dev/null; then
+            base="$(git rev-parse 'HEAD^1')"
+          else
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            base="$BASE_SHA"
+          fi
+          branch="$HEAD_REF"
+          if [ "$HEAD_REPO" != "$THIS_REPO" ]; then branch="fork:$HEAD_REPO:$HEAD_REF"; fi
+          python3 scripts/check-generated-mirror.py --base "$base" --head-branch "$branch"
+        else
+          python3 scripts/check-generated-mirror.py
+        fi
     - name: Run unittests
       run: |
         cd scripts && python3 -m unittest discover fleet_rag/tests/ -v
@@ -24,6 +63,24 @@ jobs:
     - name: agent-sync CLI tests
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
+    # Infisical knobs for the open-loops jobs:  fake-CLI fetch, last-known-good, secrets fail
+    # closed, local files only narrow, and INFISICAL.md equal to the registry.
+    - name: fleet_knobs tests
+      run: |
+        cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t . -v
+    # needs-owner (open-loops C6-1):  a fake `board` and `agent-sync` on PATH, built on the real parsers;
+    # the stable copy installed into a temp HOME must run under `python3 -I`.
+    - name: needs-owner tests
+      run: |
+        cd scripts && python3 -m unittest discover -s needs_owner/tests -t . -v
+    # Open-loops F6:  the fleet_facts gatherers and the single activity definition.  Fake gh, board and lane
+    # programs on PATH and a temp HOME, so nothing live is read;  the install test runs the stable copy
+    # with python3 -I.  The second step fails if the test data holds a real path, Linear id, UUID or secret.
+    - name: fleet_facts tests
+      run: |
+        cd scripts && python3 -m unittest discover -s fleet_facts/tests -t . -v
+    - name: fleet_facts fixtures are synthetic
+      run: python3 scripts/fleet_facts/check_fixtures.py
     # Fleet skills pack: canonical pin-or-fail identity block, every rendered
     # tree equal to a fresh render, and the AGENT-SYNC roster the pack mirrors.
     - name: Fleet skill identity tests
@@ -34,6 +91,13 @@ jobs:
     # launcher variables, or lack the launcher clause.
     - name: Seat blocks in the rendered skill trees
       run: python3 scripts/check-seat-blocks.py
+    # The open-loops routine texts are private (kept in the canonical private repository) and never enter this
+    # repo.  Only their checker and its synthetic fixtures do:  the good set must pass, and each bad
+    # fixture must fail on exactly its own rule (docs/open-loops/README.md).
+    - name: Routine prompt checker
+      run: |
+        python3 scripts/test_check_routine_prompts.py
+        python3 scripts/check-routine-prompts.py scripts/tests/fixtures/routines/good
     # Mac watch and Grok idle-unload logic.  Both suites build their own temp
     # HOME and fixture sessions, so they read no live state and kill nothing.
     - name: Mac watch and Grok idle-unload tests
@@ -60,12 +124,21 @@ jobs:
     # Worker will not follow).  This now fails the build instead.
     - name: Verify fleet registry (incl. admin-panel APPS copy)
       run: python3 scripts/check-fleet-registry.py
+    # The registry's AGENT-SYNC.md rows are read under the GENERATED header, which itself names Fleet-OPS.
+    - name: Registry checks read AGENT-SYNC.md under its header
+      run: python3 scripts/test_check_fleet_registry.py
     # GROK-BUILD in any spelling is an alias for GROK (owner 2026-10-10).  The standalone runtimes (the
     # board scripts, recall) carry a copy of the registry's aliasPattern;  these fail when a copy drifts.
     - name: Seat alias parity (board scripts)
       run: |
         python3 scripts/mac-collab/test_seat_alias.py
         python3 scripts/linear-board/test_board.py SeatAliasTests
+    # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
+    # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
+    # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
+    # slower and stays a local run.
+    - name: Board CLI input files and flat labels
+      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests
     # Infisical's only environment is prod (owner 2026-10-10).  The lint fails on a dev or
     # staging INFISICAL_ENV in an env file or cursor-cloud-start.sh fallback, and on a
     # non-prod .infisical.json default;  `--fleet` runs it over every ~/Code repo on origin/main.
@@ -89,9 +162,18 @@ jobs:
       run: node --test tests/deployment-boundary.test.cjs
     - name: Kody defer and deferred sweep tests
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
+    # Pure builders and readers of the Fleet Reference Sheet registry sync.  No
+    # network:  the tests import the script, which runs main() only as an entry point.
+    - name: Fleet Reference Sheet registry sync tests
+      run: node --test scripts/fleet-apps-sheet-sync.format.test.mjs scripts/fleet-apps-sheet-sync.tabs.test.mjs
     - name: Mac ledger mirror tests
       run: bash scripts/test-mac-ledger-mirror.sh
     # The LaunchAgent script that copies a Cloudflare token from Infisical prod into the handoff
     # file.  A stub CLI and a temp dir stand in for the real ones.
     - name: Infisical secrets sync tests
       run: bash scripts/test-infisical-secrets-sync.sh
+    # The BotFleet launch wrapper and its LaunchAgent template:  the "already healthy" exit, the
+    # missing-checkout exits, and the fleet-seat switch (BOTFLEET_FLEET_SEAT_PROMPTS=1) that the
+    # open-loops routines depend on.  A stub curl and a stub node stand in for the real ones.
+    - name: BotFleet start wrapper tests
+      run: bash scripts/test-botfleet-server-start.sh
