@@ -583,14 +583,27 @@ def probe_environment(environ: Dict[str, str]) -> Dict[str, str]:
     return {k: v for k, v in environ.items() if k not in PROBE_STRIPPED_ENV}
 
 
+# Owner ruling 2026-10-10: any spelling of GROK followed by BUILD is the seat GROK.  This is a copy of the
+# `aliasPattern` on the GROK row of fleet-apps.json, because this module reads no registry;  the layout test
+# (test_install_mcp.CallerSeatAliasTests) reads the registry and fails when the two differ.
+GROK_ALIAS_PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
+_GROK_ALIAS = re.compile(GROK_ALIAS_PATTERN, re.IGNORECASE | re.ASCII)
+
+
+def _seat_upper(value: str) -> str:
+    """A seat value trimmed and upper-cased, except that a GROK-BUILD spelling is GROK."""
+    text = value.strip()
+    return "GROK" if _GROK_ALIAS.fullmatch(text) else text.upper()
+
+
 def caller_seat(environ: Dict[str, str]) -> Optional[str]:
     """The seat this session runs as, upper case, or None: a launcher's AGENT_LAUNCH_SEAT (with AGENT_LAUNCHER) first,
-    else AGENT_SEAT, else AGENT_TAG."""
+    else AGENT_SEAT, else AGENT_TAG.  Any spelling of GROK followed by BUILD comes back as GROK."""
     if environ.get("AGENT_LAUNCHER", "").strip() and environ.get("AGENT_LAUNCH_SEAT", "").strip():
-        return environ["AGENT_LAUNCH_SEAT"].strip().upper()
+        return _seat_upper(environ["AGENT_LAUNCH_SEAT"])
     for name in ("AGENT_SEAT", "AGENT_TAG"):
         if environ.get(name, "").strip():
-            return environ[name].strip().upper()
+            return _seat_upper(environ[name])
     return None
 
 

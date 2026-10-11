@@ -12,6 +12,7 @@ anything outside the temp directories.
 from __future__ import annotations
 
 import contextlib
+import copy
 import datetime as dt
 import fcntl
 import hashlib
@@ -62,6 +63,27 @@ REGISTRY_DATA = {
               for t, s, b, ret in _SEATS],
 }
 REGISTRY = L.parse_registry(REGISTRY_DATA)
+
+# Owner ruling 2026-10-10: any spelling of GROK followed by BUILD is the seat GROK.  REGISTRY_DATA above is the
+# older registry (no aliasPattern, GROK-BUILD a live seat) and stays the baseline.  `_grok_registry_data` builds
+# a pair that differs only in the alias rows, as the real fleet-apps.json does:  the GROK row has aliasPattern
+# and the GROK-BUILD row is retired and aliasOf GROK.  Both carry GROK-WEB, a cloud seat with no branch prefix.
+GROK_ALIAS_PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
+GROK_BUILD_MUST = ("GROK-BUILD", "Grok-Build", "grok-build", "grok_build", "Grok Build", "GROK.BUILD", "Grok (Build)",
+                   "grok/build/", "GrokBuild", "GROK--BUILD!!")
+GROK_BUILD_MUST_NOT = ("GROKBUILDER", "grok-build-bot", "grok2build", "GB-COMPILER", "BF-BUILDER", "Grok (Web/iOS)")
+
+
+def _grok_registry_data(*, alias: bool) -> dict:
+    data = copy.deepcopy(REGISTRY_DATA)
+    data["seats"].append({"tag": "GROK-WEB", "worktreeSuffix": "grok-web", "branchPrefixes": []})
+    if alias:
+        for row in data["seats"]:
+            if row["tag"] == "GROK":
+                row["aliasPattern"] = GROK_ALIAS_PATTERN
+            elif row["tag"] == "GROK-BUILD":
+                row.update({"retired": True, "aliasOf": "GROK"})
+    return data
 
 _HERMETIC = {
     "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "LC_ALL": "C",
@@ -572,6 +594,176 @@ class ResolveTests(unittest.TestCase):
         self.assertIn("CURSOR", {s.name for s in registry.seats if s.suffix in accepted})
         self.assertEqual(len(accepted), len([s for s in registry.seats if not s.retired]) - len(refused),
                          "no two accepted seats share a folder name")
+
+
+    def test_the_real_registry_reads_any_spelling_of_grok_build_as_the_grok_seat(self) -> None:
+        # The GROK row of fleet-apps.json carries the aliasPattern;  the retired GROK-BUILD row never answers
+        # for its own name, so lane signs GROK whichever way AGENT_SEAT spells it (owner 2026-10-10).
+        registry = L.load_registry(L.default_registry_path({}))
+        self.assertEqual(registry.seat_by_name("GROK").alias_pattern, GROK_ALIAS_PATTERN)
+        retired = registry.seat_by_suffix("grok-build")
+        self.assertTrue(retired is not None and retired.retired, "the GROK-BUILD row stays, retired")
+        for raw in GROK_BUILD_MUST + ("  grok-build\n", "GROK", "grok"):
+            with self.subTest(raw=raw):
+                seat = K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                self.assertEqual((seat.name, seat.suffix, seat.retired), ("GROK", "grok", False))
+                self.assertEqual(K.branch_for(seat, "x"), "grok/x")
+        for raw in GROK_BUILD_MUST_NOT + ("GROK-BOT",):
+            with self.subTest(raw=raw):
+                with self.assertRaises(K.Refusal) as cm:
+                    K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                self.assertIn("belongs to CURSOR" if raw == "GROK-BOT" else "not a seat tag", str(cm.exception))
+        with self.subTest(raw="GROK-WEB"):
+            with self.assertRaises(K.Refusal) as cm:       # a cloud seat: no branch prefix, so no lane
+                K.branch_for(K.resolve_seat({"AGENT_SEAT": "GROK-WEB"}, registry), "x")
+            self.assertIn("no branch prefix", str(cm.exception))
+
+
+class GrokBuildAliasResolveTests(unittest.TestCase):
+    """`resolve_seat` against a registry with and without the GROK aliasPattern (owner ruling 2026-10-10)."""
+
+    def test_every_spelling_is_the_live_grok_seat_with_an_alias_pattern(self) -> None:
+        registry = L.parse_registry(_grok_registry_data(alias=True))
+        for raw in GROK_BUILD_MUST + ("  grok-build\n", "\tGrok (Build) "):
+            with self.subTest(raw=raw):
+                seat = K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                self.assertEqual((seat.name, seat.suffix, seat.retired), ("GROK", "grok", False))
+                self.assertEqual(registry.seat_by_name(raw).name, "GROK")
+                self.assertEqual(K.branch_for(seat, "x"), "grok/x")
+                self.assertEqual(seat.primary_branch_prefix(), "grok")
+
+    def test_other_seats_still_resolve_by_their_own_tag_in_any_case(self) -> None:
+        registry = L.parse_registry(_grok_registry_data(alias=True))
+        for raw, name in (("CLAUDE", "CLAUDE"), (" ag ", "AG"), ("mm", "MM"), ("Cursor", "CURSOR"), ("grok", "GROK")):
+            with self.subTest(raw=raw):
+                self.assertEqual(K.resolve_seat({"AGENT_SEAT": raw}, registry).name, name)
+
+    def test_nothing_else_is_grok_and_each_keeps_the_outcome_it_has_without_the_alias(self) -> None:
+        # GROK-BOT shares CURSOR's folder name;  every other value is not a seat tag.  GROK-WEB is a real
+        # seat with no branch prefix, so it resolves and `branch_for` is what refuses it.
+        both = (L.parse_registry(_grok_registry_data(alias=False)), L.parse_registry(_grok_registry_data(alias=True)))
+        for registry in both:
+            for raw in GROK_BUILD_MUST_NOT:
+                with self.subTest(raw=raw, alias=bool(registry.seat_by_name("GROK").alias_pattern)):
+                    with self.assertRaises(K.Refusal) as cm:
+                        K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                    self.assertIn("not a seat tag", str(cm.exception))
+            with self.assertRaises(K.Refusal) as cm:
+                K.resolve_seat({"AGENT_SEAT": "GROK-BOT"}, registry)
+            self.assertIn("belongs to CURSOR", str(cm.exception))
+            web = K.resolve_seat({"AGENT_SEAT": "GROK-WEB"}, registry)
+            self.assertEqual((web.name, web.suffix), ("GROK-WEB", "grok-web"))
+            with self.assertRaises(K.Refusal):
+                K.branch_for(web, "x")
+
+    def test_the_ascii_case_rule_keeps_look_alike_letters_out(self) -> None:
+        # The alias matches ASCII case only, so a dotted or dotless I never makes GROK.  The Kelvin sign lowercases
+        # to a plain k in the exact-tag fallback, which reaches the retired GROK-BUILD row:  refused, never GROK.
+        registry = L.parse_registry(_grok_registry_data(alias=True))
+        for raw, needle in (("grok-bu\u0130ld", "not a seat tag"), ("grok-bu\u0131ld", "not a seat tag"),
+                            ("GRO\u212a-BUILD", "retired")):
+            with self.subTest(raw=raw):
+                with self.assertRaises(K.Refusal) as cm:
+                    K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                self.assertIn(needle, str(cm.exception))
+
+    def test_without_an_alias_pattern_only_the_exact_tag_is_grok_build(self) -> None:
+        # An older registry (the baseline fixture) keeps today's behaviour:  GROK-BUILD is a live seat of its own.
+        registry = L.parse_registry(_grok_registry_data(alias=False))
+        self.assertEqual(registry.seat_by_name("GROK").alias_pattern, "")
+        for raw in ("GROK-BUILD", "grok-build", " Grok-Build "):
+            with self.subTest(raw=raw):
+                seat = K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                self.assertEqual((seat.name, seat.suffix), ("GROK-BUILD", "grok-build"))
+                self.assertEqual(K.branch_for(seat, "x"), "grok-build/x")
+        for raw in ("grok_build", "Grok Build", "GROK.BUILD", "Grok (Build)", "grok/build/", "GrokBuild", "GROK--BUILD!!"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(K.Refusal) as cm:
+                    K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                self.assertIn("not a seat tag", str(cm.exception))
+
+
+class GrokBuildAliasLaneTests(WorldCase):
+    """`lane new` end to end, in the throwaway world, against the alias registry (owner ruling 2026-10-10)."""
+
+    def use_registry(self, *, alias: bool = True) -> None:
+        self.w.registry_path.write_text(json.dumps(_grok_registry_data(alias=alias)), encoding="utf-8")
+
+    def test_every_spelling_plans_the_grok_folder_and_the_grok_branch(self) -> None:
+        w = self.w
+        self.use_registry()
+        before = w.everything_hash()
+        want = w.roots.lanes_root / "DealDex" / "grok-x"
+        for raw in GROK_BUILD_MUST + ("  grok-build\n",):
+            with self.subTest(raw=raw):
+                res = w.lane("new", "DealDex", "x", "--dry-run", "--json", env={"AGENT_SEAT": raw})
+                self.assertEqual(res.rc, 0, res.err)
+                body = res.json()
+                self.assertEqual((body["seat"], body["tag"], body["branch"], body["path"]),
+                                 ("grok", "GROK", "grok/x", str(want)))
+                self.assertNotIn("grok-build", (res.out + res.err).lower())
+                text = w.lane("new", "DealDex", "x", "--dry-run", env={"AGENT_SEAT": raw})
+                self.assertEqual((text.rc, text.out), (0, f"{want}\n"), text.err)
+                self.assertNotIn("grok-build", (text.out + text.err).lower())
+        self.assertNoChange(before)
+
+    def test_a_real_lane_made_under_one_spelling_is_a_grok_lane_and_every_spelling_finds_it_again(self) -> None:
+        w = self.w
+        self.use_registry()
+        res = w.lane("new", "DealDex", "fix-thing", env={"AGENT_SEAT": "Grok (Build)"})
+        path = w.lane_path(seat="grok")
+        self.assertEqual((res.rc, res.out), (0, f"{path}\n"), res.err)
+        self.assertEqual(w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "grok/fix-thing")
+        git_dir = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=path))
+        manifest = json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))
+        self.assertEqual((manifest["seat"], manifest["tag"], manifest["branch"]), ("grok", "GROK", "grok/fix-thing"))
+        everything = w.git(["worktree", "list", "--porcelain"], cwd=w.tree) + w.git(["branch", "--list"], cwd=w.tree)
+        self.assertNotIn("grok-build", everything)
+        self.assertEqual(sorted(p.name for p in (w.roots.lanes_root / "DealDex").iterdir()), ["grok-fix-thing"])
+        for raw in ("GROK-BUILD", "grok_build", "GROK"):
+            with self.subTest(raw=raw):
+                again = w.lane("new", "DealDex", "fix-thing", env={"AGENT_SEAT": raw})
+                self.assertEqual((again.rc, again.out), (0, f"{path}\n"), again.err)
+                self.assertEqual(w.lane("path", "DealDex", "fix-thing", env={"AGENT_SEAT": raw}).out, f"{path}\n")
+
+    def test_what_is_not_grok_build_is_refused_exactly_as_before_and_runs_no_git(self) -> None:
+        w = self.w
+        cases = [(raw, "not a seat tag") for raw in GROK_BUILD_MUST_NOT]
+        cases += [("GROK-BOT", "belongs to CURSOR"), ("GROK-WEB", "no branch prefix")]
+        for alias in (False, True):
+            self.use_registry(alias=alias)
+            before = w.everything_hash()
+            for raw, needle in cases:
+                with self.subTest(raw=raw, alias=alias):
+                    res = w.lane("new", "DealDex", "x", env={"AGENT_SEAT": raw})
+                    self.assertEqual((res.rc, res.out), (64, ""), res.err)
+                    self.assertIn(needle, res.err)
+                    self.assertEqual(res.calls, [], "refused before any git or gh")
+            self.assertNoChange(before)
+
+    def test_a_registry_without_an_alias_pattern_keeps_grok_build_as_its_own_lane(self) -> None:
+        w = self.w
+        self.use_registry(alias=False)
+        res = w.lane("new", "DealDex", "x", "--dry-run", "--json", env={"AGENT_SEAT": "GROK-BUILD"})
+        body = res.json()
+        self.assertEqual((res.rc, body["seat"], body["tag"], body["branch"]), (0, "grok-build", "GROK-BUILD", "grok-build/x"))
+        self.assertEqual(body["path"], str(w.roots.lanes_root / "DealDex" / "grok-build-x"))
+        spelled = w.lane("new", "DealDex", "x", "--dry-run", env={"AGENT_SEAT": "Grok Build"})
+        self.assertEqual(spelled.rc, 64)
+        self.assertIn("not a seat tag", spelled.err)
+
+    def test_the_folder_rule_is_unchanged_so_grok_still_cannot_take_a_slug_that_starts_with_build(self) -> None:
+        # Folder and branch classification do not go through the alias.  GROK plus slug build-x is the
+        # folder grok-build-x, which still reads as the retired GROK-BUILD's, whichever way the seat is spelled.
+        w = self.w
+        self.use_registry()
+        before = w.everything_hash()
+        for raw in ("GROK", "GROK-BUILD", "Grok (Build)"):
+            with self.subTest(raw=raw):
+                res = w.lane("new", "DealDex", "build-x", env={"AGENT_SEAT": raw})
+                self.assertEqual(res.rc, 64, res.err)
+                self.assertIn("read as seat", res.err)
+        self.assertNoChange(before)
 
 
 # --------------------------------------------------------------------------- lane new

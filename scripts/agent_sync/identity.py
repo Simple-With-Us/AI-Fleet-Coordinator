@@ -54,6 +54,31 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 PARTITION_RELPATH = os.path.join("docs", "protocols", "agent-sync-partition.toml")
 _SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
 
+# Seat aliases (owner 2026-10-10):  "GROK followed by BUILD, any letter case, with any non-letter,
+# non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build) is an alias for GROK."
+# One pattern, matched after trimming, case-insensitively and on ASCII letters and digits only.
+# fleet-apps.json carries the same text as the GROK row's `aliasPattern`, for the runtimes that ship
+# without this package (the lane tool, the board scripts);  test_seat_alias.py and
+# check-fleet-registry.py keep every copy equal.  It never matches GROKBUILDER, grok2build or
+# grok-build-bot (a bot email is matched separately, through EMAIL_TAG_OVERRIDES).
+GROK_ALIAS_PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
+_GROK_ALIAS_RE = re.compile(GROK_ALIAS_PATTERN, re.IGNORECASE | re.ASCII)
+GROK_SEAT = "GROK"
+
+
+def is_grok_alias(raw: Any) -> bool:
+    """True when `raw` is a spelling of the retired GROK-BUILD tag."""
+    return bool(_GROK_ALIAS_RE.match(str(raw or "").strip()))
+
+
+def canonical_seat(raw: Any) -> str:
+    """The seat tag a name stands for, upper-cased:  every GROK-BUILD spelling is GROK, anything
+    else is only trimmed and upper-cased (callers still validate it as a token).  This is the one
+    input boundary:  --as, --seat, --to, AGENT_SEAT, AGENT_LAUNCH_SEAT, AGENT_TAG and the hooks'
+    platform default all pass through it, and output (labels, --by, branches) only ever sees GROK."""
+    text = str(raw or "").strip()
+    return GROK_SEAT if _GROK_ALIAS_RE.match(text) else text.upper()
+
 # Bot email local parts (minus the "-bot" Zulip appends) whose seat tag is not just the upper-cased
 # local part.  Display names are cosmetic (owner 2026-10-07), so labels come from emails, never names.
 EMAIL_TAG_OVERRIDES = {
@@ -113,18 +138,20 @@ def resolve_seat(env: Mapping[str, str], *, flag: str | None = None, default: st
                  use_tag: bool = True) -> Resolution:
     """Apply the seat precedence.  `flag` is an explicit --as; `default` is the platform default the
     caller knows (never used under a launcher); `use_tag` reads AGENT_TAG as well as AGENT_SEAT."""
-    launch_seat = _clean(env.get(ENV_LAUNCH_SEAT)).upper()
+    # Every name is canonicalized first (GROK-BUILD in any spelling is GROK), on both sides of the
+    # launcher check, so AGENT_LAUNCH_SEAT=GROK with AGENT_SEAT=Grok-Build is the same seat, not a conflict.
+    launch_seat = canonical_seat(env.get(ENV_LAUNCH_SEAT))
     who = launcher_of(env)
     named = [("--as", _clean(flag)), ("AGENT_SEAT", _clean(env.get("AGENT_SEAT")))]
     if use_tag:
         named.append(("AGENT_TAG", _clean(env.get("AGENT_TAG"))))
     if launch_seat:
         for label, raw in named:
-            if raw and raw.upper() != launch_seat:
+            if raw and canonical_seat(raw) != launch_seat:
                 return Resolution(None, "none", who, (
                     "launcher %s assigned %s, but %s names %s; a launched session keeps its launcher's seat "
                     "(Jay reassigns it in the launcher), so nothing was done"
-                    % (who or "(unnamed)", launch_seat, label, raw.upper())))
+                    % (who or "(unnamed)", launch_seat, label, canonical_seat(raw))))
         return Resolution(launch_seat, "launcher", who)
     if who:
         return Resolution(None, "none", who, (
@@ -132,7 +159,7 @@ def resolve_seat(env: Mapping[str, str], *, flag: str | None = None, default: st
             "session takes no fleet action (no platform default applies under a launcher)" % who))
     for label, raw in named + [("default", _clean(default))]:
         if raw:
-            return Resolution(raw.upper(), label)
+            return Resolution(canonical_seat(raw), label)
     return Resolution(None, "none")
 
 
@@ -140,7 +167,7 @@ def valid_seat(seat: str | None) -> str | None:
     """The seat when it is a plain token (it names a directory), else None."""
     if not seat:
         return None
-    seat = seat.strip().upper()
+    seat = canonical_seat(seat)
     return seat if _SEAT_RE.fullmatch(seat) else None
 
 

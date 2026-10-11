@@ -196,8 +196,18 @@ def slugify(s: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
 
 
+# Any spelling of GROK followed by BUILD is an alias for the seat GROK (owner 2026-10-10).  A one-line
+# copy of the GROK row's `aliasPattern` in fleet-apps.json, because this script imports no package;
+# test_board.py keeps the two equal.
+GROK_ALIAS_PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
+GROK_ALIAS_RE = re.compile(GROK_ALIAS_PATTERN, re.IGNORECASE | re.ASCII)
+
+
 def norm_seat(s: str | None) -> str:
-    return (s or "").strip().strip("@[]<>`'\" ").upper()
+    """The seat tag a value stands for, upper-cased.  Every GROK-BUILD spelling is GROK, so AGENT_SEAT,
+    --by and --mine all resolve to the one seat that signs GROK."""
+    v = (s or "").strip().strip("@[]<>`'\" ")
+    return "GROK" if GROK_ALIAS_RE.match(v) else v.upper()
 
 
 def hyphenate(h32: str) -> str:

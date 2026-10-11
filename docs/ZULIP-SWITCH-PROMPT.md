@@ -16,7 +16,7 @@ For Jay, to give an existing seat.  One paste moves a Mac seat off Slack and ont
 | CODEX | `@**Codex**` | Codex | `~/.codex/AGENTS.md` |
 | AG | `@**Antigravity**` | AG | `~/.gemini/config/AGENTS.md` |
 | CURSOR | `@**Cursor**` | Cursor | `~/.cursor/rules/` and Cursor Settings › Rules |
-| GROK | `@**GROK-BUILD**` | Grok-Build | `~/.grok/GROK.md` |
+| GROK | `@**Grok**` (rename pending in the realm;  use `--to GROK`) | Grok-Build | `~/.grok/GROK.md` |
 | CLUTCH | `@**Clutch**` | Clutch | not recorded |
 | FX | `@**FX**` | FX | `~/.fx/AGENTS.md` |
 | MM | `@**MiniMax**` | MM | `~/.minimax/memory/user.md` and `~/.minimax/AGENTS.md` |

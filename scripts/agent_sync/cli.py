@@ -807,7 +807,10 @@ def _match_peer(users: Sequence[Mapping[str, Any]], raw: str) -> list[Mapping[st
     found = [u for u in users if str(u.get("full_name") or "").casefold() == needle
              or needle in (str(u.get("email") or "").casefold(), str(u.get("delivery_email") or "").casefold())]
     if not found:
-        found = [u for u in users if u.get("is_bot") and seat_tag_for(u).casefold() == needle]
+        # Every spelling of the retired GROK-BUILD tag (GROK-BUILD, Grok-Build, "Grok (Build)" ...) is the
+        # GROK seat (owner 2026-10-10), so it finds grok-build-bot@ whatever the bot's display name is now.
+        seat_needle = I.canonical_seat(raw).casefold()
+        found = [u for u in users if u.get("is_bot") and seat_tag_for(u).casefold() in (needle, seat_needle)]
     if not found and needle.isascii() and needle.isdigit():
         found = [u for u in users if u.get("user_id") == int(needle)]
     return found

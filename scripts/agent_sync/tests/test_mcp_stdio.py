@@ -1171,19 +1171,23 @@ class StartupTests(McpHarness):
         self.assertIn("not a bot account", stderr)
 
     def test_grok_seat_reads_the_grok_build_file(self):
-        # Finding:  the doc registered AGENT_SEAT=GROK-BUILD, which always exits 3 (D2:  one seat, GROK).
+        # Finding:  the doc registered AGENT_SEAT=GROK-BUILD, which exited 3.  D2:  one seat, GROK.  Owner 2026-10-10:
+        # GROK-BUILD in any spelling is an alias for GROK, so every spelling reads the same Grok-Build-zuliprc and
+        # signs GROK.
         grok_key = zulip_shaped()
         self.extra_secrets.append(grok_key)
-        self.fake.add_bot("grok-build-bot@zulip.test", "Grok Build", grok_key)
+        self.fake.add_bot("grok-build-bot@zulip.test", "Grok", grok_key)
         write_rc(self.home / ".secrets" / "Zulip" / "Grok-Build-zuliprc", email="grok-build-bot@zulip.test",
                  key=grok_key, site=self.fake.url)
         call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "whoami", "arguments": {}}}
-        code, lines, stderr = self.spawn(self.mcp_env(AGENT_SEAT="GROK"), [call])
-        self.assertEqual(code, 0, stderr)
-        self.assertEqual(lines[0]["result"]["structuredContent"]["seat"], "GROK")
-        code, lines, stderr = self.spawn(self.mcp_env(AGENT_SEAT="GROK-BUILD"), [call])
+        for spelling in ("GROK", "GROK-BUILD", "Grok-Build", "grok_build", "Grok (Build)"):
+            with self.subTest(AGENT_SEAT=spelling):
+                code, lines, stderr = self.spawn(self.mcp_env(AGENT_SEAT=spelling), [call])
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(lines[0]["result"]["structuredContent"]["seat"], "GROK")
+        code, lines, stderr = self.spawn(self.mcp_env(AGENT_SEAT="GROKBUILDER"), [call])
         self.assertEqual((code, lines), (3, []))
-        self.assertIn("seat GROK", stderr)
+        self.assertIn("Grokbuilder-zuliprc", stderr)
 
     def test_subprocess_over_nonblocking_pipes_loses_no_bytes(self):
         # Finding:  a non-blocking stdout cut a large line short; a non-blocking stdin looked like EOF.

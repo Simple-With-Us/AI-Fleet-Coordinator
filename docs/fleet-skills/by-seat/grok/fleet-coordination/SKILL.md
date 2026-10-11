@@ -7,7 +7,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 > **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), so never sign `GROK-BUILD`, a retired alias the CLI refuses.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
+> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
 Canonical reference: `/Users/jay/apps/AGENT-SYNC.md` and `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md`.  
@@ -55,7 +55,7 @@ Every agent session must start with systematic orientation before touching code:
    - Codex: `CODEX` (display `Codex`, prefix `codex/`, `codex-bot@`, `Codex`)
    - Antigravity / Gemini: `AG` (display `Antigravity`, prefix `ag/`, `ag-bot@`, `AG`)
    - Cursor: `CURSOR` (display `Cursor`, prefix `cursor/`, `cursor-bot@`, `Cursor`)
-   - Grok: `GROK` (display `GROK-BUILD`, prefix `grok/`, `grok-build-bot@`, `Grok-Build`)
+   - Grok: `GROK` (display `Grok`, prefix `grok/`, `grok-build-bot@`, `Grok-Build`;  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (e.g. GROK-BUILD, Grok (Build), grok_build), is an alias for GROK:  the tools accept it and sign GROK)
    - Grok (Web/iOS): `GROK-WEB` (display `Grok (Web/iOS)`, prefix `grok-web/`, `grok-web-bot@`, `Grok-Web`) — cloud seat
    - Clutch: `CLUTCH` (display `Clutch`, prefix `clutch/`, `clutch-bot@`, `Clutch`)
    - Fx: `FX` (display `FX`, prefix `fx/`, `fx-bot@`, `FX`)
@@ -63,7 +63,7 @@ Every agent session must start with systematic orientation before touching code:
    - Muse Code: `MC` (display `Muse Code`, prefix `mc/`, `mc-bot@`, `MC`)
    - Muse Assist: `MA` (display `Rob (Muse)`, prefix `ma/`, `muse-assist-bot@`, `MA`)
    - BotFleet role bots carry the platform prefix in the display name (`@**BF-Plumber**`); Grok Bot personas are `GB-<ROLE>`.
-   *(Retired:  MONET, RENOIR, HARNESS, DSH, KIMI have no bot.  Retired tags:  MINIMAX → MM, DEEPSEEK, MUSE → MA, GROK-BUILD → GROK.  Never assign work to a retired seat or wait on one.)*
+   *(Retired:  MONET, RENOIR, HARNESS, DSH, KIMI have no bot.  Retired tags:  MINIMAX → MM, DEEPSEEK, MUSE → MA, GROK-BUILD → GROK (an accepted alias, signed GROK;  display name `Grok`).  Never assign work to a retired seat or wait on one.)*
 
 2. **Read live coordination (Zulip #agent-sync):**
    ```bash

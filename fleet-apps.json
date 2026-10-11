@@ -248,7 +248,8 @@
         "grok/"
       ],
       "zulipBotEmail": "grok-build-bot@simplewithus.zulipchat.com",
-      "zulipFileCode": "Grok-Build"
+      "zulipFileCode": "Grok-Build",
+      "aliasPattern": "^grok[^a-z0-9]*build[^a-z0-9]*$"
     },
     {
       "tag": "GROK-BUILD",
@@ -259,7 +260,7 @@
       ],
       "retired": true,
       "retiredDate": "2026-10-08",
-      "retiredReason": "Retired alias of GROK (owner 2026-10-08): the Mac Grok TUI and Grok Build are one seat that signs GROK.  Its Zulip bot, Grok-Build, is GROK's.  Existing grok-build/ branches and grok-build lanes stay readable.",
+      "retiredReason": "Retired alias of GROK (owner 2026-10-08): the Mac Grok TUI and Grok Build are one seat that signs GROK.  Its Zulip bot, Grok-Build, is GROK's, and its display name is Grok.  Existing grok-build/ branches and grok-build lanes stay readable.  GROK followed by BUILD in any spelling is an alias for GROK (owner 2026-10-10):  the GROK row's aliasPattern resolves it, and everything is signed GROK.",
       "aliasOf": "GROK"
     },
     {

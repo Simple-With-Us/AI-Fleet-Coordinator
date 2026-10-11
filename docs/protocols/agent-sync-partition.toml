@@ -73,5 +73,6 @@ BF-PLUMBER = "none"
 BF-PUBLISHER = "none"
 
 # GROK-BUILD is the older code of the GROK seat (terminal Grok and Grok Build are one seat,
-# owner 2026-10-08); listed as none so neither name can be held twice.
+# owner 2026-10-08); listed as none so neither name can be held twice.  Every input spelling of
+# it is canonicalized to GROK before the partition is read (owner 2026-10-10), so this row is inert.
 GROK-BUILD = "none"

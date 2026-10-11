@@ -284,8 +284,12 @@ CURSOR_EXTRA = (
 
 GROK_EXTRA = (
     "> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok "
-    "Build:  one seat (owner 2026-10-08), so never sign `GROK-BUILD`, a retired "
-    "alias the CLI refuses.  Old `grok-build/` branches stay readable.  Grok Bot "
+    "Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its "
+    "Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with "
+    "any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), "
+    "grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as "
+    "a seat name and sign GROK, so do not write it as a tag, a branch prefix or a "
+    "lane folder.  Old `grok-build/` branches stay readable.  Grok Bot "
     "(Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not "
     "`[GROK-BOT]`.  Never `[MONET]`.\n\n"
 )
@@ -466,14 +470,18 @@ SEATS: dict[str, Seat] = {
         zulip_bot="grok-build-bot",
         zulip_rc="Grok-Build",
     ),
+    # Grok Build is the GROK seat (owner 2026-10-08), and GROK-BUILD in any spelling is an alias for GROK
+    # (owner 2026-10-10).  This pack is the copy its home (~/.grok-build/skills) reads, and it signs GROK like
+    # the Grok TUI pack:  chat tag `[GROK·session8]`, Notes `Grok`, branches `grok/`, lanes `grok-<slug>`.
     "grok-build": Seat(
-        "GROK-BUILD", "Grok Build", "grok-build", "grok-build",
+        "GROK", "Grok", "grok", "grok",
         "~/.grok-build/skills", "exclusive",
-        "This pack is for **GROK-BUILD** (Grok Build TUI / App Builder).  Session "
-        "tag `[GROK-BUILD·session8]`.  Notes name `Grok Build`.  Branches `grok-build/<slug>` "
-        "only.  Lanes `~/apps/lanes/<Repo>/grok-build-<slug>`.  Do not use `grok/` or "
-        "sign as GROK or a Grok Bot `[GB-<NAME>]` role.  Pin "
-        "`AGENT_SEAT=GROK-BUILD`.",
+        "This pack is for the **GROK** seat in its Grok Build TUI / App Builder runtime:  Grok Build and the "
+        "Mac Grok TUI / CLI are ONE seat, and GROK-BUILD (in any spelling) is only an alias for it.  Session "
+        "tag `[GROK·session8]`.  Notes name `Grok`.  Branches `grok/<slug>` only.  Lanes "
+        "`~/apps/lanes/<Repo>/grok-<slug>`.  Never sign as Monet or Grok Bot.  Pin "
+        "`AGENT_SEAT=GROK`.",
+        extra_banner=GROK_EXTRA,
         seat_key="grok-build",
         zulip_bot="grok-build-bot",
         zulip_rc="Grok-Build",

@@ -691,6 +691,38 @@ class ProbeSeatTests(HomeCase):
         self.assertEqual(M.probe_environment({"AGENT_SEAT": "X", "PATH": "/bin"}), {"PATH": "/bin"})
 
 
+class CallerSeatAliasTests(unittest.TestCase):
+    """Owner ruling 2026-10-10: any spelling of GROK followed by BUILD is the seat GROK."""
+
+    MUST = ("GROK-BUILD", "Grok-Build", "grok-build", "grok_build", "Grok Build", "GROK.BUILD", "Grok (Build)",
+            "grok/build/", "GrokBuild", "GROK--BUILD!!", "  grok-build\n")
+    MUST_NOT = ("GROKBUILDER", "grok-build-bot", "grok2build", "GROK-WEB", "GROK-BOT", "GB-COMPILER", "BF-BUILDER",
+                "Grok (Web/iOS)")
+
+    def test_the_constant_equals_the_registry_pattern(self) -> None:
+        registry = json.loads((Path(__file__).resolve().parents[3] / "fleet-apps.json").read_text(encoding="utf-8"))
+        row = next(r for r in registry["seats"] if r["tag"] == "GROK")
+        self.assertEqual(M.GROK_ALIAS_PATTERN, row["aliasPattern"])
+
+    def test_every_spelling_is_grok_in_each_variable(self) -> None:
+        for raw in self.MUST:
+            with self.subTest(raw=raw):
+                self.assertEqual(M.caller_seat({"AGENT_SEAT": raw}), "GROK")
+                self.assertEqual(M.caller_seat({"AGENT_TAG": raw}), "GROK")
+                self.assertEqual(M.caller_seat({"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": raw}), "GROK")
+
+    def test_other_values_come_back_exactly_as_before(self) -> None:
+        for raw in self.MUST_NOT + ("GROK", " grok ", "mm", "Claude"):
+            with self.subTest(raw=raw):
+                self.assertEqual(M.caller_seat({"AGENT_SEAT": raw}), raw.strip().upper())
+        self.assertIsNone(M.caller_seat({"AGENT_SEAT": " "}))
+        self.assertIsNone(M.caller_seat({"AGENT_SEAT": ""}))
+
+    def test_a_grok_build_session_counts_as_the_grok_seat_for_the_probe_gate(self) -> None:
+        self.assertEqual(M.caller_seat({"AGENT_SEAT": "Grok (Build)"}), "GROK")
+        self.assertNotEqual(M.caller_seat({"AGENT_SEAT": "grok-build-bot"}), "GROK")
+
+
 class CliTests(HomeCase):
     def test_apply_needs_a_target(self) -> None:
         code, _, err = self.run_cli("apply")
