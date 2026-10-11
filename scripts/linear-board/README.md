@@ -68,7 +68,7 @@ A personal or admin API key is never read, from any file or variable.
 
 **Swapped credentials.**  Before the first write with a seat app's token, the CLI asks Linear who the viewer is, once per token, and keeps the answer in that token's cache entry.  If the viewer is not that seat's app (`CLAUDE.env` holding Codex's credentials, say), `file`, `claim`, `status` and `comment` refuse with exit 4 and name the file to fix, before any write request.  Reads still work, and `whoami` exits 6 and says the credentials look swapped.  The environment pair gets the same check and accepts the seat's app or Fleet.  Writes through `Fleet.env` are not checked this way, as before.
 
-Everything else is unchanged:  claims keep their `claimed:<SEAT>` label and `CLAIMED` comment, every issue and comment keeps its seat tag line, the CLI sends no delegate and no `createAsUser`, the scope string is the same constant, and writes still need `LINEAR_BOARD_WRITES=1` and `AGENT_SEAT`.  `relabel_claims.py` always acts as the Fleet app, whatever `AGENT_SEAT` says.
+Everything else is unchanged:  claims keep their `claimed:<SEAT>` label and `CLAIMED` comment, every issue and comment keeps its seat tag line, the CLI sends no delegate and no `createAsUser`, the scope string is the same constant, and writes still need `LINEAR_BOARD_WRITES=1` and `AGENT_SEAT`.  `relabel_claims.py` never uses a seat app, whatever `AGENT_SEAT` says:  it acts as the Fleet app, or as the cloud pair when `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` are set.
 
 ## Frozen contract
 
@@ -135,7 +135,7 @@ Who holds an issue, in order:
 
 ### Cutover relabel
 
-`python3 scripts/linear-board/relabel_claims.py` adds `claimed:<SEAT>` to each In Progress and In Review issue that has none, from its footer.  It prints the plan and writes nothing unless run with `--apply` and `LINEAR_BOARD_WRITES=1`.  It only adds labels, skips issues that already have a marker (so it is idempotent and safe to resume, or to cap with `--limit N`), leaves closed issues alone, and uses the Fleet app's credentials (never a seat app's, whatever `AGENT_SEAT` says), the CLI's rate-limit handling and its loopback-only URL rule.  The import plan has 169 such issues (159 In Progress, 10 In Review), so one run is about that many `issueUpdate` calls on the Fleet app's budget.  It is an owner-approved step:  do not run it before the owner says so.
+`python3 scripts/linear-board/relabel_claims.py` adds `claimed:<SEAT>` to each In Progress and In Review issue that has none, from its footer.  It prints the plan and writes nothing unless run with `--apply` and `LINEAR_BOARD_WRITES=1`.  It only adds labels, skips issues that already have a marker (so it is idempotent and safe to resume, or to cap with `--limit N`), leaves closed issues alone, and uses the Fleet app's credentials (or the cloud pair when it is set, but never a seat app's, whatever `AGENT_SEAT` says), the CLI's rate-limit handling and its loopback-only URL rule.  The import plan has 169 such issues (159 In Progress, 10 In Review), so one run is about that many `issueUpdate` calls on the Fleet app's budget.  It is an owner-approved step:  do not run it before the owner says so.
 
 ## Safety
 
