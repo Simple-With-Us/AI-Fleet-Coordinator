@@ -2416,12 +2416,13 @@ def _run(cfg: Config, args, held: list[int]) -> int:
                    detail=res.get("error", "")[:120], **common)
         shutil.rmtree(stage_root, ignore_errors=True)
         return 4
-    if unreadable and not partial:
+    if unreadable:
         warns.append("restic-unreadable-files")
-        try:
-            run_restic(cfg, env, "tag", "--add", "partial", res["snapshot_full"], timeout=300)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        if not partial:      # a snapshot restic could not fully read is partial too:  tag it so retention keeps it apart
+            try:
+                run_restic(cfg, env, "tag", "--add", "partial", res["snapshot_full"], timeout=300)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
     maint = {"forget": "-", "prune": "-", "check": "-"}
     try:
         maint = restic_maintenance(cfg, env, state)

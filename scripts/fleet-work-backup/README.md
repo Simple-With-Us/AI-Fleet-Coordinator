@@ -94,12 +94,13 @@ leak from.  Two layers:
    them (`regex_only=N`).  A changed binary file in a worktree or a stash is staged as the raw new content,
    never as git's binary patch, for exactly that reason.
 
-   Unpushed commits are scanned with the same regex over `git log -p --cc` (first 512 MB per scan, the
-   exact range the bundle holds;  a longer history is bundled anyway and the run line says
-   `warn=bundle-scan-partial`) before they are bundled.  A hit is then isolated ref by ref (10 minute
-   budget), so one branch holding a key-shaped string costs only that branch:  the clean refs are still
-   bundled and each dropped ref is named.  Not covered:  gitleaks does not run over history, and a secret
-   in a pushed commit that a bundle carries along is already on GitHub.
+   Unpushed commits are scanned with the same regex over one `git log -p --cc` pass (first 512 MB per
+   scan) before they are bundled, commit by commit:  a hit is attributed to the commit that carries it,
+   and only the branches that can reach that commit are dropped, so one branch holding a key-shaped
+   string costs that branch and not the repository (each dropped ref is named in the detail log).  The
+   scan covers the commits no network remote has;  a bundle also carries pushed-but-unmerged commits it is
+   stacked on, and those are on GitHub already.  A longer history than the window is bundled anyway and the
+   run line says `warn=bundle-scan-partial`.  Not covered:  gitleaks does not run over history.
 
 A key-shaped string that is plainly an example (`sk_live_xxxxxxxx`, `AKIA...EXAMPLE`, a PEM header with
 no key body after it) does not count.  The scan is cached by (path, size, mtime or content hash) in
