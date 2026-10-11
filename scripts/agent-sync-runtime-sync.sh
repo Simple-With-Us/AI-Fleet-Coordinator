@@ -58,6 +58,18 @@ main() {
   fi
   trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 
+  # Code-only Coolify CLI sync uses this same tick, lock and pause.  Run before the
+  # local fetch/no-change exits so failed sends retry and a changed Mac revision
+  # reaches Coolify on the next tick.  Updates never register wrappers or MCP.
+  if [ -e "$STATE_DIR/coolify-cli-sync.enabled" ]; then
+    if [ ! -f "$RUNTIME/scripts/fleet-cli-sync.py" ]; then
+      log "COOLIFY-CLI-SYNC-MISSING  published pusher is not available yet; will retry next run"
+    elif ! perl -e 'alarm 95; exec @ARGV' /opt/homebrew/bin/python3 \
+        "$RUNTIME/scripts/fleet-cli-sync.py" --source-repo "$RUNTIME" >/dev/null 2>&1; then
+      log "COOLIFY-CLI-SYNC-FAILED  code push did not complete; will retry next run"
+    fi
+  fi
+
   if ! git -C "$RUNTIME" rev-parse --git-dir >/dev/null 2>&1; then
     log "ERROR  $RUNTIME is not a git worktree"
     exit 1

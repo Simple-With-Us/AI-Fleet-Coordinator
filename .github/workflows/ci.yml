@@ -60,6 +60,12 @@ jobs:
     - name: Lane doctor and tmp guard tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_lanes/tests -t . -v
+    - name: Code-only Coolify fleet CLI sync tests
+      run: |
+        python3 scripts/test_fleet_cli_release.py
+        python3 scripts/test_fleet_cli_sync.py
+        python3 scripts/test_fleet_cli_runtime.py
+        bash -n scripts/agent-sync-runtime-sync.sh
     - name: agent-sync CLI tests
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v

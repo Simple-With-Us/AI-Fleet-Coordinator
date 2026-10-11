@@ -1,5 +1,9 @@
 # Status
 
+## 2026-10-11 CODEX — Coolify fleet CLI distribution (OPS-933)
+
+Adds a bounded, code-only release receiver and pusher for the existing Coolify SSH route.  The existing Mac runtime updater can opt in to push published board and Agent-Sync runtime files; releases activate atomically after isolated smoke checks and support pause and rollback.  Initial installation preserves Codex configuration and adds a CODEX-scoped local MCP wrapper.  Installation receipts and current host status are tracked in OPS-933, with the source rollout in `docs/rollouts/2026-10-11-coolify-fleet-cli-sync.md`; authentication and wake routing remain separate work.
+
 Updated: 2026-10-10 (CLAUDE — Linear replaces THE BOARD)
 
 ## 2026-10-10 CLAUDE — Linear replaces THE BOARD (docs, skills, scripts)
