@@ -1335,6 +1335,8 @@ Lookup data only.  The binding rules live in the sections above.
 | `HH` | HogHunter | `hoghunter` |
 | `OPS` | fleet-ops | `fleet-ops` |
 | `CC` | CodeCaps | `codecaps` |
+| `FL` | FleetLink | `fleetlink` |
+| `FLL` | fleetlink-legacy (legacy, live until cutover) | `fleetlink-legacy` |
 
 Name drift, verified Wed, Oct 7, 2026:
 
@@ -1343,6 +1345,7 @@ Name drift, verified Wed, Oct 7, 2026:
 - The registry's `fleet-ops` is GitHub `Fleet-OPS`.  GitHub names are case-insensitive, so both resolve.
 - Autorotate is archived on GitHub.
 - Clutch (`CK`) is missing from the old canonical list; it belongs.
+- FleetLink (`FL`) and fleetlink-legacy (`FLL`) were added to `fleet-apps.json` on Sun, Oct 11, 2026 (AFC-252).  Neither has a Linear team yet:  Jay creates the FL team, and FLL is only a registry key for the legacy worker repo.  Neither has a Zulip linkifier, so write `FleetLink#n` and `fleetlink-legacy#n`, never `FL#n` or `FLL#n`.
 
 ### Branch Protection
 
