@@ -8,17 +8,27 @@ table and every environment variable.
 
 Usage:
   board list [--app A] [--status S,S] [--severity P0,P1] [--kind K] [--mine SEAT]
-             [--search TEXT] [--limit N] [--json]
+             [--label NAME ...] [--search TEXT] [--limit N] [--json]
   board show <id> [--json]
-  board file --title T [--app A] [--severity P0..P4] [--desc D] [--fix F]
+  board file --title T [--app A] [--severity P0..P4] [--desc D | --desc-file PATH|-]
+             [--fix F | --fix-file PATH|-] [--label NAME ...]
              [--by SEAT] [--where LOC] [--env Mac|cloud] [--kind K] [--uid U] [--url URL]
   board claim <id> --by SEAT [--where LOC] [--env Mac|cloud] [--session ID ...]
              [--steal --reason TEXT]
   board status <id> <open|in_progress|addressed|completed|deployed|wontfix|duplicate|parked>
              [--by SEAT] [--resolution TEXT] [--of <id>] [--session ID ...]
-  board comment <id> --by SEAT --text TEXT [--where LOC] [--env Mac|cloud] [--session ID ...]
+  board comment <id> --by SEAT (--text TEXT | --text-file PATH|-) [--where LOC]
+             [--env Mac|cloud] [--session ID ...]
+  board label add|remove <id> NAME [--by SEAT]
   board stats
   board whoami
+
+--desc-file, --fix-file and --text-file keep free text out of argv (and so out of
+`ps` and shell history).  PATH must be a regular file you own, mode 0600 or 0400,
+at most 64 KB of UTF-8;  `-` reads standard input, same cap.  --label, `label` and
+`list --label` take only the flat workspace labels needs-owner, ask-capture,
+fleet-report and stale-claim.  These are Linear-only (BOARD_BACKEND=mac-collab
+refuses them).
 
 Ids: a full board id (32 hex, with or without hyphens), a prefix of 8 or more
 hex characters, or a Linear identifier such as AFC-123.
@@ -28,7 +38,7 @@ Identity: a Linear app that mints its own token by OAuth client credentials
 signs as "Claude"), when its credentials file <SEAT>.env sits beside Fleet.env;
 a seat with no app yet, and every read without AGENT_SEAT, uses the shared
 "Fleet" app.  Each app has its own token cache and lock.  The seat comes from
-AGENT_SEAT, which the four write verbs require and the read verbs do not.  The
+AGENT_SEAT, which the five write verbs require and the read verbs do not.  The
 shared app cannot tell seats apart, so every issue and comment this CLI writes
 starts with a seat tag line ([CLAUDE·6db9ee77]), with a seat app too.  A seat
 app's writes are refused when Linear names another app as the viewer
@@ -45,12 +55,14 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import errno
 import fcntl
 import hashlib
 import http.client
 import json
 import os
 import re
+import stat
 import sys
 import time
 import urllib.error
@@ -85,7 +97,7 @@ EXIT_RATE_LIMIT = 5     # Linear rate limit outlasted LINEAR_BOARD_MAX_WAIT
 EXIT_AUTH = 6           # token refused, mint refused, or whoami check failed
 EXIT_WRITES_OFF = 7     # a write verb without LINEAR_BOARD_WRITES=1
 
-WRITE_VERBS = ("file", "claim", "status", "comment")
+WRITE_VERBS = ("file", "claim", "status", "comment", "label")
 SESSION_ENV_VAR = "CLAUDE_CODE_SESSION_ID"
 
 # A claim is a `claimed:<SEAT>` label; `seat:<SEAT>` is attribution only.  The
@@ -204,6 +216,21 @@ PRIORITY_ORDER = (1, 2, 3, 4, 0)  # Urgent, High, Medium, Low, none: the board's
 KINDS = ("agent-report", "review-finding", "effort-row", "github-issue", "sentry")
 ENVS = {"mac": "Mac", "cloud": "Cloud"}
 LABEL_COLORS = {"seat": "#0284c7", "claimed": "#d97706", "app": "#7c3aed"}
+
+# The only labels `file --label`, `label add|remove` and `list --label` take (open-loops plan B1):  flat
+# workspace labels, no team and no parent group.  Everything else a seat could name is refused, so a
+# seat can never forge a claim (`claimed:*`), attribution (`seat:*`) or a member of the single-select
+# Kind, Severity and Env groups through this door.  `fleet-report` is a label, never a Kind.
+FLAT_LABELS = ("needs-owner", "ask-capture", "fleet-report", "stale-claim")
+FLAT_LABEL_COLORS = {"needs-owner": "#dc2626", "ask-capture": "#0d9488", "fleet-report": "#4f46e5",
+                     "stale-claim": "#6b7280"}
+# Closing a thread ends these two:  a decision answered or a captured ask handled stops waiting on the owner.
+CLOSING_STATUSES = ("completed", "deployed", "wontfix", "duplicate", "canceled")
+CLOSING_REMOVES = ("needs-owner", "ask-capture")
+# --desc-file, --fix-file and --text-file read at most this many bytes of UTF-8.
+INPUT_MAX_BYTES = 64 * 1024
+# Flags and the verb only the Linear backend has;  BOARD_BACKEND=mac-collab refuses them.
+LINEAR_ONLY_FLAGS = ("--desc-file", "--fix-file", "--text-file", "--label")
 
 OPEN_STATES = ("Todo", "Backlog", "In Progress")
 DONE_STATES = ("Done", "Deployed", "In Review")
@@ -385,6 +412,117 @@ def check_by(by: str | None, seat: str, flag: str = "--by") -> str:
 def seat_tag(seat: str, sessions: list[str] | None) -> str:
     s8 = (sessions[0].replace("-", "")[:8]) if sessions else ""
     return f"[{seat}·{s8}]" if s8 else f"[{seat}]"
+
+
+# ----------------------------------------------------------------- input files and flat labels
+
+def read_private_file(path: str, flag: str) -> bytes:
+    """The bytes of a file a seat handed over so its text stays out of argv:  a regular file owned by
+    the caller with mode exactly 0600 or 0400, at most INPUT_MAX_BYTES.  The checks run on the open
+    descriptor (O_NOFOLLOW refuses a symlink, O_NONBLOCK keeps a FIFO from hanging), so the file cannot
+    be swapped between the check and the read.  Anything else exits 2.  The text is never echoed."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            die(f"{flag} {path}: is a symbolic link;  pass the real file", EXIT_USAGE)
+        die(f"{flag} {path}: cannot open it ({e.strerror or type(e).__name__})", EXIT_USAGE)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            die(f"{flag} {path}: not a regular file", EXIT_USAGE)
+        if st.st_uid != os.geteuid():
+            die(f"{flag} {path}: not owned by you", EXIT_USAGE)
+        mode = stat.S_IMODE(st.st_mode)
+        if mode not in (0o600, 0o400):
+            die(f"{flag} {path}: mode {mode:04o} is not 0600 or 0400, so others may read or change it;  "
+                f"run chmod 600 on it first", EXIT_USAGE)
+        if st.st_size > INPUT_MAX_BYTES:
+            die(f"{flag} {path}: more than {INPUT_MAX_BYTES // 1024} KB", EXIT_USAGE)
+        data = b""
+        while len(data) <= INPUT_MAX_BYTES:
+            chunk = os.read(fd, INPUT_MAX_BYTES + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+        return data
+    finally:
+        os.close(fd)
+
+
+def read_text_input(src: str, flag: str) -> str:
+    """Text for --desc-file, --fix-file or --text-file:  the private file at `src`, or standard input
+    for `-`.  At most INPUT_MAX_BYTES of strict UTF-8, else exit 2."""
+    if src == "-":
+        data = sys.stdin.buffer.read(INPUT_MAX_BYTES + 1)
+        where = "standard input"
+    else:
+        data = read_private_file(src, flag)
+        where = src
+    if len(data) > INPUT_MAX_BYTES:
+        die(f"{flag} {where}: more than {INPUT_MAX_BYTES // 1024} KB", EXIT_USAGE)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        die(f"{flag} {where}: not valid UTF-8", EXIT_USAGE)
+
+
+def flat_label(raw: str | None, flag: str = "--label") -> str:
+    """The canonical name of an allowed flat label, or exit 2 saying why it is refused.  Matching ignores
+    case and surrounding spaces, so Needs-Owner is needs-owner and never a second label."""
+    name = (raw or "").strip()
+    low = name.lower()
+    if low in FLAT_LABELS:
+        return low
+    if low.startswith(CLAIM_PREFIX):
+        why = "a claimed:* label is a claim;  `board claim` writes it"
+    elif low.startswith(SEAT_PREFIX):
+        why = "a seat:* label is attribution;  `board claim` and `board file` write it"
+    elif low.split("/", 1)[0] in ("kind", "severity", "env") or low in ("kind", "severity", "env"):
+        why = "Kind, Severity and Env are single-select groups;  use --kind, --severity or --env"
+    elif low in KINDS:
+        why = "that is a Kind;  use --kind"
+    elif low.upper() in SEVERITIES:
+        why = "that is a Severity;  use --severity"
+    elif low in ENVS:
+        why = "that is an Env;  use --env"
+    else:
+        why = "it is not one of the flat labels this CLI may set"
+    die(f"{flag} {raw!r}: {why}.  Allowed:  {', '.join(FLAT_LABELS)}", EXIT_USAGE)
+
+
+def flat_labels(raws: list[str] | None, flag: str = "--label") -> list[str]:
+    """Validated, de-duplicated flat label names in the order given."""
+    out: list[str] = []
+    for raw in raws or []:
+        name = flat_label(raw, flag)
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def prepare_inputs(a) -> None:
+    """Validate flags and read every --*-file before any credential is read or request is sent, so a bad
+    input exits 2 having touched nothing.  Runs after the writes-off gate:  a gated write never reads a
+    file (or standard input)."""
+    if a.cmd in ("file", "list"):
+        a.labels = flat_labels(a.labels)
+    if a.cmd == "label":
+        a.label_name = flat_label(a.label_name, "NAME")
+    files = []
+    if a.cmd == "file":
+        files = [("--desc-file", a.desc_file, "desc"), ("--fix-file", a.fix_file, "fix")]
+    elif a.cmd == "comment":
+        files = [("--text-file", a.text_file, "text")]
+    files = [f for f in files if f[1] is not None]
+    if sum(1 for f in files if f[1] == "-") > 1:
+        die("only one of --desc-file and --fix-file can read standard input (-)", EXIT_USAGE)
+    for flag, src, attr in files:
+        text = read_text_input(src, flag)
+        if a.cmd == "comment" and not text.strip():
+            die(f"{flag} {'standard input' if src == '-' else src}: the comment text is empty", EXIT_USAGE)
+        setattr(a, attr, text)
 
 
 # ----------------------------------------------------------------- credentials and token
@@ -962,6 +1100,10 @@ class Workspace:
         self.L = L
         self.teams: dict = {}
         self.labels: dict = {}
+        # Workspace-level labels with no team and no parent group, by lower-case name:  the only place a
+        # flat label (needs-owner and the rest) is looked up.  A team-scoped label of the same name can
+        # only be put on that team's issues, so it never counts.
+        self.flat: dict = {}
         self.fresh = False
         self._load()
 
@@ -970,8 +1112,10 @@ class Workspace:
 
     def _load(self, refresh: bool = False) -> None:
         d = None if refresh else read_json_file(self._path())
-        if d and d.get("api") == self.L.url and time.time() - float(d.get("at") or 0) < self.TTL:
-            self.teams, self.labels = d.get("teams") or {}, d.get("labels") or {}
+        # A cache written before flat labels existed has no "flat" key:  it is stale, read Linear once.
+        if d and d.get("api") == self.L.url and time.time() - float(d.get("at") or 0) < self.TTL \
+                and "flat" in d:
+            self.teams, self.labels, self.flat = d.get("teams") or {}, d.get("labels") or {}, d.get("flat") or {}
             return
         teams = {}
         for t in self.L.paginate(Q_TEAMS, {}, ("teams",), 50):
@@ -979,11 +1123,15 @@ class Workspace:
                                "states": {s["name"]: s["id"] for s in (t.get("states") or {}).get("nodes") or []}}
         workspace_labels: dict = {}
         team_labels: dict = {}
+        flat: dict = {}
         for lb in self.L.paginate(Q_LABELS, {}, ("issueLabels",), 250):
             (team_labels if lb.get("team") else workspace_labels).setdefault(label_key(lb), lb["id"])
+            if not lb.get("team") and not lb.get("parent") and not lb.get("isGroup"):
+                flat.setdefault(str(lb["name"]).lower(), lb["id"])
         labels = dict(team_labels, **workspace_labels)  # a workspace label wins over a team label
-        self.teams, self.labels, self.fresh = teams, labels, True
-        write_json_file(self._path(), {"api": self.L.url, "at": time.time(), "teams": teams, "labels": labels})
+        self.teams, self.labels, self.flat, self.fresh = teams, labels, flat, True
+        write_json_file(self._path(), {"api": self.L.url, "at": time.time(), "teams": teams, "labels": labels,
+                                       "flat": flat})
 
     def team(self, key: str) -> dict:
         if key not in self.teams and not self.fresh:
@@ -1021,6 +1169,32 @@ class Workspace:
         d = read_json_file(self._path()) or {}
         if d.get("api") == self.L.url:
             d.setdefault("labels", {})[key] = lid
+            write_json_file(self._path(), d)
+        return lid
+
+    def flat_label_id(self, name: str) -> str:
+        """The id of the flat workspace label `name` (one of FLAT_LABELS, already validated).  Looked up
+        at workspace level;  when Linear has none, created once as a flat workspace label (no team, no
+        parent group) under a fixed id and cached, so every later run, and a racing one, finds it."""
+        if name not in self.flat and not self.fresh:
+            self._load(refresh=True)
+        if name in self.flat:
+            return self.flat[name]
+        lid = det_uuid("label", name)
+        try:
+            self.L.call(M_LABEL, {"input": {"id": lid, "name": name,
+                                            "color": FLAT_LABEL_COLORS.get(name, "#6b7280")}})
+        except GqlError as e:
+            self._load(refresh=True)
+            if name in self.flat:
+                return self.flat[name]
+            die(f"could not create label {name!r}: {e}")
+        self.flat[name] = lid
+        self.labels.setdefault(name, lid)
+        d = read_json_file(self._path()) or {}
+        if d.get("api") == self.L.url:
+            d.setdefault("flat", {})[name] = lid
+            d.setdefault("labels", {}).setdefault(name, lid)
             write_json_file(self._path(), d)
         return lid
 
@@ -1373,6 +1547,8 @@ def list_filter(a) -> tuple[list[dict], list[str] | None]:
         parts.append({"title": {"containsIgnoreCase": a.search}})
     if a.mine:
         parts.append(label_cond(f"{CLAIM_PREFIX}{norm_seat(a.mine)}"))
+    for name in a.labels or []:
+        parts.append(label_cond(name))    # every --label must be on the issue
     return parts, sevs
 
 
@@ -1544,7 +1720,8 @@ def cmd_file(L: Linear, a, seat: str) -> int:
         die("--severity must be P0 to P4", EXIT_USAGE)
     kind = a.source_kind or "agent-report"
     if kind not in KINDS:
-        die(f"--kind must be one of {', '.join(KINDS)}", EXIT_USAGE)
+        hint = "  fleet-report is a label, not a kind:  use --label fleet-report." if kind == "fleet-report" else ""
+        die(f"--kind must be one of {', '.join(KINDS)}.{hint}", EXIT_USAGE)
     env_label = norm_env(a.env)
     title = a.title.strip()
     if not title:
@@ -1587,6 +1764,8 @@ def cmd_file(L: Linear, a, seat: str) -> int:
         label_ids.append(ws.label_id(f"Env/{env_label}"))
     if fslug:
         label_ids.append(ws.label_id(f"app:{fslug}", create=True))
+    # Flat labels are resolved here, after the repeat-uid return above, so a repeat creates nothing.
+    label_ids += [ws.flat_label_id(name) for name in a.labels or []]
     inp = {
         "id": iid, "teamId": ws.team(team)["id"], "title": title,
         "description": "\n".join(lines + foot), "stateId": ws.state_id(team, "Todo"),
@@ -1737,6 +1916,11 @@ def duplicate_target(resolution: str | None) -> str | None:
     return next(iter(found)) if len(found) == 1 else None
 
 
+def closing_label_ids(n: dict) -> list[str]:
+    """Ids of the labels on `n` that closing it removes (needs-owner, ask-capture), none for the rest."""
+    return [x["id"] for x in (n.get("labels") or {}).get("nodes") or [] if label_key(x) in CLOSING_REMOVES]
+
+
 def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
     by = check_by(a.addressed_by, seat)
     value = a.value.strip().lower()
@@ -1774,6 +1958,13 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
         if state != "Duplicate":
             time.sleep(env_float("LINEAR_BOARD_DUP_WAIT", 3))
             state = (fetch_issue(L, n["id"], a.id).get("state") or {}).get("name")
+        drop = closing_label_ids(n)
+        if drop:
+            try:
+                L.call(M_UPDATE, {"id": n["id"], "input": {"removedLabelIds": drop}})
+            except GqlError as e:
+                L.fail(f"Linear refused removing the open-loop labels: {e}")
+            L.landed.append(f"{n['identifier']} lost needs-owner and ask-capture")
         text = f"Duplicate of {canon['identifier']}"
         if a.resolution:
             text = f"Resolution (duplicate of {canon['identifier']}): {a.resolution.strip()}"
@@ -1796,6 +1987,11 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
                     if label_key(x).startswith(CLAIM_PREFIX)]
         if released:
             inp["removedLabelIds"] = released
+    elif value in CLOSING_STATUSES:
+        # Closed:  the question was answered or the ask handled, so it stops waiting on the owner.
+        drop = closing_label_ids(n)
+        if drop:
+            inp["removedLabelIds"] = drop
     try:
         L.call(M_UPDATE, {"id": n["id"], "input": inp})
     except GqlError as e:
@@ -1819,6 +2015,37 @@ def cmd_comment(L: Linear, ids: IdIndex, a, seat: str) -> int:
     sessions = auto_sessions(a.session_ids)
     post_comment(L, n, comment_body(by, sessions, a.text, a.location, env_label), by, "comment", sessions)
     print(f"commented on {short_id(n['id'])} as {by}{session_tail(sessions)}  {n['identifier']}")
+    return 0
+
+
+def cmd_label(L: Linear, ids: IdIndex, a, seat: str) -> int:
+    """`label add|remove <id> NAME`:  one flat workspace label (FLAT_LABELS) on or off an issue, with
+    addedLabelIds or removedLabelIds only (labelIds would replace every label).  `add` finds or creates
+    the label;  `remove` never creates one, and removing what is not there changes nothing."""
+    check_by(a.addressed_by, seat)
+    name = a.label_name
+    n = fetch_issue(L, ids.resolve(a.id), a.id)
+    have = [x["id"] for x in (n.get("labels") or {}).get("nodes") or [] if label_key(x) == name]
+    short = short_id(n["id"])
+    if a.action == "add":
+        if have:
+            print(f"{short} already has {name}  (unchanged)  {n['identifier']}")
+            return 0
+        inp = {"addedLabelIds": [Workspace(L).flat_label_id(name)]}
+    else:
+        if not have:
+            print(f"{short} does not have {name}  (unchanged)  {n['identifier']}")
+            return 0
+        inp = {"removedLabelIds": have}
+    try:
+        L.call(M_UPDATE, {"id": n["id"], "input": inp})
+    except GqlError as e:
+        die(f"Linear refused the label change: {e}")
+    remember([n])
+    if a.action == "add":
+        print(f"labeled {short} +{name}  {n['identifier']}")
+    else:
+        print(f"unlabeled {short} -{name}  {n['identifier']}")
     return 0
 
 
@@ -1928,6 +2155,8 @@ def build_parser() -> argparse.ArgumentParser:
     lp.add_argument("--kind", dest="source_kind")
     lp.add_argument("--search")
     lp.add_argument("--mine", help="only items claimed by this seat (claimed:<TAG> label)")
+    lp.add_argument("--label", dest="labels", action="append", metavar="NAME",
+                    help=f"only items with this flat label ({', '.join(FLAT_LABELS)});  repeat to require several")
     lp.add_argument("--limit", default="60")
     lp.add_argument("--json", action="store_true")
 
@@ -1939,8 +2168,17 @@ def build_parser() -> argparse.ArgumentParser:
     fp.add_argument("--title", required=True)
     fp.add_argument("--app", default=DEFAULT_APP)
     fp.add_argument("--severity")
-    fp.add_argument("--desc")
-    fp.add_argument("--fix")
+    desc_g = fp.add_mutually_exclusive_group()
+    desc_g.add_argument("--desc")
+    desc_g.add_argument("--desc-file", dest="desc_file", metavar="PATH",
+                        help="read the description from PATH, or standard input for -  (regular file you own, "
+                             "mode 0600 or 0400, 64 KB, UTF-8)")
+    fix_g = fp.add_mutually_exclusive_group()
+    fix_g.add_argument("--fix")
+    fix_g.add_argument("--fix-file", dest="fix_file", metavar="PATH",
+                       help="read the recommended fix from PATH, or standard input for -  (same rules)")
+    fp.add_argument("--label", dest="labels", action="append", metavar="NAME",
+                    help=f"add a flat workspace label ({', '.join(FLAT_LABELS)});  repeatable")
     fp.add_argument("--by", dest="reported_by")
     fp.add_argument("--where", dest="location")
     fp.add_argument("--env")
@@ -1969,10 +2207,20 @@ def build_parser() -> argparse.ArgumentParser:
     cmp_ = sub.add_parser("comment", help="comment on an item")
     cmp_.add_argument("id")
     cmp_.add_argument("--by", dest="author", required=True)
-    cmp_.add_argument("--text", required=True)
+    text_g = cmp_.add_mutually_exclusive_group(required=True)
+    text_g.add_argument("--text")
+    text_g.add_argument("--text-file", dest="text_file", metavar="PATH",
+                        help="read the comment from PATH, or standard input for -  (regular file you own, "
+                             "mode 0600 or 0400, 64 KB, UTF-8)")
     cmp_.add_argument("--where", dest="location")
     cmp_.add_argument("--env")
     cmp_.add_argument("--session", dest="session_ids", action="append", help=session_help)
+
+    lbp = sub.add_parser("label", help=f"add or remove a flat label ({', '.join(FLAT_LABELS)})")
+    lbp.add_argument("action", choices=("add", "remove"))
+    lbp.add_argument("id")
+    lbp.add_argument("label_name", metavar="NAME")
+    lbp.add_argument("--by", dest="addressed_by")
 
     sub.add_parser("stats", help="aggregate counts")
     sub.add_parser("whoami", help="the Linear identity this CLI acts as")
@@ -1982,6 +2230,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if (env("BOARD_BACKEND") or "linear").lower() == "mac-collab":
+        linear_only = "label" if argv[:1] == ["label"] else \
+            next((f for f in (t.split("=", 1)[0] for t in argv) if f in LINEAR_ONLY_FLAGS), None)
+        if linear_only:
+            die(f"`{linear_only}` is Linear only:  BOARD_BACKEND=mac-collab runs the old board CLI, which has "
+                "no such flag or verb.  Unset BOARD_BACKEND to use it.", EXIT_USAGE)
         old = Path(env("BOARD_MAC_COLLAB_CLI") or (Path.home() / "apps" / "mac-collab" / "board")).expanduser()
         if not old.is_file():
             die(f"BOARD_BACKEND=mac-collab, but the old board CLI is not at {old} (set BOARD_MAC_COLLAB_CLI)")
@@ -1996,6 +2249,7 @@ def main(argv: list[str] | None = None) -> int:
                       ("--by", getattr(a, "author", None))):
         if val is not None:
             check_by(val, seat, flag)
+    prepare_inputs(a)
     token_url = endpoint("LINEAR_BOARD_TOKEN_URL", TOKEN_URL)
     api_url = endpoint("LINEAR_BOARD_API_URL", GRAPHQL_URL)
     auth = Auth(token_url, resolve_identity(seat))
@@ -2020,6 +2274,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_status(L, ids, a, seat)
         if a.cmd == "comment":
             return cmd_comment(L, ids, a, seat)
+        if a.cmd == "label":
+            return cmd_label(L, ids, a, seat)
     except GqlError as e:
         die(f"Linear error: {e}")
     return EXIT_ERROR
