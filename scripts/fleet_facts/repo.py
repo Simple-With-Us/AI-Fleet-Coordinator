@@ -14,7 +14,7 @@ apps the owner allowed by name) can read what lands in it:
 Not checked, because the token that reads the rest cannot:  organization-level webhooks (they need the
 admin:org_hook scope).
 
-Writes go through `gh api -X PUT repos/<repo>/contents/<path> --input <0600 file>`:  the body (message, base64
+Writes go through `gh api -X PUT repos/<repo>/contents/<path> --input <0600 file>` (and, for `mac-facts.json` alone, `-X DELETE`):  the body (message, base64
 content and the blob sha of the file being replaced) is in a private file, never on a command line;  there is no
 clone and no force.  A path must be `mac-facts.json` or a file under `gb/`, never a dotfile, never `..`.
 """
@@ -203,10 +203,8 @@ class Writer:
             raise WriteFailed("reading %s failed (%s)" % (rel, got.reason or "HTTP %s" % (status or "?")))
         raise WriteFailed("reading %s failed" % rel)  # pragma: no cover - the loop always returns or raises
 
-    def _put(self, rel: str, data: bytes, message: str, sha: str | None) -> Result:
-        body: dict[str, Any] = {"message": message, "content": base64.b64encode(data).decode("ascii")}
-        if sha:
-            body["sha"] = sha
+    def _send(self, method: str, rel: str, body: dict[str, Any]) -> Result:
+        """`gh api -X <method> repos/<repo>/contents/<rel> --input <0600 file>`:  the body is never on the command line."""
         folder = tempfile.mkdtemp(prefix="fleet-facts-put-")
         try:
             os.chmod(folder, 0o700)
@@ -214,9 +212,15 @@ class Writer:
             fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(body, fh)
-            return _gh(self.run, self.gh, "api", "-X", "PUT", "repos/%s/contents/%s" % (self.repo, rel), "--input", target, timeout=120)
+            return _gh(self.run, self.gh, "api", "-X", method, "repos/%s/contents/%s" % (self.repo, rel), "--input", target, timeout=120)
         finally:
             shutil.rmtree(folder, ignore_errors=True)
+
+    def _put(self, rel: str, data: bytes, message: str, sha: str | None) -> Result:
+        body: dict[str, Any] = {"message": message, "content": base64.b64encode(data).decode("ascii")}
+        if sha:
+            body["sha"] = sha
+        return self._send("PUT", rel, body)
 
     def put(self, rel: str, data: bytes, message: str) -> str:
         """"created", "updated" or "unchanged".  Raises Refused for a bad path and WriteFailed for anything else."""
@@ -246,3 +250,33 @@ class Writer:
                 return "created" if sha is None else "updated"
             status = _http(result)
         raise WriteFailed("writing %s failed (%s)" % (rel, result.reason or "HTTP %s" % (status or "?")))
+
+    def remove(self, rel: str, message: str) -> str:
+        """Delete `mac-facts.json` (the path-bearing copy a knob governs) from the branch:  "removed", or "absent" when it was not there.
+        Sha-aware, never forced, and no other path can be removed by this job.  Git keeps the old commits, so this stops the file
+        being read at the tip;  it does not unpublish what was already there."""
+        if rel != "mac-facts.json":
+            raise Refused("this job removes only mac-facts.json")
+        sha = self._remote_sha(rel)
+        if sha is None:
+            return "absent"
+        result = self._send("DELETE", rel, {"message": message, "sha": sha})
+        if result.reason is None and result.rc == 0:
+            return "removed"
+        status = _http(result)
+        if status in ("409", "422"):
+            fresh = self._remote_sha(rel)
+            if fresh is None:
+                return "absent"
+            if fresh != sha:
+                result = self._send("DELETE", rel, {"message": message, "sha": fresh})
+                if result.reason is None and result.rc == 0:
+                    return "removed"
+                status = _http(result)
+        elif result.reason or status.startswith("5"):
+            self.sleep(5)
+            result = self._send("DELETE", rel, {"message": message, "sha": sha})
+            if result.reason is None and result.rc == 0:
+                return "removed"
+            status = _http(result)
+        raise WriteFailed("removing %s failed (%s)" % (rel, result.reason or "HTTP %s" % (status or "?")))

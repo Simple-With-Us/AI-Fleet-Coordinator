@@ -115,7 +115,7 @@ sha-aware `gh api -X PUT` calls (no clone, never forced), in this order:
 | --- | --- |
 | `gb/full-list.md` | the digest's full list;  its SHA-256 and size are in the signed JSON (`full_list`), which covers the Markdown.  When the list could not be built (open-loops not installed, a failed step, a secret in it) the file is replaced by a short "Full List Not Available" note with the reason words, and `full_list.status` and `full_list.placeholder` say so, so an old list is never read as today's |
 | `gb/mac-facts.json` | the copy for Grok Bot:  no `path` key, no `~/`, `/Users/` or `/Volumes/` text, every string cut to 80 characters (a branch, repository, lane name, identifier and topic are never cut) |
-| `mac-facts.json` | the full copy, with lane paths.  **Off by default**:  everything that can read the repository (Grok Bot's token included) can read it, which would undo the path-free copy.  The Infisical knob `FLEET_FACTS_PUBLISH_FULL_COPY` turns it on |
+| `mac-facts.json` | the full copy, with lane paths.  **Off by default**:  everything that can read the repository (Grok Bot's token included) can read it, which would undo the path-free copy.  The Infisical knob `FLEET_FACTS_PUBLISH_FULL_COPY` turns it on;  while it is off each cycle removes the file from the branch if a run left one (a sha-aware delete, the only delete this job can make;  git history keeps the old commits) |
 
 Both JSON files have the shape of `fleet-facts gather` (schema 1:  `generated_at`, `sources`, then `lanes`, `autopush`, `backup` and
 `needs_owner` with the same data as the gatherers give) plus `kind`, `signed_for` (the path in the repository), `full_list`,
@@ -143,11 +143,13 @@ consumer's job:  `generated_at` is the time the facts were gathered and is never
 webhooks included) and no deploy key;  and no GitHub App installed on the organization can read the repository (an installation on all
 repositories can;  one on selected repositories is listed with `user/installations/<id>/repositories`).  Any read that fails is a refusal.  Apps the owner
 accepts are named in the Infisical knob `FLEET_LOOPS_DATA_ALLOWED_APPS` (empty by default).  Not checked:  organization-level webhooks (they need the
-`admin:org_hook` scope).  `publish --path` writes only `mac-facts.json` or a file under `gb/` (no `..`, no dotfile, never `.github/`).
+`admin:org_hook` scope).  `publish --path` writes only `mac-facts.json` (only while the full-copy knob is on) or a file under `gb/` (no `..`, no dotfile, never `.github/`), and everything under `gb/` goes through the same path-free copy rule, by hand as in a cycle:  a JSON file is minimized before it is signed, and a Markdown file with a Mac path in it is refused.  The full list has its Mac paths replaced by `[path]` before it is hashed.
 
 **Secrets.**  `FLEET_FACTS_SIGNING_KEY` comes from K1 (`fleet_knobs`, imported only by `publish` and `publish-mac`), is never cached or printed, and is also a
 `known` value for the redactor, so it cannot be published even inside a field.  Each document gets per-field `redact_fields`, then a whole-document scan:  a
 hit that survives refuses the cycle (nothing is written).  A secret-shaped string in the full list withholds just the list.  No key means nothing is published.
+
+**Writes that do not finish.**  The list is written first, because the signed JSON carries its hash.  If the JSON write then fails, the new list is replaced by the not-available note, so a new list never stands beside the previous run's facts (git data commits would make the three files one commit;  this job stays on the contents API the plan names).
 
 **Time and load.**  One lock (a second run exits), a 20-minute wall-clock cap (a timer ends the run and kills the children), every child's timeout
 clamped to the time left, no write phase with under a minute left, and a skip when load1 is over 250.  A skip writes nothing to the repository:  the

@@ -42,10 +42,12 @@ class FakeGitHub:
         self.installs_error = False
         self.selected: dict[int, list[str] | None] = {}    # installation id -> repository full names (None = unreadable)
         self.files: dict[str, bytes] = {}
-        self.put_fail: dict[str, list[str]] = {}       # path -> HTTP codes to fail with, one per attempt
+        self.put_fail: dict[str, list] = {}       # path -> HTTP codes to fail with, one per attempt (None = let that attempt through)
         self.get_fail: dict[str, list[str]] = {}
         self.calls: list[list[str]] = []
         self.puts: list[dict] = []                     # {"path", "body", "argv", "mode"}
+        self.deletes: list[dict] = []
+        self.delete_fail: dict[str, list] = {}
         self.repo_view_error = False
 
     # -- the Runner interface -------------------------------------------------------------------------
@@ -64,7 +66,7 @@ class FakeGitHub:
         method = args[args.index("--method") + 1] if "--method" in args else (args[args.index("-X") + 1] if "-X" in args else None)
         if method is None and any(a in ("-f", "-F", "--input") for a in args):
             method = "POST"
-        if method not in (None, "GET", "PUT"):
+        if method not in (None, "GET", "PUT", "DELETE"):
             return Result(1, "", "gh: Not Found (HTTP 404)")
         if endpoint == "repos/%s/hooks" % self.repo:
             return Result(1, "", "gh: Must have admin rights to Repository. (HTTP 403)") if self.hooks_error else Result(0, pages(self.hooks, None), "")
@@ -83,6 +85,8 @@ class FakeGitHub:
             rel = endpoint[len(prefix):]
             if method == "PUT":
                 return self._put(rel, args)
+            if method == "DELETE":
+                return self._delete(rel, args)
             return self._get(rel)
         return Result(1, "", "fake gh: unknown endpoint")
 
@@ -104,12 +108,29 @@ class FakeGitHub:
         failing = self.put_fail.get(rel)
         if failing:
             code = failing.pop(0)
-            return Result(1, "", "gh: failure (HTTP %s)" % code)
+            if code is not None:         # None lets this attempt through
+                return Result(1, "", "gh: failure (HTTP %s)" % code)
         current = blob_sha(self.files[rel]) if rel in self.files else None
         if body.get("sha") != current:
             return Result(1, "", "gh: %s does not match (HTTP 409)" % rel)
         self.files[rel] = base64.b64decode(body["content"])
         return Result(0, json.dumps({"content": {"sha": blob_sha(self.files[rel])}}), "")
+
+    def _delete(self, rel: str, args: list[str]) -> Result:
+        path = args[args.index("--input") + 1]
+        mode = os.stat(path).st_mode & 0o777
+        with open(path, encoding="utf-8") as fh:
+            body = json.load(fh)
+        self.deletes.append({"path": rel, "body": body, "argv": list(args), "mode": mode})
+        failing = self.delete_fail.get(rel)
+        if failing:
+            code = failing.pop(0)
+            if code is not None:
+                return Result(1, "", "gh: failure (HTTP %s)" % code)
+        if rel not in self.files or body.get("sha") != blob_sha(self.files[rel]):
+            return Result(1, "", "gh: %s does not match (HTTP 409)" % rel)
+        del self.files[rel]
+        return Result(0, json.dumps({"commit": {"sha": "0" * 40}}), "")
 
     # -- helpers for the tests -------------------------------------------------------------------------
     def put_paths(self) -> list[str]:

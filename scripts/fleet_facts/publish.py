@@ -45,7 +45,7 @@ from typing import Callable, Iterator, Mapping
 
 from . import gather as ff_gather
 from . import localtime, repo as repomod, safety, signing
-from .minimize import PathLeak, minimize
+from .minimize import PathLeak, mac_path_in, minimize, scrub
 from .runner import Result, Runner, home_path, kill_live, which
 from .runner import run as default_run
 
@@ -281,6 +281,10 @@ def build_full_list(run: Runner, deadline: Deadline, key: str) -> tuple[dict, st
         kind = scanner.scan(text, known=[key])
         if kind:
             return miss("failed", "secret-shaped text (%s) withheld from the list" % kind)
+        text = scrub(text)          # gb/ holds no Mac path, in a list any more than in the JSON
+        if mac_path_in(text):
+            return miss("failed", "a Mac path is still in the list")
+        data = text.encode("utf-8")
         return dict(info, status="ok", reason=None, sha256=signing.sha256_hex(data), bytes=len(data)), text
     finally:
         shutil.rmtree(folder, ignore_errors=True)
@@ -409,9 +413,15 @@ def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1
     stamp = facts.get("generated_at") or now.strftime("%Y-%m-%dT%H:%M:%SZ")
     results: dict[str, str] = {}
     failure: str | None = None
+    if FULL_FACTS not in files:
+        # The path-bearing copy is off:  if a run published it while the knob was on, it must not stay readable at the tip.
+        try:
+            results[FULL_FACTS] = FULL_COPY_OFF if writer.remove(FULL_FACTS, "mac-facts: remove %s (the full copy is off)" % FULL_FACTS) == "absent" \
+                else "removed:  FLEET_FACTS_PUBLISH_FULL_COPY is off"
+        except (repomod.WriteFailed, repomod.Refused) as exc:
+            return Outcome("failed", exc.reason, EXIT_FAILED, {FULL_FACTS: "failed"}, notes, extra)
     for rel in WRITE_ORDER:
         if rel not in files:
-            results[rel] = FULL_COPY_OFF
             continue
         try:
             results[rel] = writer.put(rel, files[rel], "mac-facts: %s %s" % (rel, stamp))
@@ -420,6 +430,14 @@ def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1
             failure = exc.reason
             break       # a later file may depend on this one (the JSON carries the list's hash)
     if failure:
+        if results.get(FULL_LIST) in ("created", "updated"):
+            # The new list landed and the facts that describe it did not:  do not leave the new list beside the old facts.
+            note = unavailable_text(now, "the facts file could not be written, so this list was withdrawn").encode("utf-8")
+            try:
+                writer.put(FULL_LIST, note, "mac-facts: %s withdrawn" % FULL_LIST)
+                results[FULL_LIST] += ";  then withdrawn (a not-available note)"
+            except (repomod.WriteFailed, repomod.Refused):
+                results[FULL_LIST] += ";  could not be withdrawn"
         return Outcome("failed", failure, EXIT_FAILED, results, notes, extra)
     return Outcome("published", None, EXIT_OK, results, notes, extra)
 
@@ -508,6 +526,11 @@ def publish_file(rel: str, local: str, *, run: Runner = default_run, key_provide
             cleaned, paths = scanner.redact_fields(document, known=[key])
             if paths:
                 cleaned["redacted"] = list(dict.fromkeys(list(cleaned.get("redacted") or []) + paths))
+            if rel.startswith("gb/"):
+                try:
+                    cleaned = minimize(cleaned)         # everything Grok Bot can read is path-free and has its quotes cut
+                except PathLeak as exc:
+                    raise Withheld(str(exc)) from None
             _check_whole(cleaned, rel, key)
             data = _serialize(signing.sign(cleaned, key))
         else:
@@ -518,6 +541,8 @@ def publish_file(rel: str, local: str, *, run: Runner = default_run, key_provide
             kind = scanner.scan(text, known=[key])
             if kind:
                 raise Withheld("secret-shaped text (%s) is in %s" % (kind, rel))
+            if rel.startswith("gb/") and mac_path_in(text):
+                raise Withheld("a Mac path is in %s, and everything under gb/ is path-free" % rel)
             data = raw
     except safety.HelpersMissing as exc:
         return Outcome("refused", "nothing was published:  %s" % exc, EXIT_REFUSED)

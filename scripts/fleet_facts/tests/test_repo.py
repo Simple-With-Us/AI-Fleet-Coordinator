@@ -266,6 +266,62 @@ class Writing(unittest.TestCase):
         self.assertEqual(self.gh.puts, [])
 
 
+class Removing(unittest.TestCase):
+    def setUp(self):
+        self.gh = good()
+        self.sleeps = []
+        self.writer = r.Writer(self.gh, GH, REPO, sleep=self.sleeps.append)
+
+    def test_the_file_is_removed_with_its_blob_sha_and_nothing_forced(self):
+        self.gh.files["mac-facts.json"] = b"{}"
+        self.assertEqual(self.writer.remove("mac-facts.json", "m"), "removed")
+        (delete,) = self.gh.deletes
+        self.assertEqual(delete["body"], {"message": "m", "sha": blob_sha(b"{}")})
+        self.assertEqual(delete["mode"], 0o600)
+        self.assertNotIn("mac-facts.json", self.gh.files)
+        self.assertNotIn("force", " ".join(delete["argv"]).lower())
+
+    def test_a_file_that_is_not_there_is_absent_and_nothing_is_sent(self):
+        self.assertEqual(self.writer.remove("mac-facts.json", "m"), "absent")
+        self.assertEqual(self.gh.deletes, [])
+
+    def test_only_the_full_copy_can_ever_be_removed(self):
+        for rel in ("gb/mac-facts.json", "gb/full-list.md", ".github/workflows/x.yml", "other.json", "../mac-facts.json"):
+            self.gh.files[rel] = b"x"
+            with self.assertRaises(r.Refused, msg=rel):
+                self.writer.remove(rel, "m")
+        self.assertEqual((self.gh.deletes, self.gh.calls), ([], []))
+
+    def test_a_conflict_with_nothing_changed_is_reported_not_looped(self):
+        self.gh.files["mac-facts.json"] = b"{}"
+        self.gh.delete_fail["mac-facts.json"] = ["422"]
+        with self.assertRaises(r.WriteFailed) as caught:
+            self.writer.remove("mac-facts.json", "m")
+        self.assertIn("removing mac-facts.json failed", caught.exception.reason)
+        self.assertEqual(len(self.gh.deletes), 1)
+        self.assertIn("mac-facts.json", self.gh.files)
+
+    def test_a_file_someone_else_already_removed_is_absent(self):
+        self.gh.files["mac-facts.json"] = b"{}"
+        self.gh.delete_fail["mac-facts.json"] = ["409"]
+        calls = {"n": 0}
+        real_get = self.gh._get
+
+        def get(rel):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                self.gh.files.pop(rel, None)       # gone between our read and the retry look
+            return real_get(rel)
+        self.gh._get = get
+        self.assertEqual(self.writer.remove("mac-facts.json", "m"), "absent")
+
+    def test_a_server_error_is_retried_once(self):
+        self.gh.files["mac-facts.json"] = b"{}"
+        self.gh.delete_fail["mac-facts.json"] = ["502"]
+        self.assertEqual(self.writer.remove("mac-facts.json", "m"), "removed")
+        self.assertEqual((len(self.gh.deletes), self.sleeps), (2, [5]))
+
+
 class Streams(unittest.TestCase):
     def test_json_stream_reads_pages_in_a_row(self):
         self.assertEqual(list(r.json_stream('{"a": 1}\n{"a": 2}  [3]')), [{"a": 1}, {"a": 2}, [3]])

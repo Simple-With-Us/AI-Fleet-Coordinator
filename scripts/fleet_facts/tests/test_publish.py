@@ -277,15 +277,41 @@ class Published(Sandbox):
         self.assertEqual(document["sources"]["lanes"]["status"], "failed")
         self.assertNotIn("lanes", document, "a failed source carries no counts, so a consumer cannot read nothing-wrong into it")
 
-    def test_a_write_failure_stops_the_rest_and_says_which(self):
+    def test_a_write_failure_stops_the_rest_and_withdraws_the_new_list(self):
+        self.cycle()                                    # an earlier good run:  the old list and the old facts
+        old_facts = self.gh.written(p.GB_FACTS)
+        self.machine.list_text = "# Full list\n\n- Newer item\n"
         self.gh.put_fail[p.GB_FACTS] = ["500", "500"]
-        outcome = self.cycle()
+        outcome = self.cycle(now=NOW.replace(hour=20))
         self.assertEqual((outcome.result, outcome.exit_code), ("failed", 4))
-        self.assertEqual(outcome.files, {p.FULL_LIST: "created", p.GB_FACTS: "failed"})
-        self.assertNotIn(p.FULL_FACTS, self.gh.put_paths())
+        self.assertEqual(outcome.files, {p.FULL_LIST: "updated;  then withdrawn (a not-available note)", p.GB_FACTS: "failed"})
+        note = self.gh.written(p.FULL_LIST).decode()
+        self.assertIn("Full List Not Available", note)
+        self.assertIn("this list was withdrawn", note)
+        self.assertNotIn("Newer item", note)
+        self.assertEqual(self.gh.written(p.GB_FACTS), old_facts, "the old facts stand, and no list claims to belong to the new run")
         status = self.status()
         self.assertTrue(status["stale"])
-        self.assertIsNone(status["last_published_at"])
+        self.assertEqual(status["last_published_at"], "2026-10-11T17:30:00Z", "the last good publish is remembered")
+
+    def test_a_failed_withdrawal_is_said_so(self):
+        self.gh.put_fail[p.GB_FACTS] = ["500", "500"]
+        self.gh.put_fail[p.FULL_LIST] = [None, "500", "500"]
+        outcome = self.cycle()
+        self.assertEqual(outcome.files[p.FULL_LIST], "created;  could not be withdrawn")
+
+    def test_a_failure_on_the_first_write_has_nothing_to_withdraw(self):
+        self.gh.put_fail[p.FULL_LIST] = ["500", "500"]
+        outcome = self.cycle()
+        self.assertEqual((outcome.result, outcome.files), ("failed", {p.FULL_LIST: "failed"}))
+        self.assertEqual(len(self.gh.puts), 2, "two attempts at the list, then nothing more")
+
+    def test_a_list_with_a_mac_path_in_it_is_scrubbed_before_it_is_hashed_and_written(self):
+        self.machine.list_text = "# Full list\n\n- lane at " + USERS + "/apps/lanes/Example/claude-x and ~/apps/notes\n"
+        self.cycle()
+        written = self.gh.written(p.FULL_LIST).decode()
+        self.assertEqual(written, "# Full list\n\n- lane at [path] and [path]\n")
+        self.assertEqual(json.loads(self.gh.written(p.GB_FACTS))["full_list"]["sha256"], signing.sha256_hex(written.encode()))
 
 
 class Refusals(Sandbox):
@@ -563,6 +589,27 @@ class OneFile(Sandbox):
             self.assertEqual((outcome.result, outcome.exit_code), ("refused", 3), rel)
         self.assertEqual(self.gh.calls, [])
 
+    def test_everything_under_gb_is_path_free_however_it_gets_there(self):
+        local = self.local("g.json", json.dumps({"lanes": [{"path": USERS + "/apps/lanes/Example/claude-x", "branch": "claude/x", "note": "n" * 200}],
+                                                 "text": "see ~/apps/notes"}))
+        outcome = self.publish("gb/by-hand.json", local)
+        self.assertEqual(outcome.result, "published")
+        written = self.gh.written("gb/by-hand.json").decode()
+        for needle in ("/" + "Users", "/" + "Volumes", "~/", '"path"'):
+            self.assertNotIn(needle, written)
+        document = json.loads(written)
+        self.assertEqual(document["lanes"][0]["lane"], "claude-x")
+        self.assertEqual(len(document["lanes"][0]["note"]), 80)
+        self.assertTrue(signing.verify(document, SIGNER, signed_for="gb/by-hand.json"))
+
+    def test_a_mac_path_in_a_markdown_file_or_a_key_under_gb_is_refused(self):
+        refused = self.publish("gb/notes.md", self.local("p.md", "my lane is at " + USERS + "/apps/x"))
+        self.assertEqual((refused.result, refused.exit_code), ("refused", 3))
+        self.assertIn("path-free", refused.reason)
+        key_path = self.publish("gb/k.json", self.local("k.json", json.dumps({USERS + "/apps/x": 1})))
+        self.assertEqual(key_path.result, "refused")
+        self.assertEqual(self.gh.puts, [])
+
     def test_no_key_and_a_public_repository_both_stop_it(self):
         def no_key():
             raise signing.KeyUnavailable("unset")
@@ -645,6 +692,36 @@ class FullCopy(Sandbox):
         self.cycle(full_copy_provider=lambda: True)
         self.assertEqual(self.gh.put_paths(), [p.FULL_LIST, p.GB_FACTS, p.FULL_FACTS])
         self.assertIs(self.status()["full_copy"], True)
+
+    def test_turning_it_off_removes_the_copy_a_run_left_behind(self):
+        self.cycle(full_copy_provider=lambda: True)
+        self.assertIn(p.FULL_FACTS, self.gh.files)
+        outcome = self.cycle(full_copy_provider=lambda: False, now=NOW.replace(hour=20))
+        self.assertEqual(outcome.result, "published")
+        self.assertNotIn(p.FULL_FACTS, self.gh.files, "no longer readable at the tip")
+        self.assertEqual(outcome.files[p.FULL_FACTS], "removed:  FLEET_FACTS_PUBLISH_FULL_COPY is off")
+        (delete,) = self.gh.deletes
+        self.assertEqual(delete["path"], p.FULL_FACTS)
+        self.assertEqual(sorted(delete["body"]), ["message", "sha"])
+        self.assertNotIn("force", " ".join(delete["argv"]).lower())
+        self.assertEqual(delete["mode"], 0o600)
+        self.assertEqual((outcome.files[p.FULL_LIST], outcome.files[p.GB_FACTS]), ("unchanged", "updated"), "the other files were still written")
+        again = self.cycle(full_copy_provider=lambda: False, now=NOW.replace(hour=23))
+        self.assertEqual(again.files[p.FULL_FACTS], p.FULL_COPY_OFF)
+        self.assertEqual(len(self.gh.deletes), 1, "nothing to remove the second time")
+
+    def test_a_copy_that_cannot_be_removed_is_a_failure_and_nothing_else_is_written(self):
+        self.gh.files[p.FULL_FACTS] = b"{}"
+        self.gh.delete_fail[p.FULL_FACTS] = ["403"]
+        outcome = self.cycle(full_copy_provider=lambda: False)
+        self.assertEqual((outcome.result, outcome.exit_code, outcome.files), ("failed", 4, {p.FULL_FACTS: "failed"}))
+        self.assertEqual(self.gh.puts, [])
+        self.assertIn(p.FULL_FACTS, self.gh.files)
+
+    def test_a_dry_run_never_removes_anything(self):
+        self.gh.files[p.FULL_FACTS] = b"{}"
+        self.cycle(full_copy_provider=lambda: False, dry_run_dir=self.root / "dry")
+        self.assertEqual((self.gh.calls, self.gh.deletes), ([], []))
 
     def test_a_dry_run_follows_the_same_rule(self):
         out = self.root / "dry"

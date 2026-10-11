@@ -20,7 +20,7 @@ import os
 import re
 from typing import Any
 
-__all__ = ["QUOTE_CAP", "PathLeak", "minimize", "mac_path_in"]
+__all__ = ["QUOTE_CAP", "PathLeak", "minimize", "mac_path_in", "scrub"]
 
 QUOTE_CAP = 80
 ELLIPSIS = "…"
@@ -41,8 +41,12 @@ def mac_path_in(text: str) -> bool:
     return bool(_LEAK.search(text))
 
 
-def _scrub(text: str) -> str:
+def scrub(text: str) -> str:
+    """`text` with every Mac path (`~/...`, `/Users/...`, `/Volumes/...`) replaced by `[path]`."""
     return _PATH.sub("[path]", text)
+
+
+_scrub = scrub
 
 
 def _cut(text: str) -> str:
