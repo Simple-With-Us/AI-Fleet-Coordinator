@@ -114,7 +114,21 @@ run with `python3 -I` cannot import what it did not copy, and `-I` leaves the sc
 `~/.secrets`.  `mac-facts-publish` calls `fleet-facts publish-mac`, which F7 builds;  until then it exits 3.
 
 Another unit that imports `fleet_facts` (C2-1, C4-1, C5) copies this package and the two F3 helpers into its
-own stable folder the same way.
+own stable folder the same way.  C2-1 (`scripts/open_loops/install.sh`, stable copy `~/apps/open-loops`) does, and adds
+a third helper, `textfmt.py`, which `safety.textfmt()` loads only when asked (the DM lint's sentence-gap rule);  this
+package's own stable copy does not carry it.
+
+## `fleet-facts verify` (built by F7;  the contract C2-1 relies on)
+
+`open-loops gather --mac-facts` reads the signed `gb/mac-facts.json` and uses it only if `fleet-facts verify FILE`
+exits 0.  F7 builds the command to this contract:
+
+* `fleet-facts verify FILE` exits **0** only when the file's `sig` is the hex HMAC-SHA256, with
+  `FLEET_FACTS_SIGNING_KEY`, of the file's canonical JSON without `sig`.
+* Any other exit is "not verified":  **1** the signature is wrong or missing, **2** a usage error (what a `fleet-facts`
+  without the command answers today), **3** the key is unavailable.
+* The key comes in the environment of the command, never on the command line, and is never printed.
+* The file is read once, from the path given.  The caller then uses the very bytes it handed over.
 
 ## Tests
 
