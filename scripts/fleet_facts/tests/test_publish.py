@@ -442,6 +442,15 @@ class Skips(Sandbox):
         self.assertEqual(status["load1"], 300.0)
         self.assertEqual(json.loads(self.gh.written(p.GB_FACTS))["generated_at"], "2026-10-11T17:30:00Z", "never re-dated")
 
+    def test_a_load_that_cannot_be_read_is_a_skip_not_a_zero(self):
+        def broken():
+            raise OSError(0, "Load average could not be obtained")
+        outcome = self.cycle(load1=broken)
+        self.assertEqual((outcome.result, outcome.exit_code), ("skipped", 0))
+        self.assertIn("load1 could not be read", outcome.reason)
+        self.assertEqual(self.machine.calls, [])
+        self.assertIsNone(self.status()["load1"])
+
     def test_load_exactly_at_the_limit_runs(self):
         self.assertEqual(self.cycle(load1=lambda: 250.0).result, "published")
 

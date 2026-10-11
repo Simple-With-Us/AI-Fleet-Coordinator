@@ -384,8 +384,10 @@ def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1
            dry_run_dir: Path | None, deadline: Deadline, load_limit: float) -> Outcome:
     try:
         load = float(load1())
-    except OSError:
-        load = 0.0
+    except OSError as exc:
+        # A load that cannot be read is not a load of zero:  skip like a high load (the files already published stay and are stale).
+        return Outcome("skipped", "load1 could not be read (%s);  the last published files stay and are stale" % (exc.strerror or type(exc).__name__),
+                       extra={"load1": None})
     if load > load_limit:
         return Outcome("skipped", "load1 %.0f is over %d;  the last published files stay and are stale" % (load, load_limit), extra={"load1": round(load, 1)})
     try:

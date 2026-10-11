@@ -27,8 +27,11 @@ ELLIPSIS = "…"
 # Keys whose strings are matched exactly by a consumer:  never cut.
 EXACT_KEYS = frozenset({"branch", "repo", "owner_repo", "lane", "name", "identifier", "topic", "head_ref", "signed_for", "sig", "sig_alg",
                        "kind", "schema", "tool", "version", "host", "sha256", "path_in_repo"})
-_PATH = re.compile(r"(?:~|/Users|/Volumes)/[^\s\"',;)\]}]*|/Users\b|/Volumes\b")
-_LEAK = re.compile(r"/Users/|/Volumes/|~/")
+# A Mac path starts a token:  `~/...`, or one of the system folders a tool writes about (`/Users`, `/Volumes`, `/private`, `/var`, `/tmp`,
+# `/opt`, `/etc`).  The look-behind keeps `fix/tmp/x` (a branch) and `https://host/etc/x` (a link) out of it.
+_ROOTS = r"/(?:Users|Volumes|private|var|tmp|opt|etc)"
+_PATH = re.compile(r"~/[^\s\"',;)\]}]*|(?<![\w.~/-])" + _ROOTS + r"(?:/[^\s\"',;)\]}]*)?(?![\w-])")
+_LEAK = re.compile(r"~/|(?<![\w.~/-])" + _ROOTS + r"(?![\w-])")
 DROPPED_KEYS = ("path", "path_exact")       # the path, and the flag that says whether it was exact
 MAX_DEPTH = 64
 

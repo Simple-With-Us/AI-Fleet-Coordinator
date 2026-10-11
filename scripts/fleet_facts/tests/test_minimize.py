@@ -73,12 +73,24 @@ class Minimize(unittest.TestCase):
         doc = {"branch": "claude/" + "b" * 150, "repo": "o/" + "r" * 120, "lane": "l" * 120, "identifier": "FFX-1", "topic": "t" * 70}
         self.assertEqual(m.minimize(doc), doc)
 
+    def test_the_system_folders_a_tool_writes_about_are_scrubbed_too(self):
+        text = "log /private/var/folders/ab/T/com.apple.dt.Xcode/foo and /tmp/a.log, cache /var/tmp/x, /opt/homebrew/bin, /etc/hosts"
+        out = m.minimize({"reason": text})["reason"]
+        self.assertEqual(out, "log [path] and [path], cache [path], [path], [path]")
+        self.assertFalse(m.mac_path_in(out))
+
+    def test_a_folder_name_inside_a_branch_or_a_link_is_not_a_path(self):
+        doc = {"branch": "fix/tmp/x", "reason": "see https://example.test/etc/x and a/var/b, also /varnish", "repo": "o/opt"}
+        self.assertEqual(m.minimize(doc), doc)
+
     def test_a_tilde_that_is_not_a_path_stays(self):
         self.assertEqual(m.minimize({"note": "about ~5 minutes"}), {"note": "about ~5 minutes"})
 
     def test_a_path_in_a_key_cannot_be_scrubbed_so_the_copy_is_refused(self):
         with self.assertRaises(m.PathLeak):
             m.minimize({USERS + "/apps/x": 1})
+        with self.assertRaises(m.PathLeak):
+            m.minimize({"/tmp/x": 1})
 
     def test_numbers_booleans_and_nulls_pass_through(self):
         doc = {"a": 1, "b": 2.5, "c": True, "d": None, "e": [1, None, False]}
