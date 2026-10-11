@@ -179,13 +179,13 @@
       "rules": [
         {
           "id": "CPY-1",
-          "rule": "Two spaces between sentences in every human-readable string.",
-          "detail": "App names, subtitles, promotional text, descriptions, release notes, and what's-new notes all follow it. Canonical: /Users/jay/apps/FLEET-UI-COPY.md."
+          "rule": "A visibly wider gap between sentences in every human-readable string.",
+          "detail": "Owner rule since 2026-08-08, App Store fields included.  How the gap is made depends on where the text renders (owner ruling 2026-10-08, AFC #388, #392).  Files read as source, commits, terminals and Linear text:  two ASCII spaces.  GitHub PR and issue text, Zulip, and rendered product copy (HTML, JSX):  a real U+00A0 plus a space, or a shared SENTENCE_GAP constant.  SwiftUI Text:  two literal spaces or \\u{00A0}.  Markdown agent chat panes:  the HTML non-breaking-space entity plus a space.  Canonical:  /Users/jay/apps/FLEET-UI-COPY.md and the 'Writing anything a human reads' section of the global agent instructions."
         },
         {
           "id": "CPY-2",
-          "rule": "Titles, headings, and button labels are Title Case.",
-          "detail": "Owner ruling 2026-10-01 widened this to ALL UI text including helper text, tooltips, empty states, and errors — no carve-out for status text. App Store subtitles and promotional headings follow it too."
+          "rule": "Buttons, headings, and titles are Title Case; values and status text are sentence case.",
+          "detail": "The current owner rule in the global agent instructions ('Writing anything a human reads').  It replaces the 2026-10-01 wording that put all UI text in Title Case.  App Store subtitles and promotional headings are titles, so they stay Title Case."
         },
         {
           "id": "CPY-3",
@@ -239,18 +239,18 @@
         },
         {
           "id": "SHEET-3",
-          "rule": "The sync runs during iOS releases and on demand.",
-          "detail": "node /Users/jay/apps/fleet-apps-sheet-sync.mjs — wired into ios-fleet/publish-ios-versions.sh."
+          "rule": "The registry sync runs from an AI-Fleet-Coordinator lane, during iOS releases and on demand.",
+          "detail": "From a lane at origin/main (~/apps/lane new AFC <slug>):  node scripts/fleet-apps-sheet-sync.mjs --dry-run, then the same command without the flag.  ios-fleet/publish-ios-versions.sh calls the guarded shim ~/apps/fleet-apps-sheet-sync.mjs, which runs ~/Code/AI-Fleet-Coordinator's copy only when that tree is clean and at origin/main.  Run the ops sync (Fleet-OPS scripts/fleet-sheet/fleet-ops-sheet-sync.mjs) after this one."
         },
         {
           "id": "SHEET-4",
-          "rule": "Tabs are generated. Only the Legacy tab holds historical hand-written notes.",
-          "detail": "The Legacy tab is preserved for reference and is not updated by the sync."
+          "rule": "Every tab is generated except Monitors and Telemetry endpoints.",
+          "detail": "Those two are hand-built snapshots from Oct 6 that no sync refreshes, and each carries a banner saying so.  The old Legacy pre-2026-10-02 tab no longer exists."
         },
         {
           "id": "SHEET-5",
-          "rule": "Editability map: generated tabs are read-only; custom tabs are editable.",
-          "detail": "Generated tabs ('RULES & STANDARDS', 'App Store Registry', 'TestFlight Builds', 'Icon Audit') are completely rewritten by fleet-apps-sheet-sync.mjs. Do not edit them in Google Sheets. Hand-written operator notes and manual overrides must go into custom tabs (such as 'Legacy pre-2026-10-02' or an owner-created tab like 'Manual Notes'), which the sync script preserves completely untouched."
+          "rule": "Editability map:  generated tabs are read-only; hand notes go in a tab no sync owns.",
+          "detail": "The registry sync rewrites RULES & STANDARDS, App Store Registry, TestFlight Builds, Icon Audit, Fleet Apps, and Seats and Bots.  The ops sync rewrites START HERE and the ops tabs.  Both clear a tab before writing it, so anything typed into a generated tab is lost.  Hand-written notes go in an owner-created tab (for example 'Manual Notes'), which both syncs leave untouched."
         }
       ]
     }

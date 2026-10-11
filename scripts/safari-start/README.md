@@ -1,5 +1,7 @@
 # Operator start alias
 
+> **Current state (Sun, Oct 11, 2026):**  `start.jays.services` no longer reaches this Worker.  Since about Oct 5 it is a DNS-only CNAME to Vercel and is **private, behind Vercel login (Vercel SSO)**;  Jay chose to keep the login on Oct 11.  It is not a public page.  Leave the Cloudflare and Vercel settings as they are;  the Worker code below describes the earlier redirect.
+
 `https://start.jays.services/` redirects temporarily to the existing protected `https://home.jays.services/` operator page.  The Worker handles page aliases before static assets, so `/index.html` cannot bypass the redirect.  Unknown paths return 404.  Only the icon and robots file remain directly served.
 
 `GET /suggest?q=…` and its CORS behavior remain available for previously installed local start pages.  It sends the supplied search text to Google Suggest and returns a bounded suggestion list.  No operator inventory or private-repository links are returned by that endpoint.
