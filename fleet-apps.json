@@ -4,7 +4,7 @@
   "appsRoot": "/Users/jay/apps",
   "zulipRealm": "https://simplewithus.zulipchat.com",
   "zulipChannel": "agent-sync",
-  "notes": "Canonical fleet app + coding-seat inventory.  onboard-new-app.sh adds a row here, then patches the registries listed in docs/ONBOARDING-NEW-APP.md.  check-fleet-registry.py verifies those files still mention every app.  GROK-BOT is a fleet-wide identity that drives Cursor cloud agents; it shares CURSOR's folder name and gets no lanes of its own.  Seats carry zulipBotEmail and zulipFileCode, copied from the roster in docs/protocols/zulip-fleet-guide.md (the file code must match the agent-sync CLI's rule).  A retired seat has no bot, and aliasOf names the live seat that a retired alias now means.",
+  "notes": "Canonical fleet app + coding-seat inventory.  onboard-new-app.sh adds a row here, then patches the registries listed in docs/ONBOARDING-NEW-APP.md.  check-fleet-registry.py verifies those files still mention every app.  GROK-BOT is a fleet-wide identity that drives Cursor cloud agents; it shares CURSOR's folder name and gets no lanes of its own.  Seats carry zulipBotEmail and zulipFileCode, copied from the roster in docs/protocols/zulip-fleet-guide.md (the file code must match the agent-sync CLI's rule).  A retired seat has no bot, and aliasOf names the live seat that a retired alias now means.  Each app's acronym is also its Linear team key (Linear replaced THE BOARD, owner 2026-10-10).  liveBoard is the file name of the app's archived effort log under appsRoot; it is a record only, and nothing creates or checks that file any more.",
   "apps": [
     {
       "repo": "Socratic-Trade",

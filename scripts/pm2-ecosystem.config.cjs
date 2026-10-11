@@ -10,7 +10,10 @@
  * system cloudflared).  Do not start scheduled fire-and-exit jobs here
  * (watchdog, janitor, collector) — those stay launchd StartInterval.
  *
- * Deprecated / removed from this ecosystem (do not resurrect): scout,
+ * Deprecated / removed from this ecosystem (do not resurrect): mac-collab-sync
+ * and mac-collab-writeback (retired at the Linear cutover:  the effort logs are
+ * archived and Linear is the tracker;  mac-collab itself stays as a read-only
+ * archive with mac-collab-litestream until about day 30), scout,
  * residential-proxy, senate-relay, senate-tunnel.  Senate/residential stay
  * off this Mac; Coolify/Texas paths own them.
  *
@@ -86,26 +89,6 @@ module.exports = {
       cwd: `${home}/apps/mac-collab`,
       out_file: `${logs}/mac-collab-out.log`,
       error_file: `${logs}/mac-collab-error.log`,
-    }),
-    app({
-      name: "mac-collab-sync",
-      script: `${home}/apps/mac-collab/sync_board.py`,
-      args: "--loop",
-      interpreter: "/usr/bin/python3",
-      interpreter_args: "-u",
-      cwd: `${home}/apps/mac-collab`,
-      out_file: `${logs}/mac-collab-sync-out.log`,
-      error_file: `${logs}/mac-collab-sync-error.log`,
-    }),
-    app({
-      name: "mac-collab-writeback",
-      script: `${home}/apps/mac-collab/write_back.py`,
-      args: "--loop",
-      interpreter: "/usr/bin/python3",
-      interpreter_args: "-u",
-      cwd: `${home}/apps/mac-collab`,
-      out_file: `${logs}/mac-collab-writeback-out.log`,
-      error_file: `${logs}/mac-collab-writeback-error.log`,
     }),
     app({
       name: "agy-acp",

@@ -1,16 +1,16 @@
 ---
 name: board-ops
-description: Use THE BOARD (mac.jays.services/board + the board CLI) as the first place to look and write. File, claim, comment, and resolve fleet items. Trigger whenever starting work, hunting open P0/P1s, reviewing a peer fix, closing a lane, or when the owner mentions the board, mac-collab, or findings.
+description: Use Linear through the `board` CLI as the first place to look and write.  File, claim, comment, and resolve fleet items (issue ids like BF-123).  Trigger whenever starting work, hunting open P0/P1s, reviewing a peer fix, closing a lane, or when the owner mentions the board, Linear, findings, or an issue id.
 ---
 
-# THE BOARD (DSH)
+# Board CLI on Linear (DSH)
 
 > **Retired seat.**  DSH (DeepSeek Harness) is retired (2026-09-19): use `CLUTCH` for `Simple-With-Us/Clutch`.  Do not take work as DSH and do not install this pack to `~/.deepseek/skills`.  This catalog copy is inactive.
 
 
-Primary coordination surface (owner 2026-08-19).  One searchable board over review findings, every app's effort-board rows, and every repo's GitHub issues, synced about every 10 minutes.
+Linear is the system of record for fleet work (owner 2026-10-10), and `board` is how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
 
-Humans: `https://mac.jays.services/board` (HTTP Basic Auth, any username, password = `$MAC_COLLAB_TOKEN`).  Short link `https://board.jays.services` 302s there.  Agents: the `board` CLI.
+Humans use Linear in the browser.  Agents use the `board` CLI, which is the same command with the same flags as before; it now reads and writes Linear and signs each write with your seat.  The old `mac.jays.services/board` is a read-only archive until about day 30 after the cutover.  The effort logs are archived.  Nothing mirrors to them any more.
 
 ## Invoke it literally
 
@@ -21,11 +21,13 @@ board list --app congress-trade --mine "$AGENT_SEAT"
 board show <id>
 ```
 
-`~/apps/mac-collab/board`, also `~/.local/bin/board`.  It reads `MAC_COLLAB_TOKEN` from `~/.secrets/mac-collab.env`.  The token must never appear on a command line, in `ps`, or in a transcript.
+`<id>` is a Linear identifier (`BF-123`), a full old board id, or the first 8 or more hex characters of an old board id.  Every output line ends with the identifier, so use it from then on.
+
+The CLI reads the Fleet app's credentials from `~/.secrets/Linear/Fleet.env` itself.  The secret must never appear on a command line, in `ps`, or in a transcript.  Do not use the claude.ai Linear connector or Composio to write to Linear: they act as Jay, not as a seat.
 
 Some agent CLIs only allowlist a stable command prefix.  `board stats` allowlists.  `B=…/board; $B stats`, `$(…)`, pipes, and `&&` chains do not.
 
-`--env` is only `Mac` or `cloud`.  `--by` for this seat is your verified seat (`DSH` in an ordinary DeepSeek Harness session).
+**Writes need `AGENT_SEAT`.**  `file`, `claim`, `status` and `comment` exit 2 without it, and `--by` must equal it.  Reads (`list`, `show`, `stats`, `whoami`) need no seat.  Your shell may not keep exports between commands, so set it in the same command, from the seat you verified in `session-start`.  `--env` is only `Mac` or `cloud`.  `--by` for this seat is your verified seat (`DSH` in an ordinary DeepSeek Harness session).
 
 ## File / claim / talk / finish
 
@@ -41,32 +43,36 @@ board comment <id> --by "$AGENT_SEAT" --text "Verified on main; the shared helpe
 board status <id> completed --resolution "Landed in #2894."
 ```
 
-`--app` values you will actually use: `socratic-trade` / `Socratic.Trade`, `congress-trade`, `usage-monitor`, `congress-trading-shared`, `dealdex`, `personal-site`, `fleet-infra`.  If unsure, `board stats` prints the live app list.
+`--app` takes an app team key (`CT`) or the old slug (`congress-trade`, `socratic-trade`, `usage-monitor`, `congress-trading-shared`, `dealdex`, `personal-site`, `fleet-infra`, which files to OPS).  If unsure, `board stats` prints the live app list.
 
-Status values: `open`, `in_progress`, `completed`, `deployed`, `addressed`, `wontfix`, `duplicate`.
+Status values: `open`, `in_progress`, `addressed` (In Review), `completed` (Done), `deployed`, `wontfix`, `duplicate`, plus `parked`.  Two rules differ from the old board:
 
-## What you owe the board
+- `status <id> duplicate` needs `--of <canonical id>` (or `dup of <id>` in `--resolution`), because Linear only makes a Duplicate through a link to the issue it duplicates.
+- `claim` is check-then-set.  It exits 3 when another seat holds the issue In Progress, unless you pass `--steal --reason "..."`.  A claim is the `claimed:<SEAT>` label plus a `CLAIMED` comment; `status <id> open` releases it.  There is no 20-minute lease and no server lock, so a second claim in the same second can still collide.
 
-1. **Before substantial work:** list the app.  Claim the existing item or file then claim.
+The full verb table, id forms and exit codes are in `scripts/linear-board/README.md` in AI-Fleet-Coordinator.
+
+## What you owe Linear
+
+1. **Before substantial work:** list the app.  Claim the existing issue or file then claim.  Name the branch `<seat>/<id>-<slug>` (`claude/afc-123-zulip-cutover`).
 2. **While working:** keep `--by "$AGENT_SEAT"`, `--env Mac`, and `--where "lane path @ branch"` accurate.
-3. **When done:** `completed` or `deployed` with a resolution that names the PR and what changed.  Do not leave `in_progress` after you stopped.
-4. **On a peer's item:** comment with evidence.  Reviewing fixes here is expected.
+3. **In the PR:** put `Fixes <ID>` in the body when the PR finishes the issue, and `Refs <ID>` for partial work.  A `Refs` PR never closes it, even with the id in the branch name.  Once Linear's GitHub automation is on (Jay enables it right after the cutover), a merge moves a `Fixes` issue to Done by itself;  `board status <id> completed` does the same by hand, works before then, and is always safe to run.
+4. **When done:** `completed`, or `deployed` only after the production check, with a resolution that names the PR and what changed.  Do not leave `in_progress` after you stopped.
+5. **On a peer's item:** comment with evidence.  Reviewing fixes here is expected.
 
 ## Item kinds
 
-- `agent-report` (default) and `review-finding` — your status persists.
-- `effort-row` and `github-issue` — mirrored both ways.  `mac-collab-writeback` (pm2, 10 min) moves the live effort-log bullet and closes/reopens the GitHub issue to match a status you set on the board.  A 15-minute grace window stops `mac-collab-sync` from overwriting that status.  Still land `docs/EFFORT-LOG.md` in the app PR when you are in that repo; writeback does not push git.
-
-The board is the **write surface**.  Live `~/apps/*-EFFORT-LOG.md` and GitHub Issues are copies for seats that cannot reach the board.
+`agent-report`, `review-finding`, `effort-row`, `github-issue` and `sentry` are labels now (`Kind`), not separate systems.  Nothing is mirrored in either direction: there is no writeback, no `mac-collab-sync`, and no effort log to land.  Imported effort-log items are ordinary issues, marked `imported`.
 
 ## Do not
 
-- Paste `MAC_COLLAB_TOKEN` into curl "to be safe."  Use `board`.
-- Use THE BOARD as the only closeout.  Zulip + effort board + issues still move.
+- Write to Linear any way except `board` (no connector, no personal API key, no raw GraphQL with a borrowed token).
+- Use Linear as the only closeout.  The work topic in Zulip still gets its `DONE` post.
 - File a duplicate because you did not `board list --search` first.
+- Edit an archived `*-EFFORT-LOG.md` or `docs/EFFORT-LOG.md`.  They carry an Archived header and nobody reads them.
 
 ## Canon
 
-- `/Users/jay/apps/AGENT-SYNC.md` § THE BOARD
-- `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md`
+- `/Users/jay/apps/AGENT-SYNC.md` § Linear and the Claim Lifecycle
+- `scripts/linear-board/README.md` and `docs/protocols/linear-migration.md` in AI-Fleet-Coordinator
 - `board --help` / `board file --help`

@@ -35,7 +35,7 @@ app-runtime errors stay in the app projects listed above. Conventions:
   minted throwaway `fleet-infra` issues off merge-queue refs.
 - **New repos**: add the additive `sentry-ci-report.yml` (copy from
   `AI-Fleet-Coordinator/github-workflows-template/workflows/`) as part of
-  bootstrap, after reserving on the board.  Do **not** mint a Sentry *app*
+  bootstrap, after claiming the Linear issue.  Do **not** mint a Sentry *app*
   project for Personal-Site, congress-trading-shared, or fleet-ops.  Long-running
   per-agent background jobs you own get their own cron monitor (slug
   `<agent>-<job>`, upsert on check-in).
