@@ -82,6 +82,14 @@ jobs:
         cd scripts && python3 -m unittest discover -s fleet_facts/tests -t . -v
     - name: fleet_facts fixtures are synthetic
       run: python3 scripts/fleet_facts/check_fixtures.py
+    # Open-loops C2-1:  gather, render and send for the daily digest.  Scripted gatherers, a fake agent-sync that
+    # runs every command line through the real agent-sync parser, and a temp HOME for the install test (which
+    # runs the stable copy with python3 -I).  The second step uses the same synthetic-data check on these tests.
+    - name: open_loops tests
+      run: |
+        cd scripts && python3 -m unittest discover -s open_loops/tests -t . -v
+    - name: open_loops fixtures are synthetic
+      run: python3 scripts/fleet_facts/check_fixtures.py --root scripts/open_loops/tests
     # Fleet skills pack: canonical pin-or-fail identity block, every rendered
     # tree equal to a fresh render, and the AGENT-SYNC roster the pack mirrors.
     - name: Fleet skill identity tests

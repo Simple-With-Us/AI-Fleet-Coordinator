@@ -3,7 +3,8 @@
   C1  `fleet-autopush status --json`          part `autopush`
   C3  `agent-sync asks status --json`         part `asks`
   C4  `~/apps/claim-expiry/state/report-latest.json`   part `report`  (a file, schema 1)
-  C6  `needs-owner list --json`               part `needs_owner`
+  C6  `needs-owner list --all --json`         part `needs_owner`   (--all:  the default lists only the open
+                                                                   rows, and the digest needs the answered ones)
   C7  `consult status --all --json`           part `consult`
 
 Each of those components is built by a later unit, so each reader is tolerant:  a program that is not
@@ -27,7 +28,7 @@ MAX_DOCUMENT_BYTES = 1_000_000
 COMMANDS: dict[str, list[str]] = {
     "autopush": ["fleet-autopush", "status", "--json"],
     "asks": ["agent-sync", "asks", "status", "--json"],
-    "needs_owner": ["needs-owner", "list", "--json"],
+    "needs_owner": ["needs-owner", "list", "--all", "--json"],
     "consult": ["consult", "status", "--all", "--json"],
 }
 REPORT_PARTS = ("report",)
