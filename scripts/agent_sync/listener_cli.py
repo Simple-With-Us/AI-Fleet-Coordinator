@@ -482,8 +482,10 @@ def _held_line(summary: Any) -> str | None:
     parts = ["oldest %s" % _age(summary.get("oldest_age"))] if summary.get("count") else []
     if reasons:
         parts.append(reasons)
+    if summary.get("overflow"):
+        parts.append("%d in overflow" % summary["overflow"])
     if summary.get("evicted"):
-        parts.append("%d more evicted" % summary["evicted"])
+        parts.append("%d more lost past the caps" % summary["evicted"])
     return "held back %d (%s)" % (int(summary.get("count") or 0), "; ".join(parts))
 
 
