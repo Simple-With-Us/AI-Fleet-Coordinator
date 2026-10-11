@@ -52,7 +52,7 @@ BASELINE_RULES = ("deletion", "non_fast_forward", "pull_request")
 #: enable this feature" for both rulesets and classic protection.  This is a
 #: plan limit, not a gap we can close by configuring something, so the auditor
 #: reports it as a documented exception instead of a failure.
-FREE_PLAN_PRIVATE = {"Kodus-Config", "Fleet-OPS", "demo-repository"}
+FREE_PLAN_PRIVATE = {"Kodus-Config", "Fleet-OPS"}
 
 #: Secrets that are NOT credentials.  Sentry states plainly that "DSNs are safe
 #: to keep public because they only allow submission of new events and related
