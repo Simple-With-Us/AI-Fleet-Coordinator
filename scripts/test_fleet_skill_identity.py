@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib.util
 import io
@@ -1006,11 +1007,61 @@ class CatalogMatchesFreshRenderTests(unittest.TestCase):
 class RepoPlatformCopiesTests(unittest.TestCase):
     """The repo-tracked platform trees must equal a fresh render of the pack.
 
-    Sessions opened in this repo load .claude/skills, .cursor/skills and
-    .grok/skills directly, so a stale copy teaches the old lane commands.
+    Sessions opened in this repo load the platform tree directly, so a stale copy
+    teaches the old lane commands.  Every platform that owns a tool home gets a
+    tree here, rendered by that platform's own seat (incident, Oct 11 2026:  MM
+    fell through to the CLAUDE-rendered `.claude/skills` because no `.minimax`
+    tree existed).
     """
 
     FIX = "python3 scripts/install-fleet-skills.py --repo-only"
+
+    def test_every_tool_home_platform_gets_a_repo_tree(self) -> None:
+        copies = repo_platform_copies(ROOT)
+        by_dest = {dest: seat for dest, seat in copies}
+        for seat in SEATS.values():
+            if seat.retired or not seat.dest.startswith("~/"):
+                continue
+            want = os.path.join(ROOT, *seat.dest[2:].split("/"))
+            if seat.seat_key in ("claude", "grok-build"):
+                continue  # deliberate exclusions, see NO_REPO_TREE
+            self.assertIn(want, by_dest, f"{seat.seat_key} has no repo tree")
+            self.assertIs(by_dest[want], seat, want)
+
+    def test_repo_trees_are_distinct(self) -> None:
+        dests = [dest for dest, _seat in repo_platform_copies(ROOT)]
+        self.assertEqual(len(dests), len(set(dests)), "two seats collide on one tree")
+
+    def test_retired_seats_get_no_new_repo_tree(self) -> None:
+        dests = {dest for dest, _seat in repo_platform_copies(ROOT)}
+        for key, seat in SEATS.items():
+            if not seat.retired:
+                continue
+            self.assertNotIn(
+                os.path.join(ROOT, *seat.dest[2:].split("/")), dests, key
+            )
+
+    def test_the_three_original_trees_keep_their_seats(self) -> None:
+        by_dest = {dest: seat for dest, seat in repo_platform_copies(ROOT)}
+        for rel, key in (
+            (os.path.join(".claude", "skills"), "claude_shared"),
+            (os.path.join(".cursor", "skills"), "cursor"),
+            (os.path.join(".grok", "skills"), "grok"),
+        ):
+            self.assertIn(os.path.join(ROOT, rel), by_dest, rel)
+            self.assertEqual(by_dest[os.path.join(ROOT, rel)], SEATS[key], rel)
+
+    def test_minimax_tree_is_rendered_for_mm(self) -> None:
+        """The tree MiniMax Code reads first inside this repo must say MM."""
+        path = Path(ROOT, ".minimax", "skills", "board-ops", "SKILL.md")
+        self.assertTrue(path.is_file(), f"{path} missing; re-render with: {self.FIX}")
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("# Board CLI on Linear (MM)", text)
+        for wanted in ("`[MM·session8]`", "minimax/", "mm-bot@simplewithus.zulipchat.com",
+                       "MM-zuliprc"):
+            self.assertIn(wanted, text, wanted)
+        for foreign in ("CLAUDE", "CURSOR", "Claude-zuliprc", "`[CLAUDE·session8]`"):
+            self.assertNotIn(foreign, text, foreign)
 
     def test_tracked_platform_copies_match_fresh_render(self) -> None:
         stale: list[str] = []
@@ -1239,6 +1290,62 @@ class BranchPrefixMatchesLaneNewTests(unittest.TestCase):
         self.assertIn("`cursor/<slug>`", cursor)
         # The new lane's branch is not the legacy standing lane's branch.
         self.assertNotIn("cursor-<slug>`), on its own branch (`agent/cursor`)", cursor)
+
+
+class LinearTeamListTests(unittest.TestCase):
+    """The Linear team list in the skills must match the board's own routing table.
+
+    It is a literal, because a static skill must not shell out to the board CLI at
+    read time.  The literal is therefore anchored here to `TEAM_KEYS` in
+    scripts/linear-board/board, so adding a team to the board without updating the
+    skill fails this test instead of silently rotting again (FL and CC went missing
+    this way;  FL is FleetLink, CC is CodeCaps, both live 2026-10-11).
+    """
+
+    # A run of uppercase team acronyms, however each file chooses to introduce it.
+    # Three or more, so single all-caps words like API or CLI never match.
+    LIST = re.compile(r"\b[A-Z]{2,3}(?:,\s*[A-Z]{2,3}){2,}\b")
+
+    def _team_keys(self) -> tuple[str, ...]:
+        # Parse just the assignment:  importing the board would pull in its
+        # credential setup, and a test must not need a Linear login to run.
+        path = Path(ROOT, "scripts", "linear-board", "board")
+        match = re.search(
+            r"(?m)^TEAM_KEYS = (\(.*?\))\s*$", path.read_text(encoding="utf-8"), re.S
+        )
+        self.assertIsNotNone(match, "TEAM_KEYS not found in scripts/linear-board/board")
+        return tuple(ast.literal_eval(match.group(1)))
+
+    def _sources(self) -> list[Path]:
+        return [
+            Path(ROOT, "docs", "fleet-skills", "board-ops", "SKILL.md"),
+            Path(ROOT, "AGENT-SYNC.md"),
+            Path(ROOT, "docs", "protocols", "linear-migration.md"),
+        ]
+
+    def _assert_list(self, path: Path, want: str) -> None:
+        text = path.read_text(encoding="utf-8")
+        lists = {m.group(0) for m in self.LIST.finditer(text)}
+        self.assertIn(
+            want, lists,
+            f"{path} has no team list matching the board's TEAM_KEYS;  found {sorted(lists)[:4]}",
+        )
+
+    def test_every_source_carries_the_boards_team_keys(self) -> None:
+        want = ", ".join(self._team_keys())
+        for path in self._sources():
+            self._assert_list(path, want)
+
+    def test_every_rendered_copy_carries_the_same_list(self) -> None:
+        want = ", ".join(self._team_keys())
+        roots = [Path(ROOT, "skills"), Path(ROOT, "docs", "fleet-skills", "by-seat")]
+        roots += [Path(dest) for dest, _seat in repo_platform_copies(ROOT)]
+        checked = 0
+        for root in roots:
+            for path in sorted(root.rglob("board-ops/SKILL.md")):
+                self._assert_list(path, want)
+                checked += 1
+        self.assertGreater(checked, 10, "expected the team list in every rendered copy")
 
 
 class AgentSyncRosterTests(unittest.TestCase):

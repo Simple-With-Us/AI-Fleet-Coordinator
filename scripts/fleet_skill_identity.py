@@ -1424,13 +1424,45 @@ def catalog_seats() -> list[Seat]:
     ]
 
 
+# Seats with no repo tree of their own, and why.  This is the only hand-maintained
+# part of `repo_platform_copies`;  every path it returns is derived from a seat's own
+# `dest`, so a new seat cannot drift away from the directory that renders it.
+NO_REPO_TREE: dict[str, str] = {
+    # CLAUDE is the by-seat upload pack for the one Claude seat.  `claude_shared` owns
+    # `~/.claude/skills` and therefore owns `.claude/skills`;  two homes, one tree.
+    "claude": "same seat as claude_shared, which owns .claude/skills",
+    # GROK-BUILD is an alias for GROK (owner 2026-10-08/10), not a platform.  Its home
+    # `~/.grok-build/skills` would render byte-identical content to `.grok/skills`.
+    "grok-build": "alias for the GROK seat, which owns .grok/skills",
+}
+
+
 def repo_platform_copies(repo_root: str) -> list[tuple[str, Seat]]:
-    """Repo-tracked skill trees the installer must re-render."""
-    return [
-        (os.path.join(repo_root, ".claude", "skills"), SEATS["claude_shared"]),
-        (os.path.join(repo_root, ".cursor", "skills"), SEATS["cursor"]),
-        (os.path.join(repo_root, ".grok", "skills"), SEATS["grok"]),
-    ]
+    """Repo-tracked skill trees the installer must re-render.
+
+    Every platform that owns a tool home under `~` gets a matching tree in the repo,
+    rendered by that platform's own seat.  The path is derived from the seat's `dest`
+    (strip the `~/`, join it under the repo root), so the tree and the tool home can
+    never disagree.
+
+    Why this matters (incident, Oct 11 2026):  with no `.minimax/skills` tree, the MM
+    seat running MiniMax Code inside this repo fell through to `.claude/skills` and
+    loaded a CLAUDE-rendered `board-ops`, because that was the only tree in the repo.
+    The runtime scans `<repo>/.minimax/skills` ahead of `<repo>/.claude/skills`
+    (priority 65 to 60), so rendering the MM tree here is what fixes the identity.
+
+    Retired seats are skipped:  their catalog copies stay as history, and a retired
+    seat gets no new tracked tree.  Seats whose `dest` is already repo-relative
+    (`claude`, `grok-bot`, `muse-assist`) carry their tree in `docs/fleet-skills/by-seat/`.
+    """
+    copies: list[tuple[str, Seat]] = []
+    for key, seat in SEATS.items():
+        if key in NO_REPO_TREE or seat.retired:
+            continue
+        if not seat.dest.startswith("~/"):
+            continue
+        copies.append((os.path.join(repo_root, *seat.dest[2:].split("/")), seat))
+    return copies
 
 
 def tool_home_exists(dest: str) -> bool:
