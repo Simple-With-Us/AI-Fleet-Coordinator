@@ -1,0 +1,11 @@
+#!/bin/sh
+# mac-facts-publish:  the launcher the (later) LaunchAgent com.jay.mac-facts-publish runs every 3 hours.
+#
+# It is a launcher of its own, and not the fleet-facts link, so a Removable Volumes grant can be scoped to
+# this one file.  install.sh puts it beside the stable copy of fleet-facts and does nothing more:  it does not
+# load a LaunchAgent.  The publisher it runs, `fleet-facts publish-mac`, is built by open-loops unit F7;  until
+# then that command prints that it is not built and this launcher exits 3.
+D=$(cd "$(dirname "$0")" && pwd -P)
+PY=/opt/homebrew/bin/python3
+[ -x "$PY" ] || PY=$(command -v python3) || { echo "mac-facts-publish: no python3" >&2; exit 3; }
+exec "$PY" -I "$D/fleet-facts" publish-mac "$@"
