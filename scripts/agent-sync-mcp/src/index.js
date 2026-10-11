@@ -59,6 +59,7 @@ import { verifyAccessJwt } from "./access.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy } from "./pages.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
+import { ToolError } from "./contract.js";
 import { recallClientFromEnv } from "./recall.js";
 import { ZulipClient } from "./zulip.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
@@ -239,6 +240,8 @@ async function serveMcp(request, env, ctx) {
     paused: result.code === "paused",
     gate: seatGate,
     config,
+    // A `channel` filter must name a channel the seat may use (src/channels.js).
+    channels: () => tools.checkedChannelSet(),
     clientId: typeof auth.clientId === "string" ? auth.clientId : "",
     logRefusal: (row) => logRefusal(env, row),
   }) : null;
@@ -302,13 +305,31 @@ async function serveWake(request, env, ctx, config) {
   if (claim.verdict === "go") {
     // The answer waits for the deliveries, and waitUntil keeps them (and the
     // settle that ends the claim) running if the listener hangs up first.
-    const work = deliverWake({ gate: seatGate, wake, claim, config, fetchFn: (...a) => fetch(...a), deadline: started + WAKE_BUDGET_MS });
+    const work = deliverWake({ gate: seatGate, wake, claim, channels: () => wakeChannels(env, config, seat, seatGate), fetchFn: (...a) => fetch(...a), deadline: started + WAKE_BUDGET_MS });
     ctx.waitUntil(work.catch(() => {}));
     result = await work;
   }
   console.log(JSON.stringify({ event: "wake", seat, verdict: claim.verdict, outcome: result.outcome ?? null, subscribers: claim.subs?.length ?? 0, delivered: result.delivered ?? 0, message_id: wake.message_id }));
   const reply = wakeReply(result);
   return jsonResponse(reply.body, reply.status, reply.retryAfterS ? { "Retry-After": String(reply.retryAfterS) } : {});
+}
+
+/**
+ * The seat's allowed channels for a wake (src/channels.js), read with the
+ * seat's own key after the same member-only role check the tools make.  Null
+ * (every channel wake refused) when no key is installed or the bot is
+ * refused;  a Zulip failure throws, which deliverWake answers with a retry.
+ */
+async function wakeChannels(env, config, seat, seatGate) {
+  const key = typeof env[SEAT_SECRETS[seat].key] === "string" ? env[SEAT_SECRETS[seat].key].trim() : "";
+  if (!key) return null;
+  const tools = new HostedTools({ seat, scopes: [], config, zulip: new ZulipClient({ email: config.botEmails[seat], key }), key, gate: seatGate });
+  try {
+    return await tools.checkedChannelSet();
+  } catch (error) {
+    if (error instanceof ToolError && error.code === "not_authorized") return null;
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------- /authorize and /admin

@@ -484,7 +484,13 @@ try {
     const [ev] = list.json.result.events;
     assert.equal(ev.name, "zulip.mention");
     assert.deepEqual(ev.delivery, ["webhook"]);
-    assert.deepEqual(ev.inputSchema.properties.channel.enum, ["agent-sync", "sandbox"]);
+    // Any public channel the bot is in:  the filter is a free string, checked at subscribe time.
+    assert.equal(ev.inputSchema.properties.channel.type, "string");
+    assert.equal(ev.inputSchema.properties.channel.enum, undefined);
+    // A private stream the bot is in is not a valid filter, and nothing is subscribed or verified.
+    const priv = await mcpModern(tokens.access_token, "events/subscribe", { name: "zulip.mention", arguments: { channel: "other" }, delivery: { mode: "webhook", url: CALLBACK, secret: CALLBACK_SECRET }, cursor: null });
+    assert.equal(priv.json.error?.code, -32602, JSON.stringify(priv.json));
+    assert.equal(callbackCalls.length, 0);
   });
 
   let subId;
@@ -554,6 +560,9 @@ try {
     assert.equal(other.status, 202);
     assert.deepEqual(await other.json(), { ok: true, subscribers: 1, delivered: 0, outcome: "no_subscriber" });
     assert.equal(callbackCalls.length, before + 1, "no delivery for a non-matching channel");
+    // A public channel that was never on the old allowlist is a usable channel now:  not refused, just not this filter's.
+    const design = await wakePost("JET", wakeBytes({ channel: "design", stream_id: STREAMS.design, reply_to: { type: "stream", channel: "design", topic: "x" } }));
+    assert.deepEqual(await design.json(), { ok: true, subscribers: 1, delivered: 0, outcome: "no_subscriber" });
   });
 
   await step("wake:  a failed delivery is 503 so the listener retries;  the retry delivers (202);  one more is a duplicate;  a copy mid-delivery is 503 in_flight", async () => {
