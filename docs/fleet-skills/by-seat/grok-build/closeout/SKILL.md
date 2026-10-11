@@ -1,14 +1,16 @@
 ---
 name: closeout
-description: Finish a Grok Build work unit — THE BOARD, effort log, GitHub issue, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
+description: Finish a Grok work unit — the Linear issue, the PR link, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
 ---
 
-# Closeout (GROK-BUILD)
+# Closeout (GROK)
 
-> **This install is for `GROK-BUILD`.**  Chat tag `[GROK-BUILD·session8]`.  Notes `Grok Build`.  Branches `grok-build/`.  Lanes `~/apps/lanes/<Repo>/grok-build-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK-BUILD·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK·session8]`, and the `agent-sync` CLI writes it for you.
+
+> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
-Start-of-work is a triple claim.  End-of-work is the same three surfaces plus Notes when the owner might ask "what happened?"
+Start-of-work is a claim on the Linear issue and a post in its Zulip topic.  End-of-work is the same two surfaces, the PR that links the issue, plus Notes when the owner might ask "what happened?"
 
 ## 1. Truth check
 
@@ -25,42 +27,42 @@ A two-dot `git diff origin/main HEAD` on a stale lane is actively misleading.  A
 - Production verified?  (`deploy-verify`)  Completed ≠ Deployed.
 - Uncommitted files?  Commit or explicitly report why not (failing tests, secrets, owner hold).
 
-## 2. THE BOARD
+## 2. Linear
 
 ```bash
 board status <id> completed --resolution "Landed in #<PR>.  <one line>."
 # or: deployed — only after health verify
 ```
 
-If the item is an `effort-row` / `github-issue`, writeback copies that status to the live effort log and GitHub within ~10 min.  Still land `docs/EFFORT-LOG.md` in the app PR.  A comment is useful context; the 15-min grace window keeps sync from clobbering the status you just set.
-
-## 3. Effort board + issues
-
-Live board first, then `docs/EFFORT-LOG.md` in the landing commit.
+The PR body carried `Fixes <ID>` when the PR finished the issue.  Once Linear's GitHub automation is on, that moves the issue to Done on merge;  before then, run the command above.  It is the same move done by hand and is safe to repeat.  A PR that carried only `Refs <ID>` never closes the issue, so run the command yourself, or leave the issue open on purpose.  Writes need `AGENT_SEAT`, and `--by` must equal it.
 
 - **Completed** = merged to main.
 - **Deployed** = released and verified (say how).
-- Never delete another row.  Correct in place with `(Grok Build): …` and the date.
+- Correct a wrong status or resolution with a new `board comment` or `board status`, never by editing another seat's comment.
 
-Board and GitHub issues must match.  Prefer landing the mirror so `effort-issues-sync` closes the issue.  If you executed a numbered issue, comment/close it so it is not abandoned.
+Every imported GitHub issue has a Linear twin;  work and close the Linear issue, not the GitHub one.  A new GitHub issue filed after the cutover is copied into Linear one way, by Linear's GitHub sync, as an issue with its own id;  close that Linear issue, not the GitHub one.  Cross-app work gets an issue on each affected team, linked in the descriptions.
 
-Cross-app work gets a row on each affected board.
+There is no effort log to update and nothing for writeback to copy.  The effort logs are archived.
+
+## 3. The PR
+
+The PR body names the issue (`Fixes <ID>` or `Refs <ID>`), and the branch is `<seat>/<id>-<slug>`.  Say in the closeout post which of the two you used.
 
 ## 4. Zulip
 
-Board first, then the work topic — the same one you claimed in.
+Linear first, then the work topic — the same one you claimed in.
 
 ```bash
-agent-sync post --topic "<APP> <board8> <subject>" $'repo:  <project>  |  DONE\npr: #<n>\nboard: <id>\ngates: <what ran>\nwork: <what landed>'
+agent-sync post --topic "<ID> <subject>" $'repo:  <project>  |  DONE\npr: #<n>\nissue: <ID>\ngates: <what ran>\nwork: <what landed>'
 ```
 
-Then resolve the topic when the board item reaches Deployed or Parked:  `agent-sync resolve --topic "<topic>"`.  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
+Then resolve the topic when the issue reaches Deployed or Parked:  `agent-sync resolve --topic "<topic>"`.  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
 
 Not a fleet wake (`@**all**`) for a normal closeout.  The Slack-era helpers (`slack-sync.sh`, `agent-sync-websocket.py`, `agent-sync-poll.py`) are retired; `agent-sync` replaces them.
 
 ## 5. Apple Notes
 
-Substantial work: living Completion note, `--update` in place.  Title `[APP, Grok Build] short topic`.  See `apple-notes`.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
+Substantial work: living Completion note, `--update` in place.  Title `[APP, Grok] short topic`.  See `apple-notes`.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
 
 ## 6. Mac local processes
 
@@ -74,7 +76,7 @@ If you shipped a flag that is off, reserve a Planned enablement row (ST: also `d
 
 ## Parked, not done
 
-If you stop without merge: board stays accurate (`open` or a comment "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
+If you stop without merge: the issue stays accurate (`board status <id> open` to release it, or `parked`, plus a comment "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
 
 ## Fleet recall (every closeout)
 
@@ -84,12 +86,12 @@ If you learned a reusable lesson (gotcha, measured number, owner preference, run
 recall contribute "<one paragraph>" --category lesson --app <slug>
 ```
 
-or MCP `recall_contribute`.  40–4000 chars, one idea, category `lesson | preference | infrastructure | decision | runbook`.  Optional `url` (board/PR) is provenance, not a gate.  Owner 2026-09-02: this is the highest-yield write path.  Do not paste transcripts or secrets.
+or MCP `recall_contribute`.  40–4000 chars, one idea, category `lesson | preference | infrastructure | decision | runbook`.  Optional `url` (Linear issue or PR) is provenance, not a gate.  Owner 2026-09-02: this is the highest-yield write path.  Do not paste transcripts or secrets.
 
 ## Canon
 
-- `/Users/jay/apps/AGENT-SYNC.md` — triple closeout; Apple Notes; Mac local processes; always-commit
-- `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md`
+- `/Users/jay/apps/AGENT-SYNC.md` — Linear and the claim lifecycle; Apple Notes; Mac local processes; always-commit
+- `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` — retired stub:  the effort logs are archived
 - Skills: `board-ops`, `apple-notes`, `deploy-verify`, `land-lane`
 
 ## Living Handoff Morphing to Closeout

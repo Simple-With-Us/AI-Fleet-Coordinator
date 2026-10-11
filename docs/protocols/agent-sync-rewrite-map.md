@@ -2,6 +2,7 @@
 
 Every rule in the previous `AGENT-SYNC.md` (2,230 lines, `origin/main` before the Wed, Oct 7, 2026 rewrite), mapped to its home in the [rewritten document](../../AGENT-SYNC.md) or to the reason it was retired.  Generated with Python from the rule ledger (1,091 atomic rules), the writers' carried-id lists, and the outline's retire list.  Old line numbers refer to the previous version.
 
+- Linear cutover note (2026-10-10):  the section these rows call THE BOARD and the Claim Lifecycle is now [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle), and its rules were rewritten for Linear.  Rows that point there record where the Slack-era rule landed in the October 7 rewrite, not what the rule says today.
 - Carried into the new document:  1031 rules.
 - Retired:  60 rules.
 - Unplaced (in neither list):  0.
@@ -22,7 +23,7 @@ None.
 | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) | 13 |
 | [Reading and Listening](../../AGENT-SYNC.md#reading-and-listening) | 33 |
 | [Posting](../../AGENT-SYNC.md#posting) | 63 |
-| [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) | 95 |
+| [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) | 95 |
 | [Lanes, Worktrees, and Branches](../../AGENT-SYNC.md#lanes-worktrees-and-branches) | 38 |
 | [Landing Work: Commit, PR, Review, Merge, Deploy](../../AGENT-SYNC.md#landing-work-commit-pr-review-merge-deploy) | 84 |
 | [Repositories, Forks, and External Contact](../../AGENT-SYNC.md#repositories-forks-and-external-contact) | 11 |
@@ -55,9 +56,9 @@ None.
 | `L10-zulip-move` | 10 | Header | retired:  Transition note ('until Zulip lands, the Slack protocol stands') is superseded by the owner's own 2026-10-07 hard-cut ruling.  The rewrite states Zulip as the only chat, so nothing the owner still wants is dropped. |
 | `L11-pointer-files` | 11 | Header | [How to Use This Document](../../AGENT-SYNC.md#how-to-use-this-document) |
 | `L17-coordination-purpose` | 17-20 | Overview | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
-| `L18-effort-board-source-of-truth` | 17-19 | Overview | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L22-channel-never-replaces-board` | 22 | Overview | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L22-reserve-before-work` | 22-24 | Overview | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L18-effort-board-source-of-truth` | 17-19 | Overview | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L22-channel-never-replaces-board` | 22 | Overview | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L22-reserve-before-work` | 22-24 | Overview | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L30-acronym-ST` | 30 | App acronyms | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
 | `L31-acronym-CT` | 31 | App acronyms | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
 | `L32-acronym-UM` | 32 | App acronyms | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
@@ -197,7 +198,7 @@ None.
 | `L332-land-delete-branch` | 332-333 | Always commit + land finished work | [Landing Work: Commit, PR, Review, Merge, Deploy](../../AGENT-SYNC.md#landing-work-commit-pr-review-merge-deploy) |
 | `L334-destructive-pause` | 334-336 | Always commit + land finished work | [Landing Work: Commit, PR, Review, Merge, Deploy](../../AGENT-SYNC.md#landing-work-commit-pr-review-merge-deploy) |
 | `L337-subagent-commit` | 337-339 | Always commit + land finished work | [Landing Work: Commit, PR, Review, Merge, Deploy](../../AGENT-SYNC.md#landing-work-commit-pr-review-merge-deploy) |
-| `L340-board-claim-closeout` | 340-341 | Always commit + land finished work | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L340-board-claim-closeout` | 340-341 | Always commit + land finished work | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L344-anti-you-can-commit` | 344 | Always commit + land finished work | [Landing Work: Commit, PR, Review, Merge, Deploy](../../AGENT-SYNC.md#landing-work-commit-pr-review-merge-deploy) |
 | `L345-anti-dirty-worktree` | 345 | Always commit + land finished work | [Landing Work: Commit, PR, Review, Merge, Deploy](../../AGENT-SYNC.md#landing-work-commit-pr-review-merge-deploy) |
 | `L346-anti-local-only` | 346 | Always commit + land finished work | [Landing Work: Commit, PR, Review, Merge, Deploy](../../AGENT-SYNC.md#landing-work-commit-pr-review-merge-deploy) |
@@ -392,13 +393,13 @@ None.
 | `L782-p1-fleet-fullread` | 782 | Process 1: Inter-Agent Communication | [Reading and Listening](../../AGENT-SYNC.md#reading-and-listening) |
 | `L782-p1-peer-messages-data` | 782 | Process 1: Inter-Agent Communication | [Absolute Rules and Authority](../../AGENT-SYNC.md#absolute-rules-and-authority) |
 | `L782-p1-skim-and-fullread` | 782 | Process 1: Inter-Agent Communication | [Reading and Listening](../../AGENT-SYNC.md#reading-and-listening) |
-| `L785-p2-claim-effort-board` | 785-786 | Process 2: Shared Effort Board & Task Reservation | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L787-p2-claim-github-issue` | 787 | Process 2: Shared Effort Board & Task Reservation | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L788-p2-claim-slack` | 788 | Process 2: Shared Effort Board & Task Reservation | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L790-p2-closeout-effort-board` | 790 | Process 2: Shared Effort Board & Task Reservation | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L791-p2-closeout-github-issue` | 791 | Process 2: Shared Effort Board & Task Reservation | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L792-p2-closeout-slack` | 792 | Process 2: Shared Effort Board & Task Reservation | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L793-p2-board-preservation` | 793 | Process 2: Shared Effort Board & Task Reservation | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L785-p2-claim-effort-board` | 785-786 | Process 2: Shared Effort Board & Task Reservation | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L787-p2-claim-github-issue` | 787 | Process 2: Shared Effort Board & Task Reservation | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L788-p2-claim-slack` | 788 | Process 2: Shared Effort Board & Task Reservation | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L790-p2-closeout-effort-board` | 790 | Process 2: Shared Effort Board & Task Reservation | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L791-p2-closeout-github-issue` | 791 | Process 2: Shared Effort Board & Task Reservation | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L792-p2-closeout-slack` | 792 | Process 2: Shared Effort Board & Task Reservation | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L793-p2-board-preservation` | 793 | Process 2: Shared Effort Board & Task Reservation | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L796-p3-feature-branches` | 796 | Process 3: Isolation, Branching, Verification, PR & Deployment | [Lanes, Worktrees, and Branches](../../AGENT-SYNC.md#lanes-worktrees-and-branches) |
 | `L796-p3-no-commit-main` | 796 | Process 3: Isolation, Branching, Verification, PR & Deployment | [Landing Work: Commit, PR, Review, Merge, Deploy](../../AGENT-SYNC.md#landing-work-commit-pr-review-merge-deploy) |
 | `L797-p3-local-verify` | 797 | Process 3: Isolation, Branching, Verification, PR & Deployment | [Landing Work: Commit, PR, Review, Merge, Deploy](../../AGENT-SYNC.md#landing-work-commit-pr-review-merge-deploy) |
@@ -742,21 +743,21 @@ None.
 | `L1345-deny-message-content` | 1345-1346 | Delegation & model economics > Directive 6: Hook enforcement | [Delegation and Model Economics](../../AGENT-SYNC.md#delegation-and-model-economics) |
 | `L1346-hook-processes-row` | 1346-1347 | Delegation & model economics > Directive 6: Hook enforcement | [Delegation and Model Economics](../../AGENT-SYNC.md#delegation-and-model-economics) |
 | `L1351-terse` | 1351 | Message Structure | [Posting](../../AGENT-SYNC.md#posting) |
-| `L1353-post-start-end` | 1353-1357 | ALWAYS update peers in Slack | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1353-post-start-end` | 1353-1357 | ALWAYS update peers in Slack | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1355-post-on-change` | 1355-1356 | ALWAYS update peers in Slack | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1357-silent-work` | 1357 | ALWAYS update peers in Slack | [Posting](../../AGENT-SYNC.md#posting) |
-| `L1359-claim-effort-board` | 1359-1361 | ALWAYS update peers in Slack | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1360-claim-github-issue` | 1360-1361 | ALWAYS update peers in Slack | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1361-claim-slack` | 1361-1362 | ALWAYS update peers in Slack | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1362-claim-date-slack` | 1362-1363 | ALWAYS update peers in Slack | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1363-claim-date-board-where` | 1363-1364 | ALWAYS update peers in Slack | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1364-claim-date-effort-row` | 1364-1365 | ALWAYS update peers in Slack | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1365-created-at-not-claim` | 1365 | ALWAYS update peers in Slack | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1366-closeout-board` | 1366-1367 | ALWAYS update peers in Slack | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1367-closeout-issue` | 1367-1368 | ALWAYS update peers in Slack | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1368-board-issue-parity` | 1368-1369 | ALWAYS update peers in Slack | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1368-closeout-slack` | 1368 | ALWAYS update peers in Slack | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1369-effort-protocol-ref` | 1369-1370 | ALWAYS update peers in Slack | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1359-claim-effort-board` | 1359-1361 | ALWAYS update peers in Slack | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1360-claim-github-issue` | 1360-1361 | ALWAYS update peers in Slack | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1361-claim-slack` | 1361-1362 | ALWAYS update peers in Slack | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1362-claim-date-slack` | 1362-1363 | ALWAYS update peers in Slack | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1363-claim-date-board-where` | 1363-1364 | ALWAYS update peers in Slack | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1364-claim-date-effort-row` | 1364-1365 | ALWAYS update peers in Slack | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1365-created-at-not-claim` | 1365 | ALWAYS update peers in Slack | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1366-closeout-board` | 1366-1367 | ALWAYS update peers in Slack | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1367-closeout-issue` | 1367-1368 | ALWAYS update peers in Slack | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1368-board-issue-parity` | 1368-1369 | ALWAYS update peers in Slack | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1368-closeout-slack` | 1368 | ALWAYS update peers in Slack | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1369-effort-protocol-ref` | 1369-1370 | ALWAYS update peers in Slack | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1372-header-required` | 1372 | ALWAYS update peers in Slack | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1374-sender-forms` | 1374-1376 | ALWAYS update peers in Slack | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1374-sender-required` | 1374 | ALWAYS update peers in Slack | [Posting](../../AGENT-SYNC.md#posting) |
@@ -829,7 +830,7 @@ None.
 | `L1489-sync-n` | 1489-1490 | Header | retired:  The optional per-session `sync-N` serial counter is redundant once each unit of work has its own Zulip topic and sessions carry a `[SEAT·session8]` tag. |
 | `L1494-body-compact` | 1494 | Body | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1497-field-claim` | 1497 | Body | [Posting](../../AGENT-SYNC.md#posting) |
-| `L1498-field-claimed` | 1498 | Body | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1498-field-claimed` | 1498 | Body | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1499-field-state` | 1499 | Body | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1500-field-keepout` | 1500 | Body | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1501-field-collision` | 1501 | Body | [Posting](../../AGENT-SYNC.md#posting) |
@@ -878,29 +879,29 @@ None.
 | `L1662-contradiction-no-execute` | 1660-1665 | Conflict Resolution | [Absolute Rules and Authority](../../AGENT-SYNC.md#absolute-rules-and-authority) |
 | `L1665-surface-conflict` | 1665-1666 | Conflict Resolution | [Absolute Rules and Authority](../../AGENT-SYNC.md#absolute-rules-and-authority) |
 | `L1667-owner-decides` | 1667 | Conflict Resolution | [Absolute Rules and Authority](../../AGENT-SYNC.md#absolute-rules-and-authority) |
-| `L1673-keep-board-issues-matching` | 1673 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1674-effort-protocol-canonical` | 1674 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1677-start-board-row` | 1676-1678 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1679-start-issue-claim` | 1679-1681 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1682-start-slack-claim` | 1682 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1673-keep-board-issues-matching` | 1673 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1674-effort-protocol-canonical` | 1674 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1677-start-board-row` | 1676-1678 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1679-start-issue-claim` | 1679-1681 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1682-start-slack-claim` | 1682 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1683-prefer-not-fleet` | 1682-1683 | Effort Board + GitHub Issues Integration | [Posting](../../AGENT-SYNC.md#posting) |
-| `L1686-end-board-state` | 1685-1686 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1687-end-issue-state` | 1687 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1688-end-slack-closeout` | 1688 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1686-end-board-state` | 1685-1686 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1687-end-issue-state` | 1687 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1688-end-slack-closeout` | 1688 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1690-never-completed-before-merge` | 1690-1691 | Effort Board + GitHub Issues Integration | [Landing Work: Commit, PR, Review, Merge, Deploy](../../AGENT-SYNC.md#landing-work-commit-pr-review-merge-deploy) |
-| `L1690-state-order` | 1690 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1691-never-leave-in-progress` | 1691 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1694-ex-step1-planned-to-inprogress` | 1693-1694 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1695-ex-step2-land-mirror` | 1695 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1696-ex-step3-slack-claim` | 1696 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1697-ex-step4-honest-status` | 1697 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1698-ex-step5-finish` | 1698 | Effort Board + GitHub Issues Integration | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1702-board-primary` | 1702-1705 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1706-board-first-place` | 1706-1707 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1709-board-scope` | 1709-1710 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1710-board-sync-cadence` | 1710-1711 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1711-board-hosting` | 1711-1713 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1715-use-board-cli` | 1715 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1690-state-order` | 1690 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1691-never-leave-in-progress` | 1691 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1694-ex-step1-planned-to-inprogress` | 1693-1694 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1695-ex-step2-land-mirror` | 1695 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1696-ex-step3-slack-claim` | 1696 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1697-ex-step4-honest-status` | 1697 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1698-ex-step5-finish` | 1698 | Effort Board + GitHub Issues Integration | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1702-board-primary` | 1702-1705 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1706-board-first-place` | 1706-1707 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1709-board-scope` | 1709-1710 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1710-board-sync-cadence` | 1710-1711 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1711-board-hosting` | 1711-1713 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1715-use-board-cli` | 1715 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1718-cmd-board-stats` | 1718 | THE BOARD | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
 | `L1719-cmd-board-list` | 1719 | THE BOARD | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
 | `L1720-cmd-board-list-mine` | 1720 | THE BOARD | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
@@ -909,56 +910,56 @@ None.
 | `L1725-cmd-board-claim` | 1725 | THE BOARD | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
 | `L1726-cmd-board-comment` | 1726 | THE BOARD | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
 | `L1727-cmd-board-status` | 1727 | THE BOARD | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
-| `L1730-board-cli-path` | 1730 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1731-board-token-source` | 1731-1732 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1733-board-allowlisted` | 1732-1733 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1734-never-paste-token` | 1733-1734 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1736-invoke-literally` | 1736 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1737-allow-once-forever` | 1736-1740 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1730-board-cli-path` | 1730 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1731-board-token-source` | 1731-1732 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1733-board-allowlisted` | 1732-1733 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1734-never-paste-token` | 1733-1734 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1736-invoke-literally` | 1736 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1737-allow-once-forever` | 1736-1740 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1740-owner-hit-allow-once` | 1740 | THE BOARD | [Appendix D: History and Incidents](../../AGENT-SYNC.md#appendix-d-history-and-incidents) |
-| `L1741-old-secret-dance-avoid` | 1741-1742 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1741-old-secret-dance-avoid` | 1741-1742 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1742-wrap-secret-in-cli` | 1742-1744 | THE BOARD | [Secrets and Credentials](../../AGENT-SYNC.md#secrets-and-credentials) |
-| `L1744-raw-rest-endpoints` | 1744-1746 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1746-prefer-cli-on-mac` | 1746 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1748-human-board-url` | 1748-1749 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1749-board-short-link` | 1749-1750 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1750-page-gated` | 1750-1751 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1751-new-item-composer` | 1751-1752 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1754-login-fallback` | 1754-1757 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1757-per-seat-token` | 1757-1759 | THE BOARD | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1744-raw-rest-endpoints` | 1744-1746 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1746-prefer-cli-on-mac` | 1746 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1748-human-board-url` | 1748-1749 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1749-board-short-link` | 1749-1750 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1750-page-gated` | 1750-1751 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1751-new-item-composer` | 1751-1752 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1754-login-fallback` | 1754-1757 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1757-per-seat-token` | 1757-1759 | THE BOARD | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1759-github-outbox-bridge` | 1759-1761 | THE BOARD | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
-| `L1765-before-work-board-list` | 1765 | THE BOARD - What every seat owes | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1766-claim-or-file` | 1766-1768 | THE BOARD - What every seat owes | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1768-claim-date-in-where` | 1768-1769 | THE BOARD - What every seat owes | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1769-claim-fields` | 1769-1771 | THE BOARD - What every seat owes | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1771-keep-claim-accurate` | 1771 | THE BOARD - What every seat owes | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1772-done-status-resolution` | 1772-1773 | THE BOARD - What every seat owes | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1774-never-leave-in-progress` | 1773-1774 | THE BOARD - What every seat owes | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1775-comment-on-peer-items` | 1775-1776 | THE BOARD - What every seat owes | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1776-peer-review-expected` | 1776-1777 | THE BOARD - What every seat owes | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1779-no-manual-effort-updates` | 1779-1780 | THE BOARD - What every seat owes | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1780-writeback-process` | 1780-1781 | THE BOARD - What every seat owes | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1782-land-mirror-in-app-pr` | 1781-1783 | THE BOARD - What every seat owes | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1783-board-write-surface` | 1783 | THE BOARD - What every seat owes | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1787-kind-agent-report` | 1787-1789 | THE BOARD - Item kinds | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1790-kind-review-finding` | 1790-1791 | THE BOARD - Item kinds | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1792-kind-effort-row` | 1792-1793 | THE BOARD - Item kinds | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1794-kind-github-issue` | 1794-1795 | THE BOARD - Item kinds | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1797-writeback-grace-window` | 1797-1800 | THE BOARD - Item kinds | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1800-report-finding-board-authoritative` | 1800-1801 | THE BOARD - Item kinds | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1805-seat-marks` | 1805-1807 | THE BOARD - Seats, and who is actually who | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1765-before-work-board-list` | 1765 | THE BOARD - What every seat owes | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1766-claim-or-file` | 1766-1768 | THE BOARD - What every seat owes | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1768-claim-date-in-where` | 1768-1769 | THE BOARD - What every seat owes | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1769-claim-fields` | 1769-1771 | THE BOARD - What every seat owes | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1771-keep-claim-accurate` | 1771 | THE BOARD - What every seat owes | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1772-done-status-resolution` | 1772-1773 | THE BOARD - What every seat owes | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1774-never-leave-in-progress` | 1773-1774 | THE BOARD - What every seat owes | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1775-comment-on-peer-items` | 1775-1776 | THE BOARD - What every seat owes | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1776-peer-review-expected` | 1776-1777 | THE BOARD - What every seat owes | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1779-no-manual-effort-updates` | 1779-1780 | THE BOARD - What every seat owes | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1780-writeback-process` | 1780-1781 | THE BOARD - What every seat owes | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1782-land-mirror-in-app-pr` | 1781-1783 | THE BOARD - What every seat owes | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1783-board-write-surface` | 1783 | THE BOARD - What every seat owes | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1787-kind-agent-report` | 1787-1789 | THE BOARD - Item kinds | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1790-kind-review-finding` | 1790-1791 | THE BOARD - Item kinds | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1792-kind-effort-row` | 1792-1793 | THE BOARD - Item kinds | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1794-kind-github-issue` | 1794-1795 | THE BOARD - Item kinds | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1797-writeback-grace-window` | 1797-1800 | THE BOARD - Item kinds | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1800-report-finding-board-authoritative` | 1800-1801 | THE BOARD - Item kinds | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1805-seat-marks` | 1805-1807 | THE BOARD - Seats, and who is actually who | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1809-claude-instances-names` | 1809-1810 | THE BOARD - Seats, and who is actually who | retired:  States that Monet and Renoir keep their own seat names on board marks.  The owner retired both on 2026-10-07, and CLAUDE is the only Claude seat. |
 | `L1811-grok-bot-own-seat` | 1811-1812 | THE BOARD - Seats, and who is actually who | [Seats and Identity](../../AGENT-SYNC.md#seats-and-identity) |
-| `L1813-cursor-renders-both-marks` | 1812-1814 | THE BOARD - Seats, and who is actually who | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1813-cursor-renders-both-marks` | 1812-1814 | THE BOARD - Seats, and who is actually who | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1814-cursor-chat-surfaces` | 1814-1815 | THE BOARD - Seats, and who is actually who | [Seats and Identity](../../AGENT-SYNC.md#seats-and-identity) |
-| `L1817-env-mac-or-cloud` | 1817-1818 | THE BOARD - Seats, and who is actually who | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1817-env-mac-or-cloud` | 1817-1818 | THE BOARD - Seats, and who is actually who | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1822-two-way-sync-dates` | 1822 | THE BOARD - Relationship to effort boards and GitHub Issues | [Appendix D: History and Incidents](../../AGENT-SYNC.md#appendix-d-history-and-incidents) |
-| `L1824-forward-sync` | 1824-1825 | THE BOARD - Relationship to effort boards and GitHub Issues | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1826-back-sync` | 1826-1828 | THE BOARD - Relationship to effort boards and GitHub Issues | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1828-writeback-limits` | 1828-1829 | THE BOARD - Relationship to effort boards and GitHub Issues | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1830-fallback-sync-script` | 1830-1831 | THE BOARD - Relationship to effort boards and GitHub Issues | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1833-board-is-write-surface` | 1833 | THE BOARD - Relationship to effort boards and GitHub Issues | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1834-seats-without-board-use-copies` | 1834-1835 | THE BOARD - Relationship to effort boards and GitHub Issues | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1824-forward-sync` | 1824-1825 | THE BOARD - Relationship to effort boards and GitHub Issues | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1826-back-sync` | 1826-1828 | THE BOARD - Relationship to effort boards and GitHub Issues | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1828-writeback-limits` | 1828-1829 | THE BOARD - Relationship to effort boards and GitHub Issues | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1830-fallback-sync-script` | 1830-1831 | THE BOARD - Relationship to effort boards and GitHub Issues | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1833-board-is-write-surface` | 1833 | THE BOARD - Relationship to effort boards and GitHub Issues | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1834-seats-without-board-use-copies` | 1834-1835 | THE BOARD - Relationship to effort boards and GitHub Issues | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1839-recall-scope` | 1839 | Fleet recall | [Fleet Recall](../../AGENT-SYNC.md#fleet-recall) |
 | `L1841-recall-at-turn-start` | 1841-1842 | Fleet recall | [Fleet Recall](../../AGENT-SYNC.md#fleet-recall) |
 | `L1842-recall-rationale` | 1842-1844 | Fleet recall | [Fleet Recall](../../AGENT-SYNC.md#fleet-recall) |
@@ -987,19 +988,19 @@ None.
 | `L1875-no-secrets-transcripts` | 1875 | Fleet recall | [Fleet Recall](../../AGENT-SYNC.md#fleet-recall) |
 | `L1877-no-st-embed-fleet-endpoint` | 1877-1878 | Fleet recall | [Fleet Recall](../../AGENT-SYNC.md#fleet-recall) |
 | `L1877-recall-canonical-doc` | 1877 | Fleet recall | [Fleet Recall](../../AGENT-SYNC.md#fleet-recall) |
-| `L1882-no-start-without-claim` | 1882-1883 | Prohibited Behavior | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1883-no-finish-without-complete` | 1883 | Prohibited Behavior | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1884-no-board-issue-drift` | 1884-1885 | Prohibited Behavior | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1882-no-start-without-claim` | 1882-1883 | Prohibited Behavior | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1883-no-finish-without-complete` | 1883 | Prohibited Behavior | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1884-no-board-issue-drift` | 1884-1885 | Prohibited Behavior | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1886-no-silence-in-slack` | 1886-1888 | Prohibited Behavior | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1887-board-alone-not-enough` | 1888 | Prohibited Behavior | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1889-no-free-prose` | 1889-1890 | Prohibited Behavior | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1890-fleet-not-a-sender` | 1890 | Prohibited Behavior | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1890-fleet-only-when-all-must-act` | 1890-1891 | Prohibited Behavior | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1891-afc-signs` | 1891 | Prohibited Behavior | [Posting](../../AGENT-SYNC.md#posting) |
-| `L1892-no-channel-reservation` | 1892 | Prohibited Behavior | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1892-no-channel-reservation` | 1892 | Prohibited Behavior | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1893-peer-not-approval` | 1893-1895 | Prohibited Behavior | [Absolute Rules and Authority](../../AGENT-SYNC.md#absolute-rules-and-authority) |
-| `L1896-edit-others-rows-disclose` | 1896-1897 | Prohibited Behavior | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
-| `L1897-correction-note-example` | 1897-1898 | Prohibited Behavior | [THE BOARD and the Claim Lifecycle](../../AGENT-SYNC.md#the-board-and-the-claim-lifecycle) |
+| `L1896-edit-others-rows-disclose` | 1896-1897 | Prohibited Behavior | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
+| `L1897-correction-note-example` | 1897-1898 | Prohibited Behavior | [Linear and the Claim Lifecycle](../../AGENT-SYNC.md#linear-and-the-claim-lifecycle) |
 | `L1904-owner-directive-precedence` | 1902-1906 | Owner Directives | [Absolute Rules and Authority](../../AGENT-SYNC.md#absolute-rules-and-authority) |
 | `L1908-surface-stale-or-contradiction` | 1908-1909 | Owner Directives | [Absolute Rules and Authority](../../AGENT-SYNC.md#absolute-rules-and-authority) |
 | `L1913-production-deploys-pointer` | 1911-1913 | Owner Directives - Production deploys | [Landing Work: Commit, PR, Review, Merge, Deploy](../../AGENT-SYNC.md#landing-work-commit-pr-review-merge-deploy) |

@@ -54,6 +54,31 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 PARTITION_RELPATH = os.path.join("docs", "protocols", "agent-sync-partition.toml")
 _SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
 
+# Seat aliases (owner 2026-10-10):  "GROK followed by BUILD, any letter case, with any non-letter,
+# non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build) is an alias for GROK."
+# One pattern, matched after trimming, case-insensitively and on ASCII letters and digits only.
+# fleet-apps.json carries the same text as the GROK row's `aliasPattern`, for the runtimes that ship
+# without this package (the lane tool, the board scripts);  test_seat_alias.py and
+# check-fleet-registry.py keep every copy equal.  It never matches GROKBUILDER, grok2build or
+# grok-build-bot (a bot email is matched separately, through EMAIL_TAG_OVERRIDES).
+GROK_ALIAS_PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
+_GROK_ALIAS_RE = re.compile(GROK_ALIAS_PATTERN, re.IGNORECASE | re.ASCII)
+GROK_SEAT = "GROK"
+
+
+def is_grok_alias(raw: Any) -> bool:
+    """True when `raw` is a spelling of the retired GROK-BUILD tag."""
+    return bool(_GROK_ALIAS_RE.match(str(raw or "").strip()))
+
+
+def canonical_seat(raw: Any) -> str:
+    """The seat tag a name stands for, upper-cased:  every GROK-BUILD spelling is GROK, anything
+    else is only trimmed and upper-cased (callers still validate it as a token).  This is the one
+    input boundary:  --as, --seat, --to, AGENT_SEAT, AGENT_LAUNCH_SEAT, AGENT_TAG and the hooks'
+    platform default all pass through it, and output (labels, --by, branches) only ever sees GROK."""
+    text = str(raw or "").strip()
+    return GROK_SEAT if _GROK_ALIAS_RE.match(text) else text.upper()
+
 # Bot email local parts (minus the "-bot" Zulip appends) whose seat tag is not just the upper-cased
 # local part.  Display names are cosmetic (owner 2026-10-07), so labels come from emails, never names.
 EMAIL_TAG_OVERRIDES = {
@@ -113,18 +138,20 @@ def resolve_seat(env: Mapping[str, str], *, flag: str | None = None, default: st
                  use_tag: bool = True) -> Resolution:
     """Apply the seat precedence.  `flag` is an explicit --as; `default` is the platform default the
     caller knows (never used under a launcher); `use_tag` reads AGENT_TAG as well as AGENT_SEAT."""
-    launch_seat = _clean(env.get(ENV_LAUNCH_SEAT)).upper()
+    # Every name is canonicalized first (GROK-BUILD in any spelling is GROK), on both sides of the
+    # launcher check, so AGENT_LAUNCH_SEAT=GROK with AGENT_SEAT=Grok-Build is the same seat, not a conflict.
+    launch_seat = canonical_seat(env.get(ENV_LAUNCH_SEAT))
     who = launcher_of(env)
     named = [("--as", _clean(flag)), ("AGENT_SEAT", _clean(env.get("AGENT_SEAT")))]
     if use_tag:
         named.append(("AGENT_TAG", _clean(env.get("AGENT_TAG"))))
     if launch_seat:
         for label, raw in named:
-            if raw and raw.upper() != launch_seat:
+            if raw and canonical_seat(raw) != launch_seat:
                 return Resolution(None, "none", who, (
                     "launcher %s assigned %s, but %s names %s; a launched session keeps its launcher's seat "
                     "(Jay reassigns it in the launcher), so nothing was done"
-                    % (who or "(unnamed)", launch_seat, label, raw.upper())))
+                    % (who or "(unnamed)", launch_seat, label, canonical_seat(raw))))
         return Resolution(launch_seat, "launcher", who)
     if who:
         return Resolution(None, "none", who, (
@@ -132,7 +159,7 @@ def resolve_seat(env: Mapping[str, str], *, flag: str | None = None, default: st
             "session takes no fleet action (no platform default applies under a launcher)" % who))
     for label, raw in named + [("default", _clean(default))]:
         if raw:
-            return Resolution(raw.upper(), label)
+            return Resolution(canonical_seat(raw), label)
     return Resolution(None, "none")
 
 
@@ -140,8 +167,190 @@ def valid_seat(seat: str | None) -> str | None:
     """The seat when it is a plain token (it names a directory), else None."""
     if not seat:
         return None
-    seat = seat.strip().upper()
+    seat = canonical_seat(seat)
     return seat if _SEAT_RE.fullmatch(seat) else None
+
+
+# --------------------------------------------------------------------------------------------
+# Strict seat names and seat apps (fleet-apps.json `seats` and `seatApps`)
+# --------------------------------------------------------------------------------------------
+#
+# canonical_seat() is the lenient input boundary (#457):  it upper-cases anything, so a typo is a
+# new seat.  Code that decides something from a seat's name (who owns a claim, which app a vote
+# counts for) must not accept a typo, so it calls strict_seat(), which runs canonical_seat() first
+# and then refuses a name the registry does not know.  seat_app() says which product a seat runs in.
+#
+# The data is the top-level `seatApps` key of fleet-apps.json, not a field on the `seats` rows:  a
+# dozen tools read `seats` (lanes, skill copies, listener seats), and a BF-* or GB-* row there
+# would make each of them.  `seatApps` is read only here.
+#
+#   bySeat      live row of `seats` -> app          (check-fleet-registry.py wants every live row here)
+#   extraSeats  real seats with no `seats` row      (JET, ECHO, INSTINCT:  hosted or owner-run)
+#   patterns    families made of a role             (BF-<ROLE> is botfleet, GB-<ROLE> is grok-bot)
+#
+# Two apps are never one app because they share a model:  GROK (the terminal) and GROK-WEB are two.
+
+ENV_APPS_JSON = "FLEET_APPS_JSON"  # the same override the lane tool reads
+APPS_JSON_NAME = "fleet-apps.json"
+_APP_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_PATTERN_RE = re.compile(r"[A-Z0-9_*-]+")
+_ROLE_CHARS = "[A-Z0-9][A-Z0-9_-]*"  # what one `*` in a pattern stands for:  a non-empty token tail
+
+
+class UnknownSeat(ValueError):
+    """The name is not a live seat:  it is in neither `seats` (not retired), `seatApps.extraSeats` nor
+    `seatApps.patterns`.  `seat` is the canonical spelling, `retired` says the registry knows it as a
+    retired seat.  Callers that mean "an unknown claimant is an orphan" catch exactly this."""
+
+    def __init__(self, raw: Any, seat: str, retired: bool = False) -> None:
+        self.raw = raw
+        self.seat = seat
+        self.retired = retired
+        shown = seat if len(seat) <= 40 else seat[:40] + "..."
+        super().__init__("%r is %s" % (shown, "a retired seat in %s" % APPS_JSON_NAME if retired else
+                                       "not a live seat in %s (seats, seatApps.extraSeats or seatApps.patterns)"
+                                       % APPS_JSON_NAME))
+
+
+class SeatRegistryError(RuntimeError):
+    """fleet-apps.json cannot answer:  missing, not JSON, no usable `seatApps`, or a live seat with no
+    app.  Deliberately NOT an UnknownSeat, so a caller that turns unknown names into orphans can never
+    turn an unreadable registry into a mass of orphans."""
+
+
+class SeatPattern(NamedTuple):
+    """One `seatApps.patterns` row:  `match` (BF-*) compiled to `regex`, and the app it gives."""
+    regex: "re.Pattern[str]"
+    app: str
+    match: str
+
+
+class SeatRegistry(NamedTuple):
+    """The parts of fleet-apps.json that strict_seat and seat_app read."""
+    live: frozenset[str]
+    retired: frozenset[str]
+    by_seat: Mapping[str, str]
+    extra: Mapping[str, str]
+    patterns: tuple[SeatPattern, ...]  # in file order;  the first match wins
+    source: str = ""
+
+
+def _pattern_regex(match: str) -> "re.Pattern[str]":
+    """`BF-*` -> BF- followed by a non-empty token.  Only A-Z, 0-9, _, - and * are allowed in a match."""
+    if not _PATTERN_RE.fullmatch(match):
+        raise SeatRegistryError("seatApps.patterns match %r may hold only A-Z, 0-9, _, - and *" % match)
+    return re.compile("".join(_ROLE_CHARS if ch == "*" else re.escape(ch) for ch in match))
+
+
+def _app_name(where: str, value: Any) -> str:
+    if not isinstance(value, str) or not _APP_RE.fullmatch(value):
+        raise SeatRegistryError("%s must be a lowercase app name like claude-code, not %r" % (where, value))
+    return value
+
+
+def parse_seat_registry(data: Any, source: str = "") -> SeatRegistry:
+    """Build a SeatRegistry from already-loaded fleet-apps.json.  Strict about `seatApps` (a malformed
+    key raises SeatRegistryError) and tolerant of everything else in the file."""
+    if not isinstance(data, Mapping):
+        raise SeatRegistryError("%s: expected a JSON object at the top level" % (source or APPS_JSON_NAME))
+    rows = [r for r in (data.get("seats") if isinstance(data.get("seats"), list) else []) if isinstance(r, Mapping)]
+    live: set[str] = set()
+    retired: set[str] = set()
+    for row in rows:
+        tag = str(row.get("tag") or "").strip().upper()
+        if tag:
+            (retired if row.get("retired") else live).add(tag)
+    apps = data.get("seatApps")
+    if not isinstance(apps, Mapping):
+        raise SeatRegistryError("%s has no seatApps key" % (source or APPS_JSON_NAME))
+    maps: dict[str, dict[str, str]] = {}
+    for key in ("bySeat", "extraSeats"):
+        raw_map = apps.get(key)
+        if not isinstance(raw_map, Mapping):
+            raise SeatRegistryError("seatApps.%s must be an object" % key)
+        maps[key] = {str(tag).strip().upper(): _app_name("seatApps.%s.%s" % (key, tag), app)
+                     for tag, app in raw_map.items()}
+    raw_patterns = apps.get("patterns")
+    if not isinstance(raw_patterns, list):
+        raise SeatRegistryError("seatApps.patterns must be a list")
+    patterns = []
+    for item in raw_patterns:
+        if not isinstance(item, Mapping) or not isinstance(item.get("match"), str):
+            raise SeatRegistryError("every seatApps.patterns entry needs a match string and an app")
+        patterns.append(SeatPattern(_pattern_regex(item["match"]),
+                                    _app_name("seatApps.patterns %s" % item["match"], item.get("app")), item["match"]))
+    return SeatRegistry(frozenset(live), frozenset(retired), maps["bySeat"], maps["extraSeats"],
+                        tuple(patterns), source)
+
+
+_registry_cache: dict[str, tuple[tuple[int, int], SeatRegistry]] = {}
+
+
+def seat_registry_path(env: Mapping[str, str] | None = None) -> str:
+    """FLEET_APPS_JSON when set, else fleet-apps.json at the repo root."""
+    env = os.environ if env is None else env
+    return os.path.expanduser(_clean(env.get(ENV_APPS_JSON)) or os.path.join(REPO_ROOT, APPS_JSON_NAME))
+
+
+def load_seat_registry(path: str | None = None, env: Mapping[str, str] | None = None) -> SeatRegistry:
+    """The registry at `path` (default:  seat_registry_path), read again only when the file changes.
+    Raises SeatRegistryError when it cannot be read or `seatApps` is malformed."""
+    target = path or seat_registry_path(env)
+    try:
+        stat = os.stat(target)
+    except OSError as exc:
+        raise SeatRegistryError("cannot read %s: %s" % (target, exc.strerror or type(exc).__name__)) from None
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    cached = _registry_cache.get(target)
+    if cached and cached[0] == stamp:
+        return cached[1]
+    import json  # only here:  the Claude hooks import this module on every prompt and never need it
+    try:
+        with open(target, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise SeatRegistryError("cannot read %s: %s" % (target, type(exc).__name__)) from None
+    registry = parse_seat_registry(data, target)
+    _registry_cache[target] = (stamp, registry)
+    return registry
+
+
+def _pattern_app(seat: str, registry: SeatRegistry) -> str | None:
+    if not _SEAT_RE.fullmatch(seat):
+        return None
+    for pattern in registry.patterns:
+        if pattern.regex.fullmatch(seat):
+            return pattern.app
+    return None
+
+
+def strict_seat(raw: Any, *, registry: SeatRegistry | None = None) -> str:
+    """The canonical seat tag for `raw`, or UnknownSeat.
+
+    canonical_seat() runs first (every GROK-BUILD spelling is GROK, anything else is trimmed and
+    upper-cased).  The result must then be a non-retired row of fleet-apps.json `seats`, a key of
+    `seatApps.extraSeats`, or match a `seatApps.patterns` row (BF-<ROLE>, GB-<ROLE>).  Everything else
+    raises:  MINIMAX (the tag is MM), a retired seat, a typo, an empty name, a name that is not a token.
+    Raises SeatRegistryError when the registry cannot be read, which is not the same thing."""
+    seat = canonical_seat(raw)
+    reg = registry if registry is not None else load_seat_registry()
+    if seat in reg.live or seat in reg.extra or _pattern_app(seat, reg):
+        return seat
+    raise UnknownSeat(raw, seat, retired=seat in reg.retired)
+
+
+def seat_app(seat: Any, *, registry: SeatRegistry | None = None) -> str:
+    """The app `seat` runs in:  claude-code, codex, cursor, grok-terminal, grok-web, antigravity,
+    minimax-code, muse-code, muse-assist, clutch, fx, opencode, grok-bot, chatgpt, instinct, botfleet.
+
+    `seat` goes through strict_seat() first, so an unknown or retired name raises UnknownSeat and is
+    never taken for a new app.  A live seat the registry lists no app for raises SeatRegistryError."""
+    reg = registry if registry is not None else load_seat_registry()
+    name = strict_seat(seat, registry=reg)
+    app = reg.by_seat.get(name) or reg.extra.get(name) or _pattern_app(name, reg)
+    if not app:
+        raise SeatRegistryError("%s lists no app for the seat %s (seatApps.bySeat)" % (reg.source or APPS_JSON_NAME, name))
+    return app
 
 
 # --------------------------------------------------------------------------------------------

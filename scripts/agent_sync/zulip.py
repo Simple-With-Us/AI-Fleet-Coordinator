@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from .identity import canonical_seat
 from .textfmt import sentence_gap
 
 __all__ = [
@@ -58,6 +59,7 @@ USER_AGENT = "agent-sync/1 (fleet)"
 # breaks the rule.
 SEAT_FILE_OVERRIDES: dict[str, str] = {
     "GROK": "Grok-Build",  # GROK posts as grok-build-bot@ (owner 2026-10-08)
+    "OPENCODE": "OpenCode",  # the credential file is OpenCode-zuliprc (Sat, Oct 10);  the rule would say Opencode
 }
 SHORT_PART_MAX = 2
 
@@ -122,11 +124,19 @@ class QueueExpired(Exception):
 # --------------------------------------------------------------------------------------------
 
 def normalise_seat(name: str) -> str:
-    """Upper-case a seat name, refusing anything that is not a plain token (it names a directory)."""
+    """Upper-case a seat name, refusing anything that is not a plain token (it names a directory).
+    Every spelling of the retired GROK-BUILD tag (GROK-BUILD, Grok-Build, grok_build, "Grok (Build)",
+    GROK.BUILD ...) is the GROK seat (owner 2026-10-10;  identity.canonical_seat), and is canonicalized
+    before the token check because several of those spellings are not tokens."""
     cleaned = (name or "").strip()
+    if not cleaned:
+        raise UsageError("seat name %r is not valid; use letters, digits, hyphen or underscore (e.g. CLAUDE)" % cleaned)
+    canonical = canonical_seat(cleaned)
+    if canonical != cleaned.upper():
+        return canonical  # an alias:  the canonical tag is a token by construction
     if not _SEAT_RE.match(cleaned):
         raise UsageError("seat name %r is not valid; use letters, digits, hyphen or underscore (e.g. CLAUDE)" % cleaned)
-    return cleaned.upper()
+    return canonical
 
 
 def credential_file_name(seat: str) -> str:

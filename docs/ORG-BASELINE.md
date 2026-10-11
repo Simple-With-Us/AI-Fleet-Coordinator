@@ -24,7 +24,7 @@ blocks force-push, and requires a pull request.  Two of them
 `main-protection` instead of the fleet name `default-main-protection`; both are
 now renamed, and both keep their own stricter required checks.
 
-Three repos — `Fleet-OPS`, `Kodus-Config`, `demo-repository` — are **private**,
+Two repos — `Fleet-OPS` and `Kodus-Config` — are **private**,
 and GitHub answers every ruleset and branch-protection request on them with:
 
 > Upgrade to GitHub Pro or make this repository public to enable this feature.
@@ -37,7 +37,7 @@ it stays visible without crying wolf.
 
 GitHub documents org-wide rulesets as a feature for *"customers on GitHub Team
 and GitHub Enterprise plans"*.  This org is on Free — which is also why the
-three private repos have no protection.  So there is **no server-side object to
+two private repos have no protection.  So there is **no server-side object to
 hold "the global minimum"**, and no setting to flip.
 
 That reframes the request: on Free, the baseline can only be held as *code that

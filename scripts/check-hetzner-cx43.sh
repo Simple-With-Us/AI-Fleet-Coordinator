@@ -100,8 +100,7 @@ if [ "$STATUS" = "HIT" ]; then
   BANNER="HETZNER CHEAPER 8-vCPU AVAILABLE: $DETAIL -- live host id $SERVER_ID is $CURRENT_TYPE in $DC.  Review before any change_type."
   echo "$STAMP  *** $BANNER" >> "$LOG"
   osascript -e "display notification \"$DETAIL\" with title \"Hetzner cx43/cpx41 now migratable\"" 2>/dev/null || true
-  BOARD="/Users/jay/apps/CONGRESS-SHARED-EFFORT-LOG.md"
-  if [ -w "$BOARD" ] && ! grep -q "HETZNER UPGRADE AVAILABLE" "$BOARD" 2>/dev/null; then
-    printf '\n- **[fleet][AUTOMATED WATCH] %s** (detected %s by check-hetzner-cx43.sh)\n' "$BANNER" "$STAMP" >> "$BOARD"
-  fi
+  # No effort-log line any more:  the effort logs are archived (Linear cutover).  The log above and
+  # the notification are the record;  a person files the Linear issue (`board file --app OPS`) if the
+  # migration is worth doing.
 fi

@@ -77,6 +77,8 @@ const ENDPOINTS = [
   // The gh-pages CNAME is codecaps.simplewithus.com; the github.io path is
   // case-sensitive and the lower-case /codecaps/ spelling 404s.
   { name: 'CodeCaps', url: 'https://codecaps.simplewithus.com/' },
+  // fleetlink.online answers 200 on / (the Worker has no /health route; it 404s).
+  { name: 'FleetLink', url: 'https://fleetlink.online/' },
   { name: 'Fleet Activity', url: 'https://simple-with-us.github.io/AI-Fleet-Coordinator/' },
   { name: 'Start Page', url: 'https://start.jays.services' },
   { name: 'The Board', url: 'https://mac.jays.services/board' },
@@ -112,6 +114,10 @@ const APPS = [
   { repo: 'fleet-ops', name: 'Fleet Ops', kind: 'infra' },
   { repo: 'Clutch', name: 'Clutch', kind: 'infra' },
   { repo: 'CodeCaps', name: 'CodeCaps', kind: 'product' },
+  { repo: 'FleetLink', name: 'FleetLink.online', kind: 'product' },
+  // Legacy, live until cutover.  It is private and has no Actions workflow, so the
+  // GitHub card reads "1 with no run on main" (amber) until its row is retired.
+  { repo: 'fleetlink-legacy', name: 'FleetLink Legacy', kind: 'product' },
 ];
 
 // Vercel personal projects come back on the first call; team-scoped ones need
@@ -578,7 +584,7 @@ function coolifyState(status) {
 
 /* ----------------------------------------------------------------- github */
 /* Subrequests: one org-wide PR search + one actions/runs call per repo.     */
-/* Worst case 1 + APPS.length = 15.  It used to be two per repo — 24 — and   */
+/* Worst case 1 + APPS.length = 17.  It used to be two per repo — 24 — and   */
 /* that alone was half the platform's budget.                                */
 
 async function checkGitHub(env) {

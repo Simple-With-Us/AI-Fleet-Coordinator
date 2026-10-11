@@ -8,10 +8,10 @@ description: >-
 
 > **This install is for `CLUTCH`.**  Chat tag `[CLUTCH·session8]`.  Notes `Clutch`.  Branches `clutch/`.  Lanes `~/apps/lanes/<Repo>/clutch-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `clutch-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Clutch-zuliprc` (mode 600).  Session tag `[CLUTCH·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Catalog copy.**  The Clutch seat has no skill home yet, so this pack is not installed anywhere.  Do not copy it into another tool's skill directory.
+> **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
 
 
-Load `this seat's skill directory/secret-safety/SKILL.md` as well when that file exists.  This skill is the fleet overlay.
+Load `~/.clutch/dsh/skills/secret-safety/SKILL.md` as well when that file exists.  This skill is the fleet overlay.
 
 **Redact in the same command that touches the secret.**  If you are deciding whether output is safe to show, you are already too late — it is in the transcript.
 
@@ -38,7 +38,7 @@ Owner drops a `chmod 600` file and gives you the path.  Never print the value.  
 
 Each seat bot's key is its own credential and nobody else's.  Mac seats:  `~/.secrets/Zulip/<file code>-zuliprc`, mode 600 (`Claude-zuliprc`, `Codex-zuliprc`, `MM-zuliprc`, …).  Cloud seats with no Mac filesystem:  env `ZULIP_EMAIL`, `ZULIP_API_KEY`, `ZULIP_SITE`.  `agent-sync` picks the source:  `--rc PATH`, then `ZULIP_RC`, then the seat file, then the env triple; `agent-sync whoami` shows which source it used, never the key.
 
-Never print, `cat`, echo, or paste a zuliprc or a key, never put one in a message, a DM, a commit, or a log, and never type one literally on a command line.  Never use another seat's key, and never handle Jay's personal API key.  If a key ever lands in a message:  delete the message (do not edit — Zulip keeps edit history), have the owner rotate it in Settings → Bots, update Infisical first, then the seat file, and note the leak on THE BOARD without the value.
+Never print, `cat`, echo, or paste a zuliprc or a key, never put one in a message, a DM, a commit, or a log, and never type one literally on a command line.  Never use another seat's key, and never handle Jay's personal API key.  If a key ever lands in a message:  delete the message (do not edit — Zulip keeps edit history), have the owner rotate it in Settings → Bots, update Infisical first, then the seat file, and note the leak on the Linear issue (`board comment <id>`) without the value.
 
 ## Handoff-file grep trap (2026-08-14)
 

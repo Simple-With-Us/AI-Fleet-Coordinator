@@ -7,7 +7,8 @@
 REPORT ONLY.  The doctor never deletes, moves, fetches or modifies anything.  Every subprocess goes
 through `run_cmd`, which refuses any command that is not on an explicit read-only allowlist (git
 status [--ignored], rev-parse, rev-list [--remotes=NAME], log, for-each-ref, branch --show-current,
-config --get, remote get-url, worktree list; gh pr list; lsof -d cwd; du -sk -x).  `git diff` is
+config --get, remote get-url, worktree list; gh pr list, --state all for the PR states and --state open for
+draft bodies; lsof -d cwd; du -sk -x).  `git diff` is
 deliberately absent: it refreshes the index and rewrites `.git/index` in checkouts that belong to
 other seats.  Every git call also runs with GIT_OPTIONAL_LOCKS=0 and core.fsmonitor=false so `git
 status` cannot touch the index or run a repo-configured monitor command.
@@ -54,6 +55,56 @@ one bulk `gh pr list` call per repo, matched by headRefName and headRefOid.  A m
 equals local HEAD covers the checkout, and that evidence is applied before any unpushed or
 detached-HEAD reason is recorded.  When gh is missing or fails the PR state is UNKNOWN, never NONE.
 
+Lane signals (open-loops F4, report only, schema 2 additive).  Every field below is read from files in the
+checkout's own git dir (`.git/worktrees/<name>` for a linked worktree) and work tree, from the same git
+calls the doctor already made, or from the PR list.  The allowlist did not change.
+  git_op_in_progress  the names of MERGE_HEAD, rebase-merge, rebase-apply, CHERRY_PICK_HEAD, REVERT_HEAD,
+                      BISECT_LOG, sequencer and index.lock that exist.  Any of them is a NEEDS-REVIEW
+                      reason ("git operation in progress (...)") and keeps the lane out of
+                      cleaner_candidates.  index_lock_age_hours says how old the lock is;  one over an hour is
+                      called possibly stale in the reason, and is still held back:  the doctor never
+                      removes a lock and cannot tell a crash from a running command.
+  dirty_oldest_age_hours, dirty_newest_mtime
+                      over every dirty path:  tracked edits, staged changes, UNTRACKED files (a lane that only
+                      made new files is not idle, and fleet-autopush commits those too) and, for a deletion,
+                      the folder the file left.  Ignored files are excluded.  A folded untracked folder is
+                      listed file by file with one more `git status --untracked-files=all`.  lstat only, so a
+                      symlink is never followed.  At most DIRTY_STAT_CAP paths are read;  dirty_times_partial
+                      says the list was cut or the full listing failed.
+  last_change_at, last_change_basis
+                      the newest of the dirty file times, the index mtime, the HEAD reflog mtime
+                      (`logs/HEAD`) and the last commit time, and which one won.  The index mtime is weak
+                      evidence:  any tool's plain `git status` rewrites the index, so it can only make a lane
+                      look busier than it is.  null when the dirty listing could not be read, because an
+                      unknown must not read as quiet.
+  never_pushed, never_pushed_age_hours
+                      a branch with no upstream whose commits no trusted remote has (unpushed above 0);  null
+                      for a detached HEAD or an unreadable fact;  false once a merged PR covers the commits.
+                      The age is the committer date of the oldest of those commits (last line of
+                      `git rev-list HEAD --not --remotes=...`, then `git log -1` on it), skipped above
+                      NEVER_PUSHED_LIST_CAP commits.
+  keep                the `.janitor-keep` marker read as `key: value` lines (reason, by, set, expires,
+                      board):  present, valid, reason, by, set_on, expires, expired, board, problem.  The
+                      marker is only read when it is a regular file (never through a symlink, never a FIFO), at
+                      most KEEP_READ_LIMIT bytes and KEEP_MAX_LINES lines;  reason, by and board are cleaned of
+                      control characters and capped, and are UNTRUSTED text for a consumer to quote.  A bare
+                      expires date lasts through that day, UTC.  A legacy empty marker is valid false.  Any
+                      present marker, valid or not, expired or not, keeps `janitor_keep` true:  expiry tells a
+                      person to look again and never permits a delete.
+  pr_is_auto_draft, auto_draft_seat_commit
+                      an OPEN PR that is a draft carrying the `fleet-autopush` label or, for a draft without the
+                      label, the body marker `<!-- fleet-autopush:auto-draft v1 -->` (one extra
+                      `gh pr list --state open --json number,body` per repo that has such a draft for a checkout;
+                      if it fails the answer is null).  True only when every open PR for the branch is one,
+                      false when any is an ordinary PR, null when it cannot be told.  auto_draft_seat_commit is
+                      whether the branch TIP is a commit made after the draft opened (PR createdAt) that has no
+                      `Fleet-Autopush: v1` trailer.  Approximation:  only the tip is looked at, so a seat commit
+                      under a later autopush commit reads as no seat commit, and a seat that forges the trailer
+                      only makes the lane look unattended.
+dropped_ball treats an open PR as covering the lane except for an auto-draft with auto_draft_seat_commit false:
+the draft holds what the auto-commit saved, not what changed after it, so a dirty or unpushed lane under it is a
+dropped ball.  A null auto_draft or auto_draft_seat_commit keeps the old rule (an open PR covers the lane).
+
 Layout v2 (owner decision 2026-10-09).  Each checkout also carries `layout_status`, `layout_reasons` and, for a
 legacy checkout whose new home is known, `layout_target` (see `layout.explain_layout`): `correct` is
 lanes/<Repo>/<seat>-<slug>, <slug>-<hex> (Claude desktop) or review-pr-<n>; `legacy-migrate` is an old prefix
@@ -65,7 +116,8 @@ classes, the strict exit code and the cleaner contract do not change: a legacy o
 always had, so the cleaners and the HogHunter vacuum see what they saw before.
 
 JSON schema 2 = schema 1 plus the top-level fresh_days, cleaner_min_days, gh_repos and
-cleaner_candidates, summary.cleaner_candidates, and the TOOL-CACHE safety class.  Exit codes: 0, 2 for
+cleaner_candidates, summary.cleaner_candidates, and the TOOL-CACHE safety class, plus the additive lane-signal
+fields above (git_op_in_progress through auto_draft_seat_commit, and `keep`).  Exit codes: 0, 2 for
 `--strict` hits, 64 for a usage error.
 
 Tests: fleet_lanes/tests/test_doctor.py (real temp git repos; no network).
@@ -82,8 +134,10 @@ import os
 import re
 import signal
 import socket
+import stat as _stat
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
@@ -94,7 +148,9 @@ __all__ = [
     "SCHEMA", "CommandRefused", "CmdResult", "run_cmd", "check_allowed",
     "redact_url", "redact_text", "parse_owner_repo",
     "WorktreeRecord", "parse_worktree_porcelain", "count_status", "split_ignored", "IGNORED_LIST_CAP",
-    "PrMatch", "match_pr", "make_gh_fetcher", "make_lsof_reader", "parse_lsof",
+    "PrMatch", "match_pr", "make_gh_fetcher", "make_gh_body_fetcher", "add_draft_bodies", "make_lsof_reader",
+    "parse_lsof", "GIT_OP_FILES", "git_ops_in_progress", "parse_status_entries", "dirty_times",
+    "parse_keep_marker", "KEEP_ABSENT",
     "ScanSpec", "scan_plan", "find_git_dirs",
     "Checkout", "assess", "FRESH_DAYS", "TOOL_CACHE_SAFETY", "has_merged_evidence", "cleaner_age_floor",
     "is_cleaner_candidate", "cleaner_candidates", "build_report", "render_text", "main",
@@ -429,6 +485,9 @@ _REGENERABLE_NAMES = frozenset({
 })
 _REGENERABLE_GLOBS = ("*.tsbuildinfo", "*.pyc", "dist-*")
 KEEP_MARKER = ".janitor-keep"  # has its own reason in assess, so it is not "ignored local state" too
+# What a checkout without a marker reports in `keep`.  `problem` says why a present marker is not valid.
+KEEP_ABSENT = {"present": False, "valid": False, "reason": None, "by": None, "set_on": None, "expires": None,
+               "expired": False, "board": None, "problem": None}
 IGNORED_LIST_CAP = 50
 _QUOTED_ESCAPE = re.compile(r"\\([0-7]{3}|.)", re.S)
 _SIMPLE_ESCAPES = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, '"': 34, "\\": 92}
@@ -495,7 +554,14 @@ def parse_lsof(text: str) -> list[tuple[int, str, str]]:
 
 DEFAULT_BRANCHES = frozenset({"main", "master"})
 GH_LIMIT = 500
-GH_FIELDS = "number,state,headRefName,headRefOid,mergedAt,closedAt"
+GH_FIELDS = "number,state,headRefName,headRefOid,mergedAt,closedAt,isDraft,labels,createdAt"
+
+# What fleet-autopush (open-loops C1-3) puts on the draft PR it opens, and on the commits it makes.  The label
+# is the main signal.  The body marker covers a draft opened while the label was missing, and is read with one
+# small extra call (`make_gh_body_fetcher`) that only runs for an open draft without the label.
+AUTOPUSH_LABEL = "fleet-autopush"
+AUTOPUSH_MARKER = "<!-- fleet-autopush:auto-draft v1 -->"
+_AUTOPUSH_TRAILER = re.compile(r"^Fleet-Autopush:[ \t]*v1[ \t]*$", re.M)
 
 
 @dataclass(frozen=True)
@@ -505,12 +571,66 @@ class PrMatch:
     state: OPEN | MERGED | CLOSED | BEYOND-MERGED | NONE | UNKNOWN | N/A.  MERGED and CLOSED mean
     local HEAD is covered by a PR head that lives on GitHub (so unpushed commits are not at risk).
     BEYOND-MERGED means a merged PR exists for this branch but HEAD has commits past its head.
+
+    The last three fields describe an OPEN match only.  `auto_draft` is True when every matched open PR
+    is a draft opened by fleet-autopush, False when any of them is an ordinary PR (it covers the lane),
+    and None when that could not be told (the PR record has no draft or label data, or a draft without
+    the label whose body could not be read).  `opened_at` is the epoch second the newest open PR was
+    created.  `seat_commit` is filled in later by `build_report` for an auto-draft: True when the branch
+    tip is a commit made after the draft opened that fleet-autopush did not make.
     """
 
     state: str
     number: int | None = None
     basis: str = ""
     beyond: int | None = None  # commits past the merged head; None when it could not be counted
+    auto_draft: bool | None = None
+    opened_at: float | None = None
+    seat_commit: bool | None = None
+
+
+def _epoch(text: object) -> float | None:
+    """Epoch seconds from an ISO 8601 stamp.  Python 3.9 rejects a trailing Z, so it is rewritten.  A stamp
+    without a zone is read as UTC."""
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        when = _dt.datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=_dt.timezone.utc)
+    return when.timestamp()
+
+
+def _auto_draft_of(pr: Mapping[str, object]) -> bool | None:
+    """True for a draft PR carrying the fleet-autopush label or the body marker, False for any PR known
+    not to be one, None when the record cannot say (a missing field).  The body is only ever searched for
+    the marker; it is not kept."""
+    is_draft, labels = pr.get("isDraft"), pr.get("labels")
+    if not isinstance(is_draft, bool):
+        return None
+    if not is_draft:
+        return False
+    if isinstance(labels, list) and any(isinstance(lab, Mapping) and lab.get("name") == AUTOPUSH_LABEL
+                                        for lab in labels):
+        return True
+    body = pr.get("body")
+    if isinstance(body, str):
+        return AUTOPUSH_MARKER in body
+    return None  # a draft without the label whose body was not read: it may still carry the marker
+
+
+def _auto_draft_summary(opens: Sequence[Mapping[str, object]]) -> tuple[bool | None, float | None]:
+    """(auto_draft, opened_at) over every open PR that matched the checkout.  One ordinary open PR is
+    enough to cover the lane, so any False wins; otherwise any None makes the answer None."""
+    kinds = [_auto_draft_of(p) for p in opens]
+    if any(k is False for k in kinds):
+        return False, None
+    if any(k is None for k in kinds):
+        return None, None
+    newest = max(opens, key=lambda p: int(p.get("number") or 0))
+    return True, _epoch(newest.get("createdAt"))
 
 
 def match_pr(branch: str | None, head_sha: str | None, prs: Sequence[Mapping[str, object]] | None, *,
@@ -537,7 +657,8 @@ def match_pr(branch: str | None, head_sha: str | None, prs: Sequence[Mapping[str
     opens = [p for p, _, _ in matched if p.get("state") == "OPEN"]
     if opens:
         pr = newest(opens)
-        return PrMatch("OPEN", int(pr["number"]), "open PR for this branch or HEAD")
+        auto, opened = _auto_draft_summary(opens)
+        return PrMatch("OPEN", int(pr["number"]), "open PR for this branch or HEAD", auto_draft=auto, opened_at=opened)
     exact_merged = [p for p, _, s in matched if s and p.get("state") == "MERGED"]
     if exact_merged:
         pr = newest(exact_merged)
@@ -577,6 +698,59 @@ def make_gh_fetcher(run: Callable[..., CmdResult] = run_cmd,
     return fetch
 
 
+GH_BODY_LIMIT = 100
+
+
+def make_gh_body_fetcher(run: Callable[..., CmdResult] = run_cmd) -> Callable[[str], dict[int, str] | None]:
+    """A fetcher for the bodies of one repo's OPEN PRs: number -> body.  It exists only to find the
+    auto-draft marker on a draft that lacks the label, so it asks for open PRs alone (a short list) and a
+    failure costs nothing but that answer (the PR then reads auto_draft None).  None means it failed."""
+    def fetch(repo: str) -> dict[int, str] | None:
+        res = run(["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", str(GH_BODY_LIMIT),
+                   "--json", "number,body"], None, None)
+        if not res.ok:
+            return None
+        try:
+            data = json.loads(res.out or "[]")
+        except ValueError:
+            return None
+        if not isinstance(data, list):
+            return None
+        return {int(p["number"]): p.get("body") if isinstance(p.get("body"), str) else ""
+                for p in data if isinstance(p, dict) and isinstance(p.get("number"), int)}
+    return fetch
+
+
+def _needs_body(pr: Mapping[str, object]) -> bool:
+    """An open draft with label data, no fleet-autopush label and no body yet: the marker decides."""
+    labels = pr.get("labels")
+    return (pr.get("state") == "OPEN" and pr.get("isDraft") is True and isinstance(labels, list)
+            and "body" not in pr
+            and not any(isinstance(lab, Mapping) and lab.get("name") == AUTOPUSH_LABEL for lab in labels))
+
+
+def add_draft_bodies(repo: str, prs: list[dict], fetch: Callable[[str], dict[int, str] | None] | None,
+                     refs: Iterable[str] | None = None) -> tuple[list[dict], bool]:
+    """(PR list with `body` added to each open draft that needs it, whether the lookup failed).  The
+    input list is not changed.  `refs` (branch names and head shas of this repo's checkouts) limits the
+    drafts that count, so another person's draft nobody has checked out costs no call.  Without a fetcher,
+    or when no draft needs it, nothing is asked."""
+    ours = None if refs is None else frozenset(refs)
+
+    def wanted(pr: Mapping[str, object]) -> bool:
+        return _needs_body(pr) and (ours is None or pr.get("headRefName") in ours or pr.get("headRefOid") in ours)
+    if fetch is None or not any(wanted(p) for p in prs):
+        return prs, False
+    try:
+        bodies = fetch(repo)
+    except Exception:  # noqa: BLE001 - a failed lookup means "unknown", never a crash
+        bodies = None
+    if bodies is None:
+        return prs, True
+    return [({**p, "body": bodies[int(p["number"])]} if wanted(p) and int(p.get("number") or 0) in bodies else p)
+            for p in prs], False
+
+
 def make_lsof_reader(run: Callable[..., CmdResult] = run_cmd) -> Callable[[], list[tuple[int, str, str]] | None]:
     """One read-only `lsof -d cwd -Fpcn` call.  None means lsof failed (the answer is unknown)."""
     def read() -> list[tuple[int, str, str]] | None:
@@ -606,7 +780,7 @@ STATIC_TMP_SCAN = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp")
 # (relative path under ~, depth)
 _HARNESS_SCANS = (
     (".codex/worktrees", 3), (".cursor/worktrees", 3), (".ag/worktrees", 3), (".grok", 4),
-    (".fx", 4), (".botfleet", 5), (".gemini/antigravity", 5), (".buzz", 3),
+    (".fx", 4), (".botfleet", 5), (".gemini/antigravity", 5), (".buzz", 3), ("conductor/workspaces", 3),
 )
 
 
@@ -643,6 +817,11 @@ def scan_plan(roots: L.Roots, tmp_scan_roots: Iterable[str | os.PathLike[str]], 
         specs.append(ScanSpec("tmp", os.path.realpath(os.fspath(t)), 4, True))
     specs.append(ScanSpec("apps", os.fspath(roots.apps_root), 2, False))
     specs.append(ScanSpec("lanes", os.fspath(roots.lanes_root), 4, False))
+    # The scan never follows symlinks, and a lanes/<Repo> folder stored on the external disk is one.  Each such
+    # link gets its own scan, rooted at the link (so hits keep their ~/apps/lanes spelling), one level shallower.
+    for link in L.external_links(roots):
+        if link.status in ("ok", "renamed"):
+            specs.append(ScanSpec(f"lanes/{link.name}", link.path, 3, False))
     specs.append(ScanSpec("code", os.fspath(roots.code_root), 1, False))
     try:
         with os.scandir(roots.code_root) as it:
@@ -761,6 +940,18 @@ class Checkout:
     cwd_procs: list[str] | None = None
     active: bool | None = None
     janitor_keep: bool = False
+    keep: dict = field(default_factory=lambda: dict(KEEP_ABSENT))
+    git_op_in_progress: list[str] = field(default_factory=list)
+    index_lock_age_hours: float | None = None
+    dirty_oldest_age_hours: float | None = None
+    dirty_newest_mtime: str | None = None
+    dirty_times_partial: bool = False
+    last_change_at: str | None = None
+    last_change_basis: str | None = None
+    never_pushed: bool | None = None
+    never_pushed_age_hours: float | None = None
+    pr_is_auto_draft: bool | None = None
+    auto_draft_seat_commit: bool | None = None
     size_mb: float | None = None
     name_verdict: str | None = None
     name_reasons: list[str] = field(default_factory=list)
@@ -780,6 +971,8 @@ class Checkout:
     _remote_checked: bool = field(default=False, repr=False)
     _remote_notes: list[str] = field(default_factory=list, repr=False)
     _git_ok: bool = field(default=False, repr=False)  # git resolved this very directory
+    _dirty_entries: list = field(default_factory=list, repr=False)  # (XY, path) of every non-ignored status line
+    _dirty_listing_partial: bool = field(default=False, repr=False)  # the full untracked listing was not read
 
     def to_dict(self) -> dict:
         return {f.name: getattr(self, f.name) for f in dataclasses.fields(self) if not f.name.startswith("_")}
@@ -826,6 +1019,232 @@ def _iso(epoch: float) -> str:
 
 def _days(now: float, then: float | None) -> float | None:
     return None if then is None else round(max(0.0, now - then) / 86400.0, 1)
+
+
+# --------------------------------------------------------------------------- lane signals (open-loops F4)
+
+# Files and folders in a checkout's own git dir (`.git/worktrees/<name>` for a linked worktree, which is
+# where git keeps them) that exist only while an operation is half done.  Presence checks only: nothing
+# here runs git.  `index.lock` also appears for a moment during any git command, and a crash leaves it
+# behind for good; it is reported either way, with its age, and the doctor never removes it.
+GIT_OP_FILES = ("MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG",
+                "sequencer", "index.lock")
+STALE_LOCK_HOURS = 1.0
+DIRTY_STAT_CAP = 3000          # at most this many dirty paths are stat'ed per checkout; more sets dirty_times_partial
+NEVER_PUSHED_LIST_CAP = 5000   # the oldest unpushed commit is looked up only for a lane with at most this many
+KEEP_READ_LIMIT = 4096         # bytes of a .janitor-keep file that are read
+KEEP_MAX_LINES = 40
+KEEP_REASON_MAX = 200
+KEEP_SHORT_MAX = 40
+_KEEP_KEYS = ("reason", "by", "set", "expires", "board")
+_SHA = re.compile(r"^[0-9a-f]{40,64}$")
+
+
+def git_ops_in_progress(admin: str | None) -> list[str]:
+    """The names from GIT_OP_FILES that exist in `admin`, in that order.  `lexists`, so a dangling symlink
+    named like one still counts."""
+    if not admin:
+        return []
+    return [name for name in GIT_OP_FILES if os.path.lexists(os.path.join(admin, name))]
+
+
+def parse_status_entries(porcelain: str) -> list[tuple[str, str]]:
+    """(XY, path) for every line of `git status --porcelain=v1` that is not an ignored path.  A rename or
+    copy reports its new path.  Paths are relative to the work tree root, with git's quoting undone, and a
+    folded untracked directory keeps its trailing slash."""
+    out: list[tuple[str, str]] = []
+    for line in porcelain.splitlines():
+        if len(line) < 4 or line.startswith("!!"):
+            continue
+        xy, rest = line[:2], line[3:]
+        if ("R" in xy or "C" in xy) and " -> " in rest:
+            rest = rest.rsplit(" -> ", 1)[1]
+        path = _unquote_porcelain(rest)
+        if path:
+            out.append((xy, path))
+    return out
+
+
+def _path_mtime(root: str, rel: str) -> float | None:
+    """lstat mtime of a dirty path (never follows a symlink).  A path that is gone (a deletion, or a rename
+    away) reports the nearest folder above it that still exists, because that folder changed when the file
+    went."""
+    rel = rel.rstrip("/")
+    if not rel or rel.startswith("/") or ".." in rel.split("/") or "\x00" in rel:
+        return None
+    full = os.path.join(root, rel)
+    while True:
+        try:
+            return os.lstat(full).st_mtime
+        except OSError:
+            up = os.path.dirname(full)
+            if len(up) < len(root) or up == full:
+                return None
+            full = up
+
+
+def dirty_times(root: str, entries: Sequence[tuple[str, str]]) -> tuple[list[float], bool]:
+    """(mtimes, partial) of the dirty paths: tracked edits, staged changes and untracked files alike.
+    Ignored files are not in `entries`.  At most DIRTY_STAT_CAP paths are read; the rest set `partial`."""
+    times: list[float] = []
+    for _, rel in entries[:DIRTY_STAT_CAP]:
+        when = _path_mtime(root, rel)
+        if when is not None:
+            times.append(when)
+    return times, len(entries) > DIRTY_STAT_CAP
+
+
+def _clean_text(text: str, cap: int) -> str:
+    """Free text from a file someone else wrote: control, format and unassigned characters dropped, runs of
+    white space collapsed, cut to `cap`.  It is still untrusted;  a consumer renders it as a quoted value."""
+    kept = "".join(ch if not unicodedata.category(ch).startswith("C") else (" " if ch in "\t\n\r" else "")
+                   for ch in text)
+    return " ".join(kept.split())[:cap]
+
+
+def _read_small_regular(path: str, limit: int) -> tuple[str | None, str]:
+    """(text, problem).  Reads at most `limit` bytes of a regular file, never through a symlink: a marker
+    that links to some other file must not carry that file's first lines into a report."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None, "unreadable"
+    if _stat.S_ISLNK(st.st_mode):
+        return None, "symlink (not read)"
+    if not _stat.S_ISREG(st.st_mode):
+        return None, "not a regular file (not read)"
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None, "unreadable"
+    try:
+        if not _stat.S_ISREG(os.fstat(fd).st_mode):
+            return None, "not a regular file (not read)"
+        data = os.read(fd, limit)
+    except OSError:
+        return None, "unreadable"
+    finally:
+        os.close(fd)
+    return data.decode("utf-8", "replace"), ""
+
+
+def _keep_when(raw: str) -> tuple[str | None, float | None]:
+    """(normalized stamp, epoch of the instant it stops counting).  A bare date lasts through that day,
+    UTC;  a stamp without a zone is read as UTC.  (None, None) when it is not a date."""
+    raw = raw.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        try:
+            day = _dt.date.fromisoformat(raw)
+        except ValueError:
+            return None, None
+        end = _dt.datetime.combine(day + _dt.timedelta(days=1), _dt.time.min, tzinfo=_dt.timezone.utc)
+        return day.isoformat(), end.timestamp()
+    epoch = _epoch(raw)
+    return (None, None) if epoch is None else (_iso(epoch), epoch)
+
+
+def parse_keep_marker(root: str, now: float) -> dict:
+    """The `keep` record of a checkout: `.janitor-keep` read as `key: value` lines (reason, by, set,
+    expires, board).  Presence is what protects a lane;  nothing here can lift it.  A legacy empty marker, an
+    unreadable one, a symlink and a malformed one are all present with valid False, and an expired one is
+    still present: expiry only tells a person to look again, it never permits a delete.  `reason`, `by` and
+    `board` are untrusted free text (cleaned and capped here, still to be rendered as quoted data).  `now`
+    is the report clock's epoch second."""
+    out = dict(KEEP_ABSENT)
+    marker = os.path.join(root, KEEP_MARKER)
+    if not os.path.lexists(marker):
+        return out
+    out["present"] = True
+    text, problem = _read_small_regular(marker, KEEP_READ_LIMIT)
+    if text is None:
+        out["problem"] = problem
+        return out
+    raw: dict[str, str] = {}
+    for line in text.splitlines()[:KEEP_MAX_LINES]:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, value = line.partition(":")
+        key = key.strip().lower()
+        if sep and key in _KEEP_KEYS and key not in raw:
+            raw[key] = value
+    if not raw:
+        out["problem"] = "legacy or empty marker (no key: value lines)"
+        return out
+    out["reason"] = _clean_text(raw.get("reason", ""), KEEP_REASON_MAX) or None
+    out["by"] = _clean_text(raw.get("by", ""), KEEP_SHORT_MAX) or None
+    out["board"] = _clean_text(raw.get("board", ""), KEEP_SHORT_MAX) or None
+    out["set_on"], _ = _keep_when(raw.get("set", ""))
+    out["expires"], ends = _keep_when(raw.get("expires", ""))
+    out["expired"] = ends is not None and now >= ends
+    missing = [name for name, value in (("reason", out["reason"]), ("by", out["by"]), ("set", out["set_on"]),
+                                        ("expires", out["expires"])) if not value]
+    out["valid"] = not missing
+    out["problem"] = ("missing or unreadable: " + ", ".join(missing)) if missing else None
+    return out
+
+
+def _hours(now: float, then: float) -> float:
+    return round(max(0.0, now - then) / 3600.0, 1)
+
+
+def _file_signals(co: Checkout, ctx: _Ctx) -> None:
+    """git_op_in_progress, index_lock_age_hours, the dirty-file times and last_change_at, from file stats
+    in the checkout's own git dir and work tree.  No process runs here."""
+    admin = co._admin if co._admin and os.path.isdir(co._admin) else None
+    now = ctx.now
+    co.git_op_in_progress = git_ops_in_progress(admin)
+    if admin and "index.lock" in co.git_op_in_progress:
+        try:
+            co.index_lock_age_hours = _hours(now, os.lstat(os.path.join(admin, "index.lock")).st_mtime)
+        except OSError:
+            pass
+    if not co._git_ok or co.dirty_tracked is None:
+        return  # without a dirty listing the newest change is unknown, so last_change_at stays unknown
+    times, partial = dirty_times(co.path, co._dirty_entries)
+    co.dirty_times_partial = partial or co._dirty_listing_partial
+    candidates: list[tuple[float, str]] = []
+    if times:
+        co.dirty_oldest_age_hours = _hours(now, min(times))
+        co.dirty_newest_mtime = _iso(max(times))
+        candidates.append((max(times), "dirty-file"))
+    # The index mtime is weak evidence: any plain `git status` by any tool rewrites the index.  It can only
+    # make a lane look busier than it is, never idler, and `last_change_basis` says when it won.
+    for rel, label in (("index", "index"), (os.path.join("logs", "HEAD"), "reflog")):
+        if admin:
+            try:
+                candidates.append((os.lstat(os.path.join(admin, rel)).st_mtime, label))
+            except OSError:
+                pass
+    if co.last_commit:
+        candidates.append((_dt.datetime.fromisoformat(co.last_commit).timestamp(), "last-commit"))
+    if candidates:
+        when, label = max(candidates)
+        co.last_change_at, co.last_change_basis = _iso(when), label
+
+
+def _probe_never_pushed(co: Checkout, ctx: _Ctx, path: str, not_args: Sequence[str]) -> None:
+    """never_pushed: a branch with no upstream whose commits no trusted remote has.  None for a detached
+    HEAD or when a needed fact could not be read.  The age is the committer date of the oldest of those
+    commits (the last line of `git rev-list`, then `git log -1` on it:  both already allowlisted).  The
+    `assess` step clears both fields when a merged PR covers the commits."""
+    if not co.head_sha:
+        co.never_pushed = False  # no commits yet: nothing to push
+        return
+    if co.branch is None or co.unpushed is None or co.upstream_state == "unknown":
+        co.never_pushed = None
+        return
+    co.never_pushed = co.upstream_state == "none" and co.unpushed > 0
+    if not co.never_pushed or co.unpushed > NEVER_PUSHED_LIST_CAP:
+        return
+    res = _call(ctx, ["git", "rev-list", "HEAD", *not_args], path)
+    oldest = res.out.split()[-1] if res.ok and res.out.split() else ""
+    if not _SHA.match(oldest):
+        return
+    res = _call(ctx, ["git", "log", "-1", "--no-show-signature", "--format=%ct", oldest], path)
+    if res.ok and res.out.strip().isdigit():
+        co.never_pushed_age_hours = _hours(ctx.now, float(res.out.strip()))
 
 
 # --------------------------------------------------------------------------- per-checkout inspection
@@ -913,7 +1332,8 @@ def _inspect(cand: _Cand, ctx: _Ctx) -> Checkout:
     co.kind, co._admin, co.parent_repo = kind, admin, parent
     if admin and os.path.exists(os.path.join(admin, "locked")) and kind == "LINKED-WORKTREE":
         co.locked = True
-    co.janitor_keep = os.path.exists(os.path.join(path, KEEP_MARKER))
+    co.keep = parse_keep_marker(path, ctx.now)
+    co.janitor_keep = bool(co.keep["present"])  # presence alone protects a lane:  legacy, invalid, expired or a symlink
     try:
         st = os.stat(path)
         co.lane_age_days = _days(ctx.now, getattr(st, "st_birthtime", st.st_mtime))
@@ -922,6 +1342,7 @@ def _inspect(cand: _Cand, ctx: _Ctx) -> Checkout:
 
     if kind != "ORPHAN":
         _probe_git(co, ctx, path)
+        _file_signals(co, ctx)
         times: list[float] = []
         if admin:
             try:
@@ -1033,6 +1454,15 @@ def _probe_git(co: Checkout, ctx: _Ctx, path: str) -> None:
     res = _call(ctx, ["git", "status", "--porcelain=v1", "--untracked-files=normal"], path)
     if res.ok:
         co.dirty_tracked, co.dirty_untracked = count_status(res.out)
+        co._dirty_entries = parse_status_entries(res.out)
+        if any(xy == "??" and rel.endswith("/") for xy, rel in co._dirty_entries):
+            # `normal` folds an untracked folder into one line.  The full listing (still allowlisted, still
+            # skips ignored files) names its files, so a new file deep in a new folder is seen as a change.
+            full = _call(ctx, ["git", "status", "--porcelain=v1", "--untracked-files=all"], path)
+            if full.ok:
+                co._dirty_entries = parse_status_entries(full.out)
+            else:
+                co._dirty_listing_partial = True
     else:
         errors.append("status: " + res.failure_text())
     # Ignored files get their own call: walking a large ignored tree is the slow part, and a
@@ -1092,6 +1522,7 @@ def _probe_git(co: Checkout, ctx: _Ctx, path: str) -> None:
             co.has_stash = bool(res.out.strip())
         else:
             errors.append("stash: " + res.failure_text())
+    _probe_never_pushed(co, ctx, path, not_args)
 
 
 _CLAUDE_HEX = re.compile(r"-[0-9a-f]{6}$")
@@ -1113,6 +1544,7 @@ def infer_tool(real: str, roots: L.Roots, branch: str | None, seat: str | None,
     branch prefix.  The basis says which evidence was used so a reader can discount it."""
     home = os.fspath(roots.home)
     fold = (lambda s: s.casefold()) if roots.case_insensitive else (lambda s: s)
+    real = L.to_logical(real, roots)          # a lane stored on the external disk is judged at its lanes-root place
     r = fold(real)
 
     def under(rel: str) -> bool:
@@ -1124,6 +1556,8 @@ def infer_tool(real: str, roots: L.Roots, branch: str | None, seat: str | None,
     lanes = fold(os.fspath(roots.lanes_root))
     if r == lanes + os.sep + L.CODEX_DIR or r.startswith(lanes + os.sep + L.CODEX_DIR + os.sep):
         return "codex", f"path:lanes/{L.CODEX_DIR}"
+    if r == lanes + os.sep + L.CONDUCTOR_DIR or r.startswith(lanes + os.sep + L.CONDUCTOR_DIR + os.sep):
+        return "conductor", f"path:lanes/{L.CONDUCTOR_DIR}"
     if r.startswith(lanes + os.sep):
         rel = real[len(os.fspath(roots.lanes_root)) + 1:].split(os.sep)
         if len(rel) >= 2 and L.is_desktop_dir_name(rel[1], roots.seat_tokens):
@@ -1131,7 +1565,7 @@ def infer_tool(real: str, roots: L.Roots, branch: str | None, seat: str | None,
 
     for rel, tool in ((".codex", "codex"), (".cursor", "cursor"), (".grok", "grok"), (".fx", "fx"),
                       (".gemini", "antigravity"), (".ag", "antigravity"), (".botfleet", "botfleet"),
-                      (".buzz", "buzz"), (".claude", "claude-cli")):
+                      ("conductor/workspaces", "conductor"), (".buzz", "buzz"), (".claude", "claude-cli")):
         if under(rel):
             return tool, f"path:~/{rel}"
     if re.search(r"/\.muse/worktrees(/|$)", real):
@@ -1220,6 +1654,10 @@ def assess(co: Checkout, pr: PrMatch, active_reasons: Sequence[str], *, fresh_da
     evidence: list[str] = []
     covered = has_merged_evidence(pr.state)
     co.pr_state, co.pr_number, co.pr_basis = pr.state, pr.number, pr.basis
+    co.pr_is_auto_draft = pr.auto_draft if pr.state == "OPEN" else False
+    co.auto_draft_seat_commit = pr.seat_commit if co.pr_is_auto_draft else None
+    # An auto-draft that nobody has committed to since it opened covers nothing the lane has done since.
+    unattended = pr.state == "OPEN" and pr.auto_draft is True and pr.seat_commit is False
 
     if co.kind == "ORPHAN":
         unknown.append("orphan: .git points to a missing gitdir, so no git state can be read")
@@ -1238,6 +1676,14 @@ def assess(co: Checkout, pr: PrMatch, active_reasons: Sequence[str], *, fresh_da
         evidence.append(f"ignored files are regenerable build output only ({co.ignored_regenerable})")
     if co.janitor_keep:
         risk.append(f"keep marker {KEEP_MARKER}: ask the owner first")
+    if co.git_op_in_progress:
+        # A half-done merge, rebase or cherry-pick (or a git command that holds the index) means the tree is
+        # in a state nobody should clean up or auto-commit.  Report only:  nothing is removed or unlocked.
+        names = ", ".join(co.git_op_in_progress)
+        note = ""
+        if co.index_lock_age_hours is not None and co.index_lock_age_hours >= STALE_LOCK_HOURS:
+            note = f"; index.lock is {co.index_lock_age_hours:g}h old and may be left over from a crash"
+        risk.append(f"git operation in progress ({names}){note}")
 
     if co._remote_checked and co.remote_url is None:
         risk.append("no remote configured (origin)")
@@ -1246,7 +1692,12 @@ def assess(co: Checkout, pr: PrMatch, active_reasons: Sequence[str], *, fresh_da
     risk.extend(co._remote_notes)
 
     if pr.state == "OPEN":
-        risk.append(f"open PR #{pr.number}")
+        kind = ""
+        if unattended:
+            kind = " (auto-draft by fleet-autopush, no seat commit since it opened)"
+        elif pr.auto_draft is True:
+            kind = " (auto-draft by fleet-autopush)"
+        risk.append(f"open PR #{pr.number}{kind}")
     elif pr.state == "BEYOND-MERGED":
         extra = "" if pr.beyond is None else f" ({_plural(pr.beyond, 'commit')})"
         risk.append(f"commits beyond merged PR #{pr.number}{extra}" +
@@ -1268,6 +1719,8 @@ def assess(co: Checkout, pr: PrMatch, active_reasons: Sequence[str], *, fresh_da
             unknown.append("lane age unknown: " + " and ".join(missing) +
                            " could not be read, so a fresh lane cannot be ruled out")
 
+    if covered and co.never_pushed:
+        co.never_pushed, co.never_pushed_age_hours = False, None  # GitHub holds these commits through a merged PR
     if co.unpushed is not None and co.unpushed > 0 and not covered:
         note = " (PR state unknown; may already be merged)" if pr.state == "UNKNOWN" else ""
         risk.append(f"unpushed commits: {co.unpushed}{note}")
@@ -1309,12 +1762,13 @@ def assess(co: Checkout, pr: PrMatch, active_reasons: Sequence[str], *, fresh_da
 
     # dropped_ball: NEEDS-REVIEW with dirty files or uncovered unpushed commits and no open PR.
     # A parent's unpushed branch commits are normally its lanes' work, which the lane rows flag, so
-    # they raise dropped_ball only on a clone that hosts no worktrees.
+    # they raise dropped_ball only on a clone that hosts no worktrees.  An open PR covers the lane,
+    # except an unattended auto-draft:  the draft holds what the auto-commit saved, not what has changed since.
     unpushed_at_risk = ((co.unpushed or 0) > 0 and not covered) or \
         (other_branch_commits > 0 and not co.registered_worktrees)
     if co.safety != "NEEDS-REVIEW" or not (dirty or unpushed_at_risk):
         co.dropped_ball = False
-    elif pr.state == "OPEN":
+    elif pr.state == "OPEN" and not unattended:
         co.dropped_ball = False
     elif pr.state == "UNKNOWN":
         co.dropped_ball = None  # cannot assert "no open PR"
@@ -1351,8 +1805,9 @@ def is_cleaner_candidate(co: Checkout, *, fresh_days: float = FRESH_DAYS,
 
     SAFE-TO-REMOVE alone is never enough (a fresh, clean, pushed lane reads SAFE).  Every one of
     these must hold: safety SAFE-TO-REMOVE; merged-PR evidence; lane_age_days and idle_days both known
-    and at least the age floor; no .janitor-keep marker; lsof worked and no process has it as cwd;
-    a lane, review or managed location; not a tool cache; no read errors; a successful gh lookup for
+    and at least the age floor; no .janitor-keep marker; no git operation in progress (`assess` already
+    makes one NEEDS-REVIEW;  this repeats it for a hand-built record); lsof worked and no process has it
+    as cwd; a lane, review or managed location; not a tool cache; no read errors; a successful gh lookup for
     its repo; and, because removal is `git worktree remove`, a linked worktree that its parent
     repository's list registers.  A path with a line break is left out so the list stays parseable."""
     floor = cleaner_age_floor(fresh_days)
@@ -1362,6 +1817,7 @@ def is_cleaner_candidate(co: Checkout, *, fresh_days: float = FRESH_DAYS,
         and co.lane_age_days is not None and co.lane_age_days >= floor
         and co.idle_days is not None and co.idle_days >= floor
         and not co.janitor_keep
+        and not co.git_op_in_progress
         and co.cwd_procs == [] and co.active is False
         and co.location_class in _LANE_LIKE
         and not co.tool_cache
@@ -1393,6 +1849,23 @@ def cleaner_candidates(checkouts: Iterable[Checkout], *, fresh_days: float = FRE
 
 
 # --------------------------------------------------------------------------- build the report
+
+def _seat_commit_since(ctx: _Ctx, path: str, opened_at: float | None) -> bool | None:
+    """Whether the branch tip is a commit made after the auto-draft opened that fleet-autopush did not make
+    (no `Fleet-Autopush: v1` trailer).  One `git log -1` on HEAD.  None when the open time or the commit
+    could not be read.  Approximation:  a seat commit that a later autopush commit sits on top of reads as
+    "no seat commit", because only the tip is looked at.  A seat that forges the trailer only makes the lane
+    count as unattended, which reports more, never less.  The commit message is searched, not stored."""
+    if opened_at is None:
+        return None
+    res = _call(ctx, ["git", "log", "-1", "--no-show-signature", "--format=%ct%x09%B"], path)
+    stamp, _, message = res.out.partition("\t")
+    if not res.ok or not stamp.strip().isdigit():
+        return None
+    if _AUTOPUSH_TRAILER.search(message):
+        return False
+    return float(stamp.strip()) > opened_at
+
 
 _ANOMALY_ORDER = ("FORBIDDEN_TMP", "FORBIDDEN_CODE_TOPLEVEL", "ORPHAN", "PRUNABLE", "UNSANCTIONED",
                   "WRONG-PLACE", "FULL-CLONE-IN-LANE", "NAME-DRIFT", "NON-LANE")
@@ -1454,6 +1927,43 @@ def _anomalies_for(co: Checkout) -> list[dict]:
     return out
 
 
+def external_lane_warnings(roots: L.Roots) -> list[str]:
+    """What is wrong with lanes stored on the external disk (docs/protocols/lane-map.md, "External lanes").
+
+    A lanes/<Repo> symlink whose target is missing (the disk is not mounted, so none of its lanes can be seen),
+    one that points somewhere that is not lanes storage, and, once any link is in use, a folder on the external
+    lanes disk that no link under the lanes root leads to (its lanes are invisible at their ~/apps/lanes path).
+    Empty when no lanes folder is a symlink."""
+    links = L.external_links(roots)
+    out: list[str] = []
+    for link in links:
+        if link.status == "dangling":
+            out.append(f"{link.path} is a symlink to {link.target}, which does not exist; is the external disk mounted?  "
+                       "Its lanes are not listed until it is.")
+        elif link.status == "renamed":
+            out.append(f"{link.path} is a symlink to {link.real}, a folder with another name; the lanes in it are judged "
+                       f"by that name ({os.path.basename(link.real)}), not by {link.name}.  Name the folder on the disk "
+                       f"{link.name}.")
+        elif link.status == "elsewhere":
+            ext = ", ".join(str(r) for r in roots.external_lanes_roots) or "off"
+            out.append(f"{link.path} is a symlink to {link.real}, which is not on the external lanes disk ({ext}); "
+                       "its lanes are reported as unsanctioned.")
+    if any(link.status in ("ok", "renamed") for link in links):
+        fold = str.casefold if roots.case_insensitive else str
+        linked = {fold(os.path.basename(link.real)) for link in links if link.status in ("ok", "renamed")}
+        for ext in roots.external_lanes_roots:
+            try:
+                with os.scandir(ext) as it:
+                    stray = sorted(e.name for e in it if not e.name.startswith(".") and e.is_dir()
+                                   and fold(e.name) not in linked and not os.path.lexists(os.path.join(roots.lanes_root, e.name)))
+            except OSError:
+                continue
+            if stray:
+                out.append(f"{ext} holds {', '.join(stray[:6])}{' ...' if len(stray) > 6 else ''} with no symlink under "
+                           f"{roots.lanes_root}; its lanes are not at their ~/apps/lanes path.")
+    return out
+
+
 def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = None, *,
                  cwd: str | os.PathLike[str] | None = None,
                  tmp_scan_roots: Iterable[str | os.PathLike[str]] | None = None,
@@ -1461,6 +1971,7 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
                  registry: L.Registry | None = None,
                  run: Callable[..., CmdResult] = run_cmd,
                  gh_prs: Callable[[str], list[dict] | None] | None = None,
+                 gh_bodies: Callable[[str], dict[int, str] | None] | None = None,
                  lsof_cwds: Callable[[], list[tuple[int, str, str]] | None] | None = None,
                  clock: Callable[[], _dt.datetime] | None = None, workers: int = 8,
                  case_insensitive: bool | None = None, only_class: str | None = None,
@@ -1468,8 +1979,10 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
     """Run the whole sweep and return the JSON-ready report.
 
     Everything that touches the machine is injectable: `run` (every subprocess), `gh_prs`
-    (repo -> PR list or None), `lsof_cwds` (-> rows or None), `clock`, `tmp_scan_roots` (default:
-    the real temp dirs) and `cwd` (None skips the current-directory check).  `only_class` filters
+    (repo -> PR list or None), `gh_bodies` (repo -> {open PR number: body} or None, asked only for an open
+    draft without the fleet-autopush label;  not asked at all when `gh_prs` is injected and this is not),
+    `lsof_cwds` (-> rows or None), `clock`, `tmp_scan_roots` (default: the real temp dirs) and `cwd` (None
+    skips the current-directory check).  `only_class` filters
     the output but `summary.strict_violations` always counts the whole machine.  `fresh_days` is the
     fresh-lane threshold (see `assess`); `cleaner_candidates` is computed over the checkouts shown.
     """
@@ -1486,6 +1999,7 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
             warnings.append(f"registry unreadable ({type(exc).__name__}); app and seat names are partial")
     roots = L.make_roots(home, env, registry=registry, case_insensitive=case_insensitive)
     warnings.extend(roots.warnings)
+    warnings.extend(external_lane_warnings(roots))
     ctx = _Ctx(roots, registry, run, now, sizes)
     fold = str.casefold if roots.case_insensitive else str
 
@@ -1542,7 +2056,9 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
                     if rec.bare or k in checkouts or any(c.key == k for c in pending):
                         continue
                     if os.path.lexists(os.path.join(rec.path, ".git")):
-                        pending.append(_Cand(rec.path, k, [f"worktree-list:{parent}"]))
+                        # git prints the real path of a worktree; a lane stored on the external disk is shown at
+                        # the ~/apps/lanes spelling the agents use.
+                        pending.append(_Cand(L.display_path(rec.path, roots), k, [f"worktree-list:{parent}"]))
                         found_fold.add(fold(rec.path))
     anomalies: list[dict] = []
     prunable_seen: set[tuple[str, str]] = set()
@@ -1566,7 +2082,8 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
                 if dedupe not in prunable_seen:
                     prunable_seen.add(dedupe)
                     why = rec.prunable or "registered path no longer exists"
-                    anomalies.append({"type": "PRUNABLE", "path": rec.path, "realpath": rec.path,
+                    shown = L.display_path(rec.path, roots)
+                    anomalies.append({"type": "PRUNABLE", "path": shown, "realpath": shown,
                                       "detail": f"{why} (parent {parent_of_list[pk]})"})
             else:
                 live += 1
@@ -1604,6 +2121,21 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
         if failed:
             warnings.append("gh PR lookup failed for " + ", ".join(failed) +
                             "; their checkouts report PR state UNKNOWN")
+        # An open draft with no fleet-autopush label may still carry the body marker.  One small call per
+        # such repo reads it.  The call is best effort:  if it fails the draft reads auto_draft None.
+        body_fetch = gh_bodies if gh_bodies is not None else (make_gh_body_fetcher(run) if gh_prs is None else None)
+        body_failed: list[str] = []
+        for repo in sorted(prs_by_repo):
+            listed_prs = prs_by_repo[repo]
+            if listed_prs is None:
+                continue
+            refs = {r for co in checkouts.values() if co.owner_repo == repo for r in (co.branch, co.head_sha) if r}
+            prs_by_repo[repo], lookup_failed = add_draft_bodies(repo, listed_prs, body_fetch, refs)
+            if lookup_failed:
+                body_failed.append(repo)
+        if body_failed:
+            warnings.append("gh open-PR body lookup failed for " + ", ".join(body_failed) +
+                            "; a draft there without the fleet-autopush label reports auto-draft unknown")
 
     # ---- processes: one lsof call
     lsof_rows = (lsof_cwds or make_lsof_reader(run))()
@@ -1658,6 +2190,8 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
                 res = _call(ctx, ["git", "rev-list", "--count", "HEAD", "--not", oid], _co.path)
                 return int(res.out.strip()) if res.ok and res.out.strip().isdigit() else None
             pr = match_pr(co.branch, co.head_sha, prs, truncated=truncated, beyond=beyond, limit=gh_limit)
+            if pr.state == "OPEN" and pr.auto_draft is True:
+                pr = dataclasses.replace(pr, seat_commit=_seat_commit_since(ctx, co.path, pr.opened_at))
         assess(co, pr, active_reasons, fresh_days=fresh_days)
 
     # ---- anomalies and summary
@@ -1773,6 +2307,11 @@ def _row(co: dict, home: str) -> list[str]:
         facts.append(f"dirty {co['dirty_tracked']}t/{co['dirty_untracked']}u")
     if co["unpushed"]:
         facts.append(f"unpushed {co['unpushed']}")
+    if co.get("never_pushed"):
+        age = co.get("never_pushed_age_hours")
+        facts.append("never pushed" + ("" if age is None else f" (oldest commit {age:g}h old)"))
+    if co.get("git_op_in_progress"):
+        facts.append("git op " + ",".join(co["git_op_in_progress"]))
     facts.append(f"PR {co['pr_state']}" + (f" #{co['pr_number']}" if co["pr_number"] else ""))
     facts.append(f"tool {co['creating_tool']}")
     lines = [f"  {_tilde(co['path'], home)}", f"      {'  '.join(bits)}", f"      {'; '.join(facts)}"]

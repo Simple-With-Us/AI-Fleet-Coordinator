@@ -63,7 +63,6 @@ export const WAKE_SECRETS = Object.freeze({
 export const SEAT_LABELS = Object.freeze({ JET: "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", INSTINCT: "Instinct" });
 
 const BOT_EMAIL_RE = /^[a-z0-9-]+-bot@simplewithus\.zulipchat\.com$/;
-const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9 _-]{0,59}$/;
 
 function parseJsonVar(env, name) {
   const raw = env[name];
@@ -136,18 +135,20 @@ export function loadConfig(env) {
     if (listed.length === 1) redirectOwner.set(uri, listed[0]);
   }
 
-  // D4:  the channel allowlist, pinned name to stream id.  Tools use the id,
-  // never a name lookup, so a renamed or look-alike channel cannot widen it.
-  const channelsRaw = parseJsonVar(env, "CHANNELS");
-  if (typeof channelsRaw !== "object" || Array.isArray(channelsRaw)) throw new Error("config: CHANNELS must be an object");
-  const channels = new Map();
-  for (const [name, id] of Object.entries(channelsRaw)) {
-    if (!CHANNEL_NAME_RE.test(name)) throw new Error("config: a CHANNELS name is not a plain lowercase channel name");
-    if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`config: CHANNELS.${name} must be a stream id`);
-    if ([...channels.values()].includes(id)) throw new Error("config: a stream id is listed twice in CHANNELS");
-    channels.set(name, id);
+  // Channels (owner ruling Sat, Oct 10, 2026:  any public channel the seat's
+  // bot is subscribed to;  src/channels.js resolves that set from Zulip).
+  // CHANNELS_DENY is the one config lever:  stream ids no seat may use even
+  // when they are public.  Optional, empty by default, enforced by id.
+  const channelsDeny = [];
+  if (env.CHANNELS_DENY !== undefined && env.CHANNELS_DENY !== null && env.CHANNELS_DENY !== "") {
+    const denyRaw = parseJsonVar(env, "CHANNELS_DENY");
+    if (!Array.isArray(denyRaw)) throw new Error("config: CHANNELS_DENY must be a JSON array of stream ids");
+    for (const id of denyRaw) {
+      if (!Number.isSafeInteger(id) || id <= 0) throw new Error("config: CHANNELS_DENY entries must be stream ids");
+      if (channelsDeny.includes(id)) throw new Error("config: a stream id is listed twice in CHANNELS_DENY");
+      channelsDeny.push(id);
+    }
   }
-  if (channels.size === 0) throw new Error("config: CHANNELS is empty");
 
   // The owner's pinned Zulip user id and human clients (listener rule):  the
   // `owner` flag on a message is a routing hint, never authority.
@@ -196,8 +197,7 @@ export function loadConfig(env) {
       configured: /^[a-z0-9-]+\.cloudflareaccess\.com$/.test(teamDomain) && /^[0-9a-f]{64}$/.test(accessAud) && ownerEmails.length > 0,
     }),
     mcpDisabled: String(env.MCP_DISABLED ?? "") === "1",
-    channels,
-    channelIds: Object.freeze([...channels.values()]),
+    channelsDeny: Object.freeze(channelsDeny),
     ownerUserId,
     ownerClients: Object.freeze(ownerClients),
     botEmails: Object.freeze(botEmails),

@@ -157,7 +157,7 @@ class InitAndTestWakeTests(ListenerHarness):
 
     def test_init_pins_the_grok_build_bot_under_the_tag_grok(self) -> None:
         # grok-build-bot@ derives to the seat tag GROK (EMAIL_TAG_OVERRIDES), so GROK must be in FLEET_SEATS.
-        build = self.fake.add_user("grok-build-bot@zulip.test", "Grok Build", is_bot=True, user_id=30)
+        build = self.fake.add_user("grok-build-bot@zulip.test", "Grok", is_bot=True, user_id=30)
         web = self.fake.add_user("grok-web-bot@zulip.test", "Grok (Web/iOS)", is_bot=True, user_id=31)
         result = self.run_cli("daemon", "init", "--yes")
         self.assertEqual(result.code, 0, result.err)
@@ -165,6 +165,15 @@ class InitAndTestWakeTests(ListenerHarness):
         cfg = C.load(self.root)
         self.assertIn(build["user_id"], cfg.eligible_user_ids)
         self.assertNotIn(web["user_id"], cfg.eligible_user_ids, "GROK-WEB is a different seat and not a Mac seat bot")
+
+    def test_init_pins_the_opencode_bot_as_an_eligible_sender(self) -> None:
+        # opencode-bot@ derives to the seat tag OPENCODE by the default rule (no EMAIL_TAG_OVERRIDES entry), so
+        # OPENCODE must be in FLEET_SEATS for its @-mentions and DMs to wake a peer.  Owner 2026-10-10: a seat.
+        opencode = self.fake.add_user("opencode-bot@zulip.test", "OpenCode", is_bot=True, user_id=36)
+        result = self.run_cli("daemon", "init", "--yes")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertIn("OPENCODE=%d" % opencode["user_id"], result.out)
+        self.assertIn(opencode["user_id"], C.load(self.root).eligible_user_ids)
 
     def test_init_pins_jet_but_not_gb_personas_webhook_bots_or_grok_web(self) -> None:
         # openai-dot-bot@ derives to the seat tag JET (EMAIL_TAG_OVERRIDES).  Owner 2026-10-09:  Jet is eligible

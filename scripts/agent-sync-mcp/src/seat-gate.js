@@ -134,6 +134,14 @@ export class SeatGate extends DurableObject {
     return state.eventClaimWake(this.store, options);
   }
 
+  eventSettleWake(options) {
+    return state.eventSettleWake(this.store, options);
+  }
+
+  eventSubLive(options) {
+    return state.eventSubLive(this.store, options);
+  }
+
   eventDeliveryResult(options) {
     return state.eventDeliveryResult(this.store, options);
   }

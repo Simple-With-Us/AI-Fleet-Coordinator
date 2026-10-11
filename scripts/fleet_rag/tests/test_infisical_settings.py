@@ -21,7 +21,7 @@ from fleet_rag import infisical_settings as mod
 
 
 PROJECT = "proj-test"
-ENV = "dev"
+ENV = "prod"
 MANAGED = ("API_TOKEN", "BACKEND_URL", "TIMEOUT_S", "SETTINGS_REFRESH_SECONDS")
 REQUIRED = ("API_TOKEN",)
 SECRETS = ("API_TOKEN",)
@@ -362,6 +362,73 @@ class ModuleDefaultTests(_SettingsCase):
         self.assertEqual(mod.get("API_TOKEN"), "tok")
         mod.set("TIMEOUT_S", "7")
         self.assertEqual(mod.get("TIMEOUT_S"), "7")
+
+
+class ProdOnlyTests(_SettingsCase):
+    """Infisical's only environment is prod:  the default is prod and every other slug is
+    refused before any network call, while the last-known-good cache is kept."""
+
+    def test_default_environment_is_prod(self):
+        s = mod.InfisicalSettings(project_id=PROJECT, managed_keys=MANAGED, required_keys=REQUIRED)
+        self.assertEqual(s.environment, "prod")
+        self.assertEqual(mod.PROD_ENVIRONMENT, "prod")
+        self.world.secrets = {"API_TOKEN": "tok"}
+        s.init()
+        fetch = [c for c in self.world.calls if c[0] == "GET"][0]
+        self.assertIn("environment=prod", fetch[1])
+        self.assertNotIn("environment=dev", fetch[1])
+
+    def test_blank_and_mixed_case_prod_are_prod(self):
+        for given in ("", "  ", "prod", "PROD", " Prod "):
+            self.assertEqual(self.make(environment=given).environment, "prod", given)
+
+    def test_other_slugs_are_refused_before_any_network_call(self):
+        self.world.secrets = {"API_TOKEN": "tok"}
+        for slug in ("dev", "staging", "development", "production", "preview"):
+            s = self.make(environment=slug)
+            with self.assertRaises(mod.SettingsError) as ctx:
+                s.init()
+            self.assertIn(repr(slug), str(ctx.exception))
+            self.assertIn("prod is the only environment", str(ctx.exception))
+        self.assertEqual(self.world.network_calls, 0)
+
+    def test_refused_even_with_no_identity(self):
+        with mock.patch.dict(os.environ, {"INFISICAL_AUTOMATION_CLIENT_ID": "",
+                                          "INFISICAL_AUTOMATION_CLIENT_SECRET": ""}):
+            with mock.patch.object(mod.InfisicalSettings, "_identity_from_file",
+                                   return_value=(None, None)):
+                with self.assertRaises(mod.SettingsError):
+                    self.make(environment="dev").init()
+        self.assertEqual(self.world.network_calls, 0)
+
+    def test_set_refuses_non_prod_and_writes_nothing(self):
+        s = self.make(environment="staging")
+        with self.assertRaises(mod.SettingsError):
+            s.set("TIMEOUT_S", "7")
+        self.assertIsNone(s.get("TIMEOUT_S"))
+        self.assertEqual(self.world.network_calls, 0)
+
+    def test_refresh_refuses_non_prod_and_keeps_last_known_good(self):
+        self.world.secrets = {"API_TOKEN": "tok", "BACKEND_URL": "http://x"}
+        s = self.make()
+        s.init()
+        calls_after_init = self.world.network_calls
+        s.environment = "dev"                 # drifted after startup
+        self.assertFalse(s.refresh())
+        self.assertEqual(s.get("API_TOKEN"), "tok")
+        self.assertEqual(s.get("BACKEND_URL"), "http://x")
+        self.assertEqual(self.world.network_calls, calls_after_init)
+
+    def test_configure_refuses_non_prod_and_keeps_previous_settings(self):
+        self.world.secrets = {"API_TOKEN": "tok"}
+        first = mod.configure(project_id=PROJECT, environment="prod", managed_keys=MANAGED,
+                              required_keys=REQUIRED, secret_keys=SECRETS)
+        mod.init_settings()
+        with self.assertRaises(mod.SettingsError):
+            mod.configure(project_id=PROJECT, environment="dev", managed_keys=MANAGED,
+                          required_keys=REQUIRED, secret_keys=SECRETS)
+        self.assertIs(mod._default, first)
+        self.assertEqual(mod.get("API_TOKEN"), "tok")
 
 
 if __name__ == "__main__":

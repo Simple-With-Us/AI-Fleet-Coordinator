@@ -1,8 +1,11 @@
 // A fake Zulip REST API for the hosted tools, as a `fetch` function.  No
 // dependencies, so it runs under CI's plain `node --test` and as the workerd
 // flow's outbound service.  It implements only what the seven tools call:
-// users/me, users, users/me/<stream>/topics, messages (GET with narrow and
-// anchor, POST), messages/<id> and messages/<id>/reactions.  Direct messages
+// users/me, users, users/me/subscriptions, users/me/<stream>/topics, messages
+// (GET with narrow and anchor, POST), messages/<id> and
+// messages/<id>/reactions.  Streams:  agent-sync, sandbox and design are
+// public;  other (999001) is private, and every bot is subscribed to all four,
+// so "other" stands for a private stream a bot is in.  Direct messages
 // are real-Zulip shaped:  `display_recipient` lists every person in the
 // conversation, the sender included;  `is:dm` and `dm:[ids]` narrows work;  a
 // caller sees only the DMs it is in;  a POST of type direct takes a JSON array
@@ -10,7 +13,8 @@
 // are born read).
 
 export const REALM = "https://simplewithus.zulipchat.com";
-export const STREAMS = { "agent-sync": 642232, sandbox: 642167, other: 999001 };
+export const STREAMS = { "agent-sync": 642232, sandbox: 642167, other: 999001, design: 700001 };
+export const PRIVATE_STREAMS = Object.freeze([STREAMS.other]);
 export const OWNER_ID = 1211974;
 export const BOT_EMAIL = "grok-web-bot@simplewithus.zulipchat.com";
 
@@ -47,6 +51,9 @@ export class FakeZulip {
       this.users.push({ user_id: 1212700 + i, is_bot: true, is_active: true, role: 400, is_admin: false, is_owner: false, ...bot, key: undefined });
       this.keys.set(bot.email, bot.key);
     }
+    // Stream table:  current name, id, privacy.  `unsubscribed` holds ids no bot is in.
+    this.streams = Object.entries(STREAMS).map(([name, stream_id]) => ({ stream_id, name, invite_only: PRIVATE_STREAMS.includes(stream_id) }));
+    this.unsubscribed = new Set();
     this.messages = [];
     this.reactions = new Set();
     this.requests = [];
@@ -56,6 +63,24 @@ export class FakeZulip {
 
   get me() {
     return this.users[0];
+  }
+
+  /** A stream id from its current name (or an old STREAMS key). */
+  streamId(name) {
+    return this.streams.find((s) => s.name === name)?.stream_id ?? STREAMS[name];
+  }
+
+  /** Add a stream ({name, stream_id, invite_only}). */
+  addStream(name, streamId, { inviteOnly = false } = {}) {
+    this.streams.push({ stream_id: streamId, name, invite_only: inviteOnly });
+    return streamId;
+  }
+
+  /** Rename a stream in place:  the id stays, its messages show the new name. */
+  renameStream(streamId, name) {
+    const stream = this.streams.find((s) => s.stream_id === streamId);
+    stream.name = name;
+    for (const msg of this.messages) if (msg.type === "stream" && msg.stream_id === streamId) msg.display_recipient = name;
   }
 
   addUser(email, fullName, { isBot = false } = {}) {
@@ -109,7 +134,7 @@ export class FakeZulip {
       timestamp: this.time++,
       content,
       type: "stream",
-      stream_id: STREAMS[channel],
+      stream_id: this.streamId(channel),
       display_recipient: channel,
       subject: topic,
       flags: mentioned ? ["mentioned"] : [],
@@ -163,6 +188,9 @@ export class FakeZulip {
   route(method, path, params, caller = this.me) {
     if (method === "GET" && path === "users/me") return this.ok({ ...caller, key: undefined });
     if (method === "GET" && path === "users") return this.ok({ members: this.users.map((u) => ({ ...u, key: undefined })) });
+    if (method === "GET" && path === "users/me/subscriptions") {
+      return this.ok({ subscriptions: this.streams.filter((s) => !this.unsubscribed.has(s.stream_id)).map((s) => ({ ...s, color: "#c2c2c2", is_muted: false })) });
+    }
     let m = /^users\/me\/(\d+)\/topics$/.exec(path);
     if (method === "GET" && m) {
       const sid = Number(m[1]);
@@ -192,7 +220,7 @@ export class FakeZulip {
     }
     if (method === "POST" && path === "messages") {
       const sid = Number(params.to);
-      const name = Object.entries(STREAMS).find(([, id]) => id === sid)?.[0];
+      const name = this.streams.find((s) => s.stream_id === sid)?.name;
       if (params.type !== "stream" || !name) return this.error(400, "STREAM_DOES_NOT_EXIST");
       const msg = this.addMessage(caller, name, params.topic, params.content, { client: "agent-sync-mcp" });
       return this.ok({ id: msg.id });

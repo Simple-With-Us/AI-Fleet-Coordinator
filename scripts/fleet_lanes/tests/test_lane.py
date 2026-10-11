@@ -12,6 +12,7 @@ anything outside the temp directories.
 from __future__ import annotations
 
 import contextlib
+import copy
 import datetime as dt
 import fcntl
 import hashlib
@@ -62,6 +63,27 @@ REGISTRY_DATA = {
               for t, s, b, ret in _SEATS],
 }
 REGISTRY = L.parse_registry(REGISTRY_DATA)
+
+# Owner ruling 2026-10-10: any spelling of GROK followed by BUILD is the seat GROK.  REGISTRY_DATA above is the
+# older registry (no aliasPattern, GROK-BUILD a live seat) and stays the baseline.  `_grok_registry_data` builds
+# a pair that differs only in the alias rows, as the real fleet-apps.json does:  the GROK row has aliasPattern
+# and the GROK-BUILD row is retired and aliasOf GROK.  Both carry GROK-WEB, a cloud seat with no branch prefix.
+GROK_ALIAS_PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
+GROK_BUILD_MUST = ("GROK-BUILD", "Grok-Build", "grok-build", "grok_build", "Grok Build", "GROK.BUILD", "Grok (Build)",
+                   "grok/build/", "GrokBuild", "GROK--BUILD!!")
+GROK_BUILD_MUST_NOT = ("GROKBUILDER", "grok-build-bot", "grok2build", "GB-COMPILER", "BF-BUILDER", "Grok (Web/iOS)")
+
+
+def _grok_registry_data(*, alias: bool) -> dict:
+    data = copy.deepcopy(REGISTRY_DATA)
+    data["seats"].append({"tag": "GROK-WEB", "worktreeSuffix": "grok-web", "branchPrefixes": []})
+    if alias:
+        for row in data["seats"]:
+            if row["tag"] == "GROK":
+                row["aliasPattern"] = GROK_ALIAS_PATTERN
+            elif row["tag"] == "GROK-BUILD":
+                row.update({"retired": True, "aliasOf": "GROK"})
+    return data
 
 _HERMETIC = {
     "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "LC_ALL": "C",
@@ -546,12 +568,17 @@ class ResolveTests(unittest.TestCase):
                         K.branch_for(seat, "x")
                     continue
                 self.assertEqual(K.branch_for(seat, "x"), seat.primary_branch_prefix() + "/x")
-        # Only seats the listener partition gives to the server may go without a prefix.
+        # Only seats the listener partition gives to the server may go without a prefix, plus GROK-BOT:  one
+        # fleet-wide identity that opens no lanes (its GB-<ROLE> personas are the server seats), which had
+        # CURSOR's cursor/ until F2 (2026-10-11) and so put one prefix on two seats.
         partition = tomllib.loads(
             (SCRIPTS_DIR.parent / "docs" / "protocols" / "agent-sync-partition.toml").read_text(encoding="utf-8")
         )["seats"]
         for name in laneless:
+            if name == "GROK-BOT":
+                continue
             self.assertEqual(partition.get(name), "server", f"{name} has no branch prefix but is not a server seat")
+        self.assertIn("GROK-BOT", laneless)
         retired = {s.name for s in registry.seats if s.retired}
         for tag in ("MONET", "RENOIR", "HARNESS", "DSH", "KIMI"):
             self.assertIn(tag, retired)
@@ -559,8 +586,8 @@ class ResolveTests(unittest.TestCase):
                 K.resolve_seat({"AGENT_SEAT": tag}, registry)
 
     def test_the_real_registry_gives_a_lane_only_to_the_seat_that_owns_each_folder_name(self) -> None:
-        # CURSOR and GROK-BOT share worktreeSuffix `cursor` and prefix `cursor/`.  GROK-BOT is one
-        # fleet-wide identity, not a per-app coding seat (TEMPLATE-AGENTS.md), so it gets no lane.
+        # CURSOR and GROK-BOT share worktreeSuffix `cursor`.  GROK-BOT is one fleet-wide identity, not
+        # a per-app coding seat (TEMPLATE-AGENTS.md), so it gets no lane.
         registry = L.load_registry(L.default_registry_path({}))
         accepted, refused = set(), set()
         for seat in (s for s in registry.seats if not s.retired):
@@ -572,6 +599,176 @@ class ResolveTests(unittest.TestCase):
         self.assertIn("CURSOR", {s.name for s in registry.seats if s.suffix in accepted})
         self.assertEqual(len(accepted), len([s for s in registry.seats if not s.retired]) - len(refused),
                          "no two accepted seats share a folder name")
+
+
+    def test_the_real_registry_reads_any_spelling_of_grok_build_as_the_grok_seat(self) -> None:
+        # The GROK row of fleet-apps.json carries the aliasPattern;  the retired GROK-BUILD row never answers
+        # for its own name, so lane signs GROK whichever way AGENT_SEAT spells it (owner 2026-10-10).
+        registry = L.load_registry(L.default_registry_path({}))
+        self.assertEqual(registry.seat_by_name("GROK").alias_pattern, GROK_ALIAS_PATTERN)
+        retired = registry.seat_by_suffix("grok-build")
+        self.assertTrue(retired is not None and retired.retired, "the GROK-BUILD row stays, retired")
+        for raw in GROK_BUILD_MUST + ("  grok-build\n", "GROK", "grok"):
+            with self.subTest(raw=raw):
+                seat = K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                self.assertEqual((seat.name, seat.suffix, seat.retired), ("GROK", "grok", False))
+                self.assertEqual(K.branch_for(seat, "x"), "grok/x")
+        for raw in GROK_BUILD_MUST_NOT + ("GROK-BOT",):
+            with self.subTest(raw=raw):
+                with self.assertRaises(K.Refusal) as cm:
+                    K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                self.assertIn("belongs to CURSOR" if raw == "GROK-BOT" else "not a seat tag", str(cm.exception))
+        with self.subTest(raw="GROK-WEB"):
+            with self.assertRaises(K.Refusal) as cm:       # a cloud seat: no branch prefix, so no lane
+                K.branch_for(K.resolve_seat({"AGENT_SEAT": "GROK-WEB"}, registry), "x")
+            self.assertIn("no branch prefix", str(cm.exception))
+
+
+class GrokBuildAliasResolveTests(unittest.TestCase):
+    """`resolve_seat` against a registry with and without the GROK aliasPattern (owner ruling 2026-10-10)."""
+
+    def test_every_spelling_is_the_live_grok_seat_with_an_alias_pattern(self) -> None:
+        registry = L.parse_registry(_grok_registry_data(alias=True))
+        for raw in GROK_BUILD_MUST + ("  grok-build\n", "\tGrok (Build) "):
+            with self.subTest(raw=raw):
+                seat = K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                self.assertEqual((seat.name, seat.suffix, seat.retired), ("GROK", "grok", False))
+                self.assertEqual(registry.seat_by_name(raw).name, "GROK")
+                self.assertEqual(K.branch_for(seat, "x"), "grok/x")
+                self.assertEqual(seat.primary_branch_prefix(), "grok")
+
+    def test_other_seats_still_resolve_by_their_own_tag_in_any_case(self) -> None:
+        registry = L.parse_registry(_grok_registry_data(alias=True))
+        for raw, name in (("CLAUDE", "CLAUDE"), (" ag ", "AG"), ("mm", "MM"), ("Cursor", "CURSOR"), ("grok", "GROK")):
+            with self.subTest(raw=raw):
+                self.assertEqual(K.resolve_seat({"AGENT_SEAT": raw}, registry).name, name)
+
+    def test_nothing_else_is_grok_and_each_keeps_the_outcome_it_has_without_the_alias(self) -> None:
+        # GROK-BOT shares CURSOR's folder name;  every other value is not a seat tag.  GROK-WEB is a real
+        # seat with no branch prefix, so it resolves and `branch_for` is what refuses it.
+        both = (L.parse_registry(_grok_registry_data(alias=False)), L.parse_registry(_grok_registry_data(alias=True)))
+        for registry in both:
+            for raw in GROK_BUILD_MUST_NOT:
+                with self.subTest(raw=raw, alias=bool(registry.seat_by_name("GROK").alias_pattern)):
+                    with self.assertRaises(K.Refusal) as cm:
+                        K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                    self.assertIn("not a seat tag", str(cm.exception))
+            with self.assertRaises(K.Refusal) as cm:
+                K.resolve_seat({"AGENT_SEAT": "GROK-BOT"}, registry)
+            self.assertIn("belongs to CURSOR", str(cm.exception))
+            web = K.resolve_seat({"AGENT_SEAT": "GROK-WEB"}, registry)
+            self.assertEqual((web.name, web.suffix), ("GROK-WEB", "grok-web"))
+            with self.assertRaises(K.Refusal):
+                K.branch_for(web, "x")
+
+    def test_the_ascii_case_rule_keeps_look_alike_letters_out(self) -> None:
+        # The alias matches ASCII case only, so a dotted or dotless I never makes GROK.  The Kelvin sign lowercases
+        # to a plain k in the exact-tag fallback, which reaches the retired GROK-BUILD row:  refused, never GROK.
+        registry = L.parse_registry(_grok_registry_data(alias=True))
+        for raw, needle in (("grok-bu\u0130ld", "not a seat tag"), ("grok-bu\u0131ld", "not a seat tag"),
+                            ("GRO\u212a-BUILD", "retired")):
+            with self.subTest(raw=raw):
+                with self.assertRaises(K.Refusal) as cm:
+                    K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                self.assertIn(needle, str(cm.exception))
+
+    def test_without_an_alias_pattern_only_the_exact_tag_is_grok_build(self) -> None:
+        # An older registry (the baseline fixture) keeps today's behaviour:  GROK-BUILD is a live seat of its own.
+        registry = L.parse_registry(_grok_registry_data(alias=False))
+        self.assertEqual(registry.seat_by_name("GROK").alias_pattern, "")
+        for raw in ("GROK-BUILD", "grok-build", " Grok-Build "):
+            with self.subTest(raw=raw):
+                seat = K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                self.assertEqual((seat.name, seat.suffix), ("GROK-BUILD", "grok-build"))
+                self.assertEqual(K.branch_for(seat, "x"), "grok-build/x")
+        for raw in ("grok_build", "Grok Build", "GROK.BUILD", "Grok (Build)", "grok/build/", "GrokBuild", "GROK--BUILD!!"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(K.Refusal) as cm:
+                    K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                self.assertIn("not a seat tag", str(cm.exception))
+
+
+class GrokBuildAliasLaneTests(WorldCase):
+    """`lane new` end to end, in the throwaway world, against the alias registry (owner ruling 2026-10-10)."""
+
+    def use_registry(self, *, alias: bool = True) -> None:
+        self.w.registry_path.write_text(json.dumps(_grok_registry_data(alias=alias)), encoding="utf-8")
+
+    def test_every_spelling_plans_the_grok_folder_and_the_grok_branch(self) -> None:
+        w = self.w
+        self.use_registry()
+        before = w.everything_hash()
+        want = w.roots.lanes_root / "DealDex" / "grok-x"
+        for raw in GROK_BUILD_MUST + ("  grok-build\n",):
+            with self.subTest(raw=raw):
+                res = w.lane("new", "DealDex", "x", "--dry-run", "--json", env={"AGENT_SEAT": raw})
+                self.assertEqual(res.rc, 0, res.err)
+                body = res.json()
+                self.assertEqual((body["seat"], body["tag"], body["branch"], body["path"]),
+                                 ("grok", "GROK", "grok/x", str(want)))
+                self.assertNotIn("grok-build", (res.out + res.err).lower())
+                text = w.lane("new", "DealDex", "x", "--dry-run", env={"AGENT_SEAT": raw})
+                self.assertEqual((text.rc, text.out), (0, f"{want}\n"), text.err)
+                self.assertNotIn("grok-build", (text.out + text.err).lower())
+        self.assertNoChange(before)
+
+    def test_a_real_lane_made_under_one_spelling_is_a_grok_lane_and_every_spelling_finds_it_again(self) -> None:
+        w = self.w
+        self.use_registry()
+        res = w.lane("new", "DealDex", "fix-thing", env={"AGENT_SEAT": "Grok (Build)"})
+        path = w.lane_path(seat="grok")
+        self.assertEqual((res.rc, res.out), (0, f"{path}\n"), res.err)
+        self.assertEqual(w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "grok/fix-thing")
+        git_dir = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=path))
+        manifest = json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))
+        self.assertEqual((manifest["seat"], manifest["tag"], manifest["branch"]), ("grok", "GROK", "grok/fix-thing"))
+        everything = w.git(["worktree", "list", "--porcelain"], cwd=w.tree) + w.git(["branch", "--list"], cwd=w.tree)
+        self.assertNotIn("grok-build", everything)
+        self.assertEqual(sorted(p.name for p in (w.roots.lanes_root / "DealDex").iterdir()), ["grok-fix-thing"])
+        for raw in ("GROK-BUILD", "grok_build", "GROK"):
+            with self.subTest(raw=raw):
+                again = w.lane("new", "DealDex", "fix-thing", env={"AGENT_SEAT": raw})
+                self.assertEqual((again.rc, again.out), (0, f"{path}\n"), again.err)
+                self.assertEqual(w.lane("path", "DealDex", "fix-thing", env={"AGENT_SEAT": raw}).out, f"{path}\n")
+
+    def test_what_is_not_grok_build_is_refused_exactly_as_before_and_runs_no_git(self) -> None:
+        w = self.w
+        cases = [(raw, "not a seat tag") for raw in GROK_BUILD_MUST_NOT]
+        cases += [("GROK-BOT", "belongs to CURSOR"), ("GROK-WEB", "no branch prefix")]
+        for alias in (False, True):
+            self.use_registry(alias=alias)
+            before = w.everything_hash()
+            for raw, needle in cases:
+                with self.subTest(raw=raw, alias=alias):
+                    res = w.lane("new", "DealDex", "x", env={"AGENT_SEAT": raw})
+                    self.assertEqual((res.rc, res.out), (64, ""), res.err)
+                    self.assertIn(needle, res.err)
+                    self.assertEqual(res.calls, [], "refused before any git or gh")
+            self.assertNoChange(before)
+
+    def test_a_registry_without_an_alias_pattern_keeps_grok_build_as_its_own_lane(self) -> None:
+        w = self.w
+        self.use_registry(alias=False)
+        res = w.lane("new", "DealDex", "x", "--dry-run", "--json", env={"AGENT_SEAT": "GROK-BUILD"})
+        body = res.json()
+        self.assertEqual((res.rc, body["seat"], body["tag"], body["branch"]), (0, "grok-build", "GROK-BUILD", "grok-build/x"))
+        self.assertEqual(body["path"], str(w.roots.lanes_root / "DealDex" / "grok-build-x"))
+        spelled = w.lane("new", "DealDex", "x", "--dry-run", env={"AGENT_SEAT": "Grok Build"})
+        self.assertEqual(spelled.rc, 64)
+        self.assertIn("not a seat tag", spelled.err)
+
+    def test_the_folder_rule_is_unchanged_so_grok_still_cannot_take_a_slug_that_starts_with_build(self) -> None:
+        # Folder and branch classification do not go through the alias.  GROK plus slug build-x is the
+        # folder grok-build-x, which still reads as the retired GROK-BUILD's, whichever way the seat is spelled.
+        w = self.w
+        self.use_registry()
+        before = w.everything_hash()
+        for raw in ("GROK", "GROK-BUILD", "Grok (Build)"):
+            with self.subTest(raw=raw):
+                res = w.lane("new", "DealDex", "build-x", env={"AGENT_SEAT": raw})
+                self.assertEqual(res.rc, 64, res.err)
+                self.assertIn("read as seat", res.err)
+        self.assertNoChange(before)
 
 
 # --------------------------------------------------------------------------- lane new
@@ -1252,6 +1449,138 @@ class LaneNewTests(WorldCase):
         res = self.w.lane("new", "DealDex", "x", env={"FLEET_APPS_JSON": str(self.w.root / "missing.json")})
         self.assertEqual((res.rc, res.out), (64, ""))
         self.assertIn("cannot read the registry", res.err)
+
+
+class ExternalLanesTests(WorldCase):
+    """lanes/<Repo> is a symlink onto an external disk (owner 2026-10-10).  `lane new` must make the lane there
+    without anyone noticing: the path it prints is the ~/apps/lanes one, git records the real one, and every
+    check that says "inside the lanes root" has to hold for both.  The fake disk sits inside the fake home,
+    because a folder next to the home would be forbidden temp."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        w = self.w
+        self.ext = w.home / "ExternalDisk" / "Lanes"
+        self.phys_repo = self.ext / "DealDex"
+        self.phys_repo.mkdir(parents=True)
+        self.lanes = w.roots.lanes_root
+        self.lanes.mkdir(parents=True, exist_ok=True)
+        os.symlink(self.phys_repo, self.lanes / "DealDex")
+        self.env = {"FLEET_LANES_EXTERNAL_ROOT": str(self.ext)}
+
+    def test_lane_new_through_the_link_prints_the_lanes_path_and_git_records_the_real_one(self) -> None:
+        w = self.w
+        res = w.lane("new", "DealDex", "fix-thing", env=self.env)
+        path = w.lane_path()
+        self.assertEqual((res.rc, res.out), (0, f"{path}\n"), res.err)
+        self.assertIn("created", res.err)
+        self.assertEqual(os.path.realpath(path), str(self.phys_repo / "claude-fix-thing"))
+        self.assertTrue((self.phys_repo / "claude-fix-thing" / ".git").exists(), "the lane is on the external disk")
+        self.assertEqual(w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "claude/fix-thing")
+        self.assertEqual(w.git(["status", "--porcelain"], cwd=path), "")
+        listed = w.git(["worktree", "list", "--porcelain"], cwd=w.tree)
+        self.assertIn(f"worktree {self.phys_repo / 'claude-fix-thing'}", listed, "git records the real path")
+        roots = L.make_roots(w.home, {**w.env, **self.env}, registry=REGISTRY)
+        for p in (path, self.phys_repo / "claude-fix-thing"):
+            self.assertEqual(L.classify_location(p, roots), L.LocationClass.LANE_NESTED, str(p))
+        git_dir = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=path))
+        self.assertTrue((git_dir / "lane.json").is_file(), "the manifest is written")
+        self.assertEqual(json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))["branch"], "claude/fix-thing")
+
+    def test_a_second_run_finds_the_lane_it_made_and_changes_nothing(self) -> None:
+        w = self.w
+        self.assertEqual(w.lane("new", "DealDex", "fix-thing", env=self.env).rc, 0)
+        before = w.everything_hash()
+        res = w.lane("new", "DealDex", "fix-thing", env=self.env)
+        self.assertEqual((res.rc, res.out), (0, f"{w.lane_path()}\n"), res.err)
+        self.assertIn("already exists", res.err)
+        self.assertEqual(w.everything_hash(), before)
+        self.assertFalse(res.has("worktree", "add"))
+
+    def test_lane_path_and_dry_run_print_the_lanes_path_and_change_nothing(self) -> None:
+        w = self.w
+        before = w.everything_hash()
+        shown = w.lane("path", "DealDex", "fix-thing", env=self.env)
+        self.assertEqual((shown.rc, shown.out), (0, f"{w.lane_path()}\n"), shown.err)
+        dry = w.lane("new", "DealDex", "fix-thing", "--dry-run", env=self.env)
+        self.assertEqual((dry.rc, dry.out), (0, f"{w.lane_path()}\n"), dry.err)
+        self.assertFalse((self.phys_repo / "claude-fix-thing").exists())
+        self.assertEqual(w.everything_hash(), before)
+
+    def test_a_review_checkout_is_made_on_the_disk_too(self) -> None:
+        w = self.w
+        res = w.lane("new", "DealDex", "--review", "--pr", "7", env=self.env)
+        self.assertEqual((res.rc, res.out), (0, f"{w.review_path()}\n"), res.err)
+        self.assertTrue((self.phys_repo / "review-pr-7" / ".git").exists())
+        self.assertEqual(w.git(["rev-parse", "HEAD"], cwd=w.review_path()), SHAS["pr"])
+        again = w.lane("new", "DealDex", "--review", "--pr", "7", env=self.env)
+        self.assertEqual((again.rc, again.out), (0, f"{w.review_path()}\n"), again.err)
+
+    def test_a_new_repo_folder_is_made_in_the_lanes_root_when_there_is_no_link(self) -> None:
+        # the link is per repo folder: a repo without one keeps its lanes on the internal disk, as before
+        w = self.w
+        os.unlink(self.lanes / "DealDex")
+        res = w.lane("new", "DealDex", "fix-thing", env=self.env)
+        self.assertEqual((res.rc, res.out), (0, f"{w.lane_path()}\n"), res.err)
+        self.assertFalse(w.lane_path().is_symlink() or (self.lanes / "DealDex").is_symlink())
+        self.assertEqual(os.path.realpath(w.lane_path()), str(w.lane_path()))
+
+    def test_the_allowlist_treats_a_path_on_the_disk_as_inside_the_lanes_root(self) -> None:
+        w = self.w
+        roots = L.make_roots(w.home, {**w.env, **self.env}, registry=REGISTRY)
+        argv = ["git", "worktree", "add", "-b", "claude/x", str(self.lanes / "DealDex" / "claude-x"), SHAS["main"]]
+        K.check_allowed(argv, write_root=roots.lanes_root, fold=L.logical_fold(roots))
+        with self.assertRaises(K.CommandRefused):
+            K.check_allowed(argv, write_root=roots.lanes_root, fold=str.casefold)    # the old comparison would refuse
+        outside = ["git", "worktree", "add", "-b", "claude/x", str(self.ext / "Other" / "claude-x"), SHAS["main"]]
+        K.check_allowed(outside, write_root=roots.lanes_root, fold=L.logical_fold(roots))   # on the disk, so fine
+        elsewhere = ["git", "worktree", "add", "-b", "claude/x", str(w.home / "Elsewhere" / "claude-x"), SHAS["main"]]
+        with self.assertRaises(K.CommandRefused):
+            K.check_allowed(elsewhere, write_root=roots.lanes_root, fold=L.logical_fold(roots))
+
+    def test_without_the_setting_the_link_is_refused_in_words(self) -> None:
+        w = self.w
+        before = w.everything_hash()
+        res = w.lane("new", "DealDex", "fix-thing", env={"FLEET_LANES_EXTERNAL_ROOT": ""})
+        self.assertEqual((res.rc, res.out), (64, ""), res.err)
+        self.assertIn("is a symlink to", res.err)
+        self.assertIn(str(self.phys_repo), res.err)
+        self.assertEqual(w.everything_hash(), before)
+
+    def test_a_link_to_another_place_is_refused_and_nothing_is_made(self) -> None:
+        w = self.w
+        elsewhere = w.home / "Elsewhere"
+        elsewhere.mkdir()
+        os.unlink(self.lanes / "DealDex")
+        os.symlink(elsewhere, self.lanes / "DealDex")
+        before = w.everything_hash()
+        res = w.lane("new", "DealDex", "fix-thing", env=self.env)
+        self.assertEqual((res.rc, res.out), (64, ""), res.err)
+        self.assertIn("is a symlink to", res.err)
+        self.assertIn("external lanes disk", res.err)
+        self.assertEqual(w.everything_hash(), before)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_an_unmounted_disk_is_a_clear_refusal_and_creates_nothing(self) -> None:
+        w = self.w
+        shutil.rmtree(self.ext)                      # the disk is gone: lanes/DealDex now leads nowhere
+        before = w.everything_hash()
+        res = w.lane("new", "DealDex", "fix-thing", env=self.env)
+        self.assertEqual((res.rc, res.out), (64, ""), res.err)
+        self.assertIn("does not exist", res.err)
+        self.assertIn("mounted", res.err)
+        self.assertFalse(self.ext.exists(), "lane must not recreate the disk's folders on the wrong volume")
+        self.assertEqual(w.everything_hash(), before)
+        review = w.lane("new", "DealDex", "--review", "--pr", "7", env=self.env)
+        self.assertEqual((review.rc, review.out), (64, ""), review.err)
+        self.assertFalse(self.ext.exists())
+
+    def test_the_default_root_does_not_change_a_plain_lane_new(self) -> None:
+        # no external setting at all and no link: exactly the old behaviour
+        w = self.w
+        os.unlink(self.lanes / "DealDex")
+        res = w.lane("new", "DealDex", "fix-thing")
+        self.assertEqual((res.rc, res.out), (0, f"{w.lane_path()}\n"), res.err)
 
 
 class PathCommandTests(WorldCase):

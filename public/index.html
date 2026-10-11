@@ -378,7 +378,7 @@
   </form>
   <p class="hint">
     <span><kbd>gh</kbd> GitHub</span>
-    <span><kbd>b</kbd> THE BOARD</span>
+    <span><kbd>b</kbd> Linear</span>
     <span><kbd>w</kbd> Wikipedia</span>
     <span><kbd>yt</kbd> YouTube</span>
     <span class="kb"><kbd>/</kbd> focus search</span>
@@ -413,7 +413,7 @@
           <div id="rag-seats"></div>
         </div>
       </div>
-      <div class="panel-foot">Snapshot from <code id="rag-snap-date"></code> · <a href="https://mac.jays.services/board" target="_blank" rel="noopener">THE BOARD</a> · <a href="https://activity.jays.services/" target="_blank" rel="noopener">Fleet Activity</a></div>
+      <div class="panel-foot">Snapshot from <code id="rag-snap-date"></code> · <a href="https://linear.app/simple-with-us" target="_blank" rel="noopener">Linear</a> · <a href="https://activity.jays.services/" target="_blank" rel="noopener">Fleet Activity</a></div>
     </div>
   </section>
 
@@ -497,10 +497,10 @@
   // One place to edit.  Each link: name, sub (shown small), url, mono (badge letters), color (badge background).
   const SECTIONS = [
     { title: "Fleet", links: [
-      { name: "THE BOARD",            sub: "mac.jays.services/board",        url: "https://mac.jays.services/board",                          mono: "TB", color: "#4F46E5", glyph: ICONS["oc-table-16"] },
+      { name: "Linear",               sub: "linear.app/simple-with-us",      url: "https://linear.app/simple-with-us",                        mono: "LN", color: "#4F46E5", glyph: ICONS["oc-table-16"] },
       { name: "#agent-sync",          sub: "Zulip",                          url: "https://simplewithus.zulipchat.com/#narrow/channel/642232-agent-sync", mono: "#", color: "#287D6B" },
       { name: "Fleet Apps Registry",  sub: "Google Sheet",                   url: "https://docs.google.com/spreadsheets/d/1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY/edit?usp=sharing", mono: "GS", color: "#0F9D58" },
-      { name: "Fleet Activity",       sub: "jaywedgeworth22.github.io",      url: "https://activity.jays.services/",  mono: "FA", color: "#2563EB", glyph: ICONS["oc-pulse-16"] },
+      { name: "Fleet Activity",       sub: "activity.jays.services",         url: "https://activity.jays.services/",  mono: "FA", color: "#2563EB", glyph: ICONS["oc-pulse-16"] },
       { name: "AI Fleet Coordinator", sub: "GitHub repo",                    url: "https://github.com/Simple-With-Us/ai-fleet-coordinator",  mono: "AF", color: "#111827", glyph: ICONS["oc-repo-16"] },
       { name: "Fleet Ops",            sub: "GitHub repo",                    url: "https://github.com/Simple-With-Us/fleet-ops",             mono: "OP", color: "#374151", glyph: ICONS["oc-repo-16"] },
     ]},
@@ -538,7 +538,7 @@
   // Search prefixes: "gh foo" searches GitHub, "gh" alone opens it.
   const PREFIX = {
     gh: { home: "https://github.com",                 q: s => "https://github.com/search?q=" + enc(s) },
-    b:  { home: "https://mac.jays.services/board" },  // no query: the board reads only app/kind/status/severity from the URL
+    b:  { home: "https://linear.app/simple-with-us" },  // no query: Linear has no URL search that matches this box
     w:  { home: "https://en.wikipedia.org",           q: s => "https://en.wikipedia.org/w/index.php?search=" + enc(s) },
     yt: { home: "https://www.youtube.com",            q: s => "https://www.youtube.com/results?search_query=" + enc(s) },
   };

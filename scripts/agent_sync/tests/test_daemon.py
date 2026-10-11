@@ -69,7 +69,7 @@ class RoutingTests(DaemonHarness):
         self.assertEqual(json.loads(open(self.seat_paths().cursor).read())["last_id"], self.fake.messages[-1]["id"])
         registration = self.fake.registrations[-1]
         self.assertEqual(json.loads(registration["params"]["event_types"]),
-                         ["message", "update_message", "user_topic", "realm_user"])
+                         ["message", "update_message", "user_topic", "realm_user", "stream", "subscription"])
         self.assertNotIn("narrow", registration["params"])
         self.assertEqual(registration["params"]["apply_markdown"], "false")
 
@@ -523,7 +523,7 @@ class WakeTests(DaemonHarness):
         self.fake.add_direct_message("Jay Wedgeworth", "please answer", deliver=True)
         self.pump_until(daemon, lambda: any(r["state"] == "queued" for r in self.ledger()))
         self.wake_cycle(daemon, 6)
-        self.assertEqual(self.ledger()[-1]["reason"], "usd_per_day")
+        self.assertEqual((self.ledger()[-1]["state"], self.ledger()[-1]["reason"]), ("held_back", "usd_per_day"))
         self.assertEqual(self.dumps(), [])
 
     def test_usd_per_day_counts_waiting_wakes_so_two_owner_wakes_cannot_overshoot(self) -> None:
@@ -535,7 +535,8 @@ class WakeTests(DaemonHarness):
         self.pump_until(daemon, lambda: sum(1 for r in self.ledger() if r["state"] == "queued") >= 2)
         self.wake_cycle(daemon, 6)
         self.assertEqual(len(self.dumps()), 1)
-        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "dropped"], ["usd_per_day"])
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], ["usd_per_day"])
+        self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
 
     def test_a_restored_accepted_wake_is_checked_again_before_it_runs(self) -> None:
         now = self.clock.time()
@@ -553,7 +554,7 @@ class WakeTests(DaemonHarness):
         self.assertEqual(len(daemon.seats["CLAUDE"].jobs), 2)
         daemon.run_jobs("CLAUDE")
         self.assertEqual(len(self.dumps()), 1, "1.70 spent + 0.25 waiting + 0.25 is over 2.00, so only one runs")
-        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "dropped"], ["usd_per_day"])
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], ["usd_per_day"])
 
     def test_the_wake_runs_the_pinned_realpath_not_the_symlink(self) -> None:
         versions = self.tmp / "versions"
@@ -600,8 +601,9 @@ class WakeTests(DaemonHarness):
             self.fake.add_message("Codex", "agent-sync", "t", MENTION + " %d" % n)
             self.pump_until(daemon, lambda n=n: sum(1 for r in self.ledger() if r["state"] == "queued") >= n + 1)
             self.wake_cycle(daemon, 95)
-        reasons = [r.get("reason") for r in self.ledger() if r["state"] == "dropped"]
-        self.assertEqual(reasons, ["per_topic_per_hour"])
+        reasons = [r.get("reason") for r in self.ledger() if r["state"] == "held_back"]
+        self.assertEqual(reasons, ["per_topic_per_hour"], "held back, not dropped (owner, Sat, Oct 10)")
+        self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
         self.assertEqual(len(self.dumps()), 2)
 
     def test_the_kill_switch_and_the_owner_dm_pause(self) -> None:
@@ -631,7 +633,7 @@ class WakeTests(DaemonHarness):
         daemon.tick()
         states = [r["state"] for r in self.ledger() if r["state"] != "queued"]
         self.assertEqual(states.count("accepted"), 5)
-        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "dropped"], ["overflow", "overflow"])
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], ["overflow", "overflow"])
         self.assertEqual(daemon.run_jobs("CLAUDE", limit=1), 1)
         self.assertEqual(len(daemon.seats["CLAUDE"].jobs), 4)
 
@@ -738,9 +740,11 @@ class WakeTests(DaemonHarness):
 
     def test_board_filing_is_off_by_default_and_a_list_argv_when_on(self) -> None:
         board_calls = []
+        board_envs = []
 
         def board_runner(argv, **kw):
             board_calls.append(argv)
+            board_envs.append(kw.get("env"))
             return subprocess.CompletedProcess(argv, 0, "", "")
 
         self.set_claude(mode="ok", output={"action": "board", "reply": None, "owner_note": None, "risk": None,
@@ -762,6 +766,8 @@ class WakeTests(DaemonHarness):
         self.assertIn("--app=CT", argv)
         self.assertIn("zulip:CLAUDE:%d" % mid, argv)
         self.assertEqual(self.ledger()[-1]["board_uid"], "zulip:CLAUDE:%d" % mid)
+        # `env -i` drops the inherited seat, and the Linear board CLI refuses a write without AGENT_SEAT.
+        self.assertEqual(board_envs[0].get("AGENT_SEAT"), "CLAUDE")
 
     def test_the_loop_guard_resets_only_on_an_owner_post(self) -> None:
         daemon = self.started()
@@ -1396,3 +1402,53 @@ class ThreadedRunTests(DaemonHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AutoSubscribeTests(DaemonHarness):
+    """Owner, Sat, Oct 10, 2026:  "I want bots to wake to any channel or DM".  A held seat joins every
+    public channel at connect and when one is created, so a mention anywhere reaches it."""
+
+    def test_connect_joins_every_public_channel_quietly_and_never_a_private_one(self) -> None:
+        self.fake.streams["private-ops"] = 50
+        self.assertNotIn("sandbox", self.fake.subscribed)
+        daemon = self.started()
+        self.assertIn("sandbox", self.fake.subscribed)
+        self.assertNotIn("private-ops", self.fake.subscribed)
+        self.assertIn("sandbox", daemon.seats["CLAUDE"].streams.values())
+        sent = [json.loads(r.params["subscriptions"]) for r in self.fake.requests_to("POST", "users/me/subscriptions")]
+        self.assertEqual(sent, [[{"name": "sandbox"}]], "only the missing public channel, by its current name")
+        quiet = {(p["stream_id"], p["property"]): p["value"] for p in self.fake.subscription_properties}
+        self.assertIs(quiet[(9, "push_notifications")], False)
+        self.assertIs(quiet[(9, "email_notifications")], False)
+
+    def test_a_new_public_channel_is_joined_and_a_mention_there_wakes(self) -> None:
+        daemon = self.started()
+        self.fake.create_stream("trading")
+        self.pump_until(daemon, lambda: "trading" in self.fake.subscribed)
+        mid = self.fake.add_message("Codex", "trading", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+        self.assertEqual([r["id"] for r in self.inbox()], [mid])
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("auto-subscribe", log)
+
+    def test_a_new_private_channel_is_never_joined(self) -> None:
+        daemon = self.started()
+        before = len(self.fake.requests_to("POST", "users/me/subscriptions"))
+        self.fake.create_stream("private-hr", invite_only=True)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertNotIn("private-hr", self.fake.subscribed)
+        self.assertEqual(len(self.fake.requests_to("POST", "users/me/subscriptions")), before)
+
+    def test_auto_subscribe_false_leaves_subscriptions_alone(self) -> None:
+        self.write_config(extra_daemon="auto_subscribe = false")
+        self.pin()
+        self.started()
+        self.assertNotIn("sandbox", self.fake.subscribed)
+        self.assertEqual(self.fake.requests_to("POST", "users/me/subscriptions"), [])
+
+    def test_a_failed_reconcile_never_stops_the_seat(self) -> None:
+        self.fake.inject("GET", "streams", status=400, body={"result": "error", "msg": "boom", "code": "BAD_REQUEST"})
+        daemon = self.started()
+        self.assertTrue(daemon.seats["CLAUDE"].connected)
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("auto-subscribe-error", log)

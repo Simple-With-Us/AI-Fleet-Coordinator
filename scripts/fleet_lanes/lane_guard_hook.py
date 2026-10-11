@@ -18,6 +18,7 @@ Formats (default claude):
   cursor       {"permission": "deny", "user_message": SHORT, "agent_message": REASON}
                for beforeShellExecution, which sends command, cwd and workspace_roots
   muse         UNVERIFIED: mirrors claude
+  kimi         the exit-2 contract below (Kimi Code documents exit code 2 with the reason on stderr)
 --exit2 is the plain-text contract: on a deny the reason goes to stderr and the exit code is 2,
 with nothing on stdout.
 
@@ -30,7 +31,8 @@ import os
 import sys
 from typing import IO, Sequence
 
-FORMATS = ("claude", "codex", "grok", "antigravity", "cursor", "muse")
+FORMATS = ("claude", "codex", "grok", "antigravity", "cursor", "muse", "kimi")
+EXIT2_FORMATS = ("kimi",)       # formats that are the plain-text exit-2 contract, whatever flags come with them
 DEFAULT_FORMAT = "claude"
 
 
@@ -60,7 +62,8 @@ def _parse_args(argv: Sequence[str]) -> tuple[str, bool]:
         elif a.startswith("--format="):
             fmt = a.split("=", 1)[1]
     fmt = fmt.strip().lower()
-    return (fmt if fmt in FORMATS else DEFAULT_FORMAT), exit2
+    fmt = fmt if fmt in FORMATS else DEFAULT_FORMAT
+    return fmt, exit2 or fmt in EXIT2_FORMATS
 
 
 def render(reason: str, fmt: str, destination: str = "") -> str:
@@ -75,6 +78,21 @@ def render(reason: str, fmt: str, destination: str = "") -> str:
         body = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                        "permissionDecisionReason": reason}}
     return json.dumps(body)
+
+
+def emit_deny(reason: str, fmt: str, destination: str, exit2: bool, stdout: IO, stderr: IO) -> int:
+    """Write one deny in the platform's contract and return the exit code.  Never raises: a hook that cannot
+    write its answer allows (exit 0)."""
+    try:
+        if exit2:
+            stderr.write(reason + "\n")
+            stderr.flush()
+            return 2
+        stdout.write(render(reason, fmt, destination) + "\n")
+        stdout.flush()
+    except Exception:
+        return 0
+    return 0
 
 
 def _read_stdin(stdin: IO) -> str:
@@ -102,16 +120,7 @@ def main(argv: Sequence[str] | None = None, stdin: IO | None = None, stdout: IO 
         return 0
     if decision.action != guard.DENY or not decision.reason:
         return 0
-    try:
-        if exit2:
-            stderr.write(decision.reason + "\n")
-            stderr.flush()
-            return 2
-        stdout.write(render(decision.reason, fmt, decision.destination) + "\n")
-        stdout.flush()
-    except Exception:
-        return 0
-    return 0
+    return emit_deny(decision.reason, fmt, decision.destination, exit2, stdout, stderr)
 
 
 if __name__ == "__main__":

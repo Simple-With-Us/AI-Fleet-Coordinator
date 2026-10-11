@@ -12,8 +12,8 @@
 # so a fleet_lanes folder in the caller's cwd (every AFC lane has one under scripts/) can never
 # stand in for this checkout's copy; the boot line puts scripts/ first on sys.path itself.  Do
 # not point ~/apps/lane at this file: that path belongs to `install_tools apply tools`, which
-# writes a shim for the stable copy there.  FLEET_APPS_JSON, FLEET_LAYOUT, FLEET_LANES_ROOT and
-# AGENT_SEAT are read from the environment as they are (-I drops only PYTHON* variables).
+# writes a shim for the stable copy there.  FLEET_APPS_JSON, FLEET_LAYOUT, FLEET_LANES_ROOT,
+# FLEET_LANES_EXTERNAL_ROOT and AGENT_SEAT are read from the environment as they are (-I drops only PYTHON* variables).
 # FLEET_SCRIPTS_DIR overrides the scripts/ directory (for a shim that was copied instead of
 # linked).  FLEET_PYTHON overrides the interpreter.
 

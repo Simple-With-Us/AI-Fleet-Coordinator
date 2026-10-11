@@ -284,8 +284,12 @@ CURSOR_EXTRA = (
 
 GROK_EXTRA = (
     "> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok "
-    "Build:  one seat (owner 2026-10-08), so never sign `GROK-BUILD`, a retired "
-    "alias the CLI refuses.  Old `grok-build/` branches stay readable.  Grok Bot "
+    "Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its "
+    "Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with "
+    "any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), "
+    "grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as "
+    "a seat name and sign GROK, so do not write it as a tag, a branch prefix or a "
+    "lane folder.  Old `grok-build/` branches stay readable.  Grok Bot "
     "(Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not "
     "`[GROK-BOT]`.  Never `[MONET]`.\n\n"
 )
@@ -342,13 +346,18 @@ CLUTCH_IDENTITY = (
     "`[CLUTCH·session8]`.  Notes name `Clutch`.  Branches `clutch/<slug>` only.  "
     "Lanes `~/apps/lanes/Clutch/clutch-<slug>`.  One seat for every model run "
     "through Clutch (owner 2026-10-07: no per-model split).  Replaces HARNESS and "
-    "DSH.  Never sign as Monet.  Pin `AGENT_SEAT=CLUTCH`."
+    "DSH.  Never sign as Monet.  Default seat `CLUTCH` unless Jay names another or a launcher "
+    "set `AGENT_LAUNCH_SEAT`;  never overwrite an `AGENT_SEAT` that is already set."
 )
 
-CLUTCH_CATALOG_BANNER = (
-    "> **Catalog copy.**  The Clutch seat has no skill home yet, so this pack is "
-    "not installed anywhere.  Do not copy it into another tool's skill "
-    "directory.\n\n"
+CLUTCH_EXTRA = (
+    "> **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the "
+    "Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared "
+    "`~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads "
+    "`~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither "
+    "`~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane "
+    "(`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) "
+    "beats the CLUTCH default.\n\n"
 )
 
 KIMI_IDENTITY = (
@@ -461,14 +470,18 @@ SEATS: dict[str, Seat] = {
         zulip_bot="grok-build-bot",
         zulip_rc="Grok-Build",
     ),
+    # Grok Build is the GROK seat (owner 2026-10-08), and GROK-BUILD in any spelling is an alias for GROK
+    # (owner 2026-10-10).  This pack is the copy its home (~/.grok-build/skills) reads, and it signs GROK like
+    # the Grok TUI pack:  chat tag `[GROK·session8]`, Notes `Grok`, branches `grok/`, lanes `grok-<slug>`.
     "grok-build": Seat(
-        "GROK-BUILD", "Grok Build", "grok-build", "grok-build",
+        "GROK", "Grok", "grok", "grok",
         "~/.grok-build/skills", "exclusive",
-        "This pack is for **GROK-BUILD** (Grok Build TUI / App Builder).  Session "
-        "tag `[GROK-BUILD·session8]`.  Notes name `Grok Build`.  Branches `grok-build/<slug>` "
-        "only.  Lanes `~/apps/lanes/<Repo>/grok-build-<slug>`.  Do not use `grok/` or "
-        "sign as GROK or a Grok Bot `[GB-<NAME>]` role.  Pin "
-        "`AGENT_SEAT=GROK-BUILD`.",
+        "This pack is for the **GROK** seat in its Grok Build TUI / App Builder runtime:  Grok Build and the "
+        "Mac Grok TUI / CLI are ONE seat, and GROK-BUILD (in any spelling) is only an alias for it.  Session "
+        "tag `[GROK·session8]`.  Notes name `Grok`.  Branches `grok/<slug>` only.  Lanes "
+        "`~/apps/lanes/<Repo>/grok-<slug>`.  Never sign as Monet or Grok Bot.  Pin "
+        "`AGENT_SEAT=GROK`.",
+        extra_banner=GROK_EXTRA,
         seat_key="grok-build",
         zulip_bot="grok-build-bot",
         zulip_rc="Grok-Build",
@@ -544,10 +557,9 @@ SEATS: dict[str, Seat] = {
     ),
     "clutch": Seat(
         "CLUTCH", "Clutch", "clutch", "clutch",
-        "docs/fleet-skills/by-seat/clutch", "exclusive",
+        "~/.clutch/dsh/skills", "exclusive",
         CLUTCH_IDENTITY,
-        extra_banner=CLUTCH_CATALOG_BANNER,
-        write_home=False,
+        extra_banner=CLUTCH_EXTRA,
         seat_key="clutch",
         zulip_bot="clutch-bot",
         zulip_rc="Clutch",
@@ -901,7 +913,7 @@ def _specialize_grok_bot(text: str, seat: Seat, skill_name: str) -> str:
         ("# Pick up a seat (MONET)", "# Pick up a seat (Grok Bot)"),
         ("# Closeout (MONET)", "# Closeout (Grok Bot)"),
         ("# Apple Notes (MONET)", "# Apple Notes (Grok Bot)"),
-        ("# THE BOARD (MONET)", "# THE BOARD (Grok Bot)"),
+        ("# Board CLI on Linear (MONET)", "# Board CLI on Linear (Grok Bot)"),
         ("# Land a feature branch (MONET)", "# Land a feature branch (Grok Bot)"),
         ("# Owner-facing copy (MONET)", "# Owner-facing copy (Grok Bot)"),
         ("# Secret handoff (MONET)", "# Secret handoff (Grok Bot)"),
@@ -1142,7 +1154,7 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
         ("# Pick up a seat (MONET)", f"# Pick up a seat ({seat.tag})"),
         ("# Closeout (MONET)", f"# Closeout ({seat.tag})"),
         ("# Apple Notes (MONET)", f"# Apple Notes ({seat.tag})"),
-        ("# THE BOARD (MONET)", f"# THE BOARD ({seat.tag})"),
+        ("# Board CLI on Linear (MONET)", f"# Board CLI on Linear ({seat.tag})"),
         ("# Land a feature branch (MONET)", f"# Land a feature branch ({seat.tag})"),
         ("# Owner-facing copy (MONET)", f"# Owner-facing copy ({seat.tag})"),
         ("# Secret handoff (MONET)", f"# Secret handoff ({seat.tag})"),
@@ -1335,7 +1347,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         ("# Pick up a seat (MONET)", "# Pick up a seat (Universal)"),
         ("# Closeout (MONET)", "# Closeout (Universal)"),
         ("# Apple Notes (MONET)", "# Apple Notes (Universal)"),
-        ("# THE BOARD (MONET)", "# THE BOARD (Universal)"),
+        ("# Board CLI on Linear (MONET)", "# Board CLI on Linear (Universal)"),
         ("# Land a feature branch (MONET)", "# Land a feature branch (Universal)"),
         ("# Owner-facing copy (MONET)", "# Owner-facing copy (Universal)"),
         ("# Secret handoff (MONET)", "# Secret handoff (Universal)"),

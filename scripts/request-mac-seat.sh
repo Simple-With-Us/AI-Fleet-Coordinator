@@ -26,7 +26,7 @@
 #   --branch NAME        Git branch the Mac seat should use
 #   --worktree PATH      Worktree path on Jay's Mac (~/apps/...)
 #   --reason TEXT        Why Mac is needed (default: xcodebuild)
-#   --board-id ID        Optional THE BOARD item id to link
+#   --board-id ID        Optional Linear issue id (for example AFC-123) to link
 #   --no-zulip           Skip the Zulip work-topic post
 #   --dry-run            Print actions without creating the issue
 #   -h, --help           Show this help

@@ -18,6 +18,11 @@
 # checkout (review-pr-<n>) and a tool folder (_codex, _managed, _review) are not lanes and are skipped,
 # and so is a symlink left at an old lane path by the layout migration.
 #
+# External lanes (owner 2026-10-10): ~/apps/lanes/<Repo> may be a symlink onto the external disk
+# (FLEET_LANES_EXTERNAL_ROOT, default /Volumes/External/Lanes; set but empty turns it off).  The path agents
+# use is still ~/apps/lanes/<Repo>/<lane>, but a shell whose cwd is the real path (/Volumes/External/Lanes/...)
+# is the same lane, so such a path is read at its ~/apps/lanes spelling before it is judged.
+#
 # It ONLY ever touches the untracked `.claude/settings.local.json` file inside
 # a lane, and inside that file it only ever sets `env.OTEL_RESOURCE_ATTRIBUTES`
 # — every other key in that file (and the rest of the lane) is left alone.
@@ -42,6 +47,8 @@
 set -euo pipefail
 
 APPS_ROOT="${OTEL_LANE_TAG_APPS_ROOT:-$HOME/apps}"
+LANES_EXTERNAL_ROOT="${FLEET_LANES_EXTERNAL_ROOT-/Volumes/External/Lanes}"
+LANES_EXTERNAL_ROOT="${LANES_EXTERNAL_ROOT%/}"
 FLEET_REPO="${OTEL_LANE_TAG_FLEET_REPO:-$HOME/Code/ai-fleet-coordinator}"
 
 fetch_fleet_apps_json() {
@@ -62,10 +69,17 @@ tag_one_lane() {
     return 0
   fi
   lane_dir="$(cd "$lane_dir" && pwd)"
-  local lane_name lane_parent=""
+  local lane_name lane_parent="" place="$lane_dir"
   lane_name="$(basename "$lane_dir")"
+  # `place` is where the lane sits in the map: a real path on the external lanes disk is read at its
+  # ~/apps/lanes spelling.  `lane_dir` stays as given, for git and for the file that is written.
+  if [ -n "$LANES_EXTERNAL_ROOT" ]; then
+    case "$lane_dir" in
+      "$LANES_EXTERNAL_ROOT"/*) place="$APPS_ROOT/lanes/${lane_dir#"$LANES_EXTERNAL_ROOT"/}" ;;
+    esac
+  fi
 
-  case "$lane_dir" in
+  case "$place" in
     "$APPS_ROOT"/*) ;;
     *)
       printf '%-45s skip  not under ~/apps\n' "$lane_name"
@@ -76,7 +90,7 @@ tag_one_lane() {
   # Lane Map v2 (owner 2026-10-09): lanes live at ~/apps/lanes/<Repo>/<seat>-<slug>.  Review checkouts
   # (review-pr-<n>) and tool folders (_codex, _managed, _review) are not lanes.  The folder above a
   # nested lane is handed to the parser, which maps it to the app (a repo folder, or an old prefix).
-  case "$lane_dir" in
+  case "$place" in
     "$APPS_ROOT"/lanes/_*)
       printf '%-45s skip  review or tool-managed folder, not a lane\n' "$lane_name"
       return 0
@@ -86,7 +100,7 @@ tag_one_lane() {
       return 0
       ;;
     "$APPS_ROOT"/lanes/*/*)
-      lane_parent="$(basename "$(dirname "$lane_dir")")"
+      lane_parent="$(basename "$(dirname "$place")")"
       ;;
     "$APPS_ROOT"/lanes|"$APPS_ROOT"/lanes/*)
       printf '%-45s skip  not a lane folder\n' "$lane_name"

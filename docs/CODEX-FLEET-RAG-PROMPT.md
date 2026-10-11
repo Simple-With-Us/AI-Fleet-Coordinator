@@ -33,15 +33,15 @@ c. Call recall_search with a question about the task you are about to start.  Sa
 d. If step a or b failed, run `recall doctor --platforms` in a shell and paste the FAIL rows.
    If the ingest:sentinel row says "direct path skipped", note that search still works through
    the recall.jays.services fallback; only ingest/eval need `recall-tunnel up`.
-e. Post one comment on board item 02512901 in this exact shape:
-   board comment 02512901 --by CODEX --env Mac --text "surface: stdio-mcp | search: ok|FAIL <detail> | contribute: ok|FAIL <detail> | stats points: <n>"
+e. Post one comment on Linear issue OPS-372 in this exact shape:
+   board comment OPS-372 --by CODEX --env Mac --text "surface: stdio-mcp | search: ok|FAIL <detail> | contribute: ok|FAIL <detail> | stats points: <n>"
 
 From now on in every session:
 - **Search recall at the START of turns and tasks, before re-deriving.**  Evaluate the 4 Search
   Triggers (error/blocker, infra/deployment/secrets, cross-repo/unfamiliar domain, pre-owner query).
   If any trigger matches, run `recall_search` BEFORE inspecting files or running diagnostic loops.
   Bypass only for deterministic mechanical edits or an already-researched active plan step.
-  A hit is a lead, not a verdict; open the board row, note, or doc it cites.
+  A hit is a lead, not a verdict; open the Linear issue, note, or doc it cites.
 - At closeout, contribute every reusable lesson with recall_contribute: one idea, 40 to 4,000
   characters, category lesson | preference | infrastructure | decision | runbook, app slug set,
   two spaces between sentences.  Search first so you corroborate rather than duplicate; the
