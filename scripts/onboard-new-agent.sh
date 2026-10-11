@@ -48,7 +48,9 @@ while [ $# -gt 0 ]; do
       # Accepted so older command lines keep working.  These used to pick which
       # integration trees got a lane; no lane is created here any more.
       echo "note: $1 is ignored; lanes are created per task with 'lane new'" >&2
-      if [ "$1" = "--apps" ]; then shift 2; else shift; fi ;;
+      # --apps used to take a value; older command lines still pass one, but the flag is
+      # documented as a no-op, so only take a value when the next argument is not a flag.
+      if [ "$1" = "--apps" ] && [ "$#" -gt 1 ] && [ "${2#--}" = "$2" ]; then shift 2; else shift; fi ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage 0 ;;
     *) echo "unknown arg: $1" >&2; usage 1 ;;
@@ -59,6 +61,9 @@ if [ -z "$TAG" ]; then
   echo "required: --tag" >&2
   usage 1
 fi
+# Registry keys are upper case (parse_seat_registry upper-cases every seatApps key), so
+# canonicalise the tag here or a lower-case --tag writes a duplicate lower-case key.
+TAG="${TAG^^}"
 NOTES_NAME="${NOTES_NAME:-$TAG}"
 SUFFIX="${SUFFIX:-$(echo "$TAG" | tr '[:upper:]' '[:lower:]')}"
 PREFIX="${PREFIX:-$SUFFIX/}"
