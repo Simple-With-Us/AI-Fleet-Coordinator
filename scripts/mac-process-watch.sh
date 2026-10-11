@@ -96,7 +96,8 @@ grok_leader_lock_held() {
   pgrep -f '/[.]grok/bin/grok .* leader' >/dev/null 2>&1
 }
 
-# Deprecated / off-Mac (do not watch or resurrect): scout, senate-relay,
+# Deprecated / off-Mac (do not watch or resurrect): mac-collab-sync and
+# mac-collab-writeback (retired at the Linear cutover), scout, senate-relay,
 # senate-tunnel, residential-proxy, Congress/Socratic/Usage mac-xcode runners.
 # Slack retired in the hard cut to Zulip on 2026-10-07: agent-sync-push
 # (the Slack relay, :8787), cursor-slack-sync and the slack-agent-inbox
@@ -110,8 +111,6 @@ expect_pm2=(
   grok-leader
   grok-acp
   mac-collab
-  mac-collab-sync
-  mac-collab-writeback
   mac-collab-litestream
   clutch-web
   seat-mcp

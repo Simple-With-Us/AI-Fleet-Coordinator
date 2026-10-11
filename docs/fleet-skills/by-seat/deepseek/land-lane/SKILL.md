@@ -24,7 +24,7 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 
 ## Docs before the PR
 
-1. Live effort board → In Progress with honest status; mirror `docs/EFFORT-LOG.md` in the same commit (fleet-infra has no mirror).
+1. Linear issue → In Progress with honest status (`board claim <id> ...`, branch `<seat>/<id>-<slug>`).  The effort logs are archived, so there is no `docs/EFFORT-LOG.md` row to mirror.  The PR body says `Fixes <ID>` if it finishes the issue, `Refs <ID>` if not.
 2. `STATUS.md` stanza: what landed, next action.
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
 4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[APP, DeepSeek Harness] …`.
@@ -77,7 +77,7 @@ gh pr create --fill
 
 CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#agent-sync` then tag.  Consumers pin the exact tag.
 
-`STATUS.md` / `PLAN.md` / `docs/EFFORT-LOG.md` often carry `merge=union` in `.gitattributes`.  Additive board edits usually combine.  Never delete another agent's row while resolving.  Up to 3 land attempts are fine.
+`STATUS.md` / `PLAN.md` (and the archived `docs/EFFORT-LOG.md`) often carry `merge=union` in `.gitattributes`.  Additive edits usually combine.  Never delete another agent's row while resolving.  Up to 3 land attempts are fine.
 
 ## Arm auto-merge
 
@@ -91,7 +91,7 @@ If the box is gating several lanes, announce the full gate in #builds topic `gat
 
 ## After merge
 
-- Board row: **Completed** means merged to `main`, not "PR opened."
+- Linear issue: **Completed** (Done) means merged to `main`, not "PR opened."  A `Fixes <ID>` PR moves it on merge once Linear's GitHub automation is on;  otherwise run `board status <id> completed`.
 - **Deployed** only after the app's production target is verified (`deploy-verify`).
 - Merge to `main` auto-deploys ST / CT / UM on Coolify and DealDex on Vercel.  Do not double-trigger.  Personal-Site live origin is Vercel behind Cloudflare and is **not** "merge = live" — do not mint a second Vercel project.
 - Closeout: `closeout` skill.

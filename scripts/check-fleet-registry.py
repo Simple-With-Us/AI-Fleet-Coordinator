@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Verify every fleet-apps.json app is mentioned in the known registries.
 
-Exits 1 if any required file is missing a repo, acronym, live board, or
-DEFAULT_REPOS entry.  It also checks the registry's Zulip fields:  the realm and
+Exits 1 if any required file is missing a repo, acronym, or DEFAULT_REPOS
+entry.  It also checks the registry's Zulip fields:  the realm and
 channel must match the agent-sync CLI, and each seat's bot email and credential
 file code must be well formed and agree with the CLI's file-name rule.  Run from
 the AI-Fleet-Coordinator worktree:
 
     python3 scripts/check-fleet-registry.py
 
-Live-board checks compare against a real board checkout, which exists on
-operator seats but never on CI runners. With FLEET_BOARD_HOME set, the live
-checks run against that directory and a missing board fails the check. Without
+Live-copy checks compare ~/apps/AGENT-SYNC.md against the registry, which exists
+on operator seats but never on CI runners. With FLEET_BOARD_HOME set, the live
+checks run against that directory and a missing directory fails the check. Without
 it, ~/apps is used when present; when neither exists the live checks are
-skipped and only the repository-portable assertions run.
+skipped and only the repository-portable assertions run.  The effort logs are
+archived (Linear is the tracker), so nothing checks a live effort log or
+EFFORT-LOG-PROTOCOL.md any more; `liveBoard` in the registry is an optional
+record of where an app's archived log lives.
 """
 from __future__ import annotations
 
@@ -178,21 +181,17 @@ def main() -> int:
 
     digest = (ROOT / "scripts" / "build-fleet-daily-digest.py").read_text()
     public_repos = set(PUBLIC_REPOS)
-    protocol = (ROOT / "EFFORT-LOG-PROTOCOL.md").read_text()
     agent_sync = (ROOT / "AGENT-SYNC.md").read_text()
-    live_protocol = APPS / "EFFORT-LOG-PROTOCOL.md"
     live_sync = APPS / "AGENT-SYNC.md"
-    live_quick = APPS / "AGENT-COORDINATION-QUICKSTART.md"
-    live_checks = APPS.is_dir() if _board_home_env else (APPS / "EFFORT-LOG-PROTOCOL.md").is_file()
+    live_checks = APPS.is_dir() if _board_home_env else live_sync.is_file()
     if _board_home_env and not live_checks:
         errors.append(f"FLEET_BOARD_HOME is not a directory: {APPS}")
     elif not live_checks:
-        print(f"note: live board checks skipped (no FLEET_BOARD_HOME, {APPS} absent or not a board checkout)")
+        print(f"note: live copy checks skipped (no FLEET_BOARD_HOME, {APPS} has no AGENT-SYNC.md)")
 
     for app in apps:
         repo = app["repo"]
         acronym = app["acronym"]
-        board = app["liveBoard"]
 
         if repo in public_repos and f'"{repo}": (' not in digest:
             errors.append(f"digest REPO_BADGE missing {repo}")
@@ -205,30 +204,17 @@ def main() -> int:
                 errors.append(
                     f"digest CSS --{css_var} does not match digestColor {color} for {repo}"
                 )
-        if repo not in protocol and board not in protocol:
-            errors.append(f"coordinator EFFORT-LOG-PROTOCOL.md missing {repo} / {board}")
         if repo not in agent_sync:
             errors.append(f"coordinator AGENT-SYNC.md missing repo {repo}")
         if acronym not in agent_sync:
             errors.append(f"coordinator AGENT-SYNC.md missing acronym {acronym}")
 
-        if live_protocol.is_file() and repo not in live_protocol.read_text() and board not in live_protocol.read_text():
-            errors.append(f"~/apps/EFFORT-LOG-PROTOCOL.md missing {repo} / {board}")
         if live_sync.is_file():
             live = live_sync.read_text()
             if repo.casefold() not in live.casefold():
                 errors.append(f"~/apps/AGENT-SYNC.md missing {repo}")
             if acronym not in live:
                 errors.append(f"~/apps/AGENT-SYNC.md missing acronym {acronym}")
-        if live_quick.is_file() and repo not in live_quick.read_text() and board not in live_quick.read_text():
-            # fleet-infra has no row in the quickstart table on purpose
-            if app.get("kind") != "infra":
-                errors.append(f"~/apps/AGENT-COORDINATION-QUICKSTART.md missing {repo} / {board}")
-
-        if live_checks:
-            live_board = APPS / board
-            if not live_board.is_file():
-                errors.append(f"live board missing: {live_board}")
 
         icon = app.get("iconFile")
         if app.get("hasAppIcon") and icon:
