@@ -153,6 +153,41 @@ class Retries(unittest.TestCase):
             self.assertEqual(G.gather(FakeRunner(lambda a: out("")))["status"], "failed")
 
 
+class Malformed(unittest.TestCase):
+    """A reply that is not a whole page is a failed source, never a short list that reads as complete."""
+
+    def test_no_node_list_fails(self):
+        for nodes in (None, "x", {"a": 1}):
+            page = gql_page([gql_node(1)], None)
+            page["data"]["search"]["nodes"] = nodes
+            result = gather(paged({"": page}))
+            self.assertEqual(result["status"], "failed", nodes)
+            self.assertIn("node list", result["reason"])
+
+    def test_no_page_info_fails(self):
+        for info in (None, {}, {"hasNextPage": "false"}, {"endCursor": "x"}):
+            page = gql_page([gql_node(1)], None)
+            if info is None:
+                del page["data"]["search"]["pageInfo"]
+            else:
+                page["data"]["search"]["pageInfo"] = info
+            result = gather(paged({"": page}))
+            self.assertEqual(result["status"], "failed", info)
+            self.assertIn("page info", result["reason"])
+
+    def test_fewer_prs_than_the_search_counted_fails(self):
+        result = gather(paged({"": gql_page([gql_node(1), gql_node(2)], None, 5)}))
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("counted 5", result["reason"])
+
+    def test_more_prs_than_counted_is_fine(self):
+        # a PR opened while paging
+        self.assertEqual(gather(paged({"": gql_page([gql_node(1), gql_node(2)], None, 1)}))["status"], "ok")
+
+    def test_no_search_object_fails(self):
+        self.assertEqual(gather(paged({"": {"data": {"viewer": {}}}}))["status"], "failed")
+
+
 class Forks(unittest.TestCase):
     def test_a_fork_pr_is_reduced_to_a_count(self):
         evil = gql_node(7, cross=True, owner="outside-person", title="SECRET-LOOKING TITLE @**all**", ref="evil/branch-name",

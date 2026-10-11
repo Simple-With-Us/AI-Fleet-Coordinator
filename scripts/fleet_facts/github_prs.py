@@ -141,15 +141,23 @@ def _fetch_all(run: Runner, gh: str, sleep: Callable[[float], None]) -> tuple[li
         meta["pages"] += 1
         if isinstance(search.get("issueCount"), int):
             meta["issue_count"] = search["issueCount"]
-        page = [n for n in (search.get("nodes") or []) if isinstance(n, dict) and "number" in n]
+        raw = search.get("nodes")
+        if not isinstance(raw, list):
+            raise GithubError("the search result has no node list")
+        page = [n for n in raw if isinstance(n, dict) and "number" in n]
         fresh = [n for n in page if n.get("id") not in seen_ids]
         if page and not fresh:
             raise GithubError("a page repeated (the cursor did not advance)")
         for n in fresh:
             seen_ids.add(n.get("id"))
         nodes.extend(fresh)
-        info = search.get("pageInfo") or {}
-        if not info.get("hasNextPage"):
+        info = search.get("pageInfo")
+        if not isinstance(info, dict) or not isinstance(info.get("hasNextPage"), bool):
+            raise GithubError("the search result has no page info")
+        if not info["hasNextPage"]:
+            count = meta["issue_count"]
+            if isinstance(count, int) and len(nodes) < count:
+                raise GithubError("the search counted %d PRs but %d were returned" % (count, len(nodes)))
             return nodes, meta
         nxt = info.get("endCursor")
         if not isinstance(nxt, str) or not nxt or nxt == cursor or nxt in seen_cursors:

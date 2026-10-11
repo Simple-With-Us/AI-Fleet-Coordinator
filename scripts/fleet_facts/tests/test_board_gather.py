@@ -140,6 +140,87 @@ def _has_tz_database() -> bool:
         return False
 
 
+class Holders(unittest.TestCase):
+    """Who holds an In Progress issue follows the board's own rule, and not knowing is never the same as nobody."""
+
+    def unlabelled(self, ident="FFX-2", n=2):
+        return board_row(ident, seats=(), n=n)
+
+    def test_an_issue_with_no_claimed_label_is_held_by_the_footers_seat(self):
+        fake = Fake([self.unlabelled()], shows={"FFX-2": board_show("FFX-2", addressed_by="CODEX")})
+        data = gather(fake)["data"]
+        self.assertEqual(data["orphans"], [])
+        claim = data["claims"][0]
+        self.assertEqual((claim["seat"], claim["seats"], claim["seat_basis"]), ("CODEX", ["CODEX"], "footer"))
+
+    def test_two_footer_seats_are_both_kept_in_order(self):
+        fake = Fake([self.unlabelled()], shows={"FFX-2": board_show("FFX-2", addressed_by="CODEX,CURSOR")})
+        claim = gather(fake)["data"]["claims"][0]
+        self.assertEqual(claim["seats"], ["CODEX", "CURSOR"])
+
+    def test_a_label_wins_over_the_footer(self):
+        fake = Fake([board_row("FFX-1", seats=("CLAUDE",))], shows={"FFX-1": board_show("FFX-1", addressed_by="CODEX")})
+        claim = gather(fake)["data"]["claims"][0]
+        self.assertEqual((claim["seat"], claim["seat_basis"]), ("CLAUDE", "label"))
+
+    def test_nobody_in_the_footer_either_is_an_orphan(self):
+        fake = Fake([self.unlabelled()], shows={"FFX-2": board_show("FFX-2", addressed_by=None)})
+        data = gather(fake)["data"]
+        self.assertEqual([o["identifier"] for o in data["orphans"]], ["FFX-2"])
+        self.assertEqual(data["orphans"][0]["seat_basis"], "none")
+        self.assertEqual((data["claims"], data["unreadable"]), ([], []))
+
+    def test_a_failed_show_on_an_unlabelled_issue_is_not_an_orphan(self):
+        fake = Fake([self.unlabelled()], shows={}, fail=["FFX-2"])
+        data = gather(fake)["data"]
+        self.assertEqual(data["orphans"], [])
+        self.assertEqual([u["identifier"] for u in data["unreadable"]], ["FFX-2"])
+        self.assertFalse(data["unreadable"][0]["linear_comments"]["ok"])
+
+    def test_a_row_with_no_labels_list_is_unreadable_not_an_orphan(self):
+        for labels in (None, "claimed:CLAUDE", {"x": 1}):
+            row = self.unlabelled()
+            if labels is None:
+                del row["labels"]
+            else:
+                row["labels"] = labels
+            data = gather(Fake([row], shows={"FFX-2": board_show("FFX-2")}))["data"]
+            self.assertEqual((data["orphans"], data["claims"]), ([], []), labels)
+            self.assertEqual(len(data["unreadable"]), 1, labels)
+
+    def test_the_budget_running_out_on_an_unlabelled_issue_is_unreadable(self):
+        ticks = iter([0, 1000, 1001, 1002])
+        fake = Fake([self.unlabelled()], shows={"FFX-2": board_show("FFX-2")})
+        data = gather(fake, monotonic=lambda: next(ticks), detail_budget_s=600)["data"]
+        self.assertEqual((data["orphans"], len(data["unreadable"])), ([], 1))
+
+    def test_a_row_that_is_not_an_object_fails_the_source(self):
+        fake = Fake([board_row("FFX-1"), "garbage"], shows={"FFX-1": board_show("FFX-1")})
+        self.assertEqual(gather(fake)["status"], "failed")
+        fake = Fake([board_row("FFX-1")], ["garbage"], shows={"FFX-1": board_show("FFX-1")})
+        self.assertEqual(gather(fake)["status"], "failed")
+
+
+class MalformedShow(unittest.TestCase):
+    def test_a_show_that_is_not_a_document_is_unreadable_never_quiet(self):
+        for shown in ([], "text", None, 7, {"identifier": "FFX-1"}, {"comments": None}, {"comments": "x"}, {"comments": {"a": 1}}):
+            detail = B.read_detail(shown)
+            self.assertFalse(detail["linear_comments"]["ok"], shown)
+            self.assertFalse(detail["detail_ok"], shown)
+
+    def test_an_empty_comment_list_is_a_real_answer(self):
+        detail = B.read_detail({"identifier": "FFX-1", "comments": []})
+        self.assertTrue(detail["linear_comments"]["ok"] and detail["detail_ok"])
+        self.assertEqual(detail["linear_comments"]["events"], [])
+
+    def test_a_malformed_show_in_a_run_marks_the_claim_unknown(self):
+        fake = Fake([board_row("FFX-1")], shows={"FFX-1": {"identifier": "FFX-1"}})
+        claim = gather(fake)["data"]["claims"][0]
+        self.assertFalse(claim["linear_comments"]["ok"])
+        from fleet_facts import activity as A
+        self.assertEqual(A.activity_at({"linear_comments": claim["linear_comments"]}, launch_at="2026-10-01T00:00:00Z"), A.UNKNOWN)
+
+
 class ClaimTime(unittest.TestCase):
     def detail(self, shown):
         return B.read_detail(shown)

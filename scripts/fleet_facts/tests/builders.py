@@ -88,8 +88,9 @@ def board_row(identifier: str, *, seats=("CLAUDE",), title: str = "Example issue
 
 
 def board_show(identifier: str, *, comments=(), location: str = "Mac, ~/apps/lanes/Example/claude-example @ claude/example",
-               provenance: str = "**Filed with the board CLI**\n\n* Reported by CLAUDE") -> dict:
-    return {"identifier": identifier, "location": location, "provenance": provenance, "comments": list(comments)}
+               provenance: str = "**Filed with the board CLI**\n\n* Reported by CLAUDE", addressed_by: str | None = None) -> dict:
+    return {"identifier": identifier, "location": location, "provenance": provenance, "comments": list(comments),
+            "addressed_by": addressed_by}
 
 
 def comment(author: str, text: str, at: str) -> dict:

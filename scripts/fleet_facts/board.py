@@ -10,9 +10,13 @@ time (the Fleet app's request budget is shared) with a timeout each and a time b
 pass;  an issue whose `show` fails or runs out of budget is marked `linear_comments.ok = false`, which makes
 its activity "unknown", never idle.
 
-A claim is an In Progress issue with a `claimed:<SEAT>` label.  An In Progress issue with none is an orphan
-and is listed separately (claim expiry treats it differently).  Linear's `updated_at` is deliberately not
-copied into any record.
+A claim is an In Progress issue held by a seat:  by its `claimed:<SEAT>` label (`seat_basis` "label") or, when
+it has no such label yet, by the import footer's `addressed by` seat that `board show` reports as
+`addressed_by` (`seat_basis` "footer"), which is the board's own holder rule.  An In Progress issue the board
+itself says nobody holds is an orphan and is listed separately (claim expiry treats it differently).  An issue
+whose holder cannot be told (a list row with no labels, a `show` that failed, ran out of budget or came back
+malformed) is neither:  it goes in `unreadable`, so it is never taken for an orphan.  Linear's `updated_at` is
+deliberately not copied into any record.
 
 Claim time:  the newest `CLAIMED` comment, else the import footer's `claimed <Central date and time>` (read
 in America/Chicago), else None with basis "unknown".  Comments keep only `{at, author, sweeper, claimed}`:
@@ -147,10 +151,12 @@ def _base(row: dict) -> dict:
 def read_detail(shown: Any) -> dict:
     """From one `board show --json` document:  branch, location, claim time and basis, and the comment
     events (text dropped).  Pure."""
+    if not isinstance(shown, dict) or not isinstance(shown.get("comments"), list):
+        return _unreadable("board show returned an unexpected shape")
     comments_ok = True
     events: list[dict] = []
     claimed_comment: datetime | None = None
-    for comment in (shown.get("comments") or []) if isinstance(shown, dict) else []:
+    for comment in shown["comments"]:
         if not isinstance(comment, dict):
             comments_ok = False
             continue
@@ -164,15 +170,18 @@ def read_detail(shown: Any) -> dict:
                        "sweeper": is_sweeper_text(text), "claimed": is_claim})
         if is_claim and (claimed_comment is None or when > claimed_comment):
             claimed_comment = when
-    location = shown.get("location") if isinstance(shown, dict) and isinstance(shown.get("location"), str) else ""
+    location = shown.get("location") if isinstance(shown.get("location"), str) else ""
     found = _BRANCH_IN_LOCATION.search(location)
     branch, exact = safety.safe_ref(found.group(1)) if found else (None, True)
     if claimed_comment is not None:
         claimed_at, basis = _iso(claimed_comment), "claimed_comment"
     else:
-        footer = parse_footer_claimed(shown.get("provenance") if isinstance(shown, dict) else None)
+        footer = parse_footer_claimed(shown.get("provenance"))
         claimed_at, basis = (_iso(footer), "import_footer") if footer else (None, "unknown")
+    holders = [h for h in (safety.safe_token(x.strip(), 40) for x in str(shown.get("addressed_by") or "").split(",")) if h]
     return {
+        "detail_ok": True,
+        "holders": holders,
         "location": safety.clean(location, 200) or None,
         "branch": branch,
         "branch_exact": exact,
@@ -183,8 +192,8 @@ def read_detail(shown: Any) -> dict:
 
 
 def _unreadable(reason: str) -> dict:
-    return {"location": None, "branch": None, "branch_exact": True, "claimed_at": None, "claimed_basis": "unknown",
-            "linear_comments": {"ok": False, "events": [], "reason": reason}}
+    return {"detail_ok": False, "holders": [], "location": None, "branch": None, "branch_exact": True, "claimed_at": None,
+            "claimed_basis": "unknown", "linear_comments": {"ok": False, "events": [], "reason": reason}}
 
 
 def gather(run: Runner, *, monotonic: Callable[[], float] = time.monotonic,
@@ -200,15 +209,21 @@ def gather(run: Runner, *, monotonic: Callable[[], float] = time.monotonic,
         return failed(str(exc))
     if not isinstance(in_progress, list) or not isinstance(needs_owner, list):
         return failed("board list did not return a list")
-    rows = [r for r in in_progress if isinstance(r, dict)]
+    if not all(isinstance(r, dict) for r in in_progress) or not all(isinstance(r, dict) for r in needs_owner):
+        return failed("board list returned a row that is not an object")
+    rows = in_progress
     started = monotonic()
     claims: list[dict] = []
     orphans: list[dict] = []
+    unreadable: list[dict] = []
     detail_failed = 0
     for row in rows:
         record = _base(row)
         ident = record["identifier"]
-        if ident is None:
+        labelled = isinstance(row.get("labels"), list)
+        if not labelled:
+            detail = _unreadable("the list row has no labels, so its holder cannot be told")
+        elif ident is None:
             detail = _unreadable("the issue has no usable identifier")
         elif monotonic() - started > detail_budget_s:
             detail = _unreadable("the detail time budget ran out")
@@ -217,21 +232,34 @@ def gather(run: Runner, *, monotonic: Callable[[], float] = time.monotonic,
                 detail = read_detail(_json(_board(run, board, "show", [ident, "--json"], SHOW_TIMEOUT_S)))
             except ValueError as exc:
                 detail = _unreadable(str(exc))
-        if not detail["linear_comments"]["ok"]:
-            detail_failed += 1
+        holders = detail.pop("holders")
         record.update(detail)
-        seats = record["seats"]
-        record["seat"] = seats[0] if seats else None
-        (claims if seats else orphans).append(record)
+        if record["seats"]:
+            record["seat_basis"] = "label"
+        elif labelled and detail["detail_ok"] and holders:
+            # No claimed: label yet (an import not relabelled):  the footer's "addressed by" still holds it,
+            # exactly as the board's own holder rule reads it.
+            record["seats"], record["seat_basis"] = sorted(holders), "footer"
+        else:
+            record["seat_basis"] = "none"
+        record["seat"] = record["seats"][0] if record["seats"] else None
+        if not record["linear_comments"]["ok"]:
+            detail_failed += 1
+        if record["seats"]:
+            claims.append(record)
+        elif labelled and detail["detail_ok"]:
+            orphans.append(record)        # the board itself says nobody holds it
+        else:
+            unreadable.append(record)     # not knowing the holder is not the same as no holder
     owner_items = []
     for row in needs_owner:
-        if isinstance(row, dict):
-            item = _base(row)
-            item["claimant"] = (item["seats"] or [None])[0]
-            owner_items.append(item)
+        item = _base(row)
+        item["claimant"] = (item["seats"] or [None])[0]
+        owner_items.append(item)
     data = {
         "claims": claims,
         "orphans": orphans,
+        "unreadable": unreadable,
         "needs_owner": owner_items,
         "in_progress_total": len(rows),
         "detail_failed": detail_failed,
