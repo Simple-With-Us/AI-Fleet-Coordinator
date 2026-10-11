@@ -44,11 +44,13 @@ from . import heldback as HELD
 from . import live as L
 from . import router as R
 from . import secretscan
+from . import subscribe_all as SUB
 from . import wakes as W
 from . import zulip as Z
 from .cli import format_time, seat_tag_for
 
-EVENT_TYPES = ["message", "update_message", "user_topic", "realm_user"]
+# "stream" and "subscription" keep the bot on every public channel and `streams` current (owner 2026-10-10).
+EVENT_TYPES = ["message", "update_message", "user_topic", "realm_user", "stream", "subscription"]
 FLEET_ROLES = (300, 400)  # moderator and member (owner decision 2026-10-07); owner 100 and admin 200 refused
 BACKOFF = (5.0, 30.0, 60.0, 120.0)
 DEAD_QUEUE_SECONDS = 180.0
@@ -241,6 +243,8 @@ class SeatRunner:
             raise RoleRefused("the credential for seat %s belongs to the bot of seat %s (users/me); a seat holds "
                               "only its own bot, so it is refused" % (self.seat, tag))
         self.me = R.SeatIdentity(self.seat, int(me["user_id"]), str(me.get("full_name") or ""), self.creds.email)
+        self.daemon.join_public(self, "connect")
+        self.streams.clear()
         for sub in self.client.get("users/me/subscriptions").get("subscriptions") or []:
             if isinstance(sub.get("stream_id"), int):
                 self.streams[sub["stream_id"]] = str(sub.get("name") or "")
@@ -743,6 +747,10 @@ class Daemon:
                     self.handle_update(runner, event)
                 elif kind == "user_topic":
                     runner.apply_user_topic(event)
+                elif kind == "stream":
+                    self.handle_stream_event(runner, event)
+                elif kind == "subscription":
+                    self.handle_subscription_event(runner, event)
                 elif kind == "realm_user":
                     person = event.get("person") or {}
                     uid = person.get("user_id")
@@ -765,6 +773,42 @@ class Daemon:
                 self.log.write("event-error", seat=runner.seat, type=str(kind)[:40], id=event.get("id"),
                                error=self.scrub(type(exc).__name__ + ": " + str(exc)))
         runner.flush_cursor()
+
+    def join_public(self, runner: SeatRunner, why: str) -> None:
+        """Subscribe the seat's bot to every public channel it is missing (owner, Sat, Oct 10, 2026:
+        "I want bots to wake to any channel or DM").  Zulip delivers a channel message only to a
+        subscriber, so a bot outside a channel never sees a mention there.  Runs at connect and on a
+        new public channel;  a failure is logged and never stops the seat."""
+        if not self.config.auto_subscribe or runner.client is None:
+            return
+        try:
+            _missing, joined = SUB.ensure_public(runner.client, apply=True)
+        except Exception as exc:  # never fatal:  the seat keeps the channels it already has
+            self.log.write("auto-subscribe-error", seat=runner.seat, why=why,
+                           error=self.scrub(type(exc).__name__ + ": " + str(exc)))
+            return
+        if joined:
+            self.log.write("auto-subscribe", seat=runner.seat, why=why, joined=joined[:50])
+
+    def handle_stream_event(self, runner: SeatRunner, event: Mapping[str, Any]) -> None:
+        op = event.get("op")
+        if op == "create":
+            if any(isinstance(s, dict) and not s.get("invite_only") for s in event.get("streams") or []):
+                self.join_public(runner, "stream-create")
+        elif op == "update" and event.get("property") == "name":
+            sid = event.get("stream_id")
+            if sid in runner.streams:
+                runner.streams[sid] = str(event.get("value") or "")
+        elif op == "update" and event.get("property") == "invite_only" and event.get("value") is False:
+            self.join_public(runner, "stream-public")
+
+    def handle_subscription_event(self, runner: SeatRunner, event: Mapping[str, Any]) -> None:
+        op = event.get("op")
+        for sub in event.get("subscriptions") or []:
+            if op == "add" and isinstance(sub, dict) and isinstance(sub.get("stream_id"), int):
+                runner.streams[sub["stream_id"]] = str(sub.get("name") or "")
+            elif op == "remove" and isinstance(sub, dict):
+                runner.streams.pop(sub.get("stream_id"), None)
 
     def route_backfill(self, runner: SeatRunner, messages: list[dict[str, Any]]) -> None:
         for message in sorted(messages, key=lambda m: m.get("id", 0)):
