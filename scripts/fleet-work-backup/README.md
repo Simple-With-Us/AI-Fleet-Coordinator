@@ -141,7 +141,10 @@ The bucket is shared (`litestream.yml` replicates the board database into it), s
 check that with read-only B2 calls (`b2_authorize_account` and `b2_list_buckets`, API v4) and refuse a key
 that is not limited to them, lacks a capability restic needs, or holds key or bucket admin capabilities
 (`--force` does not override that), and a lifecycle rule that hides files under the prefix by age
-(`daysFromUploadingToHiding` would hide live restic packs).  The v4 response shape is tested against an offline
+(`daysFromUploadingToHiding` would hide live restic packs).  A scheduled run checks the key too, because the sync
+can bring a new one after the install:  a passing verdict is kept for a day per key, so a steady run costs two
+read-only B2 calls a day, a hard problem refuses the run (`status=error reason=unsafe-b2-key`, the problems in the
+detail log), and a missing hide-to-delete rule is `warn=b2-lifecycle-missing`.  The v4 response shape is tested against an offline
 fake built from Backblaze's documentation;  a real response the check misreads fails closed (init and install
 refuse) rather than letting an unscoped key through.  Two B2 facts that need a bucket setting,
 not code:  over the S3 API a delete only hides a file version, so `restic prune` frees no space until the
@@ -272,7 +275,7 @@ disk, so restic itself never reads `/Volumes/External`.
 - `~/Library/Logs/fleet-work-backup.log`:  one line per run, key=value, 12-hour local time.
   `status` is `ok`, `partial` (the snapshot is missing something:  a denied path, an unmounted volume,
   files deferred by the gate, files restic could not read), `skip` (`reason=` load, memory pressure, swap,
-  lock-held, low-disk) or `error` (`reason=` restic-missing, missing-credentials with the NAMES,
+  lock-held, low-disk) or `error` (`reason=` restic-missing, missing-credentials with the NAMES, unsafe-b2-key,
   wrong-password, restic-backup-failed, timeout, exception).  Fields:  `checkouts groups work unpushed
   stashes dirty files staged dropped deferred regex_only gate large blocked snapshot added forget prune
   check elapsed warn grant last_ok`.  `gate` is `gitleaks`, `gitleaks-error` or `regex-only`;  `warn` is a

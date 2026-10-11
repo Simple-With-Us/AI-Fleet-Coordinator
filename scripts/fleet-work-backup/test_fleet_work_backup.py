@@ -2147,6 +2147,28 @@ class B2SetupCase(RunBase):
                 self.assertNotIn(secret, buf.getvalue() + repr(probs))
         self.assertFalse(any(a.startswith("init") for a in self.argv()))
 
+    def test_a_scheduled_run_refuses_a_key_that_changed_to_an_unsafe_one(self):
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)                  # the installed, scoped key
+        self.assertEqual(len(self.cfg.b2_http.calls), 2)
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)                  # checked once a day per key
+        self.assertEqual(len(self.cfg.b2_http.calls), 2)
+        backups = sum(1 for a in self.argv() if a.startswith("backup"))
+        handoff = self.home / ".secrets" / "global-api-keys"                   # the sync brings a different key
+        handoff.write_text(handoff.read_text().replace(KEYID, KEYID[::-1]))
+        self.cfg.b2_http = self.fake_b2(prefix=None)
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 2)
+        line = self.log().splitlines()[-1]
+        self.assertIn("status=error reason=unsafe-b2-key", line)
+        self.assertEqual(sum(1 for a in self.argv() if a.startswith("backup")), backups)   # nothing uploaded
+        self.assertIn("b2-refused the key is not limited to the file-name prefix", self.cfg.detail_log_path.read_text())
+        for secret in (KEYID, KEYID[::-1], APPKEY, B2TOKEN):
+            self.assertNotIn(secret, self.log() + self.cfg.detail_log_path.read_text() + (self.cfg.state_dir / "state.json").read_text())
+
+    def test_a_missing_lifecycle_rule_warns_on_the_run_line(self):
+        self.cfg.b2_http = self.fake_b2(rules=[])
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        self.assertIn("b2-lifecycle-missing", self.log().splitlines()[-1])
+
     def test_the_console_read_and_write_preset_is_accepted(self):
         preset = ["deleteFiles", "listAllBucketNames", "listBuckets", "listFiles", "readBucketEncryption", "readBuckets",
                   "readFiles", "shareFiles", "writeBucketEncryption", "writeFiles", "readBucketRetentions",

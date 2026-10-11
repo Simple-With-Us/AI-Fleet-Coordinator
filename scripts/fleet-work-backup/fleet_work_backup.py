@@ -2273,6 +2273,33 @@ def check_b2_setup(cfg: Config) -> list[tuple[bool, str]]:
     return b2_key_problems(cfg, key_id, app_key, bucket)
 
 
+B2_RECHECK_EVERY = 24 * 3600
+
+
+def b2_gate(cfg: Config, state: dict) -> tuple[list[str], list[str]]:
+    """The B2 check for a scheduled run:  (hard problems, soft problems).  The key can change after the install (the
+    sync follows Infisical), so a run checks it too.  A passing verdict is kept for a day per key (a hash of the key
+    id in state.json), so a steady run costs two read-only B2 calls a day and a new key is checked on its first run."""
+    if cfg.repository:
+        return [], []
+    src = dict(read_handoff(cfg.handoff))
+    for name in CRED_NAMES.values():
+        if os.environ.get(name):
+            src[name] = os.environ[name]
+    tag = hashlib.sha256(("fwb-b2:" + src.get(CRED_NAMES["key_id"], "")).encode()).hexdigest()[:16]
+    seen = state.get("b2_ok") or {}
+    if seen.get("key") == tag and cfg.now() - float(seen.get("at", 0)) < B2_RECHECK_EVERY:
+        return [], list(seen.get("soft") or [])
+    probs = check_b2_setup(cfg)
+    hard = [t for h, t in probs if h]
+    soft = [t for h, t in probs if not h]
+    if hard:
+        state.pop("b2_ok", None)
+    elif not any(t.startswith("could not") for t in soft):
+        state["b2_ok"] = {"key": tag, "at": cfg.now(), "soft": soft}
+    return hard, soft
+
+
 def restic_key_count(cfg: Config, env: dict) -> Optional[int]:
     """How many keys open the repository (``restic key list --json``);  None when restic could not say."""
     try:
@@ -2696,6 +2723,7 @@ def log_not_ok(cfg: Config, **fields) -> str:
 def _run(cfg: Config, args, held: list[int]) -> int:
     t0 = time.time()
     dry = args.dry_run
+    b2_soft: list[str] = []
     if getattr(args, "skip_gitleaks", False) and not dry:
         log_not_ok(cfg, status="error", reason="skip-gitleaks-is-for-a-dry-run")
         return 2
@@ -2725,6 +2753,13 @@ def _run(cfg: Config, args, held: list[int]) -> int:
         env, missing = restic_env(cfg)
         if env is None:
             log_not_ok(cfg, status="error", reason="missing-credentials", names=",".join(missing))
+            return 2
+        state = read_state(cfg)
+        b2_hard, b2_soft = b2_gate(cfg, state)
+        write_state(cfg, state)
+        if b2_hard:
+            detail_log(cfg, [f"b2-refused {t}" for t in b2_hard])
+            log_not_ok(cfg, status="error", reason="unsafe-b2-key", problems=len(b2_hard))
             return 2
         if not disk_ok(cfg):
             state = read_state(cfg)
@@ -2819,6 +2854,9 @@ def _run(cfg: Config, args, held: list[int]) -> int:
         warns.append("allow-entry-stale")
     if stage.allow_unpinned:
         warns.append("allow-entry-unpinned")
+    if b2_soft:
+        warns.append("b2-lifecycle-missing" if any("daysFromHidingToDeleting" in t for t in b2_soft) else "b2-unchecked")
+        detail += [f"b2-warning {t}" for t in b2_soft]
     partial = bool(blocked or disc.missing_volumes or deferred)
     detail_log(cfg, detail)
     try:
