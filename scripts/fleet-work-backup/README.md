@@ -21,8 +21,9 @@ all of its linked worktrees are one group.
 that is a local path, a `file://` URL or a bundle file is the same disk and does not count;  a repository
 with only such remotes has its whole history bundled (the dry run lists it, the detail log says
 `local-only-remotes`), unless the remote is another checkout on this Mac that itself has a GitHub remote (a
-flat lane cloned from `~/Code/X`):  then that checkout's default branch is the bound and the pushed line
-(`local-remote-proxied`, `bound.via_url` in `group.json`).
+flat lane cloned from `~/Code/X`):  then that checkout's GitHub default branch is the bound and the pushed line (for a clone that has
+not fetched lately, the newest commit it shares with that branch;  `local-remote-proxied`, `bound.via_url` in
+`group.json`).
 
 | Per group (repository) | What |
 |---|---|

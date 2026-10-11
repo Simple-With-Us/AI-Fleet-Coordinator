@@ -1076,8 +1076,10 @@ def resolve_bound(git: Git, cwd: str, net: list[str]) -> tuple[str, str]:
 def proxy_bound(git: Git, cwd: str) -> Optional[dict]:
     """For a repository whose only remotes are local paths:  a commit GitHub holds, found through a local remote
     that is itself a checkout with a GitHub remote (a flat lane cloned from ~/Code/X).  That checkout's default
-    branch tip is the bound when this clone has it;  a clone that has not fetched lately has an older tip, and
-    its own tracking ref for the local remote counts when it is an ancestor of the checkout's default branch."""
+    branch tip is the bound when this clone has it;  a clone that has not fetched lately has an older tip, so the
+    bound is the newest commit that its own tracking ref for the local remote and the checkout's GitHub branch
+    share (the merge base, computed in the checkout, which has both).  That commit is on GitHub's default branch
+    and an ancestor of what this clone holds."""
     rc, out, _ = git.run(cwd, "config", "-z", "--get-regexp", r"^remote\..*\.url$")
     for rec in out.decode("utf-8", "replace").split("\0") if rc == 0 else []:
         key, _, val = rec.partition("\n")
@@ -1098,8 +1100,12 @@ def proxy_bound(git: Git, cwd: str) -> Optional[dict]:
         else:
             for cand in (f"refs/remotes/{m.group(1)}/HEAD", f"refs/remotes/{m.group(1)}/main", f"refs/remotes/{m.group(1)}/master"):
                 sha = git.text(cwd, "rev-parse", "-q", "--verify", f"{cand}^{{commit}}")
-                if sha and git.run(path, "merge-base", "--is-ancestor", sha, psha)[0] == 0:
-                    found = sha
+                if not sha:
+                    continue
+                rc, mb, _ = git.run(path, "merge-base", sha, psha)
+                base = mb.decode().strip() if rc == 0 else ""
+                if base and git.run(cwd, "cat-file", "-e", f"{base}^{{commit}}")[0] == 0:
+                    found = base
                     break
         if found:
             url = next((l.split(" ", 1)[1] for l in pmeta if l.split(" ", 1)[0] == pnet[0] and " " in l), "")

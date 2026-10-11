@@ -83,7 +83,7 @@ clone of the remote:
 
 `bundle verify` names the missing commit when a prerequisite is not in the clone.  A flat lane cloned from
 another checkout on this Mac (`"network_remotes": []` but `bound.via_url` set in `group.json`, and a
-`local-remote-proxied` note in the detail log) is bounded by that checkout's default branch:  clone
+`local-remote-proxied` note in the detail log) is bounded by a commit on that checkout's GitHub default branch (`bound.sha`):  clone
 `bound.via_url` (the GitHub URL) instead of the remote the lane lists.  A repository whose only remotes are
 local paths or bundle files with no GitHub behind them (`"network_remotes": []`, no `via_url`, and a
 `local-only-remotes` note) has its whole history in the bundle:

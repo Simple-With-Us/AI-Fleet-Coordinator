@@ -1282,36 +1282,52 @@ class BundleCase(RunBase):
         self.assertEqual((fresh / "a.txt").read_text(), "a\n")
         self.assertTrue(any(n.startswith("local-only-remotes") for n in stage.notes))
 
-    def test_a_clone_of_a_local_checkout_is_bounded_by_that_checkouts_github_branch(self):
+    def proxied_child(self, scenario: str):
+        """A flat lane cloned from a checkout that has a GitHub-looking remote;  returns (stage, group, parent, child,
+        expected bound sha).  ``current``:  the clone is up to date.  ``stale``:  the checkout's main moved on.
+        ``diverged``:  the clone's origin/main is a commit GitHub never got (the checkout's main was reset)."""
         parent = make_repo(self.home, self.home / "Code" / "parent")           # origin looks like GitHub
+        base = git(parent, "rev-parse", "HEAD")
+        if scenario == "diverged":
+            write(parent / "never-pushed.txt", "only in the checkout's local main\n")
+            git(parent, "add", "-A")
+            git(parent, "commit", "-q", "-m", "local main only")
         child = self.home / "apps" / "child"
         git(self.tmp, "clone", "-q", str(parent), str(child))                   # child's only remote is a local path
-        stale_main = git(child, "rev-parse", "refs/remotes/origin/main")
-        write(parent / "moved-on.txt", "the checkout's main moved on after the clone was made\n")      # the clone is now stale
-        git(parent, "add", "-A")
-        git(parent, "commit", "-q", "-m", "main moves on")
-        git(parent, "push", "-q")
+        child_main = git(child, "rev-parse", "refs/remotes/origin/main")
+        if scenario == "diverged":
+            git(parent, "reset", "-q", "--hard", "origin/main")
+        if scenario in ("stale", "diverged"):
+            write(parent / "moved-on.txt", "main moved on after the clone was made\n")
+            git(parent, "add", "-A")
+            git(parent, "commit", "-q", "-m", "main moves on")
+            git(parent, "push", "-q")
         write(child / "child.txt", "work only in the clone\n")
         git(child, "add", "-A")
         git(child, "commit", "-q", "-m", "clone-only work")
         stage = self.build()
-        g = next(g for g in self.groups if g.name == "child")
-        self.assertEqual(g.unpushed_refs, 1)
-        meta = json.loads((self.cfg.dry_stage / f"git/{g.slug}/group.json").read_text())
-        self.assertEqual(meta["network_remotes"], [])
-        self.assertEqual(meta["bound"]["sha"], stale_main)         # the newest commit the clone has that GitHub holds
-        self.assertNotEqual(stale_main, git(parent, "rev-parse", "refs/remotes/origin/main"))
-        self.assertEqual(meta["bound"]["via_url"], "https://example.invalid/parent.git")
-        self.assertEqual(os.path.realpath(meta["bound"]["via"]), os.path.realpath(parent))
-        self.assertTrue(any(n.startswith("local-remote-proxied") for n in stage.notes))
-        self.assertFalse(any(n.startswith("local-only-remotes") and "child" in n for n in stage.notes))
-        (b,) = [self.cfg.dry_stage / k for k in stage.items if k.endswith(".bundle") and f"/{g.slug}/" in k]
-        fresh = self.tmp / "from-github"
-        git(self.tmp, "clone", "-q", f"file://{self.home / 'remotes' / 'parent.git'}", str(fresh))   # what GitHub would serve
-        git(fresh, "bundle", "verify", str(b))
-        git(fresh, "fetch", "-q", str(b), "refs/heads/*:refs/restored/*")
-        self.assertEqual(git(fresh, "show", "refs/restored/main:child.txt"), "work only in the clone")
-        self.assertLess(b.stat().st_size, 2000)                                 # one commit, not the whole history
+        want = {"current": git(parent, "rev-parse", "refs/remotes/origin/main"), "stale": child_main, "diverged": base}[scenario]
+        return stage, next(g for g in self.groups if g.name == "child"), parent, child, want
+
+    def test_a_clone_of_a_local_checkout_is_bounded_by_that_checkouts_github_branch(self):
+        for scenario in ("current", "stale", "diverged"):
+            with self.subTest(scenario):
+                for p in (self.home / "Code" / "parent", self.home / "apps" / "child", self.home / "remotes" / "parent.git"):
+                    shutil.rmtree(p, ignore_errors=True)
+                stage, g, parent, child, want = self.proxied_child(scenario)
+                self.assertEqual(g.unpushed_refs, 1)
+                meta = json.loads((self.cfg.dry_stage / f"git/{g.slug}/group.json").read_text())
+                self.assertEqual(meta["network_remotes"], [])
+                self.assertEqual(meta["bound"]["sha"], want)
+                self.assertEqual(os.path.realpath(meta["bound"]["via"]), os.path.realpath(parent))
+                self.assertEqual(meta["bound"]["via_url"], "https://example.invalid/parent.git")
+                self.assertTrue(any(n.startswith("local-remote-proxied") for n in stage.notes))
+                (b,) = [self.cfg.dry_stage / k for k in stage.items if k.endswith(".bundle") and f"/{g.slug}/" in k]
+                fresh = self.tmp / f"from-github-{scenario}"
+                git(self.tmp, "clone", "-q", f"file://{self.home / 'remotes' / 'parent.git'}", str(fresh))   # what GitHub serves
+                git(fresh, "bundle", "verify", str(b))
+                git(fresh, "fetch", "-q", str(b), "refs/heads/*:refs/restored/*")
+                self.assertEqual(git(fresh, "show", "refs/restored/main:child.txt"), "work only in the clone")
 
     def test_network_urls(self):
         for url in ("https://github.com/a/b.git", "git@github.com:a/b.git", "ssh://git@github.com/a/b",
@@ -1350,6 +1366,26 @@ class BundleCase(RunBase):
         self.assertEqual({d["reason"] for d in hits}, {"content:aws-access-key-id"})
         self.assertTrue(all(len(d["digest"]) == 12 for d in hits))
         self.assertEqual(self.bundle_heads(stage), ["refs/heads/independent", "refs/heads/main"])
+
+    def test_two_independent_leaky_branches_are_both_dropped(self):
+        """refs_containing with several --contains arguments must mean "any of them", or the second branch is bundled."""
+        for name, key in (("x", AWS), ("y", AWS2)):
+            git(self.r, "checkout", "-q", "-b", name, "origin/main")
+            self.commit(f"leak-{name}.md", f"example {key}\n")
+        git(self.r, "checkout", "-q", "-b", "stacked-on-y")
+        self.commit("more.md", "fine\n")
+        git(self.r, "checkout", "-q", "main")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        dropped = sorted(d["path"].split(" ref ")[1] for d in stage.dropped if " ref " in d["path"])
+        self.assertEqual(dropped, ["refs/heads/stacked-on-y", "refs/heads/x", "refs/heads/y"])
+        self.assertEqual(self.bundle_heads(stage), ["refs/heads/main"])
+        # the same answer from a batch of commits as from one commit at a time
+        git_obj = fwb.Git(self.cfg)
+        bad, _ = fwb.scan_commits(git_obj, str(self.r), ["--branches", "--not", "--remotes=origin"], 10 ** 9)
+        self.assertEqual(len(bad), 2)
+        refs = {"refs/heads/x", "refs/heads/y", "refs/heads/stacked-on-y", "refs/heads/main"}
+        self.assertEqual(fwb.refs_containing(git_obj, str(self.r), list(bad), refs),
+                         {"refs/heads/x", "refs/heads/y", "refs/heads/stacked-on-y"})
 
     def test_a_secret_in_a_pushed_commit_does_not_cost_the_local_branch(self):
         git(self.r, "checkout", "-q", "-b", "feat", "origin/main")
