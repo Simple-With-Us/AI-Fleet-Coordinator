@@ -128,6 +128,22 @@ class PostTests(Harness):
         self.run_cli("post", "--topic", "t", "--to", "jay@zulip.test", "hi")
         self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192JAY] @**Jay Wedgeworth** hi" % TAG)
 
+    def test_to_takes_the_grok_seat_tag_and_the_real_display_name_but_not_grok_build(self) -> None:
+        # The roster once told seats to mention @**GROK-BUILD**.  The bot is grok-build-bot@ (seat tag GROK,
+        # owner 2026-10-08) and its display name is "Grok (Build)", so GROK-BUILD names nobody.
+        self.fake.users.remove(self.fake.user_named("Grok"))  # the harness's stand-in grok-bot@ also signs GROK, which the real realm has no such bot for
+        self.fake.add_user("grok-build-bot@zulip.test", "Grok (Build)", is_bot=True)
+        for raw in ("GROK", "Grok (Build)", "grok-build-bot@zulip.test"):
+            with self.subTest(raw=raw):
+                result = self.run_cli("post", "--topic", "t", "--to", raw, "hi")
+                self.assertEqual(result.code, 0, result.err)
+                self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192GROK] @**Grok (Build)** hi" % TAG)
+        before = len(self.fake.requests_to("POST", "messages"))
+        refused = self.run_cli("post", "--topic", "t", "--to", "GROK-BUILD", "hi")
+        self.assertEqual(refused.code, 2)
+        self.assertIn("Grok (Build)", refused.err, "the refusal lists the real name among the closest")
+        self.assertEqual(len(self.fake.requests_to("POST", "messages")), before)
+
     def test_peer_labels_come_from_the_bot_email_not_the_display_name(self) -> None:
         from agent_sync.cli import seat_tag_for
         bot = lambda email, name: {"email": email, "full_name": name, "is_bot": True}
@@ -139,7 +155,7 @@ class PostTests(Harness):
             ("compiler-grok-bot@simplewithus.zulipchat.com", "GB-Compiler"): "GB-COMPILER",
             ("openai-dot-bot@simplewithus.zulipchat.com", "Jet (OpenAI dot)"): "JET",
             ("instinct-bat-bot@simplewithus.zulipchat.com", "Echo"): "ECHO",
-            ("grok-build-bot@simplewithus.zulipchat.com", "GROK-BUILD"): "GROK",
+            ("grok-build-bot@simplewithus.zulipchat.com", "Grok (Build)"): "GROK",
             ("grok-web-bot@simplewithus.zulipchat.com", "Grok (Web/iOS)"): "GROK-WEB",
             ("opencode-bot@simplewithus.zulipchat.com", "OpenCode"): "OPENCODE",
         }
