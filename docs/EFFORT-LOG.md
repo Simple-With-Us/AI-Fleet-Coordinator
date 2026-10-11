@@ -137,6 +137,7 @@ repo's board too. As of 2026-08-17. 2026-08-17 GROK board hygiene: one In Progre
 - **2026-08-16 — GROK — IN PROGRESS — FDA for Xcode Python.app + iOS 26.5 platform + TestFlight ships.**  iOS 26.5 runtime installed (`23F77`).  CT 1.0.17 archive running (stuck at provisioning/keychain — needs owner Allow/Touch ID if a dialog is up).  SIP blocked TCC.db write; launchd iMessage still needs FDA toggle in System Settings.  Listener is up from this session.
 
 ## Completed
+- **2026-10-10 — CLAUDE — COMPLETED (lands when its PR merges) — Digest builders default `FLEET_OWNER` to `Simple-With-Us` (`claude/digest-owner`, lane `~/apps/lanes/AI-Fleet-Coordinator/claude-digest-owner`, board `d7ba74cc`).**  `build-fleet-daily-digest.py` and `build-agent-calendar.py` defaulted to `jaywedgeworth22`, so a manual run wrote `jaywedgeworth22.github.io` links into `digest.md`, both ICS files and the HTML.  The Pages workflow already overrode both env vars, so CI output was unaffected.  The `public/index.html` Fleet Activity card label now names the live host.  Left for the owner:  `activity.jays.services` still 302s to the dead host (Cloudflare).
 
 - **2026-09-27 — CODEX — IN PROGRESS — Register iOS signing file helpers (board `3935f5ec`, issue #299, branch `codex/ios-signing-helper-registry-20260927`).**  Master list identifies ST/CT/UM/DD staging and synthetic workflow tests as on-demand; no daemon created.
   Completed: AFC #300 merged as `d1030a1`; master list and pinned Coding Apple Note refreshed.  No recurring process added.

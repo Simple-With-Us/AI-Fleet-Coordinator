@@ -12,7 +12,7 @@ Outputs (under site/ and calendar/):
 
 Env:
   GITHUB_TOKEN / FLEET_GITHUB_TOKEN
-  FLEET_OWNER (default jaywedgeworth22)
+  FLEET_OWNER (default Simple-With-Us)
   FLEET_REPOS (comma list)
   DIGEST_LOOKBACK_DAYS (default 21)
   DIGEST_TZ (default America/Chicago)  — day bucketing only
@@ -40,7 +40,7 @@ from zoneinfo import ZoneInfo
 # Allow `python3 scripts/build-fleet-daily-digest.py` from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ics_utils import ics_escape, join_ics  # noqa: E402
-from public_activity_repos import PUBLIC_REPOS, select_public_repos  # noqa: E402
+from public_activity_repos import DEFAULT_FLEET_OWNER, PUBLIC_REPOS, select_public_repos  # noqa: E402
 
 DEFAULT_REPOS = PUBLIC_REPOS
 
@@ -1197,7 +1197,7 @@ def build_daily_ics(days: list[DayBucket], now: datetime, base_url: str) -> str:
 
 
 def main() -> int:
-    owner = os.environ.get("FLEET_OWNER", "jaywedgeworth22").strip() or "jaywedgeworth22"
+    owner = os.environ.get("FLEET_OWNER", DEFAULT_FLEET_OWNER).strip() or DEFAULT_FLEET_OWNER
     repos_raw = os.environ.get("FLEET_REPOS", "").strip()
     requested = [r.strip() for r in repos_raw.split(",") if r.strip()] or list(DEFAULT_REPOS)
     lookback = env_int("DIGEST_LOOKBACK_DAYS", 21)
@@ -1208,7 +1208,7 @@ def main() -> int:
     base_url = os.environ.get("SITE_BASE_URL", "").strip()
     # Default GitHub Pages URL if not set
     if not base_url:
-        base_url = f"https://{owner}.github.io/AI-Fleet-Coordinator"
+        base_url = f"https://{owner.lower()}.github.io/AI-Fleet-Coordinator"
 
     tok = token()
     repos = select_public_repos(owner, requested, tok)

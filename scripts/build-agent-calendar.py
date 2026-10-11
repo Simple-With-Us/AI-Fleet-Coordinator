@@ -9,7 +9,7 @@ Auth:
   FLEET_GITHUB_TOKEN    — optional token for GitHub API rate limits
 
 Env:
-  FLEET_OWNER           — GitHub owner (default: jaywedgeworth22)
+  FLEET_OWNER           — GitHub owner (default: Simple-With-Us)
   FLEET_REPOS           — comma list of repo names (default fleet set)
   CALENDAR_LOOKBACK_DAYS — how far back to fetch (default: 14)
   CALENDAR_PER_REPO     — max commits per repo (default: 40)
@@ -29,7 +29,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ics_utils import fold_line, ics_escape, join_ics  # noqa: E402
-from public_activity_repos import PUBLIC_REPOS, select_public_repos  # noqa: E402
+from public_activity_repos import DEFAULT_FLEET_OWNER, PUBLIC_REPOS, select_public_repos  # noqa: E402
 
 DEFAULT_REPOS = PUBLIC_REPOS
 
@@ -140,7 +140,7 @@ def build_ics(events: list[dict[str, Any]], now: datetime) -> str:
 
 
 def main() -> int:
-    owner = os.environ.get("FLEET_OWNER", "jaywedgeworth22").strip() or "jaywedgeworth22"
+    owner = os.environ.get("FLEET_OWNER", DEFAULT_FLEET_OWNER).strip() or DEFAULT_FLEET_OWNER
     repos_raw = os.environ.get("FLEET_REPOS", "").strip()
     requested = [r.strip() for r in repos_raw.split(",") if r.strip()] or list(DEFAULT_REPOS)
     lookback = env_int("CALENDAR_LOOKBACK_DAYS", 14)

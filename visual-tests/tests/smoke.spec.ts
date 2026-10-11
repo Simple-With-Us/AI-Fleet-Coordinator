@@ -31,3 +31,17 @@ test.describe('operator start redirect page (scripts/safari-start/public/index.h
     expect(refresh).toContain('https://home.jays.services/');
   });
 });
+
+test.describe('operator dashboard (public/index.html)', () => {
+  test('Fleet Activity card names the live host, never the retired Pages host', async ({ page }) => {
+    await serveRepo(page);
+    await page.goto('/public/index.html');
+    // Cards render client-side from the SECTIONS list, so wait for the card itself.
+    const card = page.locator('li > a', {
+      has: page.locator('.name', { hasText: 'Fleet Activity' }),
+    });
+    await expect(card).toBeVisible();
+    await expect(card.locator('.sub')).toHaveText('activity.jays.services');
+    expect(await page.content()).not.toMatch(/jaywedgeworth22\.github\.io/i);
+  });
+});
