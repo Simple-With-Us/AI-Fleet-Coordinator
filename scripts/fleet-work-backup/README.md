@@ -141,7 +141,9 @@ The bucket is shared (`litestream.yml` replicates the board database into it), s
 check that with read-only B2 calls (`b2_authorize_account` and `b2_list_buckets`, API v4) and refuse a key
 that is not limited to them, lacks a capability restic needs, or holds key or bucket admin capabilities
 (`--force` does not override that), and a lifecycle rule that hides files under the prefix by age
-(`daysFromUploadingToHiding` would hide live restic packs).  Two B2 facts that need a bucket setting,
+(`daysFromUploadingToHiding` would hide live restic packs).  The v4 response shape is tested against an offline
+fake built from Backblaze's documentation;  a real response the check misreads fails closed (init and install
+refuse) rather than letting an unscoped key through.  Two B2 facts that need a bucket setting,
 not code:  over the S3 API a delete only hides a file version, so `restic prune` frees no space until the
 bucket has a **lifecycle rule** on the prefix `fleet-work-backup/` with `daysFromHidingToDeleting` of 7 to
 30 (which also leaves a soft-delete window);  and a key that can delete lets any process on the Mac that can
@@ -301,9 +303,13 @@ for a dry run only (a faster report);  a real run refuses it.
 Order matters;  nothing here runs by itself:
 
 1. `brew install restic` (or `install.py --install-restic`).
-2. In the B2 console, create an application key **limited to the bucket and the prefix `fleet-work-backup/`**
-   (capabilities `listFiles readFiles writeFiles deleteFiles listBuckets`, nothing more), and add a lifecycle
-   rule on that prefix with days from hiding to deleting of 7 to 30 and **no** days from uploading to hiding.
+2. In the B2 console, create an application key with access to the one bucket only, type **Read and Write**,
+   and the file-name prefix `fleet-work-backup/` (or with the `b2` CLI, an exact list:  `b2 key create --bucket
+   <bucket> --name-prefix fleet-work-backup/ fleet-work-backup listBuckets,listFiles,readFiles,writeFiles,deleteFiles`).
+   It needs `listFiles readFiles writeFiles deleteFiles listBuckets`;  the check refuses key or bucket admin
+   (`writeKeys`, `deleteKeys`, `writeBuckets`, `deleteBuckets`) and accepts the console preset's other read and
+   write capabilities.  Add a lifecycle rule on that prefix with days from hiding to deleting of 7 to 30 and
+   **no** days from uploading to hiding.
 3. Write `B2_FLEET_WORK_KEY_ID` and `B2_FLEET_WORK_APPLICATION_KEY` to Infisical (project `AI Fleet
    Coordinator`, `prod`), and copy `scripts/fleet-work-backup/fleet_work_backup.py` to
    `~/apps/fleet-work-backup/` (`install.py --skip-launchd` does that), then run `fleet_work_backup.py

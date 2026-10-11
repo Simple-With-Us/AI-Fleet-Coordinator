@@ -2183,7 +2183,9 @@ def restic_env(cfg: Config, allow_master: bool = False) -> tuple[Optional[dict],
 B2_API = "https://api.backblazeb2.com"
 B2_PREFIX = "fleet-work-backup/"
 B2_NEEDED_CAPS = {"listFiles", "readFiles", "writeFiles", "deleteFiles", "listBuckets"}
-B2_TOO_STRONG_CAPS = {"writeKeys", "deleteKeys", "writeBuckets", "deleteBuckets", "bypassGovernance"}
+# Key and bucket administration.  Anything else a console "Read and Write" bucket key carries (shareFiles, retention
+# and encryption settings, listAllBucketNames) is accepted, so the documented console steps make a key this accepts.
+B2_TOO_STRONG_CAPS = {"writeKeys", "deleteKeys", "writeBuckets", "deleteBuckets"}
 
 
 def b2_call(cfg: Config, method: str, url: str, headers: dict, body: Optional[dict] = None) -> tuple[int, dict]:

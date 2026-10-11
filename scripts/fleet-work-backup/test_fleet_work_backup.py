@@ -2147,6 +2147,13 @@ class B2SetupCase(RunBase):
                 self.assertNotIn(secret, buf.getvalue() + repr(probs))
         self.assertFalse(any(a.startswith("init") for a in self.argv()))
 
+    def test_the_console_read_and_write_preset_is_accepted(self):
+        preset = ["deleteFiles", "listAllBucketNames", "listBuckets", "listFiles", "readBucketEncryption", "readBuckets",
+                  "readFiles", "shareFiles", "writeBucketEncryption", "writeFiles", "readBucketRetentions",
+                  "readFileRetentions", "writeFileRetentions", "readFileLegalHolds", "writeFileLegalHolds", "bypassGovernance"]
+        self.cfg.b2_http = self.fake_b2(caps=preset)
+        self.assertEqual(self.problems(), [])
+
     def test_a_rule_that_hides_live_packs_is_refused_and_a_missing_one_is_a_warning(self):
         self.cfg.b2_http = self.fake_b2(rules=[{"fileNamePrefix": "", "daysFromHidingToDeleting": 7,
                                                 "daysFromUploadingToHiding": 30}])
@@ -2186,9 +2193,27 @@ class B2SetupCase(RunBase):
             missing = inst.prerequisites(fwb, sys.executable, False, True, hard)
         self.assertTrue(any("prefix" in m for m in missing), missing)
         self.assertTrue(hard)
-        src = (HERE / "install.py").read_text()
-        self.assertIn("--force does not override that", src)
-        self.assertLess(src.index("if hard:"), src.index("elif missing and not a.force:"))
+        # main() with --force, end to end:  launchctl is a stub that records every call;  every path is in the temp dir.
+        bindir = self.tmp / "bin"
+        bindir.mkdir()
+        (bindir / "launchctl").write_text('#!/bin/bash\necho "$@" >> "$STUB_DIR/inst-launchctl.log"\nexit 0\n')
+        (bindir / "launchctl").chmod(0o755)
+        buf = io.StringIO()
+        with mock.patch.object(fwb, "config_from_env", return_value=self.cfg), \
+                mock.patch.object(inst, "load_module", return_value=fwb), \
+                mock.patch.object(inst, "SCRIPT_DST", str(self.tmp / "installed" / "fleet_work_backup.py")), \
+                mock.patch.object(inst, "PLIST_DST", str(self.tmp / "agents" / "agent.plist")), \
+                mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch.object(sys, "argv", ["install.py", "--force", "--interpreter", sys.executable]), \
+                mock.patch.dict(os.environ, {"PATH": f"{bindir}:{os.environ['PATH']}"}), \
+                contextlib.redirect_stdout(buf):
+            rc = inst.main()
+        self.assertEqual(rc, 1)
+        self.assertIn("--force does not override that", buf.getvalue())
+        self.assertFalse((self.tmp / "agents" / "agent.plist").exists())
+        self.assertFalse((self.stubdir / "inst-launchctl.log").exists())      # never printed, never bootstrapped
+        for secret in (KEYID, APPKEY, B2TOKEN):
+            self.assertNotIn(secret, buf.getvalue())
 
 
 class NewPasswordCase(RunBase):
