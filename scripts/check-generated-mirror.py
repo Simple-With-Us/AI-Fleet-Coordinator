@@ -17,11 +17,16 @@ check fails when
      a header before or after the change, and the head branch is not `handbook-sync/mirror`;
   4. (a pull request from `handbook-sync/mirror`) the branch changes anything but generated paths.
 
-Rule 3 stops a hand edit with a recomputed hash.  Rule 1 stops one that strips the header.  The hash
-cannot tell a real build from a forged one, since anyone can recompute it;  authenticity is the Mac
-sync job's work, which refuses a hash it did not write.  The mirror PR carries only the generated
-file, so nothing in this script can change in the same PR as the first header:  the pin is how the
-check passes before that PR and refuses a hand edit after it.
+Rule 3 stops a hand edit with a recomputed hash, and (on the mirror branch only) rejects a strip of the
+GENERATED header while the base still has it.  Rule 1 stops an unheadered file whose text is not the
+pinned pre-flip bytes.  On a non-mirror branch rule 3 already refuses the strip on attribution grounds;
+on the mirror branch the pin exemption and the rule 3 exemption together would let a headered-to-
+unheadered change pass, so the mirror branch is held to a strip refusal here.  The pin still excuses a
+header-less file before the first mirror PR lands.  The hash cannot tell a real build from a forged one,
+since anyone can recompute it;  authenticity is the Mac sync job's work, which refuses a hash it did
+not write.  The mirror PR carries only the generated file, so nothing in this script can change in the
+same PR as the first header:  the pin is how the check passes before that PR and refuses a hand edit
+after it.
 
 This is a hard gate.  Branch protection on main requires the `test` check (strict, so the branch must also be up to
 date), and this check is a step in that job, so a red result here blocks the merge of every pull request, not only
@@ -70,7 +75,9 @@ class GeneratedPath:
     # Until the first mirror PR lands the header, the path is the text the handbook was imported from, and this is
     # its sha256.  A header-less file that is not exactly this text fails, so a hand edit during the freeze is
     # refused too.  None means the header is required from the start.  Drop the pin in a one-line follow-up once
-    # the header is on main;  until then it is harmless, because rule 3 refuses a revert to the pinned text.
+    # the header is on main;  until then the mirror-branch strip check in branch_problems refuses a mirror PR that
+    # reverts to the pinned text (rule 3 alone would let it through, because the pin exemption accepts header-less
+    # bytes and the mirror branch is exempt from rule 3's branch attribution check).
     pre_flip_sha256: str | None
 
 
@@ -127,8 +134,22 @@ def content_problems(spec: GeneratedPath, data: bytes) -> tuple[list[str], str]:
 
 def branch_problems(spec: GeneratedPath, base: bytes | None, head: bytes | None, head_branch: str,
                     mirror_branch: str) -> list[str]:
-    """Rule 3:  only the mirror branch may change a path that carries a header."""
+    """Rule 3:  only the mirror branch may change a path that carries a header.
+
+    The pin exemption in rule 1 accepts an unheadered file whose bytes match the pre-flip text, and the
+    mirror branch is exempt from rule 3 entirely.  On a non-mirror branch the strip is still refused by
+    rule 3 (the change attribution is wrong);  on the mirror branch the sync job is the only legitimate
+    writer, so the same strip would slip through.  Once the base has the header, dropping it on a mirror
+    PR drops the only thing this gate can verify going forward, so the mirror branch itself is held to a
+    strip refusal here.  The pin still excuses a header-less file before the first mirror PR lands.
+    """
     if head_branch == mirror_branch:
+        if has_header(base) and not has_header(head):
+            return [
+                f"strips the GENERATED header;  the base already has it, and on the mirror branch rule 3 would "
+                f"otherwise pass the change.  Removing it leaves main without the invariant this gate enforces, "
+                f"so even the sync job must rewrite the body without stripping the header"
+            ]
         return []
     if not (has_header(head) or has_header(base)):
         return []      # hand-written on both sides;  rule 1 holds the text to the pin

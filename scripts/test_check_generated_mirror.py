@@ -265,6 +265,47 @@ class BranchRule(RepoCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("only the sync job's mirror pull request", problems[0])
 
+    def test_mirror_branch_stripping_back_to_the_pinned_text_fails(self) -> None:
+        # Once the base already has a generated mirror, the pin exemption in rule 1 would accept the exact pre-flip
+        # bytes, and rule 3's mirror-branch exemption would let the change through.  Together that would let a
+        # later mirror PR drop the GENERATED header from main while CI reports success.  The mirror-branch strip
+        # check fires regardless of those exemptions.
+        self.commit_base(mirror())
+        self.write(BODY)             # the pinned pre-flip text, no header
+        problems, _ = self.run_check(pin=sha(BODY), base=True, branch="handbook-sync/mirror")
+        # the only problem is the strip:  rule 1 accepts the pinned bytes, rule 3 exempts the mirror branch
+        self.assertEqual(len(problems), 1)
+        self.assertIn("strips the GENERATED header", problems[0])
+
+    def test_mirror_branch_stripping_to_non_pinned_text_fails(self) -> None:
+        # Same shape, but the unheadered head is not the pinned text.  Both rule 1 and the strip rule fire, and
+        # the strip rule's message is in the output.
+        self.commit_base(mirror())
+        self.write(BODY + "An extra line.\n")      # not the pin, so rule 1 also fires
+        problems, _ = self.run_check(pin=sha(BODY), base=True, branch="handbook-sync/mirror")
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(any("strips the GENERATED header" in m for m in problems))
+        self.assertTrue(any("not the pinned pre-flip text" in m for m in problems))
+
+    def test_mirror_branch_deleting_a_mirror_fails(self) -> None:
+        # Deleting the file on the mirror branch removes the GENERATED header too.  The headerless head combined
+        # with a headered base is the same shape as a strip, so the mirror-branch check fires.
+        self.commit_base(mirror())
+        (self.root / self.PATH).unlink()
+        self.git("add", "-A")
+        problems, _ = self.run_check(base=True, branch="handbook-sync/mirror")
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(any("is missing" in m for m in problems))
+        self.assertTrue(any("strips the GENERATED header" in m for m in problems))
+
+    def test_mirror_branch_first_header_still_passes(self) -> None:
+        # The strip check must not block the legitimate first-mirror-PR transition:  a headered head on a
+        # headerless base is the exact shape that lands the GENERATED header on main.
+        self.commit_base(BODY)
+        self.write(mirror(BODY + "Rewritten by the handbook.\n"))
+        problems, _ = self.run_check(pin=sha(BODY), base=True, branch="handbook-sync/mirror")
+        self.assertEqual(problems, [])
+
     def test_pre_flip_pull_request_that_leaves_the_file_alone_passes(self) -> None:
         self.commit_base(BODY)
         problems, notes = self.run_check(pin=sha(BODY), base=True, branch="claude/other-work")
