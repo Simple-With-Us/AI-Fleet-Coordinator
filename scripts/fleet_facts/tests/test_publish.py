@@ -115,7 +115,7 @@ class Sandbox(unittest.TestCase):
 
     def cycle(self, **over):
         args = dict(run=self.machine, now=NOW, key_provider=lambda: SIGNER, load1=lambda: 1.0, sleep=self.sleeps.append, repo=REPO,
-                    gh="gh", apps_provider=lambda: [], full_copy_provider=lambda: True)
+                    gh="gh", apps_provider=lambda: [], full_copy_provider=lambda: True, limits_provider=lambda: (p.CAP_SECONDS, p.LOAD_LIMIT))
         args.update(over)
         with contextlib.redirect_stdout(io.StringIO()) as out:
             outcome = p.run_cycle(**args)
@@ -475,7 +475,7 @@ class Cap(Sandbox):
 
     def test_no_write_phase_starts_with_less_than_a_minute_left(self):
         ticks = iter([0.0, 0.0] + [1190.0] * 200)
-        outcome = self.cycle(cap_seconds=1200, clock=lambda: next(ticks))
+        outcome = self.cycle(limits_provider=lambda: (1200, 250.0), clock=lambda: next(ticks))
         self.assertEqual((outcome.result, outcome.exit_code), ("over-cap", 4))
         self.assertEqual(self.gh.puts, [])
         self.assertEqual([c for c in self.gh.calls if c[1:3] == ["repo", "view"]].__len__(), 1, "only the early look at the gate, not the one before the writes")
@@ -763,6 +763,23 @@ class KnobProviders(KnobTestCase):
         self.fake.set(mode="fail")
         self.assertIs(p._default_full_copy(), False)
         self.assertEqual(p._default_apps(), [])
+
+    def test_the_cap_and_the_load_limit_come_from_infisical_and_default_to_20_minutes_and_250(self):
+        self.fake.set(secrets={})
+        self.assertEqual(p._default_limits(), (20 * 60, 250.0))
+        self.new_process()
+        self.fake.set(secrets={"FLEET_FACTS_PUBLISH_CAP_MINUTES": "10", "FLEET_FACTS_PUBLISH_MAX_LOAD1": "100"})
+        self.assertEqual(p._default_limits(), (600, 100.0))
+        self.new_process()
+        self.fake.set(secrets={"FLEET_FACTS_PUBLISH_CAP_MINUTES": "90", "FLEET_FACTS_PUBLISH_MAX_LOAD1": "banana"})
+        self.assertEqual(p._default_limits(), (20 * 60, 250.0), "a value out of range or not a number is the default")
+
+    def test_an_outage_keeps_the_last_good_limits(self):
+        self.fake.set(secrets={"FLEET_FACTS_PUBLISH_CAP_MINUTES": "7", "FLEET_FACTS_PUBLISH_MAX_LOAD1": "90"})
+        self.assertEqual(p._default_limits(), (420, 90.0))
+        self.new_process()
+        self.fake.set(mode="fail")
+        self.assertEqual(p._default_limits(), (420, 90.0))
 
     def test_the_allowed_apps_come_from_infisical(self):
         self.fake.set(secrets={"FLEET_LOOPS_DATA_ALLOWED_APPS": "alpha-app, beta-app"})

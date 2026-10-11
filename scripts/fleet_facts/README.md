@@ -151,8 +151,9 @@ hit that survives refuses the cycle (nothing is written).  A secret-shaped strin
 
 **Writes that do not finish.**  The list is written first, because the signed JSON carries its hash.  If the JSON write then fails, the new list is replaced by the not-available note, so a new list never stands beside the previous run's facts (git data commits would make the three files one commit;  this job stays on the contents API the plan names).
 
-**Time and load.**  One lock (a second run exits), a 20-minute wall-clock cap (a timer ends the run and kills the children), every child's timeout
-clamped to the time left, no write phase with under a minute left, and a skip when load1 is over 250.  A skip writes nothing to the repository:  the
+**Time and load.**  One lock (a second run exits), a wall-clock cap of 20 minutes (a timer ends the run and kills the children), every child's timeout
+clamped to the time left, no write phase with under a minute left, and a skip when load1 is over 250.  The cap and the limit are the Infisical knobs
+`FLEET_FACTS_PUBLISH_CAP_MINUTES` (1 to 60) and `FLEET_FACTS_PUBLISH_MAX_LOAD1` (1 to 1000);  a local setting can only lower them.  A skip writes nothing to the repository:  the
 files stay, `generated_at` keeps ageing, and `~/.local/state/fleet-facts/mac-facts-publish.json` says `stale`.
 
 Exit status of `publish-mac` and `publish`:  0 published, or skipped on purpose;  3 nothing published because a safety condition failed (no key, the gate, a
@@ -183,11 +184,12 @@ package's own stable copy does not carry it.
 
 ## `fleet-facts verify` (the contract C2-1 relies on;  built by F7)
 
-`open-loops gather --mac-facts` reads the signed `gb/mac-facts.json` and uses it only if `fleet-facts verify FILE`
-exits 0.  The command meets this contract:
+`open-loops gather --mac-facts` reads the signed `gb/mac-facts.json` and uses it only if `fleet-facts verify FILE --path
+gb/mac-facts.json` exits 0 (the path pin means the root `mac-facts.json`, which keeps lane paths, is never accepted as the Grok Bot copy,
+even with a good signature).  The command meets this contract:
 
-* `fleet-facts verify FILE` exits **0** only when the file's `sig` is the hex HMAC-SHA256, with
-  `FLEET_FACTS_SIGNING_KEY`, of the file's canonical JSON without `sig`.
+* `fleet-facts verify FILE [--path REL]` exits **0** only when the file's `sig` is the hex HMAC-SHA256, with
+  `FLEET_FACTS_SIGNING_KEY`, of the file's canonical JSON without `sig` (and, with `--path`, the file's signed `signed_for` equals REL).
 * Any other exit is "not verified":  **1** the signature is wrong or missing, **2** a usage error (what a `fleet-facts`
   without the command answers today), **3** the key is unavailable.
 * The key comes in the environment of the command, never on the command line, and is never printed.

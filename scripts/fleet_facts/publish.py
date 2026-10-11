@@ -52,7 +52,7 @@ from .runner import run as default_run
 __all__ = ["CAP_SECONDS", "LOAD_LIMIT", "PARTS", "FULL_LIST", "GB_FACTS", "FULL_FACTS", "Outcome", "Withheld", "UnreadableFile", "CapExceeded",
            "build_documents", "build_full_list", "run_cycle", "publish_file", "verify_file", "state_dir"]
 
-CAP_SECONDS = 20 * 60
+CAP_SECONDS = 20 * 60        # the K1 defaults (FLEET_FACTS_PUBLISH_CAP_MINUTES, FLEET_FACTS_PUBLISH_MAX_LOAD1);  Infisical sets the real values
 LOAD_LIMIT = 250.0
 PARTS = ("lanes", "autopush", "backup", "needs_owner")
 FULL_LIST = "gb/full-list.md"
@@ -199,6 +199,15 @@ def _default_full_copy() -> bool:
 
 
 FULL_COPY_OFF = "skipped:  FLEET_FACTS_PUBLISH_FULL_COPY is off"
+
+
+def _default_limits() -> tuple[int, float]:
+    """(the time cap in seconds, the load1 limit) from K1.  An unreadable knob gives the registry defaults, which are the same numbers."""
+    try:
+        from fleet_knobs import knobs  # noqa: PLC0415
+        return int(knobs.get("FLEET_FACTS_PUBLISH_CAP_MINUTES")) * 60, float(knobs.get("FLEET_FACTS_PUBLISH_MAX_LOAD1"))
+    except Exception:  # noqa: BLE001
+        return CAP_SECONDS, LOAD_LIMIT
 
 
 # ---- time budget -----------------------------------------------------------------------------------------
@@ -358,13 +367,13 @@ def _write_dry_run(folder: Path, files: Mapping[str, bytes]) -> None:
 
 def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1: Callable[[], float], sleep: Callable[[float], None],
            repo: str, gh: str | None, apps_provider: Callable[[], list[str]], full_copy_provider: Callable[[], bool],
-           dry_run_dir: Path | None, deadline: Deadline) -> Outcome:
+           dry_run_dir: Path | None, deadline: Deadline, load_limit: float) -> Outcome:
     try:
         load = float(load1())
     except OSError:
         load = 0.0
-    if load > LOAD_LIMIT:
-        return Outcome("skipped", "load1 %.0f is over %d;  the last published files stay and are stale" % (load, LOAD_LIMIT), extra={"load1": round(load, 1)})
+    if load > load_limit:
+        return Outcome("skipped", "load1 %.0f is over %d;  the last published files stay and are stale" % (load, load_limit), extra={"load1": round(load, 1)})
     try:
         key = key_provider()
     except signing.KeyUnavailable as exc:
@@ -446,7 +455,8 @@ def run_cycle(*, run: Runner = default_run, now: datetime | None = None, key_pro
               load1: Callable[[], float] = lambda: os.getloadavg()[0], sleep: Callable[[float], None] = time.sleep,
               state: Path | None = None, repo: str = repomod.REPO, gh: str | None = None,
               apps_provider: Callable[[], list[str]] = _default_apps, full_copy_provider: Callable[[], bool] = _default_full_copy,
-              dry_run_dir: Path | None = None, cap_seconds: int = CAP_SECONDS, clock: Callable[[], float] = time.monotonic) -> Outcome:
+              dry_run_dir: Path | None = None, limits_provider: Callable[[], tuple[int, float]] = _default_limits,
+              clock: Callable[[], float] = time.monotonic) -> Outcome:
     """One publish cycle.  Never raises for a condition it knows;  the Outcome says what happened and the exit status to use."""
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     folder = _private_dir(state or state_dir())
@@ -455,13 +465,14 @@ def run_cycle(*, run: Runner = default_run, now: datetime | None = None, key_pro
             outcome = Outcome("skipped", "another publish is running")
             _log(current, "skipped:  another publish is running")
             return outcome
+        cap_seconds, load_limit = limits_provider()
         deadline = Deadline(cap_seconds, clock)
         _log(current, "start")
         try:
             with hard_cap(cap_seconds):
                 outcome = _cycle(run=run, now=current, key_provider=key_provider, load1=load1, sleep=sleep, repo=repo, gh=gh,
                                  apps_provider=apps_provider, full_copy_provider=full_copy_provider, dry_run_dir=dry_run_dir,
-                                 deadline=deadline)
+                                 deadline=deadline, load_limit=load_limit)
         except CapExceeded:
             kill_live()
             outcome = Outcome("over-cap", "the %d-minute cap was reached;  running children were ended" % (cap_seconds // 60), EXIT_FAILED)

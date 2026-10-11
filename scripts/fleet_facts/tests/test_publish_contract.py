@@ -27,6 +27,7 @@ OTHER = "another-fixture-key-9876543210zyxwvuTSRQ"
 class Contract(Sandbox):
     def setUp(self):
         super().setUp()
+        self.pin = True          # False reads a file the way an unpinned `fleet-facts verify FILE` would
         self.world = standard_world(self.home, self.bin)
         self.gh = FakeGitHub()
         self.program = self.bin / "open-loops"
@@ -48,12 +49,13 @@ class Contract(Sandbox):
         import io
         with contextlib.redirect_stdout(io.StringIO()):
             outcome = p.run_cycle(run=self.machine, now=NOW, key_provider=lambda: SIGNER, load1=lambda: 1.0, sleep=lambda s: None, repo=REPO, gh="gh",
-                                  apps_provider=lambda: [], full_copy_provider=lambda: True)
+                                  apps_provider=lambda: [], full_copy_provider=lambda: True, limits_provider=lambda: (1200, 250.0))
         self.assertEqual((outcome.result, outcome.reason), ("published", None))
 
     def consumer(self, argv, *, timeout, env=None, cwd=None):
         if os.path.basename(argv[0]) == "fleet-facts" and argv[1] == "verify":
-            code, _ = p.verify_file(argv[2], dict(env or {}))
+            signed_for = argv[argv.index("--path") + 1] if "--path" in argv and self.pin else None
+            code, _ = p.verify_file(argv[2], dict(env or {}), signed_for=signed_for)
             return Result(code, "", "")
         return self.world.runner()(argv, timeout=timeout, env=env, cwd=cwd)
 
@@ -79,7 +81,9 @@ class Contract(Sandbox):
         self.assertEqual(names, {"claude-stale", "claude-never"})
 
     def test_what_a_cloud_host_sees_equals_what_the_mac_itself_sees(self):
+        self.pin = False         # the full copy is read unpinned here, only to compare its content with the minimized copy's
         full = self.facts("mac-facts.json")
+        self.pin = True
         minimized = self.facts("gb/mac-facts.json")
         for section in ("not_on_github", "unpushed_over_a_day", "decisions"):
             self.assertEqual(minimized[section], full[section], section)
@@ -118,13 +122,15 @@ class Contract(Sandbox):
         self.assertEqual(facts["sources"]["mac_facts"]["status"], "absent")
         self.assertIn("stale, built", facts["sources"]["mac_facts"]["reason"])
 
-    def test_a_file_signed_for_the_other_path_still_verifies_without_a_path_check(self):
-        """Moving `mac-facts.json` to `gb/mac-facts.json` verifies for `fleet-facts verify FILE`;  `--path` is how a caller pins the path."""
+    def test_the_full_copy_is_not_accepted_as_the_grok_bot_copy_even_with_a_good_signature(self):
+        """The digest pins `--path gb/mac-facts.json`, so the root mac-facts.json (lane paths) cannot be read as the GB document by mistake."""
         full = self.gh.written("mac-facts.json")
         code, _ = p.verify_file(str(self._write(full)), {signing.KEY_ENV: SIGNER})
-        self.assertEqual(code, 0)
-        code, _ = p.verify_file(str(self._write(full)), {signing.KEY_ENV: SIGNER}, signed_for="gb/mac-facts.json")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0, "the signature itself is good")
+        facts = self.facts("mac-facts.json")
+        self.assertEqual(facts["sources"]["mac_facts"]["status"], "absent")
+        self.assertIn("did not verify", facts["sources"]["mac_facts"]["reason"])
+        self.assertEqual({m["source"] for m in facts["missing"]}, {"mac_facts", "lanes", "autopush"})
 
     def _write(self, data: bytes) -> Path:
         path = self.root / "moved.json"

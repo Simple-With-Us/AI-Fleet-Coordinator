@@ -5,6 +5,7 @@ import plistlib
 import re
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -23,9 +24,9 @@ class LaunchAgentTests(unittest.TestCase):
     def test_it_is_a_valid_plist_with_the_label(self) -> None:
         self.assertEqual(self.plist["Label"], LABEL)
 
-    @unittest.skipUnless(shutil.which("plutil"), "plutil is a macOS tool")
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("plutil"), "plutil is a macOS tool (another plutil on Linux takes different arguments)")
     def test_plutil_lints_it(self) -> None:
-        ran = subprocess.run(["plutil", "-lint", str(PLIST)], capture_output=True, text=True, timeout=30)
+        ran = subprocess.run(["plutil", "-lint", "--", str(PLIST)], capture_output=True, text=True, timeout=30)
         self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
 
     def test_it_runs_at_half_past_every_third_hour_and_not_at_load(self) -> None:

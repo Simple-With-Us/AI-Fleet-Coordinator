@@ -8,7 +8,8 @@ the sources it would have supplied are reported as Missing):
   * it can be read (a regular file under 8 MB, or an https response from api.github.com or
     raw.githubusercontent.com with no redirect);
   * FLEET_FACTS_SIGNING_KEY is set in the environment;
-  * `fleet-facts verify FILE` exits 0 (the contract is in README.md:  F7 builds the command);
+  * `fleet-facts verify FILE --path gb/mac-facts.json` exits 0 (the contract is in the fleet_facts README):  the signature is good and
+    the file was signed for that path;
   * the bytes that were verified parse as a JSON object, and that object says when it was built and was built
     less than 9 hours ago (F7 publishes every 3 hours).
 
@@ -36,9 +37,10 @@ from fleet_facts.runner import Runner, which
 
 from . import central
 
-__all__ = ["KEY_ENV", "MAX_BYTES", "MAX_AGE_HOURS", "ALLOWED_HOSTS", "FetchError", "fetch_https", "load", "part"]
+__all__ = ["KEY_ENV", "EXPECTED_PATH", "MAX_BYTES", "MAX_AGE_HOURS", "ALLOWED_HOSTS", "FetchError", "fetch_https", "load", "part"]
 
 KEY_ENV = "FLEET_FACTS_SIGNING_KEY"
+EXPECTED_PATH = "gb/mac-facts.json"      # the repository path the file must have been signed for
 TOKEN_ENVS = ("FLEET_LOOPS_DATA_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
 MAX_BYTES = 8 * 1024 * 1024
 MAX_AGE_HOURS = 9.0
@@ -123,7 +125,9 @@ def _verify(run: Runner, data: bytes, environ: Mapping[str, str]) -> str | None:
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
-        result = run([exe, "verify", target], timeout=VERIFY_TIMEOUT_S, env={KEY_ENV: key})
+        # `--path` pins what the file was signed for:  the full mac-facts.json (lane paths) is a different signed document and
+        # must not be accepted as the Grok Bot copy if it ever reaches this reader by mistake.
+        result = run([exe, "verify", target, "--path", EXPECTED_PATH], timeout=VERIFY_TIMEOUT_S, env={KEY_ENV: key})
     finally:
         shutil.rmtree(folder, ignore_errors=True)
     if result.reason:
