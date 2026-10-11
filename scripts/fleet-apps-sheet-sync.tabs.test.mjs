@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   parsePartition, parseServerListener, parseBoardCli, buildFleetAppsTab, buildSeatsTab,
-  repoForAppKey, worktreeCell, zulipFileCode, buildMarkdownMirror
+  repoForAppKey, worktreeCell, zulipFileCode, buildMarkdownMirror, validateFacts
 } from "./fleet-apps-sheet-sync.mjs";
 
 const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
@@ -89,4 +89,20 @@ test("the Markdown mirror stops each table at its first blank row", () => {
   assert.doesNotMatch(md, /ASC RECORDS NOT IN/);
   assert.doesNotMatch(md, /RE-APPROVE/);
   assert.match(md, /\| ST \|/);
+});
+
+test("the facts file passes its shape check, and a bad section is refused", () => {
+  assert.equal(validateFacts(facts), facts);
+  assert.throws(() => validateFacts({ ascRecords: { "1": { status: "x" } } }), /wrong shape/);
+  assert.throws(() => validateFacts({ seatPlatfroms: {} }), /unknown section/);
+});
+
+test("the Markdown mirror escapes HTML in cell text", () => {
+  const tabs = {
+    registry: [["A"], ["<img src=x onerror=alert(1)>"], []],
+    testflight: [["A"], []], icons: [[], [], [], ["A"], []], fleetApps: [["A"], []], seats: [["A"], []],
+  };
+  const md = buildMarkdownMirror({ sections: [] }, tabs, "NOW");
+  assert.doesNotMatch(md, /<img/);
+  assert.match(md, /&lt;img/);
 });
