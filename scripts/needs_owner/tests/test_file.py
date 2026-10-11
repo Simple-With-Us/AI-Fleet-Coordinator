@@ -333,6 +333,47 @@ class FileTests(unittest.TestCase):
             self.assertEqual(r.code, 2, (name, r.out, r.err))
         self.assertEqual(self.w.calls(), [])
 
+    # ---- what Linear does to the fence -------------------------------------------------------
+    def test_a_bare_fence_still_reads(self) -> None:
+        """Linear may drop the info string of a code block it does not know:  the block is found by its content."""
+        env = self.w.env(FAKE_BOARD_STRIP_FENCE_INFO="1")
+        first = self.w.file(Q, "Revive it", "Close it", env=env)
+        self.assertEqual(first.code, 0, first.err)
+        self.assertNotIn("```needs-owner", self.w.issue("AFC-300")["description"])
+        got = self.w.run("status", "AFC-300", "--json").json()
+        self.assertEqual((got["state"], got["block_ok"], got["seat_verified"]), ("notified", True, True))
+        again = self.w.file(Q, "Revive it", "Close it", env=env)
+        self.assertEqual(again.code, 0, again.err)
+        self.assertTrue(again.json()["already_filed"])
+        self.assertEqual((len(self.w.board_state()["issues"]), len(self.w.zulip()["messages"])), (1, 1))
+        changed = self.w.file(Q, "Revive it", "Park it", env=env)
+        self.assertEqual(changed.code, 2)
+        self.assertIn("AFC-300", changed.err)
+
+    def test_a_description_that_loses_the_block_is_repaired_with_a_comment(self) -> None:
+        env = self.w.env(FAKE_BOARD_DROP_FENCE="1")
+        r = self.w.file(Q, "Revive it", "Close it", env=env)
+        self.assertEqual(r.code, 0, r.err)
+        self.assertIn("posting the block as a comment", r.err)
+        self.assertEqual(r.json()["state"], "notified")
+        got = self.w.run("status", "AFC-300", "--json").json()
+        self.assertEqual((got["block_ok"], got["seat_verified"], got["state"]), (True, True, "notified"))
+        again = self.w.file(Q, "Revive it", "Close it", env=env)
+        self.assertEqual(again.code, 0, again.err)
+        self.assertTrue(again.json()["already_filed"])
+        self.assertEqual((len(self.w.board_state()["issues"]), len(self.w.zulip()["messages"])), (1, 1))
+        self.assertEqual(len([c for c in self.w.comments("AFC-300") if "[needs-owner] block" in c]), 1)
+
+    def test_a_filed_item_whose_repair_failed_is_repaired_by_the_rerun(self) -> None:
+        r = self.w.file(Q, "Revive it", "Close it", env=self.w.env(FAKE_BOARD_DROP_FENCE="1", FAKE_BOARD_FAIL="comment"))
+        self.assertEqual(r.code, 1)
+        self.assertEqual(self.w.zulip()["messages"], [], "nothing is announced without a readable block")
+        self.assertEqual(self.w.run("list", "--json").json()[0]["state"], "unadopted")
+        again = self.w.file(Q, "Revive it", "Close it", env=self.w.env(FAKE_BOARD_DROP_FENCE="1"))
+        self.assertEqual(again.code, 0, again.err)
+        self.assertEqual(again.json()["state"], "notified")
+        self.assertEqual(len(self.w.board_state()["issues"]), 1)
+
     # ---- failures ----------------------------------------------------------------------------
     def test_board_writes_off_passes_the_exit_code_through(self) -> None:
         r = self.w.file(Q, "Yes", "No", env=self.w.env(FAKE_BOARD_WRITES_OFF="1"))

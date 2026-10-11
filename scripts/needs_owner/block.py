@@ -31,7 +31,9 @@ from . import text as T
 FORMAT = "needs-owner/1"
 FENCE_OPEN = "```needs-owner"
 FENCE_CLOSE = "```"
-_FENCE_RE = re.compile(r"^```needs-owner[ \t]*\r?\n(?P<body>.*?)\r?\n```[ \t]*$", re.S | re.M)
+_FENCE_OPEN = re.compile(r"^```[^`]*$")
+_FENCE_CLOSE = re.compile(r"^```[ \t]*$")
+_FORMAT_LINE = re.compile(r"(?i)^format:\s*needs-owner/1$")
 _OPTION_KEY = re.compile(r"option (?P<n>[1-9])(?: \((?P<mark>low-stakes)\))?")
 _SEAT_RE = re.compile(r"[A-Z][A-Z0-9-]{0,31}")
 _PARENT_RE = re.compile(r"[A-Z]{1,8}-[0-9]{1,9}")
@@ -123,9 +125,27 @@ def render_description(b: Block) -> str:
 
 
 def find_fence(text: str) -> str | None:
-    """The body of the first needs-owner fence in `text`, or None."""
-    match = _FENCE_RE.search(text or "")
-    return match.group("body") if match else None
+    """The body of the first fenced block in `text` whose first line is `Format: needs-owner/1`, or None.
+
+    The fence is found by its content, not by its info string:  Linear's editor may keep ```needs-owner as
+    written or may normalize a language it does not know to a bare fence, and either way the block reads."""
+    lines = (text or "").replace("\r\n", "\n").split("\n")
+    i = 0
+    while i < len(lines):
+        if _FENCE_OPEN.match(lines[i].rstrip()):
+            j = i + 1
+            while j < len(lines) and not _FENCE_CLOSE.match(lines[j]):
+                j += 1
+            if j >= len(lines):
+                return None  # never closed
+            body = lines[i + 1:j]
+            first = next((line for line in body if line.strip()), "")
+            if _FORMAT_LINE.match(first.strip()):
+                return "\n".join(body)
+            i = j + 1
+            continue
+        i += 1
+    return None
 
 
 def parse_block(text: str) -> Block:

@@ -90,6 +90,11 @@ Context: none
 ```
 ````
 
+The fence is found by its content (a fenced block whose first line is `Format: needs-owner/1`), not by its
+info string, because Linear's editor may normalize a code language it does not know to a bare fence.  If a
+description does not read back as a block at all, `file` posts the block as a `[needs-owner] block` comment
+(the way `adopt` does) and says so on stderr, so the decision still lands.
+
 `Version`, `Again of` and `Mirror of` lines appear only when they apply.  Every value is one clean line
 (control and invisible characters dropped, whitespace collapsed, a backtick turned into an apostrophe), so a
 value can neither start another field nor close the fence.  The reader is strict:  an unknown or repeated
@@ -122,6 +127,11 @@ Readers accept any whitespace where the writers put one.  Reasons are `no_creden
 **A post that may or may not have landed** (agent-sync exit 5 or 6, or a timeout) is never retried blind:  the
 topic is read for the reference line first, and only a missing line becomes `notify_pending`.  A rerun looks
 in the topic before it posts, so a crash between the post and its record cannot post twice.
+
+**For the fallback notifier (C6-2).**  An item shows `notify_pending` when a post landed but both attempts to
+record it failed.  Before it posts, the notifier must read the topic for the `Ref:` line (the item's uid) the
+way `notify.py` does on a rerun, or it will post a second time.  The record formats and the states live in
+`records.py` and `items.py`:  import them rather than copying the patterns.
 
 **A Grok Bot item** (`file --mirror-of <topic link> --context "for GB-<ROLE>"`, used by the C6-2 notifier as
 CLAUDE):  files as above, posts **no** new topic, records the persona's own message as the notice
@@ -184,7 +194,8 @@ Three ways, and a consumer **verifies before it acts** (the records say a reply 
   and Zulip messages through standard input.  Nothing a filer wrote shows up in `ps` for longer than that.
 - Everything echoed into Zulip goes through `render_untrusted`:  no `@**all**`, no `/poll`, no live link, no
   backtick breakout.
-- The tool is the only writer of these records, and it never closes, edits or restates an item.
+- This tool writes the `block`, `notified` and `notify_pending` records.  The `owner replied:` records are the
+  fallback notifier's (C6-2) to write.  Nothing here closes, edits or restates an item.
 - No credential is read, printed or logged.  A `notify_pending` reason is a word, not an error text.
 
 ## Exit Codes

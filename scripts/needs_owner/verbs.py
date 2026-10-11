@@ -229,16 +229,38 @@ def file_new(io: Streams, runner: Runner, seat: str, app: str, f: Fields, scope:
         item = itemsmod.fetch(runner, match.group(3))
         if item is None:
             raise BoardFailed("%s was filed but cannot be read back;  run the same command again" % match.group(3))
-        if "already filed" not in match.group(4):
-            return item, True
-        # An issue with this uid exists that the open list did not show (closed, or past the list's limit).
-        if item.status in CLOSED_STATUSES:
+        unchanged = "already filed" in match.group(4)
+        if unchanged and item.status in CLOSED_STATUSES:
+            # An issue with this uid exists that the open list did not show (it is closed).
             if not again:
                 raise Refusal("%s asked this exact question and is closed.  Use --again to ask it again" % item.identifier)
             block = make_block(seat, scope, f, parent=parent, version=block.version + 1, again_of=item.identifier, mirror=mirror)
             continue
-        return item, False
+        if item.block is None:
+            item = repair_block(io, runner, item, block)
+        return item, not unchanged
     raise BoardFailed("could not find an unused version of this question after %d tries" % _MAX_VERSION_TRIES)
+
+
+def post_block_comment(runner: Runner, identifier: str, block: Block) -> None:
+    """The block as a `[needs-owner] block` comment:  how an adopted issue carries it, and the repair when
+    Linear does not hand a description's block back."""
+    with runner.private_file(records.block_comment_text(render_block(block))) as path:
+        result = runner.board("comment", identifier, "--by", runner.seat, "--text-file", path)
+    if not result.ok:
+        raise BoardFailed("board comment failed:  %s" % (first_line(result.err) or "exit %d" % result.code), result.code)
+
+
+def repair_block(io: Streams, runner: Runner, item: Item, block: Block) -> Item:
+    """An issue this tool filed (its uid matched) whose description does not read back as a block:  post the
+    block as a comment instead, so the decision still lands and can be announced."""
+    io.warn("%s is filed, but its description does not read back as a needs-owner block (%s);  posting the block as a comment" % (
+        item.identifier, item.problem or "unreadable"))
+    post_block_comment(runner, item.identifier, block)
+    fresh = itemsmod.fetch(runner, item.identifier)
+    if fresh is None or fresh.block is None:
+        raise BoardFailed("%s: the block cannot be read back, even from a comment.  Nothing was announced" % item.identifier)
+    return fresh
 
 
 def comment_on_parent(io: Streams, runner: Runner, parent: str, identifier: str) -> None:
@@ -281,10 +303,7 @@ def run_adopt(args, io: Streams) -> int:
             result = runner.board("label", "add", item.identifier, LABEL, "--by", seat)
             if not result.ok:
                 raise BoardFailed("board label add failed:  %s" % (first_line(result.err) or "exit %d" % result.code), result.code)
-        with runner.private_file(records.block_comment_text(render_block(wanted))) as path:
-            result = runner.board("comment", item.identifier, "--by", seat, "--text-file", path)
-        if not result.ok:
-            raise BoardFailed("board comment failed:  %s" % (first_line(result.err) or "exit %d" % result.code), result.code)
+        post_block_comment(runner, item.identifier, wanted)
         item = itemsmod.fetch(runner, item.identifier)
         if item is None or item.block is None:
             raise BoardFailed("%s was adopted but its block cannot be read back" % ref[:40])

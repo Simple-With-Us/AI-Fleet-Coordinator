@@ -7,13 +7,15 @@ instead of Linear.  Like Linear, it hands descriptions back re-serialized (`line
 escaped outside code spans, `-` bullets turned into `*`).
 
 Environment:  FAKE_STATE_DIR (board.json and calls.jsonl live there), FAKE_SCRIPTS_DIR (the repo's scripts/),
-FAKE_BOARD_WRITES_OFF=1 (every write exits 7), FAKE_BOARD_FAIL=verb,verb (those verbs exit 1).
+FAKE_BOARD_WRITES_OFF=1 (every write exits 7), FAKE_BOARD_FAIL=verb,verb (those verbs exit 1), FAKE_BOARD_STRIP_FENCE_INFO=1 (a description comes back
+with a bare fence), FAKE_BOARD_DROP_FENCE=1 (it comes back with the fence turned into an indented block).
 """
 import datetime as dt
 import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import stat
 import sys
 
@@ -193,8 +195,14 @@ def cmd_file(world, a, seat):
     labels = ["Kind/" + kind] + (["Severity/" + sev] if sev else []) + list(a.labels or [])
     ident = "%s-%d" % (team, world["next"])
     world["next"] += 1
+    description = linear_markdown("\n".join(lines + foot))
+    if os.environ.get("FAKE_BOARD_STRIP_FENCE_INFO") == "1":  # an editor that drops a code language it does not know
+        description = description.replace("```needs-owner", "```")
+    if os.environ.get("FAKE_BOARD_DROP_FENCE") == "1":  # an editor that turns a fenced block into an indented one
+        description = re.sub(r"```needs-owner\n(.*?)\n```", lambda m: "\n".join("    " + x for x in m.group(1).splitlines()),
+                             description, flags=re.S)
     node = {"id": iid, "identifier": ident, "url": "https://linear.app/simple-with-us/issue/" + ident,
-            "title": a.title.strip(), "description": linear_markdown("\n".join(lines + foot)),
+            "title": a.title.strip(), "description": description,
             "priority": B.SEV_PRIORITY.get(sev, 0), "createdAt": now_iso(world), "updatedAt": now_iso(world),
             "state": {"name": "Todo"}, "team": {"key": team},
             "labels": {"nodes": [label_node(k) for k in labels]}, "attachments": {"nodes": []}, "comments": []}

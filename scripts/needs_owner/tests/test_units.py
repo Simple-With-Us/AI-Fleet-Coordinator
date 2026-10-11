@@ -106,6 +106,18 @@ class BlockTests(unittest.TestCase):
         self.assertEqual(B.parse_block(rewrite(text)).question, b.question)
         self.assertEqual(B.parse_block(rewrite(text)).options, b.options)
 
+    def test_the_fence_is_found_by_its_content(self) -> None:
+        good = B.render_block(sample())
+        bare = good.replace("```needs-owner", "```", 1)
+        self.assertEqual(B.parse_block(bare), sample())
+        self.assertEqual(B.parse_block(good.replace("```needs-owner", "```text", 1)), sample())
+        other_first = "```python\nprint(1)\n```\n\nsome words\n\n" + bare
+        self.assertEqual(B.parse_block(other_first), sample())
+        self.assertEqual(B.parse_block(bare.replace("\n", "\r\n")), sample())
+        for not_ours in ("```\nQuestion: x\n```", "```\nFormat: other/1\nQuestion: x\n```", good[:-4]):
+            with self.assertRaises(B.BlockError):
+                B.parse_block(not_ours)
+
     def test_strict_parse(self) -> None:
         good = B.render_block(sample())
         broken = {

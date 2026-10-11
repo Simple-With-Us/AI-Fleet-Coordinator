@@ -23,6 +23,7 @@ from . import f3
 from . import links as linkmod
 from . import records
 from . import text as T
+from .errors import Refusal
 from .items import Item
 from .proc import Result, Runner
 
@@ -60,7 +61,8 @@ def _again_phrase(again_of: str) -> str:
 def compose_body(item: Item) -> str:
     """The OWNER topic's first message.  Every word that came from the filer goes through `render_untrusted`."""
     b = item.block
-    assert b is not None
+    if b is None:
+        raise Refusal("%s has no readable needs-owner block" % item.identifier)
     urgent = item.severity == "P1"
     paragraphs = ["**%s** from %s:  %s" % ("Urgent decision needed" if urgent else "Decision needed", b.filed_by,
                                           _quote(b.question, 260))]
@@ -133,7 +135,8 @@ def notify(runner: Runner, item: Item, *, rescan: bool = False, environ: dict | 
     """Announce `item` unless it already is.  `rescan` looks in the topic for an earlier post of this item
     first (a rerun after a crash between the post and its record)."""
     b = item.block
-    assert b is not None
+    if b is None:
+        raise Refusal("%s has no readable needs-owner block;  adopt it first" % item.identifier)
     if item.notified:
         return Notice("notified", item.notified[0], item.notified[1] or item.topic, None, True, already=True)
     if b.mirror_of:
