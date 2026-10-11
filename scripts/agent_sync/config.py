@@ -53,15 +53,19 @@ BUDGET_DEFAULTS: dict[str, float] = {
     "routes_per_hour": 3, "routes_per_day": 10, "route_topic_minutes": 30,
 }
 WAKE_MAX_BUDGET_USD = 0.25
-# Wakes the budget holds back (heldback.py), per seat:  `held_back = { max = 200, ttl_hours = 24,
-# items_in_wake = 20, owner_digest_minutes = 60, catch_up = true }`.  catch_up applies to a seat whose
+# Wakes the budget holds back (heldback.py), per seat:  `held_back = { max = 200, overflow_max = 1000,
+# ttl_hours = 24, items_in_wake = 20, owner_digest_minutes = 60, catch_up = true }`.  max is the records
+# with names;  past it the oldest move to a compact overflow tier (still listed by id), and only past
+# overflow_max is an id lost (counted and told to the owner at once).  ttl_hours applies only to what a
+# digest the owner was shown named (a Mac banner), so on the server nothing expires unsurfaced.  catch_up applies to a seat whose
 # adapter runs a turn (`claude` or `http`) and defaults to `[daemon] held_back_catch_up` (true);  an
 # `inbox` seat never wakes, so it has nothing to hold back or catch up.  owner_digest_minutes = 0 turns
 # the owner digest off.  None of these changes a budget:  every wake, a catch-up included, passes them.
-HELD_BACK_DEFAULTS: dict[str, float] = {"max": 200, "ttl_hours": 24, "items_in_wake": 20, "owner_digest_minutes": 60}
+HELD_BACK_DEFAULTS: dict[str, float] = {"max": 200, "overflow_max": 1000, "ttl_hours": 24, "items_in_wake": 20,
+                                       "owner_digest_minutes": 60}
 # (minimum, maximum, whole numbers only).  items_in_wake stops at 20, the hosted Worker's cap.
 HELD_BACK_LIMITS: dict[str, tuple[float, float, bool]] = {
-    "max": (1, 1000, True), "ttl_hours": (1, 168, False), "items_in_wake": (0, 20, True),
+    "max": (1, 1000, True), "overflow_max": (0, 5000, True), "ttl_hours": (1, 168, False), "items_in_wake": (0, 20, True),
     "owner_digest_minutes": (0, 1440, False),
 }
 HELD_BACK_MIN_DIGEST_MINUTES = 15
