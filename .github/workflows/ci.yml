@@ -105,3 +105,8 @@ jobs:
     # file.  A stub CLI and a temp dir stand in for the real ones.
     - name: Infisical secrets sync tests
       run: bash scripts/test-infisical-secrets-sync.sh
+    # The BotFleet launch wrapper and its LaunchAgent template:  the "already healthy" exit, the
+    # missing-checkout exits, and the fleet-seat switch (BOTFLEET_FLEET_SEAT_PROMPTS=1) that the
+    # open-loops routines depend on.  A stub curl and a stub node stand in for the real ones.
+    - name: BotFleet start wrapper tests
+      run: bash scripts/test-botfleet-server-start.sh
