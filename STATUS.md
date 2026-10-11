@@ -1,5 +1,11 @@
 # Status
 
+Updated: 2026-10-10 (CLAUDE — Linear replaces THE BOARD)
+
+## 2026-10-10 CLAUDE — Linear replaces THE BOARD (docs, skills, scripts)
+
+This entry lands with the cutover PR and is true only once the cutover has run.  Linear (workspace Simple With Us, one team per app, ids like `BF-123`) is the system of record, and `board` is now a Linear-backed CLI with the same verbs and flags (`scripts/linear-board/`).  Claims and closeouts are the Linear issue (`board claim`, `board status`), the PR (`Fixes <ID>` or `Refs <ID>`, branch `<seat>/<id>-<slug>`) and a Zulip post in the topic `<ID> <subject>`.  Writes need `AGENT_SEAT`.  The effort logs are archived, and `mac-collab-sync`, `mac-collab-writeback` and `effort-issues-sync` are retired.  The old board is a read-only archive for 14 days, with litestream running, and is retired at about day 30.  `AGENT-SYNC.md`, `EFFORT-LOG-PROTOCOL.md` (now a stub), `TEMPLATE-AGENTS.md`, the onboarding docs and prompts, the fleet skills (re-rendered) and `scripts/onboard-new-app.sh` / `check-fleet-registry.py` were updated together.  The cutover runbook and the non-repo patch bundle live outside git under `~/.local/share/linear-migration/cutover/`.
+
 Updated: 2026-10-08 (MM — top-level fleet docs moved from Slack to Zulip)
 
 ## 2026-10-08 MM — Zulip terminology in the top-level fleet docs

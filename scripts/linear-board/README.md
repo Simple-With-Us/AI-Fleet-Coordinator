@@ -10,10 +10,10 @@ Status: built and tested against a local mock of Linear only.  The Fleet Linear 
 
 ### Before cutover: as `board-linear`
 
-Install it next to the old CLI and leave `~/.local/bin/board` alone.  Install from the repo only, so the live copy cannot drift from the tracked one.
+Install it next to the old CLI and leave `~/.local/bin/board` alone.  Install from the repo only, so the live copy cannot drift from the tracked one.  Link to the managed runtime checkout, never to the human integration tree under `~/Code`:  `/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime` is a detached worktree that `com.jay.agent-sync-runtime-sync` keeps on AFC origin/main every 120 seconds (the `agent-sync` CLI already runs from it).
 
 ```bash
-ln -sf "$HOME/Code/AI-Fleet-Coordinator/scripts/linear-board/board" "$HOME/.local/bin/board-linear"
+ln -sf "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/linear-board/board" "$HOME/.local/bin/board-linear"
 AGENT_SEAT=CLAUDE board-linear whoami
 ```
 
@@ -23,18 +23,23 @@ Installing it is a helper other agents are expected to run.  Add an on-demand ro
 
 ### At cutover only (do not do this before step 4)
 
-Step 4 of the design swaps `~/.local/bin/board` for this CLI and turns writes on.  A wrapper keeps both in one place:
+Step 4 of the design swaps `~/.local/bin/board` for this CLI and turns writes on.  The whole cutover, including this install, is the runbook `~/.local/share/linear-migration/cutover/cutover.sh` (dry by default).  The wrapper it writes keeps both settings in one place and uses absolute paths, because the listener runs `env -i` with no `PATH`:
 
 ```bash
 cat > "$HOME/.local/bin/board" <<'EOF'
 #!/bin/sh
 export LINEAR_BOARD_WRITES=1
-exec python3 "$HOME/Code/AI-Fleet-Coordinator/scripts/linear-board/board" "$@"
+CHECKOUT="${BOARD_CHECKOUT:-/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime}"
+for py in /opt/homebrew/bin/python3 /usr/bin/python3; do
+  [ -x "$py" ] && exec "$py" "$CHECKOUT/scripts/linear-board/board" "$@"
+done
+echo "board: no python3 found" >&2
+exit 1
 EOF
 chmod 755 "$HOME/.local/bin/board"
 ```
 
-Cloud seats and BotFleet set `LINEAR_BOARD_WRITES=1` in their own environment at the same moment.
+The old CLI stays as `~/.local/bin/board-legacy` (a symlink to `~/apps/mac-collab/board`).  Cloud seats and BotFleet set `LINEAR_BOARD_WRITES=1` in their own environment at the same moment.
 
 ### Rollback
 

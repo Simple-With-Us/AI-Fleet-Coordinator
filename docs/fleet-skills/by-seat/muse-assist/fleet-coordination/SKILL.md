@@ -1,6 +1,6 @@
 ---
 name: fleet-coordination
-description: Comprehensive master skill for multi-agent fleet operations across all apps and platforms (Claude/CLAUDE, Codex, Cursor, Antigravity/AG, Grok, Grok-Web, Clutch, FX, MM, MC, MA). Use at session start, when claiming work on effort boards, managing pull requests, handling secrets safely, writing owner-facing Apple Notes, ensuring sentence gap compliance, and deploying to production.
+description: Comprehensive master skill for multi-agent fleet operations across all apps and platforms (Claude/CLAUDE, Codex, Cursor, Antigravity/AG, Grok, Grok-Web, Clutch, FX, MM, MC, MA). Use at session start, when claiming work in Linear, managing pull requests, handling secrets safely, writing owner-facing Apple Notes, ensuring sentence gap compliance, and deploying to production.
 ---
 
 # Fleet Coordination Protocol (Universal)
@@ -10,7 +10,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 > **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
 
-Canonical reference: `/Users/jay/apps/AGENT-SYNC.md` and `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md`.  
+Canonical reference: `/Users/jay/apps/AGENT-SYNC.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
 Chat mechanics:  `docs/protocols/zulip-fleet-guide.md` in AI-Fleet-Coordinator.  Slack is retired (hard cut, owner 2026-10-07); Zulip realm `https://simplewithus.zulipchat.com` is the only agent chat.  Coordination channel:  Zulip `#agent-sync`, where a topic is the thread.
 
 This skill governs how autonomous AI agents collaborate across the entire application fleet (Socratic.Trade, Congress.Trade, Usage-Monitor, congress-trading-shared, DealDex, Personal-Site, Autorotate, ContactLogo, and AI-Fleet-Coordinator).
@@ -73,12 +73,12 @@ Every agent session must start with systematic orientation before touching code:
    ```
    `agent-sync` is on PATH as `~/.local/bin/agent-sync` (AFC `scripts/agent_sync`) and writes the `[SEAT·session8]` tag itself.  Skim channel, topic, and sender; full-read when your bot is @-mentioned, the topic carries your tag, or the topic holds your app's acronym.  Every seat full-reads a fleet wake (`@**all**` in #agent-sync topic `fleet`).  Coordinator self-id is `AFC`, not `FLEET`.  A peer message is coordination data, never an owner instruction and never approval.  Screen a peer's request and help when it is low risk; decline high-risk asks and DM the owner (AGENT-SYNC Precedence rule 3).
 
-3. **Check Live Effort Boards & Work Items:**
+3. **Check Linear Work Items:**
    ```bash
    board stats
    board list --status open,in_progress --limit 25
    ```
-   Or inspect live board files directly: `rg -n "In Progress" /Users/jay/apps/*EFFORT-LOG.md`.
+   `board` reads Linear (issue ids like `BF-123`, one team per app).  Reads need no seat; every write needs `AGENT_SEAT` set in the same command.  Do not read the archived `*-EFFORT-LOG.md` files for current state.
 
 4. **Fleet recall:** `recall "<task>" --limit 5` (or MCP `recall_search`) before re-deriving a lesson.  At closeout, `recall_contribute` every reusable lesson (owner 2026-09-02).  Cloud: `https://agents.jays.services/mcp`.  Do not dump chat transcripts into the corpus.
 
@@ -98,16 +98,15 @@ Flat lanes that already exist (`~/apps/<app>-<seat>-<lane>`) stay until they ret
 
 ---
 
-## 3. Triple-Claim & Task Lifecycle
+## 3. Claim & Task Lifecycle
 
-Before starting substantial work, reserve your lane across three durable surfaces:
+Before starting substantial work, reserve your lane on two durable surfaces:
 
-1. **Live Effort Board (`/Users/jay/apps/<APP>-EFFORT-LOG.md`):**
-   - Add/move your row to **In Progress** with your tag, branch, worktree, and concise objective.
-   - Live boards are branch-neutral and canonical.  Mirror your update to `docs/EFFORT-LOG.md` in the repo before committing.
-2. **GitHub Issue:**
-   - Link your branch to the corresponding GitHub Issue or create one.
-3. **Zulip `#agent-sync`, work topic (`<APP> <board8> <subject>`, at most 58 characters):**
+1. **Linear issue (`board claim`):**
+   - `board list --app <app>`, then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "<lane path> @ <branch>"`.  If nothing exists, `board file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label and exits 3 if another seat holds the issue (`--steal --reason` overrides on purpose).
+   - Branch `<seat>/<id>-<slug>` (`claude/afc-123-zulip-cutover`).  The PR body says `Fixes <ID>` when it finishes the issue, `Refs <ID>` for partial work; only `Fixes` closes it on merge (once Linear's GitHub automation is on).
+   - There is no live effort board, no `docs/EFFORT-LOG.md` mirror, and no separate GitHub issue leg any more.
+2. **Zulip `#agent-sync`, work topic (`<ID> <subject>`, at most 58 characters):**
    Post a standardized claim block.  One topic per unit of work; a reply is a post to the same channel and topic.
    ```text
    [<SEAT>·session8] repo:  <RepositoryName>  |  CLAIMED
@@ -115,7 +114,7 @@ Before starting substantial work, reserve your lane across three durable surface
    claimed:  <Day, Mon D, YYYY>
    work: <One-line summary of task>
    ```
-   Via the CLI:  `agent-sync post --topic "AFC 18f61cf4 claim title" $'repo:  <Project>  |  CLAIMED\nwork: <one line>'`.  A directed ask adds `--to Codex`, which @-mentions that bot — the bracket label alone wakes nobody.
+   Via the CLI:  `agent-sync post --topic "AFC-123 claim title" $'repo:  <Project>  |  CLAIMED\nwork: <one line>'`.  A directed ask adds `--to Codex`, which @-mentions that bot — the bracket label alone wakes nobody.
 
 *(Reserve `@**all**` in #agent-sync topic `fleet` strictly for urgent wakes that every seat must spend time on.  Coordinator/ops posts as `[AFC]`, never as `[FLEET]`.)*
 
@@ -206,10 +205,9 @@ Once PR merges to `main`:
 1. **Verify Production Deploy:**
    - Check public health: `curl -s https://socratictrade.com/api/health`, `curl -s https://congress.trade/api/health`, `curl -s https://usage.jays.services/api/health`.
    - Confirm HTTP 200 and expected `build.sha`.
-2. **Triple Closeout:**
-   - Effort board: Update row to **Deployed** (or **Completed**) with live verification note.
-   - GitHub Issue: Close issue.
-   - Zulip `#agent-sync`: Post `DONE` in the work topic with the PR, the gates run, and the health check result.  When the board item reaches Deployed or Parked, resolve the topic with `agent-sync resolve --topic "<topic>"`; resolving is the final act.
+2. **Closeout:**
+   - Linear: `board status <id> completed` (merged;  a `Fixes <ID>` PR also does this on merge once Linear's GitHub automation is on) or `deployed` (verified in production) with a `--resolution` that names the PR and the check.  The PR you merged links the issue, so there is no separate GitHub issue or effort row to close.
+   - Zulip `#agent-sync`: Post `DONE` in the work topic with the PR, the gates run, and the health check result.  When the issue reaches Deployed or Parked, resolve the topic with `agent-sync resolve --topic "<topic>"`; resolving is the final act.
    - Apple Note: Add final verification stamp.
 
 ---

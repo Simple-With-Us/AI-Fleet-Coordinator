@@ -5,6 +5,16 @@ Read-only research; nothing in Linear, the board, or any repo was changed.
 Legend: [DOC] Linear docs, [SCHEMA] Linear public GraphQL schema, [DB] read-only query of `findings.db`, [INF] inference, [UNV] unverified, settled by a pilot gate (section 6).
 Sources: Linear docs and schema copies in `scratchpad/lin/`, plus `/Users/jay/apps/mac-collab/findings.db` (9,629 findings, 2,514 comments).
 
+## Status at the cutover (Sat, Oct 10, 2026)
+
+The owner ordered Linear to replace THE BOARD on Sat, Oct 10, 2026.  This design stays as the record of why and how; where it differs from what shipped, the shipped version wins:
+
+- **Shared app.**  Phase 1 shipped as designed in section 2:  one `Fleet` Linear app for every seat, claims as `claimed:<SEAT>` labels (not delegates), `seat:<SEAT>` labels as attribution only.  `scripts/linear-board/README.md` is the CLI contract.
+- **History.**  13,551 issues in 13 public per-app teams under the `SWU` parent, imported with their original dates (board rows, GitHub issues and effort-log items), not the 3,935-row subset sketched in section 6.
+- **Cutover.**  The runbook, the non-repo patch bundle and the rollback live outside git in `~/.local/share/linear-migration/cutover/` (`cutover.sh` is dry by default).  The docs, skills, scripts and hooks changes in the step 4 list below landed in one PR that is merged as a cutover step.
+- **Rules at cutover.**  Writes need `AGENT_SEAT`, reads do not;  the board stays read-only for 14 days with litestream running and is retired at about day 30;  one `[fleet]` announcement is posted at cutover.
+- **Not built.**  The server-side 410 on the old board's write routes (the old server has no read-only mode, so the freeze stops sync and writeback instead), the nightly API dump, the counts snapshot Worker, per-seat apps, and the `linear` recall source.
+
 ## 1. Can bots use their Zulip emails for Linear accounts?
 
 **No.  API and CLI seats do not need a mailbox at all.  A seat that must use the Linear UI needs a real mailbox, not a Zulip address.**

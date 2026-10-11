@@ -68,7 +68,7 @@ Do not interpolate the token into a command you will see.  Prefer Coolify MCP or
 ssh -i ~/.ssh/hetzner root@<PROD_ORIGIN_IP> 'docker ps --format "{{.Names}} {{.Status}}"'
 ```
 
-**Zombie:** a deploy stuck `in_progress` blocks the queue (`concurrent_builds` serializes).  Post the deployment id in the app's Zulip work topic (`agent-sync post --topic "<APP> <board8> <subject>" …`) if you can see it from the box.
+**Zombie:** a deploy stuck `in_progress` blocks the queue (`concurrent_builds` serializes).  Post the deployment id in the app's Zulip work topic (`agent-sync post --topic "<ID> <subject>" …`) if you can see it from the box.
 
 **Silent freeze (ST #2545 class):** webhook 200 + healthy `/api/health` on an **old** sha.  Standing watch: ST `.github/workflows/deploy-freshness.yml`.  Do not hand-trigger; inspect the queue.
 
@@ -83,7 +83,7 @@ curl -s https://socratictrade.com/api/health \
   | jq '.checks.storage | {litestreamAgeSeconds, litestreamStatus, litestreamState, litestreamDegradedReasons}'
 ```
 
-`storageDegraded: true` or `stale`/`stopped` → escalate immediately in the Zulip work topic + on the board.
+`storageDegraded: true` or `stale`/`stopped` → escalate immediately in the Zulip work topic + with a Linear comment.
 
 Litestream 0.5.12 is the pin after 0.5.14 leaked TCP sockets (2026-07-10).  Do not "upgrade" it casually.
 
@@ -103,7 +103,7 @@ Do not revert raised `tcp_mem` sysctl just because a deploy succeeded.
 
 ## 5. After verify
 
-Move the effort row to **Deployed** only when you say how you verified.  `closeout` skill.  Rollback: Coolify previous deployment / Vercel rollback — not Mac pm2, not `trading-publish.sh` (retired).
+Move the Linear issue to **Deployed** (`board status <id> deployed --resolution "..."`) only when you say how you verified.  `closeout` skill.  Rollback: Coolify previous deployment / Vercel rollback — not Mac pm2, not `trading-publish.sh` (retired).
 
 ## Canon
 
