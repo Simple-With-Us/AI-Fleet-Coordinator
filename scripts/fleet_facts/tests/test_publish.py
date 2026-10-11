@@ -215,33 +215,58 @@ class Published(Sandbox):
         self.cycle(now=NOW)
         self.assertTrue(json.loads(self.gh.written(p.FULL_FACTS))["lanes"]["reused_report"])
 
-    def test_no_open_loops_means_no_list_and_the_json_says_so(self):
+    def test_no_open_loops_means_a_not_available_note_and_the_json_says_so(self):
         (self.bin / "open-loops").unlink()
         outcome = self.cycle()
         self.assertEqual(outcome.result, "published")
-        self.assertNotIn(p.FULL_LIST, self.gh.put_paths())
-        self.assertTrue(outcome.files[p.FULL_LIST].startswith("skipped"))
+        self.assertEqual(outcome.files[p.FULL_LIST], "created")
+        note = self.gh.written(p.FULL_LIST).decode()
+        self.assertTrue(note.startswith("# Full List Not Available"))
+        self.assertIn("open-loops is not installed on this host", note)
         info = json.loads(self.gh.written(p.GB_FACTS))["full_list"]
-        self.assertEqual(info["status"], "absent")
-        self.assertNotIn("sha256", info)
+        self.assertEqual((info["status"], info["placeholder"]), ("absent", True))
+        self.assertEqual(info["sha256"], signing.sha256_hex(self.gh.written(p.FULL_LIST)), "the hash covers the note too")
 
-    def test_a_failed_render_is_reported_and_does_not_stop_the_json(self):
+    def test_a_failed_render_is_reported_and_replaces_the_list_with_a_note(self):
         self.machine.fail_open_loops = "render"
         outcome = self.cycle()
         self.assertEqual(outcome.result, "published")
         info = json.loads(self.gh.written(p.FULL_FACTS))["full_list"]
-        self.assertEqual(info["status"], "failed")
+        self.assertEqual((info["status"], info["placeholder"]), ("failed", True))
         self.assertIn("open-loops render exited 1", info["reason"])
+        self.assertIn("open-loops render exited 1", self.gh.written(p.FULL_LIST).decode())
 
-    def test_a_secret_in_the_list_is_withheld_but_the_json_is_still_published(self):
+    def test_an_old_list_is_never_left_next_to_fresh_facts(self):
+        self.cycle()
+        self.assertEqual(self.gh.written(p.FULL_LIST).decode(), self.machine.list_text)
+        self.machine.fail_open_loops = "gather"
+        self.cycle(now=NOW.replace(hour=20))
+        note = self.gh.written(p.FULL_LIST).decode()
+        self.assertNotIn("Example item", note, "the previous list is gone")
+        self.assertIn("Full List Not Available", note)
+        self.assertIn("Sun, Oct 11, 3:30pm", note)
+        self.machine.fail_open_loops = None
+        self.cycle(now=NOW.replace(hour=23))
+        self.assertEqual(self.gh.written(p.FULL_LIST).decode(), self.machine.list_text, "and the next good run brings the list back")
+        self.assertFalse(json.loads(self.gh.written(p.GB_FACTS))["full_list"].get("placeholder", False))
+
+    def test_the_note_uses_the_owners_clock_and_non_breaking_sentence_gaps(self):
+        text = p.unavailable_text(NOW, "out of time before the full list")
+        self.assertIn("Sun, Oct 11, 12:30pm", text)
+        self.assertNotIn("UTC", text)
+        self.assertIn("\u00a0 Reason:  out of time before the full list.", text)
+        self.assertEqual(text.count(". "), 0, "no ordinary one-space gap between sentences")
+
+    def test_a_secret_in_the_list_is_withheld_and_replaced_by_the_note(self):
         self.machine.list_text = "# Full list\n\n- note " + fake_secret() + "\n"
         outcome = self.cycle()
         self.assertEqual(outcome.result, "published")
-        self.assertNotIn(p.FULL_LIST, self.gh.put_paths())
         info = json.loads(self.gh.written(p.GB_FACTS))["full_list"]
         self.assertEqual(info["status"], "failed")
         self.assertIn("secret-shaped", info["reason"])
         self.assertNotIn(fake_secret(), json.dumps(info))
+        self.assertNotIn(fake_secret(), self.gh.written(p.FULL_LIST).decode())
+        self.assertIn("Full List Not Available", self.gh.written(p.FULL_LIST).decode())
 
     def test_the_failed_lane_doctor_is_published_as_failed_not_as_zero(self):
         self.machine.lane_report = doctor_report([], generated_at=iso(0.1), gh="error")

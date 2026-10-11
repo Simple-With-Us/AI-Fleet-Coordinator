@@ -136,7 +136,8 @@ def guard(run: Runner, gh: str, repo: str = REPO, *, allowed_apps: Iterable[str]
         if found:
             raise Refused("the repository has %d %s%s" % (len(found), label, "" if len(found) == 1 else "s"))
 
-    installs = _gh(run, gh, "api", "--paginate", "-f", "per_page=100", "orgs/%s/installations" % owner)
+    # `--method GET`:  gh sends a POST as soon as a field (-f) is added, and these endpoints answer a POST with 404.
+    installs = _gh(run, gh, "api", "--paginate", "--method", "GET", "-f", "per_page=100", "orgs/%s/installations" % owner)
     if installs.reason or installs.rc != 0:
         raise Refused("cannot list the apps installed on %s, so none can be ruled out (needs organization admin)" % owner)
     covering: list[str] = []
@@ -152,7 +153,7 @@ def guard(run: Runner, gh: str, repo: str = REPO, *, allowed_apps: Iterable[str]
             if not isinstance(install_id, int) or isinstance(install_id, bool):
                 reaches = True
             else:
-                repos = _gh(run, gh, "api", "--paginate", "-f", "per_page=100", "user/installations/%d/repositories" % install_id)
+                repos = _gh(run, gh, "api", "--paginate", "--method", "GET", "-f", "per_page=100", "user/installations/%d/repositories" % install_id)
                 if repos.reason or repos.rc != 0:
                     reaches = True      # could not look:  assume it can read
                 else:

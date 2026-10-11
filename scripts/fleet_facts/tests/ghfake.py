@@ -59,6 +59,13 @@ class FakeGitHub:
         if args[:1] != ["api"]:
             return Result(1, "", "fake gh: unexpected command")
         endpoint = next((a for a in args[1:] if a.startswith(("repos/", "orgs/", "user/"))), "")
+        # Like the real gh:  a field (-f or -F) turns the request into a POST unless --method GET is given, and the listing
+        # endpoints answer a POST with 404.
+        method = args[args.index("--method") + 1] if "--method" in args else (args[args.index("-X") + 1] if "-X" in args else None)
+        if method is None and any(a in ("-f", "-F", "--input") for a in args):
+            method = "POST"
+        if method not in (None, "GET", "PUT"):
+            return Result(1, "", "gh: Not Found (HTTP 404)")
         if endpoint == "repos/%s/hooks" % self.repo:
             return Result(1, "", "gh: Must have admin rights to Repository. (HTTP 403)") if self.hooks_error else Result(0, pages(self.hooks, None), "")
         if endpoint == "repos/%s/keys" % self.repo:
@@ -74,7 +81,7 @@ class FakeGitHub:
         prefix = "repos/%s/contents/" % self.repo
         if endpoint.startswith(prefix):
             rel = endpoint[len(prefix):]
-            if "-X" in args and args[args.index("-X") + 1] == "PUT":
+            if method == "PUT":
                 return self._put(rel, args)
             return self._get(rel)
         return Result(1, "", "fake gh: unknown endpoint")
@@ -112,4 +119,4 @@ class FakeGitHub:
         return self.files[rel]
 
     def write_calls(self) -> list[list[str]]:
-        return [c for c in self.calls if "-X" in c]
+        return [c for c in self.calls if "-X" in c or "--method" in c and c[c.index("--method") + 1] != "GET"]

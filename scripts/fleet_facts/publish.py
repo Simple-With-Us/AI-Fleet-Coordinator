@@ -16,6 +16,8 @@ One cycle:
      fails closed, the minimized Grok Bot copy (minimize.py), and an HMAC signature on each JSON file (signing.py);
   5. repo.guard() (private, no webhook, no deploy key, no app that can read it), then three sha-aware PUTs:
      gb/full-list.md, gb/mac-facts.json, mac-facts.json.  The Markdown is covered by its SHA-256 in the signed JSON.
+     When the list could not be built, `gb/full-list.md` is replaced by a short "not available" note (reason words only) and
+     `full_list.status` says why, so an old list is never read as today's.
 
 Files, state and logs hold ids, counts and reason words, never fact text and never the key:
 
@@ -272,6 +274,19 @@ def build_full_list(run: Runner, deadline: Deadline, key: str) -> tuple[dict, st
         shutil.rmtree(folder, ignore_errors=True)
 
 
+GAP = "\u00a0 "      # the Markdown is rendered on GitHub, where two typed spaces collapse
+
+
+def unavailable_text(now: datetime, reason: str | None) -> str:
+    """What `gb/full-list.md` says when this run could not build the list:  the previous list is replaced on purpose, so a daily
+    digest that always links this file never shows an old list as today's.  Reason words only."""
+    why = (reason or "no reason given").strip()
+    return ("# Full List Not Available\n\n"
+            "The Mac could not build the full open-loops list for the run at %s.%sReason:  %s.\n\n"
+            "The list that was here before was removed on purpose, so an old list is not read as today's.%sThe next run tries again.\n"
+            % (localtime.stamp(now), GAP, why, GAP))
+
+
 # ---- the documents ---------------------------------------------------------------------------------------
 
 def _serialize(document: dict) -> bytes:
@@ -345,6 +360,11 @@ def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1
     try:
         facts = ff_gather.build(list(PARTS), no_mac=False, run=bounded(run, deadline, GATHER_RESERVE_S), now=now)
         full_info, full_text = build_full_list(bounded(run, deadline, 90), deadline, key)
+        if full_text is None:
+            # Never leave the previous list standing next to fresh facts:  replace it with a note that says why.
+            full_text = unavailable_text(now, full_info.get("reason"))
+            data = full_text.encode("utf-8")
+            full_info = dict(full_info, placeholder=True, sha256=signing.sha256_hex(data), bytes=len(data))
         files = build_documents(facts, full_info, key)
     except safety.HelpersMissing as exc:
         return Outcome("refused", "nothing was published:  %s" % exc, EXIT_REFUSED)
@@ -353,8 +373,7 @@ def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1
     extra = {"generated_at": facts.get("generated_at"), "full_list": full_info["status"],
              "sources": {name: entry.get("status") for name, entry in (facts.get("sources") or {}).items()},
              "redacted_count": len(json.loads(files[FULL_FACTS])["redacted"])}
-    if full_text is not None:
-        files[FULL_LIST] = full_text.encode("utf-8")
+    files[FULL_LIST] = full_text.encode("utf-8")
     if dry_run_dir is not None:
         _write_dry_run(dry_run_dir, files)
         return Outcome("dry-run", "wrote %d files to %s;  nothing was sent" % (len(files), dry_run_dir.name), files={rel: "written" for rel in files}, extra=extra)
@@ -369,9 +388,6 @@ def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1
     results: dict[str, str] = {}
     failure: str | None = None
     for rel in WRITE_ORDER:
-        if rel not in files:
-            results[rel] = "skipped:  no list this time (%s)" % full_info["status"] if rel == FULL_LIST else "skipped"
-            continue
         try:
             results[rel] = writer.put(rel, files[rel], "mac-facts: %s %s" % (rel, stamp))
         except (repomod.WriteFailed, repomod.Refused) as exc:

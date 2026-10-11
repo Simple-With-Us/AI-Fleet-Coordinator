@@ -129,6 +129,21 @@ class Guard(unittest.TestCase):
             with self.assertRaises(r.Refused):
                 r.guard(good(), GH, name)
 
+    def test_a_listing_with_a_field_names_get_explicitly(self):
+        """gh turns a request into a POST when a field is added, and these endpoints answer a POST with 404 (the fake does too)."""
+        gh = good()
+        gh.installs = [{"id": 7, "app_slug": "picky-app", "repository_selection": "selected"}]
+        gh.selected = {7: ["example-org/other-one"]}
+        self.assertEqual(r.guard(gh, GH, REPO), [])
+        with_fields = [c for c in gh.calls if "-f" in c]
+        self.assertEqual(len(with_fields), 2, "the installation list and the selected app's repository list")
+        for call in with_fields:
+            self.assertEqual(call[call.index("--method") + 1], "GET", call)
+        broken = good()
+        broken.installs = [{"id": 1, "app_slug": "x", "repository_selection": "all"}]
+        result = broken(["gh", "api", "--paginate", "-f", "per_page=100", "orgs/example-org/installations"], timeout=1)
+        self.assertEqual(result.rc, 1, "the fake refuses a field without --method GET, like the real gh")
+
     def test_the_gate_never_writes(self):
         gh = good()
         gh.installs = [{"id": 1, "app_slug": "x", "repository_selection": "all"}]
