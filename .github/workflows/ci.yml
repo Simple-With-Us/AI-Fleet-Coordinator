@@ -22,8 +22,12 @@ jobs:
     # AGENT-SYNC.md is generated from Fleet-OPS handbook/ and mirrored here by the sync job's pull request from
     # handbook-sync/mirror.  The mirror must start with the GENERATED header, its body must hash to the header, and
     # only that branch may change it.  To change policy, open a PR to Fleet-OPS handbook/ (its README has the rules).
-    # This repository has no required status checks, so a red step is a visible warning and the Mac sync job is the
-    # enforcer.  It runs first, on the untouched checkout, because it compares the base with the working tree and a
+    # `test` is a required status check on main (strict:  the branch must be up to date), so this step is a hard gate:
+    # a red result blocks the merge of every pull request here, and a bug in the check or a bad state on main blocks
+    # the whole repository.  Break-glass is an admin bypass (enforce_admins is false) or the sync job's own branch
+    # handbook-sync/mirror with a valid header and hash.  The Mac sync job is the authenticity enforcer, because a
+    # hash cannot tell a real build from a forged one.
+    # It runs first, on the untouched checkout, because it compares the base with the working tree and a
     # later step that rewrote a tracked file would look like a change by the pull request.  A pull request is compared
     # with the first parent of its merge commit, which is exactly the base GitHub merged against;  a fork's branch is
     # tagged fork:, so it can never borrow the mirror branch name.  A push to main checks the header and hash only.

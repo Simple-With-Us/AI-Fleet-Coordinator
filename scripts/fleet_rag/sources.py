@@ -8,8 +8,8 @@ Sources (payload `source` value):
   board          ~/apps/mac-collab/findings.db   (read-only sqlite; findings + comments)
   effort-log     ~/apps/*-EFFORT-LOG.md + EFFORT-LOG-PROTOCOL.md
   doc            markdown in fleet app repos (README/AGENTS/STATUS/CLAUDE + docs/**/*.md),
-                 AI-Fleet-Coordinator, fleet-ops (its handbook/ pages too, private ones only:  the
-                 public ones are the text of the live AGENT-SYNC.md, which is ingested once),
+                 AI-Fleet-Coordinator, fleet-ops (its handbook/ pages too, private ones only when an
+                 AGENT-SYNC.md is ingested:  the public ones are the text of that file),
                  top-level ~/apps/*.md (not effort logs),
                  ~/.claude/CLAUDE.md, ~/.grok/docs/**/*.md, ~/.grok/skills/**/SKILL.md
   skill          ~/.claude/skills/*/SKILL.md and ~/.cursor/skills/*/SKILL.md
@@ -83,7 +83,7 @@ SKILL_TREE_DIRS = frozenset({".claude", ".cursor", ".grok"})
 SKIP_APPS_MIRROR = "apps-mirror"            # (a) live ~/apps copy is canonical
 SKIP_SKILL_COPY = "skill-copy"              # (b) covered by the skill source
 SKIP_EFFORT_LOG = "effort-log-mirror"       # (c) covered by the effort-log source
-SKIP_HANDBOOK_MIRROR = "handbook-mirror"    # (d) Fleet-OPS generated/ and public handbook pages: the live AGENT-SYNC.md
+SKIP_HANDBOOK_MIRROR = "handbook-mirror"    # (d) Fleet-OPS generated/ and public handbook pages: any ingested AGENT-SYNC.md
 DOC_SKIPS: list[tuple[str, str]] = []
 
 
@@ -540,7 +540,8 @@ def handbook_page_is_public(p: pathlib.Path, rel: pathlib.PurePath) -> bool:
 
 def mirror_skip_reason(p: pathlib.Path, *, fleet_repos: Iterable[pathlib.Path] = (),
                        live_basenames: Iterable[str] = (),
-                       ops_repos: Iterable[pathlib.Path] = ()) -> str | None:
+                       ops_repos: Iterable[pathlib.Path] = (),
+                       agent_sync_ingested: bool | None = None) -> str | None:
     """Why the doc walk drops this file, or None to keep it.
 
     (a) SKIP_APPS_MIRROR: a file inside the fleet coordinator checkout whose basename is also a
@@ -552,11 +553,13 @@ def mirror_skip_reason(p: pathlib.Path, *, fleet_repos: Iterable[pathlib.Path] =
     (c) SKIP_EFFORT_LOG: EFFORT-LOG.md, *-EFFORT-LOG.md and EFFORT-LOG-PROTOCOL.md anywhere.
         The effort-log source ingests the live boards.
     (d) SKIP_HANDBOOK_MIRROR: in a fleet-ops checkout, anything under generated/ and every public page under
-        handbook/ (handbook_page_is_public), but only when the live AGENT-SYNC.md is among `live_basenames`.
-        They are the text of that file, which is ingested once as an extra doc, so a recall query for a handbook
-        rule would otherwise return each rule twice;  without the live file (a fresh host) they are the only
-        copy and stay.  Private pages (handbook/private/, handbook/rulings/, a page that is not
-        `visibility: public`) and handbook/README.md are not in the live file and are always kept.
+        handbook/ (handbook_page_is_public), but only when a copy of AGENT-SYNC.md is really ingested
+        (`agent_sync_ingested`;  left as None it means the live file is among `live_basenames`).  The public pages are
+        the text of that file, so a recall query for a handbook rule would otherwise return each rule twice:  once
+        from the file (the live copy, or the AI-Fleet-Coordinator mirror when there is no live copy) and once from
+        the page.  With no ingested copy at all (a fresh host, or both copies rejected by _skip_doc) the pages are the
+        only text and stay.  Private pages (handbook/private/, handbook/rulings/, a page that is not
+        `visibility: public`) and handbook/README.md are not in the file and are always kept.
     """
     name = p.name
     parts = p.parts
@@ -574,7 +577,9 @@ def mirror_skip_reason(p: pathlib.Path, *, fleet_repos: Iterable[pathlib.Path] =
     if live and name in live and name not in DOC_ROOT_NAMES and _under(p, fleet_repos):
         return SKIP_APPS_MIRROR
     ops = list(ops_repos)
-    if ops and "AGENT-SYNC.md" in live:
+    if agent_sync_ingested is None:
+        agent_sync_ingested = "AGENT-SYNC.md" in live
+    if ops and agent_sync_ingested:
         rel = _rel_under(p, ops)
         if rel is not None and rel.parts:
             if rel.parts[0] == "generated":
@@ -713,9 +718,14 @@ def _doc_files(fleet_repo: pathlib.Path, fleet_ops: pathlib.Path,
     # rejected by _skip_doc (over DOC_MAX_BYTES, in a skipped directory), would leave the mirror as the only copy.
     live_basenames = {p.name for p in live
                       if p.is_file() and not _is_effort_log_name(p.name) and not _skip_doc(p)}
+    # The handbook's public pages stand down for an AGENT-SYNC.md that the walk will really ingest:  the live file, or
+    # (on a host without one) the coordinator's mirror, which rule (a) keeps when there is no live copy.
+    agent_sync_ingested = "AGENT-SYNC.md" in live_basenames or any(
+        f.name == "AGENT-SYNC.md" and f.is_file() and not _skip_doc(f) and _under(f, fleet_repos) for f in files)
     kept: list[pathlib.Path] = []
     for f in _unique_paths(files):
-        reason = mirror_skip_reason(f, fleet_repos=fleet_repos, live_basenames=live_basenames, ops_repos=ops_repos)
+        reason = mirror_skip_reason(f, fleet_repos=fleet_repos, live_basenames=live_basenames, ops_repos=ops_repos,
+                                    agent_sync_ingested=agent_sync_ingested)
         if reason:
             DOC_SKIPS.append((reason, str(f)))
             continue

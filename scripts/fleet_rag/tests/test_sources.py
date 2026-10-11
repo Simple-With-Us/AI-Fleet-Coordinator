@@ -670,19 +670,45 @@ class MirrorSkipTests(unittest.TestCase):
         pointers = by_path[str(self.ops / "handbook" / "private" / "pointers.md")]
         self.assertEqual((pointers.source, pointers.app, pointers.title), ("doc", "fleet-ops", "Pointers"))
 
-    def test_rule_d_keeps_the_public_pages_when_the_live_file_is_not_ingested(self):
+    def test_rule_d_stands_down_to_the_afc_mirror_when_there_is_no_live_file(self):
         live, mirror, generated, public, private = self._handbook()
         live.unlink()                       # a fresh host:  no ~/apps/AGENT-SYNC.md
         docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
                                       apps_dir=self.apps, grok_home=self.grok))
         skipped = {path: rule for rule, path in sources.take_doc_skips()}
         kept = {d.path for d in docs}
-        for page in public + private + [mirror]:
+        # the mirror is the one AGENT-SYNC.md the walk ingests, so the public pages are dropped for it, as they are
+        # for the live file:  a handbook rule is one hit, which is what it was before the handbook was walked at all
+        self.assertIn(str(mirror), kept)
+        for page in public:
+            self.assertEqual(skipped.get(str(page)), sources.SKIP_HANDBOOK_MIRROR, page)
+        for page in private:
+            self.assertIn(str(page), kept, page)
+        hits = [d.path for d in docs if self.RULE in d.text_markdown]
+        self.assertEqual(hits, [str(mirror)])
+
+    def test_rule_d_keeps_the_public_pages_when_no_agent_sync_copy_is_ingested(self):
+        live, mirror, generated, public, private = self._handbook()
+        live.unlink()
+        mirror.unlink()                     # nothing else holds the text:  the public pages are the only copy
+        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                                      apps_dir=self.apps, grok_home=self.grok))
+        skipped = {path: rule for rule, path in sources.take_doc_skips()}
+        kept = {d.path for d in docs}
+        for page in public + private:
             self.assertIn(str(page), kept, page)
         self.assertEqual(skipped, {})
-        # every rule now appears in two copies (the AFC mirror and the public handbook page), which is the price
-        # of having no live file;  it is not worse than before this rule
-        self.assertEqual(len([d for d in docs if self.RULE in d.text_markdown]), 2)
+        self.assertEqual(len([d for d in docs if self.RULE in d.text_markdown]), 1)
+
+    def test_rule_d_is_not_satisfied_by_another_repos_agent_sync_copy(self):
+        live, mirror, generated, public, private = self._handbook()
+        live.unlink()
+        mirror.unlink()
+        self._w(self.st / "docs" / "AGENT-SYNC.md", f"# ST's own copy\n\n{self.RULE}\n")   # not the coordinator's mirror
+        kept, skipped = self._walk()
+        for page in public:
+            self.assertIn(str(page), kept, page)
+        self.assertEqual(skipped, {})
 
     def test_a_live_file_the_walk_rejects_does_not_hide_its_mirrors(self):
         live, mirror, generated, public, private = self._handbook()
@@ -693,8 +719,22 @@ class MirrorSkipTests(unittest.TestCase):
         kept = {d.path for d in docs}
         self.assertNotIn(str(live), kept)                       # too big for the doc source
         self.assertIn(str(mirror), kept)                        # so the mirror is not dropped for it (rule a)
+        for page in public:                                     # and the mirror, which is ingested, stands in for
+            self.assertEqual(skipped.get(str(page)), sources.SKIP_HANDBOOK_MIRROR, page)   # the pages (rule d)
+        self.assertNotIn(str(mirror), skipped)
+        self.assertEqual([d.path for d in docs if self.RULE in d.text_markdown], [str(mirror)])
+
+    def test_a_live_file_and_mirror_the_walk_both_reject_do_not_hide_the_pages(self):
+        live, mirror, generated, public, private = self._handbook()
+        big = "x" * (sources.DOC_MAX_BYTES + 10)
+        live.write_text(f"# Agent sync (live)\n\n{self.RULE}\n{big}")
+        mirror.write_text(f"# Agent sync (mirror)\n\n{self.RULE}\n{big}")
+        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                                      apps_dir=self.apps, grok_home=self.grok))
+        skipped = {path: rule for rule, path in sources.take_doc_skips()}
+        kept = {d.path for d in docs}
         for page in public:
-            self.assertIn(str(page), kept, page)                # nor are the public pages (rule d)
+            self.assertIn(str(page), kept, page)
         self.assertEqual(skipped, {})
 
     def test_rule_d_is_logged_once(self):
@@ -728,9 +768,13 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIsNone(r(elsewhere, ops_repos=ops, live_basenames=live))
         # without an ops repo the rule is off, so existing callers are unchanged
         self.assertIsNone(r(pub, live_basenames=live))
-        # without the live AGENT-SYNC.md the public pages and generated/ are the only copy, so they stay
+        # without an ingested AGENT-SYNC.md the public pages and generated/ are the only copy, so they stay
         self.assertIsNone(r(pub, ops_repos=ops))
         self.assertIsNone(r(gen, ops_repos=ops, live_basenames={"MAC-LOCAL-PROCESSES.md"}))
+        # the caller may say a copy is ingested that is not live (the coordinator's mirror), or that none is
+        self.assertEqual(r(pub, ops_repos=ops, agent_sync_ingested=True), sources.SKIP_HANDBOOK_MIRROR)
+        self.assertEqual(r(gen, ops_repos=ops, agent_sync_ingested=True), sources.SKIP_HANDBOOK_MIRROR)
+        self.assertIsNone(r(pub, ops_repos=ops, live_basenames=live, agent_sync_ingested=False))
 
     def test_rule_d_public_page_reads_only_the_front_matter(self):
         rel = pathlib.PurePath("handbook/chat/posting.md")

@@ -23,7 +23,13 @@ sync job's work, which refuses a hash it did not write.  The mirror PR carries o
 file, so nothing in this script can change in the same PR as the first header:  the pin is how the
 check passes before that PR and refuses a hand edit after it.
 
-AI-Fleet-Coordinator has no required status checks, so a failure here is a visible warning, not a lock.
+This is a hard gate.  Branch protection on main requires the `test` check (strict, so the branch must also be up to
+date), and this check is a step in that job, so a red result here blocks the merge of every pull request, not only
+one that touches a generated path.  A bug in this script, or a bad state on main, therefore blocks the whole
+repository.  Break-glass:  enforce_admins is false, so an admin can bypass the protection to merge a fix;  and the
+sync job's own pull request, from `handbook-sync/mirror` with a valid header and hash, passes by design.  The check
+cannot prove a header was written by the generator;  the Mac sync job (which refuses a hash it did not write) is
+the authenticity enforcer, and this check is the gate that stops a hand edit from merging.
 
 Usage:
     python3 scripts/check-generated-mirror.py                                      header and hash
