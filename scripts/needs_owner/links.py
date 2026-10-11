@@ -54,3 +54,18 @@ def parse_topic_link(raw: str, environ: dict | None = None) -> TopicLink:
     if not topic.startswith("OWNER "):
         raise Refusal("--mirror-of must be an OWNER topic (its name starts with 'OWNER ')")
     return TopicLink(link, CHANNEL, topic, int(match.group("id")))
+
+
+def _encode(part: str) -> str:
+    """Zulip's narrow encoding:  the URL-encoded text with `.` for `%` (and `.2E` for a real dot), the inverse of `_decode`."""
+    return urllib.parse.quote(part, safe="").replace(".", "%2E").replace("%", ".")
+
+
+def make_topic_link(topic: str, message_id: int, *, stream_id: int | None = None, channel: str = CHANNEL,
+                    environ: dict | None = None) -> str:
+    """The link to message `message_id` in `topic` of #agent-sync on this realm, in the form `parse_topic_link`
+    reads back (`.../#narrow/channel/<stream id>-agent-sync/topic/<topic>/near/<id>`).  Without the stream id the
+    channel part is its name alone, which Zulip also resolves."""
+    host = realm_host(environ)
+    chan = "%d-%s" % (stream_id, channel) if isinstance(stream_id, int) and stream_id > 0 else channel
+    return "https://%s/#narrow/channel/%s/topic/%s/near/%d" % (host, _encode(chan), _encode(topic), int(message_id))

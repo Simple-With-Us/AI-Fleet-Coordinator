@@ -56,6 +56,29 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(ran.returncode, 0, (argv, ran.stderr))
         self.assertIn("needs-owner", self.isolated("--version").stdout)
 
+    def test_the_stable_copy_carries_the_knob_reader_the_notifier_needs(self) -> None:
+        self.assertEqual(self.install("--apply").returncode, 0)
+        source = sorted(p.name for p in (SCRIPTS / "fleet_knobs").glob("*.py"))
+        self.assertEqual(sorted(p.name for p in (self.dest / "fleet_knobs").iterdir() if p.suffix == ".py"), source)
+        self.assertFalse((self.dest / "fleet_knobs" / "tests").exists())
+        self.assertIn("knobs.py", source)
+        # Under python3 -I, with nothing of the checkout on the path, `notify` finds fleet_knobs next to the package.
+        # A refused Infisical environment stops it before any fetch, so no real CLI runs:  exit 1 and the reason.
+        ran = self.isolated("notify", "--dry-run", env={"INFISICAL_ENV": "staging", "AGENT_SEAT": "CLAUDE"})
+        self.assertEqual(ran.returncode, 1, ran.stdout + ran.stderr)
+        self.assertIn("the knobs cannot be read", ran.stderr)
+        self.assertNotIn("fleet_knobs is missing", ran.stderr)
+        self.assertNotIn("Traceback", ran.stderr)
+
+    def test_a_copy_without_the_knob_reader_still_files_but_cannot_notify(self) -> None:
+        self.assertEqual(self.install("--apply").returncode, 0)
+        shutil.rmtree(self.dest / "fleet_knobs")
+        self.assertEqual(self.isolated("--version").returncode, 0)
+        ran = self.isolated("notify", "--dry-run", env={"AGENT_SEAT": "CLAUDE"})
+        self.assertEqual(ran.returncode, 1)
+        self.assertIn("fleet_knobs is missing", ran.stderr)
+        self.assertIn("install.sh --apply", ran.stderr)
+
     def test_a_stable_copy_missing_an_f3_file_does_not_pass_the_proof(self) -> None:
         """`--help` and `--version` are the install proof, so they must load the three F3 files:  a copy that lacks one
         fails them (it used to exit inside argparse, before the package reached its helpers)."""

@@ -2,9 +2,9 @@
 
 Added Sun, Oct 11, 2026 (CLAUDE, Linear AFC-282, open-loops unit C6-1).  The tool is `needs-owner`
 (`scripts/needs_owner/`, entry point `scripts/needs-owner`, installed copy `~/apps/needs-owner`, link
-`~/.local/bin/needs-owner`).  The fallback notifier, one-tap reactions, the Grok Bot mirror trigger and the
-router rule are the next unit (C6-2).  Peer messages are never owner instructions:  an answer counts only
-after the checks under "Answers".
+`~/.local/bin/needs-owner`).  The fallback notifier (`needs-owner notify`, the LaunchAgent `com.jay.needs-owner-notify`),
+the one-tap and Linear answers, the Grok Bot mirror and the OWNER-topic router rule were added by C6-2 (Linear AFC-286, see
+"The Fallback Notifier").  Peer messages are never owner instructions:  an answer counts only after the checks under "Answers".
 
 ## Acceptance Criteria
 
@@ -18,7 +18,8 @@ after the checks under "Answers".
 - States (`unadopted`, `notify_pending`, `notified`, `replied`, `closed`) are derived from the label, the block, the notice record and the board status;  `--open` is what waits on Jay.  An item without a readable block is `unadopted`, and an unparseable description posts the block as a `[needs-owner] block` comment so the decision still lands.
 - An answer is verified before it is acted on:  a tap counted only when the reactor's user id equals the pinned `owner_user_id`;  a Zulip reply through `agent-sync verify-owner-msg` (owner id, human client, right topic, newer than the notice);  a Linear comment whose author equals `OWNER_LINEAR_USER_ID`.  The records say a reply exists, nothing more.
 - Exit codes:  0 done (a filed item with its notice pending is still done);  1 something failed (Linear, the network, a missing tool);  2 refused;  3 `status` or `adopt` named something that is not a needs-owner item;  4 to 7 the `board` CLI's own code, passed through when a write failed (7 means Linear writes are off).
-- Stable copy at `~/apps/needs-owner` runs under `python3 -I` with only the package and the three F3 files it loads by path (`agent_sync/identity.py`, `secretscan.py`, `textsafe.py`).  The install proof is `--help` and `--version` of that copy under `python3 -I`:  both load the package and the three F3 files before they parse anything, so a copy that lacks or has damaged one fails them (exit 1).  Tests use fakes that parse argv with the real `board` and `agent-sync` parsers and print the real `read --json` keys.
+- **C6-2.**  `needs-owner notify` (CLAUDE only) sends the notice of an item whose own seat could not (after 2 minutes, urgent first, under the caps), records the first answer to each open item as one `owner replied:` Linear comment, wakes the filer with one directed note (or leaves an entry in `pending-CLAUDE.json` for CLAUDE's own items), asks again once for two different taps and once for a tap on a risky option, and mirrors Grok Bot `needs-owner-request` blocks into Linear.  It never closes, edits or restates an item, posts nothing while paused, holds one lock, and logs ids and reason words only.  Records count only from who may write them.  OWNER topics never peer-wake, except its note.
+- Stable copy at `~/apps/needs-owner` runs under `python3 -I` with only the package, `fleet_knobs/` (the notifier's knob reader) and the three F3 files it loads by path (`agent_sync/identity.py`, `secretscan.py`, `textsafe.py`).  The install proof is `--help` and `--version` of that copy under `python3 -I`:  both load the package and the three F3 files before they parse anything, so a copy that lacks or has damaged one fails them (exit 1).  Tests use fakes that parse argv with the real `board` and `agent-sync` parsers and print the real `read --json` keys.
 - A post that may have landed is found again by its `Ref:` line (`notify.find_notice`):  only a message from a bot (`is_bot` true) of the filing seat or of CLAUDE, only when the line stands alone and is not quoted, and the oldest such message wins.  A person's quote-and-reply, or a peer who copies the public uid, is never taken for the notice.
 
 ## Why This Exists
@@ -136,8 +137,13 @@ Linear link, "Answer here or as a comment on the Linear issue.", and a reference
 | `[needs-owner] block` then the fenced block | `adopt` | an issue filed earlier became an item |
 | `owner replied:  msg <id>` / `reaction <n> on msg <id>` / `comment <id>` | the notifier (C6-2) | Jay replied;  **never holds the answer** |
 
-Readers accept any whitespace where the writers put one.  Reasons are `no_credential`, `send_failed`,
-`no_agent_sync`.
+Readers accept any whitespace where the writers put one.  Reasons are `no_credential`, `send_failed`, `no_agent_sync`, `unsent` and `held`
+(`adopt --no-notify` marks the item `held`, so the fallback notifier leaves it alone until it is announced for real).
+
+**Who may write a record.**  Anyone who can comment can type a record, so a record counts only when the comment is signed by a seat that may
+write it (the tag line the board writes for the seat that wrote the comment):  a notice (`notified`) or a `notify_pending` mark from the
+filing seat or from CLAUDE, a reply (`owner replied:`) only from CLAUDE.  A copied record from a peer is just a comment:  it cannot hide an
+item from Jay's list or point the taps at another message.
 
 **A post that may or may not have landed** (agent-sync exit 5 or 6, or a timeout) is never retried blind:  the
 topic is read for the reference line first, and only a missing line becomes `notify_pending`.  A rerun looks
@@ -146,8 +152,9 @@ in the topic before it posts, so a crash between the post and its record cannot 
 next paragraph).
 
 **For the fallback notifier (C6-2).**  An item shows `notify_pending` when a post landed but both attempts to
-record it failed.  Before it posts, the notifier must call `notify.find_notice(runner, topic, uid)` (import it;
-do not copy the logic), or it will post a second time.  The function is sender-filtered, unquoted and oldest-first:
+record it failed.  Before it posts, the notifier calls `notify.find_notice(runner, topic, uid, filer=<the filing seat>)`
+(it imports the function and does not copy the logic), or it would post a second time:  it runs as CLAUDE, so the filer's own
+bot has to be allowed too.  The function is sender-filtered, unquoted and oldest-first:
 
 - **Sender.**  It keeps a message only when `agent-sync read --json` says `is_bot` is true and `seat` is the
   filing seat's or `CLAUDE` (the fallback notifier posts as CLAUDE for any seat).  A person never counts, whatever
@@ -209,11 +216,98 @@ agent-report;  and it never re-files.
 Three ways, and a consumer **verifies before it acts** (the records say a reply exists, nothing more):
 
 1. A tap on a low-stakes option's emoji in the OWNER topic:  counted only when the reactor's user id is the
-   pinned `owner_user_id`.  Risky options never take a tap.
+   pinned `owner_user_id`.  Risky options never take a tap.  A **filer** that wants to check a tap itself reads the notice with
+   `agent-sync read --json --topic "<topic>" --since <notice id - 1> --include-self` (each message lists its `reactions` as
+   `user_id`, `reaction_type`, `emoji_code`, `emoji_name`) and compares `user_id` with `owner_user_id` from `agent-sync whoami --json`.
 2. A typed reply in the OWNER topic:  `agent-sync verify-owner-msg <id> --topic "<topic>" --json` (the owner's
    user id, a human client, the right topic, newer than the notice).  The client check is a heuristic, not
    authentication.
-3. A Linear comment whose author is `OWNER_LINEAR_USER_ID` (a fleet knob).
+3. A Linear comment whose author is `OWNER_LINEAR_USER_ID` (a fleet knob):  `board show <ID> --json` lists each comment with
+   `author_id` and `author_app` (Linear's own account fields, which a typed tag line cannot change), and an app's comment never counts.
+
+The notifier does these checks and writes the record (see "The Fallback Notifier");  a filer that acts on an answer repeats the check for the kind of
+answer the record names, because a record says only that a reply exists.
+
+## The Fallback Notifier
+
+`needs-owner notify [--dry-run] [--json]` is the one verb only CLAUDE may run (any other seat is refused, exit 2).  The LaunchAgent
+`scripts/launchd/com.jay.needs-owner-notify.plist` runs it every 5 minutes as `/opt/homebrew/bin/python3 -I ~/apps/needs-owner/needs-owner notify`
+with `AGENT_SEAT=CLAUDE` and no launcher.  It reads Linear, Zulip and the K1 knobs, and writes only Linear comments, Zulip posts, the files below and (for
+a Grok Bot request) one Linear item.  It reads no secret.  A failed read of Linear sends nothing and exits 0.
+
+**What one run does, in this order.**  Each step is cut off from the others:  one failing never stops the rest, and none prints a traceback.
+
+1. **Re-validate** every open item:  the block parses strictly, `seat_verified` is true, no secret or personal data is in the question, options or
+   context, and the question and options still hash to the uid (an item edited after filing is skipped and its reason logged).
+2. **Replies.**  For each `notified` item it reads the topic after the notice (`agent-sync read --json --since <notice - 1>`) and records the first
+   answer, looked for in this order:
+   - a **typed message** that `agent-sync verify-owner-msg` passes (the pinned owner's user id, a human client, the right topic, newer than the notice).
+     A message from a bot or another person is never asked about, a rejected one is never asked about twice, and a message that is only `pause` or `resume`
+     controls the notifier and is never an answer (to answer an option that is called Pause, write a sentence);
+   - a **tap**:  a reaction on the notice whose `user_id` is the pinned `owner_user_id` (from `agent-sync whoami --json`, never a name), whose
+     `reaction_type` is `unicode_emoji` and whose `emoji_code` is a keycap from 1️⃣ to 5️⃣ (`0031-20e3` and so on) naming an option the item has, and that option is
+     **low-stakes**.  A custom emoji, anyone else's reaction and any other emoji are not taps.  **Two different options** from Jay mean "ask again"
+     (neither counts), and a tap on an option that is **not** low-stakes is not an answer ("this one needs a typed reply");
+   - a **Linear comment** whose `author_id` is `OWNER_LINEAR_USER_ID` and which is not an app's (`board show --json` gives `author_id` and `author_app`, Linear's
+     own account fields;  a typed tag line cannot change them).  With the knob empty, no Linear reply is accepted.
+
+   The record is one comment from CLAUDE, `owner replied:  msg <id>`, `owner replied:  reaction <n> on msg <id>` or `owner replied:  comment <id>`.  It is written
+   once per item.  The first answer stands:  a reaction or message that comes later does not undo it (Jay says so to the filer if he means to, and the filer decides).
+3. **Notices.**  An item still `notify_pending` two minutes after it was filed, adopted or marked (urgent items first) is posted from CLAUDE with the header
+   `For <SEAT> (filed by <SEAT>, not checked by CLAUDE).`, after `find_notice` has looked for a post the filer's bot already landed.  A failed post backs off
+   (5 minutes, then doubling up to an hour).
+4. **Notes.**  The record is followed by one directed note in the item's topic that wakes the filer:  `agent-sync --as CLAUDE --session needsown post --topic "OWNER <ID> ..." --to <SEAT>`,
+   saying "Jay replied on <ID>:  <Linear link>" and where the reply is (the message, the message a tap is on, or the Linear comment), "verify it before you act", and that
+   the item stays open.  It never repeats the answer.  For a Grok Bot item the note goes to the persona (`for GB-<ROLE>`).  For **CLAUDE's own items** a post that mentions
+   yourself wakes nobody, so the entry goes into `~/apps/needs-owner/state/pending-CLAUDE.json` (identifier, link, kind, message or comment id, option, topic and time;
+   no words) for the CLAUDE session-start skill to read, and is removed once the item is closed.  A note that cannot go out (the seat has no bot, the caps are full, the pause)
+   stays due and is retried, 12 times at the most.
+5. **Nudges**, once each:  "I saw two different reactions ... I counted neither" and "I saw a reaction on option N, which needs a typed reply".
+6. **The Grok Bot mirror** (below).
+
+**The caps and the pause.**  Every Zulip post the notifier makes counts:  `NEEDS_OWNER_CAPS` (default 3 urgent an hour, 6 an hour, 30 a day) caps notices, notes, nudges and
+mirror link-backs together, urgent notices first.  The counts are kept in `notify-state.json` and carry over between runs.  Nothing is dropped for a full cap:  it waits for the next
+hour or day.  **Paused** (the Infisical knob `NEEDS_OWNER_NOTIFY_PAUSED` true, or Jay's verified `pause` as the whole message in **any** OWNER topic, for
+24 hours or until his `resume`;  each topic is read for what was said since the last run, and the first run reads no history) stops every post and every Linear item the notifier would make.  Replies are still recorded in Linear (a comment is silent) and their notes wait,
+and the file for CLAUDE's items is still written.  To stop it at once:  `launchctl bootout gui/$(id -u)/com.jay.needs-owner-notify`.
+
+**Its files**, in `~/apps/needs-owner/state/` (directory 0700, files 0600, ids and numbers only, never a question, option, answer or message):  `notify-state.json`, `notify.lock`
+(one run at a time;  a lock older than 30 minutes, or whose process is gone, is taken over) and `pending-CLAUDE.json`.  The log is `~/Library/Logs/needs-owner-notify.log`:  a line per
+event with an identifier and reason words (`notified`, `replied`, `note-sent`, `skip why=edited_after_filing`, `deferred cap=per_hour`, ...), nothing else.
+
+**The Grok Bot mirror.**  A Grok Bot persona cannot run the Mac CLI and has no Linear write, so it opens its own OWNER topic by REST and puts a fenced block in the message:
+
+````text
+```needs-owner-request
+{"question": "Rotate the Plumber's key?", "options": ["Approve", "Decline"], "seat": "GB-PLUMBER", "low_stakes": [1], "recommend": 1, "context": "one line", "urgent": false}
+```
+````
+
+Each run lists the recent OWNER topics (`agent-sync topics --json`), skips the topics of existing items and the ones already read at their last message, and for the others requires
+that the topic's first message is from a **Grok Bot persona** (a bot whose seat is `GB-<ROLE>`, whose `seat_app` is `grok-bot` and whose email is exactly `<role>-grok-bot@<this realm>`),
+and that the block is in a message from that same persona, once, with only the keys above (`app` and `format` are accepted and ignored).  The question is 1 to 200 characters, there are
+1 to 5 different options, `seat` equals the sender's seat, `low_stakes` and `recommend` name real options, `urgent` never comes with `low_stakes`, and the same secret and personal-data
+refusals as `file` apply.  An accepted request becomes `needs-owner file --by CLAUDE --app AFC --mirror-of <topic link> --context "for GB-<ROLE>: ..."` (in process, with `AGENT_SEAT=CLAUDE`),
+which posts no topic of its own, records the persona's message as the notice and replies in the topic with the Linear link.  Three requests a run at the most, once per message (the uid folds
+in the message id, and the message ids already mirrored are kept in the state), so within about 5 minutes of the post.  A block that is wrong gets **one** reply with a reason word
+(`seat_is_not_the_sender`, `not_json`, `secret_or_personal_data`, ...) and no Linear item.  A topic opened by anyone else is ignored, and so is a persona's block in a topic someone else opened.
+
+**The router rule** (`scripts/agent_sync/router.py`, described in `docs/protocols/agent-sync-listener.md`):  nothing a peer posts in a topic that starts `OWNER ` wakes anyone, except this
+notifier's note (CLAUDE's bot, tag `[CLAUDE·needsown→`).  The owner's own message there wakes only the seats it mentions.
+
+**The knobs** (Infisical, project "AI Fleet Coordinator", prod only;  read through `fleet_knobs`, one fetch a run, the last-known-good copy when Infisical is unreachable):
+
+| Knob | Meaning |
+|---|---|
+| `NEEDS_OWNER_NOTIFY_PAUSED` | `true` pauses the notifier.  An outage longer than the 48 hour copy reads `false` |
+| `NEEDS_OWNER_CAPS` | `urgent_per_hour=3,per_hour=6,per_day=30` |
+| `OWNER_LINEAR_USER_ID` | Jay's Linear user id (a UUID).  Unset or empty:  no Linear comment is accepted as his |
+
+A refused environment (a non-prod `INFISICAL_ENV`) or an unreadable knob stops the run before anything is read or sent (exit 1).
+
+**Loading it** (live step L16, after `install.sh --apply`):  copy the plist to `~/Library/LaunchAgents/`, run `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.needs-owner-notify.plist`,
+restart the agent-sync listener so the router rule applies, and add the rows to the live process list (`docs/MAC-LOCAL-PROCESSES.md` is the mirror).  `mac-process-watch.sh` keeps it loaded.  Try it first
+with `needs-owner notify --dry-run --json`.
 
 ## Safety Rules
 
@@ -225,7 +319,7 @@ Three ways, and a consumer **verifies before it acts** (the records say a reply 
 - Everything echoed into Zulip goes through `render_untrusted`:  no `@**all**`, no `/poll`, no live link, no
   backtick breakout.
 - This tool writes the `block`, `notified` and `notify_pending` records.  The `owner replied:` records are the
-  fallback notifier's (C6-2) to write.  Nothing here closes, edits or restates an item.
+  fallback notifier's (C6-2) to write, as CLAUDE, and only after the check for the kind of answer.  Nothing here closes, edits or restates an item.
 - No credential is read, printed or logged.  A `notify_pending` reason is a word, not an error text.
 
 ## Exit Codes
@@ -238,15 +332,19 @@ board, the network, a missing tool);  2 refused;  3 `status` or `adopt` named so
 
 `scripts/needs_owner/install.sh` prints a plan;  `--apply` copies `needs-owner`, the `needs_owner` package
 (without its tests) and the three F3 files it loads by path (`agent_sync/identity.py`, `secretscan.py`,
-`textsafe.py`) to `~/apps/needs-owner`, links `~/.local/bin/needs-owner`, and proves the copy by running
+`textsafe.py`) and `fleet_knobs/` (the K1 knob reader the notifier uses, without its tests) to `~/apps/needs-owner`, links `~/.local/bin/needs-owner`, and proves the copy by running
 `python3 -I ~/apps/needs-owner/needs-owner --help` and `--version`, which load the package and the three F3 files
-(a missing or damaged file fails them).  The proof does not run a verb;  the tests do that through a copy.  It leaves `~/apps/needs-owner/state/` alone.  The tool
-is an on-demand helper (docs/MAC-LOCAL-PROCESSES.md);  nothing stays running.  BotFleet routine allowlists
+(a missing or damaged file fails them).  The proof does not run a verb;  the tests do that through a copy (`notify` also runs from it, and says so when
+`fleet_knobs/` is missing).  It leaves `~/apps/needs-owner/state/` alone.  `needs-owner` is an on-demand helper (docs/MAC-LOCAL-PROCESSES.md);  nothing it does stays running.  The
+scheduled fallback notifier is the LaunchAgent above, which the owner session loads.  BotFleet routine allowlists
 name `/Users/jay/.local/bin/needs-owner file` with fixed flags and the question and options as quoted
 arguments.
 
 ## Tests
 
-`cd scripts && python3 -m unittest discover -s needs_owner/tests -t .` (CI runs it).  The fakes parse
+`cd scripts && python3 -m unittest discover -s needs_owner/tests -t .` (CI runs it;  about four minutes).  The router rule is tested in
+`agent_sync/tests/test_router.py`, the `reactions` and `owner_user_id` fields in `agent_sync/tests/test_safety_commands.py`, and the comment account fields
+in `linear-board/test_board.py` (`CommentAuthorTests`).  The notifier tests run `notify` in process with a fixed clock and fake K1 knobs (and one class against
+the real `fleet_knobs` and a fake `infisical`), and a LaunchAgent test parses the plist.  The fakes parse
 argv with the real `board` and `agent-sync` parsers, so a wrong flag fails here too, and the fake board hands
 descriptions back as Linear does (escaped `[ ] ~`, `*` bullets).

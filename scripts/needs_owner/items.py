@@ -102,9 +102,15 @@ class Item:
         return None
 
 
-def _newest(comments: list[dict], parse):
-    """(parsed value, comment) of the newest comment `parse` accepts."""
+NOTIFIER_SEAT = "CLAUDE"  # the seat that runs the fallback notifier:  it posts notices for any seat and writes every reply record
+
+
+def _newest(comments: list[dict], parse, authors: frozenset[str] | None = None):
+    """(parsed value, comment) of the newest comment `parse` accepts.  With `authors`, only a comment signed
+    by one of those seats counts (`author` is the tag line the board writes for the seat that wrote it)."""
     for comment in reversed(comments):
+        if authors is not None and comment.get("author") not in authors:
+            continue
         value = parse(comment.get("text") or "")
         if value is not None:
             return value, comment
@@ -139,9 +145,13 @@ def build_item(show: dict) -> Item:
                 item.problem = item.problem or str(exc)
     if item.block is None and item.problem is None:
         item.problem = "no needs-owner block"
-    item.notified, _ = _newest(comments, records.parse_notified)
-    item.pending, _ = _newest(comments, records.parse_pending)
-    item.replied, reply_comment = _newest(comments, records.parse_reply)
+    # Anyone who can comment can type a record, so a record counts only from who may write it:  a notice or a
+    # pending mark from the filing seat or from CLAUDE (the fallback notifier), a reply only from CLAUDE (the
+    # notifier writes every reply record).  A copied record from a peer is just a comment.
+    notice_authors = frozenset({NOTIFIER_SEAT} | ({item.block.filed_by} if item.block else set()))
+    item.notified, _ = _newest(comments, records.parse_notified, notice_authors)
+    item.pending, _ = _newest(comments, records.parse_pending, notice_authors)
+    item.replied, reply_comment = _newest(comments, records.parse_reply, frozenset({NOTIFIER_SEAT}))
     if reply_comment is not None:
         item.replied_by = reply_comment.get("author")
     return item

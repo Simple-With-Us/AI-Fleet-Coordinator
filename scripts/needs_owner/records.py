@@ -26,7 +26,7 @@ NOTIFIED_HEAD = "[needs-owner] notified msg"
 PENDING_HEAD = "[needs-owner] notify_pending"
 REPLY_HEAD = "owner replied:"
 
-PENDING_REASONS = ("no_credential", "send_failed", "no_agent_sync", "unsent")
+PENDING_REASONS = ("no_credential", "send_failed", "no_agent_sync", "unsent", "held")
 
 _NOTIFIED = re.compile(r"\A\s*\[needs-owner\]\s+notified\s+msg\s+([0-9]{1,12})\b(.*)\Z", re.I | re.S)
 _PENDING = re.compile(r"\A\s*\[needs-owner\]\s+notify_pending\b(.*)\Z", re.I | re.S)
@@ -45,6 +45,23 @@ def notified_text(msg_id: int, topic: str) -> str:
 
 def pending_text(reason: str) -> str:
     return "%s\nreason: %s" % (PENDING_HEAD, reason)
+
+
+def reply_text(kind: str, ident: object, option: int | None = None) -> str:
+    """`owner replied:  msg 5`, `owner replied:  reaction 2 on msg 55` or `owner replied:  comment <id>`.  It says a
+    reply exists and where, never what it said (a tap's option number is the tap itself).  `parse_reply` reads it."""
+    if kind == "msg":
+        return "%s  msg %d" % (REPLY_HEAD, int(ident))
+    if kind == "reaction":
+        if option is None or not 1 <= int(option) <= 9:
+            raise ValueError("a reaction reply names an option from 1 to 9")
+        return "%s  reaction %d on msg %d" % (REPLY_HEAD, int(option), int(ident))
+    if kind == "comment":
+        text = str(ident).strip()
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", text):
+            raise ValueError("a comment id is letters, digits and hyphens")
+        return "%s  comment %s" % (REPLY_HEAD, text)
+    raise ValueError("unknown reply kind %r" % kind)
 
 
 def block_comment_text(block_text: str) -> str:

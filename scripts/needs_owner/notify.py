@@ -65,14 +65,16 @@ def _again_phrase(again_of: str) -> str:
     return "%s (message %s)" % (ident, message) if message else ident
 
 
-def compose_body(item: Item) -> str:
-    """The OWNER topic's first message.  Every word that came from the filer goes through `render_untrusted`."""
+def compose_body(item: Item, header: str | None = None) -> str:
+    """The OWNER topic's first message.  Every word that came from the filer goes through `render_untrusted`.
+    `header` is a line of the sender's own words that goes first (the fallback notifier's "for SEAT ...")."""
     b = item.block
     if b is None:
         raise Refusal("%s has no readable needs-owner block" % item.identifier)
     urgent = item.severity == "P1"
-    paragraphs = ["**%s** from %s:  %s" % ("Urgent decision needed" if urgent else "Decision needed", b.filed_by,
-                                          _quote(b.question, 260))]
+    paragraphs = [header] if header else []
+    paragraphs.append("**%s** from %s:  %s" % ("Urgent decision needed" if urgent else "Decision needed", b.filed_by,
+                                              _quote(b.question, 260)))
     if b.again_of:
         paragraphs.append("Asking again.  The earlier question was %s." % _again_phrase(b.again_of))
     lines = []
@@ -134,8 +136,10 @@ def notice_seats(seat: str) -> frozenset[str]:
     return frozenset({f3.identity.canonical_seat(seat), FALLBACK_SEAT})
 
 
-def find_notice(runner: Runner, topic: str, uid: str) -> int | None:
-    """The id of the message that announced the item whose uid is `uid`, else None.
+def find_notice(runner: Runner, topic: str, uid: str, *, filer: str | None = None) -> int | None:
+    """The id of the message that announced the item whose uid is `uid`, else None.  `filer` is the seat that
+    filed the item when the caller is not that seat (the fallback notifier runs as CLAUDE, so the filer's own bot
+    must be allowed too, or a post the filer's bot landed but did not record would be posted a second time).
 
     It reads the newest `READ_BACK` messages of `topic` (`agent-sync read --json`, whose fields are the real
     `message_json`) and keeps a message only when all of this holds:  `is_bot` is true (never a person,
@@ -148,7 +152,7 @@ def find_notice(runner: Runner, topic: str, uid: str) -> int | None:
                                "--topic", topic, "--include-self", "--limit", str(READ_BACK))
     if not result.ok:
         return None
-    allowed = notice_seats(runner.seat)
+    allowed = notice_seats(runner.seat) | (notice_seats(filer) if filer else frozenset())
     found = []
     for line in result.out.splitlines():
         try:
@@ -173,20 +177,26 @@ def _record(runner: Runner, item: Item, text: str) -> bool:
     return False
 
 
+def record(runner: Runner, item: Item, text: str) -> bool:
+    """One comment on the item (tried twice), written as the runner's seat.  The notifier's reply records use it."""
+    return _record(runner, item, text)
+
+
 def _announce(runner: Runner, item: Item, msg_id: int, topic: str) -> Notice:
     return Notice("notified", msg_id, topic, None, _record(runner, item, records.notified_text(msg_id, topic)))
 
 
 def _pending(runner: Runner, item: Item, topic: str, reason: str) -> Notice:
     recorded = True
-    if not item.pending:  # one record is enough;  a rerun does not pile more on
+    if item.pending in (None, "held"):  # one record is enough (a rerun does not pile more on);  a "held" mark is replaced
         recorded = _record(runner, item, records.pending_text(reason))
     return Notice("notify_pending", None, topic, reason, recorded)
 
 
-def notify(runner: Runner, item: Item, *, rescan: bool = False, environ: dict | None = None) -> Notice:
+def notify(runner: Runner, item: Item, *, rescan: bool = False, environ: dict | None = None,
+           header: str | None = None) -> Notice:
     """Announce `item` unless it already is.  `rescan` looks in the topic for an earlier post of this item
-    first (a rerun after a crash between the post and its record)."""
+    first (a rerun after a crash between the post and its record).  `header` goes first in the message."""
     b = item.block
     if b is None:
         raise Refusal("%s has no readable needs-owner block;  adopt it first" % item.identifier)
@@ -196,21 +206,21 @@ def notify(runner: Runner, item: Item, *, rescan: bool = False, environ: dict | 
         return _mirror(runner, item, linkmod.parse_topic_link(b.mirror_of, environ))
     topic = T.topic_for(item.identifier, b.question)
     if rescan:
-        earlier = find_notice(runner, topic, b.uid)
+        earlier = find_notice(runner, topic, b.uid, filer=b.filed_by)
         if earlier is not None:
             return _announce(runner, item, earlier, topic)
     result = runner.agent_sync("post", "--as", runner.seat, "--session", SESSION, "--json", "--topic", topic,
-                               "--to-owner", "--", "-", stdin=compose_body(item))
+                               "--to-owner", "--", "-", stdin=compose_body(item, header))
     if result.ok:
         msg_id = _message_id(result)
         if msg_id is not None:
             return _announce(runner, item, msg_id, topic)
-        landed = find_notice(runner, topic, b.uid)  # posted, but the answer carried no id
+        landed = find_notice(runner, topic, b.uid, filer=b.filed_by)  # posted, but the answer carried no id
         return _announce(runner, item, landed, topic) if landed is not None else _pending(runner, item, topic, "send_failed")
     if result.missing:
         return _pending(runner, item, topic, "no_agent_sync")
     if result.timed_out or result.code in MAYBE_SENT_CODES:
-        landed = find_notice(runner, topic, b.uid)
+        landed = find_notice(runner, topic, b.uid, filer=b.filed_by)
         if landed is not None:
             return _announce(runner, item, landed, topic)
         return _pending(runner, item, topic, "send_failed")

@@ -357,6 +357,7 @@ class Agent:
             "flags": list(message.get("flags") or []),
             "sibling": self.is_sibling(message),
             "mentioned": self.is_mention(message),
+            "reactions": message_reactions(message),
         }
 
     def dm_peers(self, message: Mapping[str, Any]) -> str:
@@ -771,6 +772,45 @@ def build_parser() -> argparse.ArgumentParser:
 # Commands
 # --------------------------------------------------------------------------------------------
 
+MAX_REACTIONS_SHOWN = 100
+
+
+def message_reactions(message: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The reactions on a message as ids and emoji codes:  who reacted (`user_id`), and which emoji
+    (`reaction_type`, `emoji_code`, `emoji_name`).  Nothing else Zulip sends with a reaction is passed on.  A
+    reaction is a client-free record, so it proves who tapped but not through which app;  a consumer that
+    counts one as the owner's compares `user_id` with the pinned owner (`whoami --json` `owner_user_id`), and
+    matches an emoji by `reaction_type` `unicode_emoji` plus `emoji_code`, because a realm can add a custom
+    emoji named like a standard one."""
+    shown: list[dict[str, Any]] = []
+    for reaction in message.get("reactions") or []:
+        if not isinstance(reaction, Mapping):
+            continue
+        user_id = reaction.get("user_id")
+        if not _is_int(user_id):
+            user = reaction.get("user")  # servers before Zulip 3.0 carry only the nested user
+            user_id = user.get("id") if isinstance(user, Mapping) else None
+        if not _is_int(user_id):
+            continue
+        shown.append({"user_id": user_id,
+                      "reaction_type": reaction.get("reaction_type") if isinstance(reaction.get("reaction_type"), str) else None,
+                      "emoji_code": reaction.get("emoji_code") if isinstance(reaction.get("emoji_code"), str) else None,
+                      "emoji_name": reaction.get("emoji_name") if isinstance(reaction.get("emoji_name"), str) else None})
+        if len(shown) >= MAX_REACTIONS_SHOWN:
+            break
+    return shown
+
+
+def pinned_owner_id(agent: Agent) -> int | None:
+    """`daemon.owner_user_id` of the installed listener.toml, or None when it is not pinned or cannot be read.
+    The same file `dm --owner`, `post --to-owner` and `verify-owner-msg` read."""
+    try:
+        owner = int(listener_cli._load(agent.rt).owner_user_id)
+    except Exception:  # noqa: BLE001 - a missing or damaged config is "not pinned" here, never a crash of whoami
+        return None
+    return owner if owner > 0 else None
+
+
 def cmd_whoami(agent: Agent, args: argparse.Namespace) -> int:
     """Both identities:  the seat this session resolved, and the bot its key authenticates as.
     Exits 3 when they differ (the key is printed by no path)."""
@@ -780,7 +820,8 @@ def cmd_whoami(agent: Agent, args: argparse.Namespace) -> int:
             "user_id": me.get("user_id"), "is_bot": me.get("is_bot"), "seat": agent.seat,
             "bot_seat": seat_tag_for(me), "seat_source": agent.seat_source, "launcher": agent.launcher,
             "verified": problem is None, "problem": problem,
-            "session": agent.tag, "credential": agent.creds.source, "realm": agent.realm}
+            "session": agent.tag, "credential": agent.creds.source, "realm": agent.realm,
+            "owner_user_id": pinned_owner_id(agent)}
     if agent.json:
         agent.emit_json(info)
     else:
@@ -789,7 +830,8 @@ def cmd_whoami(agent: Agent, args: argparse.Namespace) -> int:
                 ("launcher", agent.launcher or "none (an ordinary session)"),
                 ("verified", "yes:  the key is this seat's own bot" if problem is None else "NO"),
                 ("session", agent.tag or "none (state is shared under nosession)"),
-                ("credential", agent.creds.source), ("realm", agent.realm)]
+                ("credential", agent.creds.source), ("realm", agent.realm),
+                ("owner id", info["owner_user_id"] or "not pinned in listener.toml")]
         agent.out("".join("%-11s %s\n" % (label + ":", value) for label, value in rows))
     if problem:
         agent.err(problem)

@@ -46,6 +46,8 @@ class Streams:
     environ: Mapping[str, str]
     out: TextIO
     err: TextIO
+    knobs: object = None  # notify:  the K1 knob reader (tests pass a fake;  None means the real fleet_knobs)
+    clock: object = None  # notify:  a function giving the current aware datetime (tests pass a fixed one)
 
     def say(self, line: str = "") -> None:
         self.out.write(line + "\n")
@@ -122,6 +124,9 @@ def finish(io: Streams, runner: Runner, args, seat: str, item: Item, others: lis
         io.warn("%s has %d decisions waiting on Jay (more than %d).  This one was filed anyway;  the digest shows the warning" % (
             seat, count, OVER_FIVE))
     if no_notify:
+        if not item.notified and not item.pending:
+            # Mark it held, so the fallback notifier (which sends every other notify_pending item) leaves it alone.
+            notifymod.record(runner, item, records.pending_text("held"))
         notice = notifymod.Notice("notified" if item.notified else "notify_pending", item.notified[0] if item.notified else None,
                                   item.topic, recorded=True)
     elif item.state == "replied":
@@ -318,6 +323,16 @@ def run_adopt(args, io: Streams) -> int:
 
 
 # ---- list and status ---------------------------------------------------------------------------
+
+def run_notify(args, io: Streams) -> int:
+    """The fallback notifier.  Only CLAUDE runs it."""
+    from . import notifier  # noqa: PLC0415 - the other verbs never need it
+
+    seat = seatmod.verified_seat(args.by or notifier.SEAT, io.environ)
+    if seat != notifier.SEAT:
+        raise Refusal("only %s runs the fallback notifier (this session is %s)" % (notifier.SEAT, seat))
+    return notifier.run(args, io, seat)
+
 
 def run_list(args, io: Streams) -> int:
     runner = Runner(None, io.environ)

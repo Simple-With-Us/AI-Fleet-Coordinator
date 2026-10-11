@@ -10,6 +10,7 @@ real one), so the children it starts are the fakes and nothing can reach Linear 
 """
 from __future__ import annotations
 
+import datetime as dt
 import io
 import json
 import os
@@ -29,6 +30,29 @@ if str(SCRIPTS) not in sys.path:
 from needs_owner import cli  # noqa: E402
 
 REALM_LINK = "https://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/%s/near/%d"
+OWNER_ID = 7  # Jay, the pinned owner in the fake realm (fake_agent_sync.OWNER_ID)
+KEYCAP = {n: "003%d-20e3" % n for n in range(1, 6)}  # Zulip's emoji_code for 1️⃣ to 5️⃣
+
+
+class FakeKnobs:
+    """The K1 knobs as the notifier reads them (`get` and `stale`);  a test sets `values`, `stale_copy` or `fail`."""
+
+    def __init__(self) -> None:
+        self.values: dict = {"NEEDS_OWNER_NOTIFY_PAUSED": False,
+                             "NEEDS_OWNER_CAPS": {"urgent_per_hour": 3, "per_hour": 6, "per_day": 30},
+                             "OWNER_LINEAR_USER_ID": ""}
+        self.stale_copy = False
+        self.fail: Exception | None = None
+        self.reads: list = []
+
+    def get(self, name: str):
+        self.reads.append(name)
+        if self.fail is not None:
+            raise self.fail
+        return self.values[name]
+
+    def stale(self) -> bool:
+        return self.stale_copy
 
 
 class Run(NamedTuple):
@@ -49,6 +73,8 @@ class World:
         self.home = self.root / "home"
         for d in (self.bin, self.state, self.home):
             d.mkdir()
+        self.knobs = FakeKnobs()
+        self.now = dt.datetime(2026, 10, 11, 18, 0, 0, tzinfo=dt.timezone.utc)  # well after every issue the fake board stamps
         self._launcher("board", HERE / "fake_board.py")
         self._launcher("agent-sync", HERE / "fake_agent_sync.py")
 
@@ -71,10 +97,23 @@ class World:
     def run(self, *argv: str, env: dict | None = None) -> Run:
         out, err = io.StringIO(), io.StringIO()
         try:
-            code = cli.main(list(argv), environ=env if env is not None else self.env(), out=out, err=err)
+            code = cli.main(list(argv), environ=env if env is not None else self.env(), out=out, err=err,
+                            knobs=self.knobs, clock=lambda: self.now)
         except SystemExit as exc:  # argparse refusing a flag
             code = exc.code if isinstance(exc.code, int) else 2
         return Run(code, out.getvalue(), err.getvalue())
+
+    def notify(self, *extra: str, env: dict | None = None) -> Run:
+        """One run of the fallback notifier, as CLAUDE, with the fake knobs and the fake clock."""
+        return self.run("notify", "--json", *extra, env=env)
+
+    @property
+    def notifier_dir(self) -> Path:
+        return self.home / "apps" / "needs-owner" / "state"
+
+    def notifier_state(self) -> dict:
+        path = self.notifier_dir / "notify-state.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
     def file(self, question: str, *options: str, seat: str = "CLAUDE", extra: tuple = (), env: dict | None = None,
              app: str = "AFC") -> Run:
@@ -111,10 +150,13 @@ class World:
         world.update(changes)
         (self.state / "zulip.json").write_text(json.dumps(world), encoding="utf-8")
 
-    def add_message(self, topic: str, content: str, *, seat: str | None = None, channel: str = "agent-sync") -> int:
+    def add_message(self, topic: str, content: str, *, seat: str | None = None, channel: str = "agent-sync",
+                    sender_id: int | None = None, client: str | None = None, email: str | None = None,
+                    reactions: list | None = None) -> int:
         """A message someone else put in a topic, after the fact.  `seat` is a bot's seat tag;  with none it
-        is a person's message (`is_bot` false, no seat, as the real `read --json` prints a person).  Returns
-        its id."""
+        is a person's message (`is_bot` false, no seat, as the real `read --json` prints a person), by default
+        Jay (id 7, the pinned owner) from the website.  `sender_id` and `client` make another person or an API
+        client.  Returns its id."""
         world = self.zulip()
         mid = world["next"]
         world["next"] += 1
@@ -122,10 +164,33 @@ class World:
         if seat is not None:
             row["seat"] = seat
         else:
-            row["sender_id"] = 7
+            row["sender_id"] = OWNER_ID if sender_id is None else sender_id
+        if sender_id is not None and seat is not None:
+            row["sender_id"] = sender_id
+        if client is not None:
+            row["client"] = client
+        if email is not None:
+            row["email"] = email
+        if reactions:
+            row["reactions"] = list(reactions)
         world["messages"].append(row)
         (self.state / "zulip.json").write_text(json.dumps(world), encoding="utf-8")
         return mid
+
+    def react(self, message_id: int, user_id: int, emoji_code: str, *, emoji_name: str = "one",
+              reaction_type: str = "unicode_emoji") -> None:
+        """One more reaction on a message."""
+        world = self.zulip()
+        row = next(m for m in world["messages"] if m["id"] == message_id)
+        row.setdefault("reactions", []).append({"user_id": user_id, "emoji_code": emoji_code, "emoji_name": emoji_name,
+                                                "reaction_type": reaction_type})
+        (self.state / "zulip.json").write_text(json.dumps(world), encoding="utf-8")
+
+    def unreact(self, message_id: int, user_id: int) -> None:
+        world = self.zulip()
+        row = next(m for m in world["messages"] if m["id"] == message_id)
+        row["reactions"] = [r for r in row.get("reactions", []) if r["user_id"] != user_id]
+        (self.state / "zulip.json").write_text(json.dumps(world), encoding="utf-8")
 
     def issue(self, ident: str) -> dict:
         return self.board_state()["issues"][ident]
@@ -160,13 +225,23 @@ class World:
         self.save_board(world)
         return ident
 
-    def add_comment(self, ident: str, body: str) -> None:
+    def add_comment(self, ident: str, body: str, *, user_name: str = "Fleet", user_id: str | None = None,
+                    app: bool | None = None, at: str | None = None) -> str:
+        """A comment on an issue.  By default it is the Fleet app's (no account id, so no reply can come from it);
+        `user_id` and `app` make a person's or another app's.  Returns the comment id."""
         world = self.board_state()
         node = world["issues"][ident]
         world["tick"] = world.get("tick", 0) + 1
-        node["comments"].append({"id": "seed-%d" % world["tick"], "body": body, "user": {"name": "Fleet"},
-                                 "createdAt": "2026-10-11T09:%02d:00.000Z" % (world["tick"] % 60)})
+        who = {"name": user_name}
+        if user_id is not None:
+            who["id"] = user_id
+        if app is not None:
+            who["app"] = app
+        cid = "seed-%d" % world["tick"]
+        node["comments"].append({"id": cid, "body": body, "user": who,
+                                 "createdAt": at or "2026-10-11T09:%02d:00.000Z" % (world["tick"] % 60)})
         self.save_board(world)
+        return cid
 
     def close(self, ident: str, state: str = "Done", keep_label: bool = False) -> None:
         world = self.board_state()
