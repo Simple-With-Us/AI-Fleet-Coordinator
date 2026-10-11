@@ -176,7 +176,7 @@ FOOTER_ADDRESSED_RE = re.compile(
 # Team routing, copied from the importer (lm_common.load_team_routing over
 # fleet-apps.json plus BOARD_SLUG_OVERRIDES, read Sat, Oct 10, 2026).  A slug
 # that matches nothing goes to AFC with an app:<slug> label, as the import did.
-TEAM_KEYS = ("ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK", "FL")
+TEAM_KEYS = ("ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK", "FL", "CC")
 FALLBACK_TEAM = "AFC"
 DEFAULT_APP = "fleet-infra"  # routes to OPS (design section 3)
 BOARD_SLUG_TEAM = {
@@ -184,6 +184,7 @@ BOARD_SLUG_TEAM = {
     "autorotate": "AR", "autorotate-codes": "AR",
     "botfleet": "BF", "botfleet-app": "BF",
     "clutch": "CK", "dsh-runtime": "CK", "harness": "CK",
+    "codecaps": "CC",  # CodeCaps team CC (owner 2026-10-11)
     "congress": "CT", "congress-trade": "CT",
     "congress-trading-shared": "CTS", "cts": "CTS",
     "contactlogo": "CL",
