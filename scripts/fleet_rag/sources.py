@@ -720,8 +720,13 @@ def _doc_files(fleet_repo: pathlib.Path, fleet_ops: pathlib.Path,
                       if p.is_file() and not _is_effort_log_name(p.name) and not _skip_doc(p)}
     # The handbook's public pages stand down for an AGENT-SYNC.md that the walk will really ingest:  the live file, or
     # (on a host without one) the coordinator's mirror, which rule (a) keeps when there is no live copy.
-    agent_sync_ingested = "AGENT-SYNC.md" in live_basenames or any(
-        f.name == "AGENT-SYNC.md" and f.is_file() and not _skip_doc(f) and _under(f, fleet_repos) for f in files)
+    def _ingestable_mirror(f: pathlib.Path) -> bool:
+        try:
+            return f.name == "AGENT-SYNC.md" and f.is_file() and not _skip_doc(f) and _under(f, fleet_repos)
+        except OSError:      # unreadable:  _dedupe_docs drops it too, so it cannot stand in for the pages
+            return False
+
+    agent_sync_ingested = "AGENT-SYNC.md" in live_basenames or any(_ingestable_mirror(f) for f in files)
     kept: list[pathlib.Path] = []
     for f in _unique_paths(files):
         reason = mirror_skip_reason(f, fleet_repos=fleet_repos, live_basenames=live_basenames, ops_repos=ops_repos,

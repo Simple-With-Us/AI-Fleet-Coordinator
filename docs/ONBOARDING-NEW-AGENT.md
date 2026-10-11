@@ -139,7 +139,7 @@ with the top-level `apps` (the acronyms) and `--app`.
    `fleet-apps.json` `seatApps.bySeat` (`scripts/onboard-new-agent.sh --app`).  The
    seat's row in the Active Seats table is a pull request to Fleet-OPS `handbook/`
    (`handbook/core/seats-and-identity.md`);  `AGENT-SYNC.md` is being generated from
-   the handbook, so do not edit `~/apps/AGENT-SYNC.md` or this repo's copy by hand.
+   the handbook, so do not edit either copy of `AGENT-SYNC.md` by hand.
 2. If the platform has a global rules file, add the fleet pointer there
    **before** the first session in a repo:
 
@@ -361,7 +361,7 @@ Only when the seat's product needs them. Do not block first code on these.
 1. If it is a standing seat, not a one-off sub-agent, add its row to the Active
    Seats table with a pull request to Fleet-OPS `handbook/`
    (`handbook/core/seats-and-identity.md`).  `AGENT-SYNC.md` is being generated
-   from the handbook, so do not edit `~/apps/AGENT-SYNC.md` or this repo's copy by hand.
+   from the handbook, so do not edit either copy of `AGENT-SYNC.md` by hand.
 2. Mention the new tag in the onboarding Zulip closeout so skim-match
    starts working.
 3. Sub-agents spawned inside a seat **inherit that seat's tag**. They do

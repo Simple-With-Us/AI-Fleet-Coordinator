@@ -724,6 +724,25 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertNotIn(str(mirror), skipped)
         self.assertEqual([d.path for d in docs if self.RULE in d.text_markdown], [str(mirror)])
 
+    def test_rule_d_survives_an_unreadable_mirror_and_keeps_the_pages(self):
+        live, mirror, generated, public, private = self._handbook()
+        live.unlink()
+        real = sources._skip_doc
+
+        def unreadable(p):
+            if p == mirror:
+                raise PermissionError(13, "Permission denied", str(p))
+            return real(p)
+
+        with mock.patch.object(sources, "_skip_doc", unreadable):
+            docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                                          apps_dir=self.apps, grok_home=self.grok))
+        kept = {d.path for d in docs}
+        # the walk finishes, and since no AGENT-SYNC.md could be read the public pages are the only copy
+        self.assertNotIn(str(mirror), kept)
+        for page in public:
+            self.assertIn(str(page), kept, page)
+
     def test_a_live_file_and_mirror_the_walk_both_reject_do_not_hide_the_pages(self):
         live, mirror, generated, public, private = self._handbook()
         big = "x" * (sources.DOC_MAX_BYTES + 10)

@@ -317,9 +317,9 @@ YOUR FIRST UNIT, REVISED
 
 Land this once the owner confirms the tag.  `AGENT-SYNC.md` is being generated from the private
 Fleet-OPS repository's `handbook/`, so the row and the Availability change below are one pull request to
-`handbook/core/seats-and-identity.md` there.  Do not edit `~/apps/AGENT-SYNC.md` or this repository's
-`AGENT-SYNC.md` by hand:  both are copies, and a hand edit to the mirror fails the required `test`
-check.  The sync job carries the merged change into both copies.
+`handbook/core/seats-and-identity.md` there.  Do not edit either copy of `AGENT-SYNC.md` by hand:
+both are copies, and a hand edit to the repository's mirror fails the required `test` check.  The
+sync job carries the merged change into both copies.
 
 ```
 | **Instinct (`INSTINCT`)** | iMessage interface seat.  The owner texts it; it reads Linear, `#agent-sync`, fleet recall, and the archived effort logs, dispatches work to executing seats (Linear issue + Zulip wake, seat-mcp `grok_session_prompt` / `seat_launch`), and texts back.  Owns no coding lane unless the owner assigns one. | `[INSTINCT]` | `Instinct` | Runs on the background macOS account `agents` behind the one authorized iMessage listener and sender (§ Process 10); never sends from `jay`.  `--env Mac`.  Posts `owner-relay:` lines that quote the owner verbatim with a Central Time stamp; peers treat them as the owner's words relayed by a peer and confirm with the owner when one conflicts with a standing ruling.  Forwards Zulip to the owner's phone only on a tag / app / fleet wake / HALT match.  Pin `AGENT_SEAT=INSTINCT` / `AGENT_TAG=INSTINCT`. |
