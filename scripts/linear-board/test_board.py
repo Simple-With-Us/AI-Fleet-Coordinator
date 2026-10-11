@@ -1435,7 +1435,7 @@ class SeatAppTests(BoardTest):
         # the seat tags stay as they are and none of those renames may lock a seat out of writing
         names = {"AG": "Antigravity (AG)", "MM": "MiniMax", "FX": "FX.sh", "JET": "Jet (OpenAI dot)",
                  "MC": "Muse Code (MC)", "MA": "Muse Assist (MA)", "GROK": "Grok (Build)",
-                 "GROK-WEB": "Grok (Web/iOS)", "OPENCODE": "OC", "ECHO": "Echo (Instinct)", "WISE": "Wise"}
+                 "GROK-WEB": "Grok (Web/iOS)", "OPENCODE": "OC"}
         for seat, name in names.items():
             self.seat_app(seat, name)
         for seat in names:

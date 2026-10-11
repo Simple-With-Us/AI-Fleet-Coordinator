@@ -118,7 +118,6 @@ SEAT_APP_NAMES = {
     "CLAUDE": "Claude", "CODEX": "Codex", "CURSOR": "Cursor", "AG": "AG", "GROK": "Grok",
     "GROK-WEB": "Grok Web", "CLUTCH": "Clutch", "MM": "MM", "FX": "Fx", "MC": "Muse Code",
     "MA": "Muse Assist", "JET": "Jet", "OPENCODE": "OpenCode",
-    "ECHO": "Echo (Instinct)", "WISE": "Wise (Instinct)",
 }
 # Other names the owner may give a seat's app (the seat tag and the credentials key names stay as they are).
 # The swapped-credentials check accepts the primary name above, any alias here, or the seat tag itself, and
@@ -135,8 +134,6 @@ SEAT_APP_ALIASES = {
     "GROK": ("Grok (Build)", "Grok Build"),
     "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
     "OPENCODE": ("OC",),
-    "ECHO": ("Echo",),
-    "WISE": ("Wise",),
 }
 
 
