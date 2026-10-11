@@ -447,12 +447,12 @@
       "CLUTCH": "clutch",
       "FX": "fx",
       "OPENCODE": "opencode",
-      "GROK-BOT": "grok-bot"
-    },
-    "extraSeats": {
-      "JET": "chatgpt",
+      "GROK-BOT": "grok-bot",
       "ECHO": "instinct",
       "INSTINCT": "instinct"
+    },
+    "extraSeats": {
+      "JET": "chatgpt"
     },
     "patterns": [
       {

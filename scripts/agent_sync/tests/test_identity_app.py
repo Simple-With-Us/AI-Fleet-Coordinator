@@ -130,12 +130,18 @@ class SeatAppTests(RealRegistryCase):
         self.assertEqual(self.app("GB-COMPILER"), "grok-bot")
         self.assertEqual(self.app("GROK-BOT"), "grok-bot", "the fleet-wide row is the same app as its personas")
 
-    def test_the_extra_seats_have_no_row_in_seats_and_still_have_apps(self) -> None:
+    def test_the_extra_seat_has_no_row_in_seats_and_still_has_an_app(self) -> None:
         self.assertEqual(self.app("JET"), "chatgpt")
+        rows = {s["tag"] for s in registry_data()["seats"]}
+        self.assertNotIn("JET", rows)
+
+    def test_echo_and_instinct_are_regular_seats_with_rows_and_apps(self) -> None:
+        # ECHO and INSTINCT moved from extraSeats to the seats table (owner decision Sun, Oct 11, 2026).
         self.assertEqual(self.app("ECHO"), "instinct")
         self.assertEqual(self.app("INSTINCT"), "instinct")
         rows = {s["tag"] for s in registry_data()["seats"]}
-        self.assertFalse(rows & {"JET", "ECHO", "INSTINCT"})
+        self.assertIn("ECHO", rows)
+        self.assertIn("INSTINCT", rows)
 
     def test_grok_and_grok_web_are_two_apps_and_echo_with_instinct_is_one(self) -> None:
         self.assertNotEqual(self.app("GROK"), self.app("GROK-WEB"))
@@ -146,9 +152,10 @@ class SeatAppTests(RealRegistryCase):
     def test_the_plan_table_is_what_the_registry_says(self) -> None:
         want = {"CLAUDE": "claude-code", "CODEX": "codex", "CURSOR": "cursor", "GROK": "grok-terminal",
                 "GROK-WEB": "grok-web", "AG": "antigravity", "MM": "minimax-code", "MC": "muse-code",
-                "MA": "muse-assist", "CLUTCH": "clutch", "FX": "fx", "OPENCODE": "opencode", "GROK-BOT": "grok-bot"}
+                "MA": "muse-assist", "CLUTCH": "clutch", "FX": "fx", "OPENCODE": "opencode", "GROK-BOT": "grok-bot",
+                "ECHO": "instinct", "INSTINCT": "instinct"}
         self.assertEqual(dict(self.reg.by_seat), want)
-        self.assertEqual(dict(self.reg.extra), {"JET": "chatgpt", "ECHO": "instinct", "INSTINCT": "instinct"})
+        self.assertEqual(dict(self.reg.extra), {"JET": "chatgpt"})
 
     def test_an_unknown_seat_is_never_a_new_app(self) -> None:
         for raw in ("MINIMAX", "MONET", "ACME", "BF-"):
@@ -170,14 +177,22 @@ class SeatAppTests(RealRegistryCase):
                     self.assertEqual(I.strict_seat(tag, registry=self.reg), tag)
                     self.assertEqual(self.app(tag), app)
 
-    def test_the_hosted_seats_sign_the_tags_the_registry_lists(self) -> None:
-        for local, tag, app in (("openai-dot", "JET", "chatgpt"), ("instinct-bat", "ECHO", "instinct"),
-                                ("instinct-owl", "INSTINCT", "instinct"), ("muse-assist", "MA", "muse-assist"),
+    def test_the_hosted_seat_signs_the_tag_the_registry_lists(self) -> None:
+        # ECHO and INSTINCT were hosted seats; they moved to the seats table (owner decision Sun, Oct 11, 2026).
+        for local, tag, app in (("openai-dot", "JET", "chatgpt"), ("muse-assist", "MA", "muse-assist"),
                                 ("grok-build", "GROK", "grok-terminal"), ("mm", "MM", "minimax-code")):
             with self.subTest(tag=tag):
                 got = I.seat_tag_for({"is_bot": True, "email": "%s-bot@%s" % (local, HOST), "full_name": "x"})
                 self.assertEqual(got, tag)
                 self.assertEqual(self.app(got), app)
+
+    def test_echo_and_instinct_bot_emails_still_map_to_their_tags(self) -> None:
+        # Their bot emails keep working after the move from extraSeats to the seats table.
+        for local, tag in (("instinct-bat", "ECHO"), ("instinct-owl", "INSTINCT")):
+            with self.subTest(tag=tag):
+                got = I.seat_tag_for({"is_bot": True, "email": "%s-bot@%s" % (local, HOST), "full_name": "x"})
+                self.assertEqual(got, tag)
+                self.assertEqual(self.app(got), "instinct")
 
 
 class RegistryDataTests(unittest.TestCase):
@@ -191,7 +206,10 @@ class RegistryDataTests(unittest.TestCase):
     def test_no_bf_gb_or_hosted_seat_has_a_row_in_seats(self) -> None:
         for tag in self.seats:
             self.assertFalse(tag.startswith(("BF-", "GB-")), tag)
-        self.assertFalse(set(self.seats) & {"JET", "ECHO", "INSTINCT"})
+        # ECHO and INSTINCT moved to the seats table (owner decision Sun, Oct 11, 2026); JET stays hosted.
+        self.assertNotIn("JET", self.seats)
+        self.assertIn("ECHO", self.seats)
+        self.assertIn("INSTINCT", self.seats)
 
     def test_no_seats_row_carries_an_app_field(self) -> None:
         # `app` would collide with the top-level `apps` (ST, CT, BF) and `--app`.
@@ -207,6 +225,9 @@ class RegistryDataTests(unittest.TestCase):
             if row.get("retired"):
                 continue
             for prefix in row.get("branchPrefixes", []):
+                # ECHO and INSTINCT both claim instinct/ (owner decision Sun, Oct 11, 2026).
+                if prefix == "instinct/" and tag in ("ECHO", "INSTINCT") and seen.get(prefix) in ("ECHO", "INSTINCT"):
+                    continue
                 self.assertNotIn(prefix, seen, "%s and %s both claim branch prefix %s" % (tag, seen.get(prefix), prefix))
                 seen[prefix] = tag
 
