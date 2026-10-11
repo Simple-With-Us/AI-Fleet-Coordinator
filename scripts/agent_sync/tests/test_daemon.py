@@ -780,11 +780,11 @@ class WakeTests(DaemonHarness):
         self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
         daemon.pump("CLAUDE", timeout=0.5)
         self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY))
-        self.assertEqual(self.ledger(), [])
+        self.assertEqual([r["reason"] for r in self.ledger()], ["loop_guard"], "AFC-255:  a guard drop is a row")
         self.fake.add_message(jay, "agent-sync", "t", "Jay typing in the app")
         self.pump_until(daemon, lambda: not daemon.loopguard.blocked(TOPIC_KEY))
         self.fake.add_message("Codex", "agent-sync", "t", MENTION + " now")
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 2)
 
 
 class JetWakeTests(DaemonHarness):
@@ -823,12 +823,16 @@ class JetWakeTests(DaemonHarness):
         self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
         daemon.pump("CLAUDE", timeout=0.5)
         self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY))
-        self.assertEqual(self.ledger(), [], "the guard holds back a Jet mention like any peer's")
+        # AFC-255:  the guard holds a Jet mention back like any peer's, but it says so now.  Before,
+        # the ledger stayed empty and only a JSON log line recorded the drop.
+        rows = self.ledger()
+        self.assertEqual([(r["state"], r["reason"]) for r in rows], [("dropped", "loop_guard")])
+        self.assertEqual(rows[0]["trigger_ids"], [self.fake.messages[-1]["id"]])
         self.fake.add_message(jay, "agent-sync", "t", "Jay typing in the app")
         self.pump_until(daemon, lambda: not daemon.loopguard.blocked(TOPIC_KEY))
         self.fake.add_message(self.jet, "agent-sync", "t", MENTION + " now")
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.assertFalse(self.ledger()[0]["owner"])
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 2)
+        self.assertFalse(self.ledger()[-1]["owner"])
 
 
 class EveryoneWakesTests(DaemonHarness):
@@ -932,13 +936,95 @@ class EveryoneWakesTests(DaemonHarness):
         self.pump_until(daemon, lambda: any(r["id"] == last for r in self.inbox()))
         daemon.pump("CLAUDE", timeout=0.5)
         self.assertTrue(daemon.loopguard.blocked(self.dm_key, self.clock.time()))
-        self.assertEqual(self.ledger(), [], "the loop guard stops the DM ping-pong at the cap")
+        self.assertEqual([r["reason"] for r in self.ledger()], ["loop_guard"], "AFC-255:  the row is the record")
         self.assertFalse(daemon.loopguard.blocked(TOPIC_KEY, self.clock.time()), "only that DM thread is held")
         self.clock.advance(W.LoopGuard.DM_WINDOW + 60)
         self.assertFalse(daemon.loopguard.blocked(self.dm_key, self.clock.time()))
         again = self.fake.add_direct_message(self.echo, "back after a quiet spell", deliver=True, timestamp=self.now())
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 2)
+        self.assertEqual(self.ledger()[-1]["trigger_ids"], [again])
+
+    def test_a_guard_drop_leaves_a_row_and_names_the_topic_in_status(self) -> None:
+        """AFC-255.  Before, a guard drop wrote one `wake-blocked` log line and returned, so the ledger
+        was empty and only the JSON log said a wake had been thrown away."""
+        daemon = self.started()
+        for n in range(3):
+            self.fake.add_message("Codex", "agent-sync", "t", "[CODEX·wake] re=%d\nreply" % n, timestamp=self.now())
+        mid = self.fake.add_message("Codex", "agent-sync", "t", MENTION, timestamp=self.now())
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.assertEqual(self.ledger()[0]["trigger_ids"], [again])
+        rows = self.ledger()
+        self.assertEqual([(r["state"], r["reason"]) for r in rows], [("dropped", "loop_guard")])
+        self.assertEqual((rows[0]["trigger_ids"], rows[0]["guard_count"]), ([mid], 3))
+        self.assertEqual(rows[0]["topic_key"], TOPIC_KEY)
+        # status names the topic and the count holding it, so the cap is visible without the log.
+        status = daemon.status()
+        self.assertEqual([(e["channel"], e["topic"], e["count"]) for e in status["loop_guard"]],
+                         [("agent-sync", "t", 3)])
+        self.assertFalse(status["loop_guard"][0]["rolling"], "a topic counts until the owner posts")
+
+    def test_the_guard_notice_fires_once_per_topic_per_window_not_per_message(self) -> None:
+        """The guard holds a hot topic for a long time, so one notice per drop would be a flood; one per
+        topic per window is the story worth telling."""
+        daemon = self.started()
+        for n in range(3):
+            self.fake.add_message("Codex", "agent-sync", "t", "[CODEX·wake] re=%d\nreply" % n, timestamp=self.now())
+        for _ in range(4):
+            self.fake.add_message("Codex", "agent-sync", "t", MENTION, timestamp=self.now())
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 4)
+        self.assertEqual([r["reason"] for r in self.ledger()], ["loop_guard"] * 4, "every drop is still a row")
+        guard_banners = [b for b in self.banners if "loop_guard" in b[8]]
+        self.assertEqual(len(guard_banners), 1, "one notice for four drops:  %s" % guard_banners)
+        self.assertIn("t", guard_banners[0][8])
+        # A different topic is its own window, so it tells the owner on its own first drop.
+        for n in range(3):
+            self.fake.add_message("Codex", "agent-sync", "u", "[CODEX·wake] re=%d\nreply" % n, timestamp=self.now())
+        self.fake.add_message("Codex", "agent-sync", "u", MENTION, timestamp=self.now())
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 5)
+        self.assertEqual(len([b for b in self.banners if "loop_guard" in b[8]]), 2, "a second topic notices too")
+
+    def test_a_stale_pin_is_distinguished_from_a_never_pinned_one(self) -> None:
+        """AFC-256.  `pinned()` is a bool and cannot tell an install still waiting on its manual test
+        from a verified build that a claude auto-update moved out from under."""
+        never = A.pin_state(self.seat_paths(), str(self.claude))
+        self.assertEqual((never["pinned"], never["why"]), (True, None), "the harness pins in setUp")
+        os.unlink(self.seat_paths().wake_pin)
+        fresh = A.pin_state(self.seat_paths(), str(self.claude))
+        self.assertEqual((fresh["pinned"], fresh["why"]), (False, "not_pinned"))
+        self.pin()
+        moved = self.bin / "claude-9.9.9"
+        moved.write_text(self.claude.read_text())
+        moved.chmod(moved.stat().st_mode | 0o100)
+        stale = A.pin_state(self.seat_paths(), str(moved))
+        self.assertEqual((stale["pinned"], stale["why"]), (False, "pin_stale"))
+        self.assertEqual((stale["pinned_claude"], stale["claude"]),
+                         (os.path.realpath(str(self.claude)), os.path.realpath(str(moved))))
+        self.assertTrue(A.pinned(self.seat_paths(), str(self.claude)), "the old path is still pinned")
+        self.assertEqual(A.pin_state(self.seat_paths(), None)["why"], "no_claude")
+
+    def test_a_stale_pin_drops_with_a_row_and_says_so_in_the_owner_queue(self) -> None:
+        """AFC-256.  Nine wakes were dropped as `not_pinned` before the listener could tell anyone the
+        binary had moved.  It never re-pins on its own:  the pin records a person checking that build."""
+        self.pin()
+        # An auto-update replaces the binary:  `claude` on the wake PATH is a different realpath now,
+        # which is exactly how the pin goes stale (a move, not an edit of the pinned file).
+        moved = self.bin / "claude-9.9.9"
+        moved.write_text(self.claude.read_text())
+        moved.chmod(moved.stat().st_mode | 0o100)
+        os.unlink(self.claude)
+        os.symlink(str(moved), str(self.claude))
+        daemon = self.started()
+        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.wake_cycle(daemon)
+        self.assertEqual(self.ledger()[-1]["reason"], "pin_stale")
+        self.assertEqual(self.dumps(), [], "a stale pin runs nothing")
+        self.assertTrue(any("claude binary changed" in b[8] for b in self.banners), self.banners)
+        # Status says it too, with the fix, rather than leaving the owner to read a reason string.
+        seat = daemon.status()["seats"]["CLAUDE"]
+        self.assertEqual(seat["pin"]["why"], "pin_stale")
+        self.assertFalse(seat["pinned"])
+        self.assertTrue(any("wake pin is stale" in red for red in seat["red"]), seat["red"])
+        self.assertFalse(A.pinned(self.seat_paths(), str(moved)), "still not re-pinned")
 
     def test_a_topic_loop_guard_still_waits_for_the_owner(self) -> None:
         daemon = self.started()

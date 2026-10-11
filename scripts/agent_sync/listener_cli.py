@@ -205,7 +205,11 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
         for seat, s in sorted((status.get("seats") or {}).items()):
             routine = s.get("routine") or {}
             if s.get("wake") == "claude":
-                state = " (pinned)" if s.get("pinned") else " (NOT pinned)"
+                pin = s.get("pin") or {}
+                # A stale pin is not a seat that was never set up, and the difference is the whole point
+                # of AFC-256:  say which one this is rather than a bare NOT pinned.
+                state = " (pinned)" if s.get("pinned") else (
+                    " (NOT pinned: %s)" % pin.get("why") if pin.get("why") else " (NOT pinned)")
             elif s.get("wake") == "http":
                 state = (" (routine ready, %s)" % routine.get("host") if routine.get("ready")
                          else " (routine NOT ready: %s)" % (routine.get("detail") or routine.get("why")))
@@ -227,6 +231,16 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                 lines.append("  lease %s  %s  topics %s  watcher %s  pending %s" % (
                     lease.get("lease_id"), "live" if lease.get("alive") else "dead (%s)" % lease.get("why"),
                     lease.get("topics"), "yes" if lease.get("watcher") else "no", lease.get("pending")))
+        for held_key in status.get("loop_guard") or []:
+            # A bot DM has no owner to post, so its count rolls and clears itself;  a topic counts
+            # until the owner posts.  Saying the wrong one would send someone to wait for a reset
+            # that cannot come.
+            lines.append("loop guard: %d wake replies in #%s > %s (%s); %s" % (
+                int(held_key.get("count") or 0), L.escape_line(str(held_key.get("channel") or "")),
+                L.escape_line(str(held_key.get("topic") or "")),
+                "rolling, so it clears itself" if held_key.get("rolling") else "counts until you post",
+                "the messages are in the seat inboxes" if held_key.get("rolling")
+                else "an owner post there resets it, and the messages are in the seat inboxes"))
         if status.get("disabled"):
             lines.append("disabled seats (enabled = false, no queue): %s" % ", ".join(status["disabled"]))
     else:

@@ -1010,13 +1010,13 @@ class Daemon:
                                      kind="inbox-owner", key="inbox-owner:%s:%s" % (runner.seat, key), once_per=3600)
             return
         if self.loopguard.blocked(key, now):
-            self.log.write("wake-blocked", seat=runner.seat, id=item.get("id"), reason="loop_guard")
+            self._guard_drop(runner, item, key, "loop_guard", owner, now)
             return
         if owner and item.get("stale"):
             for view in runner.ledger.wakes().values():
                 if view.get("topic_key") == key and view.get("stale") and isinstance(view.get("ts"), (int, float)) \
                         and now - float(view["ts"]) < W.DAY:
-                    self.log.write("wake-blocked", seat=runner.seat, id=item.get("id"), reason="stale_once")
+                    self._guard_drop(runner, item, key, "stale_once", owner, now)
                     return
         pending = self.coalescer.offer(runner.seat, item, owner, now)
         if item.get("stale"):
@@ -1147,20 +1147,76 @@ class Daemon:
     def _drop(self, runner: SeatRunner, pending: W.Pending, reason: str, now: float) -> None:
         runner.ledger.append(pending.row("dropped", now, reason=reason))
         self.log.write("wake-dropped", seat=runner.seat, wake_id=pending.wake_id, reason=reason)
-        if reason != "stale":
+        if reason == "stale":
+            return
+        # A stale pin is the one refusal whose fix is a command, so the notice names it (AFC-256):  a
+        # bare "not_pinned" read like a seat nobody had set up yet, and nine wakes went by that way.
+        # `pin` is re-read here because `_pinned_claude` ran earlier in the same call frame; between
+        # then and now the binary may have been re-pinned, re-pointed or removed, so guard the format
+        # against `claude` or `pinned_claude` coming back None.
+        if reason == "pin_stale":
+            claude = A.resolve_claude(runner.cfg.claude, self.wake_path)
+            pin = A.pin_state(runner.paths, claude)
+            current = pin.get("claude") or "<unresolved>"
+            recorded = pin.get("pinned_claude") or "<none>"
             self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
-                                 "a wake was not run (%s); the message is in the seat inbox" % reason,
-                                 kind="wake-" + reason, key="wake:%s:%s" % (runner.seat, reason))
+                                 "the claude binary changed (%s), so %s wakes are inbox-only until it is "
+                                 "re-pinned" % (current, runner.seat),
+                                 kind="wake-" + reason, key="wake:%s:%s" % (runner.seat, reason),
+                                 note="pinned %s, on disk %s; run `agent-sync daemon test-wake --seat %s --run` "
+                                      "then `--pin`.  It is never re-pinned automatically:  the pin records "
+                                      "that a person checked this build's wake contract." % (
+                                          recorded, current, runner.seat),
+                                 trigger_ids=pending.trigger_ids)
+            return
+        self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
+                             "a wake was not run (%s); the message is in the seat inbox" % reason,
+                             kind="wake-" + reason, key="wake:%s:%s" % (runner.seat, reason))
+
+    def _guard_drop(self, runner: SeatRunner, item: Mapping[str, Any], key: str, reason: str, owner: bool,
+                    now: float) -> None:
+        """A wake-worthy item the loop guard (or the stale-once rule) closed before it ever became a
+        pending wake.  Until AFC-255 this wrote one `wake-blocked` log line and returned, so a topic at
+        its cap looked exactly like a working one and only the JSON log said otherwise.  It now leaves
+        the same `dropped` ledger row every other refusal does, carrying the trigger id, so the ledger
+        answers what the log used to be the only record of.
+
+        The notice is once per topic per guard window, not per message:  a hot topic drops many wakes a
+        second and the guard resets only on an owner post, so a per-message notice would be a banner
+        flood and still be the wrong story.  One notice names the topic, the count that holds it and the
+        post that clears it.  `stale_once` closes on a day, so it keeps the ledger row and skips the
+        notice entirely (the owner already has the daily stale digest)."""
+        pending = W.Pending(self._new_wake_id(), runner.seat, item, owner=owner, now=now, due=now)
+        pending.add(item, owner)
+        count = self.loopguard.count(key, now) if reason == "loop_guard" else 0
+        runner.ledger.append(pending.row("dropped", now, reason=reason, guard_count=count))
+        self.log.write("wake-blocked", seat=runner.seat, id=item.get("id"), reason=reason, guard_count=count)
+        if reason == "stale_once":
+            return
+        where = "#%s > %s" % (A.clean_banner(pending.channel, 40), A.clean_banner(pending.topic, 80))
+        self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
+                             "wakes in %s are not running (%s)" % (where, reason),
+                             kind="wake-" + reason, key="wake:%s:%s:%s" % (runner.seat, reason, key),
+                             once_per=W.LoopGuard.DM_WINDOW,
+                             note="%d wake replies without an owner post; a post by you in that topic resets it, "
+                                  "and the message is in the seat inbox" % count,
+                             trigger_ids=pending.trigger_ids)
 
     def _pinned_claude(self, runner: SeatRunner) -> tuple[str | None, str | None]:
-        """(the realpath to run, why not).  Resolved once, so the pin check and the argv agree."""
+        """(the realpath to run, why not).  Resolved once, so the pin check and the argv agree.
+
+        A stale pin (a claude auto-update moved the realpath) is reported as `pin_stale`, not
+        `not_pinned`:  it holds for a reason no one asked for and clears by running `test-wake --run`
+        then `--pin` on the new binary, and it is worth saying so rather than reading like a seat that
+        was never set up (AFC-256).  It is never re-pinned here:  the pin exists because a person
+        verified that build's wake contract, and an auto-update is exactly when that proof is stale."""
         claude = A.resolve_claude(runner.cfg.claude, self.wake_path)
         if not claude:
             return None, "no_claude"
-        real = A.binary_pin(claude)
-        if not A.pinned(runner.paths, real):
-            return None, "not_pinned"
-        return real, None
+        state = A.pin_state(runner.paths, claude)
+        if not state["pinned"]:
+            return None, str(state["why"] or "not_pinned")
+        return str(state["claude"]), None
 
     def _wake_block(self, runner: SeatRunner, pending: W.Pending, now: float) -> str | None:
         """Why this wake must not run now, or None.  Checked when the quiet window ends and again
@@ -2097,10 +2153,19 @@ class Daemon:
                 red.append(runner.error)
             if runner.down_since is not None and now - runner.down_since > DOWN_NOTIFY_SECONDS:
                 red.append("down for %d minutes" % ((now - runner.down_since) // 60))
+            # A claude auto-update moves the binary's realpath and the pin with it, and every wake after
+            # that silently degrades to inbox-only.  `pin` says which state this is (AFC-256):  a seat
+            # that was never pinned is an install still waiting on its manual test, a stale pin is a
+            # verified build that has moved under us.  It is also red, because it holds every wake.
+            pin = A.pin_state(runner.paths, claude) if claude else None
+            if pin and pin["why"] == "pin_stale":
+                red.append("wake pin is stale: claude moved to %s (pinned %s); run "
+                           "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
+                           % (pin["claude"], pin["pinned_claude"], seat))
             seats[seat] = {
                 "bot": runner.cfg.bot, "creds": runner.cfg.creds, "connected": runner.connected, "cursor": runner.cursor,
                 "last_event": runner.last_event_wall, "wake": runner.cfg.wake, "routine": routine,
-                "pinned": A.pinned(runner.paths, claude) if claude else None, "claude": claude,
+                "pinned": pin["pinned"] if pin else None, "pin": pin, "claude": claude,
                 "wakes_24h": len(day), "cost_24h": W.spent_today(views.values(), now),
                 "routes_24h": W.routes_in(views.values(), now),
                 "route_enabled": bool(self.config.route_enabled and runner.cfg.route_enabled),
@@ -2108,10 +2173,13 @@ class Daemon:
                 "jobs": len(runner.jobs), "running": runner.running.wake_id if runner.running else None,
                 "paused": L.paused(self.root, seat), "wakes_paused": L.paused(self.root, seat, wakes=True),
                 "held_back": HELD.summary(runner.paths, now), "leases": leases, "red": red}
+        # The loop guard is listener-wide, not per seat (its keys are topic keys), so it is reported
+        # once for the whole instance:  a topic at its cap stops waking, and status must say which.
         return {"pid": os.getpid(), "version": __version__, "started": self.started_at, "updated": now,
                 "instance": self.config.instance, "disabled": sorted(self.config.disabled),
                 "config_errors": [self.scrub(e) for e in self.config.errors + self.refusal + self.reload_refused],
                 "owner_user_id": self.config.owner_user_id,
+                "loop_guard": self.loopguard.holding(now),
                 "rewake_verified": self.config.rewake_verified, "pause": L.read_json(pause_path(self.root)),
                 "seats": seats}
 
