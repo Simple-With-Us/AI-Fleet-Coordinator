@@ -62,23 +62,52 @@ patch that no longer fits does not stop the others:
         [ -e "$p" ] || continue
         git apply -3 "$p" || git apply --reject "$p" || echo "NEEDS HAND: $p"
       done
-      [ -d "$1/binary" ] && cp -Rp "$1/binary/." .          # a binary file is stored whole, not as a patch
-      [ -f "$1/binary-deleted.txt" ] && while IFS= read -r f; do rm -f -- "$f"; done < "$1/binary-deleted.txt"
+      if [ -d "$1/binary" ]; then cp -Rp "$1/binary/." .; fi           # a binary file is stored whole, not as a patch
+      if [ -f "$1/binary-deleted.txt" ]; then
+        while IFS= read -r f; do rm -f -- "$f"; done < "$1/binary-deleted.txt"
+      fi
     }
 
-### Unpushed commits (`bundles/*.bundle`)
+And this one fetches a repository's bundles into the clone you are in, branch bundles first, then
+`anchors.bundle` (whose prerequisites can be commits the branch bundles carry):
+
+    fetch_bundles() {   # fetch_bundles <G>
+      for b in "$1"/bundles/*.bundle; do
+        [ -e "$b" ] || continue
+        if git bundle verify -q "$b"; then
+          git fetch -q "$b" 'refs/heads/*:refs/restored/heads/*' 'refs/tags/*:refs/restored/tags/*'
+        else
+          echo "CANNOT VERIFY: $b"
+        fi
+      done
+      if [ -f "$1/anchors.bundle" ]; then
+        if git bundle verify -q "$1/anchors.bundle"; then
+          git fetch -q "$1/anchors.bundle" 'refs/fwb/*:refs/fwb/*'
+        else
+          echo "CANNOT VERIFY: $1/anchors.bundle"
+        fi
+      fi
+    }
+
+### Unpushed commits (`bundles/*.bundle`) and the commits patches sit on (`anchors.bundle`)
 
 Each bundle holds one group of branches that share commits, and every commit that group has which the
 network remote's default branch does not (so also the commits of a pushed branch that was later deleted
-on GitHub).  Its prerequisites are commits on the default branch, which GitHub keeps.  Work in a fresh
-clone of the remote:
+on GitHub).  Its prerequisites are commits on the default branch, which GitHub keeps.
+
+`anchors.bundle` holds the commits that stash and worktree patches apply to when nothing else holds them:
+the base of a stash made on a branch that was later rebased or deleted, and the `HEAD` of a dirty lane on a
+branch that landed by squash merge (GitHub deletes those).  Its refs are `refs/fwb/stash/NN` and
+`refs/fwb/worktree/<name>-<hash>`;  `stash.json` and `worktree.json` name theirs under `anchor`, and
+`"state": "covered"` there means the commit is on the default branch or in a branch bundle.  Only the base
+commit is anchored, never the stash commit itself, so nothing the gate dropped from a stash rides along.
+
+Work in a fresh clone of the remote:
 
     git clone <remote url from group.json> $HOME/restore/<repo> && cd $HOME/restore/<repo>
     git fetch origin '+refs/pull/*/head:refs/remotes/origin/pr/*'    # belt and braces:  GitHub keeps pull request heads
-    for b in $G/bundles/*.bundle; do
-      git bundle verify "$b" && git fetch "$b" 'refs/heads/*:refs/restored/heads/*' 'refs/tags/*:refs/restored/tags/*'
-    done
-    git for-each-ref refs/restored/                                   # every branch that was only on this Mac
+    fetch_bundles $G
+    git for-each-ref refs/restored/ refs/fwb/                        # every branch that was only on this Mac, and the anchors
     git branch restored-main refs/restored/heads/main                 # one per branch you want back
 
 `bundle verify` names the missing commit when a prerequisite is not in the clone.  A flat lane cloned from
@@ -96,8 +125,8 @@ local paths or bundle files with no GitHub behind them (`"network_remotes": []`,
 tracked binary files whole in `tracked/binary/`, and files the stash had untracked (`git stash -u`) in
 `untracked/`.
 
-    cd $HOME/restore/<repo>
-    git checkout <base from stash.json> || git checkout origin/main    # the base may be gone from GitHub, then 3-way does the work
+    cd $HOME/restore/<repo>                                            # after fetch_bundles $G
+    git checkout <base from stash.json> || git checkout origin/main    # the base is on GitHub or in refs/fwb;  else 3-way does the work
     D=$G/stashes/01
     apply_all $D/tracked
     apply_all $D/untracked
@@ -109,15 +138,16 @@ tracked binary files whole in `tracked/binary/`, and files the stash had untrack
 file is stored whole in `patches/binary/` (a deleted one is listed in `patches/binary-deleted.txt`), and
 untracked files are in `untracked/`.
 
-    cd $HOME/restore/<repo>
+    cd $HOME/restore/<repo>                                            # after fetch_bundles $G
     git worktree add $HOME/restore/<name> <head from worktree.json> || git worktree add $HOME/restore/<name> origin/main
     cd $HOME/restore/<name>
     apply_all $G/worktrees/<name>-<hash>/patches
     cp -Rp $G/worktrees/<name>-<hash>/untracked/. .
 
 The recorded `head` can be a commit GitHub no longer serves (a branch deleted after a squash merge);
-the pull request refs fetched above usually still have it, and otherwise `git apply -3` rebuilds the
-change on top of `origin/main`.
+`anchors.bundle` carries it then (`worktree.json` says `"state": "bundled"` under `anchor`).  If an anchor was
+dropped by the gate (`"state": "dropped"`, named in the detail log), the pull request refs fetched above usually
+still have it, and otherwise `git apply -3` rebuilds the change on top of `origin/main`.
 
 A detached `HEAD` that no network remote had is in `head.bundle` beside `worktree.json`:  fetch it the
 same way (`git fetch head.bundle HEAD:refs/restored/detached-head`).

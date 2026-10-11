@@ -54,6 +54,7 @@ HIGH = "".join(["aB3dE5", "gH7jK9", "mN1pQ3", "sT5v7x", "Zq2"])
 PW = "".join(["pw-", "Zx9Qw3", "Er5Ty7", "Ui1Op"])
 OPAQUE = "".join(["Zq8Lm", "2Vx7R", "t4Yp9", "Kd3Hs", "1Wb6N", "c0Fj5", "Gu1Wb", "6Nc0F", "p2Qa7"])
 KEYID = "".join(["005", "abcdef0123", "456789012"])
+B2TOKEN = "".join(["4_", "005abcdef01", "23456789_01", "a1b2c3d4_acct"])
 APPKEY = "".join(["K005", "AbCdEfGhIjKlMn", "OpQrStUvWx1"])
 
 
@@ -562,7 +563,31 @@ class RunBase(unittest.TestCase):
         os.environ.pop("STUB_FAIL", None)
         self.cfg.restic_bin = str(stub)
         self.set_creds()
+        self.cfg.b2_http = self.fake_b2()                          # never the real B2 API
+        self.cfg.infisical_bin = str(self.tmp / "no-infisical")    # never the real Infisical CLI (it is logged in to prod)
         self.args = argparse.Namespace(dry_run=False, json=None, keep_stage=False, ignore_pressure=False, skip_gitleaks=False)
+
+    def fake_b2(self, prefix="fleet-work-backup/", buckets=("test-bucket",), caps=None, rules=None, auth_status=200):
+        """An offline B2 API:  b2_authorize_account (v4 shape) and b2_list_buckets."""
+        caps = caps if caps is not None else ["listFiles", "readFiles", "writeFiles", "deleteFiles", "listBuckets"]
+        rules = rules if rules is not None else [{"fileNamePrefix": "fleet-work-backup/", "daysFromHidingToDeleting": 14,
+                                                  "daysFromUploadingToHiding": None}]
+        calls = []
+
+        def http(method, url, headers, body):
+            calls.append((method, url, dict(headers), body))
+            if url.endswith("/b2api/v4/b2_authorize_account"):
+                if auth_status != 200:
+                    return auth_status, {"code": "unauthorized", "status": auth_status}
+                return 200, {"accountId": "acct", "authorizationToken": B2TOKEN,
+                             "apiInfo": {"storageApi": {"apiUrl": "https://api000.example.invalid",
+                                                        "allowed": {"buckets": [{"id": "b1", "name": n} for n in buckets],
+                                                                    "capabilities": caps, "namePrefix": prefix}}}}
+            if url.endswith("/b2api/v4/b2_list_buckets"):
+                return 200, {"buckets": [{"bucketName": "test-bucket", "lifecycleRules": rules}]}
+            return 404, {}
+        http.calls = calls
+        return http
 
     def tearDown(self):
         os.environ.pop("STUB_DIR", None)
@@ -698,6 +723,8 @@ class RunCase(RunBase):
         self.assertIn("B2_FLEET_WORK_KEY_ID", missing)
         with mock.patch.dict(os.environ, {"FLEET_WORK_BACKUP_ALLOW_MASTER": "1"}):
             env, missing = fwb.restic_env(self.cfg)
+            self.assertIsNone(env)                                   # a backup or init never takes the master key
+            env, missing = fwb.restic_env(self.cfg, allow_master=True)
         self.assertEqual(missing, [])
         self.assertEqual(env["AWS_ACCESS_KEY_ID"], KEYID)
 
@@ -1050,7 +1077,7 @@ class RunCase(RunBase):
         line = self.log().splitlines()[-1]
         self.assertIn("status=partial", line)
         self.assertIn("restic-unreadable-files", line)
-        self.assertTrue(any(a.startswith("forget") for a in self.argv()))
+        self.assertFalse(any(a.startswith("forget") for a in self.argv()))      # a degraded run never drives retention
         self.assertIn("tag --add partial abcdef0123456789", self.argv())   # kept out of the good snapshots' retention
 
     def test_a_changed_file_is_rescanned_and_a_new_secret_is_caught(self):
@@ -1461,6 +1488,20 @@ class BundleCase(RunBase):
         stage = self.build()
         self.assertIn("files/apps/pruned/notes.txt", stage.items)
 
+    def test_a_pruned_lane_under_lanes_is_kept_as_plain_files_and_warned(self):
+        lane = self.home / "apps" / "lanes" / "Repo" / "claude-pruned"
+        lane.mkdir(parents=True)
+        (lane / ".git").write_text("gitdir: /nonexistent/gone/.git/worktrees/claude-pruned\n")
+        write(lane / "src" / "work.py", "uncommitted work in a pruned lane\n")
+        write(lane / ".env", f"TOKEN={HIGH}\n")
+        write(lane / "node_modules" / "x.js", "x\n")
+        stage = self.build()
+        self.assertIn("files/apps/lanes/Repo/claude-pruned/src/work.py", stage.items)
+        self.assertFalse([k for k in stage.items if k.endswith(".env") or "node_modules" in k])
+        self.assertIn(str(lane / ".env"), [d["path"] for d in stage.dropped])
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        self.assertIn("dangling-worktree", self.log().splitlines()[-1])
+
     def test_runtime_session_stores_are_skipped_by_default(self):
         a = self.home / "apps"
         write(a / "grok-acp-runtime" / "acp-home" / "sessions" / "s1.json", "{}\n")
@@ -1474,6 +1515,193 @@ class BundleCase(RunBase):
         self.assertEqual(got, ["files/apps/fleet-rag/mined/keep.json", "files/apps/grok-acp-runtime/acp-home/config.toml"])
         self.assertTrue(any(n.startswith("skipped-by-default") for n in stage.notes))
         self.assertIn("secret-name", [d["reason"] for d in stage.dropped if d["path"].endswith("auth.json")])
+
+
+def restore_md_functions(*names: str) -> str:
+    """The named shell functions from RESTORE.md, exactly as written there (indented four spaces)."""
+    md = (HERE / "RESTORE.md").read_text()
+    out = []
+    for name in names:
+        m = re.search(rf"(?ms)^    {name}\(\) \{{[^\n]*\n.*?^    \}}\n", md)
+        if not m:
+            raise AssertionError(f"RESTORE.md has no {name}()")
+        out.append("\n".join(l[4:] for l in m.group(0).splitlines()))
+    return "\n".join(out)
+
+
+class AnchorCase(RunBase):
+    """The commit a stash or a dirty worktree's patches apply to is bundled (anchors.bundle) when GitHub's default
+    branch and the branch bundles do not hold it, so the RESTORE.md steps work after GitHub deletes a branch."""
+
+    def setUp(self):
+        super().setUp()
+        self.r = self.home / "Code" / "r"
+        git(self.r, "push", "-q")              # main is pushed:  only the anchors are under test
+        self.bare = self.home / "remotes" / "r.git"
+
+    def build(self):
+        stage, disc, wts, groups, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.group = groups[0]
+        self.G = self.cfg.dry_stage / f"git/{self.group.slug}"
+        return stage
+
+    def fresh_clone(self) -> Path:
+        fresh = self.tmp / "fresh"
+        git(self.tmp, "clone", "-q", f"file://{self.bare}", str(fresh))       # only what "GitHub" serves arrives
+        return fresh
+
+    def restore(self, cwd: Path, script: str) -> None:
+        funcs = restore_md_functions("apply_all", "fetch_bundles")
+        out = subprocess.run(["bash", "-c", f'set -e\n{funcs}\ncd "{cwd}"\n{script}\n'], capture_output=True, text=True,
+                             env=GENV)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertNotIn("CANNOT VERIFY", out.stdout)
+        self.assertNotIn("NEEDS HAND", out.stdout)
+
+    def worktree_meta(self, path: Path) -> tuple[Path, dict]:
+        for p in self.G.glob("worktrees/*/worktree.json"):
+            meta = json.loads(p.read_text())
+            if meta["path"] == str(path):
+                return p.parent, meta
+        raise AssertionError(f"no worktree.json for {path}")
+
+    def stash_on_a_deleted_branch(self, extra=None) -> str:
+        """A stash made on a branch that never left this Mac and was deleted afterwards:  its base is
+        reachable only through refs/stash, which is never bundled."""
+        git(self.r, "checkout", "-q", "-b", "tmp")
+        write(self.r / "base.txt", "a base commit that never left this Mac\n")
+        git(self.r, "add", "-A")
+        git(self.r, "commit", "-q", "-m", "tmp base")
+        write(self.r / "base.txt", "stashed edit\n")
+        if extra:
+            extra()
+        git(self.r, "stash", "push", "-q", "-u", "-m", "on tmp")
+        git(self.r, "checkout", "-q", "main")
+        git(self.r, "branch", "-q", "-D", "tmp")
+        return git(self.r, "rev-parse", "stash@{0}^1")
+
+    def test_a_stash_on_a_deleted_branch_restores_through_its_anchor(self):
+        base = self.stash_on_a_deleted_branch()
+        self.build()
+        meta = json.loads((self.G / "stashes/00/stash.json").read_text())
+        self.assertEqual(meta["base"], base)
+        self.assertEqual(meta["anchor"]["ref"], "refs/fwb/stash/00")
+        self.assertEqual(meta["anchor"]["state"], "bundled")
+        self.assertEqual(self.group.anchor_refs, 1)
+        fresh = self.fresh_clone()
+        self.assertNotEqual(git(fresh, "cat-file", "-t", base, check=False), "commit")    # GitHub never had the base
+        self.restore(fresh, f'fetch_bundles "{self.G}"\ngit checkout -q {base}\napply_all "{self.G}/stashes/00/tracked"')
+        self.assertEqual((fresh / "base.txt").read_text(), "stashed edit\n")
+
+    def test_a_dirty_lane_on_a_pushed_branch_restores_after_github_deletes_the_branch(self):
+        lane = self.home / "apps" / "lanes" / "r" / "claude-feat"
+        lane.parent.mkdir(parents=True)
+        git(self.r, "worktree", "add", "-q", "-b", "feat", str(lane), "origin/main")
+        write(lane / "f.txt", "feature\n")
+        git(lane, "add", "-A")
+        git(lane, "commit", "-q", "-m", "feature")
+        git(lane, "push", "-q", "origin", "feat")
+        head = git(lane, "rev-parse", "HEAD")
+        write(lane / "a.txt", "dirty on a branch GitHub will delete\n")
+        self.build()
+        wdir, meta = self.worktree_meta(lane)
+        self.assertEqual(meta["anchor"]["state"], "bundled")
+        git(self.bare, "branch", "-D", "feat")              # the squash merge's branch auto-delete
+        git(self.bare, "gc", "-q", "--prune=now")
+        fresh = self.fresh_clone()
+        out = self.tmp / "restored-lane"
+        self.restore(fresh, f'fetch_bundles "{self.G}"\ngit worktree add -q "{out}" {head}\ncd "{out}"\n'
+                            f'apply_all "{wdir}/patches"')
+        self.assertEqual((out / "a.txt").read_text(), "dirty on a branch GitHub will delete\n")
+        self.assertEqual((out / "f.txt").read_text(), "feature\n")
+
+    def test_a_dirty_lane_on_a_squash_landed_branch_restores_from_its_anchor(self):
+        lane = self.home / "apps" / "lanes" / "r" / "claude-landed"
+        lane.parent.mkdir(parents=True)
+        git(self.r, "worktree", "add", "-q", "-b", "landed", str(lane), "origin/main")
+        write(lane / "f.txt", "feature\n")
+        git(lane, "add", "-A")
+        git(lane, "commit", "-q", "-m", "feature, never pushed")
+        head = git(lane, "rev-parse", "HEAD")
+        write(self.r / "f.txt", "feature\n")              # main lands the same change as its own commit
+        git(self.r, "add", "f.txt")
+        git(self.r, "commit", "-q", "-m", "squash of landed")
+        git(self.r, "push", "-q")
+        write(lane / "a.txt", "dirty on a landed branch\n")
+        self.build()
+        self.assertEqual(self.group.landed_refs, 1)        # so no branch bundle carries the lane's HEAD
+        wdir, meta = self.worktree_meta(lane)
+        self.assertEqual(meta["anchor"]["state"], "bundled")
+        fresh = self.fresh_clone()
+        out = self.tmp / "restored-lane"
+        self.restore(fresh, f'fetch_bundles "{self.G}"\ngit worktree add -q "{out}" {head}\ncd "{out}"\n'
+                            f'apply_all "{wdir}/patches"')
+        self.assertEqual((out / "a.txt").read_text(), "dirty on a landed branch\n")
+
+    def test_anchors_never_write_to_the_real_repository(self):
+        self.stash_on_a_deleted_branch()
+        before = snapshot_tree(self.r / ".git")
+        refs = git(self.r, "for-each-ref")
+        self.build()
+        self.assertTrue((self.G / "anchors.bundle").exists())
+        self.assertEqual(git(self.r, "for-each-ref"), refs)
+        self.assertNotIn("refs/fwb", refs)
+        self.assertEqual(snapshot_tree(self.r / ".git"), before)
+        self.assertEqual(list(self.cfg.cache_dir.glob("objs-*")), [])          # the scratch repository is gone
+
+    def test_nothing_the_gate_dropped_from_a_stash_rides_along_in_the_anchor(self):
+        def extra():
+            write(self.r / "staged.txt", f"key {AWS}\n")
+            git(self.r, "add", "staged.txt")                # in the stash's index commit
+            write(self.r / ".env", f"TOKEN={HIGH}\n")       # in its untracked commit, a secret name
+        self.stash_on_a_deleted_branch(extra)
+        self.assertIn(AWS, git(self.r, "show", "stash@{0}^2:staged.txt"))   # anchoring the stash commit would carry it
+        stage = self.build()
+        self.assertTrue((self.G / "anchors.bundle").exists())
+        reasons = {d["path"].rsplit(":", 1)[-1]: d["reason"] for d in stage.dropped if "#stash0" in d["path"]}
+        self.assertEqual(reasons.get(".env"), "secret-name")
+        self.assertTrue(any(r.startswith("content:") for k, r in reasons.items() if k != ".env"), reasons)
+        fresh = self.fresh_clone()
+        self.restore(fresh, f'fetch_bundles "{self.G}"')
+        objects = subprocess.run(["git", "-C", str(fresh), "cat-file", "--batch-all-objects", "--batch"],
+                                 env=GENV, capture_output=True).stdout          # inflated, so a key cannot hide in zlib
+        self.assertIn(b"a base commit that never left this Mac", objects)
+        self.assertNotIn(AWS.encode(), objects)
+        self.assertNotIn(HIGH.encode(), objects)
+
+    def test_an_anchor_whose_history_holds_a_key_is_dropped_unless_pinned(self):
+        git(self.r, "checkout", "-q", "-b", "tmp")
+        write(self.r / "k.txt", f"{AWS}\n")
+        git(self.r, "add", "-A")
+        git(self.r, "commit", "-q", "-m", "leaky base")
+        write(self.r / "a.txt", "edit\n")
+        git(self.r, "stash", "push", "-q")
+        git(self.r, "checkout", "-q", "main")
+        git(self.r, "branch", "-q", "-D", "tmp")
+        stage = self.build()
+        self.assertFalse((self.G / "anchors.bundle").exists())
+        (d,) = [d for d in stage.dropped if d["path"].endswith(" anchor stash/00")]
+        self.assertEqual(d["reason"], "content:aws-access-key-id")
+        self.assertEqual(json.loads((self.G / "stashes/00/stash.json").read_text())["anchor"]["state"], "dropped")
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.state_dir / "allow.txt").write_text(f"{d['path']} @ {d['digest']}\n")
+        self.build()
+        self.assertTrue((self.G / "anchors.bundle").exists())
+
+    def test_a_base_github_or_a_branch_bundle_holds_needs_no_anchor(self):
+        write(self.r / "a.txt", "edit on main\n")
+        git(self.r, "stash", "push", "-q")                 # base is origin/main
+        git(self.r, "checkout", "-q", "-b", "local")       # an unpushed branch:  its own bundle holds HEAD
+        write(self.r / "l.txt", "l\n")
+        git(self.r, "add", "-A")
+        git(self.r, "commit", "-q", "-m", "local")
+        write(self.r / "l.txt", "dirty\n")
+        self.build()
+        self.assertFalse((self.G / "anchors.bundle").exists())
+        self.assertEqual(json.loads((self.G / "stashes/00/stash.json").read_text())["anchor"]["state"], "covered")
+        _, meta = self.worktree_meta(self.r)
+        self.assertEqual(meta["anchor"]["state"], "covered")
+        self.assertEqual(self.group.anchor_refs, 0)
 
 
 class RunBehaviourCase(RunBase):
@@ -1515,9 +1743,14 @@ class RunBehaviourCase(RunBase):
         self.assertIn("warn=volume-missing", line)
         backup = next(a for a in self.argv() if a.startswith("backup"))
         self.assertIn("--tag fleet-work --tag partial", backup)      # kept out of the good snapshots' retention
-        forget = next(a for a in self.argv() if a.startswith("forget"))
-        self.assertIn("--group-by host,tags", forget)
+        self.assertIn("forget=skipped-partial", line)
+        self.assertFalse(any(a.startswith("forget") for a in self.argv()))   # no forget or prune on a partial run
         self.assertIn("not mounted", self.cfg.detail_log_path.read_text())
+        (lanes / "Repo").unlink()
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        forget = next(a for a in self.argv() if a.startswith("forget"))     # a complete run does, per host and tag set
+        self.assertIn("--group-by host,tags", forget)
+        self.assertIn("status=ok", self.log().splitlines()[-1])
 
     def test_a_good_run_carries_no_partial_tag(self):
         fwb.cmd_run(self.cfg, self.args)
@@ -1543,6 +1776,86 @@ class RunBehaviourCase(RunBase):
         os.environ.pop("STUB_FAIL")
         fwb.cmd_run(self.cfg, self.args)
         self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 0)
+
+    def stub_agent_sync(self, rc: int = 0) -> Path:
+        stub = self.tmp / "agent-sync"
+        stub.write_text("#!/bin/bash\n"
+                        'echo "$@" >> "$STUB_DIR/as-argv.log"\n'
+                        '{ cat; echo; echo "---"; } >> "$STUB_DIR/as-text.log"\n'
+                        f"exit {rc}\n")
+        stub.chmod(0o755)
+        return stub
+
+    def alerts(self) -> list[str]:
+        p = self.stubdir / "as-text.log"
+        return [t.strip() for t in p.read_text().split("---") if t.strip()] if p.exists() else []
+
+    def test_pressure_and_low_disk_skips_count_as_not_ok_but_a_lock_skip_does_not(self):
+        self.cfg.load_fn = lambda: 99.0
+        fwb.cmd_run(self.cfg, self.args)
+        self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 1)
+        self.cfg.load_fn = lambda: 1.0
+        self.cfg.min_free_bytes = 1 << 62
+        fwb.cmd_run(self.cfg, self.args)
+        self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 2)
+        self.assertIn("reason=low-disk", self.log().splitlines()[-1])
+        self.assertIn("not_ok_in_a_row=2", self.log().splitlines()[-1])
+        fd = os.open(str(self.cfg.state_dir / "lock"), os.O_CREAT | os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fwb.cmd_run(self.cfg, self.args)       # another run is working:  not a missed backup
+        finally:
+            os.close(fd)
+        self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 2)
+
+    def test_runs_that_stay_not_ok_post_one_alert_then_once_a_day_and_say_when_it_is_over(self):
+        self.cfg.agent_sync_bin = str(self.stub_agent_sync())
+        self.cfg.alert_to = ("Jay",)
+        t = [1_800_000_000.0]
+        self.cfg.now_fn = lambda: t[0]
+        os.environ["STUB_FAIL"] = "1"
+        try:
+            for _ in range(7):
+                fwb.cmd_run(self.cfg, self.args)
+                t[0] += 3 * 3600
+            self.assertEqual(self.alerts(), [])
+            self.cfg.load_fn = lambda: 99.0            # the eighth is a pressure skip:  it counts too
+            fwb.cmd_run(self.cfg, self.args)
+            self.cfg.load_fn = lambda: 1.0
+            self.assertEqual(len(self.alerts()), 1)
+            for _ in range(7):                         # the rest of that day:  no more posts
+                t[0] += 3 * 3600
+                fwb.cmd_run(self.cfg, self.args)
+            self.assertEqual(len(self.alerts()), 1)
+            t[0] += 3 * 3600
+            fwb.cmd_run(self.cfg, self.args)           # a day after the first alert
+            self.assertEqual(len(self.alerts()), 2)
+        finally:
+            os.environ.pop("STUB_FAIL", None)
+        t[0] += 3 * 3600
+        fwb.cmd_run(self.cfg, self.args)               # complete again
+        texts = self.alerts()
+        self.assertEqual(len(texts), 3)
+        self.assertIn("8 runs in a row with no complete snapshot", texts[0])
+        self.assertIn("reason=load1=99.0>60", texts[0])
+        self.assertIn(".\u00a0 ", texts[0])            # Zulip sentence gap
+        self.assertIn("back to a complete snapshot", texts[2])
+        argv = (self.stubdir / "as-argv.log").read_text().splitlines()
+        self.assertEqual(argv[0], f"post --as CLAUDE --session fwbackup --topic {fwb.ALERT_TOPIC} --to Jay -")
+        for secret in (PW, KEYID, APPKEY):
+            self.assertNotIn(secret, "".join(texts))
+        self.assertNotIn("last_alert", fwb.read_state(self.cfg))
+
+    def test_the_alert_uses_the_job_homes_agent_sync_only(self):
+        self.assertEqual(fwb.agent_sync_path(self.cfg), str(self.home / ".local" / "bin" / "agent-sync"))
+        self.assertFalse(fwb.post_alert(self.cfg, "x"))      # the temp home has none:  the suite never posts for real
+        os.environ["STUB_FAIL"] = "1"
+        try:
+            for _ in range(8):
+                fwb.cmd_run(self.cfg, self.args)
+        finally:
+            os.environ.pop("STUB_FAIL", None)
+        self.assertIn("alert-not-posted after 8 runs", self.cfg.detail_log_path.read_text())
 
     def test_skip_gitleaks_is_refused_outside_a_dry_run(self):
         self.args.skip_gitleaks = True
@@ -1673,6 +1986,25 @@ class LaunchdCase(RunBase):
         self.assertIn("no result from the launchd job", out)
         self.assertFalse(self.cfg.check_plist_path.exists())
 
+    def test_a_denial_under_launchd_names_the_jobs_own_image_not_terminals(self):
+        job_image = "/x/Job/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python"
+
+        def fake_launchctl(cfg, *args):
+            if args[0] == "bootstrap":
+                plist = plistlib.loads(Path(args[2]).read_bytes())
+                result = plist["ProgramArguments"][plist["ProgramArguments"].index("--result") + 1]
+                Path(result).write_text(json.dumps({
+                    "binary": job_image, "image": job_image, "image_app": fwb.app_bundle(job_image),
+                    "targets": [{"path": "/Volumes/E/Lanes/R", "python": "denied", "git": ""}], "denied": 1, "missing": 0}))
+            return 0
+        with mock.patch.object(fwb, "launchctl", fake_launchctl):
+            rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        denied = next(l for l in out.splitlines() if "DENIED under launchd" in l)
+        self.assertIn(fwb.app_bundle(job_image), denied)
+        if fwb.process_image() != job_image:
+            self.assertNotIn(fwb.process_image(), denied)
+
     def test_a_plain_check_says_it_reflects_the_terminal(self):
         import contextlib
         import io
@@ -1762,6 +2094,239 @@ class RealResticCase(RunBase):
         self.assertEqual(git(fresh, "show", "refs/restored/main:a.txt"), "changed and committed, not pushed")
         self.assertEqual(fwb.cmd_restic(self.cfg, argparse.Namespace(restic_args=["--", "check"])), 0)
         self.assertEqual(fwb.cmd_snapshots(self.cfg, self.args), 0)
+
+    def test_a_recovery_key_opens_the_repository_without_the_infisical_password(self):
+        self.cfg.restic_bin = "restic"
+        self.cfg.repository = str(self.tmp / "repo")
+        self.set_creds(names=("RESTIC_FLEET_WORK_PASSWORD",))
+        self.assertEqual(fwb.cmd_init(self.cfg, self.args), 0)
+        env, _ = fwb.restic_env(self.cfg)
+        self.assertEqual(fwb.restic_key_count(self.cfg, env), 1)
+        second = self.tmp / "recovery"
+        second.write_text("".join(["rec-", "Qz8Lm2Vx", "7Rt4Yp9K", "d3Hs1Wb6"]))
+        ns = argparse.Namespace(restic_args=["--", "key", "add", "--new-password-file", str(second)])
+        self.assertEqual(fwb.cmd_restic(self.cfg, ns), 0)            # README:  the recovery key, added at init
+        self.assertEqual(fwb.restic_key_count(self.cfg, env), 2)
+        bare = {k: v for k, v in os.environ.items() if not k.startswith("RESTIC_")}
+        p = subprocess.run(["restic", "-r", self.cfg.repository, "--password-file", str(second), "cat", "config"],
+                           env=bare, capture_output=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+
+class B2SetupCase(RunBase):
+    """The key must be limited to the bucket and the fleet-work-backup/ prefix, and a lifecycle rule must delete hidden
+    versions there:  init and install check it with read-only B2 calls (an offline fake here)."""
+
+    def problems(self):
+        return fwb.check_b2_setup(self.cfg)
+
+    def test_a_scoped_key_with_a_lifecycle_rule_is_ready(self):
+        self.assertEqual(self.problems(), [])
+        method, url, headers, _ = self.cfg.b2_http.calls[0]
+        self.assertEqual((method, url), ("GET", "https://api.backblazeb2.com/b2api/v4/b2_authorize_account"))
+        self.assertTrue(headers["Authorization"].startswith("Basic "))
+        _, url2, headers2, body2 = self.cfg.b2_http.calls[1]
+        self.assertEqual(url2, "https://api000.example.invalid/b2api/v4/b2_list_buckets")
+        self.assertEqual(body2, {"accountId": "acct", "bucketName": "test-bucket"})
+
+    def test_an_unscoped_key_is_refused_and_init_does_not_run(self):
+        for fake in (self.fake_b2(prefix=None), self.fake_b2(prefix=""), self.fake_b2(buckets=()),
+                     self.fake_b2(buckets=("test-bucket", "jays-fleet-shared-eu")),
+                     self.fake_b2(caps=["listFiles", "readFiles", "writeFiles", "deleteFiles", "listBuckets", "writeKeys"]),
+                     self.fake_b2(auth_status=401)):
+            self.cfg.b2_http = fake
+            probs = self.problems()
+            self.assertTrue(any(hard for hard, _ in probs), probs)
+            import contextlib
+            import io
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(fwb.cmd_init(self.cfg, self.args), 2)
+            self.assertIn("REFUSED", buf.getvalue())
+            for secret in (KEYID, APPKEY, B2TOKEN):
+                self.assertNotIn(secret, buf.getvalue() + repr(probs))
+        self.assertFalse(any(a.startswith("init") for a in self.argv()))
+
+    def test_a_scheduled_run_refuses_a_key_that_changed_to_an_unsafe_one(self):
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)                  # the installed, scoped key
+        self.assertEqual(len(self.cfg.b2_http.calls), 2)
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)                  # checked once a day per key
+        self.assertEqual(len(self.cfg.b2_http.calls), 2)
+        backups = sum(1 for a in self.argv() if a.startswith("backup"))
+        handoff = self.home / ".secrets" / "global-api-keys"                   # the sync brings a different key
+        handoff.write_text(handoff.read_text().replace(KEYID, KEYID[::-1]))
+        self.cfg.b2_http = self.fake_b2(prefix=None)
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 2)
+        line = self.log().splitlines()[-1]
+        self.assertIn("status=error reason=unsafe-b2-key", line)
+        self.assertEqual(sum(1 for a in self.argv() if a.startswith("backup")), backups)   # nothing uploaded
+        self.assertIn("b2-refused the key is not limited to the file-name prefix", self.cfg.detail_log_path.read_text())
+        for secret in (KEYID, KEYID[::-1], APPKEY, B2TOKEN):
+            self.assertNotIn(secret, self.log() + self.cfg.detail_log_path.read_text() + (self.cfg.state_dir / "state.json").read_text())
+
+    def test_a_missing_lifecycle_rule_warns_on_the_run_line(self):
+        self.cfg.b2_http = self.fake_b2(rules=[])
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        self.assertIn("b2-lifecycle-missing", self.log().splitlines()[-1])
+
+    def test_the_console_read_and_write_preset_is_accepted(self):
+        preset = ["deleteFiles", "listAllBucketNames", "listBuckets", "listFiles", "readBucketEncryption", "readBuckets",
+                  "readFiles", "shareFiles", "writeBucketEncryption", "writeFiles", "readBucketRetentions",
+                  "readFileRetentions", "writeFileRetentions", "readFileLegalHolds", "writeFileLegalHolds", "bypassGovernance"]
+        self.cfg.b2_http = self.fake_b2(caps=preset)
+        self.assertEqual(self.problems(), [])
+
+    def test_a_rule_that_hides_live_packs_is_refused_and_a_missing_one_is_a_warning(self):
+        self.cfg.b2_http = self.fake_b2(rules=[{"fileNamePrefix": "", "daysFromHidingToDeleting": 7,
+                                                "daysFromUploadingToHiding": 30}])
+        self.assertTrue(any(hard and "daysFromUploadingToHiding" in t for hard, t in self.problems()))
+        self.cfg.b2_http = self.fake_b2(rules=[])
+        probs = self.problems()
+        self.assertEqual([hard for hard, _ in probs], [False])
+        self.assertIn("daysFromHidingToDeleting", probs[0][1])
+        self.assertEqual(fwb.cmd_init(self.cfg, self.args), 0)       # a warning does not stop init
+        self.assertTrue(any(a.startswith("init") for a in self.argv()))
+        self.cfg.b2_http = self.fake_b2(rules=[{"fileNamePrefix": "other/", "daysFromHidingToDeleting": 7}])
+        self.assertIn("daysFromHidingToDeleting", self.problems()[0][1])   # a rule on another prefix does not count
+
+    def test_the_master_key_is_never_used_to_back_up_or_init_only_to_restore(self):
+        handoff = self.home / ".secrets" / "global-api-keys"
+        handoff.write_text(f"B2_FLEET_BUCKET_NAME=b\nRESTIC_FLEET_WORK_PASSWORD={PW}\n"
+                           f"BACKBLAZE_MASTER_KEY_ID={KEYID}\nBACKBLAZE_MASTER_APPLICATION_KEY={APPKEY}\n")
+        with mock.patch.dict(os.environ, {"FLEET_WORK_BACKUP_ALLOW_MASTER": "1"}):
+            self.assertEqual(fwb.cmd_run(self.cfg, self.args), 2)
+            self.assertIn("reason=missing-credentials", self.log())
+            self.assertEqual(fwb.cmd_init(self.cfg, self.args), 2)
+            self.assertEqual(self.argv(), [])
+            ns = argparse.Namespace(restic_args=["--", "snapshots"])
+            self.assertEqual(fwb.cmd_restic(self.cfg, ns), 0)          # a restore may use it
+        self.assertEqual(self.argv(), ["snapshots"])
+        self.assertIn(f"AKLEN={len(KEYID)}", (self.stubdir / "env.log").read_text())
+
+    def test_install_refuses_an_unsafe_key_even_with_force(self):
+        spec2 = importlib.util.spec_from_file_location("fwb_install_b2", HERE / "install.py")
+        inst = importlib.util.module_from_spec(spec2)
+        spec2.loader.exec_module(inst)
+        self.cfg.b2_http = self.fake_b2(prefix=None)
+        hard: list = []
+        import contextlib
+        import io
+        with mock.patch.object(fwb, "config_from_env", return_value=self.cfg), contextlib.redirect_stdout(io.StringIO()):
+            missing = inst.prerequisites(fwb, sys.executable, False, True, hard)
+        self.assertTrue(any("prefix" in m for m in missing), missing)
+        self.assertTrue(hard)
+        # main() with --force, end to end:  launchctl is a stub that records every call;  every path is in the temp dir.
+        bindir = self.tmp / "bin"
+        bindir.mkdir()
+        (bindir / "launchctl").write_text('#!/bin/bash\necho "$@" >> "$STUB_DIR/inst-launchctl.log"\nexit 0\n')
+        (bindir / "launchctl").chmod(0o755)
+        buf = io.StringIO()
+        with mock.patch.object(fwb, "config_from_env", return_value=self.cfg), \
+                mock.patch.object(inst, "load_module", return_value=fwb), \
+                mock.patch.object(inst, "SCRIPT_DST", str(self.tmp / "installed" / "fleet_work_backup.py")), \
+                mock.patch.object(inst, "PLIST_DST", str(self.tmp / "agents" / "agent.plist")), \
+                mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch.object(sys, "argv", ["install.py", "--force", "--interpreter", sys.executable]), \
+                mock.patch.dict(os.environ, {"PATH": f"{bindir}:{os.environ['PATH']}"}), \
+                contextlib.redirect_stdout(buf):
+            rc = inst.main()
+        self.assertEqual(rc, 1)
+        self.assertIn("--force does not override that", buf.getvalue())
+        self.assertFalse((self.tmp / "agents" / "agent.plist").exists())
+        self.assertFalse((self.stubdir / "inst-launchctl.log").exists())      # never printed, never bootstrapped
+        for secret in (KEYID, APPKEY, B2TOKEN):
+            self.assertNotIn(secret, buf.getvalue())
+
+
+class NewPasswordCase(RunBase):
+    """new-password:  the restic password goes to Infisical without ever being printed or put in argv, once."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_creds(names=("B2_FLEET_BUCKET_NAME", "B2_FLEET_WORK_KEY_ID", "B2_FLEET_WORK_APPLICATION_KEY"))
+        stub = self.tmp / "infisical"
+        stub.write_text(
+            "#!/bin/bash\n"
+            'echo "$@" >> "$STUB_DIR/inf-argv.log"\n'
+            'store="$STUB_DIR/inf-store"; mkdir -p "$store"\n'
+            '[ -n "$STUB_INF_FAIL" ] && { echo "auth error" >&2; exit 1; }\n'
+            'if [ "$1 $2" = "secrets get" ]; then [ -f "$store/$3" ] && cat "$store/$3"; exit 0; fi\n'
+            'if [ "$1 $2" = "secrets set" ]; then\n'
+            '  name="${3%%=@*}"; file="${3#*=@}"\n'
+            '  [ -n "$STUB_INF_MANGLE" ] && { echo other > "$store/$name"; exit 0; }\n'
+            '  cp "$file" "$store/$name"; ls -ld "$(dirname "$file")" "$file" > "$STUB_DIR/inf-perms.log"\n'
+            '  echo "SECRET NAME | SECRET VALUE"; echo "$name | $(cat "$file")"; exit 0\n'   # a CLI that prints the value
+            "fi\nexit 0\n")
+        stub.chmod(0o755)
+        self.cfg.infisical_bin = str(stub)
+
+    def run_it(self) -> tuple[int, str]:
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = fwb.cmd_new_password(self.cfg, None)
+        return rc, buf.getvalue()
+
+    def stored(self) -> str:
+        p = self.stubdir / "inf-store" / "RESTIC_FLEET_WORK_PASSWORD"
+        return p.read_text() if p.exists() else ""
+
+    def inf_argv(self) -> str:
+        p = self.stubdir / "inf-argv.log"
+        return p.read_text() if p.exists() else ""
+
+    def test_the_password_is_written_once_and_never_printed_or_passed_in_argv(self):
+        rc, out = self.run_it()
+        self.assertEqual(rc, 0, out)
+        value = self.stored()
+        self.assertGreaterEqual(len(value), 40)
+        self.assertRegex(value, r"^[A-Za-z0-9_-]+$")                    # urlsafe:  the sync's plausibility check takes it
+        self.assertNotIn(value, out)
+        self.assertNotIn(value, self.inf_argv())
+        self.assertIn("matched, length", out)
+        self.assertIn("--env=prod", self.inf_argv())
+        self.assertIn("--projectId=9bf7417a-fbbb-42ca-870c-2b45207233f5", self.inf_argv())
+        perms = (self.stubdir / "inf-perms.log").read_text().split("\n")
+        self.assertTrue(perms[0].startswith("drwx------"), perms)     # the folder, then the file
+        self.assertTrue(perms[1].startswith("-rw-------"), perms)
+        path = re.search(r"RESTIC_FLEET_WORK_PASSWORD=@(\S+)", self.inf_argv()).group(1)
+        self.assertFalse(os.path.exists(path))                        # removed afterwards
+        rc, out = self.run_it()                                       # write-once
+        self.assertEqual(rc, 1)
+        self.assertIn("already exists in Infisical", out)
+        self.assertEqual(self.stored(), value)
+
+    def test_it_refuses_when_the_mac_already_has_a_password(self):
+        self.set_creds()
+        rc, out = self.run_it()
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.inf_argv(), "")
+        self.assertNotIn(PW, out)
+
+    def test_a_read_it_cannot_make_is_a_refusal_never_absent(self):
+        os.environ["STUB_INF_FAIL"] = "1"
+        try:
+            rc, out = self.run_it()
+        finally:
+            os.environ.pop("STUB_INF_FAIL", None)
+        self.assertEqual(rc, 2)
+        self.assertNotIn("secrets set", self.inf_argv())
+        self.assertEqual(self.stored(), "")
+
+    def test_a_read_back_that_does_not_match_is_reported(self):
+        os.environ["STUB_INF_MANGLE"] = "1"
+        try:
+            rc, out = self.run_it()
+        finally:
+            os.environ.pop("STUB_INF_MANGLE", None)
+        self.assertEqual(rc, 3)
+        self.assertIn("did not match", out)
+
+    def test_no_test_reaches_the_real_infisical_cli(self):
+        self.assertNotEqual(fwb.Config(home=self.home).infisical_bin, self.cfg.infisical_bin)
+        self.assertEqual(fwb.Config(home=self.home).infisical_bin, "/opt/homebrew/bin/infisical")
+        self.assertTrue(self.cfg.infisical_bin.startswith(str(self.tmp)))
 
 
 class AccessCase(unittest.TestCase):

@@ -29,6 +29,7 @@ All git access is read-only (GIT_OPTIONAL_LOCKS=0, no fetch, no gc, no ref write
   fleet_work_backup.py check-access         # can this process read /Volumes/External?
   fleet_work_backup.py check-access --launchd   # ask a one-shot launchd job (the scheduled job's own grants)
   fleet_work_backup.py image                # the executable macOS privacy settings see for this interpreter
+  fleet_work_backup.py new-password         # generate the restic password into Infisical, never printed (once)
   fleet_work_backup.py snapshots            # restic snapshots for this job's tag
   fleet_work_backup.py restic -- <args>     # restic with this job's repo and credentials (restores)
 
@@ -38,6 +39,7 @@ Docs:  scripts/fleet-work-backup/README.md and RESTORE.md.
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures as cf
 import ctypes
 import dataclasses
@@ -50,6 +52,7 @@ import math
 import os
 import plistlib
 import re
+import secrets
 import shutil
 import signal
 import sqlite3
@@ -59,6 +62,8 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -68,6 +73,8 @@ RETENTION = (("--keep-hourly", "24"), ("--keep-daily", "14"), ("--keep-weekly", 
 PRUNE_EVERY = 24 * 3600
 CHECK_EVERY = 7 * 24 * 3600
 SKIP_WARN_AFTER = 8  # consecutive skipped runs (about 24 hours at one run per 3 hours)
+ALERT_EVERY = 24 * 3600     # at most one agent-sync alert a day while runs stay not ok
+ALERT_TOPIC = "AFC 29c02bcb fleet-work-backup"
 
 # Directory names never entered (git discovery and the non-git file walk).
 SKIP_DIR_NAMES = {
@@ -204,6 +211,13 @@ class Config:
     repository: str = ""            # a restic repository to use instead of B2 (tests, a local mirror)
     launchctl_bin: str = "launchctl"
     check_wait_s: int = 90
+    agent_sync_bin: str = ""        # '' is <home>/.local/bin/agent-sync (launchd's PATH does not have it)
+    alert_seat: str = "CLAUDE"
+    alert_topic: str = ALERT_TOPIC
+    alert_to: tuple = ()            # seats or people to @-mention;  none means the post wakes nobody
+    alert_after: int = SKIP_WARN_AFTER
+    infisical_bin: str = "/opt/homebrew/bin/infisical"
+    b2_http: Optional[Callable] = None   # (method, url, headers, body) -> (status, json):  tests answer offline
     load_fn: Optional[Callable[[], float]] = None
     swap_fn: Optional[Callable[[], Optional[float]]] = None
     pressure_fn: Optional[Callable[[], Optional[int]]] = None
@@ -276,6 +290,11 @@ def config_from_env() -> Config:
     cfg.s3_endpoint = os.environ.get("FLEET_WORK_BACKUP_S3_ENDPOINT", cfg.s3_endpoint)
     cfg.repository = os.environ.get("FLEET_WORK_BACKUP_REPOSITORY", cfg.repository)
     cfg.launchctl_bin = os.environ.get("FLEET_WORK_BACKUP_LAUNCHCTL", cfg.launchctl_bin)
+    cfg.agent_sync_bin = os.environ.get("FLEET_WORK_BACKUP_AGENT_SYNC", cfg.agent_sync_bin)
+    cfg.infisical_bin = os.environ.get("FLEET_WORK_BACKUP_INFISICAL", cfg.infisical_bin)
+    cfg.alert_seat = os.environ.get("FLEET_WORK_BACKUP_ALERT_SEAT", cfg.alert_seat)
+    cfg.alert_topic = os.environ.get("FLEET_WORK_BACKUP_ALERT_TOPIC", cfg.alert_topic)
+    cfg.alert_to = tuple(t.strip() for t in os.environ.get("FLEET_WORK_BACKUP_ALERT_TO", "").split(",") if t.strip())
     for env, attr, cast in (("FLEET_WORK_BACKUP_LOAD_LIMIT", "load_limit", float),
                             ("FLEET_WORK_BACKUP_SWAP_LIMIT", "swap_limit", float),
                             ("FLEET_WORK_BACKUP_WORKERS", "workers", int),
@@ -467,6 +486,7 @@ class Discovery:
     blocked: list[dict] = dataclasses.field(default_factory=list)
     notes: list[str] = dataclasses.field(default_factory=list)
     missing_volumes: list[str] = dataclasses.field(default_factory=list)   # symlinks onto an unmounted /Volumes disk
+    dangling: list[str] = dataclasses.field(default_factory=list)          # folders whose .git points at a gitdir that is gone
 
 
 def git_root_state(path: str) -> str:
@@ -516,6 +536,7 @@ def discover(cfg: Config) -> Discovery:
                     continue
                 if state == "dangling":
                     d.notes.append(f"dangling-gitdir {cur}")
+                    d.dangling.append(cur)
                     continue
             if depth >= max_depth:
                 continue
@@ -947,6 +968,7 @@ class GroupResult:
     bundle: bool = False
     bundles: int = 0
     head_bundles: int = 0
+    anchor_refs: int = 0
     notes: list[str] = dataclasses.field(default_factory=list)
 
     @property
@@ -1164,6 +1186,76 @@ def make_bundle(cfg: Config, git: Git, stage: Stage, cwd: str, rel: str, src: st
     return True
 
 
+ANCHOR_NS = "refs/fwb/"
+
+
+def make_anchors(cfg: Config, git: Git, stage: Stage, cwd: str, common_dir: str, rel: str,
+                 cands: list[tuple[str, str]], excl: list[str], scan_excl: list[str]) -> dict[str, dict]:
+    """Bundle the commits that stash and worktree patches apply to, when nothing else in the backup holds them.
+
+    ``cands`` is (name, sha):  a stash's base (its first parent, never the stash commit itself, whose index and
+    untracked trees hold exactly what the gate dropped) or a dirty worktree's HEAD.  A candidate reachable from
+    ``excl`` (the network remote's default branch and the tips the branch bundles hold) is covered.  The rest are
+    scanned like unpushed commits, then cut into one bundle, ``refs/fwb/<name>``, bounded by ``excl``.  git bundles
+    only refs, and the real repository is never written:  the refs live in a scratch bare repository whose
+    alternates point at the real object store, and it is removed afterwards.  Returns {name: {sha, state}}."""
+    out: dict[str, dict] = {}
+    need: list[tuple[str, str]] = []
+    for name, sha in cands:
+        stdin = "".join([sha + "\n"] + [f"^{e}\n" for e in excl]).encode()
+        rc, o, _ = git.run(cwd, "rev-list", "-1", "--stdin", stdin=stdin)
+        if rc != 0:
+            out[name] = {"sha": sha, "state": "unreadable"}
+            stage.notes.append(f"anchor-unreadable {common_dir} {name}")
+        elif not o.strip():
+            out[name] = {"sha": sha, "state": "covered"}       # on the default branch, or in a branch bundle
+        else:
+            need.append((name, sha))
+    if not need:
+        return out
+    shas = sorted({s for _, s in need})
+    bad, truncated = scan_commits(git, cwd, [*shas, *(["--not", *scan_excl] if scan_excl else [])], cfg.bundle_scan_cap)
+    keep: list[tuple[str, str]] = []
+    for name, sha in need:
+        hit = next((pat for c, pat in sorted(bad.items())
+                    if c == sha or git.run(cwd, "merge-base", "--is-ancestor", c, sha)[0] == 0), "")
+        label = f"{common_dir} anchor {name}"
+        if hit and not stage.permit(label, sha):
+            stage.dropped.append({"path": label, "stage": "", "reason": f"content:{hit}", "digest": sha[:12]})
+            out[name] = {"sha": sha, "state": "dropped"}
+        else:
+            keep.append((name, sha))
+    if not keep:
+        return out
+    if truncated:
+        stage.notes.append(f"bundle-scan-partial {common_dir} (anchors)")
+    scratch = tempfile.mkdtemp(prefix="objs-anchor-", dir=str(cfg.cache_dir))
+    try:
+        fmt = git.text(cwd, "rev-parse", "--show-object-format") or "sha1"
+        rc, _, err = git.run(cfg.cache_dir, "init", "-q", "--bare", "--template=", f"--object-format={fmt}", scratch)
+        ok = rc == 0
+        if ok:
+            info = Path(scratch) / "objects" / "info"
+            info.mkdir(parents=True, exist_ok=True)
+            (info / "alternates").write_text(os.path.join(common_dir, "objects") + "\n")
+            if os.path.isfile(os.path.join(common_dir, "shallow")):
+                shutil.copyfile(os.path.join(common_dir, "shallow"), os.path.join(scratch, "shallow"))
+            lines = "".join(f"create {ANCHOR_NS}{name} {sha}\n" for name, sha in keep).encode()
+            rc, _, err = git.run(scratch, "update-ref", "--stdin", stdin=lines)
+            ok = rc == 0
+        if not ok:
+            stage.notes.append(f"anchor-failed {common_dir}: {err.decode('utf-8', 'replace').strip()[:120]}")
+            made = False
+        else:
+            made = make_bundle(cfg, git, stage, scratch, rel, common_dir,
+                               [*(ANCHOR_NS + n for n, _ in keep), *(["--not", *excl] if excl else [])])
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    for name, sha in keep:
+        out[name] = {"sha": sha, "state": "bundled" if made else "failed", "ref": ANCHOR_NS + name}
+    return out
+
+
 def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: list[Worktree]) -> GroupResult:
     name = repo_name(common_dir)
     slug = f"{slugify(name, 40)}-{short_hash(common_dir)}"
@@ -1242,6 +1334,7 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
         # scans the commits no network remote has (a pushed commit is already on GitHub, so carrying it along
         # exposes nothing new), each hit is attributed to its commit, and the refs that can reach a hit commit
         # are dropped alone:  one key-shaped string in some branch costs that branch, not the repository.
+        bundled_tips: list[str] = []
         if pending:
             tips = dict(pending)
             ref_names = [r for r, _ in pending]
@@ -1271,9 +1364,12 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
                 if make_bundle(cfg, git, stage, cwd, rel, common_dir, [*comp, *not_bound]):
                     res.bundle = True
                     res.bundles += 1
+                    bundled_tips += [tips[r] for r in comp]
                     group_meta["bundles"].append({"file": rel.rsplit("/", 1)[-1], "refs": [{"ref": r, "sha": tips[r]} for r in comp]})
             group_meta["unpushed"] = [{"ref": r, "sha": s} for r, s in pending]
         # Every stash, as per-file patches (no refs are created in the repository).
+        anchor_cands: list[tuple[str, str]] = []
+        pending_meta: list[tuple[str, dict, str]] = []       # (stage rel, metadata, anchor name), written after the anchors
         rc, out, _ = git.run(cwd, "stash", "list", "--format=%H%x00%gs")
         empty_tree = git.text(cwd, "hash-object", "-t", "tree", "/dev/null") or "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
         for n, line in enumerate(out.decode("utf-8", "replace").splitlines() if rc == 0 else []):
@@ -1294,7 +1390,10 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
                                        f"{sdir}/untracked", f"{common_dir}#stash{n}", None, tracked=False,
                                        post_rev=untracked_commit)
             meta = {"index": n, "sha": sha, "base": base_sha, "subject": subject, "patches": wrote}
-            stage.write(f"{sdir}/stash.json", json.dumps(meta, indent=2).encode(), "", "meta")
+            aname = f"stash/{n:02d}"
+            if wrote and base_sha:
+                anchor_cands.append((aname, base_sha))
+            pending_meta.append((f"{sdir}/stash.json", meta, aname))
             group_meta["stashes"].append(meta)
             res.stashes += 1
         # Per worktree:  uncommitted work and a detached HEAD no network remote has.
@@ -1325,12 +1424,34 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
             if wrote or un or wmeta.get("detached_head_bundle"):
                 wmeta["patches_written"] = wrote
                 wmeta["untracked_written"] = un
-                stage.write(f"{wdir}/worktree.json", json.dumps(wmeta, indent=2).encode(), "", "meta")
+                aname = f"worktree/{wslug}"
+                if (wrote or un) and wt.head and not wmeta.get("detached_head_bundle"):
+                    anchor_cands.append((aname, wt.head))
+                pending_meta.append((f"{wdir}/worktree.json", wmeta, aname))
                 group_meta["worktrees"].append(wmeta)
                 if wrote or un:
                     res.dirty_worktrees += 1
                 res.patch_files += wrote
                 res.untracked_files += un
+        # Anchors:  the commit a stash or a dirty worktree's patches apply to can be one GitHub never had, or one it
+        # deletes later (a lane on a squash-landed branch, a stash on a rebased or deleted branch).  Those commits go
+        # into anchors.bundle, bounded by the default branch and the tips the branch bundles above hold.
+        if anchor_cands:
+            excl = ([bound_sha] if bound_sha else []) + bundled_tips
+            if not bound_sha and net:          # no default branch found:  every network remote tip bounds it instead
+                rc, o, _ = git.run(cwd, "for-each-ref", "--format=%(objectname)", *[f"refs/remotes/{r}" for r in net])
+                excl += o.decode().split() if rc == 0 else []
+            scan_excl = (not_net[1:] if not_net else []) + bundled_tips
+            anchors = make_anchors(cfg, git, stage, cwd, common_dir, f"{base}/anchors.bundle", anchor_cands,
+                                   sorted(set(excl)), scan_excl)
+            res.anchor_refs = sum(1 for a in anchors.values() if a["state"] == "bundled")
+            group_meta["anchors"] = {"bundle": "anchors.bundle" if res.anchor_refs else "",
+                                     "refs": {n: a for n, a in sorted(anchors.items())}}
+            for _, meta, aname in pending_meta:
+                if aname in anchors:
+                    meta["anchor"] = {"ref": ANCHOR_NS + aname, **anchors[aname]}
+        for rel_meta, meta, _ in pending_meta:
+            stage.write(rel_meta, json.dumps(meta, indent=2).encode(), "", "meta")
         if any(k.startswith(base + "/") for k in list(stage.items)):
             stage.write(f"{base}/group.json", json.dumps(group_meta, indent=2).encode(), "", "meta")
     finally:
@@ -1368,14 +1489,17 @@ def snapshot_sqlite(src: str, dst: str) -> bool:
     return True
 
 
-def collect_files(cfg: Config, stage: Stage) -> int:
-    """Stage non-git files under ~/apps (outside any checkout) and the loose files at the top of ~/Code."""
+def collect_files(cfg: Config, stage: Stage, dangling: Iterable[str] = ()) -> int:
+    """Stage non-git files under ~/apps (outside any checkout) and the loose files at the top of ~/Code.  A lane whose
+    .git points at a gitdir that is gone (``git worktree prune`` ran while its disk was unmounted) is no longer a
+    checkout, so its files are kept here too, under the same filters;  the ~/apps walk skips ~/apps/lanes, so those
+    come from ``dangling`` (discovery's list)."""
     count = 0
     skip_real = {os.path.realpath(p) for p in (cfg.lanes, cfg.install_dir, cfg.cache_dir)}
 
     def stage_one(src: str, name: str, rel_to_home: str) -> None:
         nonlocal count
-        if is_skipped_file(name):
+        if is_skipped_file(name) or name == ".git":     # a .git file here points at a gitdir that is gone
             return
         if is_secret_name(rel_to_home):
             stage.dropped.append({"path": src, "stage": "", "reason": "secret-name"})
@@ -1450,6 +1574,11 @@ def collect_files(cfg: Config, stage: Stage) -> int:
 
     if cfg.apps.is_dir():
         walk(cfg.apps)
+    lanes_prefix = str(cfg.lanes) + os.sep
+    for top in sorted(set(dangling)):
+        if top.startswith(lanes_prefix) and os.path.isdir(top):
+            stage.notes.append(f"dangling-worktree-kept-as-files {top}")
+            walk(Path(top))
     if cfg.code.is_dir():
         try:
             for e in sorted(os.scandir(cfg.code), key=lambda e: e.name):
@@ -1881,8 +2010,10 @@ def probe_external(cfg: Config) -> dict:
     return result
 
 
-def removable_hint(cfg: Config) -> str:
-    img = process_image()
+def removable_hint(cfg: Config, image: str = "") -> str:
+    """The grant instruction.  ``image`` is the executable to name when it is not this process's own (the one-shot
+    launchd job reports its own, which is what the schedule runs;  Terminal's interpreter can differ)."""
+    img = image or process_image()
     app = app_bundle(img)
     who = f"{app} (the running executable is {img})" if app else img
     return (f"grant Removable Volumes (or Full Disk Access) to {who} in System Settings > Privacy & Security, "
@@ -1974,7 +2105,7 @@ def check_via_launchd(cfg: Config) -> int:
         say("no lane symlinks point at /Volumes: nothing to check")
         return 0
     if data.get("denied"):
-        say("DENIED under launchd: " + removable_hint(cfg))
+        say("DENIED under launchd: " + removable_hint(cfg, str(data.get("image") or data.get("binary") or "")))
         return 1
     if data.get("missing"):
         say("a volume is not mounted: its lanes will be skipped until it is")
@@ -2007,10 +2138,14 @@ def read_handoff(path: Path) -> dict[str, str]:
     return values
 
 
-def restic_env(cfg: Config) -> tuple[Optional[dict], list[str]]:
+def restic_env(cfg: Config, allow_master: bool = False) -> tuple[Optional[dict], list[str]]:
     """Return (env for the restic subprocess, missing key NAMES).  Values never leave this process
     except in that env.  ``cfg.repository`` (FLEET_WORK_BACKUP_REPOSITORY) points restic at another
-    repository, a local one for a test or a mirror, and then only the password is needed."""
+    repository, a local one for a test or a mirror, and then only the password is needed.
+
+    The B2 master key is a fallback only for a restore (``restic`` and ``snapshots`` pass ``allow_master``) and
+    only with FLEET_WORK_BACKUP_ALLOW_MASTER=1:  it has no file-name prefix, so it can delete the board's
+    database replica in the same bucket, and a backup, an init or an install never uses it."""
     src = dict(read_handoff(cfg.handoff))
     for name in list(CRED_NAMES.values()) + list(MASTER_NAMES.values()):
         if os.environ.get(name):
@@ -2026,7 +2161,7 @@ def restic_env(cfg: Config) -> tuple[Optional[dict], list[str]]:
         return env, []
     key_id = src.get(CRED_NAMES["key_id"], "")
     app_key = src.get(CRED_NAMES["app_key"], "")
-    if (not key_id or not app_key) and os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
+    if (not key_id or not app_key) and allow_master and os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
         key_id = key_id or src.get(MASTER_NAMES["key_id"], "")
         app_key = app_key or src.get(MASTER_NAMES["app_key"], "")
     bucket = src.get(CRED_NAMES["bucket"], "")
@@ -2043,6 +2178,202 @@ def restic_env(cfg: Config) -> tuple[Optional[dict], list[str]]:
         "AWS_DEFAULT_REGION": region,
     })
     return env, []
+
+
+B2_API = "https://api.backblazeb2.com"
+B2_PREFIX = "fleet-work-backup/"
+B2_NEEDED_CAPS = {"listFiles", "readFiles", "writeFiles", "deleteFiles", "listBuckets"}
+# Key and bucket administration.  Anything else a console "Read and Write" bucket key carries (shareFiles, retention
+# and encryption settings, listAllBucketNames) is accepted, so the documented console steps make a key this accepts.
+B2_TOO_STRONG_CAPS = {"writeKeys", "deleteKeys", "writeBuckets", "deleteBuckets"}
+
+
+def b2_call(cfg: Config, method: str, url: str, headers: dict, body: Optional[dict] = None) -> tuple[int, dict]:
+    if cfg.b2_http:
+        return cfg.b2_http(method, url, headers, body)
+    req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={**headers, **({"Content-Type": "application/json"} if body is not None else {})},
+                                 method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.status, json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read() or b"{}")
+        except ValueError:
+            return exc.code, {}
+
+
+def b2_key_problems(cfg: Config, key_id: str, app_key: str, bucket: str) -> list[tuple[bool, str]]:
+    """What is wrong with the B2 key and bucket for this job, as (hard, text) pairs;  empty means ready.
+
+    Hard:  the key is not limited to the one bucket and the ``fleet-work-backup/`` prefix (the bucket also holds the
+    board's database replica), lacks a capability restic needs, holds one it must not (key or bucket admin), or a
+    lifecycle rule hides files under the prefix by age (that would hide live restic packs).  Soft:  B2 could not be
+    asked, or no lifecycle rule deletes hidden versions (``restic prune`` frees no space without one).  Read-only
+    calls (b2_authorize_account and b2_list_buckets, API v4);  the texts name no key and no token."""
+    basic = base64.b64encode(f"{key_id}:{app_key}".encode()).decode()
+    try:
+        st, auth = b2_call(cfg, "GET", f"{B2_API}/b2api/v4/b2_authorize_account", {"Authorization": "Basic " + basic})
+    except (OSError, ValueError) as exc:
+        return [(False, f"could not reach B2 to check the key ({type(exc).__name__})")]
+    if st != 200:
+        return [(st in (401, 403), f"B2 did not accept the key (status {st}, {str(auth.get('code', '?'))[:40]})")]
+    storage = (auth.get("apiInfo") or {}).get("storageApi") or {}
+    allowed = storage.get("allowed") or {}
+    probs: list[tuple[bool, str]] = []
+    prefix = allowed.get("namePrefix")
+    if prefix != B2_PREFIX:
+        probs.append((True, f"the key is not limited to the file-name prefix {B2_PREFIX} (its prefix is "
+                            f"{'none' if not prefix else repr(prefix)});  create a bucket key with that prefix"))
+    names = sorted(str(b.get("name")) for b in allowed.get("buckets") or [])
+    if names != [bucket]:
+        probs.append((True, f"the key is not limited to the one bucket {bucket} (it allows "
+                            f"{', '.join(names) if names else 'every bucket'})"))
+    caps = set(allowed.get("capabilities") or [])
+    if B2_NEEDED_CAPS - caps:
+        probs.append((True, "the key lacks " + ", ".join(sorted(B2_NEEDED_CAPS - caps))))
+    if caps & B2_TOO_STRONG_CAPS:
+        probs.append((True, "the key holds admin capabilities it must not have: " + ", ".join(sorted(caps & B2_TOO_STRONG_CAPS))))
+    token, api = auth.get("authorizationToken"), storage.get("apiUrl")
+    if "listBuckets" not in caps or not token or not api:
+        return probs
+    try:
+        st, lb = b2_call(cfg, "POST", f"{api}/b2api/v4/b2_list_buckets", {"Authorization": token},
+                         {"accountId": auth.get("accountId"), "bucketName": bucket})
+    except (OSError, ValueError) as exc:
+        return probs + [(False, f"could not read the bucket's lifecycle rules ({type(exc).__name__})")]
+    found = (lb.get("buckets") or []) if st == 200 else []
+    if st != 200 or not found:
+        return probs + [(False, f"could not read the bucket's lifecycle rules (status {st})")]
+    rules = [r for r in found[0].get("lifecycleRules") or [] if isinstance(r, dict)]
+    covering = [r for r in rules if B2_PREFIX.startswith(r.get("fileNamePrefix") or "")]
+    inside = [r for r in rules if (r.get("fileNamePrefix") or "").startswith(B2_PREFIX)]
+    if any(r.get("daysFromUploadingToHiding") for r in covering + inside):
+        probs.append((True, f"a lifecycle rule hides files under {B2_PREFIX} by age (daysFromUploadingToHiding):  it would "
+                            f"hide live restic packs and break the repository;  remove that field"))
+    if not any(int(r.get("daysFromHidingToDeleting") or 0) >= 1 for r in covering):
+        probs.append((False, f"no lifecycle rule on {B2_PREFIX} deletes hidden versions (daysFromHidingToDeleting 7 to 30):  "
+                             f"restic prune frees no space without it"))
+    return probs
+
+
+def check_b2_setup(cfg: Config) -> list[tuple[bool, str]]:
+    """b2_key_problems for the key this job would use (never the master key).  A local repository needs none."""
+    if cfg.repository:
+        return []
+    src = dict(read_handoff(cfg.handoff))
+    for name in CRED_NAMES.values():
+        if os.environ.get(name):
+            src[name] = os.environ[name]
+    key_id, app_key, bucket = (src.get(CRED_NAMES[k], "") for k in ("key_id", "app_key", "bucket"))
+    if not (key_id and app_key and bucket):
+        return [(True, "the bucket-scoped key or the bucket name is missing (" + ", ".join(
+            CRED_NAMES[k] for k, v in (("key_id", key_id), ("app_key", app_key), ("bucket", bucket)) if not v) + ")")]
+    return b2_key_problems(cfg, key_id, app_key, bucket)
+
+
+B2_RECHECK_EVERY = 24 * 3600
+
+
+def b2_gate(cfg: Config, state: dict) -> tuple[list[str], list[str]]:
+    """The B2 check for a scheduled run:  (hard problems, soft problems).  The key can change after the install (the
+    sync follows Infisical), so a run checks it too.  A passing verdict is kept for a day per key (a hash of the key
+    id in state.json), so a steady run costs two read-only B2 calls a day and a new key is checked on its first run."""
+    if cfg.repository:
+        return [], []
+    src = dict(read_handoff(cfg.handoff))
+    for name in CRED_NAMES.values():
+        if os.environ.get(name):
+            src[name] = os.environ[name]
+    tag = hashlib.sha256(("fwb-b2:" + src.get(CRED_NAMES["key_id"], "")).encode()).hexdigest()[:16]
+    seen = state.get("b2_ok") or {}
+    if seen.get("key") == tag and cfg.now() - float(seen.get("at", 0)) < B2_RECHECK_EVERY:
+        return [], list(seen.get("soft") or [])
+    probs = check_b2_setup(cfg)
+    hard = [t for h, t in probs if h]
+    soft = [t for h, t in probs if not h]
+    if hard:
+        state.pop("b2_ok", None)
+    elif not any(t.startswith("could not") for t in soft):
+        state["b2_ok"] = {"key": tag, "at": cfg.now(), "soft": soft}
+    return hard, soft
+
+
+def restic_key_count(cfg: Config, env: dict) -> Optional[int]:
+    """How many keys open the repository (``restic key list --json``);  None when restic could not say."""
+    try:
+        p = run_restic(cfg, env, "key", "list", "--json", timeout=300)
+        return len(json.loads(p.stdout or b"[]")) if p.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+        return None
+
+
+INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"     # "AI Fleet Coordinator";  prod is its only environment
+
+
+def infisical_get(cfg: Config, name: str) -> tuple[int, str]:
+    """(rc, value) of one Infisical secret.  The value stays in this process;  rc 0 with '' means it does not exist."""
+    p = subprocess.run([cfg.infisical_bin, "secrets", "get", name, f"--projectId={INFISICAL_PROJECT}", "--env=prod",
+                        "--plain", "--silent"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=120)
+    return p.returncode, p.stdout.decode("utf-8", "replace").strip()
+
+
+def cmd_new_password(cfg: Config, args) -> int:
+    """Generate the repository password and write it to Infisical, never printing it.  Write-once:  it refuses when
+    the handoff file, the environment or Infisical already has one (a replaced password locks every snapshot), and
+    any read it cannot make is a refusal, never 'absent'.  The value reaches the CLI as a file path (``NAME=@file``,
+    a 0600 file in a 0700 folder, removed afterwards), never in argv;  the CLI's output is discarded;  the value is
+    read back and compared in memory, and only 'matched' and its length are reported."""
+    name = CRED_NAMES["password"]
+    if read_handoff(cfg.handoff).get(name) or os.environ.get(name):
+        say(f"{name} is already in {cfg.handoff} or the environment:  the repository has its password;  "
+            f"it is never replaced (README, Credentials).  Nothing written.")
+        return 1
+    if not os.access(cfg.infisical_bin, os.X_OK):
+        say(f"the Infisical CLI is not at {cfg.infisical_bin} (FLEET_WORK_BACKUP_INFISICAL overrides)")
+        return 2
+    try:
+        rc, cur = infisical_get(cfg, name)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        say(f"could not read Infisical ({type(exc).__name__});  nothing written")
+        return 2
+    if rc != 0:
+        say(f"could not read {name} from Infisical (rc={rc});  is the CLI logged in?  Nothing written.")
+        return 2
+    if cur:
+        say(f"{name} already exists in Infisical (length {len(cur)});  nothing written.  It is write-once:  a new "
+            f"repository password would lock every snapshot (keys change only with restic key add and key remove).")
+        return 1
+    value = secrets.token_urlsafe(32)
+    folder = tempfile.mkdtemp(prefix="fwb-pw-")
+    try:
+        path = os.path.join(folder, "value")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(value)
+        p = subprocess.run([cfg.infisical_bin, "secrets", "set", f"{name}=@{path}", f"--projectId={INFISICAL_PROJECT}",
+                            "--env=prod", "--type=shared", "--silent"],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        say(f"the Infisical write did not run ({type(exc).__name__});  nothing written")
+        return 2
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    if p.returncode != 0:
+        say(f"the Infisical write failed (rc={p.returncode});  nothing written")
+        return 2
+    try:
+        rc, back = infisical_get(cfg, name)
+    except (OSError, subprocess.TimeoutExpired):
+        rc, back = -1, ""
+    if rc != 0 or back != value:
+        say(f"written, but the read-back did not match (rc={rc}, length {len(back)});  check {name} in the Infisical "
+            f"UI before running init")
+        return 3
+    say(f"{name} written to Infisical (project AI Fleet Coordinator, prod) and read back:  matched, length {len(value)}.  "
+        f"Never printed.  Next:  wait one infisical-secrets-sync tick, then init, then the recovery key (README, Install).")
+    return 0
 
 
 def restic_path(cfg: Config) -> Optional[str]:
@@ -2148,7 +2479,8 @@ def build_report(cfg: Config, disc: Discovery, wts: list[Worktree], groups: list
         "groups_with_work": sum(1 for g in groups if g.has_work),
         "groups_no_remote": [g.name for g in groups if g.no_remote],
         "unpushed_refs": sum(g.unpushed_refs for g in groups),
-        "bundle_files": sum(g.bundles + g.head_bundles for g in groups),
+        "bundle_files": sum(g.bundles + g.head_bundles + (1 if g.anchor_refs else 0) for g in groups),
+        "anchor_refs": sum(g.anchor_refs for g in groups),
         "landed_refs_skipped": sum(g.landed_refs for g in groups),
         "stashes": sum(g.stashes for g in groups),
         "patch_files": sum(g.patch_files for g in groups),
@@ -2180,6 +2512,7 @@ def print_report(rep: dict) -> None:
     print(f"  groups with unpushed     {rep['groups_with_unpushed']}  ({rep['unpushed_refs']} refs in {rep['bundle_files']} bundles;  "
           f"{rep['landed_refs_skipped']} landed refs skipped)")
     print(f"  groups with stashes      {rep['groups_with_stashes']}  ({rep['stashes']} stashes)")
+    print(f"  anchor commits bundled   {rep['anchor_refs']}  (bases of stashes and dirty worktrees GitHub may not keep)")
     print(f"  dirty worktrees          {rep['worktrees_dirty']}  ({rep['patch_files']} patches or binary files, {rep['untracked_files']} untracked files)")
     print(f"  non-git files            {rep['non_git_files']}")
     print(f"  staged                   {rep['staged_files']} files, {fmt_bytes(rep['staged_bytes'])}")
@@ -2288,7 +2621,7 @@ def build_stage(cfg: Config, stage_root: Path, progress: Optional[Callable[[str]
                                sorted(by_common.items())))
     phase(f"processed {len(groups)} repository groups, {sum(1 for g in groups if g.has_work)} with work, "
           f"{fmt_bytes(stage.total())} staged so far")
-    file_count = collect_files(cfg, stage)
+    file_count = collect_files(cfg, stage, disc.dangling)
     phase(f"staged {file_count} non-git files, {fmt_bytes(stage.total())} total")
     gate = run_gate(cfg, stage, progress, use_gitleaks)
     phase(f"gate done, {len(stage.dropped)} dropped, {len(stage.deferred)} deferred, {fmt_bytes(stage.total())} left")
@@ -2318,25 +2651,79 @@ def cmd_run(cfg: Config, args) -> int:
                 pass
 
 
+def bump_not_ok(state: dict) -> int:
+    """Count one more run with no complete snapshot (an error, a partial snapshot, a pressure or low-disk skip).
+    Every such path goes through here, so the warning and the alert hang off one counter."""
+    n = int(state.get("consecutive_not_ok", 0)) + 1
+    state["consecutive_not_ok"] = n
+    return n
+
+
+def agent_sync_path(cfg: Config) -> str:
+    return cfg.agent_sync_bin or str(cfg.home / ".local" / "bin" / "agent-sync")
+
+
+def post_alert(cfg: Config, text: str) -> bool:
+    """Post to the fleet's Zulip through agent-sync as this job's seat.  Never raises;  False when it did not post."""
+    exe = agent_sync_path(cfg)
+    if not os.access(exe, os.X_OK):
+        return False
+    cmd = [exe, "post", "--as", cfg.alert_seat, "--session", "fwbackup", "--topic", cfg.alert_topic]
+    for who in cfg.alert_to:
+        cmd += ["--to", who]
+    cmd.append("-")
+    try:
+        p = subprocess.run(cmd, input=text.encode("utf-8"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=60)
+        return p.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def alert_after_line(cfg: Config, state: dict, line: str) -> None:
+    """After ``alert_after`` runs in a row with no complete snapshot, say so in Zulip, then at most once a day while
+    it lasts;  the first good run after an alert says it is over.  The run line carries names and counts only."""
+    n = int(state.get("consecutive_not_ok", 0))
+    last = float(state.get("last_alert", 0) or 0)
+    gap = "\u00a0 "              # Zulip renders Markdown:  a sentence gap is U+00A0 plus a space
+    if n == 0:
+        if last:
+            post_alert(cfg, f"fleet-work-backup on {cfg.host} is back to a complete snapshot.{gap}`{line}`")
+            state.pop("last_alert", None)
+        return
+    if n < cfg.alert_after or (last and cfg.now() - last < ALERT_EVERY):
+        return
+    text = (f"fleet-work-backup on {cfg.host}:  {n} runs in a row with no complete snapshot (last complete:  "
+            f"{state.get('last_ok_text', 'never')}).{gap}Latest run line:  `{line}`.{gap}The detail log is "
+            f"~/Library/Logs/fleet-work-backup.detail.log, and README.md in scripts/fleet-work-backup says what each "
+            f"reason and warning means.")
+    if post_alert(cfg, text):
+        state["last_alert"] = cfg.now()
+    else:
+        detail_log(cfg, [f"alert-not-posted after {n} runs (agent-sync at {agent_sync_path(cfg)} missing or failed)"])
+
+
 def log_not_ok(cfg: Config, **fields) -> str:
     """A log line for a run that produced no good snapshot, with the running count and the last good one."""
     state = read_state(cfg)
-    n = int(state.get("consecutive_not_ok", 0)) + 1
-    state["consecutive_not_ok"] = n
+    n = bump_not_ok(state)
+    warn = [w for w in str(fields.pop("warn", "") or "").split(",") if w]
+    if n >= SKIP_WARN_AFTER:
+        warn.append("no-complete-backup-for-about-24h")
+    line = log_line(cfg, **fields, not_ok_in_a_row=n if n > 1 else "", warn=",".join(warn),
+                    last_ok=state.get("last_ok_text", "never"))
+    alert_after_line(cfg, state, line)
     try:
         write_state(cfg, state)
     except OSError:
         pass
-    warn = [w for w in str(fields.pop("warn", "") or "").split(",") if w]
-    if n >= SKIP_WARN_AFTER:
-        warn.append("no-complete-backup-for-about-24h")
-    return log_line(cfg, **fields, not_ok_in_a_row=n if n > 1 else "", warn=",".join(warn),
-                    last_ok=state.get("last_ok_text", "never"))
+    return line
 
 
 def _run(cfg: Config, args, held: list[int]) -> int:
     t0 = time.time()
     dry = args.dry_run
+    b2_soft: list[str] = []
     if getattr(args, "skip_gitleaks", False) and not dry:
         log_not_ok(cfg, status="error", reason="skip-gitleaks-is-for-a-dry-run")
         return 2
@@ -2353,10 +2740,12 @@ def _run(cfg: Config, args, held: list[int]) -> int:
         why = pressure_reason(cfg) if not args.ignore_pressure else None
         if why:
             state["consecutive_skips"] = int(state.get("consecutive_skips", 0)) + 1
-            write_state(cfg, state)
+            bump_not_ok(state)
             warn = "no-backup-for-about-24h" if state["consecutive_skips"] >= SKIP_WARN_AFTER else ""
-            log_line(cfg, status="skip", reason=why, consecutive=state["consecutive_skips"], warn=warn,
-                     last_ok=state.get("last_ok_text", "never"))
+            line = log_line(cfg, status="skip", reason=why, consecutive=state["consecutive_skips"], warn=warn,
+                            last_ok=state.get("last_ok_text", "never"))
+            alert_after_line(cfg, state, line)
+            write_state(cfg, state)
             return 0
         if not restic_path(cfg):
             log_not_ok(cfg, status="error", reason="restic-missing", hint="brew install restic")
@@ -2365,9 +2754,20 @@ def _run(cfg: Config, args, held: list[int]) -> int:
         if env is None:
             log_not_ok(cfg, status="error", reason="missing-credentials", names=",".join(missing))
             return 2
+        state = read_state(cfg)
+        b2_hard, b2_soft = b2_gate(cfg, state)
+        write_state(cfg, state)
+        if b2_hard:
+            detail_log(cfg, [f"b2-refused {t}" for t in b2_hard])
+            log_not_ok(cfg, status="error", reason="unsafe-b2-key", problems=len(b2_hard))
+            return 2
         if not disk_ok(cfg):
-            log_line(cfg, status="skip", reason="low-disk", need=fmt_bytes(cfg.min_free_bytes),
-                     last_ok=state.get("last_ok_text", "never"))
+            state = read_state(cfg)
+            n = bump_not_ok(state)
+            line = log_line(cfg, status="skip", reason="low-disk", need=fmt_bytes(cfg.min_free_bytes),
+                            not_ok_in_a_row=n if n > 1 else "", last_ok=state.get("last_ok_text", "never"))
+            alert_after_line(cfg, state, line)
+            write_state(cfg, state)
             return 0
         if cfg.max_runtime:
             def _alarm(*_):
@@ -2394,7 +2794,8 @@ def _run(cfg: Config, args, held: list[int]) -> int:
     (stage_root / "README-RESTORE.txt").write_text(
         "Restore runbook: scripts/fleet-work-backup/RESTORE.md in AI-Fleet-Coordinator.\n"
         "files/ mirrors absolute paths (copy files/Users/jay back to /Users/jay).  git/<repo>/ holds\n"
-        "bundles/*.bundle, stashes/<n>/ and worktrees/<name>/ (patches/, binary/, untracked/, head.bundle).\n")
+        "bundles/*.bundle, anchors.bundle (the commits the patches apply to), stashes/<n>/ and\n"
+        "worktrees/<name>/ (patches/, binary/, untracked/, head.bundle).\n")
     detail = []
     for d in stage.dropped:
         detail.append(f"dropped {d['reason']} {d['path']}")
@@ -2439,6 +2840,10 @@ def _run(cfg: Config, args, held: list[int]) -> int:
         warns.append("volume-missing")
         detail.append(f"hint {len(disc.missing_volumes)} lane links point onto a volume that is not mounted:  "
                       f"{disc.missing_volumes[0]}, ...  Their work is not in this snapshot.")
+    if disc.dangling:
+        warns.append("dangling-worktree")
+        detail.append(f"hint {len(disc.dangling)} folders have a .git that points at a gitdir that is gone (a pruned "
+                      f"worktree):  their files are kept as plain files, not as git work.  {disc.dangling[0]}, ...")
     if deferred:
         warns.append("gitleaks-error" if gate.get("gitleaks_error") else "gitleaks-deferred")
     if gate_name == "regex-only":
@@ -2449,6 +2854,9 @@ def _run(cfg: Config, args, held: list[int]) -> int:
         warns.append("allow-entry-stale")
     if stage.allow_unpinned:
         warns.append("allow-entry-unpinned")
+    if b2_soft:
+        warns.append("b2-lifecycle-missing" if any("daysFromHidingToDeleting" in t for t in b2_soft) else "b2-unchecked")
+        detail += [f"b2-warning {t}" for t in b2_soft]
     partial = bool(blocked or disc.missing_volumes or deferred)
     detail_log(cfg, detail)
     try:
@@ -2474,12 +2882,15 @@ def _run(cfg: Config, args, held: list[int]) -> int:
                 run_restic(cfg, env, "tag", "--add", "partial", res["snapshot_full"], timeout=300)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-    maint = {"forget": "-", "prune": "-", "check": "-"}
-    try:
-        maint = restic_maintenance(cfg, env, state)
-    except (OSError, subprocess.TimeoutExpired):
-        maint["forget"] = "fail"
     status = "partial" if (partial or unreadable) else "ok"
+    # Retention runs only after a complete snapshot:  a degraded one (a volume gone, a path denied, files deferred)
+    # never decides what is forgotten or pruned, so a week of lane-less runs cannot age out the last good state.
+    maint = {"forget": "skipped-partial", "prune": "-", "check": "-"}
+    if status == "ok":
+        try:
+            maint = restic_maintenance(cfg, env, state)
+        except (OSError, subprocess.TimeoutExpired):
+            maint = {"forget": "fail", "prune": "-", "check": "-"}
     state["consecutive_skips"] = 0
     state["last_success"] = cfg.now()
     state["last_success_text"] = stamp(cfg.now())
@@ -2488,14 +2899,15 @@ def _run(cfg: Config, args, held: list[int]) -> int:
         state["last_ok"] = cfg.now()
         state["last_ok_text"] = stamp(cfg.now())
     else:
-        state["consecutive_not_ok"] = int(state.get("consecutive_not_ok", 0)) + 1
-        if state["consecutive_not_ok"] >= SKIP_WARN_AFTER:
+        if bump_not_ok(state) >= SKIP_WARN_AFTER:
             warns.append("no-complete-backup-for-about-24h")
+    line = log_line(cfg, status=status, snapshot=res["snapshot"] or "?", added=fmt_bytes(res["added"]),
+                    forget=maint["forget"], prune=maint["prune"], check=maint["check"],
+                    elapsed=f"{time.time() - t0:.0f}s", warn=",".join(warns), grant=grant,
+                    not_ok_in_a_row=state["consecutive_not_ok"] if state.get("consecutive_not_ok", 0) > 1 else "",
+                    last_ok=(state.get("last_ok_text", "never") if status != "ok" else ""), **common)
+    alert_after_line(cfg, state, line)
     write_state(cfg, state)
-    log_line(cfg, status=status, snapshot=res["snapshot"] or "?", added=fmt_bytes(res["added"]),
-             forget=maint["forget"], prune=maint["prune"], check=maint["check"], elapsed=f"{time.time() - t0:.0f}s",
-             warn=",".join(warns), grant=grant, last_ok=(state.get("last_ok_text", "never") if status != "ok" else ""),
-             **common)
     shutil.rmtree(stage_root, ignore_errors=True)
     return 0
 
@@ -2508,13 +2920,19 @@ def cmd_init(cfg: Config, args) -> int:
     if env is None:
         say(f"missing credentials in {cfg.handoff} or the environment: {', '.join(missing)}")
         return 2
+    probs = check_b2_setup(cfg)
+    for hard, text in probs:
+        say(("REFUSED:  " if hard else "warning:  ") + text)
+    if any(hard for hard, _ in probs):
+        say("not initialising:  fix the B2 key or bucket first (README, Where it goes)")
+        return 2
     p = run_restic(cfg, env, "init", timeout=300)
     say("restic init " + ("ok" if p.returncode == 0 else "failed: " + (p.stderr.decode().strip().splitlines() or [""])[-1][:160]))
     return p.returncode
 
 
 def cmd_snapshots(cfg: Config, args) -> int:
-    env, missing = restic_env(cfg)
+    env, missing = restic_env(cfg, allow_master=True)
     if env is None or not restic_path(cfg):
         say("restic or credentials missing: " + ", ".join(missing or ["restic"]))
         return 2
@@ -2525,7 +2943,7 @@ def cmd_snapshots(cfg: Config, args) -> int:
 
 def cmd_restic(cfg: Config, args) -> int:
     """Run restic with this job's repository and credentials (for restores and checks)."""
-    env, missing = restic_env(cfg)
+    env, missing = restic_env(cfg, allow_master=True)
     if env is None or not restic_path(cfg):
         say("restic or credentials missing: " + ", ".join(missing or ["restic"]))
         return 2
@@ -2593,6 +3011,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ca.add_argument("--launchd", action="store_true", help="run the check as a one-shot launchd job and report its result")
     ca.add_argument("--result", help=argparse.SUPPRESS)
     sub.add_parser("image", help="print the executable macOS privacy settings see for this interpreter")
+    sub.add_parser("new-password", help="generate the repository password into Infisical, never printing it (once)")
     sub.add_parser("snapshots", help="list this job's snapshots")
     rs = sub.add_parser("restic", help="run restic against this job's repository (restores, checks)")
     rs.add_argument("restic_args", nargs=argparse.REMAINDER)
@@ -2603,7 +3022,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             args = ap.parse_args(["run"])
         return cmd_run(cfg, args)
     return {"init": cmd_init, "check-access": cmd_check_access, "snapshots": cmd_snapshots,
-            "restic": cmd_restic, "image": cmd_image}[args.cmd](cfg, args)
+            "restic": cmd_restic, "image": cmd_image, "new-password": cmd_new_password}[args.cmd](cfg, args)
 
 
 if __name__ == "__main__":

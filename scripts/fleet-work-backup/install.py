@@ -11,7 +11,9 @@ What it does, from a checkout of AI-Fleet-Coordinator:
   1. copies fleet_work_backup.py to ~/apps/fleet-work-backup/ (a replaced copy is kept as
      <file>.bak-fwb-<stamp>);
   2. checks the prerequisites and prints what is missing:  restic, the four credential NAMES in
-     ~/.secrets/global-api-keys (names only, never values), the interpreter, gitleaks (optional);
+     ~/.secrets/global-api-keys (names only, never values), the interpreter, gitleaks (optional), and,
+     with read-only B2 calls, that the key is limited to the bucket and the fleet-work-backup/ prefix,
+     holds no admin capability, and that a lifecycle rule deletes hidden versions there;
   3. copies scripts/launchd/com.jay.fleet-work-backup.plist to ~/Library/LaunchAgents/ and boots it
      out and in when it changed or is not loaded.  RunAtLoad is false, so loading never starts a
      backup.  It refuses to load the agent while a prerequisite is missing, unless --force;
@@ -21,7 +23,11 @@ What it does, from a checkout of AI-Fleet-Coordinator:
 It never creates the B2 key, never writes to Infisical, never runs 'restic init' and never starts
 a backup.  The order is in README.md:  key, Infisical, sync, restic install, init, install, grant
 Removable Volumes, check-access --launchd.  --check-repo asks restic for the repository config
-(read-only) to confirm the init was done.
+(read-only) to confirm the init was done, and counts the repository keys:  fewer than two means the
+recovery key kept outside Infisical was never added.
+
+A key that is not limited to the bucket and prefix (or holds admin capabilities, or a lifecycle rule
+that would hide live packs) is refused even with --force:  the bucket also holds the board's database.
 """
 from __future__ import annotations
 
@@ -103,9 +109,11 @@ def interpreter_image(interpreter: str, script: str) -> tuple[str, str]:
     return image, app
 
 
-def prerequisites(fwb, interpreter: str, install_restic: bool, dry: bool) -> list[str]:
+def prerequisites(fwb, interpreter: str, install_restic: bool, dry: bool, hard: list[str] | None = None) -> list[str]:
+    """What is missing, as text.  Problems --force must not override are also appended to ``hard``."""
     cfg = fwb.config_from_env()
     missing: list[str] = []
+    hard = hard if hard is not None else []
     if not shutil.which(cfg.restic_bin):
         if install_restic and not dry:
             say("running: brew install restic")
@@ -130,6 +138,13 @@ def prerequisites(fwb, interpreter: str, install_restic: bool, dry: bool) -> lis
         missing.append("credentials in ~/.secrets/global-api-keys or the environment: " + ", ".join(names))
     else:
         say("credentials: all four names are set (values not shown)")
+        probs = fwb.check_b2_setup(cfg)
+        for is_hard, text in probs:
+            missing.append(f"B2 setup: {text}")
+            if is_hard:
+                hard.append(text)
+        if not probs:
+            say("B2: the key is limited to the bucket and the fleet-work-backup/ prefix;  a lifecycle rule deletes hidden versions")
     gl = shutil.which(cfg.gitleaks_bin) if cfg.gitleaks_bin else None
     say(f"gitleaks: {gl or 'not installed (the regex scan still runs, and the run line says warn=gitleaks-missing)'}")
     return missing
@@ -184,7 +199,8 @@ def main() -> int:
         return 1
     fwb = load_module()
     copy(SCRIPT_SRC, SCRIPT_DST, 0o755, a.dry_run)
-    missing = prerequisites(fwb, a.interpreter, a.install_restic, a.dry_run)
+    hard: list[str] = []
+    missing = prerequisites(fwb, a.interpreter, a.install_restic, a.dry_run, hard)
     if a.check_repo:
         cfg = fwb.config_from_env()
         env, _ = fwb.restic_env(cfg)
@@ -195,11 +211,19 @@ def main() -> int:
             say("repository: " + ("initialised" if rc == 0 else "NOT initialised or unreachable: run fleet_work_backup.py init"))
             if rc != 0:
                 missing.append("restic repository (fleet_work_backup.py init)")
+            else:
+                keys = fwb.restic_key_count(cfg, env)
+                say(f"repository keys: {keys if keys is not None else 'unknown'}")
+                if keys is not None and keys < 2:
+                    missing.append("the recovery key kept outside Infisical (README, Credentials:  restic -- key add)")
     for m in missing:
         say(f"MISSING {m}")
     status = 0
     if not a.skip_launchd:
-        if missing and not a.force:
+        if hard:
+            say("not loading the LaunchAgent:  the B2 key or bucket is unsafe for this job, and --force does not override that")
+            status = 1
+        elif missing and not a.force:
             say("not loading the LaunchAgent until the above is fixed (or pass --force)")
         else:
             plist = plist_with_interpreter(a.interpreter)
