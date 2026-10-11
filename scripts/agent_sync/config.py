@@ -37,6 +37,10 @@ except ImportError:  # pragma: no cover - Python 3.10 and older
 
 KNOWN_WAKES = ("inbox", "claude", "http", "muse")
 WORKER_WAKES = ("claude", "http", "muse")  # adapters that run on a per-seat wake worker thread
+# The runtimes a wake may name as its fallback (AFC-291).  `muse` is the primary and `mcode` is the
+# fallback:  both shape the answer with `--output-schema`, but only muse can state "hold no tools",
+# so the order is fixed and a seat may not invert it (checked against the wake type in from_dict).
+KNOWN_FALLBACKS = ("mcode",)
 INSTANCES = ("mac", "server")
 PARTITION_VALUES = ("mac", "server", "none")
 ENV_INSTANCE = "AGENT_SYNC_INSTANCE"  # set by the LaunchAgent (mac) and the container image (server)
@@ -130,7 +134,8 @@ class SeatConfig:
                  creds: str = "file", email_env: str | None = None, key_env: str | None = None,
                  site_env: str = DEFAULT_SITE_ENV, routine: RoutineConfig | None = None,
                  route_enabled: bool = True, held_back: dict[str, Any] | None = None,
-                 muse: str | None = None, provider: str | None = None) -> None:
+                 muse: str | None = None, provider: str | None = None,
+                 mcode: str | None = None, fallback: str | None = None) -> None:
         self.seat = seat
         self.bot = bot
         self.wake = wake
@@ -139,6 +144,10 @@ class SeatConfig:
         self.live = live
         self.claude = claude  # an absolute path to the claude binary, else resolved on the wake PATH
         self.muse = muse  # an absolute path to the muse binary, else resolved on the wake PATH
+        self.mcode = mcode  # an absolute path to the mcode binary, else resolved on the wake PATH
+        # The fallback runtime, tried only when the primary could not produce a usable answer.  It is
+        # never consulted for a quota refusal:  a capped provider stays capped whatever runs.
+        self.fallback = fallback
         self.provider = provider  # the CodeCaps provider name this seat's quota is read under
         self.instance = instance
         self.enabled = enabled
@@ -474,13 +483,27 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             problems.append("seat.%s.muse must be an absolute path" % seat_name)
         if wake != "muse" and "muse" in section:
             problems.append("seat.%s.muse applies only to wake = \"muse\"" % seat_name)
+        mcode = section.get("mcode")
+        if mcode is not None and (not isinstance(mcode, str) or not os.path.isabs(mcode)):
+            problems.append("seat.%s.mcode must be an absolute path" % seat_name)
+        if "mcode" in section and wake not in ("claude", "muse"):
+            problems.append("seat.%s.mcode applies only to wake = \"claude\" or \"muse\"" % seat_name)
+        # The fallback runtime, tried only when the primary could not produce a usable answer.  It
+        # is never consulted for a quota refusal:  a capped provider stays capped whatever runs.
+        fallback = section.get("fallback")
+        if fallback is not None and fallback not in KNOWN_FALLBACKS:
+            problems.append("seat.%s.fallback must be one of %s" % (seat_name, ", ".join(KNOWN_FALLBACKS)))
+        if fallback is not None and wake not in WORKER_WAKES:
+            problems.append("seat.%s.fallback applies only to a wake that runs a turn" % seat_name)
+        if fallback is not None and fallback == wake:
+            problems.append("seat.%s.fallback may not be its own wake type" % seat_name)
         provider = section.get("provider")
         if provider is not None:
             if not isinstance(provider, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,60}", provider):
                 problems.append("seat.%s.provider must be a provider name such as \"Claude Code\" or \"MiniMax\""
                                 % seat_name)
-            elif wake != "muse":
-                problems.append("seat.%s.provider applies only to wake = \"muse\"" % seat_name)
+            elif wake not in ("claude", "muse"):
+                problems.append("seat.%s.provider applies only to wake = \"claude\" or \"muse\"" % seat_name)
         budget = dict(BUDGET_DEFAULTS)
         given = section.get("budget", {})
         if not isinstance(given, dict):
@@ -512,7 +535,8 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         seat_cfg = SeatConfig(seat_name, bot, wake, model, budget, L.live_limits(raw, seat_name), claude,
                               instance=seat_instance or cfg.instance, enabled=enabled, creds=creds,
                               email_env=email_env, key_env=key_env, site_env=site_env, routine=routine,
-                              route_enabled=route_enabled, held_back=held_back, muse=muse, provider=provider)
+                              route_enabled=route_enabled, held_back=held_back, muse=muse, provider=provider,
+                              mcode=mcode, fallback=fallback)
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg
     _refuse_shared_env(cfg)
     return cfg

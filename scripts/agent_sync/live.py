@@ -227,6 +227,10 @@ class SeatPaths:
         # is a different binary with a different flag surface.
         self.wake_pin_muse = os.path.join(self.seat_dir, "wake-pin-muse.json")
         self.wake_pin_candidate_muse = os.path.join(self.seat_dir, "wake-pin-candidate-muse.json")
+        # The mcode fallback pins its own binary on its own files too:  a fallback is only trusted
+        # once a person has verified that build's wake contract, exactly as for the primaries.
+        self.wake_pin_mcode = os.path.join(self.seat_dir, "wake-pin-mcode.json")
+        self.wake_pin_candidate_mcode = os.path.join(self.seat_dir, "wake-pin-candidate-mcode.json")
 
     def lease(self, lease_id: str) -> str:
         return os.path.join(self.leases, lease_id + ".json")

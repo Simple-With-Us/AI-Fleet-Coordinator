@@ -358,11 +358,25 @@ class SeatRunner:
 # The daemon
 # --------------------------------------------------------------------------------------------
 
+def _is_quota_reason(reason: str | None) -> bool:
+    """True when a failure is a provider's quota, not a fault worth retrying on another runtime.
+
+    Matched on the provider's own words as well as ours, because claude and muse both put the
+    human-facing message in the result text ("You've hit your weekly limit ..."), and the snapshot
+    gate words it as "<provider> quota is exhausted"."""
+    if not reason:
+        return False
+    text = str(reason).casefold()
+    return any(word in text for word in ("quota", "weekly limit", "rate limit", "usage limit", "cap reached",
+                                         "exhausted", "too many requests"))
+
+
 class Daemon:
     def __init__(self, *, env: Mapping[str, str] | None = None, root: str | None = None, home: str | None = None,
                  clock: Clock | None = None, notifier: A.Notifier | None = None,
                  claude_runner: A.ClaudeRunner | None = None, wake_path: str | None = None,
                  muse_runner: A.MuseRunner | None = None,
+                 mcode_runner: A.McodeRunner | None = None,
                  agents_runner: Callable[[Sequence[str]], str | None] | None = None,
                  board_runner: Callable[..., Any] | None = None, board_bin: str | None = None,
                  start_time: Callable[[int], int] | None = None, http_timeout: float = 30.0,
@@ -384,6 +398,7 @@ class Daemon:
         self.banners_allowed = self.notifier.banners  # the config can only turn banners off (the server has none)
         self.claude_runner = claude_runner or A.ClaudeRunner(on_start=self._track_child, on_exit=self._untrack_child)
         self.muse_runner = muse_runner or A.MuseRunner(on_start=self._track_child, on_exit=self._untrack_child)
+        self.mcode_runner = mcode_runner or A.McodeRunner(on_start=self._track_child, on_exit=self._untrack_child)
         self.wake_path = wake_path or A.default_wake_path(self.home)
         self.agents_runner = agents_runner or self._run_agents
         self.board_runner = board_runner
@@ -1234,15 +1249,61 @@ class Daemon:
             return None, str(state["why"] or "not_pinned")
         return str(state["muse"]), None
 
+    def _pinned_fallback(self, runner: SeatRunner) -> tuple[str | None, str | None]:
+        """(the realpath to run, why not), for the seat's fallback runtime.  Same never-self-heal
+        rule as the primaries:  a fallback that was never verified by a person is not trusted, and a
+        fallback whose binary moved holds rather than re-pinning itself."""
+        if not runner.cfg.fallback:
+            return None, "no_fallback"
+        mcode = A.resolve_mcode(runner.cfg.mcode, self.wake_path)
+        if not mcode:
+            return None, "no_mcode"
+        state = A.mcode_pin_state(runner.paths, mcode)
+        if not state["pinned"]:
+            return None, str(state["why"] or "not_pinned")
+        return str(state["mcode"]), None
+
+    def run_fallback(self, runner: SeatRunner, prompt: str, schema: str, primary: str,
+                     primary_error: str) -> A.RunResult | None:
+        """Run the seat's fallback runtime after the primary failed, or None when there is none to
+        run.  The ledger and the log name which runtime answered, so a wake answered by the fallback
+        is never mistaken for a wake answered by the primary.
+
+        Deliberately NOT tried for a quota refusal (`primary_error` naming a limit or a cap):  a
+        capped provider stays capped whichever binary asks, so a fallback there would spend a second
+        run to learn the same thing the snapshot already said."""
+        if not runner.cfg.fallback:
+            return None
+        if _is_quota_reason(primary_error):
+            return None
+        binary, why = self._pinned_fallback(runner)
+        if binary is None:
+            self.log.write("wake-fallback-held", seat=runner.seat, reason=why or "not_pinned",
+                           primary=primary, primary_error=primary_error)
+            return None
+        self.log.write("wake-fallback", seat=runner.seat, primary=primary, primary_error=primary_error,
+                       fallback=runner.cfg.fallback, binary=binary)
+        if runner.cfg.fallback == "mcode":
+            return self.mcode_runner.run(A.mcode_argv(binary),
+                                         A.mcode_env(self.env, self.home, self.wake_path, seat=runner.seat),
+                                         runner.paths.wake_dir, prompt, schema=schema)
+        return None
+
     def _quota_reason(self, runner: SeatRunner) -> str | None:
         """Why this seat's provider has nothing left, or None.  Read from the CodeCaps snapshot
         (Jay 2026-10-11:  no reason to try to wake an agent that cannot run), checked before the
         subprocess spawns so an exhausted seat costs no run, no queue slot and no retry.
 
+        Applies to any seat that names a `provider`.  This started as muse-only, and the first live
+        failure it could have prevented was a CLAUDE seat:  on Oct 11 claude 2.1.296 hit its weekly
+        cap and every wake still spawned a child, ran ~4-9 seconds, and came back "modelUsage shows
+        0 models, not 1".  A cap that is visible in the snapshot should stop the run before the
+        child exists, whichever runtime would have run it.
+
         Only a fresh, positive exhaustion reading blocks.  A missing, stale, malformed or simply
         absent window never does:  this is an optimisation, not a safety control, and a quota
         source that is down must not silence the fleet."""
-        if runner.cfg.wake != "muse":
+        if runner.cfg.wake not in ("claude", "muse"):
             return None
         return A.quota_block(runner.cfg.provider or "", self.clock.time())
 
@@ -1439,29 +1500,57 @@ class Daemon:
                                 route=self.route_gate(runner, pending), held_back=held)
         held_count = held["count"] if held else 0
         is_muse = runner.cfg.wake == "muse"
-        # A muse wake reserves nothing:  there is no per-run dollar cap to reserve against and the
-        # run is covered by a subscription the user already pays for (config.wake_max_usd).  The row
-        # still names the adapter, so the ledger says which runtime answered.
+        adapter = "muse" if is_muse else "claude"
+        # A subscription-backed run reserves nothing:  there is no per-run dollar cap to reserve
+        # against and the run is covered by a plan the user already pays for (config.wake_max_usd).
+        # The row still names the adapter, so the ledger says which runtime answered.
         runner.ledger.append(pending.row("started", now,
                                          reserved_usd=0.0 if is_muse else C.WAKE_MAX_BUDGET_USD,
-                                         adapter="muse" if is_muse else "claude", held_back=held_count))
+                                         adapter=adapter, held_back=held_count))
+        schema = W.schema_text(self.fleet_tags)
         if is_muse:
             argv = A.muse_argv(binary, runner.cfg.model)
             result = self.muse_runner.run(argv, A.muse_env(self.env, self.home, self.wake_path, seat=runner.seat),
-                                          runner.paths.wake_dir, prompt,
-                                          schema=W.schema_text(self.fleet_tags))
+                                          runner.paths.wake_dir, prompt, schema=schema)
         else:
             argv = A.claude_argv(binary, runner.cfg.model, self.fleet_tags)
             result = self.claude_runner.run(argv, A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat),
                                             runner.paths.wake_dir, prompt)
+        # The primary failed for any reason a fallback could answer differently (a crashed runtime,
+        # an unparseable result, a missing binary).  A quota refusal never falls back:  a capped
+        # provider stays capped whichever binary asks.
+        if result.refused or result.error:
+            fallback = self.run_fallback(runner, prompt, schema, adapter, result.refused or result.error or "")
+            if fallback is not None:
+                self.log.write("wake-fallback-result", seat=runner.seat, wake_id=pending.wake_id,
+                               runtime=runner.cfg.fallback, ok=fallback.ok, exit=fallback.exit,
+                               secs=fallback.secs, models=fallback.models, error=fallback.error)
+                if fallback.ok or fallback.refused or fallback.error:
+                    result = fallback
+                    adapter = runner.cfg.fallback
         self.log.write("wake-run", seat=runner.seat, wake_id=pending.wake_id, exit=result.exit, secs=result.secs,
                        cost=result.cost_usd, refused=result.refused, error=result.error, models=result.models,
+                       limited=result.limited or None, adapter=adapter,
                        stdout_len=result.stdout_len, stderr_len=result.stderr_len, stderr_sha256=result.stderr_sha)
         done = self.clock.time()
         if result.refused or result.error:
             runner.ledger.append(pending.row("failed", done, reason=result.refused or result.error,
                                              cost_usd=result.cost_usd, exit=result.exit, secs=result.secs,
-                                             held_back=held_count))
+                                             held_back=held_count, limited=result.limited or None,
+                                             adapter=adapter))
+            if result.limited:
+                # A quota refusal is not a fault and must not read like one.  The banner names the
+                # provider's own words and its reset, and says the message is in the seat inbox, so
+                # the owner is not left debugging an adapter that is working exactly as built.
+                self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
+                                     "%s wakes are not running: %s" % (
+                                         runner.cfg.provider or "the provider",
+                                         A.clean_banner(result.error or "quota exhausted", 80)),
+                                     kind="wake-limited", key="wake-limited:%s" % (runner.cfg.provider or ""),
+                                     note="the message is in the seat inbox and will be picked up when the "
+                                          "quota resets",
+                                     trigger_ids=pending.trigger_ids)
+                return
             if result.refused or pending.owner:
                 self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
                                      "a wake %s: %s" % ("was refused" if result.refused else "failed",
@@ -1475,7 +1564,8 @@ class Daemon:
         finished = self.clock.time()
         runner.ledger.append(pending.row("done", finished, cost_usd=result.cost_usd, exit=result.exit,
                                          secs=result.secs, action=obj["action"], risk=obj.get("risk"),
-                                         coerced=obj.get("coerced"), invalid=why, held_back=held_count, **outcome))
+                                         coerced=obj.get("coerced"), invalid=why, held_back=held_count,
+                                         adapter=adapter, **outcome))
         self._surface(runner, pending, listed, lost, finished)
 
     def trigger_row(self, runner: SeatRunner, pending: W.Pending) -> dict[str, Any] | None:

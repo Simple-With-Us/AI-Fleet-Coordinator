@@ -417,14 +417,27 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
     if seat_cfg is None or seat_cfg.wake not in ("claude", "muse"):
         raise Z.UsageError("seat %s has no claude or muse wake in %s" % (seat, _config_path(rt)))
     wake_path = rt.env.get("AGENT_SYNC_WAKE_PATH") or A.default_wake_path(home)
-    is_muse = seat_cfg.wake == "muse"
-    # One command verifies either runtime.  The test is the same in both:  the canned hostile
-    # messages must not be obeyed, and nothing may be posted.  What differs is the binary, the
-    # pin file and the runner, so the two can never pass each other's proof.
+    # One command verifies any runtime:  the seat's wake, or the fallback on its own (which is how a
+    # fallback gets verified BEFORE it is ever trusted, exactly like a primary).  The test is the
+    # same in every case:  the canned hostile messages must not be obeyed, and nothing may be posted.
+    # What differs is the binary, the pin file and the runner, so no two runtimes can pass each
+    # other's proof.
+    want = args.runtime
+    if want == "auto":
+        want = seat_cfg.fallback if seat_cfg.wake == "auto" else seat_cfg.wake
+    if want not in ("claude", "muse", "mcode"):
+        raise Z.UsageError("seat %s has no runtime to test (wake = %s)" % (seat, seat_cfg.wake))
+    is_muse = want == "muse"
+    is_mcode = want == "mcode"
     if is_muse:
         found = A.resolve_muse(seat_cfg.muse, wake_path)
         if not found:
             raise Z.UsageError("no muse binary found (seat.%s.muse, else muse on %s)" % (seat, wake_path))
+        binary = A.binary_pin(found)
+    elif is_mcode:
+        found = A.resolve_mcode(seat_cfg.mcode, wake_path)
+        if not found:
+            raise Z.UsageError("no mcode binary found (seat.%s.mcode, else mcode on %s)" % (seat, wake_path))
         binary = A.binary_pin(found)
     else:
         found = A.resolve_claude(seat_cfg.claude, wake_path)
@@ -433,8 +446,8 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
         binary = A.binary_pin(found)  # resolved once:  the binary tested is the binary pinned and run
     paths = L.SeatPaths(root, seat)
     if args.pin:
-        problem = (A.muse_pin_candidate(paths, binary, time.time()) if is_muse
-                   else A.pin_candidate(paths, binary, time.time()))
+        pin_fn = A.mcode_pin_candidate if is_mcode else (A.muse_pin_candidate if is_muse else A.pin_candidate)
+        problem = pin_fn(paths, binary, time.time())
         if problem:
             rt.out("NOT PINNED: %s\n" % problem)
             return 1
@@ -442,6 +455,11 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
             pin = L.read_json(paths.wake_pin_muse)
             rt.out("pinned %s for %s (%s, effort %s); headless wakes are enabled for this binary\n" % (
                 binary, seat, pin.get("model") or seat_cfg.model, pin.get("effort") or A.MUSE_REASONING_EFFORT))
+        elif is_mcode:
+            pin = L.read_json(paths.wake_pin_mcode)
+            rt.out("pinned %s for %s as the FALLBACK (fallback-only:  mcode has no sandbox toggle and no "
+                   "--disable-shell/--disable-write/--disable-web-tools, and cannot be HOME-isolated)\n"
+                   % (binary, seat))
         else:
             pin = L.read_json(paths.wake_pin)
             rt.out("pinned %s for %s (claude agents --json %s); headless wakes are enabled for this binary\n" % (
@@ -462,28 +480,32 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
                             is_bot=lambda uid: bots.get(uid, True), owner_of=lambda m: False, format_time=format_time,
                             board_enabled=False, route=route_gate)
     partition, _ = C.load_partition(C.partition_path(rt.env))
-    argv = (A.muse_argv(binary, seat_cfg.model) if is_muse
-            else A.claude_argv(binary, seat_cfg.model, C.fleet_tags(partition)))
-    env = (A.muse_env(rt.env, home, wake_path, seat=seat) if is_muse
-           else A.claude_env(rt.env, home, wake_path, seat=seat))
-    rt.out("argv:\n%s\n\nenvironment names: %s\ncwd: %s\n\nprompt:\n%s\n" % (
-        json.dumps(argv, indent=1), ", ".join(sorted(env)), paths.wake_dir, prompt))
+    argv = (A.muse_argv(binary, seat_cfg.model) if is_muse else
+            A.mcode_argv(binary) if is_mcode else
+            A.claude_argv(binary, seat_cfg.model, C.fleet_tags(partition)))
+    env = (A.muse_env(rt.env, home, wake_path, seat=seat) if is_muse else
+           A.mcode_env(rt.env, home, wake_path, seat=seat) if is_mcode else
+           A.claude_env(rt.env, home, wake_path, seat=seat))
+    rt.out("runtime: %s\n\nargv:\n%s\n\nenvironment names: %s\ncwd: %s\n\nprompt:\n%s\n" % (
+        want, json.dumps(argv, indent=1), ", ".join(sorted(env)), paths.wake_dir, prompt))
     if not args.run:
-        rt.out("dry run: %s was not started.  Add --run to run it on these canned hostile messages.\n"
-               % ("muse" if is_muse else "claude"))
+        rt.out("dry run: %s was not started.  Add --run to run it on these canned hostile messages.\n" % want)
         return 0
     if is_muse:
         result = A.MuseRunner().run(argv, env, paths.wake_dir, prompt, schema=W.schema_text(C.fleet_tags(partition)))
-        agents_rows = None
         agents_note = "n/a (the muse runtime has no agents listing; lease liveness is pid and start time)"
+    elif is_mcode:
+        result = A.McodeRunner().run(argv, env, paths.wake_dir, prompt, schema=W.schema_text(C.fleet_tags(partition)))
+        agents_note = "n/a (the mcode runtime has no agents listing; lease liveness is pid and start time)"
     else:
         result = A.ClaudeRunner().run(argv, env, paths.wake_dir, prompt)
         agents_text = A.run_agents([binary, "agents", "--json"], env, paths.wake_dir)
         agents_rows = A.parse_agents(agents_text)
         agents_note = "usable (%d rows)" % len(agents_rows) if agents_rows is not None else "not usable"
     obj, why = W.validate(result.parsed) if result.ok else ({}, None)
-    summary = {"refused": result.refused, "error": result.error, "exit": result.exit, "secs": result.secs,
-               "cost_usd": result.cost_usd, "models": result.models, "init_tools": result.init_tools,
+    summary = {"runtime": want, "refused": result.refused, "error": result.error, "exit": result.exit,
+               "secs": result.secs, "cost_usd": result.cost_usd, "models": result.models,
+               "init_tools": result.init_tools, "limited": result.limited or None,
                "invalid": why, "result": obj or None,
                "route": (obj or {}).get("route"), "route_invalid": (obj or {}).get("route_invalid"),
                "route_verdict": "dropped (%s)" % route_gate if (obj or {}).get("route") else "none proposed",
@@ -495,12 +517,15 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
     if passed:
         if is_muse:
             A.record_muse_candidate(paths, binary, time.time(), model=seat_cfg.model)
+        elif is_mcode:
+            A.record_mcode_candidate(paths, binary, time.time(), model=seat_cfg.model)
         else:
             A.record_candidate(paths, binary, time.time(), agents_ok=agents_rows is not None, init_tools=result.init_tools)
         rt.out("PASS, NOT PINNED YET: read the result above (the reply must not obey the hostile messages).  If it "
-               "is right, pin %s with:\n  agent-sync daemon test-wake --seat %s --pin\n" % (binary, seat))
+               "is right, pin %s with:\n  agent-sync daemon test-wake --seat %s --runtime %s --pin\n"
+               % (binary, seat, want))
         return 0
-    rt.out("FAIL: the binary was not pinned; wakes for %s stay inbox-only\n" % seat)
+    rt.out("FAIL: the binary was not pinned; wakes for %s stay on their current runtime\n" % seat)
     return 1
 
 
@@ -646,6 +671,9 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
                          "messages; --pin then pins the binary that passed", dsub)
     q.add_argument("--seat", metavar="S", required=True)
     q.add_argument("--topic", metavar="T")
+    q.add_argument("--runtime", choices=["claude", "muse", "mcode", "fallback"], default="auto",
+                   help="which runtime to test:  the seat's wake, its fallback, or auto (the wake, "
+                        "or the fallback alone when the seat has none)")
     mode = q.add_mutually_exclusive_group()
     mode.add_argument("--run", action="store_true", help="really run the seat's wake runtime (claude or muse; "
                                                      "manual gated test 3); never pins")
