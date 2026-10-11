@@ -59,7 +59,7 @@ node --test test/*.test.mjs                      # no install needed (ci.yml run
 npm ci --ignore-scripts && npm run test:workerd  # one Miniflare flow over the bundled Worker
 ```
 
-- The unit suites run the shared golden fixtures (`scripts/agent_sync/mcp/fixtures.jsonl`:  fence, secret, mentions, schema, error map, inbox and the hosted channel rule) against the hosted tools and a fake Zulip (`test/fake-zulip.mjs`), plus seat binding, spacing, budgets, idempotency and reconcile, 429, audit and leak checks, and the sentence gap against the Python suite's own tables (skipped where `python3` is missing).
+- The unit suites run the shared golden fixtures (`scripts/agent_sync/mcp/fixtures.jsonl`:  fence, secret, mentions, schema, error map, inbox and the hosted channel rule) against the hosted tools and a fake Zulip (`test/fake-zulip.mjs`), plus seat binding, spacing, budgets, idempotency and reconcile, 429, audit and leak checks, the sentence gap against the Python suite's own tables, and the secret scanner against the Python scanner's samples (`test/secretscan-parity.test.mjs`;  both skipped where `python3` is missing).
 - The workerd flow (also in `.github/workflows/agent-sync-mcp.yml`) walks the Phase 0 OAuth flow, checks `tools/list` against `tools.json`, a `seat` argument as a tool error, an unknown tool as a protocol error, the scope challenge, pause, epoch and revoke, then Grok's client metadata document through consent to a `post` as GROK-WEB in `#sandbox` (checked at the fake Zulip:  GROK-WEB's own key, the tag, the sentence gap), a tool error through the real SDK client, and a replayed refresh token pausing the seat.
 
 ## Versions and the two-week rule

@@ -1025,7 +1025,7 @@ Q_COMMENTS = """query BoardComments($id: String!, $first: Int!, $after: String) 
   issue(id: $id) {
     comments(first: $first, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id body createdAt user { name } }
+      nodes { id body createdAt user { id name app } }
     }
   }
 }"""
@@ -1461,8 +1461,14 @@ def parse_comment(c: dict) -> dict:
         where = mm.group(3) or ""
         body = body[mm.end():]
     body = HTML_COMMENT_RE.sub("\n", body).strip()
+    # `author` is the name a reader shows and the seat a tag line claims;  anyone who can write a comment can type a
+    # tag line, so a consumer that has to know WHO wrote it (the needs-owner notifier, for the owner's reply) reads
+    # `author_id` and `author_app`, which are Linear's own account fields and never come from the text.
+    user = c.get("user") or {}
+    author_id = user.get("id") if isinstance(user.get("id"), str) and user.get("id") else None
+    author_app = user.get("app") if isinstance(user.get("app"), bool) else None
     return {"id": c.get("id"), "author": author, "text": body, "where": where,
-            "sessions": sessions, "created_at": c.get("createdAt")}
+            "sessions": sessions, "created_at": c.get("createdAt"), "author_id": author_id, "author_app": author_app}
 
 
 def resolution_of(comments: list[dict]) -> str:

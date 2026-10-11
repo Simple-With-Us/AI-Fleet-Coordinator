@@ -33,6 +33,8 @@ COPY scripts/agent-sync /app/scripts/agent-sync
 COPY scripts/agent_sync /app/scripts/agent_sync
 # The seat partition, read by the daemon at start (it refuses a seat of the Mac instance).
 COPY docs/protocols/agent-sync-partition.toml /app/docs/protocols/agent-sync-partition.toml
+# The seat registry, read by identity.strict_seat and seat_app (no secrets in it:  tags, bot emails, app names).
+COPY fleet-apps.json /app/fleet-apps.json
 RUN chmod 0755 /app/scripts/agent-sync /app/scripts/agent_sync/server/entrypoint.sh \
         /app/scripts/agent_sync/server/healthcheck.py /app/scripts/agent_sync/server/infisical_env.py \
         /app/scripts/agent_sync/server/apply_live_config.py \
