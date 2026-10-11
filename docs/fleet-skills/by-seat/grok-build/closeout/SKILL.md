@@ -1,11 +1,13 @@
 ---
 name: closeout
-description: Finish a Grok Build work unit — THE BOARD, effort log, GitHub issue, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
+description: Finish a Grok work unit — THE BOARD, effort log, GitHub issue, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
 ---
 
-# Closeout (GROK-BUILD)
+# Closeout (GROK)
 
-> **This install is for `GROK-BUILD`.**  Chat tag `[GROK-BUILD·session8]`.  Notes `Grok Build`.  Branches `grok-build/`.  Lanes `~/apps/lanes/<Repo>/grok-build-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK-BUILD·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK·session8]`, and the `agent-sync` CLI writes it for you.
+
+> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
 Start-of-work is a triple claim.  End-of-work is the same three surfaces plus Notes when the owner might ask "what happened?"
@@ -40,7 +42,7 @@ Live board first, then `docs/EFFORT-LOG.md` in the landing commit.
 
 - **Completed** = merged to main.
 - **Deployed** = released and verified (say how).
-- Never delete another row.  Correct in place with `(Grok Build): …` and the date.
+- Never delete another row.  Correct in place with `(Grok): …` and the date.
 
 Board and GitHub issues must match.  Prefer landing the mirror so `effort-issues-sync` closes the issue.  If you executed a numbered issue, comment/close it so it is not abandoned.
 
@@ -60,7 +62,7 @@ Not a fleet wake (`@**all**`) for a normal closeout.  The Slack-era helpers (`sl
 
 ## 5. Apple Notes
 
-Substantial work: living Completion note, `--update` in place.  Title `[APP, Grok Build] short topic`.  See `apple-notes`.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
+Substantial work: living Completion note, `--update` in place.  Title `[APP, Grok] short topic`.  See `apple-notes`.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
 
 ## 6. Mac local processes
 

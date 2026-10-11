@@ -55,6 +55,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, replace as _dc_replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -265,6 +266,10 @@ class Seat:
     branch_prefixes: tuple[str, ...] = ()
     retired: bool = False
     notes_name: str = ""
+    # Registry `aliasPattern`: a case-insensitive ASCII regex, matched against a trimmed AGENT_SEAT, for every
+    # spelling that means this seat (GROK takes any spelling of GROK followed by BUILD, owner 2026-10-10).
+    # An older registry has none, and then only the exact tag matches.
+    alias_pattern: str = ""
 
     def primary_branch_prefix(self) -> str:
         """First slash-terminated branch prefix, without the slash ("" when there is none)."""
@@ -348,7 +353,15 @@ class Registry:
         return None
 
     def seat_by_name(self, tag: str) -> Seat | None:
-        want = tag.strip().lower()
+        """The seat a value in AGENT_SEAT names: a live seat whose `aliasPattern` matches the trimmed value
+        (so GROK-BUILD, Grok (Build) and grok_build all name GROK), else the seat whose tag equals it in any
+        case.  Only live seats take an alias, so the retired GROK-BUILD row never answers for its own name.
+        Folder and branch classification do not come through here and are unchanged."""
+        want = tag.strip()
+        for seat in self.seats:
+            if not seat.retired and seat_alias_matches(seat.alias_pattern, want):
+                return seat
+        want = want.lower()
         for seat in self.seats:
             if seat.name.lower() == want:
                 return seat
@@ -381,6 +394,25 @@ class Registry:
 
 def _as_str(value: object, default: str = "") -> str:
     return value.strip() if isinstance(value, str) else default
+
+
+@lru_cache(maxsize=64)
+def _compiled_alias(pattern: str) -> "re.Pattern[str] | None":
+    """The registry's aliasPattern, compiled case-insensitive and ASCII-only.  A pattern that does not
+    compile is skipped, so one bad row never stops the lane tool from loading."""
+    if not pattern:
+        return None
+    try:
+        return re.compile(pattern, re.IGNORECASE | re.ASCII)
+    except re.error:
+        return None
+
+
+def seat_alias_matches(pattern: str, value: str) -> bool:
+    """True when `value`, trimmed, is a spelling the aliasPattern accepts.  An empty value never matches."""
+    rx = _compiled_alias(pattern)
+    text = value.strip()
+    return bool(rx is not None and text and rx.fullmatch(text))
 
 
 def parse_registry(data: Mapping[str, object], *, include_extras: bool = True, source: str = "") -> Registry:
@@ -426,6 +458,7 @@ def parse_registry(data: Mapping[str, object], *, include_extras: bool = True, s
             branch_prefixes=tuple(b for b in bps if isinstance(b, str) and b) if isinstance(bps, list) else (),
             retired=bool(item.get("retired")),
             notes_name=_as_str(item.get("notesName")),
+            alias_pattern=_as_str(item.get("aliasPattern")),
         ))
     return Registry(
         owner=owner, apps=tuple(apps), seats=tuple(seats),
