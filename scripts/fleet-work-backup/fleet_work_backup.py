@@ -30,6 +30,8 @@ All git access is read-only (GIT_OPTIONAL_LOCKS=0, no fetch, no gc, no ref write
   fleet_work_backup.py check-access --launchd   # ask a one-shot launchd job (the scheduled job's own grants)
   fleet_work_backup.py image                # the executable macOS privacy settings see for this interpreter
   fleet_work_backup.py new-password         # generate the restic password into Infisical, never printed (once)
+  fleet_work_backup.py health --json        # read-only:  installed, loaded, last complete backup, verdict ok/warn/unhealthy
+  fleet_work_backup.py repair --reload      # the one repair:  load the installed LaunchAgent when it is not loaded
   fleet_work_backup.py snapshots            # restic snapshots for this job's tag
   fleet_work_backup.py restic -- <args>     # restic with this job's repo and credentials (restores)
 
@@ -265,6 +267,10 @@ class Config:
     @property
     def detail_log_path(self) -> Path:
         return self.home / "Library" / "Logs" / "fleet-work-backup.detail.log"
+
+    @property
+    def launch_agent_path(self) -> Path:
+        return self.home / "Library" / "LaunchAgents" / f"{JOB_LABEL}.plist"
 
     @property
     def check_plist_path(self) -> Path:
@@ -2953,6 +2959,266 @@ def _run(cfg: Config, args, held: list[int]) -> int:
     return 0
 
 
+# ----------------------------------------------------------------------------- health and repair
+# Two verbs for the Plumbers (BF-Plumber and the F7 publisher run them).  Neither touches the run path.
+# ``health`` reads the state file, the newest run line, the installed files and ``launchctl print``;  it writes
+# nothing.  ``repair --reload`` is the one repair that needs no secret:  it loads the installed LaunchAgent when it
+# is not loaded.  Neither reads the credential names, the handoff file, restic or B2.
+HEALTH_SCHEMA = 1
+HEALTH_WARN_AFTER_S = 12 * 3600           # no complete backup for longer than this:  verdict warn
+HEALTH_UNHEALTHY_AFTER_S = 24 * 3600      # ... for longer than this:  verdict unhealthy
+LAST_LINE_MAX = 600
+LAUNCHCTL_DID_NOT_RUN = 127               # what launchctl() returns when the binary is missing or hangs
+WARN_TOKEN_RX = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+
+
+def tilde(cfg: Config, path: Path) -> str:
+    try:
+        return "~/" + str(path.relative_to(cfg.home))
+    except ValueError:
+        return str(path)
+
+
+def sha256_file(path: Path) -> Optional[str]:
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for block in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(block)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def state_time(value) -> Optional[float]:
+    """A timestamp from state.json, or None when it is missing or not a usable number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def state_count(value) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def state_text(value) -> Optional[str]:
+    return value.strip()[:80] if isinstance(value, str) and value.strip() else None
+
+
+def newest_log_line(cfg: Config) -> str:
+    """The newest non-empty line of the run log (one line per run), read from the tail of the file."""
+    try:
+        with open(cfg.log_path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 64 * 1024))
+            tail = fh.read()
+    except OSError:
+        return ""
+    for raw in reversed(tail.splitlines()):
+        text = raw.decode("utf-8", "replace").strip()
+        if text:
+            return text
+    return ""
+
+
+def safe_run_line(line: str) -> str:
+    """A run line is names and counts only, but it can also carry restic's last error line, so it goes through the
+    same content scan the backup uses and is cut short.  A match withholds the whole line."""
+    if not line:
+        return ""
+    if scan_bytes(line.encode("utf-8")):
+        return "(withheld:  the line matched the secret scan)"
+    return line[:LAST_LINE_MAX]
+
+
+def warn_tokens(line: str) -> list[str]:
+    """The ``warn=`` tokens of a run line, only those shaped like a name (lower case, digits, dot, dash)."""
+    m = re.search(r"(?:^|\s)warn=(\S+)", line)
+    if not m:
+        return []
+    return [t for t in m.group(1).split(",") if WARN_TOKEN_RX.fullmatch(t)]
+
+
+def launchd_loaded(cfg: Config) -> tuple[Optional[bool], int]:
+    """(loaded, exit status of ``launchctl print gui/<uid>/<label>``), the one launchctl verb ``health`` uses.
+    ``loaded`` is None when launchctl itself could not run."""
+    rc = launchctl(cfg, "print", f"gui/{os.getuid()}/{JOB_LABEL}")
+    return (None if rc == LAUNCHCTL_DID_NOT_RUN else rc == 0), rc
+
+
+def launchctl_capture(cfg: Config, *args: str) -> tuple[int, str]:
+    """Like ``launchctl()`` but also returns the first line launchctl printed (stderr first), squeezed and cut short,
+    so a refused bootstrap can say why.  launchctl prints no credential, only the label, a path and an error."""
+    try:
+        p = subprocess.run([cfg.launchctl_bin, *args], capture_output=True, text=True, errors="replace", timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return LAUNCHCTL_DID_NOT_RUN, ""
+    text = (p.stderr.strip() or p.stdout.strip()).splitlines()
+    return p.returncode, re.sub(r"\s+", " ", text[0])[:200] if text else ""
+
+
+def disk_free_gb(cfg: Config) -> Optional[float]:
+    try:
+        return round(shutil.disk_usage(cfg.home).free / 1024 ** 3, 1)
+    except OSError:
+        return None
+
+
+def health_report(cfg: Config) -> dict:
+    """Is the backup installed, loaded and recent?  Read-only.  The state keys it maps are the ones the run path
+    writes:  last_success(_text) is the last snapshot, last_ok_text the last status=ok one, consecutive_not_ok and
+    consecutive_skips the counters, last_check the last restic check, last_alert the last alert sent.  The one key
+    install.py writes is plist_sha256, the hash of the plist it installed (plist_installed_at beside it)."""
+    now = cfg.now()
+    state = read_state(cfg)
+    script = cfg.install_dir / "fleet_work_backup.py"
+    plist = cfg.launch_agent_path
+    script_present, plist_present = script.is_file(), plist.is_file()
+    installed = script_present and plist_present
+    loaded, print_rc = launchd_loaded(cfg)
+
+    last_complete = state_time(state.get("last_success"))
+    last_check = state_time(state.get("last_check"))
+    not_ok = state_count(state.get("consecutive_not_ok"))
+    recorded = state.get("plist_sha256")
+    recorded = recorded if isinstance(recorded, str) else ""
+    sha_ok = bool(recorded) and plist_present and sha256_file(plist) == recorded
+    line = safe_run_line(newest_log_line(cfg))
+    age_s = max(0.0, now - last_complete) if last_complete is not None else None
+
+    def hours(seconds: float) -> str:
+        return f"{seconds / 3600:.1f} hours"
+
+    if not installed:
+        gone = []
+        if not plist_present:
+            gone.append(f"no LaunchAgent plist ({tilde(cfg, plist)})")
+        if not script_present:
+            gone.append(f"no stable copy ({tilde(cfg, script)})")
+        verdict, reason = "unhealthy", "not installed:  " + " and ".join(gone) + "."
+    elif not loaded:
+        why = ("launchctl did not run" if loaded is None
+               else f"launchctl print gui/{os.getuid()}/{JOB_LABEL} exited {print_rc}")
+        verdict, reason = "unhealthy", f"installed but not loaded:  {why}."
+    else:
+        if age_s is None:      # nothing has completed yet:  count from the install, not from a backup that never ran
+            since_install = state_time(state.get("plist_installed_at"))
+            if since_install is None:
+                try:
+                    since_install = plist.stat().st_mtime
+                except OSError:
+                    since_install = now
+            waited = max(0.0, now - since_install)
+            what = f"no complete backup yet, {hours(waited)} after the install"
+        else:
+            waited = age_s
+            what = f"last complete backup {hours(age_s)} ago ({state_text(state.get('last_success_text')) or '?'})"
+        if waited > HEALTH_UNHEALTHY_AFTER_S:
+            verdict = "unhealthy"
+        elif waited > HEALTH_WARN_AFTER_S:
+            verdict = "warn"
+        else:
+            verdict = "ok"
+        reason = what + "." + (f"  {not_ok} runs in a row were not ok." if not_ok and verdict != "ok" else "")
+
+    return {
+        "schema": HEALTH_SCHEMA,
+        "checked_at": now,
+        "checked_text": stamp(now),
+        "verdict": verdict,
+        "reason": reason,
+        "installed": installed,
+        "script_present": script_present,
+        "plist_present": plist_present,
+        "loaded": bool(loaded),
+        "launchctl_rc": print_rc,
+        "last_complete_at": last_complete,
+        "last_complete_text": state_text(state.get("last_success_text")),
+        "last_complete_age_hours": round(age_s / 3600, 1) if age_s is not None else None,
+        "last_ok_text": state_text(state.get("last_ok_text")),
+        "not_ok_in_a_row": not_ok,
+        "skips_in_a_row": state_count(state.get("consecutive_skips")),
+        "last_check_at": last_check,
+        "last_check_age_days": round(max(0.0, now - last_check) / 86400, 1) if last_check is not None else None,
+        "alert_last_sent": state_time(state.get("last_alert")),
+        "last_line": line or None,
+        "warn": warn_tokens(line),
+        "disk_free_gb": disk_free_gb(cfg),
+        "plist_sha_recorded": bool(recorded),
+        "plist_sha_ok": sha_ok,
+    }
+
+
+def cmd_health(cfg: Config, args) -> int:
+    rep = health_report(cfg)
+    if args.json:
+        print(json.dumps(rep, indent=2))
+        return 0
+    say(f"verdict: {rep['verdict']}  ({rep['reason']})")
+    say(f"installed: {'yes' if rep['installed'] else 'no'};  loaded: {'yes' if rep['loaded'] else 'no'};  "
+        f"plist hash matches install: {'yes' if rep['plist_sha_ok'] else 'no'}")
+    say(f"last complete backup: {rep['last_complete_text'] or 'never'};  last status=ok: {rep['last_ok_text'] or 'never'};  "
+        f"not ok in a row: {rep['not_ok_in_a_row']};  skips in a row: {rep['skips_in_a_row']}")
+    say(f"last restic check: {'never' if rep['last_check_age_days'] is None else str(rep['last_check_age_days']) + ' days ago'};  "
+        f"disk free: {'?' if rep['disk_free_gb'] is None else str(rep['disk_free_gb']) + ' GB'};  "
+        f"warn: {','.join(rep['warn']) or '-'}")
+    if rep["last_line"]:
+        say(f"newest run line: {rep['last_line']}")
+    return 0
+
+
+def plist_label(path: Path) -> Optional[str]:
+    try:
+        with open(path, "rb") as fh:
+            data = plistlib.load(fh)
+    except Exception:           # a broken plist is a refusal, whatever parser error it raised
+        return None
+    label = data.get("Label") if isinstance(data, dict) else None
+    return label if isinstance(label, str) else None
+
+
+def repair_reload(cfg: Config) -> tuple[int, str]:
+    """The Plumbers' one repair (owner, Oct 10, 2026:  fix backup failures without asking him).  Only when the
+    job is installed, not loaded, and its plist is byte for byte the one install.py recorded:
+    ``launchctl bootstrap gui/<uid> <installed plist>``, then check again.  Otherwise nothing is done and the
+    message says why.  Never edits the plist, reads credentials, runs restic or B2, or runs install.py.
+    Returns (exit status, message):  0 reloaded or nothing to do, 1 refused, 2 launchctl bootstrap did not load it."""
+    script = cfg.install_dir / "fleet_work_backup.py"
+    plist = cfg.launch_agent_path
+    if not plist.is_file() or not script.is_file():
+        gone = ([] if plist.is_file() else [tilde(cfg, plist)]) + ([] if script.is_file() else [tilde(cfg, script)])
+        return 1, "did nothing:  not installed (missing " + ", ".join(gone) + ").  install.py installs it."
+    loaded, _ = launchd_loaded(cfg)
+    if loaded is None:
+        return 1, "did nothing:  launchctl did not run, so whether the job is loaded is unknown."
+    if loaded:
+        return 0, f"nothing to do:  {JOB_LABEL} is already loaded."
+    recorded = read_state(cfg).get("plist_sha256")
+    if not isinstance(recorded, str) or not recorded:
+        return 1, ("did nothing:  install.py has not recorded a plist hash for this job, so the plist cannot be "
+                   "trusted to reload.  Re-run install.py.")
+    if sha256_file(plist) != recorded:
+        return 1, (f"did nothing:  {tilde(cfg, plist)} is not the plist install.py installed (its hash changed "
+                   f"since).  A person must look at it and re-run install.py.")
+    if plist_label(plist) != JOB_LABEL:
+        return 1, f"did nothing:  {tilde(cfg, plist)} does not carry the label {JOB_LABEL}."
+    domain = f"gui/{os.getuid()}"
+    rc, said = launchctl_capture(cfg, "bootstrap", domain, str(plist))
+    loaded, print_rc = launchd_loaded(cfg)
+    if loaded:
+        return 0, (f"bootstrapped {JOB_LABEL} from {tilde(cfg, plist)};  it is loaded now."
+                   + (f"  (launchctl bootstrap exited {rc}: {said})" if rc else ""))
+    return 2, (f"launchctl bootstrap {domain} {tilde(cfg, plist)} exited {rc}" + (f" ({said})" if said else "")
+               + f" and the job is still not loaded (launchctl print exited {print_rc}).  Nothing else was changed.")
+
+
+def cmd_repair(cfg: Config, args) -> int:
+    code, message = repair_reload(cfg)
+    say(f"repair --reload: {message}")
+    return code
+
+
 def cmd_init(cfg: Config, args) -> int:
     if not restic_path(cfg):
         say("restic is not installed (brew install restic)")
@@ -3053,6 +3319,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     ca.add_argument("--result", help=argparse.SUPPRESS)
     sub.add_parser("image", help="print the executable macOS privacy settings see for this interpreter")
     sub.add_parser("new-password", help="generate the repository password into Infisical, never printing it (once)")
+    hl = sub.add_parser("health", help="read-only:  installed, loaded, last complete backup, and a verdict (ok, warn, unhealthy)")
+    hl.add_argument("--json", action="store_true", help="print the report as JSON")
+    rp = sub.add_parser("repair", help="the one repair:  load the installed LaunchAgent when it is not loaded")
+    rp.add_argument("--reload", action="store_true", required=True,
+                    help="bootstrap com.jay.fleet-work-backup from its installed plist (only when the plist hash matches install)")
     sub.add_parser("snapshots", help="list this job's snapshots")
     rs = sub.add_parser("restic", help="run restic against this job's repository (restores, checks)")
     rs.add_argument("restic_args", nargs=argparse.REMAINDER)
@@ -3063,7 +3334,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             args = ap.parse_args(["run"])
         return cmd_run(cfg, args)
     return {"init": cmd_init, "check-access": cmd_check_access, "snapshots": cmd_snapshots,
-            "restic": cmd_restic, "image": cmd_image, "new-password": cmd_new_password}[args.cmd](cfg, args)
+            "restic": cmd_restic, "image": cmd_image, "new-password": cmd_new_password,
+            "health": cmd_health, "repair": cmd_repair}[args.cmd](cfg, args)
 
 
 if __name__ == "__main__":
