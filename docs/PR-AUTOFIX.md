@@ -29,7 +29,7 @@ permissions: {}
 
 concurrency:
   group: pr-autofix-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   autofix:
