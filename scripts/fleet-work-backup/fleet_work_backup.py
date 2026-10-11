@@ -486,6 +486,7 @@ class Discovery:
     blocked: list[dict] = dataclasses.field(default_factory=list)
     notes: list[str] = dataclasses.field(default_factory=list)
     missing_volumes: list[str] = dataclasses.field(default_factory=list)   # symlinks onto an unmounted /Volumes disk
+    dangling: list[str] = dataclasses.field(default_factory=list)          # folders whose .git points at a gitdir that is gone
 
 
 def git_root_state(path: str) -> str:
@@ -535,6 +536,7 @@ def discover(cfg: Config) -> Discovery:
                     continue
                 if state == "dangling":
                     d.notes.append(f"dangling-gitdir {cur}")
+                    d.dangling.append(cur)
                     continue
             if depth >= max_depth:
                 continue
@@ -1487,14 +1489,17 @@ def snapshot_sqlite(src: str, dst: str) -> bool:
     return True
 
 
-def collect_files(cfg: Config, stage: Stage) -> int:
-    """Stage non-git files under ~/apps (outside any checkout) and the loose files at the top of ~/Code."""
+def collect_files(cfg: Config, stage: Stage, dangling: Iterable[str] = ()) -> int:
+    """Stage non-git files under ~/apps (outside any checkout) and the loose files at the top of ~/Code.  A lane whose
+    .git points at a gitdir that is gone (``git worktree prune`` ran while its disk was unmounted) is no longer a
+    checkout, so its files are kept here too, under the same filters;  the ~/apps walk skips ~/apps/lanes, so those
+    come from ``dangling`` (discovery's list)."""
     count = 0
     skip_real = {os.path.realpath(p) for p in (cfg.lanes, cfg.install_dir, cfg.cache_dir)}
 
     def stage_one(src: str, name: str, rel_to_home: str) -> None:
         nonlocal count
-        if is_skipped_file(name):
+        if is_skipped_file(name) or name == ".git":     # a .git file here points at a gitdir that is gone
             return
         if is_secret_name(rel_to_home):
             stage.dropped.append({"path": src, "stage": "", "reason": "secret-name"})
@@ -1569,6 +1574,11 @@ def collect_files(cfg: Config, stage: Stage) -> int:
 
     if cfg.apps.is_dir():
         walk(cfg.apps)
+    lanes_prefix = str(cfg.lanes) + os.sep
+    for top in sorted(set(dangling)):
+        if top.startswith(lanes_prefix) and os.path.isdir(top):
+            stage.notes.append(f"dangling-worktree-kept-as-files {top}")
+            walk(Path(top))
     if cfg.code.is_dir():
         try:
             for e in sorted(os.scandir(cfg.code), key=lambda e: e.name):
@@ -2582,7 +2592,7 @@ def build_stage(cfg: Config, stage_root: Path, progress: Optional[Callable[[str]
                                sorted(by_common.items())))
     phase(f"processed {len(groups)} repository groups, {sum(1 for g in groups if g.has_work)} with work, "
           f"{fmt_bytes(stage.total())} staged so far")
-    file_count = collect_files(cfg, stage)
+    file_count = collect_files(cfg, stage, disc.dangling)
     phase(f"staged {file_count} non-git files, {fmt_bytes(stage.total())} total")
     gate = run_gate(cfg, stage, progress, use_gitleaks)
     phase(f"gate done, {len(stage.dropped)} dropped, {len(stage.deferred)} deferred, {fmt_bytes(stage.total())} left")
@@ -2793,6 +2803,10 @@ def _run(cfg: Config, args, held: list[int]) -> int:
         warns.append("volume-missing")
         detail.append(f"hint {len(disc.missing_volumes)} lane links point onto a volume that is not mounted:  "
                       f"{disc.missing_volumes[0]}, ...  Their work is not in this snapshot.")
+    if disc.dangling:
+        warns.append("dangling-worktree")
+        detail.append(f"hint {len(disc.dangling)} folders have a .git that points at a gitdir that is gone (a pruned "
+                      f"worktree):  their files are kept as plain files, not as git work.  {disc.dangling[0]}, ...")
     if deferred:
         warns.append("gitleaks-error" if gate.get("gitleaks_error") else "gitleaks-deferred")
     if gate_name == "regex-only":

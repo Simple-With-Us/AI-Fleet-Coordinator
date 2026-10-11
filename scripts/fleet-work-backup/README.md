@@ -275,7 +275,9 @@ disk, so restic itself never reads `/Volumes/External`.
   stashes dirty files staged dropped deferred regex_only gate large blocked snapshot added forget prune
   check elapsed warn grant last_ok`.  `gate` is `gitleaks`, `gitleaks-error` or `regex-only`;  `warn` is a
   comma list (`gitleaks-missing`, `gitleaks-deferred`, `gitleaks-error`, `volume-missing`,
-  `removable-volumes-denied`, `bundle-scan-partial`, `allow-entry-stale`, `restic-unreadable-files`, ...).
+  `removable-volumes-denied`, `bundle-scan-partial`, `allow-entry-stale`, `restic-unreadable-files`,
+  `dangling-worktree` (a folder whose `.git` points at a gitdir that is gone, a lane pruned while its disk was
+  unmounted:  its files are kept as plain files under `files/`, same filters), ...).
 - `~/Library/Logs/fleet-work-backup.detail.log`:  per run, the paths the gate dropped (with reason and the
   `allow-line` to paste), the files it deferred, large files skipped, blocked paths, notes.  Paths only.
 - `.out.log` / `.err.log`:  launchd stdout and stderr.

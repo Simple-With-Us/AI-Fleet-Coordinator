@@ -1488,6 +1488,20 @@ class BundleCase(RunBase):
         stage = self.build()
         self.assertIn("files/apps/pruned/notes.txt", stage.items)
 
+    def test_a_pruned_lane_under_lanes_is_kept_as_plain_files_and_warned(self):
+        lane = self.home / "apps" / "lanes" / "Repo" / "claude-pruned"
+        lane.mkdir(parents=True)
+        (lane / ".git").write_text("gitdir: /nonexistent/gone/.git/worktrees/claude-pruned\n")
+        write(lane / "src" / "work.py", "uncommitted work in a pruned lane\n")
+        write(lane / ".env", f"TOKEN={HIGH}\n")
+        write(lane / "node_modules" / "x.js", "x\n")
+        stage = self.build()
+        self.assertIn("files/apps/lanes/Repo/claude-pruned/src/work.py", stage.items)
+        self.assertFalse([k for k in stage.items if k.endswith(".env") or "node_modules" in k])
+        self.assertIn(str(lane / ".env"), [d["path"] for d in stage.dropped])
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        self.assertIn("dangling-worktree", self.log().splitlines()[-1])
+
     def test_runtime_session_stores_are_skipped_by_default(self):
         a = self.home / "apps"
         write(a / "grok-acp-runtime" / "acp-home" / "sessions" / "s1.json", "{}\n")
