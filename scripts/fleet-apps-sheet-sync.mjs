@@ -144,8 +144,13 @@ function collectASC() {
 const buildsCache = new Map();
 function collectBuilds(appleId) {
   if (buildsCache.has(appleId)) return buildsCache.get(appleId);
-  const builds = queryASC(`/v1/apps/${appleId}/builds?limit=5&fields[builds]=version,expired,uploadedDate,minOsVersion`)?.data || [];
-  const pre = queryASC(`/v1/apps/${appleId}/preReleaseVersions?limit=5&fields[preReleaseVersions]=version,platform`)?.data || [];
+  // A failed query is not "no builds":  throw, so the run ends before any write instead of showing
+  // "(no builds)" for an app that has them.  An app with no builds answers an empty data array.
+  const builds = queryASC(`/v1/apps/${appleId}/builds?limit=5&fields[builds]=version,expired,uploadedDate,minOsVersion`)?.data;
+  const pre = queryASC(`/v1/apps/${appleId}/preReleaseVersions?limit=5&fields[preReleaseVersions]=version,platform`)?.data;
+  if (!Array.isArray(builds) || !Array.isArray(pre)) {
+    throw new Error(`App Store Connect build query failed for app ${appleId}; refusing to rewrite the registry tabs`);
+  }
   const out = { builds, pre };
   buildsCache.set(appleId, out);
   return out;
@@ -378,6 +383,32 @@ function buildIconTab(iconReport, nowIso) {
   return rows;
 }
 
+// The facts file is hand-edited, so check its shape before any builder indexes it:  a typo there must
+// stop the run, not quietly drop a note from the sheet.  No dependency:  this script runs with plain node.
+const FACT_SECTIONS = {
+  ascRecords: (v) => v && typeof v.status === "string" && typeof v.action === "string",
+  appNotes: (v) => typeof v === "string",
+  seatPlatforms: (v) => typeof v === "string",
+  hostedSeats: (v) => v && typeof v.notesName === "string" && typeof v.zulipBotEmail === "string" && typeof v.notes === "string",
+  macWake: (v) => typeof v === "string",
+  unheldWake: (v) => typeof v === "string",
+  linearKeysMissing: (v) => typeof v === "string",
+};
+export function validateFacts(facts) {
+  if (!facts || typeof facts !== "object" || Array.isArray(facts)) throw new Error("fleet-apps-sheet-facts.json is not an object");
+  for (const key of Object.keys(facts)) {
+    if (key === "_comment") continue;
+    const check = FACT_SECTIONS[key];
+    if (!check) throw new Error(`fleet-apps-sheet-facts.json has an unknown section "${key}"`);
+    const section = facts[key];
+    if (!section || typeof section !== "object" || Array.isArray(section)) throw new Error(`facts.${key} is not an object`);
+    for (const [k, v] of Object.entries(section)) {
+      if (!check(v)) throw new Error(`facts.${key}.${k} has the wrong shape`);
+    }
+  }
+  return facts;
+}
+
 // ---------------------------------------------------------------- fleet apps + seats
 
 // Tiny readers for the three non-JSON sources.  Each is a regex over a file this repo owns, guarded by tests,
@@ -561,7 +592,7 @@ async function ensureTab(meta, title) {
 // script owns are ever passed here.
 async function writeTab(title, rows) {
   if (rows.length === 0) throw new Error(`refusing to write an empty ${title} tab`);
-  await sheetsApi(`/values/${encodeURIComponent(`${title}!A1:Z2000`)}:clear`, { method: "POST", body: JSON.stringify({}) });
+  await sheetsApi(`/values/${encodeURIComponent(`${title}!A1:Z${FORMAT_ROW_COUNT}`)}:clear`, { method: "POST", body: JSON.stringify({}) });
   const range = `${title}!A1:Z${rows.length}`;
   await sheetsApi(`/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
     method: "PUT",
@@ -671,7 +702,10 @@ export function isScriptEntryPoint(entryPath = process.argv[1]) {
 
 function toMarkdownTable(headers, rows) {
   if (!headers || headers.length === 0) return "";
-  const escapeCell = (c) => String(c ?? "").replace(/\r?\n/g, "<br>").replace(/\|/g, "\\|");
+  // Cell text comes from apps.json and App Store Connect.  Neutralise HTML before adding the <br> line
+  // breaks, so a name can never inject markup into the mirror or the Fleet RAG index.
+  const escapeCell = (c) => String(c ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/\r?\n/g, "<br>").replace(/\|/g, "\\|");
   const headerLine = `| ${headers.map(escapeCell).join(" | ")} |`;
   const separatorLine = `| ${headers.map(() => "---").join(" | ")} |`;
   const dataLines = rows.map(r => `| ${headers.map((_, i) => escapeCell(r[i] ?? "")).join(" | ")} |`);
@@ -775,7 +809,7 @@ async function main() {
   console.log("1. Reading sources...");
   const appsData = JSON.parse(readFileSync(APPS_JSON_PATH, "utf8"));
   const rules = JSON.parse(readFileSync(RULES_PATH, "utf8"));
-  const facts = JSON.parse(readFileSync(FACTS_PATH, "utf8"));
+  const facts = validateFacts(JSON.parse(readFileSync(FACTS_PATH, "utf8")));
   const fleetApps = JSON.parse(readFileSync(FLEET_APPS_PATH, "utf8"));
   const partition = parsePartition(readFileSync(PARTITION_PATH, "utf8"));
   const serverSeats = parseServerListener(readFileSync(SERVER_LISTENER_PATH, "utf8"));
