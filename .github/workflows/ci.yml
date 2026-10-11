@@ -162,6 +162,12 @@ jobs:
       run: |
         python3 scripts/test_check_infisical_env.py
         python3 scripts/check-infisical-env.py
+    # fleet-telemetry-relay: transform mappings against recorded payloads,
+    # secretscan redaction parity, Coolify env-name inventory, and a stubbed
+    # configure-agents.sh (never talks to Infisical or writes under $HOME).
+    - name: fleet-telemetry-relay tests
+      run: |
+        cd telemetry-relay && PYTHONPATH=tests python3 -m unittest discover -s tests -t tests -v
     - name: Set up Node
       uses: actions/setup-node@v7
       with:

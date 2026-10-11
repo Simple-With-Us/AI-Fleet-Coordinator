@@ -96,6 +96,30 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 
 <!-- fleet-knobs:end -->
 
+## Telemetry relay (Coolify)
+
+`telemetry-relay/` is a Coolify-hosted otelcol-contrib.  Its secrets live in this
+project, `prod`, and are copied into the Coolify service env by name (see
+`telemetry-relay/COOLIFY.md`).  They are not fleet knobs and are not in the
+generated block above.  Names only:
+
+| Key | Kind | Who sets it |
+|---|---|---|
+| `SENTRY_FLEET_OTLP_ENDPOINT` | config (URL) | Jay, from Sentry `fleet-infra` Client Keys > OTLP |
+| `SENTRY_FLEET_OTLP_KEY` | secret | Jay, same page (OTLP `sentry_key`) |
+| `USAGE_MONITOR_OTLP_METRICS_ENDPOINT` | config (URL) | Jay, Usage-Monitor `/api/otlp/v1/metrics` |
+| `USAGE_MONITOR_OTLP_TRACES_ENDPOINT` | config (URL) | Jay, Usage-Monitor `/api/otlp/v1/traces` (parallel task) |
+| `USAGE_MONITOR_INGEST_TOKEN` | secret | Jay, Usage-Monitor ingest bearer |
+| `RELAY_BEARER_CLAUDE_CODE` | secret | Jay, generated (`openssl rand -hex 32`) |
+| `RELAY_BEARER_CODEX` | secret | Jay, generated |
+| `RELAY_BEARER_GROK` | secret | Jay, generated |
+| `RELAY_BEARER_SHIM` | secret | Jay, generated |
+| `RELAY_BASE_URL` | config (URL) | Jay, the relay's public or tailnet base (no port) |
+
+`scripts/telemetry/configure-agents.sh` pulls the bearer names and
+`RELAY_BASE_URL` from Infisical (`--env=prod`) and writes 0600 snippets only; it
+is shipped, never run against Jay's Mac, and prints no secret values.
+
 ## Rotation
 
 Set a new value in the Infisical UI/API, or `POST /admin/settings` (write-through, immediate).  Background refresh picks UI/API changes up within `SETTINGS_REFRESH_SECONDS`; `POST /admin/reload-settings` or `SIGHUP` forces it now.  Rotating `RECALL_API_TOKEN` requires distributing the new bearer to the seats (coordinate via the board) — the old token stops working as soon as the refresh lands.  Never print, echo, or log a value; verify with key names and the `set`/`empty` flags from `GET /admin/settings` only.

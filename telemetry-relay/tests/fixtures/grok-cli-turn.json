@@ -1,0 +1,1 @@
+{"event":"turn","note":"Representative Grok CLI telemetry record (telemetry.* reference; nothing reaches Sentry today, audit B.3). Benign values only.","resource":{"service.name":"grok-cli"},"attributes":{"event.name":"grok.turn.completed","model":"grok-4-7","session.id":"session-201","input_tokens":3100,"output_tokens":420,"cost_usd":0.012,"duration_ms":9800,"tool_name":"read"}}

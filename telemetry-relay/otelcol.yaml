@@ -1,0 +1,408 @@
+# telemetry-relay/otelcol.yaml — fleet-telemetry-relay (audit section C item 1).
+#
+# One OTLP endpoint per producer, each with its own bearer token, so retargeting
+# (for example agent-sessions -> fleet-infra) is a relay config change and never
+# N edits across laptops and VMs.  The existing agent-sessions producers are
+# untouched:  cutover is a later config change (audit section D.1).
+#
+# Flow per record:  receiver -> memory_limiter -> filter (drop hook noise, logs
+# only) -> transform (vendor attrs -> OTel gen_ai semconv, plus resource attrs
+# platform/seat/lane/repo passthrough and signal=agent) -> redaction (secret
+# patterns transcribed from scripts/agent_sync/secretscan.py; prompts and
+# responses stay, secrets do not) -> batch -> exporters.
+#
+# Sinks:  traces + logs -> Sentry fleet-infra OTLP; metrics + turn records ->
+# Usage-Monitor /api/otlp/v1/metrics and /api/otlp/v1/traces (the traces route
+# lands in a parallel Usage-Monitor task; until then the collector drops those
+# 404s without a retry storm, and metrics flow normally).  Token/cost sums are
+# computed downstream in Usage-Monitor, not in-collector.
+#
+# Sentry reserves the resource attributes "project" and "organization.id":  this
+# config never sets them (a test pins that).  Sentry also drops span events, so
+# turn-level detail rides on span attributes, which Usage-Monitor persists.
+#
+# Every secret below arrives as ${env:NAME}.  An unset bearer fails closed (its
+# receiver rejects everything).  See COOLIFY.md for the names Jay must set.
+
+extensions:
+  # One bearer per producer (audit B.4).  Values are Coolify/Infisical secrets.
+  bearertokenauth/claude:
+    token: "${env:RELAY_BEARER_CLAUDE_CODE}"
+  bearertokenauth/codex:
+    token: "${env:RELAY_BEARER_CODEX}"
+  bearertokenauth/grok:
+    token: "${env:RELAY_BEARER_GROK}"
+  bearertokenauth/shim:
+    token: "${env:RELAY_BEARER_SHIM}"
+  health_check:
+    endpoint: "0.0.0.0:13133"
+
+receivers:
+  # Claude Code native OTLP (metrics+logs+traces).  Default Claude endpoint port.
+  otlp/claude:
+    protocols:
+      http:
+        endpoint: "0.0.0.0:4318"
+        auth:
+          authenticator: bearertokenauth/claude
+  # Codex CLI native [otel] exporter.
+  otlp/codex:
+    protocols:
+      http:
+        endpoint: "0.0.0.0:4319"
+        auth:
+          authenticator: bearertokenauth/codex
+  # Grok CLI native telemetry.* exporter.
+  otlp/grok:
+    protocols:
+      http:
+        endpoint: "0.0.0.0:4320"
+        auth:
+          authenticator: bearertokenauth/grok
+  # Hook shim v2 (Cursor IDE + Cloud Agents, Antigravity, Copilot) and any
+  # future OTel producer (BotFleet/Clutch second exporter).
+  otlp/shim:
+    protocols:
+      http:
+        endpoint: "0.0.0.0:4321"
+        auth:
+          authenticator: bearertokenauth/shim
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # hook_execution_* logs are ~51% of agent-sessions volume (audit B.2) and carry
+  # no turn signal; idle_poll.command_class is the same PreToolUse hook noise.
+  filter/drop-noise:
+    error_mode: ignore
+    logs:
+      log_record:
+        - 'IsMatch(attributes["event.name"], "^hook_execution_")'
+        - 'attributes["event.name"] == "idle_poll.command_class"'
+
+  # Claude Code: observed agent-sessions attrs are model, session.id,
+  # input_tokens, output_tokens, cost_usd, duration_ms, tool_name, prompt and
+  # prompt_length (audit B.2).  Every mapping is where-guarded, so records from
+  # a newer Claude schema pass through unmapped instead of erroring.
+  transform/claude:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - set(attributes["signal"], "agent")
+          - set(attributes["platform"], "claude-code")
+      - context: span
+        statements:
+          - set(attributes["gen_ai.agent.name"], "claude-code")
+          - set(attributes["gen_ai.request.model"], attributes["model"]) where attributes["model"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session.id"]) where attributes["session.id"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session_id"]) where attributes["gen_ai.conversation.id"] == nil and attributes["session_id"] != nil
+          - set(attributes["gen_ai.usage.input_tokens"], attributes["input_tokens"]) where attributes["input_tokens"] != nil
+          - set(attributes["gen_ai.usage.output_tokens"], attributes["output_tokens"]) where attributes["output_tokens"] != nil
+          - set(attributes["gen_ai.usage.cost"], attributes["cost_usd"]) where attributes["cost_usd"] != nil
+          - set(attributes["turn.duration_ms"], attributes["duration_ms"]) where attributes["duration_ms"] != nil
+          - set(attributes["gen_ai.tool.name"], attributes["tool_name"]) where attributes["tool_name"] != nil
+    log_statements:
+      - context: resource
+        statements:
+          - set(attributes["signal"], "agent")
+          - set(attributes["platform"], "claude-code")
+      - context: log
+        statements:
+          - set(attributes["gen_ai.agent.name"], "claude-code")
+          - set(attributes["gen_ai.request.model"], attributes["model"]) where attributes["model"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session.id"]) where attributes["session.id"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session_id"]) where attributes["gen_ai.conversation.id"] == nil and attributes["session_id"] != nil
+          - set(attributes["gen_ai.usage.input_tokens"], attributes["input_tokens"]) where attributes["input_tokens"] != nil
+          - set(attributes["gen_ai.usage.output_tokens"], attributes["output_tokens"]) where attributes["output_tokens"] != nil
+          - set(attributes["gen_ai.usage.cost"], attributes["cost_usd"]) where attributes["cost_usd"] != nil
+          - set(attributes["turn.duration_ms"], attributes["duration_ms"]) where attributes["duration_ms"] != nil
+          - set(attributes["gen_ai.tool.name"], attributes["tool_name"]) where attributes["tool_name"] != nil
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["signal"], "agent")
+          - set(attributes["platform"], "claude-code")
+
+  # Codex CLI: only agent_communication + internal otel events have been observed
+  # (audit B.2), so api/token/tool attr names are carried defensively under the
+  # same generic names; unmapped records pass through.
+  transform/codex:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - set(attributes["signal"], "agent")
+          - set(attributes["platform"], "codex")
+      - context: span
+        statements:
+          - set(attributes["gen_ai.agent.name"], "codex")
+          - set(attributes["gen_ai.request.model"], attributes["model"]) where attributes["model"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session.id"]) where attributes["session.id"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session_id"]) where attributes["gen_ai.conversation.id"] == nil and attributes["session_id"] != nil
+          - set(attributes["gen_ai.usage.input_tokens"], attributes["input_tokens"]) where attributes["input_tokens"] != nil
+          - set(attributes["gen_ai.usage.output_tokens"], attributes["output_tokens"]) where attributes["output_tokens"] != nil
+          - set(attributes["gen_ai.usage.cost"], attributes["cost_usd"]) where attributes["cost_usd"] != nil
+          - set(attributes["turn.duration_ms"], attributes["duration_ms"]) where attributes["duration_ms"] != nil
+          - set(attributes["gen_ai.tool.name"], attributes["tool_name"]) where attributes["tool_name"] != nil
+    log_statements:
+      - context: resource
+        statements:
+          - set(attributes["signal"], "agent")
+          - set(attributes["platform"], "codex")
+      - context: log
+        statements:
+          - set(attributes["gen_ai.agent.name"], "codex")
+          - set(attributes["gen_ai.request.model"], attributes["model"]) where attributes["model"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session.id"]) where attributes["session.id"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session_id"]) where attributes["gen_ai.conversation.id"] == nil and attributes["session_id"] != nil
+          - set(attributes["gen_ai.usage.input_tokens"], attributes["input_tokens"]) where attributes["input_tokens"] != nil
+          - set(attributes["gen_ai.usage.output_tokens"], attributes["output_tokens"]) where attributes["output_tokens"] != nil
+          - set(attributes["gen_ai.usage.cost"], attributes["cost_usd"]) where attributes["cost_usd"] != nil
+          - set(attributes["turn.duration_ms"], attributes["duration_ms"]) where attributes["duration_ms"] != nil
+          - set(attributes["gen_ai.tool.name"], attributes["tool_name"]) where attributes["tool_name"] != nil
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["signal"], "agent")
+          - set(attributes["platform"], "codex")
+
+  # Grok CLI: nothing reaches Sentry today (audit B.3); attr names follow the
+  # telemetry.* reference with the same defensive guards as Codex.
+  transform/grok:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - set(attributes["signal"], "agent")
+          - set(attributes["platform"], "grok-cli")
+      - context: span
+        statements:
+          - set(attributes["gen_ai.agent.name"], "grok-cli")
+          - set(attributes["gen_ai.request.model"], attributes["model"]) where attributes["model"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session.id"]) where attributes["session.id"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session_id"]) where attributes["gen_ai.conversation.id"] == nil and attributes["session_id"] != nil
+          - set(attributes["gen_ai.usage.input_tokens"], attributes["input_tokens"]) where attributes["input_tokens"] != nil
+          - set(attributes["gen_ai.usage.output_tokens"], attributes["output_tokens"]) where attributes["output_tokens"] != nil
+          - set(attributes["gen_ai.usage.cost"], attributes["cost_usd"]) where attributes["cost_usd"] != nil
+          - set(attributes["turn.duration_ms"], attributes["duration_ms"]) where attributes["duration_ms"] != nil
+          - set(attributes["gen_ai.tool.name"], attributes["tool_name"]) where attributes["tool_name"] != nil
+    log_statements:
+      - context: resource
+        statements:
+          - set(attributes["signal"], "agent")
+          - set(attributes["platform"], "grok-cli")
+      - context: log
+        statements:
+          - set(attributes["gen_ai.agent.name"], "grok-cli")
+          - set(attributes["gen_ai.request.model"], attributes["model"]) where attributes["model"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session.id"]) where attributes["session.id"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session_id"]) where attributes["gen_ai.conversation.id"] == nil and attributes["session_id"] != nil
+          - set(attributes["gen_ai.usage.input_tokens"], attributes["input_tokens"]) where attributes["input_tokens"] != nil
+          - set(attributes["gen_ai.usage.output_tokens"], attributes["output_tokens"]) where attributes["output_tokens"] != nil
+          - set(attributes["gen_ai.usage.cost"], attributes["cost_usd"]) where attributes["cost_usd"] != nil
+          - set(attributes["turn.duration_ms"], attributes["duration_ms"]) where attributes["duration_ms"] != nil
+          - set(attributes["gen_ai.tool.name"], attributes["tool_name"]) where attributes["tool_name"] != nil
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["signal"], "agent")
+          - set(attributes["platform"], "grok-cli")
+
+  # Hook shim v2: field names are the audit B.3 contract (afterAgentResponse
+  # token counts + response, stop status/loop count, pre/postToolUse(+Failure),
+  # subagentStart/Stop, sessionStart/End, conversation_id/generation_id).
+  # platform defaults to hook-shim but a producer-set value wins, so Cursor,
+  # Antigravity and Copilot stay distinguishable without a config change.
+  transform/shim:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - set(attributes["signal"], "agent")
+          - set(attributes["platform"], "hook-shim") where attributes["platform"] == nil
+      - context: span
+        statements:
+          - set(attributes["gen_ai.agent.name"], attributes["platform"]) where attributes["platform"] != nil
+          - set(attributes["gen_ai.request.model"], attributes["model"]) where attributes["model"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["conversation_id"]) where attributes["conversation_id"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session.id"]) where attributes["gen_ai.conversation.id"] == nil and attributes["session.id"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session_id"]) where attributes["gen_ai.conversation.id"] == nil and attributes["session_id"] != nil
+          - set(attributes["gen_ai.usage.input_tokens"], attributes["input_tokens"]) where attributes["input_tokens"] != nil
+          - set(attributes["gen_ai.usage.output_tokens"], attributes["output_tokens"]) where attributes["output_tokens"] != nil
+          - set(attributes["gen_ai.usage.cost"], attributes["cost_usd"]) where attributes["cost_usd"] != nil
+          - set(attributes["turn.duration_ms"], attributes["duration_ms"]) where attributes["duration_ms"] != nil
+          - set(attributes["gen_ai.tool.name"], attributes["tool_name"]) where attributes["tool_name"] != nil
+          - set(attributes["turn.generation_id"], attributes["generation_id"]) where attributes["generation_id"] != nil
+    log_statements:
+      - context: resource
+        statements:
+          - set(attributes["signal"], "agent")
+          - set(attributes["platform"], "hook-shim") where attributes["platform"] == nil
+      - context: log
+        statements:
+          - set(attributes["gen_ai.agent.name"], attributes["platform"]) where attributes["platform"] != nil
+          - set(attributes["gen_ai.request.model"], attributes["model"]) where attributes["model"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["conversation_id"]) where attributes["conversation_id"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session.id"]) where attributes["gen_ai.conversation.id"] == nil and attributes["session.id"] != nil
+          - set(attributes["gen_ai.conversation.id"], attributes["session_id"]) where attributes["gen_ai.conversation.id"] == nil and attributes["session_id"] != nil
+          - set(attributes["gen_ai.usage.input_tokens"], attributes["input_tokens"]) where attributes["input_tokens"] != nil
+          - set(attributes["gen_ai.usage.output_tokens"], attributes["output_tokens"]) where attributes["output_tokens"] != nil
+          - set(attributes["gen_ai.usage.cost"], attributes["cost_usd"]) where attributes["cost_usd"] != nil
+          - set(attributes["turn.duration_ms"], attributes["duration_ms"]) where attributes["duration_ms"] != nil
+          - set(attributes["gen_ai.tool.name"], attributes["tool_name"]) where attributes["tool_name"] != nil
+          - set(attributes["turn.generation_id"], attributes["generation_id"]) where attributes["generation_id"] != nil
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["signal"], "agent")
+          - set(attributes["platform"], "hook-shim") where attributes["platform"] == nil
+
+  # Secret scrubbing that keeps prompts: every blocked_values entry is a
+  # transcription of a scripts/agent_sync/secretscan.py pattern into RE2 (no
+  # lookarounds; the Zulip-shaped heuristic needs code and is documented there
+  # instead).  A parity test pins the two lists together.  Attribute values that
+  # match are replaced with [REDACTED]; prompt/response text without secrets
+  # passes through (Jay approved prompts).  Log bodies are not scanned by this
+  # processor, so producers must carry prompt/response as attributes.
+  redaction:
+    allow_all_keys: true
+    summary: debug
+    blocked_values:
+      - '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+      - '\b(AKIA|ASIA)[0-9A-Z]{16}\b'
+      - '\bgh[pousr]_[A-Za-z0-9]{30,}\b'
+      - '\bgithub_pat_[A-Za-z0-9_]{40,}\b'
+      - '\bsk-(ant-)?[A-Za-z0-9_-]{20,}\b'
+      - '\bxox[abposr]-[A-Za-z0-9-]{10,}\b'
+      - '\bglpat-[A-Za-z0-9_-]{20,}\b'
+      - '\bAIza[0-9A-Za-z_-]{35}\b'
+      - '\b(sk|rk)_(live|test)_[A-Za-z0-9]{16,}\b'
+      - '\blin_(api|oauth|wh)_[A-Za-z0-9]{20,}'
+      - '(?i)\blinear[\w -]{0,24}secret\s*[=:]\s*[''"]?[A-Za-z0-9]{24,}'
+      - '\bsntry[su]_[A-Za-z0-9+/=_-]{20,}'
+      - '\bxai-[A-Za-z0-9]{20,}'
+      - '\bst\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}'
+      - '(?i)\binfisical[\w .-]{0,40}?(token|secret)[''"]?\s*[=:]\s*[''"]?[A-Za-z0-9+/=._-]{24,}'
+      - '\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+      - '\bcf(ut|at|k)_[A-Za-z0-9]{30,}'
+      - '(?i)\bcloudflare[\w ]{0,24}(token|key)\s*[=:]\s*[''"]?[A-Za-z0-9_-]{37,}'
+      - '(^|[^A-Za-z0-9])[0-9]{1,5}\|[A-Za-z0-9]{36,}([^A-Za-z0-9]|$)'
+      - '\b[A-Z][A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_?KEY)\s*=\s*[''"]?[A-Za-z0-9+/=._-]{16,}'
+      - '(?i)\bauthorization:\s*(basic|bearer)\s+[A-Za-z0-9+/=._-]{16,}'
+      - '(?i)\b(api[_-]?key|secret|token|password)\s*[=:]\s*[''"]?[A-Za-z0-9+/=._-]{16,}'
+
+  batch: {}
+
+connectors:
+  # Turn duration + call counts from spans, split by producer.  Token and cost
+  # sums are computed downstream in Usage-Monitor (AgentTurn table), which sees
+  # the mapped gen_ai.usage.* attributes on each span.
+  spanmetrics:
+    dimensions:
+      - name: platform
+      - name: signal
+      - name: gen_ai.request.model
+      - name: gen_ai.agent.name
+  # Relay self-monitoring: raw span/log volume by platform.
+  count:
+    spans:
+      relay.spans:
+        description: Spans received by the relay, split by producer platform.
+        attributes:
+          - key: platform
+    logs:
+      relay.logs:
+        description: Log records received by the relay, split by producer platform.
+        attributes:
+          - key: platform
+
+exporters:
+  # Sentry fleet-infra, combined OTLP endpoint (the collector appends
+  # /v1/traces and /v1/logs).  Endpoint + public key from the fleet-infra
+  # project settings (Client Keys / OTLP); see COOLIFY.md.
+  otlphttp/sentry:
+    endpoint: "${env:SENTRY_FLEET_OTLP_ENDPOINT}"
+    headers:
+      x-sentry-auth: "sentry sentry_key=${env:SENTRY_FLEET_OTLP_KEY}"
+    compression: gzip
+    encoding: proto
+  # Usage-Monitor metrics (existing /api/otlp/v1/metrics).  Full URL, not a
+  # base:  Jay can retarget without a config edit.
+  otlphttp/usage-monitor-metrics:
+    metrics_endpoint: "${env:USAGE_MONITOR_OTLP_METRICS_ENDPOINT}"
+    headers:
+      Authorization: "Bearer ${env:USAGE_MONITOR_INGEST_TOKEN}"
+    compression: gzip
+    encoding: proto
+  # Usage-Monitor turn records (parallel task adds /api/otlp/v1/traces).  A
+  # separate env so Jay can point it at the new route when it lands, or at a
+  # discard URL until then.  4xx except 429 are not retried.
+  otlphttp/usage-monitor-traces:
+    traces_endpoint: "${env:USAGE_MONITOR_OTLP_TRACES_ENDPOINT}"
+    headers:
+      Authorization: "Bearer ${env:USAGE_MONITOR_INGEST_TOKEN}"
+    compression: gzip
+    encoding: proto
+
+service:
+  extensions: [bearertokenauth/claude, bearertokenauth/codex, bearertokenauth/grok, bearertokenauth/shim, health_check]
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces/claude:
+      receivers: [otlp/claude]
+      processors: [memory_limiter, transform/claude, redaction, batch]
+      exporters: [spanmetrics, count, otlphttp/sentry, otlphttp/usage-monitor-traces]
+    logs/claude:
+      receivers: [otlp/claude]
+      processors: [memory_limiter, filter/drop-noise, transform/claude, redaction, batch]
+      exporters: [count, otlphttp/sentry]
+    metrics/claude:
+      receivers: [otlp/claude]
+      processors: [memory_limiter, transform/claude, batch]
+      exporters: [otlphttp/usage-monitor-metrics]
+    traces/codex:
+      receivers: [otlp/codex]
+      processors: [memory_limiter, transform/codex, redaction, batch]
+      exporters: [spanmetrics, count, otlphttp/sentry, otlphttp/usage-monitor-traces]
+    logs/codex:
+      receivers: [otlp/codex]
+      processors: [memory_limiter, filter/drop-noise, transform/codex, redaction, batch]
+      exporters: [count, otlphttp/sentry]
+    metrics/codex:
+      receivers: [otlp/codex]
+      processors: [memory_limiter, transform/codex, batch]
+      exporters: [otlphttp/usage-monitor-metrics]
+    traces/grok:
+      receivers: [otlp/grok]
+      processors: [memory_limiter, transform/grok, redaction, batch]
+      exporters: [spanmetrics, count, otlphttp/sentry, otlphttp/usage-monitor-traces]
+    logs/grok:
+      receivers: [otlp/grok]
+      processors: [memory_limiter, filter/drop-noise, transform/grok, redaction, batch]
+      exporters: [count, otlphttp/sentry]
+    metrics/grok:
+      receivers: [otlp/grok]
+      processors: [memory_limiter, transform/grok, batch]
+      exporters: [otlphttp/usage-monitor-metrics]
+    traces/shim:
+      receivers: [otlp/shim]
+      processors: [memory_limiter, transform/shim, redaction, batch]
+      exporters: [spanmetrics, count, otlphttp/sentry, otlphttp/usage-monitor-traces]
+    logs/shim:
+      receivers: [otlp/shim]
+      processors: [memory_limiter, filter/drop-noise, transform/shim, redaction, batch]
+      exporters: [count, otlphttp/sentry]
+    metrics/shim:
+      receivers: [otlp/shim]
+      processors: [memory_limiter, transform/shim, batch]
+      exporters: [otlphttp/usage-monitor-metrics]
+    metrics/derived:
+      receivers: [spanmetrics, count]
+      processors: [batch]
+      exporters: [otlphttp/usage-monitor-metrics]
