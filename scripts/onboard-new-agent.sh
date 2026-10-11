@@ -234,5 +234,6 @@ echo "  6. Listener: docs/protocols/agent-sync-partition.toml must list $TAG as 
 echo "     PR that enables it and with Jay's OK.  A listener refuses a seat the file does not give to"
 echo "     its own instance, and a seat must never be in both."
 echo "  7. Add the seat to the Who's Here roster in docs/protocols/zulip-fleet-guide.md (mention, bot"
-echo "     email, file code), and a row to the AGENT-SYNC.md Active Seats table if this is a standing seat"
+echo "     email, file code), and a row to the Active Seats table if this is a standing seat:  that table is in"
+echo "     Fleet-OPS handbook/core/seats-and-identity.md, changed by pull request, never by editing AGENT-SYNC.md"
 echo "  8. See docs/ONBOARDING-NEW-AGENT.md"

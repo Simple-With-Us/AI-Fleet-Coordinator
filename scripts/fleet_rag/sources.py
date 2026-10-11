@@ -8,7 +8,9 @@ Sources (payload `source` value):
   board          ~/apps/mac-collab/findings.db   (read-only sqlite; findings + comments)
   effort-log     ~/apps/*-EFFORT-LOG.md + EFFORT-LOG-PROTOCOL.md
   doc            markdown in fleet app repos (README/AGENTS/STATUS/CLAUDE + docs/**/*.md),
-                 AI-Fleet-Coordinator, fleet-ops, top-level ~/apps/*.md (not effort logs),
+                 AI-Fleet-Coordinator, fleet-ops (its handbook/ pages too, private ones only:  the
+                 public ones are the text of the live AGENT-SYNC.md, which is ingested once),
+                 top-level ~/apps/*.md (not effort logs),
                  ~/.claude/CLAUDE.md, ~/.grok/docs/**/*.md, ~/.grok/skills/**/SKILL.md
   skill          ~/.claude/skills/*/SKILL.md and ~/.cursor/skills/*/SKILL.md
                  (doc_id skill/<tree>/<name>; byte-identical copies collapse to the first tree)
@@ -74,12 +76,14 @@ DOC_APP_REPOS = (
 # Doc-walk mirror rules (2026-09-02).  The same text used to be ingested several times over:
 # the live ~/apps copy AND the AI-Fleet-Coordinator mirror of a protocol file, every by-seat /
 # universal / dot-dir copy of a skill on top of the skill source, and each repo's
-# docs/EFFORT-LOG.md mirror on top of the effort-log source.  mirror_skip_reason() names the
+# docs/EFFORT-LOG.md mirror on top of the effort-log source, and (2026-10-11) the Fleet-OPS handbook/ pages that
+# build the live AGENT-SYNC.md.  mirror_skip_reason() names the
 # rule that drops a file; iter_docs logs a per-rule summary through warn().
 SKILL_TREE_DIRS = frozenset({".claude", ".cursor", ".grok"})
 SKIP_APPS_MIRROR = "apps-mirror"            # (a) live ~/apps copy is canonical
 SKIP_SKILL_COPY = "skill-copy"              # (b) covered by the skill source
 SKIP_EFFORT_LOG = "effort-log-mirror"       # (c) covered by the effort-log source
+SKIP_HANDBOOK_MIRROR = "handbook-mirror"    # (d) Fleet-OPS generated/ and public handbook pages: the live AGENT-SYNC.md
 DOC_SKIPS: list[tuple[str, str]] = []
 
 
@@ -491,8 +495,52 @@ def _under(p: pathlib.Path, roots: Iterable[pathlib.Path]) -> bool:
     return False
 
 
+def _rel_under(p: pathlib.Path, roots: Iterable[pathlib.Path]) -> pathlib.PurePath | None:
+    """`p` relative to the first of `roots` that holds it, both spelled the way the disk spells them (so a
+    case-variant spelling of fleet-ops / Fleet-OPS on APFS still matches), or None."""
+    try:
+        cp = canonical_path(p)
+    except OSError:
+        return None
+    for r in roots:
+        try:
+            return cp.relative_to(canonical_path(r))
+        except (ValueError, OSError):
+            continue
+    return None
+
+
+_HANDBOOK_ALWAYS_PRIVATE = frozenset({"private", "rulings"})
+
+
+def handbook_page_is_public(p: pathlib.Path, rel: pathlib.PurePath) -> bool:
+    """True for a Fleet-OPS handbook page whose text is in the generated AGENT-SYNC.md.
+
+    The generator's own predicate (scripts/handbook/build.mjs):  the front matter says exactly
+    `visibility: public`, and the page is not under handbook/private/ or handbook/rulings/, whatever its front
+    matter says.  Anything else (no front matter, handbook/README.md, any other value, an unreadable file) is
+    kept, because only the public pages duplicate the live file.
+    """
+    if len(rel.parts) > 2 and rel.parts[1] in _HANDBOOK_ALWAYS_PRIVATE:
+        return False
+    try:
+        with open(p, encoding="utf-8", errors="replace", newline="") as fh:
+            lines = fh.read(8192).split("\n")
+    except OSError:
+        return False
+    if not lines or lines[0] != "---":
+        return False
+    for line in lines[1:]:
+        if line == "---":
+            return False
+        if line == "visibility: public":
+            return True
+    return False
+
+
 def mirror_skip_reason(p: pathlib.Path, *, fleet_repos: Iterable[pathlib.Path] = (),
-                       live_basenames: Iterable[str] = ()) -> str | None:
+                       live_basenames: Iterable[str] = (),
+                       ops_repos: Iterable[pathlib.Path] = ()) -> str | None:
     """Why the doc walk drops this file, or None to keep it.
 
     (a) SKIP_APPS_MIRROR: a file inside the fleet coordinator checkout whose basename is also a
@@ -503,6 +551,11 @@ def mirror_skip_reason(p: pathlib.Path, *, fleet_repos: Iterable[pathlib.Path] =
         The skill source ingests ~/.claude/skills, ~/.cursor/skills and ~/.grok/skills.
     (c) SKIP_EFFORT_LOG: EFFORT-LOG.md, *-EFFORT-LOG.md and EFFORT-LOG-PROTOCOL.md anywhere.
         The effort-log source ingests the live boards.
+    (d) SKIP_HANDBOOK_MIRROR: in a fleet-ops checkout, anything under generated/ and every public page under
+        handbook/ (handbook_page_is_public).  They are the text of the live AGENT-SYNC.md, which is ingested
+        once as an extra doc, so a recall query for a handbook rule would otherwise return each rule twice.
+        Private pages (handbook/private/, handbook/rulings/, a page that is not `visibility: public`) and
+        handbook/README.md are not in the live file and are kept.
     """
     name = p.name
     parts = p.parts
@@ -519,6 +572,14 @@ def mirror_skip_reason(p: pathlib.Path, *, fleet_repos: Iterable[pathlib.Path] =
     live = set(live_basenames)
     if live and name in live and name not in DOC_ROOT_NAMES and _under(p, fleet_repos):
         return SKIP_APPS_MIRROR
+    ops = list(ops_repos)
+    if ops:
+        rel = _rel_under(p, ops)
+        if rel is not None and rel.parts:
+            if rel.parts[0] == "generated":
+                return SKIP_HANDBOOK_MIRROR
+            if rel.parts[0] == "handbook" and name.endswith(".md") and handbook_page_is_public(p, rel):
+                return SKIP_HANDBOOK_MIRROR
     return None
 
 
@@ -543,6 +604,15 @@ def _collect_repo_docs(repo: pathlib.Path, *, root_all_md: bool) -> list[pathlib
     if docs_dir.is_dir():
         files += sorted(docs_dir.rglob("*.md"))
     return files
+
+
+def _collect_handbook_pages(repo: pathlib.Path) -> list[pathlib.Path]:
+    """The Fleet-OPS handbook/ pages.  The root and docs/ walk does not enter handbook/, and the public pages are
+    dropped again by mirror_skip_reason rule (d), so what survives is the private text and handbook/README.md."""
+    pages = repo / "handbook"
+    if not pages.is_dir():
+        return []
+    return sorted(pages.rglob("*.md"))
 
 
 def _unique_paths(files: Iterable[pathlib.Path]) -> list[pathlib.Path]:
@@ -618,10 +688,13 @@ def _doc_files(fleet_repo: pathlib.Path, fleet_ops: pathlib.Path,
     files: list[pathlib.Path] = []
     files += _collect_repo_docs(fleet_repo, root_all_md=True)
     files += _collect_repo_docs(fleet_ops, root_all_md=True)
+    files += _collect_handbook_pages(fleet_ops)
     fleet_repos = [fleet_repo]
+    ops_repos = [fleet_ops]
     if code_dir is not None:
         code_dir = pathlib.Path(code_dir)
         fleet_repos.append(code_dir / "AI-Fleet-Coordinator")
+        ops_repos.append(code_dir / "fleet-ops")
         for repo_dir in _unique_repo_dirs(code_dir):
             files += _collect_repo_docs(repo_dir, root_all_md=False)
     live: list[pathlib.Path] = [pathlib.Path(x) for x in extra if pathlib.Path(x).exists()]
@@ -638,7 +711,7 @@ def _doc_files(fleet_repo: pathlib.Path, fleet_ops: pathlib.Path,
     live_basenames = {p.name for p in live if p.is_file() and not _is_effort_log_name(p.name)}
     kept: list[pathlib.Path] = []
     for f in _unique_paths(files):
-        reason = mirror_skip_reason(f, fleet_repos=fleet_repos, live_basenames=live_basenames)
+        reason = mirror_skip_reason(f, fleet_repos=fleet_repos, live_basenames=live_basenames, ops_repos=ops_repos)
         if reason:
             DOC_SKIPS.append((reason, str(f)))
             continue
@@ -699,7 +772,7 @@ def _log_doc_skips() -> None:
     by_rule: dict[str, list[str]] = {}
     for rule, path in DOC_SKIPS:
         by_rule.setdefault(rule, []).append(path)
-    for rule in (SKIP_APPS_MIRROR, SKIP_SKILL_COPY, SKIP_EFFORT_LOG):
+    for rule in (SKIP_APPS_MIRROR, SKIP_SKILL_COPY, SKIP_EFFORT_LOG, SKIP_HANDBOOK_MIRROR):
         paths = by_rule.get(rule)
         if not paths:
             continue

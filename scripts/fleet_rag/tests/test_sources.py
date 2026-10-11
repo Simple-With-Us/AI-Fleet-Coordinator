@@ -623,6 +623,91 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIsNone(r(outside, fleet_repos=[self.fleet], live_basenames=live))
         self.assertIsNone(r(mirror, fleet_repos=[self.fleet], live_basenames=()))
 
+    # ---- rule (d): the Fleet-OPS handbook.  Its public pages and generated/ are the text of the live AGENT-SYNC.md.
+
+    PUBLIC = "---\ntitle: {t}\norder: {o}\nvisibility: public\nsection: {s}\n---\n## {t}\n\n{body}\n"
+    PRIVATE = "---\ntitle: {t}\norder: {o}\nvisibility: private\nsection: {s}\n---\n## {t}\n\n{body}\n"
+    RULE = "Never idle-watch a PR:  a PR that is not merging is waiting on an action, not on time."
+
+    def _handbook(self):
+        """The shapes build.mjs makes: public pages, a private page, a ruling log whose front matter says public by
+        mistake, the README, and generated/AGENT-SYNC.md; plus the live file and the AFC mirror that hold the same text."""
+        live = self._w(self.apps / "AGENT-SYNC.md", f"# Agent sync (live)\n\n{self.RULE}\n")
+        mirror = self._w(self.fleet / "AGENT-SYNC.md", f"# Agent sync (mirror)\n\n{self.RULE}\n")
+        generated = self._w(self.ops / "generated" / "AGENT-SYNC.md", f"# Agent sync (generated)\n\n{self.RULE}\n")
+        h = self.ops / "handbook"
+        public = [
+            self._w(h / "work" / "landing.md", self.PUBLIC.format(t="Landing", o="0400", s="work", body=self.RULE)),
+            self._w(h / "core" / "how-to-use.md", self.PUBLIC.format(t="How", o="0100", s="core", body="Read it.")),
+            self._w(h / "00-preamble.md", self.PUBLIC.format(t="Preamble", o="0010", s="core", body="Scope.")),
+        ]
+        private = [
+            self._w(h / "private" / "pointers.md", self.PRIVATE.format(t="Pointers", o="9000", s="private", body="See ATTACK-MAP.")),
+            self._w(h / "rulings" / "2026-10.md", self.PUBLIC.format(t="Rulings", o="9100", s="rulings", body="A ruling.")),
+            self._w(h / "ops" / "held-back.md", self.PRIVATE.format(t="Held", o="8000", s="ops", body="Not yet public.")),
+            self._w(h / "README.md", "# Fleet Handbook\n\nEditing rules.\n"),
+        ]
+        return live, mirror, generated, public, private
+
+    def test_rule_d_public_handbook_pages_are_one_hit_through_the_live_file(self):
+        live, mirror, generated, public, private = self._handbook()
+        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                                      apps_dir=self.apps, grok_home=self.grok))
+        skipped = {path: rule for rule, path in sources.take_doc_skips()}
+        kept = {d.path for d in docs}
+        # the handbook rule appears once, in the live file
+        hits = [d.path for d in docs if self.RULE in d.text_markdown]
+        self.assertEqual(hits, [str(live)])
+        for page in public:
+            self.assertEqual(skipped.get(str(page)), sources.SKIP_HANDBOOK_MIRROR, page)
+        for page in private:
+            self.assertIn(str(page), kept, page)
+        self.assertEqual(skipped.get(str(mirror)), sources.SKIP_APPS_MIRROR)
+        self.assertNotIn(str(generated), kept)       # the walk never enters generated/
+        self.assertNotIn(str(generated), skipped)
+        # the private pages are ingested as fleet-ops docs
+        by_path = {d.path: d for d in docs}
+        pointers = by_path[str(self.ops / "handbook" / "private" / "pointers.md")]
+        self.assertEqual((pointers.source, pointers.app, pointers.title), ("doc", "fleet-ops", "Pointers"))
+
+    def test_rule_d_is_logged_once(self):
+        self._handbook()
+        list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                               apps_dir=self.apps, grok_home=self.grok))
+        by_rule = {w.split()[3]: w for w in sources.take_warnings()}
+        self.assertIn(sources.SKIP_HANDBOOK_MIRROR, by_rule)
+        self.assertTrue(by_rule[sources.SKIP_HANDBOOK_MIRROR].startswith("doc: skipped 3 handbook-mirror file(s): "))
+
+    def test_rule_d_unit(self):
+        r = sources.mirror_skip_reason
+        h = self.ops / "handbook"
+        pub = self._w(h / "chat" / "posting.md", self.PUBLIC.format(t="P", o="0700", s="chat", body="x"))
+        priv = self._w(h / "private" / "p.md", self.PRIVATE.format(t="P", o="9000", s="private", body="x"))
+        ruling = self._w(h / "rulings" / "2026-10.md", self.PUBLIC.format(t="R", o="9100", s="rulings", body="x"))
+        quoted = self._w(h / "chat" / "quoted.md", '---\ntitle: Q\nvisibility: "public"\n---\n## Q\n')
+        nofm = self._w(h / "README.md", "# readme\n")
+        crlf = self._w(h / "chat" / "crlf.md", "---\r\ntitle: C\r\nvisibility: public\r\n---\n## C\n")
+        late = self._w(h / "chat" / "late.md", "## No front matter\n\n---\nvisibility: public\n---\n")
+        gen = self._w(self.ops / "generated" / "AGENT-SYNC.md")
+        docs_gen = self._w(self.ops / "docs" / "generated" / "x.md")
+        elsewhere = self._w(self.st / "handbook" / "chat" / "posting.md", self.PUBLIC.format(t="P", o="1", s="chat", body="x"))
+        ops = [self.ops]
+        self.assertEqual(r(pub, ops_repos=ops), sources.SKIP_HANDBOOK_MIRROR)
+        self.assertEqual(r(gen, ops_repos=ops), sources.SKIP_HANDBOOK_MIRROR)
+        for kept in (priv, ruling, quoted, nofm, crlf, late, docs_gen):
+            self.assertIsNone(r(kept, ops_repos=ops), kept)
+        # a handbook/ folder in another repo is not Fleet-OPS's
+        self.assertIsNone(r(elsewhere, ops_repos=ops))
+        # without an ops repo the rule is off, so existing callers are unchanged
+        self.assertIsNone(r(pub))
+
+    def test_rule_d_public_page_reads_only_the_front_matter(self):
+        rel = pathlib.PurePath("handbook/chat/posting.md")
+        page = self._w(self.ops / "handbook" / "chat" / "posting.md",
+                       "---\ntitle: P\nvisibility: private\n---\n## P\n\nvisibility: public\n")
+        self.assertFalse(sources.handbook_page_is_public(page, rel))
+        self.assertFalse(sources.handbook_page_is_public(self.ops / "handbook" / "missing.md", rel))
+
     def test_grok_skills_are_a_skill_source_tree(self):
         self.assertIn(sources.GROK_HOME / "skills", sources.SKILL_DIRS)
         self._w(self.grok / "skills" / "housekeeper" / "SKILL.md", "---\nname: housekeeper\n---\n# HK (GROK)\n")
