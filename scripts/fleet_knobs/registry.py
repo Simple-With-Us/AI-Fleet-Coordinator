@@ -85,6 +85,9 @@ REGISTRY: Tuple[Spec, ...] = (
     # F7 fleet-facts publisher
     _S("FLEET_FACTS_SIGNING_KEY", "str", "F7", secret=True, pattern=SIGNING_KEY_PATTERN,
        note="HMAC key for the signed facts files;  never cached, a job without it publishes nothing"),
+    _S("FLEET_FACTS_PUBLISH_FULL_COPY", "bool", "F7", default=False, safe=False,
+       note="true also publishes the full mac-facts.json, which keeps lane paths and is readable by everything that can "
+            "read fleet-loops-data;  false (the default) publishes only the path-free gb/ copy and the full list"),
     _S("FLEET_LOOPS_DATA_ALLOWED_APPS", "list", "F7", default=(), local="deny",
        note="app slugs the owner accepts as able to read the private fleet-loops-data repository;  "
             "empty means the publisher refuses while any installed app can read it"),

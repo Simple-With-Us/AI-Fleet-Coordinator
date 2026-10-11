@@ -9,6 +9,7 @@ Executables are looked up on PATH plus the places a LaunchAgent's short PATH lea
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import shutil
@@ -86,17 +87,29 @@ def run(argv: Sequence[str], *, timeout: float, env: Mapping[str, str] | None = 
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
+        _kill_group(proc)
         out, err = proc.communicate()
         return Result(None, _text(out), _text(err), reason="timed out after %ds" % int(timeout))
+    except BaseException:
+        # Interrupted from outside (a signal handler raised, as the publisher's time cap does):  end the child here, so it
+        # is not left running after this process stops caring about it.
+        _kill_group(proc)
+        with contextlib.suppress(Exception):
+            proc.communicate(timeout=5)
+        raise
     finally:
         _LIVE_GROUPS.discard(proc.pid)
     if len(out) > MAX_OUTPUT_BYTES:
         return Result(proc.returncode, "", _text(err), reason="output too large")
     return Result(proc.returncode, _text(out), _text(err))
+
+
+def _kill_group(proc: "subprocess.Popen") -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        with contextlib.suppress(OSError):
+            proc.kill()
 
 
 def kill_live() -> int:

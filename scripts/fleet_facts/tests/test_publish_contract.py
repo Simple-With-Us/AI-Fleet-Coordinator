@@ -48,7 +48,7 @@ class Contract(Sandbox):
         import io
         with contextlib.redirect_stdout(io.StringIO()):
             outcome = p.run_cycle(run=self.machine, now=NOW, key_provider=lambda: SIGNER, load1=lambda: 1.0, sleep=lambda s: None, repo=REPO, gh="gh",
-                                  apps_provider=lambda: [])
+                                  apps_provider=lambda: [], full_copy_provider=lambda: True)
         self.assertEqual((outcome.result, outcome.reason), ("published", None))
 
     def consumer(self, argv, *, timeout, env=None, cwd=None):

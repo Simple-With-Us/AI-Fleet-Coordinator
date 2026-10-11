@@ -33,7 +33,9 @@ class Sandbox(unittest.TestCase):
 
     def install_fake_infisical(self, key=None, fail=False):
         """A fake `infisical` first on PATH:  K1 finds it before any real CLI (and so never reaches the real Infisical)."""
-        body = "#!/bin/sh\nexit 1\n" if fail else "#!/bin/sh\nprintf '{\"FLEET_FACTS_SIGNING_KEY\": \"%s\"}' \"$FAKE_SIGNING_KEY\"\n"
+        body = ("#!/bin/sh\nexit 1\n" if fail else
+                "#!/bin/sh\nprintf '{\"FLEET_FACTS_SIGNING_KEY\": \"%s\", \"FLEET_FACTS_PUBLISH_FULL_COPY\": \"%s\"}' "
+                "\"$FAKE_SIGNING_KEY\" \"${FAKE_FULL_COPY:-false}\"\n")
         path = self.bin / "infisical"
         path.write_text(body)
         path.chmod(0o755)
@@ -175,17 +177,27 @@ class Errors(Sandbox):
         status = json.loads((self.home / ".local" / "state" / "fleet-facts" / "mac-facts-publish.json").read_text())
         self.assertEqual(status["result"], "no-key")
 
-    def test_publish_mac_dry_run_signs_three_files_and_sends_nothing(self):
+    def test_publish_mac_dry_run_signs_the_path_free_copy_and_sends_nothing(self):
         self.install_fake_infisical(key=SIGNER)
         out = self.root / "dry"
         proc = self.run_cli("publish-mac", "--dry-run", "--out", str(out))
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        for rel in ("mac-facts.json", "gb/mac-facts.json"):
-            document = json.loads((out / rel).read_text())
-            self.assertEqual(document["signed_for"], rel)
-            self.assertRegex(document["sig"], r"^[0-9a-f]{64}$")
+        document = json.loads((out / "gb" / "mac-facts.json").read_text())
+        self.assertEqual(document["signed_for"], "gb/mac-facts.json")
+        self.assertRegex(document["sig"], r"^[0-9a-f]{64}$")
+        self.assertTrue((out / "gb" / "full-list.md").is_file(), "the full list, or the note that says why there is none")
+        self.assertFalse((out / "mac-facts.json").exists(), "the path-bearing copy is off unless Infisical turns it on")
+        self.assertIn("FLEET_FACTS_PUBLISH_FULL_COPY is off", proc.stdout)
         self.assertNotIn(SIGNER, proc.stdout + proc.stderr)
         self.assertNotIn(SIGNER, (out / "gb" / "mac-facts.json").read_text())
+
+    def test_publish_mac_dry_run_writes_the_full_copy_when_infisical_says_so(self):
+        self.install_fake_infisical(key=SIGNER)
+        out = self.root / "dry"
+        proc = self.run_cli("publish-mac", "--dry-run", "--out", str(out), env_extra={"FAKE_FULL_COPY": "true"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        document = json.loads((out / "mac-facts.json").read_text())
+        self.assertEqual(document["signed_for"], "mac-facts.json")
 
     def test_out_without_dry_run_is_a_usage_error(self):
         proc = self.run_cli("publish-mac", "--out", str(self.root / "x"))

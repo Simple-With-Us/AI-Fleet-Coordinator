@@ -23,6 +23,8 @@ from fleet_facts import repo as repomod
 from fleet_facts import runner, safety, signing
 from fleet_facts.runner import Result
 
+from fleet_knobs.tests._fake import KnobTestCase
+
 from .builders import doctor_checkout, doctor_report
 from .ghfake import REPO, FakeGitHub
 
@@ -38,7 +40,7 @@ def iso(hours_ago: float) -> str:
 
 
 def fake_secret() -> str:
-    return "gh" + "p_" + "aB3dE5gH7jK9mN1pQ3sT5vX7zA9cE1gI3kM5"       # shaped like a GitHub token, built at run time
+    return "pass" + "word=" + "Zx8Qm2Vb7Nc4Lk9Wd3Fh"       # an assigned credential the scanner flags;  built at run time, not a provider key
 
 
 class Machine:
@@ -113,7 +115,7 @@ class Sandbox(unittest.TestCase):
 
     def cycle(self, **over):
         args = dict(run=self.machine, now=NOW, key_provider=lambda: SIGNER, load1=lambda: 1.0, sleep=self.sleeps.append, repo=REPO,
-                    gh="gh", apps_provider=lambda: [])
+                    gh="gh", apps_provider=lambda: [], full_copy_provider=lambda: True)
         args.update(over)
         with contextlib.redirect_stdout(io.StringIO()) as out:
             outcome = p.run_cycle(**args)
@@ -453,6 +455,39 @@ class Cap(Sandbox):
         self.assertEqual([c for c in self.gh.calls if c[1:3] == ["repo", "view"]].__len__(), 1, "only the early look at the gate, not the one before the writes")
         self.assertEqual(self.gh.write_calls(), [])
 
+    def test_a_child_interrupted_by_the_cap_is_killed_by_the_runner_itself(self):
+        """The signal handler raises inside proc.communicate();  the child must not be left running (and not only found by kill_live)."""
+        pids = []
+        real_popen = subprocess.Popen
+
+        def spy(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            pids.append(proc.pid)
+            return proc
+
+        def on_alarm(signum, frame):
+            raise p.CapExceeded()
+        previous = signal.signal(signal.SIGALRM, on_alarm)
+        self.addCleanup(signal.signal, signal.SIGALRM, previous)
+        with mock.patch.object(runner.subprocess, "Popen", spy):
+            signal.alarm(1)
+            try:
+                with self.assertRaises(p.CapExceeded):
+                    runner.run(["sleep", "30"], timeout=60)
+            finally:
+                signal.alarm(0)
+        self.assertEqual(len(pids), 1)
+        self.assertEqual(runner._LIVE_GROUPS, set())
+        deadline = time.monotonic() + 5
+        gone = False
+        while time.monotonic() < deadline and not gone:
+            try:
+                os.killpg(pids[0], 0)
+                time.sleep(0.05)
+            except ProcessLookupError:
+                gone = True
+        self.assertTrue(gone, "the sleeping child is gone")
+
     def test_kill_live_ends_a_running_child(self):
         box = {}
 
@@ -490,7 +525,8 @@ class OneFile(Sandbox):
         return str(path)
 
     def publish(self, rel, local, **over):
-        args = dict(run=self.gh, key_provider=lambda: SIGNER, repo=REPO, gh="gh", apps_provider=lambda: [], sleep=self.sleeps.append)
+        args = dict(run=self.gh, key_provider=lambda: SIGNER, repo=REPO, gh="gh", apps_provider=lambda: [], sleep=self.sleeps.append,
+                    full_copy_provider=lambda: True)
         args.update(over)
         return p.publish_file(rel, local, **args)
 
@@ -588,6 +624,77 @@ class Verify(unittest.TestCase):
             code, line = p.verify_file(self.write(signed), env)
             self.assertNotIn(SIGNER, line)
             self.assertNotIn("value-in-the-file", line)
+
+
+class FullCopy(Sandbox):
+    """mac-facts.json keeps lane paths and everything that can read the repository can read it:  it is published only when the owner says so."""
+
+    def test_off_by_default_only_the_path_free_files_are_written(self):
+        outcome = self.cycle(full_copy_provider=lambda: False)
+        self.assertEqual(outcome.result, "published")
+        self.assertEqual(self.gh.put_paths(), [p.FULL_LIST, p.GB_FACTS])
+        self.assertEqual(outcome.files[p.FULL_FACTS], p.FULL_COPY_OFF)
+        self.assertNotIn(p.FULL_FACTS, self.gh.files)
+        sent = b"".join(self.gh.files.values()).decode()
+        for needle in ("/" + "Users", "/" + "Volumes", "~/"):
+            self.assertNotIn(needle, sent)
+        self.assertIs(self.status()["full_copy"], False)
+        self.assertEqual(self.status()["files"][p.FULL_FACTS], p.FULL_COPY_OFF)
+
+    def test_on_it_is_written_last(self):
+        self.cycle(full_copy_provider=lambda: True)
+        self.assertEqual(self.gh.put_paths(), [p.FULL_LIST, p.GB_FACTS, p.FULL_FACTS])
+        self.assertIs(self.status()["full_copy"], True)
+
+    def test_a_dry_run_follows_the_same_rule(self):
+        out = self.root / "dry"
+        outcome = self.cycle(full_copy_provider=lambda: False, dry_run_dir=out)
+        self.assertFalse((out / p.FULL_FACTS).exists())
+        self.assertEqual(outcome.files[p.FULL_FACTS], p.FULL_COPY_OFF)
+        self.assertTrue((out / p.GB_FACTS).exists())
+
+    def test_build_documents_builds_the_full_copy_only_when_asked(self):
+        facts = TheDocuments().facts()
+        info = {"status": "absent", "reason": "x", "file": p.FULL_LIST}
+        self.assertEqual(sorted(p.build_documents(facts, info, SIGNER, include_full=False)), [p.GB_FACTS])
+        self.assertEqual(sorted(p.build_documents(facts, info, SIGNER)), [p.GB_FACTS, p.FULL_FACTS])
+
+    def test_publishing_that_one_file_by_hand_follows_the_same_rule(self):
+        local = self.root / "a.json"
+        local.write_text("{}")
+        refused = p.publish_file(p.FULL_FACTS, str(local), run=self.gh, key_provider=lambda: SIGNER, repo=REPO, gh="gh",
+                                 apps_provider=lambda: [], full_copy_provider=lambda: False)
+        self.assertEqual((refused.result, refused.exit_code), ("refused", 3))
+        self.assertIn("FLEET_FACTS_PUBLISH_FULL_COPY is off", refused.reason)
+        self.assertEqual(self.gh.calls, [])
+        allowed = p.publish_file(p.FULL_FACTS, str(local), run=self.gh, key_provider=lambda: SIGNER, repo=REPO, gh="gh",
+                                 apps_provider=lambda: [], full_copy_provider=lambda: True)
+        self.assertEqual(allowed.result, "published")
+
+
+class KnobProviders(KnobTestCase):
+    """The defaults the cycle uses read the K1 knobs, and an unreadable knob is the strict answer."""
+
+    def test_the_full_copy_is_off_unless_infisical_says_true(self):
+        self.fake.set(secrets={})
+        self.assertIs(p._default_full_copy(), False)
+        self.new_process()
+        self.fake.set(secrets={"FLEET_FACTS_PUBLISH_FULL_COPY": "true"})
+        self.assertIs(p._default_full_copy(), True)
+
+    def test_an_outage_with_no_copy_is_off_and_the_apps_list_is_empty(self):
+        self.fake.set(mode="fail")
+        self.assertIs(p._default_full_copy(), False)
+        self.assertEqual(p._default_apps(), [])
+
+    def test_the_allowed_apps_come_from_infisical(self):
+        self.fake.set(secrets={"FLEET_LOOPS_DATA_ALLOWED_APPS": "alpha-app, beta-app"})
+        self.assertEqual(p._default_apps(), ["alpha-app", "beta-app"])
+
+    def test_a_refused_environment_is_strict(self):
+        with mock.patch.dict(os.environ, {"INFISICAL_ENV": "staging"}):
+            self.assertIs(p._default_full_copy(), False)
+            self.assertEqual(p._default_apps(), [])
 
 
 class TheDocuments(unittest.TestCase):

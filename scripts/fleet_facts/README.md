@@ -108,14 +108,14 @@ fleet-facts verify FILE [--path REL]                       check a signed file
 ```
 
 A cycle gathers the Mac parts (`lanes`, `autopush`, `backup`, `needs_owner`) and the full list (`open-loops gather` then
-`open-loops render --markdown`, skipped and reported when open-loops is not installed), and writes three files to the PRIVATE
-repository `Simple-With-Us/fleet-loops-data` through sha-aware `gh api -X PUT` calls (no clone, never forced), in this order:
+`open-loops render --markdown`), and writes up to three files to the PRIVATE repository `Simple-With-Us/fleet-loops-data` through
+sha-aware `gh api -X PUT` calls (no clone, never forced), in this order:
 
 | File | What it is |
 | --- | --- |
-| `gb/full-list.md` | the digest's full list;  its SHA-256 and size are in the signed JSON (`full_list`), which covers the Markdown |
+| `gb/full-list.md` | the digest's full list;  its SHA-256 and size are in the signed JSON (`full_list`), which covers the Markdown.  When the list could not be built (open-loops not installed, a failed step, a secret in it) the file is replaced by a short "Full List Not Available" note with the reason words, and `full_list.status` and `full_list.placeholder` say so, so an old list is never read as today's |
 | `gb/mac-facts.json` | the copy for Grok Bot:  no `path` key, no `~/`, `/Users/` or `/Volumes/` text, every string cut to 80 characters (a branch, repository, lane name, identifier and topic are never cut) |
-| `mac-facts.json` | the full copy, with lane paths |
+| `mac-facts.json` | the full copy, with lane paths.  **Off by default**:  everything that can read the repository (Grok Bot's token included) can read it, which would undo the path-free copy.  The Infisical knob `FLEET_FACTS_PUBLISH_FULL_COPY` turns it on |
 
 Both JSON files have the shape of `fleet-facts gather` (schema 1:  `generated_at`, `sources`, then `lanes`, `autopush`, `backup` and
 `needs_owner` with the same data as the gatherers give) plus `kind`, `signed_for` (the path in the repository), `full_list`,

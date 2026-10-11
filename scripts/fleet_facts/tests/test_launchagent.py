@@ -83,7 +83,7 @@ class LaunchAgentTests(unittest.TestCase):
         (row,) = [line for line in scheduled.splitlines() if line.startswith("| `%s`" % LABEL)]
         self.assertIn("every 3 hours", row)
         self.assertIn("always-on", row.lower())
-        for needle in (ISSUE, "mac-process-watch.sh", "FLEET_FACTS_SIGNING_KEY", "FLEET_LOOPS_DATA_ALLOWED_APPS", "mac-facts-publish.json",
+        for needle in (ISSUE, "mac-process-watch.sh", "FLEET_FACTS_SIGNING_KEY", "FLEET_LOOPS_DATA_ALLOWED_APPS", "FLEET_FACTS_PUBLISH_FULL_COPY", "mac-facts-publish.json",
                        "mac-facts-publish.log", "gb/full-list.md", "gb/mac-facts.json", "fleet-facts verify", "L16c", "Removable Volumes"):
             self.assertIn(needle, row)
         self.assertIn(ISSUE, text.split("## Inventory Changelog & Historical Updates", 1)[1][:600])

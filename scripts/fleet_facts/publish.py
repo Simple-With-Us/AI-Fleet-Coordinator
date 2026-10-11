@@ -14,8 +14,9 @@ One cycle:
      (`open-loops gather` and `open-loops render --markdown`, skipped and reported when open-loops is not installed);
   4. build the documents:  per-field redaction (the key itself is a `known` value), a whole-document secret scan that
      fails closed, the minimized Grok Bot copy (minimize.py), and an HMAC signature on each JSON file (signing.py);
-  5. repo.guard() (private, no webhook, no deploy key, no app that can read it), then three sha-aware PUTs:
-     gb/full-list.md, gb/mac-facts.json, mac-facts.json.  The Markdown is covered by its SHA-256 in the signed JSON.
+  5. repo.guard() (private, no webhook, no deploy key, no app that can read it), then sha-aware PUTs:
+     gb/full-list.md, gb/mac-facts.json and, only when the Infisical knob FLEET_FACTS_PUBLISH_FULL_COPY is on, mac-facts.json
+     (it keeps lane paths, and whatever can read the repository can read it).  The Markdown is covered by its SHA-256 in the signed JSON.
      When the list could not be built, `gb/full-list.md` is replaced by a short "not available" note (reason words only) and
      `full_list.status` says why, so an old list is never read as today's.
 
@@ -189,6 +190,17 @@ def _default_apps() -> list[str]:
         return []
 
 
+def _default_full_copy() -> bool:
+    try:
+        from fleet_knobs import knobs  # noqa: PLC0415
+        return bool(knobs.get("FLEET_FACTS_PUBLISH_FULL_COPY"))
+    except Exception:  # noqa: BLE001 - an unreadable knob is off, which is the strict answer
+        return False
+
+
+FULL_COPY_OFF = "skipped:  FLEET_FACTS_PUBLISH_FULL_COPY is off"
+
+
 # ---- time budget -----------------------------------------------------------------------------------------
 
 class Deadline:
@@ -299,8 +311,10 @@ def _check_whole(document: dict, rel: str, key: str) -> None:
         raise Withheld("secret-shaped text (%s) is still in %s after redaction" % (kind, rel))
 
 
-def build_documents(facts: Mapping, full_list: Mapping, key: str) -> dict[str, bytes]:
-    """{path: bytes} for mac-facts.json and gb/mac-facts.json, signed.  Raises Withheld (or PathLeak) when either is unsafe."""
+def build_documents(facts: Mapping, full_list: Mapping, key: str, *, include_full: bool = True) -> dict[str, bytes]:
+    """{path: bytes} for gb/mac-facts.json and, with `include_full`, mac-facts.json, signed.  The full copy keeps lane paths, so
+    the cycle builds it only when the owner turned FLEET_FACTS_PUBLISH_FULL_COPY on.  Raises Withheld (or PathLeak) when
+    a document is unsafe."""
     document = json.loads(json.dumps(facts))
     document["kind"] = "mac-facts"
     document["signed_for"] = FULL_FACTS
@@ -317,7 +331,10 @@ def build_documents(facts: Mapping, full_list: Mapping, key: str) -> dict[str, b
     gb["kind"] = "mac-facts-gb"
     gb["signed_for"] = GB_FACTS
     _check_whole(gb, GB_FACTS, key)
-    return {FULL_FACTS: _serialize(signing.sign(cleaned, key)), GB_FACTS: _serialize(signing.sign(gb, key))}
+    out = {GB_FACTS: _serialize(signing.sign(gb, key))}
+    if include_full:
+        out[FULL_FACTS] = _serialize(signing.sign(cleaned, key))
+    return out
 
 
 # ---- the cycle -------------------------------------------------------------------------------------------
@@ -336,7 +353,8 @@ def _write_dry_run(folder: Path, files: Mapping[str, bytes]) -> None:
 
 
 def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1: Callable[[], float], sleep: Callable[[float], None],
-           repo: str, gh: str | None, apps_provider: Callable[[], list[str]], dry_run_dir: Path | None, deadline: Deadline) -> Outcome:
+           repo: str, gh: str | None, apps_provider: Callable[[], list[str]], full_copy_provider: Callable[[], bool],
+           dry_run_dir: Path | None, deadline: Deadline) -> Outcome:
     try:
         load = float(load1())
     except OSError:
@@ -365,18 +383,22 @@ def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1
             full_text = unavailable_text(now, full_info.get("reason"))
             data = full_text.encode("utf-8")
             full_info = dict(full_info, placeholder=True, sha256=signing.sha256_hex(data), bytes=len(data))
-        files = build_documents(facts, full_info, key)
+        include_full = bool(full_copy_provider())
+        files = build_documents(facts, full_info, key, include_full=include_full)
     except safety.HelpersMissing as exc:
         return Outcome("refused", "nothing was published:  %s" % exc, EXIT_REFUSED)
     except (Withheld, PathLeak) as exc:
         return Outcome("refused", "nothing was published:  %s" % (exc.reason if isinstance(exc, Withheld) else str(exc)), EXIT_REFUSED)
     extra = {"generated_at": facts.get("generated_at"), "full_list": full_info["status"],
              "sources": {name: entry.get("status") for name, entry in (facts.get("sources") or {}).items()},
-             "redacted_count": len(json.loads(files[FULL_FACTS])["redacted"])}
+             "redacted_count": len(json.loads(files[GB_FACTS])["redacted"]), "full_copy": include_full}
     files[FULL_LIST] = full_text.encode("utf-8")
     if dry_run_dir is not None:
         _write_dry_run(dry_run_dir, files)
-        return Outcome("dry-run", "wrote %d files to %s;  nothing was sent" % (len(files), dry_run_dir.name), files={rel: "written" for rel in files}, extra=extra)
+        written = {rel: "written" for rel in files}
+        if FULL_FACTS not in files:
+            written[FULL_FACTS] = FULL_COPY_OFF
+        return Outcome("dry-run", "wrote %d files to %s;  nothing was sent" % (len(files), dry_run_dir.name), files=written, extra=extra)
     if deadline.left() < MIN_WRITE_S:
         return Outcome("over-cap", "less than %d seconds were left for the writes;  nothing was written" % MIN_WRITE_S, EXIT_FAILED, extra=extra)
     try:
@@ -388,6 +410,9 @@ def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1
     results: dict[str, str] = {}
     failure: str | None = None
     for rel in WRITE_ORDER:
+        if rel not in files:
+            results[rel] = FULL_COPY_OFF
+            continue
         try:
             results[rel] = writer.put(rel, files[rel], "mac-facts: %s %s" % (rel, stamp))
         except (repomod.WriteFailed, repomod.Refused) as exc:
@@ -402,8 +427,8 @@ def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1
 def run_cycle(*, run: Runner = default_run, now: datetime | None = None, key_provider: Callable[[], str] = signing.key_from_knobs,
               load1: Callable[[], float] = lambda: os.getloadavg()[0], sleep: Callable[[float], None] = time.sleep,
               state: Path | None = None, repo: str = repomod.REPO, gh: str | None = None,
-              apps_provider: Callable[[], list[str]] = _default_apps, dry_run_dir: Path | None = None,
-              cap_seconds: int = CAP_SECONDS, clock: Callable[[], float] = time.monotonic) -> Outcome:
+              apps_provider: Callable[[], list[str]] = _default_apps, full_copy_provider: Callable[[], bool] = _default_full_copy,
+              dry_run_dir: Path | None = None, cap_seconds: int = CAP_SECONDS, clock: Callable[[], float] = time.monotonic) -> Outcome:
     """One publish cycle.  Never raises for a condition it knows;  the Outcome says what happened and the exit status to use."""
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     folder = _private_dir(state or state_dir())
@@ -417,7 +442,8 @@ def run_cycle(*, run: Runner = default_run, now: datetime | None = None, key_pro
         try:
             with hard_cap(cap_seconds):
                 outcome = _cycle(run=run, now=current, key_provider=key_provider, load1=load1, sleep=sleep, repo=repo, gh=gh,
-                                 apps_provider=apps_provider, dry_run_dir=dry_run_dir, deadline=deadline)
+                                 apps_provider=apps_provider, full_copy_provider=full_copy_provider, dry_run_dir=dry_run_dir,
+                                 deadline=deadline)
         except CapExceeded:
             kill_live()
             outcome = Outcome("over-cap", "the %d-minute cap was reached;  running children were ended" % (cap_seconds // 60), EXIT_FAILED)
@@ -453,10 +479,13 @@ def _read_regular(path: str) -> bytes:
 
 def publish_file(rel: str, local: str, *, run: Runner = default_run, key_provider: Callable[[], str] = signing.key_from_knobs,
                  repo: str = repomod.REPO, gh: str | None = None, apps_provider: Callable[[], list[str]] = _default_apps,
+                 full_copy_provider: Callable[[], bool] = _default_full_copy,
                  sleep: Callable[[float], None] = time.sleep, dry_run: bool = False) -> Outcome:
     """Sign (a .json file) or scan (anything else) one local file and write it to `rel`.  The same gate as the cycle."""
     try:
         repomod.check_path(rel)
+        if rel == FULL_FACTS and not full_copy_provider():
+            raise repomod.Refused("mac-facts.json keeps lane paths and FLEET_FACTS_PUBLISH_FULL_COPY is off")
         raw = _read_regular(local)
     except repomod.Refused as exc:
         return Outcome("refused", exc.reason, EXIT_REFUSED)

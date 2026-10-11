@@ -7,8 +7,9 @@
   <!-- Publishes the Mac's open-loops facts (open-loops unit F7, Linear AFC-287).  Scheduled, not always-on:  idle
        between runs is correct, and mac-process-watch.sh only keeps it loaded.  Each run gathers the lane doctor
        report, the C1 status, the backup health and the needs-owner list, signs them (HMAC-SHA256, the key
-       FLEET_FACTS_SIGNING_KEY comes from Infisical through K1 and is never cached) and writes mac-facts.json,
-       gb/mac-facts.json (no paths, quotes cut to 80 characters) and gb/full-list.md to the PRIVATE repository
+       FLEET_FACTS_SIGNING_KEY comes from Infisical through K1 and is never cached) and writes
+       gb/mac-facts.json (no paths, quotes cut to 80 characters) and gb/full-list.md (and, only when the Infisical knob
+       FLEET_FACTS_PUBLISH_FULL_COPY is on, the path-bearing mac-facts.json) to the PRIVATE repository
        Simple-With-Us/fleet-loops-data through sha-aware `gh api` PUTs (no clone, never forced).  Before any write the
        run refuses unless the repository is private with no webhook, no deploy key and no app that can read it.
        A missing key, a failed gate or a secret-shaped string means nothing is published.
