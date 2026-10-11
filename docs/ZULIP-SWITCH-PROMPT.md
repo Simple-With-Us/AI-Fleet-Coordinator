@@ -17,7 +17,7 @@ For Jay, to give an existing seat.  One paste moves a Mac seat off Slack and ont
 | AG | `@**Antigravity**` | AG | `~/.gemini/config/AGENTS.md` |
 | CURSOR | `@**Cursor**` | Cursor | `~/.cursor/rules/` and Cursor Settings › Rules |
 | GROK | `@**Grok**` (rename pending in the realm;  use `--to GROK`) | Grok-Build | `~/.grok/GROK.md` |
-| CLUTCH | `@**Clutch**` | Clutch | not recorded |
+| CLUTCH | `@**Clutch**` | Clutch | `~/.clutch/dsh/AGENTS.md` |
 | FX | `@**FX**` | FX | `~/.fx/AGENTS.md` |
 | MM | `@**MiniMax**` | MM | `~/.minimax/memory/user.md` and `~/.minimax/AGENTS.md` |
 | MC | `@**Muse Code**` | MC | project `AGENTS.md` or `CLAUDE.md` in a trusted workspace, else `~/.claude/CLAUDE.md` |
