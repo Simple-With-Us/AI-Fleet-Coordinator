@@ -222,6 +222,11 @@ class SeatPaths:
         self.wake_dir = os.path.join(self.seat_dir, "wake")
         self.wake_pin = os.path.join(self.seat_dir, "wake-pin.json")
         self.wake_pin_candidate = os.path.join(self.seat_dir, "wake-pin-candidate.json")
+        # The muse wake pins its own binary on its own files (AFC-291):  a claude pin says a person
+        # verified the claude build's wake contract and can never stand in for the muse one, which
+        # is a different binary with a different flag surface.
+        self.wake_pin_muse = os.path.join(self.seat_dir, "wake-pin-muse.json")
+        self.wake_pin_candidate_muse = os.path.join(self.seat_dir, "wake-pin-candidate-muse.json")
 
     def lease(self, lease_id: str) -> str:
         return os.path.join(self.leases, lease_id + ".json")
