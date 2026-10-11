@@ -30,11 +30,13 @@ EXACT_KEYS = frozenset({"branch", "repo", "owner_repo", "lane", "name", "identif
 # A Mac path starts a token:  `~/...`, a local `file://...` URL (`file:///Users/...` or `file://localhost/Users/...`),
 # or one of the system folders a tool writes about (`/Users`, `/Volumes`, `/private`, `/var`, `/tmp`,
 # `/opt`, `/etc`).  The look-behind keeps `fix/tmp/x` (a branch) and `https://host/etc/x` (a link) out of it.
-# `file://...` is matched as a whole (the `://` and the look-behind over the first path slash), and `https://...`
-# never starts with `file:` so it is not affected.
+# `file://...` is matched as a whole (the scheme, an optional `localhost/`, and the rest of the path) so the
+# third `/` after `file://` is part of the match, not a token boundary the look-behind on the system roots
+# has to allow;  `https://...` never starts with `file:` so it is not affected.
 _ROOTS = r"/(?:Users|Volumes|private|var|tmp|opt|etc)"
-_PATH = re.compile(r"~/(?:[^\s\"',;)\]}]*)?|(?<![\w.~/-])" + _ROOTS + r"(?:/[^\s\"',;)\]}]*)?(?![\w-])|file://(?:localhost/)?[^\s\"',;)\]}]*")
-_LEAK = re.compile(r"~/|file://(?:localhost/)?|(?<![\w.~/-])" + _ROOTS + r"(?![\w-])")
+_FILE_URL = r"file://(?:localhost/)?[^\s\"',;)\]}]*"
+_PATH = re.compile(r"~/(?:[^\s\"',;)\]}]*)?|(?<![\w.~/-])" + _ROOTS + r"(?:/[^\s\"',;)\]}]*)?(?![\w-])|" + _FILE_URL)
+_LEAK = re.compile(r"~/|" + _FILE_URL + r"|(?<![\w.~/-])" + _ROOTS + r"(?![\w-])")
 DROPPED_KEYS = ("path", "path_exact")       # the path, and the flag that says whether it was exact
 MAX_DEPTH = 64
 
