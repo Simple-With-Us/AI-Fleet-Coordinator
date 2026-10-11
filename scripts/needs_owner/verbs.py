@@ -295,6 +295,9 @@ def run_adopt(args, io: Streams) -> int:
     if item.block is not None:
         if item.block.uid != wanted.uid or not item.block.same_request(wanted):
             raise Refusal("%s is already a needs-owner item with other content.  An adopted item is not changed" % item.identifier)
+        if args.dry_run:
+            io.say("dry run:  %s is already adopted" % item.identifier)
+            return 0
     else:
         if args.dry_run:
             io.say("dry run:  would adopt %s as %s" % (item.identifier, wanted.uid))
