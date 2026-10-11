@@ -2,6 +2,11 @@
 
 From:  CLAUDE (cloud session, stopped at weekly quota). Lane:  condense the `GROK-WEB` custom instructions.
 
+## Context
+- grok.com / Grok iOS enforces a **4,000-character limit** on custom instructions;  the prior text was 9,110 characters and silently truncated, dropping the Zulip and work-item procedures Grok Web must follow.
+- Business rule:  Grok Web (a fleet seat, not the Mac terminal) must read the Zulip inbox, post in work topics, and pick up Linear work items, without depending on a Mac shell or `agent-sync` CLI it cannot reach.
+- Acceptance criteria:  instructions fit ≤4,000 chars;  a fresh Grok session still reads Zulip and opens work topics;  the rules survive even if a skill file fails to load (repeated in a "Never Skip" block).
+
 ## Done
 - Owner condensed the grok.com/iOS custom instructions from 9,110 to 3,997 characters (limit 4,000).  Procedure moved into two Grok skills;  a "Never Skip" section repeats the critical skill rules so they hold if a skill is not loaded.
 - Recorded in `docs/grok-web/` (merged in #465, `6148255`):  `INSTRUCTIONS.md` (owner's final text, verbatim), `skills/grok-web-zulip/SKILL.md`, `skills/grok-web-work-items/SKILL.md`, `README.md`.
