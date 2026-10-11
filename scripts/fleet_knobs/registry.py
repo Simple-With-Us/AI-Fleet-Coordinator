@@ -85,6 +85,17 @@ REGISTRY: Tuple[Spec, ...] = (
     # F7 fleet-facts publisher
     _S("FLEET_FACTS_SIGNING_KEY", "str", "F7", secret=True, pattern=SIGNING_KEY_PATTERN,
        note="HMAC key for the signed facts files;  never cached, a job without it publishes nothing"),
+    _S("FLEET_FACTS_PUBLISH_FULL_COPY", "bool", "F7", default=False, safe=False,
+       note="true also publishes the full mac-facts.json, which keeps lane paths and is readable by everything that can "
+            "read fleet-loops-data;  false (the default) publishes only the path-free gb/ copy and the full list"),
+    _S("FLEET_FACTS_PUBLISH_CAP_MINUTES", "int", "F7", default=20, narrower="min", minimum=10, maximum=60,
+       note="minutes a publish run may take before it ends itself and its child processes;  10 is the least that leaves "
+            "room for the gatherers (5 minutes are reserved) and the writes"),
+    _S("FLEET_FACTS_PUBLISH_MAX_LOAD1", "int", "F7", default=250, narrower="min", minimum=1, maximum=1000,
+       note="a publish run is skipped when the one-minute load average is over this"),
+    _S("FLEET_LOOPS_DATA_ALLOWED_APPS", "list", "F7", default=(), local="deny",
+       note="app slugs the owner accepts as able to read the private fleet-loops-data repository;  "
+            "empty means the publisher refuses while any installed app can read it"),
     # C6 needs-owner
     _S("NEEDS_OWNER_NOTIFY_PAUSED", "bool", "C6", default=False, safe=True,
        note="true pauses the fallback notifier;  an Infisical outage past the 48 hour copy "

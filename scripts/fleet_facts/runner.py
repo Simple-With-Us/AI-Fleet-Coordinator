@@ -9,6 +9,7 @@ Executables are looked up on PATH plus the places a LaunchAgent's short PATH lea
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import shutil
@@ -18,6 +19,11 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
+
+# The process groups of the children running right now, so a job that hits its own time cap (F7's publisher)
+# can end every child it started before it exits.  A child is its own session leader (start_new_session), so
+# killing this process's group would not reach it.
+_LIVE_GROUPS: set[int] = set()
 
 
 @dataclass
@@ -77,18 +83,47 @@ def run(argv: Sequence[str], *, timeout: float, env: Mapping[str, str] | None = 
         return Result(None, reason="not executable")
     except OSError as exc:
         return Result(None, reason="could not start (%s)" % type(exc).__name__)
+    _LIVE_GROUPS.add(proc.pid)
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
+        _kill_group(proc)
         out, err = proc.communicate()
         return Result(None, _text(out), _text(err), reason="timed out after %ds" % int(timeout))
+    except BaseException:
+        # Interrupted from outside (a signal handler raised, as the publisher's time cap does):  end the child here, so it
+        # is not left running after this process stops caring about it.
+        _kill_group(proc)
+        with contextlib.suppress(Exception):
+            proc.communicate(timeout=5)
+        raise
+    finally:
+        _LIVE_GROUPS.discard(proc.pid)
     if len(out) > MAX_OUTPUT_BYTES:
         return Result(proc.returncode, "", _text(err), reason="output too large")
     return Result(proc.returncode, _text(out), _text(err))
+
+
+def _kill_group(proc: "subprocess.Popen") -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        with contextlib.suppress(OSError):
+            proc.kill()
+
+
+def kill_live() -> int:
+    """SIGKILL every child process group started by `run` that has not finished yet;  each PID is removed from
+    the live set as we go, so a second call does not double-count.  Returns how many were signalled."""
+    count = 0
+    for pid in list(_LIVE_GROUPS):
+        _LIVE_GROUPS.discard(pid)
+        try:
+            os.killpg(pid, signal.SIGKILL)
+            count += 1
+        except (ProcessLookupError, PermissionError):
+            pass
+    return count
 
 
 def _text(data: bytes | None) -> str:
