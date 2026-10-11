@@ -298,6 +298,43 @@ export async function roleSet(store, entry, now = Date.now()) {
   return row;
 }
 
+// ---- the seat's Linear token (AFC-289)
+
+// The cached Linear token for one seat.  It lives in the Durable Object, not in
+// KV, because the DO's input gate is what stops two requests of one seat from
+// minting at the same time:  Linear allows one mint per app per 24 hours, and
+// what happens past that cap is undocumented.  The row holds only what this
+// server needs to decide whether it may reuse the token.
+export async function linearTokenGet(store) {
+  const cached = await store.get("linear_token");
+  if (!cached || typeof cached.access_token !== "string" || !cached.access_token) return null;
+  return {
+    access_token: cached.access_token,
+    minted_at: Number(cached.minted_at) || 0,
+    expires_at: Number(cached.expires_at) || 0,
+    mint_count: Number(cached.mint_count) || 0,
+    cred_fp: String(cached.cred_fp ?? ""),
+  };
+}
+
+export async function linearTokenSet(store, entry) {
+  const row = {
+    access_token: String(entry?.access_token ?? ""),
+    minted_at: Number(entry?.minted_at) || 0,
+    expires_at: Number(entry?.expires_at) || 0,
+    mint_count: Number(entry?.mint_count) || 0,
+    cred_fp: String(entry?.cred_fp ?? ""),
+  };
+  await store.put("linear_token", row);
+  return { ...row };
+}
+
+/** Forget the token, so the next call mints.  Only the owner needs this. */
+export async function linearTokenClear(store) {
+  await store.delete("linear_token");
+  return { cleared: true };
+}
+
 // ---- per-call audit (spec 3.9), kept 90 days
 
 const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10);

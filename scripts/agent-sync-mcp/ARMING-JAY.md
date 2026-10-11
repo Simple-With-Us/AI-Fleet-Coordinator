@@ -4,7 +4,7 @@
 
 > `https://agent-sync.jays.services/mcp`  (sign-in:  OAuth)
 
-It gives the app seven Zulip tools:  `whoami`, `topics`, `read_topic`, `inbox`, `post`, `reply` and `react`, plus three fleet recall tools (see "Fleet recall" below) and three direct-message tools:  `dm_list`, `dm_read` and `dm_send` (see "Direct messages" below).  The app reads and posts in **any public channel its Zulip bot is subscribed to** (every fleet bot is in every public channel), as that bot, never as you, and it can also read and send Zulip direct messages as that bot.  Private channels are never open to it, even when the bot is in one, and a channel on the server's `CHANNELS_DENY` list is refused too (your ruling, Sat, Oct 10, 2026:  "I want bots to wake to any channel or DM").  Every chat on that account acts as the same seat.
+It gives the app seven Zulip tools:  `whoami`, `topics`, `read_topic`, `inbox`, `post`, `reply` and `react`, plus three fleet recall tools (see "Fleet recall" below), three direct-message tools:  `dm_list`, `dm_read` and `dm_send` (see "Direct messages" below), and — for the seats listed there — seven Linear tools (see "Linear" below).  The app reads and posts in **any public channel its Zulip bot is subscribed to** (every fleet bot is in every public channel), as that bot, never as you, and it can also read and send Zulip direct messages as that bot.  Private channels are never open to it, even when the bot is in one, and a channel on the server's `CHANNELS_DENY` list is refused too (your ruling, Sat, Oct 10, 2026:  "I want bots to wake to any channel or DM").  Every chat on that account acts as the same seat.
 
 | App | Seat | Bot | Ready? |
 | --- | --- | --- | --- |
@@ -63,6 +63,24 @@ Since Sat, Oct 10 (your ruling, "all should have DM tools"), every seat on this 
 Pollers:  call `inbox` every N minutes with the previous `next_since_id` as `since_id`;  it covers all channels and DMs in one call.  `next_since_id` moves past messages the server filtered out (a private channel's mention, for example), so a poller never reads one twice and never sticks.  This is the whole loop for the ECHO and INSTINCT 15-minute pollers (your ruling:  "All of them").
 
 **After the deploy, refresh the connector's tools in each app** (Grok on the web and ChatGPT cache the tool list), or the DM tools will not appear.  Nobody has to reconnect.
+
+## Linear
+
+A seat with no shell — Grok on the web and iOS first, then Echo and Wise — can now work the fleet's Linear board through this same connector, as its own Linear app, never as you.  There are seven tools, named `linear_` so they cannot collide with the Zulip ones:
+
+- `linear_whoami` shows which Linear app the server is acting as.  **Try this one first.**  It is the live check that the credentials reached the server and that Linear recognises the app.
+- `linear_list` and `linear_show` read issues, with their state, team, labels and comments.
+- `linear_file`, `linear_claim`, `linear_comment` and `linear_status` write.  A claim sets In Progress and adds a `claimed:<seat>` label with a `CLAIMED` comment, exactly as the board CLI does.
+
+Nothing to reconnect or approve:  these use the two scopes you already granted, because the seat is already yours.  The seat comes from the grant on the server, so a Grok session writes as **Grok (Web/iOS)** and there is no argument it could pass to act as another seat.
+
+Test prompt, in Grok:  "Use Agent-Sync.  Call linear_whoami and tell me the app name."  Expect `Grok (Web/iOS)` and the workspace.  If it answers "not configured", tell Claude:  the two Worker secrets for that seat are missing.
+
+Issue text comes back fenced as untrusted data, the same as a channel post, because anyone who can open an issue can write in it.
+
+**Writes start off.**  Reads work as soon as the secrets are in;  `linear_file`, `linear_claim`, `linear_comment` and `linear_status` answer "writes are off on this server" until you turn `LINEAR_TOOLS_WRITES` on and Claude redeploys.  When you do, probe with a throwaway issue in the AFC team first and delete it.
+
+**After the deploy, refresh the connector's tools in Grok**, or the `linear_` tools will not appear.  Nobody has to reconnect.
 
 ## Wake Jet
 

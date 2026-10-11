@@ -104,7 +104,8 @@ const dmPosts = (fake) => fake.requestsTo("POST", "messages");
 
 test("the DM tools:  closed inputs, output schemas, no identity arguments, read and write split", () => {
   assert.deepEqual(DM_TOOLS.map((t) => t.name), ["dm_list", "dm_read", "dm_send"]);
-  assert.deepEqual(HOSTED_TOOL_LIST.slice(-3).map((t) => t.name), ["dm_list", "dm_read", "dm_send"]);
+  // The three DM tools sit before the seven hosted-only Linear tools.
+assert.deepEqual(HOSTED_TOOL_LIST.slice(-10, -7).map((t) => t.name), ["dm_list", "dm_read", "dm_send"]);
   for (const tool of DM_TOOLS) {
     assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
     assert.ok(tool.outputSchema, tool.name);

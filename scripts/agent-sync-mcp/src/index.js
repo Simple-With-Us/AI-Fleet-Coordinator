@@ -61,6 +61,7 @@ import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromEnv } from "./recall.js";
+import { linearClientFromEnv } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS } from "./events.js";
@@ -221,6 +222,11 @@ async function serveMcp(request, env, ctx) {
     // Null when any recall secret is missing:  the recall tools then answer
     // not_configured and every other tool works as before (spec 1.1).
     recall: recallClientFromEnv(env),
+    // Null when this seat has no Linear app credentials, or when the seat is
+    // not on LINEAR_SEATS:  the Linear tools then answer not_configured and
+    // every other tool works as before (AFC-289).
+    linear: linearClientFromEnv(env, seat, { gate: seatGate }),
+    linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
   });
   const authInfo = {
     token: auth.token,

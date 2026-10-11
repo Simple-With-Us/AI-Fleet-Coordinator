@@ -102,6 +102,18 @@ export class SeatGate extends DurableObject {
     return state.roleStatus(this.store);
   }
 
+  linearTokenGet() {
+    return state.linearTokenGet(this.store);
+  }
+
+  linearTokenSet(entry) {
+    return state.linearTokenSet(this.store, entry);
+  }
+
+  linearTokenClear() {
+    return state.linearTokenClear(this.store);
+  }
+
   auditCall(row) {
     return state.auditCall(this.store, row);
   }
