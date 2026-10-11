@@ -365,8 +365,22 @@ def _write_dry_run(folder: Path, files: Mapping[str, bytes]) -> None:
         _write_private(target, data)
 
 
+def _revoke_full_copy(run: Runner, gh: str | None, repo: str, sleep: Callable[[float], None]) -> dict[str, str]:
+    """With the full copy off, delete `mac-facts.json` from the branch if it is there.  {path: result} (and "reason" when it failed).
+    It needs only `gh`, not the key, the load, the gatherers or the repository gate:  a repository that stopped being safe is exactly
+    when a path-bearing file must not stay readable."""
+    gh_path = gh or which("gh")
+    if gh_path is None:
+        return {FULL_FACTS: "not checked:  gh is not installed"}
+    try:
+        done = repomod.Writer(run, gh_path, repo, sleep=sleep).remove(FULL_FACTS, "mac-facts: remove %s (the full copy is off)" % FULL_FACTS)
+    except (repomod.WriteFailed, repomod.Refused) as exc:
+        return {FULL_FACTS: "failed", "reason": exc.reason}
+    return {FULL_FACTS: FULL_COPY_OFF if done == "absent" else "removed:  FLEET_FACTS_PUBLISH_FULL_COPY is off"}
+
+
 def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1: Callable[[], float], sleep: Callable[[float], None],
-           repo: str, gh: str | None, apps_provider: Callable[[], list[str]], full_copy_provider: Callable[[], bool],
+           repo: str, gh: str | None, apps_provider: Callable[[], list[str]], include_full: bool,
            dry_run_dir: Path | None, deadline: Deadline, load_limit: float) -> Outcome:
     try:
         load = float(load1())
@@ -396,7 +410,6 @@ def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1
             full_text = unavailable_text(now, full_info.get("reason"))
             data = full_text.encode("utf-8")
             full_info = dict(full_info, placeholder=True, sha256=signing.sha256_hex(data), bytes=len(data))
-        include_full = bool(full_copy_provider())
         files = build_documents(facts, full_info, key, include_full=include_full)
     except safety.HelpersMissing as exc:
         return Outcome("refused", "nothing was published:  %s" % exc, EXIT_REFUSED)
@@ -422,13 +435,6 @@ def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1
     stamp = facts.get("generated_at") or now.strftime("%Y-%m-%dT%H:%M:%SZ")
     results: dict[str, str] = {}
     failure: str | None = None
-    if FULL_FACTS not in files:
-        # The path-bearing copy is off:  if a run published it while the knob was on, it must not stay readable at the tip.
-        try:
-            results[FULL_FACTS] = FULL_COPY_OFF if writer.remove(FULL_FACTS, "mac-facts: remove %s (the full copy is off)" % FULL_FACTS) == "absent" \
-                else "removed:  FLEET_FACTS_PUBLISH_FULL_COPY is off"
-        except (repomod.WriteFailed, repomod.Refused) as exc:
-            return Outcome("failed", exc.reason, EXIT_FAILED, {FULL_FACTS: "failed"}, notes, extra)
     for rel in WRITE_ORDER:
         if rel not in files:
             continue
@@ -439,8 +445,9 @@ def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1
             failure = exc.reason
             break       # a later file may depend on this one (the JSON carries the list's hash)
     if failure:
-        if results.get(FULL_LIST) in ("created", "updated"):
+        if results.get(FULL_LIST) in ("created", "updated") and results.get(GB_FACTS) not in ("created", "updated", "unchanged"):
             # The new list landed and the facts that describe it did not:  do not leave the new list beside the old facts.
+            # (When the facts did land, the list they hash is the one to keep, even if the optional full copy failed after them.)
             note = unavailable_text(now, "the facts file could not be written, so this list was withdrawn").encode("utf-8")
             try:
                 writer.put(FULL_LIST, note, "mac-facts: %s withdrawn" % FULL_LIST)
@@ -467,12 +474,21 @@ def run_cycle(*, run: Runner = default_run, now: datetime | None = None, key_pro
             return outcome
         cap_seconds, load_limit = limits_provider()
         deadline = Deadline(cap_seconds, clock)
+        include_full = bool(full_copy_provider())
         _log(current, "start")
         try:
             with hard_cap(cap_seconds):
-                outcome = _cycle(run=run, now=current, key_provider=key_provider, load1=load1, sleep=sleep, repo=repo, gh=gh,
-                                 apps_provider=apps_provider, full_copy_provider=full_copy_provider, dry_run_dir=dry_run_dir,
-                                 deadline=deadline, load_limit=load_limit)
+                # First, before anything that can return early (no key, high load, a gate that refuses):  while the path-bearing copy is
+                # off, a copy an earlier run left must not stay readable.
+                revoked = {} if include_full or dry_run_dir is not None else _revoke_full_copy(run, gh, repo, sleep)
+                if revoked.get(FULL_FACTS) == "failed":
+                    outcome = Outcome("failed", revoked.pop("reason"), EXIT_FAILED, {FULL_FACTS: "failed"})
+                else:
+                    outcome = _cycle(run=run, now=current, key_provider=key_provider, load1=load1, sleep=sleep, repo=repo, gh=gh,
+                                     apps_provider=apps_provider, include_full=include_full, dry_run_dir=dry_run_dir,
+                                     deadline=deadline, load_limit=load_limit)
+                    if revoked:
+                        outcome.files = {**revoked, **outcome.files}
         except CapExceeded:
             kill_live()
             outcome = Outcome("over-cap", "the %d-minute cap was reached;  running children were ended" % (cap_seconds // 60), EXIT_FAILED)
@@ -513,6 +529,8 @@ def publish_file(rel: str, local: str, *, run: Runner = default_run, key_provide
     """Sign (a .json file) or scan (anything else) one local file and write it to `rel`.  The same gate as the cycle."""
     try:
         repomod.check_path(rel)
+        if rel in (FULL_LIST, GB_FACTS):
+            raise repomod.Refused("%s belongs to publish-mac:  the signed facts carry the list's hash, so the two are written together" % rel)
         if rel == FULL_FACTS and not full_copy_provider():
             raise repomod.Refused("mac-facts.json keeps lane paths and FLEET_FACTS_PUBLISH_FULL_COPY is off")
         raw = _read_regular(local)

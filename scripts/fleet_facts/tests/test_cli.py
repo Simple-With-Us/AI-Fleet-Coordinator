@@ -41,6 +41,13 @@ class Sandbox(unittest.TestCase):
         path.chmod(0o755)
         self.fake_key = key
 
+    def install_fake_gh_404(self):
+        """A `gh` that answers every call with a 404:  a publish run (not a dry run) always looks for a left-over full copy first,
+        and a test must never reach the real GitHub."""
+        path = self.bin / "gh"
+        path.write_text("#!/bin/sh\necho 'gh: Not Found (HTTP 404)' >&2\nexit 1\n")
+        path.chmod(0o755)
+
     def run_cli(self, *args, scenario=None, entry=ENTRY, env_extra=None):
         write_scenario(self.root / "scenario.json", scenario if scenario is not None else self.scenario)
         env = {"HOME": str(self.home), "PATH": "%s:/usr/bin:/bin" % self.bin, "FF_SCENARIO": str(self.root / "scenario.json"),
@@ -169,6 +176,7 @@ class Errors(Sandbox):
 
     def test_publish_mac_without_a_signing_key_publishes_nothing(self):
         self.install_fake_infisical(fail=True)
+        self.install_fake_gh_404()
         proc = self.run_cli("publish-mac")
         self.assertEqual(proc.returncode, 3, proc.stderr)
         self.assertIn("no-key", proc.stderr)
@@ -176,6 +184,7 @@ class Errors(Sandbox):
         self.assertFalse((self.root / "calls.log").exists(), "no gh, board or lane program was started")
         status = json.loads((self.home / ".local" / "state" / "fleet-facts" / "mac-facts-publish.json").read_text())
         self.assertEqual(status["result"], "no-key")
+        self.assertEqual(status["files"], {"mac-facts.json": "skipped:  FLEET_FACTS_PUBLISH_FULL_COPY is off"}, "the left-over check ran first and found none")
 
     def test_publish_mac_dry_run_signs_the_path_free_copy_and_sends_nothing(self):
         self.install_fake_infisical(key=SIGNER)

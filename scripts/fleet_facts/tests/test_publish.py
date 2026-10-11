@@ -294,6 +294,16 @@ class Published(Sandbox):
         self.assertTrue(status["stale"])
         self.assertEqual(status["last_published_at"], "2026-10-11T17:30:00Z", "the last good publish is remembered")
 
+    def test_the_list_stays_when_the_facts_that_hash_it_already_landed(self):
+        """With the full copy on, the third write can fail after the first two:  the list the signed facts describe is the one to keep."""
+        self.gh.put_fail[p.FULL_FACTS] = ["500", "500"]
+        outcome = self.cycle(full_copy_provider=lambda: True)
+        self.assertEqual((outcome.result, outcome.exit_code), ("failed", 4))
+        self.assertEqual(outcome.files, {p.FULL_LIST: "created", p.GB_FACTS: "created", p.FULL_FACTS: "failed"})
+        self.assertEqual(self.gh.written(p.FULL_LIST).decode(), self.machine.list_text)
+        info = json.loads(self.gh.written(p.GB_FACTS))["full_list"]
+        self.assertEqual(info["sha256"], signing.sha256_hex(self.gh.written(p.FULL_LIST)), "the hash still checks")
+
     def test_a_failed_withdrawal_is_said_so(self):
         self.gh.put_fail[p.GB_FACTS] = ["500", "500"]
         self.gh.put_fail[p.FULL_LIST] = [None, "500", "500"]
@@ -583,6 +593,14 @@ class OneFile(Sandbox):
         self.assertEqual(outcome.result, "published")
         self.assertNotIn(SIGNER, self.gh.written("gb/x.json").decode())
 
+    def test_the_two_paths_publish_mac_owns_cannot_be_written_one_at_a_time(self):
+        """gb/mac-facts.json carries the SHA-256 of gb/full-list.md:  writing either alone would leave a pair that cannot pass its own check."""
+        for rel in (p.FULL_LIST, p.GB_FACTS):
+            outcome = self.publish(rel, self.local("a.md", "x"))
+            self.assertEqual((outcome.result, outcome.exit_code), ("refused", 3), rel)
+            self.assertIn("belongs to publish-mac", outcome.reason)
+        self.assertEqual(self.gh.calls, [])
+
     def test_a_forbidden_path_is_refused_before_anything_else(self):
         for rel in (".github/workflows/x.yml", "../x.json", "docs/a.md", "/mac-facts.json"):
             outcome = self.publish(rel, self.local("a.md", "x"))
@@ -717,6 +735,38 @@ class FullCopy(Sandbox):
         self.assertEqual((outcome.result, outcome.exit_code, outcome.files), ("failed", 4, {p.FULL_FACTS: "failed"}))
         self.assertEqual(self.gh.puts, [])
         self.assertIn(p.FULL_FACTS, self.gh.files)
+        self.assertEqual(self.machine.names(), ["gh"] * len(self.machine.calls), "nothing was gathered")
+
+    def test_the_left_over_copy_goes_first_whatever_else_stops_the_run(self):
+        """Revoking does not wait for the key, the load, the gatherers or the repository gate."""
+        def no_key():
+            raise signing.KeyUnavailable("unset")
+        cases = [("no key", dict(key_provider=no_key), "no-key"),
+                 ("high load", dict(load1=lambda: 999.0), "skipped"),
+                 ("a gate that refuses", {}, "refused")]
+        for label, over, expected in cases:
+            with self.subTest(label):
+                self.gh = FakeGitHub()
+                self.machine = Machine(self.gh)
+                if label == "a gate that refuses":
+                    self.gh.visibility = "PUBLIC"
+                self.gh.files[p.FULL_FACTS] = b"{}"
+                outcome = self.cycle(full_copy_provider=lambda: False, **over)
+                self.assertEqual(outcome.result, expected)
+                self.assertNotIn(p.FULL_FACTS, self.gh.files, "removed first")
+                self.assertEqual(outcome.files[p.FULL_FACTS], "removed:  FLEET_FACTS_PUBLISH_FULL_COPY is off")
+                self.assertEqual(self.gh.puts, [])
+                self.assertEqual(self.status()["files"][p.FULL_FACTS], "removed:  FLEET_FACTS_PUBLISH_FULL_COPY is off")
+
+    def test_with_the_copy_on_nothing_is_removed(self):
+        self.gh.files[p.FULL_FACTS] = b"{}"
+        self.cycle(full_copy_provider=lambda: True)
+        self.assertEqual(self.gh.deletes, [])
+
+    def test_no_gh_means_the_check_is_reported_not_skipped_silently(self):
+        with mock.patch.object(p, "which", return_value=None):
+            outcome = self.cycle(full_copy_provider=lambda: False, gh=None)
+        self.assertEqual(outcome.files[p.FULL_FACTS], "not checked:  gh is not installed")
 
     def test_a_dry_run_never_removes_anything(self):
         self.gh.files[p.FULL_FACTS] = b"{}"

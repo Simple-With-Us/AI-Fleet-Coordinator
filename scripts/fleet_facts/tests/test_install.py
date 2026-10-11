@@ -121,6 +121,9 @@ class Install(unittest.TestCase):
     def test_the_launcher_runs_the_publisher_and_publishes_nothing_without_a_key(self):
         self.install("--apply")
         bin_dir = self.fake_infisical("exit 1")
+        gh = bin_dir / "gh"          # a publish run always looks for a left-over full copy first;  this one finds nothing, offline
+        gh.write_text("#!/bin/sh\necho 'gh: Not Found (HTTP 404)' >&2\nexit 1\n")
+        gh.chmod(0o755)
         env = {"HOME": str(self.home), "PATH": "%s:/usr/bin:/bin" % bin_dir}
         proc = subprocess.run(["/bin/sh", str(self.stable / "mac-facts-publish")], capture_output=True, text=True, env=env, timeout=60)
         self.assertEqual(proc.returncode, 3, proc.stderr)
