@@ -569,7 +569,8 @@ class SeatFieldsTests(Harness):
         mid = self.fake.add_message("Codex", "agent-sync", "t", "hi @**Claude**")
         (row,) = self.lines("read", "--topic", "t", "--json")
         self.assertEqual(set(row), {"id", "sender_id", "client", "channel", "topic", "dm", "sender_email", "sender_full_name",
-                                    "is_bot", "seat", "seat_app", "timestamp", "content", "flags", "sibling", "mentioned"})
+                                    "is_bot", "seat", "seat_app", "timestamp", "content", "flags", "sibling", "mentioned",
+                                    "reactions"})
         self.assertEqual(row["id"], mid)
 
     def test_the_fields_also_reach_inbox_and_dm_read(self) -> None:
@@ -580,13 +581,89 @@ class SeatFieldsTests(Harness):
         self.assertEqual((row["seat"], row["seat_app"]), ("CODEX", "codex"))
 
 
+# --------------------------------------------------------------------------------------------
+# read --json:  reactions, and whoami --json:  owner_user_id (open-loops C6-2, the one-tap answer)
+# --------------------------------------------------------------------------------------------
+
+class ReactionFieldsTests(OwnerHarness):
+    def lines(self, *argv: str) -> list[dict]:
+        result = self.run_cli(*argv)
+        self.assertEqual(result.code, 0, result.err)
+        return [json.loads(line) for line in result.out.splitlines()]
+
+    def react(self, message_id: int, *reactions: dict) -> None:
+        for message in self.fake.messages:
+            if message["id"] == message_id:
+                message["reactions"] = list(reactions)
+                return
+        raise AssertionError("no message %d" % message_id)
+
+    def test_a_message_carries_who_reacted_and_with_which_emoji(self) -> None:
+        mid = self.fake.add_message("Claude", "agent-sync", "t", "pick one")
+        self.react(mid, {"emoji_name": "one", "emoji_code": "0031-20e3", "reaction_type": "unicode_emoji", "user_id": OWNER_ID,
+                         "user": {"id": OWNER_ID, "email": "jay@zulip.test", "full_name": "Jay Wedgeworth"}},
+                   {"emoji_name": "two", "emoji_code": "0032-20e3", "reaction_type": "unicode_emoji", "user_id": 77})
+        (row,) = self.lines("read", "--topic", "t", "--json", "--include-self")
+        self.assertEqual(row["reactions"], [
+            {"user_id": OWNER_ID, "reaction_type": "unicode_emoji", "emoji_code": "0031-20e3", "emoji_name": "one"},
+            {"user_id": 77, "reaction_type": "unicode_emoji", "emoji_code": "0032-20e3", "emoji_name": "two"}])
+        self.assertNotIn("full_name", json.dumps(row["reactions"]), "the nested user object is not passed on")
+
+    def test_a_message_without_reactions_has_an_empty_list(self) -> None:
+        self.fake.add_message("Claude", "agent-sync", "t", "quiet")
+        (row,) = self.lines("read", "--topic", "t", "--json", "--include-self")
+        self.assertEqual(row["reactions"], [])
+
+    def test_a_custom_emoji_keeps_its_type_so_a_consumer_can_refuse_it(self) -> None:
+        mid = self.fake.add_message("Claude", "agent-sync", "t", "pick one")
+        self.react(mid, {"emoji_name": "one", "emoji_code": "12", "reaction_type": "realm_emoji", "user_id": OWNER_ID})
+        (row,) = self.lines("read", "--topic", "t", "--json", "--include-self")
+        self.assertEqual(row["reactions"][0]["reaction_type"], "realm_emoji")
+
+    def test_odd_rows_are_dropped_or_blanked_never_crash(self) -> None:
+        mid = self.fake.add_message("Claude", "agent-sync", "t", "pick one")
+        self.react(mid, "not a dict", {"emoji_code": "0031-20e3"}, {"user_id": True, "emoji_code": "0031-20e3"},
+                   {"user_id": "5", "emoji_code": "0031-20e3"}, {"user": {"id": 9}, "emoji_code": 31, "emoji_name": None},
+                   {"user_id": 8, "emoji_code": "0033-20e3", "reaction_type": ["unicode_emoji"]})
+        (row,) = self.lines("read", "--topic", "t", "--json", "--include-self")
+        self.assertEqual(row["reactions"], [
+            {"user_id": 9, "reaction_type": None, "emoji_code": None, "emoji_name": None},
+            {"user_id": 8, "reaction_type": None, "emoji_code": "0033-20e3", "emoji_name": None}])
+
+    def test_the_list_is_capped(self) -> None:
+        mid = self.fake.add_message("Claude", "agent-sync", "t", "pick one")
+        self.react(mid, *[{"user_id": 1000 + n, "emoji_code": "0031-20e3", "reaction_type": "unicode_emoji"} for n in range(250)])
+        (row,) = self.lines("read", "--topic", "t", "--json", "--include-self")
+        self.assertEqual(len(row["reactions"]), cli.MAX_REACTIONS_SHOWN)
+
+    def test_whoami_names_the_pinned_owner(self) -> None:
+        self.pin_owner()
+        info = json.loads(self.run_cli("whoami", "--json").out)
+        self.assertEqual(info["owner_user_id"], OWNER_ID)
+        self.assertIn("owner id:", self.run_cli("whoami").out)
+
+    def test_whoami_says_null_when_the_owner_is_not_pinned_or_the_file_is_damaged(self) -> None:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        path = self.state_dir / "listener.toml"
+        for text in (None, "[daemon]\nowner_user_id = 0\n", "this is = not [toml", "[daemon]\nowner_user_id = \"12\"\n"):
+            with self.subTest(text=text):
+                if text is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(text)
+                result = self.run_cli("whoami", "--json")
+                self.assertEqual(result.code, 0, result.err)
+                self.assertIsNone(json.loads(result.out)["owner_user_id"])
+        self.assertIn("not pinned", self.run_cli("whoami").out)
+
+
 class ReadmeCoversTheNewSurfaceTests(unittest.TestCase):
     def test_every_new_flag_and_command_is_in_the_readme(self) -> None:
         from pathlib import Path
 
         text = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
         for needle in ("verify-owner-msg", "--to-owner", "--body-file", "render_untrusted", "redact_fields", "seat_app",
-                       "| 7 |", "7 when not", "heuristic"):
+                       "| 7 |", "7 when not", "heuristic", "reactions", "owner_user_id"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, text)
 

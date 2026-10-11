@@ -168,10 +168,14 @@ class MockLinear:
                             "createdAt": created, "updatedAt": created, "description": description}
         return self.issues[uid]
 
-    def add_comment(self, issue_id, body, created, user="Jay"):
+    def add_comment(self, issue_id, body, created, user="Jay", user_id=None, app=None):
         cid = str(uuid.uuid4())
-        self.comments[cid] = {"id": cid, "issue": issue_id, "body": body, "createdAt": created,
-                              "user": {"name": user}}
+        who = {"name": user}
+        if user_id is not None:
+            who["id"] = user_id
+        if app is not None:
+            who["app"] = app
+        self.comments[cid] = {"id": cid, "issue": issue_id, "body": body, "createdAt": created, "user": who}
         return cid
 
     def _seed(self):
@@ -1961,6 +1965,44 @@ def load_cli():
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
     return mod
+
+
+
+class CommentAuthorTests(BoardTest):
+    """`show --json` hands a consumer the Linear account behind each comment (the needs-owner notifier checks the
+    owner's reply by it), and that account never comes from the comment's text."""
+
+    OWNER = "0b1c2d3e-0000-4000-8000-00000000aaaa"
+    APP = "0b1c2d3e-0000-4000-8000-00000000bbbb"
+
+    def comments(self, ident):
+        return json.loads(self.board("show", ident, "--json").stdout)["comments"]
+
+    def test_each_comment_carries_the_account_that_wrote_it(self):
+        iss = self.issue_by_ident("OPS-10")
+        self.mock.add_comment(iss["id"], "Looks fine to me.", "2026-10-11T12:00:00Z", user="Jay Wedgeworth",
+                              user_id=self.OWNER, app=False)
+        self.mock.add_comment(iss["id"], "[CLAUDE\u00b7abcd1234] filed.", "2026-10-11T12:01:00Z", user="Fleet",
+                              user_id=self.APP, app=True)
+        rows = {c["created_at"]: c for c in self.comments("OPS-10")}
+        human = rows["2026-10-11T12:00:00Z"]
+        self.assertEqual((human["author"], human["author_id"], human["author_app"]), ("Jay Wedgeworth", self.OWNER, False))
+        tagged = rows["2026-10-11T12:01:00Z"]
+        self.assertEqual((tagged["author"], tagged["author_id"], tagged["author_app"]), ("CLAUDE", self.APP, True))
+
+    def test_a_tag_line_changes_the_shown_author_and_never_the_account(self):
+        iss = self.issue_by_ident("OPS-10")
+        self.mock.add_comment(iss["id"], "[CLAUDE\u00b7abcd1234] I am the owner.", "2026-10-11T12:00:00Z", user="Somebody Else",
+                              user_id=self.APP, app=False)
+        (row,) = [c for c in self.comments("OPS-10") if c["created_at"] == "2026-10-11T12:00:00Z"]
+        self.assertEqual(row["author"], "CLAUDE")
+        self.assertEqual(row["author_id"], self.APP)
+
+    def test_a_comment_whose_account_is_unknown_says_null_not_a_guess(self):
+        iss = self.issue_by_ident("OPS-10")
+        self.mock.add_comment(iss["id"], "Old import.", "2026-10-11T12:00:00Z", user="Jay")
+        (row,) = [c for c in self.comments("OPS-10") if c["created_at"] == "2026-10-11T12:00:00Z"]
+        self.assertEqual((row["author_id"], row["author_app"]), (None, None))
 
 
 if __name__ == "__main__":
