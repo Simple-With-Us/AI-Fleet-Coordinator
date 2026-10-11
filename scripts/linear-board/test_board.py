@@ -1430,18 +1430,35 @@ class SeatAppTests(BoardTest):
         self.assertIn("viewer:      Codex (app user)", p.stdout)
         self.assertIn("look swapped", p.stderr)
 
-    def test_spelled_out_app_names_are_accepted_for_ag_and_mm(self):
-        # the owner may name the AG seat's app Antigravity and the MM seat's app MiniMax; the seat tags stay AG and MM
-        self.seat_app("AG", "Antigravity")
-        self.seat_app("MM", "MiniMax")
-        self.seat_app("FX", "FX")
-        self.seat_app("JET", "Jet (OpenAI dot)")
-        for seat in ("AG", "MM", "FX", "JET"):
+    def test_renamed_app_names_are_accepted(self):
+        # the owner renames seat apps in Linear (Antigravity, Antigravity (AG), OC, FX.sh, Grok (Build) ...);
+        # the seat tags stay as they are and none of those renames may lock a seat out of writing
+        names = {"AG": "Antigravity (AG)", "MM": "MiniMax", "FX": "FX.sh", "JET": "Jet (OpenAI dot)",
+                 "MC": "Muse Code (MC)", "MA": "Muse Assist (MA)", "GROK": "Grok (Build)",
+                 "GROK-WEB": "Grok (Web/iOS)", "OPENCODE": "OC"}
+        for seat, name in names.items():
+            self.seat_app(seat, name)
+        for seat in names:
             self.as_seat(seat, "comment", B_A[:8], "--by", seat, "--text", "alias name is accepted")
             self.assertIn("(app user)", self.as_seat(seat, "whoami").stdout)
+        # OpenCode and OC are interchangeable, and case never matters
+        self.seat_app("OPENCODE", "OpenCode")
+        self.as_seat("OPENCODE", "comment", B_A[:8], "--by", "OPENCODE", "--text", "primary name is accepted")
+        self.seat_app("OPENCODE", "oc")
+        self.as_seat("OPENCODE", "comment", B_A[:8], "--by", "OPENCODE", "--text", "case is ignored")
         # a wrong name is still refused
         self.seat_app("CLAUDE", "Antigravity")
         self.assertIn("look swapped", self.as_seat("CLAUDE", "comment", B_A[:8], "--by", "CLAUDE", "--text", "x", code=4).stderr)
+
+    def test_accepted_app_names_belong_to_one_seat(self):
+        # a name two seats share would let their credentials be swapped without the check noticing
+        cli = load_cli()
+        owner = {}
+        for seat in cli.SEAT_APP_NAMES:
+            for name in {n.casefold() for n in (*cli.seat_app_names(seat), seat)}:
+                self.assertNotIn(name.casefold(), owner, f"{name!r} is accepted for both {owner.get(name.casefold())} and {seat}")
+                owner[name.casefold()] = seat
+        self.assertEqual(set(cli.SEAT_APP_ALIASES) - set(cli.SEAT_APP_NAMES), set())
 
     def test_remint_rules_apply_per_cache_file(self):
         claude, _ = self.seat_app("CLAUDE", "Claude")
