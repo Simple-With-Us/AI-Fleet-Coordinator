@@ -127,8 +127,10 @@ def seat_apps_errors(data: dict) -> list[str]:
         return [f"seatApps: {exc}"]
     errors: list[str] = []
     seats = [s for s in data.get("seats", []) if isinstance(s, dict) and s.get("tag")]
-    live = {s["tag"] for s in seats if not s.get("retired")}
-    rows = {s["tag"] for s in seats}
+    # Tags are read the way identity.parse_seat_registry reads them (strip, upper case), so a row written
+    # "ghost" and a bySeat key "GHOST" agree here as they do in strict_seat.
+    live = {str(s["tag"]).strip().upper() for s in seats if not s.get("retired")}
+    rows = {str(s["tag"]).strip().upper() for s in seats}
     apps = data["seatApps"]
     for key in ("bySeat", "extraSeats"):
         for tag in apps[key]:

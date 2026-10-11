@@ -409,6 +409,17 @@ class CheckTests(unittest.TestCase):
         errors = self.errors(lambda d: d["seatApps"]["bySeat"].__setitem__("MONET", "claude-code"))
         self.assertTrue(any("MONET" in e and "is retired" in e for e in errors), errors)
 
+    def test_a_row_tag_is_read_upper_case_as_identity_reads_it(self) -> None:
+        def lower_case_the_codex_row(d) -> None:
+            next(r for r in d["seats"] if r["tag"] == "CODEX")["tag"] = " codex "
+        self.assertEqual(self.errors(lower_case_the_codex_row), [], "no false 'has no app' or 'not a row' report")
+
+        def lower_case_a_retired_row(d) -> None:
+            next(r for r in d["seats"] if r["tag"] == "MONET")["tag"] = "monet"
+        self.assertEqual(self.errors(lower_case_a_retired_row), [])
+        errors = self.errors(lambda d: (lower_case_a_retired_row(d), d["seatApps"]["bySeat"].__setitem__("MONET", "x")))
+        self.assertTrue(any("MONET" in e and "is retired" in e for e in errors), errors)
+
     def test_a_by_seat_entry_for_no_row_is_reported(self) -> None:
         errors = self.errors(lambda d: d["seatApps"]["bySeat"].__setitem__("GHOST", "ghost"))
         self.assertTrue(any("GHOST" in e and "not a row of seats" in e for e in errors), errors)
