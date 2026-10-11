@@ -35,8 +35,8 @@ try:
 except ImportError:  # pragma: no cover - Python 3.10 and older
     tomllib = None  # type: ignore[assignment]
 
-KNOWN_WAKES = ("inbox", "claude", "http")
-WORKER_WAKES = ("claude", "http")  # adapters that run on a per-seat wake worker thread
+KNOWN_WAKES = ("inbox", "claude", "http", "muse")
+WORKER_WAKES = ("claude", "http", "muse")  # adapters that run on a per-seat wake worker thread
 INSTANCES = ("mac", "server")
 PARTITION_VALUES = ("mac", "server", "none")
 ENV_INSTANCE = "AGENT_SYNC_INSTANCE"  # set by the LaunchAgent (mac) and the container image (server)
@@ -53,6 +53,11 @@ BUDGET_DEFAULTS: dict[str, float] = {
     "routes_per_hour": 3, "routes_per_day": 10, "route_topic_minutes": 30,
 }
 WAKE_MAX_BUDGET_USD = 0.25
+# The muse seat's default model (AFC-291).  The catalog carries three muse-spark-1.3 variants and
+# the plain `muse-spark-1.3` is 15x dearer than the contributor tier, so the default names the
+# contributor tier explicitly.  It is a default, not a hardcode:  `seat.X.model` still wins, so a
+# seat can be moved to another tier deliberately and the change shows up in the config.
+MUSE_DEFAULT_MODEL = "muse-spark-1.3-contributor"
 # Wakes the budget holds back (heldback.py), per seat:  `held_back = { max = 200, overflow_max = 1000,
 # ttl_hours = 24, items_in_wake = 20, owner_digest_minutes = 60, catch_up = true }`.  max is the records
 # with names;  past it the oldest move to a compact overflow tier (still listed by id), and only past
@@ -124,7 +129,8 @@ class SeatConfig:
                  live: dict[str, int], claude: str | None, *, instance: str = "mac", enabled: bool = True,
                  creds: str = "file", email_env: str | None = None, key_env: str | None = None,
                  site_env: str = DEFAULT_SITE_ENV, routine: RoutineConfig | None = None,
-                 route_enabled: bool = True, held_back: dict[str, Any] | None = None) -> None:
+                 route_enabled: bool = True, held_back: dict[str, Any] | None = None,
+                 muse: str | None = None, provider: str | None = None) -> None:
         self.seat = seat
         self.bot = bot
         self.wake = wake
@@ -132,6 +138,8 @@ class SeatConfig:
         self.budget = budget
         self.live = live
         self.claude = claude  # an absolute path to the claude binary, else resolved on the wake PATH
+        self.muse = muse  # an absolute path to the muse binary, else resolved on the wake PATH
+        self.provider = provider  # the CodeCaps provider name this seat's quota is read under
         self.instance = instance
         self.enabled = enabled
         self.creds = creds  # "file" or "env"
@@ -146,7 +154,31 @@ class SeatConfig:
     def wake_max_usd(self) -> float:
         """What one wake may cost, reserved against usd_per_day:  the claude run's maximum, a
         routine's configured cost (default 0:  the daemon spends nothing; the routine's platform
-        bills its own run), nothing for inbox."""
+        bills its own run), nothing for inbox, and nothing for muse.
+
+        The muse value is 0.0 DELIBERATELY (AFC-291), not an oversight and not a rounding of the
+        claude number.  Three reasons, in order:
+
+        1.  There is no per-run dollar cap.  `muse exec` has no `--max-budget-usd` equivalent, so
+            the $0.25 the claude wake reserves is a number about a cap that does not exist.
+        2.  A subscription-backed run has no marginal cost.  The seat's user already pays the plan;
+            one more or one fewer wake in a window changes no bill, so reserving against
+            usd_per_day would subtract a fictional quantity from a real ceiling.
+        3.  The owner asked for exactly this (2026-10-11):  cost is not the concern.  What matters is
+            not spamming the fleet and not causing downstream cost by fanning one wake into many.
+
+        So the dollar axis carries no signal for a muse seat and the COUNT caps do the bounding:
+        wakes_per_hour 6, wakes_per_day 40, per_topic_per_hour 2, owner_per_day 20 and
+        owner_per_topic_per_hour 6 (BUDGET_DEFAULTS) are unchanged and still enforced first, exactly
+        as they are for a claude seat.  usd_per_day still exists in the config and is still read, so
+        an operator who sets it sees it enforced as a plain ceiling of $0 spent against $0 spent:  it
+        never blocks, which is correct, because the run it would have blocked was never paid for.
+
+        The consequence to be explicit about:  the held-back machinery (heldback.py) and its
+        eviction reserve `reserve_usd` from this value to decide what a wake might still spend.  At
+        0.0 a muse seat reserves nothing, so nothing is held back on cost grounds.  That is correct
+        rather than a gap:  a wake is held back when a COUNT cap is hit, and holding it back "in
+        case it turns out to be expensive" is not a reason that can apply to a run with no cost."""
         if self.wake == "claude":
             return WAKE_MAX_BUDGET_USD
         if self.wake == "http" and self.routine is not None:
@@ -431,12 +463,24 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             routine = _routine(seat_name, section.get("routine"), problems)
         elif "routine" in section:
             problems.append("seat.%s.routine applies only to wake = \"http\"" % seat_name)
-        model = section.get("model", "sonnet")
+        model = section.get("model") or (MUSE_DEFAULT_MODEL if wake == "muse" else "sonnet")
         if not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
             problems.append("seat.%s.model must be a model alias such as sonnet" % seat_name)
         claude = section.get("claude")
         if claude is not None and (not isinstance(claude, str) or not os.path.isabs(claude)):
             problems.append("seat.%s.claude must be an absolute path" % seat_name)
+        muse = section.get("muse")
+        if muse is not None and (not isinstance(muse, str) or not os.path.isabs(muse)):
+            problems.append("seat.%s.muse must be an absolute path" % seat_name)
+        if wake != "muse" and "muse" in section:
+            problems.append("seat.%s.muse applies only to wake = \"muse\"" % seat_name)
+        provider = section.get("provider")
+        if provider is not None:
+            if not isinstance(provider, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,60}", provider):
+                problems.append("seat.%s.provider must be a provider name such as \"Claude Code\" or \"MiniMax\""
+                                % seat_name)
+            elif wake != "muse":
+                problems.append("seat.%s.provider applies only to wake = \"muse\"" % seat_name)
         budget = dict(BUDGET_DEFAULTS)
         given = section.get("budget", {})
         if not isinstance(given, dict):
@@ -468,7 +512,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         seat_cfg = SeatConfig(seat_name, bot, wake, model, budget, L.live_limits(raw, seat_name), claude,
                               instance=seat_instance or cfg.instance, enabled=enabled, creds=creds,
                               email_env=email_env, key_env=key_env, site_env=site_env, routine=routine,
-                              route_enabled=route_enabled, held_back=held_back)
+                              route_enabled=route_enabled, held_back=held_back, muse=muse, provider=provider)
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg
     _refuse_shared_env(cfg)
     return cfg

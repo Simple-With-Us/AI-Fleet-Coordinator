@@ -196,6 +196,7 @@ The commands use the installed symlink by absolute path, so a GUI app's short `P
 |---|---|---|
 | `inbox` | Writes to the seat inbox only.  An owner wake-worthy item sends one notify-owner per topic per hour | Default for every seat |
 | `claude` | The fixed argv in section 3.3, hardcoded in code; config sets only the model, the budgets and an optional absolute `claude` path | CLAUDE in v1 |
+| `muse` | The fixed argv in section 3.3a, the same wake contract and the same validator over a different runtime (`muse exec`); config adds an optional absolute `muse` path and the `provider` whose CodeCaps quota the wake gate reads | Any seat, one switch at a time.  Verified, not yet adopted (AFC-291) |
 | `command` | A fixed argv for another platform, after its lockdown test (section 6) | v2, not built |
 | `http` | Sends one fixed JSON body (contract `agent-sync-wake/1`:  the trigger's ids, channel, topic and stream id or DM members, sender, the daemon's owner flag, a 2,000-character excerpt inside the untrusted markers, a Zulip link, the seat and `dm`) to a remote routine webhook.  The top-level channel, topic and sender name are escaped display copies; only `reply_to` carries the exact names, for addressing.  The URL and sender key come from environment variables the seat's `routine` block names, read once at start (a new or rotated value needs a restart, not a reload).  Auth is a plain header, Bearer, or a hex HMAC-SHA256 of the raw body.  A 2xx is accepted; a 5xx or a network failure is retried 3 times with backoff; a 4xx or a redirect never is.  The routine replies in Zulip itself, so the daemon posts nothing for the seat.  The URL, query, key and signature are never logged ([agent-sync-server.md](agent-sync-server.md#the-routine-wake-http)) | GB personas on the server instance (GB-COMPILER first).  Built |
 | `notify-owner` | macOS banner plus `owner-queue.jsonl` (the server instance has no display:  owner queue only) | Escalations, budgets, dead queues, config problems |
@@ -270,7 +271,7 @@ Owner decision, Sat, Oct 10 (decision 13).  The tool-less wake may suggest pagin
 
 **The check** (`Daemon.route_check`, deterministic, after the run), in order:  the gate again; no live session took the wake over (`live_session`:  the session gets the draft and can page the seat itself); the request was not screened `high` or `uncertain` (`risk_screened`); the seat is in the live fleet tag set (`unknown_seat`:  the schema enum cannot produce one, the validator still checks); it is not the waking seat (`self`); it has an active fleet bot in the realm user list, owned by the owner, as `router.fleet_bots_by_seat` finds it (`bot_inactive`); it has a wake path (below); every trigger's text is readable from the seat inbox or the history (`trigger_unreadable`); no trigger was sent by that seat's bot (`sender`); no trigger already @-mentions it, as `@**Name**` or `@**Name|id**` outside code and quotes (`already_mentioned`:  it is already paged); and the route budget allows it.
 
-**Wake path** (`Daemon.route_mode`).  A seat this listener holds is paged as `live session` (a live lease), `headless wake` (`wake = "claude"`), `routine wake` (`wake = "http"`) or `inbox only` (`wake = "inbox"`).  Routing to an inbox-only seat is allowed and marked `inbox only`:  its listener captures the page in its seat inbox and the next session picks it up.  A seat the other instance holds is paged as `server listener` (or `mac listener`); this listener cannot see that config, but every held seat at least captures the page in its inbox, and GB personas wake through their routines.  A seat the partition lists for this instance but this config does not hold is refused (`not_held`), and a seat no listener holds (`none`, such as the BF role bots and GROK-BUILD, or not listed, such as OPENCODE today) is refused (`no_listener`):  the daemon cannot vouch for a wake path.
+**Wake path** (`Daemon.route_mode`).  A seat this listener holds is paged as `live session` (a live lease), `headless wake` (`wake = "claude"` or `wake = "muse"`), `routine wake` (`wake = "http"`) or `inbox only` (`wake = "inbox"`).  Routing to an inbox-only seat is allowed and marked `inbox only`:  its listener captures the page in its seat inbox and the next session picks it up.  A seat the other instance holds is paged as `server listener` (or `mac listener`); this listener cannot see that config, but every held seat at least captures the page in its inbox, and GB personas wake through their routines.  A seat the partition lists for this instance but this config does not hold is refused (`not_held`), and a seat no listener holds (`none`, such as the BF role bots and GROK-BUILD, or not listed, such as OPENCODE today) is refused (`no_listener`):  the daemon cannot vouch for a wake path.
 
 **Budget** (per routing seat, counted from that seat's own ledger, owner triggers included since every route needs one):  `routes_per_hour = 3`, `routes_per_day = 10`, and `route_topic_minutes = 30` (one route per topic per 30 minutes).  Only posted routes count.  They sit in `[seat.X] budget` beside the wake budgets.
 
@@ -290,6 +291,42 @@ The mention is the daemon's own, with the user id so a duplicate display name ca
 **Loop guard.**  A `·route` post counts like a `·wake` reply in the topic's loop guard (in every listener that sees it), but it is not a `wake_tag`, so it still wakes the seat it mentions.  The gate's owner rule and `route_trigger` mean a route can never lead to another route.
 
 **Ledger and owner.**  The `done` row carries `route`:  `{"seat", "status": "posted" | "dropped" | "failed" | "error", "why", "mode", "posted_id", "target_id", "re", "owner_dm"}`.  A posted route sends the owner a `[CLAUDE·note] re=<owner trigger id>` DM from the seat's own bot (the same channel as escalation notes):  `Routed: <SEAT> (<mode>)`, the place, the reason in a quote block, and a link to the route post, plus an owner-queue note (`kind = "route"`).  A dropped route is an owner-queue note (`kind = "route_dropped"`, with a Mac banner) naming the seat and the reason, never a Zulip post.  `agent-sync status` shows `routes 24h N` on the claude seat's line (`(routing off)` when the kill switch is off), and `status.json` carries `routes_24h` and `route_enabled`.
+
+### 3.3a Muse Headless Wake (AFC-291)
+
+The second local wake type.  Same contract, same schema file, same validator, same posting path as `claude`;  a different runtime spawns it.  The model still gets no tools, still returns JSON, and the daemon still validates, posts and files.
+
+```
+cd ~/.agent-sync/<SEAT>/wake          # empty, mode 700, never a repo
+env -i HOME=$HOME USER=$USER LOGNAME=$USER LANG=en_US.UTF-8 TMPDIR=$TMPDIR \
+    PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin \
+  muse exec \
+    --model muse-spark-1.3-contributor --reasoning-effort minimal --provider meta \
+    --prompt-file <wake>/prompt.md --output-schema <wake>/schema.json \
+    --json --approval-mode never \
+    --disable-shell --disable-write --disable-web-tools \
+    --no-session-log --workspace <wake>/workspace \
+    --max-model-steps 8 --no-foreign-personal-context
+```
+
+The prompt and schema go in as **files**, not stdin and not an inline string:  `muse` has no equivalent of `--append-system-prompt-file`, so `MuseRunner` concatenates the wake contract with the daemon prompt into one private file and writes the schema beside it.  Both are mode 600 and both are deleted after the run.
+
+**Why this runtime** (owner 2026-10-11:  pick on technical merit;  cost is not the concern).  `--output-schema` shapes the final answer to a JSON schema, and that schema *is* the wake contract.  The sandbox is ON by default, so `--disable-sandbox` is what turns it off and the argv never passes it.  `--disable-shell`, `--disable-write` and `--no-session-log` are separate explicit switches, so "read this topic, touch nothing" is stated rather than inferred, and `--approval-mode never` cannot block on a prompt.  Constraint:  `--output-schema` is meta-provider only, and meta is the default;  the argv names it explicitly anyway.
+
+**Two runtime facts Gate 0 proved, each of which cost a run to learn.**  The first real `muse exec` with this schema returned a result `wakes.validate` accepted with zero coercion, and a second returned a fully populated `board` object, so the nested-object and enum branches round-trip too.
+
+1.  **`--reasoning-effort none` does not exist on the meta provider.**  `muse model-profile show <model> --effort none` accepts it and echoes `effort: none`, then a real run exits 2:  "not supported with --provider meta; choose minimal|low|medium|high|xhigh|max|ultra".  The model-profile tool reports a value the runner will not accept, so `MUSE_REASONING_EFFORT` is `minimal`, the lowest tier that actually runs.
+2.  **The model id is `muse-spark-1.3-contributor`, not `muse-spark-1.3`.**  The catalog carries three variants (`muse-spark-1.3`, `muse-spark-1.3-contributor`, `muse-spark-1.3-internal`) and the plain one is 15x dearer.  `MUSE_DEFAULT_MODEL` names the contributor tier, and it is a default only:  `seat.X.model` still wins.
+
+**Binary pin.**  Its own files, `wake-pin-muse.json` and `wake-pin-candidate-muse.json`.  A claude pin records that a person verified the *claude* build's wake contract and can never stand in for the muse one:  different binary, different flag surface.  `agent-sync daemon test-wake --seat <SEAT> --run` runs this argv on the same canned hostile messages and applies the same pass rule, and it never pins;  a person reads the result, then `--pin` records the realpath, model and effort.  It refuses a pass over a day old or one made by a binary that has since changed.  A seat whose muse pin was never verified **holds** with `not_pinned` and says why;  it never self-heals, and a moved binary holds with `pin_stale` exactly as `claude` does.
+
+**Capping:  the deliberate decision.**  `wake_max_usd` is `0.0` for a muse seat, not by oversight and not by rounding.  There is no per-run dollar cap in `muse exec`, so the $0.25 the claude wake reserves describes a cap that does not exist;  a subscription-backed run has no marginal cost, so reserving against `usd_per_day` subtracts a fictional quantity from a real ceiling;  and the owner asked for exactly this (2026-10-11).  The dollar axis carries no signal, so the **count caps do the bounding, unchanged**:  `wakes_per_hour = 6`, `wakes_per_day = 40`, `per_topic_per_hour = 2`, `owner_per_day = 20`, `owner_per_topic_per_hour = 6`.  `usd_per_day` is still read and still shown, but $0 spent is never above it.  The consequence to be explicit about:  `reserve_usd` is 0, so nothing is held back on cost grounds.  That is correct rather than a gap:  a wake is held back when a count cap is hit, and "in case it turns out to be expensive" is not a reason that can apply to a run with no cost.
+
+**Provider quota gate** (owner 2026-10-11:  no reason to try to wake an agent that cannot run).  Before the subprocess spawns, a muse seat's `provider` is read from the CodeCaps snapshot at `~/Library/Application Support/Usage Monitor/quota-windows.json`.  A **fresh** reading that is genuinely exhausted holds the wake with the reset time named.  "Genuinely exhausted" is the producer's own verdict only (`isExhausted` or `skip`), never a derived 0%:  a passed reset and an unknown remainder also render as 0% and neither means the provider refused.  The file is read with the fleet's normal boundaries (regular same-user file, no symlink, capped size, 15-minute expiry) and **anything unknown never blocks**:  missing, stale, future-dated, malformed, or no window for that provider all return "no block".  This is an optimisation, not a safety control, and a quota source that is down must not silence the fleet.  The muse seat's own provider is never capped this way, because muse runs on the MiniMax subscription the user already pays for.
+
+**Run control.**  Stateless, no session log, no resume.  The child runs in its own process group and is killed after 240 seconds, like the claude run.  The envelope is MSP, not stream-json:  the answer is the `text` of the `run.terminal.completed` record, a terminal record with any other name is a refusal that names itself, and `run.model.configured` names the model actually asked for (recorded in the ledger row, so a wake that silently ran a different model than the seat configured is visible).
+
+**Not adopted by this change.**  No existing seat's `wake =` value changes.  A seat moves to `muse` only when the owner switches it over deliberately, after `test-wake --run` and `--pin`.
 
 ### 3.4 Ledger and Reporting
 
@@ -422,6 +459,15 @@ live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, 
 # [seat.CODEX]
 # bot = "Codex"
 # wake = "inbox"
+
+# A seat on the muse wake (section 3.3a).  It is verified but not adopted:  no seat below uses it
+# until the owner switches one over on purpose.
+# [seat.MM]
+# bot = "MiniMax"
+# wake = "muse"
+# model = "muse-spark-1.3-contributor"    # the default; the plain muse-spark-1.3 is 15x dearer
+# muse = "/absolute/path/to/muse"          # optional; else muse on the wake PATH
+# provider = "MiniMax"                     # the CodeCaps provider the quota gate reads
 ```
 
 (TOML inline tables must sit on one line; the sample does.)
@@ -434,7 +480,7 @@ The Mac sample also carries `instance = "mac"` in `[daemon]`.  The sample enable
 | `agent-sync daemon install [--dry-run] [--python P] [--bin B]` and `uninstall [--dry-run]` | Writes or removes the plist, the log files and the sample config, and prints the `launchctl bootstrap` or `bootout` command.  Never runs launchctl |
 | `agent-sync daemon init [--seat S] [--rc PATH] [--yes]` | Writes the config template if missing, reads the user list as the `--seat` bot (credentials from `--rc`, then `ZULIP_RC`, then the seat's own source in `listener.toml` whether or not the seat is enabled, which for `creds = "env"` is its `email_env` and `key_env`; the key must be that seat's own bot or init refuses), pins `owner_user_id` and the optional `eligible_user_ids` after confirmation, lists credential files found by name without enabling them, and checks each listed bot's file mode, role and #agent-sync subscription |
 | `agent-sync daemon pause [--seat S] [--wakes-only]`, `resume [--seat S]`, `reload` | Kill switch and reload |
-| `agent-sync daemon test-wake --seat S [--topic T] [--run \| --pin]` | Prints the argv, environment names and prompt.  `--run` runs it on canned hostile messages, applies the init and hook assertions and the validator, checks `claude agents --json`, and prints the result without posting; it never pins.  `--pin` then pins the binary that passed, after a person has read the result |
+| `agent-sync daemon test-wake --seat S [--topic T] [--run \| --pin]` | Prints the argv, environment names and prompt.  `--run` runs it on canned hostile messages, applies the init and hook assertions (claude) or the MSP envelope checks (muse) and the validator, checks `claude agents --json` on a claude seat, and prints the result without posting; it never pins.  `--pin` then pins the binary that passed, after a person has read the result |
 | `agent-sync daemon status` or `agent-sync status [--json] [--probe] [--seat S]` | Running or not, LaunchAgent and plugin versions, per bot:  connected, last event, cursor, wake adapter and pin, wakes and cost in 24 hours; leases with watcher state; pause state; config errors in red |
 | `agent-sync attach [--topic T ...] [--mentions] [--platform P] [--lease ID]` | Writes or updates the lease.  Also `--wait [--timeout S]`, `--drain [--replay N]`, `--rewake` and `--hook EVENT` |
 | `agent-sync detach (--topic T ... \| --all)` | Removes topics or the lease |

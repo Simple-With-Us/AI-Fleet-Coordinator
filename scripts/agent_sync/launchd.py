@@ -106,6 +106,17 @@ def sample_config(secrets_dir: str) -> str:
         "budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, "
         "owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }",
         "live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, loop_turns = 3 }",
+        "",
+        "# The muse wake (docs/protocols/agent-sync-listener.md 3.3a) is verified and available, and",
+        "# no seat below uses it:  a seat moves to it only when the owner switches it over on purpose,",
+        "# after `agent-sync daemon test-wake --seat <SEAT> --run` and then --pin on that seat's own",
+        "# muse pin file.  Uncomment for a seat that is meant to wake on it.",
+        "# [seat.MM]",
+        '# bot = "MiniMax"',
+        '# wake = "muse"',
+        '# model = "muse-spark-1.3-contributor"   # the plain muse-spark-1.3 is 15x dearer',
+        '# muse = "/absolute/path/to/muse"         # optional; else muse on the wake PATH',
+        '# provider = "MiniMax"                    # the CodeCaps provider the quota gate reads',
     ]
     listed = [seat for seat in READER_SEATS[1:] if present(seat)]
     if listed:

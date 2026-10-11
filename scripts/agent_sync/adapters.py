@@ -31,6 +31,7 @@ Python 3.11+, standard library only.
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import hmac
 import http.client
@@ -369,6 +370,462 @@ def pin_candidate(paths: L.SeatPaths, claude: str, now: float) -> str | None:
         os.unlink(paths.wake_pin_candidate)
     except OSError:
         pass
+    return None
+
+
+# --------------------------------------------------------------------------------------------
+# Muse headless wake
+# --------------------------------------------------------------------------------------------
+#
+# The second local wake type (AFC-291).  `muse exec` replaces `claude -p`, chosen on technical merit
+# (owner 2026-10-11:  cost is not the concern;  spam and cascade are).
+#
+#     muse exec --model muse-spark-1.3-contributor --reasoning-effort minimal
+#               --prompt-file <prompt> --output-schema <schema>
+#               --json --approval-mode never
+#               --disable-shell --disable-write --disable-web-tools
+#               --no-session-log --workspace <inert dir>
+#               --max-model-steps N --no-foreign-personal-context
+#
+# Why this runtime:
+#   * `--output-schema` shapes the final answer to a JSON schema, and that schema IS the wake
+#     contract.  Constraint:  meta provider only, and meta is the default.
+#   * The sandbox is ON by default;  `--disable-sandbox` turns it off.  The claude wake had to work
+#     to reach an equivalent state.
+#   * `--disable-shell`, `--disable-write` and `--no-session-log` are separate explicit switches, so
+#     "read this topic, touch nothing" is stated rather than inferred.
+#   * `--approval-mode never` cannot block on a prompt.
+#
+# Two runtime facts Gate 0 proved, both of which cost a run to learn:
+#   * `--reasoning-effort none` DOES NOT EXIST on the meta provider.  `muse model-profile show
+#     --effort none` accepts it and echoes `effort: none`, then a real run exits 2 with "not
+#     supported with --provider meta; choose minimal|low|medium|high|xhigh|max|ultra".  The
+#     model-profile tool reports a value the runner will not accept, so MUSE_REASONING_EFFORT is
+#     `minimal`, the lowest tier that actually runs.
+#   * The model id is `muse-spark-1.3-contributor`, NOT `muse-spark-1.3`.  The catalog carries three
+#     variants and the plain one is 15x dearer.  `model` still comes from the seat's config so a
+#     seat can be moved deliberately;  the default here is the contributor tier.
+#
+# The envelope differs from claude's stream-json:  muse emits MSP records, and the answer is the
+# `text` of the `run.terminal.completed` record.  `--output-schema` makes that text the JSON object
+# itself (Gate 0:  it round-tripped through wakes.validate with zero coercion, nested objects and
+# enums included), so parse_muse_result reads it the same way parse_result reads a claude result.
+
+MUSE_MAX_MODEL_STEPS = 8
+MUSE_REASONING_EFFORT = "minimal"  # the lowest effort `muse exec` accepts on the meta provider
+# `--output-schema` needs the meta provider (the default).  Naming it keeps the contract explicit.
+MUSE_PROVIDER = "meta"
+MUSE_SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wake", "wake-schema.json")
+# muse takes the prompt, the schema and the workspace by path;  the argv carries these slots and
+# MuseRunner.run swaps in the private files it wrote, so the argv can be printed and diffed as-is.
+MUSE_PROMPT_SLOT = "<prompt-file>"
+MUSE_SCHEMA_SLOT = "<output-schema>"
+MUSE_WORKSPACE_SLOT = "<workspace>"
+
+
+def resolve_muse(explicit: str | None, wake_path: str) -> str | None:
+    """The muse binary:  the configured absolute path, else `muse` on the fixed wake PATH.  Mirrors
+    resolve_claude so a seat pins and runs the same resolved realpath."""
+    if explicit:
+        return explicit if os.path.isabs(explicit) and os.access(explicit, os.X_OK) else None
+    found = shutil.which("muse", path=wake_path)
+    return os.path.abspath(found) if found else None
+
+
+def muse_argv(muse: str, model: str) -> list[str]:
+    """The fixed wake argv.  `muse` should be the pinned realpath (binary_pin), so the build that
+    runs is the build that was verified, even if the PATH symlink moves in between.
+
+    The three path slots are filled in by MuseRunner.run against the wake dir;  the fleet tag set
+    (the enum of the schema's route seat) travels in the schema file itself (wakes.schema_text),
+    which is why it is not an argv parameter here."""
+    return [muse, "exec",
+            "--model", model,
+            "--reasoning-effort", MUSE_REASONING_EFFORT,
+            "--provider", MUSE_PROVIDER,
+            "--prompt-file", MUSE_PROMPT_SLOT,
+            "--output-schema", MUSE_SCHEMA_SLOT,
+            "--json",
+            "--approval-mode", "never",
+            "--disable-shell", "--disable-write", "--disable-web-tools",
+            "--no-session-log",
+            "--workspace", MUSE_WORKSPACE_SLOT,
+            "--max-model-steps", str(MUSE_MAX_MODEL_STEPS),
+            "--no-foreign-personal-context"]
+
+
+def muse_env(env: Mapping[str, str], home: str, wake_path: str, *, seat: str | None = None) -> dict[str, str]:
+    """`env -i` plus a fixed list, the same shape as claude_env.
+
+    Every ANTHROPIC_*, CLAUDE_*, AGENT_*, ZULIP_* and MUSE_* variable is dropped, so the run uses
+    the muse subscription login the daemon's user already has and never a second seat's identity.
+    With `seat` (a wake, or test-wake) the listener is the reference launcher (AGENT-SYNC
+    Identity Rules):  it names the seat it is waking and clears every inherited identity variable
+    first.  The wake has no tools and posts nothing itself (the daemon posts its validated reply as
+    the seat's bot), so this only keeps the seat explicit."""
+    user = env.get("USER") or env.get("LOGNAME") or os.path.basename(home)
+    out = {"HOME": home, "USER": user, "LOGNAME": user, "LANG": "en_US.UTF-8",
+           "TMPDIR": env.get("TMPDIR") or "/tmp", "PATH": wake_path}
+    if seat:
+        out.update({"AGENT_LAUNCHER": WAKE_LAUNCHER, "AGENT_LAUNCH_SEAT": seat, "AGENT_SEAT": seat,
+                    "AGENT_SYNC_ATTACH": "0"})
+    return out
+
+
+def parse_muse_records(text_lines: Iterable[str]) -> tuple[str | None, str | None, list[str]]:
+    """(the final answer, why it is refused, the model ids seen) from muse's MSP records.
+
+    Each stdout line is one record.  The answer is the `text` of `run.terminal.completed`; a terminal
+    record that is not `completed` is a refusal that names its own reason.  `run.model.configured`
+    names the model that was actually asked for, and it is recorded so test-wake can show it:  a
+    wake that silently ran a different model than the seat configured is exactly the failure the pin
+    exists to catch.  Returns one model id or several when the run switched models."""
+    answer: str | None = None
+    why: str | None = None
+    models: list[str] = []
+    for raw in text_lines:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        payload = record.get("payload")
+        payload_type = str(record.get("payload_type") or "")
+        if payload_type == "run.model.configured" and isinstance(payload, dict):
+            model = payload.get("model_id")
+            if isinstance(model, str) and model and model not in models:
+                models.append(model)
+        elif payload_type == "run.terminal.completed" and isinstance(payload, dict):
+            answer = payload.get("text") if isinstance(payload.get("text"), str) else None
+        elif payload_type.startswith("run.terminal.") and isinstance(payload, dict):
+            # Any terminal record that is not `completed` is a refusal.  The name may sit in the
+            # record's own `terminal` field, in the payload_type's suffix, or in `reason`, and a
+            # bare reason with no terminal name still means the run did not complete.
+            terminal = str(payload.get("terminal") or "") or payload_type[len("run.terminal."):]
+            reason = payload.get("reason")
+            detail = clean_banner(str(reason), 120) if isinstance(reason, str) and reason else ""
+            why = "%s (%s)" % (terminal, detail) if detail else terminal
+    return answer, why, models
+
+
+def parse_muse_result(text: str | None) -> Any:
+    """The final answer text as JSON, or None.  `--output-schema` makes the terminal text the JSON
+    object itself, so this is json.loads with the same leniency as the claude path (a fenced or
+    prefixed block still parses) rather than a separate grammar."""
+    if not isinstance(text, str):
+        return None
+    body = text.strip()
+    if body.startswith("```"):
+        body = body.strip("`")
+    if "{" in body:
+        body = body[body.find("{"):]
+    try:
+        return json.loads(body)
+    except ValueError:
+        return None
+
+
+class MuseRunner:
+    """Runs one headless muse wake.  Same lifecycle contract as ClaudeRunner:  `on_start`/`on_exit`
+    bracket each child so the daemon can track every running child and kill each group on SIGTERM.
+
+    Two structural differences from the claude run, both forced by the runtime:
+      * The prompt goes in a FILE (`--prompt-file`), not on stdin, so it is written to the private
+        wake dir and removed afterwards.
+      * The schema goes in a FILE too, so it is materialised next to the prompt from the same
+        in-memory source the claude wake passes as a string.  One schema, two transports."""
+    def __init__(self, *, timeout: float = WAKE_TIMEOUT, clock: Callable[[], float] = time.monotonic,
+                 on_start: Callable[[subprocess.Popen[Any]], None] | None = None,
+                 on_exit: Callable[[subprocess.Popen[Any]], None] | None = None) -> None:
+        self.timeout = timeout
+        self.clock = clock
+        self.on_start = on_start
+        self.on_exit = on_exit
+
+    def run(self, argv: Sequence[str], env: Mapping[str, str], cwd: str, prompt: str,
+            schema: str | None = None) -> RunResult:
+        out = RunResult()
+        L.private_dir(cwd)
+        prompt_path = os.path.join(cwd, "prompt.md")
+        schema_path = os.path.join(cwd, "schema.json")
+        workspace = os.path.join(cwd, "workspace")
+        L.private_dir(workspace)
+        fd = os.open(prompt_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(prompt)
+        # The schema is written from the same source claude passes inline, so the two runtimes can
+        # never drift onto different contracts.
+        fd = os.open(schema_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(schema if schema is not None else schema_text())
+        # muse takes these three by path, and the paths are the wake dir's own private files, so
+        # the argv is rebuilt here with the real paths in place of the placeholders.
+        argv = [prompt_path if a == MUSE_PROMPT_SLOT else schema_path if a == MUSE_SCHEMA_SLOT
+                else workspace if a == MUSE_WORKSPACE_SLOT else a for a in argv]
+        started = self.clock()
+        proc: subprocess.Popen[Any] | None = None
+        try:
+            try:
+                proc = subprocess.Popen(list(argv), cwd=cwd, env=dict(env), stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+                                        close_fds=True)
+            except OSError as exc:
+                out.error = "could not start muse (%s)" % (exc.strerror or type(exc).__name__)
+                return out
+            if self.on_start:
+                self.on_start(proc)
+            lines: queue.Queue[bytes | None] = queue.Queue()
+            err_chunks: list[bytes] = []
+
+            def pump_out() -> None:
+                assert proc is not None and proc.stdout is not None
+                for raw in proc.stdout:
+                    lines.put(raw)
+                lines.put(None)
+
+            def pump_err() -> None:
+                assert proc is not None and proc.stderr is not None
+                err_chunks.append(proc.stderr.read())
+
+            out_thread = threading.Thread(target=pump_out, daemon=True)
+            out_thread.start()
+            err_thread = threading.Thread(target=pump_err, daemon=True)
+            err_thread.start()
+            deadline = time.monotonic() + self.timeout
+            stdout_chunks: list[str] = []
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    out.error = "timed out after %d seconds" % self.timeout
+                    out.killed = True
+                    _kill_group(proc)
+                    break
+                try:
+                    raw = lines.get(timeout=min(remaining, 1.0))
+                except queue.Empty:
+                    continue
+                if raw is None:
+                    break
+                out.stdout_len += len(raw)
+                stdout_chunks.append(raw.decode("utf-8", "replace"))
+            try:
+                out.exit = proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                _kill_group(proc)
+                out.exit = proc.wait(timeout=10)
+            err_thread.join(timeout=2)
+            out_thread.join(timeout=2)
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None and not (out_thread.is_alive() or err_thread.is_alive()):
+                    stream.close()
+            err = b"".join(err_chunks)
+            out.stderr_len = len(err)
+            out.stderr_sha = hashlib.sha256(err).hexdigest()
+            text, why, models = parse_muse_records(stdout_chunks)
+            out.models = models
+            if out.refused is None and out.error is None:
+                if why:
+                    out.error = why  # a terminal record that is not `completed` (a model refusal)
+                elif text is None:
+                    out.error = "no parseable result"
+                elif out.exit not in (0, None):
+                    out.error = "muse exited %s" % out.exit
+                else:
+                    out.result = {"text": text}
+                    out.parsed = parse_muse_result(text)
+        finally:
+            if proc is not None and self.on_exit:
+                self.on_exit(proc)
+            for path in (prompt_path, schema_path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            out.secs = round(self.clock() - started, 2)
+        # A subscription-backed run has no per-run dollar amount, so there is nothing to reserve
+        # against and nothing to debit:  cost_usd stays 0.  The count caps are what bound a seat.
+        out.cost_usd = 0.0
+        return out
+
+
+def muse_pin_state(paths: L.SeatPaths, muse: str | None) -> dict[str, Any]:
+    """Why the muse pin does or does not match the binary.  Same discipline as the claude pin
+    (AFC-256), on the muse seat's own file so a claude pin can never stand in for a muse one.
+
+    `why` is None when pinned, else `no_muse` (no binary to pin), `not_pinned` (nothing recorded
+    yet) or `pin_stale` (a pin was recorded and the binary has since moved).  A seat whose muse pin
+    has never been verified HOLDS and says why:  it never self-heals, because the pin records that
+    a person checked this build's wake contract."""
+    if not muse:
+        return {"pinned": False, "why": "no_muse", "pinned_muse": None, "muse": None}
+    current = binary_pin(muse)
+    recorded = L.read_json(paths.wake_pin_muse).get("muse")
+    if not isinstance(recorded, str) or not recorded:
+        return {"pinned": False, "why": "not_pinned", "pinned_muse": None, "muse": current}
+    if recorded != current:
+        return {"pinned": False, "why": "pin_stale", "pinned_muse": recorded, "muse": current}
+    return {"pinned": True, "why": None, "pinned_muse": recorded, "muse": current}
+
+
+def muse_pinned(paths: L.SeatPaths, muse: str | None) -> bool:
+    if not muse:
+        return False
+    return L.read_json(paths.wake_pin_muse).get("muse") == binary_pin(muse)
+
+
+def record_muse_pin(paths: L.SeatPaths, muse: str, now: float, *, model: str | None = None) -> None:
+    L.write_json(paths.wake_pin_muse, {"muse": binary_pin(muse), "at": now, "model": model,
+                                       "effort": MUSE_REASONING_EFFORT})
+
+
+def record_muse_candidate(paths: L.SeatPaths, muse: str, now: float, *, model: str | None = None) -> None:
+    """A binary that passed `test-wake --run`, waiting for a person to read the result and pin it."""
+    L.write_json(paths.wake_pin_candidate_muse, {"muse": binary_pin(muse), "at": now, "model": model,
+                                                 "effort": MUSE_REASONING_EFFORT})
+
+
+def muse_pin_candidate(paths: L.SeatPaths, muse: str, now: float) -> str | None:
+    """Pin the candidate `test-wake --run` left.  None on success, else why it was not pinned."""
+    cand = L.read_json(paths.wake_pin_candidate_muse)
+    if not cand:
+        return "no passing test-wake --run to pin; run that first"
+    at = cand.get("at")
+    if not isinstance(at, (int, float)) or now - float(at) > CANDIDATE_SECONDS or now < float(at):
+        return "the last passing test-wake --run is over a day old; run it again"
+    if cand.get("muse") != binary_pin(muse):
+        return "the muse binary changed since the test (%s, tested %s); run test-wake --run again" % (
+            binary_pin(muse), cand.get("muse"))
+    record_muse_pin(paths, muse, now, model=cand.get("model") if isinstance(cand.get("model"), str) else None)
+    try:
+        os.unlink(paths.wake_pin_candidate_muse)
+    except OSError:
+        pass
+    return None
+
+
+# --------------------------------------------------------------------------------------------
+# Provider quota gate (CodeCaps)
+# --------------------------------------------------------------------------------------------
+#
+# Jay 2026-10-11:  no reason to try to wake an agent that cannot run.  CodeCaps (the Mac menu-bar
+# quota app) publishes what each provider has left;  a wake whose provider is spent is refused
+# BEFORE the subprocess spawns, so an exhausted seat costs no run, no queue slot and no retry.
+#
+# The source is the Usage Monitor snapshot (docs/protocols/agent-sync-listener.md), read with the
+# same rules the rest of the fleet uses for it:  a regular same-user file, no symlink, capped size,
+# and a 15-minute expiry (the producer's 5-minute cadence plus two missed cycles).  A file that is
+# missing, stale, malformed or simply has no window for this provider NEVER blocks a wake:  this is
+# an optimisation, not a safety control, and a quota source that is down must not silence the fleet.
+
+QUOTA_PATH = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Usage Monitor",
+                          "quota-windows.json")
+QUOTA_MAX_AGE = 15 * 60
+QUOTA_MAX_BYTES = 1024 * 1024
+QUOTA_FORMAT = "usage-monitor-local-quotas"
+QUOTA_NEVER_CAP_PROVIDERS = frozenset({"minimax", "muse"})
+
+
+def _quota_file(path: str) -> dict[str, Any] | None:
+    """The parsed snapshot, or None when it is not a fresh, regular, same-user file we can trust."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if os.path.islink(path) or st.st_size <= 0 or st.st_size > QUOTA_MAX_BYTES or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("format") != QUOTA_FORMAT:
+        return None
+    return data
+
+
+def _quota_generated_at(value: Any) -> float | None:
+    """The snapshot's `generatedAt` as a unix timestamp, or None when it is not one.
+
+    The producer writes UTC with a trailing `Z`.  `strptime` parses that as LOCAL time, so
+    subtracting `time.timezone` is wrong by an hour for an hour a year, and a reading one minute
+    old would be judged stale (or a day-old one judged fresh) exactly when it matters.  `datetime`
+    with an explicit UTC offset is the only correct reading, and `utcfromtimestamp` is deprecated."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
+def provider_quota(provider: str, now: float | None = None, path: str | None = None) -> dict[str, Any]:
+    """One provider's verdict from the CodeCaps snapshot.
+
+    `known` False means the snapshot cannot speak for this provider (no file, stale, malformed, or
+    no matching window), and the caller must NOT block:  an absent reading is not an exhausted one.
+    `exhausted` is the producer's OWN verdict only (`isExhausted` or `skip`), never a derived 0%
+    percentage:  a passed reset and an unknown remainder also render as 0%, and only one of those
+    three means the provider refused to serve."""
+    key = (provider or "").strip().casefold()
+    unknown = {"known": False, "exhausted": False, "remaining": None, "reset_at": None, "reason": None,
+               "source": "unknown"}
+    if not key:
+        return unknown
+    data = _quota_file(path or QUOTA_PATH)
+    if data is None:
+        return unknown
+    at = time.time() if now is None else float(now)
+    generated = _quota_generated_at(data.get("generatedAt"))
+    if generated is None:
+        return unknown  # an undated snapshot cannot be aged, so it cannot be trusted
+    if generated - at > QUOTA_MAX_AGE or at - generated > QUOTA_MAX_AGE:
+        return unknown  # in the future by more than the window, or older than the window
+    windows = data.get("windows")
+    if not isinstance(windows, list):
+        return unknown
+    matched = 0
+    exhausted = False
+    remaining: float | None = None
+    reset_at: str | None = None
+    reason: str | None = None
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        names = {str(window.get("provider") or "").casefold(), str(window.get("providerKey") or "").casefold()}
+        if key not in names and not any(key in name for name in names if name):
+            continue
+        matched += 1
+        if window.get("isExhausted") is True or window.get("skip") is True:
+            exhausted = True
+            why = window.get("fileSkipReason")
+            reason = clean_banner(str(why), 160) if isinstance(why, str) and why else reason
+        value = window.get("remainingPercent")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            remaining = float(value) if remaining is None else min(remaining, float(value))
+        if isinstance(window.get("resetAt"), str) and not reset_at:
+            reset_at = window["resetAt"]
+    if not matched:
+        return unknown
+    return {"known": True, "exhausted": exhausted, "remaining": remaining, "reset_at": reset_at,
+            "reason": reason, "source": "codecaps"}
+
+
+def quota_block(provider: str, now: float | None = None, path: str | None = None) -> str | None:
+    """Why this wake must not start, or None.  Only a fresh, positive exhaustion reading blocks;
+    everything else returns None so a quota source that is down never silences the fleet."""
+    if (provider or "").strip().casefold() in QUOTA_NEVER_CAP_PROVIDERS:
+        return None  # muse runs on the MiniMax subscription the daemon's user already pays for
+    state = provider_quota(provider, now, path)
+    if state["known"] and state["exhausted"]:
+        reset = state.get("reset_at")
+        return "%s quota is exhausted%s" % (provider, (" until %s" % clean_banner(str(reset), 40)) if reset else "")
     return None
 
 

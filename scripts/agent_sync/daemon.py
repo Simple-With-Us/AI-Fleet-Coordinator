@@ -362,6 +362,7 @@ class Daemon:
     def __init__(self, *, env: Mapping[str, str] | None = None, root: str | None = None, home: str | None = None,
                  clock: Clock | None = None, notifier: A.Notifier | None = None,
                  claude_runner: A.ClaudeRunner | None = None, wake_path: str | None = None,
+                 muse_runner: A.MuseRunner | None = None,
                  agents_runner: Callable[[Sequence[str]], str | None] | None = None,
                  board_runner: Callable[..., Any] | None = None, board_bin: str | None = None,
                  start_time: Callable[[int], int] | None = None, http_timeout: float = 30.0,
@@ -382,6 +383,7 @@ class Daemon:
         self.notifier = notifier or A.Notifier(self.root, clock=self.clock.time)
         self.banners_allowed = self.notifier.banners  # the config can only turn banners off (the server has none)
         self.claude_runner = claude_runner or A.ClaudeRunner(on_start=self._track_child, on_exit=self._untrack_child)
+        self.muse_runner = muse_runner or A.MuseRunner(on_start=self._track_child, on_exit=self._untrack_child)
         self.wake_path = wake_path or A.default_wake_path(self.home)
         self.agents_runner = agents_runner or self._run_agents
         self.board_runner = board_runner
@@ -1219,6 +1221,31 @@ class Daemon:
             return None, str(state["why"] or "not_pinned")
         return str(state["claude"]), None
 
+    def _pinned_muse(self, runner: SeatRunner) -> tuple[str | None, str | None]:
+        """(the realpath to run, why not), for a `muse` seat.  Same discipline as _pinned_claude and
+        on the muse seat's own pin file, so a verified claude build can never stand in for a muse
+        one.  It never self-heals:  the pin records that a person checked this build's wake
+        contract, and a muse auto-update is exactly when that proof goes stale."""
+        muse = A.resolve_muse(runner.cfg.muse, self.wake_path)
+        if not muse:
+            return None, "no_muse"
+        state = A.muse_pin_state(runner.paths, muse)
+        if not state["pinned"]:
+            return None, str(state["why"] or "not_pinned")
+        return str(state["muse"]), None
+
+    def _quota_reason(self, runner: SeatRunner) -> str | None:
+        """Why this seat's provider has nothing left, or None.  Read from the CodeCaps snapshot
+        (Jay 2026-10-11:  no reason to try to wake an agent that cannot run), checked before the
+        subprocess spawns so an exhausted seat costs no run, no queue slot and no retry.
+
+        Only a fresh, positive exhaustion reading blocks.  A missing, stale, malformed or simply
+        absent window never does:  this is an optimisation, not a safety control, and a quota
+        source that is down must not silence the fleet."""
+        if runner.cfg.wake != "muse":
+            return None
+        return A.quota_block(runner.cfg.provider or "", self.clock.time())
+
     def _wake_block(self, runner: SeatRunner, pending: W.Pending, now: float) -> str | None:
         """Why this wake must not run now, or None.  Checked when the quiet window ends and again
         just before the run (a restored or long-queued wake gets the same checks)."""
@@ -1232,6 +1259,13 @@ class Daemon:
             _, why = self._pinned_claude(runner)
             if why:
                 return why
+        elif runner.cfg.wake == "muse":
+            _, why = self._pinned_muse(runner)
+            if why:
+                return why
+            spent = self._quota_reason(runner)
+            if spent:
+                return spent
         elif runner.cfg.wake == "http":
             _, why, _ = self.routine(runner)
             if why:
@@ -1375,8 +1409,16 @@ class Daemon:
         if runner.cfg.wake == "http":
             self.run_routine(runner, pending, now)
             return
-        claude, why = self._pinned_claude(runner)
-        if claude is None:
+        # claude and muse share everything below the run:  same prompt, same schema, same
+        # validator, same posting path.  They differ only in which pinned binary is checked and
+        # which runner spawns it, so the two are dispatched here rather than forked.
+        binary = None
+        why = None
+        if runner.cfg.wake == "muse":
+            binary, why = self._pinned_muse(runner)
+        else:
+            binary, why = self._pinned_claude(runner)
+        if binary is None:
             self._drop(runner, pending, why or "not_pinned", now)
             return
         try:
@@ -1396,11 +1438,22 @@ class Daemon:
                                 owner_of=self.owner_of, format_time=format_time, board_enabled=board_on,
                                 route=self.route_gate(runner, pending), held_back=held)
         held_count = held["count"] if held else 0
-        runner.ledger.append(pending.row("started", now, reserved_usd=C.WAKE_MAX_BUDGET_USD, adapter="claude",
-                                         held_back=held_count))
-        argv = A.claude_argv(claude, runner.cfg.model, self.fleet_tags)
-        result = self.claude_runner.run(argv, A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat),
-                                        runner.paths.wake_dir, prompt)
+        is_muse = runner.cfg.wake == "muse"
+        # A muse wake reserves nothing:  there is no per-run dollar cap to reserve against and the
+        # run is covered by a subscription the user already pays for (config.wake_max_usd).  The row
+        # still names the adapter, so the ledger says which runtime answered.
+        runner.ledger.append(pending.row("started", now,
+                                         reserved_usd=0.0 if is_muse else C.WAKE_MAX_BUDGET_USD,
+                                         adapter="muse" if is_muse else "claude", held_back=held_count))
+        if is_muse:
+            argv = A.muse_argv(binary, runner.cfg.model)
+            result = self.muse_runner.run(argv, A.muse_env(self.env, self.home, self.wake_path, seat=runner.seat),
+                                          runner.paths.wake_dir, prompt,
+                                          schema=W.schema_text(self.fleet_tags))
+        else:
+            argv = A.claude_argv(binary, runner.cfg.model, self.fleet_tags)
+            result = self.claude_runner.run(argv, A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat),
+                                            runner.paths.wake_dir, prompt)
         self.log.write("wake-run", seat=runner.seat, wake_id=pending.wake_id, exit=result.exit, secs=result.secs,
                        cost=result.cost_usd, refused=result.refused, error=result.error, models=result.models,
                        stdout_len=result.stdout_len, stderr_len=result.stderr_len, stderr_sha256=result.stderr_sha)
@@ -2211,6 +2264,7 @@ class Daemon:
             day = [v for v in views.values() if isinstance((v.get("times") or {}).get("started"), (int, float))
                    and now - v["times"]["started"] < W.DAY]
             claude = A.resolve_claude(runner.cfg.claude, self.wake_path) if runner.cfg.wake == "claude" else None
+            muse = A.resolve_muse(runner.cfg.muse, self.wake_path) if runner.cfg.wake == "muse" else None
             routine = None
             if runner.cfg.wake == "http":
                 target, why, detail = self.routine(runner)
@@ -2239,10 +2293,25 @@ class Daemon:
                 red.append("wake pin is stale: claude moved to %s (pinned %s); run "
                            "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
                            % (pin["claude"], pin["pinned_claude"], seat))
+            # A muse seat reports the same pin state on its own file, plus the provider quota the
+            # wake gate reads:  a seat held by an exhausted quota must be visibly held BY THE
+            # QUOTA, or it looks exactly like a seat nobody configured.
+            muse_pin = A.muse_pin_state(runner.paths, muse) if muse else None
+            if muse_pin and muse_pin["why"] == "pin_stale":
+                red.append("wake pin is stale: muse moved to %s (pinned %s); run "
+                           "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
+                           % (muse_pin["muse"], muse_pin["pinned_muse"], seat))
+            quota = None
+            if runner.cfg.wake == "muse":
+                quota = A.provider_quota(runner.cfg.provider or "", now)
+                if quota["known"] and quota["exhausted"]:
+                    red.append("wakes are not running: the %s quota is exhausted%s" % (
+                        runner.cfg.provider, (" until %s" % quota["reset_at"]) if quota.get("reset_at") else ""))
             seats[seat] = {
                 "bot": runner.cfg.bot, "creds": runner.cfg.creds, "connected": runner.connected, "cursor": runner.cursor,
                 "last_event": runner.last_event_wall, "wake": runner.cfg.wake, "routine": routine,
-                "pinned": pin["pinned"] if pin else None, "pin": pin, "claude": claude,
+                "pinned": (pin or muse_pin or {}).get("pinned"), "pin": pin or muse_pin,
+                "claude": claude, "muse": muse, "provider": runner.cfg.provider, "quota": quota,
                 "wakes_24h": len(day), "cost_24h": W.spent_today(views.values(), now),
                 "routes_24h": W.routes_in(views.values(), now),
                 "route_enabled": bool(self.config.route_enabled and runner.cfg.route_enabled),
