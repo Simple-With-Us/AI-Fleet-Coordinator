@@ -124,13 +124,16 @@ def write(knobs: Dict[str, str], secret_values: Iterable[str] = (),
     _ensure_dir()
     fd, tmp = tempfile.mkstemp(prefix=".lkg.", suffix=".tmp", dir=state_dir())
     try:
-        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as fh:
             fh.write(blob)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path())
     except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
         try:
             os.unlink(tmp)
         except OSError:

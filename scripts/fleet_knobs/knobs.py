@@ -21,6 +21,7 @@ What a job can rely on:
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from typing import Any, Dict, Optional
@@ -121,18 +122,20 @@ def _load() -> None:
         if refusal:
             st.loaded = False
             raise KnobError(refusal)
+        previous, previous_note = lkg.read()
         try:
             live = source.fetch([s.name for s in REGISTRY])
-            _refuse_empty_export(live)
+            _refuse_empty_export(live, previous)
             st.live = live
             st.fetch = "ok"
+            st.lkg, st.lkg_note = previous, previous_note
         except Exception as exc:                      # noqa: BLE001 - a read must not crash a job
             st.fetch = "failed"
             st.reason = (exc.reason if isinstance(exc, source.FetchFailed)
                          else "error-" + type(exc).__name__)
             log.warning("fleet_knobs: Infisical fetch failed (%s);  using the last-known-good "
                         "copy where there is one", st.reason)
-            st.lkg, st.lkg_note = lkg.read()
+            st.lkg, st.lkg_note = previous, previous_note
             return
         try:
             _save_lkg(st)
@@ -141,7 +144,7 @@ def _load() -> None:
                         type(exc).__name__)
 
 
-def _refuse_empty_export(live: Dict[str, str]) -> None:
+def _refuse_empty_export(live: Dict[str, str], previous: Optional[dict]) -> None:
     """An export with none of our names in it is not proof that every knob was deleted.
 
     An empty body with exit 0 is also what a wrong path, a project with nothing in it or a
@@ -154,7 +157,6 @@ def _refuse_empty_export(live: Dict[str, str]) -> None:
     """
     if live:
         return
-    previous, _note = lkg.read()
     if previous and previous["knobs"]:
         raise source.FetchFailed("empty")
 
@@ -182,8 +184,14 @@ def _save_lkg(st: _State) -> None:
     try:
         lkg.write(fresh, secrets)
     except (OSError, ValueError) as exc:
-        log.warning("fleet_knobs: could not write the last-known-good copy (%s)",
-                    type(exc).__name__)
+        offender = next(
+            (k for k, v in fresh.items()
+             for s in secrets if s and len(s) >= 8
+             and s.encode("utf-8") in json.dumps({k: v}).encode("utf-8")),
+            None)
+        log.warning("fleet_knobs: could not write the last-known-good copy (%s)%s",
+                    type(exc).__name__,
+                    f"; a secret value is a substring of {offender}" if offender else "")
 
 
 def _coerce_default(spec: Spec, default: Any) -> Any:
