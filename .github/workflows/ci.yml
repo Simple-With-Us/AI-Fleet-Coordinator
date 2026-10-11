@@ -68,6 +68,11 @@ jobs:
     - name: fleet_knobs tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t . -v
+    # needs-owner (open-loops C6-1):  a fake `board` and `agent-sync` on PATH, built on the real parsers;
+    # the stable copy installed into a temp HOME must run under `python3 -I`.
+    - name: needs-owner tests
+      run: |
+        cd scripts && python3 -m unittest discover -s needs_owner/tests -t . -v
     # Open-loops F6:  the fleet_facts gatherers and the single activity definition.  Fake gh, board and lane
     # programs on PATH and a temp HOME, so nothing live is read;  the install test runs the stable copy
     # with python3 -I.  The second step fails if the test data holds a real path, Linear id, UUID or secret.
