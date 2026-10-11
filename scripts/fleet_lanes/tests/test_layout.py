@@ -146,9 +146,11 @@ class RealRegistryTests(unittest.TestCase):
     def test_extras_are_appended_and_unregistered(self) -> None:
         reg = L.load_registry(env={})
         extras = {a.name: a for a in reg.apps if not a.registered}
-        for name in ("FleetLink", "Simple-With-Us", "Kodus-Config", "upptime-status",
+        for name in ("Simple-With-Us", "Kodus-Config", "upptime-status",
                      "mmx-acp", "homebrew-tap"):
             self.assertIn(name, extras)
+        for name in ("FleetLink", "fleetlink-legacy", "CodeCaps"):
+            self.assertNotIn(name, extras, f"{name} has a registry row, so it is not an unregistered extra")
 
     def test_codecaps_has_a_registry_row_so_it_is_not_an_extra(self) -> None:
         reg = L.load_registry(env={})
@@ -156,6 +158,27 @@ class RealRegistryTests(unittest.TestCase):
         self.assertEqual((caps.name, caps.acronym, caps.integration_dir_name), ("CodeCaps", "CC", "CodeCaps"))
         self.assertTrue(caps.registered)
         self.assertEqual([a.name for a in reg.apps if a.name.lower() == "codecaps"], ["CodeCaps"])
+
+    def test_fleetlink_and_its_legacy_worker_have_registry_rows(self) -> None:
+        # AFC-252:  lane new refused both because neither had a row.  A registry row wins over the EXTRA_APPS
+        # fallback, and the legacy row must not capture a query meant for FleetLink (or the reverse).
+        reg = L.load_registry(env={})
+        fl = reg.app_by_prefix("fleetlink")
+        legacy = reg.app_by_prefix("fleetlink-legacy")
+        self.assertEqual((fl.name, fl.acronym, fl.integration_dir_name, fl.lane_dir, fl.registered),
+                         ("FleetLink", "FL", "FleetLink", "FleetLink", True))
+        self.assertEqual((legacy.name, legacy.acronym, legacy.integration_dir_name, legacy.lane_dir, legacy.registered),
+                         ("fleetlink-legacy", "FLL", "fleetlink-legacy", "fleetlink-legacy", True))
+        self.assertEqual(fl.owner_repo, "Simple-With-Us/FleetLink")
+        self.assertEqual(legacy.owner_repo, "Simple-With-Us/fleetlink-legacy")
+        self.assertEqual([a.name for a in reg.apps if a.name.lower() == "fleetlink"], ["FleetLink"])
+        self.assertEqual([a.name for a in reg.apps if a.name.lower() == "fleetlink-legacy"], ["fleetlink-legacy"])
+        from fleet_lanes import lane as K
+        for query, want in (("FleetLink", "FleetLink"), ("fleetlink", "FleetLink"), ("FL", "FleetLink"), ("fl", "FleetLink"),
+                            ("fleetlink-legacy", "fleetlink-legacy"), ("FleetLink-Legacy", "fleetlink-legacy"),
+                            ("FLL", "fleetlink-legacy")):
+            with self.subTest(query=query):
+                self.assertEqual(K.resolve_app(reg, query).name, want)
 
 
 class SeatAliasPatternTests(unittest.TestCase):

@@ -279,9 +279,9 @@ class Seat:
         return ""
 
 
-# Apps with lanes on disk but no fleet-apps.json row.  CodeCaps has a row now;  its entry here stays
-# only as the fallback for an installed copy of the registry that predates the row, and a registry row
-# wins.  owner_repo and prefix come from the git remotes and lane names seen in the 2026-10-07 sweep.
+# Apps with lanes on disk but no fleet-apps.json row.  CodeCaps, FleetLink and fleetlink-legacy have a
+# row now;  their entries here stay only as the fallback for an installed copy of the registry that
+# predates the rows, and a registry row wins.  owner_repo and prefix come from the git remotes and lane names seen in the 2026-10-07 sweep.
 # mmx-acp had no remote (owner_repo ""), and Kodus-Config, upptime-status and mmx-acp have no ~/Code
 # tree (their clone lives in ~/apps), so their integration_dir_name is "".  Simple-With-Us appears on
 # disk as simple-with-us-*, simplewithus-* and Simple-With-Us-*; the hyphenated lowercase form is the
@@ -295,8 +295,9 @@ EXTRA_APPS: tuple[App, ...] = (
     App("upptime-status", f"{DEFAULT_OWNER}/upptime-status", "upptime-status", "", registered=False),
     App("mmx-acp", "", "mmx-acp", "", registered=False),
     App("homebrew-tap", f"{DEFAULT_OWNER}/homebrew-tap", "homebrew-tap", "homebrew-tap", registered=False),
-    # A private full clone that lives in the lanes tree (lanes/fleetlink/claude-legacy-hotfix) but is a
-    # different repo from FleetLink.  It has no ~/Code tree, so its folder is the GitHub repo name.
+    # A private full clone that lives in the lanes tree (lanes/fleetlink-legacy/claude-legacy-hotfix) but is a
+    # different repo from FleetLink.  It had no ~/Code tree until its registry row landed (AFC-252), so this
+    # fallback keeps its folder as the GitHub repo name and, with no tree, it gets no `lane new`.
     App("fleetlink-legacy", f"{DEFAULT_OWNER}/fleetlink-legacy", "fleetlink-legacy", "", registered=False),
 )
 
