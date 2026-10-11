@@ -53,8 +53,8 @@ test("ordinary text that only looks like a token passes here as it does in Pytho
 });
 
 test("a token inside prose, markdown and a code block is still refused", () => {
-  const token = ["lin_", "api_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4"].join("");
-  for (const text of [`see ${token} for it`, `\`${token}\``, `\`\`\`\nexport K=${token}\n\`\`\``, `(${token})`, `> ${token}`, `a\n\n${token}\nb`]) {
+  const sample = "lin_" + "api_" + "Ab12".repeat(8); // built at run time and low-entropy:  gitleaks runs on this repo
+  for (const text of [`see ${sample} for it`, `\`${sample}\``, `\`\`\`\nexport K=${sample}\n\`\`\``, `(${sample})`, `> ${sample}`, `a\n\n${sample}\nb`]) {
     assert.equal(scanSecret(text), "Linear API key", JSON.stringify(text.slice(0, 20)));
   }
 });
