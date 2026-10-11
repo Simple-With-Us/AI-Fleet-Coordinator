@@ -176,7 +176,7 @@ FOOTER_ADDRESSED_RE = re.compile(
 # Team routing, copied from the importer (lm_common.load_team_routing over
 # fleet-apps.json plus BOARD_SLUG_OVERRIDES, read Sat, Oct 10, 2026).  A slug
 # that matches nothing goes to AFC with an app:<slug> label, as the import did.
-TEAM_KEYS = ("ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK")
+TEAM_KEYS = ("ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK", "FL")
 FALLBACK_TEAM = "AFC"
 DEFAULT_APP = "fleet-infra"  # routes to OPS (design section 3)
 BOARD_SLUG_TEAM = {
@@ -189,6 +189,7 @@ BOARD_SLUG_TEAM = {
     "contactlogo": "CL",
     "dealdex": "DD", "dealdex-net": "DD",
     "fleet-infra": "OPS", "fleet-ops": "OPS",
+    "fleetlink": "FL", "fleetlink-legacy": "FL",  # one FleetLink team (owner 2026-10-11), registry rows FL and FLL
     "hog-hunter": "HH", "hoghunter": "HH",
     "personal": "PS", "personal-site": "PS",
     "socratic": "ST", "socratic-trade": "ST", "trading": "ST",

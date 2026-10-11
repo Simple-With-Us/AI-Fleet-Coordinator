@@ -110,7 +110,7 @@ class MockLinear:
         self.current_token = None
         self.org = {"name": "Simple With Us", "urlKey": "simple-with-us"}
         self.teams: dict = {}
-        for i, key in enumerate(("OPS", "ST", "CT", "AFC")):
+        for i, key in enumerate(("OPS", "ST", "CT", "AFC", "FL")):
             self.teams[key] = {"id": f"team-{key}", "name": key + " team", "n": 0,
                                "states": {n: {"id": f"st-{key}-{j}", "name": n, "type": t}
                                           for j, (n, t) in enumerate(STATES)}}
@@ -890,6 +890,15 @@ class WriteTests(BoardTest):
         self.assertEqual(iss["team"], "AFC")
         self.assertIn("app:brand-new-app", self.label_names(iss))
         p = self.board("file", "--title", "x", "--kind", "nonsense", code=2)
+
+    def test_fleetlink_files_to_its_own_team(self):
+        # FleetLink and its legacy Worker repo share the one FL team;  an unmapped slug still falls back to AFC
+        for app in ("fleetlink", "FleetLink", "fleetlink-legacy", "FL"):
+            p = self.board("file", "--title", f"routing {app}", "--app", app)
+            self.assertIn("(-- FL)", p.stdout, app)
+            iss = self.issue_by_ident(p.stdout.split()[-1])
+            self.assertEqual(iss["team"], "FL", app)
+            self.assertFalse([n for n in self.label_names(iss) if n.startswith("app:")], app)
 
     def test_file_uid_is_idempotent(self):
         p1 = self.board("file", "--title", "Effort row", "--app", "socratic-trade", "--uid", "effort-abc")
