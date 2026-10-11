@@ -99,54 +99,106 @@ class StoreTests(unittest.TestCase):
         return record
 
     def test_one_record_per_message_keeps_every_wake_id(self) -> None:
-        self.assertEqual(HELD.hold(self.paths, self.record(5), cap=200, now=1000), (True, []))
-        self.assertEqual(HELD.hold(self.paths, self.record(5, wake="w-again"), cap=200, now=1100), (False, []))
+        self.assertEqual(HELD.hold(self.paths, self.record(5), cap=200, now=1000), ([5], []))
+        self.assertEqual(HELD.hold(self.paths, self.record(5, wake="w-again"), cap=200, now=1100), ([], []))
         records = HELD.load(self.paths)["records"]
         self.assertEqual([r["message_id"] for r in records], [5])
         self.assertEqual(HELD.wake_ids(records[0]), ["w5", "w-again"], "each wake still gets its closing ledger row")
         self.assertEqual(HELD.summary(self.paths, 1100)["totals"]["held"], 1)
         self.assertEqual(os.stat(HELD.path_for(self.paths)).st_mode & 0o777, 0o600)
 
-    def test_past_the_cap_the_oldest_are_evicted_and_still_counted(self) -> None:
-        evicted = []
+    def test_past_the_cap_the_oldest_move_to_overflow_and_are_still_listed_by_id(self) -> None:
         for n in range(5):
-            evicted += HELD.hold(self.paths, self.record(n + 1, at=1000 + n), cap=3, now=1000 + n)[1]
-        self.assertEqual([r["message_id"] for r in evicted], [1, 2])
+            self.assertEqual(HELD.hold(self.paths, self.record(n + 1, at=1000 + n), cap=3, overflow_cap=10,
+                                       now=1000 + n)[1], [], "nothing is lost below overflow_max")
         data = HELD.load(self.paths)
-        self.assertEqual(([r["message_id"] for r in data["records"]], data["evicted"]), ([3, 4, 5], 2))
-        held, listed, reported = HELD.wake_summary(self.paths, exclude=[], limit=20)
-        self.assertEqual(held["count"], 5, "3 held plus 2 evicted:  never silently fewer")
-        self.assertEqual((listed, reported), ([5, 4, 3], 2), "newest first")
-        HELD.surface(self.paths, message_ids=listed, evicted=reported)
+        self.assertEqual(([r["message_id"] for r in data["records"]], [e["message_id"] for e in data["overflow"]]),
+                         ([3, 4, 5], [1, 2]))
+        self.assertNotIn("channel", data["overflow"][0], "an overflow entry is compact:  no names")
+        held, listed, lost = HELD.wake_summary(self.paths, exclude=[], limit=20)
+        self.assertEqual(held["count"], 5)
+        self.assertEqual((listed, lost), ([1, 2, 3, 4, 5], 0), "oldest first, overflow first, every id")
+        bare = held["items"][0]
+        self.assertEqual(bare, {"message_id": 1, "dm": False, "channel": None, "topic": None, "stream_id": None,
+                                "sender_full_name": "", "zulip_link": "", "reason": "wakes_per_hour", "at": 1000})
+        self.assertFalse(worker_refuses(held))
+        HELD.surface(self.paths, message_ids=listed, lost=lost)
         data = HELD.load(self.paths)
-        self.assertEqual((data["records"], data["evicted"]), ([], 0))
-        self.assertEqual(HELD.summary(self.paths, 2000)["totals"], {"held": 5, "surfaced": 3, "expired": 0, "evicted": 2})
+        self.assertEqual((data["records"], data["overflow"]), ([], []))
+        self.assertEqual(HELD.summary(self.paths, 2000)["totals"],
+                         {"held": 5, "surfaced": 5, "expired": 0, "overflowed": 2, "evicted": 0})
 
-    def test_records_expire_after_the_ttl_and_the_evicted_count_with_them(self) -> None:
+    def test_past_both_caps_an_id_is_lost_and_counted_until_a_delivered_wake_reports_it(self) -> None:
+        lost = []
+        for n in range(4):
+            lost += HELD.hold(self.paths, self.record(n + 1, at=1000 + n), cap=2, overflow_cap=1, now=1000 + n)[1]
+        self.assertEqual([e["message_id"] for e in lost], [1])
+        self.assertEqual(lost[0]["wake_ids"], ["w1"], "the daemon writes its evicted row")
+        held, listed, reported = HELD.wake_summary(self.paths, exclude=[], limit=20)
+        self.assertEqual((held["count"], listed, reported), (4, [2, 3, 4], 1), "3 held plus 1 lost:  never fewer")
+        HELD.note_digest(self.paths, upto=99, now=1000, told=True)
+        HELD.expire(self.paths, ttl=1, now=10 ** 9)
+        self.assertEqual(HELD.load(self.paths)["lost"], 1, "a timer never clears what is owed")
+        HELD.surface(self.paths, message_ids=[], lost=reported)
+        self.assertEqual(HELD.load(self.paths)["lost"], 0)
+        self.assertEqual(HELD.summary(self.paths, 2000)["totals"]["evicted"], 1)
+
+    def test_a_wake_is_closed_once_by_whichever_removal_takes_its_last_message(self) -> None:
+        HELD.hold(self.paths, [self.record(1, wake="w"), self.record(2, wake="w"), self.record(3, wake="v")], cap=200,
+                  now=1000)
+        first = HELD.surface(self.paths, message_ids=[1, 3])
+        self.assertEqual({e["message_id"]: e["closes"] for e in first}, {1: [], 3: ["v"]}, "2 still stands for w")
+        HELD.note_digest(self.paths, upto=99, now=1000, told=True)
+        [last] = HELD.expire(self.paths, ttl=1, now=5000)
+        self.assertEqual((last["message_id"], last["closes"]), (2, ["w"]))
+        self.assertNotIn("closes", json.dumps(HELD.load(self.paths)), "never written to the file")
+
+    def test_only_entries_the_owner_was_shown_expire(self) -> None:
         HELD.hold(self.paths, self.record(1, at=1000), cap=1, now=1000)
-        HELD.hold(self.paths, self.record(2, at=2000), cap=1, now=2000)  # evicts 1
-        self.assertEqual(HELD.expire(self.paths, ttl=3600, now=4000), [])
+        HELD.hold(self.paths, self.record(2, at=2000), cap=1, now=2000)  # 1 moves to overflow
+        self.assertEqual(HELD.expire(self.paths, ttl=3600, now=10 ** 9), [], "never shown:  never expires")
+        HELD.note_digest(self.paths, upto=2, now=3000)
+        self.assertEqual(HELD.expire(self.paths, ttl=3600, now=10 ** 9), [], "a digest nobody was shown is not telling")
+        HELD.note_digest(self.paths, upto=1, now=3000, told=True)
+        self.assertEqual(HELD.expire(self.paths, ttl=3600, now=4000), [], "inside the TTL")
+        self.assertEqual([r["message_id"] for r in HELD.expire(self.paths, ttl=3600, now=4600)], [1])
+        self.assertEqual([r["message_id"] for r in HELD.load(self.paths)["records"]], [2], "2 was not in that digest")
+        HELD.note_digest(self.paths, upto=2, now=4600, told=True)
         self.assertEqual([r["message_id"] for r in HELD.expire(self.paths, ttl=3600, now=5600)], [2])
-        data = HELD.load(self.paths)
-        self.assertEqual((data["records"], data["evicted"]), ([], 0))
-        self.assertEqual(HELD.summary(self.paths, 5600)["totals"]["expired"], 1)
+        self.assertEqual(HELD.summary(self.paths, 5600)["totals"]["expired"], 2)
         self.assertEqual(HELD.expire(L.SeatPaths(self.dir, "NONE"), ttl=1, now=9999), [])
         self.assertFalse(os.path.exists(HELD.path_for(L.SeatPaths(self.dir, "NONE"))), "no file for a seat with nothing")
 
-    def test_a_wake_lists_the_newest_metadata_only_and_leaves_its_own_triggers_out(self) -> None:
+    def test_a_file_from_before_afc_253_is_split_per_message_and_keeps_what_was_evicted(self) -> None:
+        old = self.record(9, wake="w9", owner=True, seq=1)
+        old["trigger_ids"] = [7, 8, 9]
+        L.write_json(HELD.path_for(self.paths), {"records": [old], "evicted": 3, "evicted_at": 1000, "next_seq": 2})
+        data = HELD.load(self.paths)
+        self.assertEqual([(r["message_id"], r["owner"]) for r in data["records"]], [(7, False), (8, False), (9, True)])
+        self.assertTrue(data["records"][0]["zulip_link"].endswith("/near/7"))
+        self.assertEqual((data["lost"], "evicted" in data), (3, False))
+        held, listed, lost = HELD.wake_summary(self.paths, exclude=[], limit=20)
+        self.assertEqual((held["count"], listed, lost), (6, [7, 8, 9], 3))
+        self.assertEqual(HELD.referenced_wake_ids(self.paths), {"w9"})
+        HELD.surface(self.paths, message_ids=[7, 8])
+        self.assertEqual(HELD.referenced_wake_ids(self.paths), {"w9"}, "w9 still stands for 9")
+        HELD.surface(self.paths, message_ids=[9], lost=3)
+        self.assertEqual(HELD.referenced_wake_ids(self.paths), set())
+
+    def test_a_wake_lists_the_oldest_metadata_only_and_leaves_its_own_triggers_out(self) -> None:
         for n in range(1, 26):
             HELD.hold(self.paths, self.record(n, at=1000 + n), cap=200, now=1000 + n)
-        held, listed, evicted = HELD.wake_summary(self.paths, exclude=[25], limit=20)
+        held, listed, lost = HELD.wake_summary(self.paths, exclude=[25], limit=20)
         self.assertEqual(held["count"], 24)
-        self.assertEqual(listed, list(range(24, 4, -1)))
+        self.assertEqual(listed, list(range(1, 21)))
         self.assertEqual([item["message_id"] for item in held["items"]], listed)
         for item in held["items"]:
             self.assertEqual(tuple(item), FIELDS)
         self.assertFalse(worker_refuses(held))
         # Only what a wake listed (and its own triggers) is surfaced:  the 4 it did not list stay held back.
-        HELD.surface(self.paths, message_ids=set(listed) | {25}, evicted=evicted)
-        self.assertEqual([r["message_id"] for r in HELD.load(self.paths)["records"]], [1, 2, 3, 4])
-        self.assertIsNone(HELD.wake_summary(self.paths, exclude=[1, 2, 3, 4], limit=20)[0])
+        HELD.surface(self.paths, message_ids=set(listed) | {25}, lost=lost)
+        self.assertEqual([r["message_id"] for r in HELD.load(self.paths)["records"]], [21, 22, 23, 24])
+        self.assertIsNone(HELD.wake_summary(self.paths, exclude=[21, 22, 23, 24], limit=20)[0])
         self.assertEqual(HELD.wake_summary(self.paths, exclude=[], limit=0)[0], {"count": 4, "items": []})
 
     def test_the_digest_waits_for_new_records_and_the_interval(self) -> None:
@@ -285,7 +337,8 @@ class ConfigTests(unittest.TestCase):
         cfg = self.cfg(self.SEATS)
         self.assertEqual(cfg.errors, [])
         for seat, catch_up in (("CLAUDE", True), ("GB-X", True), ("MA", False)):
-            self.assertEqual(cfg.seats[seat].held_back, {"max": 200, "ttl_hours": 24.0, "items_in_wake": 20,
+            self.assertEqual(cfg.seats[seat].held_back, {"max": 200, "overflow_max": 1000, "ttl_hours": 24.0,
+                                                         "items_in_wake": 20,
                                                          "owner_digest_minutes": 60.0, "catch_up": catch_up}, seat)
             self.assertEqual(cfg.seats[seat].budget, C.BUDGET_DEFAULTS, "no budget number changed")
 
@@ -296,7 +349,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual({s: c.held_back["catch_up"] for s, c in cfg.seats.items()}, {"CLAUDE": False, "GB-X": True, "MA": False})
         cfg = self.cfg('[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\nheld_back = { catch_up = false, max = 50, '
                        'ttl_hours = 6, items_in_wake = 5, owner_digest_minutes = 0 }\n')
-        self.assertEqual(cfg.seats["CLAUDE"].held_back, {"max": 50, "ttl_hours": 6.0, "items_in_wake": 5,
+        self.assertEqual(cfg.seats["CLAUDE"].held_back, {"max": 50, "overflow_max": 1000, "ttl_hours": 6.0,
+                                                         "items_in_wake": 5,
                                                          "owner_digest_minutes": 0.0, "catch_up": False})
 
     def test_a_bad_value_is_an_error_and_the_seat_gets_no_queue(self) -> None:
@@ -498,7 +552,7 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         self.assertEqual(self.routine.received[-1].json()["held_back"]["items"][0]["message_id"], b)
         self.assertEqual(self.held(), [])
 
-    def test_the_cap_evicts_the_oldest_and_the_ttl_expires_the_rest_without_a_wake(self) -> None:
+    def test_the_cap_overflows_by_id_and_on_the_server_nothing_expires_unsurfaced(self) -> None:
         self.write_server_config(budget="wakes_per_hour = 0", seat_extra="held_back = { catch_up = false, max = 2 }")
         daemon = self.started()
         ids = []
@@ -508,24 +562,26 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         held_rows = self.rows("held_back")
         self.assertEqual(len(held_rows), 4)
         self.assertEqual([r["message_id"] for r in self.held()], ids[2:])
-        self.assertEqual([r["wake_id"] for r in self.rows("evicted")], [r["wake_id"] for r in held_rows[:2]])
+        self.assertEqual([e["message_id"] for e in HELD.load(self.seat_paths(SEAT))["overflow"]], ids[:2])
+        self.assertEqual(self.rows("evicted"), [], "overflow is not a loss")
         summary = daemon.status()["seats"][SEAT]["held_back"]
-        self.assertEqual((summary["count"], summary["evicted"]), (2, 2))
+        self.assertEqual((summary["count"], summary["overflow"], summary["evicted"]), (4, 2, 0))
         self.mention(daemon, "o", sender=self.jay())
         self.wake_cycle(daemon, 6)
         held = self.routine.received[-1].json()["held_back"]
-        self.assertEqual((held["count"], [i["message_id"] for i in held["items"]]), (4, [ids[3], ids[2]]))
-        self.assertEqual(daemon.status()["seats"][SEAT]["held_back"]["evicted"], 0, "reported, so cleared")
+        self.assertEqual((held["count"], [i["message_id"] for i in held["items"]]), (4, ids))
+        self.assertEqual([i["channel"] for i in held["items"]], [None, None, "agent-sync", "agent-sync"])
+        self.assertFalse(worker_refuses(held))
+        self.assertEqual(sorted(r["wake_id"] for r in self.rows("surfaced")), sorted(r["wake_id"] for r in held_rows))
         later = []
         for n in range(2):
             later.append(self.mention(daemon, "u%d" % n))
             self.wake_cycle(daemon)
         sent = len(self.routine.received)
-        self.step(daemon, 24 * 3600 + 60)
-        self.assertEqual(len(self.routine.received), sent, "expiry wakes nothing")
-        self.assertEqual(sorted(r["message_id"] for r in self.rows("expired")), sorted(later))
-        self.assertEqual(self.held(), [])
-        self.assertEqual(daemon.status()["seats"][SEAT]["held_back"]["totals"]["expired"], 2)
+        self.step(daemon, 3 * 24 * 3600)
+        self.assertEqual(len(self.routine.received), sent, "nothing woke")
+        self.assertEqual(self.rows("expired"), [], "the server's owner queue is read by nobody:  no TTL there")
+        self.assertEqual([r["message_id"] for r in self.held()], later)
 
     def test_a_catch_up_after_a_long_throttle_stays_inside_the_hourly_and_daily_caps(self) -> None:
         self.write_server_config(budget="wakes_per_hour = 2, wakes_per_day = 5")
@@ -546,9 +602,9 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         first = next(r.json() for r in self.routine.received if r.json()["wake_id"] == catch_ups[0]["wake_id"])
         self.assertEqual(first["message_id"], ids[-1], "the newest held-back message is the trigger")
         self.assertEqual([first["held_back"]["count"], [i["message_id"] for i in first["held_back"]["items"]]],
-                         [3, [ids[4], ids[3], ids[2]]])
-        self.assertEqual(self.held(), [], "past the TTL nothing is left")
-        self.assertEqual(len(self.rows("expired")), 4)
+                         [3, [ids[2], ids[3], ids[4]]])
+        self.assertEqual(len(self.held()), 4, "nothing reached anyone, so on the server all four are still held")
+        self.assertEqual(self.rows("expired"), [])
 
     def test_a_catch_up_that_is_delivered_surfaces_everything_it_named(self) -> None:
         self.write_server_config(budget="wakes_per_hour = 1")
@@ -608,7 +664,7 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         self.wake_cycle(daemon)
         self.step(daemon, 31)
         self.assertEqual(len(digests()), 1)
-        self.assertIn("1 wake held back for the budget (wakes_per_hour 1)", digests()[0]["text"])
+        self.assertIn("1 message held back for the budget (wakes_per_hour 1)", digests()[0]["text"])
         self.assertIn("/near/", digests()[0]["note"])
         self.mention(daemon, "b")
         self.wake_cycle(daemon)
@@ -616,7 +672,7 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         self.assertEqual(len(digests()), 1, "at most one an hour")
         self.step(daemon, 3000)
         self.assertEqual(len(digests()), 2, "a new hold after the hour")
-        self.assertIn("2 wakes held back", digests()[1]["text"])
+        self.assertIn("2 messages held back", digests()[1]["text"])
         self.step(daemon, 7200)
         self.assertEqual(len(digests()), 2, "nothing new, nothing sent")
         self.assertEqual(self.banners, [], "the server has no banners:  the owner queue only")
@@ -638,6 +694,61 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         status = self.run_cli("status", env=self.server_env())
         self.assertIn("  held back 1 (oldest 2m; wakes_per_hour 1)", status.out)
 
+    def pending(self, wake_id: str, ids, owner=()):
+        pending = W.Pending(wake_id, SEAT, {"channel": "agent-sync", "topic": "batch", "stream_id": 642232},
+                            owner=False, now=1.0, due=1.0)
+        for i in ids:
+            pending.add({"id": i}, i in owner)
+        return pending
+
+    def test_a_coalesced_wake_holds_every_message_and_ends_once_the_last_one_surfaced(self) -> None:
+        self.write_server_config(budget="wakes_per_hour = 0", seat_extra="held_back = { catch_up = false }")
+        daemon = self.started()
+        runner = daemon.seats[SEAT]
+        now = self.clock.time()
+        daemon._hold(runner, self.pending("w-batch", [501, 502, 503], owner=[502]), "wakes_per_hour", now)
+        self.assertEqual([(r["message_id"], r["owner"]) for r in self.held()], [(501, False), (502, True), (503, False)])
+        [row] = self.rows("held_back")
+        self.assertEqual((row["message_id"], row["message_ids"]), (503, [501, 502, 503]))
+        daemon._surface(runner, self.pending("w-d1", [600]), [501, 502], 0, now + 1)
+        self.assertEqual(self.rows("surfaced"), [], "503 is still held, so w-batch has not ended")
+        daemon._surface(runner, self.pending("w-d2", [601]), [503], 0, now + 2)
+        [ended] = self.rows("surfaced")
+        self.assertEqual((ended["wake_id"], ended["message_ids"], ended["by"]), ("w-batch", [503], "w-d2"))
+
+    def test_sixty_held_drain_oldest_first_across_three_wakes_while_new_ones_arrive(self) -> None:
+        self.write_server_config(budget="wakes_per_hour = 0", seat_extra="held_back = { catch_up = false }")
+        daemon = self.started()
+        runner = daemon.seats[SEAT]
+        now = self.clock.time()
+        for k in range(3):
+            daemon._hold(runner, self.pending("w-h%d" % k, range(1000 + 20 * k, 1020 + 20 * k)), "wakes_per_hour", now)
+        firsts = []
+        for k in range(3):
+            held, listed, lost = HELD.wake_summary(runner.paths, exclude=[], limit=20)
+            firsts.append(listed[0])
+            daemon._surface(runner, self.pending("w-d%d" % k, [2000 + k]), listed, lost, now + k)
+            if k == 0:  # newer holds never push the backlog back
+                daemon._hold(runner, self.pending("w-new", [3000, 3001]), "wakes_per_hour", now + k)
+        self.assertEqual(firsts, [1000, 1020, 1040])
+        self.assertEqual([r["message_id"] for r in self.held()], [3000, 3001])
+        self.assertEqual(sorted(r["wake_id"] for r in self.rows("surfaced")), ["w-h0", "w-h1", "w-h2"])
+
+    def test_an_id_lost_past_both_caps_gets_its_row_and_the_owner_is_told(self) -> None:
+        self.write_server_config(budget="wakes_per_hour = 0",
+                                 seat_extra="held_back = { catch_up = false, max = 1, overflow_max = 1 }")
+        daemon = self.started()
+        runner = daemon.seats[SEAT]
+        now = self.clock.time()
+        for k in range(3):
+            daemon._hold(runner, self.pending("w-l%d" % k, [700 + k]), "wakes_per_hour", now)
+        [evicted] = self.rows("evicted")
+        self.assertEqual((evicted["wake_id"], evicted["message_ids"]), ("w-l0", [700]))
+        notes = [r for r in L.read_jsonl(runner.paths.owner_queue) if r["kind"] == "held-back-lost"]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("700", notes[0]["note"])
+        self.assertEqual(daemon.status()["seats"][SEAT]["held_back"]["evicted"], 1)
+
     def test_the_largest_held_back_fits_the_workers_rules_and_the_body_cap(self) -> None:
         daemon = self.started()
         runner = daemon.seats[SEAT]
@@ -647,17 +758,19 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         pending = W.Pending("w-long", SEAT, {"channel": "agent-sync", "topic": long, "stream_id": 642232}, owner=False,
                             now=1.0, due=1.0)
         pending.add({"id": 77}, False)
-        item = HELD.item(daemon._held_record(runner, pending, "wakes_per_hour", self.clock.time()))
+        item = HELD.item(daemon._held_records(runner, pending, "wakes_per_hour", self.clock.time())[0])
         self.assertEqual(item["zulip_link"], "", "a link over 200 characters is left out, never cut")
         self.assertLessEqual(len(item["topic"]), 100)
         self.assertNotIn("\u2028", json.dumps(item, ensure_ascii=False))
         dm = W.Pending("w-dm", SEAT, {"type": "private", "recipients": [12, self.gb["user_id"]], "stream_id": 9},
                        owner=True, now=1.0, due=1.0)
         dm.add({"id": 78}, True)
-        dm_item = HELD.item(daemon._held_record(runner, dm, "owner_per_day", self.clock.time()))
+        dm_item = HELD.item(daemon._held_records(runner, dm, "owner_per_day", self.clock.time())[0])
         self.assertEqual((dm_item["dm"], dm_item["channel"], dm_item["topic"], dm_item["stream_id"]), (True, None, None, None))
         self.assertIn("/#narrow/dm/", dm_item["zulip_link"])
-        held = {"count": 200, "items": [dict(item, message_id=1000 + n) for n in range(19)] + [dm_item]}
+        bare = HELD.item(HELD.compact(dict(daemon._held_records(runner, dm, "owner_per_day", 1.0)[0])))
+        self.assertEqual((bare["channel"], bare["zulip_link"], bare["sender_full_name"]), (None, "", ""))
+        held = {"count": 200, "items": [dict(item, message_id=1000 + n) for n in range(18)] + [dm_item, bare]}
         self.assertFalse(worker_refuses(held))
         row = {"id": 5, "type": "stream", "channel": "agent-sync", "topic": long, "stream_id": 642232, "sender_id": 11,
                "sender": long, "content": "\U0001F525" * 5000}
@@ -855,6 +968,19 @@ class HeldBackClaudeTests(HeldMixin, DaemonHarness):
         self.assertEqual(len(self.rows("held_back")), 3)
         held_banners = [argv for argv in self.banners if any("held back" in part for part in argv)]
         self.assertEqual(len(held_banners), 1)
+
+    def test_on_the_mac_a_held_back_wake_expires_only_after_its_banner_was_shown(self) -> None:
+        self.configure("per_topic_per_hour = 1", "catch_up = false")
+        daemon = self.started()
+        self.mention(daemon, "t")
+        self.wake_cycle(daemon)
+        held = self.mention(daemon, "t")
+        self.wake_cycle(daemon, 95)
+        self.assertEqual([r["message_id"] for r in self.held()], [held])
+        self.assertEqual(HELD.load(self.seat_paths())["told_seq"], 1, "the banner was shown")
+        self.step(daemon, 24 * 3600 + 60)
+        self.assertEqual([r["message_id"] for r in self.rows("expired")], [held])
+        self.assertEqual(self.held(), [])
 
     def test_a_loop_guarded_topic_is_still_a_plain_drop(self) -> None:
         daemon = self.started()
