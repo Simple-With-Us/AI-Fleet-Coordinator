@@ -27,7 +27,7 @@ Grok Web (a fleet seat, not the Mac terminal) must read the Zulip inbox, post in
 1. **Remove two existing Grok skills** if the owner has not:  `sentence-gap` (tells Markdown panes to type the `&nbsp;` entity, which Grok Web must not show) and `fleet-coordination` (assumes a Mac shell;  its Grok copy is also stale, description "Enforce Jay Wedgeworth…").
 2. **Verify skill loading:**  in a fresh Grok chat, ask it to read the Zulip inbox and confirm it loads `grok-web-zulip`. If not, move the budget and read-routine lines back into the instructions (3 characters of headroom, so something else must shrink).
 3. **Closeout not done:**  no Zulip post in `#agent-sync` and no Linear issue or effort-log entry;  the cloud session had no Zulip credentials or `agent-sync` CLI. A Mac seat should post `DONE` and record it in Linear (the fleet has since cut over from THE BOARD).
-4. **Optional:**  add `GROK-WEB` as a seat in `scripts/install-fleet-skills.py` / `scripts/fleet_skill_identity.py` so `docs/grok-web/skills/` is generated with the rest of the pack instead of maintained by hand. Needs a claim;  touches several files.
+4. **Optional:**  add `GROK-WEB` as a seat in `scripts/install-fleet-skills.py` / `scripts/fleet_skill_identity.py` so the skills render to `docs/fleet-skills/by-seat/grok-web/skills/` with the rest of the pack instead of being maintained by hand under `docs/grok-web/skills/` (the renderer expects canonical `docs/fleet-skills/<name>/SKILL.md` sources, so the two existing `SKILL.md` files must move there). Needs a claim;  touches several files.
 5. **Sync rule:**  when the owner edits the instructions on grok.com, update `docs/grok-web/INSTRUCTIONS.md` in the same change.
 
 ## Notes
