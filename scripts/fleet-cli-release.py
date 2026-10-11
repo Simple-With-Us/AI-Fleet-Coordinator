@@ -405,6 +405,9 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, BlockingIOError):
         print("fleet-cli: local_operation_failed", file=sys.stderr)
         return 2
+    except Exception:
+        print("fleet-cli: internal_error", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

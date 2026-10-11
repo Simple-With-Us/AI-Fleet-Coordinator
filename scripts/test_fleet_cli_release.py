@@ -215,6 +215,13 @@ class ReleaseTests(unittest.TestCase):
             result = subprocess.run([os.sys.executable, "-c", code], env=env, capture_output=True)
             self.assertEqual(result.returncode, 3)
 
+    def test_main_reports_internal_error_without_traceback(self):
+        import io
+        with mock.patch.object(release, "control", side_effect=RuntimeError("boom")), \
+                mock.patch.object(release.sys, "stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(release.main(["status", "--home", str(self.home)]), 2)
+        self.assertIn("fleet-cli: internal_error", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
