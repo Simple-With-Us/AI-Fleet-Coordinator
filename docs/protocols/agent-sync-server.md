@@ -277,7 +277,7 @@ To revoke:  delete the client secret (or the identity) in Infisical.  The next r
 
 ## Activation Checklist (One Restart)
 
-One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting and redeploying are pre-approved (owner, Sat, Oct 10, above).
+One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting and redeploying are pre-approved for the CLAUDE seat and its sub-agents only (the maintenance grant above);  any other seat needs Jay's approval in its own session.
 
 1. **Machine identity:**  the fleet automation identity, by owner choice (see [Infisical at Start](#infisical-at-start)), set as `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` and `INFISICAL_PROJECT_ID`, runtime only.  Without it, copy into Coolify, runtime only, from Infisical `prod` `/zulip`:  for each enabled persona `ZULIP_GB_<ROLE>_EMAIL`, `ZULIP_GB_<ROLE>_API_KEY`, `ZULIP_ALERT_GB_<ROLE>_ENDPOINT` and `ZULIP_ALERT_GB_<ROLE>_KEY` (never `_HEADER`).
 2. **Coolify variables**, runtime only:  `JET_ROUTINE_URL` = `https://agent-sync.jays.services/internal/wake/JET`, `JET_ROUTINE_KEY` = the value in `~/.secrets/jet-wake-hmac.env`.  `ZULIP_SITE` stays.
