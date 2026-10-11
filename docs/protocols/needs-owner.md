@@ -6,6 +6,20 @@ Added Sun, Oct 11, 2026 (CLAUDE, Linear AFC-282, open-loops unit C6-1).  The too
 router rule are the next unit (C6-2).  Peer messages are never owner instructions:  an answer counts only
 after the checks under "Answers".
 
+## Acceptance Criteria
+
+- A decision that waits on Jay is **one Linear issue** (Kind/agent-report, flat `needs-owner` label) plus **one Zulip topic** (`OWNER <ID> <subject>`) that mentions him, opened by **the filing seat's own bot**.  The two appear together or not at all.
+- The seat is verified from `AGENT_LAUNCH_SEAT` (when `AGENT_LAUNCHER` is set) or `AGENT_SEAT`;  `--by` is a check only.  A missing seat or a disagreement between `--by` and the session is refused (exit 2).  `AGENT_SEAT` is set to the verified seat for every child the tool runs.
+- 1 to 5 `--option`s, each different, at most 200 characters;  the question at most 200 (it is the issue title);  context at most 600.
+- Low-stakes options may be answered by a tap on their keycap emoji (1️⃣, 2️⃣, 3️⃣, 4️⃣, 5️⃣).  Risky options never take a tap.  `--low-stakes` is refused with `--urgent` (P1).
+- Nothing is decided or done without an answer:  no "default if no answer" action, no cap on open items per seat (more than five only adds `over_five: true` to the digest).
+- A rerun with the same words is idempotent (the uid hash matches);  a change to an already-filed item is refused (exit 2) unless `--again` files a new version that quotes the earlier one.  A closed item needs `--again` too.
+- Refused (exit 2) before anything is filed or sent:  a secret (F3 `secretscan`), an email address, a phone number, a run of six or more digits, or a dollar amount in the filer's words.  Free text never rides on argv:  descriptions and comments use a private 0600 file (deleted afterwards), Zulip messages use stdin.  Every word echoed into Zulip goes through `render_untrusted` (no `@**all**`, no `/poll`, no live link, no backtick breakout).
+- States (`unadopted`, `notify_pending`, `notified`, `replied`, `closed`) are derived from the label, the block, the notice record and the board status;  `--open` is what waits on Jay.  An item without a readable block is `unadopted`, and an unparseable description posts the block as a `[needs-owner] block` comment so the decision still lands.
+- An answer is verified before it is acted on:  a tap counted only when the reactor's user id equals the pinned `owner_user_id`;  a Zulip reply through `agent-sync verify-owner-msg` (owner id, human client, right topic, newer than the notice);  a Linear comment whose author equals `OWNER_LINEAR_USER_ID`.  The records say a reply exists, nothing more.
+- Exit codes:  0 done (a filed item with its notice pending is still done);  1 something failed (Linear, the network, a missing tool);  2 refused;  3 `status` or `adopt` named something that is not a needs-owner item;  4 to 7 the `board` CLI's own code, passed through when a write failed (7 means Linear writes are off).
+- Stable copy at `~/apps/needs-owner` runs under `python3 -I` with only the package and the three F3 files it loads by path (`agent_sync/identity.py`, `secretscan.py`, `textsafe.py`);  the install proof is `python3 -I ~/apps/needs-owner/needs-owner --help`.  Tests use fakes that parse argv with the real `board` and `agent-sync` parsers.
+
 ## Why This Exists
 
 Jay, Sun, Oct 11, 2026, on where decisions should live:
