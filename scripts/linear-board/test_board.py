@@ -110,7 +110,7 @@ class MockLinear:
         self.current_token = None
         self.org = {"name": "Simple With Us", "urlKey": "simple-with-us"}
         self.teams: dict = {}
-        for i, key in enumerate(("OPS", "ST", "CT", "AFC", "FL")):
+        for i, key in enumerate(("OPS", "ST", "CT", "AFC", "FL", "CC")):
             self.teams[key] = {"id": f"team-{key}", "name": key + " team", "n": 0,
                                "states": {n: {"id": f"st-{key}-{j}", "name": n, "type": t}
                                           for j, (n, t) in enumerate(STATES)}}
@@ -898,6 +898,15 @@ class WriteTests(BoardTest):
             self.assertIn("(-- FL)", p.stdout, app)
             iss = self.issue_by_ident(p.stdout.split()[-1])
             self.assertEqual(iss["team"], "FL", app)
+            self.assertFalse([n for n in self.label_names(iss) if n.startswith("app:")], app)
+
+    def test_codecaps_files_to_its_own_team(self):
+        # CodeCaps routes to the CC team by slug, display name and key (owner 2026-10-11)
+        for app in ("codecaps", "CodeCaps", "CC"):
+            p = self.board("file", "--title", f"routing {app}", "--app", app)
+            self.assertIn("(-- CC)", p.stdout, app)
+            iss = self.issue_by_ident(p.stdout.split()[-1])
+            self.assertEqual(iss["team"], "CC", app)
             self.assertFalse([n for n in self.label_names(iss) if n.startswith("app:")], app)
 
     def test_file_uid_is_idempotent(self):
