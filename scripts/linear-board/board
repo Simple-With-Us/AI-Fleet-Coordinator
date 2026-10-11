@@ -108,6 +108,9 @@ BF_ROLES = {"DIRECTOR", "COMPILER", "FIXER", "DESIGNER", "PLUMBER", "PUBLISHER",
 SEAT_ALIASES = {"MINIMAX": "MM", "MUSE": "MA", "GROK-BUILD": "GROK", "ANTIGRAVITY": "AG",
                 "MUSE-ASSIST": "MA", "MUSE-CODE": "MC"}
 CLUTCH_LINEAGE = {"DSH", "DEEPSEEK", "HARNESS"}
+# Spellings of a seat tag that AGENT_SEAT and --by resolve to the tag the fleet signs with (owner 2026-10-11:  the
+# Instinct seat is shown as Wise (Instinct)).  Retagging to WISE later is a one-line swap here.
+SEAT_TAG_ALIASES = {"WISE": "INSTINCT"}
 # One Linear app per seat (owner 2026-10-10), named for the seat bot's display
 # name.  A seat's app is used when its credentials exist (<SEAT>.env beside
 # Fleet.env, or LINEAR_<SEAT>_CLIENT_ID and _SECRET in the environment, with
@@ -118,6 +121,7 @@ SEAT_APP_NAMES = {
     "CLAUDE": "Claude", "CODEX": "Codex", "CURSOR": "Cursor", "AG": "AG", "GROK": "Grok",
     "GROK-WEB": "Grok Web", "CLUTCH": "Clutch", "MM": "MM", "FX": "Fx", "MC": "Muse Code",
     "MA": "Muse Assist", "JET": "Jet", "OPENCODE": "OpenCode",
+    "ECHO": "Echo (Instinct)", "INSTINCT": "Wise (Instinct)",
 }
 # Other names the owner may give a seat's app (the seat tag and the credentials key names stay as they are).
 # The swapped-credentials check accepts the primary name above, any alias here, or the seat tag itself, and
@@ -134,6 +138,8 @@ SEAT_APP_ALIASES = {
     "GROK": ("Grok (Build)", "Grok Build"),
     "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
     "OPENCODE": ("OC",),
+    "ECHO": ("Echo",),
+    "INSTINCT": ("Wise",),
 }
 
 
@@ -253,7 +259,7 @@ def norm_seat(s: str | None) -> str:
     """The seat tag a value stands for, upper-cased.  Every GROK-BUILD spelling is GROK, so AGENT_SEAT,
     --by and --mine all resolve to the one seat that signs GROK."""
     v = (s or "").strip().strip("@[]<>`'\" ")
-    return "GROK" if GROK_ALIAS_RE.match(v) else v.upper()
+    return "GROK" if GROK_ALIAS_RE.match(v) else SEAT_TAG_ALIASES.get(v.upper(), v.upper())
 
 
 def hyphenate(h32: str) -> str:

@@ -56,7 +56,7 @@ Do these before step 4 swaps `~/.local/bin/board`.  The CLI does not make them f
 
 ## Identity and credentials
 
-Each seat has its own Linear app, named for the seat bot's display name (owner 2026-10-10):  CLAUDE is Claude, CODEX Codex, CURSOR Cursor, AG AG, GROK Grok, GROK-WEB Grok Web, CLUTCH Clutch, MM MM, FX Fx, MC Muse Code, MA Muse Assist, JET Jet and OPENCODE OpenCode (`SEAT_APP_NAMES` in the script).  Renaming an app in Linear never locks its seat out:  the swapped-credentials check also accepts the aliases in `SEAT_APP_ALIASES` (Antigravity, MiniMax, FX.sh, Grok (Build), Grok (Web/iOS), Muse Code (MC), OC and the like), the seat tag itself, and any capitalisation.  A new alias goes in that table, and a test fails if two seats would share one.  A seat whose app does not exist yet, and every read without `AGENT_SEAT`, uses the shared Fleet app.
+Each seat has its own Linear app, named for the seat bot's display name (owner 2026-10-10):  CLAUDE is Claude, CODEX Codex, CURSOR Cursor, AG AG, GROK Grok, GROK-WEB Grok Web, CLUTCH Clutch, MM MM, FX Fx, MC Muse Code, MA Muse Assist, JET Jet, OPENCODE OpenCode, ECHO Echo (Instinct) and INSTINCT Wise (Instinct) (`SEAT_APP_NAMES` in the script;  WISE is accepted as another spelling of INSTINCT, `SEAT_TAG_ALIASES`).  Renaming an app in Linear never locks its seat out:  the swapped-credentials check also accepts the aliases in `SEAT_APP_ALIASES` (Antigravity, MiniMax, FX.sh, Grok (Build), Grok (Web/iOS), Muse Code (MC), OC and the like), the seat tag itself, and any capitalisation.  A new alias goes in that table, and a test fails if two seats would share one.  A seat whose app does not exist yet, and every read without `AGENT_SEAT`, uses the shared Fleet app.
 
 Lookup order, the first that applies:
 
