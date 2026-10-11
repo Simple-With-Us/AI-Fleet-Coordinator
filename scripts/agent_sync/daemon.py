@@ -1151,17 +1151,22 @@ class Daemon:
             return
         # A stale pin is the one refusal whose fix is a command, so the notice names it (AFC-256):  a
         # bare "not_pinned" read like a seat nobody had set up yet, and nine wakes went by that way.
+        # `pin` is re-read here because `_pinned_claude` ran earlier in the same call frame; between
+        # then and now the binary may have been re-pinned, re-pointed or removed, so guard the format
+        # against `claude` or `pinned_claude` coming back None.
         if reason == "pin_stale":
             claude = A.resolve_claude(runner.cfg.claude, self.wake_path)
             pin = A.pin_state(runner.paths, claude)
+            current = pin.get("claude") or "<unresolved>"
+            recorded = pin.get("pinned_claude") or "<none>"
             self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
                                  "the claude binary changed (%s), so %s wakes are inbox-only until it is "
-                                 "re-pinned" % (pin["claude"], runner.seat),
+                                 "re-pinned" % (current, runner.seat),
                                  kind="wake-" + reason, key="wake:%s:%s" % (runner.seat, reason),
                                  note="pinned %s, on disk %s; run `agent-sync daemon test-wake --seat %s --run` "
                                       "then `--pin`.  It is never re-pinned automatically:  the pin records "
                                       "that a person checked this build's wake contract." % (
-                                          pin["pinned_claude"], pin["claude"], runner.seat),
+                                          recorded, current, runner.seat),
                                  trigger_ids=pending.trigger_ids)
             return
         self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
