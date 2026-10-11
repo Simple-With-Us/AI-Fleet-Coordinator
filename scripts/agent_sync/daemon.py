@@ -1091,7 +1091,7 @@ class Daemon:
         representative id), with display copies escaped and cut like the wake body's, so every string
         fits the hosted Worker's held_back rules.  Never a message body:  the id is the reference to the
         seat-inbox row a catch-up wake rebuilds the excerpt from."""
-        ids = list(dict.fromkeys(i for i in pending.trigger_ids if isinstance(i, int) and not isinstance(i, bool)))
+        ids = list(dict.fromkeys(i for i in pending.trigger_ids if HELD.is_id(i)))
         if not ids:
             return []
         rows = self._seat_inbox_rows(runner, ids)
@@ -1121,20 +1121,19 @@ class Daemon:
     def _held_rows(self, runner: SeatRunner, entries: Iterable[Mapping[str, Any]], state: str, now: float,
                    **extra: Any) -> None:
         """The ledger row that ends a held-back wake (surfaced, expired or evicted):  one per wake id,
-        written once no entry in held-back.json stands for that wake any more, naming the ids that
-        just left.  A wake whose five messages surface over two wakes ends with the second."""
+        once no entry in held-back.json stands for that wake any more, naming the ids that left with
+        it.  The store decided which wakes close under the lock that removed the entries (`closes`,
+        heldback._mark_closing), so two threads never both close one wake and none is missed."""
         gone: dict[str, list[Any]] = {}
         for entry in entries:
+            for wake_id in entry.get("closes") or []:
+                gone.setdefault(wake_id, [])
             for wake_id in HELD.wake_ids(entry):
-                gone.setdefault(wake_id, []).append(entry.get("message_id"))
-        if not gone:
-            return
-        still = HELD.referenced_wake_ids(runner.paths)
+                if wake_id in gone:
+                    gone[wake_id].append(entry.get("message_id"))
         for wake_id, ids in gone.items():
-            if wake_id in still:
-                continue
             runner.ledger.append(dict({"ts": now, "wake_id": wake_id, "seat": runner.seat, "state": state,
-                                       "message_id": ids[-1], "message_ids": ids}, **extra))
+                                       "message_id": ids[-1] if ids else None, "message_ids": ids}, **extra))
 
     def _surface(self, runner: SeatRunner, pending: W.Pending, listed: Iterable[int], lost: int, now: float) -> None:
         """A wake reached the seat:  its own triggers and the held-back items it listed are surfaced,

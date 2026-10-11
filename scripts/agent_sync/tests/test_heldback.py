@@ -143,6 +143,16 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(HELD.load(self.paths)["lost"], 0)
         self.assertEqual(HELD.summary(self.paths, 2000)["totals"]["evicted"], 1)
 
+    def test_a_wake_is_closed_once_by_whichever_removal_takes_its_last_message(self) -> None:
+        HELD.hold(self.paths, [self.record(1, wake="w"), self.record(2, wake="w"), self.record(3, wake="v")], cap=200,
+                  now=1000)
+        first = HELD.surface(self.paths, message_ids=[1, 3])
+        self.assertEqual({e["message_id"]: e["closes"] for e in first}, {1: [], 3: ["v"]}, "2 still stands for w")
+        HELD.note_digest(self.paths, upto=99, now=1000, told=True)
+        [last] = HELD.expire(self.paths, ttl=1, now=5000)
+        self.assertEqual((last["message_id"], last["closes"]), (2, ["w"]))
+        self.assertNotIn("closes", json.dumps(HELD.load(self.paths)), "never written to the file")
+
     def test_only_entries_the_owner_was_shown_expire(self) -> None:
         HELD.hold(self.paths, self.record(1, at=1000), cap=1, now=1000)
         HELD.hold(self.paths, self.record(2, at=2000), cap=1, now=2000)  # 1 moves to overflow

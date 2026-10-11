@@ -69,8 +69,24 @@ def path_for(paths: L.SeatPaths) -> str:
     return os.path.join(paths.seat_dir, FILE_NAME)
 
 
-def _is_id(value: Any) -> bool:
+def is_id(value: Any) -> bool:
+    """A Zulip message id:  a positive int (never a bool)."""
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+_is_id = is_id
+
+
+def _mark_closing(removed: list[dict[str, Any]], data: Mapping[str, Any]) -> None:
+    """Inside the lock that removed them:  tag each removed entry with the wake ids it closes (no entry
+    left in the file stands for them), so the daemon writes each wake's closing ledger row exactly
+    once, with no second read of the file racing another thread's change."""
+    still = {w for e in list(data.get("records") or []) + list(data.get("overflow") or []) for w in wake_ids(e)}
+    claimed: set[str] = set()
+    for entry in removed:
+        closes = [w for w in wake_ids(entry) if w not in still and w not in claimed]
+        claimed.update(closes)
+        entry["closes"] = closes
 
 
 def _entries(rows: Any) -> list[dict[str, Any]]:
@@ -192,6 +208,7 @@ def hold(paths: L.SeatPaths, records: Mapping[str, Any] | Sequence[Mapping[str, 
         if excess > 0:
             out["lost"] = overflow[:excess]
             del overflow[:excess]
+            _mark_closing(out["lost"], data)
             data["lost"] = _int(data, "lost") + excess
             data["lost_at"] = now
             totals["evicted"] += excess
@@ -220,6 +237,7 @@ def expire(paths: L.SeatPaths, *, ttl: float, now: float) -> list[dict[str, Any]
         for tier in ("records", "overflow"):
             out.extend(e for e in data[tier] if due(e))
             data[tier] = [e for e in data[tier] if not due(e)]
+        _mark_closing(out, data)
         totals["expired"] += len(out)
 
     L.update_json(target, mutate)
@@ -277,6 +295,7 @@ def surface(paths: L.SeatPaths, *, message_ids: Iterable[int], lost: int = 0) ->
         for tier in ("records", "overflow"):
             out.extend(e for e in data[tier] if e["message_id"] in wanted)
             data[tier] = [e for e in data[tier] if e["message_id"] not in wanted]
+        _mark_closing(out, data)
         data["lost"] = max(0, _int(data, "lost") - max(0, int(lost)))
         totals["surfaced"] += len(out)
         if out or lost:
