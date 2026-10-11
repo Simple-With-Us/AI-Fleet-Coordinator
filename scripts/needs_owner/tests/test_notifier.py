@@ -7,8 +7,8 @@ Grok Bot personas are the filing seats.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import os
+import subprocess
 import time
 import unittest
 
@@ -396,6 +396,13 @@ class RunTests(NotifierCase):
         self.assertEqual(self.sent_by_notifier(), [])
         self.assertTrue((directory / "notify.lock").exists(), "someone else's lock is left alone")
 
+    def test_a_lock_that_is_still_being_written_is_not_taken(self) -> None:
+        self.pending()
+        directory = self.w.notifier_dir
+        directory.mkdir(parents=True)
+        (directory / "notify.lock").write_text("")  # created a moment ago, the process id not written yet
+        self.assertEqual([e["event"] for e in self.run_notify()["events"]], ["locked"])
+
     def test_a_stale_lock_is_taken_over(self) -> None:
         self.pending()
         directory = self.w.notifier_dir
@@ -411,7 +418,9 @@ class RunTests(NotifierCase):
         self.pending()
         directory = self.w.notifier_dir
         directory.mkdir(parents=True)
-        (directory / "notify.lock").write_text("999999\n")
+        gone = subprocess.Popen(["true"])
+        gone.wait()  # a process id that has just ended, so it is not in use
+        (directory / "notify.lock").write_text("%d\n" % gone.pid)
         self.assertEqual(len(self.events(self.run_notify(), "notified")), 1)
 
     def test_a_damaged_state_file_starts_fresh_and_says_so(self) -> None:

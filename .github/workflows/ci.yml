@@ -68,8 +68,9 @@ jobs:
     - name: fleet_knobs tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t . -v
-    # needs-owner (open-loops C6-1):  a fake `board` and `agent-sync` on PATH, built on the real parsers;
-    # the stable copy installed into a temp HOME must run under `python3 -I`.
+    # needs-owner (open-loops C6-1 and C6-2):  a fake `board` and `agent-sync` on PATH, built on the real parsers, a fixed
+    # clock and fake K1 knobs for the fallback notifier;  the stable copy installed into a temp HOME must run under
+    # `python3 -I`, and the LaunchAgent plist must parse.
     - name: needs-owner tests
       run: |
         cd scripts && python3 -m unittest discover -s needs_owner/tests -t . -v
@@ -136,9 +137,10 @@ jobs:
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
-    # slower and stays a local run.
+    # slower and stays a local run.  CommentAuthorTests pins the comment account fields (author_id, author_app) that the
+    # needs-owner notifier checks the owner's Linear reply by.
     - name: Board CLI input files and flat labels
-      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests
+      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests
     # Infisical's only environment is prod (owner 2026-10-10).  The lint fails on a dev or
     # staging INFISICAL_ENV in an env file or cursor-cloud-start.sh fallback, and on a
     # non-prod .infisical.json default;  `--fleet` runs it over every ~/Code repo on origin/main.

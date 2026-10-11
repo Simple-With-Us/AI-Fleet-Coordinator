@@ -196,6 +196,18 @@ class TypedReplyTests(RepliesCase):
         good = self.w.add_message(record["topic"], "Option 1")
         self.assertEqual([e["ref"] for e in self.events(self.run_notify(), "replied")], [good])
 
+    def test_a_burst_of_rejected_messages_never_hides_the_answer_behind_them(self) -> None:
+        record = self.item()
+        for _ in range(notifier.VERIFY_PER_TOPIC + 3):
+            self.w.add_message(record["topic"], "noise", client="ZulipPython")
+        good = self.w.add_message(record["topic"], "Option 1")
+        first = self.run_notify()
+        self.assertEqual(self.events(first, "replied"), [], "ten calls a run at the most")
+        asked = len([c for c in self.w.calls("agent-sync") if c["argv"][0] == "verify-owner-msg"])
+        self.assertEqual(asked, notifier.VERIFY_PER_TOPIC)
+        second = self.run_notify()
+        self.assertEqual([e["ref"] for e in self.events(second, "replied")], [good], "the rejected ten are remembered:  three more, then the answer")
+
     def test_the_first_verified_message_wins_and_a_pause_before_it_is_not_an_answer(self) -> None:
         record = self.item()
         self.w.add_message(record["topic"], "pause")

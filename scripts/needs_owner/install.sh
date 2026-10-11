@@ -8,24 +8,26 @@
 #     needs-owner               the entry point (scripts/needs-owner)
 #     needs_owner/              the package, without its tests
 #     agent_sync/               only identity.py, secretscan.py and textsafe.py (the F3 helpers it loads by path)
+#     fleet_knobs/              the K1 knob reader the fallback notifier (`notify`) uses, without its tests
 #     state/                    untouched here (the fallback notifier keeps its files there)
 # and ~/.local/bin/needs-owner is a symbolic link to ~/apps/needs-owner/needs-owner.
 #
 # Why a copy:  a tool run from a checkout moves with the branch, and a tool run with `python3 -I` cannot import
 # a package it was not given.  So the copy carries every file the tool loads, and --apply ends by running
 # `python3 -I ~/apps/needs-owner/needs-owner --help` and `--version` to prove it (both load the package and the three F3
-# files before they parse anything, so a copy that lacks or has damaged one fails).  Run it from a lane or from the managed
+# files before they parse anything, so a copy that lacks or has damaged one fails;  `notify` imports fleet_knobs when it runs).  Run it from a lane or from the managed
 # runtime checkout, never from the human integration tree ~/Code/AI-Fleet-Coordinator.
 #
-# It touches nothing else:  no LaunchAgents, no pm2, nothing under ~/.secrets.  It is an on-demand helper
-# (docs/MAC-LOCAL-PROCESSES.md):  nothing stays running.
+# It touches nothing else:  no LaunchAgents, no pm2, nothing under ~/.secrets.  `needs-owner` is an on-demand helper
+# (docs/MAC-LOCAL-PROCESSES.md);  the scheduled fallback notifier is the separate LaunchAgent
+# scripts/launchd/com.jay.needs-owner-notify.plist, which the owner session loads (live step L16).
 set -euo pipefail
 
 apply=0
 for arg in "$@"; do
   case "$arg" in
     --apply) apply=1 ;;
-    -h|--help) sed -n "2,21p" "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n "2,23p" "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -43,6 +45,7 @@ done
 for f in $f3_files; do
   [ -f "$scripts/agent_sync/$f" ] || { echo "install.sh: $scripts/agent_sync/$f is missing" >&2; exit 1; }
 done
+[ -f "$scripts/fleet_knobs/knobs.py" ] || { echo "install.sh: $scripts/fleet_knobs/knobs.py is missing" >&2; exit 1; }
 
 say() { if [ "$apply" -eq 1 ]; then echo "$*"; else echo "would: $*"; fi; }
 
@@ -51,6 +54,7 @@ manifest() {
   echo "$scripts/needs-owner|needs-owner"
   for f in "$here"/*.py; do echo "$f|needs_owner/$(basename "$f")"; done
   for f in $f3_files; do echo "$scripts/agent_sync/$f|agent_sync/$f"; done
+  for f in "$scripts"/fleet_knobs/*.py; do echo "$f|fleet_knobs/$(basename "$f")"; done
 }
 
 changed=0
@@ -65,7 +69,7 @@ done < <(manifest)
 # Files in the stable copy that the source no longer has (a renamed module must not linger and shadow nothing).
 stale=""
 if [ -d "$dest" ]; then
-  for sub in needs_owner agent_sync; do
+  for sub in needs_owner agent_sync fleet_knobs; do
     [ -d "$dest/$sub" ] || continue
     for f in "$dest/$sub"/*.py; do
       [ -e "$f" ] || continue
@@ -98,13 +102,13 @@ if [ "$changed" -eq 1 ]; then
   mkdir -p "$HOME/apps"
   stage="$(mktemp -d "$HOME/apps/.needs-owner-stage.XXXXXX")"
   trap 'rm -rf "$stage"' EXIT
-  mkdir -p "$stage/needs_owner" "$stage/agent_sync"
+  mkdir -p "$stage/needs_owner" "$stage/agent_sync" "$stage/fleet_knobs"
   while IFS='|' read -r src rel; do
     cp "$src" "$stage/$rel"
     if [ "$rel" = "needs-owner" ]; then chmod 755 "$stage/$rel"; else chmod 644 "$stage/$rel"; fi
   done < <(manifest)
   mkdir -p "$dest"
-  for name in needs_owner agent_sync; do
+  for name in needs_owner agent_sync fleet_knobs; do
     rm -rf "$dest/$name.old"
     [ -e "$dest/$name" ] && mv "$dest/$name" "$dest/$name.old"
     mv "$stage/$name" "$dest/$name"

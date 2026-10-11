@@ -98,7 +98,10 @@ class Lock:
     def _holder_gone(self) -> bool:
         try:
             with open(self.path, encoding="utf-8") as handle:
-                pid = int((handle.readline() or "0").strip() or 0)
+                raw = handle.readline().strip()
+            if not raw:
+                return False  # just created, the process id not written yet:  the age rule decides
+            pid = int(raw)
         except (OSError, ValueError):
             return False  # unreadable:  the age rule decides
         return not self._alive(pid)
@@ -160,7 +163,7 @@ class State:
         if isinstance(loaded, dict) and loaded.get("schema") == SCHEMA:
             base = _empty()
             for key, value in loaded.items():
-                if key in base and isinstance(value, type(base[key])):
+                if key in base and (base[key] is None or isinstance(value, type(base[key]))):
                     base[key] = value
             self.data = base
         elif os.path.exists(self.path):

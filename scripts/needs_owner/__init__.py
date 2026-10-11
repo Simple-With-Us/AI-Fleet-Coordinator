@@ -15,7 +15,11 @@ Modules:
   proc      running `board` and `agent-sync` as argv lists with private temp files
   items     reading items back from the board and deriving their state
   notify    the post (or the mirror reply), the maybe-sent check and the notice record
-  verbs     file, adopt, list and status
+  notifier  `notify`:  the fallback notifier (replies, notices, notes, nudges, the Grok Bot mirror)
+  replies   pure rules for taps, control words and Grok Bot requests
+  ledger    the notifier's state, caps, lock and the file for CLAUDE's own items
+  links     Zulip topic links, read and made
+  verbs     file, adopt, list, status and notify
   cli       the argparse front end
 
 Python 3.11 or newer, standard library only.  docs/protocols/needs-owner.md is the contract.

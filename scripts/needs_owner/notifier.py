@@ -37,7 +37,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import f3
 from . import items as itemsmod
 from . import ledger
 from . import links as linkmod
@@ -360,10 +359,14 @@ class Notifier:
     def typed_answer(self, item: Item, topic: str, notice_id: int, messages: list[dict]) -> bool:
         candidates = [m for m in messages if m["id"] > notice_id and m.get("is_bot") is False and self.is_owner_sender(m)]
         decided = self.state.data["decided"]
-        for message in candidates[:VERIFY_PER_TOPIC]:
+        asked = 0
+        for message in candidates:
             key = str(message["id"])
             if key in decided:
                 continue
+            if asked >= VERIFY_PER_TOPIC:
+                break  # the rest next run:  a burst of messages never means a burst of calls
+            asked += 1
             verdict = self.verify(message["id"], topic, notice_id)
             if verdict is None:
                 self.events.add("verify-failed", item.identifier, msg=message["id"])
@@ -669,7 +672,7 @@ class Notifier:
             return "mirrored"
         from . import verbs  # noqa: PLC0415 - verbs imports this module's siblings
 
-        context = "for %s" % request.seat + (":  %s" % request.context if request.context else "")
+        context = "for %s" % request.seat + (": %s" % request.context if request.context else "")  # clean_text keeps single spaces
         args = argparse.Namespace(
             by=SEAT, app=MIRROR_APP, question=request.question, option=list(request.options),
             low_stakes=[str(n) for n in request.low_stakes], recommend=request.recommend, parent=None, context=context,
@@ -680,7 +683,7 @@ class Notifier:
         except Refusal as exc:
             self.state.data["mirror"][str(message_id)] = "refused"
             self.state.dirty = True
-            self.events.add("mirror-refused", msg=message_id, why=str(exc)[:40].split(".")[0].replace(" ", "_"))
+            self.events.add("mirror-refused", msg=message_id)
             return "rejected"
         except NeedsOwnerError as exc:
             self.events.add("mirror-failed", msg=message_id, code=exc.exit_code)
