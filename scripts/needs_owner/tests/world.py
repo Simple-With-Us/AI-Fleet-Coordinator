@@ -111,6 +111,22 @@ class World:
         world.update(changes)
         (self.state / "zulip.json").write_text(json.dumps(world), encoding="utf-8")
 
+    def add_message(self, topic: str, content: str, *, seat: str | None = None, channel: str = "agent-sync") -> int:
+        """A message someone else put in a topic, after the fact.  `seat` is a bot's seat tag;  with none it
+        is a person's message (`is_bot` false, no seat, as the real `read --json` prints a person).  Returns
+        its id."""
+        world = self.zulip()
+        mid = world["next"]
+        world["next"] += 1
+        row = {"id": mid, "channel": channel, "topic": topic, "content": content, "is_bot": seat is not None}
+        if seat is not None:
+            row["seat"] = seat
+        else:
+            row["sender_id"] = 7
+        world["messages"].append(row)
+        (self.state / "zulip.json").write_text(json.dumps(world), encoding="utf-8")
+        return mid
+
     def issue(self, ident: str) -> dict:
         return self.board_state()["issues"][ident]
 

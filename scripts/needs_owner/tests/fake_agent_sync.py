@@ -8,10 +8,16 @@ Environment:  FAKE_STATE_DIR, FAKE_SCRIPTS_DIR.  state/zulip.json (a test edits 
   post_mode       ok | exit2 | exit3 | exit5_landed | exit5_lost | exit6_landed | exit6_lost | nojson
   no_credential   seats whose bot has no credential:  every send exits 3
   read_fails      true:  `read` exits 5
+  messages        {id, channel, topic, content, seat, is_bot, sender_id}:  what the fake sends and what a test
+                  adds with World.add_message (a person's message has is_bot false and no seat)
+
+`read --json` prints one line per message with the keys of the real `message_json` in scripts/agent_sync/cli.py
+(a test compares the two key sets), so a filter on `is_bot` or `seat` passes or fails here as it would for real.
 """
 import json
 import os
 import sys
+import zlib
 
 STATE = os.environ["FAKE_STATE_DIR"]
 SCRIPTS = os.environ["FAKE_SCRIPTS_DIR"]
@@ -36,6 +42,24 @@ def save(world):
     os.replace(tmp, ZULIP_JSON)
 
 
+def bot_id(seat):
+    """A stable fake Zulip user id for a seat's bot."""
+    return 1000 + zlib.crc32(str(seat).encode()) % 90000
+
+
+def message_json(m):
+    """One stored message as the real `agent-sync read --json` prints it.  The bot's email is the seat tag
+    lower-cased plus -bot@ (what the real `seat_tag_for` reads back), and a person has no seat."""
+    is_bot = bool(m.get("is_bot", True))
+    seat = str(m.get("seat") or "") if is_bot else None
+    email = "%s-bot@simplewithus.zulipchat.com" % seat.lower() if is_bot else "jay@example.test"
+    return {"id": m["id"], "sender_id": m.get("sender_id", bot_id(seat) if is_bot else 7), "client": "fake",
+            "channel": m["channel"], "topic": m["topic"], "dm": False, "sender_email": email,
+            "sender_full_name": seat.title() if is_bot else "Jay", "is_bot": is_bot, "seat": seat or None, "seat_app": None,
+            "timestamp": m.get("timestamp", 1791700000), "content": m["content"], "flags": [], "sibling": False,
+            "mentioned": False}
+
+
 def main():
     argv = sys.argv[1:]
     args = C.build_parser().parse_args(argv)
@@ -56,8 +80,7 @@ def main():
             return 5
         for m in world["messages"]:
             if m["topic"] == args.topic and m["channel"] == args.channel:
-                print(json.dumps({"id": m["id"], "channel": m["channel"], "topic": m["topic"], "content": m["content"],
-                                  "sender": m["seat"]}))
+                print(json.dumps(message_json(m)))
         return 0
     sys.stderr.write("fake agent-sync: unexpected command %s\n" % args.command)
     return 64
@@ -66,7 +89,8 @@ def main():
 def store(world, channel, topic, seat, content):
     mid = world["next"]
     world["next"] += 1
-    world["messages"].append({"id": mid, "channel": channel, "topic": topic, "content": content, "seat": seat})
+    world["messages"].append({"id": mid, "channel": channel, "topic": topic, "content": content, "seat": seat,
+                              "is_bot": True, "sender_id": bot_id(seat)})
     return mid
 
 

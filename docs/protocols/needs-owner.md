@@ -8,7 +8,7 @@ after the checks under "Answers".
 
 ## Acceptance Criteria
 
-- A decision that waits on Jay is **one Linear issue** (Kind/agent-report, flat `needs-owner` label) plus **one Zulip topic** (`OWNER <ID> <subject>`) that mentions him, opened by **the filing seat's own bot**.  The two appear together or not at all.
+- A decision that waits on Jay is **one Linear issue** (Kind/agent-report, flat `needs-owner` label) plus **one Zulip topic** (`OWNER <ID> <subject>`) that mentions him, opened by **the filing seat's own bot**.  The issue always lands:  the topic is sent right after it, or the item is left `notify_pending` for the fallback notifier (C6-2), so a failed post never loses the decision.
 - The seat is verified from `AGENT_LAUNCH_SEAT` (when `AGENT_LAUNCHER` is set) or `AGENT_SEAT`;  `--by` is a check only.  A missing seat or a disagreement between `--by` and the session is refused (exit 2).  `AGENT_SEAT` is set to the verified seat for every child the tool runs.
 - 1 to 5 `--option`s, each different, at most 200 characters;  the question at most 200 (it is the issue title);  context at most 600.
 - Low-stakes options may be answered by a tap on their keycap emoji (1️⃣, 2️⃣, 3️⃣, 4️⃣, 5️⃣).  Risky options never take a tap.  `--low-stakes` is refused with `--urgent` (P1).
@@ -18,7 +18,8 @@ after the checks under "Answers".
 - States (`unadopted`, `notify_pending`, `notified`, `replied`, `closed`) are derived from the label, the block, the notice record and the board status;  `--open` is what waits on Jay.  An item without a readable block is `unadopted`, and an unparseable description posts the block as a `[needs-owner] block` comment so the decision still lands.
 - An answer is verified before it is acted on:  a tap counted only when the reactor's user id equals the pinned `owner_user_id`;  a Zulip reply through `agent-sync verify-owner-msg` (owner id, human client, right topic, newer than the notice);  a Linear comment whose author equals `OWNER_LINEAR_USER_ID`.  The records say a reply exists, nothing more.
 - Exit codes:  0 done (a filed item with its notice pending is still done);  1 something failed (Linear, the network, a missing tool);  2 refused;  3 `status` or `adopt` named something that is not a needs-owner item;  4 to 7 the `board` CLI's own code, passed through when a write failed (7 means Linear writes are off).
-- Stable copy at `~/apps/needs-owner` runs under `python3 -I` with only the package and the three F3 files it loads by path (`agent_sync/identity.py`, `secretscan.py`, `textsafe.py`);  the install proof is `python3 -I ~/apps/needs-owner/needs-owner --help`.  Tests use fakes that parse argv with the real `board` and `agent-sync` parsers.
+- Stable copy at `~/apps/needs-owner` runs under `python3 -I` with only the package and the three F3 files it loads by path (`agent_sync/identity.py`, `secretscan.py`, `textsafe.py`).  The install proof is `--help` and `--version` of that copy under `python3 -I`:  both load the package and the three F3 files before they parse anything, so a copy that lacks or has damaged one fails them (exit 1).  Tests use fakes that parse argv with the real `board` and `agent-sync` parsers and print the real `read --json` keys.
+- A post that may have landed is found again by its `Ref:` line (`notify.find_notice`):  only a message from a bot (`is_bot` true) of the filing seat or of CLAUDE, only when the line stands alone and is not quoted, and the oldest such message wins.  A person's quote-and-reply, or a peer who copies the public uid, is never taken for the notice.
 
 ## Why This Exists
 
@@ -140,12 +141,27 @@ Readers accept any whitespace where the writers put one.  Reasons are `no_creden
 
 **A post that may or may not have landed** (agent-sync exit 5 or 6, or a timeout) is never retried blind:  the
 topic is read for the reference line first, and only a missing line becomes `notify_pending`.  A rerun looks
-in the topic before it posts, so a crash between the post and its record cannot post twice.
+in the topic before it posts, so a crash between the post and its record cannot post twice.  The lookup is
+`notify.find_notice(runner, topic, uid)`, and it is strict about who and what it takes for the notice (see the
+next paragraph).
 
 **For the fallback notifier (C6-2).**  An item shows `notify_pending` when a post landed but both attempts to
-record it failed.  Before it posts, the notifier must read the topic for the `Ref:` line (the item's uid) the
-way `notify.py` does on a rerun, or it will post a second time.  The record formats and the states live in
-`records.py` and `items.py`:  import them rather than copying the patterns.
+record it failed.  Before it posts, the notifier must call `notify.find_notice(runner, topic, uid)` (import it;
+do not copy the logic), or it will post a second time.  The function is sender-filtered, unquoted and oldest-first:
+
+- **Sender.**  It keeps a message only when `agent-sync read --json` says `is_bot` is true and `seat` is the
+  filing seat's or `CLAUDE` (the fallback notifier posts as CLAUDE for any seat).  A person never counts, whatever
+  their quote says, and neither does a bot of another seat that copied the uid, which is public in the topic.
+  A sender whose kind `agent-sync` could not look up has `is_bot` null and is left out:  the worst outcome is a
+  repeated post, never a quote taken for the notice.
+- **Unquoted.**  The reference must be a line of its own, `` Ref:  `<uid>` ``, that is not a `>` line and not inside
+  a closed code fence (Zulip's quote-and-reply wraps the original in a fence of three backticks and the word
+  quote, with no `>` on its lines).  A mention inside a sentence does not count.
+- **Oldest.**  Of the messages that pass, the lowest id is the notice.
+
+The notifier records that id as `[needs-owner] notified msg <id>`, so `verify-owner-msg --after <notice>` and a
+tap reaction key on the bot's own post and Jay's answer counts as newer than it.  The record formats and the
+states live in `records.py` and `items.py`:  import them rather than copying the patterns.
 
 **A Grok Bot item** (`file --mirror-of <topic link> --context "for GB-<ROLE>"`, used by the C6-2 notifier as
 CLAUDE):  files as above, posts **no** new topic, records the persona's own message as the notice
@@ -222,8 +238,9 @@ board, the network, a missing tool);  2 refused;  3 `status` or `adopt` named so
 
 `scripts/needs_owner/install.sh` prints a plan;  `--apply` copies `needs-owner`, the `needs_owner` package
 (without its tests) and the three F3 files it loads by path (`agent_sync/identity.py`, `secretscan.py`,
-`textsafe.py`) to `~/apps/needs-owner`, links `~/.local/bin/needs-owner`, and proves the copy with
-`python3 -I ~/apps/needs-owner/needs-owner --help`.  It leaves `~/apps/needs-owner/state/` alone.  The tool
+`textsafe.py`) to `~/apps/needs-owner`, links `~/.local/bin/needs-owner`, and proves the copy by running
+`python3 -I ~/apps/needs-owner/needs-owner --help` and `--version`, which load the package and the three F3 files
+(a missing or damaged file fails them).  The proof does not run a verb;  the tests do that through a copy.  It leaves `~/apps/needs-owner/state/` alone.  The tool
 is an on-demand helper (docs/MAC-LOCAL-PROCESSES.md);  nothing stays running.  BotFleet routine allowlists
 name `/Users/jay/.local/bin/needs-owner file` with fixed flags and the question and options as quoted
 arguments.

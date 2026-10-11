@@ -56,6 +56,29 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(ran.returncode, 0, (argv, ran.stderr))
         self.assertIn("needs-owner", self.isolated("--version").stdout)
 
+    def test_a_stable_copy_missing_an_f3_file_does_not_pass_the_proof(self) -> None:
+        """`--help` and `--version` are the install proof, so they must load the three F3 files:  a copy that lacks one
+        fails them (it used to exit inside argparse, before the package reached its helpers)."""
+        self.assertEqual(self.install("--apply").returncode, 0)
+        for name in ("textsafe.py", "secretscan.py", "identity.py"):
+            moved = self.dest / "agent_sync" / (name + ".gone")
+            (self.dest / "agent_sync" / name).rename(moved)
+            for argv in (["--help"], ["--version"], ["list", "--help"]):
+                ran = self.isolated(*argv)
+                self.assertEqual(ran.returncode, 1, (name, argv, ran.stdout))
+                self.assertIn("incomplete", ran.stderr, (name, argv))
+                self.assertIn(name, ran.stderr, (name, argv))
+            moved.rename(self.dest / "agent_sync" / name)
+        self.assertEqual(self.isolated("--help").returncode, 0)
+
+    def test_a_damaged_f3_file_is_reported_not_a_traceback(self) -> None:
+        self.assertEqual(self.install("--apply").returncode, 0)
+        (self.dest / "agent_sync" / "secretscan.py").write_text("def broken(:\n")
+        ran = self.isolated("--version")
+        self.assertEqual(ran.returncode, 1)
+        self.assertNotIn("Traceback", ran.stderr)
+        self.assertIn("needs-owner:", ran.stderr)
+
     def test_the_stable_copy_does_real_work(self) -> None:
         """A dry run through the stable copy reaches the F3 helpers it loaded by path (identity, secretscan, textsafe)."""
         self.assertEqual(self.install("--apply").returncode, 0)

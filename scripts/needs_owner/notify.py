@@ -12,11 +12,16 @@ post of its own:  the Grok Bot persona's topic is the notice, so its message id 
 Linear link is replied in that topic.
 
 A post that may or may not have gone through (agent-sync exit 5 or 6, or a timeout) is never retried
-blind:  the message carries a reference line (the item's uid), and the topic is read for it first.
+blind:  the message carries a reference line (the item's uid), and the topic is read for it first.  Only
+`find_notice` reads it, and the C6-2 notifier imports that one function:  it takes a message only from the
+bot of the filing seat (or CLAUDE, whose fallback notifier posts for any seat), only when the reference is
+a line of its own that is not quoted, and then the oldest such message, so a person's quote-and-reply or
+a peer who copies the (public) uid can never become the notice.
 """
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 from . import f3
@@ -31,6 +36,8 @@ SESSION = "needsown"  # agent-sync cuts a session label to 8 characters
 CHANNEL = "agent-sync"
 READ_BACK = 30  # messages read when looking for a post that may have landed
 MAYBE_SENT_CODES = (5, 6)
+FALLBACK_SEAT = "CLAUDE"  # CLAUDE's fallback notifier (C6-2) posts a pending notice for any seat
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
 @dataclass
@@ -94,21 +101,67 @@ def _message_id(result: Result) -> int | None:
     return None
 
 
-def _find_by_ref(runner: Runner, topic: str, ref: str) -> int | None:
-    """The id of a message of this seat in `topic` that carries `ref`, else None."""
+def own_lines(content: str) -> list[str]:
+    """The lines of a message's raw Markdown that are its author's own words:  not a line that begins with `>`,
+    and not a line inside a closed code fence (Zulip's quote-and-reply wraps the original in a ```quote fence
+    with no `>` on its lines).  A fence that is never closed hides nothing."""
+    lines = (content or "").splitlines()
+    kept = []
+    n = 0
+    while n < len(lines):
+        opening = _FENCE.match(lines[n])
+        if opening:
+            fence = opening.group(1)
+            closing = re.compile(r"^ {0,3}%s{%d,}[ \t]*$" % (re.escape(fence[0]), len(fence)))
+            end = next((k for k in range(n + 1, len(lines)) if closing.match(lines[k])), None)
+            if end is not None:
+                n = end + 1
+                continue
+        if not lines[n].lstrip().startswith(">"):
+            kept.append(lines[n])
+        n += 1
+    return kept
+
+
+def carries_ref(content: str, uid: str) -> bool:
+    """True when `content` has the reference line `Ref:  `<uid>`` as a line of its own, not quoted."""
+    want = re.compile(r"^ {0,3}Ref:\s+`%s`\s*$" % re.escape(uid))
+    return any(want.match(line) for line in own_lines(content))
+
+
+def notice_seats(seat: str) -> frozenset[str]:
+    """The seats whose bot may have posted the notice of an item that `seat` filed."""
+    return frozenset({f3.identity.canonical_seat(seat), FALLBACK_SEAT})
+
+
+def find_notice(runner: Runner, topic: str, uid: str) -> int | None:
+    """The id of the message that announced the item whose uid is `uid`, else None.
+
+    It reads the newest `READ_BACK` messages of `topic` (`agent-sync read --json`, whose fields are the real
+    `message_json`) and keeps a message only when all of this holds:  `is_bot` is true (never a person,
+    whatever name they sign), its `seat` is the filer's or CLAUDE (a bot of another seat can copy the public
+    uid), and `carries_ref` finds the reference as an unquoted line of its own (a quote-and-reply, from
+    anyone, does not count).  The result is the lowest matching id, because the first post is the notice.
+    A sender whose kind agent-sync could not look up has `is_bot` null and is left out:  the worst result
+    is a repeated post, never an answer or a quote taken for the notice."""
     result = runner.agent_sync("read", "--as", runner.seat, "--session", SESSION, "--json", "--channel", CHANNEL,
                                "--topic", topic, "--include-self", "--limit", str(READ_BACK))
     if not result.ok:
         return None
-    found = None
+    allowed = notice_seats(runner.seat)
+    found = []
     for line in result.out.splitlines():
         try:
             message = json.loads(line)
         except ValueError:
             continue
-        if isinstance(message, dict) and ref in str(message.get("content") or "") and isinstance(message.get("id"), int):
-            found = message["id"]  # the newest wins
-    return found
+        if not isinstance(message, dict) or not isinstance(message.get("id"), int) or isinstance(message.get("id"), bool):
+            continue
+        if message.get("is_bot") is not True or f3.identity.canonical_seat(message.get("seat")) not in allowed:
+            continue
+        if carries_ref(str(message.get("content") or ""), uid):
+            found.append(message["id"])
+    return min(found) if found else None
 
 
 def _record(runner: Runner, item: Item, text: str) -> bool:
@@ -143,7 +196,7 @@ def notify(runner: Runner, item: Item, *, rescan: bool = False, environ: dict | 
         return _mirror(runner, item, linkmod.parse_topic_link(b.mirror_of, environ))
     topic = T.topic_for(item.identifier, b.question)
     if rescan:
-        earlier = _find_by_ref(runner, topic, b.uid)
+        earlier = find_notice(runner, topic, b.uid)
         if earlier is not None:
             return _announce(runner, item, earlier, topic)
     result = runner.agent_sync("post", "--as", runner.seat, "--session", SESSION, "--json", "--topic", topic,
@@ -152,12 +205,12 @@ def notify(runner: Runner, item: Item, *, rescan: bool = False, environ: dict | 
         msg_id = _message_id(result)
         if msg_id is not None:
             return _announce(runner, item, msg_id, topic)
-        landed = _find_by_ref(runner, topic, b.uid)  # posted, but the answer carried no id
+        landed = find_notice(runner, topic, b.uid)  # posted, but the answer carried no id
         return _announce(runner, item, landed, topic) if landed is not None else _pending(runner, item, topic, "send_failed")
     if result.missing:
         return _pending(runner, item, topic, "no_agent_sync")
     if result.timed_out or result.code in MAYBE_SENT_CODES:
-        landed = _find_by_ref(runner, topic, b.uid)
+        landed = find_notice(runner, topic, b.uid)
         if landed is not None:
             return _announce(runner, item, landed, topic)
         return _pending(runner, item, topic, "send_failed")

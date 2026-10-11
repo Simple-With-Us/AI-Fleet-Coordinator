@@ -13,7 +13,8 @@
 #
 # Why a copy:  a tool run from a checkout moves with the branch, and a tool run with `python3 -I` cannot import
 # a package it was not given.  So the copy carries every file the tool loads, and --apply ends by running
-# `python3 -I ~/apps/needs-owner/needs-owner --help` to prove it.  Run it from a lane or from the managed
+# `python3 -I ~/apps/needs-owner/needs-owner --help` and `--version` to prove it (both load the package and the three F3
+# files before they parse anything, so a copy that lacks or has damaged one fails).  Run it from a lane or from the managed
 # runtime checkout, never from the human integration tree ~/Code/AI-Fleet-Coordinator.
 #
 # It touches nothing else:  no LaunchAgents, no pm2, nothing under ~/.secrets.  It is an on-demand helper
@@ -24,7 +25,7 @@ apply=0
 for arg in "$@"; do
   case "$arg" in
     --apply) apply=1 ;;
-    -h|--help) sed -n "2,20p" "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n "2,21p" "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -117,11 +118,14 @@ if [ "$want_link" -eq 1 ]; then
   ln -sfn "$dest/needs-owner" "$link"
 fi
 
-# The proof:  the stable copy runs in isolated mode with only what it was given.
-if ! PYTHONDONTWRITEBYTECODE=1 python3 -I "$dest/needs-owner" --help >/dev/null; then
-  echo "install.sh: the stable copy does not run with python3 -I;  it is incomplete" >&2
-  exit 1
-fi
+# The proof:  the stable copy runs in isolated mode with only what it was given.  `--help` and `--version` import the
+# package and load the three F3 files before argparse sees them, so a missing or damaged file fails here.
+for proof in --help --version; do
+  if ! PYTHONDONTWRITEBYTECODE=1 python3 -I "$dest/needs-owner" "$proof" >/dev/null; then
+    echo "install.sh: the stable copy does not run with python3 -I ($proof);  it is incomplete" >&2
+    exit 1
+  fi
+done
 echo "installed:  $(PYTHONDONTWRITEBYTECODE=1 python3 -I "$dest/needs-owner" --version)  at $dest"
 case ":$PATH:" in
   *":$bin_dir:"*) ;;

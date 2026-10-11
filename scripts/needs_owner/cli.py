@@ -78,12 +78,14 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     out = out or sys.stdout
     err = err or sys.stderr
     env = os.environ if environ is None else environ
-    args = build_parser().parse_args(list(sys.argv[1:] if argv is None else argv))
     try:
-        from . import verbs  # loads the F3 helpers by path;  an incomplete stable copy fails here
-    except RuntimeError as exc:
+        # Before argparse:  `--help` and `--version` exit inside parse_args, and the install proof is that they run.
+        # Importing verbs loads the F3 helpers by path, so a stable copy that lacks one fails every call, those two included.
+        from . import verbs
+    except (RuntimeError, ImportError, SyntaxError) as exc:  # F3Missing is a RuntimeError;  the others are a damaged file
         err.write("needs-owner: %s\n" % exc)
         return 1
+    args = build_parser().parse_args(list(sys.argv[1:] if argv is None else argv))
     io = verbs.Streams(env, out, err)
     handlers = {"file": verbs.run_file, "adopt": verbs.run_adopt, "list": verbs.run_list, "status": verbs.run_status}
     try:
