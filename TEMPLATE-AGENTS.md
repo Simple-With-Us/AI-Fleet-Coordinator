@@ -564,6 +564,8 @@ is the replacement.
 
 ## Delegation & model economics (fleet rule — binding for every agent)
 
+**Fleet mode** — the fleet's standing working style.  Trigger phrases: `fleet mode` · `/fleet-mode` · `delegate hard` · `work like Jay` · `spawn and stay free`.  Portable briefing: `/Users/jay/apps/FLEET-MODE.md`.  Printer: `~/apps/fleet-mode`.
+
 - **Use sub-agents whenever they help.** Teams are the default for substantial work.
   Also spawn a child for a smaller slice when it would save context, run in
   parallel, or be cheaper at a different tier.  Do not serialize out of habit.
