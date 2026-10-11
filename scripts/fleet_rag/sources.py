@@ -552,10 +552,11 @@ def mirror_skip_reason(p: pathlib.Path, *, fleet_repos: Iterable[pathlib.Path] =
     (c) SKIP_EFFORT_LOG: EFFORT-LOG.md, *-EFFORT-LOG.md and EFFORT-LOG-PROTOCOL.md anywhere.
         The effort-log source ingests the live boards.
     (d) SKIP_HANDBOOK_MIRROR: in a fleet-ops checkout, anything under generated/ and every public page under
-        handbook/ (handbook_page_is_public).  They are the text of the live AGENT-SYNC.md, which is ingested
-        once as an extra doc, so a recall query for a handbook rule would otherwise return each rule twice.
-        Private pages (handbook/private/, handbook/rulings/, a page that is not `visibility: public`) and
-        handbook/README.md are not in the live file and are kept.
+        handbook/ (handbook_page_is_public), but only when the live AGENT-SYNC.md is among `live_basenames`.
+        They are the text of that file, which is ingested once as an extra doc, so a recall query for a handbook
+        rule would otherwise return each rule twice;  without the live file (a fresh host) they are the only
+        copy and stay.  Private pages (handbook/private/, handbook/rulings/, a page that is not
+        `visibility: public`) and handbook/README.md are not in the live file and are always kept.
     """
     name = p.name
     parts = p.parts
@@ -573,7 +574,7 @@ def mirror_skip_reason(p: pathlib.Path, *, fleet_repos: Iterable[pathlib.Path] =
     if live and name in live and name not in DOC_ROOT_NAMES and _under(p, fleet_repos):
         return SKIP_APPS_MIRROR
     ops = list(ops_repos)
-    if ops:
+    if ops and "AGENT-SYNC.md" in live:
         rel = _rel_under(p, ops)
         if rel is not None and rel.parts:
             if rel.parts[0] == "generated":
@@ -708,7 +709,10 @@ def _doc_files(fleet_repo: pathlib.Path, fleet_ops: pathlib.Path,
         docs = grok / "docs"
         if docs.is_dir():
             files += sorted(docs.rglob("*.md"))
-    live_basenames = {p.name for p in live if p.is_file() and not _is_effort_log_name(p.name)}
+    # Only a live file that the walk will really ingest can stand in for its mirrors:  one that is missing, or
+    # rejected by _skip_doc (over DOC_MAX_BYTES, in a skipped directory), would leave the mirror as the only copy.
+    live_basenames = {p.name for p in live
+                      if p.is_file() and not _is_effort_log_name(p.name) and not _skip_doc(p)}
     kept: list[pathlib.Path] = []
     for f in _unique_paths(files):
         reason = mirror_skip_reason(f, fleet_repos=fleet_repos, live_basenames=live_basenames, ops_repos=ops_repos)

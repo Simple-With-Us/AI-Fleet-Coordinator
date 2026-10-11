@@ -670,6 +670,33 @@ class MirrorSkipTests(unittest.TestCase):
         pointers = by_path[str(self.ops / "handbook" / "private" / "pointers.md")]
         self.assertEqual((pointers.source, pointers.app, pointers.title), ("doc", "fleet-ops", "Pointers"))
 
+    def test_rule_d_keeps_the_public_pages_when_the_live_file_is_not_ingested(self):
+        live, mirror, generated, public, private = self._handbook()
+        live.unlink()                       # a fresh host:  no ~/apps/AGENT-SYNC.md
+        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                                      apps_dir=self.apps, grok_home=self.grok))
+        skipped = {path: rule for rule, path in sources.take_doc_skips()}
+        kept = {d.path for d in docs}
+        for page in public + private + [mirror]:
+            self.assertIn(str(page), kept, page)
+        self.assertEqual(skipped, {})
+        # every rule now appears in two copies (the AFC mirror and the public handbook page), which is the price
+        # of having no live file;  it is not worse than before this rule
+        self.assertEqual(len([d for d in docs if self.RULE in d.text_markdown]), 2)
+
+    def test_a_live_file_the_walk_rejects_does_not_hide_its_mirrors(self):
+        live, mirror, generated, public, private = self._handbook()
+        live.write_text(f"# Agent sync (live)\n\n{self.RULE}\n" + "x" * (sources.DOC_MAX_BYTES + 10))
+        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                                      apps_dir=self.apps, grok_home=self.grok))
+        skipped = {path: rule for rule, path in sources.take_doc_skips()}
+        kept = {d.path for d in docs}
+        self.assertNotIn(str(live), kept)                       # too big for the doc source
+        self.assertIn(str(mirror), kept)                        # so the mirror is not dropped for it (rule a)
+        for page in public:
+            self.assertIn(str(page), kept, page)                # nor are the public pages (rule d)
+        self.assertEqual(skipped, {})
+
     def test_rule_d_is_logged_once(self):
         self._handbook()
         list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
@@ -692,14 +719,18 @@ class MirrorSkipTests(unittest.TestCase):
         docs_gen = self._w(self.ops / "docs" / "generated" / "x.md")
         elsewhere = self._w(self.st / "handbook" / "chat" / "posting.md", self.PUBLIC.format(t="P", o="1", s="chat", body="x"))
         ops = [self.ops]
-        self.assertEqual(r(pub, ops_repos=ops), sources.SKIP_HANDBOOK_MIRROR)
-        self.assertEqual(r(gen, ops_repos=ops), sources.SKIP_HANDBOOK_MIRROR)
+        live = {"AGENT-SYNC.md"}
+        self.assertEqual(r(pub, ops_repos=ops, live_basenames=live), sources.SKIP_HANDBOOK_MIRROR)
+        self.assertEqual(r(gen, ops_repos=ops, live_basenames=live), sources.SKIP_HANDBOOK_MIRROR)
         for kept in (priv, ruling, quoted, nofm, crlf, late, docs_gen):
-            self.assertIsNone(r(kept, ops_repos=ops), kept)
+            self.assertIsNone(r(kept, ops_repos=ops, live_basenames=live), kept)
         # a handbook/ folder in another repo is not Fleet-OPS's
-        self.assertIsNone(r(elsewhere, ops_repos=ops))
+        self.assertIsNone(r(elsewhere, ops_repos=ops, live_basenames=live))
         # without an ops repo the rule is off, so existing callers are unchanged
-        self.assertIsNone(r(pub))
+        self.assertIsNone(r(pub, live_basenames=live))
+        # without the live AGENT-SYNC.md the public pages and generated/ are the only copy, so they stay
+        self.assertIsNone(r(pub, ops_repos=ops))
+        self.assertIsNone(r(gen, ops_repos=ops, live_basenames={"MAC-LOCAL-PROCESSES.md"}))
 
     def test_rule_d_public_page_reads_only_the_front_matter(self):
         rel = pathlib.PurePath("handbook/chat/posting.md")
