@@ -201,7 +201,6 @@ class Config:
     max_runtime: int = 2 * 3600
     gitleaks_ignore_rules: tuple = ()
     gitleaks_budget_s: int = 1500
-    isolate_budget_s: int = 600
     repository: str = ""            # a restic repository to use instead of B2 (tests, a local mirror)
     launchctl_bin: str = "launchctl"
     check_wait_s: int = 90
@@ -960,31 +959,75 @@ def repo_name(common_dir: str) -> str:
     return p.parent.name if p.name == ".git" else p.name
 
 
-def stream_scan(git: Git, cwd: str, args: list[str], cap: int) -> tuple[Optional[str], bool]:
-    """Scan ``git log -p`` output for secret patterns.  Returns (hit, truncated).  ``--cc`` makes a
-    merge commit show what its resolution added."""
+COMMIT_MARK = "@@fwb-commit@@"
+SCAN_CHUNK = 4 * 1024 * 1024
+COMMIT_MARK_RX = re.compile(rb"(?m)^@@fwb-commit@@([0-9a-f]{40})\n")
+
+
+def scan_commits(git: Git, cwd: str, args: list[str], cap: int) -> tuple[dict[str, str], bool]:
+    """One ``git log -p --cc`` pass over a range, scanned commit by commit:  returns ({commit: pattern} for every
+    commit whose patch matches, truncated).  A hit is attributed to the commit that carries it, so which branches
+    are affected is a reachability question afterwards, not another scan of the shared history per branch."""
     cmd = [git.cfg.git_bin, *Git.BASE, "-C", cwd, "log", "-p", "--cc", "--no-color", "--no-ext-diff", "--no-textconv",
-           "--format=%H", *args]
+           f"--format={COMMIT_MARK}%H", *args]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=git.env)
     except OSError:
-        return None, False
-    read, tail, hit = 0, b"", None
+        return {}, False
+    bad: dict[str, str] = {}
+    state = {"cur": None, "tail": b""}
+
+    def scan_segment(seg: bytes) -> None:
+        if not seg:
+            return
+        cur = state["cur"]
+        if cur is not None and cur not in bad:
+            hit = scan_bytes(state["tail"] + seg)
+            if hit:
+                bad[cur] = hit
+        state["tail"] = seg[-8192:]
+
+    def feed(data: bytes) -> None:
+        pos = 0
+        for m in COMMIT_MARK_RX.finditer(data):
+            scan_segment(data[pos:m.start()])
+            state["cur"], state["tail"], pos = m.group(1).decode(), b"", m.end()
+        scan_segment(data[pos:])
+
+    read = 0
+    carry = b""
     try:
         while read < cap:
-            buf = proc.stdout.read(4 * 1024 * 1024)
-            if not buf:
+            chunk = proc.stdout.read(SCAN_CHUNK)
+            if not chunk:
                 break
-            read += len(buf)
-            hit = scan_bytes(tail + buf)
-            if hit:
-                break
-            tail = buf[-8192:]
+            read += len(chunk)
+            carry += chunk
+            cut = carry.rfind(b"\n") + 1      # whole lines only, so a marker line is never split
+            if cut:
+                feed(carry[:cut])
+                carry = carry[cut:]
+        truncated = read >= cap and bool(proc.stdout.read(1))     # at the window's end with more to come
+        if not truncated:
+            feed(carry)
     finally:
         proc.kill()
         proc.wait()
         proc.stdout.close()
-    return hit, read >= cap and hit is None
+    return bad, truncated
+
+
+def refs_containing(git: Git, cwd: str, commits: list[str], refs: set[str]) -> set[str]:
+    """Which of ``refs`` can reach any of ``commits``  (git for-each-ref --contains, batched)."""
+    found: set[str] = set()
+    for i in range(0, len(commits), 1500):
+        args: list[str] = []
+        for sha in commits[i:i + 1500]:
+            args += ["--contains", sha]
+        rc, out, _ = git.run(cwd, "for-each-ref", "--format=%(refname)", *args, "refs/heads", "refs/tags")
+        if rc == 0:
+            found |= {r for r in out.decode("utf-8", "replace").split() if r in refs}
+    return found
 
 
 def is_network_url(url: str) -> bool:
@@ -1144,27 +1187,27 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
                             "no_remote": res.no_remote, "network_remotes": net,
                             "bound": {"ref": bound_ref, "sha": bound_sha}, "unpushed": [], "bundles": [],
                             "landed_skipped": landed, "worktrees": [], "stashes": []}
-        # Bundles:  one per group of overlapping refs, shared by every worktree of the repository.  The scan
-        # covers exactly the range each bundle holds (the refs, less the bound).
+        # Bundles:  one per group of overlapping refs, shared by every worktree of the repository.  One pass
+        # scans the commits no network remote has (a pushed commit is already on GitHub, so carrying it along
+        # exposes nothing new), each hit is attributed to its commit, and the refs that can reach a hit commit
+        # are dropped alone:  one key-shaped string in some branch costs that branch, not the repository.
         if pending:
             tips = dict(pending)
             ref_names = [r for r, _ in pending]
-            hit, truncated = stream_scan(git, cwd, [*ref_names, *not_bound], cfg.bundle_scan_cap)
-            if hit:
-                # One key-shaped string in some branch must not cost the repository its whole backup:
-                # scan ref by ref and bundle only the refs whose own range is clean.
+            bad, truncated = scan_commits(git, cwd, [*ref_names, *not_net], cfg.bundle_scan_cap)
+            if bad:
+                dirty: dict[str, str] = {}
+                by_pattern: dict[str, list[str]] = {}
+                for sha, pat in bad.items():
+                    by_pattern.setdefault(pat, []).append(sha)
+                for pat, shas in by_pattern.items():
+                    for ref in refs_containing(git, cwd, shas, set(tips)):
+                        dirty.setdefault(ref, pat)
                 clean: list[str] = []
-                deadline = time.time() + cfg.isolate_budget_s
                 for ref in ref_names:
                     rl = f"{common_dir} ref {ref}"
-                    if time.time() > deadline:
-                        stage.dropped.append({"path": rl, "stage": "", "reason": "scan-budget", "digest": tips[ref][:12]})
-                        continue
-                    rhit, _ = stream_scan(git, cwd, [ref, *not_bound], cfg.bundle_scan_cap)
-                    if rhit and stage.permit(rl, tips[ref]):
-                        rhit = None
-                    if rhit:
-                        stage.dropped.append({"path": rl, "stage": "", "reason": f"content:{rhit}", "digest": tips[ref][:12]})
+                    if ref in dirty and not stage.permit(rl, tips[ref]):
+                        stage.dropped.append({"path": rl, "stage": "", "reason": f"content:{dirty[ref]}", "digest": tips[ref][:12]})
                     else:
                         clean.append(ref)
                 ref_names = clean
@@ -1217,12 +1260,15 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
                 rc, out, _ = git.run(wt.path, "rev-list", "-1", "HEAD", *not_net)
                 if rc == 0 and out.strip():
                     label = f"{wt.path} (detached HEAD)"
-                    hhit, _ = stream_scan(git, wt.path, ["HEAD", *not_bound], cfg.bundle_scan_cap)
-                    if hhit and stage.permit(label, wt.head):
-                        hhit = None
-                    if hhit:
-                        stage.dropped.append({"path": label, "stage": "", "reason": f"content:{hhit}", "digest": wt.head[:12]})
+                    hbad, htrunc = scan_commits(git, wt.path, ["HEAD", *not_net], cfg.bundle_scan_cap)
+                    if hbad and stage.permit(label, wt.head):
+                        hbad = {}
+                    if hbad:
+                        stage.dropped.append({"path": label, "stage": "", "reason": f"content:{next(iter(hbad.values()))}",
+                                              "digest": wt.head[:12]})
                     elif make_bundle(cfg, git, stage, wt.path, f"{wdir}/head.bundle", wt.path, ["HEAD", *not_bound]):
+                        if htrunc:
+                            stage.notes.append(f"bundle-scan-partial {wt.path}")
                         wmeta["detached_head_bundle"] = True
                         res.head_bundles += 1
             if wrote or un or wmeta.get("detached_head_bundle"):

@@ -1290,6 +1290,73 @@ class BundleCase(RunBase):
                     "/Volumes/External/Autorotate.bundle"):
             self.assertFalse(fwb.is_network_url(url), url)
 
+    def commit(self, name: str, content: str, branch: str | None = None, start: str | None = None) -> str:
+        if branch:
+            git(self.r, "checkout", "-q", "-b", branch, *([start] if start else []))
+        write(self.r / name, content)
+        git(self.r, "add", "-A")
+        git(self.r, "commit", "-q", "-m", f"add {name}")
+        return git(self.r, "rev-parse", "HEAD")
+
+    def bundle_heads(self, stage) -> list[str]:
+        out = []
+        for k in stage.items:
+            if k.endswith(".bundle"):
+                text = subprocess.run(["git", "bundle", "list-heads", str(self.cfg.dry_stage / k)], env=GENV,
+                                      capture_output=True, text=True).stdout
+                out += [l.split()[1] for l in text.splitlines()]
+        return sorted(out)
+
+    def test_a_hit_commit_drops_the_branches_that_carry_it_and_only_those(self):
+        git(self.r, "checkout", "-q", "-b", "bad", "origin/main")
+        self.commit("doc.md", f"example {AWS}\n")
+        self.commit("more.md", "fine\n", branch="stacked-on-bad")           # carries the bad commit
+        self.commit("ok.md", "fine\n", branch="independent", start="origin/main")
+        git(self.r, "checkout", "-q", "main")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        hits = [d for d in stage.dropped if " ref " in d["path"]]
+        self.assertEqual(sorted(d["path"].split(" ref ")[1] for d in hits), ["refs/heads/bad", "refs/heads/stacked-on-bad"])
+        self.assertEqual({d["reason"] for d in hits}, {"content:aws-access-key-id"})
+        self.assertTrue(all(len(d["digest"]) == 12 for d in hits))
+        self.assertEqual(self.bundle_heads(stage), ["refs/heads/independent", "refs/heads/main"])
+
+    def test_a_secret_in_a_pushed_commit_does_not_cost_the_local_branch(self):
+        git(self.r, "checkout", "-q", "-b", "feat", "origin/main")
+        self.commit("pushed.md", f"already on GitHub {AWS}\n")
+        git(self.r, "push", "-q", "origin", "feat")
+        self.commit("local.md", "only here\n", branch="local-on-feat")
+        git(self.r, "checkout", "-q", "main")
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertEqual([d for d in stage.dropped if " ref " in d["path"]], [])
+        self.assertIn("refs/heads/local-on-feat", self.bundle_heads(stage))
+
+    def test_the_commit_scanner_gives_the_same_answer_with_tiny_read_chunks(self):
+        for i, pad in enumerate((0, 1, 37, 4000)):
+            self.commit(f"f{i}.txt", "x" * pad + " " + AWS + " " + "y" * pad + "\n", branch=f"b{i}", start="main")
+            git(self.r, "checkout", "-q", "main")
+        self.commit("clean.txt", "nothing\n", branch="clean", start="main")
+        git(self.r, "checkout", "-q", "main")
+        git_obj = fwb.Git(self.cfg)
+        args = ["--branches", "--not", "--remotes=origin"]
+        want, truncated = fwb.scan_commits(git_obj, str(self.r), args, 10 ** 9)
+        self.assertEqual(len(want), 4)
+        self.assertFalse(truncated)
+        for chunk in (1, 5, 64, 1000):
+            with mock.patch.object(fwb, "SCAN_CHUNK", chunk):
+                got, _ = fwb.scan_commits(git_obj, str(self.r), args, 10 ** 9)
+            self.assertEqual(got, want, chunk)
+
+    def test_a_scan_that_hits_its_window_is_flagged_not_silent(self):
+        self.cfg.bundle_scan_cap = 100
+        with mock.patch.object(fwb, "SCAN_CHUNK", 50):         # the window is checked between reads
+            stage, disc, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+            self.assertTrue(any(n.startswith("bundle-scan-partial") for n in stage.notes))
+            self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        self.assertIn("warn=gitleaks-missing,bundle-scan-partial", self.log().splitlines()[-1])
+        self.cfg.bundle_scan_cap = 512 * 1024 * 1024            # a scan that read it all is not flagged, whatever the cap
+        stage, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.assertFalse(any(n.startswith("bundle-scan-partial") for n in stage.notes))
+
     def test_a_detached_head_bundle_is_scanned_like_a_branch(self):
         d = make_repo(self.home, self.home / "Code" / "det")
         git(d, "checkout", "-q", "--detach")
