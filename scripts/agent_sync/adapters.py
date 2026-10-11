@@ -309,6 +309,26 @@ def binary_pin(claude: str) -> str:
     return os.path.realpath(claude)
 
 
+def pin_state(paths: L.SeatPaths, claude: str | None) -> dict[str, Any]:
+    """Why the wake pin does or does not match the binary (AFC-256).  `pinned()` is a plain bool and
+    cannot tell a seat that was never pinned from one whose pin went stale, and the two need different
+    answers from the owner:  the first is a fresh install waiting on manual test 3, the second means a
+    claude auto-update moved the realpath and every wake since has been degrading to inbox-only.
+
+    `why` is None when pinned, else `no_claude` (no binary to pin), `not_pinned` (nothing recorded yet)
+    or `pin_stale` (a pin was recorded and the binary has since moved).  `pinned_claude` is the realpath
+    the pin holds and `claude` the one on disk now, so the owner can be told what moved."""
+    if not claude:
+        return {"pinned": False, "why": "no_claude", "pinned_claude": None, "claude": None}
+    current = binary_pin(claude)
+    recorded = L.read_json(paths.wake_pin).get("claude")
+    if not isinstance(recorded, str) or not recorded:
+        return {"pinned": False, "why": "not_pinned", "pinned_claude": None, "claude": current}
+    if recorded != current:
+        return {"pinned": False, "why": "pin_stale", "pinned_claude": recorded, "claude": current}
+    return {"pinned": True, "why": None, "pinned_claude": recorded, "claude": current}
+
+
 def pinned(paths: L.SeatPaths, claude: str | None) -> bool:
     if not claude:
         return False

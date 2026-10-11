@@ -373,11 +373,34 @@ class LoopGuard:
 
             L.update_json(self.path, mutate)
 
-    def blocked(self, key: str, now: float | None = None) -> bool:
-        value = L.read_json(self.path).get(key)
+    def count(self, key: str, now: float | None = None) -> int:
+        """The replies the guard is counting in this topic:  the running total, or for a rolling bot DM
+        the ones still inside DM_WINDOW."""
+        return self.counted(L.read_json(self.path).get(key), now)
+
+    @classmethod
+    def counted(cls, value: Any, now: float | None = None) -> int:
         if isinstance(value, list):
-            return len(self._recent(value, time.time() if now is None else float(now))) >= self.LIMIT
-        return int(value or 0) >= self.LIMIT
+            return len(cls._recent(value, time.time() if now is None else float(now)))
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+    def blocked(self, key: str, now: float | None = None) -> bool:
+        return self.count(key, now) >= self.LIMIT
+
+    def holding(self, now: float | None = None) -> list[dict[str, Any]]:
+        """The topics at their limit, for `agent-sync status` (AFC-255):  the channel, the topic, the
+        count that holds each and whether that count rolls (a bot DM, where it ages out) or waits for
+        the owner however long that takes.  A guard that blocks silently looked like a working one, so
+        status names every topic it is holding and why it is still holding it."""
+        at = time.time() if now is None else float(now)
+        out = []
+        for key, value in L.read_json(self.path).items():
+            count = self.counted(value, at)
+            if count < self.LIMIT:
+                continue
+            channel, _, topic = key.partition("\u0000")
+            out.append({"channel": channel, "topic": topic, "count": count, "rolling": isinstance(value, list)})
+        return sorted(out, key=lambda e: (e["channel"], e["topic"]))
 
 
 # --------------------------------------------------------------------------------------------
