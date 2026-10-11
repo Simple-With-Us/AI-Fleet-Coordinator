@@ -4,7 +4,7 @@ Everything here reads the restic repository with the job's own credentials.  `fl
 restic -- <args>` runs restic with that repository, password and key without putting any of them in
 your shell:
 
-    FWB="python3 /Users/jay/apps/fleet-work-backup/fleet_work_backup.py"
+    FWB="python3 $HOME/apps/fleet-work-backup/fleet_work_backup.py"
     $FWB snapshots                       # list this job's snapshots (tag fleet-work)
 
 If the Mac itself is gone, the password is in Infisical (project `AI Fleet Coordinator`, `prod`,
@@ -21,8 +21,8 @@ repository.
 Never restore over live folders.  Restore to a scratch target and copy out what you need.
 
     $FWB snapshots                       # note the id;  a snapshot tagged "partial" was missing something (see the run log)
-    $FWB restic -- restore latest --tag fleet-work --target /Users/jay/restore-fwb
-    export STAGE=/Users/jay/restore-fwb/Users/jay/Library/Caches/fleet-work-backup/stage
+    $FWB restic -- restore latest --tag fleet-work --target $HOME/restore-fwb
+    export STAGE=$HOME/restore-fwb$HOME/Library/Caches/fleet-work-backup/stage
     ls $STAGE            # MANIFEST.json  README-RESTORE.txt  files/  git/
 
 A smaller pull:  `... restore latest --tag fleet-work --target ... --include '*/stage/files/apps/mac-collab'`,
@@ -34,8 +34,8 @@ is older, name the snapshot id.
 
 `files/` mirrors paths relative to the home directory.
 
-    cp -p $STAGE/files/apps/AGENT-SYNC.md /Users/jay/apps/
-    cp -Rp $STAGE/files/apps/mac-collab /Users/jay/apps/mac-collab.restored
+    cp -p $STAGE/files/apps/AGENT-SYNC.md $HOME/apps/
+    cp -Rp $STAGE/files/apps/mac-collab $HOME/apps/mac-collab.restored
 
 `mac-collab/findings.db` is a consistent snapshot (SQLite online backup);  stop the board server
 (`mac-collab-server.py`) before moving it into place, and delete any stale `findings.db-wal` and
@@ -73,7 +73,7 @@ network remote's default branch does not (so also the commits of a pushed branch
 on GitHub).  Its prerequisites are commits on the default branch, which GitHub keeps.  Work in a fresh
 clone of the remote:
 
-    git clone <remote url from group.json> /Users/jay/restore/<repo> && cd /Users/jay/restore/<repo>
+    git clone <remote url from group.json> $HOME/restore/<repo> && cd $HOME/restore/<repo>
     git fetch origin '+refs/pull/*/head:refs/remotes/origin/pr/*'    # belt and braces:  GitHub keeps pull request heads
     for b in $G/bundles/*.bundle; do
       git bundle verify "$b" && git fetch "$b" 'refs/heads/*:refs/restored/heads/*' 'refs/tags/*:refs/restored/tags/*'
@@ -87,7 +87,7 @@ another checkout on this Mac (`"network_remotes": []` but `bound.via_url` set in
 `bound.via_url` (the GitHub URL) instead of the remote the lane lists.  A repository whose only remotes are
 local paths or bundle files with no GitHub behind them (`"network_remotes": []`, no `via_url`, and a
 `local-only-remotes` note) has its whole history in the bundle:
-`git clone $G/bundles/<file>.bundle /Users/jay/restore/<repo>`.  A repository with no remote at all
+`git clone $G/bundles/<file>.bundle $HOME/restore/<repo>`.  A repository with no remote at all
 (`"no_remote": true`) is the same.
 
 ### A stash (`stashes/NN/`, NN is the `stash@{N}` index)
@@ -96,7 +96,7 @@ local paths or bundle files with no GitHub behind them (`"network_remotes": []`,
 tracked binary files whole in `tracked/binary/`, and files the stash had untracked (`git stash -u`) in
 `untracked/`.
 
-    cd /Users/jay/restore/<repo>
+    cd $HOME/restore/<repo>
     git checkout <base from stash.json> || git checkout origin/main    # the base may be gone from GitHub, then 3-way does the work
     D=$G/stashes/01
     apply_all $D/tracked
@@ -109,9 +109,9 @@ tracked binary files whole in `tracked/binary/`, and files the stash had untrack
 file is stored whole in `patches/binary/` (a deleted one is listed in `patches/binary-deleted.txt`), and
 untracked files are in `untracked/`.
 
-    cd /Users/jay/restore/<repo>
-    git worktree add /Users/jay/restore/<name> <head from worktree.json> || git worktree add /Users/jay/restore/<name> origin/main
-    cd /Users/jay/restore/<name>
+    cd $HOME/restore/<repo>
+    git worktree add $HOME/restore/<name> <head from worktree.json> || git worktree add $HOME/restore/<name> origin/main
+    cd $HOME/restore/<name>
     apply_all $G/worktrees/<name>-<hash>/patches
     cp -Rp $G/worktrees/<name>-<hash>/untracked/. .
 

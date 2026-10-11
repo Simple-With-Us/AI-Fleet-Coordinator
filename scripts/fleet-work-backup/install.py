@@ -203,7 +203,10 @@ def main() -> int:
             say("not loading the LaunchAgent until the above is fixed (or pass --force)")
         else:
             plist = plist_with_interpreter(a.interpreter)
-            changed = copy(plist, PLIST_DST, 0o644, a.dry_run)
+            try:
+                changed = copy(plist, PLIST_DST, 0o644, a.dry_run)
+            finally:
+                shutil.rmtree(os.path.dirname(plist), ignore_errors=True)    # the temp copy with the chosen interpreter
             status = launchd(changed, a.dry_run)
             if status:
                 say(f"the LaunchAgent is NOT loaded (launchctl rc={status})")
