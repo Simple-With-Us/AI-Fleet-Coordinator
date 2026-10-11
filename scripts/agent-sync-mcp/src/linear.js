@@ -62,8 +62,9 @@ export const LINEAR_SEATS = Object.freeze(["GROK-WEB"]);
 // ---------------------------------------------------------------- ported board rules
 
 // board TEAM_KEYS, with the CodeCaps and FleetLink teams the owner added
-// 2026-10-11.
-export const TEAM_KEYS = Object.freeze(["ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK", "FL", "CC"]);
+// 2026-10-11, and SWU (AFC-292).  linear-parity.test.mjs pins this list to the
+// board's own, so adding a team key there without adding it here fails CI.
+export const TEAM_KEYS = Object.freeze(["ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK", "FL", "CC", "SWU"]);
 export const FALLBACK_TEAM = "AFC";
 export const BOARD_SLUG_TEAM = Object.freeze({
   "ai-fleet-coordinator": "AFC",
