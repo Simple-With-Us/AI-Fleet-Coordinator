@@ -91,18 +91,22 @@ def run(argv: Sequence[str], *, timeout: float, env: Mapping[str, str] | None = 
         except (ProcessLookupError, PermissionError):
             proc.kill()
         out, err = proc.communicate()
-        return Result(None, _text(out), _text(err), reason="timed out after %ds" % int(timeout))
-    finally:
         _LIVE_GROUPS.discard(proc.pid)
+        return Result(None, _text(out), _text(err), reason="timed out after %ds" % int(timeout))
+    # Another exception (a SIGALRM from `hard_cap` while `communicate()` is waiting, for example) leaves the
+    # child running and the PID in `_LIVE_GROUPS`, so `kill_live()` can find and end it.
+    _LIVE_GROUPS.discard(proc.pid)
     if len(out) > MAX_OUTPUT_BYTES:
         return Result(proc.returncode, "", _text(err), reason="output too large")
     return Result(proc.returncode, _text(out), _text(err))
 
 
 def kill_live() -> int:
-    """SIGKILL every child process group started by `run` that has not finished yet;  returns how many were signalled."""
+    """SIGKILL every child process group started by `run` that has not finished yet;  each PID is removed from
+    the live set as we go, so a second call does not double-count.  Returns how many were signalled."""
     count = 0
     for pid in list(_LIVE_GROUPS):
+        _LIVE_GROUPS.discard(pid)
         try:
             os.killpg(pid, signal.SIGKILL)
             count += 1
