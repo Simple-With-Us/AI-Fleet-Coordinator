@@ -76,6 +76,10 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `FLEET_AUTOPUSH_IDLE_HOURS` | C1 | int 1 to 168 | `2` | no | only raise it | hours a lane sits unchanged before the backstop sweep acts |
 | `FLEET_AUTOPUSH_PUBLIC_DRAFTS` | C1 | list | empty | no | only remove entries | public repos where a draft PR may open;  empty means none |
 | `FLEET_FACTS_SIGNING_KEY` | F7 | str | none, fails closed | secret | nothing | HMAC key for the signed facts files;  never cached, a job without it publishes nothing |
+| `FLEET_FACTS_PUBLISH_FULL_COPY` | F7 | bool | `false` | no | only set it to `false` | true also publishes the full mac-facts.json, which keeps lane paths and is readable by everything that can read fleet-loops-data;  false (the default) publishes only the path-free gb/ copy and the full list |
+| `FLEET_FACTS_PUBLISH_CAP_MINUTES` | F7 | int 10 to 60 | `20` | no | only lower it | minutes a publish run may take before it ends itself and its child processes;  10 is the least that leaves room for the gatherers (5 minutes are reserved) and the writes |
+| `FLEET_FACTS_PUBLISH_MAX_LOAD1` | F7 | int 1 to 1000 | `250` | no | only lower it | a publish run is skipped when the one-minute load average is over this |
+| `FLEET_LOOPS_DATA_ALLOWED_APPS` | F7 | list | empty | no | nothing | app slugs the owner accepts as able to read the private fleet-loops-data repository;  empty means the publisher refuses while any installed app can read it |
 | `NEEDS_OWNER_NOTIFY_PAUSED` | C6 | bool | `false` | no | only set it to `true` | true pauses the fallback notifier;  an Infisical outage past the 48 hour copy limit reads false and unpauses it |
 | `NEEDS_OWNER_CAPS` | C6 | caps | `per_day=30,per_hour=6,urgent_per_hour=3` | no | only lower a number | notifier post caps |
 | `OWNER_LINEAR_USER_ID` | C6 | str | unset | no | nothing | the owner's Linear user id;  empty means no Linear reply is accepted as the owner's |

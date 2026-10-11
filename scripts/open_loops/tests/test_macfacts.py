@@ -43,6 +43,7 @@ class Load(Sandbox):
         self.assertEqual(got["document"]["lanes"]["total"], 1)
         verify = [c for c in self.world.calls if c["argv"][1:2] == ["verify"]]
         self.assertEqual(len(verify), 1)
+        self.assertEqual(verify[0]["argv"][3:], ["--path", "gb/mac-facts.json"], "pinned to the Grok Bot copy's path")
         self.assertEqual(verify[0]["env"], {macfacts.KEY_ENV: FAKE_KEY})        # the key goes to the child's environment only
         self.assertNotIn(FAKE_KEY, " ".join(verify[0]["argv"]))
 

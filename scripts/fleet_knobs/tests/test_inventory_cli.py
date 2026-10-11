@@ -21,7 +21,10 @@ from ._fake import SIGNING, UNRELATED, KnobTestCase
 SCRIPTS = pathlib.Path(__file__).resolve().parents[2]
 REPO = SCRIPTS.parent
 
-# The inventory the open-loops plan (K1) names, key by key.
+# The inventory the open-loops plan (K1) names, key by key, plus FLEET_LOOPS_DATA_ALLOWED_APPS:  the one decision the
+# F7 publisher's repository gate leaves to the owner (which installed apps may read fleet-loops-data;  empty by default), and
+# FLEET_FACTS_PUBLISH_FULL_COPY (the path-bearing mac-facts.json is published only when the owner turns it on) and the publisher's
+# time cap and load limit (FLEET_FACTS_PUBLISH_CAP_MINUTES, FLEET_FACTS_PUBLISH_MAX_LOAD1).
 PLAN_KEYS = {
     "FLEET_AUTOPUSH_MODE", "FLEET_AUTOPUSH_REPOS", "FLEET_AUTOPUSH_IDLE_COMMIT",
     "FLEET_AUTOPUSH_IDLE_HOURS", "FLEET_AUTOPUSH_PUBLIC_DRAFTS", "FLEET_FACTS_SIGNING_KEY",
@@ -29,6 +32,7 @@ PLAN_KEYS = {
     "CLAIM_EXPIRY_MODE", "CLAIM_EXPIRY_CAPS", "CLAIM_EXPIRY_LAUNCH_AT",
     "ASK_CAPTURE_ENABLED", "ASK_CAPTURE_SHADOW", "ASK_CAPTURE_CAPS",
     "LANE_SWEEP_MODE", "LANE_SWEEP_CAPS", "LANE_SWEEP_OPTIN_REPOS", "CONSULT_ENABLED",
+    "FLEET_LOOPS_DATA_ALLOWED_APPS", "FLEET_FACTS_PUBLISH_FULL_COPY", "FLEET_FACTS_PUBLISH_CAP_MINUTES", "FLEET_FACTS_PUBLISH_MAX_LOAD1",
 }
 
 

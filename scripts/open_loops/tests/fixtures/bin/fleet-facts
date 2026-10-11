@@ -10,8 +10,9 @@ import sys
 
 argv = sys.argv[1:]
 scenario = json.load(open(os.environ["OL_SCENARIO"]))["fleet-facts"]
-entry = {"tool": "fleet-facts", "argv": [argv[0]] + ["<file>"] * (len(argv) - 1), "key_set": bool(os.environ.get("FLEET_FACTS_SIGNING_KEY"))}
-if len(argv) == 2 and os.path.isfile(argv[1]):
+entry = {"tool": "fleet-facts", "argv": [argv[0]] + ["<file>" if os.path.isfile(a) else a for a in argv[1:]],
+         "key_set": bool(os.environ.get("FLEET_FACTS_SIGNING_KEY"))}
+if len(argv) >= 2 and os.path.isfile(argv[1]):
     entry["file_mode"] = oct(stat.S_IMODE(os.stat(argv[1]).st_mode))
     entry["sha"] = hashlib.sha256(open(argv[1], "rb").read()).hexdigest()
 with open(os.environ["OL_LOG"], "a") as fh:

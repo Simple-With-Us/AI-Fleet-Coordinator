@@ -2,7 +2,7 @@
 
 Read-only gatherers for the fleet's open-loops digest, and the one definition of a claim's activity.
 Built for open-loops unit F6 (AFC-283).  Python 3.11 or newer, standard library only.  C2-1 (the digest), C4-1
-(claim expiry) and C5 (the landing sweep) call it;  F7 publishes the Mac side of it.
+(claim expiry) and C5 (the landing sweep) call it;  F7 (AFC-287) publishes the Mac side of it, signed (see "Publishing the Mac facts").
 
 ```
 fleet-facts gather [--part NAME]... [--no-mac] [--json]
@@ -99,6 +99,70 @@ unknown too.  See the module docstring for the event shapes.
   that is made only of plain characters stays exactly as git spelled it (it is a join key);  any other branch
   is cleaned and marked `*_exact: false`.
 
+## Publishing the Mac facts (open-loops F7)
+
+```
+fleet-facts publish-mac [--dry-run [--out DIR]]       one cycle:  what the LaunchAgent com.jay.mac-facts-publish runs every 3 hours
+fleet-facts publish --path REL --file LOCAL [--dry-run]    sign (a .json file) or scan (anything else) one file and write it
+fleet-facts verify FILE [--path REL]                       check a signed file
+```
+
+A cycle gathers the Mac parts (`lanes`, `autopush`, `backup`, `needs_owner`) and the full list (`open-loops gather` then
+`open-loops render --markdown`), and writes up to three files to the PRIVATE repository `Simple-With-Us/fleet-loops-data` through
+sha-aware `gh api -X PUT` calls (no clone, never forced), in this order:
+
+| File | What it is |
+| --- | --- |
+| `gb/full-list.md` | the digest's full list;  its SHA-256 and size are in the signed JSON (`full_list`), which covers the Markdown.  When the list could not be built (open-loops not installed, a failed step, a secret in it) the file is replaced by a short "Full List Not Available" note with the reason words, and `full_list.status` and `full_list.placeholder` say so, so an old list is never read as today's |
+| `gb/mac-facts.json` | the copy for Grok Bot:  no `path` key, no `~/`, `/Users/` or `/Volumes/` text, every string cut to 80 characters (a branch, repository, lane name, identifier and topic are never cut) |
+| `mac-facts.json` | the full copy, with lane paths.  **Off by default**:  everything that can read the repository (Grok Bot's token included) can read it, which would undo the path-free copy.  The Infisical knob `FLEET_FACTS_PUBLISH_FULL_COPY` turns it on;  while it is off each run removes the file from the branch first thing, if an earlier run left one, before the key, the load check or the repository gate (a sha-aware delete, the only delete this job can make;  git history keeps the old commits) |
+
+Both JSON files have the shape of `fleet-facts gather` (schema 1:  `generated_at`, `sources`, then `lanes`, `autopush`, `backup` and
+`needs_owner` with the same data as the gatherers give) plus `kind`, `signed_for` (the path in the repository), `full_list`,
+`sources.publish.redacted` (the paths of fields that were withheld, never their text), `sig_alg` and `sig`.  `open_loops.macfacts` reads
+`gb/mac-facts.json` through exactly this;  `tests/test_publish_contract.py` runs the real digest over what the publisher wrote.
+
+**Signature.**  `sig` is the HMAC-SHA256 of the object without `sig`, serialized as `json.dumps(obj, sort_keys=True,
+separators=(",", ":"), ensure_ascii=True, allow_nan=False)` encoded as ASCII, keyed with the text of `FLEET_FACTS_SIGNING_KEY` (trimmed;  32 to 256
+letters, digits and `+ / = _ -`), as lower-case hex.  `signed_for` and `sig_alg` are part of what is signed.  Any Python can check a file:
+
+```python
+import hashlib, hmac, json, os
+doc = json.load(open("mac-facts.json")); sig = doc.pop("sig")
+body = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")
+ok = hmac.compare_digest(sig, hmac.new(os.environ["FLEET_FACTS_SIGNING_KEY"].strip().encode(), body, hashlib.sha256).hexdigest())
+```
+
+`fleet-facts verify FILE` does that and exits **0** verified, **1** not verified (unsigned, tampered, wrong key, not JSON), **3** cannot check (no usable key
+in the environment);  **2** is only ever a usage error, because `open_loops.macfacts` reads 2 as "this fleet-facts has no verify command".  It
+reads the key from the environment (the cloud and Grok Bot hosts have no Infisical);  `--path REL` also requires `signed_for` to equal `REL`.  To
+check the Markdown, compare the SHA-256 of `gb/full-list.md` with `full_list.sha256` in the verified `gb/mac-facts.json`.  Freshness is the
+consumer's job:  `generated_at` is the time the facts were gathered and is never refreshed on a reused file.
+
+**The gate.**  Nothing is written unless `repo.guard()` has just said:  visibility PRIVATE, not archived, not a fork;  no webhook (deploy
+webhooks included) and no deploy key;  and no GitHub App installed on the organization can read the repository (an installation on all
+repositories can;  one on selected repositories is listed with `user/installations/<id>/repositories`).  Any read that fails is a refusal.  Apps the owner
+accepts are named in the Infisical knob `FLEET_LOOPS_DATA_ALLOWED_APPS` (empty by default).  Not checked:  organization-level webhooks (they need the
+`admin:org_hook` scope).  `publish --path` writes only `mac-facts.json` (only while the full-copy knob is on) or a file under `gb/` other than the two `publish-mac` owns (`gb/mac-facts.json` carries the list's hash, so it and `gb/full-list.md` are only ever written together) (no `..`, no dotfile, never `.github/`), and everything under `gb/` goes through the same path-free copy rule, by hand as in a cycle:  a JSON file is minimized before it is signed, and a Markdown file with a Mac path in it is refused.  The full list has its Mac paths replaced by `[path]` before it is hashed.
+
+**Secrets.**  `FLEET_FACTS_SIGNING_KEY` comes from K1 (`fleet_knobs`, imported only by `publish` and `publish-mac`), is never cached or printed, and is also a
+`known` value for the redactor, so it cannot be published even inside a field.  Each document gets per-field `redact_fields`, then a whole-document scan:  a
+hit that survives refuses the cycle (nothing is written).  A secret-shaped string in the full list withholds just the list.  No key means nothing is published.
+
+**Writes that do not finish.**  The list is written first, because the signed JSON carries its hash.  If the JSON write then fails, the new list is replaced by the not-available note, so a new list never stands beside the previous run's facts (but when the JSON landed and only the optional full copy failed, the list stays, because the JSON describes it) (git data commits would make the three files one commit;  this job stays on the contents API the plan names).
+
+**Time and load.**  One lock (a second run exits), a wall-clock cap of 20 minutes (a timer ends the run and kills the children), every child's timeout
+clamped to the time left, no write phase with under a minute left, and a skip when load1 is over 250.  The cap and the limit are the Infisical knobs
+`FLEET_FACTS_PUBLISH_CAP_MINUTES` (1 to 60) and `FLEET_FACTS_PUBLISH_MAX_LOAD1` (1 to 1000);  a local setting can only lower them.  A skip writes nothing to the repository:  the
+files stay, `generated_at` keeps ageing, and `~/.local/state/fleet-facts/mac-facts-publish.json` says `stale`.
+
+Exit status of `publish-mac` and `publish`:  0 published, or skipped on purpose;  3 nothing published because a safety condition failed (no key, the gate, a
+secret, a missing helper);  4 a write failed or the cap was reached;  2 usage.  The status file, the lock and the log
+(`~/Library/Logs/mac-facts-publish.log`) hold results, counts and reason words, never fact text or the key.
+
+Live steps after merge (the main session):  L4 (create the private repository;  decide the installed-apps rule), L5 (the key in Infisical), `scripts/fleet_facts/install.sh
+--apply`, `fleet-facts publish-mac --dry-run` to look at the files, L15 (Removable Volumes for `~/apps/fleet-facts/mac-facts-publish`), L16c (load the LaunchAgent).
+
 ## Install (stable copy)
 
 ```
@@ -107,24 +171,25 @@ scripts/fleet_facts/install.sh --apply    # ~/apps/fleet-facts + ~/.local/bin/fl
 ```
 
 The stable copy holds the entry script, the package (no tests), the `mac-facts-publish` launcher that F7's
-LaunchAgent will run, and `agent_sync/` with only `__init__.py`, `textsafe.py` and `secretscan.py`:  a tool
+LaunchAgent runs, `fleet_knobs/` (K1, no tests;  `publish` and `publish-mac` fetch the signing key through it), and `agent_sync/` with only `__init__.py`, `textsafe.py` and `secretscan.py`:  a tool
 run with `python3 -I` cannot import what it did not copy, and `-I` leaves the script's own folder off
 `sys.path`, so the entry script puts its real directory first.  A test installs into a temp HOME and runs
 `python3 -I <stable copy>/fleet-facts`.  The installer loads no LaunchAgent and touches nothing under
-`~/.secrets`.  `mac-facts-publish` calls `fleet-facts publish-mac`, which F7 builds;  until then it exits 3.
+`~/.secrets`.  `mac-facts-publish` calls `fleet-facts publish-mac`.
 
 Another unit that imports `fleet_facts` (C2-1, C4-1, C5) copies this package and the two F3 helpers into its
 own stable folder the same way.  C2-1 (`scripts/open_loops/install.sh`, stable copy `~/apps/open-loops`) does, and adds
 a third helper, `textfmt.py`, which `safety.textfmt()` loads only when asked (the DM lint's sentence-gap rule);  this
 package's own stable copy does not carry it.
 
-## `fleet-facts verify` (built by F7;  the contract C2-1 relies on)
+## `fleet-facts verify` (the contract C2-1 relies on;  built by F7)
 
-`open-loops gather --mac-facts` reads the signed `gb/mac-facts.json` and uses it only if `fleet-facts verify FILE`
-exits 0.  F7 builds the command to this contract:
+`open-loops gather --mac-facts` reads the signed `gb/mac-facts.json` and uses it only if `fleet-facts verify FILE --path
+gb/mac-facts.json` exits 0 (the path pin means the root `mac-facts.json`, which keeps lane paths, is never accepted as the Grok Bot copy,
+even with a good signature).  The command meets this contract:
 
-* `fleet-facts verify FILE` exits **0** only when the file's `sig` is the hex HMAC-SHA256, with
-  `FLEET_FACTS_SIGNING_KEY`, of the file's canonical JSON without `sig`.
+* `fleet-facts verify FILE [--path REL]` exits **0** only when the file's `sig` is the hex HMAC-SHA256, with
+  `FLEET_FACTS_SIGNING_KEY`, of the file's canonical JSON without `sig` (and, with `--path`, the file's signed `signed_for` equals REL).
 * Any other exit is "not verified":  **1** the signature is wrong or missing, **2** a usage error (what a `fleet-facts`
   without the command answers today), **3** the key is unavailable.
 * The key comes in the environment of the command, never on the command line, and is never printed.
@@ -145,7 +210,7 @@ show as Missing.  Shape:
   aged and the digest says so;
 * `autopush`: `{"document": <what fleet-autopush status --json prints>}`;
 * `needs_owner` (optional): `{"document": <what needs-owner list --all --json prints>}`;
-* `sig`: the HMAC-SHA256 above.
+* `sig`: the HMAC-SHA256 above.  The publisher also writes `kind`, `signed_for`, `full_list`, `sig_alg` and `sources.publish`, which this reader ignores.
 
 A part whose `sources` status is `ok` must have its data key, or it is read as failed.  Missing parts are Missing in the
 digest, never zero.

@@ -155,6 +155,7 @@ expect_scheduled=(
   "com.jay.grok-idle-unload com.jay.grok-idle-unload.plist"
   "com.jay.sim-idle-reaper com.jay.sim-idle-reaper.plist"
   "com.jay.needs-owner-notify com.jay.needs-owner-notify.plist"
+  "com.jay.mac-facts-publish com.jay.mac-facts-publish.plist"
 )
 
 # Program paths that must exist for a trigger to succeed.
@@ -179,6 +180,7 @@ expect_files=(
   "${HOME}/apps/fleet-gdrive-backup/sync-fleet-agent-config-to-gdrive.py"
   "${HOME}/apps/botfleet-server-start.sh"
   "${HOME}/apps/needs-owner/needs-owner"
+  "${HOME}/apps/fleet-facts/mac-facts-publish"
 )
 
 log() {
