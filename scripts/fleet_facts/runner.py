@@ -19,6 +19,11 @@ from typing import Callable, Mapping, Sequence
 
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 
+# The process groups of the children running right now, so a job that hits its own time cap (F7's publisher)
+# can end every child it started before it exits.  A child is its own session leader (start_new_session), so
+# killing this process's group would not reach it.
+_LIVE_GROUPS: set[int] = set()
+
 
 @dataclass
 class Result:
@@ -77,6 +82,7 @@ def run(argv: Sequence[str], *, timeout: float, env: Mapping[str, str] | None = 
         return Result(None, reason="not executable")
     except OSError as exc:
         return Result(None, reason="could not start (%s)" % type(exc).__name__)
+    _LIVE_GROUPS.add(proc.pid)
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -86,9 +92,23 @@ def run(argv: Sequence[str], *, timeout: float, env: Mapping[str, str] | None = 
             proc.kill()
         out, err = proc.communicate()
         return Result(None, _text(out), _text(err), reason="timed out after %ds" % int(timeout))
+    finally:
+        _LIVE_GROUPS.discard(proc.pid)
     if len(out) > MAX_OUTPUT_BYTES:
         return Result(proc.returncode, "", _text(err), reason="output too large")
     return Result(proc.returncode, _text(out), _text(err))
+
+
+def kill_live() -> int:
+    """SIGKILL every child process group started by `run` that has not finished yet;  returns how many were signalled."""
+    count = 0
+    for pid in list(_LIVE_GROUPS):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+            count += 1
+        except (ProcessLookupError, PermissionError):
+            pass
+    return count
 
 
 def _text(data: bytes | None) -> str:

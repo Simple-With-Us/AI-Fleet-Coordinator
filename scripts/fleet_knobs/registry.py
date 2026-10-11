@@ -85,6 +85,9 @@ REGISTRY: Tuple[Spec, ...] = (
     # F7 fleet-facts publisher
     _S("FLEET_FACTS_SIGNING_KEY", "str", "F7", secret=True, pattern=SIGNING_KEY_PATTERN,
        note="HMAC key for the signed facts files;  never cached, a job without it publishes nothing"),
+    _S("FLEET_LOOPS_DATA_ALLOWED_APPS", "list", "F7", default=(), local="deny",
+       note="app slugs the owner accepts as able to read the private fleet-loops-data repository;  "
+            "empty means the publisher refuses while any installed app can read it"),
     # C6 needs-owner
     _S("NEEDS_OWNER_NOTIFY_PAUSED", "bool", "C6", default=False, safe=True,
        note="true pauses the fallback notifier;  an Infisical outage past the 48 hour copy "
