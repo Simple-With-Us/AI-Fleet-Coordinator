@@ -62,6 +62,8 @@ Per-session `listen` under the Monitor tool was rejected:  nothing listens when 
 
 ## 2. Routing
 
+**Every channel (owner ruling, Sat, Oct 10, 2026):**  "I want bots to wake to any channel or DM" … "not just agent-sync or one other".  Routing has no channel filter:  a direct mention or a DM wakes from any channel the bot receives.  Zulip delivers a channel message only to a subscriber, so the daemon keeps each held seat's bot in every public channel:  at every connect it subscribes the bot to any public channel it is missing, and it registers for `stream` and `subscription` events so a newly created (or newly public) channel is joined at once and the seat's channel map stays current.  New subscriptions are set quiet (no desktop, push, email or sound notifications).  Private channels are never joined.  A failure is logged (`auto-subscribe-error`) and never stops the seat.  `[daemon] auto_subscribe = false` turns it off.  `scripts/agent_sync/subscribe_all.py` does the same once for every fleet bot, including seats no listener holds (BF bots, OPENCODE).  The fleet-wide wake is unchanged:  only `@**all**` in #agent-sync › `fleet`.
+
 **State layout.**  Directories are mode 700 and files mode 600.
 
 ```
@@ -375,6 +377,7 @@ coalesce_seconds = 20
 coalesce_max_seconds = 90
 owner_coalesce_seconds = 5
 # route_enabled = true            # the listener-wide kill switch for wake route suggestions (section 3.3)
+# auto_subscribe = true           # join every public channel at connect and on creation (owner 2026-10-10)
 presence_topics = [["agent-sync","roll call"],["agent-sync","fleet"],["builds","gates"],["alerts","*"]]
 
 [platform.claude-code]
