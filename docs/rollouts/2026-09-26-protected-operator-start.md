@@ -1,5 +1,7 @@
 # Protected operator start alias
 
+> **Superseded (Sun, Oct 11, 2026):**  `start.jays.services` is now a DNS-only CNAME to Vercel, private behind Vercel login (Vercel SSO), which Jay kept on Oct 11.  The Worker redirect below is history.
+
 The hosted start page previously repeated operator destinations in a public HTML file.  Page aliases now return a temporary redirect to the existing authenticated home.  Unknown paths return 404 and only the icon and robots files remain directly served.  The asset router runs after the Worker, including for `/index.html`.
 
 Older installed local start pages retain their search suggestion endpoint and CORS behavior.  Their local files and Safari preferences have not been changed.  `install.sh` is still an explicit on-demand action; running it now copies the small redirect page.

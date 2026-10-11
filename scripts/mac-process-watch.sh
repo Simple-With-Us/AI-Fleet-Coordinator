@@ -58,7 +58,7 @@
 #   - idle (no pid) is correct -- do not kickstart
 #   - never bootstrap com.jay.ios-ship-now (RunAtLoad would ship TestFlight)
 #   - never bootstrap com.PM2 (LaunchOnlyOnce)
-#   - steal stale run-locks for disk-janitor / merge-shepherd (>2h)
+#   - steal stale run-locks for merge-shepherd (>2h)
 # Does NOT touch: disabled labels (com.jay.shellular, com.jay.imessage-grok,
 # retired launchd), vendor timers, com.PM2, cloudflared (root).
 # Backoff: at most 4 restarts per key per hour.  After that, log SKIP.
@@ -141,15 +141,15 @@ BOTFLEET_HEALTH_URL="${MAC_PROCESS_WATCH_BOTFLEET_HEALTH_URL:-http://127.0.0.1:8
 
 # Timers / calendar / interval jobs.  Must be loaded so they can fire.
 # Idle (no pid) is expected.  Do not add ios-ship-now or com.PM2.
+# Retired 2026-10-10 (owner Sun, Oct 11):  com.jay.disk-janitor, com.jay.mac-cleanup and
+# com.jay.mac-resource-watch (HogHunter takes over and manages those scripts directly), and
+# com.jay.imessage-accountant-forward.  They have no plist, so do not expect them here.
 expect_scheduled=(
-  "com.jay.disk-janitor com.jay.disk-janitor.plist"
   "com.jay.merge-shepherd com.jay.merge-shepherd.plist"
   "com.jay.mac-process-watch com.jay.mac-process-watch.plist"
   "com.jays.mac-server-watchdog com.jays.mac-server-watchdog.plist"
   "com.jays.antigravity-usage-collector com.jays.antigravity-usage-collector.plist"
   "com.jays.subscription-quota-collector com.jays.subscription-quota-collector.plist"
-  "com.jay.mac-cleanup com.jay.mac-cleanup.plist"
-  "com.jay.mac-resource-watch com.jay.mac-resource-watch.plist"
   "com.jay.provider-knob-sync com.jay.provider-knob-sync.plist"
   "com.jay.fleet-gdrive-backup com.jay.fleet-gdrive-backup.plist"
   "com.jay.grok-idle-unload com.jay.grok-idle-unload.plist"
@@ -160,15 +160,11 @@ expect_scheduled=(
 expect_files=(
   "${HOME}/apps/mac-process-watch.sh"
   "${HOME}/apps/pm2-ecosystem.config.cjs"
-  "${HOME}/.claude-disk-janitor/janitor.sh"
   "${HOME}/.claude-merge-shepherd/run.sh"
   "${HOME}/.claude-merge-shepherd/merge-shepherd.sh"
   "${HOME}/Code/Usage-Monitor/scripts/ops/mac-server-watchdog.sh"
   "${HOME}/Code/Usage-Monitor/scripts/antigravity-usage-collector.mjs"
   "${HOME}/Code/Usage-Monitor/scripts/subscription-quota-collector.mjs"
-  "${HOME}/apps/mac-auto-cleanup.sh"
-  "${HOME}/apps/mac-resource-watch.py"
-  "${HOME}/apps/mac-resource-watch.sh"
   "${HOME}/apps/check-hetzner-cx43.sh"
   "${HOME}/Code/Socratic-Trade/scripts/sync-provider-knobs.sh"
   "${HOME}/apps/ios-fleet/ship-now-gui.sh"
@@ -945,7 +941,6 @@ steal_stale_lock() {
     fi
   fi
 }
-steal_stale_lock "${HOME}/.claude-disk-janitor/.lock" "disk-janitor"
 steal_stale_lock "${HOME}/.claude-merge-shepherd/.lock" "merge-shepherd"
 steal_stale_lock "${HOME}/.dsh/profiles/node_modules.lock" "dsh-profiles" 600
 

@@ -89,6 +89,10 @@ jobs:
       run: node --test tests/deployment-boundary.test.cjs
     - name: Kody defer and deferred sweep tests
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
+    # Pure builders and readers of the Fleet Reference Sheet registry sync.  No
+    # network:  the tests import the script, which runs main() only as an entry point.
+    - name: Fleet Reference Sheet registry sync tests
+      run: node --test scripts/fleet-apps-sheet-sync.format.test.mjs scripts/fleet-apps-sheet-sync.tabs.test.mjs
     - name: Mac ledger mirror tests
       run: bash scripts/test-mac-ledger-mirror.sh
     # The LaunchAgent script that copies a Cloudflare token from Infisical prod into the handoff
