@@ -315,6 +315,21 @@ const SECRET_PATTERNS = [
   ["GitLab token", /\bglpat-[A-Za-z0-9_-]{20,}\b/],
   ["Google API key", /\bAIza[0-9A-Za-z_-]{35}\b/],
   ["Stripe key", /\b(sk|rk)_(live|test)_[A-Za-z0-9]{16,}\b/],
+  // The fleet's own services (open-loops F3), in secretscan.py's order:  the specific kinds before the
+  // generic assignment rows, so the answer names the service.  test/secretscan-parity.test.mjs runs the
+  // Python suite's samples through both scanners.  Grok Bot's cloud routines post through this Worker, and
+  // they are the ones holding the read-only Linear, GitHub and fleet-loops-data tokens.
+  ["Linear API key", /\blin_(api|oauth|wh)_[A-Za-z0-9]{20,}/],
+  ["Linear client secret", /\blinear[\w -]{0,24}secret\s*[=:]\s*['"]?[A-Za-z0-9]{24,}/i],
+  ["Sentry token", /\bsntry[su]_[A-Za-z0-9+/=_-]{20,}/],
+  ["xAI key", /\bxai-[A-Za-z0-9]{20,}/],
+  ["Infisical service token", /\bst\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}/],
+  ["Infisical credential", /\binfisical[\w .-]{0,40}?(token|secret)['"]?\s*[=:]\s*['"]?[A-Za-z0-9+/=._-]{24,}/i],
+  ["access token (JWT)", /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
+  ["Cloudflare token", /\bcf(ut|at|k)_[A-Za-z0-9]{30,}/],
+  ["Cloudflare token", /\bcloudflare[\w ]{0,24}(token|key)\s*[=:]\s*['"]?[A-Za-z0-9_-]{37,}/i],
+  ["Coolify token", /(?<![A-Za-z0-9])\d{1,5}\|[A-Za-z0-9]{36,}(?![A-Za-z0-9])/],
+  ["assigned credential", /\b[A-Z][A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_?KEY)\s*=\s*['"]?[A-Za-z0-9+/=._-]{16,}/],
   ["bearer token", /\bauthorization:\s*(basic|bearer)\s+[A-Za-z0-9+/=._-]{16,}/i],
   ["assigned secret", /\b(api[_-]?key|secret|token|password)\s*[=:]\s*['"]?[A-Za-z0-9+/=._-]{16,}/i],
 ];
