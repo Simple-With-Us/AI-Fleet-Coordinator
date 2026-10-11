@@ -7,7 +7,9 @@
 What a job can rely on:
 
   * One Infisical fetch per process, on the first read.  A failed fetch is not retried in
-    the same process (``refresh()`` forces it for a long-running one).
+    the same process (``refresh()`` forces it for a long-running one).  An export that holds
+    none of the registered names counts as a failed fetch (reason ``empty``) while a usable
+    copy still has knobs, so a blank answer cannot erase a pause.
   * Non-secret knobs fall back, in order, to the on-disk last-known-good copy (marked
     stale) and then to the registry default.  A read never raises for a non-secret knob.
   * A secret has no default and no disk copy:  if it cannot be fetched, ``get()`` raises
@@ -120,7 +122,9 @@ def _load() -> None:
             st.loaded = False
             raise KnobError(refusal)
         try:
-            st.live = source.fetch([s.name for s in REGISTRY])
+            live = source.fetch([s.name for s in REGISTRY])
+            _refuse_empty_export(live)
+            st.live = live
             st.fetch = "ok"
         except Exception as exc:                      # noqa: BLE001 - a read must not crash a job
             st.fetch = "failed"
@@ -137,10 +141,27 @@ def _load() -> None:
                         type(exc).__name__)
 
 
+def _refuse_empty_export(live: Dict[str, str]) -> None:
+    """An export with none of our names in it is not proof that every knob was deleted.
+
+    An empty body with exit 0 is also what a wrong path, a project with nothing in it or a
+    half-broken login can produce, and believing it would rewrite the last-known-good copy
+    with no knobs and lift every pause the next time Infisical is unreachable.  So when a
+    usable copy still holds knobs, treat the empty answer as a failed fetch (reason
+    ``empty``):  the copy is kept and every answer is marked stale.  Deleting every knob on
+    purpose therefore reads as an outage until the copy ages out;  a project that has never
+    had a knob has no such copy, so it is unaffected.
+    """
+    if live:
+        return
+    previous, _note = lkg.read()
+    if previous and previous["knobs"]:
+        raise source.FetchFailed("empty")
+
+
 def _save_lkg(st: _State) -> None:
     """After a good fetch, refresh the on-disk copy with the non-secret knobs."""
     previous, _note = lkg.read()
-    old = dict(previous["knobs"]) if previous else {}
     fresh: Dict[str, str] = {}
     for spec in REGISTRY:
         if spec.secret:
@@ -151,8 +172,9 @@ def _save_lkg(st: _State) -> None:
         ok, _typed = values.lenient(spec, raw)
         if ok:
             fresh[spec.name] = raw
-        elif spec.name in old and values.lenient(spec, old[spec.name])[0]:
-            fresh[spec.name] = old[spec.name]         # keep the last GOOD value
+        # else: a live value that fails validation is dropped, like an unset one.  A live
+        # read answers the default for it, so the copy must too, or an outage right after a
+        # typo would bring back an older and possibly wider value (an old "act").
     unchanged = previous is not None and previous["knobs"] == fresh
     if unchanged and lkg.age_seconds(previous) < lkg.REFRESH_SECONDS:
         return

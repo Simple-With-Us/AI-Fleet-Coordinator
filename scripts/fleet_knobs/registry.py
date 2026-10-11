@@ -16,10 +16,10 @@ secret by name.  Each entry carries what the loader and the narrowing rules need
             local override at all:  an owner id or a launch timestamp)
 
 INFISICAL.md carries one row per entry.  ``python3 -m fleet_knobs inventory --check
-INFISICAL.md`` fails when the two drift, and the unit tests run the same check.
+../INFISICAL.md`` (from ``scripts/``) fails when the two drift, and the unit tests run the same check.
 
 To add a knob:  add an entry here, then run ``python3 -m fleet_knobs inventory --write
-INFISICAL.md`` from ``scripts/`` and commit both.
+../INFISICAL.md`` from ``scripts/`` and commit both.
 """
 from __future__ import annotations
 
@@ -87,7 +87,8 @@ REGISTRY: Tuple[Spec, ...] = (
        note="HMAC key for the signed facts files;  never cached, a job without it publishes nothing"),
     # C6 needs-owner
     _S("NEEDS_OWNER_NOTIFY_PAUSED", "bool", "C6", default=False, safe=True,
-       note="true pauses the fallback notifier"),
+       note="true pauses the fallback notifier;  an Infisical outage past the 48 hour copy "
+            "limit reads false and unpauses it"),
     _S("NEEDS_OWNER_CAPS", "caps", "C6",
        default={"urgent_per_hour": 3, "per_hour": 6, "per_day": 30},
        note="notifier post caps"),

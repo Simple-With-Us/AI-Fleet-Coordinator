@@ -229,6 +229,84 @@ class UnreachableTests(KnobTestCase):
         self.assertNotIn("FLEET_FACTS_SIGNING_KEY", json.loads(self.lkg_file.read_text())["knobs"])
 
 
+class EmptyExportTests(KnobTestCase):
+    """An export with none of our names is a failed fetch while a copy still has knobs."""
+
+    PAUSED = {"NEEDS_OWNER_NOTIFY_PAUSED": "true", "CLAIM_EXPIRY_MODE": "ping-only"}
+
+    def _warm_paused_copy(self):
+        self.fake.set(secrets=self.PAUSED)
+        self.assertIs(knobs.get("NEEDS_OWNER_NOTIFY_PAUSED"), True)
+        self.assertTrue(self.lkg_file.exists())
+        self.new_process()
+        return self.lkg_file.read_bytes()
+
+    def _assert_pause_survives(self, before: bytes):
+        with self.assertLogs("fleet_knobs", level="WARNING") as logs:
+            knob = knobs.resolve("NEEDS_OWNER_NOTIFY_PAUSED")
+        self.assertEqual((knob.value, knob.source, knob.stale), (True, "lkg", True))
+        self.assertIn("unreachable:empty", knob.reason)
+        rep = knobs.report()
+        self.assertEqual((rep["fetch"], rep["fetch_reason"], rep["stale"]),
+                         ("failed", "empty", True))
+        self.assertEqual(knobs.get("CLAIM_EXPIRY_MODE"), "ping-only")
+        self.assertEqual(self.lkg_file.read_bytes(), before, "the copy is kept byte for byte")
+        self.assertNotIn("true", "\n".join(logs.output), "logs carry names, never values")
+
+    def test_an_empty_export_does_not_erase_the_copy_or_lift_a_pause(self):
+        before = self._warm_paused_copy()
+        self.fake.set(secrets={})                     # exit 0, valid JSON, nothing in it
+        self._assert_pause_survives(before)
+
+    def test_an_export_of_only_unregistered_keys_is_empty_too(self):
+        before = self._warm_paused_copy()
+        self.fake.set(secrets={"QDRANT_API_KEY": UNRELATED, "SOME_OTHER_TOKEN": UNRELATED})
+        self._assert_pause_survives(before)
+        self.assertNotIn(UNRELATED, json.dumps(knobs.report()))
+
+    def test_an_empty_export_fails_a_secret_closed_as_unreachable(self):
+        self._warm_paused_copy()
+        self.fake.set(secrets={})
+        with self.assertRaises(knobs.SecretUnavailable) as ctx:
+            knobs.get("FLEET_FACTS_SIGNING_KEY")
+        self.assertEqual(ctx.exception.reason, "unreachable:empty")
+
+    def test_the_empty_answer_is_not_retried_in_the_same_process(self):
+        self._warm_paused_copy()
+        self.fake.set(secrets={})
+        knobs.get("NEEDS_OWNER_NOTIFY_PAUSED")
+        self.fake.set(secrets=self.PAUSED)
+        knobs.get("CLAIM_EXPIRY_MODE")
+        self.assertEqual(len(self.fake.calls()), 2, "one warm-up fetch and one empty fetch")
+
+    def test_a_deliberate_single_delete_still_applies(self):
+        self._warm_paused_copy()
+        self.fake.set(secrets={"CLAIM_EXPIRY_MODE": "ping-only"})   # the pause was unset
+        knob = knobs.resolve("NEEDS_OWNER_NOTIFY_PAUSED")
+        self.assertEqual((knob.value, knob.source, knob.stale), (False, "default", False))
+        self.assertEqual(json.loads(self.lkg_file.read_text())["knobs"],
+                         {"CLAIM_EXPIRY_MODE": "ping-only"})
+
+    def test_a_fresh_project_with_no_knobs_yet_is_not_an_outage(self):
+        self.fake.set(secrets={})
+        knob = knobs.resolve("NEEDS_OWNER_NOTIFY_PAUSED")
+        self.assertEqual((knob.value, knob.source, knob.stale, knob.reason),
+                         (False, "default", False, "unset"))
+        rep = knobs.report()
+        self.assertEqual((rep["fetch"], rep["stale"]), ("ok", False))
+        self.assertEqual(json.loads(self.lkg_file.read_text())["knobs"], {})
+        self.new_process()                            # the copy now exists and has no knobs
+        knob = knobs.resolve("NEEDS_OWNER_NOTIFY_PAUSED")
+        self.assertEqual((knob.stale, knobs.report()["fetch"]), (False, "ok"))
+
+    def test_an_expired_copy_does_not_make_an_empty_export_an_outage(self):
+        lkg.write({"NEEDS_OWNER_NOTIFY_PAUSED": "true"},
+                  now=time.time() - lkg.MAX_AGE_SECONDS - 60)
+        self.fake.set(secrets={})
+        knob = knobs.resolve("NEEDS_OWNER_NOTIFY_PAUSED")
+        self.assertEqual((knob.value, knob.stale, knobs.report()["fetch"]), (False, False, "ok"))
+
+
 class LkgFileTests(KnobTestCase):
     def test_good_fetch_writes_a_private_copy_of_registered_non_secrets_only(self):
         self.fake.set(secrets=GOOD)
@@ -271,14 +349,31 @@ class LkgFileTests(KnobTestCase):
         self.assertEqual(json.loads(self.lkg_file.read_text())["knobs"],
                          {"FLEET_AUTOPUSH_MODE": "report"})
 
-    def test_a_bad_value_never_replaces_the_last_good_one(self):
+    def test_a_bad_value_is_dropped_from_the_copy_so_offline_matches_live(self):
         self.fake.set(secrets=GOOD)
         knobs.get("FLEET_AUTOPUSH_MODE")
         self.new_process()
         self.fake.set(secrets=dict(GOOD, FLEET_AUTOPUSH_MODE="nonsense"))
         self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE"), "off")           # live: invalid -> default
-        self.assertEqual(json.loads(self.lkg_file.read_text())["knobs"]["FLEET_AUTOPUSH_MODE"],
-                         "snapshot")
+        copy = json.loads(self.lkg_file.read_text())["knobs"]
+        self.assertNotIn("FLEET_AUTOPUSH_MODE", copy, "the old good value must not outlive a typo")
+        self.assertIn("FLEET_AUTOPUSH_REPOS", copy, "the other knobs are untouched")
+
+    def test_a_typo_then_an_outage_reads_the_default_not_the_older_wider_value(self):
+        self.fake.set(secrets=dict(GOOD, CLAIM_EXPIRY_MODE="act"))
+        self.assertEqual(knobs.get("CLAIM_EXPIRY_MODE"), "act")
+        self.new_process()
+        self.fake.set(secrets=dict(GOOD, CLAIM_EXPIRY_MODE="ac t"))
+        live = knobs.resolve("CLAIM_EXPIRY_MODE")
+        self.assertEqual((live.value, live.source, live.stale, live.reason),
+                         ("dry-run", "default", False, "invalid"))
+        self.new_process()
+        self.fake.set(mode="fail")
+        offline = knobs.resolve("CLAIM_EXPIRY_MODE")
+        self.assertEqual((offline.value, offline.source, offline.stale),
+                         ("dry-run", "default", True))
+        self.assertEqual(offline.value, live.value, "an outage must not change the answer")
+        self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE"), "snapshot", "other knobs still hold")
 
     def test_an_unchanged_copy_is_not_rewritten_within_the_hour(self):
         self.fake.set(secrets=GOOD)

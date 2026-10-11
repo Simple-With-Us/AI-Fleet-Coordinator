@@ -25,7 +25,10 @@ key = knobs.get("FLEET_FACTS_SIGNING_KEY")         # raises SecretUnavailable:  
   (dir 0700, file 0600) with the registered non-secret knobs.  If Infisical cannot be reached
   the job reads it, `knobs.report()["stale"]` is true, and a copy older than 48 hours (or any
   untrusted file) is ignored.  With no usable copy the registry default is returned.  A read of
-  a non-secret knob never raises.
+  a non-secret knob never raises.  The copy matches what a live read answers:  an unset knob
+  and a value that fails validation are both dropped from it.  An export with none of the
+  registered names is a failed fetch (`fetch_reason` is `empty`) while the copy still has
+  knobs, so a blank answer cannot erase it.
 - **Secrets are never cached** to disk, defaulted or exported.  An unreachable, unset or
   malformed secret raises `SecretUnavailable`, and the job must stop.
 - **Local can only narrow.**  `local=` and `stop=` can lower a cap, shrink a list, force an
