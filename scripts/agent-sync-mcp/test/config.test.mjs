@@ -17,7 +17,10 @@ test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", (
   // ECHO and INSTINCT (the Instinct app) were added on Fri, Oct 9.
   assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB", "ECHO", "INSTINCT"]);
   assert.deepEqual([...loadConfig(testEnv()).hostedSeats], ["JET", "GROK-WEB"]);
-  assert.deepEqual(Object.fromEntries(cfg.channels), { "agent-sync": 642232, sandbox: 642167 }, "D4:  #agent-sync and #sandbox, by stream id");
+  // Channels:  any public channel the bot is subscribed to (owner, Sat, Oct 10, 2026), so no allowlist;  the denylist ships empty.
+  assert.deepEqual([...cfg.channelsDeny], []);
+  assert.ok(!("CHANNELS" in vars), "the old two-channel allowlist is gone");
+  assert.equal(cfg.channels, undefined);
   assert.equal(cfg.ownerUserId, 1211974);
   assert.equal(cfg.botEmails["GROK-WEB"], "grok-web-bot@simplewithus.zulipchat.com");
   assert.equal(cfg.redirectOwner.get(CHATGPT_REDIRECT), "JET");
@@ -100,10 +103,11 @@ test("config refuses loose or ambiguous allowlists", () => {
     [{ PUBLIC_HOST: "evil.example" }, /PUBLIC_HOST/],
     [{ SEATS: "{not json" }, /not valid JSON/],
     [{ SEATS: "" }, /not set/],
-    [{ CHANNELS: {} }, /CHANNELS is empty/],
-    [{ CHANNELS: { "agent-sync": "642232" } }, /stream id/],
-    [{ CHANNELS: { "agent-sync": 1, sandbox: 1 } }, /listed twice/],
-    [{ CHANNELS: { "Agent Sync!": 1 } }, /plain lowercase/],
+    [{ CHANNELS_DENY: { "agent-sync": 642232 } }, /JSON array of stream ids/],
+    [{ CHANNELS_DENY: ["642232"] }, /must be stream ids/],
+    [{ CHANNELS_DENY: [0] }, /must be stream ids/],
+    [{ CHANNELS_DENY: [642232, 642232] }, /listed twice/],
+    [{ CHANNELS_DENY: "[1," }, /not valid JSON/],
     [{ OWNER_USER_ID: "" }, /OWNER_USER_ID/],
     [{ OWNER_CLIENTS: "" }, /OWNER_CLIENTS/],
     [{ ZULIP_EMAIL_GROK_WEB: "" }, /ZULIP_EMAIL_GROK_WEB/],
@@ -111,6 +115,15 @@ test("config refuses loose or ambiguous allowlists", () => {
     [{ ZULIP_EMAIL_JET: "jay@simplewithus.zulipchat.com" }, /ZULIP_EMAIL_JET/],
   ];
   for (const [over, re] of bad) assert.throws(() => loadConfig(testEnv(over)), re, JSON.stringify(over));
+});
+
+test("CHANNELS_DENY is optional:  unset, empty, a JSON string or an array of stream ids", () => {
+  const { CHANNELS_DENY: _drop, ...without } = testEnv();
+  assert.deepEqual([...loadConfig(without).channelsDeny], []);
+  assert.deepEqual([...loadConfig(testEnv({ CHANNELS_DENY: "" })).channelsDeny], []);
+  assert.deepEqual([...loadConfig(testEnv({ CHANNELS_DENY: "[700001, 642167]" })).channelsDeny], [700001, 642167]);
+  assert.deepEqual([...loadConfig(testEnv({ CHANNELS_DENY: [700001] })).channelsDeny], [700001]);
+  assert.ok(Object.isFrozen(loadConfig(testEnv({ CHANNELS_DENY: [700001] })).channelsDeny));
 });
 
 test("config accepts the loopback callback, shared by two seats", () => {

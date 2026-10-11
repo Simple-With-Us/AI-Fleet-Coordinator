@@ -127,7 +127,8 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
 </table>
 ${replaceLine}
 <p>${sentences(
-    "This seat reads and posts in the allowlisted channels as its own Zulip bot, within its budgets.",
+    "This seat reads and posts in any public channel its Zulip bot is subscribed to, as that bot, within its budgets.",
+    "Private channels are never open to it.",
     "Every chat on that account will act as this seat.",
   )}</p>
 <form id="consent" method="post" action="/authorize">

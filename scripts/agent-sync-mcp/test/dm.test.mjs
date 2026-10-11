@@ -59,6 +59,7 @@ function harness({ scopes = ["zulip:read", "zulip:write"], paused = false } = {}
     },
     log: (row) => logs.push(JSON.stringify(row)),
     usersCache: new Map(),
+    channelsCache: new Map(),
   });
   return { fake, tools, clock, gate, logs, jay: user("Jay Wedgeworth"), codex: user("Codex"), cursor: user("Cursor"), mm: user("MiniMax"), gone, ana };
 }
@@ -469,10 +470,10 @@ test("inbox lists DMs sent to the bot as dm true, beside channel mentions, and n
   // since_id and limit apply to the merged list.
   assert.deepEqual(ok(await tools.call("inbox", { since_id: dm.id }), "inbox").ids, [group.id]);
   assert.deepEqual(ok(await tools.call("inbox", { limit: 2 }), "inbox").ids, [dm.id, group.id]);
-  // Every mention query is still channel-scoped.
+  // One mention query per call across every channel;  the private stream's mention is dropped by its stream id.
   for (const r of fake.requestsTo("GET", "messages")) {
     const narrow = JSON.parse(r.params.narrow);
-    if (narrow.some((o) => o.operator === "is" && o.operand === "mentioned")) assert.ok(narrow.some((o) => o.operator === "channel"), r.params.narrow);
+    if (narrow.some((o) => o.operator === "is" && o.operand === "mentioned")) assert.deepEqual(narrow, [{ operator: "is", operand: "mentioned" }]);
   }
   // The DM query leaves out the bot's own sends in the narrow itself, so they cannot use up the page.
   const dmQueries = fake.requestsTo("GET", "messages").map((r) => JSON.parse(r.params.narrow)).filter((n) => n.some((o) => o.operator === "is" && o.operand === "dm"));
