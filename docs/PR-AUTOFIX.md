@@ -85,9 +85,9 @@ The comment text only ever goes to a file, never to a step output or an environm
 
 A push made with `GITHUB_TOKEN` does not trigger other workflows.  After an autofix commit, the new head shows no checks, or checks stuck at `action_required`, until a human or an agent pushes again.  Agents must re-push (an empty commit is enough) or re-run the checks before arming auto-merge, and must not read "no checks" on an autofix head as green.
 
-## Not Covered Here
+## Fleet Autofix Coordination
 
-The fleet runs three autofix bots, and every caller uses the same workflow-level concurrency group, `pr-autofix-<owner/repo>-<pr>` with `cancel-in-progress: false`, so only one of them pushes to a PR at a time:
+The fleet runs three autofix bots (this PR Autofix, the Claude Code Autofix reusable, and Kody), and every caller uses the same workflow-level concurrency group, `pr-autofix-<owner/repo>-<pr>` with `cancel-in-progress: false`, so only one of them pushes to a PR at a time:
 
 - PR Autofix, this workflow.
 - Claude Code Autofix, `congress-trading-shared/.github/workflows/codex-autofix-reusable.yml` (anthropics/claude-code-action on MiniMax; the filename is left over from its DeepSeek "Codex Autofix" days).
@@ -95,4 +95,4 @@ The fleet runs three autofix bots, and every caller uses the same workflow-level
 
 GitHub keeps one running and one pending run per group, and a newer pending run replaces the older one.
 
-Codex's own fix feature runs in Codex's cloud, outside this queue.  Agents never ask Codex to fix a PR unless Jay agrees first (AGENT-SYNC.md, Landing Work).
+Codex's own fix feature runs in Codex's cloud, outside this queue.  Agents never ask Codex to fix a PR unless Jay agrees first (AGENT-SYNC.md, [Landing Work](#landing-work-commit-pr-review-merge-deploy)).  Asking Codex to *review* a PR stays allowed;  review findings are fixed by these fleet autofix bots or by the seat that owns the PR.
