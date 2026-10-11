@@ -90,8 +90,8 @@ class FixtureTests(unittest.TestCase):
 
     def test_findings_never_echo_the_text(self):
         _, out, _ = run(str(FIXTURES / "bad"))
-        for needle in ("Some Person", "Sample-Repo", "websocket"):
-            self.assertNotIn(needle, out.replace("agent-sync-websocket", ""))
+        for needle in ("Some Person", "Sample-Repo", "agent-sync-websocket"):
+            self.assertNotIn(needle, out)
 
 
 class LengthTests(unittest.TestCase):
@@ -345,6 +345,28 @@ class PrivateFolderTests(unittest.TestCase):
             code, out, _ = run("--private", str(folder))
             self.assertEqual(code, 1)
             self.assertIn("expected 0600", out)
+
+    def test_subfolders_are_checked_at_every_level(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = self.make(tmp, 0o700, 0o600)
+            nested = folder / "archive" / "2026-10"
+            nested.mkdir(parents=True)
+            (nested / "backup-health.md").write_text(clean(), encoding="utf-8")
+            os.chmod(nested / "backup-health.md", 0o600)
+            os.chmod(nested, 0o700)
+            os.chmod(folder / "archive", 0o700)
+            code, out, _ = run("--private", str(folder))
+            self.assertEqual(code, 0, out)
+            os.chmod(nested / "backup-health.md", 0o644)
+            code, out, _ = run("--private", str(folder))
+            self.assertEqual(code, 1)
+            self.assertIn("2026-10/backup-health.md", out)
+            self.assertIn("expected 0600", out)
+            os.chmod(nested / "backup-health.md", 0o600)
+            os.chmod(folder / "archive", 0o755)
+            code, out, _ = run("--private", str(folder))
+            self.assertEqual(code, 1)
+            self.assertIn("expected 0700", out)
 
     def test_a_folder_inside_a_git_worktree_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lint the fleet's routine prompt texts (open-loops Phase 1a, unit RT0).
 
-The routine texts are private (Simple-With-Us/fleet-loops-data, docs/routines/) and are pasted into Grok Bot
+The routine texts are private (kept in the canonical private repository, docs/routines/) and are pasted into Grok Bot
 or POSTed to BotFleet.  This checker keeps a text safe to run unattended.  Rules:
 
   too-long          more than 20,000 characters (BotFleet `sanitizeInput` caps a routine prompt there;  counted in
@@ -288,10 +288,16 @@ def check_private_dir(path: Path) -> list[Finding]:
         if (parent / ".git").exists():
             found.append(Finding(str(path), 0, "private-dir", "inside a git worktree (%s)" % parent.name))
             break
-    for item in sorted(path.iterdir()):
-        if item.is_file() and stat.S_IMODE(item.stat().st_mode) & 0o077:
-            found.append(Finding(str(item), 0, "private-dir",
-                                 "mode %04o, expected 0600" % stat.S_IMODE(item.stat().st_mode)))
+    for item in sorted(path.rglob("*")):        # every level:  text_files() reads subfolders too
+        if item.is_dir():
+            expected = "0700"
+        elif item.is_file():
+            expected = "0600"
+        else:
+            continue
+        item_mode = stat.S_IMODE(item.stat().st_mode)
+        if item_mode & 0o077:
+            found.append(Finding(str(item), 0, "private-dir", "mode %04o, expected %s" % (item_mode, expected)))
     return found
 
 

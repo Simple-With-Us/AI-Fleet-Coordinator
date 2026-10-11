@@ -6,7 +6,7 @@ The fleet's open-loops routines (a daily digest, a daily backup-health line and 
 
 | Place | What is there |
 | --- | --- |
-| The canonical private repository, `docs/routines/` path | The canonical copies.  A private repository with no GitHub Apps and no Actions;  see the ops note for the location.  Copied in by the open-loops live step L18a |
+| The canonical private repository (`docs/routines/`) | The canonical copies.  A private repository with no GitHub Apps and no Actions.  Its name is not written in this public repository:  it is recorded in Linear AFC-266 and in the pasted Grok Bot blocks.  Copied in by the open-loops live step L18a |
 | `/Users/jay/apps/state/routines-private/` | The Mac staging folder where they are written and checked first.  Mode 0700, files 0600, outside every worktree so no `git add -A` or idle commit can reach them |
 
 Never copy a text into a lane, into this repository, into a PR body or into chat.  Findings from the checker print a file, a line and a rule name and never the text.

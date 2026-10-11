@@ -34,7 +34,7 @@ jobs:
     # launcher variables, or lack the launcher clause.
     - name: Seat blocks in the rendered skill trees
       run: python3 scripts/check-seat-blocks.py
-    # The open-loops routine texts are private (fleet-loops-data, docs/routines/) and never enter this
+    # The open-loops routine texts are private (kept in the canonical private repository) and never enter this
     # repo.  Only their checker and its synthetic fixtures do:  the good set must pass, and each bad
     # fixture must fail on exactly its own rule (docs/open-loops/README.md).
     - name: Routine prompt checker
