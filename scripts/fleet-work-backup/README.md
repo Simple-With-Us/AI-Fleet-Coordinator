@@ -129,10 +129,12 @@ board's database not being backed up is not something to leave silent.
 Restic repository `s3:https://s3.eu-central-003.backblazeb2.com/<B2_FLEET_BUCKET_NAME>/fleet-work-backup`
 (the endpoint the fleet's litestream config already uses).  Tag `fleet-work`, host `jay-mac`, plus tag
 `partial` on a snapshot that was missing something (an unmounted volume, a denied path, files deferred by
-the gate).  Retention on every run, per host and tag set, so partial snapshots have their own slots and
-never push complete ones out:  `--keep-hourly 24 --keep-daily 14 --keep-weekly 8 --keep-monthly 6`.
-`forget` runs each time;  `--prune` at most once a day and `restic check` at most once a week, because
-list and delete calls are B2 transactions (board PD #388 is a B2 request spike).
+the gate).  Retention runs after every complete run, per host and tag set, so partial snapshots have their
+own slots and never push complete ones out:  `--keep-hourly 24 --keep-daily 14 --keep-weekly 8
+--keep-monthly 6`.  A partial run never runs `forget` or `prune` (`forget=skipped-partial` in its line), so a
+week of runs without the lanes cannot age out the last good state.  `--prune` runs at most once a day and
+`restic check` at most once a week, because list and delete calls are B2 transactions (board PD #388 is a
+B2 request spike).
 
 The bucket is shared (`litestream.yml` replicates the board database into it), so the application key
 **must** be limited to the file-name prefix `fleet-work-backup/`.  Two B2 facts that need a bucket setting,
@@ -193,8 +195,17 @@ LaunchAgent `com.jay.fleet-work-backup`, every 3 hours (`StartInterval` 10800), 
   sysctl is missing the swap rule stands alone.  This Mac has seen load 300 to 460, so after 8 consecutive
   skips (about 24 hours) the line carries `warn=no-backup-for-about-24h`;  `--ignore-pressure` overrides
   for a manual run.
-- **Not ok in a row:**  every run that makes no complete snapshot (error, partial, skip) is counted;  after 8
-  in a row the line carries `warn=no-complete-backup-for-about-24h` and every such line shows `last_ok=`.
+- **Not ok in a row:**  every run that makes no complete snapshot (error, partial, a pressure or low-disk skip;
+  not `lock-held`, which means another run is working) is counted;  after 8 in a row the line carries
+  `warn=no-complete-backup-for-about-24h` and every such line shows `last_ok=`.
+- **Alert:**  at that point the job posts once to Zulip through `agent-sync post --as CLAUDE` in the topic
+  `AFC 29c02bcb fleet-work-backup` (`#agent-sync`), with the count, the last complete run and the run line
+  (names and counts only).  It posts again at most once a day while runs stay not ok, and once more when a
+  complete run follows.  The CLI is `~/.local/bin/agent-sync` (launchd's `PATH` lacks it;
+  `FLEET_WORK_BACKUP_AGENT_SYNC` overrides).  A post with no `@`-mention wakes nobody, so set
+  `FLEET_WORK_BACKUP_ALERT_TO` in the plist (comma list of seats or people) to whoever should be woken;
+  `FLEET_WORK_BACKUP_ALERT_TOPIC` and `FLEET_WORK_BACKUP_ALERT_SEAT` change the topic and the seat.  A post that
+  fails is noted in the detail log (`alert-not-posted`).
 - **Disk:**  skips when the internal disk has under 5 GB free.
 - **Runtime cap:**  2 hours.
 - **Read-only git:**  `GIT_OPTIONAL_LOCKS=0`, `core.fsmonitor=false`, `safe.directory=*`, no fetch, no

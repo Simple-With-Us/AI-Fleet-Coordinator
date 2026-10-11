@@ -1050,7 +1050,7 @@ class RunCase(RunBase):
         line = self.log().splitlines()[-1]
         self.assertIn("status=partial", line)
         self.assertIn("restic-unreadable-files", line)
-        self.assertTrue(any(a.startswith("forget") for a in self.argv()))
+        self.assertFalse(any(a.startswith("forget") for a in self.argv()))      # a degraded run never drives retention
         self.assertIn("tag --add partial abcdef0123456789", self.argv())   # kept out of the good snapshots' retention
 
     def test_a_changed_file_is_rescanned_and_a_new_secret_is_caught(self):
@@ -1702,9 +1702,14 @@ class RunBehaviourCase(RunBase):
         self.assertIn("warn=volume-missing", line)
         backup = next(a for a in self.argv() if a.startswith("backup"))
         self.assertIn("--tag fleet-work --tag partial", backup)      # kept out of the good snapshots' retention
-        forget = next(a for a in self.argv() if a.startswith("forget"))
-        self.assertIn("--group-by host,tags", forget)
+        self.assertIn("forget=skipped-partial", line)
+        self.assertFalse(any(a.startswith("forget") for a in self.argv()))   # no forget or prune on a partial run
         self.assertIn("not mounted", self.cfg.detail_log_path.read_text())
+        (lanes / "Repo").unlink()
+        self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        forget = next(a for a in self.argv() if a.startswith("forget"))     # a complete run does, per host and tag set
+        self.assertIn("--group-by host,tags", forget)
+        self.assertIn("status=ok", self.log().splitlines()[-1])
 
     def test_a_good_run_carries_no_partial_tag(self):
         fwb.cmd_run(self.cfg, self.args)
@@ -1730,6 +1735,86 @@ class RunBehaviourCase(RunBase):
         os.environ.pop("STUB_FAIL")
         fwb.cmd_run(self.cfg, self.args)
         self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 0)
+
+    def stub_agent_sync(self, rc: int = 0) -> Path:
+        stub = self.tmp / "agent-sync"
+        stub.write_text("#!/bin/bash\n"
+                        'echo "$@" >> "$STUB_DIR/as-argv.log"\n'
+                        '{ cat; echo; echo "---"; } >> "$STUB_DIR/as-text.log"\n'
+                        f"exit {rc}\n")
+        stub.chmod(0o755)
+        return stub
+
+    def alerts(self) -> list[str]:
+        p = self.stubdir / "as-text.log"
+        return [t.strip() for t in p.read_text().split("---") if t.strip()] if p.exists() else []
+
+    def test_pressure_and_low_disk_skips_count_as_not_ok_but_a_lock_skip_does_not(self):
+        self.cfg.load_fn = lambda: 99.0
+        fwb.cmd_run(self.cfg, self.args)
+        self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 1)
+        self.cfg.load_fn = lambda: 1.0
+        self.cfg.min_free_bytes = 1 << 62
+        fwb.cmd_run(self.cfg, self.args)
+        self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 2)
+        self.assertIn("reason=low-disk", self.log().splitlines()[-1])
+        self.assertIn("not_ok_in_a_row=2", self.log().splitlines()[-1])
+        fd = os.open(str(self.cfg.state_dir / "lock"), os.O_CREAT | os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fwb.cmd_run(self.cfg, self.args)       # another run is working:  not a missed backup
+        finally:
+            os.close(fd)
+        self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 2)
+
+    def test_runs_that_stay_not_ok_post_one_alert_then_once_a_day_and_say_when_it_is_over(self):
+        self.cfg.agent_sync_bin = str(self.stub_agent_sync())
+        self.cfg.alert_to = ("Jay",)
+        t = [1_800_000_000.0]
+        self.cfg.now_fn = lambda: t[0]
+        os.environ["STUB_FAIL"] = "1"
+        try:
+            for _ in range(7):
+                fwb.cmd_run(self.cfg, self.args)
+                t[0] += 3 * 3600
+            self.assertEqual(self.alerts(), [])
+            self.cfg.load_fn = lambda: 99.0            # the eighth is a pressure skip:  it counts too
+            fwb.cmd_run(self.cfg, self.args)
+            self.cfg.load_fn = lambda: 1.0
+            self.assertEqual(len(self.alerts()), 1)
+            for _ in range(7):                         # the rest of that day:  no more posts
+                t[0] += 3 * 3600
+                fwb.cmd_run(self.cfg, self.args)
+            self.assertEqual(len(self.alerts()), 1)
+            t[0] += 3 * 3600
+            fwb.cmd_run(self.cfg, self.args)           # a day after the first alert
+            self.assertEqual(len(self.alerts()), 2)
+        finally:
+            os.environ.pop("STUB_FAIL", None)
+        t[0] += 3 * 3600
+        fwb.cmd_run(self.cfg, self.args)               # complete again
+        texts = self.alerts()
+        self.assertEqual(len(texts), 3)
+        self.assertIn("8 runs in a row with no complete snapshot", texts[0])
+        self.assertIn("reason=load1=99.0>60", texts[0])
+        self.assertIn(".\u00a0 ", texts[0])            # Zulip sentence gap
+        self.assertIn("back to a complete snapshot", texts[2])
+        argv = (self.stubdir / "as-argv.log").read_text().splitlines()
+        self.assertEqual(argv[0], f"post --as CLAUDE --session fwbackup --topic {fwb.ALERT_TOPIC} --to Jay -")
+        for secret in (PW, KEYID, APPKEY):
+            self.assertNotIn(secret, "".join(texts))
+        self.assertNotIn("last_alert", fwb.read_state(self.cfg))
+
+    def test_the_alert_uses_the_job_homes_agent_sync_only(self):
+        self.assertEqual(fwb.agent_sync_path(self.cfg), str(self.home / ".local" / "bin" / "agent-sync"))
+        self.assertFalse(fwb.post_alert(self.cfg, "x"))      # the temp home has none:  the suite never posts for real
+        os.environ["STUB_FAIL"] = "1"
+        try:
+            for _ in range(8):
+                fwb.cmd_run(self.cfg, self.args)
+        finally:
+            os.environ.pop("STUB_FAIL", None)
+        self.assertIn("alert-not-posted after 8 runs", self.cfg.detail_log_path.read_text())
 
     def test_skip_gitleaks_is_refused_outside_a_dry_run(self):
         self.args.skip_gitleaks = True

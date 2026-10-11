@@ -68,6 +68,8 @@ RETENTION = (("--keep-hourly", "24"), ("--keep-daily", "14"), ("--keep-weekly", 
 PRUNE_EVERY = 24 * 3600
 CHECK_EVERY = 7 * 24 * 3600
 SKIP_WARN_AFTER = 8  # consecutive skipped runs (about 24 hours at one run per 3 hours)
+ALERT_EVERY = 24 * 3600     # at most one agent-sync alert a day while runs stay not ok
+ALERT_TOPIC = "AFC 29c02bcb fleet-work-backup"
 
 # Directory names never entered (git discovery and the non-git file walk).
 SKIP_DIR_NAMES = {
@@ -204,6 +206,11 @@ class Config:
     repository: str = ""            # a restic repository to use instead of B2 (tests, a local mirror)
     launchctl_bin: str = "launchctl"
     check_wait_s: int = 90
+    agent_sync_bin: str = ""        # '' is <home>/.local/bin/agent-sync (launchd's PATH does not have it)
+    alert_seat: str = "CLAUDE"
+    alert_topic: str = ALERT_TOPIC
+    alert_to: tuple = ()            # seats or people to @-mention;  none means the post wakes nobody
+    alert_after: int = SKIP_WARN_AFTER
     load_fn: Optional[Callable[[], float]] = None
     swap_fn: Optional[Callable[[], Optional[float]]] = None
     pressure_fn: Optional[Callable[[], Optional[int]]] = None
@@ -276,6 +283,10 @@ def config_from_env() -> Config:
     cfg.s3_endpoint = os.environ.get("FLEET_WORK_BACKUP_S3_ENDPOINT", cfg.s3_endpoint)
     cfg.repository = os.environ.get("FLEET_WORK_BACKUP_REPOSITORY", cfg.repository)
     cfg.launchctl_bin = os.environ.get("FLEET_WORK_BACKUP_LAUNCHCTL", cfg.launchctl_bin)
+    cfg.agent_sync_bin = os.environ.get("FLEET_WORK_BACKUP_AGENT_SYNC", cfg.agent_sync_bin)
+    cfg.alert_seat = os.environ.get("FLEET_WORK_BACKUP_ALERT_SEAT", cfg.alert_seat)
+    cfg.alert_topic = os.environ.get("FLEET_WORK_BACKUP_ALERT_TOPIC", cfg.alert_topic)
+    cfg.alert_to = tuple(t.strip() for t in os.environ.get("FLEET_WORK_BACKUP_ALERT_TO", "").split(",") if t.strip())
     for env, attr, cast in (("FLEET_WORK_BACKUP_LOAD_LIMIT", "load_limit", float),
                             ("FLEET_WORK_BACKUP_SWAP_LIMIT", "swap_limit", float),
                             ("FLEET_WORK_BACKUP_WORKERS", "workers", int),
@@ -2420,20 +2431,73 @@ def cmd_run(cfg: Config, args) -> int:
                 pass
 
 
+def bump_not_ok(state: dict) -> int:
+    """Count one more run with no complete snapshot (an error, a partial snapshot, a pressure or low-disk skip).
+    Every such path goes through here, so the warning and the alert hang off one counter."""
+    n = int(state.get("consecutive_not_ok", 0)) + 1
+    state["consecutive_not_ok"] = n
+    return n
+
+
+def agent_sync_path(cfg: Config) -> str:
+    return cfg.agent_sync_bin or str(cfg.home / ".local" / "bin" / "agent-sync")
+
+
+def post_alert(cfg: Config, text: str) -> bool:
+    """Post to the fleet's Zulip through agent-sync as this job's seat.  Never raises;  False when it did not post."""
+    exe = agent_sync_path(cfg)
+    if not os.access(exe, os.X_OK):
+        return False
+    cmd = [exe, "post", "--as", cfg.alert_seat, "--session", "fwbackup", "--topic", cfg.alert_topic]
+    for who in cfg.alert_to:
+        cmd += ["--to", who]
+    cmd.append("-")
+    try:
+        p = subprocess.run(cmd, input=text.encode("utf-8"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=60)
+        return p.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def alert_after_line(cfg: Config, state: dict, line: str) -> None:
+    """After ``alert_after`` runs in a row with no complete snapshot, say so in Zulip, then at most once a day while
+    it lasts;  the first good run after an alert says it is over.  The run line carries names and counts only."""
+    n = int(state.get("consecutive_not_ok", 0))
+    last = float(state.get("last_alert", 0) or 0)
+    gap = "\u00a0 "              # Zulip renders Markdown:  a sentence gap is U+00A0 plus a space
+    if n == 0:
+        if last:
+            post_alert(cfg, f"fleet-work-backup on {cfg.host} is back to a complete snapshot.{gap}`{line}`")
+            state.pop("last_alert", None)
+        return
+    if n < cfg.alert_after or (last and cfg.now() - last < ALERT_EVERY):
+        return
+    text = (f"fleet-work-backup on {cfg.host}:  {n} runs in a row with no complete snapshot (last complete:  "
+            f"{state.get('last_ok_text', 'never')}).{gap}Latest run line:  `{line}`.{gap}The detail log is "
+            f"~/Library/Logs/fleet-work-backup.detail.log, and README.md in scripts/fleet-work-backup says what each "
+            f"reason and warning means.")
+    if post_alert(cfg, text):
+        state["last_alert"] = cfg.now()
+    else:
+        detail_log(cfg, [f"alert-not-posted after {n} runs (agent-sync at {agent_sync_path(cfg)} missing or failed)"])
+
+
 def log_not_ok(cfg: Config, **fields) -> str:
     """A log line for a run that produced no good snapshot, with the running count and the last good one."""
     state = read_state(cfg)
-    n = int(state.get("consecutive_not_ok", 0)) + 1
-    state["consecutive_not_ok"] = n
+    n = bump_not_ok(state)
+    warn = [w for w in str(fields.pop("warn", "") or "").split(",") if w]
+    if n >= SKIP_WARN_AFTER:
+        warn.append("no-complete-backup-for-about-24h")
+    line = log_line(cfg, **fields, not_ok_in_a_row=n if n > 1 else "", warn=",".join(warn),
+                    last_ok=state.get("last_ok_text", "never"))
+    alert_after_line(cfg, state, line)
     try:
         write_state(cfg, state)
     except OSError:
         pass
-    warn = [w for w in str(fields.pop("warn", "") or "").split(",") if w]
-    if n >= SKIP_WARN_AFTER:
-        warn.append("no-complete-backup-for-about-24h")
-    return log_line(cfg, **fields, not_ok_in_a_row=n if n > 1 else "", warn=",".join(warn),
-                    last_ok=state.get("last_ok_text", "never"))
+    return line
 
 
 def _run(cfg: Config, args, held: list[int]) -> int:
@@ -2455,10 +2519,12 @@ def _run(cfg: Config, args, held: list[int]) -> int:
         why = pressure_reason(cfg) if not args.ignore_pressure else None
         if why:
             state["consecutive_skips"] = int(state.get("consecutive_skips", 0)) + 1
-            write_state(cfg, state)
+            bump_not_ok(state)
             warn = "no-backup-for-about-24h" if state["consecutive_skips"] >= SKIP_WARN_AFTER else ""
-            log_line(cfg, status="skip", reason=why, consecutive=state["consecutive_skips"], warn=warn,
-                     last_ok=state.get("last_ok_text", "never"))
+            line = log_line(cfg, status="skip", reason=why, consecutive=state["consecutive_skips"], warn=warn,
+                            last_ok=state.get("last_ok_text", "never"))
+            alert_after_line(cfg, state, line)
+            write_state(cfg, state)
             return 0
         if not restic_path(cfg):
             log_not_ok(cfg, status="error", reason="restic-missing", hint="brew install restic")
@@ -2468,8 +2534,12 @@ def _run(cfg: Config, args, held: list[int]) -> int:
             log_not_ok(cfg, status="error", reason="missing-credentials", names=",".join(missing))
             return 2
         if not disk_ok(cfg):
-            log_line(cfg, status="skip", reason="low-disk", need=fmt_bytes(cfg.min_free_bytes),
-                     last_ok=state.get("last_ok_text", "never"))
+            state = read_state(cfg)
+            n = bump_not_ok(state)
+            line = log_line(cfg, status="skip", reason="low-disk", need=fmt_bytes(cfg.min_free_bytes),
+                            not_ok_in_a_row=n if n > 1 else "", last_ok=state.get("last_ok_text", "never"))
+            alert_after_line(cfg, state, line)
+            write_state(cfg, state)
             return 0
         if cfg.max_runtime:
             def _alarm(*_):
@@ -2577,12 +2647,15 @@ def _run(cfg: Config, args, held: list[int]) -> int:
                 run_restic(cfg, env, "tag", "--add", "partial", res["snapshot_full"], timeout=300)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-    maint = {"forget": "-", "prune": "-", "check": "-"}
-    try:
-        maint = restic_maintenance(cfg, env, state)
-    except (OSError, subprocess.TimeoutExpired):
-        maint["forget"] = "fail"
     status = "partial" if (partial or unreadable) else "ok"
+    # Retention runs only after a complete snapshot:  a degraded one (a volume gone, a path denied, files deferred)
+    # never decides what is forgotten or pruned, so a week of lane-less runs cannot age out the last good state.
+    maint = {"forget": "skipped-partial", "prune": "-", "check": "-"}
+    if status == "ok":
+        try:
+            maint = restic_maintenance(cfg, env, state)
+        except (OSError, subprocess.TimeoutExpired):
+            maint = {"forget": "fail", "prune": "-", "check": "-"}
     state["consecutive_skips"] = 0
     state["last_success"] = cfg.now()
     state["last_success_text"] = stamp(cfg.now())
@@ -2591,14 +2664,15 @@ def _run(cfg: Config, args, held: list[int]) -> int:
         state["last_ok"] = cfg.now()
         state["last_ok_text"] = stamp(cfg.now())
     else:
-        state["consecutive_not_ok"] = int(state.get("consecutive_not_ok", 0)) + 1
-        if state["consecutive_not_ok"] >= SKIP_WARN_AFTER:
+        if bump_not_ok(state) >= SKIP_WARN_AFTER:
             warns.append("no-complete-backup-for-about-24h")
+    line = log_line(cfg, status=status, snapshot=res["snapshot"] or "?", added=fmt_bytes(res["added"]),
+                    forget=maint["forget"], prune=maint["prune"], check=maint["check"],
+                    elapsed=f"{time.time() - t0:.0f}s", warn=",".join(warns), grant=grant,
+                    not_ok_in_a_row=state["consecutive_not_ok"] if state.get("consecutive_not_ok", 0) > 1 else "",
+                    last_ok=(state.get("last_ok_text", "never") if status != "ok" else ""), **common)
+    alert_after_line(cfg, state, line)
     write_state(cfg, state)
-    log_line(cfg, status=status, snapshot=res["snapshot"] or "?", added=fmt_bytes(res["added"]),
-             forget=maint["forget"], prune=maint["prune"], check=maint["check"], elapsed=f"{time.time() - t0:.0f}s",
-             warn=",".join(warns), grant=grant, last_ok=(state.get("last_ok_text", "never") if status != "ok" else ""),
-             **common)
     shutil.rmtree(stage_root, ignore_errors=True)
     return 0
 
