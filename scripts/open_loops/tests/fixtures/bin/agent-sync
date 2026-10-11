@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""A fake `agent-sync` for the open-loops tests.  Scenario file $OL_SCENARIO -> {"agent-sync": {...}}:
+
+  whoami, whoami_rc          the JSON `whoami --json` prints, and its exit status
+  dm_read, dm_read_rc        the messages `dm-read` prints (one JSON object per line), and its exit status
+  dm_rc, dm_stderr, dm_out   the exit status, stderr and JSON `dm` answers with
+  post_rc                    the exit status of `post`
+  topics                     the list `topics --json` prints
+  read, read_rc              {topic: [messages]} and {topic: exit status} for `read --topic`
+  asks_rc                    the exit status of `asks ...` (2 is "no such command", as today)
+
+Every command line is first run through the REAL agent-sync argument parser (scripts/agent_sync/cli.py,
+found through $OL_SCRIPTS), so a flag agent-sync does not have fails here exactly as it would live.  Each call
+is logged to $OL_LOG as JSON with the contents and mode of any --body-file read at call time."""
+import json
+import os
+import stat
+import sys
+
+argv = sys.argv[1:]
+scenario = json.load(open(os.environ["OL_SCENARIO"]))["agent-sync"]
+sys.path.insert(0, os.environ["OL_SCRIPTS"])
+if argv[:1] != ["asks"]:
+    from agent_sync import cli as real_cli
+    try:
+        real_cli.build_parser().parse_args(argv)
+    except SystemExit as exc:
+        sys.stderr.write("fake agent-sync: the real parser refused these arguments\n")
+        sys.exit(2 if exc.code in (None, 0) else exc.code)
+
+entry = {"argv": argv}
+if "--body-file" in argv:
+    path = argv[argv.index("--body-file") + 1]
+    info = os.stat(path)
+    entry["body"] = open(path, encoding="utf-8").read()
+    entry["body_mode"] = oct(stat.S_IMODE(info.st_mode))
+    entry["dir_mode"] = oct(stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode))
+with open(os.environ["OL_LOG"], "a") as fh:
+    fh.write(json.dumps(entry) + "\n")
+
+command = argv[0] if argv else ""
+if command == "whoami":
+    print(json.dumps(scenario["whoami"]))
+    sys.exit(scenario.get("whoami_rc", 0))
+if command == "dm-read":
+    for message in scenario.get("dm_read", []):
+        print(json.dumps(message))
+    sys.exit(scenario.get("dm_read_rc", 0))
+if command == "dm":
+    sys.stderr.write(scenario.get("dm_stderr", ""))
+    if scenario.get("dm_rc", 0) == 0:
+        print(json.dumps(scenario.get("dm_out", {"id": 4242, "type": "direct", "to": [7]})))
+    sys.exit(scenario.get("dm_rc", 0))
+if command == "post":
+    sys.stderr.write(scenario.get("post_stderr", ""))
+    sys.exit(scenario.get("post_rc", 0))
+if command == "topics":
+    print(json.dumps(scenario.get("topics", [])))
+    sys.exit(0)
+if command == "read":
+    topic = argv[argv.index("--topic") + 1]
+    rc = scenario.get("read_rc", {}).get(topic, 0)
+    for message in scenario.get("read", {}).get(topic, []):
+        print(json.dumps(message))
+    sys.exit(rc)
+if command == "asks":
+    sys.stderr.write("agent-sync: error: argument COMMAND: invalid choice: 'asks'\n")
+    sys.exit(scenario.get("asks_rc", 2))
+sys.exit(2)

@@ -17,7 +17,7 @@ fleet-facts gather [--part NAME]... [--no-mac] [--json]
 | `backup` | P1 `fleet_work_backup.py health --json` (`backup.py`) | yes |
 | `asks` | C3 `agent-sync asks status --json` | yes |
 | `report` | C4 `~/apps/claim-expiry/state/report-latest.json` | yes |
-| `needs_owner` | C6 `needs-owner list --json` | yes |
+| `needs_owner` | C6 `needs-owner list --all --json` (every labelled issue, answered and closed ones too) | yes |
 | `consult` | C7 `consult status --all --json` | yes |
 
 With no `--part` every part runs.  `--no-mac` is for a cloud host:  every Mac-only part is marked absent and is
@@ -114,7 +114,41 @@ run with `python3 -I` cannot import what it did not copy, and `-I` leaves the sc
 `~/.secrets`.  `mac-facts-publish` calls `fleet-facts publish-mac`, which F7 builds;  until then it exits 3.
 
 Another unit that imports `fleet_facts` (C2-1, C4-1, C5) copies this package and the two F3 helpers into its
-own stable folder the same way.
+own stable folder the same way.  C2-1 (`scripts/open_loops/install.sh`, stable copy `~/apps/open-loops`) does, and adds
+a third helper, `textfmt.py`, which `safety.textfmt()` loads only when asked (the DM lint's sentence-gap rule);  this
+package's own stable copy does not carry it.
+
+## `fleet-facts verify` (built by F7;  the contract C2-1 relies on)
+
+`open-loops gather --mac-facts` reads the signed `gb/mac-facts.json` and uses it only if `fleet-facts verify FILE`
+exits 0.  F7 builds the command to this contract:
+
+* `fleet-facts verify FILE` exits **0** only when the file's `sig` is the hex HMAC-SHA256, with
+  `FLEET_FACTS_SIGNING_KEY`, of the file's canonical JSON without `sig`.
+* Any other exit is "not verified":  **1** the signature is wrong or missing, **2** a usage error (what a `fleet-facts`
+  without the command answers today), **3** the key is unavailable.
+* The key comes in the environment of the command, never on the command line, and is never printed.
+* The file is read once, from the path given.  The caller then uses the very bytes it handed over.
+
+### The signed Mac facts file (what F7 publishes as `gb/mac-facts.json`;  the shape C2-1 reads)
+
+A `fleet-facts gather` document restricted to its Mac parts, plus `sig`.  `open-loops gather --no-mac --mac-facts` uses
+it only when `fleet-facts verify` accepts the very bytes and it is fresh;  anything else is ignored and the Mac parts
+show as Missing.  Shape:
+
+* a JSON object with a time it was built in `generated_at` (or `published_at`, or `built_at`), ISO 8601 with a zone,
+  **less than 9 hours old** and not in the future (F7 publishes every 3 hours, so one missed run is still fresh);
+* `sources`: `{part: {"status": "ok" | "absent" | "failed", "reason": ...}}` for each part below;
+* `lanes`: the `lane doctor` report part, `{"attention": [...], "total": N}` (each record carries `repo`, `branch`,
+  `unpushed`, `dirty_tracked`, `dirty_untracked`, `never_pushed`, `safety` and, when the doctor has them,
+  `last_change_at`, `dirty_oldest_age_hours`, `never_pushed_age_hours`);  a record with none of the age fields cannot be
+  aged and the digest says so;
+* `autopush`: `{"document": <what fleet-autopush status --json prints>}`;
+* `needs_owner` (optional): `{"document": <what needs-owner list --all --json prints>}`;
+* `sig`: the HMAC-SHA256 above.
+
+A part whose `sources` status is `ok` must have its data key, or it is read as failed.  Missing parts are Missing in the
+digest, never zero.
 
 ## Tests
 

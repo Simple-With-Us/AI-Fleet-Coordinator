@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__all__ = ["HelpersMissing", "clean", "safe_ref", "safe_path", "safe_token", "redact", "render", "textsafe", "secretscan"]
+__all__ = ["HelpersMissing", "clean", "safe_ref", "safe_path", "safe_token", "redact", "render", "textsafe", "secretscan", "textfmt"]
 
 
 class HelpersMissing(RuntimeError):
@@ -58,6 +58,13 @@ def textsafe():
 
 def secretscan():
     return _load("secretscan")
+
+
+def textfmt():
+    """`agent_sync/textfmt.py` (sentence_gap), for a caller that needs the same gap rule agent-sync applies on
+    the way out (open-loops C2-1's DM lint).  Loaded only when asked for:  fleet-facts itself never needs it,
+    so its stable copy does not carry the file."""
+    return _load("textfmt")
 
 
 def clean(value: Any, cap: int = 200) -> str:
