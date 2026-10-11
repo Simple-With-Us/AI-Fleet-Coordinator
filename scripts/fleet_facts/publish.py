@@ -439,8 +439,8 @@ def _cycle(*, run: Runner, now: datetime, key_provider: Callable[[], str], load1
             failure = exc.reason
             break       # a later file may depend on this one (the JSON carries the list's hash)
     if failure:
-        if results.get(FULL_LIST) in ("created", "updated"):
-            # The new list landed and the facts that describe it did not:  do not leave the new list beside the old facts.
+        if results.get(FULL_LIST) in ("created", "updated") and results.get(GB_FACTS) not in ("created", "updated"):
+            # The new list landed but the GB facts (which carry its sha256) did not:  do not leave the new list beside the old facts.
             note = unavailable_text(now, "the facts file could not be written, so this list was withdrawn").encode("utf-8")
             try:
                 writer.put(FULL_LIST, note, "mac-facts: %s withdrawn" % FULL_LIST)

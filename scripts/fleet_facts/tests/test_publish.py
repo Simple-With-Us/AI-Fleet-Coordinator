@@ -306,6 +306,19 @@ class Published(Sandbox):
         self.assertEqual((outcome.result, outcome.files), ("failed", {p.FULL_LIST: "failed"}))
         self.assertEqual(len(self.gh.puts), 2, "two attempts at the list, then nothing more")
 
+    def test_a_failure_on_only_the_full_copy_keeps_the_list_standing(self):
+        self.cycle()                                    # an earlier good run:  the old list and the old facts
+        old_facts = self.gh.written(p.GB_FACTS)
+        new_list_text = "# Full list\n\n- Newer item\n"
+        self.machine.list_text = new_list_text
+        self.gh.put_fail[p.FULL_FACTS] = ["500", "500"]
+        outcome = self.cycle(now=NOW.replace(hour=20))
+        self.assertEqual((outcome.result, outcome.exit_code), ("failed", 4))
+        self.assertEqual(outcome.files, {p.FULL_LIST: "updated", p.GB_FACTS: "updated", p.FULL_FACTS: "failed"})
+        self.assertEqual(self.gh.written(p.FULL_LIST).decode(), new_list_text,
+                         "the GB facts already signed this list's sha256, so the list must not be withdrawn")
+        self.assertNotEqual(self.gh.written(p.GB_FACTS), old_facts, "the new GB facts did land")
+
     def test_a_list_with_a_mac_path_in_it_is_scrubbed_before_it_is_hashed_and_written(self):
         self.machine.list_text = "# Full list\n\n- lane at " + USERS + "/apps/lanes/Example/claude-x and ~/apps/notes\n"
         self.cycle()
