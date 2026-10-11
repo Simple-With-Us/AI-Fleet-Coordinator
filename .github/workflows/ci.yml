@@ -24,6 +24,11 @@ jobs:
     - name: agent-sync CLI tests
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
+    # Infisical knobs for the open-loops jobs:  fake-CLI fetch, last-known-good, secrets fail
+    # closed, local files only narrow, and INFISICAL.md equal to the registry.
+    - name: fleet_knobs tests
+      run: |
+        cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t . -v
     # Fleet skills pack: canonical pin-or-fail identity block, every rendered
     # tree equal to a fresh render, and the AGENT-SYNC roster the pack mirrors.
     - name: Fleet skill identity tests
