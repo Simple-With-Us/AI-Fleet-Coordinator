@@ -63,7 +63,7 @@ if [ -z "$TAG" ]; then
 fi
 # Registry keys are upper case (parse_seat_registry upper-cases every seatApps key), so
 # canonicalise the tag here or a lower-case --tag writes a duplicate lower-case key.
-TAG="${TAG^^}"
+TAG="$(printf '%s' "$TAG" | tr '[:lower:]' '[:upper:]')"   # not ${TAG^^}:  macOS /bin/bash is 3.2
 NOTES_NAME="${NOTES_NAME:-$TAG}"
 SUFFIX="${SUFFIX:-$(echo "$TAG" | tr '[:upper:]' '[:lower:]')}"
 PREFIX="${PREFIX:-$SUFFIX/}"

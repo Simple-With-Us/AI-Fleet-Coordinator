@@ -459,9 +459,9 @@ class OnboardScriptTests(unittest.TestCase):
         self.registry = self.tmp / "fleet-apps.json"
         shutil.copy(REGISTRY_PATH, self.registry)
 
-    def run_script(self, *args: str) -> subprocess.CompletedProcess:
+    def run_script(self, *args: str, shell: str = "bash") -> subprocess.CompletedProcess:
         env = {k: v for k, v in os.environ.items() if k not in ("AGENT_SEAT", "AGENT_LAUNCH_SEAT", "AGENT_LAUNCHER")}
-        return subprocess.run(["bash", str(self.tmp / "scripts" / "onboard-new-agent.sh"), *args],
+        return subprocess.run([shell, str(self.tmp / "scripts" / "onboard-new-agent.sh"), *args],
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, timeout=60)
 
     def before(self) -> str:
@@ -523,6 +523,36 @@ class OnboardScriptTests(unittest.TestCase):
                 self.assertIn("seat KIMI is retired", got.stdout)
                 self.assertEqual(self.before(), was)
         self.assertEqual(load_check().seat_apps_errors(json.loads(self.before())), [])
+
+    def test_the_tag_is_upper_cased_so_a_lower_case_tag_never_writes_a_duplicate_key(self) -> None:
+        was = self.before()
+        got = self.run_script("--tag", "codex")
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertIn("already gives CODEX the app codex", got.stdout)
+        self.assertEqual(self.before(), was)
+        got = self.run_script("--tag", "newseat", "--app", "newseat-code")
+        self.assertEqual(got.returncode, 0, got.stderr)
+        by_seat = json.loads(self.before())["seatApps"]["bySeat"]
+        self.assertEqual(by_seat["NEWSEAT"], "newseat-code")
+        self.assertNotIn("newseat", by_seat)
+
+    def test_the_script_runs_under_the_system_bash(self) -> None:
+        """macOS /bin/bash is 3.2, which has no ${VAR^^}.  The script is started by `#!/usr/bin/env bash`, so a
+        PATH without Homebrew's bash must still work.  On Linux /bin/bash is a modern bash and this still holds."""
+        if not os.path.exists("/bin/bash"):
+            self.skipTest("no /bin/bash")
+        got = self.run_script("--tag", "codex", shell="/bin/bash")
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertNotIn("bad substitution", got.stderr)
+        self.assertIn("already gives CODEX the app codex", got.stdout)
+
+    def test_the_ignored_apps_flag_takes_a_value_only_when_one_follows(self) -> None:
+        for args in (("--apps", "--tag", "CODEX"), ("--apps", "old-value", "--tag", "CODEX"), ("--tag", "CODEX", "--apps")):
+            with self.subTest(args=args):
+                got = self.run_script(*args)
+                self.assertEqual(got.returncode, 0, got.stderr)
+                self.assertNotIn("unknown arg", got.stderr)
+                self.assertIn("--apps is ignored", got.stderr)
 
     def test_a_seat_with_a_row_but_no_app_gets_its_app_from_the_flag(self) -> None:
         data = json.loads(self.before())
