@@ -79,6 +79,16 @@ class Minimize(unittest.TestCase):
         self.assertEqual(out, "log [path] and [path], cache [path], [path], [path]")
         self.assertFalse(m.mac_path_in(out))
 
+    def test_a_file_url_is_a_local_path_whatever_folder_follows(self):
+        text = "open file://" + USERS + "/apps/x and file:///tmp/y and file://localhost/etc/z"
+        out = m.minimize({"reason": text})["reason"]
+        self.assertEqual(out, "open [path] and [path] and [path]")
+        self.assertTrue(m.mac_path_in(text))
+        self.assertFalse(m.mac_path_in(out))
+        with self.assertRaises(m.PathLeak):
+            m.minimize({"file:///anything": 1})
+        self.assertEqual(m.minimize({"reason": "see https://example.test/" + "Users" + "/x"}), {"reason": "see https://example.test/" + "Users" + "/x"}, "a remote link is not")
+
     def test_a_folder_name_inside_a_branch_or_a_link_is_not_a_path(self):
         doc = {"branch": "fix/tmp/x", "reason": "see https://example.test/etc/x and a/var/b, also /varnish", "repo": "o/opt"}
         self.assertEqual(m.minimize(doc), doc)
