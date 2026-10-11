@@ -16,7 +16,7 @@ CODEX on the existing Coolify host has Codex installed but lacks the fleet CLIs 
 - Actual-runtime integration installs the real allowlist into a disposable home and checks CLI behavior, missing-auth refusal, and the real MCP dispatcher/catalogue without an authenticated tools object.  Generated deployment-wrapper execution is a Linux-only test and is mandatory in Ubuntu CI; Mac runs retain static isolation-flag checks.
 - An initial real-runtime smoke failed under heavy Mac resource pressure.  Instrumented reruns passed all four cases at the original 12-second bounds; no timeout was increased.  Diagnostics now identify the failing case and distinguish timeout from a process-start error without revealing captured output.
 - Actual-runtime run on Mac: 6 tests, 5 passed and 1 explicit Linux-wrapper execution skip.  The helper copied into the lane was checked for byte equality and valid syntax.
-- Publication and live installation are separate gates.  This source rollout records no completed deployment yet.
+- Publication and live installation are separate gates.  Deployment receipts and current host status are recorded in OPS-933 and the local `[AFC, Codex] Coolify Fleet CLI Sync` operator note.
 
 ## Boundaries and follow-up
 
