@@ -130,9 +130,9 @@ class Install(unittest.TestCase):
 
     def test_the_stable_copy_signs_with_the_key_k1_gives_it_and_verify_checks_it_with_the_environment(self):
         self.install("--apply")
-        key = "fixture-signing-key-0123456789abcdefABCDEF"
+        signer = "fixture-signing-key-0123456789abcdefABCDEF"
         bin_dir = self.fake_infisical("printf '{\"FLEET_FACTS_SIGNING_KEY\": \"%s\"}' \"$FAKE_SIGNING_KEY\"")
-        env = {"HOME": str(self.home), "PATH": "%s:/usr/bin:/bin" % bin_dir, "FAKE_SIGNING_KEY": key}
+        env = {"HOME": str(self.home), "PATH": "%s:/usr/bin:/bin" % bin_dir, "FAKE_SIGNING_KEY": signer}
         out = Path(self.tmp.name) / "dry"
         proc = subprocess.run([sys.executable, "-I", str(self.link), "publish-mac", "--dry-run", "--out", str(out)],
                               capture_output=True, text=True, env=env, timeout=120)
@@ -140,12 +140,12 @@ class Install(unittest.TestCase):
         signed = out / "gb" / "mac-facts.json"
         self.assertTrue(signed.is_file())
         good = subprocess.run([sys.executable, "-I", str(self.link), "verify", str(signed), "--path", "gb/mac-facts.json"],
-                              capture_output=True, text=True, env={"HOME": str(self.home), "PATH": "/usr/bin:/bin", "FLEET_FACTS_SIGNING_KEY": key}, timeout=60)
+                              capture_output=True, text=True, env={"HOME": str(self.home), "PATH": "/usr/bin:/bin", "FLEET_FACTS_SIGNING_KEY": signer}, timeout=60)
         self.assertEqual(good.returncode, 0, good.stderr)
         # verify needs no Infisical and no fleet_knobs:  a copy without the package still checks a file
         (self.stable / "fleet_knobs" / "knobs.py").unlink()
         again = subprocess.run([sys.executable, "-I", str(self.link), "verify", str(signed)],
-                               capture_output=True, text=True, env={"HOME": str(self.home), "PATH": "/usr/bin:/bin", "FLEET_FACTS_SIGNING_KEY": key}, timeout=60)
+                               capture_output=True, text=True, env={"HOME": str(self.home), "PATH": "/usr/bin:/bin", "FLEET_FACTS_SIGNING_KEY": signer}, timeout=60)
         self.assertEqual(again.returncode, 0, again.stderr)
         # and publish says how to fix the copy
         broken = subprocess.run([sys.executable, "-I", str(self.link), "publish-mac", "--dry-run", "--out", str(out)],

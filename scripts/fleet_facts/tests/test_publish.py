@@ -26,7 +26,7 @@ from fleet_facts.runner import Result
 from .builders import doctor_checkout, doctor_report
 from .ghfake import REPO, FakeGitHub
 
-KEY = "fixture-signing-key-0123456789abcdefABCDEF"
+SIGNER = "fixture-signing-key-0123456789abcdefABCDEF"
 NOW = datetime(2026, 10, 11, 17, 30, 0, tzinfo=timezone.utc)      # Sun, Oct 11, 12:30pm Central
 USERS = "/" + "Users" + "/someone"
 LANE_PATH = USERS + "/apps/lanes/Example/claude-stale-lane"
@@ -112,7 +112,7 @@ class Sandbox(unittest.TestCase):
         path.chmod(0o755)
 
     def cycle(self, **over):
-        args = dict(run=self.machine, now=NOW, key_provider=lambda: KEY, load1=lambda: 1.0, sleep=self.sleeps.append, repo=REPO,
+        args = dict(run=self.machine, now=NOW, key_provider=lambda: SIGNER, load1=lambda: 1.0, sleep=self.sleeps.append, repo=REPO,
                     gh="gh", apps_provider=lambda: [])
         args.update(over)
         with contextlib.redirect_stdout(io.StringIO()) as out:
@@ -132,7 +132,7 @@ class Published(Sandbox):
         self.assertEqual(outcome.files, {p.FULL_LIST: "created", p.GB_FACTS: "created", p.FULL_FACTS: "created"})
         for rel in (p.GB_FACTS, p.FULL_FACTS):
             document = json.loads(self.gh.written(rel))
-            self.assertTrue(signing.verify(document, KEY, signed_for=rel), rel)
+            self.assertTrue(signing.verify(document, SIGNER, signed_for=rel), rel)
             self.assertEqual(document["generated_at"], "2026-10-11T17:30:00Z")
             self.assertEqual(document["parts"], list(p.PARTS))
         self.assertEqual(self.gh.written(p.FULL_LIST).decode(), self.machine.list_text)
@@ -199,7 +199,7 @@ class Published(Sandbox):
         self.assertEqual(stat.S_IMODE((self.state / "mac-facts-publish.json").stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(self.state.stat().st_mode), 0o700)
         everything = json.dumps(status) + self.log
-        for needle in (KEY, "claude-stale-lane", "claude/stale-branch", "diverged", "someone"):
+        for needle in (SIGNER, "claude-stale-lane", "claude/stale-branch", "diverged", "someone"):
             self.assertNotIn(needle, everything)
         self.assertIn("12:30pm", self.log)
 
@@ -454,7 +454,7 @@ class DryRun(Sandbox):
         for rel in (p.FULL_LIST, p.GB_FACTS, p.FULL_FACTS):
             self.assertEqual(stat.S_IMODE((out / rel).stat().st_mode), 0o600, rel)
         self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o700)
-        self.assertTrue(signing.verify(json.loads((out / p.GB_FACTS).read_text()), KEY, signed_for=p.GB_FACTS))
+        self.assertTrue(signing.verify(json.loads((out / p.GB_FACTS).read_text()), SIGNER, signed_for=p.GB_FACTS))
         self.assertFalse((self.state / "mac-facts-publish.json").exists(), "a dry run does not overwrite the real status")
 
 
@@ -465,7 +465,7 @@ class OneFile(Sandbox):
         return str(path)
 
     def publish(self, rel, local, **over):
-        args = dict(run=self.gh, key_provider=lambda: KEY, repo=REPO, gh="gh", apps_provider=lambda: [], sleep=self.sleeps.append)
+        args = dict(run=self.gh, key_provider=lambda: SIGNER, repo=REPO, gh="gh", apps_provider=lambda: [], sleep=self.sleeps.append)
         args.update(over)
         return p.publish_file(rel, local, **args)
 
@@ -473,7 +473,7 @@ class OneFile(Sandbox):
         outcome = self.publish("gb/sweep.json", self.local("a.json", json.dumps({"generated_at": iso(1), "n": 1})))
         self.assertEqual((outcome.result, outcome.files), ("published", {"gb/sweep.json": "created"}))
         document = json.loads(self.gh.written("gb/sweep.json"))
-        self.assertTrue(signing.verify(document, KEY, signed_for="gb/sweep.json"))
+        self.assertTrue(signing.verify(document, SIGNER, signed_for="gb/sweep.json"))
 
     def test_a_markdown_file_is_scanned_and_written_as_it_is(self):
         outcome = self.publish("gb/notes.md", self.local("a.md", "# Notes\n"))
@@ -492,9 +492,9 @@ class OneFile(Sandbox):
         self.assertEqual(json.loads(written)["redacted"], ["$.note"])
 
     def test_the_key_itself_is_never_written_even_inside_a_field(self):
-        outcome = self.publish("gb/x.json", self.local("c.json", json.dumps({"oops": "the key is " + KEY})))
+        outcome = self.publish("gb/x.json", self.local("c.json", json.dumps({"oops": "the key is " + SIGNER})))
         self.assertEqual(outcome.result, "published")
-        self.assertNotIn(KEY, self.gh.written("gb/x.json").decode())
+        self.assertNotIn(SIGNER, self.gh.written("gb/x.json").decode())
 
     def test_a_forbidden_path_is_refused_before_anything_else(self):
         for rel in (".github/workflows/x.yml", "../x.json", "docs/a.md", "/mac-facts.json"):
@@ -536,8 +536,8 @@ class Verify(unittest.TestCase):
         return str(path)
 
     def test_exit_codes(self):
-        signed = signing.sign({"signed_for": "mac-facts.json", "generated_at": "2026-10-11T12:00:00Z"}, KEY)
-        env = {signing.KEY_ENV: KEY}
+        signed = signing.sign({"signed_for": "mac-facts.json", "generated_at": "2026-10-11T12:00:00Z"}, SIGNER)
+        env = {signing.KEY_ENV: SIGNER}
         code, line = p.verify_file(self.write(signed), env)
         self.assertEqual((code, line.startswith("verified:")), (0, True))
         self.assertEqual(p.verify_file(self.write(signed), env, signed_for="mac-facts.json")[0], 0)
@@ -553,15 +553,15 @@ class Verify(unittest.TestCase):
 
     def test_two_is_never_a_verdict(self):
         """open-loops reads exit status 2 as 'this fleet-facts has no verify command';  a tampered file must not look like that."""
-        signed = signing.sign({"n": 1}, KEY)
-        codes = {p.verify_file(self.write(d), e)[0] for d in (signed, dict(signed, n=2), "{x") for e in ({signing.KEY_ENV: KEY}, {}, {signing.KEY_ENV: "x"})}
+        signed = signing.sign({"n": 1}, SIGNER)
+        codes = {p.verify_file(self.write(d), e)[0] for d in (signed, dict(signed, n=2), "{x") for e in ({signing.KEY_ENV: SIGNER}, {}, {signing.KEY_ENV: "x"})}
         self.assertNotIn(2, codes)
 
     def test_the_output_never_holds_the_key_or_the_file(self):
-        signed = signing.sign({"secret_looking": "value-in-the-file"}, KEY)
-        for env in ({signing.KEY_ENV: KEY}, {signing.KEY_ENV: "y" * 40}):
+        signed = signing.sign({"secret_looking": "value-in-the-file"}, SIGNER)
+        for env in ({signing.KEY_ENV: SIGNER}, {signing.KEY_ENV: "y" * 40}):
             code, line = p.verify_file(self.write(signed), env)
-            self.assertNotIn(KEY, line)
+            self.assertNotIn(SIGNER, line)
             self.assertNotIn("value-in-the-file", line)
 
 
@@ -576,7 +576,7 @@ class TheDocuments(unittest.TestCase):
     def test_redaction_is_per_field_and_recorded_in_sources(self):
         facts = self.facts()
         facts["lanes"]["attention"][0]["reasons"] = ["fine", "oops " + fake_secret()]
-        files = p.build_documents(facts, {"status": "absent", "reason": "x", "file": p.FULL_LIST}, KEY)
+        files = p.build_documents(facts, {"status": "absent", "reason": "x", "file": p.FULL_LIST}, SIGNER)
         for rel, data in files.items():
             text = data.decode()
             self.assertNotIn(fake_secret(), text, rel)
@@ -588,25 +588,25 @@ class TheDocuments(unittest.TestCase):
 
     def test_the_signing_key_in_a_field_is_withheld(self):
         facts = self.facts()
-        facts["lanes"]["attention"][0]["reasons"] = ["the key " + KEY]
-        files = p.build_documents(facts, {"status": "absent", "reason": "x", "file": p.FULL_LIST}, KEY)
+        facts["lanes"]["attention"][0]["reasons"] = ["the key " + SIGNER]
+        files = p.build_documents(facts, {"status": "absent", "reason": "x", "file": p.FULL_LIST}, SIGNER)
         for data in files.values():
-            self.assertNotIn(KEY, data.decode())
+            self.assertNotIn(SIGNER, data.decode())
 
     def test_the_input_facts_are_not_changed(self):
         facts = self.facts()
         before = json.dumps(facts, sort_keys=True)
-        p.build_documents(facts, {"status": "ok", "file": p.FULL_LIST, "sha256": "0" * 64, "bytes": 1}, KEY)
+        p.build_documents(facts, {"status": "ok", "file": p.FULL_LIST, "sha256": "0" * 64, "bytes": 1}, SIGNER)
         self.assertEqual(json.dumps(facts, sort_keys=True), before)
 
     def test_the_output_is_stable_ascii(self):
         facts = self.facts()
         facts["lanes"]["attention"][0]["keep_reason"] = "caf\u00e9"
-        files = p.build_documents(facts, {"status": "absent", "reason": "x", "file": p.FULL_LIST}, KEY)
+        files = p.build_documents(facts, {"status": "absent", "reason": "x", "file": p.FULL_LIST}, SIGNER)
         for data in files.values():
             data.decode("ascii")
             self.assertTrue(data.endswith(b"\n"))
-        again = p.build_documents(facts, {"status": "absent", "reason": "x", "file": p.FULL_LIST}, KEY)
+        again = p.build_documents(facts, {"status": "absent", "reason": "x", "file": p.FULL_LIST}, SIGNER)
         self.assertEqual(files, again)
 
 

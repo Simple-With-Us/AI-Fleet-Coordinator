@@ -20,7 +20,7 @@ from open_loops.tests.scenes import standard_world
 
 from .ghfake import REPO, FakeGitHub
 
-KEY = "fixture-signing-key-0123456789abcdefABCDEF"
+SIGNER = "fixture-signing-key-0123456789abcdefABCDEF"
 OTHER = "another-fixture-key-9876543210zyxwvuTSRQ"
 
 
@@ -47,7 +47,7 @@ class Contract(Sandbox):
         import contextlib
         import io
         with contextlib.redirect_stdout(io.StringIO()):
-            outcome = p.run_cycle(run=self.machine, now=NOW, key_provider=lambda: KEY, load1=lambda: 1.0, sleep=lambda s: None, repo=REPO, gh="gh",
+            outcome = p.run_cycle(run=self.machine, now=NOW, key_provider=lambda: SIGNER, load1=lambda: 1.0, sleep=lambda s: None, repo=REPO, gh="gh",
                                   apps_provider=lambda: [])
         self.assertEqual((outcome.result, outcome.reason), ("published", None))
 
@@ -57,7 +57,7 @@ class Contract(Sandbox):
             return Result(code, "", "")
         return self.world.runner()(argv, timeout=timeout, env=env, cwd=cwd)
 
-    def facts(self, rel: str, *, key: str | None = KEY, now=NOW, data: bytes | None = None):
+    def facts(self, rel: str, *, key: str | None = SIGNER, now=NOW, data: bytes | None = None):
         path = self.root / ("read-" + rel.replace("/", "-"))
         path.write_bytes(data if data is not None else self.gh.written(rel))
         path.chmod(0o600)
@@ -121,9 +121,9 @@ class Contract(Sandbox):
     def test_a_file_signed_for_the_other_path_still_verifies_without_a_path_check(self):
         """Moving `mac-facts.json` to `gb/mac-facts.json` verifies for `fleet-facts verify FILE`;  `--path` is how a caller pins the path."""
         full = self.gh.written("mac-facts.json")
-        code, _ = p.verify_file(str(self._write(full)), {signing.KEY_ENV: KEY})
+        code, _ = p.verify_file(str(self._write(full)), {signing.KEY_ENV: SIGNER})
         self.assertEqual(code, 0)
-        code, _ = p.verify_file(str(self._write(full)), {signing.KEY_ENV: KEY}, signed_for="gb/mac-facts.json")
+        code, _ = p.verify_file(str(self._write(full)), {signing.KEY_ENV: SIGNER}, signed_for="gb/mac-facts.json")
         self.assertEqual(code, 1)
 
     def _write(self, data: bytes) -> Path:
@@ -135,8 +135,8 @@ class Contract(Sandbox):
         for rel in ("mac-facts.json", "gb/mac-facts.json"):
             document = json.loads(self.gh.written(rel))
             self.assertEqual(document["signed_for"], rel)
-            self.assertTrue(signing.verify(document, KEY, signed_for=rel))
-            self.assertFalse(signing.verify(document, KEY, signed_for="gb/other.json"))
+            self.assertTrue(signing.verify(document, SIGNER, signed_for=rel))
+            self.assertFalse(signing.verify(document, SIGNER, signed_for="gb/other.json"))
 
 
 if __name__ == "__main__":

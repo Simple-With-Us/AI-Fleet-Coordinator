@@ -12,7 +12,7 @@ from .builders import (board_row, board_show, comment, doctor_checkout, doctor_r
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 ENTRY = SCRIPTS / "fleet-facts"
-SIGNING_KEY = "fixture-signing-key-0123456789abcdefABCDEF"
+SIGNER = "fixture-signing-key-0123456789abcdefABCDEF"
 
 
 class Sandbox(unittest.TestCase):
@@ -176,7 +176,7 @@ class Errors(Sandbox):
         self.assertEqual(status["result"], "no-key")
 
     def test_publish_mac_dry_run_signs_three_files_and_sends_nothing(self):
-        self.install_fake_infisical(key=SIGNING_KEY)
+        self.install_fake_infisical(key=SIGNER)
         out = self.root / "dry"
         proc = self.run_cli("publish-mac", "--dry-run", "--out", str(out))
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -184,15 +184,15 @@ class Errors(Sandbox):
             document = json.loads((out / rel).read_text())
             self.assertEqual(document["signed_for"], rel)
             self.assertRegex(document["sig"], r"^[0-9a-f]{64}$")
-        self.assertNotIn(SIGNING_KEY, proc.stdout + proc.stderr)
-        self.assertNotIn(SIGNING_KEY, (out / "gb" / "mac-facts.json").read_text())
+        self.assertNotIn(SIGNER, proc.stdout + proc.stderr)
+        self.assertNotIn(SIGNER, (out / "gb" / "mac-facts.json").read_text())
 
     def test_out_without_dry_run_is_a_usage_error(self):
         proc = self.run_cli("publish-mac", "--out", str(self.root / "x"))
         self.assertEqual(proc.returncode, 2)
 
     def test_publish_one_file_dry_run(self):
-        self.install_fake_infisical(key=SIGNING_KEY)
+        self.install_fake_infisical(key=SIGNER)
         local = self.root / "a.json"
         local.write_text('{"n": 1}')
         proc = self.run_cli("publish", "--path", "gb/a.json", "--file", str(local), "--dry-run")
@@ -205,19 +205,19 @@ class Errors(Sandbox):
     def test_verify_exit_codes_through_the_real_entry_point(self):
         from fleet_facts import signing
         signed = self.root / "signed.json"
-        signed.write_text(json.dumps(signing.sign({"signed_for": "mac-facts.json", "generated_at": "2026-10-11T12:00:00Z"}, SIGNING_KEY)))
+        signed.write_text(json.dumps(signing.sign({"signed_for": "mac-facts.json", "generated_at": "2026-10-11T12:00:00Z"}, SIGNER)))
         tampered = self.root / "tampered.json"
         tampered.write_text(signed.read_text().replace("2026-10-11T12", "2026-10-11T13"))
-        good = self.run_cli("verify", str(signed), env_extra={"FLEET_FACTS_SIGNING_KEY": SIGNING_KEY})
+        good = self.run_cli("verify", str(signed), env_extra={"FLEET_FACTS_SIGNING_KEY": SIGNER})
         self.assertEqual((good.returncode, good.stdout.startswith("fleet-facts: verified:")), (0, True), good.stderr)
-        bad = self.run_cli("verify", str(tampered), env_extra={"FLEET_FACTS_SIGNING_KEY": SIGNING_KEY})
+        bad = self.run_cli("verify", str(tampered), env_extra={"FLEET_FACTS_SIGNING_KEY": SIGNER})
         self.assertEqual(bad.returncode, 1)
         self.assertIn("not verified", bad.stderr)
-        self.assertEqual(self.run_cli("verify", str(signed), "--path", "gb/mac-facts.json", env_extra={"FLEET_FACTS_SIGNING_KEY": SIGNING_KEY}).returncode, 1)
+        self.assertEqual(self.run_cli("verify", str(signed), "--path", "gb/mac-facts.json", env_extra={"FLEET_FACTS_SIGNING_KEY": SIGNER}).returncode, 1)
         self.assertEqual(self.run_cli("verify", str(signed)).returncode, 3, "no key in the environment")
         self.assertEqual(self.run_cli("verify").returncode, 2, "usage")
         for proc in (good, bad):
-            self.assertNotIn(SIGNING_KEY, proc.stdout + proc.stderr)
+            self.assertNotIn(SIGNER, proc.stdout + proc.stderr)
 
     def test_help_and_version(self):
         self.assertEqual(self.run_cli("--help").returncode, 0)
