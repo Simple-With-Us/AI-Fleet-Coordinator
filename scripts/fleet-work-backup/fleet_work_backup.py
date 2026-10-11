@@ -947,6 +947,7 @@ class GroupResult:
     bundle: bool = False
     bundles: int = 0
     head_bundles: int = 0
+    anchor_refs: int = 0
     notes: list[str] = dataclasses.field(default_factory=list)
 
     @property
@@ -1164,6 +1165,76 @@ def make_bundle(cfg: Config, git: Git, stage: Stage, cwd: str, rel: str, src: st
     return True
 
 
+ANCHOR_NS = "refs/fwb/"
+
+
+def make_anchors(cfg: Config, git: Git, stage: Stage, cwd: str, common_dir: str, rel: str,
+                 cands: list[tuple[str, str]], excl: list[str], scan_excl: list[str]) -> dict[str, dict]:
+    """Bundle the commits that stash and worktree patches apply to, when nothing else in the backup holds them.
+
+    ``cands`` is (name, sha):  a stash's base (its first parent, never the stash commit itself, whose index and
+    untracked trees hold exactly what the gate dropped) or a dirty worktree's HEAD.  A candidate reachable from
+    ``excl`` (the network remote's default branch and the tips the branch bundles hold) is covered.  The rest are
+    scanned like unpushed commits, then cut into one bundle, ``refs/fwb/<name>``, bounded by ``excl``.  git bundles
+    only refs, and the real repository is never written:  the refs live in a scratch bare repository whose
+    alternates point at the real object store, and it is removed afterwards.  Returns {name: {sha, state}}."""
+    out: dict[str, dict] = {}
+    need: list[tuple[str, str]] = []
+    for name, sha in cands:
+        stdin = "".join([sha + "\n"] + [f"^{e}\n" for e in excl]).encode()
+        rc, o, _ = git.run(cwd, "rev-list", "-1", "--stdin", stdin=stdin)
+        if rc != 0:
+            out[name] = {"sha": sha, "state": "unreadable"}
+            stage.notes.append(f"anchor-unreadable {common_dir} {name}")
+        elif not o.strip():
+            out[name] = {"sha": sha, "state": "covered"}       # on the default branch, or in a branch bundle
+        else:
+            need.append((name, sha))
+    if not need:
+        return out
+    shas = sorted({s for _, s in need})
+    bad, truncated = scan_commits(git, cwd, [*shas, *(["--not", *scan_excl] if scan_excl else [])], cfg.bundle_scan_cap)
+    keep: list[tuple[str, str]] = []
+    for name, sha in need:
+        hit = next((pat for c, pat in sorted(bad.items())
+                    if c == sha or git.run(cwd, "merge-base", "--is-ancestor", c, sha)[0] == 0), "")
+        label = f"{common_dir} anchor {name}"
+        if hit and not stage.permit(label, sha):
+            stage.dropped.append({"path": label, "stage": "", "reason": f"content:{hit}", "digest": sha[:12]})
+            out[name] = {"sha": sha, "state": "dropped"}
+        else:
+            keep.append((name, sha))
+    if not keep:
+        return out
+    if truncated:
+        stage.notes.append(f"bundle-scan-partial {common_dir} (anchors)")
+    scratch = tempfile.mkdtemp(prefix="objs-anchor-", dir=str(cfg.cache_dir))
+    try:
+        fmt = git.text(cwd, "rev-parse", "--show-object-format") or "sha1"
+        rc, _, err = git.run(cfg.cache_dir, "init", "-q", "--bare", "--template=", f"--object-format={fmt}", scratch)
+        ok = rc == 0
+        if ok:
+            info = Path(scratch) / "objects" / "info"
+            info.mkdir(parents=True, exist_ok=True)
+            (info / "alternates").write_text(os.path.join(common_dir, "objects") + "\n")
+            if os.path.isfile(os.path.join(common_dir, "shallow")):
+                shutil.copyfile(os.path.join(common_dir, "shallow"), os.path.join(scratch, "shallow"))
+            lines = "".join(f"create {ANCHOR_NS}{name} {sha}\n" for name, sha in keep).encode()
+            rc, _, err = git.run(scratch, "update-ref", "--stdin", stdin=lines)
+            ok = rc == 0
+        if not ok:
+            stage.notes.append(f"anchor-failed {common_dir}: {err.decode('utf-8', 'replace').strip()[:120]}")
+            made = False
+        else:
+            made = make_bundle(cfg, git, stage, scratch, rel, common_dir,
+                               [*(ANCHOR_NS + n for n, _ in keep), *(["--not", *excl] if excl else [])])
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    for name, sha in keep:
+        out[name] = {"sha": sha, "state": "bundled" if made else "failed", "ref": ANCHOR_NS + name}
+    return out
+
+
 def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: list[Worktree]) -> GroupResult:
     name = repo_name(common_dir)
     slug = f"{slugify(name, 40)}-{short_hash(common_dir)}"
@@ -1242,6 +1313,7 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
         # scans the commits no network remote has (a pushed commit is already on GitHub, so carrying it along
         # exposes nothing new), each hit is attributed to its commit, and the refs that can reach a hit commit
         # are dropped alone:  one key-shaped string in some branch costs that branch, not the repository.
+        bundled_tips: list[str] = []
         if pending:
             tips = dict(pending)
             ref_names = [r for r, _ in pending]
@@ -1271,9 +1343,12 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
                 if make_bundle(cfg, git, stage, cwd, rel, common_dir, [*comp, *not_bound]):
                     res.bundle = True
                     res.bundles += 1
+                    bundled_tips += [tips[r] for r in comp]
                     group_meta["bundles"].append({"file": rel.rsplit("/", 1)[-1], "refs": [{"ref": r, "sha": tips[r]} for r in comp]})
             group_meta["unpushed"] = [{"ref": r, "sha": s} for r, s in pending]
         # Every stash, as per-file patches (no refs are created in the repository).
+        anchor_cands: list[tuple[str, str]] = []
+        pending_meta: list[tuple[str, dict, str]] = []       # (stage rel, metadata, anchor name), written after the anchors
         rc, out, _ = git.run(cwd, "stash", "list", "--format=%H%x00%gs")
         empty_tree = git.text(cwd, "hash-object", "-t", "tree", "/dev/null") or "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
         for n, line in enumerate(out.decode("utf-8", "replace").splitlines() if rc == 0 else []):
@@ -1294,7 +1369,10 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
                                        f"{sdir}/untracked", f"{common_dir}#stash{n}", None, tracked=False,
                                        post_rev=untracked_commit)
             meta = {"index": n, "sha": sha, "base": base_sha, "subject": subject, "patches": wrote}
-            stage.write(f"{sdir}/stash.json", json.dumps(meta, indent=2).encode(), "", "meta")
+            aname = f"stash/{n:02d}"
+            if wrote and base_sha:
+                anchor_cands.append((aname, base_sha))
+            pending_meta.append((f"{sdir}/stash.json", meta, aname))
             group_meta["stashes"].append(meta)
             res.stashes += 1
         # Per worktree:  uncommitted work and a detached HEAD no network remote has.
@@ -1325,12 +1403,34 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
             if wrote or un or wmeta.get("detached_head_bundle"):
                 wmeta["patches_written"] = wrote
                 wmeta["untracked_written"] = un
-                stage.write(f"{wdir}/worktree.json", json.dumps(wmeta, indent=2).encode(), "", "meta")
+                aname = f"worktree/{wslug}"
+                if (wrote or un) and wt.head and not wmeta.get("detached_head_bundle"):
+                    anchor_cands.append((aname, wt.head))
+                pending_meta.append((f"{wdir}/worktree.json", wmeta, aname))
                 group_meta["worktrees"].append(wmeta)
                 if wrote or un:
                     res.dirty_worktrees += 1
                 res.patch_files += wrote
                 res.untracked_files += un
+        # Anchors:  the commit a stash or a dirty worktree's patches apply to can be one GitHub never had, or one it
+        # deletes later (a lane on a squash-landed branch, a stash on a rebased or deleted branch).  Those commits go
+        # into anchors.bundle, bounded by the default branch and the tips the branch bundles above hold.
+        if anchor_cands:
+            excl = ([bound_sha] if bound_sha else []) + bundled_tips
+            if not bound_sha and net:          # no default branch found:  every network remote tip bounds it instead
+                rc, o, _ = git.run(cwd, "for-each-ref", "--format=%(objectname)", *[f"refs/remotes/{r}" for r in net])
+                excl += o.decode().split() if rc == 0 else []
+            scan_excl = (not_net[1:] if not_net else []) + bundled_tips
+            anchors = make_anchors(cfg, git, stage, cwd, common_dir, f"{base}/anchors.bundle", anchor_cands,
+                                   sorted(set(excl)), scan_excl)
+            res.anchor_refs = sum(1 for a in anchors.values() if a["state"] == "bundled")
+            group_meta["anchors"] = {"bundle": "anchors.bundle" if res.anchor_refs else "",
+                                     "refs": {n: a for n, a in sorted(anchors.items())}}
+            for _, meta, aname in pending_meta:
+                if aname in anchors:
+                    meta["anchor"] = {"ref": ANCHOR_NS + aname, **anchors[aname]}
+        for rel_meta, meta, _ in pending_meta:
+            stage.write(rel_meta, json.dumps(meta, indent=2).encode(), "", "meta")
         if any(k.startswith(base + "/") for k in list(stage.items)):
             stage.write(f"{base}/group.json", json.dumps(group_meta, indent=2).encode(), "", "meta")
     finally:
@@ -2148,7 +2248,8 @@ def build_report(cfg: Config, disc: Discovery, wts: list[Worktree], groups: list
         "groups_with_work": sum(1 for g in groups if g.has_work),
         "groups_no_remote": [g.name for g in groups if g.no_remote],
         "unpushed_refs": sum(g.unpushed_refs for g in groups),
-        "bundle_files": sum(g.bundles + g.head_bundles for g in groups),
+        "bundle_files": sum(g.bundles + g.head_bundles + (1 if g.anchor_refs else 0) for g in groups),
+        "anchor_refs": sum(g.anchor_refs for g in groups),
         "landed_refs_skipped": sum(g.landed_refs for g in groups),
         "stashes": sum(g.stashes for g in groups),
         "patch_files": sum(g.patch_files for g in groups),
@@ -2180,6 +2281,7 @@ def print_report(rep: dict) -> None:
     print(f"  groups with unpushed     {rep['groups_with_unpushed']}  ({rep['unpushed_refs']} refs in {rep['bundle_files']} bundles;  "
           f"{rep['landed_refs_skipped']} landed refs skipped)")
     print(f"  groups with stashes      {rep['groups_with_stashes']}  ({rep['stashes']} stashes)")
+    print(f"  anchor commits bundled   {rep['anchor_refs']}  (bases of stashes and dirty worktrees GitHub may not keep)")
     print(f"  dirty worktrees          {rep['worktrees_dirty']}  ({rep['patch_files']} patches or binary files, {rep['untracked_files']} untracked files)")
     print(f"  non-git files            {rep['non_git_files']}")
     print(f"  staged                   {rep['staged_files']} files, {fmt_bytes(rep['staged_bytes'])}")
@@ -2394,7 +2496,8 @@ def _run(cfg: Config, args, held: list[int]) -> int:
     (stage_root / "README-RESTORE.txt").write_text(
         "Restore runbook: scripts/fleet-work-backup/RESTORE.md in AI-Fleet-Coordinator.\n"
         "files/ mirrors absolute paths (copy files/Users/jay back to /Users/jay).  git/<repo>/ holds\n"
-        "bundles/*.bundle, stashes/<n>/ and worktrees/<name>/ (patches/, binary/, untracked/, head.bundle).\n")
+        "bundles/*.bundle, anchors.bundle (the commits the patches apply to), stashes/<n>/ and\n"
+        "worktrees/<name>/ (patches/, binary/, untracked/, head.bundle).\n")
     detail = []
     for d in stage.dropped:
         detail.append(f"dropped {d['reason']} {d['path']}")

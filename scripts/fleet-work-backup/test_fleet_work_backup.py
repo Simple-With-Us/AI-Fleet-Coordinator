@@ -1476,6 +1476,193 @@ class BundleCase(RunBase):
         self.assertIn("secret-name", [d["reason"] for d in stage.dropped if d["path"].endswith("auth.json")])
 
 
+def restore_md_functions(*names: str) -> str:
+    """The named shell functions from RESTORE.md, exactly as written there (indented four spaces)."""
+    md = (HERE / "RESTORE.md").read_text()
+    out = []
+    for name in names:
+        m = re.search(rf"(?ms)^    {name}\(\) \{{[^\n]*\n.*?^    \}}\n", md)
+        if not m:
+            raise AssertionError(f"RESTORE.md has no {name}()")
+        out.append("\n".join(l[4:] for l in m.group(0).splitlines()))
+    return "\n".join(out)
+
+
+class AnchorCase(RunBase):
+    """The commit a stash or a dirty worktree's patches apply to is bundled (anchors.bundle) when GitHub's default
+    branch and the branch bundles do not hold it, so the RESTORE.md steps work after GitHub deletes a branch."""
+
+    def setUp(self):
+        super().setUp()
+        self.r = self.home / "Code" / "r"
+        git(self.r, "push", "-q")              # main is pushed:  only the anchors are under test
+        self.bare = self.home / "remotes" / "r.git"
+
+    def build(self):
+        stage, disc, wts, groups, *_ = fwb.build_stage(self.cfg, self.cfg.dry_stage)
+        self.group = groups[0]
+        self.G = self.cfg.dry_stage / f"git/{self.group.slug}"
+        return stage
+
+    def fresh_clone(self) -> Path:
+        fresh = self.tmp / "fresh"
+        git(self.tmp, "clone", "-q", f"file://{self.bare}", str(fresh))       # only what "GitHub" serves arrives
+        return fresh
+
+    def restore(self, cwd: Path, script: str) -> None:
+        funcs = restore_md_functions("apply_all", "fetch_bundles")
+        out = subprocess.run(["bash", "-c", f'set -e\n{funcs}\ncd "{cwd}"\n{script}\n'], capture_output=True, text=True,
+                             env=GENV)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertNotIn("CANNOT VERIFY", out.stdout)
+        self.assertNotIn("NEEDS HAND", out.stdout)
+
+    def worktree_meta(self, path: Path) -> tuple[Path, dict]:
+        for p in self.G.glob("worktrees/*/worktree.json"):
+            meta = json.loads(p.read_text())
+            if meta["path"] == str(path):
+                return p.parent, meta
+        raise AssertionError(f"no worktree.json for {path}")
+
+    def stash_on_a_deleted_branch(self, extra=None) -> str:
+        """A stash made on a branch that never left this Mac and was deleted afterwards:  its base is
+        reachable only through refs/stash, which is never bundled."""
+        git(self.r, "checkout", "-q", "-b", "tmp")
+        write(self.r / "base.txt", "a base commit that never left this Mac\n")
+        git(self.r, "add", "-A")
+        git(self.r, "commit", "-q", "-m", "tmp base")
+        write(self.r / "base.txt", "stashed edit\n")
+        if extra:
+            extra()
+        git(self.r, "stash", "push", "-q", "-u", "-m", "on tmp")
+        git(self.r, "checkout", "-q", "main")
+        git(self.r, "branch", "-q", "-D", "tmp")
+        return git(self.r, "rev-parse", "stash@{0}^1")
+
+    def test_a_stash_on_a_deleted_branch_restores_through_its_anchor(self):
+        base = self.stash_on_a_deleted_branch()
+        self.build()
+        meta = json.loads((self.G / "stashes/00/stash.json").read_text())
+        self.assertEqual(meta["base"], base)
+        self.assertEqual(meta["anchor"]["ref"], "refs/fwb/stash/00")
+        self.assertEqual(meta["anchor"]["state"], "bundled")
+        self.assertEqual(self.group.anchor_refs, 1)
+        fresh = self.fresh_clone()
+        self.assertNotEqual(git(fresh, "cat-file", "-t", base, check=False), "commit")    # GitHub never had the base
+        self.restore(fresh, f'fetch_bundles "{self.G}"\ngit checkout -q {base}\napply_all "{self.G}/stashes/00/tracked"')
+        self.assertEqual((fresh / "base.txt").read_text(), "stashed edit\n")
+
+    def test_a_dirty_lane_on_a_pushed_branch_restores_after_github_deletes_the_branch(self):
+        lane = self.home / "apps" / "lanes" / "r" / "claude-feat"
+        lane.parent.mkdir(parents=True)
+        git(self.r, "worktree", "add", "-q", "-b", "feat", str(lane), "origin/main")
+        write(lane / "f.txt", "feature\n")
+        git(lane, "add", "-A")
+        git(lane, "commit", "-q", "-m", "feature")
+        git(lane, "push", "-q", "origin", "feat")
+        head = git(lane, "rev-parse", "HEAD")
+        write(lane / "a.txt", "dirty on a branch GitHub will delete\n")
+        self.build()
+        wdir, meta = self.worktree_meta(lane)
+        self.assertEqual(meta["anchor"]["state"], "bundled")
+        git(self.bare, "branch", "-D", "feat")              # the squash merge's branch auto-delete
+        git(self.bare, "gc", "-q", "--prune=now")
+        fresh = self.fresh_clone()
+        out = self.tmp / "restored-lane"
+        self.restore(fresh, f'fetch_bundles "{self.G}"\ngit worktree add -q "{out}" {head}\ncd "{out}"\n'
+                            f'apply_all "{wdir}/patches"')
+        self.assertEqual((out / "a.txt").read_text(), "dirty on a branch GitHub will delete\n")
+        self.assertEqual((out / "f.txt").read_text(), "feature\n")
+
+    def test_a_dirty_lane_on_a_squash_landed_branch_restores_from_its_anchor(self):
+        lane = self.home / "apps" / "lanes" / "r" / "claude-landed"
+        lane.parent.mkdir(parents=True)
+        git(self.r, "worktree", "add", "-q", "-b", "landed", str(lane), "origin/main")
+        write(lane / "f.txt", "feature\n")
+        git(lane, "add", "-A")
+        git(lane, "commit", "-q", "-m", "feature, never pushed")
+        head = git(lane, "rev-parse", "HEAD")
+        write(self.r / "f.txt", "feature\n")              # main lands the same change as its own commit
+        git(self.r, "add", "f.txt")
+        git(self.r, "commit", "-q", "-m", "squash of landed")
+        git(self.r, "push", "-q")
+        write(lane / "a.txt", "dirty on a landed branch\n")
+        self.build()
+        self.assertEqual(self.group.landed_refs, 1)        # so no branch bundle carries the lane's HEAD
+        wdir, meta = self.worktree_meta(lane)
+        self.assertEqual(meta["anchor"]["state"], "bundled")
+        fresh = self.fresh_clone()
+        out = self.tmp / "restored-lane"
+        self.restore(fresh, f'fetch_bundles "{self.G}"\ngit worktree add -q "{out}" {head}\ncd "{out}"\n'
+                            f'apply_all "{wdir}/patches"')
+        self.assertEqual((out / "a.txt").read_text(), "dirty on a landed branch\n")
+
+    def test_anchors_never_write_to_the_real_repository(self):
+        self.stash_on_a_deleted_branch()
+        before = snapshot_tree(self.r / ".git")
+        refs = git(self.r, "for-each-ref")
+        self.build()
+        self.assertTrue((self.G / "anchors.bundle").exists())
+        self.assertEqual(git(self.r, "for-each-ref"), refs)
+        self.assertNotIn("refs/fwb", refs)
+        self.assertEqual(snapshot_tree(self.r / ".git"), before)
+        self.assertEqual(list(self.cfg.cache_dir.glob("objs-*")), [])          # the scratch repository is gone
+
+    def test_nothing_the_gate_dropped_from_a_stash_rides_along_in_the_anchor(self):
+        def extra():
+            write(self.r / "staged.txt", f"key {AWS}\n")
+            git(self.r, "add", "staged.txt")                # in the stash's index commit
+            write(self.r / ".env", f"TOKEN={HIGH}\n")       # in its untracked commit, a secret name
+        self.stash_on_a_deleted_branch(extra)
+        self.assertIn(AWS, git(self.r, "show", "stash@{0}^2:staged.txt"))   # anchoring the stash commit would carry it
+        stage = self.build()
+        self.assertTrue((self.G / "anchors.bundle").exists())
+        reasons = {d["path"].rsplit(":", 1)[-1]: d["reason"] for d in stage.dropped if "#stash0" in d["path"]}
+        self.assertEqual(reasons.get(".env"), "secret-name")
+        self.assertTrue(any(r.startswith("content:") for k, r in reasons.items() if k != ".env"), reasons)
+        fresh = self.fresh_clone()
+        self.restore(fresh, f'fetch_bundles "{self.G}"')
+        objects = subprocess.run(["git", "-C", str(fresh), "cat-file", "--batch-all-objects", "--batch"],
+                                 env=GENV, capture_output=True).stdout          # inflated, so a key cannot hide in zlib
+        self.assertIn(b"a base commit that never left this Mac", objects)
+        self.assertNotIn(AWS.encode(), objects)
+        self.assertNotIn(HIGH.encode(), objects)
+
+    def test_an_anchor_whose_history_holds_a_key_is_dropped_unless_pinned(self):
+        git(self.r, "checkout", "-q", "-b", "tmp")
+        write(self.r / "k.txt", f"{AWS}\n")
+        git(self.r, "add", "-A")
+        git(self.r, "commit", "-q", "-m", "leaky base")
+        write(self.r / "a.txt", "edit\n")
+        git(self.r, "stash", "push", "-q")
+        git(self.r, "checkout", "-q", "main")
+        git(self.r, "branch", "-q", "-D", "tmp")
+        stage = self.build()
+        self.assertFalse((self.G / "anchors.bundle").exists())
+        (d,) = [d for d in stage.dropped if d["path"].endswith(" anchor stash/00")]
+        self.assertEqual(d["reason"], "content:aws-access-key-id")
+        self.assertEqual(json.loads((self.G / "stashes/00/stash.json").read_text())["anchor"]["state"], "dropped")
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.state_dir / "allow.txt").write_text(f"{d['path']} @ {d['digest']}\n")
+        self.build()
+        self.assertTrue((self.G / "anchors.bundle").exists())
+
+    def test_a_base_github_or_a_branch_bundle_holds_needs_no_anchor(self):
+        write(self.r / "a.txt", "edit on main\n")
+        git(self.r, "stash", "push", "-q")                 # base is origin/main
+        git(self.r, "checkout", "-q", "-b", "local")       # an unpushed branch:  its own bundle holds HEAD
+        write(self.r / "l.txt", "l\n")
+        git(self.r, "add", "-A")
+        git(self.r, "commit", "-q", "-m", "local")
+        write(self.r / "l.txt", "dirty\n")
+        self.build()
+        self.assertFalse((self.G / "anchors.bundle").exists())
+        self.assertEqual(json.loads((self.G / "stashes/00/stash.json").read_text())["anchor"]["state"], "covered")
+        _, meta = self.worktree_meta(self.r)
+        self.assertEqual(meta["anchor"]["state"], "covered")
+        self.assertEqual(self.group.anchor_refs, 0)
+
+
 class RunBehaviourCase(RunBase):
     def test_a_full_swap_alone_does_not_skip_a_quiet_mac(self):
         self.cfg.swap_fn = lambda: 0.97
