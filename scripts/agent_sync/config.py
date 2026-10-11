@@ -169,6 +169,7 @@ class Config:
         self.notify_banners = True
         self.route_enabled = True  # daemon.route_enabled:  the listener-wide kill switch for route suggestions
         self.held_back_catch_up = True  # the default for every seat's held_back.catch_up (heldback.py)
+        self.auto_subscribe = True  # daemon.auto_subscribe:  held seats join every public channel (owner 2026-10-10)
 
     @property
     def ok(self) -> bool:
@@ -321,6 +322,11 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.held_back_catch_up must be true or false")
     else:
         cfg.held_back_catch_up = catch_up
+    auto_sub = daemon.get("auto_subscribe", True)
+    if not isinstance(auto_sub, bool):
+        errors.append("daemon.auto_subscribe must be true or false")
+    else:
+        cfg.auto_subscribe = auto_sub
     cfg.presence = L.presence_topics(raw)
     platform = ((raw.get("platform") or {}).get("claude-code") or {}) if isinstance(raw.get("platform"), dict) else {}
     seat = platform.get("seat") if isinstance(platform, dict) else None
