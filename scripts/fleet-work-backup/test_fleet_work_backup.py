@@ -1286,6 +1286,11 @@ class BundleCase(RunBase):
         parent = make_repo(self.home, self.home / "Code" / "parent")           # origin looks like GitHub
         child = self.home / "apps" / "child"
         git(self.tmp, "clone", "-q", str(parent), str(child))                   # child's only remote is a local path
+        stale_main = git(child, "rev-parse", "refs/remotes/origin/main")
+        write(parent / "moved-on.txt", "the checkout's main moved on after the clone was made\n")      # the clone is now stale
+        git(parent, "add", "-A")
+        git(parent, "commit", "-q", "-m", "main moves on")
+        git(parent, "push", "-q")
         write(child / "child.txt", "work only in the clone\n")
         git(child, "add", "-A")
         git(child, "commit", "-q", "-m", "clone-only work")
@@ -1294,7 +1299,9 @@ class BundleCase(RunBase):
         self.assertEqual(g.unpushed_refs, 1)
         meta = json.loads((self.cfg.dry_stage / f"git/{g.slug}/group.json").read_text())
         self.assertEqual(meta["network_remotes"], [])
-        self.assertEqual(meta["bound"]["sha"], git(parent, "rev-parse", "refs/remotes/origin/main"))
+        self.assertEqual(meta["bound"]["sha"], stale_main)         # the newest commit the clone has that GitHub holds
+        self.assertNotEqual(stale_main, git(parent, "rev-parse", "refs/remotes/origin/main"))
+        self.assertEqual(meta["bound"]["via_url"], "https://example.invalid/parent.git")
         self.assertEqual(os.path.realpath(meta["bound"]["via"]), os.path.realpath(parent))
         self.assertTrue(any(n.startswith("local-remote-proxied") for n in stage.notes))
         self.assertFalse(any(n.startswith("local-only-remotes") and "child" in n for n in stage.notes))

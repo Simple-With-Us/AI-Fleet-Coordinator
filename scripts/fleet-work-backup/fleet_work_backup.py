@@ -1074,23 +1074,36 @@ def resolve_bound(git: Git, cwd: str, net: list[str]) -> tuple[str, str]:
 
 
 def proxy_bound(git: Git, cwd: str) -> Optional[dict]:
-    """For a repository whose only remotes are local paths:  the default-branch tip of the repository such a remote
-    points at, when that one has a network remote and the commit is here too (a flat lane cloned from ~/Code/X).
-    GitHub holds that commit, so it bounds the bundles the same way origin/main would."""
+    """For a repository whose only remotes are local paths:  a commit GitHub holds, found through a local remote
+    that is itself a checkout with a GitHub remote (a flat lane cloned from ~/Code/X).  That checkout's default
+    branch tip is the bound when this clone has it;  a clone that has not fetched lately has an older tip, and
+    its own tracking ref for the local remote counts when it is an ancestor of the checkout's default branch."""
     rc, out, _ = git.run(cwd, "config", "-z", "--get-regexp", r"^remote\..*\.url$")
     for rec in out.decode("utf-8", "replace").split("\0") if rc == 0 else []:
-        _, _, val = rec.partition("\n")
+        key, _, val = rec.partition("\n")
+        m = re.fullmatch(r"remote\.(.+)\.url", key, re.I)
         val = val.strip()
         path = val[len("file://"):] if val.startswith("file://") else val
-        if not path.startswith("/") or not os.path.isdir(path):
+        if not m or not path.startswith("/") or not os.path.isdir(path):
             continue
         pmeta, pnet = remote_info(git, path)
         if not pnet:
             continue
-        ref, sha = resolve_bound(git, path, pnet)
-        if sha and git.run(cwd, "cat-file", "-e", f"{sha}^{{commit}}")[0] == 0:
+        pref, psha = resolve_bound(git, path, pnet)
+        if not psha:
+            continue
+        found = ""
+        if git.run(cwd, "cat-file", "-e", f"{psha}^{{commit}}")[0] == 0:
+            found = psha
+        else:
+            for cand in (f"refs/remotes/{m.group(1)}/HEAD", f"refs/remotes/{m.group(1)}/main", f"refs/remotes/{m.group(1)}/master"):
+                sha = git.text(cwd, "rev-parse", "-q", "--verify", f"{cand}^{{commit}}")
+                if sha and git.run(path, "merge-base", "--is-ancestor", sha, psha)[0] == 0:
+                    found = sha
+                    break
+        if found:
             url = next((l.split(" ", 1)[1] for l in pmeta if l.split(" ", 1)[0] == pnet[0] and " " in l), "")
-            return {"via": path, "ref": ref, "sha": sha, "url": url}
+            return {"via": path, "ref": pref, "sha": found, "url": url}
     return None
 
 
