@@ -135,7 +135,7 @@ with the top-level `apps` (the acronyms) and `--app`.
 ## Phase 0 — identity
 
 1. Pick `TAG`, Notes name, worktree suffix, branch prefix, and the app the seat
-   runs in. Add the first four to `fleet-apps.json` `seats`, the app to
+   runs in.  Add the first four to `fleet-apps.json` `seats`, the app to
    `fleet-apps.json` `seatApps.bySeat` (`scripts/onboard-new-agent.sh --app`), and
    the seat to the Agent Seat table in `AGENT-SYNC.md` (both `~/apps/AGENT-SYNC.md`
    and this repo's copy).

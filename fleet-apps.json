@@ -332,7 +332,7 @@
       "notesName": "Grok Bot",
       "worktreeSuffix": "cursor",
       "branchPrefixes": [],
-      "notes": "Grok Bot, one fleet-wide identity:  the GB-<ROLE> personas (Zulip bots <role>-grok-bot@) that implement through Cursor cloud agents.  It opens no Mac lanes, so it has no branch prefix of its own (it carried CURSOR's cursor/ until 2026-10-11, which put one prefix on two seats).  worktreeSuffix stays cursor, so the lane tool still refuses GROK-BOT and still reads gb and grok-bot as the cursor folder.  Its app is in seatApps, not here."
+      "notes": "Grok Bot, one fleet-wide identity:  the GB-<ROLE> personas (Zulip bots <role>-grok-bot@) that implement through Cursor cloud agents.  It opens no Mac lanes, so it has no branch prefix of its own (it carried CURSOR's cursor/ until 2026-10-11, which put one prefix on two seats).  worktreeSuffix stays cursor, so the lane tool still refuses GROK-BOT and still reads gb and grok-bot as the cursor folder.  A cursor/ branch can come from CURSOR or from a GB persona's Cursor cloud agent, so the prefix alone does not name the seat.  Its app is in seatApps, not here."
     },
     {
       "tag": "RENOIR",
