@@ -23,6 +23,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 import unittest
 from typing import Callable
 from unittest import mock
@@ -208,6 +209,10 @@ ALLOWED_COMMANDS = [
     (["git", "rev-list", "--count", "--branches", "--not", "--remotes"], "git"),
     (["git", "rev-list", "--count", "HEAD", "--not", "0123abc"], "git"),
     (["git", "log", "-1", "--format=%ct"], "git"),
+    (["git", "log", "-1", "--no-show-signature", "--format=%ct%x09%B"], "git"),
+    (["git", "log", "-1", "--no-show-signature", "--format=%ct", "0123456789abcdef0123456789abcdef01234567"], "git"),
+    (["git", "rev-list", "HEAD", "--not", "--remotes=origin"], "git"),
+    (["git", "status", "--porcelain=v1", "--untracked-files=all"], "git"),
     (["git", "for-each-ref", "--format=%(upstream:short)|%(upstream:track)", "refs/heads/x"], "git"),
     (["git", "for-each-ref", "--count=1", "--contains", "HEAD", "--format=%(refname)", "refs/heads"], "git"),
     (["git", "branch", "--show-current"], "git"),
@@ -217,6 +222,7 @@ ALLOWED_COMMANDS = [
     (["git", "worktree", "list"], "git"),
     (["gh", "pr", "list", "--repo", "a/b", "--state", "all", "--limit", "500", "--json",
       "number,state,headRefName,headRefOid"], "gh"),
+    (["gh", "pr", "list", "--repo", "a/b", "--state", "open", "--limit", "100", "--json", "number,body"], "gh"),
     (["lsof", "-d", "cwd", "-Fpcn"], "lsof"),
     (["du", "-sk", "-x", "/some/path"], "du"),
 ]
@@ -445,7 +451,8 @@ class MatchPrTests(unittest.TestCase):
         fetch = doctor.make_gh_fetcher(fake_run)
         self.assertEqual(fetch("o/r"), [{"number": 1}])
         self.assertEqual(calls, [["gh", "pr", "list", "--repo", "o/r", "--state", "all", "--limit", "500",
-                                  "--json", "number,state,headRefName,headRefOid,mergedAt,closedAt"]])
+                                  "--json", "number,state,headRefName,headRefOid,mergedAt,closedAt,isDraft,labels,createdAt"]])
+        self.assertEqual(doctor.check_allowed(calls[0]), "gh")  # the real command passes the real allowlist
         for bad in (doctor.CmdResult(1, err="auth"), doctor.CmdResult(None, timed_out=True),
                     doctor.CmdResult(None, error="FileNotFoundError"), doctor.CmdResult(0, "not json"),
                     doctor.CmdResult(0, "{}")):
@@ -851,6 +858,19 @@ class DiscoveryTests(GitCase):
         self.assertTrue(any(s.startswith("worktree-list:") for s in co["found_by"]), co["found_by"])
         self.assertEqual(co["location_class"], "UNSANCTIONED")
 
+    def test_a_fleet_repo_conductor_cloned_into_its_repos_folder_is_found_and_flagged(self) -> None:
+        # Conductor clones a repo it is given by URL into ~/conductor/repos/<Repo>: a full checkout outside ~/Code and
+        # the lane map.  Its workspaces (~/conductor/workspaces) are tool-managed;  this folder is not a workspace.
+        clone = self.make_repo(self.home / "conductor" / "repos" / "DealDex")
+        rep = self.report()
+        co = self.one(rep, clone)
+        self.assertEqual(co["location_class"], "UNSANCTIONED")
+        self.assertIn("UNSANCTIONED", {a["type"] for a in rep["anomalies"] if a["path"] == str(clone)})
+        self.assertEqual(co["layout_status"], "unsanctioned")
+        self.assertEqual(rep["summary"]["strict_violations"], 1, "--strict fails on it")
+        ws = self.make_repo(self.home / "conductor" / "workspaces" / "DealDex" / "oslo")
+        self.assertEqual(self.one(self.report(), ws)["location_class"], "MANAGED", "a workspace is still tool-managed")
+
     def test_the_parent_of_a_discovered_worktree_is_found_through_its_git_file(self) -> None:
         hidden_parent = self.make_repo(self.base / "elsewhere" / "parent")
         lane = self.add_worktree(hidden_parent, self.home / "apps" / "dealdex-claude-viaparent", "claude/viaparent")
@@ -1106,6 +1126,8 @@ class DiscoveryTests(GitCase):
             (home / "Code" / "DealDex", "main", None, None, "human"),
             # layout v2: Codex nests lanes/_codex/<slug>/<Repo>; the desktop app files lanes/<Repo>/<slug>-<hex>
             (home / "apps" / "lanes" / "_codex" / "ab12" / "DealDex", None, None, None, "codex"),
+            (home / "apps" / "lanes" / "_conductor" / "DealDex" / "lagos", None, None, None, "conductor"),
+            (home / "conductor" / "workspaces" / "DealDex" / "oslo", "claude/x", None, "claude", "conductor"),
             (home / "apps" / "lanes" / "DealDex" / "fix-bug-a1b2c3", "claude/fix-bug-a1b2c3", None, None, "claude-desktop"),
             (home / "apps" / "lanes" / "DealDex" / "fix-bug-a1b2c3" / "src", None, None, None, "claude-desktop"),
             (home / "apps" / "lanes" / "DealDex" / "claude-fix-a1b2c3", None, "claude", None, "claude-cli"),
@@ -1589,6 +1611,148 @@ class UnknownPrStateTests(GitCase):
         co = self.one(self.report(use_gh=False), self.parent)
         self.assertEqual(co["pr_state"], "N/A")
         self.assertNotIn("PR state unknown", " ".join(co["safety_reasons"]))
+
+
+class ExternalLanesReportTests(GitCase):
+    """lanes/<Repo> is a symlink onto an external disk (owner 2026-10-10).  git and lsof name a lane at its real
+    path, the scan never follows symlinks, and a lane there must still read as a correct lane at the
+    ~/apps/lanes path agents use.  The fake disk is inside the fake home (a sibling would be forbidden temp)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.parent = self.integration()
+        self.ext = self.home / "ExternalDisk" / "Lanes"
+        self.phys_repo = self.ext / "DealDex"
+        self.phys_repo.mkdir(parents=True)
+        self.lanes = self.home / "apps" / "lanes"
+        self.lanes.mkdir(parents=True)
+        os.symlink(self.phys_repo, self.lanes / "DealDex")
+        self.env = {**self.env, "FLEET_LANES_EXTERNAL_ROOT": str(self.ext)}
+
+    def lane_here(self, name: str = "claude-fix-thing", branch: str = "claude/fix-thing", **kw) -> pathlib.Path:
+        """A linked worktree made through the link: git records the real path on the disk."""
+        return self.add_worktree(self.parent, self.lanes / "DealDex" / name, branch, **kw)
+
+    def co(self, rep: dict, name: str = "claude-fix-thing") -> dict:
+        found = self.by_path(rep)
+        key = str(self.lanes / "DealDex" / name)
+        self.assertIn(key, found, sorted(found))
+        return found[key]
+
+    def test_a_lane_behind_the_link_is_one_correct_lane_at_the_lanes_path(self) -> None:
+        lane = self.lane_here()
+        listed = self.git(self.parent, "worktree", "list", "--porcelain")
+        self.assertIn(f"worktree {self.phys_repo / 'claude-fix-thing'}", listed, "fixture: git records the real path")
+        rep = self.report(env=self.env)
+        paths = [c["realpath"] for c in rep["checkouts"]]
+        self.assertEqual(len(paths), len(set(paths)), "one entry, not one per spelling")
+        co = self.co(rep)
+        self.assertEqual(co["path"], str(lane), "shown the way agents write it")
+        self.assertEqual(co["location_class"], "LANE_NESTED")
+        self.assertEqual((co["layout_status"], co["name_verdict"]), ("correct", "CONFORMING"))
+        self.assertEqual(co["lane_root"], str(lane))
+        self.assertEqual(co["creating_tool"], "claude-cli")
+        self.assertIn("scan:lanes/DealDex", co["found_by"], "the scan follows the link, which it never does by itself")
+        kinds = {a["type"] for a in rep["anomalies"] if a["realpath"] == co["realpath"]}
+        self.assertFalse(kinds & {"WRONG-PLACE", "UNSANCTIONED", "NAME-DRIFT", "NON-LANE", "PRUNABLE", "ORPHAN"}, kinds)
+        self.assertEqual(rep["summary"]["strict_violations"], 0)
+        self.assertEqual(rep["warnings"], [])
+
+    def test_with_the_setting_off_the_same_lane_is_outside_the_map(self) -> None:
+        self.lane_here()
+        rep = self.report(env={**self.env, "FLEET_LANES_EXTERNAL_ROOT": ""})
+        classes = {c["location_class"] for c in rep["checkouts"] if "claude-fix-thing" in c["path"]}
+        self.assertEqual(classes, {"UNSANCTIONED"}, "this is the failure the setting prevents")
+
+    def test_a_process_whose_cwd_is_the_real_path_makes_the_lane_active(self) -> None:
+        lane = self.lane_here()
+        real = self.phys_repo / "claude-fix-thing"
+        for label, cwd in (("real path", str(real / "src")), ("lanes path", str(lane / "src")), ("the root", str(real))):
+            with self.subTest(cwd=label):
+                rep = self.report(env=self.env, lsof_cwds=lambda cwd=cwd: [(4242, "zsh", cwd)])
+                co = self.co(rep)
+                self.assertTrue(co["active"], label)
+                self.assertEqual(co["cwd_procs"], ["4242:zsh"])
+        quiet = self.co(self.report(env=self.env, lsof_cwds=lambda: [(4242, "zsh", str(self.home))]))
+        self.assertFalse(quiet["active"])
+
+    def test_a_worktree_only_git_lists_is_shown_at_the_lanes_path_too(self) -> None:
+        # deeper than the scan goes, so only `git worktree list` (which prints the real path) can find it
+        deep = self.add_worktree(self.parent, self.lanes / "DealDex" / "a" / "b" / "c" / "d" / "claude-deep", "claude/deep")
+        rep = self.report(env=self.env)
+        found = self.by_path(rep)
+        self.assertIn(str(deep), found, sorted(found))
+        co = found[str(deep)]
+        self.assertEqual(co["path"], str(deep))
+        self.assertTrue(any(s.startswith("worktree-list:") for s in co["found_by"]), co["found_by"])
+        self.assertFalse([c for c in rep["checkouts"] if c["path"].startswith(str(self.ext))], "no real-path spelling")
+
+    def test_a_clone_behind_the_link_is_found_by_the_scan_and_flagged_as_a_clone_in_a_lane(self) -> None:
+        clone = self.make_repo(self.lanes / "DealDex" / "claude-clone")
+        rep = self.report(env=self.env)
+        co = self.co(rep, "claude-clone")
+        self.assertEqual((co["kind"], co["path"]), ("FULL-CLONE", str(clone)))
+        self.assertIn("scan:lanes/DealDex", co["found_by"])
+        self.assertIn("FULL-CLONE-IN-LANE", {a["type"] for a in rep["anomalies"] if a["realpath"] == co["realpath"]})
+
+    def test_an_old_merged_lane_behind_the_link_is_a_cleaner_candidate_at_the_lanes_path(self) -> None:
+        lane = self.lane_here(pushed=False)
+        self.commit(lane)
+        pr = {"number": 33, "state": "MERGED", "headRefName": "claude/fix-thing",
+              "headRefOid": self.git(lane, "rev-parse", "HEAD"), "mergedAt": "2026-10-01T00:00:00Z"}
+        rep = self.report(env=self.env, gh_prs=FakeGh({DEALDEX_REPO: [pr]}))
+        self.assertEqual(rep["cleaner_candidates"], [str(lane)])
+        # the janitor joins the candidate to its own checkout by device and inode, so the spelling is free
+        self.assertEqual(os.stat(rep["cleaner_candidates"][0]).st_ino, os.stat(self.phys_repo / "claude-fix-thing").st_ino)
+
+    def test_a_link_that_leads_nowhere_is_a_warning_and_never_a_crash(self) -> None:
+        os.symlink(self.ext / "Gone", self.lanes / "Gone")
+        rep = self.report(env=self.env)
+        text = "\n".join(rep["warnings"])
+        self.assertIn(f"{self.lanes / 'Gone'} is a symlink to", text)
+        self.assertIn("mounted", text)
+        self.assertEqual(rep["summary"]["strict_violations"], 0)
+
+    def test_a_link_to_another_place_and_a_renamed_folder_are_warnings(self) -> None:
+        elsewhere = self.home / "Elsewhere"
+        elsewhere.mkdir()
+        os.symlink(elsewhere, self.lanes / "Stray")
+        other = self.ext / "other-name"
+        other.mkdir()
+        os.symlink(other, self.lanes / "Beta")
+        text = "\n".join(self.report(env=self.env)["warnings"])
+        self.assertIn(f"{self.lanes / 'Stray'} is a symlink to {elsewhere}", text)
+        self.assertIn("not on the external lanes disk", text)
+        self.assertIn(f"{self.lanes / 'Beta'} is a symlink to {other}", text)
+        self.assertIn("another name", text)
+
+    def test_a_folder_on_the_disk_with_no_link_is_a_warning_once_links_are_in_use(self) -> None:
+        (self.ext / "Orphaned").mkdir()
+        text = "\n".join(self.report(env=self.env)["warnings"])
+        self.assertIn("Orphaned", text)
+        self.assertIn("no symlink", text)
+        # no links at all (the feature is not in use): nothing to say about the disk
+        os.unlink(self.lanes / "DealDex")
+        self.assertEqual(self.report(env=self.env)["warnings"], [])
+
+    def test_the_scan_plan_has_a_scan_for_each_link_and_none_without(self) -> None:
+        roots = L.make_roots(self.home, self.env, registry=self.registry, case_insensitive=False)
+        plan = {(s.label, s.path, s.depth) for s in doctor.scan_plan(roots, [], deep=False)}
+        self.assertIn(("lanes/DealDex", str(self.lanes / "DealDex"), 3), plan)
+        os.unlink(self.lanes / "DealDex")
+        labels = {s.label for s in doctor.scan_plan(roots, [], deep=False)}
+        self.assertFalse([name for name in labels if name.startswith("lanes/")])
+
+    def test_the_doctor_runs_only_its_allowlisted_commands_for_a_lane_on_the_disk(self) -> None:
+        self.lane_here()
+        seen: list[list[str]] = []
+
+        def recording(argv, cwd=None, timeout=None):
+            seen.append(list(argv))
+            return doctor.run_cmd(argv, cwd, timeout)
+        self.report(env=self.env, run=recording)
+        self.assertTrue(seen)
+        self.assertFalse([a for a in seen if a[:3] in (["git", "worktree", "prune"], ["git", "worktree", "remove"])])
 
 
 class DiscoveryGapTests(GitCase):
@@ -2205,6 +2369,866 @@ class ReadOnlyTests(GitCase):
             rep = self.report()
         self.assertEqual(snapshot([parent / ".git", decoy / ".git"]), before)
         self.assertEqual(self.one(rep, parent)["branch"], "main")
+
+
+# --------------------------------------------------------------------------- lane signals (open-loops F4)
+
+NEW_FIELDS = (
+    "git_op_in_progress", "index_lock_age_hours", "dirty_oldest_age_hours", "dirty_newest_mtime",
+    "dirty_times_partial", "last_change_at", "last_change_basis", "never_pushed", "never_pushed_age_hours",
+    "keep", "pr_is_auto_draft", "auto_draft_seat_commit",
+)
+
+
+def real_now() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def stamp(epoch: float) -> str:
+    return dt.datetime.fromtimestamp(epoch, tz=dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class SignalCase(GitCase):
+    """Fixtures for the F4 signals.  The default clock is the real one, so a file backdated with `os.utime`
+    reads as that many hours;  a test that needs another clock passes `clock=`."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.parent = self.integration()
+
+    @staticmethod
+    def ago(hours: float) -> float:
+        return time.time() - hours * 3600.0
+
+    @staticmethod
+    def admin(lane: pathlib.Path) -> pathlib.Path:
+        return pathlib.Path((lane / ".git").read_text().split("gitdir:", 1)[1].strip())
+
+    @staticmethod
+    def backdate(path: pathlib.Path, epoch: float) -> None:
+        os.utime(path, (epoch, epoch), follow_symlinks=False)
+
+    def commit_at(self, path: pathlib.Path, name: str, hours_ago: float, message: str | None = None) -> str:
+        when = f"{int(self.ago(hours_ago))} +0000"
+        env = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
+        (path / name).write_text("x\n")
+        subprocess.run(["git", "add", name], cwd=path, check=True, env=env, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", message or f"add {name}"], cwd=path, check=True, env=env,
+                       capture_output=True)
+        return self.git(path, "rev-parse", "HEAD")
+
+    def sig(self, lane: pathlib.Path, **kw) -> dict:
+        kw.setdefault("clock", real_now)
+        return self.one(self.report(**kw), lane)
+
+    def new_lane(self, slug: str = "sig", **kw) -> pathlib.Path:
+        return self.lane(self.parent, f"dealdex-claude-{slug}", f"claude/{slug}", **kw)
+
+    @staticmethod
+    def epoch_of(text: str) -> float:
+        return dt.datetime.fromisoformat(text).timestamp()
+
+
+class GitOperationTests(SignalCase):
+    def conflict(self, lane: pathlib.Path) -> None:
+        (self.parent / "README.md").write_text("main side\n")
+        self.git(self.parent, "commit", "-qam", "main edit")
+        (lane / "README.md").write_text("lane side\n")
+        self.git(lane, "commit", "-qam", "lane edit")
+
+    def test_a_real_merge_in_a_linked_worktree_reads_the_lanes_own_git_dir(self) -> None:
+        lane = self.new_lane("merge")
+        self.conflict(lane)
+        merge = subprocess.run(["git", "merge", "main"], cwd=lane, capture_output=True, text=True)
+        self.assertNotEqual(merge.returncode, 0)
+        self.assertTrue((self.admin(lane) / "MERGE_HEAD").exists())
+        self.assertFalse((self.parent / ".git" / "MERGE_HEAD").exists())  # not the parent's .git
+        rep = self.report(clock=real_now)
+        co = self.one(rep, lane)
+        self.assertEqual(co["git_op_in_progress"], ["MERGE_HEAD"])
+        self.assertEqual(co["safety"], "NEEDS-REVIEW")
+        self.assertIn("git operation in progress (MERGE_HEAD)", co["safety_reasons"])
+        self.assertEqual(self.one(rep, self.parent)["git_op_in_progress"], [])
+        self.assertNotIn(os.path.realpath(lane), rep["cleaner_candidates"])
+
+    def test_a_real_rebase_stopped_on_a_conflict(self) -> None:
+        lane = self.new_lane("rebase")
+        self.conflict(lane)
+        rebase = subprocess.run(["git", "rebase", "main"], cwd=lane, capture_output=True, text=True)
+        self.assertNotEqual(rebase.returncode, 0)
+        co = self.sig(lane)
+        self.assertEqual(co["git_op_in_progress"], ["rebase-merge"])
+        self.assertEqual(co["safety"], "NEEDS-REVIEW")
+        self.assertIsNone(co["branch"])  # detached while the rebase runs
+        subprocess.run(["git", "rebase", "--abort"], cwd=lane, capture_output=True, check=True)
+        self.assertEqual(self.sig(lane)["git_op_in_progress"], [])
+
+    def test_every_marker_is_found_in_the_order_the_spec_lists_them(self) -> None:
+        lane = self.new_lane("markers")
+        admin = self.admin(lane)
+        self.assertEqual(doctor.GIT_OP_FILES, ("MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD",
+                                               "REVERT_HEAD", "BISECT_LOG", "sequencer", "index.lock"))
+        for name in doctor.GIT_OP_FILES:
+            with self.subTest(marker=name):
+                target = admin / name
+                if name in ("rebase-merge", "rebase-apply", "sequencer"):
+                    target.mkdir()
+                else:
+                    target.write_text("0" * 40 + "\n")
+                co = self.sig(lane)
+                self.assertEqual(co["git_op_in_progress"], [name])
+                self.assertEqual(co["safety"], "NEEDS-REVIEW")
+                self.assertTrue(co["safety_reasons"][0].startswith(f"git operation in progress ({name})"))
+                shutil.rmtree(target) if target.is_dir() else target.unlink()
+        self.assertEqual(self.sig(lane)["git_op_in_progress"], [])
+        (admin / "MERGE_HEAD").write_text("0" * 40 + "\n")
+        (admin / "index.lock").write_text("")
+        self.assertEqual(self.sig(lane)["git_op_in_progress"], ["MERGE_HEAD", "index.lock"])
+
+    def test_a_dangling_symlink_with_a_marker_name_still_counts(self) -> None:
+        lane = self.new_lane("dangling")
+        os.symlink(str(self.base / "nowhere"), self.admin(lane) / "MERGE_HEAD")
+        self.assertEqual(self.sig(lane)["git_op_in_progress"], ["MERGE_HEAD"])
+
+    def test_index_lock_age_is_reported_and_an_old_one_is_called_possibly_stale(self) -> None:
+        lane = self.new_lane("lock")
+        lock = self.admin(lane) / "index.lock"
+        lock.write_text("")
+        self.backdate(lock, self.ago(0.1))
+        fresh = self.sig(lane)
+        self.assertLess(fresh["index_lock_age_hours"], 0.5)
+        self.assertEqual(fresh["safety_reasons"][0], "git operation in progress (index.lock)")
+        self.backdate(lock, self.ago(5))
+        old = self.sig(lane)
+        self.assertAlmostEqual(old["index_lock_age_hours"], 5.0, delta=0.2)
+        self.assertEqual(old["safety"], "NEEDS-REVIEW")  # still held back:  the doctor never removes or trusts a lock
+        self.assertIn("may be left over from a crash", old["safety_reasons"][0])
+        self.assertTrue(lock.exists())
+
+    def test_a_merged_lane_stays_a_cleaner_candidate_until_a_marker_appears(self) -> None:
+        lane = self.new_lane("done", pushed=False)
+        self.commit(lane)
+        pr = {"number": 33, "state": "MERGED", "headRefName": "claude/done", "mergedAt": "2026-10-01T00:00:00Z",
+              "headRefOid": self.git(lane, "rev-parse", "HEAD")}
+        gh = FakeGh({DEALDEX_REPO: [pr]})
+        base = self.report(gh_prs=gh)
+        co = self.one(base, lane)
+        self.assertEqual(base["cleaner_candidates"], [os.path.realpath(lane)])
+        self.assertEqual(co["safety"], "SAFE-TO-REMOVE")
+        self.assertEqual((co["git_op_in_progress"], co["never_pushed"], co["pr_is_auto_draft"]), ([], False, False))
+        self.assertEqual(co["keep"], dict(doctor.KEEP_ABSENT))
+        (self.admin(lane) / "MERGE_HEAD").write_text("0" * 40 + "\n")
+        held = self.report(gh_prs=gh)
+        self.assertEqual(held["cleaner_candidates"], [])
+        self.assertEqual(self.one(held, lane)["safety"], "NEEDS-REVIEW")
+        (self.admin(lane) / "MERGE_HEAD").unlink()
+        self.assertEqual(self.report(gh_prs=gh)["cleaner_candidates"], [os.path.realpath(lane)])
+
+
+class DirtyTimeTests(SignalCase):
+    def test_a_backdated_tracked_edit_gives_its_age_and_mtime(self) -> None:
+        lane = self.new_lane("tracked")
+        (lane / "README.md").write_text("edited\n")
+        self.backdate(lane / "README.md", self.ago(5))
+        co = self.sig(lane)
+        self.assertAlmostEqual(co["dirty_oldest_age_hours"], 5.0, delta=0.2)
+        self.assertAlmostEqual(self.epoch_of(co["dirty_newest_mtime"]), self.ago(5), delta=2)
+        self.assertFalse(co["dirty_times_partial"])
+
+    def test_a_lane_that_only_made_new_files_is_not_idle(self) -> None:
+        lane = self.new_lane("newfiles")
+        (lane / "notes.md").write_text("new\n")  # untracked:  fleet-autopush commits and pushes these too
+        self.backdate(lane / "notes.md", self.ago(0.5))
+        co = self.sig(lane)
+        self.assertEqual((co["dirty_tracked"], co["dirty_untracked"]), (0, 1))
+        self.assertAlmostEqual(co["dirty_oldest_age_hours"], 0.5, delta=0.1)
+        self.assertAlmostEqual(self.epoch_of(co["dirty_newest_mtime"]), self.ago(0.5), delta=2)
+
+    def test_a_file_deep_in_a_new_folder_counts_by_its_own_mtime(self) -> None:
+        lane = self.new_lane("folder")
+        deep = lane / "newdir" / "sub"
+        deep.mkdir(parents=True)
+        (deep / "f.txt").write_text("1\n")
+        self.backdate(deep / "f.txt", self.ago(1))
+        for folder in (deep, lane / "newdir"):
+            self.backdate(folder, self.ago(10))  # the folders read older than the file inside
+        co = self.sig(lane)
+        self.assertEqual(co["dirty_untracked"], 1)  # the count still comes from the folded listing
+        self.assertAlmostEqual(self.epoch_of(co["dirty_newest_mtime"]), self.ago(1), delta=2)
+        self.assertAlmostEqual(co["dirty_oldest_age_hours"], 1.0, delta=0.1)
+
+    def test_oldest_and_newest_span_every_dirty_path(self) -> None:
+        lane = self.new_lane("span")
+        (lane / "README.md").write_text("edited\n")
+        (lane / "new.txt").write_text("n\n")
+        self.backdate(lane / "README.md", self.ago(8))
+        self.backdate(lane / "new.txt", self.ago(2))
+        co = self.sig(lane)
+        self.assertAlmostEqual(co["dirty_oldest_age_hours"], 8.0, delta=0.2)
+        self.assertAlmostEqual(self.epoch_of(co["dirty_newest_mtime"]), self.ago(2), delta=2)
+
+    def test_ignored_files_do_not_count(self) -> None:
+        lane = self.new_lane("ignored")
+        with open(self.parent / ".git" / "info" / "exclude", "a", encoding="utf-8") as fh:
+            fh.write("build/\n")
+        (lane / "README.md").write_text("edited\n")
+        self.backdate(lane / "README.md", self.ago(6))
+        (lane / "build").mkdir()
+        (lane / "build" / "out.bin").write_text("fresh\n")  # written just now, but git ignores it
+        co = self.sig(lane)
+        self.assertAlmostEqual(self.epoch_of(co["dirty_newest_mtime"]), self.ago(6), delta=2)
+
+    def test_a_staged_rename_reads_the_new_path_and_a_deletion_reads_its_folder(self) -> None:
+        lane = self.new_lane("rename")
+        (lane / "sub").mkdir()
+        (lane / "sub" / "b.txt").write_text("b\n")
+        self.git(lane, "add", "sub/b.txt")
+        self.git(lane, "commit", "-qm", "add sub")
+        self.push(lane, "claude/rename")
+        self.git(lane, "mv", "README.md", "MOVED.md")
+        self.backdate(lane / "MOVED.md", self.ago(4))
+        (lane / "sub" / "b.txt").unlink()
+        self.backdate(lane / "sub", self.ago(3))
+        co = self.sig(lane)
+        self.assertEqual(co["dirty_tracked"], 2)
+        self.assertAlmostEqual(co["dirty_oldest_age_hours"], 4.0, delta=0.2)
+        self.assertAlmostEqual(self.epoch_of(co["dirty_newest_mtime"]), self.ago(3), delta=2)
+
+    def test_a_symlink_is_stat_ed_not_followed_and_a_quoted_name_is_found(self) -> None:
+        lane = self.new_lane("links")
+        target = self.base / "old-target.txt"
+        target.write_text("t\n")
+        self.backdate(target, self.ago(90))
+        os.symlink(str(target), lane / "link")
+        (lane / "we ird.txt").write_text("w\n")
+        self.backdate(lane / "we ird.txt", self.ago(7))
+        co = self.sig(lane)
+        self.assertEqual(co["dirty_untracked"], 2)
+        self.assertLess(co["dirty_oldest_age_hours"], 8)  # the link itself is new:  the old target is not followed
+        self.assertAlmostEqual(co["dirty_oldest_age_hours"], 7.0, delta=0.2)
+
+    def test_a_clean_lane_has_no_dirty_times_and_a_big_dirty_set_is_marked_partial(self) -> None:
+        lane = self.new_lane("clean")
+        co = self.sig(lane)
+        self.assertEqual((co["dirty_oldest_age_hours"], co["dirty_newest_mtime"], co["dirty_times_partial"]),
+                         (None, None, False))
+        with mock.patch.object(doctor, "DIRTY_STAT_CAP", 3):
+            for n in range(5):
+                (lane / f"f{n}.txt").write_text("x\n")
+            self.assertTrue(self.sig(lane)["dirty_times_partial"])
+
+    def test_the_parser_handles_renames_quotes_and_ignored_lines(self) -> None:
+        text = ('R  old.txt -> new.txt\n M README.md\n?? "we ird.txt"\n?? dir/\n!! build/\nC  "a b" -> "c d"\n D gone.txt\n')
+        self.assertEqual(doctor.parse_status_entries(text),
+                         [("R ", "new.txt"), (" M", "README.md"), ("??", "we ird.txt"), ("??", "dir/"),
+                          ("C ", "c d"), (" D", "gone.txt")])
+        self.assertEqual(doctor.parse_status_entries(""), [])
+        root = str(self.base)
+        self.assertIsNone(doctor._path_mtime(root, "../escape"))
+        self.assertIsNone(doctor._path_mtime(root, "/abs/path"))
+
+
+class LastChangeTests(SignalCase):
+    def test_the_newest_of_dirty_file_index_reflog_and_commit_wins(self) -> None:
+        lane = self.new_lane("order")
+        admin = self.admin(lane)
+        base = time.time() + 30 * 86400  # later than every real file time, so the order is the test's own
+        self.backdate(admin / "index", base)
+        self.backdate(admin / "logs" / "HEAD", base + 3600)
+        co = self.sig(lane)
+        self.assertEqual(co["last_change_basis"], "reflog")
+        self.assertAlmostEqual(self.epoch_of(co["last_change_at"]), base + 3600, delta=2)
+        self.backdate(admin / "index", base + 7200)
+        co = self.sig(lane)
+        self.assertEqual(co["last_change_basis"], "index")
+        self.assertAlmostEqual(self.epoch_of(co["last_change_at"]), base + 7200, delta=2)
+        (lane / "late.txt").write_text("l\n")
+        self.backdate(lane / "late.txt", base + 10800)
+        co = self.sig(lane)
+        self.assertEqual(co["last_change_basis"], "dirty-file")
+        self.assertAlmostEqual(self.epoch_of(co["last_change_at"]), base + 10800, delta=2)
+        self.assertAlmostEqual(self.epoch_of(co["dirty_newest_mtime"]), base + 10800, delta=2)
+
+    def test_an_old_untouched_lane_reads_its_last_commit_or_reflog(self) -> None:
+        lane = self.new_lane("quiet")
+        admin = self.admin(lane)
+        self.commit_at(lane, "old.txt", 40)
+        self.backdate(admin / "index", self.ago(50))
+        self.backdate(admin / "logs" / "HEAD", self.ago(45))
+        co = self.sig(lane)
+        self.assertEqual(co["last_change_basis"], "last-commit")
+        self.assertAlmostEqual(self.epoch_of(co["last_change_at"]), self.ago(40), delta=2)
+
+    def test_one_new_untracked_file_from_30_minutes_ago_is_enough_to_not_look_idle(self) -> None:
+        lane = self.new_lane("thirty")
+        admin = self.admin(lane)
+        self.commit_at(lane, "old.txt", 40)
+        self.backdate(admin / "index", self.ago(50))
+        self.backdate(admin / "logs" / "HEAD", self.ago(45))
+        quiet = self.sig(lane)
+        self.assertEqual(quiet["last_change_basis"], "last-commit")
+        self.assertAlmostEqual(self.epoch_of(quiet["last_change_at"]), self.ago(40), delta=2)
+        (lane / "notes.md").write_text("only a new file\n")
+        self.backdate(lane / "notes.md", self.ago(0.5))
+        busy = self.sig(lane)
+        self.assertEqual((busy["dirty_tracked"], busy["dirty_untracked"]), (0, 1))
+        self.assertEqual(busy["last_change_basis"], "dirty-file")
+        self.assertAlmostEqual(self.epoch_of(busy["last_change_at"]), self.ago(0.5), delta=2)
+
+    def test_it_is_unknown_when_the_dirty_listing_could_not_be_read(self) -> None:
+        lane = self.new_lane("blind")
+        (lane / "README.md").write_text("edited\n")
+        run = failing_runner(lambda argv, cwd: argv[:2] == ["git", "status"] and "--ignored" not in argv
+                             and "--untracked-files=normal" in argv)
+        co = self.sig(lane, run=run, clock=self.aged(OLD_DAYS))
+        self.assertIsNone(co["dirty_tracked"])
+        self.assertIsNone(co["last_change_at"])  # an idle rule must not read "unknown" as "quiet"
+        self.assertIsNone(co["dirty_oldest_age_hours"])
+        self.assertEqual(co["safety"], "UNKNOWN")
+
+    def test_a_failed_full_untracked_listing_falls_back_and_says_partial(self) -> None:
+        lane = self.new_lane("fold")
+        (lane / "newdir").mkdir()
+        (lane / "newdir" / "f.txt").write_text("1\n")
+        run = failing_runner(lambda argv, cwd: "--untracked-files=all" in argv)
+        co = self.sig(lane, run=run)
+        self.assertTrue(co["dirty_times_partial"])
+        self.assertEqual(co["dirty_untracked"], 1)
+        self.assertIsNotNone(co["dirty_newest_mtime"])  # the folder's own mtime stands in
+        self.assertEqual(co["safety"], "NEEDS-REVIEW")
+
+
+class NeverPushedTests(SignalCase):
+    def test_commits_no_remote_has_on_a_branch_with_no_upstream(self) -> None:
+        lane = self.new_lane("never", pushed=False)
+        self.commit_at(lane, "a.txt", 7)
+        self.commit_at(lane, "b.txt", 1)
+        co = self.sig(lane)
+        self.assertEqual((co["upstream_state"], co["unpushed"]), ("none", 2))
+        self.assertTrue(co["never_pushed"])
+        self.assertAlmostEqual(co["never_pushed_age_hours"], 7.0, delta=0.2)  # the oldest of the two
+
+    def test_a_merge_commit_does_not_change_which_commit_is_oldest(self) -> None:
+        lane = self.new_lane("branchy", pushed=False)
+        self.commit_at(lane, "a.txt", 9)
+        self.git(lane, "checkout", "-q", "-b", "side")
+        self.commit_at(lane, "side.txt", 4)
+        self.git(lane, "checkout", "-q", "claude/branchy")
+        self.commit_at(lane, "main.txt", 3)
+        subprocess.run(["git", "merge", "-q", "--no-ff", "-m", "merge", "side"], cwd=lane, check=True,
+                       capture_output=True)
+        co = self.sig(lane)
+        self.assertTrue(co["never_pushed"])
+        self.assertAlmostEqual(co["never_pushed_age_hours"], 9.0, delta=0.2)
+
+    def test_already_pushed_or_with_an_upstream_or_with_nothing_to_push_is_false(self) -> None:
+        pushed = self.new_lane("pushed")  # remote-tracking ref set, no upstream configured
+        self.commit_at(pushed, "p.txt", 2)
+        self.push(pushed, "claude/pushed")
+        co = self.sig(pushed)
+        self.assertEqual((co["upstream_state"], co["unpushed"], co["never_pushed"], co["never_pushed_age_hours"]),
+                         ("none", 0, False, None))
+        tracked = self.new_lane("tracked", pushed=False)
+        self.git(tracked, "update-ref", "refs/remotes/origin/claude/tracked", "HEAD")
+        self.git(tracked, "config", "branch.claude/tracked.remote", "origin")
+        self.git(tracked, "config", "branch.claude/tracked.merge", "refs/heads/claude/tracked")
+        self.commit_at(tracked, "t.txt", 2)
+        co = self.sig(tracked)
+        self.assertEqual(co["upstream_state"], "ahead")
+        self.assertEqual((co["unpushed"], co["never_pushed"]), (1, False))  # ahead of a real upstream:  pushed before
+        fresh = self.new_lane("fresh")
+        co = self.sig(fresh)
+        self.assertEqual((co["unpushed"], co["never_pushed"]), (0, False))
+
+    def test_a_detached_head_cannot_say(self) -> None:
+        lane = self.new_lane("detached", pushed=False)
+        self.commit_at(lane, "d.txt", 2)
+        self.git(lane, "checkout", "-q", "--detach")
+        co = self.sig(lane)
+        self.assertIsNone(co["branch"])
+        self.assertIsNone(co["never_pushed"])
+        self.assertIsNone(co["never_pushed_age_hours"])
+
+    def test_a_merged_pr_clears_it(self) -> None:
+        lane = self.new_lane("squashed", pushed=False)
+        sha = self.commit_at(lane, "s.txt", 6)
+        pr = {"number": 41, "state": "MERGED", "headRefName": "claude/squashed", "headRefOid": sha,
+              "mergedAt": "2026-10-01T00:00:00Z"}
+        co = self.sig(lane, gh_prs=FakeGh({DEALDEX_REPO: [pr]}))
+        self.assertEqual((co["upstream_state"], co["unpushed"]), ("none", 1))
+        self.assertEqual((co["never_pushed"], co["never_pushed_age_hours"]), (False, None))
+
+    def test_a_long_lane_skips_the_age_lookup_and_a_failed_lookup_leaves_it_empty(self) -> None:
+        lane = self.new_lane("long", pushed=False)
+        self.commit_at(lane, "l.txt", 3)
+        with mock.patch.object(doctor, "NEVER_PUSHED_LIST_CAP", 0):
+            co = self.sig(lane)
+        self.assertTrue(co["never_pushed"])
+        self.assertIsNone(co["never_pushed_age_hours"])
+        run = failing_runner(lambda argv, cwd: argv[:3] == ["git", "rev-list", "HEAD"])
+        co = self.sig(lane, run=run)
+        self.assertTrue(co["never_pushed"])
+        self.assertIsNone(co["never_pushed_age_hours"])
+        self.assertEqual(co["safety"], "NEEDS-REVIEW")
+
+
+class KeepMarkerTests(SignalCase):
+    def keep(self, lane: pathlib.Path, text: str) -> None:
+        (lane / ".janitor-keep").write_text(text)
+        with open(self.parent / ".git" / "info" / "exclude", "a", encoding="utf-8") as fh:
+            fh.write(".janitor-keep\n")
+
+    def test_no_marker_reports_the_absent_record(self) -> None:
+        lane = self.new_lane("nokeep")
+        co = self.sig(lane)
+        self.assertFalse(co["janitor_keep"])
+        self.assertEqual(co["keep"], dict(doctor.KEEP_ABSENT))
+
+    def test_a_legacy_empty_marker_is_present_invalid_and_still_honored(self) -> None:
+        lane = self.new_lane("legacy")
+        self.keep(lane, "")
+        co = self.sig(lane)
+        self.assertTrue(co["janitor_keep"])
+        self.assertEqual((co["keep"]["present"], co["keep"]["valid"], co["keep"]["expired"]), (True, False, False))
+        self.assertIn("legacy", co["keep"]["problem"])
+        self.assertIn(KEEP_REASON, co["safety_reasons"])
+        self.assertEqual(co["safety"], "NEEDS-REVIEW")
+
+    def test_a_valid_marker_is_parsed_into_its_fields(self) -> None:
+        lane = self.new_lane("valid")
+        self.keep(lane, "# kept by hand\nreason: long migration, do not clean\nby: CLAUDE\nset: 2026-10-01\n"
+                        "expires: 2026-10-20\nboard: AFC-265\nunknown: ignored\n")
+        clock = lambda: dt.datetime(2026, 10, 11, 12, 0, tzinfo=dt.timezone.utc)  # noqa: E731
+        co = self.sig(lane, clock=clock)
+        self.assertEqual(co["keep"], {
+            "present": True, "valid": True, "reason": "long migration, do not clean", "by": "CLAUDE",
+            "set_on": "2026-10-01", "expires": "2026-10-20", "expired": False, "board": "AFC-265", "problem": None})
+        self.assertEqual(co["safety"], "NEEDS-REVIEW")
+
+    def test_an_expired_marker_still_protects_the_lane_and_never_makes_it_a_candidate(self) -> None:
+        lane = self.new_lane("expired", pushed=False)
+        sha = self.commit(lane)
+        pr = {"number": 51, "state": "MERGED", "headRefName": "claude/expired", "headRefOid": sha,
+              "mergedAt": "2026-09-01T00:00:00Z"}
+        gh = FakeGh({DEALDEX_REPO: [pr]})
+        self.assertEqual(self.report(gh_prs=gh, clock=self.aged(OLD_DAYS))["cleaner_candidates"], [os.path.realpath(lane)])
+        self.keep(lane, "reason: waiting on review\nby: CODEX\nset: 2020-01-01\nexpires: 2020-01-31\n")
+        rep = self.report(gh_prs=gh, clock=self.aged(OLD_DAYS))
+        co = self.one(rep, lane)
+        self.assertEqual((co["keep"]["valid"], co["keep"]["expired"]), (True, True))
+        self.assertTrue(co["janitor_keep"])
+        self.assertEqual(co["safety"], "NEEDS-REVIEW")
+        self.assertEqual(rep["cleaner_candidates"], [])
+
+    def test_dates_a_bare_day_lasts_through_that_day_and_z_stamps_parse(self) -> None:
+        lane = self.base / "marker"
+        lane.mkdir()
+        (lane / ".janitor-keep").write_text("reason: r\nby: B\nset: 2026-10-01T08:00:00Z\nexpires: 2026-10-11\n")
+        end_of_day = dt.datetime(2026, 10, 11, 23, 59, tzinfo=dt.timezone.utc).timestamp()
+        midnight = dt.datetime(2026, 10, 12, 0, 0, tzinfo=dt.timezone.utc).timestamp()
+        keep = doctor.parse_keep_marker(str(lane), end_of_day)
+        self.assertEqual((keep["valid"], keep["expired"], keep["set_on"]), (True, False, "2026-10-01T08:00:00+00:00"))
+        self.assertTrue(doctor.parse_keep_marker(str(lane), midnight)["expired"])
+        (lane / ".janitor-keep").write_text("reason: r\nby: B\nset: 2026-10-01\nexpires: 2026-10-12T05:00:00Z\n")
+        self.assertFalse(doctor.parse_keep_marker(str(lane), midnight)["expired"])
+        self.assertTrue(doctor.parse_keep_marker(str(lane), midnight + 6 * 3600)["expired"])
+
+    def test_missing_or_unreadable_parts_make_it_invalid_with_the_reason(self) -> None:
+        lane = self.base / "marker2"
+        lane.mkdir()
+        now = time.time()
+        for text, missing in (("reason: only a reason\n", "by, set, expires"),
+                              ("reason: r\nby: B\nset: yesterday\nexpires: 2026-10-20\n", "set"),
+                              ("by: B\nset: 2026-10-01\nexpires: 2026-10-20\n", "reason"),
+                              ("reason: r\nby: B\nset: 2026-10-01\nexpires: 2026-13-45\n", "expires"),
+                              ("reason:\nby:\nset:\nexpires:\n", "reason, by, set, expires")):
+            with self.subTest(text=text):
+                (lane / ".janitor-keep").write_text(text)
+                keep = doctor.parse_keep_marker(str(lane), now)
+                self.assertTrue(keep["present"])
+                self.assertFalse(keep["valid"])
+                self.assertEqual(keep["problem"], f"missing or unreadable: {missing}")
+        (lane / ".janitor-keep").write_text("just some words\nno colon keys here\n")
+        self.assertIn("legacy", doctor.parse_keep_marker(str(lane), now)["problem"])
+
+    def test_the_first_value_of_a_repeated_key_wins_and_long_or_dirty_text_is_cut(self) -> None:
+        lane = self.base / "marker3"
+        lane.mkdir()
+        noisy = "ok\x07\x1b[31m red\u202e\u200b gone " + "x" * 400
+        (lane / ".janitor-keep").write_text(
+            f"reason: {noisy}\nreason: second\nby: {'B' * 500}\nboard: {'9' * 100}\n"
+            "filler: 1\n\n\n" + "z: 1\n" * 100 + "expires: 2026-10-20\n")
+        keep = doctor.parse_keep_marker(str(lane), time.time())
+        self.assertEqual(len(keep["reason"]), doctor.KEEP_REASON_MAX)
+        self.assertTrue(keep["reason"].startswith("ok[31m red gone xxx"))
+        self.assertNotIn("second", keep["reason"])  # the first value of a repeated key wins
+        for ch in ("\x07", "\x1b", "\u202e", "\u200b"):
+            self.assertNotIn(ch, keep["reason"])
+        self.assertEqual(len(keep["by"]), doctor.KEEP_SHORT_MAX)
+        self.assertEqual(len(keep["board"]), doctor.KEEP_SHORT_MAX)
+        self.assertIsNone(keep["expires"])  # past the line cap:  not read
+
+    def test_a_symlinked_marker_is_never_read_and_its_target_never_reaches_the_report(self) -> None:
+        lane = self.new_lane("linked")
+        secret = self.base / "secret.txt"
+        secret.write_text("reason: TOP-SECRET-VALUE\nby: leaked\nset: 2026-10-01\nexpires: 2026-10-20\n")
+        os.symlink(str(secret), lane / ".janitor-keep")
+        with open(self.parent / ".git" / "info" / "exclude", "a", encoding="utf-8") as fh:
+            fh.write(".janitor-keep\n")
+        rep = self.report(clock=real_now)
+        co = self.one(rep, lane)
+        self.assertTrue(co["janitor_keep"])
+        self.assertEqual((co["keep"]["present"], co["keep"]["valid"], co["keep"]["reason"]), (True, False, None))
+        self.assertEqual(co["keep"]["problem"], "symlink (not read)")
+        self.assertNotIn("TOP-SECRET-VALUE", json.dumps(rep))
+        self.assertNotIn("leaked", json.dumps(rep))
+
+    def test_a_dangling_symlink_and_a_fifo_still_protect_the_lane_without_a_hang(self) -> None:
+        lane = self.new_lane("odd")
+        marker = lane / ".janitor-keep"
+        os.symlink(str(self.base / "missing"), marker)
+        co = self.sig(lane)
+        self.assertTrue(co["janitor_keep"])
+        self.assertEqual(co["keep"]["problem"], "symlink (not read)")
+        marker.unlink()
+        os.mkfifo(marker)
+        def hung(signum, frame):
+            raise TimeoutError("the doctor opened a FIFO and blocked")
+        previous = signal.signal(signal.SIGALRM, hung)
+        signal.alarm(30)  # opening a FIFO with no writer would block forever
+        try:
+            co = self.sig(lane)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        self.assertTrue(co["janitor_keep"])
+        self.assertEqual(co["keep"]["problem"], "not a regular file (not read)")
+        self.assertEqual(co["safety"], "NEEDS-REVIEW")
+
+
+class AutoDraftMatchTests(unittest.TestCase):
+    SHA = "c" * 40
+
+    def pr(self, number: int = 9, **kw) -> dict:
+        pr = {"number": number, "state": "OPEN", "headRefName": "claude/x", "headRefOid": self.SHA,
+              "isDraft": True, "labels": [{"name": "fleet-autopush"}], "createdAt": "2026-10-11T04:12:33Z"}
+        pr.update(kw)
+        return pr
+
+    def match(self, *prs: dict) -> doctor.PrMatch:
+        return doctor.match_pr("claude/x", self.SHA, list(prs))
+
+    def test_the_label_makes_a_draft_an_auto_draft_and_a_z_stamp_parses(self) -> None:
+        m = self.match(self.pr())
+        self.assertEqual((m.state, m.number, m.auto_draft), ("OPEN", 9, True))
+        self.assertEqual(m.opened_at, dt.datetime(2026, 10, 11, 4, 12, 33, tzinfo=dt.timezone.utc).timestamp())
+        self.assertIsNone(m.seat_commit)
+
+    def test_the_body_marker_does_too_and_a_plain_draft_is_not(self) -> None:
+        marker = "Saved by fleet-autopush.\n\n<!-- fleet-autopush:auto-draft v1 -->"
+        self.assertTrue(self.match(self.pr(labels=[], body=marker)).auto_draft)
+        self.assertFalse(self.match(self.pr(labels=[{"name": "bug"}], body="hand written")).auto_draft)
+        self.assertIsNone(self.match(self.pr(labels=[{"name": "bug"}])).auto_draft)  # body not read:  it may carry the marker
+
+    def test_a_ready_pr_or_a_record_without_the_fields_is_not_a_known_auto_draft(self) -> None:
+        self.assertFalse(self.match(self.pr(isDraft=False)).auto_draft)
+        bare = {"number": 9, "state": "OPEN", "headRefName": "claude/x", "headRefOid": self.SHA}
+        self.assertIsNone(self.match(bare).auto_draft)
+        self.assertIsNone(self.match(self.pr(labels="oops")).auto_draft)
+
+    def test_one_ordinary_open_pr_covers_the_lane_whatever_else_is_open(self) -> None:
+        self.assertFalse(self.match(self.pr(7, isDraft=False), self.pr(9)).auto_draft)
+        self.assertFalse(self.match(self.pr(9), self.pr(7, isDraft=False)).auto_draft)
+        self.assertIsNone(self.match(self.pr(9), self.pr(10, labels=[])).auto_draft)
+        both = self.match(self.pr(9, createdAt="2026-10-01T00:00:00Z"), self.pr(10))
+        self.assertTrue(both.auto_draft)
+        self.assertEqual(both.number, 10)
+        self.assertEqual(both.opened_at, dt.datetime(2026, 10, 11, 4, 12, 33, tzinfo=dt.timezone.utc).timestamp())
+
+    def test_a_bad_created_at_leaves_the_open_time_empty(self) -> None:
+        for bad in (None, "", "not a date", 12345):
+            with self.subTest(bad=bad):
+                m = self.match(self.pr(createdAt=bad))
+                self.assertTrue(m.auto_draft)
+                self.assertIsNone(m.opened_at)
+
+    def test_other_states_carry_no_auto_draft_data(self) -> None:
+        m = self.match(self.pr(state="MERGED"))
+        self.assertEqual((m.state, m.auto_draft, m.opened_at), ("MERGED", None, None))
+
+    def test_the_body_fetcher_asks_for_open_prs_only_and_fails_soft(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(argv, cwd=None, timeout=None):
+            calls.append(list(argv))
+            return doctor.CmdResult(0, json.dumps([{"number": 9, "body": "b"}, {"number": 10, "body": None}, {"x": 1}]))
+        self.assertEqual(doctor.make_gh_body_fetcher(fake_run)("o/r"), {9: "b", 10: ""})
+        self.assertEqual(calls, [["gh", "pr", "list", "--repo", "o/r", "--state", "open", "--limit", "100",
+                                  "--json", "number,body"]])
+        self.assertEqual(doctor.check_allowed(calls[0]), "gh")
+        for bad in (doctor.CmdResult(1, err="auth"), doctor.CmdResult(None, timed_out=True),
+                    doctor.CmdResult(0, "not json"), doctor.CmdResult(0, "{}")):
+            self.assertIsNone(doctor.make_gh_body_fetcher(lambda *a, _b=bad, **k: _b)("o/r"))
+
+    def test_add_draft_bodies_asks_only_when_a_matching_unlabeled_draft_needs_it(self) -> None:
+        asked: list[str] = []
+
+        def fetch(repo: str):
+            asked.append(repo)
+            return {9: "<!-- fleet-autopush:auto-draft v1 -->", 11: "plain"}
+        labeled = [self.pr()]
+        self.assertEqual(doctor.add_draft_bodies("o/r", labeled, fetch, {"claude/x"}), (labeled, False))
+        elsewhere = [self.pr(labels=[], headRefName="claude/other", headRefOid="d" * 40)]
+        self.assertEqual(doctor.add_draft_bodies("o/r", elsewhere, fetch, {"claude/x"}), (elsewhere, False))
+        ready = [self.pr(labels=[], isDraft=False)]
+        self.assertEqual(doctor.add_draft_bodies("o/r", ready, fetch, {"claude/x"}), (ready, False))
+        self.assertEqual(asked, [])
+        wanted = [self.pr(labels=[]), self.pr(11, labels=[], headRefName="claude/other", headRefOid="e" * 40)]
+        out, failed = doctor.add_draft_bodies("o/r", wanted, fetch, {"claude/x"})
+        self.assertEqual((asked, failed), (["o/r"], False))
+        self.assertEqual(out[0]["body"], "<!-- fleet-autopush:auto-draft v1 -->")
+        self.assertNotIn("body", out[1])  # not ours:  left alone
+        self.assertNotIn("body", wanted[0])  # the input list is never changed
+        self.assertEqual(doctor.add_draft_bodies("o/r", wanted, lambda repo: None, {"claude/x"}), (wanted, True))
+        self.assertEqual(doctor.add_draft_bodies("o/r", wanted, None, {"claude/x"}), (wanted, False))
+
+        def boom(repo: str):
+            raise RuntimeError("network")
+        self.assertEqual(doctor.add_draft_bodies("o/r", wanted, boom, {"claude/x"}), (wanted, True))
+
+
+class AutoDraftReportTests(SignalCase):
+    """A lane with a dirty file and an open PR, under each kind of PR."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.lane_dir = self.new_lane("draft")
+        self.opened = self.ago(48)
+
+    def pr_for(self, **kw) -> dict:
+        pr = {"number": 9, "state": "OPEN", "headRefName": "claude/draft", "isDraft": True,
+              "headRefOid": self.git(self.lane_dir, "rev-parse", "HEAD"), "labels": [{"name": "fleet-autopush"}],
+              "createdAt": stamp(self.opened)}
+        pr.update(kw)
+        return pr
+
+    def tip(self, hours_ago: float, message: str | None = None) -> None:
+        self.commit_at(self.lane_dir, f"t{hours_ago}.txt", hours_ago, message)
+        self.push(self.lane_dir, "claude/draft")
+        (self.lane_dir / "scratch.txt").write_text("not committed\n")
+
+    def look(self, pr: dict, **kw) -> dict:
+        kw.setdefault("gh_prs", FakeGh({DEALDEX_REPO: [pr]}))
+        return self.sig(self.lane_dir, **kw)
+
+    AUTOPUSH = "WIP: auto-commit after 2 hours idle\n\nSaved by fleet-autopush.\n\nFleet-Autopush: v1\nFleet-Event: idle"
+
+    def test_an_ordinary_open_pr_still_covers_the_lane(self) -> None:
+        self.tip(24)
+        co = self.look(self.pr_for(isDraft=False))
+        self.assertEqual((co["pr_state"], co["safety"], co["dropped_ball"]), ("OPEN", "NEEDS-REVIEW", False))
+        self.assertIs(co["pr_is_auto_draft"], False)
+        self.assertIsNone(co["auto_draft_seat_commit"])
+        self.assertIn("open PR #9", co["safety_reasons"])
+        plain = self.pr_for(labels=[], isDraft=False)  # a ready PR with no label at all
+        self.assertIs(self.look(plain)["dropped_ball"], False)
+
+    def test_an_auto_draft_nobody_has_committed_to_since_covers_nothing_new(self) -> None:
+        self.tip(24, self.AUTOPUSH)
+        co = self.look(self.pr_for())
+        self.assertEqual((co["pr_is_auto_draft"], co["auto_draft_seat_commit"], co["dropped_ball"]), (True, False, True))
+        self.assertIn("open PR #9 (auto-draft by fleet-autopush, no seat commit since it opened)", co["safety_reasons"])
+
+    def test_a_seat_commit_after_it_opened_makes_it_an_ordinary_pr_again(self) -> None:
+        self.tip(24, "a plain commit by the seat")
+        co = self.look(self.pr_for())
+        self.assertEqual((co["pr_is_auto_draft"], co["auto_draft_seat_commit"], co["dropped_ball"]), (True, True, False))
+        self.assertIn("open PR #9 (auto-draft by fleet-autopush)", co["safety_reasons"])
+
+    def test_a_tip_older_than_the_draft_is_not_a_commit_since_it_opened(self) -> None:
+        self.tip(72, "a plain commit by the seat, before the draft")
+        co = self.look(self.pr_for())
+        self.assertEqual((co["auto_draft_seat_commit"], co["dropped_ball"]), (False, True))
+
+    def test_a_forged_trailer_only_makes_the_lane_count_as_unattended(self) -> None:
+        self.tip(24, "looks plain\n\nFleet-Autopush: v2")  # v2 is not the trailer
+        self.assertIs(self.look(self.pr_for())["auto_draft_seat_commit"], True)
+        self.tip(20, "forged\n\nFleet-Autopush: v1")
+        self.assertIs(self.look(self.pr_for())["auto_draft_seat_commit"], False)
+
+    def test_an_unreadable_open_time_or_commit_keeps_the_old_rule(self) -> None:
+        self.tip(24, self.AUTOPUSH)
+        co = self.look(self.pr_for(createdAt="garbage"))
+        self.assertEqual((co["pr_is_auto_draft"], co["auto_draft_seat_commit"], co["dropped_ball"]), (True, None, False))
+        run = failing_runner(lambda argv, cwd: argv[:3] == ["git", "log", "-1"] and "--format=%ct%x09%B" in argv)
+        co = self.look(self.pr_for(), run=run)
+        self.assertEqual((co["auto_draft_seat_commit"], co["dropped_ball"]), (None, False))
+
+    def test_the_body_marker_is_looked_up_once_for_a_draft_without_the_label(self) -> None:
+        self.tip(24, self.AUTOPUSH)
+        asked: list[str] = []
+
+        def bodies(repo: str):
+            asked.append(repo)
+            return {9: "text\n<!-- fleet-autopush:auto-draft v1 -->"}
+        co = self.look(self.pr_for(labels=[]), gh_bodies=bodies)
+        self.assertEqual((asked, co["pr_is_auto_draft"], co["dropped_ball"]), ([DEALDEX_REPO], True, True))
+        asked.clear()
+        co = self.look(self.pr_for(labels=[]), gh_bodies=lambda repo: {9: "a person's own draft"})
+        self.assertEqual((co["pr_is_auto_draft"], co["dropped_ball"]), (False, False))
+
+    def test_a_failed_body_lookup_reads_unknown_and_warns_but_changes_no_other_state(self) -> None:
+        self.tip(24, self.AUTOPUSH)
+        rep = self.report(clock=real_now, gh_prs=FakeGh({DEALDEX_REPO: [self.pr_for(labels=[])]}),
+                          gh_bodies=lambda repo: None)
+        co = self.one(rep, self.lane_dir)
+        self.assertEqual((co["pr_state"], co["pr_is_auto_draft"], co["dropped_ball"]), ("OPEN", None, False))
+        self.assertEqual(rep["gh"], "ok")
+        self.assertTrue(any("open-PR body lookup failed" in w for w in rep["warnings"]))
+
+    def test_the_label_needs_no_body_call_and_an_injected_pr_list_never_reaches_real_gh(self) -> None:
+        self.tip(24, self.AUTOPUSH)
+        asked: list[str] = []
+        self.look(self.pr_for(), gh_bodies=lambda repo: asked.append(repo))
+        self.assertEqual(asked, [])
+        seen: list[list[str]] = []
+
+        def spy(argv, cwd=None, timeout=None):
+            seen.append(list(argv))
+            return doctor.run_cmd(argv, cwd, timeout)
+        co = self.look(self.pr_for(labels=[]), run=spy)
+        self.assertEqual([a for a in seen if a[0] == "gh"], [])
+        self.assertIsNone(co["pr_is_auto_draft"])  # no body fetcher was injected, so the marker was not read
+
+    def test_a_clean_lane_with_an_auto_draft_is_not_a_dropped_ball(self) -> None:
+        self.commit_at(self.lane_dir, "c.txt", 24, self.AUTOPUSH)
+        self.push(self.lane_dir, "claude/draft")
+        co = self.look(self.pr_for())
+        self.assertEqual((co["dirty_tracked"], co["dirty_untracked"], co["dropped_ball"]), (0, 0, False))
+        self.assertTrue(co["pr_is_auto_draft"])
+
+
+class SignalAssessTests(unittest.TestCase):
+    """`assess` over hand-built checkouts, no git."""
+
+    def test_a_git_operation_forces_needs_review_and_lists_every_name(self) -> None:
+        co = assessed(git_op_in_progress=["MERGE_HEAD", "index.lock"], index_lock_age_hours=0.2)
+        self.assertEqual(co.safety, "NEEDS-REVIEW")
+        self.assertEqual(co.safety_reasons, ["git operation in progress (MERGE_HEAD, index.lock)"])
+        self.assertIs(co.dropped_ball, False)  # clean tree:  held back, not lost
+
+    def test_an_old_index_lock_is_called_possibly_stale_and_a_new_one_is_not(self) -> None:
+        old = assessed(git_op_in_progress=["index.lock"], index_lock_age_hours=3.0)
+        self.assertEqual(old.safety_reasons,
+                         ["git operation in progress (index.lock); index.lock is 3h old and may be left over from a crash"])
+        self.assertEqual(old.safety, "NEEDS-REVIEW")
+        self.assertEqual(assessed(git_op_in_progress=["index.lock"], index_lock_age_hours=0.4).safety_reasons,
+                         ["git operation in progress (index.lock)"])
+
+    def test_active_still_wins_and_a_tool_cache_still_relabels(self) -> None:
+        co = assessed(active=True, active_reasons=["active: process cwd 1:zsh"], git_op_in_progress=["rebase-apply"])
+        self.assertEqual(co.safety, "ACTIVE")
+        self.assertIn("git operation in progress (rebase-apply)", co.safety_reasons)
+        cache = assessed(tool_cache=True, git_op_in_progress=["MERGE_HEAD"], dirty_tracked=2)
+        self.assertEqual(cache.safety, "TOOL-CACHE")
+        self.assertIs(cache.dropped_ball, False)
+
+    def test_a_dirty_lane_in_a_merge_with_no_pr_is_a_dropped_ball(self) -> None:
+        co = assessed(git_op_in_progress=["MERGE_HEAD"], dirty_tracked=3)
+        self.assertEqual(co.safety, "NEEDS-REVIEW")
+        self.assertIs(co.dropped_ball, True)
+
+    def test_the_cleaner_predicate_refuses_a_hand_built_record_with_a_marker(self) -> None:
+        co = assessed(MERGED)
+        self.assertTrue(doctor.is_cleaner_candidate(co, gh_ok_repos=[DEALDEX_REPO]))
+        co.git_op_in_progress = ["BISECT_LOG"]
+        self.assertFalse(doctor.is_cleaner_candidate(co, gh_ok_repos=[DEALDEX_REPO]))
+
+    def open_pr(self, **kw) -> doctor.PrMatch:
+        return doctor.PrMatch("OPEN", 9, "open PR for this branch or HEAD", **kw)
+
+    def test_the_dropped_ball_rule_for_open_prs(self) -> None:
+        cases = [
+            ("ordinary", self.open_pr(auto_draft=False), False),
+            ("not told", self.open_pr(auto_draft=None), False),
+            ("auto-draft, seat committed", self.open_pr(auto_draft=True, opened_at=1.0, seat_commit=True), False),
+            ("auto-draft, seat unknown", self.open_pr(auto_draft=True, opened_at=1.0, seat_commit=None), False),
+            ("auto-draft, no seat commit", self.open_pr(auto_draft=True, opened_at=1.0, seat_commit=False), True),
+            ("old record without the fields", doctor.PrMatch("OPEN", 9, "x"), False),
+        ]
+        for label, pr, expected in cases:
+            with self.subTest(label):
+                co = assessed(pr, dirty_tracked=2)
+                self.assertEqual(co.safety, "NEEDS-REVIEW")
+                self.assertIs(co.dropped_ball, expected)
+        unpushed = assessed(self.open_pr(auto_draft=True, opened_at=1.0, seat_commit=False), unpushed=2)
+        self.assertIs(unpushed.dropped_ball, True)
+        clean = assessed(self.open_pr(auto_draft=True, opened_at=1.0, seat_commit=False))
+        self.assertIs(clean.dropped_ball, False)  # nothing at risk, so nothing dropped
+
+    def test_the_pr_fields_are_filled_for_open_prs_only(self) -> None:
+        auto = assessed(self.open_pr(auto_draft=True, opened_at=1.0, seat_commit=False), dirty_tracked=1)
+        self.assertEqual((auto.pr_is_auto_draft, auto.auto_draft_seat_commit), (True, False))
+        self.assertEqual(assessed(self.open_pr(auto_draft=None), dirty_tracked=1).pr_is_auto_draft, None)
+        for pr in (MERGED, doctor.PrMatch("NONE"), doctor.PrMatch("UNKNOWN", basis="x")):
+            co = assessed(pr)
+            self.assertEqual((co.pr_is_auto_draft, co.auto_draft_seat_commit), (False, None))
+        self.assertIsNone(assessed(doctor.PrMatch("UNKNOWN", basis="x"), dirty_tracked=1).dropped_ball)  # unchanged
+
+    def test_never_pushed_is_cleared_when_a_merged_pr_covers_the_commits(self) -> None:
+        co = assessed(MERGED, never_pushed=True, never_pushed_age_hours=9.0, unpushed=2, upstream_state="none")
+        self.assertEqual((co.never_pushed, co.never_pushed_age_hours), (False, None))
+        open_pr = assessed(self.open_pr(auto_draft=False), never_pushed=True, never_pushed_age_hours=9.0, unpushed=2)
+        self.assertEqual((open_pr.never_pushed, open_pr.never_pushed_age_hours), (True, 9.0))
+        unknown = assessed(never_pushed=None)
+        self.assertIsNone(unknown.never_pushed)
+
+
+class SignalReportTests(SignalCase):
+    def test_every_new_field_is_additive_json_with_a_quiet_default(self) -> None:
+        lane = self.new_lane("plain")
+        rep = self.report(clock=real_now)
+        co = self.one(rep, lane)
+        self.assertEqual(rep["schema"], 2)
+        for key in NEW_FIELDS:
+            self.assertIn(key, co)
+        self.assertEqual((co["git_op_in_progress"], co["index_lock_age_hours"], co["dirty_oldest_age_hours"],
+                          co["dirty_newest_mtime"], co["dirty_times_partial"]), ([], None, None, None, False))
+        self.assertEqual((co["never_pushed"], co["never_pushed_age_hours"], co["pr_is_auto_draft"],
+                          co["auto_draft_seat_commit"]), (False, None, False, None))
+        self.assertIn(co["last_change_basis"], ("index", "reflog", "last-commit"))
+        dt.datetime.fromisoformat(co["last_change_at"])
+        json.dumps(rep)
+        other = self.one(rep, self.parent)
+        self.assertIsNot(co["keep"], other["keep"])  # no shared mutable default
+        self.assertIsNot(co["keep"], doctor.KEEP_ABSENT)
+
+    def test_the_new_probes_change_nothing_on_disk(self) -> None:
+        lane = self.new_lane("quiet", pushed=False)
+        self.commit_at(lane, "c.txt", 3)
+        (lane / "newdir" / "deep").mkdir(parents=True)
+        (lane / "newdir" / "deep" / "f.txt").write_text("1\n")
+        (lane / "README.md").write_text("edited\n")
+        (lane / ".janitor-keep").write_text("reason: r\nby: B\nset: 2026-10-01\nexpires: 2026-10-20\n")
+        (self.admin(lane) / "MERGE_HEAD").write_text("0" * 40 + "\n")
+        os.utime(lane / "README.md", (time.time() + 5, time.time() + 5))
+        roots = [self.home, self.faketmp]
+        before = snapshot(roots)
+        rep = self.report(clock=real_now, sizes=True)
+        self.assertEqual(snapshot(roots), before)
+        co = self.one(rep, lane)
+        self.assertEqual(co["git_op_in_progress"], ["MERGE_HEAD"])
+        self.assertTrue(co["never_pushed"])
+        self.assertTrue(co["keep"]["valid"])
+        self.assertEqual(co["dirty_untracked"], 2)
+
+    def test_the_text_report_names_a_git_operation_and_a_never_pushed_lane(self) -> None:
+        lane = self.new_lane("text", pushed=False)
+        self.commit_at(lane, "t.txt", 4)
+        (self.admin(lane) / "CHERRY_PICK_HEAD").write_text("0" * 40 + "\n")
+        text = doctor.render_text(self.report(clock=real_now))
+        self.assertIn("git op CHERRY_PICK_HEAD", text)
+        self.assertIn("never pushed (oldest commit 4h old)", text)
 
 
 # --------------------------------------------------------------------------- command line

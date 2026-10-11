@@ -1,8 +1,9 @@
 """Lane layout core: where fleet checkouts may live, what they are called, and what they are.
 
 Everything here is pure.  There is no subprocess and no network.  The only filesystem access is
-`os.path.realpath` (symlink resolution) and one `.git` existence probe for direct children of
-~/Code, and both work from an explicit home path carried by `Roots`, so tests can use a fake home.
+`os.path.realpath` (symlink resolution), one `.git` existence probe for direct children of ~/Code,
+and `external_links`, which lists the lanes root once.  All of it works from an explicit home path
+carried by `Roots`, so tests can use a fake home.
 
 Layout v2 (owner decision 2026-10-09).  Sanctioned places for checkouts:
   1. Integration trees at ~/Code/<Repo> (main only, human use).  Nothing else belongs inside them,
@@ -13,6 +14,7 @@ Layout v2 (owner decision 2026-10-09).  Sanctioned places for checkouts:
        ~/apps/lanes/<Repo>/<slug>-<hex>       made by Claude desktop (its worktree location is ~/apps/lanes)
        ~/apps/lanes/<Repo>/review-pr-<n>      read-only PR check (-<seat> is added when another seat has it)
        ~/apps/lanes/_codex/<slug>/<Repo>      Codex desktop, the one tool that nests the other way round
+       ~/apps/lanes/_conductor/<Repo>/<city>  Conductor, which names its own workspaces with city names
      The FLEET_LAYOUT variable can still say `flat` (~/apps/<prefix>-<seat>-<slug>); that is a legacy
      opt-out and is no longer documented as a way to create lanes.
   3. Harness-managed worktree locations (~/.codex/worktrees, .cursor/worktrees and friends).
@@ -25,6 +27,13 @@ and .muse/worktrees.  `explain_layout` says which of these a path is (correct, l
 codex-managed, tool-managed, human, wrong, unsanctioned) and where a legacy lane belongs.  The
 LocationClass VALUES are unchanged on purpose: HogHunter's vacuum and the doctor's JSON consumers
 hard-code them.
+
+External lanes (owner 2026-10-10).  The folders under ~/apps/lanes may be symlinks into an external disk
+(~/apps/lanes/<Repo> -> /Volumes/External/Lanes/<Repo>).  The path agents use never changes, but git and
+lsof report the resolved path, and a resolved path outside ~/apps/lanes would read as UNSANCTIONED.  So
+`Roots.external_lanes_roots` (FLEET_LANES_EXTERNAL_ROOT, default /Volumes/External/Lanes) names the places
+that are lanes storage, and `resolve_path` reports a path under one at its ~/apps/lanes spelling.  Every
+classification, key and name check goes through `resolve_path`, so a lane reads the same on either spelling.
 
 Forbidden for any checkout: /tmp, /private/tmp, /var/tmp, /private/var/tmp, the per-user macOS
 temp dir (/private/var/folders/*/*/T) and the TMPDIR directory.  macOS /tmp is a symlink to
@@ -45,9 +54,10 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
+from functools import lru_cache
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 try:
     from enum import StrEnum
@@ -73,13 +83,15 @@ __all__ = [
     "seat_alias_map", "canonical_seat_set", "normalize_seat", "is_alias_only", "is_known_seat",
     "HarnessLocation", "Roots", "make_roots", "make_guard_roots", "make_tmp_roots", "is_forbidden_tmp",
     "resolve_path", "real_key", "dedupe_paths", "classify_location", "lane_root",
+    "ENV_LANES_EXTERNAL_ROOT", "DEFAULT_EXTERNAL_LANES_ROOT", "to_logical", "display_path", "logical_fold",
+    "is_external_path", "external_links", "ExternalLink",
     "validate_slug", "is_valid_slug", "is_valid_repo_dir", "validate_repo_dir",
     "lane_dir_name", "nested_dir_name", "branch_name",
     "review_dir_name", "is_review_dir_name", "is_desktop_dir_name", "review_lane_path",
     "expected_lane_path", "LaneNameResult", "explain_lane_name", "check_lane_name",
     "LayoutStatus", "LayoutResult", "STATUS_LABELS", "explain_layout",
     "check_branch_name", "seat_from_branch", "upgrade_with_branch",
-    "CODEX_DIR", "LEGACY_MANAGED_DIR", "LEGACY_REVIEW_DIR", "REVIEW_PREFIX",
+    "CODEX_DIR", "CONDUCTOR_DIR", "LEGACY_MANAGED_DIR", "LEGACY_REVIEW_DIR", "REVIEW_PREFIX",
 ]
 
 DEFAULT_OWNER = "Simple-With-Us"
@@ -91,11 +103,19 @@ DEFAULT_LAYOUT = LAYOUT_NESTED
 ENV_LAYOUT = "FLEET_LAYOUT"
 ENV_LANES_ROOT = "FLEET_LANES_ROOT"
 ENV_APPS_JSON = "FLEET_APPS_JSON"
+# Where lanes may physically live when ~/apps/lanes/<Repo> is a symlink onto an external disk (owner 2026-10-10).
+# Unset means the default below; set but empty turns the feature off; anything else must be an absolute path.
+ENV_LANES_EXTERNAL_ROOT = "FLEET_LANES_EXTERNAL_ROOT"
+DEFAULT_EXTERNAL_LANES_ROOT = "/Volumes/External/Lanes"
 
 # Layout v2: Codex desktop nests <root>/<slug>/<Repo>, so its worktree root is lanes/_codex.  The old
 # `_managed` and `_review` folders are the pre-v2 homes of harness worktrees and PR checks.  They are
 # still recognised (MANAGED and REVIEW) so the fleet can migrate, and layout status calls them legacy.
 CODEX_DIR = "_codex"
+# Conductor (conductor.build) files a workspace at <location>/<Repo>/<city> with a city name it picks itself, so it can
+# never be <seat>-<slug> or <slug>-<hex>.  Like _codex it gets a reserved root of its own, and everything below it is
+# harness-managed.  The app's default location (~/conductor/workspaces) is a sanctioned harness location too.
+CONDUCTOR_DIR = "_conductor"
 LEGACY_MANAGED_DIR = "_managed"
 LEGACY_REVIEW_DIR = "_review"
 REVIEW_PREFIX = "review-pr-"
@@ -246,6 +266,10 @@ class Seat:
     branch_prefixes: tuple[str, ...] = ()
     retired: bool = False
     notes_name: str = ""
+    # Registry `aliasPattern`: a case-insensitive ASCII regex, matched against a trimmed AGENT_SEAT, for every
+    # spelling that means this seat (GROK takes any spelling of GROK followed by BUILD, owner 2026-10-10).
+    # An older registry has none, and then only the exact tag matches.
+    alias_pattern: str = ""
 
     def primary_branch_prefix(self) -> str:
         """First slash-terminated branch prefix, without the slash ("" when there is none)."""
@@ -255,9 +279,9 @@ class Seat:
         return ""
 
 
-# Apps with lanes on disk but no fleet-apps.json row.  CodeCaps has a row now;  its entry here stays
-# only as the fallback for an installed copy of the registry that predates the row, and a registry row
-# wins.  owner_repo and prefix come from the git remotes and lane names seen in the 2026-10-07 sweep.
+# Apps with lanes on disk but no fleet-apps.json row.  CodeCaps, FleetLink and fleetlink-legacy have a
+# row now;  their entries here stay only as the fallback for an installed copy of the registry that
+# predates the rows, and a registry row wins.  owner_repo and prefix come from the git remotes and lane names seen in the 2026-10-07 sweep.
 # mmx-acp had no remote (owner_repo ""), and Kodus-Config, upptime-status and mmx-acp have no ~/Code
 # tree (their clone lives in ~/apps), so their integration_dir_name is "".  Simple-With-Us appears on
 # disk as simple-with-us-*, simplewithus-* and Simple-With-Us-*; the hyphenated lowercase form is the
@@ -271,8 +295,9 @@ EXTRA_APPS: tuple[App, ...] = (
     App("upptime-status", f"{DEFAULT_OWNER}/upptime-status", "upptime-status", "", registered=False),
     App("mmx-acp", "", "mmx-acp", "", registered=False),
     App("homebrew-tap", f"{DEFAULT_OWNER}/homebrew-tap", "homebrew-tap", "homebrew-tap", registered=False),
-    # A private full clone that lives in the lanes tree (lanes/fleetlink/claude-legacy-hotfix) but is a
-    # different repo from FleetLink.  It has no ~/Code tree, so its folder is the GitHub repo name.
+    # A private full clone that lives in the lanes tree (lanes/fleetlink-legacy/claude-legacy-hotfix) but is a
+    # different repo from FleetLink.  It had no ~/Code tree until its registry row landed (AFC-252), so this
+    # fallback keeps its folder as the GitHub repo name and, with no tree, it gets no `lane new`.
     App("fleetlink-legacy", f"{DEFAULT_OWNER}/fleetlink-legacy", "fleetlink-legacy", "", registered=False),
 )
 
@@ -329,7 +354,15 @@ class Registry:
         return None
 
     def seat_by_name(self, tag: str) -> Seat | None:
-        want = tag.strip().lower()
+        """The seat a value in AGENT_SEAT names: a live seat whose `aliasPattern` matches the trimmed value
+        (so GROK-BUILD, Grok (Build) and grok_build all name GROK), else the seat whose tag equals it in any
+        case.  Only live seats take an alias, so the retired GROK-BUILD row never answers for its own name.
+        Folder and branch classification do not come through here and are unchanged."""
+        want = tag.strip()
+        for seat in self.seats:
+            if not seat.retired and seat_alias_matches(seat.alias_pattern, want):
+                return seat
+        want = want.lower()
         for seat in self.seats:
             if seat.name.lower() == want:
                 return seat
@@ -362,6 +395,25 @@ class Registry:
 
 def _as_str(value: object, default: str = "") -> str:
     return value.strip() if isinstance(value, str) else default
+
+
+@lru_cache(maxsize=64)
+def _compiled_alias(pattern: str) -> "re.Pattern[str] | None":
+    """The registry's aliasPattern, compiled case-insensitive and ASCII-only.  A pattern that does not
+    compile is skipped, so one bad row never stops the lane tool from loading."""
+    if not pattern:
+        return None
+    try:
+        return re.compile(pattern, re.IGNORECASE | re.ASCII)
+    except re.error:
+        return None
+
+
+def seat_alias_matches(pattern: str, value: str) -> bool:
+    """True when `value`, trimmed, is a spelling the aliasPattern accepts.  An empty value never matches."""
+    rx = _compiled_alias(pattern)
+    text = value.strip()
+    return bool(rx is not None and text and rx.fullmatch(text))
 
 
 def parse_registry(data: Mapping[str, object], *, include_extras: bool = True, source: str = "") -> Registry:
@@ -407,6 +459,7 @@ def parse_registry(data: Mapping[str, object], *, include_extras: bool = True, s
             branch_prefixes=tuple(b for b in bps if isinstance(b, str) and b) if isinstance(bps, list) else (),
             retired=bool(item.get("retired")),
             notes_name=_as_str(item.get("notesName")),
+            alias_pattern=_as_str(item.get("aliasPattern")),
         ))
     return Registry(
         owner=owner, apps=tuple(apps), seats=tuple(seats),
@@ -444,7 +497,7 @@ CANONICAL_SEATS: tuple[str, ...] = (
 )
 
 # Short forms in wide use on disk.  `gb` and `grok-bot` map to `cursor` because the registry gives
-# GROK-BOT the cursor suffix and the cursor/ branch prefix.
+# GROK-BOT the cursor suffix (it has no branch prefix of its own since F2, 2026-10-11).
 SEAT_ALIASES: dict[str, str] = {
     "ag": "antigravity",
     "mm": "minimax",
@@ -529,6 +582,7 @@ _HARNESS_SPECS: tuple[tuple[str, str, bool], ...] = (
     ("claude-repo", "Code/*/.claude/worktrees", True),
     ("muse-repo", "Code/*/.muse/worktrees", True),
     ("codex", ".codex/worktrees", True),
+    ("conductor", "conductor/workspaces", True),
     ("cursor", ".cursor/worktrees", True),
     ("grok", ".grok/worktrees", True),
     ("antigravity", ".gemini/antigravity/worktrees", True),
@@ -560,6 +614,8 @@ class Roots:
     integration_names: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     seat_tokens: tuple[str, ...] = ()
+    conductor_root: Path | None = None
+    external_lanes_roots: tuple[Path, ...] = ()
 
 
 def _real(path: str | os.PathLike[str]) -> str:
@@ -605,7 +661,7 @@ def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = Non
                registry: Registry | None = None, case_insensitive: bool | None = None) -> Roots:
     """Resolve every root under `home`.
 
-    `env` is read for FLEET_LAYOUT, FLEET_LANES_ROOT and TMPDIR only; pass an explicit dict in
+    `env` is read for FLEET_LAYOUT, FLEET_LANES_ROOT, FLEET_LANES_EXTERNAL_ROOT and TMPDIR only; pass an explicit dict in
     tests so the process environment never leaks in.  FLEET_LAYOUT other than nested or flat falls
     back to nested and is recorded in `warnings` (it never raises, so forbidden-tmp detection stays
     on).  `registry` defaults to `load_registry(env=env)`, which can raise if the file is
@@ -639,7 +695,7 @@ def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = Non
     if registry is None:
         registry = load_registry(env=env)
     tmp_roots, tmp_globs = make_tmp_roots(env, real_home)
-    return Roots(
+    roots = Roots(
         home=Path(real_home),
         code_root=Path(code_root),
         apps_root=Path(apps_root),
@@ -658,7 +714,47 @@ def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = Non
         integration_names=registry.integration_names(),
         warnings=tuple(warnings),
         seat_tokens=tuple(sorted(canonical_seat_set(registry) | set(seat_alias_map(registry)) | ROLE_TOKENS)),
+        conductor_root=Path(lanes_root) / CONDUCTOR_DIR,
     )
+    external, ext_warnings = _external_lanes_roots(env, roots, real_home)
+    if external or ext_warnings:
+        roots = _dc_replace(roots, external_lanes_roots=external, warnings=roots.warnings + ext_warnings)
+    return roots
+
+
+def _external_lanes_roots(env: Mapping[str, str], roots: Roots, real_home: str) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+    """The external lanes root, checked, and the warnings for a setting that was refused.
+
+    FLEET_LANES_EXTERNAL_ROOT unset means the default (/Volumes/External/Lanes); set but empty switches the
+    feature off.  A root is refused (never raised, so a bad setting cannot switch the temp guard off) when
+    it is not absolute, when it is the lanes root or holds the home, ~/apps, ~/Code or the lanes root (every
+    path under it would be re-spelled as a lane), when it sits inside the lanes root or ~/Code, or when it
+    is inside a forbidden temp directory (the setting would be a way round the temp guard).  A root that
+    is the lanes root itself is not a warning: there is nothing to map.
+    """
+    raw = env.get(ENV_LANES_EXTERNAL_ROOT)
+    raw = DEFAULT_EXTERNAL_LANES_ROOT if raw is None else raw.strip()
+    if not raw:
+        return (), ()
+    if raw == "~" or raw.startswith("~/"):
+        raw = os.path.join(real_home, raw[2:])
+    if not os.path.isabs(raw):
+        return (), (f"{ENV_LANES_EXTERNAL_ROOT} must be an absolute path, got {raw!r}; no external lanes root is used",)
+    ext = _real(raw)
+    ep = _parts(ext, roots)
+    lanes_p = _parts(roots.lanes_root, roots)
+    if ep == lanes_p:
+        return (), ()
+    for label, other in (("the lanes root", roots.lanes_root), ("the home folder", roots.home),
+                         ("~/apps", roots.apps_root), ("~/Code", roots.code_root)):
+        if _under(_parts(other, roots), ep):
+            return (), (f"{ENV_LANES_EXTERNAL_ROOT} {ext} is or holds {label}; no external lanes root is used",)
+    if _under(ep, lanes_p) or _under(ep, _parts(roots.code_root, roots)):
+        return (), (f"{ENV_LANES_EXTERNAL_ROOT} {ext} is inside the lanes root or ~/Code; no external lanes root is used",)
+    if _tmp_hit(ep, roots):
+        return (), (f"{ENV_LANES_EXTERNAL_ROOT} {ext} is inside a temp directory, where no checkout may live; "
+                    "no external lanes root is used",)
+    return (Path(ext),), ()
 
 
 def make_guard_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = None) -> Roots:
@@ -698,13 +794,110 @@ def _glob_match(parts: tuple[str, ...], pattern: str, roots: Roots) -> int:
     return len(pat)
 
 
-def resolve_path(path: str | os.PathLike[str], roots: Roots) -> str:
-    """Absolute real path.  `~` and `~/x` expand against `roots.home`; symlinks are resolved, so
-    /tmp/x becomes /private/tmp/x on macOS.  Relative paths resolve against the process cwd."""
+def to_logical(path: str | os.PathLike[str], roots: Roots) -> str:
+    """Spell a path on the external lanes disk the way agents write it: `<external root>/<rel>` becomes
+    `<lanes root>/<rel>`.  Textual (no filesystem access) and idempotent; any other path is returned as
+    given.  Pass a real path (git, lsof and `os.path.realpath` all report one): a lane stored on the
+    external disk is a symlink under ~/apps/lanes, so its real path is on the disk and not under the
+    lanes root, and without this it would read as UNSANCTIONED."""
+    s = os.fspath(path)
+    if not roots.external_lanes_roots:
+        return s
+    parts = _parts(s, roots)
+    orig = Path(s).parts
+    for ext in roots.external_lanes_roots:
+        ep = _parts(ext, roots)
+        if _under(parts, ep):
+            return os.path.join(os.fspath(roots.lanes_root), *orig[len(ep):])
+    return s
+
+
+def is_external_path(path: str | os.PathLike[str], roots: Roots) -> bool:
+    """True when the real path of `path` is on the external lanes disk (under an external lanes root)."""
+    real = _real(_expand_home(path, roots))
+    return to_logical(real, roots) != real
+
+
+def display_path(path: str | os.PathLike[str], roots: Roots) -> str:
+    """`path` spelled as an agent would write it: a path on the external disk gets its ~/apps/lanes
+    spelling when that place exists and is the same folder, otherwise it is returned unchanged.  Use it
+    for what is shown or stored (git prints the real path of a worktree), not for classification."""
+    s = os.fspath(path)
+    logical = to_logical(s, roots)
+    if logical == s:
+        return s
+    fold = _fold(roots)
+    try:
+        same = fold(_real(logical)) == fold(_real(s))
+    except OSError:
+        same = False
+    return logical if same else s
+
+
+def logical_fold(roots: Roots) -> Callable[[str], str]:
+    """A comparison key for real paths: the external disk re-spelled as the lanes root, then case-folded
+    when the volume is case-insensitive.  `lane` hands it to its allowlist so a lane that lives on the
+    external disk counts as inside the lanes root."""
+    fold = _fold(roots)
+    return lambda text: fold(to_logical(text, roots))
+
+
+@dataclass(frozen=True)
+class ExternalLink:
+    """A symlink directly under the lanes root.  `status` is `ok` (a folder on the external lanes disk with the
+    link's own name), `renamed` (a folder on that disk under another name: its lanes are judged by the folder's
+    name, not the link's), `dangling` (its target does not exist: the disk is not mounted, or the folder was
+    removed) or `elsewhere` (it points somewhere that is not lanes storage)."""
+
+    name: str
+    path: str
+    target: str
+    real: str
+    status: str
+
+
+def external_links(roots: Roots) -> list[ExternalLink]:
+    """The symlinks directly under the lanes root, sorted by name.  Reads one directory listing and the
+    link targets; an unreadable lanes root gives an empty list."""
+    out: list[ExternalLink] = []
+    try:
+        with os.scandir(roots.lanes_root) as it:
+            entries = sorted(it, key=lambda e: e.name)
+    except OSError:
+        return out
+    for entry in entries:
+        try:
+            if not entry.is_symlink():
+                continue
+            target = os.readlink(entry.path)
+        except OSError:
+            continue
+        real = _real(entry.path)
+        if not os.path.exists(real):
+            status = "dangling"
+        elif os.path.isdir(real) and to_logical(real, roots) != real:
+            status = "ok" if os.path.basename(real) == entry.name else "renamed"
+        else:
+            status = "elsewhere"
+        out.append(ExternalLink(entry.name, entry.path, target, real, status))
+    return out
+
+
+def _expand_home(path: str | os.PathLike[str], roots: Roots) -> str:
     s = os.fspath(path)
     if s == "~" or s.startswith("~/"):
         s = os.path.join(os.fspath(roots.home), s[2:])
-    return _real(s)
+    return s
+
+
+def resolve_path(path: str | os.PathLike[str], roots: Roots) -> str:
+    """Absolute real path.  `~` and `~/x` expand against `roots.home`; symlinks are resolved, so
+    /tmp/x becomes /private/tmp/x on macOS.  Relative paths resolve against the process cwd.
+
+    One exception: a path on the external lanes disk comes back at its ~/apps/lanes spelling (see
+    `to_logical`), so ~/apps/lanes/<Repo>/<lane> and /Volumes/External/Lanes/<Repo>/<lane> resolve to
+    the same string, and every key, classification and name check treats them alike."""
+    return to_logical(_real(_expand_home(path, roots)), roots)
 
 
 def real_key(path: str | os.PathLike[str], roots: Roots) -> str:
@@ -776,6 +969,7 @@ def _harness_for(parts: tuple[str, ...], roots: Roots) -> tuple[int, HarnessLoca
 
 def _classify(real: str, roots: Roots, is_checkout: bool | None) -> tuple[LocationClass, str | None]:
     """(class, lane directory or None) for an already-resolved path."""
+    real = to_logical(real, roots)      # a path on the external lanes disk is judged at its lanes-root place
     orig = Path(real).parts
     parts = _parts(real, roots)
     fold = _fold(roots)
@@ -793,6 +987,8 @@ def _classify(real: str, roots: Roots, is_checkout: bool | None) -> tuple[Locati
         # <slug>/<Repo> (layout v2).  _managed and _review are the pre-v2 homes of harness worktrees
         # and PR checks, still recognised so the fleet can migrate.  Any other one is unsanctioned.
         if _under(parts, _parts(roots.codex_root, roots)) or _under(parts, _parts(roots.legacy_managed_root, roots)):
+            return LocationClass.MANAGED, None
+        if roots.conductor_root is not None and _under(parts, _parts(roots.conductor_root, roots)):
             return LocationClass.MANAGED, None
         if _under(parts, _parts(roots.legacy_review_root, roots)):
             return LocationClass.REVIEW, None
@@ -1268,6 +1464,8 @@ def explain_layout(path: str | os.PathLike[str], registry: Registry, roots: Root
         orig_rel = orig[len(lanes_p):]
         if rel and rel[0] == CODEX_DIR:
             return done(LayoutStatus.CODEX_MANAGED, "lanes/_codex")
+        if rel and rel[0] == CONDUCTOR_DIR:
+            return done(LayoutStatus.TOOL_MANAGED, "lanes/_conductor")
         if rel and rel[0] in (LEGACY_MANAGED_DIR, LEGACY_REVIEW_DIR):
             return done(LayoutStatus.LEGACY, f"legacy-folder:{orig_rel[0]}")
         if cls is LocationClass.UNSANCTIONED or len(orig_rel) < 2:

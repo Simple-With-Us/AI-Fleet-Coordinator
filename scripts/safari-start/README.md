@@ -1,5 +1,7 @@
 # Operator start alias
 
+> **Current state (Sun, Oct 11, 2026):**  `start.jays.services` is **private, behind a login**, and this Worker no longer serves it.  Jay chose to keep the login on Oct 11.  It is not a public page.  The routing details are in the private Fleet-OPS routing doc;  the Worker code below describes the earlier redirect.
+
 `https://start.jays.services/` redirects temporarily to the existing protected `https://home.jays.services/` operator page.  The Worker handles page aliases before static assets, so `/index.html` cannot bypass the redirect.  Unknown paths return 404.  Only the icon and robots file remain directly served.
 
 `GET /suggest?q=…` and its CORS behavior remain available for previously installed local start pages.  It sends the supplied search text to Google Suggest and returns a bounded suggestion list.  No operator inventory or private-repository links are returned by that endpoint.

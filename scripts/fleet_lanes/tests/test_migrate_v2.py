@@ -730,6 +730,115 @@ class CodexTests(World):
         self.assertIn("marker", " ".join(item.reasons))
 
 
+class ExternalLanesTests(World):
+    """A lanes/<Repo> folder may be a symlink onto the external disk (owner 2026-10-10).  The migration reads such a
+    folder like any other, and it never tries to move a lane across disks (rename(2) cannot)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ext = self.home / "ExternalDisk" / "Lanes"
+        self.ext.mkdir(parents=True)
+        self.env = {**self.env, "FLEET_LANES_EXTERNAL_ROOT": str(self.ext)}
+
+    def link(self, repo: str) -> Path:
+        target = self.ext / repo
+        target.mkdir(exist_ok=True)
+        os.symlink(target, self.lanes / repo)
+        return target
+
+    def other_disk(self):
+        """Make everything under the fake disk report another st_dev, as a real second volume would."""
+        real_stat = os.stat
+        ext = str(self.ext)
+
+        def fake(path, *args, **kw):
+            st = real_stat(path, *args, **kw)
+            if os.path.realpath(os.fspath(path)).startswith(ext):
+                fields = list(st)
+                fields[2] += 1
+                return os.stat_result(fields)
+            return st
+        return mock.patch.object(os, "stat", fake)
+
+    def test_a_lane_already_in_a_linked_folder_reports_already_correct(self) -> None:
+        phys = self.link("AI-Fleet-Coordinator")
+        lane = self.lanes / "AI-Fleet-Coordinator" / "claude-a"
+        git(self.repos["AI-Fleet-Coordinator"], "worktree", "add", "-q", "-b", "claude/a", str(lane))
+        self.assertTrue((phys / "claude-a").is_dir(), "fixture: the lane is on the disk")
+        plan = self.plan()
+        self.assertEqual(plan[str(lane)].action, "already-correct")
+        self.assertNotIn(str(self.lanes / "AI-Fleet-Coordinator"), plan, "the link is read, not skipped as a symlink")
+        rc, out = self.run_cli("--apply")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(lane.is_dir())
+
+    def test_a_process_whose_cwd_is_the_real_path_still_keeps_a_lane_in_place(self) -> None:
+        phys = self.link("AI-Fleet-Coordinator")
+        git(self.repos["AI-Fleet-Coordinator"], "worktree", "add", "-q", "-b", "claude/a", str(self.lanes / "AI-Fleet-Coordinator" / "claude-a"))
+        self.procs = [(77, "zsh", str(phys / "claude-a" / "src"))]
+        self.assertEqual(M.processes_in(self.ctx(), str(self.lanes / "AI-Fleet-Coordinator" / "claude-a")), ["zsh(77)"])
+
+    def test_a_legacy_lane_moves_into_a_linked_folder_when_it_is_the_same_disk(self) -> None:
+        phys = self.link("AI-Fleet-Coordinator")
+        old = self.lane("fleet", "claude-b", "AI-Fleet-Coordinator")
+        rc, out = self.run_cli("--apply")
+        self.assertEqual(rc, 0, out)
+        new = self.lanes / "AI-Fleet-Coordinator" / "claude-b"
+        self.assert_valid_lane(new, "AI-Fleet-Coordinator", "claude/claude-b")
+        self.assertTrue((phys / "claude-b").is_dir())
+        self.assertTrue(old.is_symlink())
+        self.assertEqual(os.readlink(old), str(new))
+
+    def test_a_legacy_lane_is_never_moved_across_disks_and_is_told_why(self) -> None:
+        self.link("AI-Fleet-Coordinator")
+        old = self.lane("fleet", "claude-b", "AI-Fleet-Coordinator")
+        with self.other_disk():
+            item = self.plan()[str(old)]
+        self.assertEqual(item.action, "skip")
+        self.assertTrue(any("another disk" in r for r in item.reasons), item.reasons)
+        before = tree_hash(self.home)
+        with self.other_disk():
+            rc, out = self.run_cli("--apply")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(tree_hash(self.home), before, "nothing was moved, linked or created")
+        self.assertTrue(old.is_dir() and not old.is_symlink())
+
+    def test_the_last_moment_check_refuses_a_cross_disk_move_too(self) -> None:
+        self.link("AI-Fleet-Coordinator")
+        old = self.lane("fleet", "claude-b", "AI-Fleet-Coordinator")
+        item = M.Item("move", str(old), str(self.lanes / "AI-Fleet-Coordinator" / "claude-b"), kind="worktree")
+        with self.other_disk(), self.assertRaises(M.Skipped):
+            M.apply_move(self.ctx(), item, {"links": [], "events": []})
+        self.assertTrue(old.is_dir())
+
+    def test_a_link_that_leads_nowhere_is_a_note_and_a_move_through_it_is_refused(self) -> None:
+        os.symlink(self.ext / "AI-Fleet-Coordinator", self.lanes / "AI-Fleet-Coordinator")      # the disk is not there
+        old = self.lane("fleet", "claude-b", "AI-Fleet-Coordinator")
+        plan = self.plan()
+        note = plan[str(self.lanes / "AI-Fleet-Coordinator")]
+        self.assertEqual(note.action, "note")
+        self.assertTrue(any("mounted" in r for r in note.reasons), note.reasons)
+        self.assertEqual(plan[str(old)].action, "skip")
+        self.assertTrue(any("does not exist" in r and "mounted" in r for r in plan[str(old)].reasons), plan[str(old)].reasons)
+        rc, out = self.run_cli("--apply")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self.ext.joinpath("AI-Fleet-Coordinator").exists(), "nothing is created on the wrong disk")
+
+    def test_a_link_to_another_place_is_still_only_a_note(self) -> None:
+        elsewhere = self.home / "Elsewhere"
+        elsewhere.mkdir()
+        os.symlink(elsewhere, self.lanes / "AI-Fleet-Coordinator")
+        note = self.plan()[str(self.lanes / "AI-Fleet-Coordinator")]
+        self.assertEqual(note.action, "note")
+        self.assertTrue(any("not on the external lanes disk" in r for r in note.reasons), note.reasons)
+
+    def test_with_the_setting_off_a_link_is_a_note_as_before(self) -> None:
+        self.link("AI-Fleet-Coordinator")
+        self.env = {**self.env, "FLEET_LANES_EXTERNAL_ROOT": ""}
+        note = self.plan()[str(self.lanes / "AI-Fleet-Coordinator")]
+        self.assertEqual(note.action, "note")
+
+
 class LinkTests(World):
     def moved(self) -> "tuple[Path, Path]":
         old = self.lane("fleet", "claude-a", "AI-Fleet-Coordinator")

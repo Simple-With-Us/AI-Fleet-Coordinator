@@ -82,7 +82,7 @@ def sample_config(secrets_dir: str) -> str:
         "# seat and fails closed:  a listener refuses to start with any seat it does not give to this instance.",
         'instance = "mac"',
         "owner_user_id = 0                 # pinned by `agent-sync daemon init`, never derived at runtime",
-        "eligible_user_ids = []            # fleet seat bots, pinned by `agent-sync daemon init`",
+        "eligible_user_ids = []            # optional extra pins:  every fleet bot is eligible at runtime (owner 2026-10-09)",
         "# Owner priority needs the owner's user id AND one of these clients (human Zulip apps).  A post",
         "# made with the owner's key from any other client is treated as not the owner and flagged.",
         "# Manual test 5 confirms the exact client names.",

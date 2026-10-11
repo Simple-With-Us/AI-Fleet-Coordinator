@@ -16,7 +16,7 @@
 # other names.
 #
 # The container copies this file onto its volume (AGENT_SYNC_CONFIG) on first start.  Then
-# `agent-sync daemon init` pins owner_user_id and eligible_user_ids in that copy, and
+# `agent-sync daemon init` pins owner_user_id (and the optional eligible_user_ids) in that copy, and
 # `agent-sync daemon reload` (or a restart) applies it.  Until then nothing is treated as the
 # owner and nothing wakes.  A reload re-reads only this file:  a new or changed environment
 # variable reaches the listener only when the container restarts.  A section changed here never reaches a live
@@ -28,7 +28,7 @@
 [daemon]
 instance = "server"
 owner_user_id = 0                 # pinned by `agent-sync daemon init`, never derived at runtime
-eligible_user_ids = []            # fleet seat bots, pinned by `agent-sync daemon init`
+eligible_user_ids = []            # optional extra pins:  every fleet bot is eligible at runtime (owner 2026-10-09)
 owner_clients = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]
 stale_after_minutes = 120
 coalesce_seconds = 20
@@ -62,6 +62,8 @@ wake = "inbox"
 instance = "server"
 creds = "env"                     # ZULIP_JET_EMAIL, ZULIP_JET_API_KEY (openai-dot-bot@)
 wake = "http"
+# timeout_seconds stays at 15 or more:  the Worker answers only after it tried ChatGPT (about 10 seconds at
+# most), and its 503 asks for this daemon's retry (docs/protocols/agent-sync-mcp.md section 3.12, item 11).
 routine = { url_env = "JET_ROUTINE_URL", key_env = "JET_ROUTINE_KEY", method = "POST", auth = "hmac-sha256", header = "X-Agent-Sync-Signature", timeout_seconds = 15 }
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 30, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 
@@ -87,13 +89,9 @@ wake = "inbox"
 # routine URL and key.  Enabling or disabling one is the `enabled` line, then a restart.
 
 # GB-DIRECTOR (Routing, fleet sync, org help, director-grok-bot@).
-# Disabled (Sat, Oct 10):  ZULIP_ALERT_GB_DIRECTOR_KEY in Infisical holds the whole header line
-# ("Authorization: Bearer crsr_..."), not the bare key, so a wake would send a broken header.  Its Zulip pair is
-# fine.  To enable:  replace that secret with the bare crsr_ key in Infisical, set enabled = true here and in
-# /data/listener.toml, then restart the app.
 [seat.GB-DIRECTOR]
 instance = "server"
-enabled = false
+enabled = true
 creds = "env"                     # ZULIP_GB_DIRECTOR_EMAIL, ZULIP_GB_DIRECTOR_API_KEY; the site from ZULIP_SITE
 wake = "http"
 routine = { url_env = "ZULIP_ALERT_GB_DIRECTOR_ENDPOINT", key_env = "ZULIP_ALERT_GB_DIRECTOR_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
@@ -118,13 +116,9 @@ routine = { url_env = "ZULIP_ALERT_GB_DESIGNER_ENDPOINT", key_env = "ZULIP_ALERT
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 
 # GB-COMPILER (Builds, compile and test gates, compiler-grok-bot@).
-# Disabled (Sat, Oct 10):  ZULIP_GB_COMPILER_EMAIL and ZULIP_GB_COMPILER_API_KEY in Infisical are not
-# GB-Compiler's (the email is Jet's openai-dot-bot@, and Zulip refuses the key with 401), so the seat would be
-# refused at connect.  The real bot is compiler-grok-bot@ (a member).  Its routine webhook is fine.  To enable:
-# put compiler-grok-bot@'s pair in Infisical, set enabled = true here and in /data/listener.toml, then restart.
 [seat.GB-COMPILER]
 instance = "server"
-enabled = false
+enabled = true
 creds = "env"                     # ZULIP_GB_COMPILER_EMAIL, ZULIP_GB_COMPILER_API_KEY; the site from ZULIP_SITE
 wake = "http"
 routine = { url_env = "ZULIP_ALERT_GB_COMPILER_ENDPOINT", key_env = "ZULIP_ALERT_GB_COMPILER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }

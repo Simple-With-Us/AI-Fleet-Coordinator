@@ -5,6 +5,16 @@ Read-only research; nothing in Linear, the board, or any repo was changed.
 Legend: [DOC] Linear docs, [SCHEMA] Linear public GraphQL schema, [DB] read-only query of `findings.db`, [INF] inference, [UNV] unverified, settled by a pilot gate (section 6).
 Sources: Linear docs and schema copies in `scratchpad/lin/`, plus `/Users/jay/apps/mac-collab/findings.db` (9,629 findings, 2,514 comments).
 
+## Status at the cutover (Sat, Oct 10, 2026)
+
+The owner ordered Linear to replace THE BOARD on Sat, Oct 10, 2026.  This design stays as the record of why and how; where it differs from what shipped, the shipped version wins:
+
+- **Shared app.**  Phase 1 shipped as designed in section 2:  one `Fleet` Linear app for every seat, claims as `claimed:<SEAT>` labels (not delegates), `seat:<SEAT>` labels as attribution only.  `scripts/linear-board/README.md` is the CLI contract.
+- **History.**  13,551 issues in 13 public per-app teams under the `SWU` parent, imported with their original dates (board rows, GitHub issues and effort-log items), not the 3,935-row subset sketched in section 6.
+- **Cutover.**  The runbook, the non-repo patch bundle and the rollback live outside git in `~/.local/share/linear-migration/cutover/` (`cutover.sh` is dry by default).  The docs, skills, scripts and hooks changes in the step 4 list below landed in one PR that is merged as a cutover step.
+- **Rules at cutover.**  Writes need `AGENT_SEAT`, reads do not;  the board stays read-only for 14 days with litestream running and is retired at about day 30;  one `[fleet]` announcement is posted at cutover.
+- **Not built.**  The server-side 410 on the old board's write routes (the old server has no read-only mode, so the freeze stops sync and writeback instead), the nightly API dump, the counts snapshot Worker, per-seat apps, and the `linear` recall source.
+
 ## 1. Can bots use their Zulip emails for Linear accounts?
 
 **No.  API and CLI seats do not need a mailbox at all.  A seat that must use the Linear UI needs a real mailbox, not a Zulip address.**
@@ -25,6 +35,7 @@ Sources: Linear docs and schema copies in `scratchpad/lin/`, plus `/Users/jay/ap
 **Rules**
 - One OAuth app per active identity.  Never a shared app, Jay's account, Jay's personal API key, the claude.ai Linear connector or Composio.
 - Seats never use the Linear MCP's interactive OAuth: it authenticates whoever clicks, which would be Jay.
+- **One owner exception (2026-10-10).**  GROK-WEB (Grok on the web and iOS) has no shell, so it uses its own Linear connector, which acts as Jay.  Its comments and issue bodies start with `[GROK-WEB·<session>]` on their own first line, it claims with the `claimed:GROK-WEB` label and a `CLAIMED` comment, and it never claims or comments as Jay himself.  The step 4 deny rules do not apply to it, and every other seat keeps the rule above.  The replacement, if attribution becomes a problem, is a small set of Linear tools on the hosted Agent-Sync Worker that act as the `Fleet` app and stamp the seat on the server from the OAuth grant, the way the Zulip tools do.
 - Retired seats (MONET, RENOIR, DSH, HARNESS, KIMI) get no app.  Their history keeps its names in the description footer.
 - **Enforced, not just stated.**  This Mac's Claude sessions already carry a claude.ai Linear connector (`save_issue`, `save_comment`, `delete_comment`) and Composio execute tools, and both act as Jay.  The step 4 PR adds `permissions.deny` rules for the connector's write tools and for Composio's Linear toolkit in `~/.claude/settings.json`, plus the equivalents for Codex, Cursor and Grok, or Jay disconnects Linear from the claude.ai connectors Code uses.  `board whoami` exits non-zero when the viewer is a human rather than an app, and the session-start skill runs it.  A weekly audit lists issues and comments authored by Jay's user that carry a seat footer.
 
@@ -100,6 +111,7 @@ Sources: Linear docs and schema copies in `scratchpad/lin/`, plus `/Users/jay/ap
 - **Claims.**  The actor is the seat's app user for creating, commenting and delegation.
   - **Claim = `delegate` set to the seat, plus a `CLAIMED` comment.**  The human `assignee` stays empty or Jay. [DOC agents-in-linear]  This depends on pilot gate 2.
   - **Fallback, kept behind a CLI flag:** a single-select `Claimed By` label group with `seat:<tag>`, plus the comment; wake polling filters by label instead of delegate.
+  - **As built in phase 1** (`scripts/linear-board/README.md`, Claims):  the label fallback is a flat `claimed:<tag>` label, one holder at a time, plus the comment.  The import's `seat:<tag>` labels are attribution only (they sit on reporters as well as claimants), so the CLI never reads one as a claim and never removes one.  Imported claims get their `claimed:` label from a one-time, owner-approved relabel that reads each footer's `addressed by` line.
 - **Sessions.**  The board's `session_ids` is already dead (the server drops it).  `--session <id>` becomes an attachment whose URL is the Usage-Monitor cost link for that session. [INF]
 
 ## 4. The agent-facing CLI

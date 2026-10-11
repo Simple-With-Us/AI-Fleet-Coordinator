@@ -95,6 +95,7 @@ function harness({ respond = defaultRespond, scopes = ["zulip:read", "zulip:writ
     },
     log: (row) => logs.push(JSON.stringify(row)),
     usersCache: new Map(),
+    channelsCache: new Map(),
   });
   return { tools, upstream, clock, gate, logs };
 }

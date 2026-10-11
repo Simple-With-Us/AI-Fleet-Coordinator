@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Verify every fleet-apps.json app is mentioned in the known registries.
 
-Exits 1 if any required file is missing a repo, acronym, live board, or
-DEFAULT_REPOS entry.  It also checks the registry's Zulip fields:  the realm and
+Exits 1 if any required file is missing a repo, acronym, or DEFAULT_REPOS
+entry.  It also checks the registry's Zulip fields:  the realm and
 channel must match the agent-sync CLI, and each seat's bot email and credential
 file code must be well formed and agree with the CLI's file-name rule.  Run from
 the AI-Fleet-Coordinator worktree:
 
     python3 scripts/check-fleet-registry.py
 
-Live-board checks compare against a real board checkout, which exists on
-operator seats but never on CI runners. With FLEET_BOARD_HOME set, the live
-checks run against that directory and a missing board fails the check. Without
+Live-copy checks compare ~/apps/AGENT-SYNC.md against the registry, which exists
+on operator seats but never on CI runners. With FLEET_BOARD_HOME set, the live
+checks run against that directory and a missing directory fails the check. Without
 it, ~/apps is used when present; when neither exists the live checks are
-skipped and only the repository-portable assertions run.
+skipped and only the repository-portable assertions run.  The effort logs are
+archived (Linear is the tracker), so nothing checks a live effort log or
+EFFORT-LOG-PROTOCOL.md any more; `liveBoard` in the registry is an optional
+record of where an app's archived log lives.
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from public_activity_repos import PUBLIC_REPOS  # noqa: E402
+from agent_sync.identity import GROK_ALIAS_PATTERN, SeatRegistryError, parse_seat_registry  # noqa: E402
 from agent_sync.zulip import DEFAULT_CHANNEL, REALM, credential_file_name  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,6 +109,147 @@ def zulip_errors(data: dict) -> list[str]:
                 errors.append(f"seat {tag} and seat {emails[email]} share the Zulip bot {email}")
             else:
                 emails[email] = tag
+    errors.extend(alias_pattern_errors(seats))
+    return errors
+
+
+def seat_apps_errors(data: dict) -> list[str]:
+    """`seatApps` (F2, open-loops plan 2026-10-11) says which app each seat runs in, so code that counts apps
+    instead of models (a consult quorum) never reads a seat's model off its tag.  It lives beside `seats`, not
+    in it, because a dozen tools read `seats` and a BF-* or GB-* row there would make lanes, skill copies and
+    listener seats.  Checked:  the key parses the way scripts/agent_sync/identity.py reads it;  every live
+    `seats` row has an app in `bySeat`, and `bySeat` names no other tag;  `extraSeats` holds only tags with no
+    `seats` row;  no `seats` row (live or retired) also matches a `patterns` row;  tags are written upper case;
+    each pattern's `zulipEmail` is a bot email on the realm with one <role> in it."""
+    try:
+        parsed = parse_seat_registry(data, "fleet-apps.json")
+    except SeatRegistryError as exc:
+        return [f"seatApps: {exc}"]
+    errors: list[str] = []
+    seats = [s for s in data.get("seats", []) if isinstance(s, dict) and s.get("tag")]
+    # Tags are read the way identity.parse_seat_registry reads them (strip, upper case), so a row written
+    # "ghost" and a bySeat key "GHOST" agree here as they do in strict_seat.
+    live = {str(s["tag"]).strip().upper() for s in seats if not s.get("retired")}
+    rows = {str(s["tag"]).strip().upper() for s in seats}
+    apps = data["seatApps"]
+    for key in ("bySeat", "extraSeats"):
+        for tag in apps[key]:
+            if tag != tag.upper():
+                errors.append(f"seatApps.{key} key {tag!r} must be written upper case ({tag.upper()!r})")
+    for tag in sorted(live - set(parsed.by_seat)):
+        errors.append(f"live seat {tag} has no app in seatApps.bySeat (every non-retired seat needs one;  "
+                      "scripts/onboard-new-agent.sh --app adds it)")
+    for tag in sorted(set(parsed.by_seat) - live):
+        reason = "is retired" if tag in rows else "is not a row of seats"
+        errors.append(f"seatApps.bySeat lists {tag}, which {reason};  bySeat covers live seats only")
+    for tag in sorted(set(parsed.extra) & rows):
+        errors.append(f"seatApps.extraSeats lists {tag}, which has a row in seats;  a seat is in bySeat or "
+                      "extraSeats, never both")
+    for tag in sorted(set(parsed.by_seat) & set(parsed.extra)):
+        errors.append(f"seat {tag} is in both seatApps.bySeat and seatApps.extraSeats")
+    for tag in sorted(rows):
+        for pattern in parsed.patterns:
+            if pattern.regex.fullmatch(tag.upper()):
+                errors.append(f"seat {tag} has a row in seats but also matches seatApps.patterns {pattern.match};  "
+                              "a pattern is for tags that have no row")
+    host = urlparse(REALM).hostname or ""
+    for item in apps["patterns"]:
+        email = item.get("zulipEmail")
+        match = item["match"]
+        if email is None:
+            continue
+        probe = email.replace("<role>", "x") if isinstance(email, str) and email.count("<role>") == 1 else ""
+        found = BOT_EMAIL_RE.match(probe)
+        if not found or found.group("host") != host:
+            errors.append(f"seatApps.patterns {match} zulipEmail {email!r} must be a <role>-bot@{host} address "
+                          "with exactly one <role>")
+    return errors
+
+
+def alias_pattern_errors(seats: list[dict]) -> list[str]:
+    """A seat's `aliasPattern` (owner 2026-10-10:  GROK-BUILD in any spelling is the GROK seat) must compile,
+    equal the CLI's own copy (agent_sync.identity.GROK_ALIAS_PATTERN), sit on a live seat, match the tag of
+    every retired row that is an alias of that seat, and match no other seat tag.  The lane tool and the
+    board scripts read it from here, so a pattern that is broken or too wide would sign the wrong seat."""
+    errors: list[str] = []
+    tags = [s.get("tag") or "" for s in seats]
+    for seat in seats:
+        raw = seat.get("aliasPattern")
+        if raw is None:
+            continue
+        tag = seat.get("tag") or "(no tag)"
+        if not isinstance(raw, str):
+            errors.append(f"seat {tag} aliasPattern must be a string")
+            continue
+        if seat.get("retired"):
+            errors.append(f"seat {tag} is retired and cannot carry an aliasPattern; the live seat it aliases carries it")
+        try:
+            compiled = re.compile(raw, re.IGNORECASE | re.ASCII)
+        except re.error as exc:
+            errors.append(f"seat {tag} aliasPattern {raw!r} does not compile: {exc}")
+            continue
+        if raw != GROK_ALIAS_PATTERN:
+            errors.append(
+                f"seat {tag} aliasPattern {raw!r} disagrees with scripts/agent_sync/identity.py GROK_ALIAS_PATTERN "
+                f"({GROK_ALIAS_PATTERN!r}); change both")
+        aliases = [s.get("tag") or "" for s in seats if s.get("aliasOf") == tag and s.get("retired")]
+        if not aliases:
+            errors.append(f"seat {tag} aliasPattern aliases nothing: no retired seat has aliasOf {tag!r}")
+        for alias in aliases:
+            if not compiled.match(alias):
+                errors.append(f"seat {tag} aliasPattern {raw!r} does not match the retired tag {alias}")
+        for other in tags:
+            if other and other not in aliases and compiled.match(other):
+                errors.append(f"seat {tag} aliasPattern {raw!r} matches the tag {other}, which is not an alias of {tag}")
+    return errors
+
+
+def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
+    """No live seat may sit in AGENT-SYNC.md's "Engine-only CLIs" row (Platform Defaults).
+
+    That row lists the CLIs that are not seats.  Owner 2026-10-10 made OpenCode a seat, and a merge that
+    keeps the old row would put it back (two PRs edit that row).  A retired seat may be listed.
+    """
+    row = re.search(r"\*\*Engine-only CLIs\*\*\s*\(([^)]*)\)", agent_sync)
+    if not row:
+        return []
+    errors: list[str] = []
+    for seat in data.get("seats", []):
+        if not isinstance(seat, dict) or seat.get("retired"):
+            continue
+        for name in sorted({seat.get("tag") or "", seat.get("notesName") or ""} - {""}):
+            if re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", row.group(1), re.IGNORECASE):
+                errors.append(
+                    f"AGENT-SYNC.md lists live seat {seat.get('tag')} ({name}) in its Engine-only CLIs row; "
+                    "a seat is not an engine-only CLI"
+                )
+                break
+    return errors
+
+
+# A mirror of the Fleet-OPS handbook starts with a GENERATED comment line.  That line names Fleet-OPS, so a
+# substring check over the whole file would find the repo name and the OPS acronym there even after the body lost
+# them.  Every AGENT-SYNC.md check below therefore runs on the text under the header.
+_GENERATED_HEADER = re.compile(r"\A<!--\s*GENERATED[^\n]*\n", re.IGNORECASE)
+
+
+def strip_generated_header(text: str) -> str:
+    """The text without a leading GENERATED header line (scripts/check-generated-mirror.py checks the header itself)."""
+    return _GENERATED_HEADER.sub("", text, count=1)
+
+
+def agent_sync_errors(apps: list[dict], text: str, where: str, *, fold_repo: bool = False) -> list[str]:
+    """Every registry repo and acronym must appear in the body of an AGENT-SYNC.md copy.  `fold_repo` ignores case in
+    the repo name (the live copy has always been matched that way)."""
+    body = strip_generated_header(text)
+    haystack = body.casefold() if fold_repo else body
+    errors: list[str] = []
+    for app in apps:
+        repo = app["repo"]
+        if (repo.casefold() if fold_repo else repo) not in haystack:
+            errors.append(f"{where} missing repo {repo}")
+        if app["acronym"] not in body:
+            errors.append(f"{where} missing acronym {app['acronym']}")
     return errors
 
 
@@ -115,21 +260,17 @@ def main() -> int:
 
     digest = (ROOT / "scripts" / "build-fleet-daily-digest.py").read_text()
     public_repos = set(PUBLIC_REPOS)
-    protocol = (ROOT / "EFFORT-LOG-PROTOCOL.md").read_text()
     agent_sync = (ROOT / "AGENT-SYNC.md").read_text()
-    live_protocol = APPS / "EFFORT-LOG-PROTOCOL.md"
     live_sync = APPS / "AGENT-SYNC.md"
-    live_quick = APPS / "AGENT-COORDINATION-QUICKSTART.md"
-    live_checks = APPS.is_dir() if _board_home_env else (APPS / "EFFORT-LOG-PROTOCOL.md").is_file()
+    live_checks = APPS.is_dir() if _board_home_env else live_sync.is_file()
     if _board_home_env and not live_checks:
         errors.append(f"FLEET_BOARD_HOME is not a directory: {APPS}")
     elif not live_checks:
-        print(f"note: live board checks skipped (no FLEET_BOARD_HOME, {APPS} absent or not a board checkout)")
+        print(f"note: live copy checks skipped (no FLEET_BOARD_HOME, {APPS} has no AGENT-SYNC.md)")
 
     for app in apps:
         repo = app["repo"]
         acronym = app["acronym"]
-        board = app["liveBoard"]
 
         if repo in public_repos and f'"{repo}": (' not in digest:
             errors.append(f"digest REPO_BADGE missing {repo}")
@@ -142,37 +283,18 @@ def main() -> int:
                 errors.append(
                     f"digest CSS --{css_var} does not match digestColor {color} for {repo}"
                 )
-        if repo not in protocol and board not in protocol:
-            errors.append(f"coordinator EFFORT-LOG-PROTOCOL.md missing {repo} / {board}")
-        if repo not in agent_sync:
-            errors.append(f"coordinator AGENT-SYNC.md missing repo {repo}")
-        if acronym not in agent_sync:
-            errors.append(f"coordinator AGENT-SYNC.md missing acronym {acronym}")
-
-        if live_protocol.is_file() and repo not in live_protocol.read_text() and board not in live_protocol.read_text():
-            errors.append(f"~/apps/EFFORT-LOG-PROTOCOL.md missing {repo} / {board}")
-        if live_sync.is_file():
-            live = live_sync.read_text()
-            if repo.casefold() not in live.casefold():
-                errors.append(f"~/apps/AGENT-SYNC.md missing {repo}")
-            if acronym not in live:
-                errors.append(f"~/apps/AGENT-SYNC.md missing acronym {acronym}")
-        if live_quick.is_file() and repo not in live_quick.read_text() and board not in live_quick.read_text():
-            # fleet-infra has no row in the quickstart table on purpose
-            if app.get("kind") != "infra":
-                errors.append(f"~/apps/AGENT-COORDINATION-QUICKSTART.md missing {repo} / {board}")
-
-        if live_checks:
-            live_board = APPS / board
-            if not live_board.is_file():
-                errors.append(f"live board missing: {live_board}")
-
         icon = app.get("iconFile")
         if app.get("hasAppIcon") and icon:
             if not (ROOT / icon).is_file() and not (ROOT / "agent-logos" / Path(icon).name).is_file():
                 errors.append(f"missing app icon {icon}")
 
+    errors.extend(agent_sync_errors(apps, agent_sync, "coordinator AGENT-SYNC.md"))
+    if live_sync.is_file():
+        errors.extend(agent_sync_errors(apps, live_sync.read_text(), "~/apps/AGENT-SYNC.md", fold_repo=True))
+
     errors.extend(zulip_errors(data))
+    errors.extend(seat_apps_errors(data))
+    errors.extend(engine_only_errors(data, strip_generated_header(agent_sync)))
 
     colors: dict[str, str] = {}
     for app in apps:

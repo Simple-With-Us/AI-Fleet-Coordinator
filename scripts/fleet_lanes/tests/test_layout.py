@@ -146,9 +146,11 @@ class RealRegistryTests(unittest.TestCase):
     def test_extras_are_appended_and_unregistered(self) -> None:
         reg = L.load_registry(env={})
         extras = {a.name: a for a in reg.apps if not a.registered}
-        for name in ("FleetLink", "Simple-With-Us", "Kodus-Config", "upptime-status",
+        for name in ("Simple-With-Us", "Kodus-Config", "upptime-status",
                      "mmx-acp", "homebrew-tap"):
             self.assertIn(name, extras)
+        for name in ("FleetLink", "fleetlink-legacy", "CodeCaps"):
+            self.assertNotIn(name, extras, f"{name} has a registry row, so it is not an unregistered extra")
 
     def test_codecaps_has_a_registry_row_so_it_is_not_an_extra(self) -> None:
         reg = L.load_registry(env={})
@@ -156,6 +158,101 @@ class RealRegistryTests(unittest.TestCase):
         self.assertEqual((caps.name, caps.acronym, caps.integration_dir_name), ("CodeCaps", "CC", "CodeCaps"))
         self.assertTrue(caps.registered)
         self.assertEqual([a.name for a in reg.apps if a.name.lower() == "codecaps"], ["CodeCaps"])
+
+    def test_fleetlink_and_its_legacy_worker_have_registry_rows(self) -> None:
+        # AFC-252:  lane new refused both because neither had a row.  A registry row wins over the EXTRA_APPS
+        # fallback, and the legacy row must not capture a query meant for FleetLink (or the reverse).
+        reg = L.load_registry(env={})
+        fl = reg.app_by_prefix("fleetlink")
+        legacy = reg.app_by_prefix("fleetlink-legacy")
+        self.assertEqual((fl.name, fl.acronym, fl.integration_dir_name, fl.lane_dir, fl.registered),
+                         ("FleetLink", "FL", "FleetLink", "FleetLink", True))
+        self.assertEqual((legacy.name, legacy.acronym, legacy.integration_dir_name, legacy.lane_dir, legacy.registered),
+                         ("fleetlink-legacy", "FLL", "fleetlink-legacy", "fleetlink-legacy", True))
+        self.assertEqual(fl.owner_repo, "Simple-With-Us/FleetLink")
+        self.assertEqual(legacy.owner_repo, "Simple-With-Us/fleetlink-legacy")
+        self.assertEqual([a.name for a in reg.apps if a.name.lower() == "fleetlink"], ["FleetLink"])
+        self.assertEqual([a.name for a in reg.apps if a.name.lower() == "fleetlink-legacy"], ["fleetlink-legacy"])
+        from fleet_lanes import lane as K
+        for query, want in (("FleetLink", "FleetLink"), ("fleetlink", "FleetLink"), ("FL", "FleetLink"), ("fl", "FleetLink"),
+                            ("fleetlink-legacy", "fleetlink-legacy"), ("FleetLink-Legacy", "fleetlink-legacy"),
+                            ("FLL", "fleetlink-legacy")):
+            with self.subTest(query=query):
+                self.assertEqual(K.resolve_app(reg, query).name, want)
+
+
+class SeatAliasPatternTests(unittest.TestCase):
+    """Registry `aliasPattern` (owner 2026-10-10: GROK followed by BUILD in any spelling is the seat GROK)."""
+
+    PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
+
+    @staticmethod
+    def registry(**overrides: dict) -> L.Registry:
+        data = json.loads(json.dumps(REGISTRY_DATA))
+        for row in data["seats"]:
+            row.update(overrides.get(row["tag"], {}))
+        return L.parse_registry(data)
+
+    def test_the_pattern_is_read_from_the_row_and_is_empty_without_one(self) -> None:
+        reg = self.registry(GROK={"aliasPattern": self.PATTERN})
+        self.assertEqual(reg.seat_by_name("GROK").alias_pattern, self.PATTERN)
+        self.assertEqual(reg.seat_by_name("CLAUDE").alias_pattern, "")
+        bad = self.registry(GROK={"aliasPattern": 7})
+        self.assertEqual(bad.seat_by_name("GROK").alias_pattern, "")
+
+    def test_the_real_registry_gives_only_grok_an_alias_and_it_matches_the_ruling(self) -> None:
+        reg = L.load_registry(env={})
+        self.assertEqual({s.name: s.alias_pattern for s in reg.seats if s.alias_pattern}, {"GROK": self.PATTERN})
+        for raw in ("GROK-BUILD", "Grok-Build", "grok-build", "grok_build", "Grok Build", "GROK.BUILD", "Grok (Build)",
+                    "grok/build/", "GrokBuild", "GROK--BUILD!!", "  GROK-BUILD  "):
+            with self.subTest(raw=raw):
+                self.assertEqual(reg.seat_by_name(raw).name, "GROK")
+        for raw in ("GROKBUILDER", "grok-build-bot", "grok2build", "GROK-WEB", "GROK-BOT", "GB-COMPILER", "BF-BUILDER",
+                    "Grok (Web/iOS)", "GROK-BUILD-2", "xgrok-build", "build-grok", "grok", "build"):
+            with self.subTest(raw=raw):
+                seat = reg.seat_by_name(raw)
+                self.assertTrue(seat is None or seat.name.lower() == raw.lower(), (raw, seat))
+                self.assertFalse(seat is not None and seat.name == "GROK" and raw.lower() != "grok", raw)
+
+    def test_matching_is_a_full_match_of_the_trimmed_value_in_ascii_case(self) -> None:
+        match = L.seat_alias_matches
+        self.assertTrue(match(self.PATTERN, " Grok  Build \n"))
+        self.assertFalse(match(self.PATTERN, "grok-build-bot"), "a full match, not a prefix or a search")
+        self.assertFalse(match(self.PATTERN, "xgrok-build"))
+        self.assertFalse(match(self.PATTERN, "grok-bu\u0130ld"), "ASCII case folding only")
+        self.assertFalse(match(self.PATTERN, "GRO\u212a-BUILD"), "the Kelvin sign is not a K")
+
+    def test_an_empty_value_an_empty_pattern_and_a_broken_pattern_never_match_and_never_raise(self) -> None:
+        for value in ("", "   ", "\n"):
+            self.assertFalse(L.seat_alias_matches(".*", value), repr(value))
+        self.assertFalse(L.seat_alias_matches("", "grok-build"))
+        self.assertFalse(L.seat_alias_matches("([unclosed", "grok-build"))
+        reg = self.registry(GROK={"aliasPattern": "([unclosed"})
+        self.assertIsNone(reg.seat_by_name("grok-build-x"))
+        self.assertEqual(reg.seat_by_name("GROK-BUILD").name, "GROK-BUILD", "a bad pattern leaves the exact tag alone")
+
+    def test_only_a_live_seat_takes_an_alias(self) -> None:
+        # A pattern on a retired row is ignored, so the retired GROK-BUILD row cannot claim a spelling of its own.
+        reg = self.registry(**{"GROK-BUILD": {"retired": True, "aliasPattern": r"^gb[^a-z0-9]*old$"}})
+        self.assertIsNone(reg.seat_by_name("gb-old"))
+        self.assertEqual(reg.seat_by_name("GROK-BUILD").name, "GROK-BUILD", "its own tag still finds the row")
+        self.assertTrue(reg.seat_by_name("GROK-BUILD").retired)
+
+    def test_the_alias_wins_over_a_retired_row_with_the_same_tag_and_the_exact_tag_is_still_found(self) -> None:
+        reg = self.registry(GROK={"aliasPattern": self.PATTERN}, **{"GROK-BUILD": {"retired": True}})
+        self.assertEqual(reg.seat_by_name("GROK-BUILD").name, "GROK")
+        self.assertEqual(reg.seat_by_name("grok").name, "GROK")
+        self.assertEqual(reg.seat_by_name(" ag ").name, "AG")
+        self.assertIsNone(reg.seat_by_name("grok-bu1ld"))
+        self.assertIsNone(reg.seat_by_name(""))
+
+    def test_folder_and_branch_classification_ignore_the_alias(self) -> None:
+        # The retired GROK-BUILD row still owns grok-build folders and grok-build/ branches (they stay readable).
+        reg = self.registry(GROK={"aliasPattern": self.PATTERN}, **{"GROK-BUILD": {"retired": True}})
+        self.assertEqual(reg.seat_by_suffix("grok-build").name, "GROK-BUILD")
+        self.assertEqual(L.branch_name("GROK-BUILD", "x", reg), "grok-build/x")
+        self.assertEqual(L.check_branch_name("grok-build/x", reg), BranchVerdict.CONFORMING)
+        self.assertEqual(L.check_branch_name("grok/x", reg), BranchVerdict.CONFORMING)
 
 
 class RegistryParsingTests(HomeCase):
@@ -1198,6 +1295,25 @@ class V2ClassifyTests(HomeCase):
             for odd in ("_notes", "_archive", "_migration"):
                 self.assertEqual(L.classify_location(self.mkdir("apps", "lanes", odd, "x"), r), LC.UNSANCTIONED, odd)
 
+    def test_conductor_workspaces_are_harness_managed_in_both_homes(self) -> None:
+        self.assertEqual(self.roots().conductor_root, self.home / "apps" / "lanes" / "_conductor")
+        self.assertEqual(self.roots({"FLEET_LANES_ROOT": str(self.home / "elsewhere" / "lanes")}).conductor_root,
+                         self.home / "elsewhere" / "lanes" / "_conductor")
+        for r in self.both():
+            moved = self.checkout("apps", "lanes", "_conductor", "BotFleet", "lagos", git_file=True)
+            self.assertEqual(L.classify_location(moved, r), LC.MANAGED, "Conductor names its workspaces with city names")
+            self.assertEqual(L.classify_location(self.mkdir("apps", "lanes", "_conductor"), r), LC.MANAGED)
+            res = L.explain_layout(moved, self.reg, r)
+            self.assertEqual((res.status, res.reasons), (L.LayoutStatus.TOOL_MANAGED, ("lanes/_conductor",)))
+            default = self.checkout("conductor", "workspaces", "BotFleet", "oslo", git_file=True)
+            self.assertEqual(L.classify_location(default, r), LC.MANAGED, "the app's default location is sanctioned")
+            res = L.explain_layout(default, self.reg, r)
+            self.assertEqual((res.status, res.reasons), (L.LayoutStatus.TOOL_MANAGED, ("harness:conductor",)))
+            # a look-alike reserved name is still unsanctioned, and so is a city folder directly under the lanes root
+            self.assertEqual(L.classify_location(self.mkdir("apps", "lanes", "_conductors", "x"), r), LC.UNSANCTIONED)
+            self.assertEqual(L.classify_location(self.mkdir("apps", "lanes", "_conductor-old", "x"), r), LC.UNSANCTIONED)
+        self.assertEqual(L.CONDUCTOR_DIR, "_conductor")
+
     def test_class_values_are_unchanged(self) -> None:
         self.assertEqual({c.value for c in LC}, {
             "INTEGRATION_TREE", "LANE_NESTED", "LANE_FLAT_LEGACY", "LANE_FLAT", "REVIEW", "MANAGED",
@@ -1319,6 +1435,181 @@ class LayoutStatusTests(HomeCase):
         self.assertEqual(set(L.STATUS_LABELS), {s.value for s in L.LayoutStatus})
         self.assertEqual(L.STATUS_LABELS["legacy-migrate"], "legacy (migrate)")
         self.assertEqual(L.STATUS_LABELS["codex-managed"], "Codex-managed")
+
+
+class ExternalLanesTests(HomeCase):
+    """Lanes stored on an external disk (owner 2026-10-10): ~/apps/lanes/<Repo> is a symlink onto
+    <external root>/<Repo>.  git and lsof report the real path, so a lane must read the same on either
+    spelling.  The fake disk sits inside the fake home, because a sibling in temp would be forbidden temp."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ext = self.mkdir("ExternalDisk", "Lanes")
+        self.lanes = self.mkdir("apps", "lanes")
+        self.env = {"FLEET_LANES_EXTERNAL_ROOT": str(self.ext)}
+
+    def link(self, repo: str) -> pathlib.Path:
+        """lanes/<repo> as a symlink onto <ext>/<repo>; returns the physical folder."""
+        target = self.ext / repo
+        target.mkdir(parents=True, exist_ok=True)
+        os.symlink(target, self.lanes / repo)
+        return target
+
+    def test_the_default_root_is_the_external_disk_and_an_empty_setting_turns_it_off(self) -> None:
+        self.assertEqual(L.make_roots(self.home, {}, registry=self.reg).external_lanes_roots,
+                         (pathlib.Path("/Volumes/External/Lanes"),))
+        off = L.make_roots(self.home, {"FLEET_LANES_EXTERNAL_ROOT": ""}, registry=self.reg)
+        self.assertEqual(off.external_lanes_roots, ())
+        self.assertEqual(self.roots(self.env).external_lanes_roots, (self.ext,))
+        self.assertEqual(L.DEFAULT_EXTERNAL_LANES_ROOT, "/Volumes/External/Lanes")
+
+    def test_a_lane_reads_the_same_through_the_link_and_at_its_real_path(self) -> None:
+        phys = self.link("DealDex") / "claude-fix-thing"
+        phys.mkdir()
+        logical = self.lanes / "DealDex" / "claude-fix-thing"
+        r = self.roots(self.env)
+        self.assertEqual(os.path.realpath(logical), str(phys), "fixture: the link leads to the disk")
+        for path in (logical, phys):
+            with self.subTest(path=str(path)):
+                self.assertEqual(L.classify_location(path, r), LC.LANE_NESTED)
+                self.assertEqual(L.resolve_path(path, r), str(logical))
+                self.assertEqual(L.lane_root(path, r), logical)
+                self.assertEqual(L.check_lane_name(path, self.reg, r), NV.CONFORMING)
+                res = L.explain_layout(path, self.reg, r)
+                self.assertEqual((res.status, res.app.name), (L.LayoutStatus.CORRECT, "DealDex"))
+        self.assertEqual(L.real_key(logical, r), L.real_key(phys, r))
+        self.assertEqual(L.dedupe_paths([phys, logical], r), [phys])
+        deep = phys / "src" / "deep"
+        deep.mkdir(parents=True)
+        self.assertEqual(L.lane_root(deep, r), logical, "a folder inside a lane belongs to the lane")
+
+    def test_reviews_desktop_worktrees_and_codex_folders_on_the_disk_keep_their_class(self) -> None:
+        r = self.roots(self.env)
+        for rel, cls, status in (
+                (("DealDex", "review-pr-7"), LC.REVIEW, L.LayoutStatus.CORRECT),
+                (("DealDex", "fix-it-a1b2c3"), LC.MANAGED, L.LayoutStatus.CORRECT),
+                (("_codex", "slug", "DealDex"), LC.MANAGED, L.LayoutStatus.CODEX_MANAGED),
+                (("_conductor", "DealDex", "oslo"), LC.MANAGED, L.LayoutStatus.TOOL_MANAGED)):
+            with self.subTest(rel=rel):
+                path = self.ext.joinpath(*rel)
+                self.assertEqual(L.classify_location(path, r), cls)
+                self.assertEqual(L.explain_layout(path, self.reg, r).status, status)
+
+    def test_a_lane_folder_without_its_link_still_reads_as_a_lane(self) -> None:
+        # a half-finished move: the folder is on the disk, the link is not made yet
+        phys = self.ext / "DealDex" / "claude-fix-thing"
+        phys.mkdir(parents=True)
+        r = self.roots(self.env)
+        self.assertEqual(L.classify_location(phys, r), LC.LANE_NESTED)
+        self.assertEqual(L.display_path(phys, r), str(phys), "no link, so the real path is all there is to show")
+
+    def test_other_places_on_the_disk_are_not_lanes(self) -> None:
+        r = self.roots(self.env)
+        other = self.mkdir("ExternalDisk", "Other", "claude-x")
+        near = self.mkdir("ExternalDisk", "Lanes-extra", "DealDex", "claude-x")
+        self.assertEqual(L.classify_location(other, r), LC.UNSANCTIONED)
+        self.assertEqual(L.classify_location(near, r), LC.UNSANCTIONED, "sharing a name prefix is not being inside")
+        self.assertEqual(L.explain_layout(near, self.reg, r).status, L.LayoutStatus.UNSANCTIONED)
+        self.assertEqual(L.classify_location(self.ext, r), LC.UNSANCTIONED, "the root itself is not a lane")
+        off = self.roots({"FLEET_LANES_EXTERNAL_ROOT": ""})
+        self.assertEqual(L.classify_location(self.ext / "DealDex" / "claude-x", off), LC.UNSANCTIONED,
+                         "with the setting off the disk is just a folder")
+
+    def test_letter_case_is_folded_for_the_root_and_kept_for_the_rest(self) -> None:
+        r = self.roots(self.env, ci=True)
+        path = self.home / "externaldisk" / "LANES" / "DealDex" / "claude-Fix"
+        self.assertEqual(L.to_logical(path, r), str(self.lanes / "DealDex" / "claude-Fix"))
+        self.assertEqual(L.classify_location(path, r), LC.LANE_NESTED)
+        cs = self.roots(self.env, ci=False)
+        self.assertEqual(L.to_logical(path, cs), str(path), "a case-sensitive volume does not fold")
+
+    def test_to_logical_leaves_everything_else_alone_and_is_idempotent(self) -> None:
+        r = self.roots(self.env)
+        mine = str(self.lanes / "DealDex" / "claude-x")
+        for text in (mine, str(self.home / "Code" / "DealDex"), "/tmp/x", "relative/path", str(self.ext) + "-extra/x"):
+            with self.subTest(text=text):
+                self.assertEqual(L.to_logical(text, r), text)
+        once = L.to_logical(str(self.ext / "DealDex" / "claude-x"), r)
+        self.assertEqual(once, mine)
+        self.assertEqual(L.to_logical(once, r), once)
+        self.assertEqual(L.to_logical(str(self.ext), r), str(self.lanes))
+
+    def test_display_path_uses_the_lanes_spelling_only_when_it_leads_to_the_same_folder(self) -> None:
+        r = self.roots(self.env)
+        phys = self.link("DealDex") / "claude-x"
+        phys.mkdir()
+        logical = str(self.lanes / "DealDex" / "claude-x")
+        self.assertEqual(L.display_path(phys, r), logical)
+        self.assertEqual(L.display_path(logical, r), logical)
+        # a link that leads somewhere else is not the same folder
+        elsewhere = self.mkdir("Elsewhere")
+        os.symlink(elsewhere, self.lanes / "Beta")
+        beta = self.mkdir("ExternalDisk", "Lanes", "Beta", "claude-y")
+        self.assertEqual(L.display_path(beta, r), str(beta))
+
+    def test_is_external_path_follows_links(self) -> None:
+        r = self.roots(self.env)
+        phys = self.link("DealDex") / "claude-x"
+        phys.mkdir()
+        self.assertTrue(L.is_external_path(self.lanes / "DealDex" / "claude-x", r))
+        self.assertTrue(L.is_external_path(phys, r))
+        local = self.mkdir("apps", "lanes", "Beta", "claude-y")
+        self.assertFalse(L.is_external_path(local, r))
+
+    def test_external_links_say_ok_dangling_or_elsewhere(self) -> None:
+        r = self.roots(self.env)
+        self.link("DealDex")
+        os.symlink(self.ext / "Gone", self.lanes / "Gone")
+        elsewhere = self.mkdir("Elsewhere")
+        os.symlink(elsewhere, self.lanes / "Stray")
+        os.symlink(self.mkdir("ExternalDisk", "Lanes", "other-name"), self.lanes / "Beta")
+        self.mkdir("apps", "lanes", "RealFolder")
+        (self.lanes / "afile").write_text("x")
+        links = {link.name: link for link in L.external_links(r)}
+        self.assertEqual(sorted(links), ["Beta", "DealDex", "Gone", "Stray"], "only symlinks are listed")
+        self.assertEqual({n: link.status for n, link in links.items()},
+                         {"DealDex": "ok", "Gone": "dangling", "Stray": "elsewhere", "Beta": "renamed"})
+        self.assertEqual(links["Gone"].target, str(self.ext / "Gone"))
+        self.assertEqual(links["DealDex"].real, str(self.ext / "DealDex"))
+        self.assertEqual(L.external_links(L.make_roots(self.home / "nowhere", {}, registry=self.reg)), [])
+
+    def test_a_dangling_link_still_classifies_so_a_missing_disk_is_not_called_wrong_place(self) -> None:
+        r = self.roots(self.env)
+        os.symlink(self.ext / "DealDex", self.lanes / "DealDex")      # the folder on the disk is not there
+        path = self.lanes / "DealDex" / "claude-x"
+        self.assertEqual(L.classify_location(path, r), LC.LANE_NESTED)
+        self.assertEqual(L.explain_layout(path, self.reg, r).status, L.LayoutStatus.CORRECT)
+
+    def test_a_bad_setting_is_refused_with_a_warning_and_never_raises(self) -> None:
+        sibling = pathlib.Path(tempfile.mkdtemp())          # temp, next to the fake home: forbidden temp
+        self.addCleanup(sibling.rmdir)
+        for value, words in (
+                (str(self.home), "is or holds"), (str(self.home.parent), "is or holds"),
+                (str(self.lanes), None), (str(self.lanes / "inside"), "inside the lanes root"),
+                (str(self.home / "Code" / "Lanes"), "inside the lanes root or ~/Code"),
+                (str(self.home / "apps"), "is or holds"), ("relative/lanes", "absolute"),
+                (str(sibling), "temp directory"), ("/", "is or holds")):
+            with self.subTest(value=value):
+                r = self.roots({"FLEET_LANES_EXTERNAL_ROOT": value})
+                self.assertEqual(r.external_lanes_roots, ())
+                if words:
+                    self.assertTrue(any(words in w and "FLEET_LANES_EXTERNAL_ROOT" in w for w in r.warnings), r.warnings)
+                else:
+                    self.assertEqual(r.warnings, (), "the lanes root itself needs no mapping and no warning")
+
+    def test_a_root_in_temp_cannot_hide_a_temp_checkout(self) -> None:
+        sibling = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(sibling.rmdir)
+        r = self.roots({"FLEET_LANES_EXTERNAL_ROOT": str(sibling)})
+        self.assertEqual(L.classify_location(sibling / "DealDex" / "claude-x", r), LC.FORBIDDEN_TMP)
+
+    def test_a_tilde_root_expands_against_the_home(self) -> None:
+        r = self.roots({"FLEET_LANES_EXTERNAL_ROOT": "~/ExternalDisk/Lanes"})
+        self.assertEqual(r.external_lanes_roots, (self.ext,))
+
+    def test_the_guard_roots_carry_the_external_root_too(self) -> None:
+        r = L.make_guard_roots(self.home, self.env)
+        self.assertEqual(r.external_lanes_roots, (self.ext,))
 
 
 class BranchNameTests(unittest.TestCase):

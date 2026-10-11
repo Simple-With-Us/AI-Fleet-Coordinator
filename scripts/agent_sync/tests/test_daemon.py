@@ -69,7 +69,7 @@ class RoutingTests(DaemonHarness):
         self.assertEqual(json.loads(open(self.seat_paths().cursor).read())["last_id"], self.fake.messages[-1]["id"])
         registration = self.fake.registrations[-1]
         self.assertEqual(json.loads(registration["params"]["event_types"]),
-                         ["message", "update_message", "user_topic", "realm_user"])
+                         ["message", "update_message", "user_topic", "realm_user", "stream", "subscription"])
         self.assertNotIn("narrow", registration["params"])
         self.assertEqual(registration["params"]["apply_markdown"], "false")
 
@@ -523,7 +523,7 @@ class WakeTests(DaemonHarness):
         self.fake.add_direct_message("Jay Wedgeworth", "please answer", deliver=True)
         self.pump_until(daemon, lambda: any(r["state"] == "queued" for r in self.ledger()))
         self.wake_cycle(daemon, 6)
-        self.assertEqual(self.ledger()[-1]["reason"], "usd_per_day")
+        self.assertEqual((self.ledger()[-1]["state"], self.ledger()[-1]["reason"]), ("held_back", "usd_per_day"))
         self.assertEqual(self.dumps(), [])
 
     def test_usd_per_day_counts_waiting_wakes_so_two_owner_wakes_cannot_overshoot(self) -> None:
@@ -535,7 +535,8 @@ class WakeTests(DaemonHarness):
         self.pump_until(daemon, lambda: sum(1 for r in self.ledger() if r["state"] == "queued") >= 2)
         self.wake_cycle(daemon, 6)
         self.assertEqual(len(self.dumps()), 1)
-        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "dropped"], ["usd_per_day"])
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], ["usd_per_day"])
+        self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
 
     def test_a_restored_accepted_wake_is_checked_again_before_it_runs(self) -> None:
         now = self.clock.time()
@@ -553,7 +554,7 @@ class WakeTests(DaemonHarness):
         self.assertEqual(len(daemon.seats["CLAUDE"].jobs), 2)
         daemon.run_jobs("CLAUDE")
         self.assertEqual(len(self.dumps()), 1, "1.70 spent + 0.25 waiting + 0.25 is over 2.00, so only one runs")
-        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "dropped"], ["usd_per_day"])
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], ["usd_per_day"])
 
     def test_the_wake_runs_the_pinned_realpath_not_the_symlink(self) -> None:
         versions = self.tmp / "versions"
@@ -600,8 +601,9 @@ class WakeTests(DaemonHarness):
             self.fake.add_message("Codex", "agent-sync", "t", MENTION + " %d" % n)
             self.pump_until(daemon, lambda n=n: sum(1 for r in self.ledger() if r["state"] == "queued") >= n + 1)
             self.wake_cycle(daemon, 95)
-        reasons = [r.get("reason") for r in self.ledger() if r["state"] == "dropped"]
-        self.assertEqual(reasons, ["per_topic_per_hour"])
+        reasons = [r.get("reason") for r in self.ledger() if r["state"] == "held_back"]
+        self.assertEqual(reasons, ["per_topic_per_hour"], "held back, not dropped (owner, Sat, Oct 10)")
+        self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
         self.assertEqual(len(self.dumps()), 2)
 
     def test_the_kill_switch_and_the_owner_dm_pause(self) -> None:
@@ -631,7 +633,7 @@ class WakeTests(DaemonHarness):
         daemon.tick()
         states = [r["state"] for r in self.ledger() if r["state"] != "queued"]
         self.assertEqual(states.count("accepted"), 5)
-        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "dropped"], ["overflow", "overflow"])
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], ["overflow", "overflow"])
         self.assertEqual(daemon.run_jobs("CLAUDE", limit=1), 1)
         self.assertEqual(len(daemon.seats["CLAUDE"].jobs), 4)
 
@@ -738,9 +740,11 @@ class WakeTests(DaemonHarness):
 
     def test_board_filing_is_off_by_default_and_a_list_argv_when_on(self) -> None:
         board_calls = []
+        board_envs = []
 
         def board_runner(argv, **kw):
             board_calls.append(argv)
+            board_envs.append(kw.get("env"))
             return subprocess.CompletedProcess(argv, 0, "", "")
 
         self.set_claude(mode="ok", output={"action": "board", "reply": None, "owner_note": None, "risk": None,
@@ -762,6 +766,8 @@ class WakeTests(DaemonHarness):
         self.assertIn("--app=CT", argv)
         self.assertIn("zulip:CLAUDE:%d" % mid, argv)
         self.assertEqual(self.ledger()[-1]["board_uid"], "zulip:CLAUDE:%d" % mid)
+        # `env -i` drops the inherited seat, and the Linear board CLI refuses a write without AGENT_SEAT.
+        self.assertEqual(board_envs[0].get("AGENT_SEAT"), "CLAUDE")
 
     def test_the_loop_guard_resets_only_on_an_owner_post(self) -> None:
         daemon = self.started()
@@ -800,13 +806,13 @@ class JetWakeTests(DaemonHarness):
         self.assertEqual((row["state"], row["owner"], row["trigger_ids"]), ("queued", False, [mid]))
         self.assertFalse(row["owner_ids"])
 
-    def test_without_the_pin_the_same_mention_is_captured_and_never_wakes(self) -> None:
+    def test_without_the_pin_the_same_mention_still_wakes(self) -> None:
+        """Owner 2026-10-09:  every fleet bot is eligible at runtime, so the pin is only an optional extra."""
         self.write_config()
         daemon = self.started()
-        self.fake.add_message(self.jet, "agent-sync", "t", MENTION)
-        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
-        daemon.pump("CLAUDE", timeout=0.5)
-        self.assertEqual(self.ledger(), [])
+        mid = self.fake.add_message(self.jet, "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.assertEqual((self.ledger()[0]["trigger_ids"], self.ledger()[0]["owner"]), ([mid], False))
 
     def test_the_loop_guard_blocks_jet_wakes_until_an_owner_post(self) -> None:
         daemon = self.started()
@@ -823,6 +829,126 @@ class JetWakeTests(DaemonHarness):
         self.fake.add_message(self.jet, "agent-sync", "t", MENTION + " now")
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.assertFalse(self.ledger()[0]["owner"])
+
+
+class EveryoneWakesTests(DaemonHarness):
+    """Owner, Fri, Oct 9, 2026:  "everyone should be able to DM to wake anyone else or tag to wake anyone
+    else".  Every fleet bot (GB personas, ECHO, BF role bots and the rest) wakes a seat by mention or DM
+    without a pin, inside the peer budgets and the loop guard.  Integrations, API posts from the owner's
+    account and a seat's own posts still never wake."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.write_config(eligible=[])  # no pins at all:  eligibility comes from the realm user list
+        self.gb = self.fake.add_user("compiler-grok-bot@zulip.test", "GB-Compiler", is_bot=True, user_id=21)
+        self.echo = self.fake.add_user("instinct-bat-bot@zulip.test", "Echo", is_bot=True, user_id=22)
+        self.bf = self.fake.add_user("bf-fixer-bot@zulip.test", "BF Fixer", is_bot=True, user_id=23)
+        self.sentry = self.fake.add_user("sentry-bot@zulip.test", "Sentry", is_bot=True, user_id=40)
+        self.sentry["bot_type"] = 2  # an incoming-webhook integration
+        self.dm_key = L.topic_key("DM", "10,22")
+
+    def now(self) -> int:
+        return int(self.clock.time())
+
+    def test_a_gb_persona_mention_wakes_claude(self) -> None:
+        daemon = self.started()
+        mid = self.fake.add_message(self.gb, "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        row = self.ledger()[0]
+        self.assertEqual((row["state"], row["owner"], row["trigger_ids"]), ("queued", False, [mid]))
+
+    def test_a_bf_bot_mention_wakes_claude(self) -> None:
+        daemon = self.started()
+        mid = self.fake.add_message(self.bf, "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.assertEqual(self.ledger()[0]["trigger_ids"], [mid])
+
+    def test_an_echo_dm_wakes_claude_and_is_answered_by_dm(self) -> None:
+        daemon = self.started()
+        dm = self.fake.add_direct_message(self.echo, "can you look at the CT build?", deliver=True)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        row = self.ledger()[0]
+        self.assertEqual((row["state"], row["owner"], row["type"], row["trigger_ids"]), ("queued", False, "private", [dm]))
+        self.assertEqual(row["topic_key"], self.dm_key)
+        self.assertIn("dm", self.inbox()[0]["classes"])
+        self.assertIn("eligible", self.inbox()[0]["classes"])
+
+    def test_a_bot_someone_else_owns_never_wakes_even_with_a_fleet_email(self) -> None:
+        spoof = self.fake.add_user("fixer-grok-bot@zulip.test", "GB-Fixer?", is_bot=True, user_id=41)
+        spoof["bot_owner_id"] = 11  # created by another account, not the owner
+        daemon = self.started()
+        self.fake.add_message(spoof, "agent-sync", "t", MENTION)
+        self.fake.add_direct_message(spoof, "wake up", deliver=True)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 2)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertEqual(self.ledger(), [])
+
+    def test_the_fleet_set_follows_realm_user_changes(self) -> None:
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        self.assertIn(21, daemon.eligible_ids(runner))
+        daemon.handle_events(runner, [{"type": "realm_user", "op": "update", "person": {"user_id": 21, "is_active": False}}])
+        self.assertNotIn(21, daemon.eligible_ids(runner), "a deactivated bot drops out at once, cache or not")
+
+    def test_sentry_never_wakes_by_mention_or_dm(self) -> None:
+        daemon = self.started()
+        self.fake.add_message(self.sentry, "agent-sync", "t", MENTION)
+        self.fake.add_direct_message(self.sentry, "error spike", deliver=True)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 2)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertEqual(self.ledger(), [])
+        self.assertTrue(all("eligible" not in r["classes"] for r in self.inbox()))
+
+    def test_an_api_post_from_the_owner_account_never_wakes(self) -> None:
+        daemon = self.started()
+        jay = self.fake.user_named("Jay Wedgeworth")
+        self.fake.add_message(jay, "agent-sync", "t", MENTION, client="ZulipPython")
+        self.fake.add_direct_message(jay, "deploy now", deliver=True, client="ZulipPython")
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 2)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertEqual(self.ledger(), [])
+        self.assertTrue(all(r["owner_api"] and not r["owner"] for r in self.inbox()))
+
+    def test_a_seats_own_message_never_wakes_it(self) -> None:
+        daemon = self.started()
+        self.fake.add_message(self.fake.me, "agent-sync", "t", MENTION)
+        self.fake.add_direct_message(self.fake.me, "note to self", recipients=[self.echo], deliver=True)
+        marker = self.fake.add_message(self.gb, "agent-sync", "other", "@**Claude** marker")
+        self.pump_until(daemon, lambda: any(r["id"] == marker for r in self.inbox()))
+        self.assertEqual([r["trigger_ids"] for r in self.ledger()], [[marker]], "only the peer's mention woke")
+
+    def test_bot_to_bot_dm_ping_pong_stops_at_the_cap_and_recovers(self) -> None:
+        """Each side's wake reply is `·wake`-tagged, so it never wakes the other.  However the thread goes,
+        3 wake replies within the DM window stop it waking; the owner is not in it, so the count is rolling
+        and the pair wakes again once the oldest reply ages out."""
+        daemon = self.started()
+        for n in range(3):
+            sender = self.fake.me if n % 2 else self.echo
+            tag = "CLAUDE" if n % 2 else "ECHO"
+            self.fake.add_direct_message(sender, "[%s·wake] re=%d\nreply" % (tag, n),
+                                         recipients=[self.echo if n % 2 else self.fake.me], deliver=True,
+                                         timestamp=self.now())
+        last = self.fake.add_direct_message(self.echo, "and another thing", deliver=True, timestamp=self.now())
+        self.pump_until(daemon, lambda: any(r["id"] == last for r in self.inbox()))
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertTrue(daemon.loopguard.blocked(self.dm_key, self.clock.time()))
+        self.assertEqual(self.ledger(), [], "the loop guard stops the DM ping-pong at the cap")
+        self.assertFalse(daemon.loopguard.blocked(TOPIC_KEY, self.clock.time()), "only that DM thread is held")
+        self.clock.advance(W.LoopGuard.DM_WINDOW + 60)
+        self.assertFalse(daemon.loopguard.blocked(self.dm_key, self.clock.time()))
+        again = self.fake.add_direct_message(self.echo, "back after a quiet spell", deliver=True, timestamp=self.now())
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.assertEqual(self.ledger()[0]["trigger_ids"], [again])
+
+    def test_a_topic_loop_guard_still_waits_for_the_owner(self) -> None:
+        daemon = self.started()
+        for n in range(3):
+            self.fake.add_message(self.gb, "agent-sync", "t", "[GB-COMPILER·wake] re=%d\nreply" % n,
+                                  timestamp=self.now())
+        mid = self.fake.add_message(self.gb, "agent-sync", "t", MENTION, timestamp=self.now())
+        self.pump_until(daemon, lambda: any(r["id"] == mid for r in self.inbox()))
+        self.clock.advance(W.LoopGuard.DM_WINDOW + 60)
+        self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY, self.clock.time()), "a topic never decays")
 
 
 class PeerScreenTests(DaemonHarness):
@@ -1276,3 +1402,53 @@ class ThreadedRunTests(DaemonHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AutoSubscribeTests(DaemonHarness):
+    """Owner, Sat, Oct 10, 2026:  "I want bots to wake to any channel or DM".  A held seat joins every
+    public channel at connect and when one is created, so a mention anywhere reaches it."""
+
+    def test_connect_joins_every_public_channel_quietly_and_never_a_private_one(self) -> None:
+        self.fake.streams["private-ops"] = 50
+        self.assertNotIn("sandbox", self.fake.subscribed)
+        daemon = self.started()
+        self.assertIn("sandbox", self.fake.subscribed)
+        self.assertNotIn("private-ops", self.fake.subscribed)
+        self.assertIn("sandbox", daemon.seats["CLAUDE"].streams.values())
+        sent = [json.loads(r.params["subscriptions"]) for r in self.fake.requests_to("POST", "users/me/subscriptions")]
+        self.assertEqual(sent, [[{"name": "sandbox"}]], "only the missing public channel, by its current name")
+        quiet = {(p["stream_id"], p["property"]): p["value"] for p in self.fake.subscription_properties}
+        self.assertIs(quiet[(9, "push_notifications")], False)
+        self.assertIs(quiet[(9, "email_notifications")], False)
+
+    def test_a_new_public_channel_is_joined_and_a_mention_there_wakes(self) -> None:
+        daemon = self.started()
+        self.fake.create_stream("trading")
+        self.pump_until(daemon, lambda: "trading" in self.fake.subscribed)
+        mid = self.fake.add_message("Codex", "trading", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+        self.assertEqual([r["id"] for r in self.inbox()], [mid])
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("auto-subscribe", log)
+
+    def test_a_new_private_channel_is_never_joined(self) -> None:
+        daemon = self.started()
+        before = len(self.fake.requests_to("POST", "users/me/subscriptions"))
+        self.fake.create_stream("private-hr", invite_only=True)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertNotIn("private-hr", self.fake.subscribed)
+        self.assertEqual(len(self.fake.requests_to("POST", "users/me/subscriptions")), before)
+
+    def test_auto_subscribe_false_leaves_subscriptions_alone(self) -> None:
+        self.write_config(extra_daemon="auto_subscribe = false")
+        self.pin()
+        self.started()
+        self.assertNotIn("sandbox", self.fake.subscribed)
+        self.assertEqual(self.fake.requests_to("POST", "users/me/subscriptions"), [])
+
+    def test_a_failed_reconcile_never_stops_the_seat(self) -> None:
+        self.fake.inject("GET", "streams", status=400, body={"result": "error", "msg": "boom", "code": "BAD_REQUEST"})
+        daemon = self.started()
+        self.assertTrue(daemon.seats["CLAUDE"].connected)
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("auto-subscribe-error", log)

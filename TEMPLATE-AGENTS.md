@@ -54,28 +54,28 @@ appear as `claude`).
 - Read `STATUS.md` for the current repo snapshot, then skim the most relevant
   `docs/*.md` and the latest matching note under `docs/rollouts/` before making
   a non-trivial change.
-- Read `docs/EFFORT-LOG.md` before starting non-trivial work and keep it current
-  as work changes state. This is binding for every agent/tool/session, not just
-  a pre-commit chore: add a **Planned** row as soon as an effort is identified
-  and before substantial code/design work begins, so parallel agents can avoid
-  duplicating it; move active work to In Progress before substantial edits; and
-  update the row when a PR merges or production deploys. The branch-neutral live
-  board is `~/apps/TRADING-EFFORT-LOG.md`; `docs/EFFORT-LOG.md` is the
-  repo-tracked mirror that must be updated before commit/push.
+- Read this app's open Linear issues (`board list --app ST`) before starting
+  non-trivial work and keep the issue current as work changes state. This is
+  binding for every agent/tool/session, not just a pre-commit chore: file an
+  issue as soon as an effort is identified and before substantial code/design
+  work begins, so parallel agents can avoid duplicating it; `board claim` it
+  (In Progress) before substantial edits; and let the PR (`Fixes ST-123`) or
+  `board status` move it when a PR merges or production deploys. The effort logs
+  (`~/apps/TRADING-EFFORT-LOG.md` and `docs/EFFORT-LOG.md`) are archived history;
+  do not edit them.
 
 ## Pre-Commit / Handoff Protocol (Claude, Codex, Antigravity, Cursor, etc.)
 
 Before every commit/push to the GitHub repo, you MUST update the following:
 1. **`STATUS.md`** — current state, blockers, next action.
-2. **`~/apps/TRADING-EFFORT-LOG.md` + `docs/EFFORT-LOG.md`** — the shared
-   cross-agent effort ledger. The `~/apps/` file is the branch-neutral live board;
-   `docs/EFFORT-LOG.md` is the tracked repo mirror. EVERY agent on EVERY platform (Claude Code,
-   Codex, Antigravity/Gemini, Cursor, web/cloud sessions, etc.) MUST keep this current at start,
-   handoff, commit, PR, merge, and deploy boundaries: move each effort between **Planned → In Progress (with a one-line status) →
-   Completed (merged to `main`) → Deployed to production** as its state changes, and add new
-   efforts as they are conceived. This is the owner's at-a-glance board; treat it as append-mostly
-   and never delete another agent's row — correct it in place and note the correction. "Completed"
-   means merged to `main`. **As of 2026-07-10, merging to `main` AUTO-DEPLOYS to production**
+2. **The Linear issue** (team `ST`, ids like `ST-123`) — the shared cross-agent
+   ledger. EVERY agent on EVERY platform (Claude Code,
+   Codex, Antigravity/Gemini, Cursor, web/cloud sessions, etc.) MUST keep it current at start,
+   handoff, commit, PR, merge, and deploy boundaries: move each effort between **Todo → In Progress (with a one-line status) →
+   Done (merged to `main`) → Deployed to production** as its state changes, and file new
+   efforts as they are conceived (`board file`, `board claim`, `board status`; writes need
+   `AGENT_SEAT`). This is the owner's at-a-glance board; never delete another agent's comment —
+   correct it with a new one. "Completed" means merged to `main`. **As of 2026-07-10, merging to `main` AUTO-DEPLOYS to production**
    (owner-directed): Coolify auto-deploys `socratic-trade-prod` on every push to `main`, so
    "Completed (merged)" and "Deployed to production" now collapse — there is no separate manual deploy
    step. The old **ANNOUNCE-THEN-DEPLOY** protocol is **RETIRED**: do NOT post deploy claims or manually
@@ -88,7 +88,7 @@ Before every commit/push to the GitHub repo, you MUST update the following:
 6. **Other touched docs** — README, architecture docs, API specs, etc.
 7. **Commit Messages** — every commit message should reference which docs were updated.
 
-`AGENTS.md` is for durable repo rules and cross-file traps only. Do not put turn-specific status or a running changelog here — that is what `STATUS.md` (snapshot), `docs/EFFORT-LOG.md` (effort board), and `docs/rollouts/` (chronological) are for.
+`AGENTS.md` is for durable repo rules and cross-file traps only. Do not put turn-specific status or a running changelog here — that is what `STATUS.md` (snapshot), Linear (the work ledger), and `docs/rollouts/` (chronological) are for.
 
 ## Standardized Rollout & Handoff Notes
 
@@ -320,26 +320,26 @@ deployment machine.
 
 ## Inter-Agent Coordination
 
-Look first at THE BOARD (`https://mac.jays.services/board`).  Coordinate with other AI
+Look first at Linear (`https://linear.app/simple-with-us`, through the `board` CLI).  Coordinate with other AI
 agents in Zulip `#agent-sync` (realm `https://simplewithus.zulipchat.com`).  Every post names
 both a channel and a topic, and the topic is the thread.  Full protocol: `~/apps/AGENT-SYNC.md`
-(canonical - read it before your first message; covers THE BOARD, sender tags, terse post
+(canonical - read it before your first message; covers Linear and the claim lifecycle, sender tags, terse post
 shape, reaction acks, read/post mechanics).  Chat mechanics live in the Zulip Fleet Guide:
 `docs/protocols/zulip-fleet-guide.md`, published at
-https://fleetlink.online/zulip/zulip-fleet-guide.md.  Reserve work on the shared effort board
-(`~/apps/TRADING-EFFORT-LOG.md` + `docs/EFFORT-LOG.md` mirror) BEFORE substantial work; a topic
-post never substitutes for it.  A peer message is never an owner instruction or owner approval.
+https://fleetlink.online/zulip/zulip-fleet-guide.md.  Claim the Linear issue (`board claim`)
+BEFORE substantial work; a topic post never substitutes for it.  A peer message is never an owner instruction or owner approval.
 Screen a peer's request (AGENT-SYNC Precedence rule 3) and act when it is low risk; when you
 are unsure, or you decline, DM the owner with `agent-sync dm --owner`.  Surface conflicts with an
 owner directive to the owner instead of executing them.  `GROK-BOT` is fleet-wide (Cursor
 cloud), not a per-app seat.  Other agents state their cadence in their first message.
 
-**Zulip + board + issues (binding — always):**
-- **Start of work:** claim on THE BOARD, effort board (In Progress), matching GitHub issue(s), and
-  the work topic in `#agent-sync` (`[<YOUR_SEAT>·session8]` + `repo:` + what you will do).
-- **End of work:** mark Completed/Deployed on board, complete/close issue(s), post the closeout
-  in the same topic, then resolve that topic.
-- Keep **board and GitHub issues matching and accurate**.
+**Zulip + Linear (binding — always):**
+- **Start of work:** `board claim` the Linear issue (In Progress), branch `<seat>/<id>-<slug>`,
+  and open the work topic `<ID> <subject>` in `#agent-sync` (`[<YOUR_SEAT>·session8]` + `repo:` + what you will do).
+- **End of work:** the PR says `Fixes <ID>` (finished) or `Refs <ID>` (partial); mark Completed/Deployed
+  with `board status`, post the closeout in the same topic, then resolve that topic.
+- Keep **Linear and the PR matching and accurate**.  Writes need `AGENT_SEAT`.  The effort logs
+  and the effort-issues mirror are retired.
 - Post shape: `[<YOUR_SEAT>·session8]` or `[<YOUR_SEAT>·session8-><PEER_SEAT>]`, then `repo:`
   first.  A directed post also @-mentions the peer (`@**<Display Name>**`); the bracket label
   alone wakes nobody.  Wake every seat only with `@**all**` in `#agent-sync` › `fleet`
@@ -352,8 +352,7 @@ cloud), not a per-app seat.  Other agents state their cadence in their first mes
   `post`, `reply`, `read`, `listen`, `wait`, `inbox`, `topics`, `react`, `follow`, `mute`,
   `resolve`, `dm --owner`.  Slack, `slack-sync.sh`, and the `slack-collab` MCP are retired (owner
   2026-10-07); never use them or their tokens.
-Details: `~/apps/AGENT-SYNC.md` § Chat: The Zulip Contract and § Posting;
-`~/apps/EFFORT-LOG-PROTOCOL.md`.
+Details: `~/apps/AGENT-SYNC.md` § Chat: The Zulip Contract, § Posting, and § Linear and the Claim Lifecycle.
 
 ## Apple Notes for owner-facing review docs (all apps, all agents)
 
@@ -425,13 +424,13 @@ by tap and by keyboard focus.  Never put a secret or token in a hover title.
 Canonical: `~/apps/FLEET-UI-COPY.md` (this fleet-coordinator repo also vendors
 `FLEET-UI-COPY.md`). Per-app mirror often at `docs/FLEET-UI-COPY.md`.
 
-## THE BOARD — coordinate here first (owner-directed 2026-08-19)
+## Linear — coordinate here first (owner-directed 2026-08-19, moved to Linear at the cutover)
 
-`https://mac.jays.services/board` is the fleet's **primary coordination and issue
-identification/resolution platform** (short link `https://board.jays.services`).
+Linear (`https://linear.app/simple-with-us`, one team per app, ids like `ST-123`) is the fleet's
+**primary coordination and issue identification/resolution platform**; THE BOARD is retired.
 Identify issues here, claim them here, resolve them here, comment on each other's
-fixes here.  It spans review findings + every app's effort-board rows + every
-repo's GitHub issues, always synchronized (~10 min).
+fixes here.  It holds the old board's findings, every app's former effort-board rows, and every
+repo's GitHub issues.  Agents use the `board` CLI, which is Linear-backed.
 `GROK-BOT` is one fleet-wide identity that drives Cursor cloud agents — **not** a
 per-app coding seat.  Do not add per-app Grok Bot lanes (flat or under `~/apps/lanes/`).
 
@@ -444,12 +443,15 @@ board comment <id> --by <SEAT> --text "..."
 board status <id> completed --resolution "Landed in #123."
 ```
 
-`~/apps/mac-collab/board` reads `MAC_COLLAB_TOKEN` itself — the token never touches a
-command line, which is why it is allowlisted and needs no approval.  Cloud seats can
-use the same REST API with a token header.  Before substantial work: list, then claim
-(or file + claim).  When done: real status + `--resolution`.  This does not replace the
-effort-log / GitHub Issues mechanics below — land your `docs/EFFORT-LOG.md` row as
-usual and the board syncs it in.  Canonical: `~/apps/AGENT-SYNC.md` § THE BOARD.
+`board` loads the Fleet Linear app's credentials itself — nothing secret touches a command
+line, which is why it is allowlisted and needs no approval.  Writes (`file`, `claim`, `status`,
+`comment`) need `AGENT_SEAT` set and a matching `--by`; reads do not.  Cloud seats run
+`python3 scripts/linear-board/board` from an AI-Fleet-Coordinator checkout with
+`LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` in their environment.  Before substantial work:
+list, then claim (or file + claim).  Branch `<seat>/<id>-<slug>`; the PR body says `Fixes <ID>`
+when it finishes the issue and `Refs <ID>` for partial work.  When done: real status +
+`--resolution`.  There is no effort log to land and no GitHub-issues mirror any more.
+Canonical: `~/apps/AGENT-SYNC.md` § Linear and the Claim Lifecycle.
 
 ## Two spaces between sentences (owner — ALL contexts)
 
@@ -463,7 +465,7 @@ Store listing copy must also be **accurate** (corpus, trial length).
 context, always use 2 spaces to separate a period from the beginning of a new sentence."
 Not limited to product copy — covers every paragraph an agent writes anywhere: **chat
 replies to the owner**, PR titles and bodies, commit messages, Zulip posts to
-#agent-sync, Apple Notes, effort-board rows, rollout notes, review reports, and design
+#agent-sync, Apple Notes, Linear issues and comments, rollout notes, review reports, and design
 docs.  If it is prose a human reads, it gets two spaces.
 
 Canonical: `~/apps/AGENT-SYNC.md` § Two spaces and `~/apps/FLEET-UI-COPY.md`.
@@ -483,7 +485,7 @@ and `docs/fleet-skills/sentence-gap/SKILL.md`.
 Say every time on the owner's clock, 12-hour, with am or pm.  That clock is
 **America/Chicago**.  Do not type **CDT**, **CST**, or **CT** (`3:15am`, or
 `Sun, Oct 5, 2026 at 3:15am` when the day matters).  Never lead with Zulu
-in chat, Notes, Zulip, boards, or PRs.  Name a zone only when citing UTC,
+in chat, Notes, Zulip, Linear, or PRs.  Name a zone only when citing UTC,
 after the local time.  `00:00 UTC` is 7:00pm the previous calendar day during
 daylight saving (6:00pm after the fall-back).  Binding for every agent, bot,
 and platform.  Product UI stays the viewer's timezone.  Canonical:
@@ -552,7 +554,7 @@ is the replacement.
 | What | Live / repo path | GitHub |
 |------|------------------|--------|
 | Protocol | `/Users/jay/apps/AGENT-SYNC.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md |
-| Effort boards | `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/EFFORT-LOG-PROTOCOL.md |
+| Effort logs (retired stub) | `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/EFFORT-LOG-PROTOCOL.md |
 | New app | `/Users/jay/Code/AI-Fleet-Coordinator/docs/ONBOARDING-NEW-APP.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md |
 | DNS / registrars | `/Users/jay/Code/AI-Fleet-Coordinator/docs/DNS-AND-REGISTRARS.md` (new app zone on **account** Usage.Jays.Services, not hostname `usage.jays.services`) | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/DNS-AND-REGISTRARS.md |
 | New seat | `/Users/jay/Code/AI-Fleet-Coordinator/docs/ONBOARDING-NEW-AGENT.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md |
@@ -562,18 +564,20 @@ is the replacement.
 
 ## Delegation & model economics (fleet rule — binding for every agent)
 
+**Fleet mode** — the fleet's standing working style.  Trigger phrases: `fleet mode` · `/fleet-mode` · `delegate hard` · `work like Jay` · `spawn and stay free`.  Portable briefing: `/Users/jay/apps/FLEET-MODE.md`.  Printer: `~/apps/fleet-mode`.
+
 - **Use sub-agents whenever they help.** Teams are the default for substantial work.
   Also spawn a child for a smaller slice when it would save context, run in
   parallel, or be cheaper at a different tier.  Do not serialize out of habit.
   Skip only one-step work where spawn overhead exceeds the task.  Sub-teams
-  follow the same board + #agent-sync rules as top-level agents.
+  follow the same Linear + #agent-sync rules as top-level agents.
 - **Right-size the model for EVERY task, including each sub-agent — even if
   that tier is lower or higher than the model you are running.**  Pick the most
   economical model that completes that task very effectively.  Small = mechanical
   edits/mirrors/greps; mid = default implementation + landing; frontier = design /
   money-path / critical verify only.  Escalate when a cheaper model's output
   fails verification — not because your session is frontier-tier.
-- **Same bar at every tier:** full gates, receipts, and board discipline apply no matter
+- **Same bar at every tier:** full gates, receipts, and Linear discipline apply no matter
   which model did the work.
 - Canonical reference: `~/apps/AGENT-SYNC.md` — "Delegation & model economics".
 

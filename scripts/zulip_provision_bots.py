@@ -57,6 +57,7 @@ ROSTER = [
     ("FX", "fx", "FX"),
     ("MiniMax", "mm", "MM"),
     ("Muse Code", "mc", "MC"),
+    ("OpenCode", "opencode", "OpenCode"),  # the stem breaks the Title Case rule: SEAT_FILE_OVERRIDES in agent_sync/zulip.py
     ("Rob (Muse)", "muse-assist", "MA"),
     # BotFleet role bots
     ("BF-Builder", "bf-builder", "BF-Builder"),

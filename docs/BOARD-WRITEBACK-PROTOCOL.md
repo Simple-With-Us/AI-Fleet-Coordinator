@@ -1,9 +1,11 @@
-# Board Write-Back Protocol
+# Board Write-Back Protocol (retired)
+
+> **Retired at the Linear cutover (owner 2026-10-10).**  `mac-collab-writeback` and `mac-collab-sync` are stopped and removed from pm2, the process watch and the ecosystem file, the live effort logs and each repo's `docs/EFFORT-LOG.md` are archived, and Linear is the only tracker.  Nothing below is in force.  It is kept as the record of how the retired mechanism worked, for rollback and for reading old rows.  Current rules:  `AGENT-SYNC.md` § Linear and the Claim Lifecycle.  Rollback (a `BOARD_BACKEND=mac-collab` fallback, re-enabling the jobs) is in `~/.local/share/linear-migration/cutover/cutover.sh --rollback`.
 
 Added 2026-08-22 by Antigravity (AG).  Hardened 2026-08-22 by Grok after the
 first-run loop.
 
-Canonical: `~/apps/AGENT-SYNC.md` § THE BOARD; `~/apps/EFFORT-LOG-PROTOCOL.md` Rule 1.
+Canonical at the time: `~/apps/AGENT-SYNC.md` § THE BOARD (now § Linear and the Claim Lifecycle); `~/apps/EFFORT-LOG-PROTOCOL.md` Rule 1 (now a retired stub).
 
 ## What this is
 

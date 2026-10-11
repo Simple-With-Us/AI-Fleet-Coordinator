@@ -20,17 +20,33 @@
 //     the resolved address the way the guide asks (resolve, check, then connect
 //     to that IP), so the host allowlist stands in for that check.  Redirects
 //     are never followed (`redirect: "manual"`, any 3xx is a failure).
-//   - Access is re-checked at delivery:  a paused seat delivers nothing, and a
-//     subscription from an older grant epoch (revoked) or past its
-//     refreshBefore is dropped (seat-state.js eventClaimWake).
+//   - Access is re-checked before every delivery attempt:  a paused seat
+//     delivers nothing, and a subscription that was removed, made under an
+//     older grant epoch (revoked) or is past its refreshBefore gets no
+//     further attempt (seat-state.js eventClaimWake and eventSubLive).
+//   - A channel wake reaches a subscription only from a stream the seat may
+//     use (src/channels.js:  a public stream its bot is subscribed to, not on
+//     CHANNELS_DENY), by its numeric id (wakeChannelRefusal), the same check
+//     the read tools make.  The set is read from Zulip at delivery time
+//     (deliverWake), so a private or denied stream never forwards an excerpt.
+//     A DM names no stream, so it needs none:  its excerpt is text the seat
+//     can already read with dm_read (spec 1.2).
+//   - `held_back`, the listener's list of wakes it held back for its budget,
+//     is metadata only, never an excerpt.  An item from a stream the seat may
+//     not use keeps only its id, reason and time (heldBackData).
+//   - Delivery runs inside the listener's request, and the answer says how it
+//     went:  a 503 asks the listener to send the wake again (wakeReply).  The
+//     wake_id is remembered once it was delivered or dropped, not when it
+//     arrived (seat-state.js eventSettleWake).
 //   - The payload carries Zulip data only.  The excerpt keeps the listener's
 //     nonce fence, and nothing in `data` tells the model what to do.
 //
-// Outbound fetches happen here, in the Worker request (verification) or in
-// ctx.waitUntil (delivery), never inside SeatGate, whose methods stay
-// storage-only so its input gate keeps them atomic.
+// Outbound fetches happen here, in the Worker request (verification and
+// delivery), never inside SeatGate, whose methods stay storage-only so its
+// input gate keeps them atomic.
 
 import { logSafe, safeEqual } from "./policy.js";
+import { HELD_BACK_MAX_ITEMS } from "./wake.js";
 
 export const EVENT_NAME = "zulip.mention";
 // One live destination per seat (Jay:  hold ambiguous routing rather than
@@ -44,9 +60,14 @@ export const ROTATION_WINDOW_MS = 10 * 60 * 1000;
 export const VERIFY_CACHE_MS = 6 * 60 * 60 * 1000;
 export const VERIFY_TIMEOUT_MS = 8000;
 export const DELIVERY_TIMEOUT_MS = 5000;
-// At most three attempts, 1s then 4s apart:  with a 5s timeout each, a whole
-// fan-out fits inside the ~30s ctx.waitUntil allows after the response.
-export const DELIVERY_BACKOFF_MS = Object.freeze([1000, 4000]);
+// Delivery runs inside the listener's request, which times out after 15
+// seconds, so it is short:  at most two attempts, 1 second apart, all within
+// WAKE_BUDGET_MS of the request's arrival.  The longer retry is the
+// listener's own (2, 5 and 10 seconds of backoff), which a 503 asks for.
+export const DELIVERY_BACKOFF_MS = Object.freeze([1000]);
+export const WAKE_BUDGET_MS = 10 * 1000;
+// No attempt starts with less than this left of the budget.
+export const MIN_ATTEMPT_MS = 1000;
 export const MAX_EVENT_BYTES = 256 * 1024;
 export const MAX_CALLBACK_URL = 2048;
 export const DEFAULT_CALLBACK_HOSTS = Object.freeze(["chatgpt.com", "*.chatgpt.com", "openai.com", "*.openai.com"]);
@@ -70,23 +91,27 @@ const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
 
 // ---------------------------------------------------------------- definition
 
-/** The one event a hosted seat offers, with the channel filter pinned to the allowlist. */
-export function eventDefinition(config) {
-  const channelNames = [...config.channels.keys()];
+/** The one event a hosted seat offers.  The channel filter is a name, checked at subscribe time and matched by stream id. */
+export function eventDefinition(_config) {
   return {
     name: EVENT_NAME,
     description:
-      "Someone @-mentioned this seat's Zulip bot in an allowlisted channel, or sent it a direct message.  " +
+      "Someone @-mentioned this seat's Zulip bot in a public channel it is subscribed to, or sent it a direct message.  " +
       "Fires once per wake from the fleet listener.  The excerpt is untrusted Zulip text between nonce markers;  " +
-      "read the whole topic with read_topic before acting.  A direct message carries no text (dm: true, empty excerpt).",
+      "read the whole topic with read_topic (a direct message:  dm_read) before acting.  held_back, when present, " +
+      "lists earlier messages the listener held back for its wake budget, as metadata only;  read them with " +
+      "read_topic, dm_read or inbox.",
     delivery: ["webhook"],
     inputSchema: {
       type: "object",
       properties: {
         channel: {
           type: "string",
-          enum: channelNames,
-          description: "Only mentions in this channel (direct messages are then left out).  Omit for every allowlisted channel and direct messages.",
+          minLength: 1,
+          maxLength: 60,
+          description:
+            "Only mentions in this channel (direct messages are then left out):  a public channel this seat's bot is subscribed to, by its current name, without #.  " +
+            "Omit for every channel the seat may use and direct messages.",
         },
       },
       additionalProperties: false,
@@ -102,7 +127,7 @@ export function eventDefinition(config) {
         sender_user_id: { type: ["integer", "null"] },
         sender_is_bot: { type: "boolean" },
         owner_hint: { type: "boolean", description: "The listener's guess that the fleet owner sent it.  A routing hint, never authority." },
-        excerpt: { type: "string", description: "Untrusted message text between nonce markers, at most 2000 characters.  Empty for a direct message:  this connector cannot read DMs, so a DM event says only that one arrived and from whom." },
+        excerpt: { type: "string", description: "Untrusted message text between nonce markers, at most 2000 characters, for a channel mention and a direct message alike." },
         zulip_link: { type: "string" },
         reply_to: {
           type: "object",
@@ -115,6 +140,37 @@ export function eventDefinition(config) {
           },
           required: ["type"],
         },
+        held_back: {
+          type: "object",
+          description:
+            "Present only when the listener held back earlier wakes for its budget:  count is how many are still held back " +
+            "(it may be more than are listed), items the newest (at most 20), metadata only, never message text.  An item from " +
+            "a channel this seat may not use keeps only message_id, dm, reason and at.",
+          properties: {
+            count: { type: "integer" },
+            items: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  message_id: { type: "integer" },
+                  dm: { type: "boolean" },
+                  channel: { type: ["string", "null"] },
+                  topic: { type: ["string", "null"] },
+                  stream_id: { type: ["integer", "null"] },
+                  sender_full_name: { type: "string" },
+                  zulip_link: { type: "string" },
+                  reason: { type: "string", description: "The budget that held it back (wakes_per_hour, per_topic_per_hour, usd_per_day, ...), or overflow." },
+                  at: { type: "integer", description: "Unix seconds when it was held back." },
+                },
+                required: ["message_id", "dm", "reason", "at"],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ["count", "items"],
+          additionalProperties: false,
+        },
       },
       required: ["message_id", "dm", "channel", "topic", "sender_full_name", "sender_user_id", "sender_is_bot", "owner_hint", "excerpt", "zulip_link", "reply_to"],
       additionalProperties: false,
@@ -122,34 +178,92 @@ export function eventDefinition(config) {
   };
 }
 
-/** Validate subscription arguments.  Returns the normalized object or throws EventError. */
-export function validateArguments(args, config) {
+/**
+ * Validate subscription arguments.  `channels` resolves the seat's allowed
+ * set (a ChannelSet, src/channels.js), and a `channel` must name one of its
+ * channels now.  The argument is stored exactly as sent, because the
+ * subscription id hashes it and unsubscribe recomputes that id from what the
+ * client sends.  Returns the normalized object or throws EventError.
+ */
+export async function validateArguments(args, channels) {
   if (args === undefined || args === null) return {};
   if (typeof args !== "object" || Array.isArray(args)) throw new EventError(INVALID_PARAMS, "arguments must be an object");
   const out = {};
   for (const [key, value] of Object.entries(args)) {
     if (key !== "channel") throw new EventError(INVALID_PARAMS, `Unknown argument ${logSafe(key, 40)}`);
-    if (typeof value !== "string" || !config.channels.has(value)) throw new EventError(INVALID_PARAMS, "channel must be an allowlisted channel name");
+    if (typeof value !== "string" || value.length === 0 || value.length > 60 || /[\r\n]/.test(value)) throw new EventError(INVALID_PARAMS, "channel must be a channel name");
+    let allowed;
+    try {
+      allowed = await channels();
+    } catch {
+      throw new EventError(INVALID_REQUEST, "Could not read this seat's channels from Zulip.  Try again.");
+    }
+    if (!allowed || allowed.idOf(value) === null) throw new EventError(INVALID_PARAMS, "channel must be a public channel this seat's bot is subscribed to");
     out.channel = value;
   }
   return out;
 }
 
-/** Does this wake match a subscription's arguments? */
-export function wakeMatches(args, wake) {
+/** A direct message:  `dm` and a direct `reply_to` both say so (src/wake.js refuses a body where they disagree). */
+const isDirectWake = (wake) => wake.dm === true && wake.reply_to?.type === "direct";
+
+/** Does this wake need the seat's channel set?  A channel wake does;  so does a DM whose held_back names a stream. */
+export function wakeNeedsChannels(wake) {
+  if (!isDirectWake(wake)) return true;
+  const items = Array.isArray(wake.held_back?.items) ? wake.held_back.items : [];
+  return items.some((item) => item && item.dm !== true);
+}
+
+/**
+ * Why a wake may reach no subscription at all, or null.  A direct message
+ * names no stream, so it needs no channel:  its excerpt is a conversation the
+ * seat's own bot is in, which dm_read can already read.  Every other wake must
+ * name, by its numeric id, a stream in `allowed` (the seat's ChannelSet, read
+ * from Zulip:  public streams its bot is subscribed to, minus CHANNELS_DENY),
+ * the check the read tools make on `stream_id`:  a mention of the bot in a
+ * private or denied stream never forwards its excerpt.  A wake without
+ * `stream_id` (a listener from before it sent one) is refused too, and so is
+ * every channel wake when there is no set (no key installed, or the bot is
+ * refused).
+ */
+export function wakeChannelRefusal(wake, allowed) {
+  if (isDirectWake(wake)) return null;
+  if (!Number.isSafeInteger(wake.stream_id)) return "no_stream_id";
+  if (!allowed) return "no_channel_set";
+  if (!allowed.has(wake.stream_id)) return "stream_not_allowed";
+  return null;
+}
+
+/**
+ * Does this wake match a subscription's arguments?  A `channel` filter
+ * resolves the subscribed name through `allowed` (current names) and matches
+ * the wake by stream id, so a look-alike name never matches, and a renamed
+ * channel's old name stops matching once it no longer resolves.
+ */
+export function wakeMatches(args, wake, allowed) {
   if (args && typeof args.channel === "string") {
-    return wake.dm !== true && wake.reply_to?.type === "stream" && wake.reply_to.channel === args.channel;
+    return (
+      wake.dm !== true &&
+      wake.reply_to?.type === "stream" &&
+      Number.isSafeInteger(wake.stream_id) &&
+      Boolean(allowed) &&
+      allowed.idOf(args.channel) === wake.stream_id
+    );
   }
   return true;
 }
 
-/** The event `data` for one wake:  Zulip data only, the listener's escaping kept. */
-export function eventData(wake) {
+/**
+ * The event `data` for one wake:  Zulip data only, the listener's escaping
+ * kept.  `held_back` is added only when the listener held something back
+ * (heldBackData).
+ */
+export function eventData(wake, allowed) {
   const replyTo =
     wake.reply_to.type === "direct"
       ? { type: "direct", to: (Array.isArray(wake.reply_to.to) ? wake.reply_to.to : []).filter((i) => Number.isSafeInteger(i)) }
       : { type: "stream", channel: String(wake.reply_to.channel ?? ""), topic: String(wake.reply_to.topic ?? "") };
-  return {
+  const data = {
     message_id: wake.message_id,
     dm: wake.dm === true,
     channel: wake.dm ? null : (wake.channel ?? null),
@@ -158,12 +272,53 @@ export function eventData(wake) {
     sender_user_id: Number.isSafeInteger(wake.sender_user_id) ? wake.sender_user_id : null,
     sender_is_bot: wake.is_bot !== false,
     owner_hint: wake.owner === true,
-    // A DM's text never leaves Zulip through this event:  the seat's tools
-    // cannot read DMs, and the event must not widen that.
-    excerpt: wake.dm ? "" : String(wake.excerpt ?? "").slice(0, 2400),
+    // A DM's excerpt goes out like a channel mention's, fenced and escaped by
+    // the listener:  the subscription needs zulip:read, which also opens
+    // dm_read on that same conversation (spec 1.2), so this widens nothing.
+    excerpt: String(wake.excerpt ?? "").slice(0, 2400),
     zulip_link: String(wake.zulip_link ?? ""),
     reply_to: replyTo,
   };
+  const heldBack = heldBackData(wake.held_back, allowed);
+  if (heldBack) data.held_back = heldBack;
+  return data;
+}
+
+/**
+ * The event's `held_back`, or null when there is nothing to tell (absent, or
+ * a count of 0).  src/wake.js checked the shape.  Metadata only:  only the
+ * known fields are copied, so an item never carries an excerpt.  An item keeps
+ * its channel, topic, stream id, sender and link when it is a DM (no stream at
+ * all) or its stream_id is in `allowed` (the seat's ChannelSet;  null allows
+ * no stream).  Any other item is reduced to {message_id, dm, reason, at}, so a
+ * private or denied channel never names itself here, not even in a link.  The wake body is at most 64
+ * KiB, so the event stays far below MAX_EVENT_BYTES, which deliverEvent
+ * enforces anyway.
+ */
+export function heldBackData(heldBack, allowed) {
+  if (!heldBack || typeof heldBack !== "object" || !Number.isSafeInteger(heldBack.count) || heldBack.count <= 0) return null;
+  const listed = (Array.isArray(heldBack.items) ? heldBack.items : []).slice(0, HELD_BACK_MAX_ITEMS);
+  const items = listed
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const reason = String(item.reason ?? "");
+      const at = Number.isSafeInteger(item.at) ? item.at : 0;
+      const isDm = item.dm === true && item.stream_id == null && item.channel == null && item.topic == null;
+      const usable = item.dm !== true && Number.isSafeInteger(item.stream_id) && Boolean(allowed) && allowed.has(item.stream_id);
+      if (!isDm && !usable) return { message_id: item.message_id, dm: item.dm === true, reason, at };
+      return {
+        message_id: item.message_id,
+        dm: isDm,
+        channel: isDm ? null : String(item.channel ?? ""),
+        topic: isDm ? null : String(item.topic ?? ""),
+        stream_id: isDm ? null : item.stream_id,
+        sender_full_name: String(item.sender_full_name ?? ""),
+        zulip_link: String(item.zulip_link ?? ""),
+        reason,
+        at,
+      };
+    });
+  return { count: heldBack.count, items };
 }
 
 // ---------------------------------------------------------------- identity
@@ -383,48 +538,80 @@ export async function verifyCallback(fetchFn, { url, subId, secret, now = Date.n
  * Deliver one event to one subscription with bounded retries.  Returns
  * {outcome, status, attempts} where outcome is "delivered", "gone" (410:  drop
  * the subscription), "rejected" (413 or another 4xx, or a redirect:  not
- * retried) or "failed" (retries ran out).
+ * retried), "not_live" (`isLive` said no before an attempt, with its `reason`)
+ * or "failed" (retries or the budget ran out, or `isLive` could not answer:
+ * worth another try later).
+ * `isLive` runs before every attempt, the first included, and nothing is sent
+ * unless it answers {live: true}.  `deadline` bounds the whole loop:  each
+ * attempt's timeout is cut to what is left, and no attempt starts with less
+ * than MIN_ATTEMPT_MS left.
  */
-export async function deliverEvent(fetchFn, sub, event, { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), backoff = DELIVERY_BACKOFF_MS } = {}) {
+export async function deliverEvent(
+  fetchFn,
+  sub,
+  event,
+  { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), backoff = DELIVERY_BACKOFF_MS, deadline = Infinity, isLive = null } = {},
+) {
   const body = JSON.stringify(event);
   if (new TextEncoder().encode(body).byteLength > MAX_EVENT_BYTES) return { outcome: "rejected", status: 413, attempts: 0 };
   let last = { outcome: "failed", status: null, attempts: 0 };
   for (let attempt = 1; attempt <= backoff.length + 1; attempt++) {
+    if (attempt > 1) {
+      const pause = backoff[attempt - 2];
+      if (deadline - now() - pause < MIN_ATTEMPT_MS) break;
+      await sleep(pause);
+    }
+    if (!(deadline - now() >= MIN_ATTEMPT_MS)) break;
+    if (isLive) {
+      let live;
+      try {
+        live = await isLive();
+      } catch {
+        live = null;
+      }
+      if (!live) return { outcome: "failed", status: null, error: "live_check_failed", attempts: attempt - 1 };
+      if (live.live !== true) return { outcome: "not_live", reason: String(live.reason ?? "unknown"), status: null, attempts: attempt - 1 };
+    }
+    // Measured after the check, so the attempt still ends by the deadline.
+    const timeoutMs = Math.min(DELIVERY_TIMEOUT_MS, deadline - now());
+    if (!(timeoutMs >= MIN_ATTEMPT_MS)) break;
     // A fresh timestamp and signature on every attempt, the same event id.
-    const result = await signedPost(fetchFn, { url: sub.url, subId: sub.id, secrets: signingSecrets(sub, now()), webhookId: event.eventId, body, timeoutMs: DELIVERY_TIMEOUT_MS, now });
+    const result = await signedPost(fetchFn, { url: sub.url, subId: sub.id, secrets: signingSecrets(sub, now()), webhookId: event.eventId, body, timeoutMs, now });
     if (result.response) await result.response.body?.cancel().catch(() => {});
     const status = result.status ?? null;
     if (status !== null && status >= 200 && status < 300) return { outcome: "delivered", status, attempts: attempt };
     if (status === 410) return { outcome: "gone", status, attempts: attempt };
     if (status !== null && status >= 300 && status < 500 && status !== 408 && status !== 429) return { outcome: "rejected", status, attempts: attempt };
     last = { outcome: "failed", status, error: result.error, attempts: attempt };
-    if (attempt <= backoff.length) await sleep(backoff[attempt - 1]);
   }
   return last;
 }
 
 /**
- * Fan one wake out to the seat's live subscriptions (runs in ctx.waitUntil).
- * `subs` come from SeatGate.eventClaimWake, already filtered for epoch,
- * expiry and pause.  Each result goes back to SeatGate:  410 drops the
- * subscription, everything is audited without URLs or secrets.
+ * Fan one claimed wake out to the seat's matching subscriptions, inside the
+ * listener's request.  `subs` come from SeatGate.eventClaimWake, and
+ * SeatGate.eventSubLive checks each one again before every attempt.  A wake
+ * wakeChannelRefusal refuses reaches nobody.  `allowed` is the seat's
+ * ChannelSet (or null).  Each result goes back to SeatGate:  410 drops the
+ * subscription, and everything is audited without URLs, secrets or excerpts.
  */
-export async function fanOut({ gate, wake, subs, fetchFn, now = Date.now, sleep }) {
-  const data = eventData(wake);
+export async function fanOut({ gate, wake, subs, allowed, fetchFn, now = Date.now, sleep, deadline = Infinity }) {
+  if (wakeChannelRefusal(wake, allowed)) return [];
+  const data = eventData(wake, allowed);
   const timestamp = iso(Number.isSafeInteger(wake.sent_at) ? wake.sent_at * 1000 : now());
   const results = await Promise.all(
     subs
-      .filter((sub) => wakeMatches(sub.arguments, wake))
+      .filter((sub) => wakeMatches(sub.arguments, wake, allowed))
       .map(async (sub) => {
         const event = { eventId: await eventIdFor(wake.wake_id, sub.id), name: EVENT_NAME, timestamp, data, cursor: null };
         let result;
         try {
-          result = await deliverEvent(fetchFn, sub, event, { now, ...(sleep ? { sleep } : {}) });
+          result = await deliverEvent(fetchFn, sub, event, { now, deadline, isLive: () => gate.eventSubLive({ subId: sub.id }), ...(sleep ? { sleep } : {}) });
         } catch {
           result = { outcome: "failed", status: null, attempts: 0 };
         }
         try {
-          await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, wakeRef: String(wake.wake_id).slice(0, 40), messageId: wake.message_id });
+          await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, reason: result.reason, wakeRef: String(wake.wake_id).slice(0, 40), messageId: wake.message_id });
         } catch {
           console.log(JSON.stringify({ event: "event_result_record_failed" }));
         }
@@ -432,6 +619,89 @@ export async function fanOut({ gate, wake, subs, fetchFn, now = Date.now, sleep 
       }),
   );
   return results;
+}
+
+/**
+ * One outcome for a whole wake from fanOut's results:  "no_subscriber" when
+ * nothing matched, "delivered" when any delivery got a 2xx, "retry" when none
+ * did and at least one failed in a way worth retrying (5xx, 408, 429, a
+ * timeout, a network error), else the permanent drop:  "rejected" (another
+ * 4xx or a redirect), "gone" (410) or "not_live" (paused, revoked,
+ * unsubscribed or lapsed since the claim).
+ */
+export function wakeOutcome(results) {
+  if (results.length === 0) return "no_subscriber";
+  if (results.some((r) => r.outcome === "delivered")) return "delivered";
+  if (results.some((r) => r.outcome === "failed")) return "retry";
+  return ["rejected", "gone", "not_live"].find((outcome) => results.some((r) => r.outcome === outcome)) ?? "rejected";
+}
+
+/**
+ * Deliver one claimed wake (`claim` from SeatGate.eventClaimWake) and end its
+ * claim with SeatGate.eventSettleWake:  "retry" forgets the wake so the
+ * listener's next attempt claims it again, any other outcome settles it.
+ * Never throws:  anything unexpected is a "retry".
+ *
+ * `channels` resolves the seat's ChannelSet from Zulip (null when there is no
+ * key or the bot is refused).  It runs here, inside the try, so a Zulip
+ * failure is a "retry" (503, the listener sends the wake again), never a
+ * permanent refusal.  A DM wake whose held_back names no stream skips it;  a
+ * DM is still delivered when it fails, with any channel item in held_back
+ * reduced to metadata.
+ * Returns {verdict: "go", outcome, subscribers, delivered} for wakeReply.
+ */
+export async function deliverWake({ gate, wake, claim, channels = async () => null, fetchFn, now = Date.now, sleep, deadline = now() + WAKE_BUDGET_MS }) {
+  const subscribers = claim.subs.length;
+  let outcome = "retry";
+  let delivered = 0;
+  let streamId = null;
+  try {
+    let allowed = null;
+    if (wakeNeedsChannels(wake)) {
+      if (isDirectWake(wake)) allowed = await channels().catch(() => null);
+      else allowed = await channels();
+    }
+    if (wakeChannelRefusal(wake, allowed)) {
+      outcome = "channel_refused";
+      streamId = Number.isSafeInteger(wake.stream_id) ? wake.stream_id : null;
+    } else {
+      const results = await fanOut({ gate, wake, subs: claim.subs, allowed, fetchFn, now, sleep, deadline });
+      outcome = wakeOutcome(results);
+      delivered = results.filter((r) => r.outcome === "delivered").length;
+    }
+  } catch {
+    console.log(JSON.stringify({ event: "wake_fanout_failed" }));
+    outcome = "retry";
+    delivered = 0;
+  }
+  try {
+    await gate.eventSettleWake({ wakeId: wake.wake_id, token: claim.token, outcome, delivered, streamId });
+  } catch {
+    // A delivered wake then stays claimed until its lease runs out;  a "retry"
+    // is answered 503 anyway, and the listener's retry claims it after that.
+    console.log(JSON.stringify({ event: "wake_settle_failed", outcome }));
+  }
+  return { verdict: "go", outcome, subscribers, delivered };
+}
+
+/**
+ * The answer to the listener for one wake (src/index.js serveWake).  The
+ * listener retries a 5xx or a network failure, at most 3 times, and never a
+ * 2xx, 3xx or 4xx, so a 503 is the Worker asking for the same wake again.
+ * `result` is a claim verdict or deliverWake's result.  Returns {status, body,
+ * retryAfterS}.
+ *   duplicate         200 {ok: true, duplicate: true}
+ *   in_flight         503 {ok: false, in_flight: true}, with Retry-After
+ *   paused            202 {ok: true, paused: true, subscribers: 0}
+ *   retry             503 {ok: false, retry: true, subscribers, delivered: 0}
+ *   anything settled  202 {ok: true, subscribers, delivered, outcome}
+ */
+export function wakeReply(result) {
+  if (result.verdict === "duplicate") return { status: 200, body: { ok: true, duplicate: true } };
+  if (result.verdict === "in_flight") return { status: 503, body: { ok: false, in_flight: true }, retryAfterS: Math.max(1, result.retryAfterS ?? 1) };
+  if (result.verdict === "paused") return { status: 202, body: { ok: true, paused: true, subscribers: 0 } };
+  if (result.outcome === "retry") return { status: 503, body: { ok: false, retry: true, subscribers: result.subscribers, delivered: 0 } };
+  return { status: 202, body: { ok: true, subscribers: result.subscribers, delivered: result.delivered, outcome: result.outcome } };
 }
 
 // ---------------------------------------------------------------- MCP methods
@@ -450,7 +720,7 @@ function oneDestination(until) {
  * Jay can see ChatGPT's real host on /admin and widen EVENT_CALLBACK_HOSTS.
  */
 export class SeatEvents {
-  constructor({ seat, scopes, epoch, approvedAt, paused, gate, config, fetchFn = (...a) => fetch(...a), logRefusal = async () => {}, clientId = "", now = Date.now }) {
+  constructor({ seat, scopes, epoch, approvedAt, paused, gate, config, channels = async () => null, fetchFn = (...a) => fetch(...a), logRefusal = async () => {}, clientId = "", now = Date.now }) {
     this.seat = seat;
     this.scopes = scopes;
     this.epoch = epoch;
@@ -458,6 +728,8 @@ export class SeatEvents {
     this.paused = paused;
     this.gate = gate;
     this.config = config;
+    // Resolves the seat's ChannelSet (src/channels.js) for a `channel` filter.
+    this.channels = channels;
     this.fetchFn = fetchFn;
     this.logRefusal = logRefusal;
     this.clientId = clientId;
@@ -484,7 +756,7 @@ export class SeatEvents {
     this.requireRead();
     if (this.paused) throw new EventError(INVALID_REQUEST, "This seat is paused.");
     this.checkName(params.name);
-    const args = validateArguments(params.arguments, this.config);
+    const args = await validateArguments(params.arguments, this.channels);
     const delivery = params.delivery;
     if (!delivery || typeof delivery !== "object" || delivery.mode !== "webhook") throw new EventError(INVALID_PARAMS, "Only webhook delivery is supported.");
     if (!parseWhsec(delivery.secret)) throw new EventError(INVALID_PARAMS, "delivery.secret must be whsec_ followed by base64 of 24 to 64 bytes.");
@@ -523,8 +795,8 @@ export class SeatEvents {
   async unsubscribe(params) {
     this.requireRead();
     this.checkName(params.name);
-    // Not re-validated against today's allowlist:  a channel dropped from it
-    // later must not make its subscription impossible to remove.
+    // Not re-validated against today's channels:  a channel the seat lost (or
+    // renamed) later must not make its subscription impossible to remove.
     const raw = params.arguments;
     if (raw !== undefined && raw !== null && (typeof raw !== "object" || Array.isArray(raw))) throw new EventError(INVALID_PARAMS, "arguments must be an object");
     const args = raw ?? {};

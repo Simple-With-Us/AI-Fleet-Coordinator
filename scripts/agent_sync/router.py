@@ -18,6 +18,24 @@ Steps (design section 2), for each (seat, message) pair:
   6. Otherwise the seat inbox, if direct, dm, fleet, owner, wildcard or a followed topic.
   7. The wake prefilter, for seat-inbox items only.
 
+OWNER topics (open-loops C6, owner 2026-10-11):  a topic whose name starts `OWNER ` (a resolved check mark in
+front does not hide it) is where a decision waits on the owner.  Nothing a peer posts there wakes anyone:
+a bot's direct mention, wildcard or `re=` reply is not eligible, so it reaches no lease as an interrupt and
+no seat as a wake, and a seat that reads its inbox still sees it.  The one carve-out is the needs-owner
+notifier's directed note ("Jay replied"):  a message from CLAUDE's bot whose tag starts `[CLAUDE\u00b7needsown\u2192`.
+It is an ordinary mention and wakes the filer, under the same peer budgets, loop guard and stale rule.  The
+owner's own message there wakes only the seats it mentions (a human client, as everywhere).
+
+Eligible senders (owner 2026-10-09:  "everyone should be able to DM to wake anyone else or tag to
+wake anyone else"):  the owner, plus every fleet bot, which is an active generic bot in the realm
+user list, owned by the owner (bot_owner_id), whose email maps (seat_tag_for) to a fleet tag:  a seat in the partition file (Mac and
+cloud seats, GB personas, BF role bots, GROK-BUILD) or config.FLEET_SEATS.  The daemon computes the
+set at runtime (fleet_bot_ids) and adds the optional `eligible_user_ids` pins, so a new seat needs
+no re-init.  Integration and webhook bots (Sentry, PagerDuty, Linear), unknown senders, API posts
+from the owner's account and a seat's own posts are never eligible.  An eligible bot's DM wakes the
+seat like a direct mention:  peer budgets, the loop guard and the stale rule all apply.  A peer wake
+is still peer data, never owner authority.
+
 Owner (decision 5, confirmed 2026-10-07):  the sender is `owner_user_id` AND the message's
 `client` is a human Zulip app.  A post with the owner's account from any other client (an API
 key) is not the owner, not eligible, and flagged `owner_api`.  The `client` is what the sending
@@ -30,6 +48,7 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable, Mapping
 
+from .identity import seat_tag_for
 from .live import is_presence, topic_key
 
 INTERRUPT = "interrupt"
@@ -41,10 +60,19 @@ FLEET_WAKE_TOPIC = "fleet"
 FLEET_WAKE_KEY = topic_key(FLEET_WAKE_CHANNEL, FLEET_WAKE_TOPIC)
 _FLEET_WAKE_RE = re.compile(r"(?<![\\\w])@\*\*all\*\*")
 _WAKE_TAG_RE = re.compile(r"^\s*\[[A-Za-z0-9_-]+·wake\b")
+# A route post (`[CLAUDE·route→CODEX] re=N`):  a wake seat paged another seat on the owner's behalf.  It
+# counts on the loop guard like a wake reply, but it never blocks the wake of the seat it mentions.
+_ROUTE_TAG_RE = re.compile(r"^\s*\[[A-Za-z0-9_-]+·route\b")
 _REPLY_TO_RE = re.compile(r"(?:^|\s)re=(\d+)\b")
 _CODE_BLOCK_RE = re.compile(r"(?ms)^(```|~~~).*?(^\1\s*$|\Z)")
 _CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
 _QUOTE_LINE_RE = re.compile(r"(?m)^\s*>.*$")
+# The OWNER-topic rule.  Zulip groups topic names without case, and its resolved check mark sits in front of the name.
+OWNER_TOPIC_PREFIX = "owner "
+_RESOLVED_MARKS = ("\u2714\ufe0f", "\u2714")
+# The notifier's directed note (`agent-sync --as CLAUDE --session needsown post --to SEAT`) is tagged `[CLAUDE\u00b7needsown\u2192SEAT]`.
+NOTE_SENDER_SEAT = "CLAUDE"
+_NOTE_TAG_RE = re.compile(r"^\s*\[CLAUDE\u00b7needsown(?:\u2192|->)")
 
 
 def fleet_wake_mention(content_outside_code: str, flags: Iterable[str]) -> bool:
@@ -59,11 +87,66 @@ def fleet_wake_mention(content_outside_code: str, flags: Iterable[str]) -> bool:
     return bool(_FLEET_WAKE_RE.search(content_outside_code))
 
 
+def is_owner_topic(topic: str) -> bool:
+    """True for a topic whose name starts `OWNER ` (any case), with or without Zulip's resolved check mark."""
+    name = str(topic or "").strip()
+    for mark in _RESOLVED_MARKS:
+        if name.startswith(mark):
+            name = name[len(mark):].lstrip()
+            break
+    return name.casefold().startswith(OWNER_TOPIC_PREFIX)
+
+
 def outside_code(content: str) -> str:
     """Content without code blocks, code spans and quoted lines, for raw mention checks."""
     text = _CODE_BLOCK_RE.sub("", content)
     text = _CODE_SPAN_RE.sub("", text)
     return _QUOTE_LINE_RE.sub("", text)
+
+
+GENERIC_BOT = 1  # Zulip bot_type:  2 incoming webhook, 3 outgoing webhook, 4 embedded
+
+
+def fleet_bots_by_seat(users: Mapping[int, Mapping[str, Any]], tags: Iterable[str],
+                       owner_user_id: int) -> dict[str, list[dict[str, Any]]]:
+    """seat tag -> the fleet bots (as fleet_bot_ids decides) that sign as it, canonical email first:
+    the bot whose email local part is the seat's own (`codex-bot@` for CODEX), then by user id.  One
+    seat can have two bots (`grok-build-bot@` also signs as GROK)."""
+    ids = fleet_bot_ids(users, tags, owner_user_id)
+    found: dict[str, list[dict[str, Any]]] = {}
+    for uid in sorted(ids):
+        user = dict(users[uid], user_id=uid)
+        found.setdefault(seat_tag_for(user), []).append(user)
+
+    def canonical(seat: str, user: Mapping[str, Any]) -> tuple[int, int]:
+        local = str(user.get("email") or "").split("@", 1)[0].lower()
+        return (0 if local in (seat.lower() + "-bot", seat.lower()) else 1, int(user["user_id"]))
+
+    for seat, bots in found.items():
+        bots.sort(key=lambda u, seat=seat: canonical(seat, u))
+    return found
+
+
+def fleet_bot_ids(users: Mapping[int, Mapping[str, Any]], tags: Iterable[str], owner_user_id: int) -> set[int]:
+    """User ids of the fleet bots in a realm user list:  active generic bots that the owner owns
+    (`bot_owner_id`) and whose email maps to one of `tags` (config.fleet_tags).  Webhook and embedded
+    bots never count, whatever their email, and neither does a person.  The owner check is the trust
+    anchor:  a bot someone else creates under a fleet-looking email is not a fleet bot, and with no
+    owner pinned there are none."""
+    wanted = set(tags)
+    found: set[int] = set()
+    if not isinstance(owner_user_id, int) or owner_user_id <= 0:
+        return found
+    for uid, user in users.items():
+        if not isinstance(uid, int) or isinstance(uid, bool) or user.get("is_bot") is not True:
+            continue
+        if user.get("is_active", True) is False or user.get("bot_type", GENERIC_BOT) != GENERIC_BOT:
+            continue
+        if user.get("bot_owner_id") != owner_user_id:
+            continue
+        if seat_tag_for(user) in wanted:
+            found.add(uid)
+    return found
 
 
 class SeatIdentity:
@@ -123,6 +206,8 @@ class Classes:
     def __init__(self) -> None:
         self.own = self.owner = self.owner_api = self.eligible = self.direct = False
         self.fleet = self.wildcard = self.dm = self.wake_tag = self.stale = self.sender_is_bot = False
+        self.route_tag = False
+        self.owner_topic = self.owner_topic_peer = self.owner_note = False
         self.reply_to: int | None = None
         self.channel = ""
         self.topic = ""
@@ -130,7 +215,8 @@ class Classes:
 
     def labels(self) -> list[str]:
         return [name for name in ("own", "owner", "owner_api", "eligible", "direct", "fleet", "wildcard", "dm",
-                                  "wake_tag", "stale") if getattr(self, name)]
+                                  "wake_tag", "route_tag", "stale", "owner_topic", "owner_topic_peer", "owner_note")
+                if getattr(self, name)]
 
 
 def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Classes:
@@ -154,12 +240,22 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     c.sender_is_bot = bool(ctx.is_bot.get(sender_id, True)) if isinstance(sender_id, int) else True
     c.eligible = not c.own and (c.owner or (isinstance(sender_id, int) and sender_id in ctx.eligible_user_ids
                                             and not from_owner_account))
+    c.owner_topic = not c.dm and is_owner_topic(c.topic)
+    if c.owner_topic and c.eligible and not c.owner:
+        # Only CLAUDE's bot may wake a seat here, and only with the notifier's tag:  the sender's email is the
+        # server's, not the message's, so a peer cannot copy it, and the tag alone (which anyone can type) is not enough.
+        c.owner_note = (c.sender_is_bot and _NOTE_TAG_RE.match(content) is not None
+                        and seat_tag_for({"is_bot": True, "email": message.get("sender_email")}) == NOTE_SENDER_SEAT)
+        if not c.owner_note:
+            c.owner_topic_peer = True
+            c.eligible = False
     visible = outside_code(content)
     names = ("@**%s**" % me.full_name, "@**%s|%d**" % (me.full_name, me.user_id))
     c.direct = "mentioned" in flags and any(n in visible for n in names)
     c.fleet = c.key == FLEET_WAKE_KEY and fleet_wake_mention(visible, flags)
     c.wildcard = any(f in flags for f in WILDCARD_FLAGS)
     c.wake_tag = bool(_WAKE_TAG_RE.match(content))
+    c.route_tag = bool(_ROUTE_TAG_RE.match(content))
     ts = message.get("timestamp")
     c.stale = isinstance(ts, (int, float)) and ctx.now - float(ts) > ctx.stale_after
     first_line = content.split("\n", 1)[0]
@@ -191,14 +287,13 @@ def prefilter(c: Classes) -> tuple[str | None, str | None]:
     if c.own:
         return None, "own"
     if not c.eligible:
-        return None, "owner_api" if c.owner_api else "not_eligible"
+        return None, "owner_api" if c.owner_api else ("owner_topic" if c.owner_topic_peer else "not_eligible")
     if c.wake_tag:
         return None, "wake_tag"
     if c.owner and (c.direct or c.dm or c.fleet):
         return "owner", None
-    if c.dm and c.sender_is_bot:
-        return None, "dm_from_bot"
-    if c.direct:
+    if c.direct or c.dm:
+        # An eligible bot's DM wakes like a direct mention (owner 2026-10-09).
         return (None, "stale") if c.stale else ("peer", None)
     if c.fleet or c.wildcard:
         return None, "group_or_wildcard"

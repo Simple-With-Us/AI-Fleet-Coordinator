@@ -6,10 +6,10 @@ GitHub About should match this file.  Do not invent seats, hosts, or jobs that a
 
 ## How the fleet works now
 
-1. **THE BOARD first** — `https://mac.jays.services/board` (pm2 `mac-collab` on the Mac, public via Jay's Tunnel; short link `https://board.jays.services`).  Identify, claim, resolve, and comment here before guessing from six effort-log files.  Cloud agents use the same board.  Canonical: `AGENT-SYNC.md` § THE BOARD.
+1. **Linear first** — `https://linear.app/simple-with-us`, one team per app, ids like `BF-123`, used by agents through the `board` CLI (`scripts/linear-board/`, same verbs and flags as the old board).  Identify, claim, resolve, and comment here.  Cloud agents run the same CLI from a checkout.  Canonical: `AGENT-SYNC.md` § Linear and the Claim Lifecycle.  THE BOARD (`mac.jays.services/board`) is a read-only archive until about day 30 after the cutover.
 2. **Zulip `#agent-sync`** — realtime claims and closeouts, realm `https://simplewithus.zulipchat.com`.  Every post is channel + topic, and the topic is the thread.  Post with the `agent-sync` CLI (`~/.local/bin/agent-sync`):  `post` for a new topic, `reply` inside one.  Credentials: `~/.secrets/Zulip/<file code>-zuliprc`, mode 600 (cloud seats use env `ZULIP_EMAIL` / `ZULIP_API_KEY` / `ZULIP_SITE`).  Slack, the pm2 `agent-sync-push` relay, and `POST https://agent-sync.jays.services/post` are retired (owner 2026-10-07).  Canonical: `AGENT-SYNC.md`; mechanics in `docs/protocols/zulip-fleet-guide.md` and at https://fleetlink.online/zulip/zulip-fleet-guide.md.
-3. **Per-app effort boards** — live Mac copies (`~/apps/*-EFFORT-LOG.md`) plus each repo's `docs/EFFORT-LOG.md` and GitHub Issues.  Two-way with THE BOARD: `mac-collab-sync` (files+issues → board) and `mac-collab-writeback` (board writes → live files + Issues).  Writeback does not push git; land `docs/EFFORT-LOG.md` in the app PR.  Protocol: `EFFORT-LOG-PROTOCOL.md` and `docs/BOARD-WRITEBACK-PROTOCOL.md`.
-4. **Mac always-on** — Shellular (phone → this Mac), `mac-collab`, `grok-leader` / `grok-acp`, scout, and the rest of the inventory.  Master list: [`docs/MAC-LOCAL-PROCESSES.md`](docs/MAC-LOCAL-PROCESSES.md).  Do not invent LaunchAgents from a cloud session.
+3. **Effort logs: archived.**  The live Mac copies (`~/apps/*-EFFORT-LOG.md`) and each repo's `docs/EFFORT-LOG.md` carry an "Archived" header; every item was imported into Linear.  `mac-collab-sync`, `mac-collab-writeback` and the `effort-issues-sync` workflows are retired.  See `EFFORT-LOG-PROTOCOL.md` (a stub) and `docs/BOARD-WRITEBACK-PROTOCOL.md` (retired).
+4. **Mac always-on** — Shellular (phone → this Mac), `mac-collab` (read-only archive plus litestream), `grok-leader` / `grok-acp`, scout, and the rest of the inventory.  Master list: [`docs/MAC-LOCAL-PROCESSES.md`](docs/MAC-LOCAL-PROCESSES.md).  Do not invent LaunchAgents from a cloud session.
 5. **Seat worktrees** — each coding seat works in `~/apps/<prefix>-<suffix>` on its own branch prefix.  Never edit in `~/Code/<App>` (the human integration tree).
 6. **No app-specific Grok Bot seats.**  Grok Bot seats implement through **Cursor cloud agents**.  Their tags are `[GB-<NAME>]` — never `[GROK-BOT]`, `[CURSOR]`, or `[GROK]`, and never `GB-COMPILE`.  The live persona roster is the guide's *Who's Here*; GB personas are owner-managed, hold no fleet zuliprc, and post through the Grok Bot platform, so do not assume one is listening.  This coordinator/ops system self-id is **`AFC`**.  A fleet-wide wake is a post in `#agent-sync` › `fleet` that @-mentions each bot that must act; it is not Mac Grok (`GROK`), not Grok Build (`GROK-BUILD`), and not a per-app lane in `fleet-apps.json`.  Do not add `~/apps/<app>-grok-bot` seats.
 
@@ -27,12 +27,12 @@ Inventory: [`fleet-apps.json`](fleet-apps.json).  After any join, `python3 scrip
 | Personal-Site | PS | product |
 | AI-Fleet-Coordinator | AFC | infra |
 
-Active coding seats in that file: `CLAUDE`, `CODEX`, `AG`, `CURSOR`, `GROK`, `CLUTCH`, `FX`, `MM`, `MA`, `MC`.  It also carries retired entries (`MONET`, `DSH`, `HARNESS`, `RENOIR`, `KIMI`) and the `GROK-BUILD` alias, a retired alias of `GROK` (owner 2026-10-08).  The live seat list, with each seat's Zulip bot, is `AGENT-SYNC.md` § Seats and Identity and the guide's *Who's Here*.
+Active coding seats in that file: `CLAUDE`, `CODEX`, `AG`, `CURSOR`, `GROK`, `CLUTCH`, `FX`, `MM`, `MA`, `MC`, `OPENCODE`.  It also carries retired entries (`MONET`, `DSH`, `HARNESS`, `RENOIR`, `KIMI`) and the `GROK-BUILD` row, an alias of `GROK` (owner 2026-10-08;  any spelling of it is accepted as a seat name and resolves to `GROK`, owner 2026-10-10).  The live seat list, with each seat's Zulip bot, is `AGENT-SYNC.md` § Seats and Identity and the guide's *Who's Here*.
 
 ## Core protocols (still binding)
 
 1. **Agent lanes:** dedicated persistent git worktrees.  They never overwrite each other's uncommitted work.
-2. **Triple claim / triple closeout:** THE BOARD + effort-board/GitHub issue + a Zulip post in the `#agent-sync` work topic at start and end of every real unit.
+2. **Claim and closeout:** the Linear issue (`board claim`, `board status`) + a Zulip post in the `#agent-sync` work topic at start and end of every real unit, and a PR that says `Fixes <ID>` or `Refs <ID>`.
 3. **Safe landings:** do not push directly to `main`.  Feature branch → verify → PR → merge when CI is green (`scripts/land.sh` where the app uses it).
 4. **Fleet daily digest + calendars:** day-by-day HTML/Markdown of public-repo merged PRs and issue churn, plus two ICS feeds.  Hosted on GitHub Pages (see below).
 5. **Apple Notes for owner review:** plans, designs, reviews, and completion notes go in folder **`Coding`** (local folder on this Mac, intentionally non-iCloud), pinned.  Title `[APP, Agent] short topic`.  Helper: `scripts/apple-notes-coding.sh`.  Full rule in `AGENT-SYNC.md`.
@@ -68,7 +68,7 @@ Standing procedure (policy + checklist + scripts).  Do not invent a one-off join
 | New GitHub repo / `~/Code` folder joining the fleet | [`docs/ONBOARDING-NEW-APP.md`](docs/ONBOARDING-NEW-APP.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md)) | `scripts/onboard-new-app.sh` |
 | DNS / registrars (new app zone on **account** Usage.Jays.Services, not hostname `usage.jays.services`) | [`docs/DNS-AND-REGISTRARS.md`](docs/DNS-AND-REGISTRARS.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/DNS-AND-REGISTRARS.md)) | — |
 | New coding seat (Claude, Grok, Codex, …) | [`docs/ONBOARDING-NEW-AGENT.md`](docs/ONBOARDING-NEW-AGENT.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md)) | `scripts/onboard-new-agent.sh` |
-| Binding protocol (board + Zulip + model economics) | [`AGENT-SYNC.md`](AGENT-SYNC.md) § THE BOARD, § Delegation & model economics | — |
+| Binding protocol (Linear + Zulip + model economics) | [`AGENT-SYNC.md`](AGENT-SYNC.md) § Linear and the Claim Lifecycle, § Delegation & model economics | — |
 | Cursor chats on desktop + iOS (Grok Bot / Shellular) | [`docs/CURSOR-CHAT-SURFACES.md`](docs/CURSOR-CHAT-SURFACES.md) | `scripts/cursor_chat_surfaces.py` |
 | Universal fleet-ops skills catalog | [`docs/fleet-skills/README-add-in-app.md`](docs/fleet-skills/README-add-in-app.md) | `scripts/install-fleet-skills.py` |
 | **Fresh cloud sandbox / lost CLI toolchain** | [`docs/CLOUD-AGENT-BOOTSTRAP.md`](docs/CLOUD-AGENT-BOOTSTRAP.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/CLOUD-AGENT-BOOTSTRAP.md)) | `bash /workspace/.bootstrap.sh` |
@@ -78,7 +78,7 @@ Standing procedure (policy + checklist + scripts).  Do not invent a one-off join
 Day-by-day outline of public repository work: **merged PRs** and **issues opened/closed**.  Built by
 `scripts/build-fleet-daily-digest.py` and refreshed every 6 hours by
 `.github/workflows/fleet-activity-site.yml`, which also rebuilds the per-commit
-activity ICS and deploys the site to **GitHub Pages**.  The public feeds use an explicit repository allowlist and check current GitHub visibility before fetching activity.  Internal effort boards remain private inputs to separate operator workflows.
+activity ICS and deploys the site to **GitHub Pages**.  The public feeds use an explicit repository allowlist and check current GitHub visibility before fetching activity.  Internal Linear teams remain private inputs to separate operator workflows.
 
 ### Hosted URLs
 
@@ -88,8 +88,8 @@ activity ICS and deploys the site to **GitHub Pages**.  The public feeds use an 
 | **Markdown** | https://simple-with-us.github.io/AI-Fleet-Coordinator/digest.md |
 | **ICS — daily outline** (all-day “what shipped”) | https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/daily-digest.ics |
 | **ICS — per-commit activity** | https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/agent-activity.ics |
-| **THE BOARD** (auth) | https://mac.jays.services/board |
-| **THE BOARD short link** | https://board.jays.services (302 → `/board`) |
+| **Linear** (auth) | https://linear.app/simple-with-us |
+| **THE BOARD archive** (read-only until about day 30) | https://mac.jays.services/board, short link https://board.jays.services (302 → `/board`) |
 
 Raw-from-`main` fallbacks (no Pages required):
 

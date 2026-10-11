@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, urlsplit
 
 BOT_EMAIL = "claude-bot@zulip.test"
 EPOCH = 1_790_000_000  # a fixed base for message timestamps
-LISTENER_EVENT_TYPES = {"message", "update_message", "user_topic", "realm_user"}
+LISTENER_EVENT_TYPES = {"message", "update_message", "user_topic", "realm_user", "stream", "subscription"}
 HUMAN_CLIENT = "website"
 BOT_CLIENT = "ZulipPython"
 WILDCARDS_CHANNEL = ("all", "everyone", "channel", "stream")
@@ -60,10 +60,14 @@ class Queue:
     event_types: tuple[str, ...] = ("message",)
 
 
+FAKE_OWNER_ID = 12  # the realm owner (Jay); every fake bot is his, like the real fleet's
+
+
 def user(user_id: int, email: str, full_name: str, is_bot: bool, role: int | None = None) -> dict[str, Any]:
     return {"user_id": user_id, "email": email, "delivery_email": email, "full_name": full_name,
             "is_bot": is_bot, "is_active": True, "role": role if role is not None else 400,
-            "is_admin": role in (100, 200), "is_owner": role == 100}
+            "is_admin": role in (100, 200), "is_owner": role == 100,
+            **({"bot_type": 1, "bot_owner_id": FAKE_OWNER_ID} if is_bot else {})}
 
 
 _CODE_BLOCK_RE = re.compile(r"(?ms)^(```|~~~).*?(^\1\s*$|\Z)")
@@ -97,6 +101,7 @@ class FakeZulip:
         self.keys: dict[str, dict[str, Any]] = {key: self.me}  # API key -> the bot it belongs to
         self.streams = {"agent-sync": 7, "other": 8, "sandbox": 9}
         self.subscribed = {"agent-sync", "other"}
+        self.subscription_properties: list[dict[str, Any]] = []
         self.user_groups: list[dict[str, Any]] = []
         self.messages: list[dict[str, Any]] = []
         self.next_id = 100
@@ -249,6 +254,17 @@ class FakeZulip:
                        lambda q: {"type": "user_topic", "stream_id": stream_id, "topic_name": topic,
                                   "last_updated": int(time.time()), "visibility_policy": policy})
 
+    def create_stream(self, name: str, *, invite_only: bool = False) -> int:
+        """A new channel and its `stream` create event (a private one is prefixed "private")."""
+        with self.cond:
+            if invite_only and not name.startswith("private"):
+                raise ValueError("a private fake channel's name starts with 'private'")
+            stream_id = self.streams.setdefault(name, 100 + len(self.streams))
+            self._push(lambda q: "stream" in q.event_types,
+                       lambda q: {"type": "stream", "op": "create",
+                                  "streams": [{"name": name, "stream_id": stream_id, "invite_only": invite_only}]})
+            return stream_id
+
     def expire_queues(self) -> None:
         with self.cond:
             self.queues.clear()
@@ -347,7 +363,8 @@ class FakeZulip:
             if operator == "dm":
                 ids = set(operand if isinstance(operand, list) else [operand])
                 members = {r["id"] for r in message["display_recipient"]} if message["type"] == "private" else set()
-                if message["type"] != "private" or not ids <= members:
+                # Zulip matches the conversation with exactly these other people (the caller is always in it).
+                if message["type"] != "private" or (members - {user_id}) != (ids - {user_id}):
                     return False
         return True
 
@@ -457,6 +474,12 @@ class FakeZulip:
                 self.subscribed.add(name)
             return 200, {**ok, "subscribed": {caller["email"]: new} if new else {},
                          "already_subscribed": {caller["email"]: old} if old else {}}
+        if key == ("GET", "streams"):
+            return 200, {**ok, "streams": [{"name": n, "stream_id": i, "invite_only": n.startswith("private"),
+                                            "is_archived": False} for n, i in sorted(self.streams.items())]}
+        if key == ("POST", "users/me/subscriptions/properties"):
+            self.subscription_properties.extend(json.loads(params["subscription_data"]))
+            return 200, ok
         if key == ("GET", "get_stream_id"):
             name = params.get("stream", "")
             if name not in self.streams or (name not in self.subscribed and name.startswith("private")):

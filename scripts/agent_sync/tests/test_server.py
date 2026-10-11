@@ -317,7 +317,7 @@ class DmTests(ServerHarness):
         self.assertEqual(len(self.routine.received), 1)
         body = self.routine.received[0].json()
         self.assertTrue(body["dm"])
-        self.assertEqual((body["channel"], body["topic"]), (None, None))
+        self.assertEqual((body["channel"], body["topic"], body["stream_id"]), (None, None, None))
         self.assertEqual(body["dm_recipient_ids"], [12])
         self.assertEqual(body["reply_to"], {"type": "direct", "to": [12]})
         self.assertEqual((body["message_id"], body["trigger_ids"], body["sender_user_id"]), (dm, [dm], 12))
@@ -339,13 +339,39 @@ class DmTests(ServerHarness):
         self.assertEqual(body["reply_to"], {"type": "direct", "to": [11, 12]})
         self.assertEqual(body["message_id"], dm)
 
-    def test_a_dm_from_a_peer_bot_is_captured_but_never_wakes(self) -> None:
+    def test_a_dm_from_a_peer_bot_wakes_the_routine_and_is_answered_by_dm(self) -> None:
+        """Owner 2026-10-09:  an eligible bot's DM wakes like a direct mention.  The routine replies in the DM."""
         daemon = self.started()
         dm = self.fake.add_direct_message("Codex", "ping from codex", recipients=[self.gb], deliver=True)
+        self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 1, seat=SEAT)
+        self.assertEqual([r["id"] for r in self.inbox(SEAT)], [dm])
+        self.wake_cycle(daemon)
+        self.assertEqual(len(self.routine.received), 1)
+        body = self.routine.received[0].json()
+        self.assertTrue(body["dm"])
+        self.assertEqual(body["reply_to"], {"type": "direct", "to": [11]})
+        self.assertEqual((body["is_bot"], body["owner"], body["message_id"]), (True, False, dm))
+        self.assertEqual(body["reply_prefix"], "[GB-COMPILER·wake] re=%d" % dm)
+        self.assertEqual(self.gb_posts(), [], "the daemon never posts for a routine seat")
+
+    def test_a_bf_bot_mention_wakes_the_gb_routine(self) -> None:
+        bf = self.fake.add_user("bf-builder-bot@zulip.test", "BF Builder", is_bot=True, user_id=31)
+        daemon = self.started()
+        mid = self.fake.add_message(bf, "agent-sync", "CT build red", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 1, seat=SEAT)
+        self.wake_cycle(daemon)
+        body = self.routine.received[0].json()
+        self.assertEqual((body["message_id"], body["sender_user_id"], body["owner"]), (mid, 31, False))
+
+    def test_a_webhook_integration_dm_never_wakes(self) -> None:
+        sentry = self.fake.add_user("sentry-bot@zulip.test", "Sentry", is_bot=True, user_id=40)
+        sentry["bot_type"] = 2
+        daemon = self.started()
+        dm = self.fake.add_direct_message(sentry, "error spike", recipients=[self.gb], deliver=True)
         self.pump_until(daemon, lambda: len(self.inbox(SEAT)) >= 1, seat=SEAT)
         self.assertEqual([r["id"] for r in self.inbox(SEAT)], [dm])
         self.wake_cycle(daemon)
-        self.assertEqual(self.ledger(SEAT), [], "the prefilter keeps a DM from a bot inbox-only")
+        self.assertEqual(self.ledger(SEAT), [])
         self.assertEqual(self.routine.received, [])
 
     def test_a_channel_mention_wakes_with_dm_false(self) -> None:
@@ -359,6 +385,7 @@ class DmTests(ServerHarness):
         body = self.routine.received[0].json()
         self.assertFalse(body["dm"])
         self.assertEqual((body["channel"], body["topic"], body["dm_recipient_ids"]), ("agent-sync", "CT build red", []))
+        self.assertEqual(body["stream_id"], self.fake.streams["agent-sync"])
         self.assertEqual(body["reply_to"], {"type": "stream", "channel": "agent-sync", "topic": "CT build red"})
         self.assertEqual((body["sender_user_id"], body["is_bot"], body["owner"]), (11, True, False))
         self.assertEqual(body["zulip_link"], "%s/#narrow/channel/7-agent-sync/topic/CT.20build.20red/near/%d"
@@ -413,9 +440,27 @@ class RoutineBodyTests(unittest.TestCase):
         self.assertEqual(body["reply_to"], {"type": "stream", "channel": channel, "topic": topic})
         self.assertEqual(body["trigger_ids"], [4, 5])
         self.assertEqual(body["sent_at"], 1790000000)
+        self.assertEqual(body["stream_id"], 3)
         self.assertEqual(set(body), {"contract", "seat", "wake_id", "message_id", "trigger_ids", "dm", "channel",
-                                     "topic", "dm_recipient_ids", "sender_user_id", "sender_full_name", "is_bot",
-                                     "owner", "excerpt", "zulip_link", "reply_to", "reply_prefix", "sent_at"})
+                                     "topic", "stream_id", "dm_recipient_ids", "sender_user_id", "sender_full_name",
+                                     "is_bot", "owner", "excerpt", "zulip_link", "reply_to", "reply_prefix",
+                                     "sent_at"})
+
+    def test_the_stream_id_is_a_positive_int_or_none(self) -> None:
+        """The hosted MCP Worker holds a channel wake to its allowlist by this id, so only a real id goes out."""
+        def body(row: dict) -> dict:
+            base = {"id": 9, "type": "stream", "channel": "agent-sync", "topic": "t", "sender_id": 11, "content": "x"}
+            return A.routine_body(seat="JET", wake_id="w9", trigger_ids=[9], row={**base, **row}, bot_user_id=16,
+                                  realm="https://z.test", now=1790000000.0)
+        self.assertEqual(body({"stream_id": 642232})["stream_id"], 642232)
+        for bad in (True, False, "642232", 642232.0, 0, -4, None, [642232]):
+            with self.subTest(stream_id=bad):
+                self.assertIsNone(body({"stream_id": bad})["stream_id"])
+        self.assertIsNone(body({})["stream_id"], "a row without one (a quarantined item) sends null")
+        dm = body({"type": "private", "stream_id": 642232, "recipients": [11, 16]})
+        self.assertIsNone(dm["stream_id"], "a DM never carries a stream id")
+        self.assertIs(type(body({"stream_id": 7})["stream_id"]), int)
+        self.assertIn(b'"stream_id":7', A.routine_bytes(body({"stream_id": 7})))
 
     def test_routine_url_rules(self) -> None:
         good = ["https://routines.grok.example/hooks/abc?token=1", "http://127.0.0.1:8080/x", "http://localhost/x"]
@@ -634,8 +679,9 @@ class LedgerAndSecrecyTests(ServerHarness):
             self.pump_until(daemon, lambda: sum(1 for r in self.ledger(SEAT) if r["state"] == "queued")
                             >= ("a", "b", "c").index(topic) + 1, seat=SEAT)
             self.wake_cycle(daemon)
-        states = [(r["topic"], r["state"], r.get("reason")) for r in self.ledger(SEAT) if r["state"] in ("done", "dropped")]
-        self.assertEqual(states, [("a", "done", None), ("b", "done", None), ("c", "dropped", "wakes_per_hour")])
+        states = [(r["topic"], r["state"], r.get("reason")) for r in self.ledger(SEAT)
+                  if r["state"] in ("done", "dropped", "held_back")]
+        self.assertEqual(states, [("a", "done", None), ("b", "done", None), ("c", "held_back", "wakes_per_hour")])
         started = [r for r in self.ledger(SEAT) if r["state"] == "started"]
         self.assertEqual({r["reserved_usd"] for r in started}, {0.0})
         accepted = [r for r in self.ledger(SEAT) if r["state"] == "accepted"]
@@ -890,9 +936,8 @@ class PartitionTests(ServerHarness):
         self.assertEqual(server.errors, [])
         self.assertEqual(server.instance, "server")
         self.assertEqual(C.partition_errors(server, partition, env_instance="server"), [])
-        self.assertEqual(sorted(server.seats), sorted([s for s in gb if s not in ("GB-COMPILER", "GB-DIRECTOR")]
-                                                      + list(CLOUD_SEATS)),
-                         "the enabled seats are nine GB personas and the five cloud seats")
+        self.assertEqual(sorted(server.seats), sorted(list(gb) + list(CLOUD_SEATS)),
+                         "the enabled seats are all eleven GB personas and the five cloud seats")
         for seat in CLOUD_SEATS:
             seat_cfg = server.seats[seat]
             code = C.env_code(seat)
@@ -907,8 +952,8 @@ class PartitionTests(ServerHarness):
                                  ("inbox", "env", "server", None), "%s has capture only, no wake adapter" % seat)
             self.assertEqual((seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
                              ("ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"), seat)
-        self.assertEqual(sorted(server.disabled), ["GB-COMPILER", "GB-DIRECTOR"],
-                         "only the two personas whose Infisical entries failed the Sat, Oct 10 inventory are disabled")
+        self.assertEqual(sorted(server.disabled), [],
+                         "no persona is disabled:  GB-COMPILER and GB-DIRECTOR were fixed in Infisical on Sat, Oct 10")
         for seat in gb:
             seat_cfg = server.seats.get(seat) or server.disabled[seat]
             code = C.env_code(seat)
@@ -932,7 +977,7 @@ class PartitionTests(ServerHarness):
 # The cloud seats (MA, JET, GROK-WEB, INSTINCT and ECHO)
 # --------------------------------------------------------------------------------------------
 
-class CloudSeatTests(ServerHarness):
+class CloudSeatHarness(ServerHarness):
     """The shipped sample config holds the five cloud seats with inbox capture.  Each test starts from
     that file itself (only the owner and eligible pins differ), so a change to the sample is tested."""
 
@@ -958,6 +1003,8 @@ class CloudSeatTests(ServerHarness):
             variables["ZULIP_%s_API_KEY" % C.env_code(seat)] = self.cloud_keys[seat]
         return self.server_env(**variables)
 
+
+class CloudSeatTests(CloudSeatHarness):
     def test_the_sample_starts_with_every_cloud_seat_connected_on_its_own_queue(self) -> None:
         daemon = self.server_daemon(env=self.cloud_env())
         self.assertEqual(daemon.refusal, [], "the partition gives the server all five")
@@ -1010,6 +1057,8 @@ class CloudSeatTests(ServerHarness):
         body = got.json()
         self.assertEqual((body["contract"], body["seat"], body["topic"]), ("agent-sync-wake/1", "JET", "jet wake"))
         self.assertEqual(got.header("Idempotency-Key"), body["wake_id"])
+        # The Worker delivers a channel wake only from an allowlisted stream id, so the listener sends it.
+        self.assertEqual(body["stream_id"], self.fake.streams["agent-sync"])
 
     def test_a_gb_persona_from_the_sample_wakes_its_routine_with_the_infisical_webhook_names(self) -> None:
         # The sample reads Infisical's own webhook names (ZULIP_ALERT_GB_<ROLE>_ENDPOINT and _KEY, a bare
@@ -1071,8 +1120,7 @@ class ServerInitTests(ServerHarness):
         self.config_file.unlink()
         # Without --seat the reader is the first enabled seat in name order, which is ECHO now that the
         # sample holds the cloud seats, so the runbook always names one.
-        # GB-COMPILER is disabled in the sample (its Infisical pair is another bot's), so it is only the
-        # reader here; GB-FIXER is an enabled persona whose credentials init checks.
+        # GB-COMPILER is the reader here, and like GB-FIXER an enabled persona whose credentials init checks.
         fixer_key = secrets.token_hex(16)
         self.extra_keys.append(("fixer-grok-bot@zulip.test", fixer_key))
         self.fake.add_bot("fixer-grok-bot@zulip.test", "GB-Fixer", fixer_key)
@@ -1081,7 +1129,7 @@ class ServerInitTests(ServerHarness):
         self.assertEqual(result.code, 0, result.err + result.out)
         self.assertIn("wrote the sample config %s" % self.config_file, result.out)
         self.assertIn("GB-FIXER: environment credentials ok, role 400", result.out)
-        self.assertNotIn("  GB-COMPILER:", result.out, "a disabled persona is not checked")
+        self.assertIn("GB-COMPILER: environment credentials ok, role 400", result.out)
         cfg = C.load(self.root, str(self.config_file))
         self.assertEqual(cfg.instance, "server")
         self.assertEqual(cfg.owner_user_id, 12)
@@ -1225,6 +1273,7 @@ class ContainerTests(unittest.TestCase):
         self.assertIn("COPY scripts/agent_sync /app/scripts/agent_sync", lines)
         self.assertIn("COPY scripts/agent-sync /app/scripts/agent-sync", lines)
         self.assertIn("COPY docs/protocols/agent-sync-partition.toml /app/docs/protocols/agent-sync-partition.toml", lines)
+        self.assertIn("COPY fleet-apps.json /app/fleet-apps.json", lines, "strict_seat and seat_app read the registry")
         self.assertIn('ENTRYPOINT ["/app/scripts/agent_sync/server/entrypoint.sh"]', lines)
         self.assertIn('CMD ["daemon", "run", "--wait-lock"]', lines)
         self.assertRegex(text, r'HEALTHCHECK [^\n]*\\\n\s+CMD \["python3", "/app/scripts/agent_sync/server/healthcheck.py"\]')
@@ -1236,7 +1285,7 @@ class ContainerTests(unittest.TestCase):
         ignore = (SERVER_DIR / "Dockerfile.dockerignore").read_text().splitlines()
         self.assertEqual(ignore[[i for i, l in enumerate(ignore) if not l.startswith("#")][0]], "*")
         for keep in ("!scripts/agent-sync", "!scripts/agent_sync/", "!docs/protocols/agent-sync-partition.toml",
-                     "scripts/agent_sync/tests/"):
+                     "!fleet-apps.json", "scripts/agent_sync/tests/"):
             self.assertIn(keep, ignore)
 
     def test_the_container_paths_resolve_like_the_image(self) -> None:

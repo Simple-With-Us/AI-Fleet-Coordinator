@@ -364,6 +364,32 @@ class LedgerAndGuardTests(unittest.TestCase):
         guard.note("k", wake_reply=False, owner=True)
         self.assertFalse(guard.blocked("k"))
 
+    def test_a_topic_count_never_decays(self) -> None:
+        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"))
+        for n in range(3):
+            guard.note("k", wake_reply=True, owner=False, now=1000.0 + n)
+        self.assertTrue(guard.blocked("k", now=1000.0 + 30 * W.DAY), "a topic waits for the owner, however long")
+
+    def test_a_bot_only_dm_count_is_rolling(self) -> None:
+        """Owner 2026-10-09 made bot DMs wake.  The owner can never post in a DM between two bots, so a
+        fixed count would block that pair for good:  there 3 wake replies within DM_WINDOW stop it, and it
+        wakes again once the oldest of them ages out."""
+        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"))
+        window = W.LoopGuard.DM_WINDOW
+        for at in (1000.0, 1100.0):
+            guard.note("dm", wake_reply=True, owner=False, rolling=True, now=at)
+        self.assertFalse(guard.blocked("dm", now=1200.0))
+        guard.note("dm", wake_reply=False, owner=False, rolling=True, now=1150.0)
+        self.assertFalse(guard.blocked("dm", now=1200.0), "only wake replies count, never other posts")
+        guard.note("dm", wake_reply=True, owner=False, rolling=True, now=1200.0)
+        self.assertTrue(guard.blocked("dm", now=1201.0), "the third wake reply stops the ping-pong")
+        self.assertTrue(guard.blocked("dm", now=1000.0 + window - 1))
+        self.assertFalse(guard.blocked("dm", now=1000.0 + window + 1), "the oldest reply aged out")
+        guard.note("dm", wake_reply=True, owner=False, rolling=True, now=1000.0 + window + 2)
+        self.assertTrue(guard.blocked("dm", now=1000.0 + window + 3), "a fresh reply inside the window blocks again")
+        guard.note("dm", wake_reply=False, owner=True, rolling=True, now=1000.0 + window + 4)
+        self.assertFalse(guard.blocked("dm", now=1000.0 + window + 5), "an owner post still resets it")
+
 
 class NotifyAndBoardTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -390,8 +416,11 @@ class NotifyAndBoardTests(unittest.TestCase):
         self.assertEqual(len(queue), 1)
 
     def test_board_argv_is_a_list_with_a_validated_app(self) -> None:
-        acronyms = {"AFC", "CT", "ST"}
+        acronyms = {"AFC", "BF", "CT", "ST"}
         self.assertEqual(A.board_app("CT#2316 sentry", acronyms), "CT")
+        self.assertEqual(A.board_app("BF-123 reconnect loop", acronyms), "BF")
+        self.assertEqual(A.board_app("AFC-455 linear cutover", acronyms), "AFC")
+        self.assertEqual(A.board_app("zz-9 random", acronyms), "AFC")
         self.assertEqual(A.board_app("; rm -rf / topic", acronyms), "AFC")
         self.assertEqual(A.board_app("zz random", acronyms), "AFC")
         argv = A.board_argv("/bin/board", seat="CLAUDE", title='t"; rm -rf ~', desc="$(whoami)", severity="P3",
@@ -434,7 +463,7 @@ class ClaudeRunnerTests(ListenerHarness):
         self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "0.25")
         self.assertEqual(argv[argv.index("--output-format") + 1], "stream-json")
         self.assertEqual(json.loads(argv[argv.index("--json-schema") + 1])["required"],
-                         ["action", "reply", "board", "owner_note", "risk"])
+                         ["action", "reply", "board", "owner_note", "risk", "route"])
         self.assertTrue(argv[argv.index("--append-system-prompt-file") + 1].endswith("wake/wake-contract.md"))
         env = seen["env"]
         for name in ("ZULIP_API_KEY", "CLAUDE_CODE_SSE_PORT", "AGENT_SEAT", "ANTHROPIC_API_KEY"):

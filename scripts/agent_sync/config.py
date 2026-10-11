@@ -47,8 +47,32 @@ DEFAULT_OWNER_CLIENTS = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectro
 BUDGET_DEFAULTS: dict[str, float] = {
     "wakes_per_hour": 6, "wakes_per_day": 40, "per_topic_per_hour": 2, "owner_per_day": 20,
     "owner_per_topic_per_hour": 6, "usd_per_day": 2.0, "board_per_day": 0,
+    # Route suggestions (owner 2026-10-10):  what one routing seat (today only CLAUDE, the one claude
+    # wake) may page on the owner's behalf, counted from that seat's own ledger.  A route also needs
+    # route_topic_minutes since the last route posted in the same topic.
+    "routes_per_hour": 3, "routes_per_day": 10, "route_topic_minutes": 30,
 }
 WAKE_MAX_BUDGET_USD = 0.25
+# Wakes the budget holds back (heldback.py), per seat:  `held_back = { max = 200, overflow_max = 1000,
+# ttl_hours = 24, items_in_wake = 20, owner_digest_minutes = 60, catch_up = true }`.  max is the records
+# with names;  past it the oldest move to a compact overflow tier (still listed by id), and only past
+# overflow_max is an id lost (counted and told to the owner at once).  ttl_hours applies only to what a
+# digest the owner was shown named (a Mac banner), so on the server nothing expires unsurfaced.  catch_up applies to a seat whose
+# adapter runs a turn (`claude` or `http`) and defaults to `[daemon] held_back_catch_up` (true);  an
+# `inbox` seat never wakes, so it has nothing to hold back or catch up.  owner_digest_minutes = 0 turns
+# the owner digest off.  None of these changes a budget:  every wake, a catch-up included, passes them.
+HELD_BACK_DEFAULTS: dict[str, float] = {"max": 200, "overflow_max": 1000, "ttl_hours": 24, "items_in_wake": 20,
+                                       "owner_digest_minutes": 60}
+# (minimum, maximum, whole numbers only).  items_in_wake stops at 20, the hosted Worker's cap.
+HELD_BACK_LIMITS: dict[str, tuple[float, float, bool]] = {
+    "max": (1, 1000, True), "overflow_max": (0, 5000, True), "ttl_hours": (1, 168, False), "items_in_wake": (0, 20, True),
+    "owner_digest_minutes": (0, 1440, False),
+}
+HELD_BACK_MIN_DIGEST_MINUTES = 15
+# Seat tags whose bots are always eligible senders, on top of every tag the seat partition lists
+# (fleet_tags).  Owner 2026-10-09:  "everyone should be able to DM to wake anyone else or tag to wake
+# anyone else", so every fleet bot (Mac and cloud seats, GB personas, BF role bots) is eligible.
+FLEET_SEATS = ("CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "MA", "JET", "OPENCODE")
 DEFAULT_SITE_ENV = "ZULIP_SITE"
 # The CLI's single-seat triple.  A listener seat never reads it, so two seats cannot alias one bot.
 GENERIC_ENV = frozenset({"ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_RC"})
@@ -94,7 +118,8 @@ class SeatConfig:
     def __init__(self, seat: str, bot: str, wake: str, model: str, budget: dict[str, float],
                  live: dict[str, int], claude: str | None, *, instance: str = "mac", enabled: bool = True,
                  creds: str = "file", email_env: str | None = None, key_env: str | None = None,
-                 site_env: str = DEFAULT_SITE_ENV, routine: RoutineConfig | None = None) -> None:
+                 site_env: str = DEFAULT_SITE_ENV, routine: RoutineConfig | None = None,
+                 route_enabled: bool = True, held_back: dict[str, Any] | None = None) -> None:
         self.seat = seat
         self.bot = bot
         self.wake = wake
@@ -109,6 +134,8 @@ class SeatConfig:
         self.key_env = key_env
         self.site_env = site_env
         self.routine = routine
+        self.route_enabled = route_enabled  # the per-seat kill switch for wake route suggestions
+        self.held_back: dict[str, Any] = held_back if held_back is not None else held_back_defaults(wake)
 
     @property
     def wake_max_usd(self) -> float:
@@ -144,6 +171,9 @@ class Config:
         self.disabled: dict[str, SeatConfig] = {}  # parsed and checked, but no queue (enabled = false)
         self.seat_instances: dict[str, str | None] = {}  # every [seat.X] section:  its own instance key, if any
         self.notify_banners = True
+        self.route_enabled = True  # daemon.route_enabled:  the listener-wide kill switch for route suggestions
+        self.held_back_catch_up = True  # the default for every seat's held_back.catch_up (heldback.py)
+        self.auto_subscribe = True  # daemon.auto_subscribe:  held seats join every public channel (owner 2026-10-10)
 
     @property
     def ok(self) -> bool:
@@ -155,6 +185,46 @@ def _number(value: Any, name: str, errors: list[str], *, minimum: float = 0) -> 
         errors.append("%s must be a number of at least %g" % (name, minimum))
         return None
     return float(value)
+
+
+def held_back_defaults(wake: str, catch_up: bool = True) -> dict[str, Any]:
+    held: dict[str, Any] = {k: (int(v) if HELD_BACK_LIMITS[k][2] else float(v)) for k, v in HELD_BACK_DEFAULTS.items()}
+    held["catch_up"] = bool(catch_up) and wake in WORKER_WAKES
+    return held
+
+
+def _held_back(seat: str, wake: str, given: Any, problems: list[str], *, catch_up: bool = True) -> dict[str, Any]:
+    """The seat's `held_back` table over the defaults (catch_up from `[daemon] held_back_catch_up`).  A
+    bad value is an error like a bad budget."""
+    held = held_back_defaults(wake, catch_up)
+    if not isinstance(given, dict):
+        problems.append("seat.%s.held_back must be a table" % seat)
+        return held
+    for key, value in given.items():
+        name = "seat.%s.held_back.%s" % (seat, key)
+        if key == "catch_up":
+            if not isinstance(value, bool):
+                problems.append("%s must be true or false" % name)
+            elif value and wake not in WORKER_WAKES:
+                problems.append("%s applies only to wake = \"claude\" or \"http\" (an inbox seat never wakes)" % name)
+            else:
+                held["catch_up"] = value
+            continue
+        if key not in HELD_BACK_LIMITS:
+            problems.append("%s is not a known held_back setting" % name)
+            continue
+        low, high, whole = HELD_BACK_LIMITS[key]
+        number = _number(value, name, problems, minimum=low)
+        if number is None:
+            continue
+        if number > high or (whole and number != int(number)):
+            problems.append("%s must be a%s number from %g to %g" % (name, " whole" if whole else "", low, high))
+            continue
+        if key == "owner_digest_minutes" and 0 < number < HELD_BACK_MIN_DIGEST_MINUTES:
+            problems.append("%s must be 0 (off) or at least %d" % (name, HELD_BACK_MIN_DIGEST_MINUTES))
+            continue
+        held[key] = int(number) if whole else number
+    return held
 
 
 def _env_name(value: Any, name: str, problems: list[str]) -> str | None:
@@ -246,6 +316,21 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                 setattr(cfg, attr, value * scale)
     # macOS banners on the Mac; the server has no display, so it keeps only the owner queue.
     cfg.notify_banners = daemon["notify_banners"] is True if "notify_banners" in daemon else cfg.instance == "mac"
+    route_on = daemon.get("route_enabled", True)
+    if not isinstance(route_on, bool):
+        errors.append("daemon.route_enabled must be true or false")
+    else:
+        cfg.route_enabled = route_on
+    catch_up = daemon.get("held_back_catch_up", True)
+    if not isinstance(catch_up, bool):
+        errors.append("daemon.held_back_catch_up must be true or false")
+    else:
+        cfg.held_back_catch_up = catch_up
+    auto_sub = daemon.get("auto_subscribe", True)
+    if not isinstance(auto_sub, bool):
+        errors.append("daemon.auto_subscribe must be true or false")
+    else:
+        cfg.auto_subscribe = auto_sub
     cfg.presence = L.presence_topics(raw)
     platform = ((raw.get("platform") or {}).get("claude-code") or {}) if isinstance(raw.get("platform"), dict) else {}
     seat = platform.get("seat") if isinstance(platform, dict) else None
@@ -274,6 +359,10 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if not isinstance(enabled, bool):
             problems.append("seat.%s.enabled must be true or false" % seat_name)
             enabled = True
+        route_enabled = section.get("route_enabled", True)
+        if not isinstance(route_enabled, bool):
+            problems.append("seat.%s.route_enabled must be true or false" % seat_name)
+            route_enabled = True
         creds = section.get("creds", "file")
         if creds not in ("file", "env"):
             problems.append("seat.%s.creds must be \"file\" (a zuliprc) or \"env\" (environment variables)" % seat_name)
@@ -331,6 +420,8 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             number = _number(value, "seat.%s.budget.%s" % (seat_name, key), problems)
             if number is not None:
                 budget[key] = number
+        held_back = _held_back(seat_name, str(wake), section.get("held_back", {}), problems,
+                               catch_up=cfg.held_back_catch_up)
         if "allow_admin" in section:
             problems.append("seat.%s.allow_admin is not supported: admin and owner bot keys are always refused, "
                             "moderator and member keys are accepted (owner decision 2026-10-07)" % seat_name)
@@ -347,7 +438,8 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             continue
         seat_cfg = SeatConfig(seat_name, bot, wake, model, budget, L.live_limits(raw, seat_name), claude,
                               instance=seat_instance or cfg.instance, enabled=enabled, creds=creds,
-                              email_env=email_env, key_env=key_env, site_env=site_env, routine=routine)
+                              email_env=email_env, key_env=key_env, site_env=site_env, routine=routine,
+                              route_enabled=route_enabled, held_back=held_back)
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg
     _refuse_shared_env(cfg)
     return cfg
@@ -434,6 +526,12 @@ def load_partition(path: str) -> tuple[dict[str, str] | None, str | None]:
                 path, name, ", ".join(PARTITION_VALUES))
         found[seat] = value
     return found, None
+
+
+def fleet_tags(partition: Mapping[str, str] | None) -> frozenset[str]:
+    """Every seat tag whose bot is an eligible sender:  each seat the partition lists, whatever its
+    instance (`none` seats such as the BF role bots and GROK-BUILD count too), plus FLEET_SEATS."""
+    return frozenset(FLEET_SEATS) | frozenset(str(seat).upper() for seat in (partition or {}))
 
 
 _DEFAULT_ENV_RE = re.compile(r"^ZULIP_([A-Z0-9_]+)_(EMAIL|API_KEY)$")

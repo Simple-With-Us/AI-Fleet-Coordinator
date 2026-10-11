@@ -2,10 +2,14 @@
 """Regression checks for the public activity publication boundary."""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import importlib.util
+import os
 import re
 import sys
+import tempfile
 import unittest
 import urllib.error
 from datetime import date, datetime, timezone
@@ -14,13 +18,19 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from public_activity_repos import HISTORICAL_PUBLIC_REPO_ALIASES, PUBLIC_REPOS, select_public_repos  # noqa: E402
+from public_activity_repos import DEFAULT_FLEET_OWNER, HISTORICAL_PUBLIC_REPO_ALIASES, PUBLIC_REPOS, select_public_repos  # noqa: E402
 
 spec = importlib.util.spec_from_file_location("digest", Path(__file__).resolve().parent / "build-fleet-daily-digest.py")
 assert spec and spec.loader
 digest = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = digest
 spec.loader.exec_module(digest)
+
+calendar_spec = importlib.util.spec_from_file_location("agent_calendar", Path(__file__).resolve().parent / "build-agent-calendar.py")
+assert calendar_spec and calendar_spec.loader
+agent_calendar = importlib.util.module_from_spec(calendar_spec)
+sys.modules[calendar_spec.name] = agent_calendar
+calendar_spec.loader.exec_module(agent_calendar)
 
 
 class Reply:
@@ -91,6 +101,65 @@ class PublicActivityTests(unittest.TestCase):
             self.assertNotIn("fleet-ops", body.casefold())
         self.assertIn(pr["url"], rendered[0])
         self.assertIn(pr["url"], rendered[1])
+
+    def test_default_owner_is_the_org_and_never_the_retired_pages_host(self) -> None:
+        """A manual run with no FLEET_OWNER or SITE_BASE_URL must not emit jaywedgeworth22.github.io."""
+        self.assertEqual(DEFAULT_FLEET_OWNER, "Simple-With-Us")
+        day = date(2026, 9, 26)
+        pr = {"repo": "BotFleet", "number": 123, "title": "Fix onboarding", "url": "https://github.com/Simple-With-Us/BotFleet/pull/123", "user": "jay"}
+        seen: list[str] = []
+
+        def select(owner: str, requested: list[str], _token: str) -> list[str]:
+            seen.append(owner)
+            return ["BotFleet"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {key: value for key, value in os.environ.items() if key not in {"FLEET_OWNER", "SITE_BASE_URL", "FLEET_REPOS"}}
+            env.update({"SITE_OUT": str(Path(tmp) / "site"), "ICS_OUT": str(Path(tmp) / "daily.ics")})
+            cwd = os.getcwd()
+            os.chdir(tmp)  # the builder reads calendar/agent-activity.ics from the working directory
+            try:
+                with patch.dict(os.environ, env, clear=True), \
+                        patch.object(digest, "token", return_value="fixture"), \
+                        patch.object(digest, "select_public_repos", side_effect=select), \
+                        patch.object(digest, "fetch_merged_prs", return_value=[(day, pr)]), \
+                        patch.object(digest, "fetch_issue_churn", return_value=([], [])), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(digest.main(), 0)
+            finally:
+                os.chdir(cwd)
+            outputs = {
+                "digest.md": (Path(tmp) / "site" / "digest.md").read_text(),
+                "index.html": (Path(tmp) / "site" / "index.html").read_text(),
+                "daily.ics": (Path(tmp) / "daily.ics").read_text(),
+            }
+        self.assertEqual(seen, ["Simple-With-Us"])
+        for name, body in outputs.items():
+            with self.subTest(output=name):
+                self.assertNotIn("jaywedgeworth22", body.casefold())
+                self.assertIn("https://simple-with-us.github.io/AI-Fleet-Coordinator", body)
+
+    def test_agent_calendar_default_owner_is_the_org(self) -> None:
+        commit = {"sha": "a" * 40, "commit": {"message": "feat: fixture", "author": {"date": "2026-09-26T12:00:00Z"}}}
+        seen: list[str] = []
+
+        def select(owner: str, requested: list[str], _token: str) -> list[str]:
+            seen.append(owner)
+            return ["BotFleet"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "agent-activity.ics"
+            env = {key: value for key, value in os.environ.items() if key not in {"FLEET_OWNER", "FLEET_REPOS"}}
+            env.update({"GITHUB_TOKEN": "fixture", "CALENDAR_OUT": str(out)})
+            with patch.dict(os.environ, env, clear=True), \
+                    patch.object(agent_calendar, "select_public_repos", side_effect=select), \
+                    patch.object(agent_calendar, "list_commits", return_value=[commit]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(agent_calendar.main(), 0)
+            body = out.read_text()
+        self.assertEqual(seen, ["Simple-With-Us"])
+        self.assertIn("https://github.com/Simple-With-Us/BotFleet/commit/", body)
+        self.assertNotIn("jaywedgeworth22", body.casefold())
 
     def test_retired_harness_prefixes_strip_under_clutch(self) -> None:
         for title in ("Harness: fix startup", "[Harness] fix startup", "HR \u2014 fix startup", "[Clutch] fix startup", "CK: fix startup"):

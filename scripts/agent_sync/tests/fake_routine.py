@@ -3,9 +3,10 @@
 ThreadingHTTPServer on 127.0.0.1 with a random port.  It records every request (method, path,
 query, headers and the raw body bytes) under a Condition, so tests wait on recorded state, never
 on a sleep.  `script` lists what to answer, one entry per request:  a status code, "drop" (close
-the connection without an answer) or "redirect" (a 302 to another host).  An empty script
-answers 200.  Every answer echoes the request's auth headers back in its body, the way a careless
-server might, so the tests can prove the daemon never logs a response body.
+the connection without an answer), "redirect" (a 302 to another host), or (status, dict) to answer
+that JSON object (the hosted MCP Worker's answers, which also echo the auth headers).  An empty
+script answers 200.  Every answer echoes the request's auth headers back in its body, the way a
+careless server might, so the tests can prove the daemon never logs a response body.
 """
 from __future__ import annotations
 
@@ -60,7 +61,11 @@ class FakeRoutine:
                     self.close_connection = True
                     return
                 echo = {k: v for k, v in self.headers.items() if k.casefold() not in ("content-length", "host")}
-                raw = json.dumps({"ok": True, "echo": echo}).encode()
+                answer: dict[str, Any] = {"ok": True}
+                if isinstance(action, tuple):
+                    action, extra = action
+                    answer.update(extra)
+                raw = json.dumps(dict(answer, echo=echo)).encode()
                 status = 302 if action == "redirect" else int(action)
                 self.send_response(status)
                 if action == "redirect":

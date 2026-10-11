@@ -307,6 +307,34 @@ class ReasonTests(unittest.TestCase):
         self.assertEqual(G.redact_url("git@github.com:o/r.git"), "git@github.com:o/r.git")
 
 
+class ExternalLanesTests(unittest.TestCase):
+    """A lane stored on the external disk (lanes/<Repo> is a symlink there) is a fleet checkout at its real path,
+    which is where git and lsof name it: cloning it into temp is the same offence as cloning its lanes path."""
+
+    def _decide(self, command: str, **env: str) -> G.Decision:
+        return G.evaluate(_payload(command), _ctx(dict(F.BASE_ENV, **env)))
+
+    def test_cloning_an_external_lane_into_temp_is_denied_like_its_lanes_path(self) -> None:
+        via_link = self._decide("git clone /Users/jay/apps/lanes/DealDex/claude-x /tmp/y")
+        real = self._decide("git clone /Volumes/External/Lanes/DealDex/claude-x /tmp/y")
+        self.assertEqual((via_link.action, via_link.rule_id), ("deny", G.RULE_CLONE))
+        self.assertEqual((real.action, real.rule_id), ("deny", G.RULE_CLONE))
+        self.assertIn("DealDex", real.reason)
+
+    def test_only_the_external_lanes_root_counts_and_the_setting_can_turn_it_off(self) -> None:
+        self.assertEqual(self._decide("git clone /Volumes/External/Other/claude-x /tmp/y").action, "allow")
+        self.assertEqual(self._decide("git clone /Volumes/External/Lanes/DealDex/claude-x /tmp/y",
+                                      FLEET_LANES_EXTERNAL_ROOT="").action, "allow")
+        self.assertEqual(self._decide("git clone /mnt/lanes/DealDex/claude-x /tmp/y",
+                                      FLEET_LANES_EXTERNAL_ROOT="/mnt/lanes").rule_id, G.RULE_CLONE)
+
+    def test_the_hook_context_carries_the_external_root(self) -> None:
+        ctx = _ctx(dict(F.BASE_ENV, FLEET_LANES_EXTERNAL_ROOT="/mnt/lanes"))
+        self.assertEqual(ctx.roots.external_lanes_roots, (Path("/mnt/lanes"),))
+        self.assertIn("/mnt/lanes", ctx.lanes_roots_f)
+        self.assertIn("/mnt/lanes", ctx.fleet_roots_f)
+
+
 class LaneNewAgreementTests(unittest.TestCase):
     """Whatever `lane new` command a deny reason names, the CLI accepts it with the same seat and
     prints the same lane path; and when the reason shows a placeholder, the CLI refuses that seat
@@ -373,6 +401,110 @@ class LaneNewAgreementTests(unittest.TestCase):
                             self.assertEqual(self._cli(tag, slug, flat)[0], 64)
                             for other in accepted:
                                 self.assertEqual(self._cli(other, slug, flat)[0], 0, f"{other} with slug {slug}")
+
+
+def _alias_registry_data() -> dict:
+    """The frozen fixture registry plus the 2026-10-10 alias rows:  the GROK row has aliasPattern and the
+    GROK-BUILD row is retired and aliasOf GROK, as in the real fleet-apps.json.  F.REGISTRY_DATA stays the
+    older registry (no aliasPattern) that every other test in this file runs against."""
+    data = json.loads(json.dumps(F.REGISTRY_DATA))
+    for row in data["seats"]:
+        if row["tag"] == "GROK":
+            row["aliasPattern"] = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
+        elif row["tag"] == "GROK-BUILD":
+            row.update({"retired": True, "aliasOf": "GROK"})
+    return data
+
+
+class GrokBuildAliasTests(unittest.TestCase):
+    """Owner ruling 2026-10-10: any spelling of GROK followed by BUILD is the seat GROK, so the guard's
+    suggested `lane new` names the grok folder and the grok/ branch, and agrees with the CLI."""
+
+    MUST = ("GROK-BUILD", "Grok-Build", "grok-build", "grok_build", "Grok Build", "GROK.BUILD", "Grok (Build)",
+            "grok/build/", "GrokBuild", "GROK--BUILD!!")
+    MUST_NOT = ("GROKBUILDER", "grok-build-bot", "grok2build", "GROK-WEB", "GROK-BOT", "GB-COMPILER", "BF-BUILDER",
+                "Grok (Web/iOS)")
+    HINT = "Set AGENT_SEAT to your seat tag, then run `~/apps/lane new DealDex work` instead;"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.registry = L.parse_registry(_alias_registry_data())
+        cls._tmp = tempfile.TemporaryDirectory(prefix="guard-grok-alias-")
+        cls.home = os.path.realpath(cls._tmp.name)
+        cls.registry_path = os.path.join(cls.home, "fleet-apps.json")
+        with open(cls.registry_path, "w", encoding="utf-8") as fh:
+            json.dump(_alias_registry_data(), fh)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
+
+    def ctx(self, raw: str) -> G.GuardContext:
+        env = dict(F.BASE_ENV, AGENT_SEAT=raw)
+        return G.make_context(env, home=F.HOME, registry=self.registry, case_insensitive=True)
+
+    def deny(self, raw: str, target: str = "/tmp/dealdex-work") -> G.Decision:
+        d = G.evaluate(_payload(f"git clone {F._DD} {target}"), self.ctx(raw))
+        self.assertEqual(d.action, G.DENY)
+        return d
+
+    def test_every_spelling_gives_the_seat_token_grok_and_counts_as_usable(self) -> None:
+        for raw in self.MUST + ("  grok-build\n",):
+            with self.subTest(raw=raw):
+                ev = G._Evaluator(self.ctx(raw), None)
+                self.assertEqual(ev._seat_token(), "grok")
+                self.assertTrue(ev._seat_usable_for_lane_new())
+
+    def test_no_other_value_is_usable_and_grok_bot_keeps_no_token(self) -> None:
+        for raw in self.MUST_NOT:
+            with self.subTest(raw=raw):
+                ev = G._Evaluator(self.ctx(raw), None)
+                self.assertFalse(ev._seat_usable_for_lane_new())
+        self.assertIsNone(G._Evaluator(self.ctx("GROK-BOT"), None)._seat_token(), "GROK-BOT's folder name is CURSOR's")
+
+    def test_the_deny_reason_offers_the_grok_lane_and_never_the_grok_build_one(self) -> None:
+        for raw in self.MUST:
+            with self.subTest(raw=raw):
+                r = self.deny(raw).reason
+                self.assertIn("Run `~/apps/lane new DealDex work` instead; it creates branch grok/work off "
+                              "origin/main and the lane at ~/apps/lanes/DealDex/grok-work.", r)
+                self.assertNotIn("grok-build", r.lower())
+                self.assertNotIn("Set AGENT_SEAT", r)
+
+    def test_what_is_not_grok_build_gets_the_set_your_seat_hint_and_no_grok_lane(self) -> None:
+        for raw in self.MUST_NOT:
+            with self.subTest(raw=raw):
+                r = self.deny(raw).reason
+                self.assertIn(self.HINT, r)
+                self.assertIn("branch <seat>/work", r)
+                self.assertNotIn("grok", r.lower().replace("grok-bot", ""))
+
+    def test_a_target_that_reads_as_the_retired_seat_falls_back_to_work_for_every_spelling(self) -> None:
+        # GROK plus slug build is the folder grok-build, which still reads as the retired GROK-BUILD's.
+        for raw in ("GROK", "Grok (Build)", "grok_build"):
+            for target in ("/tmp/build", "/tmp/build-cache"):
+                with self.subTest(raw=raw, target=target):
+                    r = self.deny(raw, target).reason
+                    self.assertIn("`~/apps/lane new DealDex work`", r)
+                    self.assertIn("branch grok/work", r)
+
+    def test_the_command_in_the_reason_is_the_one_the_cli_accepts_for_every_spelling(self) -> None:
+        from fleet_lanes import lane as K
+        pattern = re.compile(r"[Rr]un `~/apps/lane new DealDex (\S+)` instead; it creates branch (\S+) off origin/main "
+                             r"and the lane at (\S+)\.  ")
+        for raw in self.MUST:
+            for target in ("/tmp/build", "/tmp/dealdex-work", "/tmp/grok-build-x", "/tmp/fix-login"):
+                with self.subTest(raw=raw, target=target):
+                    m = pattern.search(self.deny(raw, target).reason)
+                    self.assertIsNotNone(m)
+                    slug, branch, lane = m.groups()
+                    env = {"HOME": self.home, "AGENT_SEAT": raw, "FLEET_APPS_JSON": self.registry_path,
+                           "PATH": os.environ.get("PATH", "")}
+                    out, err = io.StringIO(), io.StringIO()
+                    self.assertEqual(K.main(["path", "DealDex", slug], env=env, stdout=out, stderr=err), 0, err.getvalue())
+                    self.assertEqual("~/" + os.path.relpath(out.getvalue().strip(), self.home), lane)
+                    self.assertEqual(K.branch_for(K.resolve_seat(env, self.registry), slug), branch)
+                    self.assertEqual((branch, lane), (f"grok/{slug}", f"~/apps/lanes/DealDex/grok-{slug}"))
 
 
 class PayloadShapeTests(unittest.TestCase):
