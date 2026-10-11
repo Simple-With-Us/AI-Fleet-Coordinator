@@ -118,6 +118,7 @@ SEAT_APP_NAMES = {
     "CLAUDE": "Claude", "CODEX": "Codex", "CURSOR": "Cursor", "AG": "AG", "GROK": "Grok",
     "GROK-WEB": "Grok Web", "CLUTCH": "Clutch", "MM": "MM", "FX": "Fx", "MC": "Muse Code",
     "MA": "Muse Assist", "JET": "Jet", "OPENCODE": "OpenCode",
+    "ECHO": "Echo (Instinct)", "WISE": "Wise (Instinct)",
 }
 # Other names the owner may give a seat's app (the seat tag and the credentials key names stay as they are).
 # The swapped-credentials check accepts the primary name above, any alias here, or the seat tag itself, and
@@ -134,6 +135,8 @@ SEAT_APP_ALIASES = {
     "GROK": ("Grok (Build)", "Grok Build"),
     "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
     "OPENCODE": ("OC",),
+    "ECHO": ("Echo",),
+    "WISE": ("Wise",),
 }
 
 
@@ -675,7 +678,7 @@ def write_identity_problem(ident: Identity, v: dict) -> str:
     else:
         return ""
     if ident.kind == "seat":
-        fix = (f"They look swapped with another seat's.  Put the {ident.accept[0]} app's client credentials "
+        fix = (f"They look swapped with another seat's.  Put the {' or '.join(ident.accept)} app's client credentials "
                f"there, or move them aside so {ident.seat} writes as the shared {fleet_app_name()} app.")
     else:
         fix = ("Set LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET to this seat's app or the shared "
@@ -1865,9 +1868,9 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
     writes = "enabled" if env("LINEAR_BOARD_WRITES") == "1" else "disabled (LINEAR_BOARD_WRITES=1 turns them on at cutover)"
     info = auth.info or {}
     if ident.kind == "seat":
-        identity = f"{app} (the {seat} seat's own Linear app)"
+        identity = f"{name or app} (the {seat} seat's own Linear app)"
     elif ident.kind == "env" and app and app_name_ok(name, seat_app_names(seat), seat):
-        identity = f"{app} (the {seat} seat's own Linear app, from the environment)"
+        identity = f"{name} (the {seat} seat's own Linear app, from the environment)"
     elif ident.kind == "env" and name != fleet:
         identity = f"unconfirmed (the environment's pair should be {' or '.join(map(repr, ident.accept))})"
     else:
@@ -1897,7 +1900,7 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
         problems.append(f"the viewer is a person, not the {' or '.join(ident.accept)} app; refusing to act as a human")
     elif not app_name_ok(name, ident.accept, ident.seat):
         if ident.kind == "seat":
-            problems.append(f"the viewer is {name!r}, not the {app!r} app:  the credentials in {ident.where} "
+            problems.append(f"the viewer is {name!r}, not the {' or '.join(map(repr, ident.accept))} app:  the credentials in {ident.where} "
                             f"look swapped, so writes refuse (exit {EXIT_NO_CREDS}) until they are fixed; "
                             "reads still work")
         else:

@@ -1435,12 +1435,14 @@ class SeatAppTests(BoardTest):
         # the seat tags stay as they are and none of those renames may lock a seat out of writing
         names = {"AG": "Antigravity (AG)", "MM": "MiniMax", "FX": "FX.sh", "JET": "Jet (OpenAI dot)",
                  "MC": "Muse Code (MC)", "MA": "Muse Assist (MA)", "GROK": "Grok (Build)",
-                 "GROK-WEB": "Grok (Web/iOS)", "OPENCODE": "OC"}
+                 "GROK-WEB": "Grok (Web/iOS)", "OPENCODE": "OC", "ECHO": "Echo (Instinct)", "WISE": "Wise"}
         for seat, name in names.items():
             self.seat_app(seat, name)
         for seat in names:
             self.as_seat(seat, "comment", B_A[:8], "--by", seat, "--text", "alias name is accepted")
             self.assertIn("(app user)", self.as_seat(seat, "whoami").stdout)
+        # whoami names the app Linear reports, not the primary name from the table
+        self.assertIn(f"identity:    {names['AG']} (the AG seat's own Linear app)", self.as_seat("AG", "whoami").stdout)
         # OpenCode and OC are interchangeable, and case never matters
         self.seat_app("OPENCODE", "OpenCode")
         self.as_seat("OPENCODE", "comment", B_A[:8], "--by", "OPENCODE", "--text", "primary name is accepted")
