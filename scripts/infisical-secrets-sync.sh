@@ -21,6 +21,16 @@ FILE="${SYNC_FILE:-$HOME/.secrets/global-api-keys}"
 LOG="${SYNC_LOG:-$HOME/.secrets/infisical-sync.log}"
 MAP=(
   "CLOUDFLARE_API_TOKEN|18f563a3-9c88-454c-96eb-28fc9678f3ba|prod|CLOUDFLARE_API_TOKEN"
+  # fleet-work-backup (scripts/fleet-work-backup):  the restic password and a bucket-scoped B2 key,
+  # all in project "AI Fleet Coordinator".  Values must be 16+ characters with no whitespace and no
+  # backslash (the plausibility check below, and awk -v, need that);  a urlsafe token satisfies it.
+  # Until a secret exists in Infisical the tick logs one WARN for it and changes nothing.
+  # A fifth field "once" makes the key write-once:  the restic password is the only key to every
+  # snapshot, so a changed Infisical value must never replace the copy the repository was created
+  # with (a changed value logs a WARN and the Mac keeps the working one).
+  "RESTIC_FLEET_WORK_PASSWORD|9bf7417a-fbbb-42ca-870c-2b45207233f5|prod|RESTIC_FLEET_WORK_PASSWORD|once"
+  "B2_FLEET_WORK_KEY_ID|9bf7417a-fbbb-42ca-870c-2b45207233f5|prod|B2_FLEET_WORK_KEY_ID"
+  "B2_FLEET_WORK_APPLICATION_KEY|9bf7417a-fbbb-42ca-870c-2b45207233f5|prod|B2_FLEET_WORK_APPLICATION_KEY"
 )
 log() { printf "%s %s\n" "$(date "+%F %T")" "$*" >> "$LOG"; }
 strip_ansi() { sed "s/$(printf "\033")\[[0-9;?]*[a-zA-Z]//g"; }
@@ -42,7 +52,8 @@ changed=0
 for entry in "${MAP[@]}"; do
   key="${entry%%|*}"; rest="${entry#*|}"
   proj="${rest%%|*}"; rest="${rest#*|}"
-  env="${rest%%|*}"; name="${rest#*|}"
+  env="${rest%%|*}"; rest="${rest#*|}"
+  name="${rest%%|*}"; mode=""; case "$rest" in *\|*) mode="${rest#*|}" ;; esac
   if [ "$env" != "prod" ]; then
     log "ERROR: refusing env '$env' for $key; prod is the only Infisical environment"; continue
   fi
@@ -53,6 +64,9 @@ for entry in "${MAP[@]}"; do
     log "WARN: fetch failed or implausible for $key (got_len=${#val})"; continue
   fi
   cur=$(grep "^${key}=" "$FILE" 2>/dev/null | cut -d= -f2- | tail -1)
+  if [ "$mode" = once ] && [ -n "$cur" ] && [ "$cur" != "$val" ]; then
+    log "WARN: $key differs from Infisical;  not overwritten (write-once:  the copy here is the one the backup repository was created with)"; continue
+  fi
   if [ "$cur" != "$val" ]; then upsert "$key" "$val"; log "updated $key (new_len=${#val})"; changed=1; fi
 done
 [ "$changed" -eq 0 ] && log "no changes"

@@ -15,3 +15,6 @@ be0df36c940b30a8bb2e75750ba34a1eebeaa222:scripts/agent_sync/tests/test_heartbeat
 # Route suggestion PR (#452), first commit:  the loop-guard note call in daemon.py is code, not a key
 # (generic-api-key misread its keyword arguments); the line is split from the next commit on.
 04a98dc842e64cf9d326a1296f42ca973a4c6f8d:scripts/agent_sync/daemon.py:generic-api-key:841
+# Fleet work backup PR (#454), review-fix commit:  a made-up 45 character string in the JSON credential field test
+# (generic-api-key read the variable name `token` as the keyword);  split from the next commit on.
+f5bc75267bdef2fd7a6d0adddfd4864b6a29c872:scripts/fleet-work-backup/test_fleet_work_backup.py:generic-api-key:487
