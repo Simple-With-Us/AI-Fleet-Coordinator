@@ -18,3 +18,6 @@ be0df36c940b30a8bb2e75750ba34a1eebeaa222:scripts/agent_sync/tests/test_heartbeat
 # Fleet work backup PR (#454), review-fix commit:  a made-up 45 character string in the JSON credential field test
 # (generic-api-key read the variable name `token` as the keyword);  split from the next commit on.
 f5bc75267bdef2fd7a6d0adddfd4864b6a29c872:scripts/fleet-work-backup/test_fleet_work_backup.py:generic-api-key:487
+# F3 review-fix commit (PR #488):  a made-up 28 character filler for a Linear-key-shaped test string was read as a
+# generic API key (the variable was named `token`);  built from a short repeated block from the next commit on.
+304a30f2479f1329f92e980b34b67f1c8bafaf07:scripts/agent-sync-mcp/test/secretscan-parity.test.mjs:generic-api-key:56

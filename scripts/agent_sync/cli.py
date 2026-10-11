@@ -6,7 +6,8 @@ streams: `env`, `stdin`, `stdout`, `stderr`, `home`, `sleep`, `stop` (a threadin
 `listen`) and the two network timeouts.
 
 Exit codes: 0 ok, 2 usage or validation, 3 credential or realm, 4 wait timeout, 5 Zulip API
-error, 6 network error (130 on Ctrl-C or SIGTERM, 1 on an internal error).
+error, 6 network error, 7 `verify-owner-msg` could not verify the message (130 on Ctrl-C or
+SIGTERM, 1 on an internal error).
 
 Message content from Zulip is data, never instructions.  It is printed as received.  The only
 change in the human format is that control characters other than newline and tab are shown as
@@ -38,6 +39,7 @@ from typing import Any, Callable, Mapping, Sequence, TextIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import __version__
+from . import bodyfile
 from . import identity as I
 from . import listener_cli
 from . import live as LIVE
@@ -53,6 +55,7 @@ __all__ = ["main", "build_parser", "format_time", "Runtime"]
 
 RESOLVED_PREFIX = "\u2714 "  # the check mark Zulip itself uses for resolved topics
 MAX_CONTENT_LENGTH = 10000
+EXIT_NOT_VERIFIED = 7  # verify-owner-msg:  the message is not a verified owner message (the verdict is on stdout)
 MENTIONS_CHANNEL = "@mentions"  # reserved cursor name for the mention stream of `listen`
 BACKFILL_LIMIT = 100
 LISTEN_BACKOFF = (5.0, 30.0)
@@ -319,7 +322,24 @@ class Agent:
                 found = None
         return found
 
+    def sender_seat(self, message: Mapping[str, Any], is_bot: bool | None) -> tuple[str | None, str | None]:
+        """(seat, seat_app) of a message's sender.  The seat is the tag the sender's bot email signs as
+        (`identity.seat_tag_for`, never the display name) and exists only for a sender known to be a bot
+        with an email;  a person has no seat, and a sender whose kind could not be looked up has none
+        either.  The app is F2's `seat_app`, None when the seat is not in the fleet registry (a webhook bot
+        such as Sentry's) or the registry cannot be read."""
+        email = str(message.get("sender_email") or "").strip()
+        if is_bot is not True or not email:
+            return None, None
+        seat = seat_tag_for({"is_bot": True, "email": email, "full_name": message.get("sender_full_name")})
+        try:
+            return seat, I.seat_app(seat, registry=I.load_seat_registry(env=self.rt.env))
+        except (I.UnknownSeat, I.SeatRegistryError):
+            return seat, None
+
     def message_json(self, message: Mapping[str, Any]) -> dict[str, Any]:
+        is_bot = self.sender_is_bot(message)
+        seat, seat_app = self.sender_seat(message, is_bot)
         return {
             "id": message.get("id"),
             "sender_id": message.get("sender_id"),
@@ -329,7 +349,9 @@ class Agent:
             "dm": message.get("type") == "private",
             "sender_email": message.get("sender_email"),
             "sender_full_name": message.get("sender_full_name"),
-            "is_bot": self.sender_is_bot(message),
+            "is_bot": is_bot,
+            "seat": seat,
+            "seat_app": seat_app,
             "timestamp": message.get("timestamp"),
             "content": message.get("content"),
             "flags": list(message.get("flags") or []),
@@ -593,7 +615,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Coordinate with the fleet on Zulip.  Every post goes to a channel and a topic, "
                     "and the default channel is %s." % Z.DEFAULT_CHANNEL,
         epilog="Exit codes: 0 ok, 2 usage, 3 credentials or realm, 4 wait timeout, 5 Zulip API error, "
-               "6 network error.  See scripts/agent_sync/README.md.")
+               "6 network error, 7 verify-owner-msg did not verify.  See scripts/agent_sync/README.md.")
     parser.add_argument("--version", action="version", version="agent-sync %s" % __version__)
     sub = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
 
@@ -606,6 +628,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     def topic_opt(p: argparse.ArgumentParser) -> None:
         p.add_argument("--topic", type=_topic, required=True, metavar="T", help="topic (required, at most 60 characters)")
+
+    def body_file_opt(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--body-file", dest="body_file", metavar="PATH", default=None,
+                       help="read the message from PATH instead of TEXT (not both):  a regular file you own, mode 0600 "
+                            "or 0400, UTF-8, at most %d KB.  For a caller that cannot pipe stdin" % (bodyfile.MAX_BYTES // 1024))
 
     add("whoami", "show the bot, seat, session tag, credential source and realm (never the key)")
     add("channels", "list subscribed channels")
@@ -629,14 +656,24 @@ def build_parser() -> argparse.ArgumentParser:
                         "seat and the owner, so use it only when every seat must act.  Zulip refuses it from a bot the "
                         "realm's can_mention_many_users_group does not include;  then use --to for each bot that "
                         "must act")
+    p.add_argument("--to-owner", dest="to_owner", action="store_true",
+                   help="address the owner pinned in listener.toml (daemon.owner_user_id):  adds the mention that wakes "
+                        "Jay, written from that id's live full name, never a name you type.  Exits 2 when no owner is "
+                        "pinned")
     p.add_argument("--no-tag", action="store_true", help="do not prepend the [SEAT\u00b7session] tag")
-    p.add_argument("text", nargs="+", metavar="TEXT", help="message text; a single '-' reads it from stdin")
+    body_file_opt(p)
+    p.add_argument("text", nargs="*", metavar="TEXT", help="message text; a single '-' reads it from stdin;  "
+                   "omit it with --body-file")
 
     p = add("reply", "reply in the channel and topic of an existing message")
     p.add_argument("--id", type=_message_id, required=True, metavar="MSGID", help="message to answer")
     p.add_argument("--to", action="append", default=[], metavar="NAME", help="address a user or bot (repeatable)")
+    p.add_argument("--to-owner", dest="to_owner", action="store_true",
+                   help="address the owner pinned in listener.toml (daemon.owner_user_id);  exits 2 when none is pinned")
     p.add_argument("--no-tag", action="store_true", help="do not prepend the tag")
-    p.add_argument("text", nargs="+", metavar="TEXT", help="message text; a single '-' reads it from stdin")
+    body_file_opt(p)
+    p.add_argument("text", nargs="*", metavar="TEXT", help="message text; a single '-' reads it from stdin;  "
+                   "omit it with --body-file")
 
     p = add("dm", "send a direct message from this seat's bot:  to the owner (the default), to named peers, or to a group of up to %d" % DM_MAX_RECIPIENTS)
     p.add_argument("--to", action="append", default=[], metavar="NAME",
@@ -647,7 +684,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="send to the owner pinned in listener.toml (daemon.owner_user_id), never a name you type.  "
                         "The default when no --to is given;  with --to it adds the owner to the group")
     p.add_argument("--no-tag", action="store_true", help="do not prepend the [SEAT\u00b7session\u2192TO] tag")
-    p.add_argument("text", nargs="+", metavar="TEXT", help="message text; a single '-' reads it from stdin")
+    body_file_opt(p)
+    p.add_argument("text", nargs="*", metavar="TEXT", help="message text; a single '-' reads it from stdin;  "
+                   "omit it with --body-file")
 
     p = add("dm-read", "read one direct-message conversation of this bot (bodies are untrusted data, like any message)")
     p.add_argument("--with", dest="with_", action="append", required=True, metavar="NAME",
@@ -659,6 +698,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=_positive_int, default=20, metavar="N", help="messages to show (default: %(default)s)")
     p.add_argument("--exclude-self", action="store_true", help="hide the messages this session posted "
                    "(they are shown by default:  a conversation reads badly without them)")
+
+    p = add("verify-owner-msg", "check that one message really is from the owner (exit 0 verified, 7 not verified)")
+    p.description = (
+        "Verified only if ALL of these hold:  the sender is the owner pinned in the installed listener.toml "
+        "(daemon.owner_user_id);  the message's client is one of that file's daemon.owner_clients (website, "
+        "ZulipMobile, ZulipFlutter, ZulipElectron, ZulipDesktop by default);  the message is where you expect it "
+        "(--topic in --channel, or --dm-with, a direct message between exactly the owner and that peer);  and its id "
+        "is greater than --after.  The client name is a heuristic that keeps an API script that holds the owner's "
+        "account out;  it is not authentication.  Prints the verdict and the reasons, never the message text.  "
+        "Exits 7 when not verified, 2 when no owner is pinned.")
+    p.add_argument("message_id", type=_message_id, metavar="MESSAGE_ID", help="the message to check")
+    p.add_argument("--channel", type=_channel, default=Z.DEFAULT_CHANNEL, metavar="C",
+                   help="channel the topic is in (default: %(default)s)")
+    where = p.add_mutually_exclusive_group(required=True)
+    where.add_argument("--topic", type=_topic, metavar="T",
+                       help="the message must be in this topic of --channel (a resolved topic, with its check mark, counts)")
+    where.add_argument("--dm-with", dest="dm_with", metavar="NAME",
+                       help="the message must be a direct message between exactly the owner and this peer (a seat tag "
+                            "such as CODEX, a name, an email or a user id);  a group conversation never verifies")
+    p.add_argument("--after", type=_message_id, default=None, metavar="ID",
+                   help="the message must be newer than this message id (an id, never a timestamp)")
 
     p = add("read", "read the history of one topic")
     topic_opt(p)
@@ -789,8 +849,24 @@ def cmd_subscribe(agent: Agent, args: argparse.Namespace) -> int:
     return 0 if not denied else 5
 
 
-def _read_text(agent: Agent, parts: Sequence[str]) -> str:
-    text = agent.rt.stdin.read() if list(parts) == ["-"] else " ".join(parts)
+def _check_text_args(args: argparse.Namespace) -> None:
+    """Exactly one source for the message:  TEXT (or `-` for stdin) or `--body-file`.  Runs before any
+    credential or network use, so the usage error is the one a caller sees.  An object that does not carry
+    `body_file` (the MCP layer's hand-built namespaces) has none."""
+    parts = list(getattr(args, "text", None) or [])
+    body_file = getattr(args, "body_file", None)
+    if body_file is not None and parts:
+        raise UsageError("--body-file and the message TEXT are exclusive:  give the text or the file, not both")
+    if body_file is None and not parts:
+        raise UsageError("no message text:  give TEXT, '-' to read stdin, or --body-file PATH")
+
+
+def _read_text(agent: Agent, parts: Sequence[str], body_file: str | None = None) -> str:
+    _check_text_args(argparse.Namespace(text=list(parts), body_file=body_file))
+    if body_file is not None:
+        text = bodyfile.read_body_file(body_file)
+    else:
+        text = agent.rt.stdin.read() if list(parts) == ["-"] else " ".join(parts)
     text = text.strip()
     if not text:
         raise UsageError("the message text is empty")
@@ -941,8 +1017,8 @@ def _fleet_refused_error(exc: ApiError) -> ApiError:
 def cmd_post(agent: Agent, args: argparse.Namespace) -> int:
     if args.fleet:
         _check_fleet_target(args.channel, args.topic)  # before any request, including the --to lookup
-    text = _read_text(agent, args.text)
-    mentions, labels = _resolve_peers(agent, args.to)
+    text = _read_text(agent, args.text, getattr(args, "body_file", None))
+    mentions, labels = _resolve_targets(agent, args.to, bool(getattr(args, "to_owner", False)))
     if args.fleet:
         mentions.append(FLEET_WAKE_MENTION)
     body = _compose(agent, text, labels=labels, mentions=mentions, no_tag=args.no_tag)
@@ -954,14 +1030,62 @@ def cmd_post(agent: Agent, args: argparse.Namespace) -> int:
         raise
 
 
-def _owner_user_id(agent: Agent) -> int:
-    """The owner's Zulip user id, from `daemon.owner_user_id` in listener.toml (pinned by `agent-sync
-    daemon init`, never derived at runtime and never taken from the command line)."""
+def _owner_config(agent: Agent) -> Any:
+    """The installed listener config with an owner pinned in it, else UsageError (exit 2).  The one way the
+    CLI learns who the owner is:  `daemon.owner_user_id` in listener.toml (pinned by `agent-sync daemon
+    init`, never derived at runtime and never taken from the command line)."""
     cfg = listener_cli._load(agent.rt)
     if cfg.owner_user_id <= 0:
         raise UsageError("no owner to message:  daemon.owner_user_id is not pinned in %s "
                          "(run agent-sync daemon init)" % listener_cli._config_path(agent.rt))
-    return cfg.owner_user_id
+    return cfg
+
+
+def _owner_user_id(agent: Agent) -> int:
+    """The owner's Zulip user id, from `daemon.owner_user_id` in listener.toml."""
+    return int(_owner_config(agent).owner_user_id)
+
+
+def _owner_mention(agent: Agent, owner_id: int) -> str:
+    """`@**Full Name|id**` for the pinned owner, the name read live from the realm user list.  Zulip
+    resolves the id, so a display name that changed or that another user also carries cannot send the mention
+    to someone else.  A pinned id that is not an active human in this realm is a usage error:  better no
+    post than a mention that wakes nobody (or a bot)."""
+    user = next((u for u in agent.users() if u.get("user_id") == owner_id), None)
+    if user is None:
+        raise UsageError("the pinned owner (daemon.owner_user_id %d) is not a user in this realm;  re-run "
+                         "agent-sync daemon init" % owner_id)
+    if not user.get("is_active", True):
+        raise UsageError("the pinned owner (daemon.owner_user_id %d) is a deactivated user" % owner_id)
+    if user.get("is_bot"):
+        raise UsageError("the pinned owner (daemon.owner_user_id %d) is a bot, not the owner's own account;  "
+                         "re-run agent-sync daemon init" % owner_id)
+    name = str(user.get("full_name") or "").strip()
+    if not name:
+        raise UsageError("the pinned owner (daemon.owner_user_id %d) has no display name to mention" % owner_id)
+    return "@**%s|%d**" % (name, owner_id)
+
+
+def _resolve_targets(agent: Agent, names: Sequence[str], to_owner: bool) -> tuple[list[str], list[str]]:
+    """(@-mentions, tag labels) for `--to NAME ...` and `--to-owner`.  The owner comes first and is
+    labelled OWNER (like `dm`), is mentioned by pinned id, and is never mentioned twice when a `--to`
+    names the same person."""
+    mentions: list[str] = []
+    labels: list[str] = []
+    owner_id: int | None = None
+    if to_owner:
+        owner_id = _owner_user_id(agent)  # before any request:  an unpinned owner exits 2 with nothing sent
+        mentions.append(_owner_mention(agent, owner_id))
+        labels.append("OWNER")
+    if names:
+        active = _active_users(agent)
+        for raw in names:
+            user = _lookup_peer(agent, active, raw)
+            if owner_id is not None and user.get("user_id") == owner_id:
+                continue
+            mentions.append(_mention_for(active, user))
+            labels.append(seat_tag_for(user))
+    return mentions, labels
 
 
 DM_MAX_RECIPIENTS = 8  # other people in one conversation, this bot not counted (the hosted dm_send's cap too)
@@ -1056,7 +1180,7 @@ def cmd_dm(agent: Agent, args: argparse.Namespace) -> int:
     (`[SEAT\u00b7session\u2192PEER]`, `OWNER` for the pinned owner), the sentence gap and the length cap.
     Recipients are resolved like `post --to` (full name, email, seat tag, user id); webhook and
     integration bots, deactivated users and this bot itself are refused before anything is sent."""
-    text = _read_text(agent, args.text)
+    text = _read_text(agent, args.text, getattr(args, "body_file", None))
     to = _dm_recipients(agent, args)
     body = _compose(agent, text, labels=to.labels, mentions=[], no_tag=args.no_tag)
     where = to.describe()
@@ -1127,13 +1251,108 @@ def cmd_dm_read(agent: Agent, args: argparse.Namespace) -> int:
     return 0
 
 
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def cmd_verify_owner_msg(agent: Agent, args: argparse.Namespace) -> int:
+    """Is message MESSAGE_ID really the owner's, and in the place the caller expects?  Every one of these
+    must hold, and the verdict says which did not:
+
+      * the message exists and this bot can read it (a missing or unreadable id is a verdict, not an error);
+      * `sender_id` is the owner pinned in the INSTALLED listener.toml, the same file `dm --owner` reads;
+      * its `client` is in that file's `daemon.owner_clients` (a person's Zulip app, never an API script that
+        holds the owner's account).  The client name is a heuristic that Zulip fills in from the request, not
+        authentication:  it narrows the owner's own tokens, it does not prove who typed the words;
+      * for `--topic`, it is a channel message in `--channel` and that topic (the same topic with the resolved
+        check mark in front counts);  for `--dm-with`, it is a direct message between exactly the owner and
+        that peer, so a group conversation never verifies;
+      * its id is greater than `--after`.
+
+    The message text is never read into the verdict.  An unpinned owner is a usage error (exit 2) like
+    `dm --owner`, and Zulip or network failures keep their own exit codes (5, 6);  a message that simply is
+    not the owner's exits 7 with ok false."""
+    cfg = _owner_config(agent)
+    owner_id = int(cfg.owner_user_id)
+    peer: Mapping[str, Any] | None = None
+    if args.dm_with is not None:
+        peer = _lookup_peer(agent, _active_users(agent), args.dm_with)
+        if peer.get("user_id") == owner_id:
+            raise UsageError("--dm-with names the owner;  name the other person in the conversation")
+    try:
+        message = agent.client.get("messages/%d" % args.message_id, {"apply_markdown": False}).get("message")
+    except ApiError as exc:
+        if exc.status not in (400, 404):  # Zulip answers 400 for an id that does not exist or is not visible
+            raise
+        message = None
+    checks = {"found": isinstance(message, Mapping), "sender_is_owner": False, "client_is_human": False,
+              "place": False, "newer": False}
+    reasons: list[str] = []
+    verdict: dict[str, Any] = {"ok": False, "message_id": args.message_id, "owner_user_id": owner_id,
+                               "checks": checks, "reasons": reasons, "sender_id": None, "client": None,
+                               "place": None, "channel": None, "topic": None, "edited": None}
+    if not isinstance(message, Mapping):
+        reasons.append("message %d was not found, or this bot cannot read it" % args.message_id)
+    else:
+        sender_id = message.get("sender_id")
+        client = message.get("client")
+        verdict["sender_id"] = sender_id if _is_int(sender_id) else None
+        verdict["client"] = client if isinstance(client, str) else None
+        verdict["edited"] = message.get("last_edit_timestamp") is not None
+        checks["sender_is_owner"] = _is_int(sender_id) and sender_id == owner_id
+        if not checks["sender_is_owner"]:
+            reasons.append("the sender is not the owner pinned in listener.toml")
+        checks["client_is_human"] = isinstance(client, str) and client in cfg.owner_clients
+        if not checks["client_is_human"]:
+            reasons.append("the message's client is not one of daemon.owner_clients (a person's Zulip app)")
+        if message.get("type") == "private":
+            verdict["place"] = "dm"
+            recipients = message.get("display_recipient")
+            ids = {r.get("id") for r in recipients if isinstance(r, dict)} if isinstance(recipients, list) else set()
+            expected = {owner_id, peer["user_id"]} if peer is not None else None
+            checks["place"] = expected is not None and ids == expected
+            if peer is None:
+                reasons.append("this is a direct message, but --topic was given")
+            elif not checks["place"]:
+                reasons.append("the direct message is not between exactly the owner and %s" % args.dm_with)
+        else:
+            verdict["place"] = "stream"
+            channel, topic = message_channel(message), message_topic(message)
+            verdict["channel"], verdict["topic"] = channel, topic
+            if peer is not None:
+                reasons.append("this is a channel message, but --dm-with was given")
+            else:
+                wanted = args.topic.casefold()
+                checks["place"] = (message.get("type") == "stream" and channel.casefold() == args.channel.casefold()
+                                   and topic.casefold() in (wanted, (RESOLVED_PREFIX + args.topic).casefold()))
+                if not checks["place"]:
+                    reasons.append("the message is not in #%s \u203a %s" % (args.channel, args.topic))
+        message_id = message.get("id")
+        checks["newer"] = args.after is None or (_is_int(message_id) and message_id > args.after)
+        if not checks["newer"]:
+            reasons.append("the message is not newer than message %d" % args.after)
+    verdict["ok"] = not reasons
+    if agent.json:
+        agent.emit_json(verdict)
+    elif verdict["ok"]:
+        agent.out("verified:  message %d is from the owner (%s)%s\n" % (
+            args.message_id, _visible(str(verdict["client"]), inline=True),
+            "  [edited after it was sent]" if verdict["edited"] else ""))
+    else:
+        agent.out("NOT verified:  message %d\n%s" % (args.message_id, "".join("  - %s\n" % _visible(r, inline=True) for r in reasons)))
+    return 0 if verdict["ok"] else EXIT_NOT_VERIFIED
+
+
 def cmd_reply(agent: Agent, args: argparse.Namespace) -> int:
-    text = _read_text(agent, args.text)
+    text = _read_text(agent, args.text, getattr(args, "body_file", None))
+    to_owner = bool(getattr(args, "to_owner", False))
+    if to_owner:
+        _owner_user_id(agent)  # an unpinned owner exits 2 before the original message is even fetched
     original = agent.client.get("messages/%d" % args.id, {"apply_markdown": False}).get("message") or {}
     if original.get("type") != "stream":
         raise UsageError("message %d is a direct message; reply is channel-only in v1" % args.id)
     channel, topic = message_channel(original), message_topic(original)
-    mentions, labels = _resolve_peers(agent, args.to)
+    mentions, labels = _resolve_targets(agent, args.to, to_owner)
     body = _compose(agent, text, labels=labels, mentions=mentions, no_tag=args.no_tag)
     return _send(agent, channel, topic, body)
 
@@ -1374,7 +1593,7 @@ def cmd_react(agent: Agent, args: argparse.Namespace) -> int:
 
 COMMANDS: dict[str, Callable[[Agent, argparse.Namespace], int]] = {
     "whoami": cmd_whoami, "channels": cmd_channels, "topics": cmd_topics, "subscribe": cmd_subscribe,
-    "post": cmd_post, "dm": cmd_dm, "dm-read": cmd_dm_read, "reply": cmd_reply, "read": cmd_read, "wait": cmd_wait, "listen": cmd_listen,
+    "post": cmd_post, "dm": cmd_dm, "dm-read": cmd_dm_read, "verify-owner-msg": cmd_verify_owner_msg, "reply": cmd_reply, "read": cmd_read, "wait": cmd_wait, "listen": cmd_listen,
     "inbox": cmd_inbox, "follow": cmd_topic_policy(3, "following"), "mute": cmd_topic_policy(1, "muted"),
     "unmute": cmd_topic_policy(0, "unmuted"), "resolve": cmd_resolve, "react": cmd_react,
 }
@@ -1426,6 +1645,8 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             from .mcp import stdio as mcp_stdio
 
             return mcp_stdio.run(rt, args)
+        if args.command in ("post", "reply", "dm"):
+            _check_text_args(args)  # a usage error needs no credential
         agent = Agent(rt, args)  # every request after users/me waits for agent.verify(); whoami reports it
         return COMMANDS[args.command](agent, args)
     except Z.AgentSyncError as exc:
