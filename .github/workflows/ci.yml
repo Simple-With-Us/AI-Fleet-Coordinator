@@ -34,6 +34,13 @@ jobs:
     # launcher variables, or lack the launcher clause.
     - name: Seat blocks in the rendered skill trees
       run: python3 scripts/check-seat-blocks.py
+    # The open-loops routine texts are private (kept in the canonical private repository) and never enter this
+    # repo.  Only their checker and its synthetic fixtures do:  the good set must pass, and each bad
+    # fixture must fail on exactly its own rule (docs/open-loops/README.md).
+    - name: Routine prompt checker
+      run: |
+        python3 scripts/test_check_routine_prompts.py
+        python3 scripts/check-routine-prompts.py scripts/tests/fixtures/routines/good
     # Mac watch and Grok idle-unload logic.  Both suites build their own temp
     # HOME and fixture sessions, so they read no live state and kill nothing.
     - name: Mac watch and Grok idle-unload tests
