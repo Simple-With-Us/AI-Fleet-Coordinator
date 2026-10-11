@@ -227,6 +227,32 @@ def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
     return errors
 
 
+# A mirror of the Fleet-OPS handbook starts with a GENERATED comment line.  That line names Fleet-OPS, so a
+# substring check over the whole file would find the repo name and the OPS acronym there even after the body lost
+# them.  Every AGENT-SYNC.md check below therefore runs on the text under the header.
+_GENERATED_HEADER = re.compile(r"\A<!--\s*GENERATED[^\n]*\n", re.IGNORECASE)
+
+
+def strip_generated_header(text: str) -> str:
+    """The text without a leading GENERATED header line (scripts/check-generated-mirror.py checks the header itself)."""
+    return _GENERATED_HEADER.sub("", text, count=1)
+
+
+def agent_sync_errors(apps: list[dict], text: str, where: str, *, fold_repo: bool = False) -> list[str]:
+    """Every registry repo and acronym must appear in the body of an AGENT-SYNC.md copy.  `fold_repo` ignores case in
+    the repo name (the live copy has always been matched that way)."""
+    body = strip_generated_header(text)
+    haystack = body.casefold() if fold_repo else body
+    errors: list[str] = []
+    for app in apps:
+        repo = app["repo"]
+        if (repo.casefold() if fold_repo else repo) not in haystack:
+            errors.append(f"{where} missing repo {repo}")
+        if app["acronym"] not in body:
+            errors.append(f"{where} missing acronym {app['acronym']}")
+    return errors
+
+
 def main() -> int:
     data = load()
     apps = data.get("apps", [])
@@ -257,26 +283,18 @@ def main() -> int:
                 errors.append(
                     f"digest CSS --{css_var} does not match digestColor {color} for {repo}"
                 )
-        if repo not in agent_sync:
-            errors.append(f"coordinator AGENT-SYNC.md missing repo {repo}")
-        if acronym not in agent_sync:
-            errors.append(f"coordinator AGENT-SYNC.md missing acronym {acronym}")
-
-        if live_sync.is_file():
-            live = live_sync.read_text()
-            if repo.casefold() not in live.casefold():
-                errors.append(f"~/apps/AGENT-SYNC.md missing {repo}")
-            if acronym not in live:
-                errors.append(f"~/apps/AGENT-SYNC.md missing acronym {acronym}")
-
         icon = app.get("iconFile")
         if app.get("hasAppIcon") and icon:
             if not (ROOT / icon).is_file() and not (ROOT / "agent-logos" / Path(icon).name).is_file():
                 errors.append(f"missing app icon {icon}")
 
+    errors.extend(agent_sync_errors(apps, agent_sync, "coordinator AGENT-SYNC.md"))
+    if live_sync.is_file():
+        errors.extend(agent_sync_errors(apps, live_sync.read_text(), "~/apps/AGENT-SYNC.md", fold_repo=True))
+
     errors.extend(zulip_errors(data))
     errors.extend(seat_apps_errors(data))
-    errors.extend(engine_only_errors(data, agent_sync))
+    errors.extend(engine_only_errors(data, strip_generated_header(agent_sync)))
 
     colors: dict[str, str] = {}
     for app in apps:
