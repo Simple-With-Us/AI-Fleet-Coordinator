@@ -70,7 +70,7 @@ want='export BOTFLEET_FLEET_SEAT_PROMPTS=1'
 n="$(grep -c -x "$want" "$WRAP" || true)"
 [ "$n" = "1" ] || { echo "FAIL $WRAP must contain exactly one line: $want (found $n)" >&2; exit 1; }
 export_line="$(grep -n -x "$want" "$WRAP" | cut -d: -f1)"
-exec_line="$(grep -n '^exec ' "$WRAP" | tail -1 | cut -d: -f1)"
+exec_line="$(grep -n '^exec ' "$WRAP" | tail -1 | cut -d: -f1 || true)"
 [ -n "$exec_line" ] && [ "$export_line" -lt "$exec_line" ] \
   || { echo "FAIL seat export (line $export_line) must come before exec (line ${exec_line:-none})" >&2; exit 1; }
 
