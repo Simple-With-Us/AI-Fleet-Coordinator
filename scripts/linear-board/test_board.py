@@ -1430,6 +1430,17 @@ class SeatAppTests(BoardTest):
         self.assertIn("viewer:      Codex (app user)", p.stdout)
         self.assertIn("look swapped", p.stderr)
 
+    def test_spelled_out_app_names_are_accepted_for_ag_and_mm(self):
+        # the owner may name the AG seat's app Antigravity and the MM seat's app MiniMax; the seat tags stay AG and MM
+        self.seat_app("AG", "Antigravity")
+        self.seat_app("MM", "MiniMax")
+        for seat in ("AG", "MM"):
+            self.as_seat(seat, "comment", B_A[:8], "--by", seat, "--text", "alias name is accepted")
+            self.assertIn("(app user)", self.as_seat(seat, "whoami").stdout)
+        # a wrong name is still refused
+        self.seat_app("CLAUDE", "Antigravity")
+        self.assertIn("look swapped", self.as_seat("CLAUDE", "comment", B_A[:8], "--by", "CLAUDE", "--text", "x", code=4).stderr)
+
     def test_remint_rules_apply_per_cache_file(self):
         claude, _ = self.seat_app("CLAUDE", "Claude")
         codex, _ = self.seat_app("CODEX", "Codex")

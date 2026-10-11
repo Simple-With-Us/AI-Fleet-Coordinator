@@ -119,6 +119,9 @@ SEAT_APP_NAMES = {
     "GROK-WEB": "Grok Web", "CLUTCH": "Clutch", "MM": "MM", "FX": "Fx", "MC": "Muse Code",
     "MA": "Muse Assist", "JET": "Jet", "OPENCODE": "OpenCode",
 }
+# Spelled-out names the owner may give a seat's app (the seat tag and the credentials key names stay as they are).
+# The swapped-credentials check accepts the primary name above or any alias here.
+SEAT_APP_ALIASES = {"AG": ("Antigravity",), "MM": ("MiniMax",)}
 # The importer writes "Reported by x, addressed by y" through str.capitalize(),
 # so the line is lower case after its first letter; "Addressed by y" when there
 # was no reporter.  Linear hands bullets back as `*`.
@@ -430,11 +433,12 @@ def resolve_identity(seat: str = "") -> Identity:
         die(f"LINEAR_FLEET_ENV must name a .env file holding only the Fleet app's client credentials; "
             f"refusing {fleet_file}", EXIT_USAGE)
     app = SEAT_APP_NAMES.get(seat, "") if seat else ""
+    app_names = ((app,) + SEAT_APP_ALIASES.get(seat, ())) if app else ()
     cid_e = os.environ.get("LINEAR_CLIENT_ID", "").strip()
     sec_e = os.environ.get("LINEAR_CLIENT_SECRET", "").strip()
     if cid_e and sec_e:
         return Identity("env", seat, cid_e, sec_e, ENV_PAIR, token_cache_path(),
-                        tuple(n for n in (app, fleet) if n), "LINEAR_CLIENT_ID app")
+                        tuple(n for n in (*app_names, fleet) if n), "LINEAR_CLIENT_ID app")
     seat_file = fleet_file.parent / f"{seat}.env" if app else None
     k = seat_env_key(seat)
     if app:
@@ -446,13 +450,13 @@ def resolve_identity(seat: str = "") -> Identity:
                 die(f"{seat_file} has no LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET.  Put the {app} app's "
                     f"client credentials in it, or move it aside so {seat} uses the shared {fleet} app.",
                     EXIT_NO_CREDS)
-            return Identity("seat", seat, cid, sec, str(seat_file), seat_cache, (app,), f"{app} seat app")
+            return Identity("seat", seat, cid, sec, str(seat_file), seat_cache, app_names, f"{app} seat app")
         cid_s = os.environ.get(f"LINEAR_{k}_CLIENT_ID", "").strip()
         sec_s = os.environ.get(f"LINEAR_{k}_CLIENT_SECRET", "").strip()
         if cid_s and sec_s:
             return Identity("seat", seat, cid_s, sec_s,
                             f"environment (LINEAR_{k}_CLIENT_ID, LINEAR_{k}_CLIENT_SECRET)",
-                            seat_cache, (app,), f"{app} seat app")
+                            seat_cache, app_names, f"{app} seat app")
     if fleet_file.is_file():
         cid, sec = read_cred_file(fleet_file, ID_KEYS, SECRET_KEYS)
         if cid and sec:
@@ -1835,7 +1839,7 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
     info = auth.info or {}
     if ident.kind == "seat":
         identity = f"{app} (the {seat} seat's own Linear app)"
-    elif ident.kind == "env" and app and name == app:
+    elif ident.kind == "env" and app and name in ((app,) + SEAT_APP_ALIASES.get(seat, ())):
         identity = f"{app} (the {seat} seat's own Linear app, from the environment)"
     elif ident.kind == "env" and name != fleet:
         identity = f"unconfirmed (the environment's pair should be {' or '.join(map(repr, ident.accept))})"
