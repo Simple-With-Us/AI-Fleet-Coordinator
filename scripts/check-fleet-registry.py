@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from public_activity_repos import PUBLIC_REPOS  # noqa: E402
-from agent_sync.identity import GROK_ALIAS_PATTERN  # noqa: E402
+from agent_sync.identity import GROK_ALIAS_PATTERN, SeatRegistryError, parse_seat_registry  # noqa: E402
 from agent_sync.zulip import DEFAULT_CHANNEL, REALM, credential_file_name  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,6 +110,57 @@ def zulip_errors(data: dict) -> list[str]:
             else:
                 emails[email] = tag
     errors.extend(alias_pattern_errors(seats))
+    return errors
+
+
+def seat_apps_errors(data: dict) -> list[str]:
+    """`seatApps` (F2, open-loops plan 2026-10-11) says which app each seat runs in, so code that counts apps
+    instead of models (a consult quorum) never reads a seat's model off its tag.  It lives beside `seats`, not
+    in it, because a dozen tools read `seats` and a BF-* or GB-* row there would make lanes, skill copies and
+    listener seats.  Checked:  the key parses the way scripts/agent_sync/identity.py reads it;  every live
+    `seats` row has an app in `bySeat`, and `bySeat` names no other tag;  `extraSeats` holds only tags with no
+    `seats` row;  no `seats` row (live or retired) also matches a `patterns` row;  tags are written upper case;
+    each pattern's `zulipEmail` is a bot email on the realm with one <role> in it."""
+    try:
+        parsed = parse_seat_registry(data, "fleet-apps.json")
+    except SeatRegistryError as exc:
+        return [f"seatApps: {exc}"]
+    errors: list[str] = []
+    seats = [s for s in data.get("seats", []) if isinstance(s, dict) and s.get("tag")]
+    live = {s["tag"] for s in seats if not s.get("retired")}
+    rows = {s["tag"] for s in seats}
+    apps = data["seatApps"]
+    for key in ("bySeat", "extraSeats"):
+        for tag in apps[key]:
+            if tag != tag.upper():
+                errors.append(f"seatApps.{key} key {tag!r} must be written upper case ({tag.upper()!r})")
+    for tag in sorted(live - set(parsed.by_seat)):
+        errors.append(f"live seat {tag} has no app in seatApps.bySeat (every non-retired seat needs one;  "
+                      "scripts/onboard-new-agent.sh --app adds it)")
+    for tag in sorted(set(parsed.by_seat) - live):
+        reason = "is retired" if tag in rows else "is not a row of seats"
+        errors.append(f"seatApps.bySeat lists {tag}, which {reason};  bySeat covers live seats only")
+    for tag in sorted(set(parsed.extra) & rows):
+        errors.append(f"seatApps.extraSeats lists {tag}, which has a row in seats;  a seat is in bySeat or "
+                      "extraSeats, never both")
+    for tag in sorted(set(parsed.by_seat) & set(parsed.extra)):
+        errors.append(f"seat {tag} is in both seatApps.bySeat and seatApps.extraSeats")
+    for tag in sorted(rows):
+        for pattern in parsed.patterns:
+            if pattern.regex.fullmatch(tag.upper()):
+                errors.append(f"seat {tag} has a row in seats but also matches seatApps.patterns {pattern.match};  "
+                              "a pattern is for tags that have no row")
+    host = urlparse(REALM).hostname or ""
+    for item in apps["patterns"]:
+        email = item.get("zulipEmail")
+        match = item["match"]
+        if email is None:
+            continue
+        probe = email.replace("<role>", "x") if isinstance(email, str) and email.count("<role>") == 1 else ""
+        found = BOT_EMAIL_RE.match(probe)
+        if not found or found.group("host") != host:
+            errors.append(f"seatApps.patterns {match} zulipEmail {email!r} must be a <role>-bot@{host} address "
+                          "with exactly one <role>")
     return errors
 
 
@@ -222,6 +273,7 @@ def main() -> int:
                 errors.append(f"missing app icon {icon}")
 
     errors.extend(zulip_errors(data))
+    errors.extend(seat_apps_errors(data))
     errors.extend(engine_only_errors(data, agent_sync))
 
     colors: dict[str, str] = {}

@@ -331,9 +331,8 @@
       "tag": "GROK-BOT",
       "notesName": "Grok Bot",
       "worktreeSuffix": "cursor",
-      "branchPrefixes": [
-        "cursor/"
-      ]
+      "branchPrefixes": [],
+      "notes": "Grok Bot, one fleet-wide identity:  the GB-<ROLE> personas (Zulip bots <role>-grok-bot@) that implement through Cursor cloud agents.  It opens no Mac lanes, so it has no branch prefix of its own (it carried CURSOR's cursor/ until 2026-10-11, which put one prefix on two seats).  worktreeSuffix stays cursor, so the lane tool still refuses GROK-BOT and still reads gb and grok-bot as the cursor folder.  Its app is in seatApps, not here."
     },
     {
       "tag": "RENOIR",
@@ -409,5 +408,40 @@
       "zulipBotEmail": "opencode-bot@simplewithus.zulipchat.com",
       "zulipFileCode": "OpenCode"
     }
-  ]
+  ],
+  "seatApps": {
+    "notes": "The app each seat runs in, for code that counts apps instead of models (a consult quorum) or asks which product a seat tag belongs to.  Kept out of seats on purpose:  a dozen tools read seats and a row there makes lanes, skill copies and listener seats.  bySeat has one entry per live row of seats (check-fleet-registry.py enforces it).  extraSeats are real seats with no row in seats (hosted or owner-run).  patterns cover the families whose tags are made up of a role (BF-<ROLE> and GB-<ROLE>).  scripts/agent_sync/identity.py strict_seat() and seat_app() read it;  canonical_seat() does not.",
+    "bySeat": {
+      "CLAUDE": "claude-code",
+      "CODEX": "codex",
+      "CURSOR": "cursor",
+      "GROK": "grok-terminal",
+      "GROK-WEB": "grok-web",
+      "AG": "antigravity",
+      "MM": "minimax-code",
+      "MC": "muse-code",
+      "MA": "muse-assist",
+      "CLUTCH": "clutch",
+      "FX": "fx",
+      "OPENCODE": "opencode",
+      "GROK-BOT": "grok-bot"
+    },
+    "extraSeats": {
+      "JET": "chatgpt",
+      "ECHO": "instinct",
+      "INSTINCT": "instinct"
+    },
+    "patterns": [
+      {
+        "match": "BF-*",
+        "app": "botfleet",
+        "zulipEmail": "bf-<role>-bot@simplewithus.zulipchat.com"
+      },
+      {
+        "match": "GB-*",
+        "app": "grok-bot",
+        "zulipEmail": "<role>-grok-bot@simplewithus.zulipchat.com"
+      }
+    ]
+  }
 }

@@ -15,11 +15,13 @@ Antigravity, Monet, Kimi, Copilot, or a future seat) to this fleet.
   --tag KIMI \
   --notes-name Kimi \
   --worktree-suffix kimi \
-  --branch-prefix kimi/
+  --branch-prefix kimi/ \
+  --app kimi-code
 ```
 
 `--help` lists flags; `--dry-run` changes nothing.  The script records the seat in
-`fleet-apps.json` and prints the manual steps.  It creates **no lanes**: a lane is made
+`fleet-apps.json` (its `seats` row and its `seatApps.bySeat` app, see
+[Seat apps](#seat-apps)) and prints the manual steps.  It creates **no lanes**: a lane is made
 per task with `~/apps/lane new` (Phase 2).  `--apps` and `--include-fleet` are still
 accepted but ignored.
 
@@ -44,7 +46,44 @@ add a dedicated row.
 **Grok Bot is not onboarded this way.**  `GROK-BOT` is one fleet-wide identity
 that drives Cursor cloud agents.  It is not Mac Grok (GROK, which Grok Build shares), and it
 is **not** a per-app seat.  Do not run this script to create
-per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
+per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.  Its `GB-<ROLE>` personas need no
+registry row:  `seatApps.patterns` covers them (and the `BF-<ROLE>` bots), and the
+`GROK-BOT` row has no branch prefix because it opens no lanes.
+
+---
+
+## Seat apps
+
+`fleet-apps.json` has a top-level `seatApps` key that says which **app** each seat runs
+in (`claude-code`, `codex`, `grok-terminal`, `grok-web`, `botfleet`, ...).  Code that
+counts apps instead of models (a consult quorum, claim ownership) reads it through two
+functions in `scripts/agent_sync/identity.py`:
+
+| Function | What it does |
+|----------|--------------|
+| `canonical_seat(raw)` | The lenient input boundary.  Trims and upper-cases anything, and turns every GROK-BUILD spelling into `GROK`.  It never raises and never reads the registry. |
+| `strict_seat(raw)` | `canonical_seat`, then `UnknownSeat` unless the result is a live `seats` row, a `seatApps.extraSeats` key, or matches a `seatApps.patterns` row.  `MINIMAX` raises (the tag is `MM`), and so does a retired seat. |
+| `seat_app(seat)` | The seat's app, patterns included.  It runs `strict_seat` first, so an unknown name is an error, never a new app. |
+
+The key has three parts:
+
+- `bySeat`:  one app for every **live** `seats` row.  `check-fleet-registry.py` fails
+  CI for a live seat without one, and for an entry that is not a live seat.
+- `extraSeats`:  real seats that have no `seats` row because they are hosted or
+  owner-run (`JET` is `chatgpt`, `ECHO` and `INSTINCT` are one app, `instinct`).
+- `patterns`:  families made of a role.  `BF-*` is `botfleet` (bot `bf-<role>-bot@`)
+  and `GB-*` is `grok-bot` (bot `<role>-grok-bot@`).  The patterns accept any
+  well-formed role, so they cannot catch a misspelled one.
+
+Two seats on one model are two apps when they are two products (`GROK` the
+terminal and `GROK-WEB`), and two seats in one product are one app (`ECHO` and
+`INSTINCT`).  The script never guesses the app from the tag;  it asks, or takes
+`--app`.
+
+**Do not put `BF-*`, `GB-*`, `JET`, `ECHO` or `INSTINCT` in `seats`.**  A dozen tools
+read `seats` (lanes, skill copies, the listener, the board scripts) and a row there
+would make each of them.  **Do not name a field `app` on a `seats` row**:  it clashes
+with the top-level `apps` (the acronyms) and `--app`.
 
 ---
 
@@ -95,9 +134,11 @@ per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
 
 ## Phase 0 — identity
 
-1. Pick `TAG`, Notes name, worktree suffix, branch prefix. Add them to
-   `fleet-apps.json` `seats` and to the Agent Seat table in `AGENT-SYNC.md`
-   (both `~/apps/AGENT-SYNC.md` and this repo's copy).
+1. Pick `TAG`, Notes name, worktree suffix, branch prefix, and the app the seat
+   runs in. Add the first four to `fleet-apps.json` `seats`, the app to
+   `fleet-apps.json` `seatApps.bySeat` (`scripts/onboard-new-agent.sh --app`), and
+   the seat to the Agent Seat table in `AGENT-SYNC.md` (both `~/apps/AGENT-SYNC.md`
+   and this repo's copy).
 2. If the platform has a global rules file, add the fleet pointer there
    **before** the first session in a repo:
 
@@ -328,7 +369,7 @@ Only when the seat's product needs them. Do not block first code on these.
 
 ## Definition of done
 
-- [ ] Tag, Notes name, suffix, prefix written in `fleet-apps.json`
+- [ ] Tag, Notes name, suffix, prefix written in `fleet-apps.json`, and the app in `seatApps.bySeat`
 - [ ] Global rules file on that platform points at `AGENT-SYNC.md`
 - [ ] Seat has its own Zulip bot and can read and post `#agent-sync` with `agent-sync` without printing the key
 - [ ] Intro posted
