@@ -69,6 +69,11 @@ HELD_BACK_LIMITS: dict[str, tuple[float, float, bool]] = {
     "owner_digest_minutes": (0, 1440, False),
 }
 HELD_BACK_MIN_DIGEST_MINUTES = 15
+# The `#alerts` held-back digest (AFC-257, heldalert.py), one post for EVERY seat per window.  An hour
+# matches the per-seat owner digest:  a hold is durable, so there is nothing to gain by saying it
+# sooner than the window, and a seat one under its cap would otherwise post every 30s tick.
+HELD_ALERT_DEFAULT_MINUTES = 60
+HELD_ALERT_LIMITS: dict[str, tuple[float, float]] = {"held_alert_minutes": (0, 1440)}
 # Seat tags whose bots are always eligible senders, on top of every tag the seat partition lists
 # (fleet_tags).  Owner 2026-10-09:  "everyone should be able to DM to wake anyone else or tag to wake
 # anyone else", so every fleet bot (Mac and cloud seats, GB personas, BF role bots) is eligible.
@@ -173,6 +178,12 @@ class Config:
         self.notify_banners = True
         self.route_enabled = True  # daemon.route_enabled:  the listener-wide kill switch for route suggestions
         self.held_back_catch_up = True  # the default for every seat's held_back.catch_up (heldback.py)
+        # The `#alerts` held-back digest (AFC-257, heldalert.py).  `held_alert_minutes` is the
+        # instance-wide window:  at most one post for EVERY seat, so the volume is bounded by the
+        # window rather than the fleet size.  0 turns it off.  `held_alert_seat` names the seat whose
+        # bot carries the post;  it defaults to the claude seat, then to the first enabled seat.
+        self.held_alert_minutes = float(HELD_ALERT_DEFAULT_MINUTES)
+        self.held_alert_seat: str | None = None
         self.auto_subscribe = True  # daemon.auto_subscribe:  held seats join every public channel (owner 2026-10-10)
 
     @property
@@ -326,6 +337,24 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.held_back_catch_up must be true or false")
     else:
         cfg.held_back_catch_up = catch_up
+    # The `#alerts` held-back digest (AFC-257).  One post for every seat per window, so a busy fleet
+    # does not turn a loud trigger into a flood;  0 turns it off.
+    if "held_alert_minutes" in daemon:
+        value = _number(daemon["held_alert_minutes"], "daemon.held_alert_minutes", errors)
+        if value is not None:
+            low, high = HELD_ALERT_LIMITS["held_alert_minutes"]
+            if not low <= value <= high:
+                errors.append("daemon.held_alert_minutes must be between %g and %g" % (low, high))
+            else:
+                cfg.held_alert_minutes = value
+    # Which seat's bot carries the digest.  Optional:  the daemon falls back to the claude seat, then
+    # to the first enabled seat, so an unset value still posts rather than silently going quiet.
+    if "held_alert_seat" in daemon:
+        alert_seat = daemon["held_alert_seat"]
+        if not isinstance(alert_seat, str) or not _SEAT_RE.match(alert_seat.upper()):
+            errors.append("daemon.held_alert_seat must be a seat name such as JET")
+        else:
+            cfg.held_alert_seat = alert_seat.upper()
     auto_sub = daemon.get("auto_subscribe", True)
     if not isinstance(auto_sub, bool):
         errors.append("daemon.auto_subscribe must be true or false")

@@ -21,9 +21,11 @@ What happens to an entry:
   - surfaced:  a wake that reached the seat listed it, or it was that wake's own trigger.  This is the
     only way an entry leaves the file before it is lost or expired.
   - expired:  `ttl_hours` passed AND the owner was told about it by a digest that was actually shown
-    (a Mac banner;  `told_seq`).  On the server nothing shows the owner anything yet (owner notes go
-    to a queue nobody reads, docs/protocols/agent-sync-server.md Open Questions), so there nothing
-    ever expires:  an entry stays until it is surfaced or lost past the caps.
+    (a Mac banner;  `told_seq`).  On the server nothing shows the owner anything that way:  the
+    `#alerts` digest (heldalert.py, AFC-257) is a post the owner has not opened, which is not the
+    same promise as a banner, so it does not mark anything told (docs/protocols/agent-sync-server.md,
+    The Held-Back Digest on This Instance).  There nothing expires:  an entry stays until it is
+    surfaced or lost past the caps.
 Each end is also a ledger row for the held-back wake's id, written once the last entry that wake
 held has left the file (daemon.py, referenced_wake_ids).
 
