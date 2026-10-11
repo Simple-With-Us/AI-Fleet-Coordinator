@@ -14,7 +14,7 @@ Access is the only thing standing in front of it.
 
 | Card | Source | What a row means |
 |---|---|---|
-| **Public Endpoints** | Direct HTTPS probe of 17 fleet surfaces, 8 s timeout, run in parallel | HTTP status and latency.  2xx and 3xx are up; a redirect to `cloudflareaccess.com` reads "Up, behind Access"; 401 and 403 read "Up, auth required"; a timeout is amber and reads "Timed out from Cloudflare". |
+| **Public Endpoints** | Direct HTTPS probe of 18 fleet surfaces, 8 s timeout, run in parallel | HTTP status and latency.  2xx and 3xx are up; a redirect to `cloudflareaccess.com` reads "Up, behind Access"; 401 and 403 read "Up, auth required"; a timeout is amber and reads "Timed out from Cloudflare". |
 | **Fleet Recall** | `GET /health`, `GET /recall/stats`, and a canary `POST /recall/search` for `fleet mode` on `recall.jays.services` | Point count, collection name and status, embedder and reranker health, per-source breakdown, and the canary hits.  The search box at the top of the card queries the live corpus. |
 | **The Board** (archive) | `GET /findings/stats` and `GET /findings?status=open,in_progress` on `mac.jays.services` | Open and in-progress counts by severity, plus the P0 and P1 rows that need attention.  Since the Linear cutover (owner 2026-10-10) this card shows the frozen archive, because THE BOARD is read-only and Linear is the system of record.  Replacing it needs the per-team counts job in `docs/protocols/linear-migration.md` section 5 (open issue), and the card goes away when the archive is retired at about day 30. |
 | **Coolify Applications** | `GET /api/v1/applications` and `/api/v1/servers` on `host.jays.services` | Container status (`running:healthy`, `exited:unhealthy`, …) per application, then server reachability. |
@@ -57,11 +57,11 @@ seconds.  Worst case per section:
 
 | Section | Subrequests |
 |---|---|
-| `endpoints` | 17 — one per entry in `ENDPOINTS` |
+| `endpoints` | 18 — one per entry in `ENDPOINTS` |
 | `recall` | 3 — health, stats, canary search |
 | `board` | 2 |
 | `coolify` | 2 |
-| `github` | 15 — one PR search plus one Actions call per repo (it was 24) |
+| `github` | 17 — one PR search plus one Actions call per repo (it was 24) |
 | `vercel` | 6 — projects, teams, and up to four team-scoped calls |
 | `sentry` | 1 |
 | `pagerduty` | 1 |
@@ -240,6 +240,12 @@ Deliberate absences and retired probes:
   (the `gh-pages` branch carries that CNAME; the `github.io` path is
   case-sensitive and the lower-case spelling 404s), and has an `APPS` row
   now that it is in `fleet-apps.json`.
+- **`fleetlink-legacy` has an `APPS` row and no endpoint row.**  It is the private
+  repo of the live worker that fleetlink.online already serves, so the `FleetLink`
+  probe covers it.  The repo has no Actions workflow, so the GitHub card reads
+  "1 with no run on main" (amber) until the row is retired at cutover.
+- **FleetLink is probed at `https://fleetlink.online/`.**  The Worker has no
+  `/health` route (it answers 404), and `/` answers 200.
 - **Scout is retired (2026-09-09).**  Do not probe `scout.jays.services`.
 - **`autorotate.codes` is retired (NXDOMAIN).**  Probe `autorotate.vercel.app`
   instead; Autorotate remains in `APPS` for the GitHub card.
