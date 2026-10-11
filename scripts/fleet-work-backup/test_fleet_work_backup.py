@@ -1699,6 +1699,43 @@ class LaunchdCase(RunBase):
         self.assertEqual(buf.getvalue().splitlines()[0], img)
 
 
+class InstallCase(unittest.TestCase):
+    """install.py's launchctl handling, against a stub launchctl on PATH."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="fwb-install-"))
+        spec2 = importlib.util.spec_from_file_location("fwb_install", HERE / "install.py")
+        self.inst = importlib.util.module_from_spec(spec2)
+        spec2.loader.exec_module(self.inst)
+        self.inst.PLIST_DST = str(self.tmp / "agent.plist")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def stub(self, script: str):
+        (self.tmp / "launchctl").write_text("#!/bin/bash\n" + script)
+        (self.tmp / "launchctl").chmod(0o755)
+        return mock.patch.dict(os.environ, {"PATH": f"{self.tmp}:{os.environ['PATH']}"})
+
+    def test_a_failed_bootstrap_is_a_failure_not_a_silent_success(self):
+        with self.stub('[ "$1" = print ] && exit 113\n[ "$1" = bootstrap ] && exit 5\nexit 0\n'):
+            self.assertEqual(self.inst.launchd(True, False), 5)
+
+    def test_a_loaded_unchanged_agent_is_left_alone(self):
+        with self.stub('echo "$1" >> "$0.log"\n[ "$1" = print ] && exit 0\nexit 0\n'):
+            self.assertEqual(self.inst.launchd(False, False), 0)
+        self.assertEqual((self.tmp / "launchctl.log").read_text().split(), ["print"])
+
+    def test_launchctl_that_cannot_run_is_reported(self):
+        with mock.patch.dict(os.environ, {"PATH": str(self.tmp)}):       # no launchctl on PATH
+            self.assertEqual(self.inst.launchd(True, False), 127)
+
+    def test_a_dry_run_changes_nothing(self):
+        with self.stub('echo "$1" >> "$0.log"\n[ "$1" = print ] && exit 113\nexit 0\n'):
+            self.assertEqual(self.inst.launchd(True, True), 0)
+        self.assertEqual((self.tmp / "launchctl.log").read_text().split(), ["print"])      # only the read-only query
+
+
 @unittest.skipUnless(shutil.which("restic"), "restic not installed")
 class RealResticCase(RunBase):
     """init, backup, check and restore against a real restic and a local repository (CI installs restic)."""

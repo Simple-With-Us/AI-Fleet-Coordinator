@@ -118,7 +118,7 @@ def prerequisites(fwb, interpreter: str, install_restic: bool, dry: bool) -> lis
         missing.append("restic (brew install restic, or pass --install-restic)")
     try:
         ok = subprocess.run([interpreter, "-c", "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)"],
-                            timeout=60).returncode == 0
+                            capture_output=True, timeout=60).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         ok = False
     if ok:
@@ -135,22 +135,37 @@ def prerequisites(fwb, interpreter: str, install_restic: bool, dry: bool) -> lis
     return missing
 
 
-def launchd(changed: bool, dry: bool) -> None:
+def run_launchctl(*args: str) -> int:
+    """launchctl with a time limit;  127 when it cannot run, 124 when it hangs."""
+    try:
+        return subprocess.run(["launchctl", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=60).returncode
+    except subprocess.TimeoutExpired:
+        return 124
+    except OSError:
+        return 127
+
+
+def launchd(changed: bool, dry: bool) -> int:
+    """Load (or reload) the LaunchAgent.  Returns 0 when it is loaded or nothing was needed, else launchctl's code."""
     domain = f"gui/{os.getuid()}"
-    loaded = subprocess.run(["launchctl", "print", f"{domain}/{LABEL}"], stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL).returncode == 0
+    printed = run_launchctl("print", f"{domain}/{LABEL}")
+    if printed in (124, 127):
+        say(f"launchctl print {LABEL} did not run (rc={printed})")
+        return printed
+    loaded = printed == 0
     if loaded and not changed:
         say(f"unchanged {LABEL} (loaded)")
-        return
+        return 0
     if dry:
         say(f"would {'reload' if loaded else 'bootstrap'} {LABEL}")
-        return
+        return 0
     if loaded:
-        subprocess.run(["launchctl", "bootout", f"{domain}/{LABEL}"], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+        run_launchctl("bootout", f"{domain}/{LABEL}")
         time.sleep(1)
-    rc = subprocess.run(["launchctl", "bootstrap", domain, PLIST_DST]).returncode
+    rc = run_launchctl("bootstrap", domain, PLIST_DST)
     say(f"bootstrap {LABEL} rc={rc}")
+    return rc
 
 
 def main() -> int:
@@ -182,13 +197,16 @@ def main() -> int:
                 missing.append("restic repository (fleet_work_backup.py init)")
     for m in missing:
         say(f"MISSING {m}")
+    status = 0
     if not a.skip_launchd:
         if missing and not a.force:
             say("not loading the LaunchAgent until the above is fixed (or pass --force)")
         else:
             plist = plist_with_interpreter(a.interpreter)
             changed = copy(plist, PLIST_DST, 0o644, a.dry_run)
-            launchd(changed, a.dry_run)
+            status = launchd(changed, a.dry_run)
+            if status:
+                say(f"the LaunchAgent is NOT loaded (launchctl rc={status})")
     image, app = interpreter_image(a.interpreter, SCRIPT_SRC)
     if image:
         say(f"macOS privacy settings see this executable for {a.interpreter}: {image}")
@@ -196,7 +214,7 @@ def main() -> int:
     else:
         say(f"could not ask {a.interpreter} for its executable;  run 'python3 {SCRIPT_DST} image' with it")
     say(f"then verify it under launchd, not Terminal:  {a.interpreter} {SCRIPT_DST} check-access --launchd")
-    return 0
+    return 1 if status else 0
 
 
 if __name__ == "__main__":
