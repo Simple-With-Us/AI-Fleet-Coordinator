@@ -29,6 +29,11 @@ jobs:
     - name: fleet_knobs tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t . -v
+    # needs-owner (open-loops C6-1):  a fake `board` and `agent-sync` on PATH, built on the real parsers;
+    # the stable copy installed into a temp HOME must run under `python3 -I`.
+    - name: needs-owner tests
+      run: |
+        cd scripts && python3 -m unittest discover -s needs_owner/tests -t . -v
     # Fleet skills pack: canonical pin-or-fail identity block, every rendered
     # tree equal to a fresh render, and the AGENT-SYNC roster the pack mirrors.
     - name: Fleet skill identity tests
