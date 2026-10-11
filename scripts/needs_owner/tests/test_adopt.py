@@ -54,6 +54,24 @@ class AdoptTests(unittest.TestCase):
         self.assertEqual(len(self.w.comments(ident)), comments)
         self.assertEqual(len(self.w.zulip()["messages"]), 1)
 
+    def test_a_dry_run_of_an_item_already_adopted_posts_and_changes_nothing(self) -> None:
+        """--dry-run must not announce:  an adopted item whose notice is still to come used to fall through to notify."""
+        ident = self.w.seed_issue("Tonight: revive PR 761 or close it?")
+        self.assertEqual(self.w.run("adopt", ident, *self.args, "--no-notify").code, 0)
+        def board_writes() -> int:
+            return len([c for c in self.w.calls("board") if c["argv"][0] in ("comment", "label", "file", "status")])
+
+        comments, writes = len(self.w.comments(ident)), board_writes()
+        plain = tuple(a for a in self.args if a != "--json")
+        r = self.w.run("adopt", ident, *plain, "--dry-run")
+        self.assertEqual(r.code, 0, r.err)
+        self.assertIn("dry run", r.out)
+        self.assertIn("already adopted", r.out)
+        self.assertEqual(self.w.zulip()["messages"], [])
+        self.assertEqual([c for c in self.w.calls("agent-sync") if c["argv"][0] in ("post", "reply")], [])
+        self.assertEqual(len(self.w.comments(ident)), comments)
+        self.assertEqual(board_writes(), writes)
+
     def test_adopt_adds_a_missing_label(self) -> None:
         ident = self.w.seed_issue("Tonight: logo?", labels=("Kind/agent-report",))
         self.assertEqual(self.w.run("list", "--json").json(), [])  # no label, not an item
