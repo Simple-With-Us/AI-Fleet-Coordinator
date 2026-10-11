@@ -6,9 +6,6 @@ description: >-
 
 # Fleet recall
 
-> **Shared `~/.claude/skills`.**  This directory is the `CLAUDE` seat's skill home, and other tools scan it too.  Other seats (Codex, Cursor, Grok, Grok-Web, AG, Clutch, FX, MM, MC, MA) must take identity from their own pack, never from here.
-
-
 The fleet has one shared memory: the `fleet-agents` collection in the self-hosted Qdrant on the
 Hetzner box, embedded by the self-hosted bge-m3 endpoint.  It holds every row of the old board with its
 resolution (Linear issues join when the `linear` recall source ships), the Apple Notes archive, every effort log, the fleet protocol docs, the skills, and

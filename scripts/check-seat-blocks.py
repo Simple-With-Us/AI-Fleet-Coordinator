@@ -24,13 +24,14 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fleet_skill_identity import repo_platform_copies
+
 ROOT = Path(__file__).resolve().parent.parent
-REPO_TREES = (
-    "skills",
-    "docs/fleet-skills/by-seat",
-    ".claude/skills",
-    ".cursor/skills",
-    ".grok/skills",
+# The repo trees are derived from the seat registry rather than listed here, so this
+# check covers every tree the installer renders and cannot miss a newly added one.
+REPO_TREES = ("skills", "docs/fleet-skills/by-seat") + tuple(
+    os.path.relpath(dest, ROOT) for dest, _seat in repo_platform_copies(str(ROOT))
 )
 # The owner's rules files and skill homes (design section 2).  Missing ones are skipped.
 HOME_FILES = (
