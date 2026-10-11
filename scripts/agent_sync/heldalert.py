@@ -159,8 +159,10 @@ def compose(seats: Sequence[tuple[str, Mapping[str, Any]]]) -> str:
     if not seats:
         return ""
     one = len(seats) == 1
-    head = "**Held-back wakes on the agent-sync server listener.**  %d seat%s %s a wake the budget would not run;  each one is in that seat's inbox and rides the next wake that can run." % (
-        len(seats), "" if one else "s", "has" if one else "have")
+    head = ("**Held-back wakes on the agent-sync server listener.**  %d seat%s %s;  each one is in that "
+            "seat's inbox and rides the next wake that can run."
+            % (len(seats), "" if one else "s", "has a wake the budget would not run" if one
+               else "have wakes the budget would not run"))
     tail = ("Nothing was dropped.  To clear a hold sooner, raise that seat's budget in `listener.toml`  "
             "(`[daemon]` `stale_after_minutes` is unrelated;  the limits are the seat's `budget` table),  "
             "and a catch-up wake goes out by itself once the budget has room.  Evictions are ids that "

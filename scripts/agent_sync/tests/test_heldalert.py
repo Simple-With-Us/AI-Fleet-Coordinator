@@ -357,7 +357,9 @@ class HeldAlertUnitTests(unittest.TestCase):
         self.assertIn("2 seats have", text)
 
     def test_compose_agrees_with_itself_about_one_seat(self) -> None:
-        self.assertIn("1 seat has", HELDALERT.compose([("JET", self.held())]))
+        self.assertIn("1 seat has a wake the budget would not run", HELDALERT.compose([("JET", self.held())]))
+        self.assertIn("2 seats have wakes the budget would not run",
+                      HELDALERT.compose([("JET", self.held()), ("MA", self.held())]))
 
     def test_holding_counts_evictions_alone(self) -> None:
         self.assertTrue(HELDALERT.holding({"count": 0, "evicted": 2}), "lost ids are still owed an answer")
