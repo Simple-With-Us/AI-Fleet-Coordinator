@@ -113,9 +113,11 @@ def _kill_group(proc: "subprocess.Popen") -> None:
 
 
 def kill_live() -> int:
-    """SIGKILL every child process group started by `run` that has not finished yet;  returns how many were signalled."""
+    """SIGKILL every child process group started by `run` that has not finished yet;  each PID is removed from
+    the live set as we go, so a second call does not double-count.  Returns how many were signalled."""
     count = 0
     for pid in list(_LIVE_GROUPS):
+        _LIVE_GROUPS.discard(pid)
         try:
             os.killpg(pid, signal.SIGKILL)
             count += 1
