@@ -2,7 +2,7 @@
 {"query": "should I wait for the owner to say commit before I push and open a PR", "expect_text_contains": ["without waiting to be asked", "unpushed work"], "note": "seed: always commit + land"}
 {"query": "git says my branch is not merged after a squash merge, was the work landed", "expect_text_contains": ["squash-merge"], "note": "seed: cherry-pick equivalence lesson"}
 {"query": "where does the fleet vector database run and on which port", "expect_text_contains": ["qdrant-st"], "note": "seed: qdrant infrastructure"}
-{"query": "which platform do I claim fleet work on before starting", "expect_text_contains": ["mac.jays.services/board"], "note": "seed: THE BOARD"}
+{"query": "which platform do I claim fleet work on before starting", "expect_text_contains": ["linear.app/simple-with-us", "Linear is the system of record", "board claim"], "note": "seed: Linear through the board command (THE BOARD retired at the Linear cutover)"}
 {"query": "how many spaces go between sentences in chat replies and commit messages", "expect_text_contains": ["two spaces"], "note": "seed: sentence gap"}
 {"query": "why is PINECONE_TRIAL_ENDS_AT earlier than the real trial end", "expect_text_contains": ["PINECONE_TRIAL_ENDS_AT"], "note": "seed: ST pinecone trial buffer"}
 {"query": "what model does the self-hosted embedding endpoint serve and where", "expect_text_contains": ["tei-bge-m3", "bge-m3"], "note": "seed: TEI infrastructure"}

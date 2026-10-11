@@ -1,5 +1,7 @@
 # mac-collab (tracked copy)
 
+> **Archive after the Linear cutover (owner 2026-10-10).**  Linear replaced THE BOARD.  `mac-collab-sync` and `mac-collab-writeback` are stopped and removed, the server stays as a read-only archive with `mac-collab-litestream` for 14 days, and it is retired at about day 30.  `board-legacy` and `BOARD_BACKEND=mac-collab` (the rollback) still run the old CLI against it.  The server has no read-only switch, so after the cutover no seat is told to write to it.  See `scripts/linear-board/README.md` and `AGENT-SYNC.md` § Linear and the Claim Lifecycle.
+
 Live process: `~/apps/mac-collab/` under pm2 `mac-collab` (HTTP), `mac-collab-sync`
 (files+issues → board), and `mac-collab-writeback` (board writes → live effort logs
 + GitHub Issues).  This directory is the git copy.  Edit live, then copy here

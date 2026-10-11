@@ -449,7 +449,7 @@ def _clean_board(text: "str | None") -> "str | None":
     if not t:
         return None
     if not _BOARD_RE.match(t):
-        raise Refusal(f"--board must look like a board id (letters, digits, . _ # : / -, at most 64): {text!r}")
+        raise Refusal(f"--board must look like an issue id such as AFC-123 (letters, digits, . _ # : / -, at most 64): {text!r}")
     return t
 
 
@@ -1180,7 +1180,7 @@ def _build_parser() -> _Parser:
     new.add_argument("slug", nargs="?", help="lowercase kebab, 1 to 40 characters")
     new.add_argument("--base", metavar="REF", help="origin/<branch> or <branch> to start from (default origin/main)")
     new.add_argument("--purpose", metavar="TEXT", help="one line saved in the manifest")
-    new.add_argument("--board", metavar="ID", help="board id saved in the manifest")
+    new.add_argument("--board", metavar="ID", help="Linear issue id (such as AFC-123) saved in the manifest")
     new.add_argument("--reuse-branch", action="store_true", help="check out an existing branch instead of creating one")
     new.add_argument("--review", action="store_true", help="read-only checkout of a PR head (needs --pr)")
     new.add_argument("--pr", metavar="N", type=_positive_int, help="pull request number for --review")

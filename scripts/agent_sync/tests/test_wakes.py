@@ -416,8 +416,11 @@ class NotifyAndBoardTests(unittest.TestCase):
         self.assertEqual(len(queue), 1)
 
     def test_board_argv_is_a_list_with_a_validated_app(self) -> None:
-        acronyms = {"AFC", "CT", "ST"}
+        acronyms = {"AFC", "BF", "CT", "ST"}
         self.assertEqual(A.board_app("CT#2316 sentry", acronyms), "CT")
+        self.assertEqual(A.board_app("BF-123 reconnect loop", acronyms), "BF")
+        self.assertEqual(A.board_app("AFC-455 linear cutover", acronyms), "AFC")
+        self.assertEqual(A.board_app("zz-9 random", acronyms), "AFC")
         self.assertEqual(A.board_app("; rm -rf / topic", acronyms), "AFC")
         self.assertEqual(A.board_app("zz random", acronyms), "AFC")
         argv = A.board_argv("/bin/board", seat="CLAUDE", title='t"; rm -rf ~', desc="$(whoami)", severity="P3",
