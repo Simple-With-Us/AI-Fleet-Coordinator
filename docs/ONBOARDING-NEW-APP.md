@@ -226,7 +226,9 @@ Optional but expected before the app is "done" as a fleet citizen:
 ### Live machine (`/Users/jay/apps` — not a git repo)
 
 - `AGENT-SYNC.md` — intro app list, Apple Notes acronym table, Zulip
-  `repo:` canonical names
+  `repo:` canonical names.  **Do not edit it by hand:**  it is being generated from
+  Fleet-OPS `handbook/`, so these rows are a pull request there (the app table is
+  `handbook/appendix/reference-tables.md`)
 - `AGENT-COORDINATION-QUICKSTART.md` — app table
 - `FLEET-UI-COPY.md` — binding apps + theme paragraph
 - `TEMPLATE-AGENTS.md` — only if you are changing the template itself
@@ -236,8 +238,8 @@ Optional but expected before the app is "done" as a fleet citizen:
 ### This repo (`AI-Fleet-Coordinator`)
 
 - `fleet-apps.json` — **add the row first**
-- `AGENT-SYNC.md`, `FLEET-UI-COPY.md`,
-  `TEMPLATE-AGENTS.md` (keep in lockstep with `~/apps`)
+- `FLEET-UI-COPY.md`, `TEMPLATE-AGENTS.md` (keep in lockstep with `~/apps`).
+  `AGENT-SYNC.md` is not edited here:  see the handbook pull request above
 - `scripts/build-fleet-daily-digest.py` — `DEFAULT_REPOS`,
   `LIVE_EFFORT_FILES`, `REPO_BADGE`, `REPO_APP_ICON`, `REPO_STRIP_ALIASES`,
   CSS color, HTML legend

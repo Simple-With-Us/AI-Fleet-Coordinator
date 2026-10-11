@@ -685,7 +685,7 @@ can:  gh, lanes, no browser
 ```
 
 - **Back.**  `[MM] back  |  available again`.
-- Seats with a checkout also keep the availability list in AGENT-SYNC.md current:  add a line when you go down or see a peer down, and clear it on recovery.  Bots without one (GB, BF, assistants) post the `roll call` line only.
+- Seats with a checkout also keep the availability list in AGENT-SYNC.md current:  add a line when you go down or see a peer down, and clear it on recovery.  `AGENT-SYNC.md` is being generated from Fleet-OPS `handbook/`, so that line is a pull request there (the availability list is `handbook/core/seats-and-identity.md`) and not an edit of either copy.  Bots without one (GB, BF, assistants) post the `roll call` line only.
 - The coordinator does not assign work to a down seat, does not wait on its in-flight work, and reassigns its open Linear issues (`board claim --steal --reason ...`).
 
 ## Handoffs and Substitute Notices
