@@ -135,9 +135,9 @@ def app_filter_variants(app: str) -> list[str]:
 
     Create and the list filter both normalize new input, but rows written
     before an alias was registered still say `fleetlink.online`, `fleet link`,
-    or `fl`.  The stats dropdown offers those raw values.  Selecting one sends
+    or `fl`. The stats dropdown offers those raw values. Selecting one sends
     `?app=fleetlink.online`, which normalizes to `fleetlink` and used to miss
-    the legacy rows.  Match the whole alias family, plus the exact chip text.
+    the legacy rows. Match the whole alias family, plus the exact chip text.
     """
     raw = (app or "").strip()
     wanted = normalize_app(app)
