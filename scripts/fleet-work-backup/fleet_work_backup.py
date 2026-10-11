@@ -29,6 +29,7 @@ All git access is read-only (GIT_OPTIONAL_LOCKS=0, no fetch, no gc, no ref write
   fleet_work_backup.py check-access         # can this process read /Volumes/External?
   fleet_work_backup.py check-access --launchd   # ask a one-shot launchd job (the scheduled job's own grants)
   fleet_work_backup.py image                # the executable macOS privacy settings see for this interpreter
+  fleet_work_backup.py new-password         # generate the restic password into Infisical, never printed (once)
   fleet_work_backup.py snapshots            # restic snapshots for this job's tag
   fleet_work_backup.py restic -- <args>     # restic with this job's repo and credentials (restores)
 
@@ -38,6 +39,7 @@ Docs:  scripts/fleet-work-backup/README.md and RESTORE.md.
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures as cf
 import ctypes
 import dataclasses
@@ -50,6 +52,7 @@ import math
 import os
 import plistlib
 import re
+import secrets
 import shutil
 import signal
 import sqlite3
@@ -59,6 +62,8 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -211,6 +216,8 @@ class Config:
     alert_topic: str = ALERT_TOPIC
     alert_to: tuple = ()            # seats or people to @-mention;  none means the post wakes nobody
     alert_after: int = SKIP_WARN_AFTER
+    infisical_bin: str = "/opt/homebrew/bin/infisical"
+    b2_http: Optional[Callable] = None   # (method, url, headers, body) -> (status, json):  tests answer offline
     load_fn: Optional[Callable[[], float]] = None
     swap_fn: Optional[Callable[[], Optional[float]]] = None
     pressure_fn: Optional[Callable[[], Optional[int]]] = None
@@ -284,6 +291,7 @@ def config_from_env() -> Config:
     cfg.repository = os.environ.get("FLEET_WORK_BACKUP_REPOSITORY", cfg.repository)
     cfg.launchctl_bin = os.environ.get("FLEET_WORK_BACKUP_LAUNCHCTL", cfg.launchctl_bin)
     cfg.agent_sync_bin = os.environ.get("FLEET_WORK_BACKUP_AGENT_SYNC", cfg.agent_sync_bin)
+    cfg.infisical_bin = os.environ.get("FLEET_WORK_BACKUP_INFISICAL", cfg.infisical_bin)
     cfg.alert_seat = os.environ.get("FLEET_WORK_BACKUP_ALERT_SEAT", cfg.alert_seat)
     cfg.alert_topic = os.environ.get("FLEET_WORK_BACKUP_ALERT_TOPIC", cfg.alert_topic)
     cfg.alert_to = tuple(t.strip() for t in os.environ.get("FLEET_WORK_BACKUP_ALERT_TO", "").split(",") if t.strip())
@@ -1992,8 +2000,10 @@ def probe_external(cfg: Config) -> dict:
     return result
 
 
-def removable_hint(cfg: Config) -> str:
-    img = process_image()
+def removable_hint(cfg: Config, image: str = "") -> str:
+    """The grant instruction.  ``image`` is the executable to name when it is not this process's own (the one-shot
+    launchd job reports its own, which is what the schedule runs;  Terminal's interpreter can differ)."""
+    img = image or process_image()
     app = app_bundle(img)
     who = f"{app} (the running executable is {img})" if app else img
     return (f"grant Removable Volumes (or Full Disk Access) to {who} in System Settings > Privacy & Security, "
@@ -2085,7 +2095,7 @@ def check_via_launchd(cfg: Config) -> int:
         say("no lane symlinks point at /Volumes: nothing to check")
         return 0
     if data.get("denied"):
-        say("DENIED under launchd: " + removable_hint(cfg))
+        say("DENIED under launchd: " + removable_hint(cfg, str(data.get("image") or data.get("binary") or "")))
         return 1
     if data.get("missing"):
         say("a volume is not mounted: its lanes will be skipped until it is")
@@ -2118,10 +2128,14 @@ def read_handoff(path: Path) -> dict[str, str]:
     return values
 
 
-def restic_env(cfg: Config) -> tuple[Optional[dict], list[str]]:
+def restic_env(cfg: Config, allow_master: bool = False) -> tuple[Optional[dict], list[str]]:
     """Return (env for the restic subprocess, missing key NAMES).  Values never leave this process
     except in that env.  ``cfg.repository`` (FLEET_WORK_BACKUP_REPOSITORY) points restic at another
-    repository, a local one for a test or a mirror, and then only the password is needed."""
+    repository, a local one for a test or a mirror, and then only the password is needed.
+
+    The B2 master key is a fallback only for a restore (``restic`` and ``snapshots`` pass ``allow_master``) and
+    only with FLEET_WORK_BACKUP_ALLOW_MASTER=1:  it has no file-name prefix, so it can delete the board's
+    database replica in the same bucket, and a backup, an init or an install never uses it."""
     src = dict(read_handoff(cfg.handoff))
     for name in list(CRED_NAMES.values()) + list(MASTER_NAMES.values()):
         if os.environ.get(name):
@@ -2137,7 +2151,7 @@ def restic_env(cfg: Config) -> tuple[Optional[dict], list[str]]:
         return env, []
     key_id = src.get(CRED_NAMES["key_id"], "")
     app_key = src.get(CRED_NAMES["app_key"], "")
-    if (not key_id or not app_key) and os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
+    if (not key_id or not app_key) and allow_master and os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
         key_id = key_id or src.get(MASTER_NAMES["key_id"], "")
         app_key = app_key or src.get(MASTER_NAMES["app_key"], "")
     bucket = src.get(CRED_NAMES["bucket"], "")
@@ -2154,6 +2168,173 @@ def restic_env(cfg: Config) -> tuple[Optional[dict], list[str]]:
         "AWS_DEFAULT_REGION": region,
     })
     return env, []
+
+
+B2_API = "https://api.backblazeb2.com"
+B2_PREFIX = "fleet-work-backup/"
+B2_NEEDED_CAPS = {"listFiles", "readFiles", "writeFiles", "deleteFiles", "listBuckets"}
+B2_TOO_STRONG_CAPS = {"writeKeys", "deleteKeys", "writeBuckets", "deleteBuckets", "bypassGovernance"}
+
+
+def b2_call(cfg: Config, method: str, url: str, headers: dict, body: Optional[dict] = None) -> tuple[int, dict]:
+    if cfg.b2_http:
+        return cfg.b2_http(method, url, headers, body)
+    req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={**headers, **({"Content-Type": "application/json"} if body is not None else {})},
+                                 method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.status, json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read() or b"{}")
+        except ValueError:
+            return exc.code, {}
+
+
+def b2_key_problems(cfg: Config, key_id: str, app_key: str, bucket: str) -> list[tuple[bool, str]]:
+    """What is wrong with the B2 key and bucket for this job, as (hard, text) pairs;  empty means ready.
+
+    Hard:  the key is not limited to the one bucket and the ``fleet-work-backup/`` prefix (the bucket also holds the
+    board's database replica), lacks a capability restic needs, holds one it must not (key or bucket admin), or a
+    lifecycle rule hides files under the prefix by age (that would hide live restic packs).  Soft:  B2 could not be
+    asked, or no lifecycle rule deletes hidden versions (``restic prune`` frees no space without one).  Read-only
+    calls (b2_authorize_account and b2_list_buckets, API v4);  the texts name no key and no token."""
+    basic = base64.b64encode(f"{key_id}:{app_key}".encode()).decode()
+    try:
+        st, auth = b2_call(cfg, "GET", f"{B2_API}/b2api/v4/b2_authorize_account", {"Authorization": "Basic " + basic})
+    except (OSError, ValueError) as exc:
+        return [(False, f"could not reach B2 to check the key ({type(exc).__name__})")]
+    if st != 200:
+        return [(st in (401, 403), f"B2 did not accept the key (status {st}, {str(auth.get('code', '?'))[:40]})")]
+    storage = (auth.get("apiInfo") or {}).get("storageApi") or {}
+    allowed = storage.get("allowed") or {}
+    probs: list[tuple[bool, str]] = []
+    prefix = allowed.get("namePrefix")
+    if prefix != B2_PREFIX:
+        probs.append((True, f"the key is not limited to the file-name prefix {B2_PREFIX} (its prefix is "
+                            f"{'none' if not prefix else repr(prefix)});  create a bucket key with that prefix"))
+    names = sorted(str(b.get("name")) for b in allowed.get("buckets") or [])
+    if names != [bucket]:
+        probs.append((True, f"the key is not limited to the one bucket {bucket} (it allows "
+                            f"{', '.join(names) if names else 'every bucket'})"))
+    caps = set(allowed.get("capabilities") or [])
+    if B2_NEEDED_CAPS - caps:
+        probs.append((True, "the key lacks " + ", ".join(sorted(B2_NEEDED_CAPS - caps))))
+    if caps & B2_TOO_STRONG_CAPS:
+        probs.append((True, "the key holds admin capabilities it must not have: " + ", ".join(sorted(caps & B2_TOO_STRONG_CAPS))))
+    token, api = auth.get("authorizationToken"), storage.get("apiUrl")
+    if "listBuckets" not in caps or not token or not api:
+        return probs
+    try:
+        st, lb = b2_call(cfg, "POST", f"{api}/b2api/v4/b2_list_buckets", {"Authorization": token},
+                         {"accountId": auth.get("accountId"), "bucketName": bucket})
+    except (OSError, ValueError) as exc:
+        return probs + [(False, f"could not read the bucket's lifecycle rules ({type(exc).__name__})")]
+    found = (lb.get("buckets") or []) if st == 200 else []
+    if st != 200 or not found:
+        return probs + [(False, f"could not read the bucket's lifecycle rules (status {st})")]
+    rules = [r for r in found[0].get("lifecycleRules") or [] if isinstance(r, dict)]
+    covering = [r for r in rules if B2_PREFIX.startswith(r.get("fileNamePrefix") or "")]
+    inside = [r for r in rules if (r.get("fileNamePrefix") or "").startswith(B2_PREFIX)]
+    if any(r.get("daysFromUploadingToHiding") for r in covering + inside):
+        probs.append((True, f"a lifecycle rule hides files under {B2_PREFIX} by age (daysFromUploadingToHiding):  it would "
+                            f"hide live restic packs and break the repository;  remove that field"))
+    if not any(int(r.get("daysFromHidingToDeleting") or 0) >= 1 for r in covering):
+        probs.append((False, f"no lifecycle rule on {B2_PREFIX} deletes hidden versions (daysFromHidingToDeleting 7 to 30):  "
+                             f"restic prune frees no space without it"))
+    return probs
+
+
+def check_b2_setup(cfg: Config) -> list[tuple[bool, str]]:
+    """b2_key_problems for the key this job would use (never the master key).  A local repository needs none."""
+    if cfg.repository:
+        return []
+    src = dict(read_handoff(cfg.handoff))
+    for name in CRED_NAMES.values():
+        if os.environ.get(name):
+            src[name] = os.environ[name]
+    key_id, app_key, bucket = (src.get(CRED_NAMES[k], "") for k in ("key_id", "app_key", "bucket"))
+    if not (key_id and app_key and bucket):
+        return [(True, "the bucket-scoped key or the bucket name is missing (" + ", ".join(
+            CRED_NAMES[k] for k, v in (("key_id", key_id), ("app_key", app_key), ("bucket", bucket)) if not v) + ")")]
+    return b2_key_problems(cfg, key_id, app_key, bucket)
+
+
+def restic_key_count(cfg: Config, env: dict) -> Optional[int]:
+    """How many keys open the repository (``restic key list --json``);  None when restic could not say."""
+    try:
+        p = run_restic(cfg, env, "key", "list", "--json", timeout=300)
+        return len(json.loads(p.stdout or b"[]")) if p.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+        return None
+
+
+INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"     # "AI Fleet Coordinator";  prod is its only environment
+
+
+def infisical_get(cfg: Config, name: str) -> tuple[int, str]:
+    """(rc, value) of one Infisical secret.  The value stays in this process;  rc 0 with '' means it does not exist."""
+    p = subprocess.run([cfg.infisical_bin, "secrets", "get", name, f"--projectId={INFISICAL_PROJECT}", "--env=prod",
+                        "--plain", "--silent"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=120)
+    return p.returncode, p.stdout.decode("utf-8", "replace").strip()
+
+
+def cmd_new_password(cfg: Config, args) -> int:
+    """Generate the repository password and write it to Infisical, never printing it.  Write-once:  it refuses when
+    the handoff file, the environment or Infisical already has one (a replaced password locks every snapshot), and
+    any read it cannot make is a refusal, never 'absent'.  The value reaches the CLI as a file path (``NAME=@file``,
+    a 0600 file in a 0700 folder, removed afterwards), never in argv;  the CLI's output is discarded;  the value is
+    read back and compared in memory, and only 'matched' and its length are reported."""
+    name = CRED_NAMES["password"]
+    if read_handoff(cfg.handoff).get(name) or os.environ.get(name):
+        say(f"{name} is already in {cfg.handoff} or the environment:  the repository has its password;  "
+            f"it is never replaced (README, Credentials).  Nothing written.")
+        return 1
+    if not os.access(cfg.infisical_bin, os.X_OK):
+        say(f"the Infisical CLI is not at {cfg.infisical_bin} (FLEET_WORK_BACKUP_INFISICAL overrides)")
+        return 2
+    try:
+        rc, cur = infisical_get(cfg, name)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        say(f"could not read Infisical ({type(exc).__name__});  nothing written")
+        return 2
+    if rc != 0:
+        say(f"could not read {name} from Infisical (rc={rc});  is the CLI logged in?  Nothing written.")
+        return 2
+    if cur:
+        say(f"{name} already exists in Infisical (length {len(cur)});  nothing written.  It is write-once:  a new "
+            f"repository password would lock every snapshot (keys change only with restic key add and key remove).")
+        return 1
+    value = secrets.token_urlsafe(32)
+    folder = tempfile.mkdtemp(prefix="fwb-pw-")
+    try:
+        path = os.path.join(folder, "value")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(value)
+        p = subprocess.run([cfg.infisical_bin, "secrets", "set", f"{name}=@{path}", f"--projectId={INFISICAL_PROJECT}",
+                            "--env=prod", "--type=shared", "--silent"],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        say(f"the Infisical write did not run ({type(exc).__name__});  nothing written")
+        return 2
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    if p.returncode != 0:
+        say(f"the Infisical write failed (rc={p.returncode});  nothing written")
+        return 2
+    try:
+        rc, back = infisical_get(cfg, name)
+    except (OSError, subprocess.TimeoutExpired):
+        rc, back = -1, ""
+    if rc != 0 or back != value:
+        say(f"written, but the read-back did not match (rc={rc}, length {len(back)});  check {name} in the Infisical "
+            f"UI before running init")
+        return 3
+    say(f"{name} written to Infisical (project AI Fleet Coordinator, prod) and read back:  matched, length {len(value)}.  "
+        f"Never printed.  Next:  wait one infisical-secrets-sync tick, then init, then the recovery key (README, Install).")
+    return 0
 
 
 def restic_path(cfg: Config) -> Optional[str]:
@@ -2685,13 +2866,19 @@ def cmd_init(cfg: Config, args) -> int:
     if env is None:
         say(f"missing credentials in {cfg.handoff} or the environment: {', '.join(missing)}")
         return 2
+    probs = check_b2_setup(cfg)
+    for hard, text in probs:
+        say(("REFUSED:  " if hard else "warning:  ") + text)
+    if any(hard for hard, _ in probs):
+        say("not initialising:  fix the B2 key or bucket first (README, Where it goes)")
+        return 2
     p = run_restic(cfg, env, "init", timeout=300)
     say("restic init " + ("ok" if p.returncode == 0 else "failed: " + (p.stderr.decode().strip().splitlines() or [""])[-1][:160]))
     return p.returncode
 
 
 def cmd_snapshots(cfg: Config, args) -> int:
-    env, missing = restic_env(cfg)
+    env, missing = restic_env(cfg, allow_master=True)
     if env is None or not restic_path(cfg):
         say("restic or credentials missing: " + ", ".join(missing or ["restic"]))
         return 2
@@ -2702,7 +2889,7 @@ def cmd_snapshots(cfg: Config, args) -> int:
 
 def cmd_restic(cfg: Config, args) -> int:
     """Run restic with this job's repository and credentials (for restores and checks)."""
-    env, missing = restic_env(cfg)
+    env, missing = restic_env(cfg, allow_master=True)
     if env is None or not restic_path(cfg):
         say("restic or credentials missing: " + ", ".join(missing or ["restic"]))
         return 2
@@ -2770,6 +2957,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ca.add_argument("--launchd", action="store_true", help="run the check as a one-shot launchd job and report its result")
     ca.add_argument("--result", help=argparse.SUPPRESS)
     sub.add_parser("image", help="print the executable macOS privacy settings see for this interpreter")
+    sub.add_parser("new-password", help="generate the repository password into Infisical, never printing it (once)")
     sub.add_parser("snapshots", help="list this job's snapshots")
     rs = sub.add_parser("restic", help="run restic against this job's repository (restores, checks)")
     rs.add_argument("restic_args", nargs=argparse.REMAINDER)
@@ -2780,7 +2968,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             args = ap.parse_args(["run"])
         return cmd_run(cfg, args)
     return {"init": cmd_init, "check-access": cmd_check_access, "snapshots": cmd_snapshots,
-            "restic": cmd_restic, "image": cmd_image}[args.cmd](cfg, args)
+            "restic": cmd_restic, "image": cmd_image, "new-password": cmd_new_password}[args.cmd](cfg, args)
 
 
 if __name__ == "__main__":

@@ -137,7 +137,11 @@ week of runs without the lanes cannot age out the last good state.  `--prune` ru
 B2 request spike).
 
 The bucket is shared (`litestream.yml` replicates the board database into it), so the application key
-**must** be limited to the file-name prefix `fleet-work-backup/`.  Two B2 facts that need a bucket setting,
+**must** be limited to the bucket and the file-name prefix `fleet-work-backup/`.  `init` and `install.py`
+check that with read-only B2 calls (`b2_authorize_account` and `b2_list_buckets`, API v4) and refuse a key
+that is not limited to them, lacks a capability restic needs, or holds key or bucket admin capabilities
+(`--force` does not override that), and a lifecycle rule that hides files under the prefix by age
+(`daysFromUploadingToHiding` would hide live restic packs).  Two B2 facts that need a bucket setting,
 not code:  over the S3 API a delete only hides a file version, so `restic prune` frees no space until the
 bucket has a **lifecycle rule** on the prefix `fleet-work-backup/` with `daysFromHidingToDeleting` of 7 to
 30 (which also leaves a soft-delete window);  and a key that can delete lets any process on the Mac that can
@@ -161,24 +165,40 @@ subprocess environment only.  Names, never values:
 | `B2_FLEET_WORK_KEY_ID`, `B2_FLEET_WORK_APPLICATION_KEY` | a **bucket-scoped** B2 application key limited to the file-name prefix `fleet-work-backup/`.  Capabilities:  `listFiles`, `readFiles`, `writeFiles`, `deleteFiles` (prune needs it), and `listBuckets`. |
 | `RESTIC_FLEET_WORK_PASSWORD` | the repository password |
 
-The master key (`BACKBLAZE_MASTER_KEY_ID` / `BACKBLAZE_MASTER_APPLICATION_KEY`) is used only when
-`FLEET_WORK_BACKUP_ALLOW_MASTER=1`, and only for names the scoped key leaves empty.
+The master key (`BACKBLAZE_MASTER_KEY_ID` / `BACKBLAZE_MASTER_APPLICATION_KEY`) is never used to back up,
+init or install:  it has no prefix.  With `FLEET_WORK_BACKUP_ALLOW_MASTER=1` the restore commands (`restic`,
+`snapshots`) may fall back to it for names the scoped key leaves empty.
 
 All three secrets live in Infisical (project `AI Fleet Coordinator`, `prod`) and reach the handoff
 file through the one-way `com.jay.infisical-secrets-sync` job:  `scripts/infisical-secrets-sync.sh`
 has a `MAP` row for each, and the sync reads exactly the rows in that array.  The password must be a
 urlsafe token of at least 16 characters, with no whitespace and no backslash (the sync's plausibility
-check rejects anything else, and its `awk -v` mangles backslashes), generated without printing it:
-`python3 -c 'import secrets; print(secrets.token_urlsafe(32))'` piped straight into the Infisical write,
-never into a terminal log.
+check rejects anything else, and its `awk -v` mangles backslashes).  Generate it with
+
+    python3 ~/apps/fleet-work-backup/fleet_work_backup.py new-password
+
+which writes a 43-character urlsafe token to Infisical through the logged-in CLI and never prints it:  the
+value reaches the CLI as a file path (`RESTIC_FLEET_WORK_PASSWORD=@<0600 file>`, removed afterwards), never in
+argv, the CLI's output is discarded, and the value is read back and compared in memory (it reports
+`matched` and the length).  It refuses when the handoff file, the environment or Infisical already has a
+password, and a read it cannot make is a refusal, never "absent".
 
 **The password is the only key to every snapshot, so it is never rotated in Infisical.**  The sync
 overwrites the Mac's copy whenever Infisical changes, and a changed value there makes every run fail with
 `reason=wrong-password` while the old one survives only in Infisical's version history.  A key changes only
 with `restic key add` and `restic key remove` against the repository.  At `init`, add a second
-**recovery key** (`python3 .../fleet_work_backup.py restic -- key add`) and keep its password outside
-Infisical (Apple Passwords, or on paper):  without it, losing Infisical while the Mac is gone loses every
-backup.  The run line reports a wrong password as its own reason.
+**recovery key** and keep its password outside Infisical:  without it, losing Infisical while the Mac is gone
+loses every backup.  The owner does this in Terminal, because the password is typed, not generated here:
+
+1. In Apple Passwords, create an entry `fleet-work-backup restic recovery key` with a generated password.
+2. `python3 ~/apps/fleet-work-backup/fleet_work_backup.py restic -- key add`:  restic asks for the new
+   password twice without echoing it;  paste it from Apple Passwords.
+3. Check that it opens the repository on its own (the file flag wins over the job's password):
+   `pbpaste | python3 ~/apps/fleet-work-backup/fleet_work_backup.py restic -- --password-file /dev/stdin cat config >/dev/null && echo recovery key ok`,
+   then clear the clipboard.
+4. `install.py --check-repo` now counts two keys;  with one it reports the recovery key as missing.
+
+The run line reports a wrong password as its own reason.
 
 ## Schedule and safety
 
@@ -263,7 +283,8 @@ disk, so restic itself never reads `/Volumes/External`.
 ## Commands
 
     python3 ~/apps/fleet-work-backup/fleet_work_backup.py run --dry-run --json /tmp/x.json
-    python3 ~/apps/fleet-work-backup/fleet_work_backup.py init            # once, explicit
+    python3 ~/apps/fleet-work-backup/fleet_work_backup.py new-password    # once:  the restic password into Infisical, never printed
+    python3 ~/apps/fleet-work-backup/fleet_work_backup.py init            # once, explicit;  refuses an unscoped B2 key
     python3 ~/apps/fleet-work-backup/fleet_work_backup.py image           # the executable to grant
     python3 ~/apps/fleet-work-backup/fleet_work_backup.py check-access --launchd
     python3 ~/apps/fleet-work-backup/fleet_work_backup.py snapshots
@@ -278,21 +299,23 @@ for a dry run only (a faster report);  a real run refuses it.
 Order matters;  nothing here runs by itself:
 
 1. `brew install restic` (or `install.py --install-restic`).
-2. Create the bucket-scoped B2 application key **limited to the prefix `fleet-work-backup/`**
-   (capabilities `listFiles readFiles writeFiles deleteFiles listBuckets`), and add the lifecycle rule on
-   that prefix (days from hiding to deleting, 7 to 30).
-3. Write `RESTIC_FLEET_WORK_PASSWORD`, `B2_FLEET_WORK_KEY_ID` and `B2_FLEET_WORK_APPLICATION_KEY` to
-   Infisical (project `AI Fleet Coordinator`, `prod`), generating the password without printing it.
+2. In the B2 console, create an application key **limited to the bucket and the prefix `fleet-work-backup/`**
+   (capabilities `listFiles readFiles writeFiles deleteFiles listBuckets`, nothing more), and add a lifecycle
+   rule on that prefix with days from hiding to deleting of 7 to 30 and **no** days from uploading to hiding.
+3. Write `B2_FLEET_WORK_KEY_ID` and `B2_FLEET_WORK_APPLICATION_KEY` to Infisical (project `AI Fleet
+   Coordinator`, `prod`), and copy `scripts/fleet-work-backup/fleet_work_backup.py` to
+   `~/apps/fleet-work-backup/` (`install.py --skip-launchd` does that), then run `fleet_work_backup.py
+   new-password` for `RESTIC_FLEET_WORK_PASSWORD`.
 4. `install -m 755 scripts/infisical-secrets-sync.sh ~/bin/` and wait one tick;  `~/.secrets/infisical-sync.log`
    shows `updated <KEY> (new_len=N)` for each.
-5. `python3 scripts/fleet-work-backup/install.py --skip-launchd`, then
-   `python3 ~/apps/fleet-work-backup/fleet_work_backup.py init`, then add the recovery key
-   (`... restic -- key add`) and keep its password outside Infisical.
-6. `python3 scripts/fleet-work-backup/install.py` (loads the LaunchAgent;  refuses while a prerequisite is
-   missing;  prints the `Python.app` to grant).
-7. Grant Removable Volumes to that `Python.app`, then `python3 ~/apps/fleet-work-backup/fleet_work_backup.py
-   check-access --launchd` until it says `ok under launchd`.
-8. Optionally `run --ignore-pressure` once by hand;  review the detail log and fill `allow.txt`.
+5. `python3 ~/apps/fleet-work-backup/fleet_work_backup.py init` (it checks the key's scope and the lifecycle
+   rule first), then add the recovery key (Credentials, above) and keep its password outside Infisical.
+6. `python3 scripts/fleet-work-backup/install.py --check-repo` (loads the LaunchAgent;  refuses while a
+   prerequisite is missing, and refuses an unscoped key even with `--force`;  prints the `Python.app` to grant).
+7. Grant Removable Volumes to that `Python.app` in System Settings, then `python3
+   ~/apps/fleet-work-backup/fleet_work_backup.py check-access --launchd` until it says `ok under launchd`.
+8. Optionally `run --ignore-pressure` once by hand;  review the detail log and fill `allow.txt`.  Set
+   `FLEET_WORK_BACKUP_ALERT_TO` in the plist if the not-ok alert should wake someone.
 9. Update the live `~/apps/MAC-LOCAL-PROCESSES.md` and its Apple Note, and add `com.jay.fleet-work-backup`
    to `mac-process-watch.sh`.
 
