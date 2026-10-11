@@ -21,7 +21,7 @@ It runs as CLAUDE every five minutes (com.jay.needs-owner-notify) and does these
      into the topic.
 
 Every Zulip post counts against the caps (urgent per hour, per hour, per day:  NEEDS_OWNER_CAPS).  The pause (the knob
-NEEDS_OWNER_NOTIFY_PAUSED, or Jay's verified `pause` in an OWNER topic of an open item, for 24 hours or until his
+NEEDS_OWNER_NOTIFY_PAUSED, or Jay's verified `pause` in any OWNER topic, for 24 hours or until his
 `resume`) stops every post and every Linear item the notifier would make;  replies are still recorded, in Linear
 only, and their notes wait.  One run at a time (a lock).  The log is ids and reason words, never a question, an
 option, a message or an answer.
@@ -58,6 +58,8 @@ VERIFY_PER_TOPIC = 10
 MIRRORS_PER_RUN = 3
 TOPIC_SCANS_PER_RUN = 10
 TOPIC_LIST_LIMIT = 60
+CONTROL_READS_PER_RUN = 10
+NEVER = -1  # state.topics value:  a topic whose first message is not a Grok Bot persona's
 NOTE_TRIES = 12
 STREAM_ID_TTL = 24 * 3600
 MIRROR_APP = "AFC"  # the team a mirrored item is filed in (the persona's own `app` is not used)
@@ -145,6 +147,16 @@ class Events:
 
 # ---- the run ---------------------------------------------------------------------------------------
 
+def router_owner_topic(name: str) -> bool:
+    """A topic that starts `OWNER ` (any case, with or without Zulip's resolved check mark):  the router's rule, kept in step by a test."""
+    text = str(name or "").strip()
+    for mark in ("\u2714\ufe0f", "\u2714"):
+        if text.startswith(mark):
+            text = text[len(mark):].lstrip()
+            break
+    return text.casefold().startswith("owner ")
+
+
 def parse_time(raw: object) -> dt.datetime | None:
     try:
         stamp = dt.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
@@ -175,6 +187,8 @@ class Notifier:
         self.pending_claude: list[dict] = []
         self.pending_claude_changed = False
         self.paused_by = self._paused_by()
+        self._topic_rows: list[dict] | None = None
+        self._topic_rows_read = False
 
     # ---- small helpers ----------------------------------------------------------------------
     def ts(self) -> float:
@@ -304,6 +318,7 @@ class Notifier:
         self.by_ident = {i.identifier: i for i in self.items}
         self.pending_claude = ledger.read_pending_claude(self.directory)
         self.phase("replies", self.replies_phase)
+        self.phase("controls", self.controls_phase)
         self.phase("urgent notices", lambda: self.notices_phase(urgent=True))
         self.phase("notes", self.notes_phase)
         self.phase("notices", lambda: self.notices_phase(urgent=False))
@@ -325,14 +340,17 @@ class Notifier:
     # ---- replies ------------------------------------------------------------------------------------
     def replies_phase(self) -> None:
         for item in self.items:
-            if item.state != "notified":
+            if item.state not in ("notified", "notify_pending"):
                 continue
             why = self.usable(item)
             if why:
                 self.events.add("skip", item.identifier, why=why)
                 continue
             try:
-                self.look_for_an_answer(item)
+                if item.state == "notify_pending":
+                    self.linear_answer(item)  # no OWNER topic yet, but the issue is in Jay's Linear view
+                else:
+                    self.look_for_an_answer(item)
             except NotifierStop:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -579,6 +597,65 @@ class Notifier:
                 self.events.add("nudge-failed", item.identifier, kind=kind)
             self.touch()
 
+    # ---- a pause or a resume in any OWNER topic -------------------------------------------------------------
+    def topic_rows(self) -> list[dict] | None:
+        """The recent topics of #agent-sync (`agent-sync topics --json`), fetched once a run.  None when it failed."""
+        if not self._topic_rows_read:
+            self._topic_rows_read = True
+            result = self.agent_sync("topics", "--json", "--channel", CHANNEL, "--limit", str(TOPIC_LIST_LIMIT))
+            rows = None
+            if result.ok:
+                try:
+                    parsed = json.loads(result.out)
+                except ValueError:
+                    parsed = None
+                if isinstance(parsed, list):
+                    rows = [r for r in parsed if isinstance(r, dict) and isinstance(r.get("name"), str)
+                            and isinstance(r.get("max_id"), int) and not isinstance(r.get("max_id"), bool)]
+            if rows is None:
+                self.events.add("topics-failed")
+            self._topic_rows = rows
+        return self._topic_rows
+
+    def controls_phase(self) -> None:
+        """Jay's verified `pause` or `resume` as a whole message in ANY OWNER topic, an open item's or not.  Each topic
+        is read only for what was said since the last run (the first run reads no history), so a pause said before the
+        notifier existed is not a pause, and a busy week is not a busy run."""
+        rows = self.topic_rows()
+        if rows is None:
+            return
+        owner_topics = sorted(((r["name"], r["max_id"]) for r in rows if router_owner_topic(r["name"])), key=lambda r: r[1])
+        seen = self.state.data["ctl"]
+        if not self.state.data.get("ctl_ready"):
+            for name, max_id in owner_topics:
+                seen[name] = max_id
+            self.state.data["ctl_ready"] = True
+            self.state.dirty = True
+            return
+        fresh = [row for row in owner_topics if seen.get(row[0]) != row[1]]
+        for name, max_id in fresh[:CONTROL_READS_PER_RUN]:
+            previous = seen.get(name)  # None for a topic opened since the last run:  read it from its start
+            messages = self.read(name, since=previous or 1, limit=30)
+            if messages is None:
+                break  # the same ground again next run
+            for message in messages:
+                if message.get("is_bot") is not False or not self.is_owner_sender(message):
+                    continue
+                word = replies.control_word(message.get("content"))
+                key = str(message["id"])
+                if not word or key in self.state.data["decided"]:
+                    continue
+                verdict = self.verify(message["id"], name, previous or 1)
+                if verdict is None:
+                    self.events.add("verify-failed", msg=message["id"])
+                    return  # not settled:  this topic stays unread, so it is read again
+                self.state.data["decided"][key] = "control" if verdict else "rejected"
+                self.state.dirty = True
+                if verdict:
+                    self.apply_control(word, message["id"])
+            seen[name] = max_id
+            self.state.dirty = True
+
     # ---- the Grok Bot mirror --------------------------------------------------------------------------
     def gb_sender(self, message: dict) -> str | None:
         """The GB seat that sent `message`, only when it is a bot whose email is exactly that persona's
@@ -596,23 +673,17 @@ class Notifier:
     def mirror_phase(self) -> None:
         if self.paused:
             return
-        result = self.agent_sync("topics", "--json", "--channel", CHANNEL, "--limit", str(TOPIC_LIST_LIMIT))
-        if not result.ok:
-            self.events.add("topics-failed")
-            return
-        try:
-            rows = json.loads(result.out)
-        except ValueError:
-            self.events.add("topics-failed")
+        rows = self.topic_rows()
+        if rows is None:
             return
         known = {i.topic.casefold() for i in self.items if i.topic}
         mirrored = {i.block.mirror_message() for i in self.items if i.block and i.block.mirror_of}
         scanned = made = 0
-        for row in rows if isinstance(rows, list) else []:
-            name, max_id = row.get("name"), row.get("max_id")
-            if not isinstance(name, str) or not isinstance(max_id, int) or not name.startswith("OWNER "):
+        for row in rows:
+            name, max_id = row["name"], row["max_id"]
+            if not name.startswith("OWNER "):
                 continue
-            if name.casefold() in known or self.state.data["topics"].get(name) == max_id:
+            if name.casefold() in known or self.state.data["topics"].get(name) in (max_id, NEVER):
                 continue
             if scanned >= TOPIC_SCANS_PER_RUN:
                 break
@@ -624,7 +695,8 @@ class Notifier:
             outcome = self.consider_topic(name, messages, mirrored, made)
             made += 1 if outcome == "mirrored" else 0
             if outcome != "retry":
-                self.state.data["topics"][name] = max_id
+                # A topic a persona did not open is never a request topic, so it is not read again for this.
+                self.state.data["topics"][name] = NEVER if outcome == "not_a_persona_topic" else max_id
                 self.state.dirty = True
             self.touch()
             if made >= MIRRORS_PER_RUN:
@@ -636,21 +708,16 @@ class Notifier:
             return "ignored"
         opener = self.gb_sender(messages[0])
         if opener is None:
-            return "ignored"
-        for message in messages:
+            return "not_a_persona_topic"
+        problems: list[tuple[int, str]] = []
+        for message in messages:  # a corrected request posted after a wrong one is the one that counts
             if self.gb_sender(message) != opener:
                 continue
             try:
                 request = replies.parse_request(message.get("content"), opener)
             except replies.RequestProblem as problem:
-                key = "badblock:%d" % message["id"]
-                if not self.state.seen_once(key) and self.caps.room(False) is None and not self.dry_run:
-                    sent, _ = self.post_reply(message["id"], replies.rejected_request_text(problem.reason))
-                    if sent:
-                        self.state.mark_once(key)
-                        self.state.record_send("reject", "-")
-                self.events.add("request-rejected", msg=message["id"], reason=problem.reason)
-                return "rejected"
+                problems.append((message["id"], problem.reason))
+                continue
             if request is None:
                 continue
             if message["id"] in mirrored or str(message["id"]) in self.state.data["mirror"]:
@@ -659,7 +726,15 @@ class Notifier:
                 self.events.add("deferred", msg=message["id"], mirror=True)
                 return "retry"
             return self.mirror(topic, message["id"], request)
-        return "ignored"
+        for message_id, reason in problems:
+            key = "badblock:%d" % message_id
+            if not self.state.seen_once(key) and self.caps.room(False) is None and not self.dry_run:
+                sent, _ = self.post_reply(message_id, replies.rejected_request_text(reason))
+                if sent:
+                    self.state.mark_once(key)
+                    self.state.record_send("reject", "-")
+            self.events.add("request-rejected", msg=message_id, reason=reason)
+        return "rejected" if problems else "ignored"
 
     def post_reply(self, message_id: int, body: str) -> tuple[bool, int | None]:
         result = self.agent_sync("reply", "--json", "--id", str(message_id), "--", "-", stdin=body)
@@ -680,7 +755,7 @@ class Notifier:
         out, err = iolib.StringIO(), iolib.StringIO()
         try:
             code = verbs.run_file(args, verbs.Streams(self.io.environ, out, err))
-        except Refusal as exc:
+        except Refusal:
             self.state.data["mirror"][str(message_id)] = "refused"
             self.state.dirty = True
             self.events.add("mirror-refused", msg=message_id)

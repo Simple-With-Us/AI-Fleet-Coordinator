@@ -117,6 +117,15 @@ class MirrorTests(MirrorCase):
         self.run_notify()
         self.assertEqual(len(self.reply_calls()), 1, "told once")
 
+    def test_a_corrected_request_after_a_wrong_one_is_the_one_that_counts(self) -> None:
+        bad = self.persona(content=request_text(seat="GB-DIRECTOR"))
+        first = self.run_notify()
+        self.assertEqual([e["msg"] for e in self.events(first, "request-rejected")], [bad])
+        fixed = self.persona(content=request_text())
+        second = self.run_notify()
+        self.assertEqual([e["msg"] for e in self.events(second, "mirrored")], [fixed])
+        self.assertEqual(len(self.reply_calls()), 2, "one rejection, one link back")
+
     def test_every_way_a_request_can_be_wrong_is_a_reason_word(self) -> None:
         cases = {
             "not_json": "{not json",

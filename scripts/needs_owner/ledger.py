@@ -3,7 +3,8 @@
 Everything lives under `~/apps/needs-owner/state/` (mode 0700, HOME from the caller's environment):
 
   notify-state.json      send times (for the caps), once-only marks, replies whose note is still due, the pause, retries,
-                         the Grok Bot requests already mirrored, the topics already read, the messages already judged.
+                         the Grok Bot requests already mirrored, the topics already read, the messages already judged, how far each OWNER
+                         topic was read for a pause.
                          Mode 0600, ids and numbers only.
   notify.lock            one run at a time.  A lock older than 30 minutes, or whose process is gone, is taken over.
   pending-CLAUDE.json    replies to items CLAUDE filed itself.  A post that mentions yourself wakes nobody, so the
@@ -143,7 +144,7 @@ class Lock:
 
 def _empty() -> dict:
     return {"schema": SCHEMA, "sent": [], "once": {}, "notes": {}, "pause": {"on": False, "msg": 0, "at": 0.0},
-            "retry": {}, "mirror": {}, "topics": {}, "decided": {}, "stream_id": None, "last_run": 0.0}
+            "retry": {}, "mirror": {}, "topics": {}, "decided": {}, "stream_id": None, "ctl": {}, "ctl_ready": False, "last_run": 0.0}
 
 
 class State:
@@ -180,7 +181,7 @@ class State:
         d = self.data
         d["sent"] = [s for s in d["sent"] if isinstance(s, dict) and now - float(s.get("t", 0)) < SENT_KEEP_SECONDS]
         d["once"] = {k: t for k, t in d["once"].items() if now - float(t) < ONCE_KEEP_SECONDS}
-        for key in ("mirror", "topics", "decided", "retry"):
+        for key in ("mirror", "topics", "decided", "retry", "ctl"):
             if len(d[key]) > MAX_KEYS:
                 d[key] = dict(list(d[key].items())[-MAX_KEYS:])
 

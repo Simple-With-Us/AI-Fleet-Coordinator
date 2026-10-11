@@ -7,6 +7,7 @@ Grok Bot personas are the filing seats.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import subprocess
 import time
@@ -281,6 +282,49 @@ class PauseTests(NotifierCase):
         self.assertIsNone(resumed["paused"])
         self.assertEqual(len(self.events(resumed, "notified")), 1)
 
+    def test_a_pause_in_any_owner_topic_counts_even_one_whose_item_is_closed(self) -> None:
+        old_item = self.file("Settled long ago?", seat="CODEX")
+        self.w.close(old_item["identifier"])
+        self.assertIsNone(self.run_notify()["paused"], "the first run only notes where each topic stands")
+        self.w.add_message(old_item["topic"], "pause")
+        self.assertEqual(self.run_notify()["paused"], "owner")
+        self.pending("Waiting to be announced?")
+        self.assertEqual(self.sent_by_notifier(), [])
+        self.w.add_message("OWNER AFC-901 some other decision", "resume")
+        resumed = self.run_notify()
+        self.assertIsNone(resumed["paused"])
+        self.assertEqual(len(self.events(resumed, "notified")), 1)
+
+    def test_a_pause_said_before_the_notifier_ever_ran_is_history_not_a_pause(self) -> None:
+        old_item = self.file("Settled long ago?", seat="CODEX")
+        self.w.add_message(old_item["topic"], "pause")
+        self.w.close(old_item["identifier"])
+        self.assertIsNone(self.run_notify()["paused"])
+        self.assertIsNone(self.run_notify()["paused"])
+
+    def test_a_topic_is_read_again_only_when_it_changes(self) -> None:
+        old_item = self.file("Settled long ago?", seat="CODEX")
+        self.w.close(old_item["identifier"])
+        self.run_notify()
+        reads = lambda: len([c for c in self.w.calls("agent-sync") if c["argv"][0] == "read" and old_item["topic"] in c["argv"]])  # noqa: E731
+        before = reads()
+        self.run_notify()
+        self.assertEqual(reads(), before)
+        self.w.add_message(old_item["topic"], "a plain remark")
+        self.run_notify()
+        self.assertEqual(reads(), before + 1)
+        self.run_notify()
+        self.assertEqual(reads(), before + 1)
+
+    def test_a_pause_from_the_wrong_sender_in_a_closed_topic_is_ignored(self) -> None:
+        old_item = self.file("Settled long ago?", seat="CODEX")
+        self.w.close(old_item["identifier"])
+        self.run_notify()
+        self.w.add_message(old_item["topic"], "pause", client="ZulipPython")
+        self.w.add_message(old_item["topic"], "pause", sender_id=8)
+        self.w.add_message(old_item["topic"], "pause", seat="CODEX")
+        self.assertIsNone(self.run_notify()["paused"])
+
     def test_a_pause_lapses_after_a_day(self) -> None:
         open_item = self.file("Which way?", seat="CODEX")
         self.w.add_message(open_item["topic"], "Pause.")
@@ -314,9 +358,13 @@ class PauseTests(NotifierCase):
 
     def test_paused_notifier_also_files_no_grok_bot_mirror(self) -> None:
         self.w.knobs.values["NEEDS_OWNER_NOTIFY_PAUSED"] = True
-        self.w.add_message("OWNER GB-PLUMBER needs a key", "x", seat="GB-PLUMBER")
+        request = "```needs-owner-request\n%s\n```" % json.dumps({"question": "Rotate it?", "options": ["Yes", "No"], "seat": "GB-PLUMBER"})
+        self.w.add_message("OWNER GB-PLUMBER needs a key", request, seat="GB-PLUMBER")
         self.run_notify()
-        self.assertEqual([c for c in self.w.calls("agent-sync") if c["argv"][0] == "topics"], [])
+        self.assertEqual([c for c in self.w.calls("board") if c["argv"][0] == "file"], [])
+        self.assertEqual([c for c in self.w.calls("agent-sync") if c["argv"][0] == "reply"], [])
+        self.w.knobs.values["NEEDS_OWNER_NOTIFY_PAUSED"] = False
+        self.assertEqual(len(self.events(self.run_notify(), "mirrored")), 1)
 
 
 class RunTests(NotifierCase):

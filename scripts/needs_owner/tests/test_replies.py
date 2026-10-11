@@ -67,7 +67,7 @@ class TapTests(RepliesCase):
         self.assertEqual(self.events(again, "replied"), [])
         self.assertEqual(len(self.replied(record["identifier"])), 1)
         self.assertEqual(len(self.notes()), 1)
-        self.tap(record, 3)  # a later change of mind is not read:  the first answer stands, the filer decides
+        self.tap(record, 3)  # a later reaction does not undo the first answer:  the filer decides
         self.run_notify()
         self.assertEqual(len(self.replied(record["identifier"])), 1)
 
@@ -275,6 +275,14 @@ class LinearReplyTests(RepliesCase):
         result = self.run_notify()
         self.assertEqual(self.events(result, "replied"), [])
         self.assertEqual(self.replied(ident), [])
+
+    def test_a_comment_answers_an_item_whose_topic_is_not_open_yet(self) -> None:
+        record = self.pending()
+        cid = self.comment(record["identifier"], "Option 1")
+        result = self.run_notify()
+        self.assertEqual([(e["id"], e["kind"], e["ref"]) for e in self.events(result, "replied")], [(record["identifier"], "comment", cid)])
+        self.assertEqual(self.events(result, "notified"), [], "an answered item needs no notice")
+        self.assertEqual(self.state_of(record["identifier"])["state"], "replied")
 
     def test_with_no_linear_id_pinned_no_comment_counts(self) -> None:
         self.w.knobs.values["OWNER_LINEAR_USER_ID"] = ""

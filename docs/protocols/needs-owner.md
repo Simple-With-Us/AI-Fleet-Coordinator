@@ -252,7 +252,7 @@ a Grok Bot request) one Linear item.  It reads no secret.  A failed read of Line
      own account fields;  a typed tag line cannot change them).  With the knob empty, no Linear reply is accepted.
 
    The record is one comment from CLAUDE, `owner replied:  msg <id>`, `owner replied:  reaction <n> on msg <id>` or `owner replied:  comment <id>`.  It is written
-   once per item.  The first answer stands:  a later change of mind is for the filer to ask about.
+   once per item.  The first answer stands:  a reaction or message that comes later does not undo it (Jay says so to the filer if he means to, and the filer decides).
 3. **Notices.**  An item still `notify_pending` two minutes after it was filed, adopted or marked (urgent items first) is posted from CLAUDE with the header
    `For <SEAT> (filed by <SEAT>, not checked by CLAUDE).`, after `find_notice` has looked for a post the filer's bot already landed.  A failed post backs off
    (5 minutes, then doubling up to an hour).
@@ -267,8 +267,8 @@ a Grok Bot request) one Linear item.  It reads no secret.  A failed read of Line
 
 **The caps and the pause.**  Every Zulip post the notifier makes counts:  `NEEDS_OWNER_CAPS` (default 3 urgent an hour, 6 an hour, 30 a day) caps notices, notes, nudges and
 mirror link-backs together, urgent notices first.  The counts are kept in `notify-state.json` and carry over between runs.  Nothing is dropped for a full cap:  it waits for the next
-hour or day.  **Paused** (the Infisical knob `NEEDS_OWNER_NOTIFY_PAUSED` true, or Jay's verified `pause` as the whole message in the OWNER topic of an item still waiting on him, for
-24 hours or until his `resume`) stops every post and every Linear item the notifier would make.  Replies are still recorded in Linear (a comment is silent) and their notes wait,
+hour or day.  **Paused** (the Infisical knob `NEEDS_OWNER_NOTIFY_PAUSED` true, or Jay's verified `pause` as the whole message in **any** OWNER topic, for
+24 hours or until his `resume`;  each topic is read for what was said since the last run, and the first run reads no history) stops every post and every Linear item the notifier would make.  Replies are still recorded in Linear (a comment is silent) and their notes wait,
 and the file for CLAUDE's items is still written.  To stop it at once:  `launchctl bootout gui/$(id -u)/com.jay.needs-owner-notify`.
 
 **Its files**, in `~/apps/needs-owner/state/` (directory 0700, files 0600, ids and numbers only, never a question, option, answer or message):  `notify-state.json`, `notify.lock`
