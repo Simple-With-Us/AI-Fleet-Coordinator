@@ -164,8 +164,13 @@ def prose_lines(text: str) -> list[str]:
 # One ASCII space after a sentence end, then the next sentence starting with a capital letter.  Two ASCII spaces
 # and U+00A0 plus a space both fail the `(?: )` + lookahead shape, so they never match.
 _SINGLE_GAP = re.compile(r"""(?P<end>[.!?])(?P<close>["'”’)\]*_]*)[ ](?=["'“‘(\[*_]*[A-Z])""")
-_NOT_A_BOUNDARY = {"e.g", "i.e", "vs", "cf", "approx", "mr", "mrs", "ms", "dr", "st", "no", "inc"}
-_LIST_MARKER = re.compile(r"^\s*(?:[-*+>]\s+|#{1,6}\s+)*\d{1,3}$")     # "1." and "## 1." open a list item or heading
+# Abbreviations that are never a sentence end.  "no" is absent on purpose:  "I said no.  Then we stop." ends a sentence,
+# and "No. 5" never reaches this list because the gap must be followed by a capital letter.  One-letter words are absent
+# too:  "Pick option A.  Then we stop." is a real boundary, and "J. Smith" cannot be told apart from it, so a text that
+# names a person by initial is reworded.  A false alarm costs a rewording;  a miss breaks the owner's spacing rule.
+_NOT_A_BOUNDARY = {"e.g", "i.e", "vs", "cf", "approx", "mr", "mrs", "ms", "dr", "st", "inc"}
+# "1." and "## 1." open a list item or heading, and so does a lone letter at the start of a line ("a." and "B.")
+_LIST_MARKER = re.compile(r"^\s*(?:[-*+>]\s+|#{1,6}\s+)*(?:\d{1,3}|[A-Za-z])$")
 
 
 def single_space_gaps(text: str) -> list[int]:
@@ -176,10 +181,10 @@ def single_space_gaps(text: str) -> list[int]:
             head = line[:match.start()]
             token = re.search(r"(\S+)$", head + match.group("end"))
             word = (token.group(1) if token else "").rstrip(".!?").lstrip("([\"'*_").lower()
-            if match.group("end") == "." and (word in _NOT_A_BOUNDARY or (len(word) == 1 and word.isalpha())):
-                continue            # e.g. / i.e. / an initial
+            if match.group("end") == "." and word in _NOT_A_BOUNDARY:
+                continue            # e.g. / i.e. / vs.
             if match.group("end") == "." and _LIST_MARKER.match(head):
-                continue            # "1. Decisions"
+                continue            # "1. Decisions" and "A. Decisions"
             found.append(number)
             break
     return found

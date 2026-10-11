@@ -26,13 +26,15 @@ The three cores are shared unchanged by both platforms.  A BotFleet block (writt
 
 ## Grok Bot Blocks Upgrade Themselves
 
-Each block does the same five things, in order:
+Each block does these five things, in order.  GB-Plumber is the one exception at step 4:  see below the list.
 
 1. Calls `GET /users/me` and stops unless the email is its own `<role>-grok-bot@` address.
 2. Verifies Jay's Zulip user id, written in the text with its provenance, with `GET /users/<id>` (a human with the owner role) before any direct message.
 3. Tries the shared tool first, from a fresh `--depth 1` clone of this repository's main branch.  It runs the tool with `--no-mac --mac-facts <signed file from fleet-loops-data>` when the tool exists.
-4. Otherwise gathers natively with GitHub and Linear reads and says "gathered natively".
+4. Otherwise gathers natively with GitHub and Linear reads and says "gathered natively".  (GB-Deployer and GB-Housekeeper only.)
 5. Posts and direct-messages by the Zulip REST API under its own label `[GB-<ROLE>]`, and ends its chat with "sent".
+
+GB-Plumber has no native fallback, on purpose.  Backup state (is the job installed and loaded, when the last complete backup finished, the restic check age, free disk) exists only on the Mac, and Grok Bot cannot see the Mac.  Its one source is the `backup` block of the signed `gb/mac-facts.json` in fleet-loops-data.  So when the tool is missing, the signature fails or the backup block is absent, GB-Plumber posts "Mac facts absent" (with the reason) in the backup topic and never guesses, and a facts file that is too old is called stale in its line.  The plan's GB-Plumber row says the same:  its first post, Tue, Oct 13, 8:00am, reports "Mac facts absent" until the facts are published.  The checker does not require "gathered natively" in any block.
 
 So when the shared tools land on main (open-loops gather, the fleet-facts reader, `lane sweep`), a pasted block starts using them with no re-paste.  Each block also carries the trigger line (`CRON_TZ=America/Chicago` plus a cron expression).
 
@@ -64,7 +66,7 @@ It exits 0 when clean, 1 on any finding and 2 on a usage error.  CI runs the tes
 | `typed-mention` | A hand-typed Zulip mention.  Mentions are built at run time from the live user list |
 | `code-path` | A path under `~/Code`, the human's integration tree |
 | `slack-helper` | The retired Slack helper or a Slack endpoint |
-| `single-space-gap` | A sentence boundary with one ASCII space.  Fences, inline code, URLs, `e.g.` and list markers are skipped |
+| `single-space-gap` | A sentence boundary with one ASCII space, including one after "no" or after a one-letter word such as "option A.".  Fences, inline code, URLs, `e.g.`, `i.e.`, `vs.` and list markers ("1." and "A." at the start of a line) are skipped.  A person named by initial (`J. Smith`) is flagged too, so reword it |
 | `reminder-missing` | The owner's standing reminder is not quoted verbatim |
 | `secret-shaped` | A secret-shaped string, by the agent-sync secret scanner plus a local copy of the Linear, Sentry, xAI, Infisical, Cloudflare and Coolify patterns |
 | `gb-label` | A `gb-<role>.md` text without its own `[GB-<ROLE>]` label and `<role>-grok-bot@` email, or with another role's;  or any GB label in a core |

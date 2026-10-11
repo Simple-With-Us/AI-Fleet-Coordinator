@@ -170,11 +170,44 @@ class SentenceGapTests(unittest.TestCase):
 
     def test_abbreviations_versions_and_list_markers_pass(self):
         for fine in ("Use a tool, e.g. Python.", "That is, i.e. this one.", "Compare vs. the old one.",
-                     "See v1.2.3 for details.", "Written by J. Smith today.", "1. Decisions Waiting",
-                     "  - 2. Next item", "## 3. Send", "Ends with a number 5. Then"):
-            if fine == "Ends with a number 5. Then":
-                continue    # a real boundary after a number:  flagged on purpose, see below
+                     "See v1.2.3 for details.", "1. Decisions Waiting", "  - 2. Next item", "## 3. Send",
+                     "A. Decisions Waiting", "  - b. Next item", "## C. Send"):
             self.assertEqual(self.gaps(fine), [], fine)
+
+    def test_a_boundary_after_no_is_flagged(self):
+        # "no" used to sit in the abbreviation list, which hid every sentence that ends with the word
+        self.assertEqual(self.gaps("I said no. Then we stop."), [1])
+        self.assertEqual(self.gaps("The answer is no! Then we stop."), [1])
+        self.assertEqual(self.gaps("No. Then we stop."), [1])
+        self.assertEqual(self.gaps("I said no.  Then we stop."), [])
+
+    def test_a_boundary_after_a_one_letter_word_is_flagged(self):
+        # a one-letter word used to count as an initial, which hid every sentence that ends with one
+        self.assertEqual(self.gaps("Pick option A. Then we stop."), [1])
+        self.assertEqual(self.gaps("Take plan B. Then wait."), [1])
+        self.assertEqual(self.gaps("You and I. Then we stop."), [1])
+        self.assertEqual(self.gaps("Pick option A.  Then we stop."), [])
+        # an initial in a name cannot be told from that boundary, so the text is reworded
+        self.assertEqual(self.gaps("Written by J. Smith today."), [1])
+        # a lone letter that opens a line is a list marker, but only the first boundary on the line is exempt
+        self.assertEqual(self.gaps("A. Decisions waiting. Then more."), [1])
+
+    def test_the_bad_fixture_pins_both_shapes(self):
+        text = (FIXTURES / "bad" / "single-space-gap.md").read_text(encoding="utf-8")
+        lines = text.split("\n")
+        want = [number for number, line in enumerate(lines, 1)
+                if line in ("The digest is short. It always ends with a link.", "Answer no. Then stop.",
+                            "Pick option A. Then wait.")]
+        self.assertEqual(len(want), 3)
+        self.assertEqual(self.gaps(text), want)
+
+    def test_the_good_fixture_holds_the_same_shapes_spaced_right(self):
+        text = (FIXTURES / "good" / "backup-health.md").read_text(encoding="utf-8")
+        self.assertIn("no.  Then stop.", text)
+        self.assertIn("A.  Then wait.", text)
+        self.assertEqual(self.gaps(text), [])
+
+    def test_a_bare_number_is_a_boundary_only_inside_prose(self):
         self.assertEqual(self.gaps("Ends with a number 5. Then"), [1])
 
     def test_code_urls_and_fences_are_ignored(self):
