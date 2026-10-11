@@ -106,14 +106,19 @@ class FakeGitHub:
             body = json.load(fh)
         self.puts.append({"path": rel, "body": body, "argv": list(args), "mode": mode, "file": path})
         failing = self.put_fail.get(rel)
+        lost_answer = False
         if failing:
             code = failing.pop(0)
-            if code is not None:         # None lets this attempt through
+            if code == "landed-timeout":     # the write happens, the answer never arrives
+                lost_answer = True
+            elif code is not None:           # None lets this attempt through
                 return Result(1, "", "gh: failure (HTTP %s)" % code)
         current = blob_sha(self.files[rel]) if rel in self.files else None
         if body.get("sha") != current:
             return Result(1, "", "gh: %s does not match (HTTP 409)" % rel)
         self.files[rel] = base64.b64decode(body["content"])
+        if lost_answer:
+            return Result(None, "", "", reason="timed out after 120s")
         return Result(0, json.dumps({"content": {"sha": blob_sha(self.files[rel])}}), "")
 
     def _delete(self, rel: str, args: list[str]) -> Result:
@@ -123,13 +128,18 @@ class FakeGitHub:
             body = json.load(fh)
         self.deletes.append({"path": rel, "body": body, "argv": list(args), "mode": mode})
         failing = self.delete_fail.get(rel)
+        lost_answer = False
         if failing:
             code = failing.pop(0)
-            if code is not None:
+            if code == "landed-timeout":
+                lost_answer = True
+            elif code is not None:
                 return Result(1, "", "gh: failure (HTTP %s)" % code)
         if rel not in self.files or body.get("sha") != blob_sha(self.files[rel]):
             return Result(1, "", "gh: %s does not match (HTTP 409)" % rel)
         del self.files[rel]
+        if lost_answer:
+            return Result(None, "", "", reason="timed out after 120s")
         return Result(0, json.dumps({"commit": {"sha": "0" * 40}}), "")
 
     # -- helpers for the tests -------------------------------------------------------------------------

@@ -222,34 +222,46 @@ class Writer:
             body["sha"] = sha
         return self._send("PUT", rel, body)
 
+    def _look(self, rel: str) -> tuple[str | None, bool]:
+        """(the file's blob sha or None, True) or (None, False) when it could not be read:  a look after a write that did not answer."""
+        try:
+            return self._remote_sha(rel), True
+        except WriteFailed:
+            return None, False
+
     def put(self, rel: str, data: bytes, message: str) -> str:
-        """"created", "updated" or "unchanged".  Raises Refused for a bad path and WriteFailed for anything else."""
+        """"created", "updated" or "unchanged".  Raises Refused for a bad path and WriteFailed for anything else.
+
+        A write that fails is looked at before anything else is done:  a PUT that timed out may have landed, and then the retry would
+        only be refused (the sha moved), so the file is read again and a blob that matches what was sent counts as written."""
         check_path(rel)
         sha = self._remote_sha(rel)
-        if sha is not None and sha == git_blob_sha(data):
+        want = git_blob_sha(data)
+        if sha == want:
             return "unchanged"
+        done = "created" if sha is None else "updated"
         result = self._put(rel, data, message, sha)
         if result.reason is None and result.rc == 0:
-            return "created" if sha is None else "updated"
+            return done
         status = _http(result)
+        fresh, readable = self._look(rel)
+        if readable and fresh == want:
+            return done                                     # it landed after all
         if status in ("409", "422"):
-            # Somebody (or a race with a second run) changed the file since we read it:  look once more, never force.
-            fresh = self._remote_sha(rel)
-            if fresh == sha:
+            # Somebody (or a race with a second run) changed the file since we read it:  use the fresh sha once, never force.
+            if not readable or fresh == sha:
                 raise WriteFailed("writing %s was refused (HTTP %s) and the file did not change" % (rel, status))
-            if fresh is not None and fresh == git_blob_sha(data):
-                return "unchanged"
-            result = self._put(rel, data, message, fresh)
-            if result.reason is None and result.rc == 0:
-                return "updated" if fresh else "created"
-            status = _http(result)
         elif result.reason or status.startswith("5"):
             self.sleep(5)
-            result = self._put(rel, data, message, sha)
-            if result.reason is None and result.rc == 0:
-                return "created" if sha is None else "updated"
-            status = _http(result)
-        raise WriteFailed("writing %s failed (%s)" % (rel, result.reason or "HTTP %s" % (status or "?")))
+        else:
+            raise WriteFailed("writing %s failed (HTTP %s)" % (rel, status or "?"))
+        retry = self._put(rel, data, message, fresh if readable else sha)
+        if retry.reason is None and retry.rc == 0:
+            return "updated" if (fresh if readable else sha) else "created"
+        again, readable = self._look(rel)
+        if readable and again == want:
+            return "updated" if again is not None and (fresh if readable else sha) else "created"
+        raise WriteFailed("writing %s failed (%s)" % (rel, retry.reason or "HTTP %s" % (_http(retry) or "?")))
 
     def remove(self, rel: str, message: str) -> str:
         """Delete `mac-facts.json` (the path-bearing copy a knob governs) from the branch:  "removed", or "absent" when it was not there.
@@ -264,19 +276,20 @@ class Writer:
         if result.reason is None and result.rc == 0:
             return "removed"
         status = _http(result)
+        fresh, readable = self._look(rel)
+        if readable and fresh is None:
+            return "removed"                                # it went after all (or someone else removed it)
         if status in ("409", "422"):
-            fresh = self._remote_sha(rel)
-            if fresh is None:
-                return "absent"
-            if fresh != sha:
-                result = self._send("DELETE", rel, {"message": message, "sha": fresh})
-                if result.reason is None and result.rc == 0:
-                    return "removed"
-                status = _http(result)
+            if not readable or fresh == sha:
+                raise WriteFailed("removing %s was refused (HTTP %s) and the file did not change" % (rel, status))
         elif result.reason or status.startswith("5"):
             self.sleep(5)
-            result = self._send("DELETE", rel, {"message": message, "sha": sha})
-            if result.reason is None and result.rc == 0:
-                return "removed"
-            status = _http(result)
-        raise WriteFailed("removing %s failed (%s)" % (rel, result.reason or "HTTP %s" % (status or "?")))
+        else:
+            raise WriteFailed("removing %s failed (HTTP %s)" % (rel, status or "?"))
+        retry = self._send("DELETE", rel, {"message": message, "sha": fresh if readable else sha})
+        if retry.reason is None and retry.rc == 0:
+            return "removed"
+        again, readable = self._look(rel)
+        if readable and again is None:
+            return "removed"
+        raise WriteFailed("removing %s failed (%s)" % (rel, retry.reason or "HTTP %s" % (_http(retry) or "?")))

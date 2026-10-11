@@ -235,6 +235,26 @@ class Writing(unittest.TestCase):
         self.assertIn("refused (HTTP 422)", caught.exception.reason)
         self.assertEqual(len(self.gh.puts), 1)
 
+    def test_a_write_that_landed_but_never_answered_counts_as_written(self):
+        """A PUT that times out may have happened;  the retry would only be refused (the sha moved), so the file is read again."""
+        self.gh.put_fail["gb/full-list.md"] = ["landed-timeout"]
+        self.assertEqual(self.writer.put("gb/full-list.md", b"new\n", "m"), "created")
+        self.assertEqual(len(self.gh.puts), 1, "no second attempt")
+        self.gh.put_fail["gb/full-list.md"] = ["landed-timeout"]
+        self.assertEqual(self.writer.put("gb/full-list.md", b"newer\n", "m"), "updated")
+        self.assertEqual((len(self.gh.puts), self.gh.written("gb/full-list.md")), (2, b"newer\n"))
+
+    def test_a_retry_that_landed_but_never_answered_counts_as_written_too(self):
+        self.gh.put_fail["gb/full-list.md"] = ["502", "landed-timeout"]
+        self.assertEqual(self.writer.put("gb/full-list.md", b"x\n", "m"), "created")
+        self.assertEqual(len(self.gh.puts), 2)
+
+    def test_a_delete_that_landed_but_never_answered_counts_as_removed(self):
+        self.gh.files["mac-facts.json"] = b"{}"
+        self.gh.delete_fail["mac-facts.json"] = ["landed-timeout"]
+        self.assertEqual(self.writer.remove("mac-facts.json", "m"), "removed")
+        self.assertEqual(len(self.gh.deletes), 1)
+
     def test_a_server_error_is_retried_once_after_a_pause(self):
         self.gh.put_fail["gb/mac-facts.json"] = ["502"]
         self.assertEqual(self.writer.put("gb/mac-facts.json", b"x", "m"), "created")
@@ -297,11 +317,11 @@ class Removing(unittest.TestCase):
         self.gh.delete_fail["mac-facts.json"] = ["422"]
         with self.assertRaises(r.WriteFailed) as caught:
             self.writer.remove("mac-facts.json", "m")
-        self.assertIn("removing mac-facts.json failed", caught.exception.reason)
+        self.assertIn("refused (HTTP 422) and the file did not change", caught.exception.reason)
         self.assertEqual(len(self.gh.deletes), 1)
         self.assertIn("mac-facts.json", self.gh.files)
 
-    def test_a_file_someone_else_already_removed_is_absent(self):
+    def test_a_file_someone_else_removed_in_the_meantime_counts_as_removed(self):
         self.gh.files["mac-facts.json"] = b"{}"
         self.gh.delete_fail["mac-facts.json"] = ["409"]
         calls = {"n": 0}
@@ -313,7 +333,7 @@ class Removing(unittest.TestCase):
                 self.gh.files.pop(rel, None)       # gone between our read and the retry look
             return real_get(rel)
         self.gh._get = get
-        self.assertEqual(self.writer.remove("mac-facts.json", "m"), "absent")
+        self.assertEqual(self.writer.remove("mac-facts.json", "m"), "removed")
 
     def test_a_server_error_is_retried_once(self):
         self.gh.files["mac-facts.json"] = b"{}"

@@ -773,13 +773,20 @@ class KnobProviders(KnobTestCase):
         self.new_process()
         self.fake.set(secrets={"FLEET_FACTS_PUBLISH_CAP_MINUTES": "90", "FLEET_FACTS_PUBLISH_MAX_LOAD1": "banana"})
         self.assertEqual(p._default_limits(), (20 * 60, 250.0), "a value out of range or not a number is the default")
+        self.new_process()
+        self.fake.set(secrets={"FLEET_FACTS_PUBLISH_CAP_MINUTES": "9"})
+        self.assertEqual(p._default_limits()[0], 20 * 60, "under 10 minutes cannot fit the reserved gather time and the writes")
+        self.new_process()
+        self.fake.set(secrets={"FLEET_FACTS_PUBLISH_CAP_MINUTES": "10"})
+        self.assertEqual(p._default_limits()[0], 10 * 60)
+        self.assertGreater(10 * 60 - p.GATHER_RESERVE_S, p.MIN_WRITE_S, "the smallest allowed cap still leaves room")
 
     def test_an_outage_keeps_the_last_good_limits(self):
-        self.fake.set(secrets={"FLEET_FACTS_PUBLISH_CAP_MINUTES": "7", "FLEET_FACTS_PUBLISH_MAX_LOAD1": "90"})
-        self.assertEqual(p._default_limits(), (420, 90.0))
+        self.fake.set(secrets={"FLEET_FACTS_PUBLISH_CAP_MINUTES": "12", "FLEET_FACTS_PUBLISH_MAX_LOAD1": "90"})
+        self.assertEqual(p._default_limits(), (720, 90.0))
         self.new_process()
         self.fake.set(mode="fail")
-        self.assertEqual(p._default_limits(), (420, 90.0))
+        self.assertEqual(p._default_limits(), (720, 90.0))
 
     def test_the_allowed_apps_come_from_infisical(self):
         self.fake.set(secrets={"FLEET_LOOPS_DATA_ALLOWED_APPS": "alpha-app, beta-app"})
