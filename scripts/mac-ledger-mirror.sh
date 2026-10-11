@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Retired with the effort logs (Linear cutover):  nothing new lands in docs/EFFORT-LOG.md, so this finds no
+# rows and skips.  Kept so an old caller does not break.
+#
 # Mirror a PR's docs/EFFORT-LOG.md rows into the Mac effort ledger and append a
 # note to matching MAC-LOCAL-PROCESSES.md rows.  Default mode is --dry-run.
 # bash 3.2 and POSIX awk (no GNU date, no sed -i).  python3 is required.

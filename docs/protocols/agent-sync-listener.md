@@ -24,7 +24,7 @@ Zulip realm ──long-poll (one queue per configured seat bot)──► agent-s
             ┌──────────────────────────┬──────────────────────────┼───────────────────────────┐
   live lease inbox files       seat inbox file           wake adapter (fixed argv)     notify-owner
   (hooks / rewake / wait)      (inbox --local)           headless run → JSON           (banner + queue)
-                                                          └─► daemon validates, posts reply / files board item
+                                                          └─► daemon validates, posts reply / files Linear issue
 ```
 
 The daemon is one process:  one poller thread per seat bot, the router on the main thread (it also runs the periodic `tick`), and one wake worker per seat whose adapter is `claude` or `http`.
@@ -61,6 +61,8 @@ BF role bots:  BotFleet, natively.  Neither instance holds them.
 Per-session `listen` under the Monitor tool was rejected:  nothing listens when no session is open, the Monitor tool stops after 30 minutes and needs a turn to restart, and every session would hold credentials and its own queue.  `listen` and `wait` stay for cloud seats and machines without the daemon.
 
 ## 2. Routing
+
+**Every channel (owner ruling, Sat, Oct 10, 2026):**  "I want bots to wake to any channel or DM" … "not just agent-sync or one other".  Routing has no channel filter:  a direct mention or a DM wakes from any channel the bot receives.  Zulip delivers a channel message only to a subscriber, so the daemon keeps each held seat's bot in every public channel:  at every connect it subscribes the bot to any public channel it is missing, and it registers for `stream` and `subscription` events so a newly created (or newly public) channel is joined at once and the seat's channel map stays current.  New subscriptions are set quiet (no desktop, push, email or sound notifications).  Private channels are never joined.  A failure is logged (`auto-subscribe-error`) and never stops the seat.  `[daemon] auto_subscribe = false` turns it off.  `scripts/agent_sync/subscribe_all.py` does the same once for every fleet bot, including seats no listener holds (BF bots, OPENCODE).  The fleet-wide wake is unchanged:  only `@**all**` in #agent-sync › `fleet`.
 
 **State layout.**  Directories are mode 700 and files mode 600.
 
@@ -249,7 +251,7 @@ env -i HOME=$HOME USER=$USER LOGNAME=$USER LANG=en_US.UTF-8 TMPDIR=$TMPDIR \
 
 1. **Concurrency.**  One wake runs per seat at a time, with a FIFO of 5; overflow is held back (section 3.5).  Before spawning and again before posting, the daemon re-checks topic leases and mention leases, skipping any lease the triggers were released or returned from.  Just before spawning it also re-checks the pause, the pin, the loop guard, staleness and the budgets.  If a live session took over before the spawn, the triggers go to that lease as interrupts (one row per id, read from the seat inbox and its rotated copy, the grace period restarted, the seat-inbox rows marked `delivered_to`) and the wake is `skipped`; after the run, the reply goes to that lease's inbox as a `draft from wake, not posted`.
 2. **`reply`.**  Every `@**X**` becomes `@_**X**` and group mentions are removed, repeated until the text stops changing (removing a group mention can join an `@` to a following `**name**`), and any `@*` left is made silent, so a wake reply notifies no one.  The secret scanner (common key prefixes, private-key blocks, Zulip-shaped keys, and every loaded bot key and its base64 form) refuses a match.  First line `[CLAUDE·wake] re=<trigger id>`.  A channel trigger is answered in its topic.  A DM trigger is answered only by DM to the original recipient set, never in a channel.  Posts are at least 3 seconds apart.
-3. **`board`** (off:  `board_per_day = 0`, decision 2).  The daemon runs `board` with a list argv and no shell:  `board file --title=<v> --desc=<v> --severity=P2|P3 --app=<APP> --by CLAUDE --env Mac --kind agent-report --uid zulip:CLAUDE:<trigger id> --url <realm>/#narrow/channel/<stream id>/near/<trigger id>`.  APP is the topic's leading acronym when it is in `fleet-apps.json`, else AFC.  The parsed result is kept in the ledger.
+3. **`board`** (off:  `board_per_day = 0`, decision 2).  The daemon runs `board` with a list argv and no shell:  `board file --title=<v> --desc=<v> --severity=P2|P3 --app=<APP> --by CLAUDE --env Mac --kind agent-report --uid zulip:CLAUDE:<trigger id> --url <realm>/#narrow/channel/<stream id>/near/<trigger id>`.  APP is the topic's leading acronym when it is in `fleet-apps.json` (`CT#2316 sentry` gives CT, and a Linear work topic `BF-123 reconnect loop` gives BF), else AFC.  After the Linear cutover this `board` is the Linear-backed CLI, which needs `AGENT_SEAT`;  the daemon sets it from the seat it is waking, because `env -i` drops the inherited one.  The parsed result is kept in the ledger.
 4. **`escalate` or `owner_note`.**  These go through notify-owner (the note goes to the owner queue, never the banner).  Unless the owner alone triggered the wake, the daemon also sends the owner a Zulip DM from the seat's own bot (`owner_dm_text`, then `dm_owner`):  `[CLAUDE·note] re=<trigger id>`, the sender's name, the place (`#channel > topic`, or a DM), the risk, the note in a quote block (backticks and mentions removed) and a link to the trigger message.  The tag is `·note`, never `·wake`, so the router does not take the DM for a wake reply.  It rides on a wake that already passed the budgets, so it is at most one DM per wake; the secret scanner withholds a flagged note but still sends the rest, and a failed send is recorded in the ledger row (`owner_dm`, `owner_dm_error`) and never fails the wake.  If the owner triggered the wake and nothing was posted, the daemon also posts a fixed one-line ack:  queued for confirmation in a Claude session.
 5. **`route`** (owner 2026-10-10).  Handled last, after the reply; see Route suggestions below.
 
@@ -375,6 +377,7 @@ coalesce_seconds = 20
 coalesce_max_seconds = 90
 owner_coalesce_seconds = 5
 # route_enabled = true            # the listener-wide kill switch for wake route suggestions (section 3.3)
+# auto_subscribe = true           # join every public channel at connect and on creation (owner 2026-10-10)
 presence_topics = [["agent-sync","roll call"],["agent-sync","fleet"],["builds","gates"],["alerts","*"]]
 
 [platform.claude-code]

@@ -10,10 +10,10 @@ Status: built and tested against a local mock of Linear, and checked live with r
 
 ### Before cutover: as `board-linear`
 
-Install it next to the old CLI and leave `~/.local/bin/board` alone.  Install from the repo only, so the live copy cannot drift from the tracked one.
+Install it next to the old CLI and leave `~/.local/bin/board` alone.  Install from the repo only, so the live copy cannot drift from the tracked one.  Link to the managed runtime checkout, never to the human integration tree under `~/Code`:  `/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime` is a detached worktree that `com.jay.agent-sync-runtime-sync` keeps on AFC origin/main every 120 seconds (the `agent-sync` CLI already runs from it).
 
 ```bash
-ln -sf "$HOME/Code/AI-Fleet-Coordinator/scripts/linear-board/board" "$HOME/.local/bin/board-linear"
+ln -sf "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/linear-board/board" "$HOME/.local/bin/board-linear"
 AGENT_SEAT=CLAUDE board-linear whoami
 ```
 
@@ -23,18 +23,23 @@ Installing it is a helper other agents are expected to run.  Add an on-demand ro
 
 ### At cutover only (do not do this before step 4)
 
-Step 4 of the design swaps `~/.local/bin/board` for this CLI and turns writes on.  A wrapper keeps both in one place:
+Step 4 of the design swaps `~/.local/bin/board` for this CLI and turns writes on.  The whole cutover, including this install, is the runbook `~/.local/share/linear-migration/cutover/cutover.sh` (dry by default).  The wrapper it writes keeps both settings in one place and uses absolute paths, because the listener runs `env -i` with no `PATH`:
 
 ```bash
 cat > "$HOME/.local/bin/board" <<'EOF'
 #!/bin/sh
 export LINEAR_BOARD_WRITES=1
-exec python3 "$HOME/Code/AI-Fleet-Coordinator/scripts/linear-board/board" "$@"
+CHECKOUT="${BOARD_CHECKOUT:-/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime}"
+for py in /opt/homebrew/bin/python3 /usr/bin/python3; do
+  [ -x "$py" ] && exec "$py" "$CHECKOUT/scripts/linear-board/board" "$@"
+done
+echo "board: no python3 found" >&2
+exit 1
 EOF
 chmod 755 "$HOME/.local/bin/board"
 ```
 
-Cloud seats and BotFleet set `LINEAR_BOARD_WRITES=1` in their own environment at the same moment.
+The old CLI stays as `~/.local/bin/board-legacy` (a symlink to `~/apps/mac-collab/board`).  Cloud seats and BotFleet set `LINEAR_BOARD_WRITES=1` in their own environment at the same moment.
 
 ### Rollback
 
@@ -44,7 +49,7 @@ Set `BOARD_BACKEND=mac-collab`.  The CLI then runs the old board CLI with the sa
 
 Do these before step 4 swaps `~/.local/bin/board`.  The CLI does not make them for you.
 
-1. **`AGENT_SEAT` in every runtime that writes.**  `file`, `claim`, `status` and `comment` exit 2 without it, because every write is signed with the seat and the CLI never guesses one.  Reads (`list`, `show`, `stats`, `whoami`) need no seat, so `board stats` and `board list ...` in a plain shell or `zsh -lic` work as they did.  Set it in each runtime's own environment (Claude Code settings `env`, Codex, Cursor, the cloud seats, BotFleet).  The listener's board filing now passes the seat it is waking (`scripts/agent_sync/daemon.py`, `claude_env(..., seat=)`), because its `env -i` drops the inherited one.  The `board` it runs is whatever resolves on its wake PATH, which after step 4 is the wrapper below, and that turns writes on.
+1. **`AGENT_SEAT` in every runtime that writes.**  `file`, `claim`, `status` and `comment` exit 2 without it, because every write is signed with the seat and the CLI never guesses one.  Reads (`list`, `show`, `stats`, `whoami`) need no seat, so `board stats` and `board list ...` in a plain shell or `zsh -lic` work as they did.  Interactive seats set it in the same command (`AGENT_SEAT=<SEAT> board claim ...`), because shell state may not persist between commands.  Daemons and cloud runtimes (BotFleet roles, Grok Bot personas, the cloud seats) set it in their own environment.  Never put it in Claude Code settings `env` or any other global setting:  that would override a launcher's seat for every session and cause `--by` mismatches.  The listener's board filing now passes the seat it is waking (`scripts/agent_sync/daemon.py`, `claude_env(..., seat=)`), because its `env -i` drops the inherited one.  The `board` it runs is whatever resolves on its wake PATH, which after step 4 is the wrapper below, and that turns writes on.
 2. **The claim relabel.**  Run `relabel_claims.py` once (see Claims).  Until it has run, `list` and `list --mine` show no claimant for imported In Progress and In Review issues.  `list` says so on stderr, and `claim` and `show` still read the claimant from the import footer.  Owner-approved step; it adds labels and removes none.
 3. **Skill updates in the step 4 skills PR** (outside this directory):  `board-ops` and `closeout` list `duplicate` as a plain status value, which now needs `--of` (see the contract table); `session-start` and `pickup-seat` use `--mine`, which reads claim labels; and the identity text in all five skills should say writes need `AGENT_SEAT`.
 4. **Seat apps.**  Before a seat writes on Linear, `AGENT_SEAT=<SEAT> board whoami` exits 0 and its `identity:` line names that seat's own app, or Fleet with `fallback for <SEAT>` and a `notice:` line.  Either is fine for cutover:  a seat on Fleet still signs every write with its tag line and `claimed:` label.  An exit 6 that says the credentials look swapped means `<SEAT>.env` holds another app's credentials; that seat's writes refuse (exit 4) until the file is fixed or moved aside.

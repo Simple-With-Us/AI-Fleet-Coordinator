@@ -1,5 +1,9 @@
 name: PR Autofix
 
+# Thin caller for the fleet's shared autofix.  The steps live in pr-autofix-reusable.yml;  see
+# docs/PR-AUTOFIX.md.  Other repos call it as
+# Simple-With-Us/AI-Fleet-Coordinator/.github/workflows/pr-autofix-reusable.yml@<sha>.
+
 on:
   issue_comment:
     types: [created]
@@ -8,24 +12,21 @@ on:
   pull_request_review_comment:
     types: [created]
 
+permissions: {}
+
 concurrency:
-  group: autofix-${{ github.event.issue.number || github.event.pull_request.number }}
+  group: pr-autofix-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
   autofix:
+    # Checked here too so a human comment never starts a runner.
     if: >
       (github.event.issue.pull_request || github.event.pull_request) &&
       contains(fromJSON('["bot", "Bot"]'), github.event.comment.user.type || github.event.review.user.type || '')
-    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: read
-    env:
-      ANTHROPIC_BASE_URL: https://api.minimax.io/anthropic
-      ANTHROPIC_AUTH_TOKEN: ${{ secrets.MINIMAX_API_KEY }}
-    steps:
-      - uses: urcades/pr-autofix@main
-        with:
-          anthropic_api_key: ${{ secrets.MINIMAX_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+    uses: ./.github/workflows/pr-autofix-reusable.yml
+    secrets:
+      MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
