@@ -407,6 +407,29 @@
       "notes": "OpenCode (opencode CLI, ~/.local/bin/opencode, global rules file ~/.config/opencode/AGENTS.md).  A seat since the owner's decision of Sat, Oct 10, 2026 (\"opencode as a seat\"); before that OpenCode was an engine-only CLI with no default seat.  Any provider or model OpenCode runs is still OPENCODE.  A BotFleet bot that runs on the opencode engine keeps its BF-<ROLE> seat, and a launcher's AGENT_LAUNCH_SEAT wins over the platform default.",
       "zulipBotEmail": "opencode-bot@simplewithus.zulipchat.com",
       "zulipFileCode": "OpenCode"
+    },
+    {
+      "tag": "ECHO",
+      "notesName": "Echo",
+      "worktreeSuffix": "echo",
+      "branchPrefixes": [
+        "echo/",
+        "instinct/"
+      ],
+      "zulipBotEmail": "instinct-bat-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Echo",
+      "notes": "Echo, shown as Echo (Instinct):  one of the two bots of the Instinct app (instinct.com), which runs on its own computer and reaches the fleet through the hosted agent-sync-mcp bridge, not through a Mac lane.  Held by the server listener (docs/protocols/agent-sync-partition.toml).  Does PR troubleshooting and release work;  its merged Congress.Trade PRs so far were pushed on instinct/ branches under the owner's GitHub login, so GitHub cannot tell the two bots apart.  echo/ is its own prefix from now on.  Has its own Linear app, Echo (Instinct), key variables LINEAR_ECHO_CLIENT_ID and LINEAR_ECHO_CLIENT_SECRET.  Registered Sun, Oct 11, 2026 (owner: add the rows)."
+    },
+    {
+      "tag": "INSTINCT",
+      "notesName": "Instinct",
+      "worktreeSuffix": "instinct",
+      "branchPrefixes": [
+        "instinct/"
+      ],
+      "zulipBotEmail": "instinct-owl-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Instinct",
+      "notes": "The other bot of the Instinct app, shown as Wise (Instinct) since Sun, Oct 11, 2026 (the owner's name for what used to be called the Instinct version).  The seat tag stays INSTINCT, and WISE is accepted as another spelling of it in the board CLI.  Held by the server listener (docs/protocols/agent-sync-partition.toml), reached through the hosted agent-sync-mcp bridge, and makes no Mac lanes.  Has its own Linear app, Wise (Instinct), key variables LINEAR_WISE_CLIENT_ID and LINEAR_WISE_CLIENT_SECRET.  A launcher's AGENT_LAUNCH_SEAT wins over any default."
     }
   ],
   "seatApps": {
@@ -424,12 +447,12 @@
       "CLUTCH": "clutch",
       "FX": "fx",
       "OPENCODE": "opencode",
-      "GROK-BOT": "grok-bot"
-    },
-    "extraSeats": {
-      "JET": "chatgpt",
+      "GROK-BOT": "grok-bot",
       "ECHO": "instinct",
       "INSTINCT": "instinct"
+    },
+    "extraSeats": {
+      "JET": "chatgpt"
     },
     "patterns": [
       {
