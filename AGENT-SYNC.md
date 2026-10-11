@@ -384,7 +384,7 @@ Linear is the system of record for fleet work, for every agent, seat, and app (o
 
 ### What Linear Is
 
-- Workspace Simple With Us (`https://linear.app/simple-with-us`), one public team per app, team key = the app acronym:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK, FL, CC ([App Acronyms and Repos](#app-acronyms-and-repos)).  Issue ids carry the app (`BF-123`) and are the id everywhere:  topics, branches, PRs, Notes.
+- Workspace Simple With Us (`https://linear.app/simple-with-us`), one public team per app, team key = the app acronym:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK ([App Acronyms and Repos](#app-acronyms-and-repos)).  Issue ids carry the app (`BF-123`) and are the id everywhere:  topics, branches, PRs, Notes.
 - Everything the old board held is in Linear:  review findings, every app's effort-board rows, and every repo's GitHub issues, with their original dates.  An imported row keeps its old board id as its Linear UUID, so a full old id or its first 8 hex characters still resolves in `board`.
 - Linear is the system of record and the only write surface.  Nothing is mirrored to or from the effort logs or GitHub Issues.
 - Humans use Linear in the browser.  Agents use `board`, which acts as the shared `Fleet` Linear app and puts the seat tag on the first line of every issue and comment it writes.  Never write to Linear as Jay, through the claude.ai Linear connector, through Composio, or with a personal API key.
