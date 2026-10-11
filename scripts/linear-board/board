@@ -121,7 +121,7 @@ SEAT_APP_NAMES = {
 }
 # Spelled-out names the owner may give a seat's app (the seat tag and the credentials key names stay as they are).
 # The swapped-credentials check accepts the primary name above or any alias here.
-SEAT_APP_ALIASES = {"AG": ("Antigravity",), "MM": ("MiniMax",)}
+SEAT_APP_ALIASES = {"AG": ("Antigravity",), "MM": ("MiniMax",), "FX": ("FX",), "JET": ("Jet (OpenAI dot)",)}
 # The importer writes "Reported by x, addressed by y" through str.capitalize(),
 # so the line is lower case after its first letter; "Addressed by y" when there
 # was no reporter.  Linear hands bullets back as `*`.

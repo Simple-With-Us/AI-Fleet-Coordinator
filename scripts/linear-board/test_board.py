@@ -1434,7 +1434,9 @@ class SeatAppTests(BoardTest):
         # the owner may name the AG seat's app Antigravity and the MM seat's app MiniMax; the seat tags stay AG and MM
         self.seat_app("AG", "Antigravity")
         self.seat_app("MM", "MiniMax")
-        for seat in ("AG", "MM"):
+        self.seat_app("FX", "FX")
+        self.seat_app("JET", "Jet (OpenAI dot)")
+        for seat in ("AG", "MM", "FX", "JET"):
             self.as_seat(seat, "comment", B_A[:8], "--by", seat, "--text", "alias name is accepted")
             self.assertIn("(app user)", self.as_seat(seat, "whoami").stdout)
         # a wrong name is still refused

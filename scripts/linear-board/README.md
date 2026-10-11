@@ -51,7 +51,7 @@ Do these before step 4 swaps `~/.local/bin/board`.  The CLI does not make them f
 
 ## Identity and credentials
 
-Each seat has its own Linear app, named for the seat bot's display name (owner 2026-10-10):  CLAUDE is Claude, CODEX Codex, CURSOR Cursor, AG AG, GROK Grok, GROK-WEB Grok Web, CLUTCH Clutch, MM MM, FX Fx, MC Muse Code, MA Muse Assist, JET Jet and OPENCODE OpenCode (`SEAT_APP_NAMES` in the script;  the AG app may also be named Antigravity and the MM app MiniMax, see `SEAT_APP_ALIASES`).  A seat whose app does not exist yet, and every read without `AGENT_SEAT`, uses the shared Fleet app.
+Each seat has its own Linear app, named for the seat bot's display name (owner 2026-10-10):  CLAUDE is Claude, CODEX Codex, CURSOR Cursor, AG AG, GROK Grok, GROK-WEB Grok Web, CLUTCH Clutch, MM MM, FX Fx, MC Muse Code, MA Muse Assist, JET Jet and OPENCODE OpenCode (`SEAT_APP_NAMES` in the script;  the AG app may also be named Antigravity, the MM app MiniMax, the FX app FX and the JET app Jet (OpenAI dot), see `SEAT_APP_ALIASES`).  A seat whose app does not exist yet, and every read without `AGENT_SEAT`, uses the shared Fleet app.
 
 Lookup order, the first that applies:
 
