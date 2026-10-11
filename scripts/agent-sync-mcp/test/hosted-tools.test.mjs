@@ -708,3 +708,13 @@ test("idempotency rows:  a pending write in flight is busy, an abandoned one rec
   assert.equal((await S.idemPeek(store, { key: "k" }, t + 40_001)).id, 7);
   assert.equal(await S.idemPeek(store, { key: "k" }, t + 60_001), null, "expired");
 });
+
+
+test("CURSOR refuses a missing key and credentials for Jet", async () => {
+  const cursorConfig = loadConfig(testEnv({ HOSTED_SEATS: "CURSOR" }));
+  const missing = harness({ seat: "CURSOR", noKey: true, over: { config: cursorConfig } });
+  toolError(await missing.tools.call("whoami", {}), "not_authorized");
+  const jet = { is_bot: true, email: "openai-dot-bot@simplewithus.zulipchat.com", role: 400, is_admin: false, is_owner: false };
+  assert.match(seatProblem(jet, { seat: "CURSOR", email: cursorConfig.botEmails.CURSOR }), /another bot/);
+  assert.match(seatProblem(jet, { seat: "CURSOR", email: jet.email }), /another seat/);
+});

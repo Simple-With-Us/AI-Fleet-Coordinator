@@ -15,7 +15,7 @@ test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", (
   // demoted it on Fri, Oct 9, and JET was deployed with its key at about 8:10am
   // (DEPLOY.md, "Re-enable JET").
   // ECHO and INSTINCT (the Instinct app) were added on Fri, Oct 9.
-  assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB", "ECHO", "INSTINCT"]);
+  assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB", "ECHO", "INSTINCT", "CURSOR"]);
   assert.deepEqual([...loadConfig(testEnv()).hostedSeats], ["JET", "GROK-WEB"]);
   // Channels:  any public channel the bot is subscribed to (owner, Sat, Oct 10, 2026), so no allowlist;  the denylist ships empty.
   assert.deepEqual([...cfg.channelsDeny], []);
@@ -165,4 +165,18 @@ test("package.json pins exact versions (fleet two-week rule, see README)", () =>
   const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
   const all = { ...pkg.dependencies, ...pkg.devDependencies };
   for (const [name, version] of Object.entries(all)) assert.match(version, /^\d+\.\d+\.\d+$/, `${name} must be pinned exactly`);
+});
+
+
+test("Cursor Cloud has only its exact web callback and a separate bot binding", () => {
+  const cfg = loadConfig(wranglerConfig().vars);
+  const callback = "https://www.cursor.com/agents/mcp/oauth/callback";
+  assert.deepEqual(cfg.seats.CURSOR.redirectUris, [callback]);
+  assert.deepEqual(cfg.seats.CURSOR.cimdClientIds, []);
+  assert.equal(cfg.redirectOwner.get(callback), "CURSOR");
+  assert.equal(cfg.botEmails.CURSOR, "cursor-bot@simplewithus.zulipchat.com");
+  assert.deepEqual(SEAT_SECRETS.CURSOR, { key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR" });
+  for (const wrong of ["https://cursor.com/agents/mcp/oauth/callback", `${callback}/`, "http://localhost:8787/callback"]) {
+    assert.equal(cfg.redirectSeats.has(wrong), false);
+  }
 });

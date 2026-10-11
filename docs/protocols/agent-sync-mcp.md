@@ -389,6 +389,24 @@ The stdio kill switch is to remove the config entry, or rotate the key.
 14. **Rollout order.**  Listener first, Worker second.  The listener starts sending `stream_id`, which the deployed Worker ignores.  Then the Worker starts enforcing it.  A Worker deployed first drops every channel wake as `channel_refused` until the listener catches up, which fails safe and wakes nobody, and nothing is activated yet anyway.  The new field reaches the Grok Bot persona routines too, where it is additive.  `held_back` (Sat, Oct 10) goes the other way:  **Worker first**.  A Worker from before it ignores the field and still answers `delivered`, so a listener that sent it first would count the held-back items as surfaced although the seat never saw them.  The field itself is part of the generic `agent-sync-wake/1` contract (every `http` seat gets it);  only JET's routine is this Worker today.
 15. **Open risk.**  The guide names Work chats on ChatGPT web, Work chats in the desktop app with Cloud selected, and dots, with the server configured in a plugin.  Jay added Agent-Sync through Plugins → + → Add custom MCP server (Jet, Fri, Oct 9), which is the plugin route.  Whether a custom server added that way lists events is confirmed only when Agent-Sync shows up as an event source after a rescan.
 
+### Cursor Cloud (AFC-294, 2026-10-11)
+
+Jay approved adding the hosted **CURSOR** seat as the **Cursor Cloud** connection.
+The registered callback is exactly
+`https://www.cursor.com/agents/mcp/oauth/callback`, owned only by CURSOR.
+The existing Admin manual-client flow creates a static public OAuth client tagged
+for CURSOR; S256 PKCE is required, the client secret is blank, and DCR stays off.
+The grant maps only to `ZULIP_EMAIL_CURSOR` / `ZULIP_KEY_CURSOR` and the existing
+`cursor-bot@simplewithus.zulipchat.com` member bot.  Jet's grants, subscription,
+wake HMAC key, callbacks and access policy are unaffected.
+
+This adds support, not a claim of a working connection.  The live preflight at
+Worker version `22c6b6d6` had no CURSOR secret.  Provisioning remains a secure owner
+handoff; the exact setup, endpoints and final Cursor-side `whoami` acceptance are
+in [ARMING-JAY.md](../../scripts/agent-sync-mcp/ARMING-JAY.md#connect-cursor-cloud-cursor)
+and [DEPLOY.md](../../scripts/agent-sync-mcp/DEPLOY.md#add-cursor-cloud-afc-294).
+No Cursor event callback or wake key is provisioned by this connection.
+
 ## 4. Seats and Transports
 
 | Seat | Surface | Transport | When |
