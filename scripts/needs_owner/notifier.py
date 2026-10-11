@@ -189,6 +189,7 @@ class Notifier:
         self.paused_by = self._paused_by()
         self._topic_rows: list[dict] | None = None
         self._topic_rows_read = False
+        self._skipped: set[tuple[str, str]] = set()
 
     # ---- small helpers ----------------------------------------------------------------------
     def ts(self) -> float:
@@ -290,6 +291,12 @@ class Notifier:
             return "edited_after_filing"
         return None
 
+    def skip(self, item: Item, why: str) -> None:
+        """Say once a run that an item is left alone, however many steps look at it."""
+        if (item.identifier, why) not in self._skipped:
+            self._skipped.add((item.identifier, why))
+            self.events.add("skip", item.identifier, why=why)
+
     def target_seat(self, item: Item) -> str:
         """The seat a note wakes:  the Grok Bot persona a mirrored item is for, else the filer."""
         b = item.block
@@ -344,7 +351,7 @@ class Notifier:
                 continue
             why = self.usable(item)
             if why:
-                self.events.add("skip", item.identifier, why=why)
+                self.skip(item, why)
                 continue
             try:
                 if item.state == "notify_pending":
@@ -485,7 +492,7 @@ class Notifier:
                 continue  # adopted with --no-notify:  the filer decided not to announce it yet
             why = self.usable(item)
             if why:
-                self.events.add("skip", item.identifier, why=why)
+                self.skip(item, why)
                 continue
             if self.ready_age(item) < NOTICE_DELAY:
                 continue
