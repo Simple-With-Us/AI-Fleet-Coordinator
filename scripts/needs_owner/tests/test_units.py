@@ -191,7 +191,7 @@ class RecordTests(unittest.TestCase):
 
 class SafetyTests(unittest.TestCase):
     def test_secrets_and_personal_data(self) -> None:
-        for text in ("lin_api_" + "A1b2C3d4E5" * 3, "sntrys_" + "abcDEF1234" * 3, "xai-" + "abcDEF1234" * 3, "st.abcdefgh.ijklmnop.qrstuvwx",
+        for text in ("lin_api_" + "A1b2C3d4E5" * 3, "sntrys_" + "abcDEF1234" * 3, "xai-" + "abcDEF1234" * 3, "st." + "abcdefgh.ijklmnop.qrstuvwx",
                      "AKIA" + "ABCDEFGHIJKLMNOP", "ghp_" + "a1B2c3D4e5" * 4):
             with self.assertRaises(Refusal, msg=text):
                 safety.check_text("the question", text)
