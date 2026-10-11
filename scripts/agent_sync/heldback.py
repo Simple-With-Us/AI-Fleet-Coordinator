@@ -330,7 +330,7 @@ def digest_due(data: Mapping[str, Any], *, every: float, now: float) -> list[dic
     if every <= 0:
         return []
     rows = list(data.get("overflow") or []) + list(data.get("records") or [])
-    fresh = [r for r in rows if _int(r, "seq") > _int(data, "digest_seq")]
+    fresh = sorted((r for r in rows if _int(r, "seq") > _int(data, "digest_seq")), key=lambda r: _int(r, "seq"))
     if not fresh or ("digest_at" in data and now - _num(data, "digest_at") < every):
         return []
     return fresh

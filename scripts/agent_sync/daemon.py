@@ -1863,15 +1863,17 @@ class Daemon:
             "; %d lost past the caps" % lost if lost else "")
         newest = list(reversed(data["records"]))[:3]
         note = "\n".join(str(r.get("zulip_link") or "message %d" % r["message_id"]) for r in newest)
-        if len(fresh) > len(newest):
-            note += "\nnew message ids: %s" % ", ".join(str(r["message_id"]) for r in fresh[-200:])
+        # The oldest 200 new ones are named;  only those count as reported, and the rest roll into the next digest.
+        named = fresh[:200]
+        if len(named) > len(newest):
+            note += "\nnew message ids: %s" % ", ".join(str(r["message_id"]) for r in named)
         sent = self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat, text, kind="held-back",
                                     key="held-back:%s" % runner.seat, once_per=every, note=note,
-                                    trigger_ids=[r["message_id"] for r in fresh[-200:]])
+                                    trigger_ids=[r["message_id"] for r in named])
         # Only a digest the owner was shown (a Mac banner) lets those entries expire;  the server's
         # owner queue is read by nobody yet, so there they stay until they are surfaced (heldback.py).
         told = bool(sent) and bool(getattr(self.notifier, "banners", False))
-        HELD.note_digest(runner.paths, upto=max(int(r.get("seq") or 0) for r in fresh), now=now, told=told)
+        HELD.note_digest(runner.paths, upto=max(int(r.get("seq") or 0) for r in named), now=now, told=told)
         self.log.write("held-back-digest", seat=runner.seat, held=len(records), new=len(fresh), sent=sent, told=told)
 
     def _catch_up(self, runner: SeatRunner, data: Mapping[str, Any], now: float) -> None:
