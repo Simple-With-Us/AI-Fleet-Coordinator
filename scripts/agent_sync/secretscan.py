@@ -15,18 +15,21 @@ SECRET, TOKEN, PASSWORD or API_KEY assigned a 16 character value.  `scripts/chec
 keeps a local fallback list of the main kinds (not `lin_wh_`, the JWT or the Infisical assignment) for
 when it runs outside the repo and cannot load this file;  inside the repo this scanner is the one that
 runs, and whatever the fallback flags, this flags too (test_secretscan_fleet pins it).
+The hosted MCP Worker keeps a JavaScript copy of the list (`scripts/agent-sync-mcp/src/contract.js`);
+`scripts/agent-sync-mcp/test/secretscan-parity.test.mjs` runs this suite's samples through both, so add a
+kind to both in one change.
 
 `redact_fields(obj)` is the per-field form for structured data that is about to be written
 somewhere durable (the signed facts published to the private fleet-loops-data repo, a ledger):  it
 replaces each secret-shaped string field with `[withheld: secret-shaped]` and says where.
 
-Standard library only (re, json) and no imports from this package:  it is safe on the hook fast
-path, and `scripts/check-routine-prompts.py` loads it by file path.
+Standard library only (`re` and `base64`;  `json` is imported inside `_key_path`, the one place that needs
+it) and no imports from this package:  it is safe on the hook fast path, and
+`scripts/check-routine-prompts.py` loads it by file path.
 """
 from __future__ import annotations
 
 import base64
-import json
 import re
 from typing import Any, Iterable
 
@@ -98,6 +101,8 @@ def _key_path(path: str, key: Any) -> str:
     """`path.name` for a dict key that is a plain identifier, else `path["key"]` (JSON quoted)."""
     if isinstance(key, str) and _IDENT_RE.fullmatch(key):
         return "%s.%s" % (path, key)
+    import json  # lazy:  the hook fast path imports this module and never needs it
+
     return "%s[%s]" % (path, json.dumps(key, ensure_ascii=True, default=str))
 
 

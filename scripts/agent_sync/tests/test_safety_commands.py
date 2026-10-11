@@ -276,11 +276,13 @@ class BodyFileTests(BodyFileHarness):
         self.assertIn("empty", empty.err)
 
     def test_the_file_goes_through_the_secret_scanner_and_its_text_is_never_echoed(self) -> None:
-        leaked = "AK" + "IA" + "ABCDEFGHIJ012345"
-        result = self.run_cli("post", "--topic", "t", "--body-file", self.body("the key is %s" % leaked, name="secret.txt"))
+        # Built at run time on purpose:  a whole AKIA-shaped literal would trip gitleaks.  It is a fake, and the
+        # test asserts the scanner refuses it and never echoes it.
+        FAKE_LEAKED_AWS_KEY = "AK" + "IA" + "ABCDEFGHIJ012345"
+        result = self.run_cli("post", "--topic", "t", "--body-file", self.body("the key is %s" % FAKE_LEAKED_AWS_KEY, name="secret.txt"))
         self.assertEqual(result.code, 2)
         self.assertIn("refusing to post", result.err)
-        self.assertNotIn(leaked, result.err + result.out)
+        self.assertNotIn(FAKE_LEAKED_AWS_KEY, result.err + result.out)
         self.assertEqual(self.posts(), 0)
         bad_mode = self.run_cli("post", "--topic", "t", "--body-file", self.body("secret words here", mode=0o644, name="s2.txt"))
         self.assertNotIn("secret words here", bad_mode.err + bad_mode.out)

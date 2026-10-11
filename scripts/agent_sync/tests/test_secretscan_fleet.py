@@ -91,18 +91,24 @@ class EveryKindIsFlaggedTests(unittest.TestCase):
         self.assertEqual(scan("sk-" + "ant-" + b64(40)), "Anthropic or OpenAI key")
 
 
+def clean_texts() -> list[str]:
+    """Text that only looks a little like a token and must not be flagged (the Worker's scanner is run over
+    these too:  scripts/agent-sync-mcp/test/secretscan-parity.test.mjs)."""
+    return [
+        "git sha " + hexs(40), "uuid 9f1c2b3a-4d5e-6f70-8192-a3b4c5d6e7f8", "lin_api_ is the prefix of a Linear key",
+        "lin_api_short", "xai-grok-bot-routines", "xai-" + "ab", "sntrys_ tokens start like that", "sntrys_abc",
+        "Saint st.louis and ghost.example.com", "st.a.b.c", "| a | b |\n|---|---|\n| 3 | 4 |", "3 | 4", "12|short",
+        "a 3|" + "x" * 10, "cfg_value and cfut_ short", "Linear secret handling is in the doc",
+        "Infisical token rotation happens monthly", "see ~/.secrets/Zulip/Claude-zuliprc", "FLEET_AUTOPUSH_MODE=snapshot",
+        "NEEDS_OWNER_CAPS=5", "OWNER_LINEAR_USER_ID=0b1c2d3e", "GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}",
+        "the Cloudflare token is stored in Infisical", "Linear client secret is in Infisical",
+        "eyJ is how a JWT header starts", "eyJhbGciOi.short", "AFC-280 F3 agent-sync safety helpers",
+    ]
+
+
 class OrdinaryTextIsNotFlaggedTests(unittest.TestCase):
     def test_things_that_only_look_a_little_like_tokens(self) -> None:
-        for text in (
-            "git sha " + hexs(40), "uuid 9f1c2b3a-4d5e-6f70-8192-a3b4c5d6e7f8", "lin_api_ is the prefix of a Linear key",
-            "lin_api_short", "xai-grok-bot-routines", "xai-" + "ab", "sntrys_ tokens start like that", "sntrys_abc",
-            "Saint st.louis and ghost.example.com", "st.a.b.c", "| a | b |\n|---|---|\n| 3 | 4 |", "3 | 4", "12|short",
-            "a 3|" + "x" * 10, "cfg_value and cfut_ short", "Linear secret handling is in the doc",
-            "Infisical token rotation happens monthly", "see ~/.secrets/Zulip/Claude-zuliprc", "FLEET_AUTOPUSH_MODE=snapshot",
-            "NEEDS_OWNER_CAPS=5", "OWNER_LINEAR_USER_ID=0b1c2d3e", "GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}",
-            "the Cloudflare token is stored in Infisical", "Linear client secret is in Infisical",
-            "eyJ is how a JWT header starts", "eyJhbGciOi.short", "AFC-280 F3 agent-sync safety helpers",
-        ):
+        for text in clean_texts():
             with self.subTest(text=text[:40]):
                 self.assertIsNone(scan(text))
 
@@ -140,6 +146,15 @@ class RoutineCheckerParityTests(unittest.TestCase):
     def test_the_checker_loads_this_module_by_path(self) -> None:
         self.assertIsNotNone(self.module._SCAN)
         self.assertEqual(self.module._SCAN("x " + "lin_" + "api_" + alnum(40)), "Linear API key")
+
+    def test_json_is_imported_where_it_is_used_and_not_at_the_top(self) -> None:
+        # the hook fast path imports this module on every tool call, so its top level stays small
+        import ast
+
+        tree = ast.parse((SCRIPTS / "agent_sync" / "secretscan.py").read_text(encoding="utf-8"))
+        top = {alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names}
+        self.assertNotIn("json", top)
+        self.assertEqual(top, {"base64", "re"})
 
     def test_the_module_has_no_import_from_this_package(self) -> None:
         # the checker executes secretscan.py as a bare file, so a relative import would break it
