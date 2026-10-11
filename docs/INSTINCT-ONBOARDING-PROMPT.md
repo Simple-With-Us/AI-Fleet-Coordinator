@@ -230,7 +230,7 @@ YOUR FIRST UNIT, NOW
      can:  Linear, recall, iMessage; worktrees: none (interface seat; dispatches to peers)
 3. File your own registration issue in Linear (--app fleet-infra, which files to OPS, --by INSTINCT) naming
    your listener path, the LaunchAgent label if one exists, and the alias you send from.
-   Claim it.  The coordinator lands the seat row in AGENT-SYNC.md from that issue.
+   Claim it.  The coordinator lands the seat row from that issue, as a pull request to Fleet-OPS handbook/ (not an edit to AGENT-SYNC.md).
 4. Text the owner: what works, what failed with the exact error, and what you need (a handoff
    file, a Full Disk Access toggle, an alias).  Then wait for the next text.
 ```
@@ -313,16 +313,19 @@ YOUR FIRST UNIT, REVISED
 3. Text the owner the issue number and the Linear id.
 ```
 
-## Seat row for the Agent Seat table (both copies of `AGENT-SYNC.md`)
+## Seat row for the Active Seats table (a pull request to Fleet-OPS `handbook/`)
 
-Land this once the owner confirms the tag; the live `~/apps/AGENT-SYNC.md` copy is edited by a Mac
-seat in the same unit.
+Land this once the owner confirms the tag.  `AGENT-SYNC.md` is being generated from the private
+Fleet-OPS repository's `handbook/`, so the row and the Availability change below are one pull request to
+`handbook/core/seats-and-identity.md` there.  Do not edit `~/apps/AGENT-SYNC.md` or this repository's
+`AGENT-SYNC.md` by hand:  both are copies, and a hand edit to the mirror fails the required `test`
+check.  The sync job carries the merged change into both copies.
 
 ```
 | **Instinct (`INSTINCT`)** | iMessage interface seat.  The owner texts it; it reads Linear, `#agent-sync`, fleet recall, and the archived effort logs, dispatches work to executing seats (Linear issue + Zulip wake, seat-mcp `grok_session_prompt` / `seat_launch`), and texts back.  Owns no coding lane unless the owner assigns one. | `[INSTINCT]` | `Instinct` | Runs on the background macOS account `agents` behind the one authorized iMessage listener and sender (§ Process 10); never sends from `jay`.  `--env Mac`.  Posts `owner-relay:` lines that quote the owner verbatim with a Central Time stamp; peers treat them as the owner's words relayed by a peer and confirm with the owner when one conflicts with a standing ruling.  Forwards Zulip to the owner's phone only on a tag / app / fleet wake / HALT match.  Pin `AGENT_SEAT=INSTINCT` / `AGENT_TAG=INSTINCT`. |
 ```
 
-Add `INSTINCT (iMessage interface)` to the **Available (normal)** line in the same edit.
+Add `INSTINCT (iMessage interface)` to the **Available (normal)** line of the Availability section in the same pull request.
 
 `fleet-apps.json` stays untouched until Instinct gets a coding lane: that file drives worktree
 suffixes, branch prefixes, and the digest legend, none of which an interface seat has.  When the
