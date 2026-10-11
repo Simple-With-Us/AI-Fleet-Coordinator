@@ -1961,8 +1961,9 @@ class Daemon:
             return
         runner = self._alert_runner()
         if runner is None:
-            # No seat can post (every key refused, or none configured).  The window is NOT consumed,
-            # so the digest retries at the next one instead of going quiet permanently.
+            # No seat can post (every key refused, or none configured).  Nothing was sent, so the
+            # window is NOT consumed and the digest goes out as soon as a usable key returns;  the
+            # cost of waiting is one seat scan a tick, which is nothing next to a post attempt.
             self.log.write("held-alert-skipped", now=now, seats=[s for s, _ in seats])
             return
         wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
@@ -1972,9 +1973,12 @@ class Daemon:
             result = runner.client.post("messages", {"type": "stream", "to": HELDALERT.CHANNEL,
                                                      "topic": HELDALERT.TOPIC, "content": text})
         except Z.AgentSyncError as exc:
-            # A post the owner never saw is still a notice nobody read, so the window is left open and
-            # this retries next window.  The hold itself is untouched:  it stays in held-back.json.
+            # A failed post is still an ATTEMPT, and an attempt consumes the window.  Without this the
+            # held tick would retry every HELD_TICK_SECONDS for as long as the key stayed bad, which is
+            # 120 attempts an hour per broken key and exactly the flood this design exists to avoid.
+            # The hold itself is untouched and the digest retries next window, so the signal survives.
             self.log.write("held-alert-failed", seat=runner.seat, error=self.scrub(str(exc)))
+            HELDALERT.note_post(self.root, now)
             return
         finally:
             runner.last_post = self.clock.monotonic()

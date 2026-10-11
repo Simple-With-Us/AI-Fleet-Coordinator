@@ -24,9 +24,11 @@ The state is one timestamp (`last_post`) and nothing else:  what to report is re
 seat's `held-back.json` at post time, so a restart mid-window cannot drop a hold and there is no
 copy of the per-seat state to keep in step.  The rate limit is the timestamp.
 
-A post the owner never sees is still a notice nobody reads, so a failed post does not consume the
-window:  it is retried at the next window, which bounds the retry to one an hour while keeping the
-signal.
+A failed post is an ATTEMPT, and an attempt consumes the window, so a key that stays broken costs one
+attempt per window rather than one per held tick (120 an hour), and the digest is retried next
+window with the hold untouched either way.  The one case that does NOT consume the window is having
+no seat able to post at all:  nothing was sent, so waiting is free and the digest goes out as soon as
+a usable key returns.
 
 One thing this deliberately does NOT do:  it does not mark the entries `told` (heldback.note_digest).
 `told_seq` is what lets a record expire, and expiry deletes a hold the owner may not have read yet.
@@ -70,8 +72,9 @@ def load(root: str) -> dict[str, Any]:
 
 
 def note_post(root: str, now: float) -> None:
-    """Record that a digest went out (or was attempted and will be retried after the window), which
-    starts the next window.  One locked write."""
+    """Record that a digest was ATTEMPTED, sent or not, which starts the next window.  One locked
+    write.  A failure counts as an attempt deliberately:  otherwise the held tick retries every 30
+    seconds for as long as a key stays broken, which is a flood rather than an alert."""
     def mutate(data: dict[str, Any]) -> None:
         data["last_post"] = float(now)
 

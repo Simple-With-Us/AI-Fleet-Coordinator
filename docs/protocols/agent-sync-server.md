@@ -348,11 +348,11 @@ Added Oct 11 2026 (AFC-257).  The held-back records of this instance used to be 
 
 **Whose bot posts.**  `held_alert_seat` in the sample names `MA`, so one seat speaks for the instance and a busy seat is not made its voice.  Unset falls back to the claude seat and then to the first enabled seat.  A seat whose key is refused or not yet connected is skipped rather than failing the digest.
 
-**Three things it will not do.**
+**Three things it will not do, and one bound it must keep.**
 
 1. **It never wakes a seat.**  `#alerts` is already a presence topic (`presence_topics`), so `router.route` classifies the post PASSIVE for every seat, and the composer writes bold names, never `@**Seat**`.  An alert that woke its own subjects would hold back more wakes, in the very channel meant to report that.
 2. **It does not let a record expire.**  `told_seq` (heldback.py) is what lets a hold expire, and it is still set only by a Mac banner the owner actually saw.  A `#alerts` post the owner has not opened is not the same promise, so records here keep AFC-253's no-TTL behaviour:  an entry leaves only when a delivered wake surfaced it, or when it is lost past the caps.
-3. **It does not consume the window when the post fails.**  A post the owner never saw is still a notice nobody read, so a refused post is retried at the next window and the hold stays in `held-back.json` either way.
+3. **It cannot be flooded by its own failure.**  A failed post is an ATTEMPT, and an attempt consumes the window, so a key that stays broken costs one post an hour rather than one per held tick (which is 120 an hour).  The hold stays in `held-back.json` and the digest retries at the next window, so the signal survives without becoming the noise it was built to avoid.  The one case that does not consume the window is having no seat able to post at all:  nothing was sent, so waiting is free and the digest goes out as soon as a usable key returns.
 
 Code:  `scripts/agent_sync/heldalert.py` (the state, the composer and the rules), `daemon._held_alert` (the post, called once per held tick after every seat's own upkeep), tests in `scripts/agent_sync/tests/test_heldalert.py`.
 

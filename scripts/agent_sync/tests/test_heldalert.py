@@ -192,38 +192,63 @@ class HeldAlertTests(HeldBackRoutineTests):
         self.assertIn("**%s**" % SEAT, self.alert_texts()[0])
 
     # ---- it must survive its own failure ---------------------------------------------------------
-    def test_a_refused_post_retries_instead_of_going_quiet(self) -> None:
-        """A post the owner never saw is still a notice nobody read, so a failure must not consume
-        the window:  the next one retries and the hold is still there to report."""
+    def test_a_refused_post_waits_a_window_and_still_retries(self) -> None:
+        """A failed post is an attempt, so it consumes the window:  a key that stays broken must not
+        cost a post every 30-second tick.  The hold is untouched and the next window retries, so the
+        signal survives without becoming the flood this design exists to prevent."""
         self.write_server_config(budget="wakes_per_hour = 0", seat_extra="held_back = { catch_up = false }")
         daemon = self.started()
         self.fail_post_for(daemon, SEAT)  # before the hold, which is what triggers the first attempt
         self.hold_one(daemon)
         self.step(daemon, 31)
         self.assertEqual(self.alert_texts(), [], "the post was refused")
-        self.assertIsNone(HELDALERT.load(self.root).get("last_post"),
-                          "a refused post must not start the window")
+        self.assertEqual(self.count_attempts(daemon), 1)
+        self.assertIsNotNone(HELDALERT.load(self.root).get("last_post"), "an attempt consumes the window")
+        for _ in range(60):  # half an hour of held ticks
+            self.step(daemon, 30)
+        self.assertEqual(self.count_attempts(daemon), 1,
+                         "a refused post must not retry every tick inside the window")
         self.fail_post_for(daemon, SEAT, fail=False)
-        self.step(daemon, 4000)
-        self.assertEqual(len(self.alert_texts()), 1, "the next window retries the hold")
+        self.step(daemon, 2400)
+        self.assertEqual(self.count_attempts(daemon), 2, "the next window retries exactly once")
+        self.assertEqual(len(self.alert_texts()), 1, "and the hold is reported then")
+
+    def test_a_long_broken_key_costs_one_attempt_a_window(self) -> None:
+        """The bound itself:  an hour of ticks against a refused key is ONE attempt, not 120."""
+        self.write_server_config(budget="wakes_per_hour = 0", seat_extra="held_back = { catch_up = false }")
+        daemon = self.started()
+        self.hold_one(daemon)
+        self.fail_post_for(daemon, SEAT)
+        self.step(daemon, 31)  # the first attempt, which fails and consumes the window
+        for _ in range(120):  # an hour of HELD_TICK_SECONDS
+            self.step(daemon, 30)
+        self.assertEqual(self.count_attempts(daemon), 1, "one attempt an hour, not one a tick")
 
     def fail_post_for(self, daemon, seat: str, *, fail: bool = True) -> None:
         """Make that seat's bot refuse a stream post, the way a refused or expired key does.  The
-        wrapper holds the real method and a live flag, so re-calling it does not stack guards."""
+        wrapper holds the ORIGINAL method and a live flag, so neither re-calling it nor layering the
+        counter on top of it stacks guards or leaves a stale refusal behind."""
         client = daemon.seats[seat].client
-        real = getattr(client, "_alert_real_post", None) or client.post
-        client._alert_real_post = real
+        real = getattr(client, "_alert_orig_post", None) or client.post
+        client._alert_orig_post = real
+        counter = getattr(client, "_alert_counter", None)
+        if counter is None:
+            counter = client._alert_counter = {"n": 0}
         refusing = {"fail": fail}
 
         def guarded(path, params=None, **kw):
-            if refusing["fail"] and path == "messages" and (params or {}).get("type") == "stream":
-                raise Z.AgentSyncError("fake refused the post")
+            if path == "messages" and (params or {}).get("type") == "stream":
+                counter["n"] += 1
+                if refusing["fail"]:
+                    raise Z.AgentSyncError("fake refused the post")
             return real(path, params, **kw)
 
         client.post = guarded
-        if not fail:
-            return
-        self.addCleanup(setattr, client, "post", real)
+
+    def count_attempts(self, daemon) -> int:
+        """How many stream posts that seat's bot has attempted since the first refusal in this test."""
+        client = daemon.seats[SEAT].client
+        return int(getattr(client, "_alert_counter", {}).get("n", 0))
 
     # ---- the records themselves are untouched ------------------------------------------------------
     def test_the_digest_does_not_let_records_expire(self) -> None:
