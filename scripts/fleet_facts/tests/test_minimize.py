@@ -83,6 +83,17 @@ class Minimize(unittest.TestCase):
         doc = {"branch": "fix/tmp/x", "reason": "see https://example.test/etc/x and a/var/b, also /varnish", "repo": "o/opt"}
         self.assertEqual(m.minimize(doc), doc)
 
+    def test_a_local_file_url_is_a_mac_path_but_an_https_link_is_not(self):
+        # Built at run time:  the fixtures check refuses a literal /Users-shaped token in the tests folder.
+        url = "file:///" + "Users" + "/jay/private/repo"
+        url_lh = "file://localhost/" + "Users" + "/jay/x"
+        doc = {"reason": "see %s, also %s, and https://example.test/etc/x stays" % (url, url_lh)}
+        out = m.minimize(doc)["reason"]
+        self.assertEqual(out, "see [path], also [path], and https://example.test/etc/x stays")
+        self.assertFalse(m.mac_path_in(out))
+        with self.assertRaises(m.PathLeak):
+            m.minimize({"a file:///" + "Users" + "/jay link": 1})
+
     def test_a_tilde_that_is_not_a_path_stays(self):
         self.assertEqual(m.minimize({"note": "about ~5 minutes"}), {"note": "about ~5 minutes"})
 

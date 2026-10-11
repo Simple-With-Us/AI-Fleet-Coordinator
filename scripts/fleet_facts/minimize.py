@@ -27,11 +27,14 @@ ELLIPSIS = "…"
 # Keys whose strings are matched exactly by a consumer:  never cut.
 EXACT_KEYS = frozenset({"branch", "repo", "owner_repo", "lane", "name", "identifier", "topic", "head_ref", "signed_for", "sig", "sig_alg",
                        "kind", "schema", "tool", "version", "host", "sha256", "path_in_repo"})
-# A Mac path starts a token:  `~/...`, or one of the system folders a tool writes about (`/Users`, `/Volumes`, `/private`, `/var`, `/tmp`,
+# A Mac path starts a token:  `~/...`, a local `file://...` URL (`file:///Users/...` or `file://localhost/Users/...`),
+# or one of the system folders a tool writes about (`/Users`, `/Volumes`, `/private`, `/var`, `/tmp`,
 # `/opt`, `/etc`).  The look-behind keeps `fix/tmp/x` (a branch) and `https://host/etc/x` (a link) out of it.
+# `file://...` is matched as a whole (the `://` and the look-behind over the first path slash), and `https://...`
+# never starts with `file:` so it is not affected.
 _ROOTS = r"/(?:Users|Volumes|private|var|tmp|opt|etc)"
-_PATH = re.compile(r"~/[^\s\"',;)\]}]*|(?<![\w.~/-])" + _ROOTS + r"(?:/[^\s\"',;)\]}]*)?(?![\w-])")
-_LEAK = re.compile(r"~/|(?<![\w.~/-])" + _ROOTS + r"(?![\w-])")
+_PATH = re.compile(r"~/(?:[^\s\"',;)\]}]*)?|(?<![\w.~/-])" + _ROOTS + r"(?:/[^\s\"',;)\]}]*)?(?![\w-])|file://(?:localhost/)?[^\s\"',;)\]}]*")
+_LEAK = re.compile(r"~/|file://(?:localhost/)?|(?<![\w.~/-])" + _ROOTS + r"(?![\w-])")
 DROPPED_KEYS = ("path", "path_exact")       # the path, and the flag that says whether it was exact
 MAX_DEPTH = 64
 
@@ -45,7 +48,7 @@ def mac_path_in(text: str) -> bool:
 
 
 def scrub(text: str) -> str:
-    """`text` with every Mac path (`~/...`, `/Users/...`, `/Volumes/...`) replaced by `[path]`."""
+    """`text` with every Mac path (`~/...`, `file:///Users/...`, `/Users/...`, `/Volumes/...`) replaced by `[path]`."""
     return _PATH.sub("[path]", text)
 
 
