@@ -69,6 +69,36 @@ The recall tools (spec 1.1) need three Worker secrets.  Without them they answer
 
 `RECALL_API_TOKEN` is the recall service's bearer (Infisical shared/prod).  The Access service token is the one on the `agents.jays.services` Access app, which also covers `recall.jays.services`.  Rotating either means running the matching `put` line again.  Check with a `recall_search` call from Grok or Jet (ARMING-JAY.md, "Fleet recall"), or look for `"tool":"recall_search"` lines in the Worker log:  `outcome` `ok` means the Worker reached recall, `not_authorized` means a credential is wrong, and `not_configured` means a secret is missing.
 
+## Step 2c:  Linear secrets for a seat (once per seat)
+
+The Linear tools (AFC-289) need two Worker secrets per seat:  the seat's own Linear app client credentials.  Without them that seat's Linear tools answer `not_configured` and everything else works, so this step is independent of every other one.  The names hold the seat with hyphens as underscores, because an env var name cannot hold one — `GROK-WEB` becomes `LINEAR_GROK_WEB_CLIENT_ID` and `LINEAR_GROK_WEB_CLIENT_SECRET`.  That matches how the owner renamed the pair in Infisical.
+
+Run from this directory, in the same subshell shape as Step 2b.  Never print a value:
+
+```bash
+(
+  set +x
+  export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
+  CLOUDFLARE_EMAIL="$(grep -m1 '^CLOUDFLARE_JAY_ACCOUNT_EMAIL=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
+  CLOUDFLARE_API_KEY="$(grep -m1 '^CLOUDFLARE_JAY_API_KEY=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
+  export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
+  put() { [ -n "$2" ] || { echo "missing $1" >&2; return 1; }; printf %s "$2" | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put "$1" >/dev/null && echo "set $1"; }
+  # Read the pair from wherever the owner keeps seat credentials (see below), then:
+  # put LINEAR_GROK_WEB_CLIENT_ID     "<the client id>"
+  # put LINEAR_GROK_WEB_CLIENT_SECRET "<the client secret>"
+)
+```
+
+**Which Infisical project holds the pair.**  `docs/protocols/linear-migration.md` section 2 says per-seat keys live in the separate project **Fleet Linear Seats**, not in AI Fleet Coordinator;  INFISICAL.md records that only the shared `Fleet` app pair lives in AI Fleet Coordinator under `/linear`.  Confirm which one Jay put the GROK-WEB pair in before running the two `put` lines.
+
+**Which seats are on.**  `LINEAR_SEATS` in `src/linear.js` lists the seats whose Linear tools answer at all;  `GROK-WEB` is the only entry today.  Adding `ECHO` or `INSTINCT` is a one-line code change and a redeploy, deliberately, so a seat cannot gain board access by accident.
+
+**Writes are off.**  `LINEAR_TOOLS_WRITES` is a plain var, not a secret, and reads happen without it.  Turn writes on in `wrangler.jsonc` (`"LINEAR_TOOLS_WRITES": "1"`), redeploy, and probe with a throwaway issue before letting a seat work for real.
+
+**The one-mint-a-day rule.**  The seat's token is cached in its Durable Object, never in KV, because the DO's input gate is what stops two requests from minting at once.  Linear allows one mint per app per 24 hours, so a cached token minted under a day ago is never replaced, not even after a 401.  Jay forces a fresh one by rotating the app's credentials in Linear and re-running the two `put` lines:  that changes the credential fingerprint, which invalidates the cached row.
+
+**Check it** with a `linear_whoami` call from the seat's app (ARMING-JAY.md, "Linear").  In the Worker log, `"tool":"linear_whoami"` with `outcome` `ok` means the mint and the viewer query both worked;  `not_authorized` with `swapped` in the message means the secret pair belongs to a different Linear app than that seat's —  the Worker refuses to write in that case, and so should you until it is fixed.
+
 ## Step 3:  The tunnel rule (once)
 
 Phase 0 moved the hostname's DNS to the Worker, but "Jay's Tunnel" still carried an ingress rule `agent-sync.jays.services -> http://localhost:8787` (the retired relay's port).  The tunnel runs with `--token-file`, so its configuration is remote, in the Cloudflare API, not in `~/.cloudflared`.

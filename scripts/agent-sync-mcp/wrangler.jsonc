@@ -143,6 +143,11 @@
     // RECALL_ACCESS_CLIENT_ID and RECALL_ACCESS_CLIENT_SECRET (DEPLOY.md);
     // without them the recall tools answer not_configured and the rest works.
     "RECALL_BASE_URL": "https://recall.jays.services",
+    // Linear writes (AFC-289):  "1" lets linear_file, linear_claim,
+    // linear_comment and linear_status write.  Reads need no switch.  Set it
+    // only after the owner's secrets are installed and linear_whoami answers
+    // with the seat's own app (DEPLOY.md step 2c).
+    "LINEAR_TOOLS_WRITES": "0",
     // Kill switch step 4:  "1" makes /mcp answer 503.
     "MCP_DISABLED": "0"
   }

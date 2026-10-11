@@ -21,7 +21,7 @@ import { FakeZulip, REALM, STREAMS, OWNER_ID, zulipShapedKey } from "./fake-zuli
 
 const TOOLS = CONTRACT.tools;
 // The hosted server lists tools.json, then the hosted-only recall tools (src/recall.js), then the DM tools (src/dm.js).
-const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send"];
+const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status"];
 const JET_KEY = zulipShapedKey(11);
 const zulip = new FakeZulip({ bots: [{ email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet", key: JET_KEY }] });
 

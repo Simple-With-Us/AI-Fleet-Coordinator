@@ -122,12 +122,13 @@ const noSecrets = (text) => {
 
 // ---------------------------------------------------------------- the tool list
 
-test("the hosted list is tools.json, then the three recall tools, then the three DM tools, closed inputs, no identity arguments", () => {
+test("the hosted list is tools.json, then the three recall tools, then the three DM tools, then the Linear tools, closed inputs, no identity arguments", () => {
   assert.deepEqual(
     HOSTED_TOOL_LIST.map((t) => t.name),
-    [...TOOLS.tools.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send"],
+    [...TOOLS.tools.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status"],
   );
-  // tools.json, the stdio contract, is untouched.
+  // tools.json, the stdio contract, is untouched:  the Linear tools are hosted-only,
+  // the way recall and dm are, because the Python stdio server cannot run them.
   const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/tools.json"), "utf8"));
   assert.deepEqual(TOOLS, file);
   for (const tool of RECALL_TOOLS) {
