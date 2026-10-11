@@ -6,7 +6,7 @@ The fleet's open-loops routines (a daily digest, a daily backup-health line and 
 
 | Place | What is there |
 | --- | --- |
-| `Simple-With-Us/fleet-loops-data`, `docs/routines/` | The canonical copies.  A private repository with no GitHub Apps and no Actions.  Copied in by the open-loops live step L18a |
+| The canonical private repository, `docs/routines/` path | The canonical copies.  A private repository with no GitHub Apps and no Actions;  see the ops note for the location.  Copied in by the open-loops live step L18a |
 | `/Users/jay/apps/state/routines-private/` | The Mac staging folder where they are written and checked first.  Mode 0700, files 0600, outside every worktree so no `git add -A` or idle commit can reach them |
 
 Never copy a text into a lane, into this repository, into a PR body or into chat.  Findings from the checker print a file, a line and a rule name and never the text.
@@ -30,23 +30,23 @@ Each block does these five things, in order.  GB-Plumber is the one exception at
 
 1. Calls `GET /users/me` and stops unless the email is its own `<role>-grok-bot@` address.
 2. Verifies Jay's Zulip user id, written in the text with its provenance, with `GET /users/<id>` (a human with the owner role) before any direct message.
-3. Tries the shared tool first, from a fresh `--depth 1` clone of this repository's main branch.  It runs the tool with `--no-mac --mac-facts <signed file from fleet-loops-data>` when the tool exists.
+3. Tries the shared tool first, from a fresh `--depth 1` clone of this repository's main branch.  It runs the tool with `--no-mac --mac-facts <signed file from the canonical private repository>` when the tool exists.
 4. Otherwise gathers natively with GitHub and Linear reads and says "gathered natively".  (GB-Deployer and GB-Housekeeper only.)
 5. Posts and direct-messages by the Zulip REST API under its own label `[GB-<ROLE>]`, and ends its chat with "sent".
 
-GB-Plumber has no native fallback, on purpose.  Backup state (is the job installed and loaded, when the last complete backup finished, the restic check age, free disk) exists only on the Mac, and Grok Bot cannot see the Mac.  Its one source is the `backup` block of the signed `gb/mac-facts.json` in fleet-loops-data.  So when the tool is missing, the signature fails or the backup block is absent, GB-Plumber posts "Mac facts absent" (with the reason) in the backup topic and never guesses, and a facts file that is too old is called stale in its line.  The plan's GB-Plumber row says the same:  its first post, Tue, Oct 13, 8:00am, reports "Mac facts absent" until the facts are published.  The checker does not require "gathered natively" in any block.
+GB-Plumber has no native fallback, on purpose.  Backup state (is the job installed and loaded, when the last complete backup finished, the restic check age, free disk) exists only on the Mac, and Grok Bot cannot see the Mac.  Its one source is the `backup` block of the signed `gb/mac-facts.json` in the canonical private repository.  So when the tool is missing, the signature fails or the backup block is absent, GB-Plumber posts "Mac facts absent" (with the reason) in the backup topic and never guesses, and a facts file that is too old is called stale in its line.  The plan's GB-Plumber row says the same:  its first post, Tue, Oct 13, 8:00am, reports "Mac facts absent" until the facts are published.  The checker does not require "gathered natively" in any block.
 
 So when the shared tools land on main (open-loops gather, the fleet-facts reader, `lane sweep`), a pasted block starts using them with no re-paste.  Each block also carries the trigger line (`CRON_TZ=America/Chicago` plus a cron expression).
 
 ## Placeholders to Fill Before the Copy
 
-The digest and the sweep post in topics named after the Linear ids of the C2 and C5 component issues.  The staged texts carry `<C2 ID>` and `<C5 ID>` until those issues exist.  Replace them, then run the checker with `--no-placeholders`, and only then copy the texts to fleet-loops-data.
+The digest and the sweep post in topics named after the Linear ids of the C2 and C5 component issues.  The staged texts carry `<C2 ID>` and `<C5 ID>` until those issues exist.  Replace them, then run the checker with `--no-placeholders`, and only then copy the texts to the canonical private repository.
 
 ## Changing a Text
 
-1. Edit the staged copy (or fetch the fleet-loops-data copy to the staging folder).
+1. Edit the staged copy (or fetch the canonical private repository copy to the staging folder).
 2. Run the checker over the folder (below).  It must print its pass line.
-3. Copy the changed file to `docs/routines/` in fleet-loops-data with a sha-aware `gh api -X PUT`.
+3. Copy the changed file to `docs/routines/` in the canonical private repository with a sha-aware `gh api -X PUT`.
 4. Make the platform pick it up:  re-paste the Grok Bot routine, or re-POST the BotFleet routine through its installer.  A core change must reach both platforms the same week, so the pair stays comparable.
 
 ## The Checker
