@@ -623,6 +623,185 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIsNone(r(outside, fleet_repos=[self.fleet], live_basenames=live))
         self.assertIsNone(r(mirror, fleet_repos=[self.fleet], live_basenames=()))
 
+    # ---- rule (d): the Fleet-OPS handbook.  Its public pages and generated/ are the text of the live AGENT-SYNC.md.
+
+    PUBLIC = "---\ntitle: {t}\norder: {o}\nvisibility: public\nsection: {s}\n---\n## {t}\n\n{body}\n"
+    PRIVATE = "---\ntitle: {t}\norder: {o}\nvisibility: private\nsection: {s}\n---\n## {t}\n\n{body}\n"
+    RULE = "Never idle-watch a PR:  a PR that is not merging is waiting on an action, not on time."
+
+    def _handbook(self):
+        """The shapes build.mjs makes: public pages, a private page, a ruling log whose front matter says public by
+        mistake, the README, and generated/AGENT-SYNC.md; plus the live file and the AFC mirror that hold the same text."""
+        live = self._w(self.apps / "AGENT-SYNC.md", f"# Agent sync (live)\n\n{self.RULE}\n")
+        mirror = self._w(self.fleet / "AGENT-SYNC.md", f"# Agent sync (mirror)\n\n{self.RULE}\n")
+        generated = self._w(self.ops / "generated" / "AGENT-SYNC.md", f"# Agent sync (generated)\n\n{self.RULE}\n")
+        h = self.ops / "handbook"
+        public = [
+            self._w(h / "work" / "landing.md", self.PUBLIC.format(t="Landing", o="0400", s="work", body=self.RULE)),
+            self._w(h / "core" / "how-to-use.md", self.PUBLIC.format(t="How", o="0100", s="core", body="Read it.")),
+            self._w(h / "00-preamble.md", self.PUBLIC.format(t="Preamble", o="0010", s="core", body="Scope.")),
+        ]
+        private = [
+            self._w(h / "private" / "pointers.md", self.PRIVATE.format(t="Pointers", o="9000", s="private", body="See ATTACK-MAP.")),
+            self._w(h / "rulings" / "2026-10.md", self.PUBLIC.format(t="Rulings", o="9100", s="rulings", body="A ruling.")),
+            self._w(h / "ops" / "held-back.md", self.PRIVATE.format(t="Held", o="8000", s="ops", body="Not yet public.")),
+            self._w(h / "README.md", "# Fleet Handbook\n\nEditing rules.\n"),
+        ]
+        return live, mirror, generated, public, private
+
+    def test_rule_d_public_handbook_pages_are_one_hit_through_the_live_file(self):
+        live, mirror, generated, public, private = self._handbook()
+        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                                      apps_dir=self.apps, grok_home=self.grok))
+        skipped = {path: rule for rule, path in sources.take_doc_skips()}
+        kept = {d.path for d in docs}
+        # the handbook rule appears once, in the live file
+        hits = [d.path for d in docs if self.RULE in d.text_markdown]
+        self.assertEqual(hits, [str(live)])
+        for page in public:
+            self.assertEqual(skipped.get(str(page)), sources.SKIP_HANDBOOK_MIRROR, page)
+        for page in private:
+            self.assertIn(str(page), kept, page)
+        self.assertEqual(skipped.get(str(mirror)), sources.SKIP_APPS_MIRROR)
+        self.assertNotIn(str(generated), kept)       # the walk never enters generated/
+        self.assertNotIn(str(generated), skipped)
+        # the private pages are ingested as fleet-ops docs
+        by_path = {d.path: d for d in docs}
+        pointers = by_path[str(self.ops / "handbook" / "private" / "pointers.md")]
+        self.assertEqual((pointers.source, pointers.app, pointers.title), ("doc", "fleet-ops", "Pointers"))
+
+    def test_rule_d_stands_down_to_the_afc_mirror_when_there_is_no_live_file(self):
+        live, mirror, generated, public, private = self._handbook()
+        live.unlink()                       # a fresh host:  no ~/apps/AGENT-SYNC.md
+        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                                      apps_dir=self.apps, grok_home=self.grok))
+        skipped = {path: rule for rule, path in sources.take_doc_skips()}
+        kept = {d.path for d in docs}
+        # the mirror is the one AGENT-SYNC.md the walk ingests, so the public pages are dropped for it, as they are
+        # for the live file:  a handbook rule is one hit, which is what it was before the handbook was walked at all
+        self.assertIn(str(mirror), kept)
+        for page in public:
+            self.assertEqual(skipped.get(str(page)), sources.SKIP_HANDBOOK_MIRROR, page)
+        for page in private:
+            self.assertIn(str(page), kept, page)
+        hits = [d.path for d in docs if self.RULE in d.text_markdown]
+        self.assertEqual(hits, [str(mirror)])
+
+    def test_rule_d_keeps_the_public_pages_when_no_agent_sync_copy_is_ingested(self):
+        live, mirror, generated, public, private = self._handbook()
+        live.unlink()
+        mirror.unlink()                     # nothing else holds the text:  the public pages are the only copy
+        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                                      apps_dir=self.apps, grok_home=self.grok))
+        skipped = {path: rule for rule, path in sources.take_doc_skips()}
+        kept = {d.path for d in docs}
+        for page in public + private:
+            self.assertIn(str(page), kept, page)
+        self.assertEqual(skipped, {})
+        self.assertEqual(len([d for d in docs if self.RULE in d.text_markdown]), 1)
+
+    def test_rule_d_is_not_satisfied_by_another_repos_agent_sync_copy(self):
+        live, mirror, generated, public, private = self._handbook()
+        live.unlink()
+        mirror.unlink()
+        self._w(self.st / "docs" / "AGENT-SYNC.md", f"# ST's own copy\n\n{self.RULE}\n")   # not the coordinator's mirror
+        kept, skipped = self._walk()
+        for page in public:
+            self.assertIn(str(page), kept, page)
+        self.assertEqual(skipped, {})
+
+    def test_a_live_file_the_walk_rejects_does_not_hide_its_mirrors(self):
+        live, mirror, generated, public, private = self._handbook()
+        live.write_text(f"# Agent sync (live)\n\n{self.RULE}\n" + "x" * (sources.DOC_MAX_BYTES + 10))
+        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                                      apps_dir=self.apps, grok_home=self.grok))
+        skipped = {path: rule for rule, path in sources.take_doc_skips()}
+        kept = {d.path for d in docs}
+        self.assertNotIn(str(live), kept)                       # too big for the doc source
+        self.assertIn(str(mirror), kept)                        # so the mirror is not dropped for it (rule a)
+        for page in public:                                     # and the mirror, which is ingested, stands in for
+            self.assertEqual(skipped.get(str(page)), sources.SKIP_HANDBOOK_MIRROR, page)   # the pages (rule d)
+        self.assertNotIn(str(mirror), skipped)
+        self.assertEqual([d.path for d in docs if self.RULE in d.text_markdown], [str(mirror)])
+
+    def test_rule_d_survives_an_unreadable_mirror_and_keeps_the_pages(self):
+        live, mirror, generated, public, private = self._handbook()
+        live.unlink()
+        real = sources._skip_doc
+
+        def unreadable(p):
+            if p == mirror:
+                raise PermissionError(13, "Permission denied", str(p))
+            return real(p)
+
+        with mock.patch.object(sources, "_skip_doc", unreadable):
+            docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                                          apps_dir=self.apps, grok_home=self.grok))
+        kept = {d.path for d in docs}
+        # the walk finishes, and since no AGENT-SYNC.md could be read the public pages are the only copy
+        self.assertNotIn(str(mirror), kept)
+        for page in public:
+            self.assertIn(str(page), kept, page)
+
+    def test_a_live_file_and_mirror_the_walk_both_reject_do_not_hide_the_pages(self):
+        live, mirror, generated, public, private = self._handbook()
+        big = "x" * (sources.DOC_MAX_BYTES + 10)
+        live.write_text(f"# Agent sync (live)\n\n{self.RULE}\n{big}")
+        mirror.write_text(f"# Agent sync (mirror)\n\n{self.RULE}\n{big}")
+        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                                      apps_dir=self.apps, grok_home=self.grok))
+        skipped = {path: rule for rule, path in sources.take_doc_skips()}
+        kept = {d.path for d in docs}
+        for page in public:
+            self.assertIn(str(page), kept, page)
+        self.assertEqual(skipped, {})
+
+    def test_rule_d_is_logged_once(self):
+        self._handbook()
+        list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
+                               apps_dir=self.apps, grok_home=self.grok))
+        by_rule = {w.split()[3]: w for w in sources.take_warnings()}
+        self.assertIn(sources.SKIP_HANDBOOK_MIRROR, by_rule)
+        self.assertTrue(by_rule[sources.SKIP_HANDBOOK_MIRROR].startswith("doc: skipped 3 handbook-mirror file(s): "))
+
+    def test_rule_d_unit(self):
+        r = sources.mirror_skip_reason
+        h = self.ops / "handbook"
+        pub = self._w(h / "chat" / "posting.md", self.PUBLIC.format(t="P", o="0700", s="chat", body="x"))
+        priv = self._w(h / "private" / "p.md", self.PRIVATE.format(t="P", o="9000", s="private", body="x"))
+        ruling = self._w(h / "rulings" / "2026-10.md", self.PUBLIC.format(t="R", o="9100", s="rulings", body="x"))
+        quoted = self._w(h / "chat" / "quoted.md", '---\ntitle: Q\nvisibility: "public"\n---\n## Q\n')
+        nofm = self._w(h / "README.md", "# readme\n")
+        crlf = self._w(h / "chat" / "crlf.md", "---\r\ntitle: C\r\nvisibility: public\r\n---\n## C\n")
+        late = self._w(h / "chat" / "late.md", "## No front matter\n\n---\nvisibility: public\n---\n")
+        gen = self._w(self.ops / "generated" / "AGENT-SYNC.md")
+        docs_gen = self._w(self.ops / "docs" / "generated" / "x.md")
+        elsewhere = self._w(self.st / "handbook" / "chat" / "posting.md", self.PUBLIC.format(t="P", o="1", s="chat", body="x"))
+        ops = [self.ops]
+        live = {"AGENT-SYNC.md"}
+        self.assertEqual(r(pub, ops_repos=ops, live_basenames=live), sources.SKIP_HANDBOOK_MIRROR)
+        self.assertEqual(r(gen, ops_repos=ops, live_basenames=live), sources.SKIP_HANDBOOK_MIRROR)
+        for kept in (priv, ruling, quoted, nofm, crlf, late, docs_gen):
+            self.assertIsNone(r(kept, ops_repos=ops, live_basenames=live), kept)
+        # a handbook/ folder in another repo is not Fleet-OPS's
+        self.assertIsNone(r(elsewhere, ops_repos=ops, live_basenames=live))
+        # without an ops repo the rule is off, so existing callers are unchanged
+        self.assertIsNone(r(pub, live_basenames=live))
+        # without an ingested AGENT-SYNC.md the public pages and generated/ are the only copy, so they stay
+        self.assertIsNone(r(pub, ops_repos=ops))
+        self.assertIsNone(r(gen, ops_repos=ops, live_basenames={"MAC-LOCAL-PROCESSES.md"}))
+        # the caller may say a copy is ingested that is not live (the coordinator's mirror), or that none is
+        self.assertEqual(r(pub, ops_repos=ops, agent_sync_ingested=True), sources.SKIP_HANDBOOK_MIRROR)
+        self.assertEqual(r(gen, ops_repos=ops, agent_sync_ingested=True), sources.SKIP_HANDBOOK_MIRROR)
+        self.assertIsNone(r(pub, ops_repos=ops, live_basenames=live, agent_sync_ingested=False))
+
+    def test_rule_d_public_page_reads_only_the_front_matter(self):
+        rel = pathlib.PurePath("handbook/chat/posting.md")
+        page = self._w(self.ops / "handbook" / "chat" / "posting.md",
+                       "---\ntitle: P\nvisibility: private\n---\n## P\n\nvisibility: public\n")
+        self.assertFalse(sources.handbook_page_is_public(page, rel))
+        self.assertFalse(sources.handbook_page_is_public(self.ops / "handbook" / "missing.md", rel))
+
     def test_grok_skills_are_a_skill_source_tree(self):
         self.assertIn(sources.GROK_HOME / "skills", sources.SKILL_DIRS)
         self._w(self.grok / "skills" / "housekeeper" / "SKILL.md", "---\nname: housekeeper\n---\n# HK (GROK)\n")
