@@ -60,6 +60,12 @@ jobs:
     # Worker will not follow).  This now fails the build instead.
     - name: Verify fleet registry (incl. admin-panel APPS copy)
       run: python3 scripts/check-fleet-registry.py
+    # GROK-BUILD in any spelling is an alias for GROK (owner 2026-10-10).  The standalone runtimes (the
+    # board scripts, recall) carry a copy of the registry's aliasPattern;  these fail when a copy drifts.
+    - name: Seat alias parity (board scripts)
+      run: |
+        python3 scripts/mac-collab/test_seat_alias.py
+        python3 scripts/linear-board/test_board.py SeatAliasTests
     # Infisical's only environment is prod (owner 2026-10-10).  The lint fails on a dev or
     # staging INFISICAL_ENV in an env file or cursor-cloud-start.sh fallback, and on a
     # non-prod .infisical.json default;  `--fleet` runs it over every ~/Code repo on origin/main.

@@ -2,7 +2,7 @@
 """fleet-work-backup:  back up the fleet's work that GitHub does not hold.
 
 Two things are staged into one fixed directory and sent to an encrypted restic repository on
-Backblaze B2 (prefix ``fleet-work-backup/`` in the bucket named by ``B2_FLEET_BUCKET_NAME``):
+Backblaze B2 (prefix ``fleet-work-backup/`` in the dedicated bucket named by ``B2_FLEET_WORK_BUCKET_NAME``):
 
   (a) Git work.  For every checkout the fleet uses (lanes under ~/apps/lanes, flat ~/apps/<x>
       lanes, other clones under ~/apps, the human trees under ~/Code, and any linked worktree
@@ -75,6 +75,7 @@ CHECK_EVERY = 7 * 24 * 3600
 SKIP_WARN_AFTER = 8  # consecutive skipped runs (about 24 hours at one run per 3 hours)
 ALERT_EVERY = 24 * 3600     # at most one agent-sync alert a day while runs stay not ok
 ALERT_TOPIC = "AFC 29c02bcb fleet-work-backup"
+ALERT_GAP = "\u00a0 "          # Zulip renders Markdown:  a sentence gap is U+00A0 plus a space
 
 # Directory names never entered (git discovery and the non-git file walk).
 SKIP_DIR_NAMES = {
@@ -215,6 +216,8 @@ class Config:
     alert_seat: str = "CLAUDE"
     alert_topic: str = ALERT_TOPIC
     alert_to: tuple = ()            # seats or people to @-mention;  none means the post wakes nobody
+    alert_dm_owner: bool = False    # also send the alert to the owner as a Zulip DM from this seat's bot
+    alert_note: str = ""            # a standing instruction appended to the topic post (never to the DM)
     alert_after: int = SKIP_WARN_AFTER
     infisical_bin: str = "/opt/homebrew/bin/infisical"
     b2_http: Optional[Callable] = None   # (method, url, headers, body) -> (status, json):  tests answer offline
@@ -295,6 +298,8 @@ def config_from_env() -> Config:
     cfg.alert_seat = os.environ.get("FLEET_WORK_BACKUP_ALERT_SEAT", cfg.alert_seat)
     cfg.alert_topic = os.environ.get("FLEET_WORK_BACKUP_ALERT_TOPIC", cfg.alert_topic)
     cfg.alert_to = tuple(t.strip() for t in os.environ.get("FLEET_WORK_BACKUP_ALERT_TO", "").split(",") if t.strip())
+    cfg.alert_dm_owner = os.environ.get("FLEET_WORK_BACKUP_ALERT_DM_OWNER", "").strip().lower() in ("1", "true", "yes")
+    cfg.alert_note = os.environ.get("FLEET_WORK_BACKUP_ALERT_NOTE", cfg.alert_note).strip()
     for env, attr, cast in (("FLEET_WORK_BACKUP_LOAD_LIMIT", "load_limit", float),
                             ("FLEET_WORK_BACKUP_SWAP_LIMIT", "swap_limit", float),
                             ("FLEET_WORK_BACKUP_WORKERS", "workers", int),
@@ -2115,7 +2120,7 @@ def check_via_launchd(cfg: Config) -> int:
 
 
 # ------------------------------------------------------------------------------------------ restic
-CRED_NAMES = {"bucket": "B2_FLEET_BUCKET_NAME", "key_id": "B2_FLEET_WORK_KEY_ID",
+CRED_NAMES = {"bucket": "B2_FLEET_WORK_BUCKET_NAME", "key_id": "B2_FLEET_WORK_KEY_ID",
               "app_key": "B2_FLEET_WORK_APPLICATION_KEY", "password": "RESTIC_FLEET_WORK_PASSWORD"}
 MASTER_NAMES = {"key_id": "BACKBLAZE_MASTER_KEY_ID", "app_key": "BACKBLAZE_MASTER_APPLICATION_KEY"}
 
@@ -2144,8 +2149,11 @@ def restic_env(cfg: Config, allow_master: bool = False) -> tuple[Optional[dict],
     repository, a local one for a test or a mirror, and then only the password is needed.
 
     The B2 master key is a fallback only for a restore (``restic`` and ``snapshots`` pass ``allow_master``) and
-    only with FLEET_WORK_BACKUP_ALLOW_MASTER=1:  it has no file-name prefix, so it can delete the board's
-    database replica in the same bucket, and a backup, an init or an install never uses it."""
+    only with FLEET_WORK_BACKUP_ALLOW_MASTER=1:  it is limited to no bucket and no file-name prefix, so it reaches
+    every bucket on the account, and a backup, an init or an install never uses it.
+
+    The bucket name is B2_FLEET_WORK_BUCKET_NAME only:  there is no fallback to the fleet's shared bucket name, because
+    a fallback could point this backup at a bucket it does not own."""
     src = dict(read_handoff(cfg.handoff))
     for name in list(CRED_NAMES.values()) + list(MASTER_NAMES.values()):
         if os.environ.get(name):
@@ -2207,9 +2215,11 @@ def b2_call(cfg: Config, method: str, url: str, headers: dict, body: Optional[di
 def b2_key_problems(cfg: Config, key_id: str, app_key: str, bucket: str) -> list[tuple[bool, str]]:
     """What is wrong with the B2 key and bucket for this job, as (hard, text) pairs;  empty means ready.
 
-    Hard:  the key is not limited to the one bucket and the ``fleet-work-backup/`` prefix (the bucket also holds the
-    board's database replica), lacks a capability restic needs, holds one it must not (key or bucket admin), or a
-    lifecycle rule hides files under the prefix by age (that would hide live restic packs).  Soft:  B2 could not be
+    Hard:  the key is not limited to the one bucket and the ``fleet-work-backup/`` prefix (the repository path stays
+    ``<bucket>/fleet-work-backup`` in the dedicated bucket, and the prefix keeps a leaked key off everything else),
+    lacks a capability restic needs, holds one it must not (key or bucket admin), or a lifecycle rule hides files under
+    the prefix by age (that would hide live restic packs).  A whole-bucket rule (empty ``fileNamePrefix``) with only
+    ``daysFromHidingToDeleting`` is accepted.  Soft:  B2 could not be
     asked, or no lifecycle rule deletes hidden versions (``restic prune`` frees no space without one).  Read-only
     calls (b2_authorize_account and b2_list_buckets, API v4);  the texts name no key and no token."""
     basic = base64.b64encode(f"{key_id}:{app_key}".encode()).decode()
@@ -2663,15 +2673,8 @@ def agent_sync_path(cfg: Config) -> str:
     return cfg.agent_sync_bin or str(cfg.home / ".local" / "bin" / "agent-sync")
 
 
-def post_alert(cfg: Config, text: str) -> bool:
-    """Post to the fleet's Zulip through agent-sync as this job's seat.  Never raises;  False when it did not post."""
-    exe = agent_sync_path(cfg)
-    if not os.access(exe, os.X_OK):
-        return False
-    cmd = [exe, "post", "--as", cfg.alert_seat, "--session", "fwbackup", "--topic", cfg.alert_topic]
-    for who in cfg.alert_to:
-        cmd += ["--to", who]
-    cmd.append("-")
+def _agent_sync_send(cmd: list, text: str) -> bool:
+    """Run one agent-sync command with ``text`` on stdin.  Never raises;  False when it did not succeed."""
     try:
         p = subprocess.run(cmd, input=text.encode("utf-8"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                            timeout=60)
@@ -2680,27 +2683,65 @@ def post_alert(cfg: Config, text: str) -> bool:
         return False
 
 
+def post_alert(cfg: Config, text: str, wake: bool = True, failed: Optional[list] = None) -> bool:
+    """Tell the fleet through agent-sync as this job's seat, in up to two places:  a post in the work topic of
+    #agent-sync and, when ``cfg.alert_dm_owner``, a Zulip DM to the owner with the text alone.  With ``wake`` the
+    post carries the ``--to`` mentions (``cfg.alert_to``) and ``cfg.alert_note`` after the text;  without it the post
+    names nobody and wakes nobody (good news does not spend a peer's wake budget).  Each send is tried even when the
+    other fails.  Never raises.  True when at least one was delivered;  ``failed`` (a list, when given) collects the
+    names of the ones that were not (``post``, ``dm``).
+
+    The job posts as ``cfg.alert_seat``, a different seat from the ones it mentions, so the mention can wake them
+    (a seat's own post that mentions itself never wakes its listener).  A peer that has used up its wake budget in the
+    topic stops waking, so the owner DM is the delivery that always arrives."""
+    exe = agent_sync_path(cfg)
+    ok_post = ok_dm = False
+    if os.access(exe, os.X_OK):
+        post = [exe, "post", "--as", cfg.alert_seat, "--session", "fwbackup", "--topic", cfg.alert_topic]
+        if wake:
+            for who in cfg.alert_to:
+                post += ["--to", who]
+        post.append("-")
+        topic_text = f"{text}{ALERT_GAP}{cfg.alert_note}" if wake and cfg.alert_note else text
+        ok_post = _agent_sync_send(post, topic_text)
+        if cfg.alert_dm_owner:
+            ok_dm = _agent_sync_send([exe, "dm", "--as", cfg.alert_seat, "--session", "fwbackup", "--owner", "-"], text)
+    if failed is not None:
+        if not ok_post:
+            failed.append("post")
+        if cfg.alert_dm_owner and not ok_dm:
+            failed.append("dm")
+    return ok_post or ok_dm
+
+
 def alert_after_line(cfg: Config, state: dict, line: str) -> None:
-    """After ``alert_after`` runs in a row with no complete snapshot, say so in Zulip, then at most once a day while
-    it lasts;  the first good run after an alert says it is over.  The run line carries names and counts only."""
+    """After ``alert_after`` runs in a row with no complete snapshot, say so in Zulip (a topic post that mentions
+    ``alert_to`` and carries ``alert_note``, and a DM to the owner when ``alert_dm_owner`` is set), then at most once a
+    day while it lasts;  the first good run after an alert says it is over (the same two places, but the post names
+    nobody).  The run line carries names and counts only."""
     n = int(state.get("consecutive_not_ok", 0))
     last = float(state.get("last_alert", 0) or 0)
-    gap = "\u00a0 "              # Zulip renders Markdown:  a sentence gap is U+00A0 plus a space
+    gap = ALERT_GAP
     if n == 0:
         if last:
-            post_alert(cfg, f"fleet-work-backup on {cfg.host} is back to a complete snapshot.{gap}`{line}`")
+            post_alert(cfg, f"fleet-work-backup on {cfg.host} is back to a complete snapshot.{gap}`{line}`", wake=False)
             state.pop("last_alert", None)
         return
     if n < cfg.alert_after or (last and cfg.now() - last < ALERT_EVERY):
         return
     text = (f"fleet-work-backup on {cfg.host}:  {n} runs in a row with no complete snapshot (last complete:  "
-            f"{state.get('last_ok_text', 'never')}).{gap}Latest run line:  `{line}`.{gap}The detail log is "
-            f"~/Library/Logs/fleet-work-backup.detail.log, and README.md in scripts/fleet-work-backup says what each "
-            f"reason and warning means.")
-    if post_alert(cfg, text):
+            f"{state.get('last_ok_text', 'never')}).{gap}Latest run line:  `{line}`.{gap}The one-line-per-run log is "
+            f"~/Library/Logs/fleet-work-backup.log and the detail log is ~/Library/Logs/fleet-work-backup.detail.log "
+            f"(launchd's own output is in fleet-work-backup.out.log and fleet-work-backup.err.log beside them).{gap}"
+            f"README.md in scripts/fleet-work-backup says what each reason and warning means.")
+    failed: list = []
+    if post_alert(cfg, text, failed=failed):
         state["last_alert"] = cfg.now()
+        if failed:                                  # one of the two arrived:  the alert counts, the other is a lead
+            detail_log(cfg, [f"alert-partly-posted after {n} runs (not delivered:  {', '.join(failed)})"])
     else:
-        detail_log(cfg, [f"alert-not-posted after {n} runs (agent-sync at {agent_sync_path(cfg)} missing or failed)"])
+        detail_log(cfg, [f"alert-not-posted after {n} runs (agent-sync at {agent_sync_path(cfg)} missing or failed;  "
+                         f"not delivered:  {', '.join(failed)})"])
 
 
 def log_not_ok(cfg: Config, **fields) -> str:

@@ -56,8 +56,14 @@ itself, this job's install and staging folders, and any file over 200 MB (also a
 over 200 MB;  listed in the dry run and the detail log instead).  Runtime session stores are skipped by
 default because tool output in a transcript carries credentials in shapes no scanner knows, and the tool
 rebuilds them:  `grok-acp-runtime/acp-home/sessions`, `acp-home/memtrace`, `fleet-rag/mined/chat` (the
-detail log notes each as `skipped-by-default`;  `FLEET_WORK_BACKUP_NO_DEFAULT_PATH_SKIPS=1` turns the
-list off).  `FLEET_WORK_BACKUP_EXTRA_SKIP_DIRS=name1,name2` adds directory names without a code change.
+detail log notes each as `skipped-by-default`;  `FLEET_WORK_BACKUP_NO_DEFAULT_PATH_SKIPS=1` turns the whole
+list off, all three together, there is no per-store switch).  **This install turns it off** (the plist sets
+it, owner ruling, Jay, Oct 10, 2026), so the Grok ACP session history (`acp-home/sessions`) and the mined
+fleet-rag chat logs (`fleet-rag/mined/chat`) are in the backup.  The third store, `acp-home/memtrace`, is put
+back by name:  the plist also sets `FLEET_WORK_BACKUP_EXTRA_SKIP_DIRS=memtrace`, and the only directory called
+`memtrace` under `~/apps` and `~/Code` is that one (a new directory of that name anywhere would be skipped too).
+The two stores' files still pass the name filter and the content and gitleaks secret gate, a file over 200 MB is
+still skipped, and `*.log` files and directories named `logs` stay skipped.  `FLEET_WORK_BACKUP_EXTRA_SKIP_DIRS=name1,name2` adds directory names without a code change.
 
 ## What is never backed up
 
@@ -126,8 +132,8 @@ board's database not being backed up is not something to leave silent.
 
 ## Where it goes
 
-Restic repository `s3:https://s3.eu-central-003.backblazeb2.com/<B2_FLEET_BUCKET_NAME>/fleet-work-backup`
-(the endpoint the fleet's litestream config already uses).  Tag `fleet-work`, host `jay-mac`, plus tag
+Restic repository `s3:https://s3.eu-central-003.backblazeb2.com/<B2_FLEET_WORK_BUCKET_NAME>/fleet-work-backup`
+(the Backblaze region the fleet's litestream config uses, so create the bucket there).  Tag `fleet-work`, host `jay-mac`, plus tag
 `partial` on a snapshot that was missing something (an unmounted volume, a denied path, files deferred by
 the gate).  Retention runs after every complete run, per host and tag set, so partial snapshots have their
 own slots and never push complete ones out:  `--keep-hourly 24 --keep-daily 14 --keep-weekly 8
@@ -136,8 +142,12 @@ week of runs without the lanes cannot age out the last good state.  `--prune` ru
 `restic check` at most once a week, because list and delete calls are B2 transactions (board PD #388 is a
 B2 request spike).
 
-The bucket is shared (`litestream.yml` replicates the board database into it), so the application key
-**must** be limited to the bucket and the file-name prefix `fleet-work-backup/`.  `init` and `install.py`
+The bucket is **dedicated** to this job and private (owner decision, Oct 10, 2026):  it is not the shared fleet
+bucket that `litestream.yml` replicates the board database into, and that bucket and its lifecycle rule are not
+touched.  Its name comes from `B2_FLEET_WORK_BUCKET_NAME` only;  there is no fallback to the shared
+`B2_FLEET_BUCKET_NAME`, because a fallback could point the backup at the wrong bucket.  The repository path stays
+`<bucket>/fleet-work-backup`, and the application key **must** still be limited to that one bucket and the
+file-name prefix `fleet-work-backup/`, so a leaked key reaches nothing else.  `init` and `install.py`
 check that with read-only B2 calls (`b2_authorize_account` and `b2_list_buckets`, API v4) and refuse a key
 that is not limited to them, lacks a capability restic needs, or holds key or bucket admin capabilities
 (`--force` does not override that), and a lifecycle rule that hides files under the prefix by age
@@ -148,9 +158,11 @@ detail log), and a missing hide-to-delete rule is `warn=b2-lifecycle-missing`.  
 fake built from Backblaze's documentation;  a real response the check misreads fails closed (init and install
 refuse) rather than letting an unscoped key through.  Two B2 facts that need a bucket setting,
 not code:  over the S3 API a delete only hides a file version, so `restic prune` frees no space until the
-bucket has a **lifecycle rule** on the prefix `fleet-work-backup/` with `daysFromHidingToDeleting` of 7 to
-30 (which also leaves a soft-delete window);  and a key that can delete lets any process on the Mac that can
-read it erase the history, so keep the key in the handoff file only (mode 600) and consider Object Lock.
+bucket has a **lifecycle rule** with `daysFromHidingToDeleting` of 7 to 30 (which also leaves a soft-delete
+window).  The dedicated bucket's rule is the whole-bucket one,
+`{fileNamePrefix: "", daysFromHidingToDeleting: 14, daysFromUploadingToHiding: null}`, and the check accepts it
+(a rule on `fleet-work-backup/` alone is accepted too).  A key that can delete lets any process on the Mac that
+can read it erase the history, so keep the key in the handoff file only (mode 600) and consider Object Lock.
 
 The staging folder is fixed at `~/Library/Caches/fleet-work-backup/stage` (restic picks the parent
 snapshot by path, so a timestamped folder would break deduplication and retention).  Files are
@@ -166,7 +178,7 @@ subprocess environment only.  Names, never values:
 
 | Name | Use |
 |---|---|
-| `B2_FLEET_BUCKET_NAME` | bucket (already in the handoff file) |
+| `B2_FLEET_WORK_BUCKET_NAME` | the dedicated bucket (16 or more characters, because the sync's plausibility check rejects anything shorter) |
 | `B2_FLEET_WORK_KEY_ID`, `B2_FLEET_WORK_APPLICATION_KEY` | a **bucket-scoped** B2 application key limited to the file-name prefix `fleet-work-backup/`.  Capabilities:  `listFiles`, `readFiles`, `writeFiles`, `deleteFiles` (prune needs it), and `listBuckets`. |
 | `RESTIC_FLEET_WORK_PASSWORD` | the repository password |
 
@@ -174,9 +186,10 @@ The master key (`BACKBLAZE_MASTER_KEY_ID` / `BACKBLAZE_MASTER_APPLICATION_KEY`) 
 init or install:  it has no prefix.  With `FLEET_WORK_BACKUP_ALLOW_MASTER=1` the restore commands (`restic`,
 `snapshots`) may fall back to it for names the scoped key leaves empty.
 
-All three secrets live in Infisical (project `AI Fleet Coordinator`, `prod`) and reach the handoff
+All four names live in Infisical (project `AI Fleet Coordinator`, `prod`) and reach the handoff
 file through the one-way `com.jay.infisical-secrets-sync` job:  `scripts/infisical-secrets-sync.sh`
-has a `MAP` row for each, and the sync reads exactly the rows in that array.  The password must be a
+has a `MAP` row for each (the password's is write-once, the other three follow Infisical), and the sync reads
+exactly the rows in that array.  The password must be a
 urlsafe token of at least 16 characters, with no whitespace and no backslash (the sync's plausibility
 check rejects anything else, and its `awk -v` mangles backslashes).  Generate it with
 
@@ -223,14 +236,30 @@ LaunchAgent `com.jay.fleet-work-backup`, every 3 hours (`StartInterval` 10800), 
 - **Not ok in a row:**  every run that makes no complete snapshot (error, partial, a pressure or low-disk skip;
   not `lock-held`, which means another run is working) is counted;  after 8 in a row the line carries
   `warn=no-complete-backup-for-about-24h` and every such line shows `last_ok=`.
-- **Alert:**  at that point the job posts once to Zulip through `agent-sync post --as CLAUDE` in the topic
-  `AFC 29c02bcb fleet-work-backup` (`#agent-sync`), with the count, the last complete run and the run line
-  (names and counts only).  It posts again at most once a day while runs stay not ok, and once more when a
-  complete run follows.  The CLI is `~/.local/bin/agent-sync` (launchd's `PATH` lacks it;
-  `FLEET_WORK_BACKUP_AGENT_SYNC` overrides).  A post with no `@`-mention wakes nobody, so set
-  `FLEET_WORK_BACKUP_ALERT_TO` in the plist (comma list of seats or people) to whoever should be woken;
-  `FLEET_WORK_BACKUP_ALERT_TOPIC` and `FLEET_WORK_BACKUP_ALERT_SEAT` change the topic and the seat.  A post that
-  fails is noted in the detail log (`alert-not-posted`).
+- **Alert:**  at that point the job tells two places, each tried even when the other fails.  (1) One post through
+  `agent-sync post --as CLAUDE` in the topic `AFC 29c02bcb fleet-work-backup` (`#agent-sync`), with the count, the
+  last complete run, the run line (names and counts only) and where the logs are
+  (`~/Library/Logs/fleet-work-backup.log`, `.detail.log`, `.out.log`, `.err.log`).  The post @-mentions each name in
+  `FLEET_WORK_BACKUP_ALERT_TO` (a comma list of seats or people;  empty wakes nobody) and ends with
+  `FLEET_WORK_BACKUP_ALERT_NOTE`, a standing instruction.  (2) When `FLEET_WORK_BACKUP_ALERT_DM_OWNER` is `1`,
+  `true` or `yes`, a Zulip DM to the owner through `agent-sync dm --as CLAUDE --owner`, with the same text and
+  without the note.  This install's plist sets all three (owner ruling, Jay, Oct 10, 2026:  DM him, and tell the
+  Plumbers to investigate and fix it without asking him):  `ALERT_TO=BF-PLUMBER,GB-PLUMBER`, `ALERT_DM_OWNER=1`,
+  and a note that says the first Plumber to reply "taking it" in the topic owns the fix and the other reviews it.
+  The job posts as the CLAUDE bot, which is a different seat from both Plumbers, so its mention can wake them.
+  BF-Plumber is woken by BotFleet's own Zulip listener and GB-Plumber through the Grok Bot routine webhook on the
+  agent-sync server (live and connected as of Oct 10, 2026 10:34pm by `agent-sync status` on the server).  Neither
+  has posted yet, so the wake path is unproven end to end.  BotFleet caps peer wakes (6 per bot per hour, 2 per
+  topic per hour, and after 4 peer wakes in one topic with no message from Jay the topic stops waking that bot
+  until Jay speaks there), so a failure that lasts for days can stop waking BF-Plumber in this topic.  **The owner
+  DM is the delivery that is guaranteed.**  The alert goes out once when the count reaches 8 and again at most once
+  a day while runs stay not ok (the mention and the note go with each).  When a complete run follows, the
+  all-clear goes out to the owner by DM and to the topic as a post with **no** mention and no note, so good news
+  spends no one's wake budget.  The CLI is `~/.local/bin/agent-sync` (launchd's `PATH` lacks it;
+  `FLEET_WORK_BACKUP_AGENT_SYNC` overrides).  `FLEET_WORK_BACKUP_ALERT_TOPIC` and `FLEET_WORK_BACKUP_ALERT_SEAT`
+  change the topic and the seat.  When neither send is delivered the detail log says `alert-not-posted` (naming
+  `post`, `dm` or both);  when only one is, it says `alert-partly-posted` and names the other, and the alert
+  counts as sent for that day, so a DM that failed beside a post that landed is not retried until tomorrow.
 - **Disk:**  skips when the internal disk has under 5 GB free.
 - **Runtime cap:**  2 hours.
 - **Read-only git:**  `GIT_OPTIONAL_LOCKS=0`, `core.fsmonitor=false`, `safe.directory=*`, no fetch, no
@@ -306,15 +335,17 @@ for a dry run only (a faster report);  a real run refuses it.
 Order matters;  nothing here runs by itself:
 
 1. `brew install restic` (or `install.py --install-restic`).
-2. In the B2 console, create an application key with access to the one bucket only, type **Read and Write**,
-   and the file-name prefix `fleet-work-backup/` (or with the `b2` CLI, an exact list:  `b2 key create --bucket
-   <bucket> --name-prefix fleet-work-backup/ fleet-work-backup listBuckets,listFiles,readFiles,writeFiles,deleteFiles`).
-   It needs `listFiles readFiles writeFiles deleteFiles listBuckets`;  the check refuses key or bucket admin
-   (`writeKeys`, `deleteKeys`, `writeBuckets`, `deleteBuckets`) and accepts the console preset's other read and
-   write capabilities.  Add a lifecycle rule on that prefix with days from hiding to deleting of 7 to 30 and
-   **no** days from uploading to hiding.
-3. Write `B2_FLEET_WORK_KEY_ID` and `B2_FLEET_WORK_APPLICATION_KEY` to Infisical (project `AI Fleet
-   Coordinator`, `prod`), and copy `scripts/fleet-work-backup/fleet_work_backup.py` to
+2. In the B2 console, create the dedicated private bucket (in the same region as the fleet's litestream bucket,
+   `eu-central-003`, and with a name of 16 or more characters), give it the lifecycle rule
+   `{fileNamePrefix: "", daysFromHidingToDeleting: 14, daysFromUploadingToHiding: null}` (days from hiding to
+   deleting of 7 to 30 and **no** days from uploading to hiding), and create an application key with access to
+   that one bucket only, type **Read and Write**, and the file-name prefix `fleet-work-backup/` (or with the `b2`
+   CLI, an exact list:  `b2 key create --bucket <bucket> --name-prefix fleet-work-backup/ fleet-work-backup
+   listBuckets,listFiles,readFiles,writeFiles,deleteFiles`).  It needs `listFiles readFiles writeFiles
+   deleteFiles listBuckets`;  the check refuses key or bucket admin (`writeKeys`, `deleteKeys`, `writeBuckets`,
+   `deleteBuckets`) and accepts the console preset's other read and write capabilities.
+3. Write `B2_FLEET_WORK_BUCKET_NAME`, `B2_FLEET_WORK_KEY_ID` and `B2_FLEET_WORK_APPLICATION_KEY` to Infisical
+   (project `AI Fleet Coordinator`, `prod`), and copy `scripts/fleet-work-backup/fleet_work_backup.py` to
    `~/apps/fleet-work-backup/` (`install.py --skip-launchd` does that), then run `fleet_work_backup.py
    new-password` for `RESTIC_FLEET_WORK_PASSWORD`.
 4. `install -m 755 scripts/infisical-secrets-sync.sh ~/bin/` and wait one tick;  `~/.secrets/infisical-sync.log`
@@ -325,8 +356,10 @@ Order matters;  nothing here runs by itself:
    prerequisite is missing, and refuses an unscoped key even with `--force`;  prints the `Python.app` to grant).
 7. Grant Removable Volumes to that `Python.app` in System Settings, then `python3
    ~/apps/fleet-work-backup/fleet_work_backup.py check-access --launchd` until it says `ok under launchd`.
-8. Optionally `run --ignore-pressure` once by hand;  review the detail log and fill `allow.txt`.  Set
-   `FLEET_WORK_BACKUP_ALERT_TO` in the plist if the not-ok alert should wake someone.
+8. Optionally `run --ignore-pressure` once by hand;  review the detail log and fill `allow.txt`.  The alert
+   settings (`FLEET_WORK_BACKUP_ALERT_TO`, `FLEET_WORK_BACKUP_ALERT_DM_OWNER`, `FLEET_WORK_BACKUP_ALERT_NOTE`) are
+   already in the repo plist (see Alert, above);  change them there, because `install.py` copies the repo plist
+   over the live one whenever the two differ.
 9. Update the live `~/apps/MAC-LOCAL-PROCESSES.md` and its Apple Note, and add `com.jay.fleet-work-backup`
    to `mac-process-watch.sh`.
 

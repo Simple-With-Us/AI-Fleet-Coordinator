@@ -16,9 +16,9 @@
           python3.14 runs .../Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python.
           Run 'python3 fleet_work_backup.py image' to print it.  Apple's interpreter is the default
           because it is Apple-signed, so a grant survives updates;  Homebrew's is ad-hoc signed and
-          loses the grant on every brew upgrade.  (install.py --interpreter /opt/homebrew/bin/python3
-          switches it.)  Check what a launchd job itself can read, not Terminal, with:
-          python3 fleet_work_backup.py check-access --launchd
+          loses the grant on every brew upgrade.  (install.py with its interpreter option set to
+          /opt/homebrew/bin/python3 switches it.)  Check what a launchd job itself can read, not Terminal,
+          with the launchd flag of:  python3 fleet_work_backup.py check-access
        2. The script is standard library only and runs on Python 3.9 and later. -->
   <key>ProgramArguments</key>
   <array>
@@ -52,6 +52,29 @@
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>/Users/jay</string>
+    <!-- Missed-backup alert (after 8 runs in a row with no complete snapshot, then at most once a day).
+         The owner ruled that he gets a DM and that the two Plumber seats are told to investigate and fix
+         it without asking him (Jay, Oct 10, 2026).  ALERT_TO puts an @-mention of BF-Plumber and
+         GB-Plumber on the topic post, ALERT_DM_OWNER also sends the same alert to Jay as a Zulip DM from
+         the CLAUDE bot, and ALERT_NOTE is the standing instruction appended to the topic post (not the
+         DM).  The all-clear message DMs Jay and posts to the topic without a mention.  BotFleet caps
+         peer wakes, so the DM is the delivery that always arrives. -->
+    <key>FLEET_WORK_BACKUP_ALERT_TO</key>
+    <string>BF-PLUMBER,GB-PLUMBER</string>
+    <key>FLEET_WORK_BACKUP_ALERT_DM_OWNER</key>
+    <string>1</string>
+    <key>FLEET_WORK_BACKUP_ALERT_NOTE</key>
+    <string>Owner standing instruction (Jay, Oct 10, 2026):  BF-Plumber and GB-Plumber, please investigate and fix this backup without asking him.  Both of you are alerted:  the first to reply "taking it" in this topic owns the fix, and the other reviews it.</string>
+    <!-- Keep two runtime session stores in the backup:  the Grok ACP session history
+         (grok-acp-runtime/acp-home/sessions) and the mined fleet-rag chat logs (fleet-rag/mined/chat).
+         NO_DEFAULT_PATH_SKIPS turns off all three built-in path skips, and EXTRA_SKIP_DIRS puts the
+         third, acp-home/memtrace, back by directory name (it is the only directory called memtrace
+         under ~/apps and ~/Code).  Every file still goes through the name filter and the secret gate,
+         files over 200 MB stay skipped, and *.log files and directories named logs stay skipped. -->
+    <key>FLEET_WORK_BACKUP_NO_DEFAULT_PATH_SKIPS</key>
+    <string>1</string>
+    <key>FLEET_WORK_BACKUP_EXTRA_SKIP_DIRS</key>
+    <string>memtrace</string>
   </dict>
 </dict>
 </plist>

@@ -134,7 +134,7 @@ class SpecializeTests(unittest.TestCase):
             "renoir": "RENOIR",
             "deepseek": "DSH",
             "minimax": "MM",
-            "grok-build": "GROK-BUILD",
+            "grok-build": "GROK",  # the Grok Build pack signs GROK (owner 2026-10-10)
             "claude": "CLAUDE",
         }
         src = _session()

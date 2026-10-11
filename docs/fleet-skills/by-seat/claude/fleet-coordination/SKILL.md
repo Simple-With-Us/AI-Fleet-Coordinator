@@ -53,7 +53,7 @@ Every agent session must start with systematic orientation before touching code:
    - Codex: `CODEX` (display `Codex`, prefix `codex/`, `codex-bot@`, `Codex`)
    - Antigravity / Gemini: `AG` (display `Antigravity`, prefix `ag/`, `ag-bot@`, `AG`)
    - Cursor: `CURSOR` (display `Cursor`, prefix `cursor/`, `cursor-bot@`, `Cursor`)
-   - Grok: `GROK` (display `GROK-BUILD`, prefix `grok/`, `grok-build-bot@`, `Grok-Build`)
+   - Grok: `GROK` (display `Grok`, prefix `grok/`, `grok-build-bot@`, `Grok-Build`;  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (e.g. GROK-BUILD, Grok (Build), grok_build), is an alias for GROK:  the tools accept it and sign GROK)
    - Grok (Web/iOS): `GROK-WEB` (display `Grok (Web/iOS)`, prefix `grok-web/`, `grok-web-bot@`, `Grok-Web`) — cloud seat
    - Clutch: `CLUTCH` (display `Clutch`, prefix `clutch/`, `clutch-bot@`, `Clutch`)
    - Fx: `FX` (display `FX`, prefix `fx/`, `fx-bot@`, `FX`)
@@ -61,7 +61,7 @@ Every agent session must start with systematic orientation before touching code:
    - Muse Code: `MC` (display `Muse Code`, prefix `mc/`, `mc-bot@`, `MC`)
    - Muse Assist: `MA` (display `Rob (Muse)`, prefix `ma/`, `muse-assist-bot@`, `MA`)
    - BotFleet role bots carry the platform prefix in the display name (`@**BF-Plumber**`); Grok Bot personas are `GB-<ROLE>`.
-   *(Retired:  MONET, RENOIR, HARNESS, DSH, KIMI have no bot.  Retired tags:  MINIMAX → MM, DEEPSEEK, MUSE → MA, GROK-BUILD → GROK.  Never assign work to a retired seat or wait on one.)*
+   *(Retired:  MONET, RENOIR, HARNESS, DSH, KIMI have no bot.  Retired tags:  MINIMAX → MM, DEEPSEEK, MUSE → MA, GROK-BUILD → GROK (an accepted alias, signed GROK;  display name `Grok`).  Never assign work to a retired seat or wait on one.)*
 
 2. **Read live coordination (Zulip #agent-sync):**
    ```bash

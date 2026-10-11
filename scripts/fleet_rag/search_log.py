@@ -12,10 +12,26 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Any
 
 from .scrub import scrub
+
+# Any spelling of GROK followed by BUILD is an alias for the seat GROK (owner 2026-10-10).  A one-line
+# copy of the GROK row's `aliasPattern` in fleet-apps.json, because this service ships in a container
+# without the agent_sync package;  tests/test_seat_alias.py keeps the two equal.
+GROK_ALIAS_PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
+_GROK_ALIAS_RE = re.compile(GROK_ALIAS_PATTERN, re.IGNORECASE | re.ASCII)
+
+
+def canonical_seat(raw: Any) -> str:
+    """The seat tag a name stands for, upper-cased:  every GROK-BUILD spelling is GROK, anything else
+    is just stripped and upper-cased.  Used where a seat is stored (contributions, the search log);
+    the recall_search seat FILTER does not use it, so legacy GROK-BUILD contributions stay findable."""
+    v = str(raw or "").strip()
+    return "GROK" if _GROK_ALIAS_RE.match(v) else v.upper()
+
 
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB
 DEFAULT_KEEP_LINES = 5000
@@ -62,12 +78,12 @@ def log_search(
     """Append one search record to the search log. Silently swallows all errors."""
     try:
         now = int(now_ms if now_ms is not None else time.time() * 1000)
-        resolved_seat = (
+        resolved_seat = canonical_seat(
             seat
             or os.environ.get("AGENT_SEAT")
             or os.environ.get("AGENT_TAG")
             or "UNKNOWN"
-        ).strip().upper()
+        )
 
         # Sanitize query with the fleet scrub
         scrubbed_query, _ = scrub(str(query or ""))

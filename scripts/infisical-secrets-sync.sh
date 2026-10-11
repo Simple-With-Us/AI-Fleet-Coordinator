@@ -21,14 +21,17 @@ FILE="${SYNC_FILE:-$HOME/.secrets/global-api-keys}"
 LOG="${SYNC_LOG:-$HOME/.secrets/infisical-sync.log}"
 MAP=(
   "CLOUDFLARE_API_TOKEN|18f563a3-9c88-454c-96eb-28fc9678f3ba|prod|CLOUDFLARE_API_TOKEN"
-  # fleet-work-backup (scripts/fleet-work-backup):  the restic password and a bucket-scoped B2 key,
-  # all in project "AI Fleet Coordinator".  Values must be 16+ characters with no whitespace and no
-  # backslash (the plausibility check below, and awk -v, need that);  a urlsafe token satisfies it.
+  # fleet-work-backup (scripts/fleet-work-backup):  the restic password, the name of the backup's own
+  # dedicated B2 bucket (not the shared fleet bucket), and a B2 key limited to that bucket and the
+  # fleet-work-backup/ prefix, all in project "AI Fleet Coordinator".  Values must be 16+ characters
+  # with no whitespace and no backslash (the plausibility check below, and awk -v, need that);  a
+  # urlsafe token satisfies it, and so does a bucket name of 16 or more characters.
   # Until a secret exists in Infisical the tick logs one WARN for it and changes nothing.
   # A fifth field "once" makes the key write-once:  the restic password is the only key to every
   # snapshot, so a changed Infisical value must never replace the copy the repository was created
   # with (a changed value logs a WARN and the Mac keeps the working one).
   "RESTIC_FLEET_WORK_PASSWORD|9bf7417a-fbbb-42ca-870c-2b45207233f5|prod|RESTIC_FLEET_WORK_PASSWORD|once"
+  "B2_FLEET_WORK_BUCKET_NAME|9bf7417a-fbbb-42ca-870c-2b45207233f5|prod|B2_FLEET_WORK_BUCKET_NAME"
   "B2_FLEET_WORK_KEY_ID|9bf7417a-fbbb-42ca-870c-2b45207233f5|prod|B2_FLEET_WORK_KEY_ID"
   "B2_FLEET_WORK_APPLICATION_KEY|9bf7417a-fbbb-42ca-870c-2b45207233f5|prod|B2_FLEET_WORK_APPLICATION_KEY"
 )

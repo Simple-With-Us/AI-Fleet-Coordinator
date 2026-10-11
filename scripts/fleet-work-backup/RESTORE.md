@@ -8,10 +8,10 @@ your shell:
     $FWB snapshots                       # list this job's snapshots (tag fleet-work)
 
 If the Mac itself is gone, the password is in Infisical (project `AI Fleet Coordinator`, `prod`,
-`RESTIC_FLEET_WORK_PASSWORD`) and the bucket key in `B2_FLEET_WORK_KEY_ID` /
-`B2_FLEET_WORK_APPLICATION_KEY`;  put them in the environment as `RESTIC_PASSWORD`,
+`RESTIC_FLEET_WORK_PASSWORD`), the bucket name in `B2_FLEET_WORK_BUCKET_NAME` and the bucket key in
+`B2_FLEET_WORK_KEY_ID` / `B2_FLEET_WORK_APPLICATION_KEY`;  put them in the environment as `RESTIC_PASSWORD`,
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION=eu-central-003` and
-`RESTIC_REPOSITORY=s3:https://s3.eu-central-003.backblazeb2.com/<B2_FLEET_BUCKET_NAME>/fleet-work-backup`,
+`RESTIC_REPOSITORY=s3:https://s3.eu-central-003.backblazeb2.com/<B2_FLEET_WORK_BUCKET_NAME>/fleet-work-backup`,
 then call `restic` directly.  If Infisical is out of reach too, use the recovery key the owner keeps
 outside Infisical (`restic key add` at init, README section Credentials):  its password opens the same
 repository.
@@ -157,8 +157,9 @@ same way (`git fetch head.bundle HEAD:refs/restored/detached-head`).
 Secrets, by design:  anything with a strict secret name (`.env`, keys, `zuliprc`, `auth.json`, `.dev.vars`,
 `*.tfstate`), any file the content scan matched, and the handoff file.  Re-create those from Infisical.
 Git-ignored files (`node_modules`, build output) are rebuilt from the checkout.  Runtime session stores
-(`acp-home/sessions`, `acp-home/memtrace`, `fleet-rag/mined/chat`) are skipped by default, and a file over
-200 MB is listed instead of copied.  The detail log (`~/Library/Logs/fleet-work-backup.detail.log`) lists,
+(`acp-home/sessions`, `acp-home/memtrace`, `fleet-rag/mined/chat`) are skipped by default, but the repo plist
+turns that off and skips `memtrace` by name, so on this install `acp-home/sessions` and `fleet-rag/mined/chat`
+are in the backup and `acp-home/memtrace` is not;  a file over 200 MB is listed instead of copied.  The detail log (`~/Library/Logs/fleet-work-backup.detail.log`) lists,
 per run, every path the gate dropped, every file it left out for a later run (`deferred`), and the large
 files.
 

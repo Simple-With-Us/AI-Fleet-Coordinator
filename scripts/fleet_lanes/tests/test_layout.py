@@ -158,6 +158,80 @@ class RealRegistryTests(unittest.TestCase):
         self.assertEqual([a.name for a in reg.apps if a.name.lower() == "codecaps"], ["CodeCaps"])
 
 
+class SeatAliasPatternTests(unittest.TestCase):
+    """Registry `aliasPattern` (owner 2026-10-10: GROK followed by BUILD in any spelling is the seat GROK)."""
+
+    PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
+
+    @staticmethod
+    def registry(**overrides: dict) -> L.Registry:
+        data = json.loads(json.dumps(REGISTRY_DATA))
+        for row in data["seats"]:
+            row.update(overrides.get(row["tag"], {}))
+        return L.parse_registry(data)
+
+    def test_the_pattern_is_read_from_the_row_and_is_empty_without_one(self) -> None:
+        reg = self.registry(GROK={"aliasPattern": self.PATTERN})
+        self.assertEqual(reg.seat_by_name("GROK").alias_pattern, self.PATTERN)
+        self.assertEqual(reg.seat_by_name("CLAUDE").alias_pattern, "")
+        bad = self.registry(GROK={"aliasPattern": 7})
+        self.assertEqual(bad.seat_by_name("GROK").alias_pattern, "")
+
+    def test_the_real_registry_gives_only_grok_an_alias_and_it_matches_the_ruling(self) -> None:
+        reg = L.load_registry(env={})
+        self.assertEqual({s.name: s.alias_pattern for s in reg.seats if s.alias_pattern}, {"GROK": self.PATTERN})
+        for raw in ("GROK-BUILD", "Grok-Build", "grok-build", "grok_build", "Grok Build", "GROK.BUILD", "Grok (Build)",
+                    "grok/build/", "GrokBuild", "GROK--BUILD!!", "  GROK-BUILD  "):
+            with self.subTest(raw=raw):
+                self.assertEqual(reg.seat_by_name(raw).name, "GROK")
+        for raw in ("GROKBUILDER", "grok-build-bot", "grok2build", "GROK-WEB", "GROK-BOT", "GB-COMPILER", "BF-BUILDER",
+                    "Grok (Web/iOS)", "GROK-BUILD-2", "xgrok-build", "build-grok", "grok", "build"):
+            with self.subTest(raw=raw):
+                seat = reg.seat_by_name(raw)
+                self.assertTrue(seat is None or seat.name.lower() == raw.lower(), (raw, seat))
+                self.assertFalse(seat is not None and seat.name == "GROK" and raw.lower() != "grok", raw)
+
+    def test_matching_is_a_full_match_of_the_trimmed_value_in_ascii_case(self) -> None:
+        match = L.seat_alias_matches
+        self.assertTrue(match(self.PATTERN, " Grok  Build \n"))
+        self.assertFalse(match(self.PATTERN, "grok-build-bot"), "a full match, not a prefix or a search")
+        self.assertFalse(match(self.PATTERN, "xgrok-build"))
+        self.assertFalse(match(self.PATTERN, "grok-bu\u0130ld"), "ASCII case folding only")
+        self.assertFalse(match(self.PATTERN, "GRO\u212a-BUILD"), "the Kelvin sign is not a K")
+
+    def test_an_empty_value_an_empty_pattern_and_a_broken_pattern_never_match_and_never_raise(self) -> None:
+        for value in ("", "   ", "\n"):
+            self.assertFalse(L.seat_alias_matches(".*", value), repr(value))
+        self.assertFalse(L.seat_alias_matches("", "grok-build"))
+        self.assertFalse(L.seat_alias_matches("([unclosed", "grok-build"))
+        reg = self.registry(GROK={"aliasPattern": "([unclosed"})
+        self.assertIsNone(reg.seat_by_name("grok-build-x"))
+        self.assertEqual(reg.seat_by_name("GROK-BUILD").name, "GROK-BUILD", "a bad pattern leaves the exact tag alone")
+
+    def test_only_a_live_seat_takes_an_alias(self) -> None:
+        # A pattern on a retired row is ignored, so the retired GROK-BUILD row cannot claim a spelling of its own.
+        reg = self.registry(**{"GROK-BUILD": {"retired": True, "aliasPattern": r"^gb[^a-z0-9]*old$"}})
+        self.assertIsNone(reg.seat_by_name("gb-old"))
+        self.assertEqual(reg.seat_by_name("GROK-BUILD").name, "GROK-BUILD", "its own tag still finds the row")
+        self.assertTrue(reg.seat_by_name("GROK-BUILD").retired)
+
+    def test_the_alias_wins_over_a_retired_row_with_the_same_tag_and_the_exact_tag_is_still_found(self) -> None:
+        reg = self.registry(GROK={"aliasPattern": self.PATTERN}, **{"GROK-BUILD": {"retired": True}})
+        self.assertEqual(reg.seat_by_name("GROK-BUILD").name, "GROK")
+        self.assertEqual(reg.seat_by_name("grok").name, "GROK")
+        self.assertEqual(reg.seat_by_name(" ag ").name, "AG")
+        self.assertIsNone(reg.seat_by_name("grok-bu1ld"))
+        self.assertIsNone(reg.seat_by_name(""))
+
+    def test_folder_and_branch_classification_ignore_the_alias(self) -> None:
+        # The retired GROK-BUILD row still owns grok-build folders and grok-build/ branches (they stay readable).
+        reg = self.registry(GROK={"aliasPattern": self.PATTERN}, **{"GROK-BUILD": {"retired": True}})
+        self.assertEqual(reg.seat_by_suffix("grok-build").name, "GROK-BUILD")
+        self.assertEqual(L.branch_name("GROK-BUILD", "x", reg), "grok-build/x")
+        self.assertEqual(L.check_branch_name("grok-build/x", reg), BranchVerdict.CONFORMING)
+        self.assertEqual(L.check_branch_name("grok/x", reg), BranchVerdict.CONFORMING)
+
+
 class RegistryParsingTests(HomeCase):
     def test_load_from_path_and_env_override(self) -> None:
         path = self.home / "apps.json"

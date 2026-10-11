@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from public_activity_repos import PUBLIC_REPOS  # noqa: E402
+from agent_sync.identity import GROK_ALIAS_PATTERN  # noqa: E402
 from agent_sync.zulip import DEFAULT_CHANNEL, REALM, credential_file_name  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,6 +109,45 @@ def zulip_errors(data: dict) -> list[str]:
                 errors.append(f"seat {tag} and seat {emails[email]} share the Zulip bot {email}")
             else:
                 emails[email] = tag
+    errors.extend(alias_pattern_errors(seats))
+    return errors
+
+
+def alias_pattern_errors(seats: list[dict]) -> list[str]:
+    """A seat's `aliasPattern` (owner 2026-10-10:  GROK-BUILD in any spelling is the GROK seat) must compile,
+    equal the CLI's own copy (agent_sync.identity.GROK_ALIAS_PATTERN), sit on a live seat, match the tag of
+    every retired row that is an alias of that seat, and match no other seat tag.  The lane tool and the
+    board scripts read it from here, so a pattern that is broken or too wide would sign the wrong seat."""
+    errors: list[str] = []
+    tags = [s.get("tag") or "" for s in seats]
+    for seat in seats:
+        raw = seat.get("aliasPattern")
+        if raw is None:
+            continue
+        tag = seat.get("tag") or "(no tag)"
+        if not isinstance(raw, str):
+            errors.append(f"seat {tag} aliasPattern must be a string")
+            continue
+        if seat.get("retired"):
+            errors.append(f"seat {tag} is retired and cannot carry an aliasPattern; the live seat it aliases carries it")
+        try:
+            compiled = re.compile(raw, re.IGNORECASE | re.ASCII)
+        except re.error as exc:
+            errors.append(f"seat {tag} aliasPattern {raw!r} does not compile: {exc}")
+            continue
+        if raw != GROK_ALIAS_PATTERN:
+            errors.append(
+                f"seat {tag} aliasPattern {raw!r} disagrees with scripts/agent_sync/identity.py GROK_ALIAS_PATTERN "
+                f"({GROK_ALIAS_PATTERN!r}); change both")
+        aliases = [s.get("tag") or "" for s in seats if s.get("aliasOf") == tag and s.get("retired")]
+        if not aliases:
+            errors.append(f"seat {tag} aliasPattern aliases nothing: no retired seat has aliasOf {tag!r}")
+        for alias in aliases:
+            if not compiled.match(alias):
+                errors.append(f"seat {tag} aliasPattern {raw!r} does not match the retired tag {alias}")
+        for other in tags:
+            if other and other not in aliases and compiled.match(other):
+                errors.append(f"seat {tag} aliasPattern {raw!r} matches the tag {other}, which is not an alias of {tag}")
     return errors
 
 

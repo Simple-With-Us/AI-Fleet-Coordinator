@@ -501,6 +501,43 @@ class BoardTest(unittest.TestCase):
                 if c["issue"] == iss["id"]]
 
 
+GROK_ALIAS_SPELLINGS = ("GROK-BUILD", "Grok-Build", "grok-build", "grok_build", "Grok Build", "GROK.BUILD",
+                        "Grok (Build)", "grok/build/", "GrokBuild", "GROK--BUILD!!", "  grok-build  ", "@Grok-Build",
+                        "[GROK-BUILD]", "`grok-build`")
+GROK_NOT_ALIASES = ("GROKBUILDER", "grok-build-bot", "grok2build", "GROK-WEB", "GROK-BOT", "GB-COMPILER",
+                    "BF-BUILDER", "Grok (Web/iOS)", "GROK", "", "MONET", "RENOIR", "HARNESS", "MINIMAX",
+                    "DEEPSEEK", "KIMI", "build", "grok")
+
+
+class SeatAliasTests(unittest.TestCase):
+    """Any spelling of GROK followed by BUILD is the seat GROK (owner 2026-10-10);  nothing else is aliased."""
+
+    def test_every_grok_build_spelling_resolves_to_grok(self):
+        cli = load_cli()
+        for raw in GROK_ALIAS_SPELLINGS:
+            self.assertEqual(cli.norm_seat(raw), "GROK", repr(raw))
+
+    def test_near_misses_and_other_retired_tags_are_not_aliased(self):
+        cli = load_cli()
+        for raw in GROK_NOT_ALIASES:
+            self.assertEqual(cli.norm_seat(raw), raw.strip().upper(), repr(raw))
+        self.assertEqual(cli.norm_seat(None), "")
+
+    def test_mine_filters_on_the_grok_claim_label(self):
+        cli = load_cli()
+        want = cli.list_filter(cli.build_parser().parse_args(["list", "--mine", "GROK"]))
+        self.assertIn({"labels": {"some": {"name": {"eq": "claimed:GROK"}}}}, want[0])
+        for raw in ("Grok-Build", "grok_build", "Grok (Build)"):
+            got = cli.list_filter(cli.build_parser().parse_args(["list", "--mine", raw]))
+            self.assertEqual(got, want, raw)
+
+    def test_pattern_is_the_one_in_fleet_apps_json(self):
+        """The board script imports no package, so it carries its own copy of the GROK row's aliasPattern."""
+        rows = json.loads((HERE.parents[1] / "fleet-apps.json").read_text())["seats"]
+        grok = next(r for r in rows if r["tag"] == "GROK")
+        self.assertEqual(load_cli().GROK_ALIAS_PATTERN, grok["aliasPattern"])
+
+
 class SafetyTests(BoardTest):
     def test_writes_require_agent_seat(self):
         for args in (["file", "--title", "x"], ["claim", B_A[:8], "--by", "CLAUDE"],
@@ -550,6 +587,23 @@ class SafetyTests(BoardTest):
         p = self.board("comment", B_A[:8], "--by", "CODEX", "--text", "hi", code=2)
         self.assertIn("does not match AGENT_SEAT=CLAUDE", p.stderr)
         self.board("comment", B_A[:8], "--by", "@claude", "--text", "hi")   # normalized match is fine
+        self.assertEqual(self.mock.violations, [])
+
+    def test_grok_build_seat_is_grok(self):
+        """AGENT_SEAT and --by in any GROK-BUILD spelling sign as GROK, and another seat is still refused."""
+        for seat_env in ("GROK-BUILD", "Grok (Build)"):
+            for by in ("Grok-Build", "GROK", "grok_build"):
+                p = self.board("comment", B_A[:8], "--by", by, "--text", f"alias {seat_env} {by}",
+                               extra={"AGENT_SEAT": seat_env})
+                self.assertIn("as GROK", p.stdout)
+        p = self.board("comment", B_A[:8], "--by", "CODEX", "--text", "hi", extra={"AGENT_SEAT": "GROK-BUILD"}, code=2)
+        self.assertIn("does not match AGENT_SEAT=GROK", p.stderr)
+        p = self.board("comment", B_A[:8], "--by", "GROK-WEB", "--text", "hi", extra={"AGENT_SEAT": "GROK-BUILD"}, code=2)
+        self.assertIn("does not match AGENT_SEAT=GROK", p.stderr)
+        p = self.board("comment", B_A[:8], "--by", "GROKBUILDER", "--text", "hi", extra={"AGENT_SEAT": "GROKBUILDER"})
+        self.assertIn("as GROKBUILDER", p.stdout)        # a near miss stays itself
+        p = self.board("comment", B_A[:8], "--by", "GROK", "--text", "hi", extra={"AGENT_SEAT": "GROKBUILDER"}, code=2)
+        self.assertIn("does not match AGENT_SEAT=GROKBUILDER", p.stderr)
         self.assertEqual(self.mock.violations, [])
 
     def test_url_override_must_be_loopback(self):

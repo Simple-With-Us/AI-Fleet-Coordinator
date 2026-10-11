@@ -36,7 +36,7 @@ GENV.update({"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_
              "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.invalid",
              "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.invalid"})
 os.environ.update({k: GENV[k] for k in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT")})
-for _name in ("B2_FLEET_BUCKET_NAME", "B2_FLEET_WORK_KEY_ID", "B2_FLEET_WORK_APPLICATION_KEY",
+for _name in ("B2_FLEET_BUCKET_NAME", "B2_FLEET_WORK_BUCKET_NAME", "B2_FLEET_WORK_KEY_ID", "B2_FLEET_WORK_APPLICATION_KEY",
               "RESTIC_FLEET_WORK_PASSWORD", "FLEET_WORK_BACKUP_ALLOW_MASTER", "BACKBLAZE_MASTER_KEY_ID",
               "BACKBLAZE_MASTER_APPLICATION_KEY"):
     os.environ.pop(_name, None)
@@ -594,9 +594,9 @@ class RunBase(unittest.TestCase):
         os.environ.pop("STUB_FAIL", None)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def set_creds(self, names=("B2_FLEET_BUCKET_NAME", "B2_FLEET_WORK_KEY_ID", "B2_FLEET_WORK_APPLICATION_KEY",
+    def set_creds(self, names=("B2_FLEET_WORK_BUCKET_NAME", "B2_FLEET_WORK_KEY_ID", "B2_FLEET_WORK_APPLICATION_KEY",
                                "RESTIC_FLEET_WORK_PASSWORD")):
-        vals = {"B2_FLEET_BUCKET_NAME": '"test-bucket"', "B2_FLEET_WORK_KEY_ID": f'"{KEYID}"',
+        vals = {"B2_FLEET_WORK_BUCKET_NAME": '"test-bucket"', "B2_FLEET_WORK_KEY_ID": f'"{KEYID}"',
                 "B2_FLEET_WORK_APPLICATION_KEY": f'"{APPKEY}"', "RESTIC_FLEET_WORK_PASSWORD": f'"{PW}"'}
         handoff = self.home / ".secrets" / "global-api-keys"
         handoff.parent.mkdir(parents=True, exist_ok=True)
@@ -706,7 +706,7 @@ class RunCase(RunBase):
         self.assertFalse(any(a.startswith("forget") for a in self.argv()))
 
     def test_missing_credentials_name_the_keys_only(self):
-        self.set_creds(names=("B2_FLEET_BUCKET_NAME", "B2_FLEET_WORK_KEY_ID"))
+        self.set_creds(names=("B2_FLEET_WORK_BUCKET_NAME", "B2_FLEET_WORK_KEY_ID"))
         self.assertEqual(fwb.cmd_run(self.cfg, self.args), 2)
         line = self.log()
         self.assertIn("reason=missing-credentials", line)
@@ -714,9 +714,29 @@ class RunCase(RunBase):
         self.assertIn("RESTIC_FLEET_WORK_PASSWORD", line)
         self.assertEqual(self.argv(), [])
 
+    def test_the_bucket_name_has_no_fallback_to_the_shared_fleet_bucket(self):
+        """The shared name in the handoff file or the environment must never point the backup at the shared bucket."""
+        self.set_creds(names=("B2_FLEET_WORK_KEY_ID", "B2_FLEET_WORK_APPLICATION_KEY", "RESTIC_FLEET_WORK_PASSWORD"))
+        handoff = self.home / ".secrets" / "global-api-keys"
+        with handoff.open("a") as fh:
+            fh.write("B2_FLEET_BUCKET_NAME=jays-fleet-shared-eu\n")
+        with mock.patch.dict(os.environ, {"B2_FLEET_BUCKET_NAME": "jays-fleet-shared-eu"}):
+            env, missing = fwb.restic_env(self.cfg)
+            self.assertIsNone(env)
+            self.assertEqual(missing, ["B2_FLEET_WORK_BUCKET_NAME"])
+            self.assertEqual(fwb.cmd_run(self.cfg, self.args), 2)
+            self.assertIn("reason=missing-credentials", self.log())
+            self.assertIn("B2_FLEET_WORK_BUCKET_NAME", self.log())
+            self.assertNotIn("jays-fleet-shared-eu", self.log())
+            self.assertEqual(self.argv(), [])
+            probs = fwb.check_b2_setup(self.cfg)
+            self.assertTrue(probs and probs[0][0])
+            self.assertIn("B2_FLEET_WORK_BUCKET_NAME", probs[0][1])
+        self.assertEqual(fwb.CRED_NAMES["bucket"], "B2_FLEET_WORK_BUCKET_NAME")
+
     def test_master_key_is_only_a_fallback_when_asked(self):
         handoff = self.home / ".secrets" / "global-api-keys"
-        handoff.write_text(f"B2_FLEET_BUCKET_NAME=b\nRESTIC_FLEET_WORK_PASSWORD={PW}\n"
+        handoff.write_text(f"B2_FLEET_WORK_BUCKET_NAME=b\nRESTIC_FLEET_WORK_PASSWORD={PW}\n"
                            f"BACKBLAZE_MASTER_KEY_ID={KEYID}\nBACKBLAZE_MASTER_APPLICATION_KEY={APPKEY}\n")
         env, missing = fwb.restic_env(self.cfg)
         self.assertIsNone(env)
@@ -1516,6 +1536,29 @@ class BundleCase(RunBase):
         self.assertTrue(any(n.startswith("skipped-by-default") for n in stage.notes))
         self.assertIn("secret-name", [d["reason"] for d in stage.dropped if d["path"].endswith("auth.json")])
 
+    def test_the_two_named_session_stores_are_staged_and_memtrace_is_not_with_the_plist_settings(self):
+        """The repo plist sets NO_DEFAULT_PATH_SKIPS=1 and EXTRA_SKIP_DIRS=memtrace:  acp-home/sessions and
+        fleet-rag/mined/chat go through the normal gate, and a directory named memtrace is still skipped."""
+        a = self.home / "apps"
+        write(a / "grok-acp-runtime" / "acp-home" / "sessions" / "s1.json", "{}\n")
+        write(a / "grok-acp-runtime" / "acp-home" / "memtrace" / "m.json", "{}\n")
+        write(a / "grok-acp-runtime" / "acp-home" / "config.toml", "x=1\n")
+        write(a / "fleet-rag" / "mined" / "chat" / "x.jsonl", "{}\n")
+        write(a / "fleet-rag" / "mined" / "chat" / "x.log", "log line\n")
+        write(a / "fleet-rag" / "mined" / "chat" / "secret.jsonl", f"AWS_KEY={AWS}\n")
+        write(a / "grok-acp-runtime" / "acp-home" / "auth.json", '{"k": 1}\n')
+        with mock.patch.object(fwb, "SKIP_PATH_PARTS", ()), \
+                mock.patch.object(fwb, "SKIP_DIR_NAMES", fwb.SKIP_DIR_NAMES | {"memtrace"}):
+            stage = self.build()
+        got = sorted(k for k in stage.items if k.startswith("files/apps/") and ("acp-home" in k or "mined" in k))
+        self.assertEqual(got, ["files/apps/fleet-rag/mined/chat/x.jsonl",
+                               "files/apps/grok-acp-runtime/acp-home/config.toml",
+                               "files/apps/grok-acp-runtime/acp-home/sessions/s1.json"])     # memtrace stays out
+        self.assertFalse(any(n.startswith("skipped-by-default") for n in stage.notes))
+        dropped = {Path(d["path"]).name: d["reason"] for d in stage.dropped}
+        self.assertEqual(dropped.get("auth.json"), "secret-name")      # the name filter still applies
+        self.assertIn("secret.jsonl", dropped)                          # and so does the content scan
+
 
 def restore_md_functions(*names: str) -> str:
     """The named shell functions from RESTORE.md, exactly as written there (indented four spaces)."""
@@ -1777,18 +1820,28 @@ class RunBehaviourCase(RunBase):
         fwb.cmd_run(self.cfg, self.args)
         self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 0)
 
-    def stub_agent_sync(self, rc: int = 0) -> Path:
+    def stub_agent_sync(self, rc: int = 0, dm_rc: int | None = None) -> Path:
+        """A stand-in for agent-sync.  ``rc`` is the exit code of ``post``, ``dm_rc`` (default ``rc``) that of ``dm``.
+        argv goes to as-argv.log, stdin to as-text.log (all calls) and to as-<subcommand>-text.log."""
         stub = self.tmp / "agent-sync"
         stub.write_text("#!/bin/bash\n"
                         'echo "$@" >> "$STUB_DIR/as-argv.log"\n'
-                        '{ cat; echo; echo "---"; } >> "$STUB_DIR/as-text.log"\n'
+                        'f="$(mktemp)"; cat > "$f"\n'
+                        'for dest in as-text.log "as-$1-text.log"; do { cat "$f"; echo; echo "---"; } >> "$STUB_DIR/$dest"; done\n'
+                        'rm -f "$f"\n'
+                        f'if [ "$1" = dm ]; then exit {rc if dm_rc is None else dm_rc}; fi\n'
                         f"exit {rc}\n")
         stub.chmod(0o755)
         return stub
 
-    def alerts(self) -> list[str]:
-        p = self.stubdir / "as-text.log"
+    def alerts(self, sub: str | None = None) -> list[str]:
+        p = self.stubdir / (f"as-{sub}-text.log" if sub else "as-text.log")
         return [t.strip() for t in p.read_text().split("---") if t.strip()] if p.exists() else []
+
+    def agent_sync_calls(self) -> list[str]:
+        """One line per agent-sync call, its arguments joined with spaces, in call order."""
+        p = self.stubdir / "as-argv.log"
+        return p.read_text().splitlines() if p.exists() else []
 
     def test_pressure_and_low_disk_skips_count_as_not_ok_but_a_lock_skip_does_not(self):
         self.cfg.load_fn = lambda: 99.0
@@ -1856,6 +1909,130 @@ class RunBehaviourCase(RunBase):
         finally:
             os.environ.pop("STUB_FAIL", None)
         self.assertIn("alert-not-posted after 8 runs", self.cfg.detail_log_path.read_text())
+
+    def alert_cfg(self, dm: bool = True, rc: int = 0, dm_rc: int | None = None, note: str = "NOTE: please fix it.") -> None:
+        self.cfg.agent_sync_bin = str(self.stub_agent_sync(rc, dm_rc))
+        self.cfg.alert_to = ("BF-PLUMBER", "GB-PLUMBER")
+        self.cfg.alert_dm_owner = dm
+        self.cfg.alert_note = note
+
+    def test_the_alert_goes_to_the_topic_and_to_the_owner_by_dm_and_only_the_post_carries_the_note(self):
+        self.alert_cfg()
+        failed: list = []
+        self.assertTrue(fwb.post_alert(self.cfg, "Base text.", failed=failed))
+        self.assertEqual(failed, [])
+        calls = self.agent_sync_calls()
+        self.assertEqual(calls, [f"post --as CLAUDE --session fwbackup --topic {fwb.ALERT_TOPIC} "
+                                 f"--to BF-PLUMBER --to GB-PLUMBER -",
+                                 "dm --as CLAUDE --session fwbackup --owner -"])
+        dm = calls[1].split()
+        self.assertTrue({"dm", "--as", "--owner"} <= set(dm))
+        self.assertNotIn("--to", dm)                   # --owner is the owner pinned in listener.toml, never a typed name
+        self.assertEqual(self.alerts("post"), ["Base text.\u00a0 NOTE: please fix it."])
+        self.assertEqual(self.alerts("dm"), ["Base text."])
+
+    def test_without_the_owner_dm_setting_only_the_topic_post_is_sent(self):
+        self.alert_cfg(dm=False)
+        self.assertTrue(fwb.post_alert(self.cfg, "Base text."))
+        self.assertEqual(len(self.agent_sync_calls()), 1)
+        self.assertTrue(self.agent_sync_calls()[0].startswith("post "))
+        self.assertEqual(self.alerts("dm"), [])
+        self.assertEqual(self.alerts("post"), ["Base text.\u00a0 NOTE: please fix it."])
+
+    def test_with_no_note_the_topic_post_is_the_text_alone(self):
+        self.alert_cfg(note="")
+        self.assertTrue(fwb.post_alert(self.cfg, "Base text."))
+        self.assertEqual(self.alerts("post"), ["Base text."])
+        self.assertEqual(self.alerts("dm"), ["Base text."])
+
+    def test_one_of_the_two_failing_still_counts_as_delivered_and_both_are_always_tried(self):
+        self.alert_cfg(rc=0, dm_rc=1)                    # the DM fails, the post lands
+        failed: list = []
+        self.assertTrue(fwb.post_alert(self.cfg, "Base text.", failed=failed))
+        self.assertEqual(failed, ["dm"])
+        self.assertEqual(len(self.agent_sync_calls()), 2)
+        (self.stubdir / "as-argv.log").unlink()
+        self.alert_cfg(rc=1, dm_rc=0)                    # the post fails, the DM is still sent and lands
+        failed = []
+        self.assertTrue(fwb.post_alert(self.cfg, "Base text.", failed=failed))
+        self.assertEqual(failed, ["post"])
+        self.assertEqual(len(self.agent_sync_calls()), 2)
+        self.assertTrue(self.agent_sync_calls()[1].startswith("dm "))
+
+    def test_both_failing_is_false_and_the_run_notes_alert_not_posted_without_setting_last_alert(self):
+        self.alert_cfg(rc=1, dm_rc=1)
+        failed: list = []
+        self.assertFalse(fwb.post_alert(self.cfg, "Base text.", failed=failed))
+        self.assertEqual(failed, ["post", "dm"])
+        state = {"consecutive_not_ok": 8, "last_ok_text": "never"}
+        fwb.alert_after_line(self.cfg, state, "status=error")
+        self.assertNotIn("last_alert", state)
+        note = self.cfg.detail_log_path.read_text()
+        self.assertIn("alert-not-posted after 8 runs", note)
+        self.assertIn("not delivered:  post, dm", note)
+        self.assertNotIn("alert-partly-posted", note)
+
+    def test_no_agent_sync_binary_fails_both_and_never_raises(self):
+        self.cfg.agent_sync_bin = str(self.tmp / "missing-agent-sync")
+        self.cfg.alert_dm_owner = True
+        failed: list = []
+        self.assertFalse(fwb.post_alert(self.cfg, "x", failed=failed))
+        self.assertEqual(failed, ["post", "dm"])
+
+    def test_a_timeout_in_one_send_does_not_stop_the_other(self):
+        self.alert_cfg()
+        real = subprocess.run
+        seen = []
+
+        def run(cmd, *a, **kw):
+            seen.append(cmd[1])
+            if cmd[1] == "post":
+                raise subprocess.TimeoutExpired(cmd, 60)
+            return real(cmd, *a, **kw)
+        with mock.patch.object(fwb.subprocess, "run", run):
+            failed: list = []
+            self.assertTrue(fwb.post_alert(self.cfg, "x", failed=failed))
+        self.assertEqual(seen, ["post", "dm"])
+        self.assertEqual(failed, ["post"])
+
+    def test_one_delivered_sets_last_alert_and_notes_which_one_was_not(self):
+        self.alert_cfg(rc=0, dm_rc=1)
+        state = {"consecutive_not_ok": 8, "last_ok_text": "never"}
+        fwb.alert_after_line(self.cfg, state, "status=error")
+        self.assertIn("last_alert", state)
+        self.assertIn("alert-partly-posted after 8 runs (not delivered:  dm)", self.cfg.detail_log_path.read_text())
+
+    def test_the_not_ok_alert_names_the_logs_and_the_recovery_message_goes_to_both_without_the_note(self):
+        self.alert_cfg()
+        state = {"consecutive_not_ok": 8, "last_ok_text": "never"}
+        fwb.alert_after_line(self.cfg, state, "status=error reason=boom")
+        post, dm = self.alerts("post")[0], self.alerts("dm")[0]
+        self.assertTrue(post.endswith("\u00a0 NOTE: please fix it."))
+        self.assertEqual(post[:-len("\u00a0 NOTE: please fix it.")], dm)
+        for text in (post, dm):
+            self.assertIn("8 runs in a row with no complete snapshot", text)
+            self.assertIn("`status=error reason=boom`", text)
+            self.assertIn("~/Library/Logs/fleet-work-backup.log ", text)
+            self.assertIn("~/Library/Logs/fleet-work-backup.detail.log", text)
+            self.assertIn("fleet-work-backup.err.log", text)
+            self.assertIn(".\u00a0 ", text)
+        state.update(consecutive_not_ok=0)               # a complete run follows
+        fwb.alert_after_line(self.cfg, state, "status=ok")
+        self.assertNotIn("last_alert", state)
+        self.assertEqual(len(self.alerts("post")), 2)
+        self.assertEqual(len(self.alerts("dm")), 2)
+        self.assertIn("back to a complete snapshot", self.alerts("post")[1])
+        self.assertNotIn("NOTE", self.alerts("post")[1])  # "please fix it" on a recovery would be wrong
+        self.assertEqual(self.alerts("post")[1], self.alerts("dm")[1])
+        calls = self.agent_sync_calls()
+        self.assertEqual(calls[2], f"post --as CLAUDE --session fwbackup --topic {fwb.ALERT_TOPIC} -")   # no --to:  no wake
+        self.assertEqual(calls[3], "dm --as CLAUDE --session fwbackup --owner -")
+
+    def test_the_all_clear_names_nobody_even_when_the_dm_is_off(self):
+        self.alert_cfg(dm=False)
+        self.assertTrue(fwb.post_alert(self.cfg, "All clear.", wake=False))
+        self.assertEqual(self.agent_sync_calls(), [f"post --as CLAUDE --session fwbackup --topic {fwb.ALERT_TOPIC} -"])
+        self.assertEqual(self.alerts("post"), ["All clear."])
 
     def test_skip_gitleaks_is_refused_outside_a_dry_run(self):
         self.args.skip_gitleaks = True
@@ -2129,6 +2306,16 @@ class B2SetupCase(RunBase):
         self.assertEqual(url2, "https://api000.example.invalid/b2api/v4/b2_list_buckets")
         self.assertEqual(body2, {"accountId": "acct", "bucketName": "test-bucket"})
 
+    def test_a_whole_bucket_hide_to_delete_rule_is_accepted_for_the_dedicated_bucket(self):
+        """The dedicated bucket's rule has no file-name prefix:  {fileNamePrefix: "", daysFromHidingToDeleting: 14}."""
+        self.cfg.b2_http = self.fake_b2(rules=[{"fileNamePrefix": "", "daysFromHidingToDeleting": 14,
+                                                "daysFromUploadingToHiding": None}])
+        self.assertEqual(self.problems(), [])
+        self.cfg.b2_http = self.fake_b2(rules=[{"fileNamePrefix": "", "daysFromHidingToDeleting": 14,
+                                                "daysFromUploadingToHiding": 30}])
+        probs = self.problems()
+        self.assertTrue(any(hard and "daysFromUploadingToHiding" in text for hard, text in probs), probs)
+
     def test_an_unscoped_key_is_refused_and_init_does_not_run(self):
         for fake in (self.fake_b2(prefix=None), self.fake_b2(prefix=""), self.fake_b2(buckets=()),
                      self.fake_b2(buckets=("test-bucket", "jays-fleet-shared-eu")),
@@ -2191,7 +2378,7 @@ class B2SetupCase(RunBase):
 
     def test_the_master_key_is_never_used_to_back_up_or_init_only_to_restore(self):
         handoff = self.home / ".secrets" / "global-api-keys"
-        handoff.write_text(f"B2_FLEET_BUCKET_NAME=b\nRESTIC_FLEET_WORK_PASSWORD={PW}\n"
+        handoff.write_text(f"B2_FLEET_WORK_BUCKET_NAME=b\nRESTIC_FLEET_WORK_PASSWORD={PW}\n"
                            f"BACKBLAZE_MASTER_KEY_ID={KEYID}\nBACKBLAZE_MASTER_APPLICATION_KEY={APPKEY}\n")
         with mock.patch.dict(os.environ, {"FLEET_WORK_BACKUP_ALLOW_MASTER": "1"}):
             self.assertEqual(fwb.cmd_run(self.cfg, self.args), 2)
@@ -2243,7 +2430,7 @@ class NewPasswordCase(RunBase):
 
     def setUp(self):
         super().setUp()
-        self.set_creds(names=("B2_FLEET_BUCKET_NAME", "B2_FLEET_WORK_KEY_ID", "B2_FLEET_WORK_APPLICATION_KEY"))
+        self.set_creds(names=("B2_FLEET_WORK_BUCKET_NAME", "B2_FLEET_WORK_KEY_ID", "B2_FLEET_WORK_APPLICATION_KEY"))
         stub = self.tmp / "infisical"
         stub.write_text(
             "#!/bin/bash\n"
@@ -2360,6 +2547,90 @@ class AccessCase(unittest.TestCase):
         self.assertEqual(res["denied"], 1)
         self.assertEqual(res["binary"], fwb.process_image())
         self.assertIn(fwb.process_image(), fwb.removable_hint(self.cfg))
+
+
+class AlertSettingsCase(unittest.TestCase):
+    """The repo plist carries the owner's alert and session-store settings, and the environment turns them on."""
+    PLIST = HERE.parent / "launchd" / "com.jay.fleet-work-backup.plist"
+    NOTE = ("Owner standing instruction (Jay, Oct 10, 2026):  BF-Plumber and GB-Plumber, please investigate and fix "
+            "this backup without asking him.  Both of you are alerted:  the first to reply \"taking it\" in this topic "
+            "owns the fix, and the other reviews it.")
+
+    def env(self) -> dict:
+        return plistlib.loads(self.PLIST.read_bytes())["EnvironmentVariables"]
+
+    def test_the_repo_plist_sets_exactly_these_environment_variables(self):
+        env = self.env()
+        self.assertEqual(env["FLEET_WORK_BACKUP_ALERT_TO"], "BF-PLUMBER,GB-PLUMBER")
+        self.assertEqual(env["FLEET_WORK_BACKUP_ALERT_DM_OWNER"], "1")
+        self.assertEqual(env["FLEET_WORK_BACKUP_ALERT_NOTE"], self.NOTE)
+        self.assertEqual(env["FLEET_WORK_BACKUP_NO_DEFAULT_PATH_SKIPS"], "1")
+        self.assertEqual(env["FLEET_WORK_BACKUP_EXTRA_SKIP_DIRS"], "memtrace")
+        self.assertEqual(sorted(env), sorted(["PATH", "HOME", "FLEET_WORK_BACKUP_ALERT_TO", "FLEET_WORK_BACKUP_ALERT_DM_OWNER",
+                                              "FLEET_WORK_BACKUP_ALERT_NOTE", "FLEET_WORK_BACKUP_NO_DEFAULT_PATH_SKIPS",
+                                              "FLEET_WORK_BACKUP_EXTRA_SKIP_DIRS"]))
+        self.assertIn("/opt/homebrew/bin", env["PATH"])         # what was there before is still there
+        self.assertTrue(env["HOME"].startswith("/"))
+        self.assertNotIn("CLAUDE", env["FLEET_WORK_BACKUP_ALERT_TO"])   # CLAUDE is the sender, no longer a recipient
+
+    def test_config_from_env_reads_the_plist_values(self):
+        with mock.patch.dict(os.environ, self.env(), clear=False):
+            cfg = fwb.config_from_env()
+        self.assertEqual(cfg.alert_to, ("BF-PLUMBER", "GB-PLUMBER"))
+        self.assertTrue(cfg.alert_dm_owner)
+        self.assertEqual(cfg.alert_note, self.NOTE)
+        self.assertEqual(cfg.alert_seat, "CLAUDE")             # the job still posts as the CLAUDE bot
+
+    def test_the_alert_to_list_tolerates_spaces_and_empty_items(self):
+        for value, want in (("BF-PLUMBER,GB-PLUMBER", ("BF-PLUMBER", "GB-PLUMBER")),
+                            (" BF-PLUMBER , GB-PLUMBER,", ("BF-PLUMBER", "GB-PLUMBER")), ("", ())):
+            with mock.patch.dict(os.environ, {"FLEET_WORK_BACKUP_ALERT_TO": value}):
+                self.assertEqual(fwb.config_from_env().alert_to, want, value)
+
+    def test_the_dm_flag_accepts_one_true_and_yes_and_nothing_else(self):
+        for value, want in (("1", True), ("true", True), ("Yes", True), ("0", False), ("no", False), ("", False)):
+            with mock.patch.dict(os.environ, {"FLEET_WORK_BACKUP_ALERT_DM_OWNER": value}):
+                self.assertIs(fwb.config_from_env().alert_dm_owner, want, value)
+        env = {k: v for k, v in os.environ.items() if k not in ("FLEET_WORK_BACKUP_ALERT_DM_OWNER", "FLEET_WORK_BACKUP_ALERT_NOTE")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = fwb.config_from_env()
+        self.assertFalse(cfg.alert_dm_owner)
+        self.assertEqual(cfg.alert_note, "")
+
+    def module_constants(self, **env_overrides: str) -> dict:
+        """SKIP_PATH_PARTS and the memtrace name skip of a fresh import of the script under the given environment
+        (the module reads both from the environment once, at import)."""
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("FLEET_WORK_BACKUP_NO_DEFAULT_PATH_SKIPS", "FLEET_WORK_BACKUP_EXTRA_SKIP_DIRS")}
+        env.update(env_overrides)
+        code = ("import importlib.util,json,sys\n"
+                "spec = importlib.util.spec_from_file_location('fwb_skips', sys.argv[1])\n"
+                "m = importlib.util.module_from_spec(spec)\n"
+                "sys.modules['fwb_skips'] = m\n"
+                "spec.loader.exec_module(m)\n"
+                "print(json.dumps({'parts': [list(p) for p in m.SKIP_PATH_PARTS], "
+                "'memtrace': 'memtrace' in m.SKIP_DIR_NAMES, 'node_modules': 'node_modules' in m.SKIP_DIR_NAMES}))\n")
+        p = subprocess.run([sys.executable, "-c", code, str(HERE / "fleet_work_backup.py")], env=env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return json.loads(p.stdout)
+
+    def test_the_no_default_skips_knob_empties_the_path_skip_list_and_nothing_else_does(self):
+        self.assertEqual(self.module_constants(FLEET_WORK_BACKUP_NO_DEFAULT_PATH_SKIPS="1")["parts"], [])
+        for value in (None, "0", ""):
+            env = {} if value is None else {"FLEET_WORK_BACKUP_NO_DEFAULT_PATH_SKIPS": value}
+            parts = self.module_constants(**env)["parts"]
+            self.assertIn(["acp-home", "sessions"], parts)
+            self.assertIn(["fleet-rag", "mined", "chat"], parts)
+
+    def test_the_plist_environment_walks_the_two_stores_and_still_skips_a_directory_named_memtrace(self):
+        plist_env = self.env()
+        got = self.module_constants(FLEET_WORK_BACKUP_NO_DEFAULT_PATH_SKIPS=plist_env["FLEET_WORK_BACKUP_NO_DEFAULT_PATH_SKIPS"],
+                                    FLEET_WORK_BACKUP_EXTRA_SKIP_DIRS=plist_env["FLEET_WORK_BACKUP_EXTRA_SKIP_DIRS"])
+        self.assertEqual(got["parts"], [])                      # acp-home/sessions and mined/chat are walked
+        self.assertTrue(got["memtrace"])                        # a directory named memtrace is not
+        self.assertTrue(got["node_modules"])                    # the built-in names are kept
+        self.assertFalse(self.module_constants(FLEET_WORK_BACKUP_NO_DEFAULT_PATH_SKIPS="1")["memtrace"])
 
 
 class MiscCase(unittest.TestCase):

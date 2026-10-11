@@ -27,7 +27,8 @@ Removable Volumes, check-access --launchd.  --check-repo asks restic for the rep
 recovery key kept outside Infisical was never added.
 
 A key that is not limited to the bucket and prefix (or holds admin capabilities, or a lifecycle rule
-that would hide live packs) is refused even with --force:  the bucket also holds the board's database.
+that would hide live packs) is refused even with --force.  The bucket is dedicated to this job
+(B2_FLEET_WORK_BUCKET_NAME);  the prefix keeps a leaked key off everything else.
 """
 from __future__ import annotations
 

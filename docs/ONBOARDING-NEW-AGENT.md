@@ -42,7 +42,7 @@ Execution Profiles".  Universal seat row (`ANY`) is the fallback until you
 add a dedicated row.
 
 **Grok Bot is not onboarded this way.**  `GROK-BOT` is one fleet-wide identity
-that drives Cursor cloud agents.  It is not Mac Grok, not GROK-BUILD, and it
+that drives Cursor cloud agents.  It is not Mac Grok (GROK, which Grok Build shares), and it
 is **not** a per-app seat.  Do not run this script to create
 per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.
 
@@ -281,7 +281,7 @@ Install the universal fleet skills catalog to ensure full procedural compliance 
 python3 ./scripts/install-fleet-skills.py
 ```
 
-This specializes the catalog per seat: Cursor `[CURSOR]` (cloud Grok Bot fork `[GROK-BOT]`), Antigravity `[AG]`, Codex `[CODEX]`, Grok `[GROK]` / Grok Build `[GROK-BUILD]`, Claude Code shared Monet/Claude/Renoir (pin `AGENT_SEAT`), Renoir, DeepSeek Harness `[DSH]` (`~/.deepseek/skills`; former tag `DEEPSEEK` retired), MiniMax `[MM]` (`~/.minimax/skills`; former tag `MINIMAX` retired), Muse Code `[MC]` (`~/.config/muse/skills`), Muse Assist `[MA]` (reference catalog), Kimi (retired banner), and Desktop Monet upload.  Per-seat zips land in `docs/fleet-skills/by-seat/<seat>/`.  Never copy the Monet pack into another seat unchanged.
+This specializes the catalog per seat: Cursor `[CURSOR]` (cloud Grok Bot fork `[GROK-BOT]`), Antigravity `[AG]`, Codex `[CODEX]`, Grok `[GROK]` (Grok Build is the same seat, signed `[GROK]`;  GROK-BUILD in any spelling is an alias for GROK), Claude Code shared Monet/Claude/Renoir (pin `AGENT_SEAT`), Renoir, DeepSeek Harness `[DSH]` (`~/.deepseek/skills`; former tag `DEEPSEEK` retired), MiniMax `[MM]` (`~/.minimax/skills`; former tag `MINIMAX` retired), Muse Code `[MC]` (`~/.config/muse/skills`), Muse Assist `[MA]` (reference catalog), Kimi (retired banner), and Desktop Monet upload.  Per-seat zips land in `docs/fleet-skills/by-seat/<seat>/`.  Never copy the Monet pack into another seat unchanged.
 
 
 ---

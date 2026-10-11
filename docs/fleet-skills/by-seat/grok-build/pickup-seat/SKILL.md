@@ -4,14 +4,16 @@ description: >-
   Pick up a capped-out or abandoned peer seat's in-flight work (owner-directed only). Inventory Linear, PRs, dirty worktrees, and Zulip; claim; adopt uncommitted work with authorship credit; disposition each item; hand back. Use when the owner says a seat hit a usage cap, died mid-task, or "take over X's lanes."
 ---
 
-# Pick up a seat (GROK-BUILD)
+# Pick up a seat (GROK)
 
-> **This install is for `GROK-BUILD`.**  Chat tag `[GROK-BUILD·session8]`.  Notes `Grok Build`.  Branches `grok-build/`.  Lanes `~/apps/lanes/<Repo>/grok-build-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK-BUILD·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK·session8]`, and the `agent-sync` CLI writes it for you.
+
+> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
 Owner-directed only.  Do not initiate a raid on a live peer.
 
-You are **GROK-BUILD**.  Keep `grok-build/` branches.  If you continue a peer's `claude/` or `grok/` branch, say so in the work topic and do not rebrand their prefix as yours unless you are opening a new follow-up branch.
+You are **GROK**.  Keep `grok/` branches.  If you continue a peer's `claude/` or `grok/` branch, say so in the work topic and do not rebrand their prefix as yours unless you are opening a new follow-up branch.
 
 ## INVENTORY
 
@@ -87,7 +89,7 @@ Answer disambiguation pings fast.  Cede lanes the returning seat re-claims, espe
 
 ## CLOSE OUT
 
-`closeout` skill: the Linear resolution, `docs/rollouts/YYYY-MM-DD-pickup-<seat>-cap.md`, Apple Note `[APP, Grok Build] pickup <seat> cap`, and a `DONE` post in the work topic.  Correct premature claims with a new comment or status.  Never delete their comments.
+`closeout` skill: the Linear resolution, `docs/rollouts/YYYY-MM-DD-pickup-<seat>-cap.md`, Apple Note `[APP, Grok] pickup <seat> cap`, and a `DONE` post in the work topic.  Correct premature claims with a new comment or status.  Never delete their comments.
 
 ## Canon
 
