@@ -1282,6 +1282,30 @@ class BundleCase(RunBase):
         self.assertEqual((fresh / "a.txt").read_text(), "a\n")
         self.assertTrue(any(n.startswith("local-only-remotes") for n in stage.notes))
 
+    def test_a_clone_of_a_local_checkout_is_bounded_by_that_checkouts_github_branch(self):
+        parent = make_repo(self.home, self.home / "Code" / "parent")           # origin looks like GitHub
+        child = self.home / "apps" / "child"
+        git(self.tmp, "clone", "-q", str(parent), str(child))                   # child's only remote is a local path
+        write(child / "child.txt", "work only in the clone\n")
+        git(child, "add", "-A")
+        git(child, "commit", "-q", "-m", "clone-only work")
+        stage = self.build()
+        g = next(g for g in self.groups if g.name == "child")
+        self.assertEqual(g.unpushed_refs, 1)
+        meta = json.loads((self.cfg.dry_stage / f"git/{g.slug}/group.json").read_text())
+        self.assertEqual(meta["network_remotes"], [])
+        self.assertEqual(meta["bound"]["sha"], git(parent, "rev-parse", "refs/remotes/origin/main"))
+        self.assertEqual(os.path.realpath(meta["bound"]["via"]), os.path.realpath(parent))
+        self.assertTrue(any(n.startswith("local-remote-proxied") for n in stage.notes))
+        self.assertFalse(any(n.startswith("local-only-remotes") and "child" in n for n in stage.notes))
+        (b,) = [self.cfg.dry_stage / k for k in stage.items if k.endswith(".bundle") and f"/{g.slug}/" in k]
+        fresh = self.tmp / "from-github"
+        git(self.tmp, "clone", "-q", f"file://{self.home / 'remotes' / 'parent.git'}", str(fresh))   # what GitHub would serve
+        git(fresh, "bundle", "verify", str(b))
+        git(fresh, "fetch", "-q", str(b), "refs/heads/*:refs/restored/*")
+        self.assertEqual(git(fresh, "show", "refs/restored/main:child.txt"), "work only in the clone")
+        self.assertLess(b.stat().st_size, 2000)                                 # one commit, not the whole history
+
     def test_network_urls(self):
         for url in ("https://github.com/a/b.git", "git@github.com:a/b.git", "ssh://git@github.com/a/b",
                     "github.com:a/b", "git://example.org/x.git", "HTTPS://GITHUB.COM/a/b"):

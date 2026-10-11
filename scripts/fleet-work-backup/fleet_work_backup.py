@@ -1073,6 +1073,27 @@ def resolve_bound(git: Git, cwd: str, net: list[str]) -> tuple[str, str]:
     return "", ""
 
 
+def proxy_bound(git: Git, cwd: str) -> Optional[dict]:
+    """For a repository whose only remotes are local paths:  the default-branch tip of the repository such a remote
+    points at, when that one has a network remote and the commit is here too (a flat lane cloned from ~/Code/X).
+    GitHub holds that commit, so it bounds the bundles the same way origin/main would."""
+    rc, out, _ = git.run(cwd, "config", "-z", "--get-regexp", r"^remote\..*\.url$")
+    for rec in out.decode("utf-8", "replace").split("\0") if rc == 0 else []:
+        _, _, val = rec.partition("\n")
+        val = val.strip()
+        path = val[len("file://"):] if val.startswith("file://") else val
+        if not path.startswith("/") or not os.path.isdir(path):
+            continue
+        pmeta, pnet = remote_info(git, path)
+        if not pnet:
+            continue
+        ref, sha = resolve_bound(git, path, pnet)
+        if sha and git.run(cwd, "cat-file", "-e", f"{sha}^{{commit}}")[0] == 0:
+            url = next((l.split(" ", 1)[1] for l in pmeta if l.split(" ", 1)[0] == pnet[0] and " " in l), "")
+            return {"via": path, "ref": ref, "sha": sha, "url": url}
+    return None
+
+
 def overlap_components(git: Git, cwd: str, refs: list[str], not_bound: list[str], limit: int = 200_000) -> list[list[str]]:
     """Group refs whose commit ranges share a commit, so a commit is bundled once per group instead of once
     per branch.  Independent branches get their own bundle:  a restore of one does not depend on another."""
@@ -1143,8 +1164,18 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
         not_bound = ["--not", *bound_args] if bound_args else []
         if net and not bound_sha:
             stage.notes.append(f"bundle-bound-fallback {common_dir} (no default branch found;  bounded by every network remote ref)")
+        proxy = None
         if remotes and not net:
-            stage.notes.append(f"local-only-remotes {common_dir} (full history bundled)")
+            proxy = proxy_bound(git, cwd)
+            if proxy:
+                # Cloned from another checkout on this Mac that has a GitHub remote:  that checkout's default
+                # branch is on GitHub, so it is the bound and the pushed line.
+                bound_ref = bound_sha = proxy["sha"]
+                bound_args, not_bound = [bound_sha], ["--not", bound_sha]
+                not_net = ["--not", bound_sha]
+                stage.notes.append(f"local-remote-proxied {common_dir} (bounded by {proxy['ref']} of {proxy['via']})")
+            else:
+                stage.notes.append(f"local-only-remotes {common_dir} (full history bundled)")
         # Unpushed refs:  tips that git rev-list finds outside every network remote's refs.
         rc, out, err = git.run(cwd, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(*objectname)",
                                "refs/heads", "refs/tags")
@@ -1185,7 +1216,8 @@ def process_group(cfg: Config, git: Git, stage: Stage, common_dir: str, wts: lis
         res.unpushed_refs = len(pending)
         group_meta: dict = {"tool": VERSION, "common_dir": common_dir, "name": name, "remotes": remotes,
                             "no_remote": res.no_remote, "network_remotes": net,
-                            "bound": {"ref": bound_ref, "sha": bound_sha}, "unpushed": [], "bundles": [],
+                            "bound": {"ref": bound_ref, "sha": bound_sha, **({"via": proxy["via"], "via_ref": proxy["ref"], "via_url": proxy["url"]} if proxy else {})},
+                            "unpushed": [], "bundles": [],
                             "landed_skipped": landed, "worktrees": [], "stashes": []}
         # Bundles:  one per group of overlapping refs, shared by every worktree of the repository.  One pass
         # scans the commits no network remote has (a pushed commit is already on GitHub, so carrying it along

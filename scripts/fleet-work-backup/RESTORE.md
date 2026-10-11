@@ -81,9 +81,12 @@ clone of the remote:
     git for-each-ref refs/restored/                                   # every branch that was only on this Mac
     git branch restored-main refs/restored/heads/main                 # one per branch you want back
 
-`bundle verify` names the missing commit when a prerequisite is not in the clone.  A repository whose
-only remotes are local paths or bundle files (`"network_remotes": []` in `group.json`, and a
-`local-only-remotes` note in the detail log) has its whole history in the bundle:
+`bundle verify` names the missing commit when a prerequisite is not in the clone.  A flat lane cloned from
+another checkout on this Mac (`"network_remotes": []` but `bound.via_url` set in `group.json`, and a
+`local-remote-proxied` note in the detail log) is bounded by that checkout's default branch:  clone
+`bound.via_url` (the GitHub URL) instead of the remote the lane lists.  A repository whose only remotes are
+local paths or bundle files with no GitHub behind them (`"network_remotes": []`, no `via_url`, and a
+`local-only-remotes` note) has its whole history in the bundle:
 `git clone $G/bundles/<file>.bundle /Users/jay/restore/<repo>`.  A repository with no remote at all
 (`"no_remote": true`) is the same.
 
