@@ -17,8 +17,8 @@
 # --app is the product the seat runs in (claude-code, codex, grok-terminal, grok-web ...), written to
 # fleet-apps.json seatApps.bySeat.  It is never guessed from the tag, because two seats on one model are
 # two apps and a wrong guess would count them as one.  Without --app a terminal asks (naming the apps
-# already there);  a script or a pipe stops.  Only --dry-run, or a seat that already has an app in
-# seatApps.bySeat, may leave it out.
+# already there);  a script or a pipe stops.  Only --dry-run, a seat that already has an app in
+# seatApps.bySeat, or a retired seat may leave it out.
 
 set -euo pipefail
 
@@ -75,13 +75,20 @@ names |= {p.get("app") for p in apps.get("patterns", []) if isinstance(p, dict) 
 print(", ".join(sorted(names)))
 PY
 }
-has_app() {
+# Needs --app unless the seat already has one, or is a retired row (a retired seat has no app).
+needs_app() {
   python3 - "$here/fleet-apps.json" "$TAG" <<'PY'
 import json, sys
-sys.exit(0 if sys.argv[2] in json.load(open(sys.argv[1])).get("seatApps", {}).get("bySeat", {}) else 1)
+data = json.load(open(sys.argv[1]))
+tag = sys.argv[2]
+if tag in data.get("seatApps", {}).get("bySeat", {}):
+    sys.exit(1)
+if any(s.get("tag") == tag and s.get("retired") for s in data.get("seats", [])):
+    sys.exit(1)
+sys.exit(0)
 PY
 }
-if [ -z "$APP" ] && [ "$DRY_RUN" -eq 0 ] && ! has_app; then
+if [ -z "$APP" ] && [ "$DRY_RUN" -eq 0 ] && needs_app; then
   if [ -t 0 ]; then
     echo "Which app does $TAG run in?  Apps in use:  $(known_apps)" >&2
     echo "Reuse a name above only when $TAG runs in that same app;  a different product gets its own name." >&2
@@ -154,7 +161,9 @@ else:
 by_seat = data.get("seatApps", {}).get("bySeat")
 if by_seat is None:
     sys.exit("fleet-apps.json has no seatApps.bySeat;  run this from a lane at origin/main")
-if tag in by_seat:
+if any(s.get("tag") == tag and s.get("retired") for s in seats):
+    print(f"seat {tag} is retired, so it gets no app in seatApps.bySeat")
+elif tag in by_seat:
     print(f"seatApps.bySeat already gives {tag} the app {by_seat[tag]}")
 else:
     by_seat[tag] = app

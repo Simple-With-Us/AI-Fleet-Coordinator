@@ -514,6 +514,16 @@ class OnboardScriptTests(unittest.TestCase):
         self.assertIn("already gives CODEX the app codex", got.stdout)
         self.assertEqual(self.before(), was)
 
+    def test_a_retired_seat_gets_no_app_even_when_one_is_passed(self) -> None:
+        was = self.before()
+        for extra in ((), ("--app", "kimi-code")):
+            with self.subTest(extra=extra):
+                got = self.run_script("--tag", "KIMI", *extra)
+                self.assertEqual(got.returncode, 0, got.stderr)
+                self.assertIn("seat KIMI is retired", got.stdout)
+                self.assertEqual(self.before(), was)
+        self.assertEqual(load_check().seat_apps_errors(json.loads(self.before())), [])
+
     def test_a_seat_with_a_row_but_no_app_gets_its_app_from_the_flag(self) -> None:
         data = json.loads(self.before())
         del data["seatApps"]["bySeat"]["CODEX"]

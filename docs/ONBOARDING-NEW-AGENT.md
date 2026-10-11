@@ -12,11 +12,11 @@ Antigravity, Monet, Kimi, Copilot, or a future seat) to this fleet.
 ```bash
 # from an AI-Fleet-Coordinator lane
 ./scripts/onboard-new-agent.sh \
-  --tag KIMI \
-  --notes-name Kimi \
-  --worktree-suffix kimi \
-  --branch-prefix kimi/ \
-  --app kimi-code
+  --tag NEWSEAT \
+  --notes-name Newseat \
+  --worktree-suffix newseat \
+  --branch-prefix newseat/ \
+  --app newseat-code
 ```
 
 `--help` lists flags; `--dry-run` changes nothing.  The script records the seat in
