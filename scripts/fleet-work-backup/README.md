@@ -316,6 +316,56 @@ disk, so restic itself never reads `/Volumes/External`.
   `allow-line` to paste), the files it deferred, large files skipped, blocked paths, notes.  Paths only.
 - `.out.log` / `.err.log`:  launchd stdout and stderr.
 
+## Health and repair
+
+Two verbs for the Plumbers (BF-Plumber runs them on this Mac, and the Mac-facts publisher reads `health --json`).
+Neither changes the backup run path.
+
+    python3 ~/apps/fleet-work-backup/fleet_work_backup.py health --json
+    python3 ~/apps/fleet-work-backup/fleet_work_backup.py repair --reload
+
+**`health --json`** is read-only.  It reads `state.json`, the newest line of the run log, the installed files and
+`launchctl print gui/<uid>/com.jay.fleet-work-backup` (the one launchctl verb it uses), and it writes nothing, not
+even a directory.  It never reads the credential names or values, the handoff file, restic or B2.  It always exits 0:
+the verdict is in the output.  Without `--json` it prints the same facts as a few lines.
+
+| Field | What it holds |
+|---|---|
+| `installed` | the stable copy `~/apps/fleet-work-backup/fleet_work_backup.py` and the plist `~/Library/LaunchAgents/com.jay.fleet-work-backup.plist` both exist (`script_present`, `plist_present` say which) |
+| `loaded` | `launchctl print` exited 0 (`launchctl_rc` is the exit status;  127 means launchctl itself did not run) |
+| `last_complete_at`, `last_complete_text`, `last_complete_age_hours` | `last_success` and `last_success_text` in the state file:  the last run that made a snapshot, which can be a `partial` one |
+| `last_ok_text` | `last_ok_text`:  the last run with `status=ok` |
+| `not_ok_in_a_row`, `skips_in_a_row` | `consecutive_not_ok`, `consecutive_skips` |
+| `last_check_at`, `last_check_age_days` | `last_check`:  the last `restic check` that passed (weekly) |
+| `alert_last_sent` | `last_alert` |
+| `last_line`, `warn` | the newest run-log line (names and counts only, cut to 600 characters, and withheld whole if the backup's own secret scan matches it), and its `warn=` tokens |
+| `disk_free_gb` | free space on the home volume |
+| `plist_sha_ok` | the installed plist's sha256 equals the one `install.py` recorded (`plist_sha_recorded` says whether one was) |
+| `verdict`, `reason` | below |
+
+Times are epoch seconds, as the state file holds them, with the 12-hour text beside them where the run wrote one.
+
+**Verdict.**  `unhealthy` when the job is not installed (the reason names the missing piece, and starts with
+`not installed`), or installed but not loaded, or the last complete backup is more than 24 hours old.  `warn` when it is
+more than 12 hours old.  Otherwise `ok`.  Before the first complete backup the wait counts from the install
+(`plist_installed_at`, or the plist's own time).  Healthy needs no message;  the reason carries the age and, when the
+verdict is not `ok`, how many runs in a row were not ok.
+
+**`repair --reload`** is the one repair a Plumber may make without asking the owner (Jay, Oct 10, 2026:  fix backup
+failures without asking him).  Only when the job is installed, **not loaded**, and `plist_sha_ok`, it runs
+`launchctl bootstrap gui/<uid> ~/Library/LaunchAgents/com.jay.fleet-work-backup.plist` and checks again.  Anything
+else it does nothing and prints why:  already loaded (exit 0), not installed, no recorded hash, a plist that has
+changed since `install.py` wrote it, a plist whose `Label` is not this job's, or launchctl not running (exit 1).  If
+the bootstrap runs and the job is still not loaded, it says so (exit 2).  It never edits the plist, reads credentials,
+calls restic or B2, or runs `install.py`.  A refusal is for a person:  a changed plist means someone must look at it
+and re-run `install.py`, and anything that needs a secret (the restic key, a B2 key) or a Removable Volumes grant is an
+owner step, not a repair.
+
+`install.py` records the plist's sha256 (`plist_sha256`, plus `plist_installed_at`) in `state.json` each time it
+installs or confirms the plist;  `--skip-launchd`, `--dry-run` and an install blocked by a missing prerequisite record
+nothing.  A state file written before this verb existed has no hash, so `repair --reload` refuses until `install.py`
+runs once more.
+
 ## Commands
 
     python3 ~/apps/fleet-work-backup/fleet_work_backup.py run --dry-run --json /tmp/x.json
@@ -323,6 +373,8 @@ disk, so restic itself never reads `/Volumes/External`.
     python3 ~/apps/fleet-work-backup/fleet_work_backup.py init            # once, explicit;  refuses an unscoped B2 key
     python3 ~/apps/fleet-work-backup/fleet_work_backup.py image           # the executable to grant
     python3 ~/apps/fleet-work-backup/fleet_work_backup.py check-access --launchd
+    python3 ~/apps/fleet-work-backup/fleet_work_backup.py health --json    # read-only:  verdict ok, warn or unhealthy, and why
+    python3 ~/apps/fleet-work-backup/fleet_work_backup.py repair --reload  # load the installed LaunchAgent if it is not loaded (hash-checked)
     python3 ~/apps/fleet-work-backup/fleet_work_backup.py snapshots
     python3 ~/apps/fleet-work-backup/fleet_work_backup.py restic -- ls latest --tag fleet-work
 
@@ -352,8 +404,9 @@ Order matters;  nothing here runs by itself:
    shows `updated <KEY> (new_len=N)` for each.
 5. `python3 ~/apps/fleet-work-backup/fleet_work_backup.py init` (it checks the key's scope and the lifecycle
    rule first), then add the recovery key (Credentials, above) and keep its password outside Infisical.
-6. `python3 scripts/fleet-work-backup/install.py --check-repo` (loads the LaunchAgent;  refuses while a
-   prerequisite is missing, and refuses an unscoped key even with `--force`;  prints the `Python.app` to grant).
+6. `python3 scripts/fleet-work-backup/install.py --check-repo` (loads the LaunchAgent and records the installed
+   plist's sha256 for `repair --reload`;  refuses while a prerequisite is missing, and refuses an unscoped key even
+   with `--force`;  prints the `Python.app` to grant).
 7. Grant Removable Volumes to that `Python.app` in System Settings, then `python3
    ~/apps/fleet-work-backup/fleet_work_backup.py check-access --launchd` until it says `ok under launchd`.
 8. Optionally `run --ignore-pressure` once by hand;  review the detail log and fill `allow.txt`.  The alert
@@ -375,4 +428,7 @@ secret-looking names and contents, plus a live WAL-mode SQLite file.  The remote
 needed a commit GitHub no longer serves would fail here.  restic, gitleaks and launchctl are stubs;  where
 `restic` is installed (CI installs it) a real init, backup, check and restore round trip runs against a local
 repository.  The RESTORE.md git steps are exercised, and a test checks that the `.git` directories are
-unchanged by a run.  Runs in CI (ubuntu) and under both Python 3.9 and 3.14.
+unchanged by a run.  `health` and `repair` run against a temp home with a fake `launchctl`:  one state file for
+each verdict and threshold, a check that nothing is written and no credential, restic or B2 code is reached, and a
+check that `repair --reload` bootstraps only when the job is not loaded and the plist hash matches (and that
+`install.py` records that hash).  Runs in CI (ubuntu) and under both Python 3.9 and 3.14.

@@ -66,6 +66,12 @@ jobs:
       run: |
         python3 scripts/mac-collab/test_seat_alias.py
         python3 scripts/linear-board/test_board.py SeatAliasTests
+    # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
+    # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
+    # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
+    # slower and stays a local run.
+    - name: Board CLI input files and flat labels
+      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests
     # Infisical's only environment is prod (owner 2026-10-10).  The lint fails on a dev or
     # staging INFISICAL_ENV in an env file or cursor-cloud-start.sh fallback, and on a
     # non-prod .infisical.json default;  `--fleet` runs it over every ~/Code repo on origin/main.
@@ -99,3 +105,8 @@ jobs:
     # file.  A stub CLI and a temp dir stand in for the real ones.
     - name: Infisical secrets sync tests
       run: bash scripts/test-infisical-secrets-sync.sh
+    # The BotFleet launch wrapper and its LaunchAgent template:  the "already healthy" exit, the
+    # missing-checkout exits, and the fleet-seat switch (BOTFLEET_FLEET_SEAT_PROMPTS=1) that the
+    # open-loops routines depend on.  A stub curl and a stub node stand in for the real ones.
+    - name: BotFleet start wrapper tests
+      run: bash scripts/test-botfleet-server-start.sh

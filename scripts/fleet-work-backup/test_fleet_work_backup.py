@@ -11,10 +11,12 @@ none.  Runs on macOS and Linux (CI is ubuntu).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import fcntl
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import plistlib
@@ -26,6 +28,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -2658,6 +2661,571 @@ class MiscCase(unittest.TestCase):
         self.assertIn("<key>Nice</key>", plist)
         self.assertIn("<key>LowPriorityIO</key>", plist)
         self.assertIn("fleet-work-backup.out.log", plist)
+
+
+class HealthBase(unittest.TestCase):
+    """A temp home with the installed files, a fake launchctl and a state file, for the health and repair verbs.
+    launchctl is a stub:  ``print`` exits 0 while $STUB/loaded exists and 113 otherwise;  ``bootstrap`` exits with
+    $STUB/bootstrap_rc (default 0) and, on 0, creates $STUB/loaded.  Every call's arguments go to $STUB/launchctl.log."""
+    NOW = 1_800_000_000.0
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="fwb-health-"))
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.stub = self.tmp / "stub"
+        self.stub.mkdir()
+        self.cfg = fwb.Config(home=self.home)
+        self.cfg.now_fn = lambda: self.NOW
+        self.launchctl = self.stub / "launchctl"
+        self.launchctl.write_text(
+            "#!/bin/bash\n"
+            f'echo "$@" >> "{self.stub}/launchctl.log"\n'
+            'case "$1" in\n'
+            f'  print) [ -e "{self.stub}/loaded" ] && exit 0; exit 113;;\n'
+            f'  bootstrap) rc=$(cat "{self.stub}/bootstrap_rc" 2>/dev/null || echo 0)\n'
+            f'    [ "$rc" = 0 ] && : > "{self.stub}/loaded"\n'
+            '    [ "$rc" = 0 ] || echo "Bootstrap failed: $rc: Input/output error" >&2\n'
+            '    exit "$rc";;\n'
+            "esac\nexit 0\n")
+        self.launchctl.chmod(0o755)
+        self.cfg.launchctl_bin = str(self.launchctl)
+        self.target = f"gui/{os.getuid()}/com.jay.fleet-work-backup"
+        self.script = self.home / "apps" / "fleet-work-backup" / "fleet_work_backup.py"
+        self.plist = self.home / "Library" / "LaunchAgents" / "com.jay.fleet-work-backup.plist"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def install_files(self, script=True, plist=True, label="com.jay.fleet-work-backup"):
+        if script:
+            write(self.script, "# the stable copy\n", 0o755)
+        if plist:
+            self.plist.parent.mkdir(parents=True, exist_ok=True)
+            self.plist.write_bytes(plistlib.dumps({"Label": label, "RunAtLoad": False, "StartInterval": 10800,
+                                                   "ProgramArguments": ["/usr/bin/python3", str(self.script), "run"]}))
+
+    def set_loaded(self, loaded: bool):
+        flag = self.stub / "loaded"
+        if loaded:
+            flag.write_text("")
+        elif flag.exists():
+            flag.unlink()
+
+    def put_state(self, **kw):
+        state = fwb.read_state(self.cfg)
+        state.update(kw)
+        fwb.write_state(self.cfg, state)
+
+    def record_hash(self):
+        self.put_state(plist_sha256=hashlib.sha256(self.plist.read_bytes()).hexdigest(), plist_installed_at=self.NOW - 86400)
+
+    def put_log(self, *lines):
+        self.cfg.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.cfg.log_path.write_text("".join(l + "\n" for l in lines))
+
+    def full_install(self, loaded=True):
+        self.install_files()
+        self.set_loaded(loaded)
+        self.record_hash()
+
+    def last_complete(self, hours: float, **kw):
+        self.put_state(last_success=self.NOW - hours * 3600, last_success_text="2026-10-11 1:00am", **kw)
+
+    def launchctl_log(self) -> list:
+        p = self.stub / "launchctl.log"
+        return p.read_text().splitlines() if p.exists() else []
+
+    def health(self) -> dict:
+        return fwb.health_report(self.cfg)
+
+    def run_cli(self, *argv) -> subprocess.CompletedProcess:
+        env = dict(os.environ, FLEET_WORK_BACKUP_HOME=str(self.home), FLEET_WORK_BACKUP_LAUNCHCTL=str(self.launchctl))
+        return subprocess.run([sys.executable, "-I", str(HERE / "fleet_work_backup.py"), *argv], env=env,
+                              capture_output=True, text=True, timeout=120)
+
+    @staticmethod
+    def tree(root: Path) -> list:
+        out = []
+        for dp, dn, fn in os.walk(root):
+            for name in dn + fn:
+                p = os.path.join(dp, name)
+                st = os.lstat(p)
+                out.append((os.path.relpath(p, root), os.path.isdir(p), st.st_size, st.st_mtime_ns))
+        return sorted(out)
+
+
+class HealthCase(HealthBase):
+    """``health``:  the verdict, the field mapping, and that it is read-only and never touches a credential."""
+
+    def test_an_ok_report_maps_every_state_key(self):
+        self.full_install()
+        self.put_state(last_success=self.NOW - 2 * 3600, last_success_text="2026-10-11 2:00am",
+                       last_ok=self.NOW - 3 * 3600, last_ok_text="2026-10-11 1:00am", consecutive_not_ok=1,
+                       consecutive_skips=2, last_check=self.NOW - 3 * 86400, last_alert=self.NOW - 5 * 3600)
+        self.put_log("2026-10-11 1:00am status=ok snapshot=ab12cd34 added=1.0KB",
+                     "2026-10-11 2:00am status=partial snapshot=ef56 warn=removable-volumes-denied,gitleaks-missing "
+                     "grant=/x/Python")
+        rep = self.health()
+        self.assertEqual(rep["verdict"], "ok")
+        self.assertEqual(rep["reason"], "last complete backup 2.0 hours ago (2026-10-11 2:00am).")
+        self.assertEqual((rep["schema"], rep["checked_at"], rep["checked_text"]), (1, self.NOW, fwb.stamp(self.NOW)))
+        self.assertEqual((rep["installed"], rep["script_present"], rep["plist_present"], rep["loaded"]),
+                         (True, True, True, True))
+        self.assertEqual(rep["launchctl_rc"], 0)
+        self.assertEqual(rep["last_complete_at"], self.NOW - 2 * 3600)
+        self.assertEqual(rep["last_complete_text"], "2026-10-11 2:00am")
+        self.assertEqual(rep["last_complete_age_hours"], 2.0)
+        self.assertEqual(rep["last_ok_text"], "2026-10-11 1:00am")
+        self.assertEqual((rep["not_ok_in_a_row"], rep["skips_in_a_row"]), (1, 2))
+        self.assertEqual((rep["last_check_at"], rep["last_check_age_days"]), (self.NOW - 3 * 86400, 3.0))
+        self.assertEqual(rep["alert_last_sent"], self.NOW - 5 * 3600)
+        self.assertEqual(rep["last_line"], "2026-10-11 2:00am status=partial snapshot=ef56 "
+                                           "warn=removable-volumes-denied,gitleaks-missing grant=/x/Python")
+        self.assertEqual(rep["warn"], ["removable-volumes-denied", "gitleaks-missing"])
+        self.assertIsInstance(rep["disk_free_gb"], float)
+        self.assertGreaterEqual(rep["disk_free_gb"], 0)
+        self.assertEqual((rep["plist_sha_recorded"], rep["plist_sha_ok"]), (True, True))
+        json.dumps(rep)
+
+    def test_the_thresholds_are_over_12_and_over_24_hours(self):
+        self.full_install()
+        for hours, want in ((0, "ok"), (11.9, "ok"), (12.0, "ok"), (12.1, "warn"), (23.9, "warn"), (24.0, "warn"),
+                            (24.1, "unhealthy"), (400, "unhealthy")):
+            self.last_complete(hours)
+            self.assertEqual(self.health()["verdict"], want, hours)
+
+    def test_a_warn_or_unhealthy_reason_names_the_age_and_the_count(self):
+        self.full_install()
+        self.last_complete(13.0, consecutive_not_ok=4)
+        rep = self.health()
+        self.assertEqual(rep["verdict"], "warn")
+        self.assertEqual(rep["reason"], "last complete backup 13.0 hours ago (2026-10-11 1:00am).  4 runs in a row were not ok.")
+        self.last_complete(30.0)
+        self.assertEqual(self.health()["reason"], "last complete backup 30.0 hours ago (2026-10-11 1:00am).  4 runs in a row were not ok.")
+
+    def test_not_installed_is_unhealthy_and_says_which_piece_is_missing(self):
+        # No plist yet but the stable copy is there:  the state after the first refresh and before the install finishes.
+        self.install_files(plist=False)
+        rep = self.health()
+        self.assertEqual(rep["verdict"], "unhealthy")
+        self.assertTrue(rep["reason"].startswith("not installed"), rep["reason"])
+        self.assertIn("no LaunchAgent plist (~/Library/LaunchAgents/com.jay.fleet-work-backup.plist)", rep["reason"])
+        self.assertNotIn("stable copy", rep["reason"])
+        self.assertEqual((rep["installed"], rep["script_present"], rep["plist_present"]), (False, True, False))
+        self.assertFalse(rep["plist_sha_ok"])
+        shutil.rmtree(self.home / "apps")
+        rep = self.health()
+        self.assertIn("no LaunchAgent plist", rep["reason"])
+        self.assertIn("no stable copy (~/apps/fleet-work-backup/fleet_work_backup.py)", rep["reason"])
+        self.install_files(script=False)
+        rep = self.health()
+        self.assertTrue(rep["reason"].startswith("not installed") and "no stable copy" in rep["reason"], rep["reason"])
+        self.assertNotIn("LaunchAgent plist", rep["reason"])
+
+    def test_installed_but_not_loaded_is_unhealthy(self):
+        self.full_install(loaded=False)
+        self.last_complete(1.0)
+        rep = self.health()
+        self.assertEqual(rep["verdict"], "unhealthy")
+        self.assertEqual(rep["reason"], f"installed but not loaded:  launchctl print {self.target} exited 113.")
+        self.assertEqual((rep["installed"], rep["loaded"], rep["launchctl_rc"]), (True, False, 113))
+        self.assertTrue(rep["plist_sha_ok"])
+
+    def test_not_installed_is_reported_before_not_loaded(self):
+        self.install_files(plist=False)
+        self.assertTrue(self.health()["reason"].startswith("not installed"))
+
+    def test_a_launchctl_that_cannot_run_is_not_loaded_and_says_so(self):
+        self.full_install()
+        self.cfg.launchctl_bin = str(self.tmp / "no-such-launchctl")
+        rep = self.health()
+        self.assertEqual((rep["loaded"], rep["launchctl_rc"], rep["verdict"]), (False, 127, "unhealthy"))
+        self.assertEqual(rep["reason"], "installed but not loaded:  launchctl did not run.")
+
+    def test_before_the_first_complete_backup_the_wait_counts_from_the_install(self):
+        self.full_install()
+        for hours, want in ((5, "ok"), (13, "warn"), (25, "unhealthy")):
+            self.put_state(plist_installed_at=self.NOW - hours * 3600)
+            rep = self.health()
+            self.assertEqual(rep["verdict"], want, hours)
+            self.assertEqual(rep["reason"], f"no complete backup yet, {hours:.1f} hours after the install.")
+            self.assertIsNone(rep["last_complete_at"])
+            self.assertIsNone(rep["last_complete_age_hours"])
+        state = fwb.read_state(self.cfg)
+        del state["plist_installed_at"]
+        fwb.write_state(self.cfg, state)
+        os.utime(self.plist, (self.NOW - 30 * 3600, self.NOW - 30 * 3600))      # no recorded time:  the plist's own
+        self.assertEqual(self.health()["verdict"], "unhealthy")
+
+    def test_a_timestamp_in_the_future_counts_as_just_now(self):
+        self.full_install()
+        self.put_state(last_success=self.NOW + 5000, last_success_text="2026-10-11 3:00am")
+        rep = self.health()
+        self.assertEqual((rep["verdict"], rep["last_complete_age_hours"]), ("ok", 0.0))
+
+    def test_a_damaged_state_file_still_gives_a_report(self):
+        self.full_install()
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.state_dir / "state.json").write_text("{ not json")
+        rep = self.health()
+        self.assertTrue(rep["reason"].startswith("no complete backup yet"), rep["reason"])      # no exception, no history
+        self.assertFalse(rep["plist_sha_ok"])
+        (self.cfg.state_dir / "state.json").write_text(json.dumps({
+            "last_success": "yesterday", "last_check": [1], "consecutive_not_ok": True, "consecutive_skips": "3",
+            "last_alert": float("nan"), "plist_sha256": 7, "last_ok_text": {"a": 1}}))
+        rep = self.health()
+        self.assertIsNone(rep["last_complete_at"])
+        self.assertIsNone(rep["last_check_at"])
+        self.assertEqual((rep["not_ok_in_a_row"], rep["skips_in_a_row"]), (0, 0))
+        self.assertIsNone(rep["alert_last_sent"])
+        self.assertIsNone(rep["last_ok_text"])
+        self.assertEqual((rep["plist_sha_recorded"], rep["plist_sha_ok"]), (False, False))
+        json.dumps(rep)
+
+    def test_a_changed_plist_is_not_plist_sha_ok(self):
+        self.full_install()
+        self.assertTrue(self.health()["plist_sha_ok"])
+        self.plist.write_bytes(self.plist.read_bytes() + b"\n")
+        rep = self.health()
+        self.assertEqual((rep["plist_sha_recorded"], rep["plist_sha_ok"]), (True, False))
+        self.put_state(plist_sha256=None)
+        self.assertEqual((self.health()["plist_sha_recorded"], self.health()["plist_sha_ok"]), (False, False))
+
+    def test_health_writes_nothing_and_asks_launchctl_only_to_print(self):
+        self.full_install()
+        self.last_complete(2.0)
+        self.put_log("2026-10-11 2:00am status=ok snapshot=ab12")
+        before = self.tree(self.home)
+        fwb.health_report(self.cfg)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(fwb.cmd_health(self.cfg, argparse.Namespace(json=True)), 0)
+            self.assertEqual(fwb.cmd_health(self.cfg, argparse.Namespace(json=False)), 0)
+        self.assertEqual(self.tree(self.home), before)
+        self.assertEqual(self.launchctl_log(), [f"print {self.target}"] * 3)
+
+    def test_a_home_with_nothing_in_it_is_not_given_any_directories(self):
+        before = self.tree(self.home)
+        rep = self.health()
+        self.assertEqual(rep["verdict"], "unhealthy")
+        self.assertEqual(self.tree(self.home), before)
+        self.assertEqual(before, [])
+
+    def test_the_run_line_is_the_newest_and_is_cut_short(self):
+        self.full_install()
+        self.assertIsNone(self.health()["last_line"])
+        self.cfg.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.cfg.log_path.write_text("first line\n\n   \n" + "x" * 5000 + " warn=late\nnewest status=ok warn=a,b\n\n")
+        rep = self.health()
+        self.assertEqual((rep["last_line"], rep["warn"]), ("newest status=ok warn=a,b", ["a", "b"]))
+        self.cfg.log_path.write_text("old\n" + "y" * 5000 + "\n")
+        self.assertEqual(self.health()["last_line"], "y" * fwb.LAST_LINE_MAX)
+        self.cfg.log_path.write_bytes(b"z" * 300_000 + b"\ntail status=ok\n")           # only the tail of a big log is read
+        self.assertEqual(self.health()["last_line"], "tail status=ok")
+
+    def test_warn_tokens_are_names_only(self):
+        self.assertEqual(fwb.warn_tokens("a b warn=gitleaks-missing,volume-missing grant=x"), ["gitleaks-missing", "volume-missing"])
+        self.assertEqual(fwb.warn_tokens("warn=ok-1,Bad,../x,a;b,,z.y_z,\u00e9t\u00e9"), ["ok-1", "z.y_z"])
+        self.assertEqual(fwb.warn_tokens("status=ok nowarn=zzz"), [])
+        self.assertEqual(fwb.warn_tokens(""), [])
+
+    def test_no_credential_value_appears_and_none_is_read(self):
+        self.full_install()
+        self.last_complete(1.0)
+        fakes = {"B2_FLEET_WORK_BUCKET_NAME": "fwb-bucket-" + "q7zp3km9tx2w", "B2_FLEET_WORK_KEY_ID": KEYID,
+                 "B2_FLEET_WORK_APPLICATION_KEY": APPKEY, "RESTIC_FLEET_WORK_PASSWORD": PW}
+        handoff = self.home / ".secrets" / "global-api-keys"
+        write(handoff, "".join(f'{k}="{v}"\n' for k, v in fakes.items()), 0o600)
+        leaked = "".join(["ghp_", "aB3dE5gH7jK9", "mN1pQ3sT5v7x", "Zq2R4tY6uW8e"])
+        self.put_log("2026-10-11 1:00am status=error reason=missing-credentials names=B2_FLEET_WORK_KEY_ID,RESTIC_FLEET_WORK_PASSWORD",
+                     f"2026-10-11 2:00am status=error reason=restic-backup-failed detail=denied for {leaked} warn=b2-unchecked")
+        trap = AssertionError("health touched a credential, restic, B2 or Infisical")
+        with mock.patch.dict(os.environ, fakes), \
+                mock.patch.object(fwb, "read_handoff", side_effect=trap), mock.patch.object(fwb, "restic_env", side_effect=trap), \
+                mock.patch.object(fwb, "run_restic", side_effect=trap), mock.patch.object(fwb, "b2_call", side_effect=trap), \
+                mock.patch.object(fwb, "infisical_get", side_effect=trap):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                fwb.cmd_health(self.cfg, argparse.Namespace(json=True))
+                fwb.cmd_health(self.cfg, argparse.Namespace(json=False))
+        out = buf.getvalue()
+        for name, value in fakes.items():
+            self.assertNotIn(value, out, name)
+        self.assertNotIn(leaked, out)
+        self.assertNotIn("denied", out)
+        self.assertIn("withheld", json.loads(out[:out.index("\nfleet-work-backup:")])["last_line"])
+
+    def test_the_names_in_a_run_line_are_not_withheld(self):
+        self.full_install()
+        self.put_log("2026-10-11 1:00am status=error reason=missing-credentials names=B2_FLEET_WORK_KEY_ID,RESTIC_FLEET_WORK_PASSWORD")
+        self.assertIn("names=B2_FLEET_WORK_KEY_ID,RESTIC_FLEET_WORK_PASSWORD", self.health()["last_line"])
+
+    def test_the_stable_copy_prints_json_and_exits_zero_whatever_the_verdict(self):
+        p = self.run_cli("health", "--json")                    # python3 -I, as the Plumbers run the installed copy
+        self.assertEqual(p.returncode, 0, p.stderr)
+        rep = json.loads(p.stdout)
+        self.assertEqual(rep["verdict"], "unhealthy")
+        self.assertTrue(rep["reason"].startswith("not installed"), rep["reason"])
+        self.full_install()
+        self.put_state(last_success=time.time() - 3600, last_success_text="just now")
+        rep = json.loads(self.run_cli("health", "--json").stdout)
+        self.assertEqual((rep["verdict"], rep["loaded"], rep["plist_sha_ok"]), ("ok", True, True))
+        p = self.run_cli("health")
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("fleet-work-backup: verdict: ok", p.stdout)
+
+    def test_the_new_verbs_are_listed_beside_the_old_ones(self):
+        out = self.run_cli("--help").stdout
+        for verb in ("health", "repair", "run", "init", "check-access", "image", "new-password", "snapshots", "restic"):
+            self.assertIn(verb, out)
+
+
+class RepairCase(HealthBase):
+    """``repair --reload``:  one launchctl bootstrap, only for the installed plist, only when it is not loaded and the
+    hash install.py recorded still matches.  Anything else does nothing and says why."""
+
+    def bootstrap_calls(self) -> list:
+        return [l for l in self.launchctl_log() if l.startswith("bootstrap")]
+
+    def test_it_bootstraps_only_the_installed_plist_when_not_loaded_and_the_hash_matches(self):
+        self.full_install(loaded=False)
+        plist_before = self.plist.read_bytes()
+        mtime_before = self.plist.stat().st_mtime_ns
+        state_before = fwb.read_state(self.cfg)
+        code, msg = fwb.repair_reload(self.cfg)
+        self.assertEqual(code, 0, msg)
+        self.assertIn("bootstrapped com.jay.fleet-work-backup", msg)
+        self.assertIn("it is loaded now", msg)
+        self.assertEqual(self.launchctl_log(),
+                         [f"print {self.target}", f"bootstrap gui/{os.getuid()} {self.plist}", f"print {self.target}"])
+        self.assertEqual(self.plist.read_bytes(), plist_before)                    # never edited
+        self.assertEqual(self.plist.stat().st_mtime_ns, mtime_before)
+        self.assertEqual(fwb.read_state(self.cfg), state_before)                  # and no state written
+        self.assertTrue(self.health()["loaded"])
+
+    def test_an_already_loaded_job_is_left_alone(self):
+        self.full_install(loaded=True)
+        code, msg = fwb.repair_reload(self.cfg)
+        self.assertEqual(code, 0)
+        self.assertIn("already loaded", msg)
+        self.assertEqual(self.launchctl_log(), [f"print {self.target}"])
+
+    def test_a_changed_plist_is_never_reloaded(self):
+        self.full_install(loaded=False)
+        self.plist.write_bytes(self.plist.read_bytes().replace(b"10800", b"60"))
+        code, msg = fwb.repair_reload(self.cfg)
+        self.assertEqual(code, 1)
+        self.assertIn("did nothing", msg)
+        self.assertIn("not the plist install.py installed", msg)
+        self.assertEqual(self.bootstrap_calls(), [])
+        self.assertFalse((self.stub / "loaded").exists())
+
+    def test_a_plist_with_no_recorded_hash_is_never_reloaded(self):
+        self.install_files()
+        self.set_loaded(False)
+        code, msg = fwb.repair_reload(self.cfg)
+        self.assertEqual(code, 1)
+        self.assertIn("has not recorded a plist hash", msg)
+        self.assertEqual(self.bootstrap_calls(), [])
+        self.put_state(plist_sha256="")
+        self.assertEqual(fwb.repair_reload(self.cfg)[0], 1)
+        self.put_state(plist_sha256=["not", "a", "string"])
+        self.assertEqual(fwb.repair_reload(self.cfg)[0], 1)
+        self.assertEqual(self.bootstrap_calls(), [])
+
+    def test_a_hash_that_matches_a_plist_with_another_label_is_refused(self):
+        self.install_files(label="com.example.something-else")
+        self.set_loaded(False)
+        self.record_hash()
+        code, msg = fwb.repair_reload(self.cfg)
+        self.assertEqual(code, 1)
+        self.assertIn("does not carry the label com.jay.fleet-work-backup", msg)
+        self.assertEqual(self.bootstrap_calls(), [])
+        self.plist.write_text("<plist>not a plist")
+        self.record_hash()
+        self.assertEqual(fwb.repair_reload(self.cfg)[0], 1)
+        self.assertEqual(self.bootstrap_calls(), [])
+
+    def test_a_job_that_is_not_installed_is_never_bootstrapped(self):
+        code, msg = fwb.repair_reload(self.cfg)
+        self.assertEqual(code, 1)
+        self.assertIn("not installed", msg)
+        self.install_files(script=False)
+        self.record_hash()
+        code, msg = fwb.repair_reload(self.cfg)
+        self.assertEqual(code, 1)
+        self.assertIn("fleet_work_backup.py", msg)
+        shutil.rmtree(self.home / "Library")
+        self.install_files(plist=False)
+        self.assertEqual(fwb.repair_reload(self.cfg)[0], 1)
+        self.assertEqual(self.bootstrap_calls(), [])
+
+    def test_a_failed_bootstrap_is_reported_and_nothing_else_runs(self):
+        self.full_install(loaded=False)
+        (self.stub / "bootstrap_rc").write_text("5")
+        code, msg = fwb.repair_reload(self.cfg)
+        self.assertEqual(code, 2)
+        self.assertIn("exited 5 (Bootstrap failed: 5: Input/output error)", msg)
+        self.assertIn("still not loaded", msg)
+        self.assertEqual(self.launchctl_log(),
+                         [f"print {self.target}", f"bootstrap gui/{os.getuid()} {self.plist}", f"print {self.target}"])
+
+    def test_a_bootstrap_that_failed_but_left_the_job_loaded_is_told_as_it_was(self):
+        self.full_install(loaded=False)
+        (self.stub / "bootstrap_rc").write_text("0")
+        with mock.patch.object(fwb, "launchctl_capture", return_value=(5, "Bootstrap failed: 5: already loaded")):
+            self.set_loaded(True)       # someone else loaded it between our check and our bootstrap
+            with mock.patch.object(fwb, "launchd_loaded", side_effect=[(False, 113), (True, 0)]):
+                code, msg = fwb.repair_reload(self.cfg)
+        self.assertEqual(code, 0)
+        self.assertIn("it is loaded now", msg)
+        self.assertIn("launchctl bootstrap exited 5: Bootstrap failed: 5: already loaded", msg)
+
+    def test_a_launchctl_that_cannot_run_is_not_guessed_at(self):
+        self.full_install(loaded=False)
+        self.cfg.launchctl_bin = str(self.tmp / "no-such-launchctl")
+        code, msg = fwb.repair_reload(self.cfg)
+        self.assertEqual(code, 1)
+        self.assertIn("launchctl did not run", msg)
+
+    def test_it_runs_launchctl_and_nothing_else_and_reads_no_credential(self):
+        self.full_install(loaded=False)
+        write(self.home / ".secrets" / "global-api-keys", f'RESTIC_FLEET_WORK_PASSWORD="{PW}"\n', 0o600)
+        trap = AssertionError("repair touched a credential, restic, B2, Infisical or the installer")
+        real_run = subprocess.run
+        ran = []
+
+        def spy(argv, *a, **kw):
+            ran.append(list(argv))
+            return real_run(argv, *a, **kw)
+        opened = []
+        real_open = open
+
+        def spy_open(file, *a, **kw):
+            opened.append(str(file))
+            return real_open(file, *a, **kw)
+        with mock.patch.object(fwb, "read_handoff", side_effect=trap), mock.patch.object(fwb, "restic_env", side_effect=trap), \
+                mock.patch.object(fwb, "run_restic", side_effect=trap), mock.patch.object(fwb, "b2_call", side_effect=trap), \
+                mock.patch.object(fwb, "infisical_get", side_effect=trap), mock.patch.object(fwb.subprocess, "run", spy), \
+                mock.patch("builtins.open", spy_open):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(fwb.cmd_repair(self.cfg, argparse.Namespace(reload=True)), 0)
+        self.assertEqual({argv[0] for argv in ran}, {str(self.launchctl)})
+        self.assertEqual([argv[1] for argv in ran], ["print", "bootstrap", "print"])
+        self.assertFalse([f for f in opened if ".secrets" in f or "global-api-keys" in f], opened)
+        self.assertIn("fleet-work-backup: repair --reload: bootstrapped", buf.getvalue())
+        self.assertNotIn(PW, buf.getvalue())
+
+    def test_the_cli_needs_the_reload_flag_and_exits_with_the_result(self):
+        p = self.run_cli("repair")
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("--reload", p.stderr)
+        self.assertEqual(self.launchctl_log(), [])
+        self.full_install(loaded=False)
+        p = self.run_cli("repair", "--reload")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("repair --reload: bootstrapped", p.stdout)
+        p = self.run_cli("repair", "--reload")                  # now loaded:  nothing to do, still a success
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("nothing to do", p.stdout)
+        self.assertEqual(len(self.bootstrap_calls()), 1)
+        self.plist.write_bytes(self.plist.read_bytes() + b" ")
+        self.set_loaded(False)
+        p = self.run_cli("repair", "--reload")
+        self.assertEqual(p.returncode, 1)
+        self.assertEqual(len(self.bootstrap_calls()), 1)
+
+
+class InstallHashCase(HealthBase):
+    """install.py records the sha256 of the plist it installs, and ``repair --reload`` trusts only that."""
+
+    def setUp(self):
+        super().setUp()
+        spec2 = importlib.util.spec_from_file_location("fwb_install_hash", HERE / "install.py")
+        self.inst = importlib.util.module_from_spec(spec2)
+        spec2.loader.exec_module(self.inst)
+        self.inst.PLIST_DST = str(self.plist)
+        self.inst.SCRIPT_DST = str(self.script)
+        self.launchd_calls = []
+
+        def fake_launchd(changed, dry):
+            self.launchd_calls.append((changed, dry, (self.cfg.state_dir / "state.json").exists()))
+            return 0
+        patches = [mock.patch.dict(os.environ, {"FLEET_WORK_BACKUP_HOME": str(self.home)}),
+                   mock.patch.object(sys, "platform", "darwin"),
+                   mock.patch.object(self.inst, "load_module", return_value=fwb),
+                   mock.patch.object(self.inst, "prerequisites", return_value=[]),
+                   mock.patch.object(self.inst, "launchd", side_effect=fake_launchd),
+                   mock.patch.object(self.inst, "interpreter_image", return_value=("", ""))]
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in reversed(patches)])
+
+    def install(self, *argv) -> int:
+        buf = io.StringIO()
+        with mock.patch.object(sys, "argv", ["install.py", *argv]), contextlib.redirect_stdout(buf):
+            rc = self.inst.main()
+        self.out = buf.getvalue()
+        return rc
+
+    def installed_hash(self) -> str:
+        return hashlib.sha256(self.plist.read_bytes()).hexdigest()
+
+    def test_install_records_the_hash_of_the_plist_it_installed_before_loading_it(self):
+        self.assertEqual(self.install(), 0)
+        state = fwb.read_state(self.cfg)
+        self.assertEqual(state["plist_sha256"], self.installed_hash())
+        self.assertIsInstance(state["plist_installed_at"], float)
+        self.assertEqual(self.launchd_calls, [(True, False, True)])         # the state file was there when launchd ran
+        self.assertIn("recorded the installed plist's sha256", self.out)
+        # ... and that is the hash repair --reload trusts
+        self.set_loaded(False)
+        code, msg = fwb.repair_reload(self.cfg)
+        self.assertEqual(code, 0, msg)
+        self.assertEqual(len([l for l in self.launchctl_log() if l.startswith("bootstrap")]), 1)
+
+    def test_the_hash_is_of_the_file_on_disk_with_the_chosen_interpreter(self):
+        self.assertEqual(self.install("--interpreter", "/opt/homebrew/bin/python3"), 0)
+        self.assertIn(b"/opt/homebrew/bin/python3", self.plist.read_bytes())
+        self.assertEqual(fwb.read_state(self.cfg)["plist_sha256"], self.installed_hash())
+
+    def test_other_state_is_kept_and_the_install_time_moves_only_with_the_hash(self):
+        self.put_state(last_success=123.0, consecutive_not_ok=3)
+        self.install()
+        self.put_state(plist_installed_at=111.0)
+        first = self.installed_hash()
+        self.install()                                                      # the same plist again
+        state = fwb.read_state(self.cfg)
+        self.assertEqual((state["plist_sha256"], state["plist_installed_at"]), (first, 111.0))
+        self.assertEqual((state["last_success"], state["consecutive_not_ok"]), (123.0, 3))
+        self.install("--interpreter", "/opt/homebrew/bin/python3")          # a different plist
+        state = fwb.read_state(self.cfg)
+        self.assertNotEqual(state["plist_sha256"], first)
+        self.assertEqual(state["plist_sha256"], self.installed_hash())
+        self.assertGreater(state["plist_installed_at"], 111.0)
+
+    def test_a_dry_run_skip_launchd_and_a_blocked_install_record_nothing(self):
+        self.assertEqual(self.install("--dry-run"), 0)
+        self.assertFalse((self.cfg.state_dir / "state.json").exists())
+        self.assertFalse(self.plist.exists())
+        self.assertEqual(self.install("--skip-launchd"), 0)
+        self.assertFalse((self.cfg.state_dir / "state.json").exists())
+        with mock.patch.object(self.inst, "prerequisites", return_value=["restic (brew install restic)"]):
+            self.assertEqual(self.install(), 0)
+            self.assertFalse((self.cfg.state_dir / "state.json").exists())      # nothing was installed, so nothing is trusted
+            self.assertEqual(self.install("--force"), 0)                        # --force installs the plist, so it is recorded
+        self.assertEqual(fwb.read_state(self.cfg)["plist_sha256"], self.installed_hash())
+
+    def test_a_state_file_that_cannot_be_written_does_not_stop_the_install(self):
+        with mock.patch.object(fwb, "write_state", side_effect=OSError("disk full")):
+            self.assertEqual(self.install(), 0)
+        self.assertIn("could not record", self.out)
+        self.assertEqual(len(self.launchd_calls), 1)
+        self.assertTrue(self.plist.exists())
+        self.set_loaded(False)
+        self.assertEqual(fwb.repair_reload(self.cfg)[0], 1)                     # without a hash, repair refuses
 
 
 if __name__ == "__main__":
