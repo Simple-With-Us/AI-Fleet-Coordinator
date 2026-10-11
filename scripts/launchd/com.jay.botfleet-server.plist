@@ -26,6 +26,8 @@
   <string>/Users/jay/Library/Logs/botfleet/server.log</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>BOTFLEET_FLEET_SEAT_PROMPTS</key>
+    <string>1</string>
     <key>HOME</key>
     <string>/Users/jay</string>
     <key>PATH</key>
