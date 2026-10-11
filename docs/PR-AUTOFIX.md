@@ -44,6 +44,8 @@ jobs:
       MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
 ```
 
+The `concurrency` group is shared on purpose by every autofix caller in a repo (another autofix bot uses the same group name), so pushes to one PR branch are serialized.  `cancel-in-progress` is `false` so one bot never cancels the other mid-push;  keep the group name and that setting exactly as shown.
+
 `MINIMAX_API_KEY` is an org secret visible to every repo.  The caller-level `if:` keeps a human comment from starting a runner at all;  the reusable job repeats the same checks and also requires the PR to be open.
 
 ## Inputs
