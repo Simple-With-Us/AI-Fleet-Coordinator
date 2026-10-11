@@ -497,7 +497,7 @@ CANONICAL_SEATS: tuple[str, ...] = (
 )
 
 # Short forms in wide use on disk.  `gb` and `grok-bot` map to `cursor` because the registry gives
-# GROK-BOT the cursor suffix and the cursor/ branch prefix.
+# GROK-BOT the cursor suffix (it has no branch prefix of its own since F2, 2026-10-11).
 SEAT_ALIASES: dict[str, str] = {
     "ag": "antigravity",
     "mm": "minimax",

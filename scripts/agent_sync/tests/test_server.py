@@ -1273,6 +1273,7 @@ class ContainerTests(unittest.TestCase):
         self.assertIn("COPY scripts/agent_sync /app/scripts/agent_sync", lines)
         self.assertIn("COPY scripts/agent-sync /app/scripts/agent-sync", lines)
         self.assertIn("COPY docs/protocols/agent-sync-partition.toml /app/docs/protocols/agent-sync-partition.toml", lines)
+        self.assertIn("COPY fleet-apps.json /app/fleet-apps.json", lines, "strict_seat and seat_app read the registry")
         self.assertIn('ENTRYPOINT ["/app/scripts/agent_sync/server/entrypoint.sh"]', lines)
         self.assertIn('CMD ["daemon", "run", "--wait-lock"]', lines)
         self.assertRegex(text, r'HEALTHCHECK [^\n]*\\\n\s+CMD \["python3", "/app/scripts/agent_sync/server/healthcheck.py"\]')
@@ -1284,7 +1285,7 @@ class ContainerTests(unittest.TestCase):
         ignore = (SERVER_DIR / "Dockerfile.dockerignore").read_text().splitlines()
         self.assertEqual(ignore[[i for i, l in enumerate(ignore) if not l.startswith("#")][0]], "*")
         for keep in ("!scripts/agent-sync", "!scripts/agent_sync/", "!docs/protocols/agent-sync-partition.toml",
-                     "scripts/agent_sync/tests/"):
+                     "!fleet-apps.json", "scripts/agent_sync/tests/"):
             self.assertIn(keep, ignore)
 
     def test_the_container_paths_resolve_like_the_image(self) -> None:

@@ -295,10 +295,11 @@ class GuardContext:
 def seat_owns_folder(seat: L.Seat, registry: L.Registry) -> bool:
     """True when the folder name `seat.suffix` belongs to `seat`.
 
-    Two registry rows can share a worktreeSuffix: CURSOR and GROK-BOT both use `cursor`, and both
-    use the cursor/ branch prefix.  The name belongs to the seat `Registry.seat_by_suffix` picks
-    (the first live row), and no other seat gets a lane under it, because that folder and branch
-    would be the owner's.  `lane` refuses such a seat, and the deny reason shows a placeholder.
+    Two registry rows can share a worktreeSuffix: CURSOR and GROK-BOT both use `cursor` (GROK-BOT had
+    CURSOR's cursor/ branch prefix too, until F2 removed it).  The name belongs to the seat
+    `Registry.seat_by_suffix` picks (the first live row), and no other seat gets a lane under it,
+    because that folder and branch would be the owner's.  `lane` refuses such a seat, and the deny
+    reason shows a placeholder.
     """
     owner = registry.seat_by_suffix(seat.suffix)
     return owner is not None and owner.name.lower() == seat.name.lower()
@@ -2099,7 +2100,7 @@ class _Evaluator:
             return None
         seat = self.ctx.registry.seat_by_name(raw)
         if seat is not None and not seat_owns_folder(seat, self.ctx.registry):
-            return None        # GROK-BOT: the folder name and branch prefix are CURSOR's
+            return None        # GROK-BOT: the folder name is CURSOR's
         token = seat.suffix if seat is not None else L.normalize_seat(raw, self.ctx.registry)
         return token if L.is_valid_slug(token) else None
 

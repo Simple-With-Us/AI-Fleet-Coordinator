@@ -568,12 +568,17 @@ class ResolveTests(unittest.TestCase):
                         K.branch_for(seat, "x")
                     continue
                 self.assertEqual(K.branch_for(seat, "x"), seat.primary_branch_prefix() + "/x")
-        # Only seats the listener partition gives to the server may go without a prefix.
+        # Only seats the listener partition gives to the server may go without a prefix, plus GROK-BOT:  one
+        # fleet-wide identity that opens no lanes (its GB-<ROLE> personas are the server seats), which had
+        # CURSOR's cursor/ until F2 (2026-10-11) and so put one prefix on two seats.
         partition = tomllib.loads(
             (SCRIPTS_DIR.parent / "docs" / "protocols" / "agent-sync-partition.toml").read_text(encoding="utf-8")
         )["seats"]
         for name in laneless:
+            if name == "GROK-BOT":
+                continue
             self.assertEqual(partition.get(name), "server", f"{name} has no branch prefix but is not a server seat")
+        self.assertIn("GROK-BOT", laneless)
         retired = {s.name for s in registry.seats if s.retired}
         for tag in ("MONET", "RENOIR", "HARNESS", "DSH", "KIMI"):
             self.assertIn(tag, retired)
@@ -581,8 +586,8 @@ class ResolveTests(unittest.TestCase):
                 K.resolve_seat({"AGENT_SEAT": tag}, registry)
 
     def test_the_real_registry_gives_a_lane_only_to_the_seat_that_owns_each_folder_name(self) -> None:
-        # CURSOR and GROK-BOT share worktreeSuffix `cursor` and prefix `cursor/`.  GROK-BOT is one
-        # fleet-wide identity, not a per-app coding seat (TEMPLATE-AGENTS.md), so it gets no lane.
+        # CURSOR and GROK-BOT share worktreeSuffix `cursor`.  GROK-BOT is one fleet-wide identity, not
+        # a per-app coding seat (TEMPLATE-AGENTS.md), so it gets no lane.
         registry = L.load_registry(L.default_registry_path({}))
         accepted, refused = set(), set()
         for seat in (s for s in registry.seats if not s.retired):

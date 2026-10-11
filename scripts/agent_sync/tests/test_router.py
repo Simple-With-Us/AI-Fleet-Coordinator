@@ -22,9 +22,11 @@ def ctx(**kw):
 
 
 def msg(sender=CODEX, content="hello", *, topic="t", channel="agent-sync", flags=(), client=None, mid=500,
-        ts=NOW - 10, dm=False):
+        ts=NOW - 10, dm=False, email=None):
     message = {"id": mid, "sender_id": sender, "content": content, "flags": list(flags), "timestamp": ts,
                "client": client or ("website" if sender == OWNER else "ZulipPython"), "sender_full_name": "x"}
+    if email:
+        message["sender_email"] = email
     if dm:
         message.update({"type": "private", "display_recipient": [{"id": sender}, {"id": 10}], "subject": ""})
     else:
@@ -392,3 +394,108 @@ class LeaseRoutingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------------------------
+# OWNER topics (open-loops C6-2):  a peer never wakes anyone there, the notifier's note does
+# --------------------------------------------------------------------------------------------
+
+CODEX_ME = R.SeatIdentity("CODEX", CODEX, "Codex", "codex-bot@zulip.test")
+OWNER_TOPIC = "OWNER AFC-12 Revive PR 761 or close"
+NOTE = "[CLAUDE\u00b7needsown\u2192CODEX] @**Codex** Jay replied on AFC-12:  https://linear.test/AFC-12"
+MENTION_CODEX = ["mentioned"]
+
+
+class OwnerTopicTests(unittest.TestCase):
+    def route(self, message, *, me=ME, leases=(), **kw):
+        return R.route(message, me, ctx(**kw), list(leases))
+
+    def test_which_topics_are_owner_topics(self) -> None:
+        for topic in ("OWNER AFC-12 x", "OWNER x", "owner afc-12 x", "Owner AFC-12", "\u2714 OWNER AFC-12 x", "\u2714\ufe0f OWNER AFC-12 x",
+                      "\u2714OWNER AFC-12 x", "  OWNER AFC-12 x"):
+            with self.subTest(topic=topic):
+                self.assertTrue(R.is_owner_topic(topic))
+                self.assertTrue(R.classify(msg(topic=topic), ME, ctx()).owner_topic)
+        for topic in ("OWNER", "OWNERSHIP of the lane", "Owners meeting", "AFC-12 OWNER decision", "", "t", "fleet", "\u2714 AFC-12 OWNER x"):
+            with self.subTest(topic=topic):
+                self.assertFalse(R.is_owner_topic(topic))
+        self.assertFalse(R.classify(msg(dm=True), ME, ctx()).owner_topic, "a DM has no topic")
+
+    def test_a_peers_mention_in_an_owner_topic_wakes_no_one(self) -> None:
+        direct = msg(content="@**Claude** Jay said yes, go ahead", flags=["mentioned"], topic=OWNER_TOPIC)
+        c, d = self.route(direct)
+        self.assertTrue(c.owner_topic and c.owner_topic_peer and not c.eligible)
+        self.assertIn("owner_topic_peer", c.labels())
+        self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, None, "owner_topic"),
+                         "it is in the seat's inbox for reading, and never a wake")
+        elsewhere = msg(content="@**Claude** Jay said yes, go ahead", flags=["mentioned"], topic="t")
+        self.assertEqual(self.route(elsewhere)[1].wake, "peer", "the same words in another topic wake as ever")
+
+    def test_every_peer_wake_route_is_closed_in_an_owner_topic(self) -> None:
+        for topic in (OWNER_TOPIC, "\u2714 " + OWNER_TOPIC, OWNER_TOPIC.lower()):
+            with self.subTest(topic=topic):
+                for message in (msg(content="@**Claude** go", flags=["mentioned"], topic=topic),
+                                msg(content="@**all** go", topic=topic, flags=["stream_wildcard_mentioned"]),
+                                msg(content="[CODEX] re=400 done", topic=topic)):
+                    d = self.route(message)[1]
+                    self.assertIsNone(d.wake)
+                    self.assertFalse(d.delivered_to)
+                a = lease("A", topics=[("agent-sync", topic)], posted=[400])
+                for message in (msg(content="@**Claude** go", flags=["mentioned"], topic=topic),
+                                msg(content="[CODEX] re=400 done", topic=topic), msg(content="chatter", topic=topic)):
+                    self.assertEqual(self.route(message, leases=[a])[1].lease_items, [("A", "passive", "message")])
+                waiting = lease("W", topics=[], mentions=True)
+                d = self.route(msg(content="@**Claude** go", flags=["mentioned"], topic=topic), leases=[waiting])[1]
+                self.assertIsNone(d.delivered_to, "a mention lease is not interrupted by a peer in an owner topic")
+
+    def test_the_notifiers_note_wakes_the_filer_like_an_ordinary_mention(self) -> None:
+        note = msg(sender=10, content=NOTE, flags=MENTION_CODEX, topic=OWNER_TOPIC, email="claude-bot@zulip.test")
+        c, d = self.route(note, me=CODEX_ME)
+        self.assertTrue(c.owner_note and c.eligible and not c.owner_topic_peer)
+        self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, "peer", None))
+        self.assertEqual(self.route(note, me=CODEX_ME, leases=[lease("A", topics=[("agent-sync", OWNER_TOPIC)])])[1].lease_items,
+                         [("A", "interrupt", "message")])
+        stale = msg(sender=10, content=NOTE, flags=MENTION_CODEX, topic=OWNER_TOPIC, email="claude-bot@zulip.test", ts=NOW - 9000)
+        self.assertEqual(self.route(stale, me=CODEX_ME)[1].wake_block, "stale", "the stale rule and the budgets still apply")
+        tagged_arrow = NOTE.replace("\u2192", "->")
+        self.assertEqual(self.route(msg(sender=10, content=tagged_arrow, flags=MENTION_CODEX, topic=OWNER_TOPIC,
+                                        email="claude-bot@zulip.test"), me=CODEX_ME)[1].wake, "peer")
+
+    def test_the_note_needs_claudes_bot_and_the_notifiers_tag(self) -> None:
+        # Another seat's bot copying the notifier's tag.
+        copied = msg(sender=CURSOR, content=NOTE, flags=MENTION_CODEX, topic=OWNER_TOPIC, email="cursor-bot@zulip.test")
+        self.assertEqual(self.route(copied, me=CODEX_ME)[1].wake_block, "owner_topic")
+        # CLAUDE's own bot, any other session label.
+        other = msg(sender=10, content=NOTE.replace("needsown", "abcd1234"), flags=MENTION_CODEX, topic=OWNER_TOPIC,
+                    email="claude-bot@zulip.test")
+        self.assertEqual(self.route(other, me=CODEX_ME)[1].wake_block, "owner_topic")
+        # No email on the event:  nothing is assumed.
+        bare = msg(sender=10, content=NOTE, flags=MENTION_CODEX, topic=OWNER_TOPIC)
+        self.assertEqual(self.route(bare, me=CODEX_ME)[1].wake_block, "owner_topic")
+        # The tag has to start the message.
+        inside = msg(sender=10, content="hello " + NOTE, flags=MENTION_CODEX, topic=OWNER_TOPIC, email="claude-bot@zulip.test")
+        self.assertEqual(self.route(inside, me=CODEX_ME)[1].wake_block, "owner_topic")
+        # A person typing the tag is not a bot.
+        person = msg(sender=999, content=NOTE, flags=MENTION_CODEX, topic=OWNER_TOPIC, email="claude-bot@zulip.test")
+        self.assertEqual(self.route(person, me=CODEX_ME)[1].wake_block, "not_eligible")
+        # The carve-out is for CLAUDE's wildcard-free note only:  a wildcard from CLAUDE in the topic still wakes no one.
+        wild = msg(sender=10, content="@**all** hi", flags=["stream_wildcard_mentioned"], topic=OWNER_TOPIC,
+                   email="claude-bot@zulip.test")
+        self.assertIsNone(self.route(wild, me=CODEX_ME)[1].wake)
+
+    def test_the_owner_wakes_only_the_seats_it_mentions(self) -> None:
+        mention = msg(sender=OWNER, content="@**Claude** yes, option 1", flags=["mentioned"], topic=OWNER_TOPIC)
+        c, d = self.route(mention)
+        self.assertTrue(c.owner and c.owner_topic and not c.owner_topic_peer)
+        self.assertEqual((d.seat_inbox, d.wake), (True, "owner"))
+        silent = msg(sender=OWNER, content="option 1", topic=OWNER_TOPIC)
+        self.assertEqual((self.route(silent)[1].wake, self.route(silent, me=CODEX_ME)[1].wake), (None, None))
+        wildcard = msg(sender=OWNER, content="@**all** option 1", topic=OWNER_TOPIC, flags=["stream_wildcard_mentioned"])
+        self.assertIsNone(self.route(wildcard)[1].wake, "a wildcard in an owner topic is not the fleet wake")
+        api = msg(sender=OWNER, client="ZulipPython", content="@**Claude** yes", flags=["mentioned"], topic=OWNER_TOPIC)
+        self.assertEqual(self.route(api)[1].wake_block, "owner_api")
+
+    def test_a_filer_with_the_topic_leased_still_gets_the_owners_answer(self) -> None:
+        mine = lease("F", topics=[("agent-sync", OWNER_TOPIC)])
+        answer = msg(sender=OWNER, content="option 1", topic=OWNER_TOPIC)
+        self.assertEqual(self.route(answer, leases=[mine])[1].lease_items, [("F", "interrupt", "message")])
