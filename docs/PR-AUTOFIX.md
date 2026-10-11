@@ -87,4 +87,12 @@ A push made with `GITHUB_TOKEN` does not trigger other workflows.  After an auto
 
 ## Not Covered Here
 
-This does not touch the Kody DeepSeek reusable in `congress-trading-shared` (board 99e559ea) or `codex-autofix`.  Those keep running as they are.
+The fleet runs three autofix bots, and every caller uses the same workflow-level concurrency group, `pr-autofix-<owner/repo>-<pr>` with `cancel-in-progress: false`, so only one of them pushes to a PR at a time:
+
+- PR Autofix, this workflow.
+- Claude Code Autofix, `congress-trading-shared/.github/workflows/codex-autofix-reusable.yml` (anthropics/claude-code-action on MiniMax; the filename is left over from its DeepSeek "Codex Autofix" days).
+- Kody autofix, `congress-trading-shared/.github/workflows/kody-autofix-reusable.yml` (DeepSeek, gated by the org variable `SWU_KODY_AUTOFIX_ENABLED`; board 99e559ea).
+
+GitHub keeps one running and one pending run per group, and a newer pending run replaces the older one.
+
+Codex's own fix feature runs in Codex's cloud, outside this queue.  Agents never ask Codex to fix a PR unless Jay agrees first (AGENT-SYNC.md, Landing Work).

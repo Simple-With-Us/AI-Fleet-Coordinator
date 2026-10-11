@@ -24,7 +24,7 @@ blocks force-push, and requires a pull request.  Two of them
 `main-protection` instead of the fleet name `default-main-protection`; both are
 now renamed, and both keep their own stricter required checks.
 
-Three repos — `Fleet-OPS`, `Kodus-Config`, `demo-repository` — are **private**,
+Two repos — `Fleet-OPS` and `Kodus-Config` — are **private**,
 and GitHub answers every ruleset and branch-protection request on them with:
 
 > Upgrade to GitHub Pro or make this repository public to enable this feature.
