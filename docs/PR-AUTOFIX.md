@@ -91,7 +91,7 @@ The fleet runs three autofix bots (this PR Autofix, the Claude Code Autofix reus
 
 - PR Autofix, this workflow.
 - Claude Code Autofix, the Claude Code Autofix reusable (anthropics/claude-code-action on MiniMax; the filename is left over from its DeepSeek "Codex Autofix" days).
-- Kody autofix, the Kody reusable (DeepSeek, gated by the org variable `SWU_KODY_AUTOFIX_ENABLED`; board 99e559ea).
+- Kody autofix, the Kody reusable (Meta Muse Spark through Vercel AI Gateway, enabled fleet-wide 2026-10-11 by the org variable `SWU_KODY_AUTOFIX_ENABLED`; board 99e559ea).
 
 GitHub keeps one running and one pending run per group, and a newer pending run replaces the older one.
 
