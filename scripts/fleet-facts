@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""fleet-facts:  entry point.  `fleet-facts gather [--part NAME] [--no-mac] --json`.  See fleet_facts/README.md.
+
+Runs from the repository (`scripts/fleet-facts`) or from the stable copy (`~/apps/fleet-facts/fleet-facts`,
+through the symlink `~/.local/bin/fleet-facts`).  `python3 -I` leaves the script's own directory off
+sys.path, so the real directory of this file is put first;  realpath, because the link is a symlink.
+"""
+import os
+import sys
+
+if sys.version_info < (3, 11):
+    sys.stderr.write("fleet-facts needs Python 3.11 or newer\n")
+    raise SystemExit(3)
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+from fleet_facts.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main())
