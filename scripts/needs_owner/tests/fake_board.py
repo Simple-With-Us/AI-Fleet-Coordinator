@@ -22,6 +22,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from linear_md import linear_markdown  # noqa: E402
 
+FLEET_APP_USER_ID = "0b1c2d3e-0000-4000-8000-00000000f1ee"  # the Linear account of the Fleet app, which signs every comment `board` writes
 STATE = os.environ["FAKE_STATE_DIR"]
 SCRIPTS = os.environ["FAKE_SCRIPTS_DIR"]
 BOARD_JSON = os.path.join(STATE, "board.json")
@@ -222,7 +223,8 @@ def cmd_comment(world, a, seat):
     if any(c["id"] == cid for c in node["comments"]):
         sys.stderr.write("the same comment is already on %s\n" % node["identifier"])
         return 0
-    node["comments"].append({"id": cid, "body": body, "createdAt": now_iso(world), "user": {"name": "Fleet"}})
+    node["comments"].append({"id": cid, "body": body, "createdAt": now_iso(world),
+                             "user": {"id": FLEET_APP_USER_ID, "name": "Fleet", "app": True}})
     print("commented on %s as %s  %s" % (B.short_id(node["id"]), by, node["identifier"]))
     return 0
 

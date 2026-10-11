@@ -7,6 +7,7 @@
                     [--parent ID] [--context TEXT] [--no-notify] [--json]
   needs-owner list  [--open | --replied | --all] [--seat SEAT] [--json]
   needs-owner status ID [--json]
+  needs-owner notify [--dry-run] [--json]       the fallback notifier (CLAUDE only;  the LaunchAgent runs it every 5 minutes)
 
 docs/protocols/needs-owner.md is the contract.
 """
@@ -68,11 +69,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="one item")
     common(p)
     p.add_argument("id", metavar="ID")
+
+    p = sub.add_parser("notify", help="the fallback notifier:  send unsent notices, record answers, mirror Grok Bot requests (CLAUDE only)")
+    common(p)
+    p.add_argument("--by", metavar="SEAT", default=None, help="only CLAUDE runs it;  this is a check, as in file")
+    p.add_argument("--dry-run", action="store_true", help="read everything and say what would be done, change nothing")
     return parser
 
 
 def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None = None,
-         out: TextIO | None = None, err: TextIO | None = None) -> int:
+         out: TextIO | None = None, err: TextIO | None = None, knobs: object = None, clock: object = None) -> int:
     import os
 
     out = out or sys.stdout
@@ -86,8 +92,9 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         err.write("needs-owner: %s\n" % exc)
         return 1
     args = build_parser().parse_args(list(sys.argv[1:] if argv is None else argv))
-    io = verbs.Streams(env, out, err)
-    handlers = {"file": verbs.run_file, "adopt": verbs.run_adopt, "list": verbs.run_list, "status": verbs.run_status}
+    io = verbs.Streams(env, out, err, knobs, clock)
+    handlers = {"file": verbs.run_file, "adopt": verbs.run_adopt, "list": verbs.run_list, "status": verbs.run_status,
+                "notify": verbs.run_notify}
     try:
         return handlers[args.verb](args, io)
     except NeedsOwnerError as exc:
