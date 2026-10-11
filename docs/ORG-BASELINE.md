@@ -37,7 +37,7 @@ it stays visible without crying wolf.
 
 GitHub documents org-wide rulesets as a feature for *"customers on GitHub Team
 and GitHub Enterprise plans"*.  This org is on Free — which is also why the
-three private repos have no protection.  So there is **no server-side object to
+two private repos have no protection.  So there is **no server-side object to
 hold "the global minimum"**, and no setting to flip.
 
 That reframes the request: on Free, the baseline can only be held as *code that
