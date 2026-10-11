@@ -182,7 +182,11 @@ class SpecializeTests(unittest.TestCase):
         out = specialize_from_monet(
             _session(), SEATS["claude_shared"], skill_name="session-start"
         )
-        self.assertIn("Shared `~/.claude/skills`", out)
+        #  No "other tools scan this too" banner (owner 2026-10-11):  every platform now has its
+        #  own repo tree, so the warning was both obsolete and a confusing apology in a file the
+        #  other seats were reading anyway.  The identity assertions are what must hold.
+        self.assertNotIn("Shared `~/.claude/skills`", out)
+        self.assertNotIn("other tools scan it too", out)
         self.assertIn(_arm("CLAUDE"), out)
         self.assertIn(_ordinary("Claude", "CLAUDE"), out)
         self.assertNotIn("MONET, CLAUDE, or RENOIR", out)
@@ -1317,9 +1321,12 @@ class LinearTeamListTests(unittest.TestCase):
         return tuple(ast.literal_eval(match.group(1)))
 
     def _sources(self) -> list[Path]:
+        #  Only files this repo owns.  AGENT-SYNC.md is deliberately absent:  it
+        #  is a generated mirror of the Fleet-OPS handbook, check-generated-mirror.py
+        #  refuses an edit here, and its copy of the team list is fixed where it is
+        #  generated rather than in this tree.
         return [
             Path(ROOT, "docs", "fleet-skills", "board-ops", "SKILL.md"),
-            Path(ROOT, "AGENT-SYNC.md"),
             Path(ROOT, "docs", "protocols", "linear-migration.md"),
         ]
 

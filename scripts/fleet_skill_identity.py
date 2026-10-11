@@ -295,14 +295,13 @@ GROK_EXTRA = (
 )
 
 # CLAUDE is the only Claude seat (owner 2026-10-07), so the shared
-# `~/.claude/skills` home renders as CLAUDE.  Other tools scan this directory
-# (fx does), which is the one thing the banner has to say.
-CLAUDE_SHARED_BANNER = (
-    "> **Shared `~/.claude/skills`.**  This directory is the `CLAUDE` seat's "
-    "skill home, and other tools scan it too.  Other seats (Codex, Cursor, "
-    "Grok, Grok-Web, AG, Clutch, FX, MM, MC, MA) must take identity from their "
-    "own pack, never from here.\n\n"
-)
+# `~/.claude/skills` home renders as CLAUDE.  There is deliberately no
+# "other tools scan this too" banner here (owner 2026-10-11):  every
+# platform now has its own repo tree (repo_platform_copies), so the
+# premise is false, and a pack telling a reader it should not be reading
+# it is just a confusing apology.  A seat takes identity from its own pack;
+# that is what the pack is.
+CLAUDE_SHARED_BANNER = ""
 
 CLAUDE_IDENTITY = (
     "This pack is for **CLAUDE** (the Claude account, the only Claude seat since "

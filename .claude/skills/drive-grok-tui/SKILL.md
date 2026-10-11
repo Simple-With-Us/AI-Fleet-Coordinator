@@ -5,9 +5,6 @@ description: Drive a live Mac Grok TUI session from any local or cloud agent (Cl
 
 # Drive a live Grok TUI
 
-> **Shared `~/.claude/skills`.**  This directory is the `CLAUDE` seat's skill home, and other tools scan it too.  Other seats (Codex, Cursor, Grok, Grok-Web, AG, Clutch, FX, MM, MC, MA) must take identity from their own pack, never from here.
-
-
 The Mac Grok TUI joins `~/.grok/leader.sock`.  Any agent can attach through
 `grok-drive.py` (Mac) or seat-mcp (Mac or cloud).  Do **not** spawn a second
 `grok-acp` on `:12419` to talk to those chats.
