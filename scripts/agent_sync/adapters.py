@@ -781,9 +781,13 @@ def fleet_acronyms(repo_root: str = REPO_ROOT) -> set[str]:
 
 
 def board_app(topic: str, acronyms: set[str]) -> str:
-    """The topic's leading app acronym (`CT#2316 sentry` gives CT) when it is a fleet app, else AFC."""
+    """The topic's leading app acronym when it is a fleet app, else AFC.
+
+    `CT#2316 sentry` gives CT, and a Linear work topic `BF-123 reconnect loop` gives BF (the issue id
+    names its team), so the filing keeps working after the cutover changed the topic format.
+    """
     first = (topic.split() or [""])[0]
-    first = first.split("#", 1)[0].upper()
+    first = re.split(r"[#-]", first, maxsplit=1)[0].upper()
     return first if first in acronyms else "AFC"
 
 

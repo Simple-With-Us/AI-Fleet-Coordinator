@@ -181,7 +181,7 @@ submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
 any context, always use 2 spaces to separate a period from the beginning of a new sentence."
 This closes the last loophole -- the rule is NOT limited to product/user-facing copy.  It
 covers every paragraph an agent writes anywhere: **chat replies to the owner**, PR titles and
-bodies, commit messages, Zulip posts to #agent-sync, Apple Notes, effort-board rows, rollout
+bodies, commit messages, Zulip posts to #agent-sync, Apple Notes, Linear issues and comments, rollout
 notes, review reports and design docs.  If it is prose, it gets two spaces.  (Single space
 remains correct after a non-terminal abbreviation -- "e.g.", "v1.2.3".  In HTML preserve the
 gap with NBSP+space or SENTENCE_GAP, since raw double spaces collapse.  In Markdown, note that
@@ -215,7 +215,7 @@ destination:
   chat, so write two ASCII spaces and convert with
   `perl -CSDA -pe 's/([.!?])  (?=\S)/$1\x{a0} /g'`, then check the result holds a U+00A0.
 - **Files read as source and other plain text** (repo markdown and text, commit messages,
-  code comments, config, effort-board rows, terminal output): two LITERAL ASCII
+  code comments, config, Linear issue text, terminal output): two LITERAL ASCII
   spaces.  An entity would appear as literal text.
 - **HTML a renderer shows** (Apple Notes `--html`, in-app HTML/JSX): `Sentence one.&nbsp;
   Sentence two.`  Notes.app is an HTML renderer, so two ASCII spaces in a `<p>` collapse to

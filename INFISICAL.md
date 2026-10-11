@@ -44,7 +44,8 @@ This service has no per-user settings: seat identity is passed per-request by th
 
 ## Deliberately not migrated (this PR)
 
-- `scripts/mac-collab/mac-collab-server.py` (THE BOARD): Mac-local; reads `~/.secrets/mac-collab.env` (canonical) or the environment.  Operator-managed on the Mac, not a hosted service surface.
+- `scripts/mac-collab/mac-collab-server.py` (THE BOARD, a read-only archive after the Linear cutover and retired at about day 30): Mac-local; reads `~/.secrets/mac-collab.env` (canonical) or the environment.  Operator-managed on the Mac, not a hosted service surface.
+- The Linear Fleet app's client credentials (`LINEAR_FLEET_CLIENT_ID`, `LINEAR_FLEET_CLIENT_SECRET`, names only) live in this project under `/linear`.  The `board` CLI reads them from `~/.secrets/Linear/Fleet.env` on the Mac (or `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` in a cloud seat's environment), not through this project's settings cache.
 - `fleet-sentry-monitor/monitor.py`: operator cron script; env-configured on the box that runs it.
 - `fleet_rag` CLI tools and MCP scripts: per-invocation env; no long-lived process to host a cache.
 - `scripts/admin-panel` (Cloudflare Worker): serverless, no Infisical-reading backend in this repo.
