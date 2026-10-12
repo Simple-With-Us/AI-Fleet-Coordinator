@@ -188,6 +188,8 @@ jobs:
       run: node --test tests/deployment-boundary.test.cjs
     - name: Kody defer and deferred sweep tests
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
+    - name: PR Autofix reusable workflow contract
+      run: node --test .github/pr-autofix-reusable.node-test.mjs
     # Pure builders and readers of the Fleet Reference Sheet registry sync.  No
     # network:  the tests import the script, which runs main() only as an entry point.
     - name: Fleet Reference Sheet registry sync tests
