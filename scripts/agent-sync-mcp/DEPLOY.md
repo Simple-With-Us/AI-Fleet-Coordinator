@@ -190,6 +190,39 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 - **ECHO and INSTINCT:**  connect one at a time from the Instinct app's own computer ([ARMING-JAY.md](ARMING-JAY.md), "Connect Echo" and "Connect Instinct").  The Worker serves both and both keys are installed (Fri, Oct 9, about 10:24pm);  the client id comes from the first attempt.
 - **JET:**  arm it and connect ChatGPT ([ARMING-JAY.md](ARMING-JAY.md)).  The bot is a member, the Worker serves JET and its key is installed (Fri, Oct 9, about 8:10am), so nothing else blocks it.
 
+
+## Add Cursor Cloud (AFC-294)
+
+Jay approved the CURSOR hosted seat, its exact Cloud callback, bounded client
+registration, tests and deployment on 2026-10-11.  The live preflight at version
+`22c6b6d6-9db4-435b-b6a0-f8dbf7645c35` had no `ZULIP_KEY_CURSOR` binding.
+This task does not read or copy CURSOR's existing bot key.
+
+1. Merge and deploy the CURSOR code/config through steps 0–1.  Preserve the live
+   OAuth KV namespace, SeatGate bindings/migrations, all existing secrets,
+   `LINEAR_TOOLS_WRITES=0`, and Jet's grants, epochs, subscription and wakes.
+2. **Secure owner handoff:** Jay provisions CURSOR's own bot credential through
+   the Cloudflare dashboard's encrypted Secret field, named `ZULIP_KEY_CURSOR`,
+   on account `3a9368057468d0909cafaa85df12d1b7`, Worker `agent-sync-mcp`.
+   Maintain the corresponding source of truth in AI Fleet Coordinator Infisical
+   `prod` `/zulip` as `ZULIP_CURSOR_API_KEY` and `ZULIP_CURSOR_EMAIL`.
+   Never send the value, a screenshot of it, or a token through chat.  Do not
+   rotate an existing key just for this integration.  Do not create another bot.
+   For an owner-operated installation from that store, the existing verifier is:
+   `python3 -I install_seat_key.py CURSOR --apply` (not run by CODEX for this task).
+   It checks the configured email, own-seat bot identity and member role before
+   writing through stdin; the hosted Worker repeats those checks at runtime.
+3. Follow **Connect Cursor Cloud** in ARMING-JAY.md to create its bounded public
+   client and complete Access/consent in Jay's browser.  Public client IDs may be
+   copied; bot keys, Access PINs, codes, and tokens must remain in secure inputs.
+4. Record the deployed version and the actual Cursor-side `whoami` result.
+   Keep AFC-294 pending if the key, interactive consent, or live identity check
+   is unfinished.  Unit/workerd fake-Zulip tests are not production evidence.
+
+No Cursor wake key or event callback host is added; this connection does not
+modify the listener or Jet's ongoing subscription.  Hosted Linear provisioning
+for CURSOR is outside this request and remains unconfigured.
+
 ## Add hosted CLAUDE (AFC-296)
 
 This change prepares CLAUDE's hosted configuration only.  It does not provision a

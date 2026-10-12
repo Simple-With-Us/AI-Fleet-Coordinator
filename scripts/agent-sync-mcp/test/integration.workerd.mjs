@@ -23,10 +23,13 @@ const TOOLS = CONTRACT.tools;
 // The hosted server lists tools.json, then the hosted-only recall tools (src/recall.js), then the DM tools (src/dm.js).
 const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status"];
 const JET_KEY = zulipShapedKey(11);
+const CURSOR_KEY = zulipShapedKey(12);
+const CURSOR_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";
 const CLAUDE_KEY = zulipShapedKey(29);
 const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
 const zulip = new FakeZulip({ bots: [
   { email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet", key: JET_KEY },
+  { email: "cursor-bot@simplewithus.zulipchat.com", full_name: "Cursor", key: CURSOR_KEY },
   { email: "claude-bot@simplewithus.zulipchat.com", full_name: "Claude", key: CLAUDE_KEY },
 ] });
 
@@ -61,6 +64,7 @@ const GROK_CIMD = {
   token_endpoint_auth_method: "none",
 };
 
+let claudeHostedTokens;
 let passed = 0;
 async function step(name, fn) {
   try {
@@ -156,7 +160,7 @@ function startWorker(upstream) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT,CLAUDE", ZULIP_KEY_CLAUDE: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_KEY_CLAUDE: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET }),
         outboundService: outboundFetch,
       },
     ],
@@ -1155,6 +1159,7 @@ try {
     const refreshed = await token({ grant_type: "refresh_token", refresh_token: issued.body.refresh_token, client_id: clientId, resource: RESOURCE });
     assert.equal(refreshed.status, 200);
     assert.notEqual(refreshed.body.refresh_token, issued.body.refresh_token);
+    claudeHostedTokens = refreshed.body;
     assert.equal(await seatOf(refreshed.body.access_token), "CLAUDE");
     assert.equal(await seatOf(jet.body.access_token), "JET");
     const jetRefresh = await token({ grant_type: "refresh_token", refresh_token: jet.body.refresh_token, client_id: CHATGPT_CLIENT, resource: RESOURCE });
@@ -1162,6 +1167,52 @@ try {
     assert.equal(await seatOf(jetRefresh.body.access_token), "JET");
     const forgedSeat = await call(refreshed.body.access_token, "whoami", { seat: "JET" });
     assert.equal(forgedSeat.json.result._meta["agent-sync/error"].code, "invalid_argument");
+  });
+
+  await step("Cursor Cloud public PKCE client stays CURSOR, refuses Jet and preserves Jet state", async () => {
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
+    const jetGate = ns.get(ns.idFromName("JET"));
+    await jetGate.arm({ by: "test" });
+    const jetBefore = await jetGate.getState();
+    assert.equal((await adminAction("create_manual_client", { seat: "CURSOR" })).status, 303);
+    const admin = await (await browser("/admin")).text();
+    const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Cursor Cloud \(manual form, CURSOR\)<\/td><td>CURSOR<\/td>/)[1];
+    assert.equal((await adminAction("arm", { seat: "CURSOR" })).status, 303);
+    const c = pkce();
+    const who = { clientId, redirect: CURSOR_REDIRECT };
+    for (const redirect of [CHATGPT_REDIRECT, "https://cursor.com/agents/mcp/oauth/callback", `${CURSOR_REDIRECT}/`, "http://localhost:8787/callback"]) {
+      const res = await browser(`/authorize?${authorizeQuery(c.challenge, "cursor-bad", { clientId, redirect })}`);
+      assert.equal(res.status, 400, redirect);
+      await res.arrayBuffer();
+    }
+    const noPkce = new URLSearchParams(authorizeQuery(c.challenge, "cursor-no-pkce", who));
+    noPkce.delete("code_challenge");
+    const refusedPkce = await browser(`/authorize?${noPkce}`);
+    assert.equal(refusedPkce.status, 400);
+    await refusedPkce.arrayBuffer();
+    let handle = await openConsent(c.challenge, "cursor-tamper", who);
+    const tampered = await browser("/authorize", { method: "POST", form: { handle, seat: "JET", decision: "approve", scope: "zulip:read" } });
+    assert.equal(tampered.status, 400);
+    await tampered.arrayBuffer();
+    handle = await openConsent(c.challenge, "cursor-ok", who);
+    const consent = await browser("/authorize", { method: "POST", form: [["handle", handle], ["seat", "CURSOR"], ["decision", "approve"], ["scope", "zulip:read"], ["scope", "zulip:write"]] });
+    assert.equal(consent.status, 302, await consent.clone().text());
+    const loc = new URL(consent.headers.get("location"));
+    assert.equal(`${loc.origin}${loc.pathname}`, CURSOR_REDIRECT);
+    const granted = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: c.verifier, redirect_uri: CURSOR_REDIRECT, client_id: clientId, client_secret: "", resource: RESOURCE });
+    assert.equal(granted.status, 200);
+    const result = await call(granted.body.access_token, "whoami");
+    assert.equal(result.json.result.structuredContent.seat, "CURSOR");
+    assert.equal(result.json.result.structuredContent.email, "cursor-bot@simplewithus.zulipchat.com");
+    assert.equal(result.json.result.structuredContent.role, 400);
+    const refreshed = await token({ grant_type: "refresh_token", refresh_token: granted.body.refresh_token, client_id: clientId, client_secret: "" });
+    assert.equal(refreshed.status, 200);
+    assert.equal(await seatOf(refreshed.body.access_token), "CURSOR");
+    assert.equal(await seatOf(claudeHostedTokens.access_token), "CLAUDE", "Cursor connection preserves the independent CLAUDE grant");
+    const jetAfter = await jetGate.getState();
+    for (const field of ["epoch", "paused", "armed", "armedUntil", "armedBy"]) {
+      assert.equal(jetAfter[field], jetBefore[field], `Cursor must preserve Jet ${field}`);
+    }
   });
 
   console.log(`\n${passed} passed`);

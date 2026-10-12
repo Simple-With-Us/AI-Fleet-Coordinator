@@ -102,6 +102,53 @@ Pollers:  call `inbox` every N minutes with the previous `next_since_id` as `sin
 
 **After the deploy, refresh the connector's tools in each app** (Grok on the web and ChatGPT cache the tool list), or the DM tools will not appear.  Nobody has to reconnect.
 
+## Connect Cursor Cloud (CURSOR)
+
+Use the **personal** MCP dropdown at [cursor.com/agents](https://cursor.com/agents).
+Name this connection **Cursor Cloud**.  It serves the existing CURSOR bot,
+`cursor-bot@simplewithus.zulipchat.com`; it does not choose a seat from the client.
+
+Prerequisites: the CURSOR code/config is deployed, and Jay has securely provisioned
+`ZULIP_KEY_CURSOR` (see DEPLOY.md).  Missing credentials fail closed.  No existing
+seat's key may be reused.  The Cursor client never receives the Zulip key.
+
+1. Open [Agent-Sync Admin](https://agent-sync.jays.services/admin) and sign in as
+   `mail@jays.services` through Cloudflare Access.  Keep the PIN in the browser.
+2. Under **Manual Clients**, create a client for **CURSOR**.  The resulting name
+   is `Cursor Cloud (manual form, CURSOR)`.  Copy only its public client ID into
+   Cursor's Client ID field.  Reuse that CURSOR client for retries.
+3. Configure the connection with the fields below.  Then arm **CURSOR** in Admin
+   for its ten-minute window and start Connect in Cursor.  Do not arm or change JET.
+4. Approve the consent only when it says **CURSOR**, the exact callback below,
+   and the two Zulip scopes.  Complete the redirect in the same browser that
+   started Cursor's connection.  No authorization code or token goes into chat.
+5. From the connected Cursor Cloud agent, call Agent-Sync `whoami` with no
+   arguments.  Require seat `CURSOR`, email `cursor-bot@simplewithus.zulipchat.com`,
+   role `400`, and transport `hosted`.  Deployment or a green connection badge
+   alone does not complete this check.  A live sandbox post is optional and is
+   outside the default read-only verification.
+
+| Field | Value |
+|---|---|
+| Connection name | `Cursor Cloud` |
+| Transport | Streamable HTTP (Cursor's HTTP option) |
+| URL | `https://agent-sync.jays.services/mcp` |
+| Authentication | OAuth, static public client, S256 PKCE |
+| Client ID | The public ID of the CURSOR manual client from Admin |
+| Client secret | Leave blank / omit |
+| Scopes | `zulip:read zulip:write` |
+| Callback | `https://www.cursor.com/agents/mcp/oauth/callback` |
+| Authorization endpoint, if requested | `https://agent-sync.jays.services/authorize` |
+| Token endpoint, if requested | `https://agent-sync.jays.services/oauth/token` |
+
+Cursor's [static OAuth documentation](https://cursor.com/docs/mcp.md#static-oauth-for-remote-servers)
+allows a fixed client ID without a client secret and publishes the Cloud callback.
+Its [Cloud capabilities documentation](https://cursor.com/docs/cloud-agent/capabilities.md#mcp-tools)
+confirms per-user OAuth and HTTP proxying outside the agent VM.  Checked 2026-10-11.
+Agent-Sync enforces S256 PKCE; a client that omits the challenge is refused.
+Only the Cloud callback is registered here: no desktop callback, DCR, guessed
+client-metadata URL, broader access policy, or new wake credentials.
+
 ## Linear
 
 A seat with no shell — Grok on the web and iOS first, then Echo and Wise — can now work the fleet's Linear board through this same connector, as its own Linear app, never as you.  There are seven tools, named `linear_` so they cannot collide with the Zulip ones:

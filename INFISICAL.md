@@ -28,6 +28,24 @@ own store and never go in Infisical.
 
 Secret values are NEVER invented, guessed, or copied from anywhere: the five secret keys above are not yet created in the project and are documented here as "to be filled by admin".  (The Infisical CLI rejects empty values, so they cannot exist as empty placeholders.)
 
+## Hosted Agent-Sync: Cursor Cloud
+
+The CURSOR seat uses the existing `cursor-bot@simplewithus.zulipchat.com` member
+bot.  Its credential pair belongs in this project, `prod`, folder `/zulip`,
+separately from the recall-service settings cache and the generated fleet-knobs
+inventory below.  Store or update the source of truth in Infisical first, then
+copy the credential to the Worker through the secure owner handoff in
+[scripts/agent-sync-mcp/DEPLOY.md](scripts/agent-sync-mcp/DEPLOY.md#add-cursor-cloud-afc-294).
+
+| Key | Kind | Worker binding / provisioning |
+|---|---|---|
+| `ZULIP_CURSOR_API_KEY` | secret | Owner-managed existing CURSOR bot key; encrypted Worker secret `ZULIP_KEY_CURSOR`.  Secure provisioning is required before live Cursor acceptance. |
+| `ZULIP_CURSOR_EMAIL` | env config | `cursor-bot@simplewithus.zulipchat.com`; Worker var `ZULIP_EMAIL_CURSOR`. |
+
+Provisioning and rotation use these same key names; no secret value belongs in
+this inventory.  The installer verifies the email, bot identity and member role
+before copying the key, and the hosted Worker repeats those checks at runtime.
+
 ## Runtime contract
 
 1. **Load at startup.**  `main()` calls `infisical_settings.configure()` + `init_settings()` before binding: universal-auth login → access token → `GET /api/v3/secrets/raw`.  A missing required key fails fast with a `SettingsError` naming the key and pointing here.  Backend keys (`QDRANT_*`, `TEI_*`) are then mirrored into `os.environ` so the `fleet_rag` library (which reads env) keeps working unchanged.  Migration bridge: any managed key missing from Infisical is backfilled from the process environment, and the backfilled key names are logged, so the service keeps its old behavior while the admin fills Infisical in.

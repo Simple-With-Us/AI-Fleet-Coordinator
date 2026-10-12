@@ -24,6 +24,7 @@ test("hosted CLAUDE has an independent bot mapping and exact hosted callback; CO
   assert.equal(prod.redirectOwner.get(REDIRECT), "CLAUDE");
   assert.equal(prod.redirectOwner.get(CHATGPT_REDIRECT), "JET");
   assert.equal(prod.cimdOwner.get(CHATGPT_CLIENT), "JET");
+  assert.equal(prod.redirectOwner.get("https://www.cursor.com/agents/mcp/oauth/callback"), "CURSOR");
   assert.ok(!KNOWN_SEATS.includes("CODEX"));
   assert.ok(!("CLAUDE" in WAKE_SECRETS));
   assert.ok(!LINEAR_SEATS.includes("CLAUDE"));
@@ -34,6 +35,9 @@ test("hosted CLAUDE has an independent bot mapping and exact hosted callback; CO
 test("CLAUDE public manual client and JET clients cannot cross-bind", () => {
   assert.equal(clientBoundToSeat(client, "CLAUDE", REDIRECT, cfg), true);
   assert.equal(clientBoundToSeat(client, "JET", CHATGPT_REDIRECT, cfg), false);
+  const cursor = { clientId: "CuRsOr1234567890", clientName: "Cursor Cloud (manual form, CURSOR)" };
+  assert.equal(clientBoundToSeat(cursor, "CLAUDE", REDIRECT, cfg), false);
+  assert.equal(clientBoundToSeat(client, "CURSOR", "https://www.cursor.com/agents/mcp/oauth/callback", cfg), false);
   const jet = { clientId: "ZyXwVu9876543210", clientName: "ChatGPT (manual form, JET)" };
   assert.equal(clientBoundToSeat(jet, "CLAUDE", REDIRECT, cfg), false);
   const cimd = { clientId: CHATGPT_CLIENT, clientName: "Claude (manual form, CLAUDE)" };
