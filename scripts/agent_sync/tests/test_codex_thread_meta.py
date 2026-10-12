@@ -48,6 +48,25 @@ class CodexThreadMetaTests(McpHarness):
         self.assertNotEqual(first["tag_prefix"], new["tag_prefix"])
         self.assertEqual(new["thread_id"], B)
 
+    def test_whoami_results_match_the_advertised_output_schema(self):
+        cases = (
+            ({}, ("--codex-thread-meta",), True),
+            ({"AGENT_SESSION": "owner session"}, ("--codex-thread-meta",), True),
+            ({"AGENT_SESSION": "owner session"}, ("--codex-thread-meta",), False),
+            ({}, ("--codex-thread-meta", "--session", "flag session"), True),
+            ({}, ("--codex-thread-meta", "--session", "flag session"), False),
+            ({}, (), False),
+        )
+        for overrides, argv, native in cases:
+            with self.subTest(overrides=overrides, argv=argv, native=native):
+                session = self.session({**self.env, **overrides}, argv=argv)
+                advertised = session.request("tools/list")["result"]["tools"]
+                schema = next(t["outputSchema"] for t in advertised if t["name"] == "whoami")
+                result = self.native(session) if native else session.call("whoami")
+                self.assertNotIn("isError", result)
+                problem = T.schema_problem(schema, result["structuredContent"], "structuredContent")
+                self.assertIsNone(problem, problem)
+
     def test_explicit_flag_wins_owner_env_and_claude_env_without_rewriting_bytes(self):
         owner, flag = "Owner Session Mixed CASE", "Flag Session Mixed CASE"
         env = self.mcp_env(AGENT_SEAT="CODEX", AGENT_SESSION=owner, CLAUDE_CODE_SESSION_ID=A)
