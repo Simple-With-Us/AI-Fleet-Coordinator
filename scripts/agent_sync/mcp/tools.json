@@ -16,7 +16,9 @@
           "realm": {"type": "string"},
           "transport": {"type": "string"},
           "tag_prefix": {"type": "string"},
-          "session_source": {"type": "string", "enum": ["flag", "env", "none"]}
+          "session_source": {"type": "string", "enum": ["flag", "env", "none", "codex_thread_meta_sha256"]},
+          "thread_id": {"type": ["string", "null"]},
+          "tag_kind": {"type": "string", "enum": ["explicit", "sha256_derived"]}
         }
       },
       "annotations": {"readOnlyHint": true, "openWorldHint": false}

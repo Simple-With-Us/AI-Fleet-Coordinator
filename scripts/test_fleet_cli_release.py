@@ -83,6 +83,9 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(parsed["features"], {"foo": True})
         self.assertTrue(parsed["mcp_servers"]["agent-sync"]["command"].endswith("agent-sync-codex-mcp"))
         self.assertNotIn("env", parsed["mcp_servers"]["agent-sync"])
+        wrapper = (self.home / ".local/bin/agent-sync-codex-mcp").read_text()
+        self.assertIn("--codex-thread-meta", wrapper)
+        self.assertNotIn("--codex-thread-meta", (self.home / ".local/bin/agent-sync").read_text())
         self.assertEqual(config.stat().st_mode & 0o777, 0o600)
         self.assertEqual(release.release_at(self.base, "current").name, self.bundle["bundle_sha256"])
 
