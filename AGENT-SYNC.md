@@ -1338,7 +1338,7 @@ Lookup data only.  The binding rules live in the sections above.
 | `CC` | CodeCaps | `codecaps` |
 | `FL` | FleetLink | `fleetlink` |
 | `FLL` | fleetlink-legacy (legacy, live until cutover) | `fleetlink-legacy` |
-| `SWU` | Simple With Us website (`https://simplewithus.com`) | `Simple-With-Us/Simple-With-Us` | not registered |
+| `SWU` | Simple With Us website (`https://simplewithus.com`, not registered) | `Simple-With-Us/Simple-With-Us` |
 
 Name drift, verified Wed, Oct 7, 2026:
 
