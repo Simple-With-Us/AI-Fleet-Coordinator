@@ -34,10 +34,97 @@ export function formatResetCopy(resetAt, nowMs = Date.now()) {
   return tail === "—" ? "—" : "Resets In " + tail;
 }
 
+const WINDOW_KEY_LABELS = {
+  "5h": "5-hour",
+  "7d": "7-day",
+};
+
+/** User-facing window period label (5-hour, 7-day, 1-month, …). */
+export function windowBarLabel(windowKey) {
+  const key = String(windowKey ?? "").trim();
+  if (WINDOW_KEY_LABELS[key]) return WINDOW_KEY_LABELS[key];
+  const m = key.match(/^(\d+)(h|d|m)$/i);
+  if (!m) return null;
+  const unit = m[2].toLowerCase() === "h" ? "hour" : m[2].toLowerCase() === "d" ? "day" : "month";
+  return m[1] + "-" + unit;
+}
+
+/** @deprecated alias */
 export function windowBarShortLabel(windowKey) {
-  if (windowKey === "5h") return "5h";
-  if (windowKey === "7d") return "Weekly";
-  return null;
+  return windowBarLabel(windowKey);
+}
+
+const PLATFORM_LABEL_BY_PROVIDER = {
+  anthropic: "Claude",
+  claude: "Claude",
+  openai: "Codex",
+  codex: "Codex",
+  xai: "Grok",
+  grok: "Grok",
+  "grok-cli": "Grok CLI",
+  "grok-bot": "Grok Bot",
+  "google-antigravity": "Antigravity",
+  antigravity: "Antigravity",
+  gemini: "Gemini",
+  "gemini-cli": "Gemini CLI",
+  minimax: "MiniMax",
+  deepseek: "DeepSeek",
+  kimi: "Kimi Code",
+  cursor: "Cursor",
+  muse: "Muse Assist",
+  "muse-assist": "Muse Assist",
+  "muse-assistant": "Muse Assist",
+  "muse-code": "Muse Code",
+};
+
+function isAntigravitySlug(slug) {
+  return (
+    slug === "google-antigravity" ||
+    slug === "antigravity" ||
+    slug.startsWith("google-antigravity-") ||
+    slug.startsWith("antigravity-")
+  );
+}
+
+/** Platform title for a quota group — never a model name. */
+export function platformDisplayName(provider, providerLabel) {
+  const slug = String(provider ?? "").trim().toLowerCase();
+  const label = String(providerLabel ?? "").trim();
+  const labelLower = label.toLowerCase();
+
+  if (isAntigravitySlug(slug) || labelLower.includes("antigravity")) {
+    if (
+      labelLower.includes("third-party") ||
+      labelLower.includes("third party") ||
+      slug.includes("third")
+    ) {
+      return "Antigravity · Third-Party";
+    }
+    if (labelLower.includes("gemini") || slug.includes("gemini")) {
+      return "Antigravity · Gemini";
+    }
+  }
+
+  if (PLATFORM_LABEL_BY_PROVIDER[slug]) return PLATFORM_LABEL_BY_PROVIDER[slug];
+
+  const base = slug.split(":")[0].split("/")[0];
+  if (PLATFORM_LABEL_BY_PROVIDER[base]) return PLATFORM_LABEL_BY_PROVIDER[base];
+
+  if (!slug) return "Unknown";
+  return slug
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/** Label for non-primary quota windows (no model names in the provider row). */
+export function extraWindowRowLabel(win) {
+  if (!win) return "";
+  const fromKey = windowBarLabel(win.windowKey);
+  if (fromKey) return fromKey;
+  if (win.displayName && typeof win.displayName === "string") return win.displayName;
+  return String(win.windowKey || "");
 }
 
 export function remainingPercentLabel(primary) {

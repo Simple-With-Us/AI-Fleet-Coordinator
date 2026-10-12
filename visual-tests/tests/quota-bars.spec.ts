@@ -56,11 +56,15 @@ test.describe('operator dashboard quota bars', () => {
     });
     await page.goto('/public/index.html');
     await expect(page.locator('#quotas-card .quota-window-row')).toHaveCount(2);
-    await expect(page.locator('.quota-window-label').filter({ hasText: '5h' })).toBeVisible();
-    await expect(page.locator('.quota-window-label').filter({ hasText: 'Weekly' })).toBeVisible();
+    await expect(page.locator('.quota-window-pair')).toBeVisible();
+    await expect(page.locator('.quota-window-label').filter({ hasText: '5-hour' })).toBeVisible();
+    await expect(page.locator('.quota-window-label').filter({ hasText: '7-day' })).toBeVisible();
     await expect(page.getByText('42% Remaining')).toBeVisible();
     await expect(page.locator('.quota-window-reset').first()).toContainText('Resets In');
     await expect(page.getByText('in resetting')).toHaveCount(0);
+    await expect(page.getByText(/model/i)).toHaveCount(0);
+    const resetColor = await page.locator('.quota-window-reset').first().evaluate((el) => getComputedStyle(el).color);
+    expect(resetColor).not.toBe('rgb(161, 161, 166)');
     await page.locator('#quotas-card').screenshot({
       path: '/opt/cursor/artifacts/quota-groups-panel.png',
     });

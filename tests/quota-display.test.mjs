@@ -11,6 +11,9 @@ import {
   usedPercentFromPrimary,
   staleReportedLabel,
   findWindow,
+  windowBarLabel,
+  platformDisplayName,
+  extraWindowRowLabel,
 } from "../public/quota-display.mjs";
 
 const T0 = Date.parse("2026-10-12T12:00:00.000Z");
@@ -96,4 +99,22 @@ test("findWindow locates window by key", () => {
   const g = { windows: [{ windowKey: "5h" }, { windowKey: "7d" }] };
   assert.equal(findWindow(g, "7d").windowKey, "7d");
   assert.equal(findWindow(g, "missing"), null);
+});
+
+test("windowBarLabel uses hyphenated period names", () => {
+  assert.equal(windowBarLabel("5h"), "5-hour");
+  assert.equal(windowBarLabel("7d"), "7-day");
+  assert.equal(windowBarLabel("1m"), "1-month");
+  assert.equal(windowBarLabel("30d"), "30-day");
+});
+
+test("platformDisplayName shows platform only and Antigravity variants", () => {
+  assert.equal(platformDisplayName("claude", "Claude Opus 4.5"), "Claude");
+  assert.equal(platformDisplayName("google-antigravity", "Antigravity · Gemini"), "Antigravity · Gemini");
+  assert.equal(platformDisplayName("google-antigravity-third-party", null), "Antigravity · Third-Party");
+  assert.equal(platformDisplayName("openai", "gpt-5-codex"), "Codex");
+});
+
+test("extraWindowRowLabel prefers period keys over display names", () => {
+  assert.equal(extraWindowRowLabel({ windowKey: "5h", displayName: "5 Hour" }), "5-hour");
 });
