@@ -7,6 +7,8 @@ The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at
 | GROK-WEB | `grok-web-bot@` (member) | Served.  Grok on the web, iOS and Android, through grok.com connectors. |
 | JET | `openai-dot-bot@` (member) | Served.  ChatGPT and the Jet dots, through ChatGPT custom connectors.  Enabled Fri, Oct 9, after Jay demoted the bot from administrator to member (hosted seats accept member (400) only, spec 3.6). |
 
+CLAUDE hosted configuration is prepared by AFC-296; its key, deployment, public manual client and real hosted `whoami` acceptance remain pending.  CODEX hosted binding awaits its actual connection identity; [surface and server alternatives](../../docs/protocols/claude-codex-bridge-access.md).
+
 Deploy and operate:  [DEPLOY.md](DEPLOY.md).  Connect a client:  [ARMING-JAY.md](ARMING-JAY.md).  The Phase 0 runbook ([DEPLOY-PHASE0.md](DEPLOY-PHASE0.md)) is kept as the record of how the hostname moved.
 
 ## Tools

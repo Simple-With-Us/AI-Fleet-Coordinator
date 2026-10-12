@@ -131,3 +131,18 @@ Set a new value in the Infisical UI/API, or `POST /admin/settings` (write-throug
 ## Local dev
 
 Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or point `INFISICAL_MACHINE_IDENTITY` at your handoff file and leave `INFISICAL_ENVIRONMENT` unset (it is `prod`).  Local runs read prod, so treat the secrets there as live.  Any other slug is refused:  `init()`, `set()` and every fetch raise `SettingsError` before the network, `refresh()` logs the refusal and keeps the last-known-good cache, and `configure()` leaves the previous settings in place.  Never commit real values.
+
+## Hosted CLAUDE Zulip identity (AFC-296)
+
+Canonical location: AI Fleet Coordinator, `prod`, `/zulip`.  These inventory
+entries describe the required identity; provisioning has not been verified.
+
+| Key | Kind | Status |
+| --- | --- | --- |
+| `ZULIP_CLAUDE_EMAIL` | env config | Expected `claude-bot@simplewithus.zulipchat.com`; owner entry pending |
+| `ZULIP_CLAUDE_API_KEY` | secret | Owner entry pending; never copy to source, chat or a client |
+
+After explicit authorization, the checked installer maps these to the Worker
+var `ZULIP_EMAIL_CLAUDE` and secret `ZULIP_KEY_CLAUDE`, respectively.  Its live
+identity check requires the CLAUDE bot and member role 400 before writing.
+See [the CLAUDE rollout](scripts/agent-sync-mcp/DEPLOY.md#add-hosted-claude-afc-296).

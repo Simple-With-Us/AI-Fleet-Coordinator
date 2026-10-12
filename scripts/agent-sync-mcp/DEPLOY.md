@@ -189,3 +189,34 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 - **A1 and D8:**  a key location no agent identity can read.  Until then the INFISICAL_AUTOMATION identity and the Global key can both reach GROK-WEB's key, which D8 accepts.
 - **ECHO and INSTINCT:**  connect one at a time from the Instinct app's own computer ([ARMING-JAY.md](ARMING-JAY.md), "Connect Echo" and "Connect Instinct").  The Worker serves both and both keys are installed (Fri, Oct 9, about 10:24pm);  the client id comes from the first attempt.
 - **JET:**  arm it and connect ChatGPT ([ARMING-JAY.md](ARMING-JAY.md)).  The bot is a member, the Worker serves JET and its key is installed (Fri, Oct 9, about 8:10am), so nothing else blocks it.
+
+## Add hosted CLAUDE (AFC-296)
+
+This change prepares CLAUDE's hosted configuration only.  It does not provision a
+key, create an OAuth client, deploy or establish a working connection.  Obtain
+explicit authorization for these actions before performing the rollout.
+
+1. The owner securely enters `ZULIP_CLAUDE_EMAIL` and `ZULIP_CLAUDE_API_KEY` into
+   AI Fleet Coordinator, `prod`, `/zulip`, using the real CLAUDE bot's own key.
+   Expected email: `claude-bot@simplewithus.zulipchat.com`.  Do not paste the key
+   into chat, source, a client form or an agent-readable local handoff.  The key
+   must belong to that bot, with member role 400, not administrator or owner.
+2. After deployment authorization, deploy using this runbook's existing process.
+   The added Worker var is `ZULIP_EMAIL_CLAUDE`; the required Worker secret is
+   `ZULIP_KEY_CLAUDE`.  The checked installer supports CLAUDE and reads the
+   canonical Infisical names above.  Its check-only mode verifies users/me, bot
+   email, CLAUDE tag and role 400 before its authorized apply step writes the
+   secret through stdin.  Secret installation publishes a Worker version, so
+   it is part of the deployment approval, not a preparation step.
+3. After OAuth registration authorization, create a tagged CLAUDE public manual
+   client in Admin and follow [Connect hosted Claude](ARMING-JAY.md#connect-hosted-claude-claude-afc-296).
+   Exact callback: `https://claude.ai/api/mcp/auth_callback`; secret blank;
+   S256 required; DCR remains off.  Arm only CLAUDE and consent to its scopes.
+4. Accept the connection only after the real hosted client reports CLAUDE's
+   bot, role 400 and hosted transport from `whoami`.  Check JET's identity before
+   and after rollout.  Record the Worker version, surface and acceptance result.
+
+CLAUDE uses its own grant, epoch and bot credential.  Existing seats, JET grants,
+wake keys, callbacks, subscriptions and Linear permissions need no migration.
+No CODEX callback or client is provisioned; see
+[hosted and server access](../../docs/protocols/claude-codex-bridge-access.md).

@@ -35,7 +35,7 @@ test("consent form:  extra keys, repeated scalars, bad enums and bad handles are
     "repeated decision": [...base, ["decision", "deny"]],
     "repeated seat": [...base, ["seat", "GROK-WEB"]],
     "unknown decision": base.map(([k, v]) => (k === "decision" ? [k, "maybe"] : [k, v])),
-    "unknown seat": base.map(([k, v]) => (k === "seat" ? [k, "CLAUDE"] : [k, v])),
+    "unknown seat": base.map(([k, v]) => (k === "seat" ? [k, "CODEX"] : [k, v])),
     "unknown scope": [...base, ["scope", "zulip:admin"]],
     "too many scopes": [...base, ["scope", "zulip:write"], ["scope", "zulip:write"]],
     "short handle": base.map(([k, v]) => (k === "handle" ? [k, "short"] : [k, v])),
@@ -61,11 +61,12 @@ test("admin form:  every action the admin page posts is accepted, anything else 
   assert.equal(admin([["csrf", CSRF], ["action", "sync_manual_client"], ["client_id", "AbCdEf1234567890"]]).ok, true);
   assert.equal(admin([["csrf", CSRF], ["action", "create_manual_client"], ["seat", "ECHO"]]).ok, true);
   assert.equal(admin([["csrf", CSRF], ["action", "create_manual_client"], ["seat", "INSTINCT"]]).ok, true);
+  assert.equal(admin([["csrf", CSRF], ["action", "create_manual_client"], ["seat", "CLAUDE"]]).ok, true);
   const bad = {
     "bad csrf shape": [["csrf", "short"], ["action", "arm"]],
     "uppercase csrf": [["csrf", "C".repeat(64)], ["action", "arm"]],
     "unknown action": [["csrf", CSRF], ["action", "delete_everything"]],
-    "unknown seat": [["csrf", CSRF], ["action", "arm"], ["seat", "CLAUDE"]],
+    "unknown seat": [["csrf", CSRF], ["action", "arm"], ["seat", "CODEX"]],
     "url client id": [["csrf", CSRF], ["action", "sync_manual_client"], ["client_id", "https://evil.example/c.json"]],
     "extra key": [["csrf", CSRF], ["action", "arm"], ["seat", "JET"], ["note", "x"]],
     "repeated action": [["csrf", CSRF], ["action", "arm"], ["action", "revoke"]],
