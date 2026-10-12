@@ -17,7 +17,7 @@ test("hosted CLAUDE has an independent bot mapping and exact hosted callback; CO
   const prod = loadConfig(wranglerConfig().vars);
   assert.ok(prod.hostedSeats.includes("CLAUDE"));
   assert.equal(prod.botEmails.CLAUDE, "claude-bot@simplewithus.zulipchat.com");
-  assert.deepEqual(SEAT_SECRETS.CLAUDE, { key: "ZULIP_KEY_CLAUDE", email: "ZULIP_EMAIL_CLAUDE" });
+  assert.deepEqual(SEAT_SECRETS.CLAUDE, { key: "ZULIP_CLAUDE_API_KEY", email: "ZULIP_CLAUDE_EMAIL" });
   assert.equal(SEAT_LABELS.CLAUDE, "Claude");
   assert.deepEqual([...prod.seats.CLAUDE.redirectUris], [REDIRECT]);
   assert.deepEqual([...prod.seats.CLAUDE.cimdClientIds], []);
@@ -29,7 +29,7 @@ test("hosted CLAUDE has an independent bot mapping and exact hosted callback; CO
   assert.ok(!("CLAUDE" in WAKE_SECRETS));
   assert.ok(!LINEAR_SEATS.includes("CLAUDE"));
   const installer = readFileSync(path.join(ROOT, "install_seat_key.py"), "utf8");
-  assert.match(installer, /"CLAUDE": \("ZULIP_CLAUDE", "ZULIP_KEY_CLAUDE", "ZULIP_EMAIL_CLAUDE"\)/);
+  assert.match(installer, /"CLAUDE": \("ZULIP_CLAUDE", "ZULIP_CLAUDE_API_KEY", "ZULIP_CLAUDE_EMAIL"\)/);
 });
 
 test("CLAUDE public manual client and JET clients cannot cross-bind", () => {
@@ -79,4 +79,15 @@ test("unprovisioned CLAUDE key fails closed for identity and writes", async () =
     assert.match(result._meta["agent-sync/error"].message, /No Zulip key is installed for CLAUDE/);
     assert.equal(result.structuredContent, undefined);
   }
+});
+
+test("CLAUDE canonical email is required; other seats keep their existing binding names", () => {
+  assert.throws(() => loadConfig(testEnv({ HOSTED_SEATS: "CLAUDE", ZULIP_CLAUDE_EMAIL: "", ZULIP_EMAIL_CLAUDE: "claude-bot@simplewithus.zulipchat.com" })), /ZULIP_CLAUDE_EMAIL/);
+  assert.deepEqual(Object.fromEntries(Object.entries(SEAT_SECRETS).filter(([seat]) => seat !== "CLAUDE")), {
+    CURSOR: { key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR" },
+    JET: { key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" },
+    "GROK-WEB": { key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" },
+    ECHO: { key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" },
+    INSTINCT: { key: "ZULIP_KEY_INSTINCT", email: "ZULIP_EMAIL_INSTINCT" },
+  });
 });

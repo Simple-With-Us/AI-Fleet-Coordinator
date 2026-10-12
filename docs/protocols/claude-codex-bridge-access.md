@@ -16,7 +16,9 @@ uses that seat's bot credential.  Identity is never a caller-supplied argument.
 
 Claude supports **Use your own OAuth client**.  Its blank secret is a public
 client, with S256 PKCE; DCR can stay disabled.  The CLAUDE manual client carries
-its own seat tag, and its callback belongs only to CLAUDE.  The existing JET
+its own seat tag, and its callback belongs only to CLAUDE.  Worker bindings
+`ZULIP_CLAUDE_EMAIL` and `ZULIP_CLAUDE_API_KEY` use the existing canonical
+AFC `prod` `/zulip` entry names; Worker provisioning remains unconfirmed.  The existing JET
 client and grant cannot be reused.  A real `whoami` must confirm CLAUDE,
 `claude-bot@simplewithus.zulipchat.com`, role 400 and hosted transport.  Follow
 [owner connection steps](../../scripts/agent-sync-mcp/ARMING-JAY.md#connect-hosted-claude-claude-afc-296).

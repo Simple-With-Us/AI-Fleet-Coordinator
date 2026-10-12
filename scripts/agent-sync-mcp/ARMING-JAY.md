@@ -48,7 +48,9 @@ ChatGPT custom connectors sit behind **Developer mode**:  on the web, Settings â
 **Prepared configuration, not a working connection.**  Provisioning, deployment,
 OAuth client registration and consent have not been performed by this change.
 Authorize those actions before following these steps; merging code is not a deploy.
-See [the rollout](DEPLOY.md#add-hosted-claude-afc-296) for secure owner entry.
+The owner confirmed the existing AFC `prod` `/zulip` entries
+`ZULIP_CLAUDE_EMAIL` and `ZULIP_CLAUDE_API_KEY`; the Worker uses those same names.
+See [the rollout](DEPLOY.md#add-hosted-claude-afc-296) for secure Worker provisioning.
 
 1. After the authorized rollout and member-bot check, open Agent-Sync Admin.
    Create **Manual Client For CLAUDE**.  Its label is

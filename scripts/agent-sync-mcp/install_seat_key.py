@@ -16,9 +16,9 @@ rotation.
 
 Before anything is written it proves the key is fit for the seat, the same
 checks the Worker repeats every 10 minutes:  the seat is in HOSTED_SEATS, the
-Infisical email equals the ZULIP_EMAIL_<SEAT> var, and Zulip's users/me for the
-key is that bot, a bot, and a member (role 400), never an administrator or
-owner.  So an admin key (openai-dot-bot until Fri, Oct 9) is refused and never installed.
+Infisical email matches the seat's configured Worker email binding, and
+Zulip's users/me for the key is that bot, a bot, and a member (role 400), never
+an administrator or owner.  So an admin key (openai-dot-bot until Fri, Oct 9) is refused and never installed.
 
 `--zuliprc PATH` reads the email and key from a seat's zuliprc file instead of
 Infisical (for a seat whose key is not in Infisical yet, like ECHO and
@@ -56,7 +56,7 @@ MEMBER_ROLE = 400
 # Seat -> (Infisical key prefix, Worker secret name, wrangler var for the email, the bot's seat tag source).
 SEATS = {
     "CURSOR": ("ZULIP_CURSOR", "ZULIP_KEY_CURSOR", "ZULIP_EMAIL_CURSOR"),
-    "CLAUDE": ("ZULIP_CLAUDE", "ZULIP_KEY_CLAUDE", "ZULIP_EMAIL_CLAUDE"),
+    "CLAUDE": ("ZULIP_CLAUDE", "ZULIP_CLAUDE_API_KEY", "ZULIP_CLAUDE_EMAIL"),
     "JET": ("ZULIP_JET", "ZULIP_KEY_JET", "ZULIP_EMAIL_JET"),
     "GROK-WEB": ("ZULIP_GROK_WEB", "ZULIP_KEY_GROK_WEB", "ZULIP_EMAIL_GROK_WEB"),
     "ECHO": ("ZULIP_ECHO", "ZULIP_KEY_ECHO", "ZULIP_EMAIL_ECHO"),

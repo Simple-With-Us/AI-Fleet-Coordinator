@@ -44,7 +44,7 @@ python3 -I install_seat_key.py INSTINCT --zuliprc ~/.secrets/Zulip/Instinct-zuli
 
 ECHO's and INSTINCT's keys are not in Infisical, so `--zuliprc` reads the email and key from the seat's mode-600 zuliprc instead (its `site` must be this realm).  The same checks run, and no field of the file is printed.
 
-For each seat the script reads `ZULIP_<SEAT>_EMAIL` and `ZULIP_<SEAT>_API_KEY` (`ZULIP_GROK_WEB_*`, `ZULIP_JET_*`) from Infisical (project "AI Fleet Coordinator", `prod`, `/zulip`) through the INFISICAL_AUTOMATION identity, and refuses unless the seat is in `HOSTED_SEATS`, the email equals `ZULIP_EMAIL_<SEAT>`, and Zulip's `users/me` for the key is that bot, a bot, and a member (role 400).  The value goes to wrangler on stdin and is never printed, logged or written to a file.  `wrangler secret put` deploys a new version at once.
+For each seat the script reads `ZULIP_<SEAT>_EMAIL` and `ZULIP_<SEAT>_API_KEY` (`ZULIP_GROK_WEB_*`, `ZULIP_JET_*`, `ZULIP_CLAUDE_*`) from Infisical (project "AI Fleet Coordinator", `prod`, `/zulip`) through the INFISICAL_AUTOMATION identity, and refuses unless the seat is in `HOSTED_SEATS`, the email equals the seat's configured Worker email binding (`ZULIP_EMAIL_<SEAT>` for every seat except CLAUDE, which uses the canonical `ZULIP_CLAUDE_EMAIL`), and Zulip's `users/me` for the key is that bot, a bot, and a member (role 400).  The value goes to wrangler on stdin and is never printed, logged or written to a file.  `wrangler secret put` deploys a new version at once.
 
 Spec 3.6 wants Infisical's Cloudflare Workers sync to push the key, from a location no agent identity can read.  Neither exists yet (owner items A1 and A4), and D8 accepts that:  this script is the sync, run by hand, and the key stays in `/zulip` where the automation identity can read it.  When Jay sets up the sync with "Disable Secret Deletion", stop using the script for that seat.
 
@@ -229,21 +229,22 @@ This change prepares CLAUDE's hosted configuration only.  It does not provision 
 key, create an OAuth client, deploy or establish a working connection.  Obtain
 explicit authorization for these actions before performing the rollout.
 
-1. The owner securely enters `ZULIP_CLAUDE_EMAIL` and `ZULIP_CLAUDE_API_KEY` into
-   AI Fleet Coordinator, `prod`, `/zulip`, using the real CLAUDE bot's own key.
+1. Reuse the owner-confirmed existing `ZULIP_CLAUDE_EMAIL` and
+   `ZULIP_CLAUDE_API_KEY` entries in AI Fleet Coordinator, `prod`, `/zulip`.
+   Worker provisioning is unconfirmed; use the real CLAUDE bot's own key.
    Expected email: `claude-bot@simplewithus.zulipchat.com`.  Do not paste the key
    into chat, source, a client form or an agent-readable local handoff.  The key
    must belong to that bot, with member role 400, not administrator or owner.
 2. After deployment authorization, deploy using this runbook's existing process.
-   The added Worker var is `ZULIP_EMAIL_CLAUDE`; the required Worker secret is
-   `ZULIP_KEY_CLAUDE`.  The checked installer supports CLAUDE and reads the
+   The added Worker var is `ZULIP_CLAUDE_EMAIL`; the required Worker secret is
+   `ZULIP_CLAUDE_API_KEY`.  The checked installer supports CLAUDE and reads the
    canonical Infisical names above.  Its check-only mode verifies users/me, bot
    email, CLAUDE tag and role 400 before its authorized apply step writes the
    secret through stdin.  Secret installation publishes a Worker version, so
    it is part of the deployment approval, not a preparation step.
 
-   **Owner-operated commands, from `scripts/agent-sync-mcp/`:** after secure
-   owner entry in step 1, first run the check-only command:
+   **Owner-operated commands, from `scripts/agent-sync-mcp/`:** using the existing
+   canonical entries in step 1, first run the check-only command:
 
    ```bash
    python3 -I install_seat_key.py CLAUDE
