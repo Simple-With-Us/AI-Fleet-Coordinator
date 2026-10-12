@@ -143,6 +143,17 @@ org scope.  Do not re-paste those three into any app.  A credential that a card
 reports as 401/403 is a *credential* problem — fix the token, not the card.
 `SENTRY_ORG_TOKEN_MINIMAX` is also 403 on that org.
 
+A `301 redirect … not followed` is the opposite case and was *not* a credential
+problem.  It means the panel asked for a repo under the wrong owner: the product
+repos live in the `Simple-With-Us` org, while `Fleet-OPS` is still on the personal
+account.  GitHub answers a personal-owner request for an org repo with a 301 to
+the new location, and this worker deliberately does not follow redirects (see
+`apiJson`), so every row failed on a repo that exists and is reachable.  `APPS`
+now carries an `owner` per entry, and the PR search runs once per owner.  If a
+new repo 301s, it moved: give it the right `owner` rather than re-pasting the
+token.  `GITHUB_TOKEN` and `GITHUB_ADMIN_PAT` are both verified working against
+this card as of 2026-10-12.
+
 The Fleet Recall card needs three of these together: `RECALL_API_TOKEN` for the
 service bearer, and `CF_ACCESS_CLIENT_ID` plus `CF_ACCESS_CLIENT_SECRET` for the
 Cloudflare Access service token in front of the host.  `GET /health` is public and
@@ -150,7 +161,9 @@ is checked even when the other two are missing.
 
 Non-secret configuration lives in `wrangler.jsonc` under `vars`: `GITHUB_OWNER`,
 `SENTRY_ORG`, `DD_SITE`, and the `RECALL_BASE` / `BOARD_BASE` / `COOLIFY_BASE`
-hostnames.
+hostnames.  `GITHUB_OWNER` is only the *fallback* for app repos that do not
+declare an `owner` of their own — today that is `Fleet-OPS` alone, and the other
+15 repos sit in the `Simple-With-Us` org.
 
 ## Deploy
 
