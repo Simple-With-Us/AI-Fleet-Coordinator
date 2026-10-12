@@ -270,6 +270,29 @@
   .quota-status.exh { background: rgba(220,38,38,.12); color: #B91C1C; }
   .quota-status.low { background: rgba(217,119,6,.12); color: #B45309; }
   .quota-group { display: block; margin-top: 10px; }
+  .quota-provider-block { padding: 12px 4px; border-top: 1px solid var(--line); }
+  .quota-provider-block:first-child { border-top: none; padding-top: 4px; }
+  .quota-provider-head { margin-bottom: 8px; }
+  .quota-window-row { display: grid; grid-template-columns: 52px 1fr; gap: 4px 10px; align-items: center; margin-bottom: 8px; }
+  .quota-window-label { font-size: 11.5px; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
+  .quota-window-meta { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; justify-content: flex-end; grid-column: 2; }
+  .quota-window-rem { font-weight: 600; color: var(--text); }
+  .quota-window-reset { color: var(--faint); }
+  .qcap { grid-column: 1 / -1; display: flex; height: 5px; border-radius: 999px; overflow: hidden; position: relative; background: rgba(0,0,0,.06); }
+  :root[data-theme="dark"] .qcap { background: rgba(255,255,255,.1); }
+  .qcap-used { flex-shrink: 0; background: #DC2626; border-radius: 999px 0 0 999px; }
+  .qcap-rem { flex: 1; background: #0D9488; border-radius: 0 999px 999px 0; }
+  .qcap-tick { position: absolute; top: -1px; bottom: -1px; width: 2px; margin-left: -1px; background: rgba(0,0,0,.28); pointer-events: none; }
+  :root[data-theme="dark"] .qcap-tick { background: rgba(255,255,255,.35); }
+  .qcap-stale .qcap-used, .qcap-stale .qcap-rem { background: #9CA3AF; }
+  .qcap-exhausted .qcap-rem { background: #DC2626; }
+  .qcap-amber .qcap-rem { background: #D97706; }
+  .qcap-teal .qcap-rem { background: #0D9488; }
+  .qcap-unknown { background: var(--faint); opacity: .45; }
+  .quota-stale-note { font-size: 11px; color: var(--faint); margin-top: 2px; }
+  .quota-older { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+  .quota-older summary { cursor: pointer; user-select: none; }
+  .quota-older-line { padding: 4px 0; border-top: 1px solid var(--line); color: var(--faint); }
 
   /* Provider identity — mark + human label, in place of the raw upstream slug.
      Both marks paint in `currentColor` so they follow the system theme: the
@@ -452,7 +475,21 @@
   <footer>Source: <code>ai-fleet-coordinator/scripts/safari-start</code></footer>
 </div>
 
-<script>
+<script type="module">
+  import {
+    aggregateQuotas,
+    sortQuotaGroups,
+    formatResetCopy,
+    remainingPercentLabel,
+    barColorState,
+    shouldShowExtraWindow,
+    findWindow,
+    primaryWindowKeys,
+    usedPercentFromPrimary,
+    staleReportedLabel,
+    windowBarShortLabel,
+    olderSourcesForGroup,
+  } from "./quota-display.mjs";
   const NAME = "Jay";
   // Inside another page (an iframe), open everything in a new tab instead of navigating the frame.
   const FRAMED = (() => { try { return window.top !== window.self; } catch (e) { return true; } })();
@@ -789,48 +826,7 @@
   const RAG_ENDPOINT = "/api/rag-snapshot";
   const QUOTA_POLL_MS = 60_000;
 
-  function aggregateQuotas(windows) {
-    const byProvider = new Map();
-    for (const w of windows) {
-      const p = w.provider || w.sourceApp || "unknown";
-      if (!byProvider.has(p)) byProvider.set(p, { provider: p, models: [], exhausted: 0 });
-      const g = byProvider.get(p);
-      g.models.push(w);
-      if (w.isExhausted || (w.remainingPercent === 0 && !w.remainingUnknown)) g.exhausted += 1;
-    }
-    for (const g of byProvider.values()) {
-      const knowns = g.models.filter(m => !m.remainingUnknown && typeof m.remainingPercent === "number");
-      g.remainingPercent = knowns.length ? Math.min(...knowns.map(m => m.remainingPercent)) : null;
-      const resets = g.models.map(m => m.resetAt).filter(Boolean).map(s => new Date(s).getTime());
-      g.resetAt = resets.length ? new Date(Math.min(...resets)).toISOString() : null;
-    }
-    return [...byProvider.values()].sort((a, b) => {
-      const ar = a.remainingPercent == null ? 101 : a.remainingPercent;
-      const br = b.remainingPercent == null ? 101 : b.remainingPercent;
-      return ar - br;
-    });
-  }
-
-  // Countdown to a FUTURE instant — quota reset windows only.  Callers must
-  // pair it with a word like "in"; it has no sensible reading for a past time.
-  function relTime(iso) {
-    if (!iso) return "—";
-    const ms = new Date(iso).getTime() - Date.now();
-    if (Number.isNaN(ms)) return "—";
-    if (ms <= 0) return "resetting";
-    const s = Math.round(ms / 1000);
-    if (s < 60) return s + "s";
-    const m = Math.round(s / 60);
-    if (m < 60) return m + "m";
-    const h = Math.floor(m / 60);
-    if (h < 24) return h + "h " + (m % 60) + "m";
-    const d = Math.floor(h / 24);
-    return d + "d " + (h % 24) + "h";
-  }
-
-  // Elapsed time SINCE a past instant, for "... N ago" labels.  Kept separate
-  // from relTime() because the two measure opposite directions: passing a past
-  // timestamp to the countdown made every panel header read "resetting ago".
+  // Elapsed time SINCE a past instant, for "... N ago" labels.
   //
   // Units floor rather than round.  Elapsed time has not completed the next unit
   // yet, and rounding made a 90s-old snapshot claim "2m" (round(90/60) = 2) —
@@ -967,20 +963,82 @@
     return "ok";
   }
 
-  function renderQuotas(payload) {
-    const body = document.getElementById("quotas-body");
-    const meta = document.getElementById("quota-meta");
-    const dot = document.getElementById("quota-dot");
-    body.replaceChildren();
-    if (!payload || !payload.windows) {
-      body.appendChild(el("div", "panel-empty", "Quota data unavailable."));
-      meta.textContent = "stale";
-      dot.className = "live-dot stale";
-      return;
+  function buildQuotaCapsule(primary) {
+    const state = barColorState(primary);
+    const wrap = el("div", "qcap qcap-" + state);
+    const used = usedPercentFromPrimary(primary);
+    if (used == null) return wrap;
+    const usedEl = el("div", "qcap-used");
+    usedEl.style.width = used + "%";
+    wrap.appendChild(usedEl);
+    wrap.appendChild(el("div", "qcap-rem"));
+    const tick = el("div", "qcap-tick");
+    tick.style.left = used + "%";
+    wrap.appendChild(tick);
+    return wrap;
+  }
+
+  function renderQuotaWindowRow(win, labelText) {
+    const p = win && win.primary;
+    const row = el("div", "quota-window-row");
+    row.appendChild(el("span", "quota-window-label", labelText));
+    const meta = el("div", "quota-window-meta");
+    meta.appendChild(el("span", "quota-window-rem", remainingPercentLabel(p)));
+    meta.appendChild(el("span", "quota-window-reset", formatResetCopy(p && p.resetAt)));
+    row.appendChild(meta);
+    row.appendChild(buildQuotaCapsule(p));
+    if (p && p.rawKey) row.title = (win.displayName || labelText) + " · " + p.rawKey;
+    return row;
+  }
+
+  function renderQuotaGroupBlock(group) {
+    const block = el("div", "quota-provider-block");
+    const head = el("div", "quota-provider-head");
+    head.appendChild(providerId(group.provider));
+    if (group.providerLabel) {
+      const nameEl = head.querySelector(".n");
+      if (nameEl) nameEl.textContent = group.providerLabel;
     }
-    const groups = aggregateQuotas(payload.windows);
-    const left = el("div");
-    body.append(left);
+    block.appendChild(head);
+
+    for (const key of primaryWindowKeys()) {
+      const win = findWindow(group, key);
+      const short = windowBarShortLabel(key);
+      if (win && short) block.appendChild(renderQuotaWindowRow(win, short));
+    }
+
+    for (const win of (group.windows || []).filter(shouldShowExtraWindow)) {
+      block.appendChild(renderQuotaWindowRow(win, win.displayName || win.windowKey));
+    }
+
+    let stalePrimary = null;
+    for (const w of group.windows || []) {
+      if (w.primary && w.primary.freshness === "stale") {
+        stalePrimary = w.primary;
+        break;
+      }
+    }
+    const staleLabel = staleReportedLabel(stalePrimary, relTimeAgo);
+    if (staleLabel) block.appendChild(el("div", "quota-stale-note", staleLabel));
+
+    const older = olderSourcesForGroup(group);
+    if (older.length) {
+      const det = el("details", "quota-older");
+      det.appendChild(el("summary", null, "Show Older Sources"));
+      const list = el("div", "quota-older-list");
+      for (const { window: win, source: src } of older) {
+        const line = el("div", "quota-older-line");
+        line.textContent = (win.displayName || win.windowKey) + " · " + (src.sourceLabel || src.source);
+        list.appendChild(line);
+      }
+      det.appendChild(list);
+      block.appendChild(det);
+    }
+    return block;
+  }
+
+  function renderLegacyQuotaRows(windows, container) {
+    const groups = aggregateQuotas(windows);
     for (const g of groups) {
       const row = el("div", "quota-row");
       const name = el("div", "quota-name");
@@ -988,21 +1046,46 @@
       name.append(el("small", null, g.models.length + (g.models.length === 1 ? " model" : " models") + (g.exhausted ? " · " + g.exhausted + " exhausted" : "")));
       const val = el("div", "quota-val");
       if (g.remainingPercent == null) {
-        val.appendChild(el("b", null, "n/a"));
+        val.appendChild(el("b", null, "Unknown"));
         val.appendChild(el("span", "quota-status", "unknown"));
       } else if (g.remainingPercent === 0) {
         val.appendChild(el("b", null, "0%"));
         val.appendChild(el("span", "quota-status exh", "exhausted"));
       } else {
         val.appendChild(el("b", null, Math.round(g.remainingPercent) + "%"));
-        val.appendChild(el("span", "quota-status " + (g.remainingPercent < 25 ? "low" : ""), "in " + relTime(g.resetAt)));
+        const resetCopy = formatResetCopy(g.resetAt);
+        val.appendChild(el("span", "quota-status " + (g.remainingPercent < 25 ? "low" : ""), resetCopy));
       }
       const bar = el("div", "quota-bar");
       const fill = el("div", "quota-fill " + quotaClass(g.remainingPercent));
       fill.style.width = (g.remainingPercent == null ? 4 : Math.max(2, g.remainingPercent)) + "%";
       bar.appendChild(fill);
       row.append(name, val, bar);
-      left.appendChild(row);
+      container.appendChild(row);
+    }
+  }
+
+  function renderQuotas(payload) {
+    const body = document.getElementById("quotas-body");
+    const meta = document.getElementById("quota-meta");
+    const dot = document.getElementById("quota-dot");
+    body.replaceChildren();
+    const hasGroups = payload && Array.isArray(payload.quotaGroups) && payload.quotaGroups.length > 0;
+    const hasWindows = payload && Array.isArray(payload.windows) && payload.windows.length > 0;
+    if (!payload || (!hasGroups && !hasWindows)) {
+      body.appendChild(el("div", "panel-empty", "Quota data unavailable."));
+      meta.textContent = "stale";
+      dot.className = "live-dot stale";
+      return;
+    }
+    const left = el("div");
+    body.append(left);
+    if (hasGroups) {
+      for (const g of sortQuotaGroups(payload.quotaGroups)) {
+        left.appendChild(renderQuotaGroupBlock(g));
+      }
+    } else {
+      renderLegacyQuotaRows(payload.windows, left);
     }
     meta.textContent = "live · " + relTimeAgo(payload.generatedAt);
     dot.className = "live-dot";

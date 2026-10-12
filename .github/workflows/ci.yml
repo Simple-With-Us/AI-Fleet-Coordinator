@@ -186,6 +186,8 @@ jobs:
       run: node --test scripts/agent-sync-mcp/test/*.test.mjs
     - name: Verify operator dashboard deployment boundary
       run: node --test tests/deployment-boundary.test.cjs
+    - name: Agent quota display unit tests
+      run: node --test tests/quota-display.test.mjs
     - name: Kody defer and deferred sweep tests
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
     # Pure builders and readers of the Fleet Reference Sheet registry sync.  No
