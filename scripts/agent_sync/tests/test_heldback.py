@@ -676,8 +676,15 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         self.step(daemon, 7200)
         self.assertEqual(len(digests()), 2, "nothing new, nothing sent")
         self.assertEqual(self.banners, [], "the server has no banners:  the owner queue only")
-        self.assertEqual([m for m in self.fake.messages if m["sender_id"] == self.gb["user_id"]], [],
-                         "and no Zulip post from the seat's bot")
+        # The per-seat owner queue still gets its digest, and since AFC-257 something the owner can
+        # actually see exists too.  The two are rate-limited on the same hour but they are not the
+        # same clock, so only the direction is pinned here:  no seat's bot says anything anywhere
+        # except the `#alerts` held-back topic, and never outside a hold.
+        posts = [m for m in self.fake.messages if m["sender_id"] == self.gb["user_id"]]
+        self.assertTrue(posts, "the owner is told somewhere they can see")
+        self.assertEqual({(m["display_recipient"], m["subject"]) for m in posts},
+                         {("alerts", "held-back wakes")},
+                         "the seat's bot carries the instance digest to #alerts and says nothing else")
 
     def test_wakes_and_status_show_what_is_held_back(self) -> None:
         self.write_server_config(budget="wakes_per_hour = 0", seat_extra="held_back = { catch_up = false }")

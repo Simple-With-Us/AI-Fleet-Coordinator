@@ -110,7 +110,7 @@ class MockLinear:
         self.current_token = None
         self.org = {"name": "Simple With Us", "urlKey": "simple-with-us"}
         self.teams: dict = {}
-        for i, key in enumerate(("OPS", "ST", "CT", "AFC", "FL", "CC")):
+        for i, key in enumerate(("OPS", "ST", "CT", "AFC", "FL", "CC", "SWU")):
             self.teams[key] = {"id": f"team-{key}", "name": key + " team", "n": 0,
                                "states": {n: {"id": f"st-{key}-{j}", "name": n, "type": t}
                                           for j, (n, t) in enumerate(STATES)}}
@@ -908,6 +908,24 @@ class WriteTests(BoardTest):
             iss = self.issue_by_ident(p.stdout.split()[-1])
             self.assertEqual(iss["team"], "CC", app)
             self.assertFalse([n for n in self.label_names(iss) if n.startswith("app:")], app)
+
+    def test_swu_files_to_its_own_team(self):
+        # SWU is a team key with no BOARD_SLUG_TEAM entry (AFC-292):  a missing key
+        # sent Simple With Us website issues to AFC with an app:swu label.
+        for app in ("SWU", "swu"):
+            p = self.board("file", "--title", f"routing {app}", "--app", app)
+            self.assertIn("(-- SWU)", p.stdout, app)
+            iss = self.issue_by_ident(p.stdout.split()[-1])
+            self.assertEqual(iss["team"], "SWU", app)
+            self.assertFalse([n for n in self.label_names(iss) if n.startswith("app:")], app)
+
+    def test_fll_is_not_a_team_key(self):
+        # FLL is a registry key only;  fleetlink-legacy files under FL, and a bare
+        # FLL stays on the AFC fallback rather than inventing a team.
+        p = self.board("file", "--title", "routing FLL", "--app", "FLL")
+        iss = self.issue_by_ident(p.stdout.split()[-1])
+        self.assertEqual(iss["team"], "AFC")
+        self.assertIn("app:fll", self.label_names(iss))
 
     def test_file_uid_is_idempotent(self):
         p1 = self.board("file", "--title", "Effort row", "--app", "socratic-trade", "--uid", "effort-abc")
