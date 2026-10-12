@@ -23,11 +23,12 @@ Use these canonical acronyms in Apple Notes titles (`[APP, Agent] topic`), commi
 | **`UM`** | Usage-Monitor | `Simple-With-Us/Usage-Monitor` |
 | **`DD`** | DealDex | `Simple-With-Us/DealDex` |
 | **`CL`** | ContactLogo | `Simple-With-Us/ContactLogo` |
-| **`AR`** | Autorotate | `Simple-With-Us/Autorotate` |
+| **`AR`** | Autorotate (archived) | `Simple-With-Us/Autorotate` |
 | **`AFC`** | AI-Fleet-Coordinator (this repo / Mac collab / skill pack) | `Simple-With-Us/AI-Fleet-Coordinator` |
 | **`OPS`** | fleet-ops (sibling identity; do not invent a checkout here) | `Simple-With-Us/fleet-ops` |
 | **`PS`** | Personal-Site | `Simple-With-Us/Personal-Site` |
 | **`CTS`** | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |
+| **`SWU`** | Simple With Us website (`https://simplewithus.com`) | `Simple-With-Us/Simple-With-Us` |
 
 ## FLEET is not an app acronym
 
@@ -98,9 +99,9 @@ Flat lanes that already exist (`~/apps/<app>-<seat>-<lane>`) stay until they ret
 Before starting substantial work, reserve your lane on two durable surfaces:
 
 1. **Linear issue (`board claim`):**
-   - `board list --app <app>`, then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "<lane path> @ <branch>"`.  If nothing exists, `board file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label and exits 3 if another seat holds the issue (`--steal --reason` overrides on purpose).
+   - `board list --app <app>`, then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "claimed: <Day, Mon D, YYYY> <lane path> @ <branch>"`.  If nothing exists, `board file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label and exits 3 if another seat holds the issue (`--steal --reason` overrides on purpose).
    - Branch `<seat>/<id>-<slug>` (`claude/afc-123-zulip-cutover`).  The PR body says `Fixes <ID>` when it finishes the issue, `Refs <ID>` for partial work; only `Fixes` closes it on merge (once Linear's GitHub automation is on).
-   - There is no live effort board, no `docs/EFFORT-LOG.md` mirror, and no separate GitHub issue leg any more.
+   - Linear is the only writable work tracker.  There is no separate GitHub issue leg or effort-log row; effort logs are archived history and must not be edited.
 2. **Zulip `#agent-sync`, work topic (`<ID> <subject>`, at most 58 characters):**
    Post a standardized claim block.  One topic per unit of work; a reply is a post to the same channel and topic.
    ```text
@@ -183,7 +184,10 @@ Follow the "Always Commit + Land Finished Work" discipline:
    git push -u origin HEAD
    gh pr create --fill
    ```
-3. **Arm Auto-Merge:**
+3. **Review Before Auto-Merge:**
+   - Request Codex review for the current PR head.  Triage every review thread against that head, fixing real findings or replying with a specific reason before resolving threads.
+   - Never ask Codex to fix a PR or push code unless Jay approves that specific request.
+   - Only after Codex has reviewed the current head and review threads are triaged, arm auto-merge:
    ```bash
    gh pr merge <PR_NUMBER> --squash --auto
    ```
@@ -201,7 +205,7 @@ Once PR merges to `main`:
    - Check public health: `curl -s https://socratictrade.com/api/health`, `curl -s https://congress.trade/api/health`, `curl -s https://usage.jays.services/api/health`.
    - Confirm HTTP 200 and expected `build.sha`.
 2. **Closeout:**
-   - Linear: `board status <id> completed` (merged;  a `Fixes <ID>` PR also does this on merge once Linear's GitHub automation is on) or `deployed` (verified in production) with a `--resolution` that names the PR and the check.  The PR you merged links the issue, so there is no separate GitHub issue or effort row to close.
+   - Linear: `board status <id> completed` only after the PR is merged, or `deployed` only after live production verification, with a `--resolution` that names the PR and evidence.  The PR you merged links the issue, so there is no separate GitHub issue or effort row to close.
    - Zulip `#agent-sync`: Post `DONE` in the work topic with the PR, the gates run, and the health check result.  When the issue reaches Deployed or Parked, resolve the topic with `agent-sync resolve --topic "<topic>"`; resolving is the final act.
    - Apple Note: Add final verification stamp.
 
