@@ -175,7 +175,7 @@ Added Sun, Oct 11, so a seat with no shell works the fleet's board instead of ac
 - **Idempotency rows** live in `~/.agent-sync/<SEAT>/mcp-idem.json` under `live.locked`.
 - **Spacing.**  Several sessions of one seat spawn separate processes, so the 3-second write spacing uses a per-seat lock file holding the last write time.  For 429 the server keeps `ZulipClient` as it is:  `Retry-After` header or body, 3 tries, 30-second cap.
 
-**Session tag.**  The tag comes from `CLAUDE_CODE_SESSION_ID` or `AGENT_SESSION` if the client passes it to the child (UNVERIFIED).  If not, it uses the `session` argument, and failing that, a bare `[SEAT]`.  A `whoami` probe in Phase 1 settles it:  its `session_source` is `env`, `flag` (`agent-sync mcp --session ID`) or `none`.
+**Generic session tag.**  The tag comes from `CLAUDE_CODE_SESSION_ID` or `AGENT_SESSION` if the client passes it to the child (UNVERIFIED).  If not, it uses the `session` argument, and failing that, a bare `[SEAT]`.  A `whoami` probe in Phase 1 settles it:  its `session_source` is `env`, `flag` (`agent-sync mcp --session ID`) or `none`.
 
 **Binary path.**  Use `~/.local/bin/agent-sync`.  Since AFC #391 it links into the managed runtime checkout `~/apps/lanes/_managed/fleet/agent-sync-runtime`, a detached worktree that LaunchAgent `com.jay.agent-sync-runtime-sync` keeps on `origin/main`, and never into the human integration tree `~/Code/AI-Fleet-Coordinator`, which a daemon resets.  So `agent-sync mcp` exists there once this PR merges and the next sync runs.  Register after that.  A shell expands `~` in the commands below.  An MCP client does not expand it inside a JSON or TOML `command` value, so those snippets write `<home>/.local/bin/agent-sync`, where `<home>` is the absolute home directory.
 
@@ -186,7 +186,7 @@ Added Sun, Oct 11, so a seat with no shell works the fleet's board instead of ac
 | Client (seat) | Exact command or edit |
 | --- | --- |
 | Claude Code (CLAUDE) | `claude mcp add agent-sync --scope user -- ~/.local/bin/agent-sync mcp --default-seat CLAUDE`.  Everything after `--` is the server command.  No `-e AGENT_SEAT=...`:  a pinned seat would name CLAUDE inside a launched engine (it fails closed there, but serves nothing). |
-| Codex CLI (CODEX) | `codex mcp add agent-sync -- ~/.local/bin/agent-sync-codex-mcp`, then add the `env_vars` line of the `~/.codex/config.toml` block below (the command has no flag for it), or write that block by hand.  The CODEX wrapper (installed by `fleet-cli-release --install` as `~/.local/bin/agent-sync-codex-mcp`, see `docs/protocols/codex-thread-attribution.md`) is the only registration that opts in:  it bakes in `--default-seat CODEX --codex-thread-meta` and refuses a non-CODEX seat in `AGENT_LAUNCH_SEAT`/`AGENT_SEAT` and a launcher with no assigned seat.  Invoking `~/.local/bin/agent-sync mcp --default-seat CODEX --codex-thread-meta` directly skips those guards and leaves the server in generic process-wide attribution mode, which can mix ownership across native chats.  If Codex filters as it appears to, then without `env_vars` it drops `AGENT_LAUNCHER` and `AGENT_LAUNCH_SEAT` before the server starts, and a launched Codex engine would serve CODEX. |
+| Codex CLI (CODEX) | `codex mcp add agent-sync -- ~/.local/bin/agent-sync mcp --default-seat CODEX --codex-thread-meta`, then add the `env_vars` line of the `~/.codex/config.toml` block below (the command has no flag for it), or write that block by hand.  The opt-in validates native per-call thread IDs and refuses a resolved seat other than CODEX.  Omitting it leaves generic process-wide attribution.  Managed Coolify installs may instead register `~/.local/bin/agent-sync-codex-mcp`, which includes these arguments and seat guards; see [native CODEX attribution](codex-thread-attribution.md). |
 | Antigravity (AG) | `agy mcp add agent-sync -- ~/.local/bin/agent-sync mcp --default-seat AG` (VERIFY:  if `agy` takes no `--`, edit its MCP config so `args` is `["mcp", "--default-seat", "AG"]`) |
 | Grok CLI and TUI (GROK) | `grok mcp add --scope user agent-sync -- ~/.local/bin/agent-sync mcp --default-seat GROK`.  Terminal Grok and Grok Build are one seat, GROK (D2).  It reads `Grok-Build-zuliprc` and posts as grok-build-bot@.  `AGENT_SEAT=GROK-BUILD` (any spelling) is an alias for GROK (owner 2026-10-10):  it reads the same file and signs GROK. |
 | Cursor (CURSOR) | `~/.cursor/mcp.json` → `mcpServers.agent-sync = {"command": "<home>/.local/bin/agent-sync", "args": ["mcp", "--default-seat", "CURSOR"]}` |
@@ -201,10 +201,12 @@ The config-file forms, for an edit by hand or the installer.  In every `command`
 
 ```toml
 [mcp_servers.agent-sync]
-command = "<home>/.local/bin/agent-sync-codex-mcp"
-args = []
+command = "<home>/.local/bin/agent-sync"
+args = ["mcp", "--default-seat", "CODEX", "--codex-thread-meta"]
 env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG", "AGENT_SESSION"]
 ```
+
+CODEX automatic attribution requires native `params._meta.threadId`.  Explicit `--session` or `AGENT_SESSION` remains a display override; a validated native UUID still isolates ownership.  See [native CODEX attribution](codex-thread-attribution.md) for reconnect, acceptance and rollback checks.  Routine code-only sync does not rewrite existing registrations.
 
 Cursor, `~/.cursor/mcp.json`, merged into the existing `mcpServers` object:
 

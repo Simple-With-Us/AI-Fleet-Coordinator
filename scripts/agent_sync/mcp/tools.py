@@ -435,7 +435,7 @@ class Tools:
         key = state_key or tag
         if tag != self.agent.tag or self.agent.state.tag != key:
             self.agent.tag = tag
-            self.agent.state = State(self.root, self.seat, key)
+            self.agent.state = State(self.root, self.seat, key, retain_posted=bool(state_key))
 
     def _prefix(self) -> str:
         return self.agent.tag_prefix + "]"

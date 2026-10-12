@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import io
+import json
 from unittest import mock
 from agent_sync import cli, zulip as Z
 from agent_sync.mcp import stdio as S
@@ -210,17 +211,42 @@ class CodexThreadMetaTests(McpHarness):
                 self.assertEqual(tools.call("read_topic", {"topic": args["topic"]}, meta={"threadId": A})["structuredContent"]["ids"], [sibling])
 
     def test_codex_thread_ledger_outlasts_the_posted_limit(self):
-        # A long-running native chat must still recognize its own older posts as self; the
-        # 500-id bound on State.record_posted would otherwise evict ownership.
-        state = State(self.state_dir, "CODEX", "codex-thread-" + A)
-        seeded = set(range(1, 501))
-        for mid in seeded:
-            state.record_posted(mid)
-        state.record_posted(501)
-        posted = state.posted()
-        self.assertIn(1, posted)
-        self.assertEqual(posted, seeded | {501})
-        # The bounded path stays bounded for any other seat and tag.
-        other = State(self.state_dir, "CLAUDE", "t")
-        other.record_posted(1)
-        self.assertEqual(len(other.posted()), 1)
+        for seat, retain in (("CODEX", True), ("CODEX", False), ("CLAUDE", False)):
+            with self.subTest(seat=seat, retain=retain):
+                state = State(self.state_dir, seat, "codex-thread-" + A, retain_posted=retain)
+                state.record_posted(1)
+                data = json.loads(state.path.read_text())
+                data["posted"] = list(range(1, 501))
+                state.path.write_text(json.dumps(data))
+                state.record_posted(501)
+                self.assertEqual(state.posted(), set(range(1 if retain else 2, 502)))
+
+    def test_native_ownership_survives_ledger_limit_and_resume(self):
+        real_sha = T._sha
+        def colliding(text):
+            return "deadbeef" + "0" * 56 if text in (A, B) else real_sha(text)
+        for owner in (None, "reused owner tag"):
+            with self.subTest(owner=owner), mock.patch.object(T, "_sha", side_effect=colliding):
+                tools = self.direct(owner, "flag" if owner else "none")
+                topic = "retained-owner" if owner else "retained-derived"
+                args = {"topic": topic, "text": "earliest owned post"}
+                first = tools.call("post", args, meta={"threadId": A})["structuredContent"]["id"]
+                state = State(self.state_dir, "CODEX", "codex-thread-" + A)
+                # Seed confirmed receipts to avoid 500 real fsyncs; the next
+                # fake-Zulip post exercises the production retention policy.
+                data = json.loads(state.path.read_text())
+                data["posted"] = list(range(first, first + 500))
+                state.path.write_text(json.dumps(data))
+                self.fake.next_id = first + 500
+                last = tools.call("post", {"topic": topic, "text": "post 501"},
+                                  meta={"threadId": A})["structuredContent"]["id"]
+                sibling = tools.call("post", {"topic": topic, "text": "sibling post"},
+                                     meta={"threadId": B})["structuredContent"]["id"]
+                self.assertIn(first, state.posted())
+                self.assertIn(last, state.posted())
+                resumed = self.direct(owner, "flag" if owner else "none")
+                read = {"topic": topic}
+                self.assertEqual(resumed.call("read_topic", read, meta={"threadId": A})
+                                 ["structuredContent"]["ids"], [sibling])
+                self.assertEqual(resumed.call("read_topic", read, meta={"threadId": B})
+                                 ["structuredContent"]["ids"], [first, last])
