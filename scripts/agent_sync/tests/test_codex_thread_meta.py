@@ -250,3 +250,30 @@ class CodexThreadMetaTests(McpHarness):
                                  ["structuredContent"]["ids"], [sibling])
                 self.assertEqual(resumed.call("read_topic", read, meta={"threadId": B})
                                  ["structuredContent"]["ids"], [first, last])
+
+    def test_native_topic_read_snapshots_current_thread_once_per_page(self):
+        tools = self.direct()
+        topic = "snapshot-page"
+        own = tools.call("post", {"topic": topic, "text": "A authored"},
+                         meta={"threadId": A})["structuredContent"]["id"]
+        sibling = tools.call("post", {"topic": topic, "text": "B authored"},
+                             meta={"threadId": B})["structuredContent"]["id"]
+        page = self.fake.messages[-2:] * 25
+        original = State.posted
+        reads = []
+        def recorded(state):
+            reads.append(state.path)
+            return original(state)
+        with mock.patch.object(tools, "_page", return_value=page), \
+                mock.patch.object(State, "posted", autospec=True, side_effect=recorded):
+            for thread, visible in ((A, sibling), (B, own), (A, sibling)):
+                reads.clear()
+                result = tools.call("read_topic", {"topic": topic, "limit": 50},
+                                    meta={"threadId": thread})["structuredContent"]
+                self.assertEqual(result["ids"], [visible] * 25)
+                self.assertEqual(reads, [self.state_dir / "CODEX" / ("codex-thread-" + thread) / "state.json"])
+            reads.clear()
+            result = tools.call("read_topic", {"topic": topic, "limit": 50, "include_self": True},
+                                meta={"threadId": A})["structuredContent"]
+            self.assertEqual(result["ids"], [own, sibling] * 25)
+            self.assertEqual(reads, [])

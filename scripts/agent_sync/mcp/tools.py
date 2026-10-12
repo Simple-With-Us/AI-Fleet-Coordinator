@@ -508,10 +508,7 @@ class Tools:
             labels.extend(found_labels)
         return mentions, labels
 
-    def _is_self(self, message: Mapping[str, Any]) -> bool:
-        if self.codex_thread_meta:
-            # A short or explicitly reused display tag cannot prove native chat ownership.
-            return _int(message.get("id")) in self.agent.state.posted()
+    def _generic_is_self(self, message: Mapping[str, Any]) -> bool:
         return message.get("id") in self.posted_ids or self.agent.is_self(message)
 
     def _remember_posted(self, message_id: int) -> None:
@@ -519,7 +516,10 @@ class Tools:
             self.posted_ids.add(message_id)
 
     def _message_item(self, message: Mapping[str, Any]) -> dict[str, Any]:
-        j = self.agent.message_json(message)
+        # MCP does not expose CLI sibling/mention attribution.  Computing it
+        # would reread the full native ownership ledger for every shown item.
+        j = message
+        is_bot = self.agent.sender_is_bot(message)
         body, truncated = clean(j.get("content") or "", BODY_LIMIT)
         sender_id = _int(j.get("sender_id"))
         owner = bool(self.owner_user_id) and sender_id == self.owner_user_id \
@@ -527,10 +527,10 @@ class Tools:
         return {"id": _int(j.get("id")), "sender_id": sender_id,
                 "sender": clean(j.get("sender_full_name") or "", NAME_LIMIT)[0],
                 "sender_email": clean(j.get("sender_email") or "", NAME_LIMIT)[0],
-                "is_bot": j.get("is_bot") if isinstance(j.get("is_bot"), bool) else None,
+                "is_bot": is_bot if isinstance(is_bot, bool) else None,
                 "owner": owner, "time": CLI.format_time(float(j.get("timestamp") or 0)),
-                "channel": clean(j.get("channel") or "", NAME_LIMIT)[0],
-                "topic": clean(j.get("topic") or "", NAME_LIMIT)[0], "body": body, "truncated": truncated}
+                "channel": clean(CLI.message_channel(message) or "", NAME_LIMIT)[0],
+                "topic": clean(CLI.message_topic(message) or "", NAME_LIMIT)[0], "body": body, "truncated": truncated}
 
     def _messages_result(self, tool: str, args: list[tuple[str, Any]], messages: list[Mapping[str, Any]],
                          next_since_id: int | None) -> dict[str, Any]:
@@ -730,7 +730,15 @@ class Tools:
         since_id = args.get("since_id")
         messages = self._page(CLI.topic_narrow(channel, topic), since_id, args["limit"])
         next_since_id = self._next_since(messages, since_id)
-        shown = [m for m in messages if args["include_self"] or not self._is_self(m)]
+        if args["include_self"]:
+            shown = messages
+        elif self.codex_thread_meta:
+            # Snapshot only this call's full-thread receipts once for the page.
+            # A short or reused display tag cannot prove native chat ownership.
+            posted = self.agent.state.posted()
+            shown = [m for m in messages if _int(m.get("id")) not in posted]
+        else:
+            shown = [m for m in messages if not self._generic_is_self(m)]
         return self._messages_result("read_topic", [("channel", channel), ("topic", topic)], shown, next_since_id)
 
     def _tool_inbox(self, args: Mapping[str, Any]) -> dict[str, Any]:
