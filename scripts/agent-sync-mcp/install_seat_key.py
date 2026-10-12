@@ -56,7 +56,7 @@ MEMBER_ROLE = 400
 # Seat -> (Infisical key prefix, Worker secret name, wrangler var for the email, the bot's seat tag source).
 SEATS = {
     "CURSOR": ("ZULIP_CURSOR", "ZULIP_KEY_CURSOR", "ZULIP_EMAIL_CURSOR"),
-    "CLAUDE": ("ZULIP_CLAUDE", "ZULIP_KEY_CLAUDE", "ZULIP_EMAIL_CLAUDE"),
+    "CLAUDE": ("ZULIP_CLAUDE", "ZULIP_CLAUDE_API_KEY", "ZULIP_CLAUDE_EMAIL"),
     "JET": ("ZULIP_JET", "ZULIP_KEY_JET", "ZULIP_EMAIL_JET"),
     "GROK-WEB": ("ZULIP_GROK_WEB", "ZULIP_KEY_GROK_WEB", "ZULIP_EMAIL_GROK_WEB"),
     "ECHO": ("ZULIP_ECHO", "ZULIP_KEY_ECHO", "ZULIP_EMAIL_ECHO"),

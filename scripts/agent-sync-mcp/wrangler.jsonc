@@ -6,7 +6,7 @@
   //
   // Secrets (never in this file):  ZULIP_KEY_GROK_WEB, ZULIP_KEY_JET,
   // ZULIP_KEY_ECHO, ZULIP_KEY_INSTINCT, ZULIP_KEY_CURSOR and
-  // ZULIP_KEY_CLAUDE (secure owner entry pending), from Infisical or the
+  // ZULIP_CLAUDE_API_KEY (Worker provisioning unconfirmed), from Infisical or the
   // seat's zuliprc, and the three recall secrets
   // RECALL_API_TOKEN, RECALL_ACCESS_CLIENT_ID and RECALL_ACCESS_CLIENT_SECRET
   // (DEPLOY.md, "Fleet recall").
@@ -76,7 +76,7 @@
     "ZULIP_EMAIL_JET": "openai-dot-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_ECHO": "instinct-bat-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_INSTINCT": "instinct-owl-bot@simplewithus.zulipchat.com",
-    "ZULIP_EMAIL_CLAUDE": "claude-bot@simplewithus.zulipchat.com",
+    "ZULIP_CLAUDE_EMAIL": "claude-bot@simplewithus.zulipchat.com",
     // Channels:  any public channel the seat's bot is subscribed to (owner
     // ruling Sat, Oct 10, 2026;  src/channels.js).  Private streams are never
     // allowed.  CHANNELS_DENY lists stream ids no seat may use even when they

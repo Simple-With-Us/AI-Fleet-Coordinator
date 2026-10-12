@@ -229,21 +229,22 @@ This change prepares CLAUDE's hosted configuration only.  It does not provision 
 key, create an OAuth client, deploy or establish a working connection.  Obtain
 explicit authorization for these actions before performing the rollout.
 
-1. The owner securely enters `ZULIP_CLAUDE_EMAIL` and `ZULIP_CLAUDE_API_KEY` into
-   AI Fleet Coordinator, `prod`, `/zulip`, using the real CLAUDE bot's own key.
+1. Reuse the owner-confirmed existing `ZULIP_CLAUDE_EMAIL` and
+   `ZULIP_CLAUDE_API_KEY` entries in AI Fleet Coordinator, `prod`, `/zulip`.
+   Worker provisioning is unconfirmed; use the real CLAUDE bot's own key.
    Expected email: `claude-bot@simplewithus.zulipchat.com`.  Do not paste the key
    into chat, source, a client form or an agent-readable local handoff.  The key
    must belong to that bot, with member role 400, not administrator or owner.
 2. After deployment authorization, deploy using this runbook's existing process.
-   The added Worker var is `ZULIP_EMAIL_CLAUDE`; the required Worker secret is
-   `ZULIP_KEY_CLAUDE`.  The checked installer supports CLAUDE and reads the
+   The added Worker var is `ZULIP_CLAUDE_EMAIL`; the required Worker secret is
+   `ZULIP_CLAUDE_API_KEY`.  The checked installer supports CLAUDE and reads the
    canonical Infisical names above.  Its check-only mode verifies users/me, bot
    email, CLAUDE tag and role 400 before its authorized apply step writes the
    secret through stdin.  Secret installation publishes a Worker version, so
    it is part of the deployment approval, not a preparation step.
 
-   **Owner-operated commands, from `scripts/agent-sync-mcp/`:** after secure
-   owner entry in step 1, first run the check-only command:
+   **Owner-operated commands, from `scripts/agent-sync-mcp/`:** using the existing
+   canonical entries in step 1, first run the check-only command:
 
    ```bash
    python3 -I install_seat_key.py CLAUDE

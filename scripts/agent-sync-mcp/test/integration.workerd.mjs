@@ -148,7 +148,7 @@ const w = wranglerConfig();
 // Miniflare 5 (pinned by wrangler 4.139.0) takes v4-style options through its
 // converter.  `upstream` makes workerd see the production URL and Host header;
 // without it, Host is the loopback socket, which the Worker must refuse.
-function startWorker(upstream) {
+function startWorker(upstream, bindingOverrides = {}) {
   return new Miniflare(convertV4MiniflareOptions({
     ...(upstream ? { upstream } : {}),
     workers: [
@@ -160,7 +160,7 @@ function startWorker(upstream) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_KEY_CLAUDE: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET, ...bindingOverrides }),
         outboundService: outboundFetch,
       },
     ],
@@ -183,7 +183,7 @@ function startWorker(upstream) {
   }
 }
 
-const mf = startWorker(HOST);
+let mf = startWorker(HOST);
 
 const jar = new Map();
 // Referrer-Policy of the last HTML page the "browser" loaded.  It decides the
@@ -1213,6 +1213,32 @@ try {
     for (const field of ["epoch", "paused", "armed", "armedUntil", "armedBy"]) {
       assert.equal(jetAfter[field], jetBefore[field], `Cursor must preserve Jet ${field}`);
     }
+  });
+
+  await step("CLAUDE legacy key alias alone fails closed without borrowing another seat credential", async () => {
+    await mf.dispose();
+    mf = startWorker(HOST, { ZULIP_CLAUDE_API_KEY: "", ZULIP_KEY_CLAUDE: CLAUDE_KEY });
+    jar.clear();
+    pagePolicy = null;
+    assert.equal((await adminAction("create_manual_client", { seat: "CLAUDE" })).status, 303);
+    const admin = await (await browser("/admin")).text();
+    const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Claude \(manual form, CLAUDE\)/)[1];
+    assert.equal((await adminAction("arm", { seat: "CLAUDE" })).status, 303);
+    const c = pkce();
+    const handle = await openConsent(c.challenge, "legacy-alias-only", { clientId, redirect: CLAUDE_REDIRECT });
+    const consent = await browser("/authorize", { method: "POST", form: [["handle", handle], ["seat", "CLAUDE"], ["decision", "approve"], ["scope", "zulip:read"], ["scope", "zulip:write"]] });
+    assert.equal(consent.status, 302);
+    const loc = new URL(consent.headers.get("location"));
+    const granted = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: c.verifier, redirect_uri: CLAUDE_REDIRECT, client_id: clientId, resource: RESOURCE });
+    assert.equal(granted.status, 200);
+    const before = zulip.requests.length;
+    for (const [name, args] of [["whoami", {}], ["post", { topic: "canonical-binding", text: "probe" }]]) {
+      const result = (await call(granted.body.access_token, name, args)).json.result;
+      assert.equal(result.isError, true);
+      assert.equal(result._meta["agent-sync/error"].code, "not_authorized");
+      assert.match(result._meta["agent-sync/error"].message, /No Zulip key is installed for CLAUDE/);
+    }
+    assert.equal(zulip.requests.length, before, "neither the legacy alias nor JET/CURSOR keys may supply CLAUDE egress");
   });
 
   console.log(`\n${passed} passed`);

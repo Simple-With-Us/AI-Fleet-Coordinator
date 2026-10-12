@@ -153,14 +153,16 @@ Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or p
 ## Hosted CLAUDE Zulip identity (AFC-296)
 
 Canonical location: AI Fleet Coordinator, `prod`, `/zulip`.  These inventory
-entries describe the required identity; provisioning has not been verified.
+entries already exist, as confirmed by the owner.  Worker provisioning remains
+unconfirmed.
 
 | Key | Kind | Status |
 | --- | --- | --- |
-| `ZULIP_CLAUDE_EMAIL` | env config | Expected `claude-bot@simplewithus.zulipchat.com`; owner entry pending |
-| `ZULIP_CLAUDE_API_KEY` | secret | Owner entry pending; never copy to source, chat or a client |
+| `ZULIP_CLAUDE_EMAIL` | env config | Owner-confirmed existing entry; expected `claude-bot@simplewithus.zulipchat.com` |
+| `ZULIP_CLAUDE_API_KEY` | secret | Owner-confirmed existing entry; Worker provisioning unconfirmed; never copy to source, chat or a client |
 
-After explicit authorization, the checked installer maps these to the Worker
-var `ZULIP_EMAIL_CLAUDE` and secret `ZULIP_KEY_CLAUDE`, respectively.  Its live
+The Worker uses these same canonical names: var `ZULIP_CLAUDE_EMAIL` and secret
+`ZULIP_CLAUDE_API_KEY`.  After authorization, the owner-operated installer
+verifies the stored identity and provisions the Worker secret.  Its live
 identity check requires the CLAUDE bot and member role 400 before writing.
 See [the CLAUDE rollout](scripts/agent-sync-mcp/DEPLOY.md#add-hosted-claude-afc-296).
