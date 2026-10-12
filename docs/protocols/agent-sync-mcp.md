@@ -186,7 +186,7 @@ Added Sun, Oct 11, so a seat with no shell works the fleet's board instead of ac
 | Client (seat) | Exact command or edit |
 | --- | --- |
 | Claude Code (CLAUDE) | `claude mcp add agent-sync --scope user -- ~/.local/bin/agent-sync mcp --default-seat CLAUDE`.  Everything after `--` is the server command.  No `-e AGENT_SEAT=...`:  a pinned seat would name CLAUDE inside a launched engine (it fails closed there, but serves nothing). |
-| Codex CLI (CODEX) | `codex mcp add agent-sync -- ~/.local/bin/agent-sync mcp --default-seat CODEX --codex-thread-meta`, then add the `env_vars` line of the `~/.codex/config.toml` block below (the command has no flag for it), or write that block by hand.  The `--codex-thread-meta` flag is CODEX-only and refuses any other seat at startup; without it the server stays in generic process-wide attribution mode and can mix ownership across native chats (see `docs/protocols/codex-thread-attribution.md`).  If Codex filters as it appears to, then without `env_vars` it drops `AGENT_LAUNCHER` and `AGENT_LAUNCH_SEAT` before the server starts, and a launched Codex engine would serve CODEX. |
+| Codex CLI (CODEX) | `codex mcp add agent-sync -- ~/.local/bin/agent-sync-codex-mcp`, then add the `env_vars` line of the `~/.codex/config.toml` block below (the command has no flag for it), or write that block by hand.  The CODEX wrapper (installed by `fleet-cli-release --install` as `~/.local/bin/agent-sync-codex-mcp`, see `docs/protocols/codex-thread-attribution.md`) is the only registration that opts in:  it bakes in `--default-seat CODEX --codex-thread-meta` and refuses a non-CODEX seat in `AGENT_LAUNCH_SEAT`/`AGENT_SEAT` and a launcher with no assigned seat.  Invoking `~/.local/bin/agent-sync mcp --default-seat CODEX --codex-thread-meta` directly skips those guards and leaves the server in generic process-wide attribution mode, which can mix ownership across native chats.  If Codex filters as it appears to, then without `env_vars` it drops `AGENT_LAUNCHER` and `AGENT_LAUNCH_SEAT` before the server starts, and a launched Codex engine would serve CODEX. |
 | Antigravity (AG) | `agy mcp add agent-sync -- ~/.local/bin/agent-sync mcp --default-seat AG` (VERIFY:  if `agy` takes no `--`, edit its MCP config so `args` is `["mcp", "--default-seat", "AG"]`) |
 | Grok CLI and TUI (GROK) | `grok mcp add --scope user agent-sync -- ~/.local/bin/agent-sync mcp --default-seat GROK`.  Terminal Grok and Grok Build are one seat, GROK (D2).  It reads `Grok-Build-zuliprc` and posts as grok-build-bot@.  `AGENT_SEAT=GROK-BUILD` (any spelling) is an alias for GROK (owner 2026-10-10):  it reads the same file and signs GROK. |
 | Cursor (CURSOR) | `~/.cursor/mcp.json` → `mcpServers.agent-sync = {"command": "<home>/.local/bin/agent-sync", "args": ["mcp", "--default-seat", "CURSOR"]}` |
@@ -201,8 +201,8 @@ The config-file forms, for an edit by hand or the installer.  In every `command`
 
 ```toml
 [mcp_servers.agent-sync]
-command = "<home>/.local/bin/agent-sync"
-args = ["mcp", "--default-seat", "CODEX", "--codex-thread-meta"]
+command = "<home>/.local/bin/agent-sync-codex-mcp"
+args = []
 env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG", "AGENT_SESSION"]
 ```
 
