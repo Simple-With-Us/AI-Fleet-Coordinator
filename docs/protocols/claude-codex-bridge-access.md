@@ -56,8 +56,7 @@ Jay selected **prepare both routes** for CODEX: the server-local CLI/MCP track
 with Zulip and its own Linear app, and the hosted OAuth track.  Both remain
 in scope; the hosted track needs actual independent connection identity capture
 through supported management UI, while persistent server credentials need
-separate approval and secure provisioning.  Keep host inventory and operational
-readiness evidence in private owner records, outside this public repository.
+separate approval and secure provisioning.
 
 Preparation does not authorize a persistent credential handoff or starting
 unattended sessions.  Verify the seat identity after separately authorized
