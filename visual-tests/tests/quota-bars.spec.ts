@@ -74,8 +74,9 @@ test.describe('operator dashboard quota bars', () => {
     await expect(page.getByText(/model/i)).toHaveCount(0);
     const resetColor = await page.locator('.quota-cc-win-reset').first().evaluate((el) => getComputedStyle(el).color);
     expect(resetColor).not.toBe('rgb(161, 161, 166)');
-    await page.locator('#quotas-card').screenshot({
-      path: '/opt/cursor/artifacts/quota-groups-panel.png',
+    await expect(page.locator('#quotas-card')).toHaveScreenshot('quota-groups-panel.png', {
+      maxDiffPixelRatio: 0.02,
+      mask: [page.locator('.quota-window-reset'), page.locator('.last-reported')],
     });
   });
 });
