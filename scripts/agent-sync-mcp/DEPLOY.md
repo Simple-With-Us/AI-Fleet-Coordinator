@@ -196,7 +196,9 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 Jay approved the CURSOR hosted seat, its exact Cloud callback, bounded client
 registration, tests and deployment on 2026-10-11.  The live preflight at version
 `22c6b6d6-9db4-435b-b6a0-f8dbf7645c35` had no `ZULIP_KEY_CURSOR` binding.
-This task does not read or copy CURSOR's existing bot key.
+This task does not read or copy CURSOR's existing bot key.  The separate exact
+CIMD/localhost extension requires explicit owner approval before merge or
+production enablement; the earlier static Cloud approval does not enable it.
 
 1. Merge and deploy the CURSOR code/config through steps 0–1.  Preserve the live
    OAuth KV namespace, SeatGate bindings/migrations, all existing secrets,
@@ -212,12 +214,18 @@ This task does not read or copy CURSOR's existing bot key.
    `python3 -I install_seat_key.py CURSOR --apply` (not run by CODEX for this task).
    It checks the configured email, own-seat bot identity and member role before
    writing through stdin; the hosted Worker repeats those checks at runtime.
-3. Follow **Connect Cursor Cloud** in ARMING-JAY.md to create its bounded public
-   client and complete Access/consent in Jay's browser.  Public client IDs may be
+3. Follow **Connect Cursor Cloud** in ARMING-JAY.md: retain the public manual
+   client for the HTTPS Cloud path, or use the approved exact CURSOR CIMD/localhost
+   pair.  Before enabling that extension, run unit and mocked workerd exchange/
+   refresh checks, including callback/client substitutions and JET isolation.
+   Complete Access/consent through a fresh Cursor-originated flow on the receiver's
+   computer; do not replay an authorize URL.  Public client IDs may be
    copied; bot keys, Access PINs, codes, and tokens must remain in secure inputs.
 4. Record the deployed version and the actual Cursor-side `whoami` result.
    Keep AFC-294 pending if the key, interactive consent, or live identity check
-   is unfinished.  Unit/workerd fake-Zulip tests are not production evidence.
+   is unfinished.  Unit/workerd fake-Zulip tests do not prove a listening callback
+   receiver or production identity.  Native OAuth completion does not establish
+   Cloud authentication; verify from the intended Cursor surface.
 
 No Cursor wake key or event callback host is added; this connection does not
 modify the listener or Jet's ongoing subscription.  Hosted Linear provisioning

@@ -118,7 +118,9 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
 <tr><th>Tokens Go To</th><td>${
     loopback
       ? `<strong>A program on the computer running this browser (${escapeHtml(redirectHost)})</strong><br><small class="warn">${sentences(
-          "127.0.0.1 always means this same computer.",
+          redirectHost === "localhost:8787"
+            ? "localhost must resolve to the computer running this browser; approval does not verify a listening callback receiver."
+            : "127.0.0.1 always means this same computer.",
           "Approve only if you opened this page on the app's own computer, right after starting the connection there.",
         )}</small>`
       : `<strong>${escapeHtml(redirectHost)}</strong>`
