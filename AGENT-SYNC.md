@@ -1338,9 +1338,10 @@ Lookup data only.  The binding rules live in the sections above.
 | `CC` | CodeCaps | `codecaps` |
 | `FL` | FleetLink | `fleetlink` |
 | `FLL` | fleetlink-legacy (legacy, live until cutover) | `fleetlink-legacy` |
-| `SWU` | Simple-With-Us (Simple With Us website; `https://simplewithus.com`) | not registered |
 
-The SWU website repository is `Simple-With-Us/Simple-With-Us`.
+**App Acronym Pending Registry Setup**
+
+`SWU` means the Simple With Us website (`https://simplewithus.com`), repository `Simple-With-Us/Simple-With-Us`.  It is not yet a registered Linear team or lane prefix; do not use `board --app SWU` or `lane new swu` until AFC-297 completes registry setup.
 
 Name drift, verified Wed, Oct 7, 2026:
 
