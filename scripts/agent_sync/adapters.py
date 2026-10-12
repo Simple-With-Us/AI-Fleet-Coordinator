@@ -288,7 +288,12 @@ class ClaudeRunner:
                 # result text, and the real message reaches the ledger, the banner and the owner.
                 if out.result.get("is_error"):
                     out.error = result_reason(out.result)
-                    out.limited = True
+                    # `limited` is a STRUCTURAL verdict, never a reading of the message text:  the
+                    # signature of a provider refusal is an error result in which NO model ran.
+                    # Matching on words instead would be fragile in the dangerous direction, because a
+                    # genuine cap whose wording we did not anticipate would look like a runtime fault
+                    # and would burn a second run on a provider that has nothing left.
+                    out.limited = not out.models
                 elif len(out.models) != 1:
                     out.refused = "modelUsage shows %d models, not 1" % len(out.models)
                 else:

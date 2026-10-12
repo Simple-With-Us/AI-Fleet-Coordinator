@@ -279,16 +279,41 @@ class McodeFallbackTest(unittest.TestCase):
     def test_a_quota_refusal_never_falls_back(self) -> None:
         # A capped provider stays capped whichever binary asks, so a fallback there would spend a
         # second run to learn what the first one already said.
-        from agent_sync.daemon import _is_quota_reason
-        self.assertTrue(_is_quota_reason("You've hit your weekly limit · resets Oct 13 at 5pm"))
-        self.assertTrue(_is_quota_reason("Claude Code quota is exhausted until 2026-10-13"))
-        self.assertTrue(_is_quota_reason("usage limit reached"))
+        from agent_sync.daemon import _is_fallbackable
+        for quota in ("You've hit your weekly limit · resets Oct 13 at 5pm",
+                      "Claude Code quota is exhausted until 2026-10-13",
+                      "usage limit reached", "mcap exhausted"):
+            self.assertFalse(_is_fallbackable(quota), quota)
+
+    def test_an_unanticipated_quota_wording_still_does_not_fall_back(self) -> None:
+        # The reason this is an ALLOWLIST and not a blocklist of known words:  a cap whose phrasing
+        # nobody anticipated must not read as "some other fault" and buy itself a second run.
+        from agent_sync.daemon import _is_fallbackable
+        self.assertFalse(_is_fallbackable("a wholly unexpected vendor message"))
+        self.assertFalse(_is_fallbackable("something nobody has seen before"))
 
     def test_a_real_fault_does_fall_back(self) -> None:
-        from agent_sync.daemon import _is_quota_reason
-        for fault in ("no parseable result", "timed out after 240 seconds",
-                      "could not start muse", "modelUsage shows 0 models, not 1"):
-            self.assertFalse(_is_quota_reason(fault), fault)
+        from agent_sync.daemon import _is_fallbackable
+        for fault in ("no parseable result", "could not start claude (Permission denied)",
+                      "timed out after 240 seconds"):
+            self.assertTrue(_is_fallbackable(fault), fault)
+
+    def test_a_safety_refusal_never_falls_back(self) -> None:
+        # The daemon killed that child on purpose (it listed tools, ran a hook, or never emitted an
+        # init event).  Re-running it on a second runtime would be trying to get around a guard.
+        from agent_sync.daemon import _is_fallbackable
+        for refusal in ("init listed tools", "hook ran", "no init event"):
+            self.assertFalse(_is_fallbackable(refusal), refusal)
+
+    def test_limited_is_structural_not_read_from_the_wording(self) -> None:
+        # The signature of a provider refusal is an error result in which NO model ran.  A cap whose
+        # message we do not recognise still sets it;  an ordinary failure never does.
+        capped = {"is_error": True, "modelUsage": {},
+                  "result": "a wholly unexpected vendor message"}
+        self.assertEqual(sorted(capped["modelUsage"]), [])
+        genuine = {"is_error": True, "modelUsage": {"claude-x": {}},
+                   "result": "something failed mid-run"}
+        self.assertTrue(sorted(genuine["modelUsage"]))
 
     def test_a_fallback_pin_is_its_own_and_never_self_heals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -326,6 +351,38 @@ class McodeFallbackTest(unittest.TestCase):
                                                "provider": "Claude Code"}}})
         self.assertEqual(cfg.errors, [])
         self.assertEqual(cfg.seats["CLAUDE"].fallback, "mcode")
+
+    def test_naming_a_fallback_is_not_enough_to_run_it(self) -> None:
+        # Measured, not assumed:  asked to write a file under the exact wake argv, mcode wrote one.
+        # `--permission off` means "never ask", so its tools are live while it composes an answer, and
+        # a parent cannot undo a side effect that already happened inside the child.  So the fallback
+        # is held unless the config names the risk explicitly, on top of pinning the binary.
+        cfg = C.from_dict({"daemon": {"owner_user_id": 12},
+                           "seat": {"MM": {"bot": "MiniMax", "wake": "muse", "fallback": "mcode"}}})
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(cfg.seats["MM"].fallback, "mcode")
+        self.assertFalse(cfg.seats["MM"].fallback_uncontained_ok)  # held by default
+
+        ok = C.from_dict({"daemon": {"owner_user_id": 12},
+                          "seat": {"MM": {"bot": "MiniMax", "wake": "muse", "fallback": "mcode",
+                                          "fallback_uncontained_ok": True}}})
+        self.assertEqual(ok.errors, [])
+        self.assertTrue(ok.seats["MM"].fallback_uncontained_ok)
+
+    def test_the_acknowledgment_needs_a_fallback_to_acknowledge(self) -> None:
+        cfg = C.from_dict({"daemon": {"owner_user_id": 12},
+                           "seat": {"MM": {"bot": "MiniMax", "wake": "muse",
+                                          "fallback_uncontained_ok": True}}})
+        self.assertTrue(any("applies only with a fallback" in e for e in cfg.errors))
+
+    def test_the_fallback_cannot_be_reached_by_the_primary_dispatch(self) -> None:
+        # Config already refuses `wake = "mcode"`, but a config check is a promise.  This is the
+        # choke point every wake passes through, so the asymmetry is structural rather than a table
+        # lookup someone could edit away.
+        from agent_sync.daemon import PRIMARY_RUNTIMES
+        self.assertIn("claude", PRIMARY_RUNTIMES)
+        self.assertIn("muse", PRIMARY_RUNTIMES)
+        self.assertNotIn("mcode", PRIMARY_RUNTIMES)
 
     def test_the_mcode_result_reader_reads_the_last_message_file_shape(self) -> None:
         self.assertEqual(A.parse_mcode_result("succeeded", "{}")[0], None)

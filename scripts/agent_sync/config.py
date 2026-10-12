@@ -135,7 +135,8 @@ class SeatConfig:
                  site_env: str = DEFAULT_SITE_ENV, routine: RoutineConfig | None = None,
                  route_enabled: bool = True, held_back: dict[str, Any] | None = None,
                  muse: str | None = None, provider: str | None = None,
-                 mcode: str | None = None, fallback: str | None = None) -> None:
+                 mcode: str | None = None, fallback: str | None = None,
+                 fallback_uncontained_ok: bool = False) -> None:
         self.seat = seat
         self.bot = bot
         self.wake = wake
@@ -148,6 +149,10 @@ class SeatConfig:
         # The fallback runtime, tried only when the primary could not produce a usable answer.  It is
         # never consulted for a quota refusal:  a capped provider stays capped whatever runs.
         self.fallback = fallback
+        # The fallback runtime's tools are live while it answers and a parent cannot undo a side
+        # effect that already happened inside the child, so trusting it is an explicit, named risk
+        # rather than a default.  False means the fallback is held and the hold is logged.
+        self.fallback_uncontained_ok = fallback_uncontained_ok
         self.provider = provider  # the CodeCaps provider name this seat's quota is read under
         self.instance = instance
         self.enabled = enabled
@@ -497,6 +502,16 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             problems.append("seat.%s.fallback applies only to a wake that runs a turn" % seat_name)
         if fallback is not None and fallback == wake:
             problems.append("seat.%s.fallback may not be its own wake type" % seat_name)
+        # Naming a fallback is not enough to run it.  mcode's tools are live while it answers, and a
+        # parent cannot undo a side effect that already happened inside the child, so the fallback
+        # runtime is not contained to the posture an unattended wake needs (measured: asked to write
+        # a file under the wake argv, it wrote one).  A seat must say so explicitly in the config
+        # before the fallback is ever trusted, on top of pinning the binary.
+        if "fallback_uncontained_ok" in section and fallback is None:
+            problems.append("seat.%s.fallback_uncontained_ok applies only with a fallback" % seat_name)
+        uncontained = section.get("fallback_uncontained_ok", False)
+        if not isinstance(uncontained, bool):
+            problems.append("seat.%s.fallback_uncontained_ok must be true or false" % seat_name)
         provider = section.get("provider")
         if provider is not None:
             if not isinstance(provider, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,60}", provider):
@@ -536,7 +551,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                               instance=seat_instance or cfg.instance, enabled=enabled, creds=creds,
                               email_env=email_env, key_env=key_env, site_env=site_env, routine=routine,
                               route_enabled=route_enabled, held_back=held_back, muse=muse, provider=provider,
-                              mcode=mcode, fallback=fallback)
+                              mcode=mcode, fallback=fallback, fallback_uncontained_ok=uncontained)
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg
     _refuse_shared_env(cfg)
     return cfg

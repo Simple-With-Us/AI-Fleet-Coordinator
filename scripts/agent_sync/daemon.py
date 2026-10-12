@@ -358,17 +358,37 @@ class SeatRunner:
 # The daemon
 # --------------------------------------------------------------------------------------------
 
-def _is_quota_reason(reason: str | None) -> bool:
-    """True when a failure is a provider's quota, not a fault worth retrying on another runtime.
+# The faults a fallback may answer, as an ALLOWLIST rather than a blocklist.  A blocklist keyed on
+# the words in an error message fails in the expensive direction:  a genuine quota refusal whose
+# wording nobody anticipated reads as "some other fault", the fallback runs, and a second wake is
+# spent on a provider that has nothing left.  An allowlist cannot fail that way, because anything
+# unrecognised simply does not fall back.
+#
+# Each entry is a runtime failure that another runtime could plausibly answer:  the binary could not
+# start, the child never produced an answer, or it ran past the deadline.
+FALLBACKABLE_FAULTS = ("could not start", "no parseable result", "timed out after", "no answer",
+                       "did not complete")
 
-    Matched on the provider's own words as well as ours, because claude and muse both put the
-    human-facing message in the result text ("You've hit your weekly limit ..."), and the snapshot
-    gate words it as "<provider> quota is exhausted"."""
+
+def _is_fallbackable(reason: str | None) -> bool:
+    """True only when the failure is one another runtime could answer differently.
+
+    Everything else is refused, and the refusals that matter are the deliberate ones:  a provider
+    quota (`RunResult.limited`, which is set from the structural "an error result in which no model
+    ran", not from the message text), and a SAFETY refusal, where the daemon killed the child itself
+    because it listed tools, ran a hook, or never emitted an init event.  Re-running those on a
+    second runtime would be trying to get around a guard that just fired."""
     if not reason:
         return False
     text = str(reason).casefold()
-    return any(word in text for word in ("quota", "weekly limit", "rate limit", "usage limit", "cap reached",
-                                         "exhausted", "too many requests"))
+    return any(marker in text for marker in FALLBACKABLE_FAULTS)
+
+
+# The runtimes a wake may actually be dispatched to.  mcode is deliberately absent, and this is the
+# structural half of that rule:  config already refuses `wake = "mcode"`, but a config check is only a
+# promise, while this is the choke point every wake passes through.  A fallback runtime that cannot
+# be reached by this dispatch can never become a primary, however the config was written or edited.
+PRIMARY_RUNTIMES = ("claude", "muse")
 
 
 class Daemon:
@@ -1264,17 +1284,32 @@ class Daemon:
         return str(state["mcode"]), None
 
     def run_fallback(self, runner: SeatRunner, prompt: str, schema: str, primary: str,
-                     primary_error: str) -> A.RunResult | None:
+                     primary_error: str, primary_limited: bool = False) -> A.RunResult | None:
         """Run the seat's fallback runtime after the primary failed, or None when there is none to
         run.  The ledger and the log name which runtime answered, so a wake answered by the fallback
-        is never mistaken for a wake answered by the primary.
+        is never mistaken for one answered by the primary.
 
-        Deliberately NOT tried for a quota refusal (`primary_error` naming a limit or a cap):  a
-        capped provider stays capped whichever binary asks, so a fallback there would spend a second
-        run to learn the same thing the snapshot already said."""
+        Only a fault on the allowlist falls back.  A provider quota never does:  a capped provider
+        stays capped whichever binary asks, so a fallback there would spend a second run to learn
+        what the snapshot or the provider already said.  That decision uses the STRUCTURAL `limited`
+        flag (an error result in which no model ran), not the wording of the message, because the
+        wording is exactly what changes when a vendor rewords a limit.  A safety refusal never falls
+        back either:  the daemon killed that child on purpose.
+
+        CONTAINMENT (measured, and the reason the fallback is opt-in twice over).  I ran the exact
+        wake argv and asked mcode to write a file;  it wrote one.  `--permission off` means "never
+        ask", so its tools are live while it composes its answer, and `run_fallback` cannot undo a
+        side effect that already happened inside the child.  Because the fallback runtime therefore
+        cannot be contained to muse's posture, it is NOT trusted by default:  a seat must set
+        `fallback_uncontained_ok = true` to name the risk in the config, on top of pinning the
+        binary.  Until then the fallback is held and the hold is logged, never silently skipped."""
         if not runner.cfg.fallback:
             return None
-        if _is_quota_reason(primary_error):
+        if primary_limited or not _is_fallbackable(primary_error):
+            return None
+        if not runner.cfg.fallback_uncontained_ok:
+            self.log.write("wake-fallback-held", seat=runner.seat, fallback=runner.cfg.fallback,
+                           reason="uncontained", primary=primary, primary_error=primary_error)
             return None
         binary, why = self._pinned_fallback(runner)
         if binary is None:
@@ -1477,8 +1512,14 @@ class Daemon:
         why = None
         if runner.cfg.wake == "muse":
             binary, why = self._pinned_muse(runner)
-        else:
+        elif runner.cfg.wake == "claude":
             binary, why = self._pinned_claude(runner)
+        else:
+            # Unreachable through the config, which refuses anything outside KNOWN_WAKES.  Kept so
+            # that a hand-edited or future config cannot quietly reach a runtime that was never
+            # verified as a primary.
+            self._drop(runner, pending, "wake_type_not_runnable", now)
+            return
         if binary is None:
             self._drop(runner, pending, why or "not_pinned", now)
             return
@@ -1520,7 +1561,8 @@ class Daemon:
         # an unparseable result, a missing binary).  A quota refusal never falls back:  a capped
         # provider stays capped whichever binary asks.
         if result.refused or result.error:
-            fallback = self.run_fallback(runner, prompt, schema, adapter, result.refused or result.error or "")
+            fallback = self.run_fallback(runner, prompt, schema, adapter,
+                                         result.refused or result.error or "", result.limited)
             if fallback is not None:
                 self.log.write("wake-fallback-result", seat=runner.seat, wake_id=pending.wake_id,
                                runtime=runner.cfg.fallback, ok=fallback.ok, exit=fallback.exit,
