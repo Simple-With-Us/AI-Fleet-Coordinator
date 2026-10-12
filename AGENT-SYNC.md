@@ -41,7 +41,7 @@ This is the protocol every AI agent seat follows when it works on the owner's ap
 
 This is the fleet protocol for every AI agent seat that coordinates work on the owner's apps.  It binds every active seat on every platform, including seats that join later.  It names no roster here:  the live seat list is in [Seats and Identity](#seats-and-identity).
 
-- **Scope.**  Every app in `fleet-apps.json`, plus any repo created later.  Today that is Socratic.Trade (`Socratic-Trade`), Congress.Trade, congress-trading-shared, Usage-Monitor (API-usage-monitor), DealDex, AI-Fleet-Coordinator, Personal-Site, Autorotate (formerly TopSpin), ContactLogo, BotFleet, HogHunter, fleet-ops, and Clutch.  Acronyms are in [Appendix A](#app-acronyms-and-repos).
+- **Scope.**  Every app in `fleet-apps.json`, plus any repo created later.  Today that is Socratic.Trade (`Socratic-Trade`), Congress.Trade, congress-trading-shared, Usage-Monitor (API-usage-monitor), DealDex, AI-Fleet-Coordinator, Personal-Site, Autorotate (archived; formerly TopSpin), ContactLogo, BotFleet, HogHunter, fleet-ops, Clutch, and the Simple With Us website.  Acronyms are in [Appendix A](#app-acronyms-and-repos).
 - **Canonical copy.**  `/Users/jay/apps/AGENT-SYNC.md` is the canonical live copy.  `AGENT-SYNC.md` in the AI-Fleet-Coordinator repo is its mirror.  Change both in the same change and keep them aligned (default 2026-10-07).
 - **Pointer files.**  Every repo's `AGENTS.md`, and `CLAUDE.md` (a symlink to it) in each worktree, carries a pointer to this file.  `AGENTS.md` `## Inter-Agent Coordination` is the short overview; this file is the detailed reference.  When a rule here changes, fix the pointer files that restate it.
 - **Platform copies.**  `TEMPLATE-AGENTS.md` and each platform's global rules (Claude, Codex, Cursor, Gemini/AG, Grok, and the rest) carry short forms of the core rules, such as [Prior Asks Stay in Scope](#prior-asks-stay-in-scope).  This file is the source they copy from.
@@ -1338,7 +1338,9 @@ Lookup data only.  The binding rules live in the sections above.
 | `CC` | CodeCaps | `codecaps` |
 | `FL` | FleetLink | `fleetlink` |
 | `FLL` | fleetlink-legacy (legacy, live until cutover) | `fleetlink-legacy` |
-| `SWU` | Simple With Us website (`https://simplewithus.com`, not registered) | `Simple-With-Us/Simple-With-Us` |
+| `SWU` | Simple-With-Us (Simple With Us website; `https://simplewithus.com`) | not registered |
+
+The SWU website repository is `Simple-With-Us/Simple-With-Us`.
 
 Name drift, verified Wed, Oct 7, 2026:
 
