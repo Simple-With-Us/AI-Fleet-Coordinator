@@ -76,7 +76,9 @@ test.describe('operator dashboard quota bars', () => {
     expect(resetColor).not.toBe('rgb(161, 161, 166)');
     await expect(page.locator('#quotas-card')).toHaveScreenshot('quota-groups-panel.png', {
       maxDiffPixelRatio: 0.02,
-      mask: [page.locator('.quota-window-reset'), page.locator('.last-reported')],
+      // Both of these render live countdown / "x ago" copy, so mask them or the
+      // baseline drifts every minute.
+      mask: [page.locator('.quota-cc-win-reset'), page.locator('#quota-meta')],
     });
   });
 });
