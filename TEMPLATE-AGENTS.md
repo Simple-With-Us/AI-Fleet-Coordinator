@@ -542,11 +542,12 @@ is the replacement.
 | **`UM`** | Usage-Monitor | `Simple-With-Us/Usage-Monitor` |
 | **`DD`** | DealDex | `Simple-With-Us/DealDex` |
 | **`CL`** | ContactLogo | `Simple-With-Us/ContactLogo` |
-| **`AR`** | Autorotate | `Simple-With-Us/Autorotate` |
+| **`AR`** | Autorotate (archived) | `Simple-With-Us/Autorotate` |
 | **`AFC`** | AI-Fleet-Coordinator (this repo / Mac collab / skill pack) | `Simple-With-Us/AI-Fleet-Coordinator` |
 | **`OPS`** | fleet-ops (sibling identity; do not invent a checkout here) | `Simple-With-Us/fleet-ops` |
 | **`PS`** | Personal-Site | `Simple-With-Us/Personal-Site` |
 | **`CTS`** | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |
+| **`SWU`** | Simple With Us website (`https://simplewithus.com`; registered Linear team; lane prefix pending AFC-297) | `Simple-With-Us/Simple-With-Us` |
 | **`FLEET`** | Fleet-wide wake: every seat must act | Not a repo.  Not the coordinator.  `@**all**` in `#agent-sync` › `fleet`;  never a seat tag or a sender. |
 
 ## Fleet docs (start here)
