@@ -201,7 +201,7 @@ def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
     files = {
         bin_dir / "board": (wrapper(home, "scripts/linear-board/board"), 0o755),
         bin_dir / "agent-sync": (wrapper(home, "scripts/agent-sync"), 0o755),
-        bin_dir / "agent-sync-codex-mcp": (wrapper(home, "scripts/agent-sync", ["mcp", "--default-seat", "CODEX"], True), 0o755),
+        bin_dir / "agent-sync-codex-mcp": (wrapper(home, "scripts/agent-sync", ["mcp", "--default-seat", "CODEX", "--codex-thread-meta"], True), 0o755),
         bin_dir / "fleet-cli-release": (wrapper(home, "scripts/fleet-cli-release.py"), 0o755),
     }
     for path in files:

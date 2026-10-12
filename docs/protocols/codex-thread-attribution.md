@@ -1,0 +1,19 @@
+# CODEX native MCP attribution
+
+The dedicated CODEX stdio registration opts in with `mcp --default-seat CODEX --codex-thread-meta`.  Other callers and seats retain their existing behavior.  The mode refuses non-CODEX identity before credential lookup, and credential verification still pins the bot and seat; transport metadata never grants authorization or selects a seat.
+
+Explicit `--session`, then nonempty owner `AGENT_SESSION`, wins without rewriting its raw value.  An explicit value with no usable tag is refused.  Automatic calls require a canonical UUID in the native `tools/call` envelope's `params._meta.threadId`; arguments and `sessionId` cannot substitute.  Missing or invalid native identity fails before the tool runs, including writes.  `CLAUDE_CODE_SESSION_ID` is ignored in this CODEX-only mode.
+
+Automatic display tags are the first eight characters of SHA256 of the complete actual UUID.  These are derived attribution labels, not native chat UUIDs or guaranteed unique short labels.  Private per-chat State uses `CODEX/codex-thread-<full UUID>/state.json`, even with an explicit display tag, so a short-tag collision cannot combine private cursors or posted ledgers.  Native own-message filtering trusts only the active full-UUID posted ledger, never a process-wide cache or display-tag match.  Requests are serialized under the existing tool lock and restore their original context on success or error.  Throttle and inbox files remain seat-wide.  Explicit idempotency keys retain seat-wide intent; implicit keys include the full native UUID to avoid short-tag deduplication collisions.
+
+An uncertain native post or reply remains `outcome_unknown` on retry while its idempotency row is retained.  Sender and matching body cannot prove which chat wrote a message, so native mode neither adopts that match nor automatically resends.  Inspect `read_topic` with `include_self true` before deciding on another write; the existing idempotency expiry still applies.  Confirmed explicit-key duplicates retain their seat-wide result without adding ownership to another chat’s ledger.  Generic reconciliation behavior is unchanged.
+
+`whoami` reports `session_source`, `tag_kind` (`explicit` or `sha256_derived`), and the actual validated `thread_id` when present.  Explicit attribution without native metadata reports no actual thread id.  A daemon's stale ambient `AGENT_SESSION` cannot be distinguished from deliberate owner input here; verify provenance rather than claim launcher environment propagation is proven.
+
+Official [CLI0.160.0 source](https://raw.githubusercontent.com/openai/codex/rust-v0.160.0/codex-rs/core/src/mcp_tool_call.rs)499–510/1203–1205/1339–1370 and [daemon0.162.1 source](https://raw.githubusercontent.com/openai/codex/rust-v0.162.1/codex-rs/core/src/mcp_tool_call.rs)511–516/1196–1198/1343–1374 stamp current `threadId` and `sessionId` on normal MCP calls.  This is static source evidence, not an installed native transport receipt.  Acceptance still requires a real native `whoami` receipt from an authorized session, then correct attribution after resume or a new chat.  No chat or daemon is started by installation or by the mocked tests.
+
+## Installation and rollback
+
+`fleet-cli-release --install` generates the opt-in CODEX wrapper for new installs.  Routine code-only fleet sync continues to preserve wrappers and configuration.  An existing wrapper needs a separately reviewed, hash-guarded upgrade after the matching merged runtime arrives; retain its prior bytes and mode, and do not restart a daemon or an active MCP process.  Existing running MCP code changes only on its normal reconnect.
+
+For rollback, restore the old CODEX wrapper **before** selecting old runtime code: an old parser cannot accept `--codex-thread-meta`.  Preserve every other wrapper/configuration entry.  Listener ownership, wake routing, OAuth and hosted JET are unaffected.
