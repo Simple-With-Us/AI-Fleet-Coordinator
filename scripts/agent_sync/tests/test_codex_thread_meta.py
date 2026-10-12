@@ -208,3 +208,19 @@ class CodexThreadMetaTests(McpHarness):
                 self.assertEqual(State(self.state_dir, "CODEX", "codex-thread-" + A).posted(), set())
                 self.assertIn(sibling, State(self.state_dir, "CODEX", "codex-thread-" + B).posted())
                 self.assertEqual(tools.call("read_topic", {"topic": args["topic"]}, meta={"threadId": A})["structuredContent"]["ids"], [sibling])
+
+    def test_codex_thread_ledger_outlasts_the_posted_limit(self):
+        # A long-running native chat must still recognize its own older posts as self; the
+        # 500-id bound on State.record_posted would otherwise evict ownership.
+        state = State(self.state_dir, "CODEX", "codex-thread-" + A)
+        seeded = set(range(1, 501))
+        for mid in seeded:
+            state.record_posted(mid)
+        state.record_posted(501)
+        posted = state.posted()
+        self.assertIn(1, posted)
+        self.assertEqual(posted, seeded | {501})
+        # The bounded path stays bounded for any other seat and tag.
+        other = State(self.state_dir, "CLAUDE", "t")
+        other.record_posted(1)
+        self.assertEqual(len(other.posted()), 1)

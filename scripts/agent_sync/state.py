@@ -195,7 +195,12 @@ class State:
             ledger = data.get("posted")
             ids = {item for item in ledger if _as_int(item) is not None} if isinstance(ledger, list) else set()
             ids.add(int(message_id))
-            data["posted"] = sorted(ids)[-POSTED_LIMIT:]
+            # A codex-thread session keeps its posted ledger unbounded:  the native mode cannot
+            # fall back on the display tag to recognize older ownership.
+            if self.tag and self.tag.startswith("codex-thread-"):
+                data["posted"] = sorted(ids)
+            else:
+                data["posted"] = sorted(ids)[-POSTED_LIMIT:]
 
         self._update(self.path, mutate)
 
