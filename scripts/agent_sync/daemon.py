@@ -366,8 +366,7 @@ class SeatRunner:
 #
 # Each entry is a runtime failure that another runtime could plausibly answer:  the binary could not
 # start, the child never produced an answer, or it ran past the deadline.
-FALLBACKABLE_FAULTS = ("could not start", "no parseable result", "timed out after", "no answer",
-                       "did not complete")
+FALLBACKABLE_FAULTS = ("could not start", "no parseable result", "timed out after")
 
 
 def _is_fallbackable(reason: str | None) -> bool:
