@@ -194,6 +194,11 @@ Follow the "Always Commit + Land Finished Work" discipline:
    ```bash
    gh pr merge <PR_NUMBER> --squash --auto
    ```
+   - If a fix or rebase pushes a new head while auto-merge is armed, disable it immediately so the new SHA cannot land before Codex reviews it:
+   ```bash
+   gh pr merge <PR_NUMBER> --disable-auto
+   ```
+   Re-arm auto-merge only after Codex has reviewed the new head and review threads are triaged.
 4. **Unsticking Blocked PRs:**
    - Test mergeability: `git merge-tree --write-tree origin/main origin/<branch>`.
    - If exit 0 (Phantom conflict): Rebase/merge `origin/main` and push fresh head.
