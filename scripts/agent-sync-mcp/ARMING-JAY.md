@@ -55,17 +55,20 @@ See [the rollout](DEPLOY.md#add-hosted-claude-afc-296) for secure owner entry.
    `Claude (manual form, CLAUDE)` and its only callback is
    `https://claude.ai/api/mcp/auth_callback`.  Copy its public client ID.
 2. On Claude web, use the creation path for your plan.
-   **Team and Enterprise:** an authorized organization owner opens
+   **Team and Enterprise:** an authorized Owner or Primary Owner opens
    **Organization settings > Connectors > Add**, then **Custom > Web**.
    **Pro and Max:** open **Customize > Connectors > + Add > Add custom connector**.
    Name it Agent-Sync CLAUDE and enter `https://agent-sync.jays.services/mcp`.
-   Choose OAuth sign-in and **Use your own OAuth client**.  Enter only the
-   CLAUDE client ID, leave the secret blank, and use `zulip:read zulip:write`
-   if a scope field is offered.  This is a public S256 PKCE client; DCR is off.
-3. In Admin, arm **CLAUDE** for the next ten minutes.  Team and Enterprise
-   members then open **Customize > Connectors**, find the owner-added connector,
-   and select **Connect**.  Complete Claude's sign-in from the same browser.
-   The consent page must name CLAUDE and claude.ai.
+   Under Authentication, choose **Sign in when needed** so adding the connector
+   does not start OAuth before arming.  Choose **Use your own OAuth client**.
+   Enter only the CLAUDE public client ID; leave the client secret and request
+   headers empty.  Use `zulip:read zulip:write` if a scope field is offered.
+   Finish adding the connector.  This is a public S256 PKCE client; DCR is off.
+3. In Admin, arm **CLAUDE** for the next ten minutes.  For every plan, return to
+   **Customize > Connectors**, find Agent-Sync CLAUDE, and select **Connect**.
+   Team and Enterprise members use the connector their owner added in step 2.
+   Complete Claude's sign-in from the same browser.  The consent page must name
+   CLAUDE and claude.ai.
 4. In a new Claude chat, enable this connector and ask it to call `whoami`.
    Accept only `seat: CLAUDE`, `email: claude-bot@simplewithus.zulipchat.com`,
    `role: 400`, `transport: hosted`, and a CLAUDE tag prefix.  Record that result
