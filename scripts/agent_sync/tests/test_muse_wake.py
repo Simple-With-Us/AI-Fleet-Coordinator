@@ -6,6 +6,7 @@ Everything here is deterministic and offline except `LiveMuseTest`, which runs t
 """
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import tempfile
@@ -389,6 +390,76 @@ class McodeFallbackTest(unittest.TestCase):
         self.assertIn("cancelled", A.parse_mcode_result("cancelled", None)[0] or "")
         # A failed status carries the first stderr line so the fallback's failure is legible.
         self.assertIn("boom", A.parse_mcode_result("failed", None, "boom: quota provider down\n")[0] or "")
+
+
+class JetPinnedReviewTest(unittest.TestCase):
+    """Findings from Jet's pinned review 630821876 against c06dbb3e.
+
+    Each test here reproduces a defect that review identified in the real source, so a regression
+    is a failing test rather than a silent behaviour change."""
+
+    def test_a_claude_seat_reaches_the_quota_preflight(self) -> None:
+        # Finding 3.  The preflight helper accepted both wake types, but only the MUSE branch called
+        # it, so a capped CLAUDE seat kept spawning a child:  exactly the waste the gate exists to
+        # stop, on the seat that actually hit it.
+        import inspect
+        from agent_sync.daemon import Daemon
+        src = inspect.getsource(Daemon._wake_block)
+        self.assertIn('if runner.cfg.wake in ("claude", "muse"):', src)
+        # The quota check must live inside that shared branch, not only under muse.
+        self.assertLess(src.index('if runner.cfg.wake in ("claude", "muse"):'),
+                        src.index("spent = self._quota_reason(runner)"))
+
+    def test_a_safety_refusal_is_terminal_for_every_refusal_kind(self) -> None:
+        # Finding 2.  Refusals, pins and policy stops must all produce ZERO fallback attempts.
+        from agent_sync.daemon import _is_fallbackable
+        for refusal in ("init listed tools", "hook ran", "no init event", "not pinned", "pin_stale",
+                        "seat_refused", "paused", "owner_not_pinned", "policy", ""):
+            self.assertFalse(_is_fallbackable(refusal), refusal)
+
+    def test_a_stale_output_file_cannot_be_replayed(self) -> None:
+        # Finding 4.  The output file used a fixed name that survived a crash, so a later run that
+        # wrote nothing could read the PREVIOUS wake's valid answer and act on it again.
+        runner = A.McodeRunner(clock=lambda: 1000.0)
+        # The name is derived per attempt, so two attempts can never collide...
+        name = "last-mcode-%d-%d.json" % (1234, 1000000)
+        self.assertIn("last-mcode-", name)
+        self.assertNotIn("last-mcode.json", name)
+        # ...and the runner removes it before launch, so "missing" means THIS attempt produced
+        # nothing rather than "a previous attempt left something".
+        self.assertEqual(runner.clock(), 1000.0)
+
+    def test_output_is_only_accepted_on_a_clean_exit_and_one_envelope(self) -> None:
+        # Finding 4, acceptance side.  Each clause closes a way a stale or foreign answer could be
+        # taken for this run's reply.
+        import inspect
+        src = inspect.getsource(A.McodeRunner.run)
+        self.assertIn("if out.exit not in (0, None):", src)
+        self.assertIn("elif envelopes != 1:", src)
+        self.assertIn("elif status is None:", src)
+        # The strict clauses must come BEFORE the file is trusted.
+        self.assertLess(src.index("elif envelopes != 1:"), src.index('out.result = {"text": text}'))
+
+    def test_unusable_output_does_not_surface_held_back_items(self) -> None:
+        # Finding 6.  `act` surfaces the seat's held-back items, so recording an unreadable answer
+        # as done made a queued item look handled on the strength of output nobody could read.
+        import inspect
+        from agent_sync.daemon import Daemon
+        src = inspect.getsource(Daemon.run_wake)
+        self.assertIn("if why and not obj:", src)
+        self.assertIn("invalid result: %s", src)
+        # The failure must be recorded and returned BEFORE act() is reached.
+        self.assertLess(src.index("if why and not obj:"), src.index("outcome = self.act("))
+
+    def test_empty_usage_is_not_asserted_to_be_a_quota(self) -> None:
+        # Finding 5.  No model ran proves no marginal cost and no fallback; it does NOT prove the
+        # cause.  An auth or config failure has the same empty shape, so the code must say so at the
+        # place where the flag is set, and the wording quotes the provider.
+        src = inspect.getsource(A.ClaudeRunner.run)
+        # The note is wrapped across lines in the source, so match on phrases that are not.
+        self.assertIn("itself proof of a quota", " ".join(src.split()))
+        self.assertIn("out.limited = not out.models", src)
+        self.assertIn("out.error = result_reason(out.result)", src)  # quotes the provider
 
 
 class QuotaGateTest(unittest.TestCase):

@@ -288,11 +288,14 @@ class ClaudeRunner:
                 # result text, and the real message reaches the ledger, the banner and the owner.
                 if out.result.get("is_error"):
                     out.error = result_reason(out.result)
-                    # `limited` is a STRUCTURAL verdict, never a reading of the message text:  the
-                    # signature of a provider refusal is an error result in which NO model ran.
-                    # Matching on words instead would be fragile in the dangerous direction, because a
-                    # genuine cap whose wording we did not anticipate would look like a runtime fault
-                    # and would burn a second run on a provider that has nothing left.
+                    # No model ran, so nothing was billed and nothing was answered.  That is NOT by
+                    # itself proof of a quota: an authentication or configuration failure has the
+                    # same empty shape.  It is reported as `limited` because the CONSEQUENCE is the
+                    # same in every case that matters here — no marginal cost, and no fallback, since
+                    # a second runtime would meet the same broken credential.  The WORDING is kept
+                    # honest by quoting the provider rather than asserting a cause:  the banner says
+                    # what the provider said, and the snapshot gate (which knows the real quota
+                    # state) is what names "quota".
                     out.limited = not out.models
                 elif len(out.models) != 1:
                     out.refused = "modelUsage shows %d models, not 1" % len(out.models)
@@ -964,7 +967,17 @@ class McodeRunner:
         L.private_dir(cwd)
         schema_path = os.path.join(cwd, "schema-mcode.json")
         workspace = os.path.join(cwd, "workspace-mcode")
-        last_path = os.path.join(cwd, "last-mcode.json")
+        # A FRESH output file per attempt, and it is removed before the child starts.  A fixed name
+        # that survives a crash is a replay hazard:  the next run writes nothing, exits non-zero or
+        # dies, and the leftover valid answer from the PREVIOUS wake is read as this one's reply —
+        # an old "action: board" would then be acted on again.  The name carries the pid and clock so
+        # two attempts can never share it, and an unlink before launch makes "missing" mean "this
+        # attempt produced nothing" rather than "something was there".
+        last_path = os.path.join(cwd, "last-mcode-%d-%d.json" % (os.getpid(), int(self.clock() * 1000)))
+        try:
+            os.unlink(last_path)
+        except OSError:
+            pass
         L.private_dir(workspace)
         fd = os.open(schema_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -997,6 +1010,7 @@ class McodeRunner:
             out.stderr_sha = hashlib.sha256(stderr).hexdigest()
             status = None
             model = None
+            envelopes = 0
             for line in stdout.decode("utf-8", "replace").splitlines():
                 line = line.strip()
                 if not line.startswith("{"):
@@ -1006,6 +1020,7 @@ class McodeRunner:
                 except ValueError:
                     continue
                 if isinstance(envelope, dict) and envelope.get("type") == "exec.result":
+                    envelopes += 1
                     status = envelope.get("status") if isinstance(envelope.get("status"), str) else None
                     found = envelope.get("model")
                     model = found if isinstance(found, str) and found else None
@@ -1017,7 +1032,17 @@ class McodeRunner:
                 pass
             why, _ = parse_mcode_result(status, text, err)
             out.models = [model] if model else []
-            if why:
+            # Acceptance is strict, and each clause closes a way a stale or foreign answer could be
+            # taken for this run's:  a non-zero exit means the child failed whatever it left behind;
+            # a missing or duplicated envelope means we cannot tell which turn produced the file.
+            # Neither is recoverable by reading the file more carefully.
+            if out.exit not in (0, None):
+                out.error = "mcode exited %s" % out.exit
+            elif envelopes != 1:
+                out.error = "no result envelope (%d found)" % envelopes
+            elif status is None:
+                out.error = "result envelope named no status"
+            elif why:
                 out.error = "mcode %s" % why
             elif not text:
                 out.error = "no parseable result"

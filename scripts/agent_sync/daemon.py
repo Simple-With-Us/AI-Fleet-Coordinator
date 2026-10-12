@@ -1351,12 +1351,14 @@ class Daemon:
             return "seat_refused"  # a credential or role problem:  nothing is posted with that key
         if L.paused(self.root, runner.seat, wakes=True):
             return "paused"
-        if runner.cfg.wake == "claude":
-            _, why = self._pinned_claude(runner)
-            if why:
-                return why
-        elif runner.cfg.wake == "muse":
-            _, why = self._pinned_muse(runner)
+        if runner.cfg.wake in ("claude", "muse"):
+            # One preflight for both local primaries, before any child exists.  It was briefly wired
+            # into the muse branch alone, which left a capped CLAUDE seat spawning a child every
+            # time:  the helper accepted both wake types, but only one of them called it.
+            if runner.cfg.wake == "claude":
+                _, why = self._pinned_claude(runner)
+            else:
+                _, why = self._pinned_muse(runner)
             if why:
                 return why
             spent = self._quota_reason(runner)
@@ -1602,6 +1604,19 @@ class Daemon:
         obj, why = W.validate(result.parsed)
         if why:
             self.log.write("wake-invalid", seat=runner.seat, wake_id=pending.wake_id, reason=why)
+        # Unusable output is a FAILED wake, not a done one.  `act` below also surfaces the seat's
+        # held-back items, and that is wrong on output nobody could read:  a wake whose answer we
+        # could not parse must not be the reason a queued item looks handled.  The wake is failed,
+        # the ledger says failed, and the held-back items stay held.
+        if why and not obj:
+            runner.ledger.append(pending.row("failed", self.clock.time(), reason="invalid result: %s" % why,
+                                             cost_usd=result.cost_usd, exit=result.exit, secs=result.secs,
+                                             held_back=held_count, adapter=adapter))
+            if pending.owner:
+                self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
+                                     "a wake could not be read (%s); nothing was posted" % A.clean_banner(why, 60),
+                                     kind="wake-invalid", key="wake-invalid:%s" % pending.wake_id, once_per=0)
+            return
         outcome = self.act(runner, pending, obj, history=history)
         finished = self.clock.time()
         runner.ledger.append(pending.row("done", finished, cost_usd=result.cost_usd, exit=result.exit,
