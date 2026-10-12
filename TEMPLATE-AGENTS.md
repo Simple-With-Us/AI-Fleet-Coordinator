@@ -547,7 +547,7 @@ is the replacement.
 | **`OPS`** | fleet-ops (sibling identity; do not invent a checkout here) | `Simple-With-Us/fleet-ops` |
 | **`PS`** | Personal-Site | `Simple-With-Us/Personal-Site` |
 | **`CTS`** | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |
-| **`SWU`** | Simple With Us website (`https://simplewithus.com`; pending registry entry) | `Simple-With-Us/Simple-With-Us` |
+| **`SWU`** | Simple With Us website (`https://simplewithus.com`; registered Linear team; lane prefix pending AFC-297) | `Simple-With-Us/Simple-With-Us` |
 | **`FLEET`** | Fleet-wide wake: every seat must act | Not a repo.  Not the coordinator.  `@**all**` in `#agent-sync` › `fleet`;  never a seat tag or a sender. |
 
 ## Fleet docs (start here)
