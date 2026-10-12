@@ -40,6 +40,7 @@ from . import __version__
 from . import adapters as A
 from . import config as C
 from . import heartbeat as HB
+from . import heldalert as HELDALERT
 from . import heldback as HELD
 from . import live as L
 from . import router as R
@@ -1955,8 +1956,12 @@ class Daemon:
     def _held_digest(self, runner: SeatRunner, data: Mapping[str, Any], now: float) -> None:
         """At most one owner digest per seat per owner_digest_minutes, and only when wakes were held
         back since the last one:  the count, the reasons and the newest links.  It goes through
-        notify-owner:  a banner and the owner queue on the Mac, the owner queue only on the server,
-        where nothing reads it yet (docs/protocols/agent-sync-server.md, Open Questions)."""
+        notify-owner:  a banner and the owner queue on the Mac, the owner queue only on the server.
+
+        This is the per-seat record;  `_held_alert` is the one the owner can actually see there
+        (AFC-257).  Either way only a digest the owner was SHOWN lets those entries expire, and
+        `told` stays false off the Mac:  a `#alerts` post is not a banner, so server records keep
+        AFC-253's no-TTL behaviour."""
         every = float(runner.cfg.held_back["owner_digest_minutes"]) * 60.0
         fresh = HELD.digest_due(data, every=every, now=now)
         if not fresh:
@@ -1983,6 +1988,72 @@ class Daemon:
         told = bool(sent) and bool(getattr(self.notifier, "banners", False))
         HELD.note_digest(runner.paths, upto=max(int(r.get("seq") or 0) for r in named), now=now, told=told)
         self.log.write("held-back-digest", seat=runner.seat, held=len(records), new=len(fresh), sent=sent, told=told)
+
+    # ---- the `#alerts` held-back digest (AFC-257) ---------------------------------------------
+    def _held_alert(self, now: float) -> None:
+        """At most one `#alerts` post for the WHOLE instance per `held_alert_minutes`, and only when
+        some seat is holding something.  Every seat's holds are read live and go into that one post.
+
+        The trigger is any hold-back, not only an eviction (owner, Oct 11 2026):  a held wake is a
+        message sitting unread in a seat's inbox with no wake to read it, and the owner chose to hear
+        about it while it is still recoverable.  That makes the loud case normal, so the volume is
+        bounded by the window instead:  ten seats holding at once are one post naming ten seats, and
+        an instance with nothing held says nothing, which is what keeps the channel worth reading.
+
+        `#alerts` is already a presence topic, so this post is classified PASSIVE for every seat
+        (router.route checks `is_presence` before a topic can interrupt), and it names no one:  an
+        alert that woke the seats it is about would be a second way to hold wakes back."""
+        every = float(self.config.held_alert_minutes) * 60.0
+        if not HELDALERT.due(self.root, every=every, now=now):
+            return
+        seats = HELDALERT.collect(self.root, list(self.seats), now)
+        if not seats:
+            return  # nothing held:  no all-clear either, so the channel is silent until it matters
+        text = HELDALERT.compose(seats)
+        if not text:
+            return
+        runner = self._alert_runner()
+        if runner is None:
+            # No seat can post (every key refused, or none configured).  Nothing was sent, so the
+            # window is NOT consumed and the digest goes out as soon as a usable key returns;  the
+            # cost of waiting is one seat scan a tick, which is nothing next to a post attempt.
+            self.log.write("held-alert-skipped", now=now, seats=[s for s, _ in seats])
+            return
+        wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
+        if wait > 0:
+            self.clock.sleep(wait)
+        try:
+            result = runner.client.post("messages", {"type": "stream", "to": HELDALERT.CHANNEL,
+                                                     "topic": HELDALERT.TOPIC, "content": text})
+        except Z.AgentSyncError as exc:
+            # A failed post is still an ATTEMPT, and an attempt consumes the window.  Without this the
+            # held tick would retry every HELD_TICK_SECONDS for as long as the key stayed bad, which is
+            # 120 attempts an hour per broken key and exactly the flood this design exists to avoid.
+            # The hold itself is untouched and the digest retries next window, so the signal survives.
+            self.log.write("held-alert-failed", seat=runner.seat, error=self.scrub(str(exc)))
+            HELDALERT.note_post(self.root, now)
+            return
+        finally:
+            runner.last_post = self.clock.monotonic()
+        HELDALERT.note_post(self.root, now)
+        message_id = result.get("id")
+        self.log.write("held-alert-posted", seat=runner.seat, channel=HELDALERT.CHANNEL,
+                       topic=HELDALERT.TOPIC, seats=[s for s, _ in seats],
+                       counts={s: h.get("count") for s, h in seats},
+                       evicted={s: h.get("evicted") for s, h in seats if h.get("evicted")},
+                       message_id=int(message_id) if isinstance(message_id, int) else None)
+
+    def _alert_runner(self) -> SeatRunner | None:
+        """The seat whose bot carries the digest:  `held_alert_seat`, else the claude seat, else the
+        first enabled seat that has a usable key.  A seat that is fatal or not yet connected cannot
+        post (its key is refused or absent), so it is skipped rather than failing the whole digest."""
+        wanted = self.config.held_alert_seat or self.config.claude_seat
+        order = ([self.seats[wanted]] if wanted in self.seats else []) + [r for r in self.seats.values()
+                                                                        if r.seat != wanted]
+        for runner in order:
+            if runner.client is not None and not runner.fatal:
+                return runner
+        return None
 
     def _catch_up(self, runner: SeatRunner, data: Mapping[str, Any], now: float) -> None:
         """One catch-up wake for a seat whose adapter runs a turn (`http` or `claude`), when its
@@ -2083,6 +2154,12 @@ class Daemon:
                 except Exception as exc:  # noqa: BLE001 - held-back upkeep must never stop the router
                     self.log.write("held-back-error", seat=runner.seat,
                                    error=self.scrub(type(exc).__name__ + ": " + str(exc)))
+            try:
+                # One post for every seat, after each seat's own upkeep has run, so the digest
+                # describes this tick's holds.  It never raises into the router (AFC-257).
+                self._held_alert(now)
+            except Exception as exc:  # noqa: BLE001 - the digest must never stop held-back upkeep
+                self.log.write("held-alert-error", error=self.scrub(type(exc).__name__ + ": " + str(exc)))
         for runner in self.seats.values():
             runner.flush_cursor()
         if now - self.last_tick["status"] >= 2:
