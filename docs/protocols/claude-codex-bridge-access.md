@@ -50,21 +50,16 @@ Sources, verified Oct 12: [OpenAI MCP](https://learn.chatgpt.com/docs/extend/mcp
 [Claude authentication](https://claude.com/docs/connectors/building/authentication),
 and [Claude Code connector delivery](https://code.claude.com/docs/en/mcp#use-mcp-servers-from-claudeai).
 
-## Existing server alternative
-
-A separate read-only server readiness check found Codex 0.160.0 installed with
-`gpt-6-luna` configured, `agent-sync` and `board` release `e19b0299` ready, and
-`/root/.local/bin/agent-sync-codex-mcp` registered.  `codex-tmux-autostart` exists.
-Claude was absent from PATH.  CODEX's server Zulip and Linear credential files
-were absent and generic LINEAR variables unset; identity checks failed closed
-(Zulip exit 3, Linear exit 4).  No agent session was started.
+## CODEX preparation tracks
 
 Jay selected **prepare both routes** for CODEX: the server-local CLI/MCP track
 with Zulip and its own Linear app, and the hosted OAuth track.  Both remain
 in scope; the hosted track needs actual independent connection identity capture
 through supported management UI, while persistent server credentials need
-separate approval and secure provisioning.  Existing readiness
-does not authorize a persistent credential handoff or starting unattended
-sessions.  Recheck identity after any separately authorized provisioning; never
-substitute another seat's credentials.  No listener or wake configuration is
-changed by this hosted preparation.
+separate approval and secure provisioning.  Keep host inventory and operational
+readiness evidence in private owner records, outside this public repository.
+
+Preparation does not authorize a persistent credential handoff or starting
+unattended sessions.  Verify the seat identity after separately authorized
+provisioning; never substitute another seat's credentials.  No listener or wake
+configuration is changed by this hosted preparation.

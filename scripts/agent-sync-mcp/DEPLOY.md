@@ -241,6 +241,25 @@ explicit authorization for these actions before performing the rollout.
    email, CLAUDE tag and role 400 before its authorized apply step writes the
    secret through stdin.  Secret installation publishes a Worker version, so
    it is part of the deployment approval, not a preparation step.
+
+   **Owner-operated commands, from `scripts/agent-sync-mcp/`:** after secure
+   owner entry in step 1, first run the check-only command:
+
+   ```bash
+   python3 -I install_seat_key.py CLAUDE
+   ```
+
+   Only if every identity and member-role check passes and deployment is
+   authorized, run the apply command:
+
+   ```bash
+   python3 -I install_seat_key.py CLAUDE --apply
+   ```
+
+   These commands read the canonical store inside the owner-operated installer.
+   Agents do not read the secret, copy it to a local file or run this handoff.
+   The apply command sends the value to Wrangler through stdin and publishes a
+   Worker version; never run it as a check-only preparation step.
 3. After OAuth registration authorization, create a tagged CLAUDE public manual
    client in Admin and follow [Connect hosted Claude](ARMING-JAY.md#connect-hosted-claude-claude-afc-296).
    Exact callback: `https://claude.ai/api/mcp/auth_callback`; secret blank;
