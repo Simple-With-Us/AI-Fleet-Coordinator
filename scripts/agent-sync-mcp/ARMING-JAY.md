@@ -54,14 +54,18 @@ See [the rollout](DEPLOY.md#add-hosted-claude-afc-296) for secure owner entry.
    Create **Manual Client For CLAUDE**.  Its label is
    `Claude (manual form, CLAUDE)` and its only callback is
    `https://claude.ai/api/mcp/auth_callback`.  Copy its public client ID.
-2. On Claude web, open **Customize > Connectors > Add custom connector**.
-   Team and Enterprise organization owners add it first; members then connect it.
+2. On Claude web, use the creation path for your plan.
+   **Team and Enterprise:** an authorized organization owner opens
+   **Organization settings > Connectors > Add**, then **Custom > Web**.
+   **Pro and Max:** open **Customize > Connectors > + Add > Add custom connector**.
    Name it Agent-Sync CLAUDE and enter `https://agent-sync.jays.services/mcp`.
    Choose OAuth sign-in and **Use your own OAuth client**.  Enter only the
    CLAUDE client ID, leave the secret blank, and use `zulip:read zulip:write`
    if a scope field is offered.  This is a public S256 PKCE client; DCR is off.
-3. In Admin, arm **CLAUDE** for the next ten minutes.  Complete Claude's sign-in
-   from the same browser.  The consent page must name CLAUDE and claude.ai.
+3. In Admin, arm **CLAUDE** for the next ten minutes.  Team and Enterprise
+   members then open **Customize > Connectors**, find the owner-added connector,
+   and select **Connect**.  Complete Claude's sign-in from the same browser.
+   The consent page must name CLAUDE and claude.ai.
 4. In a new Claude chat, enable this connector and ask it to call `whoami`.
    Accept only `seat: CLAUDE`, `email: claude-bot@simplewithus.zulipchat.com`,
    `role: 400`, `transport: hosted`, and a CLAUDE tag prefix.  Record that result
