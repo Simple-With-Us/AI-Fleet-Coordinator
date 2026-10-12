@@ -633,13 +633,16 @@ async function checkGitHub(env) {
     }
     found.push(...(search.items || []));
   }
-  {
+  // A failed search must leave openPrs null so the summary says "PR count
+  // failed" rather than "0 open PRs" — a card claiming an empty backlog when
+  // the token is dead is worse than one admitting it could not look.
+  if (!prError) {
     for (const item of found) {
       // repository_url is https://api.github.com/repos/<owner>/<repo>
       const repo = String(item.repository_url || '').split('/').pop();
       if (repo) prCounts.set(repo, (prCounts.get(repo) || 0) + 1);
     }
-    openPrs = found.length ? searches.reduce((n, s) => n + Number(s.total_count || 0), 0) : 0;
+    openPrs = searches.reduce((n, s) => n + Number(s.total_count || 0), 0);
     // per_page caps at 100 per search, so beyond that the per-repo split is
     // partial even though the total is exact.  Say so rather than quietly
     // under-reporting.
