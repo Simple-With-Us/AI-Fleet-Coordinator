@@ -176,7 +176,10 @@ FOOTER_ADDRESSED_RE = re.compile(
 # Team routing, copied from the importer (lm_common.load_team_routing over
 # fleet-apps.json plus BOARD_SLUG_OVERRIDES, read Sat, Oct 10, 2026).  A slug
 # that matches nothing goes to AFC with an app:<slug> label, as the import did.
-TEAM_KEYS = ("ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK", "FL", "CC")
+# SWU is a team key with no BOARD_SLUG_TEAM entry:  the Simple With Us website
+# is filed by its key, not by slug.  FLL stays out on purpose:  fleetlink-legacy
+# has no Linear team of its own and files under FL.
+TEAM_KEYS = ("ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK", "FL", "CC", "SWU")
 FALLBACK_TEAM = "AFC"
 DEFAULT_APP = "fleet-infra"  # routes to OPS (design section 3)
 BOARD_SLUG_TEAM = {

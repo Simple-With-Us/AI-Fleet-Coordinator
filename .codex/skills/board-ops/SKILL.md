@@ -8,7 +8,7 @@ description: Use Linear through the `board` CLI as the first place to look and w
 > **This install is for `CODEX`.**  Chat tag `[CODEX·session8]`.  Notes `Codex`.  Branches `codex/`.  Lanes `~/apps/lanes/<Repo>/codex-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `codex-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Codex-zuliprc` (mode 600).  Session tag `[CODEX·session8]`, and the `agent-sync` CLI writes it for you.
 
 
-Linear is the system of record for fleet work (owner 2026-10-10), and `board` is how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK, FL, CC.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
+Linear is the system of record for fleet work (owner 2026-10-10), and `board` is how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK, FL, CC, SWU.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
 
 Humans use Linear in the browser.  Agents use the `board` CLI, which is the same command with the same flags as before; it now reads and writes Linear and signs each write with your seat.  The old `mac.jays.services/board` is a read-only archive until about day 30 after the cutover.  The effort logs are archived.  Nothing mirrors to them any more.
 
