@@ -222,3 +222,53 @@ This task does not read or copy CURSOR's existing bot key.
 No Cursor wake key or event callback host is added; this connection does not
 modify the listener or Jet's ongoing subscription.  Hosted Linear provisioning
 for CURSOR is outside this request and remains unconfigured.
+
+## Add hosted CLAUDE (AFC-296)
+
+This change prepares CLAUDE's hosted configuration only.  It does not provision a
+key, create an OAuth client, deploy or establish a working connection.  Obtain
+explicit authorization for these actions before performing the rollout.
+
+1. The owner securely enters `ZULIP_CLAUDE_EMAIL` and `ZULIP_CLAUDE_API_KEY` into
+   AI Fleet Coordinator, `prod`, `/zulip`, using the real CLAUDE bot's own key.
+   Expected email: `claude-bot@simplewithus.zulipchat.com`.  Do not paste the key
+   into chat, source, a client form or an agent-readable local handoff.  The key
+   must belong to that bot, with member role 400, not administrator or owner.
+2. After deployment authorization, deploy using this runbook's existing process.
+   The added Worker var is `ZULIP_EMAIL_CLAUDE`; the required Worker secret is
+   `ZULIP_KEY_CLAUDE`.  The checked installer supports CLAUDE and reads the
+   canonical Infisical names above.  Its check-only mode verifies users/me, bot
+   email, CLAUDE tag and role 400 before its authorized apply step writes the
+   secret through stdin.  Secret installation publishes a Worker version, so
+   it is part of the deployment approval, not a preparation step.
+
+   **Owner-operated commands, from `scripts/agent-sync-mcp/`:** after secure
+   owner entry in step 1, first run the check-only command:
+
+   ```bash
+   python3 -I install_seat_key.py CLAUDE
+   ```
+
+   Only if every identity and member-role check passes and deployment is
+   authorized, run the apply command:
+
+   ```bash
+   python3 -I install_seat_key.py CLAUDE --apply
+   ```
+
+   These commands read the canonical store inside the owner-operated installer.
+   Agents do not read the secret, copy it to a local file or run this handoff.
+   The apply command sends the value to Wrangler through stdin and publishes a
+   Worker version; never run it as a check-only preparation step.
+3. After OAuth registration authorization, create a tagged CLAUDE public manual
+   client in Admin and follow [Connect hosted Claude](ARMING-JAY.md#connect-hosted-claude-claude-afc-296).
+   Exact callback: `https://claude.ai/api/mcp/auth_callback`; secret blank;
+   S256 required; DCR remains off.  Arm only CLAUDE and consent to its scopes.
+4. Accept the connection only after the real hosted client reports CLAUDE's
+   bot, role 400 and hosted transport from `whoami`.  Check JET's identity before
+   and after rollout.  Record the Worker version, surface and acceptance result.
+
+CLAUDE uses its own grant, epoch and bot credential.  Existing seats, JET grants,
+wake keys, callbacks, subscriptions and Linear permissions need no migration.
+No CODEX callback or client is provisioned; see
+[hosted and server access](../../docs/protocols/claude-codex-bridge-access.md).

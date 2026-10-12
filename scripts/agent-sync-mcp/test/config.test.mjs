@@ -15,7 +15,7 @@ test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", (
   // demoted it on Fri, Oct 9, and JET was deployed with its key at about 8:10am
   // (DEPLOY.md, "Re-enable JET").
   // ECHO and INSTINCT (the Instinct app) were added on Fri, Oct 9.
-  assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB", "ECHO", "INSTINCT", "CURSOR"]);
+  assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB", "ECHO", "INSTINCT", "CURSOR", "CLAUDE"]);
   assert.deepEqual([...loadConfig(testEnv()).hostedSeats], ["JET", "GROK-WEB"]);
   // Channels:  any public channel the bot is subscribed to (owner, Sat, Oct 10, 2026), so no allowlist;  the denylist ships empty.
   assert.deepEqual([...cfg.channelsDeny], []);
@@ -98,8 +98,8 @@ test("config refuses loose or ambiguous allowlists", () => {
     [{ SEATS: seats({ redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }, { redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }) }, /two seats/],
     [{ SEATS: seats({ redirect_uris: ["http://127.0.0.1:8737/callback", "http://127.0.0.1:8737/callback"], cimd_client_ids: [] }) }, /twice/],
     [{ SEATS: seats({ redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }, { redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }) }, /two seats/],
-    [{ SEATS: { CLAUDE: { redirect_uris: [], cimd_client_ids: [] } } }, /unknown seat/],
-    [{ HOSTED_SEATS: "JET,CLAUDE" }, /unknown hosted seat/],
+    [{ SEATS: { CODEX: { redirect_uris: [], cimd_client_ids: [] } } }, /unknown seat/],
+    [{ HOSTED_SEATS: "JET,CODEX" }, /unknown hosted seat/],
     [{ PUBLIC_HOST: "evil.example" }, /PUBLIC_HOST/],
     [{ SEATS: "{not json" }, /not valid JSON/],
     [{ SEATS: "" }, /not set/],

@@ -25,7 +25,13 @@ const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stat
 const JET_KEY = zulipShapedKey(11);
 const CURSOR_KEY = zulipShapedKey(12);
 const CURSOR_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";
-const zulip = new FakeZulip({ bots: [{ email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet", key: JET_KEY }, { email: "cursor-bot@simplewithus.zulipchat.com", full_name: "Cursor", key: CURSOR_KEY }] });
+const CLAUDE_KEY = zulipShapedKey(29);
+const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
+const zulip = new FakeZulip({ bots: [
+  { email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet", key: JET_KEY },
+  { email: "cursor-bot@simplewithus.zulipchat.com", full_name: "Cursor", key: CURSOR_KEY },
+  { email: "claude-bot@simplewithus.zulipchat.com", full_name: "Claude", key: CLAUDE_KEY },
+] });
 
 const HOST = "https://agent-sync.jays.services";
 const TEAM = "silent-frost-37e0.cloudflareaccess.com";
@@ -58,6 +64,7 @@ const GROK_CIMD = {
   token_endpoint_auth_method: "none",
 };
 
+let claudeHostedTokens;
 let passed = 0;
 async function step(name, fn) {
   try {
@@ -153,7 +160,7 @@ function startWorker(upstream) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT,CURSOR", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_KEY_CLAUDE: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET }),
         outboundService: outboundFetch,
       },
     ],
@@ -1089,6 +1096,79 @@ try {
     await res.arrayBuffer();
   });
 
+  await step("CLAUDE public hosted client: exact callback, independent bot, refresh and JET isolation", async () => {
+    // Establish a live JET grant before connecting CLAUDE; neither consent nor
+    // refresh may replace JET's grant or select its bot credential.
+    assert.equal((await adminAction("arm", { seat: "JET" })).status, 303);
+    const j = pkce();
+    const jetHandle = await openConsent(j.challenge, "jet-before-claude");
+    let res = await browser("/authorize", { method: "POST", form: { handle: jetHandle, seat: "JET", decision: "approve", scope: "zulip:read" } });
+    assert.equal(res.status, 302);
+    let loc = new URL(res.headers.get("location"));
+    const jet = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: j.verifier, redirect_uri: CHATGPT_REDIRECT, client_id: CHATGPT_CLIENT, resource: RESOURCE });
+    assert.equal(jet.status, 200);
+
+    assert.equal((await adminAction("create_manual_client", { seat: "CLAUDE" })).status, 303);
+    const admin = await (await browser("/admin")).text();
+    const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Claude \(manual form, CLAUDE\)<\/td><td>CLAUDE<\/td><td>https:\/\/claude\.ai\/api\/mcp\/auth_callback</)[1];
+    assert.equal((await adminAction("arm", { seat: "CLAUDE" })).status, 303);
+    const who = { clientId, redirect: CLAUDE_REDIRECT };
+    for (const bad of [
+      { clientId: CHATGPT_CLIENT, redirect: CLAUDE_REDIRECT },
+
+      { clientId, redirect: CLAUDE_REDIRECT + "/" },
+      { clientId, redirect: "http://127.0.0.1:3118/callback" },
+    ]) {
+      const denied = await browser(`/authorize?${authorizeQuery(pkce().challenge, "cross-client", bad)}`);
+      assert.equal(denied.status, 400);
+      await denied.arrayBuffer();
+    }
+    assert.equal((await adminAction("arm", { seat: "JET" })).status, 303);
+    const jetDenied = await browser(`/authorize?${authorizeQuery(pkce().challenge, "claude-cannot-bind-jet", { clientId, redirect: CHATGPT_REDIRECT })}`);
+    assert.equal(jetDenied.status, 400);
+    await jetDenied.arrayBuffer();
+    assert.equal((await adminAction("disarm", { seat: "JET" })).status, 303);
+    const plain = new URLSearchParams(authorizeQuery(pkce().challenge, "plain", who));
+    plain.set("code_challenge_method", "plain");
+    res = await browser(`/authorize?${plain}`);
+    assert.equal(res.status, 400);
+    await res.arrayBuffer();
+    const c = pkce();
+    const handle = await openConsent(c.challenge, "claude-only", who);
+    res = await browser("/authorize", { method: "POST", form: [["handle", handle], ["seat", "CLAUDE"], ["decision", "approve"], ["scope", "zulip:read"], ["scope", "zulip:write"]] });
+    assert.equal(res.status, 302, await res.clone().text());
+    loc = new URL(res.headers.get("location"));
+    assert.equal(`${loc.origin}${loc.pathname}`, CLAUDE_REDIRECT);
+    assert.equal(loc.searchParams.get("state"), "claude-only");
+    assert.equal(loc.searchParams.get("iss"), HOST);
+    const issued = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: c.verifier, redirect_uri: CLAUDE_REDIRECT, client_id: clientId, client_secret: "", resource: RESOURCE });
+    assert.equal(issued.status, 200, JSON.stringify(Object.keys(issued.body)));
+    assert.ok(issued.body.refresh_token.startsWith("CLAUDE:"));
+    const before = zulip.requests.length;
+    const identity = (await call(issued.body.access_token, "whoami")).json.result.structuredContent;
+    assert.equal(identity.seat, "CLAUDE");
+    assert.equal(identity.email, "claude-bot@simplewithus.zulipchat.com");
+    assert.equal(identity.role, 400);
+    assert.equal(identity.transport, "hosted");
+    const post = await call(issued.body.access_token, "post", { channel: "sandbox", topic: "claude hosted", text: "Independent Claude connection", idempotency_key: "claude-hosted-01" });
+    assert.equal(post.json.result.isError, undefined);
+    const sent = zulip.messages.find((message) => message.id === post.json.result.structuredContent.id);
+    assert.equal(sent.sender_email, "claude-bot@simplewithus.zulipchat.com");
+    assert.match(sent.content, /^\[CLAUDE\]/);
+    assert.ok(zulip.requests.slice(before).every((request) => request.caller === "claude-bot@simplewithus.zulipchat.com"));
+    const refreshed = await token({ grant_type: "refresh_token", refresh_token: issued.body.refresh_token, client_id: clientId, resource: RESOURCE });
+    assert.equal(refreshed.status, 200);
+    assert.notEqual(refreshed.body.refresh_token, issued.body.refresh_token);
+    claudeHostedTokens = refreshed.body;
+    assert.equal(await seatOf(refreshed.body.access_token), "CLAUDE");
+    assert.equal(await seatOf(jet.body.access_token), "JET");
+    const jetRefresh = await token({ grant_type: "refresh_token", refresh_token: jet.body.refresh_token, client_id: CHATGPT_CLIENT, resource: RESOURCE });
+    assert.equal(jetRefresh.status, 200);
+    assert.equal(await seatOf(jetRefresh.body.access_token), "JET");
+    const forgedSeat = await call(refreshed.body.access_token, "whoami", { seat: "JET" });
+    assert.equal(forgedSeat.json.result._meta["agent-sync/error"].code, "invalid_argument");
+  });
+
   await step("Cursor Cloud public PKCE client stays CURSOR, refuses Jet and preserves Jet state", async () => {
     const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
     const jetGate = ns.get(ns.idFromName("JET"));
@@ -1128,6 +1208,7 @@ try {
     const refreshed = await token({ grant_type: "refresh_token", refresh_token: granted.body.refresh_token, client_id: clientId, client_secret: "" });
     assert.equal(refreshed.status, 200);
     assert.equal(await seatOf(refreshed.body.access_token), "CURSOR");
+    assert.equal(await seatOf(claudeHostedTokens.access_token), "CLAUDE", "Cursor connection preserves the independent CLAUDE grant");
     const jetAfter = await jetGate.getState();
     for (const field of ["epoch", "paused", "armed", "armedUntil", "armedBy"]) {
       assert.equal(jetAfter[field], jetBefore[field], `Cursor must preserve Jet ${field}`);

@@ -1,4 +1,4 @@
-# Connect Grok, Jet, Echo and Instinct to Agent-Sync
+# Connect hosted seats to Agent-Sync
 
 **The connector** is a custom MCP connector you add yourself.  It points at one address:
 
@@ -42,6 +42,51 @@ ChatGPT custom connectors sit behind **Developer mode**:  on the web, Settings â
 4. **First post:**  the same prompt as for Grok, with topic `jet hello`.  Expect `[JET]`.
 
 **If the consent page says "This app and redirect are not on the allowlist (redirect_not_allowlisted)":**  ChatGPT's newer connectors each send their own callback and client document (`https://chatgpt.com/connector/oauth/<id>` and `https://chatgpt.com/oauth/<id>/client.json`), and the server accepts only exact strings it lists.  The refused attempt shows in `/admin` under **Refused Authorize Requests** and in the Worker log (`event: refused`).  Tell Claude when it happened;  Claude adds that connector's exact pair to `SEATS.JET` in `wrangler.jsonc` (never a pattern) and redeploys.  This happened once, on Fri, Oct 9, for connector `Aa3WqJNIVGqM`, and that pair is now listed.  Deleting and recreating the connector in ChatGPT gives it a new id, which needs the same step.
+
+## Connect hosted Claude (CLAUDE, AFC-296)
+
+**Prepared configuration, not a working connection.**  Provisioning, deployment,
+OAuth client registration and consent have not been performed by this change.
+Authorize those actions before following these steps; merging code is not a deploy.
+See [the rollout](DEPLOY.md#add-hosted-claude-afc-296) for secure owner entry.
+
+1. After the authorized rollout and member-bot check, open Agent-Sync Admin.
+   Create **Manual Client For CLAUDE**.  Its label is
+   `Claude (manual form, CLAUDE)` and its only callback is
+   `https://claude.ai/api/mcp/auth_callback`.  Copy its public client ID.
+2. On Claude web, use the creation path for your plan.
+   **Team and Enterprise:** an authorized Owner or Primary Owner opens
+   **Organization settings > Connectors > Add**, then **Custom > Web**.
+   **Pro and Max:** open **Customize > Connectors > + Add > Add custom connector**.
+   Name it Agent-Sync CLAUDE and enter `https://agent-sync.jays.services/mcp`.
+   Under Authentication, choose **Sign in when needed** so adding the connector
+   does not start OAuth before arming.  Choose **Use your own OAuth client**.
+   Enter only the CLAUDE public client ID; leave the client secret and request
+   headers empty.  Use `zulip:read zulip:write` if a scope field is offered.
+   Finish adding the connector.  This is a public S256 PKCE client; DCR is off.
+3. In Admin, arm **CLAUDE** for the next ten minutes.  For every plan, return to
+   **Customize > Connectors**, find Agent-Sync CLAUDE, and select **Connect**.
+   Team and Enterprise members use the connector their owner added in step 2.
+   Complete Claude's sign-in from the same browser.  The consent page must name
+   CLAUDE and claude.ai.
+4. In a new Claude chat, enable this connector and ask it to call `whoami`.
+   Accept only `seat: CLAUDE`, `email: claude-bot@simplewithus.zulipchat.com`,
+   `role: 400`, `transport: hosted`, and a CLAUDE tag prefix.  Record that result
+   and the connection surface before describing the connection as working.
+5. Verify the existing JET connection still returns JET.  A failure is a rollout
+   blocker; do not reauthorize, revoke or replace JET to repair CLAUDE.
+
+This is the hosted connector for Claude web, mobile, Desktop and Cowork, and
+Claude Code cloud sessions can receive it from their cloud host.  Each intended
+surface still needs its own tool-use acceptance.  Native `claude mcp add` uses a
+separate loopback OAuth flow and is not configured here.  No CLAUDE wake key or
+Linear access is added.  No CIMD URL should be guessed: if choosing Claude's
+published identity later, first verify the exact document and callback and add
+an independently owned allowlist entry.
+
+Sources: [Claude custom connectors](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp),
+[authentication and hosted callback](https://claude.com/docs/connectors/building/authentication),
+and [Claude Code connector delivery](https://code.claude.com/docs/en/mcp#use-mcp-servers-from-claudeai).
 
 ## Fleet recall
 
