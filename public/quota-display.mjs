@@ -127,11 +127,56 @@ export function extraWindowRowLabel(win) {
   return String(win.windowKey || "");
 }
 
+/** Plain percent beside the bar (e.g. 73%). */
+export function remainingPercentShort(primary) {
+  if (!primary) return "—";
+  if (primary.remainingUnknown || primary.remainingPercent == null) return "—";
+  return Math.round(primary.remainingPercent) + "%";
+}
+
+/** @deprecated use remainingPercentShort */
 export function remainingPercentLabel(primary) {
-  if (!primary) return "Unknown";
-  if (primary.remainingUnknown || primary.remainingPercent == null) return "Unknown";
-  if (primary.isExhausted || primary.remainingPercent === 0) return "0% Exhausted";
-  return Math.round(primary.remainingPercent) + "% Remaining";
+  return remainingPercentShort(primary);
+}
+
+const RAW_KEY_DURATION_MS = {
+  five_hour: 5 * 3600_000,
+  seven_day: 7 * 86400_000,
+  seven_day_opus: 7 * 86400_000,
+};
+
+/** Window length in ms from windowKey and/or Usage Monitor rawKey. */
+export function windowDurationMs(windowKey, rawKey) {
+  const key = String(windowKey ?? "").trim();
+  const base = key.split(":")[0];
+  const m = base.match(/^(\d+)(h|d|m)$/i);
+  if (m) {
+    const n = Number(m[1]);
+    const u = m[2].toLowerCase();
+    if (u === "h") return n * 3600_000;
+    if (u === "d") return n * 86400_000;
+    if (u === "m") return n * 30 * 86400_000;
+  }
+  const rk = String(rawKey ?? "").trim().toLowerCase();
+  if (rk && RAW_KEY_DURATION_MS[rk] != null) return RAW_KEY_DURATION_MS[rk];
+  return null;
+}
+
+/**
+ * Elapsed fraction of the quota window [0, 1] from resetAt and window duration.
+ * Returns null when reset time or duration is unknown, or the window is past reset.
+ */
+export function elapsedWindowFraction(resetAt, windowKey, rawKey, nowMs = Date.now()) {
+  const duration = windowDurationMs(windowKey, rawKey);
+  if (!resetAt || duration == null || duration <= 0) return null;
+  const resetMs = new Date(resetAt).getTime();
+  if (Number.isNaN(resetMs)) return null;
+  const untilReset = resetMs - nowMs;
+  if (untilReset <= 0) return null;
+  const startMs = resetMs - duration;
+  const elapsed = nowMs - startMs;
+  if (elapsed < 0) return null;
+  return Math.min(1, Math.max(0, elapsed / duration));
 }
 
 /**
@@ -147,6 +192,25 @@ export function barColorState(primary) {
   if (primary.remainingUnknown || primary.remainingPercent == null) return "unknown";
   if (primary.remainingPercent <= 20) return "amber";
   return "teal";
+}
+
+/** Tint class for the % pill: ok (green), low (amber), exh (red), na (grey). */
+export function percentPillTone(primary) {
+  const state = barColorState(primary);
+  if (state === "exhausted") return "exh";
+  if (state === "amber") return "low";
+  if (state === "stale" || state === "unknown") return "na";
+  return "ok";
+}
+
+/** Countdown until reset (CodeCaps-style), without a Resets In prefix. */
+export function formatResetTimeLeft(resetAt, nowMs = Date.now()) {
+  if (!resetAt) return "—";
+  const ms = new Date(resetAt).getTime() - nowMs;
+  if (Number.isNaN(ms)) return "—";
+  if (ms <= 0) return "Refreshing Now";
+  const tail = relTime(resetAt, nowMs);
+  return tail === "—" ? "—" : tail;
 }
 
 export function shouldShowExtraWindow(win) {

@@ -270,31 +270,53 @@
   .quota-status.exh { background: rgba(220,38,38,.12); color: #B91C1C; }
   .quota-status.low { background: rgba(217,119,6,.12); color: #B45309; }
   .quota-group { display: block; margin-top: 10px; }
-  .quota-provider-block { padding: 12px 4px; border-top: 1px solid var(--line); }
-  .quota-provider-block:first-child { border-top: none; padding-top: 4px; }
-  .quota-provider-head { margin-bottom: 8px; }
-  .quota-window-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 18px; margin-bottom: 8px; }
-  @media (max-width: 420px) {
-    .quota-window-pair { grid-template-columns: 1fr; }
+  .quota-provider-block { border-top: 1px solid var(--line); padding: 8px 4px; }
+  .quota-provider-block:first-child { border-top: none; }
+  .quota-cc-row {
+    display: grid;
+    grid-template-columns: minmax(92px, 1.15fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 14px;
+    align-items: start;
   }
-  .quota-window-cell { min-width: 0; }
-  .quota-window-row { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
-  .quota-window-label { font-size: 12.5px; font-weight: 600; color: var(--muted); letter-spacing: .01em; }
-  .quota-window-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .quota-window-rem { font-weight: 600; color: var(--text); }
-  .quota-window-reset { color: var(--text); font-weight: 500; }
-  :root[data-theme="light"] .quota-window-reset { color: #333333; }
-  .qcap { display: flex; height: 5px; border-radius: 999px; overflow: hidden; position: relative; background: rgba(0,0,0,.06); width: 100%; }
+  @media (max-width: 420px) {
+    .quota-cc-row { grid-template-columns: 1fr; gap: 10px; }
+  }
+  .quota-cc-id { display: flex; align-items: center; min-height: 28px; padding-top: 2px; }
+  .quota-cc-id .quota-id .n { font-size: 14px; font-weight: 600; }
+  .quota-cc-win { min-width: 0; }
+  .quota-cc-win-label { font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .02em; margin-bottom: 3px; }
+  .quota-cc-track { display: flex; align-items: center; gap: 6px; }
+  .qcap { flex: 1; display: flex; height: 5px; border-radius: 999px; overflow: visible; position: relative; background: rgba(0,0,0,.06); min-width: 40px; }
   :root[data-theme="dark"] .qcap { background: rgba(255,255,255,.1); }
-  .qcap-used { flex-shrink: 0; background: #DC2626; border-radius: 999px 0 0 999px; }
-  .qcap-rem { flex: 1; background: #0D9488; border-radius: 0 999px 999px 0; }
-  .qcap-tick { position: absolute; top: -1px; bottom: -1px; width: 2px; margin-left: -1px; background: rgba(0,0,0,.28); pointer-events: none; }
-  :root[data-theme="dark"] .qcap-tick { background: rgba(255,255,255,.35); }
+  .qcap-inner { display: flex; width: 100%; height: 100%; border-radius: 999px; overflow: hidden; }
+  .qcap-used { flex-shrink: 0; background: #DC2626; }
+  .qcap-rem { flex: 1; background: #16A34A; }
+  .qcap-elapsed { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; background: #000000; pointer-events: none; z-index: 1; }
+  .qcap-pill {
+    flex: none; font-size: 11px; font-weight: 600; line-height: 1.2;
+    padding: 2px 7px; border-radius: 6px; font-variant-numeric: tabular-nums;
+  }
+  .qcap-pill-ok { background: rgba(22, 163, 74, .16); color: #15803D; }
+  .qcap-pill-low { background: rgba(217, 119, 6, .18); color: #B45309; }
+  .qcap-pill-exh { background: rgba(220, 38, 38, .14); color: #B91C1C; }
+  .qcap-pill-na { background: rgba(0, 0, 0, .06); color: var(--muted); }
+  :root[data-theme="dark"] .qcap-pill-na { background: rgba(255, 255, 255, .1); }
+  .quota-cc-win-reset { margin-top: 3px; font-size: 11.5px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
+  :root[data-theme="light"] .quota-cc-win-reset { color: #333333; }
+  .quota-cc-extras {
+    margin-top: 8px;
+    display: grid;
+    grid-template-columns: minmax(92px, 1.15fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 14px;
+  }
+  .quota-cc-extras .quota-cc-win { grid-column: span 1; }
+  @media (max-width: 420px) {
+    .quota-cc-extras { grid-template-columns: 1fr; }
+  }
   .qcap-stale .qcap-used, .qcap-stale .qcap-rem { background: #9CA3AF; }
   .qcap-exhausted .qcap-rem { background: #DC2626; }
-  .qcap-amber .qcap-rem { background: #D97706; }
-  .qcap-teal .qcap-rem { background: #0D9488; }
-  .qcap-unknown { background: var(--faint); opacity: .45; }
+  .qcap-unknown .qcap-inner { background: var(--faint); opacity: .45; }
+  .qcap-unknown .qcap-used, .qcap-unknown .qcap-rem { background: transparent; }
   .quota-stale-note { font-size: 11px; color: var(--faint); margin-top: 2px; }
   .quota-older { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
   .quota-older summary { cursor: pointer; user-select: none; }
@@ -488,8 +510,11 @@
     aggregateQuotas,
     sortQuotaGroups,
     formatResetCopy,
-    remainingPercentLabel,
+    remainingPercentShort,
     barColorState,
+    elapsedWindowFraction,
+    percentPillTone,
+    formatResetTimeLeft,
     shouldShowExtraWindow,
     findWindow,
     primaryWindowKeys,
@@ -972,56 +997,64 @@
     return "ok";
   }
 
-  function buildQuotaCapsule(primary) {
+  function buildQuotaCapsule(primary, windowKey, rawKey) {
     const state = barColorState(primary);
     const wrap = el("div", "qcap qcap-" + state);
+    const inner = el("div", "qcap-inner");
     const used = usedPercentFromPrimary(primary);
-    if (used == null) return wrap;
-    const usedEl = el("div", "qcap-used");
-    usedEl.style.width = used + "%";
-    wrap.appendChild(usedEl);
-    wrap.appendChild(el("div", "qcap-rem"));
-    const tick = el("div", "qcap-tick");
-    tick.style.left = used + "%";
-    wrap.appendChild(tick);
+    if (used != null) {
+      const usedEl = el("div", "qcap-used");
+      usedEl.style.width = used + "%";
+      inner.appendChild(usedEl);
+      inner.appendChild(el("div", "qcap-rem"));
+    }
+    wrap.appendChild(inner);
+    const elapsed = elapsedWindowFraction(primary && primary.resetAt, windowKey, rawKey);
+    if (elapsed != null) {
+      const marker = el("div", "qcap-elapsed");
+      marker.style.left = (elapsed * 100) + "%";
+      wrap.appendChild(marker);
+    }
     return wrap;
   }
 
-  function renderQuotaWindowRow(win, labelText) {
+  function renderQuotaWindowCell(win, labelText) {
     const p = win && win.primary;
-    const row = el("div", "quota-window-row");
-    row.appendChild(el("span", "quota-window-label", labelText));
-    const meta = el("div", "quota-window-meta");
-    meta.appendChild(el("span", "quota-window-rem", remainingPercentLabel(p)));
-    meta.appendChild(el("span", "quota-window-reset", formatResetCopy(p && p.resetAt)));
-    row.appendChild(meta);
-    row.appendChild(buildQuotaCapsule(p));
-    if (p && p.rawKey) row.title = (win.displayName || labelText) + " · " + p.rawKey;
-    return row;
+    const cell = el("div", "quota-cc-win");
+    cell.appendChild(el("div", "quota-cc-win-label", labelText));
+    const track = el("div", "quota-cc-track");
+    track.appendChild(buildQuotaCapsule(p, win && win.windowKey, win && win.rawKey));
+    track.appendChild(el("span", "qcap-pill qcap-pill-" + percentPillTone(p), remainingPercentShort(p)));
+    cell.appendChild(track);
+    cell.appendChild(el("div", "quota-cc-win-reset", formatResetTimeLeft(p && p.resetAt)));
+    if (p && p.rawKey) cell.title = (win.displayName || labelText) + " · " + p.rawKey;
+    return cell;
   }
 
   function renderQuotaGroupBlock(group) {
     const block = el("div", "quota-provider-block");
-    const head = el("div", "quota-provider-head");
-    head.appendChild(providerId(group.provider));
-    const nameEl = head.querySelector(".n");
+    const row = el("div", "quota-cc-row");
+    const idCell = el("div", "quota-cc-id");
+    idCell.appendChild(providerId(group.provider));
+    const nameEl = idCell.querySelector(".n");
     if (nameEl) nameEl.textContent = platformDisplayName(group.provider, group.providerLabel);
-    block.appendChild(head);
+    row.appendChild(idCell);
 
-    const pair = el("div", "quota-window-pair");
     for (const key of primaryWindowKeys()) {
       const win = findWindow(group, key);
       const label = windowBarLabel(key);
-      if (win && label) {
-        const cell = el("div", "quota-window-cell");
-        cell.appendChild(renderQuotaWindowRow(win, label));
-        pair.appendChild(cell);
-      }
+      if (win && label) row.appendChild(renderQuotaWindowCell(win, label));
     }
-    if (pair.childElementCount) block.appendChild(pair);
+    block.appendChild(row);
 
-    for (const win of (group.windows || []).filter(shouldShowExtraWindow)) {
-      block.appendChild(renderQuotaWindowRow(win, extraWindowRowLabel(win)));
+    const extras = (group.windows || []).filter(shouldShowExtraWindow);
+    if (extras.length) {
+      const extraWrap = el("div", "quota-cc-extras");
+      extraWrap.appendChild(el("div"));
+      for (const win of extras) {
+        extraWrap.appendChild(renderQuotaWindowCell(win, extraWindowRowLabel(win)));
+      }
+      block.appendChild(extraWrap);
     }
 
     let stalePrimary = null;

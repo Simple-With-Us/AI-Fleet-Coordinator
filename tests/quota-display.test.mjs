@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import {
   relTime,
   formatResetCopy,
-  remainingPercentLabel,
+  remainingPercentShort,
+  windowDurationMs,
+  elapsedWindowFraction,
+  percentPillTone,
+  formatResetTimeLeft,
   barColorState,
   shouldShowExtraWindow,
   sortQuotaGroups,
@@ -30,11 +34,34 @@ test("formatResetCopy prefixes future resets with Resets In", () => {
   assert.match(formatResetCopy(future, T0), /1d 13h/);
 });
 
-test("remainingPercentLabel treats unknown as Unknown, not exhausted", () => {
-  assert.equal(remainingPercentLabel({ remainingUnknown: true }), "Unknown");
-  assert.equal(remainingPercentLabel({ remainingPercent: null, remainingUnknown: false }), "Unknown");
-  assert.equal(remainingPercentLabel({ remainingPercent: 42 }), "42% Remaining");
-  assert.equal(remainingPercentLabel({ remainingPercent: 0, isExhausted: true }), "0% Exhausted");
+test("remainingPercentShort is a plain percent without Remaining", () => {
+  assert.equal(remainingPercentShort({ remainingUnknown: true }), "—");
+  assert.equal(remainingPercentShort({ remainingPercent: null, remainingUnknown: false }), "—");
+  assert.equal(remainingPercentShort({ remainingPercent: 42 }), "42%");
+  assert.equal(remainingPercentShort({ remainingPercent: 0, isExhausted: true }), "0%");
+});
+
+test("percentPillTone maps quota state to pill tint", () => {
+  assert.equal(percentPillTone({ remainingPercent: 80, freshness: "fresh" }), "ok");
+  assert.equal(percentPillTone({ remainingPercent: 15, freshness: "fresh" }), "low");
+  assert.equal(percentPillTone({ remainingPercent: 0, isExhausted: true }), "exh");
+});
+
+test("formatResetTimeLeft omits Resets In prefix", () => {
+  const future = "2026-10-14T01:30:00.000Z";
+  const copy = formatResetTimeLeft(future, T0);
+  assert.ok(!copy.startsWith("Resets In"));
+  assert.match(copy, /1d 13h/);
+});
+
+test("elapsedWindowFraction derives elapsed position from resetAt and window length", () => {
+  const resetAt = "2026-10-12T17:00:00.000Z";
+  const now = Date.parse("2026-10-12T14:30:00.000Z");
+  const frac = elapsedWindowFraction(resetAt, "5h", "five_hour", now);
+  assert.equal(frac, 0.5);
+  assert.equal(elapsedWindowFraction(resetAt, "5h", "five_hour", Date.parse(resetAt)), null);
+  assert.equal(elapsedWindowFraction(null, "5h", null, now), null);
+  assert.equal(windowDurationMs("7d"), 7 * 86400_000);
 });
 
 test("barColorState follows stale, exhausted, amber, and teal rules", () => {
