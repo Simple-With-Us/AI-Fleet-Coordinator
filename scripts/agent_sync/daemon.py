@@ -2440,16 +2440,17 @@ class Daemon:
                 red.append("wake pin is stale: claude moved to %s (pinned %s); run "
                            "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
                            % (pin["claude"], pin["pinned_claude"], seat))
-            # A muse seat reports the same pin state on its own file, plus the provider quota the
-            # wake gate reads:  a seat held by an exhausted quota must be visibly held BY THE
-            # QUOTA, or it looks exactly like a seat nobody configured.
+            # A muse seat reports the same pin state on its own file;  any wake that names a
+            # `provider` reports the provider quota the wake gate reads:  a seat held by an
+            # exhausted quota must be visibly held BY THE QUOTA, or it looks exactly like a seat
+            # nobody configured (the CLAUDE seat at its weekly cap is the case the gate exists for).
             muse_pin = A.muse_pin_state(runner.paths, muse) if muse else None
             if muse_pin and muse_pin["why"] == "pin_stale":
                 red.append("wake pin is stale: muse moved to %s (pinned %s); run "
                            "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
                            % (muse_pin["muse"], muse_pin["pinned_muse"], seat))
             quota = None
-            if runner.cfg.wake == "muse":
+            if runner.cfg.wake in ("claude", "muse"):
                 quota = A.provider_quota(runner.cfg.provider or "", now)
                 if quota["known"] and quota["exhausted"]:
                     red.append("wakes are not running: the %s quota is exhausted%s" % (
