@@ -54,8 +54,12 @@ See [the rollout](DEPLOY.md#add-hosted-claude-afc-296) for secure owner entry.
    Create **Manual Client For CLAUDE**.  Its label is
    `Claude (manual form, CLAUDE)` and its only callback is
    `https://claude.ai/api/mcp/auth_callback`.  Copy its public client ID.
-2. On Claude web, open **Customize > Connectors > Add custom connector**.
-   Team and Enterprise organization owners add it first; members then connect it.
+2. Add the connector under the right surface for the plan:
+   - **Team and Enterprise:**  an Owner or Primary Owner opens
+     **Organization settings > Connectors > Add**, adds Agent-Sync CLAUDE
+     there, then each member opens **Customize > Connectors** to connect it.
+   - **Pro, Max and individual:**  open **Customize > Connectors > Add custom
+     connector**.
    Name it Agent-Sync CLAUDE and enter `https://agent-sync.jays.services/mcp`.
    Choose OAuth sign-in and **Use your own OAuth client**.  Enter only the
    CLAUDE client ID, leave the secret blank, and use `zulip:read zulip:write`
