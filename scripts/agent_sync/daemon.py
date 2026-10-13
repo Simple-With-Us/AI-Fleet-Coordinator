@@ -968,7 +968,7 @@ class Daemon:
                 matched = False
                 if runner.seat == "GROK" and not c.dm:
                     matched = self.chat_nudges.enqueue(c.channel, c.topic, message["id"], now,
-                                                       owner=d.wake == "owner")
+                                                       owner=d.wake == "owner", stale=c.stale)
                 if not matched:
                     self.offer_wake(runner, row, owner=d.wake == "owner")
                 done.add("wake")
@@ -1042,6 +1042,8 @@ class Daemon:
                     cursors[new_key] = max(value, cursors.get(new_key, value)) if isinstance(value, int) else value
 
             L.update_json(state_path, rename_cursor)
+        if runner.seat == "GROK":
+            self.chat_nudges.rename(old_channel, old_topic, new_channel, new_topic, self.clock.time())
         self.log.write("rename", seat=runner.seat, leases=renamed)
 
     # ---- wakes ---------------------------------------------------------------------------------
@@ -2655,7 +2657,15 @@ class Daemon:
                 key = L.topic_key(binding["channel"], binding["topic"])
                 if daemon.loopguard.blocked(key, daemon.clock.time()):
                     return "busy"
-                row = {"wake_id": inner.wake_id, "owner": owner, "topic_key": key,
+                stale = getattr(inner, "wake_stale", False) is True
+                if owner and stale:
+                    for wake_id, view in runner.ledger.wakes().items():
+                        if wake_id != inner.wake_id and view.get("topic_key") == key and view.get("stale") and \
+                                isinstance(view.get("ts"), (int, float)) and \
+                                daemon.clock.time() - float(view["ts"]) < W.DAY:
+                            inner.hold_reason = "stale owner topic already surfaced today"
+                            return "unsupported"
+                row = {"wake_id": inner.wake_id, "owner": owner, "stale": stale, "topic_key": key,
                        "channel": binding["channel"], "topic": binding["topic"],
                        "reserve_usd": 0.0, "downstream_cost_unknown": True, "ts": daemon.clock.time()}
                 blocked = W.budget_block(runner.ledger.wakes(), runner.cfg.budget, owner=owner, key=key,

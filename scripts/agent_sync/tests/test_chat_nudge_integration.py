@@ -44,6 +44,34 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         self.assertEqual(nudge[-1]["cost_usd"], 0.0)
         self.assertTrue(nudge[-1]["downstream_cost_unknown"])
 
+    def test_stale_owner_backlog_surfaces_once_but_fresh_owner_still_wakes(self):
+        daemon = self.daemon()
+        daemon.chat_nudges.bind("agent-sync", "topic", "grok-leader", "host", "existing", "/repo")
+        runner = self._grok_runner(daemon)
+        def send(binding, text, *, permit):
+            return "accepted" if permit() else "deferred"
+        daemon._chat_transport = SimpleNamespace(preflight=lambda binding: "ready", send=mock.Mock(side_effect=send))
+        for mid in (41, 42):
+            daemon.chat_nudges.enqueue("agent-sync", "topic", mid, self.clock.time(), owner=True, stale=True)
+        self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "accepted")
+        daemon.dispatch_chat_nudge(runner)
+        self.assertEqual(daemon._chat_transport.send.call_count, 1)
+        self.assertIn("stale owner", daemon.chat_nudges.snapshot()["items"][1]["hold_reason"])
+        daemon.chat_nudges.enqueue("agent-sync", "topic", 43, self.clock.time(), owner=True)
+        self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "accepted")
+        self.assertEqual(daemon._chat_transport.send.call_count, 2)
+
+    def test_zulip_rename_migrates_chat_binding(self):
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        runner.seat = "GROK"
+        runner.streams = {1: "agent-sync", 2: "destination"}
+        daemon.chat_nudges.bind("agent-sync", "old", "grok-leader", "host", "existing", "/repo")
+        daemon.handle_update(runner, {"propagate_mode": "change_all", "stream_id": 1,
+                                     "new_stream_id": 2, "orig_subject": "old", "subject": "new"})
+        self.assertTrue(daemon.chat_nudges.enqueue("destination", "new", 42, self.clock.time()))
+        self.assertFalse(daemon.chat_nudges.enqueue("agent-sync", "old", 43, self.clock.time()))
+
     def test_cli_requires_explicit_target_grok_and_has_nudge_actions(self):
         parser = build_parser()
         args = parser.parse_args(["daemon", "chats", "bind", "--target-seat", "GROK",

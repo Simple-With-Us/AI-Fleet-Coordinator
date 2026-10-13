@@ -125,6 +125,43 @@ class ChatNudges:
                 L.write_json(self.path, data)
             return removed
 
+    def rename(self, old_channel: str, old_topic: str, new_channel: str, new_topic: str,
+               now: float) -> dict[str, Any]:
+        """Move a topic binding and only rewrite pending nudges; uncertain text stays receipt-safe."""
+        old_key = self._key(old_channel, old_topic)
+        new_key = self._key(new_channel, new_topic)
+        with L.locked(self.path):
+            data = self._read()
+            old = data["bindings"].get(old_key)
+            if old is None:
+                return {"status": "missing", "moved": 0, "held": 0}
+            collision = new_key != old_key and new_key in data["bindings"]
+            moved_binding = self._binding(new_channel, new_topic, old["platform"], old["host"],
+                                          old["session_id"], old["cwd"])
+            data["bindings"].pop(old_key, None)
+            if collision:
+                held = 0
+                for item in data["items"]:
+                    if item.get("binding") != old or item.get("status") != "pending":
+                        continue
+                    item["hold_reason"] = "rename collision with an existing chat binding; operator review required"
+                    item["updated_at"] = float(now)
+                    held += 1
+                L.write_json(self.path, data)
+                return {"status": "collision", "moved": 0, "held": held}
+
+            data["bindings"][new_key] = moved_binding
+            moved = 0
+            for item in data["items"]:
+                if item.get("binding") != old or item.get("status") != "pending":
+                    continue
+                item["binding"] = dict(moved_binding)
+                item["text"] = nudge_text(new_channel, new_topic, item["message_id"])
+                item["updated_at"] = float(now)
+                moved += 1
+            L.write_json(self.path, data)
+            return {"status": "moved", "moved": moved, "held": 0}
+
     def snapshot(self) -> dict[str, Any]:
         # Atomic replacement makes a lock-free snapshot consistent.  Read-only CLI views do not
         # create state or recover a dispatch that another daemon may still be completing.
@@ -175,11 +212,13 @@ class ChatNudges:
         return confirmed
 
     def enqueue(self, channel: str, topic: str, message_id: str | int, now: float, *,
-                owner: bool = False) -> bool:
+                owner: bool = False, stale: bool = False) -> bool:
         if isinstance(message_id, bool) or not isinstance(message_id, (str, int)) or not str(message_id):
             raise ValueError("message_id must be a non-empty string or integer")
         if not isinstance(owner, bool):
             raise ValueError("owner must be a boolean")
+        if not isinstance(stale, bool):
+            raise ValueError("stale must be a boolean")
         message_id = str(message_id)
         with L.locked(self.path):
             data = self._read()
@@ -194,6 +233,7 @@ class ChatNudges:
                                   "binding": dict(binding),
                                   "text": nudge_text(binding["channel"], binding["topic"], message_id),
                                   "owner": owner,
+                                  "stale": stale,
                                   "status": "pending", "hold_reason": None,
                                   "created_at": float(now), "updated_at": float(now)})
             L.write_json(self.path, data)
@@ -253,6 +293,7 @@ class ChatNudges:
                         dispatch_item = next((row for row in latest["items"] if row["id"] == item_id), None)
                     setattr(transport, "wake_created_at", dispatch_item.get("created_at") if dispatch_item else None)
                     setattr(transport, "wake_owner", bool(dispatch_item.get("owner", False)) if dispatch_item else False)
+                    setattr(transport, "wake_stale", bool(dispatch_item.get("stale", False)) if dispatch_item else False)
                 except (AttributeError, TypeError):
                     pass
                 try:

@@ -21,6 +21,7 @@ class FakeTransport:
         self.receipt_calls: list[tuple[dict[str, str], str]] = []
         self.preflights: list[dict[str, str]] = []
         self.preflight_owners: list[bool] = []
+        self.preflight_stale: list[bool] = []
         self.deliveries: list[tuple[dict[str, str], str]] = []
         self.active = 0
         self.max_active = 0
@@ -30,6 +31,7 @@ class FakeTransport:
     def preflight(self, binding: dict[str, str]) -> str:
         self.preflights.append(dict(binding))
         self.preflight_owners.append(bool(getattr(self, "wake_owner", False)))
+        self.preflight_stale.append(bool(getattr(self, "wake_stale", False)))
         return self.readiness
 
     def send(self, binding: dict[str, str], text: str) -> str:
@@ -98,6 +100,52 @@ class ChatNudgesTest(unittest.TestCase):
         transport = FakeTransport(readiness="busy")
         self.queue.dispatch_one(transport, 11)
         self.assertEqual(transport.preflight_owners, [False])
+
+    def test_enqueue_persists_stale_and_legacy_rows_default_false(self) -> None:
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10, stale=True)
+        self.assertIs(self._item()["stale"], True)
+        data = self.queue.snapshot()
+        data["items"][0].pop("stale")
+        L.write_json(self.queue.path, data)
+        transport = FakeTransport(readiness="busy")
+        self.queue.dispatch_one(transport, 11)
+        self.assertEqual(transport.preflight_stale, [False])
+
+    def test_rename_moves_pending_and_keeps_unknown_text_unchanged(self) -> None:
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 10)
+        data = self.queue.snapshot()
+        pending, unknown = data["items"]
+        unknown["status"] = "unknown"
+        unknown["hold_reason"] = "delivery acknowledgement is uncertain"
+        unknown_text = unknown["text"]
+        L.write_json(self.queue.path, data)
+
+        result = self.queue.rename("agent-sync", "AFC-305 existing chat nudges",
+                                   "agent-sync", "AFC-305 renamed", 12)
+        self.assertEqual(result, {"status": "moved", "moved": 1, "held": 0})
+        snapshot = self.queue.snapshot()
+        updated_pending, unchanged_unknown = snapshot["items"]
+        self.assertEqual(snapshot["bindings"][L.topic_key("agent-sync", "AFC-305 renamed")] ["topic"],
+                         "AFC-305 renamed")
+        self.assertEqual(updated_pending["binding"]["topic"], "AFC-305 renamed")
+        self.assertIn('"topic":"AFC-305 renamed"', updated_pending["text"])
+        self.assertEqual(unchanged_unknown["text"], unknown_text)
+        self.assertEqual(unchanged_unknown["binding"]["topic"], self.binding["topic"])
+
+    def test_rename_collision_preserves_destination_and_holds_old_pending(self) -> None:
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
+        destination = dict(self.binding, topic="existing destination", session_id="session-22",
+                           cwd="/workspace/other")
+        self.queue.bind(**destination)
+        result = self.queue.rename("agent-sync", self.binding["topic"], "agent-sync",
+                                   destination["topic"], 11)
+        self.assertEqual(result, {"status": "collision", "moved": 0, "held": 1})
+        snapshot = self.queue.snapshot()
+        self.assertEqual(snapshot["bindings"][L.topic_key("agent-sync", destination["topic"])], destination)
+        self.assertNotIn(L.topic_key("agent-sync", self.binding["topic"]), snapshot["bindings"])
+        self.assertEqual(snapshot["items"][0]["binding"], self.binding)
+        self.assertIn("collision", snapshot["items"][0]["hold_reason"])
 
     def test_restart_turns_inflight_dispatch_into_unknown(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 77, 10)

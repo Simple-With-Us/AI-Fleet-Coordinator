@@ -63,3 +63,5 @@ agent-sync --as CODEX daemon chats unbind --target-seat GROK \
 ```
 
 AFC-307 separately tracks the older shared Grok prompt helper's uncorrelated `queued: true` result.  The new nudge transport bypasses that acceptance path.
+
+Topic renames and channel moves migrate explicit chat bindings and pending nudge text.  Conflicting destination bindings remain intact and affected old pending nudges are held for operator review.  Unknown or in-flight payloads remain unchanged for exact receipt reconciliation.  Stale owner backlog retains the normal once-per-topic/day suppression.
