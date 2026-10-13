@@ -1,14 +1,14 @@
 # Fleet RAG access check — can your platform search and contribute?
 
-**Every agent platform: run the check for your surface, then report on the board.**  This page is
+**Every agent platform: run the check for your surface, then report in Linear.**  This page is
 the single place to point a seat at.  It is public, so it names hostnames and credential *names*
 only — never values.
 
-Reporting rail: board item **`02512901`** (`fleet-infra`, "Fleet RAG access check").  One comment
-per platform, in this shape:
+Reporting rail: Linear issue **`OPS-372`** (old board id `02512901`, "Fleet RAG access check").  One comment
+per platform, in this shape (writes need `AGENT_SEAT`):
 
 ```bash
-board comment 02512901 --by <YOUR-SEAT> --env <Mac|cloud> \
+board comment OPS-372 --by <YOUR-SEAT> --env <Mac|cloud> \
   --text "surface: <cli|stdio-mcp|remote-mcp|rest> | search: ok|FAIL <detail> | contribute: ok|FAIL <detail> | stats points: <n>"
 ```
 
@@ -73,8 +73,8 @@ which anyone who can open it can read (see
 [CLAUDE-CODE-CLOUD-ENVIRONMENTS.md](CLAUDE-CODE-CLOUD-ENVIRONMENTS.md)).
 
 **Manual fallback**, only for a sandbox whose platform cannot inject an identity: say so on the
-board item and a Mac-side seat will hand the three values over through the usual `chmod 600`
-file — do not ask for them in Slack or in a comment.
+Linear issue and a Mac-side seat will hand the three values over through the usual `chmod 600`
+file — do not ask for them in Zulip or in a comment.
 
 ---
 
@@ -146,7 +146,7 @@ signal instead of the model inventing fleet history.
 Fleet memory (shared RAG).  Before re-deriving a lesson, debugging something that
 smells familiar, or asking me a question a past decision probably answered, search
 the fleet corpus first — recall_search (MCP tool) or `recall "query"` (CLI).  A hit
-is a lead, not a verdict: open the board row, note, or doc it cites before relying
+is a lead, not a verdict: open the Linear issue, note, or doc it cites before relying
 on it.  After you learn something reusable — a gotcha, a measured number, a
 preference of mine, a runbook step — store one paragraph with recall_contribute:
 one idea, 40-4000 chars, category lesson|preference|infrastructure|decision|runbook.
@@ -164,21 +164,21 @@ Where it goes, and what already carries it (checked 2026-09-03):
 | `~/.gemini/config/AGENTS.md` (Antigravity) | covered |
 | `~/.grok/GROK.md` | added 2026-09-03 |
 | `~/.cursor/rules/fleet-recall.mdc` | added 2026-09-03 (`alwaysApply: true`; mirrored in this repo) |
-| `~/.minimax/memory/user.md` (MiniMax / Mavis, Slack `[MM]`) | added 2026-09-04 — MiniMax has no global rules file; user memory is the only always-on layer, and `~/.minimax/skills/` is load-on-demand.  Slack tag is `[MM]` (former `MINIMAX` retired).  See [ONBOARDING-NEW-AGENT.md](ONBOARDING-NEW-AGENT.md) Phase 0. |
+| `~/.minimax/memory/user.md` (MiniMax / Mavis, chat tag `[MM]`) | added 2026-09-04 — MiniMax has no global rules file; user memory is the only always-on layer, and `~/.minimax/skills/` is load-on-demand.  Chat tag is `[MM]` (former `MINIMAX` retired).  See [ONBOARDING-NEW-AGENT.md](ONBOARDING-NEW-AGENT.md) Phase 0. |
 | Product repo `AGENTS.md` files | covered — see `docs/AGENTS-RECALL-SNIPPET.md` |
 | ChatGPT / Claude.ai / Gemini web personalization | paste the block as-is |
-| DeepSeek Harness (DSH), Kimi | skills only (`~/.deepseek/skills`); DSH Slack tag is `[DSH]` (former `DEEPSEEK` retired).  Kimi is retired |
+| DeepSeek Harness (DSH), Kimi | skills only (`~/.deepseek/skills`); DSH chat tag is `[DSH]` (former `DEEPSEEK` retired).  Kimi is retired |
 
 Keep the wording aligned with the `fleet-recall` skill and the AGENT-SYNC stanza, so a seat
 reading two sources never gets two different rules.
 
 ## Rules that apply on every surface
 
-- **Search before you re-derive.**  A hit is a lead, not a verdict: open the board row, note, or
+- **Search before you re-derive.**  A hit is a lead, not a verdict: open the Linear issue, note, or
   doc it points to before relying on it.
 - **Contribute lessons, not logs.**  One idea, 40–4000 characters, category one of
   `lesson | preference | infrastructure | decision | runbook`.  Never paste transcripts or secrets.
-- **Facts keep their existing homes.**  Board rows, Apple Notes, effort logs, and docs are
-  ingested nightly; contribute directly only for a lesson with no natural home.
+- **Facts keep their existing homes.**  Old board rows, Apple Notes, effort logs, and docs are
+  ingested nightly (Linear issues join when the `linear` recall source ships); contribute directly only for a lesson with no natural home.
 - **Do not point Socratic.Trade's embedding provider at the fleet endpoint** — the embedding
   spaces are not compatible (measured 2026-08-31).

@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""One-time cutover step:  give the import's live claims a claimed:<SEAT> label.
+
+The import put seat:<TAG> labels on reporters as well as claimants, and wrote
+the claimant only in each issue's provenance footer ("addressed by x").  The
+board CLI therefore reads a claim from a claimed:<SEAT> label, and falls back
+to the footer on `claim` and `show`.  `list` and `list --mine` see labels only,
+so until this script runs they show no claimant for imported In Progress and
+In Review issues.
+
+It is purely additive:  it adds claimed:<SEAT> and removes nothing, so
+attribution (seat: labels) stays as imported.  It skips issues that already
+carry a claimed: label, so it is idempotent and safe to resume after an
+interruption.  It uses the board CLI's own Fleet credentials, token cache,
+rate-limit handling and loopback-only URL rule, never a personal or admin key.
+
+Dry run by default.  --apply needs LINEAR_BOARD_WRITES=1, as every write does.
+Owner-approved cutover step (README, "Cutover relabel"); do not run it before
+the owner says so.
+
+  python3 scripts/linear-board/relabel_claims.py            # print the plan
+  LINEAR_BOARD_WRITES=1 python3 scripts/linear-board/relabel_claims.py --apply
+"""
+from __future__ import annotations
+
+import argparse
+import importlib.machinery
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+LIVE_STATES = ("In Progress", "In Review")
+
+
+def load_board():
+    loader = importlib.machinery.SourceFileLoader("board_cli", str(HERE / "board"))
+    spec = importlib.util.spec_from_loader("board_cli", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Add claimed:<SEAT> labels to imported live claims.")
+    ap.add_argument("--apply", action="store_true", help="write the labels (default: print the plan only)")
+    ap.add_argument("--states", default=",".join(LIVE_STATES), help="comma-separated workflow states to cover")
+    ap.add_argument("--limit", type=int, default=0, help="stop after this many writes (0 = no limit)")
+    a = ap.parse_args(argv)
+    B = load_board()
+    if a.apply and B.env("LINEAR_BOARD_WRITES") != "1":
+        B.die("--apply is a write, and writes to Linear are off until cutover (LINEAR_BOARD_WRITES=1).",
+              B.EXIT_WRITES_OFF)
+    states = B.split_csv(a.states)
+    auth = B.Auth(B.endpoint("LINEAR_BOARD_TOKEN_URL", B.TOKEN_URL))
+    L = B.Linear(auth, B.endpoint("LINEAR_BOARD_API_URL", B.GRAPHQL_URL))
+    query = """query BoardRelabel($filter: IssueFilter, $first: Int!, $after: String) {
+      issues(filter: $filter, first: $first, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { ...BoardIssue description }
+      }
+    }""" + B.F_ISSUE
+    todo, marked, unknown = [], 0, []
+    try:
+        for n in L.paginate(query, {"filter": {"state": {"name": {"in": states}}}}, ("issues",), 50):
+            if B.claim_markers(n):
+                marked += 1
+                continue
+            seats = B.footer_claimants(n.get("description"))
+            if seats:
+                todo.append((n, seats))
+            else:
+                unknown.append(n)
+        print(f"{len(todo)} issue(s) to mark, {marked} already marked, {len(unknown)} with no claimant "
+              f"in their footer (states: {', '.join(states)})")
+        for n, seats in todo:
+            print(f"  {n['identifier']:<9} {(n.get('state') or {}).get('name', ''):<12} -> "
+                  f"{', '.join(B.CLAIM_PREFIX + s for s in seats)}")
+        for n in unknown:
+            print(f"  {n['identifier']:<9} {(n.get('state') or {}).get('name', ''):<12} no claimant "
+                  "(left as it is)")
+        if not a.apply:
+            print("dry run: nothing written.  Rerun with --apply (LINEAR_BOARD_WRITES=1) to add the labels.")
+            return 0
+        ws = B.Workspace(L)
+        done = 0
+        for n, seats in todo:
+            if a.limit and done >= a.limit:
+                print(f"stopped at --limit {a.limit}; rerun to continue (marked issues are skipped).")
+                break
+            ids = [ws.label_id(f"{B.CLAIM_PREFIX}{s}", create=True) for s in seats]
+            current = {x["id"] for x in (n.get("labels") or {}).get("nodes") or []}
+            add = [i for i in ids if i and i not in current]
+            if add:
+                L.call(B.M_UPDATE, {"id": n["id"], "input": {"addedLabelIds": add}})
+            done += 1
+            if done % 25 == 0:
+                print(f"  marked {done} of {len(todo)}", file=sys.stderr, flush=True)
+        print(f"marked {done} issue(s).")
+    except B.GqlError as e:
+        B.die(f"Linear error: {e}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -6,12 +6,12 @@ description: >-
 
 # Fleet recall
 
-> **This install is for Grok Bot roles.** Slack tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
+> **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
 
 
 The fleet has one shared memory: the `fleet-agents` collection in the self-hosted Qdrant on the
-Hetzner box, embedded by the self-hosted bge-m3 endpoint.  It holds every board row with its
-resolution, the Apple Notes archive, every effort log, the fleet protocol docs, the skills, and
+Hetzner box, embedded by the self-hosted bge-m3 endpoint.  It holds every row of the old board with its
+resolution (Linear issues join when the `linear` recall source ships), the Apple Notes archive, every effort log, the fleet protocol docs, the skills, and
 each seat's memory files, refreshed nightly by the BotFleet bot Oracle.  Canonical doc:
 `docs/RAG-FLEET-INFRA.md` in AI-Fleet-Coordinator.
 
@@ -24,7 +24,7 @@ One targeted `recall_search` before you act costs seconds; re-deriving a lesson 
 At the start of every turn or task kickoff, evaluate these 4 triggers.  If ANY trigger matches, running `recall_search` is **mandatory** before inspecting code or executing trial-and-error diagnostic commands:
 1. **Error / Blocker Encounter**: Any 4xx/5xx HTTP error, test/build failure, timeout, crash trace, or Sentry issue.
 2. **Infrastructure & Platform**: Touching Coolify, LaunchAgents, pm2, Cloudflare Access/tunnels, Tailscale, Sentry, Qdrant, TEI, Redis, or secrets/auth.
-3. **Cross-Repo & Architectural Patterns**: Modifying shared protocols (AGENT-SYNC, effort logs, board sync) or touching unfamiliar sibling repositories.
+3. **Cross-Repo & Architectural Patterns**: Modifying shared protocols (AGENT-SYNC, the Linear and `board` integration) or touching unfamiliar sibling repositories.
 4. **Pre-Owner Query**: Before asking the owner a question regarding preferred conventions, architectural decisions, or environment history.
 
 ### Permitted Bypass:

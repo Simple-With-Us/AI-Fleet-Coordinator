@@ -1,5 +1,9 @@
 # Owner-facing times are Central Time (2026-08-22)
 
+**Superseded 2026-10-05.**  Keep the conversion.  Drop the zone abbreviation.
+Say `3:15am`, not `3:15am CT`.  Name a zone only when citing UTC.  Canonical:
+`AGENT-SYNC.md` § Timestamps.
+
 Owner: agents kept saying `00:00 UTC`.  Convert.  Binding for every seat,
 every platform, including chat.
 

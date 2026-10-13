@@ -32,6 +32,7 @@ import argparse
 import http.client
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -48,6 +49,22 @@ SECRETS = Path.home() / ".secrets" / "mac-collab.env"
 # when the service was actually fine, just slow.  60s absorbs that; raise
 # MAC_COLLAB_TIMEOUT if the box is worse.
 TIMEOUT = float(os.environ.get("MAC_COLLAB_TIMEOUT", "60"))
+
+
+# Any spelling of GROK followed by BUILD signs as GROK (owner 2026-10-10).  A one-line copy of the GROK
+# row's `aliasPattern` in fleet-apps.json, because this script is standalone and imports no package;
+# scripts/mac-collab/test_seat_alias.py keeps the copy equal.  Every other value is left exactly as typed.
+GROK_ALIAS_PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
+GROK_ALIAS_RE = re.compile(GROK_ALIAS_PATTERN, re.IGNORECASE | re.ASCII)
+
+
+def canonical_seat(value: str | None) -> str | None:
+    """GROK for any GROK-BUILD spelling, otherwise the value unchanged.  Applied to what is WRITTEN (--by).
+    `--mine` is a filter and is left as typed, so rows the server stored under GROK-BUILD before the alias
+    stay findable with `--mine GROK-BUILD`."""
+    if isinstance(value, str) and GROK_ALIAS_RE.match(value.strip()):
+        return "GROK"
+    return value
 
 
 AUTH_FAIL_HINT = (
@@ -182,6 +199,9 @@ def main() -> int:
     sub.add_parser("stats", help="aggregate counts")
 
     a = p.parse_args()
+    for dest in ("reported_by", "addressed_by", "author"):   # the --by payload fields;  --mine stays as typed
+        if hasattr(a, dest):
+            setattr(a, dest, canonical_seat(getattr(a, dest)))
 
     if a.cmd == "list":
         q = []

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- Grok Bot: spherical mark with characteristic dual capsule eye cutouts.
+       Inverts between light mode (dark sphere, light eyes) and dark mode
+       (light sphere, dark eyes) across both template and standard rendering. -->
+  <style>
+    path { fill: currentColor; }
+    @media (prefers-color-scheme: dark) {
+      path { fill: #FFFFFF; }
+    }
+  </style>
+  <path fill-rule="evenodd" d="M 12 2 A 10 10 0 1 0 12 22 A 10 10 0 1 0 12 2 Z M 17.37 5.35 c -0.06 0.03 -0.13 0.09 -0.14 0.14 -0.07 0.20 -0.02 0.36 0.26 0.91 0.28 0.57 0.37 0.78 0.60 1.39 0.24 0.65 0.41 0.88 0.73 1.04 0.39 0.19 0.65 -0.00 0.65 -0.46 0.00 -0.49 -0.71 -2.13 -1.12 -2.59 -0.32 -0.35 -0.73 -0.53 -0.99 -0.42 z M 13.23 6.14 c -0.29 0.10 -0.48 0.37 -0.48 0.65 0.00 0.14 0.05 0.28 0.23 0.66 0.12 0.26 0.33 0.74 0.47 1.07 0.36 0.87 0.44 0.98 0.77 1.13 0.62 0.27 1.27 -0.16 1.21 -0.81 -0.03 -0.28 -0.39 -1.18 -0.89 -2.19 -0.12 -0.23 -0.35 -0.44 -0.59 -0.50 -0.24 -0.07 -0.52 -0.07 -0.71 -0.00 z" />
+</svg>

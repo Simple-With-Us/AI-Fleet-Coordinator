@@ -21,6 +21,14 @@ Implements the fleet-wide canonical pattern (see repo-root INFISICAL.md):
    Infisical write raises SettingsError and the cache is left untouched -- cache and
    Infisical never diverge silently.
 
+5. **Prod is the only environment.**  Infisical has one live environment per project,
+   ``prod`` (owner decision 2026-10-10:  dev and staging are being deleted).  The default
+   is prod and any other slug is refused:  ``init()``, ``set()`` and every fetch raise
+   SettingsError before touching the network, ``refresh()`` logs the refusal and keeps the
+   last-known-good cache, and ``configure()`` leaves the previously configured settings in
+   place.  A stray ``INFISICAL_ENVIRONMENT=dev`` therefore fails loudly instead of reading a
+   stale copy.
+
 Stdlib only (urllib).  No secret VALUES are ever logged; only key names.
 """
 from __future__ import annotations
@@ -36,6 +44,8 @@ import urllib.request
 logger = logging.getLogger("infisical_settings")
 
 INFISICAL_API_DEFAULT = "https://app.infisical.com"
+# The only Infisical environment the fleet reads or writes (see the module docstring).
+PROD_ENVIRONMENT = "prod"
 DEFAULT_REFRESH_SECONDS = 300.0
 HTTP_TIMEOUT = 10.0
 # Knob read from the cache itself, so the refresh cadence is tunable without a deploy.
@@ -58,12 +68,14 @@ class SettingsError(Exception):
 class InfisicalSettings:
     """One app's settings set, cached in memory and backed by Infisical."""
 
-    def __init__(self, *, project_id: str, environment: str = "dev",
+    def __init__(self, *, project_id: str, environment: str = PROD_ENVIRONMENT,
                  managed_keys: tuple[str, ...] = (), required_keys: tuple[str, ...] = (),
                  secret_keys: tuple[str, ...] = (), api_base: str | None = None,
                  identity_prefixes: tuple[str, ...] = IDENTITY_PREFIXES) -> None:
         self.project_id = project_id
-        self.environment = environment
+        # Empty means "unset" (an INFISICAL_ENVIRONMENT= line), so it is prod; any other
+        # slug is kept as given and refused at first use by _require_prod().
+        self.environment = (environment or "").strip().lower() or PROD_ENVIRONMENT
         self.managed_keys = tuple(managed_keys)
         self.required_keys = tuple(required_keys)
         self.secret_keys = frozenset(secret_keys)
@@ -77,6 +89,22 @@ class InfisicalSettings:
         self._refresh_thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._listeners: list = []
+
+    # -- environment guard --------------------------------------------------
+
+    def _environment_refusal(self) -> str | None:
+        """Why this instance may not talk to Infisical, or None when it is prod.
+        The slug is not a secret, so it is safe to name."""
+        if self.environment == PROD_ENVIRONMENT:
+            return None
+        return (f"refusing Infisical environment {self.environment!r}: prod is the only "
+                "environment (dev and staging are retired); unset INFISICAL_ENVIRONMENT "
+                "or set it to prod; see INFISICAL.md")
+
+    def _require_prod(self) -> None:
+        refusal = self._environment_refusal()
+        if refusal:
+            raise SettingsError(refusal)
 
     # -- identity -----------------------------------------------------------
 
@@ -151,6 +179,7 @@ class InfisicalSettings:
         return token
 
     def _fetch_all(self, token: str) -> dict[str, str]:
+        self._require_prod()
         path = ("/api/v3/secrets/raw?workspaceId=" + urllib.parse.quote(self.project_id)
                 + "&environment=" + urllib.parse.quote(self.environment))
         status, payload = self._request("GET", path, token=token)
@@ -180,7 +209,12 @@ class InfisicalSettings:
         by name so the fallback is always visible).  With no identity configured
         at all, every managed key comes from the environment and the service keeps
         its old env-only behavior.
+
+        A non-prod environment is refused first, even with no identity configured, so
+        a bad INFISICAL_ENVIRONMENT surfaces at startup rather than the day an identity
+        is added.
         """
+        self._require_prod()
         cid, _csec = self.identity()
         if cid:
             token = self._login()
@@ -218,6 +252,11 @@ class InfisicalSettings:
 
     def refresh(self) -> bool:
         """Re-fetch from Infisical.  On failure the last-known-good cache is kept."""
+        refusal = self._environment_refusal()
+        if refusal:
+            logger.error("infisical-settings: refresh refused (%s); keeping last-known-good "
+                         "cache of %d key(s)", refusal, len(self._cache))
+            return False
         cid, _csec = self.identity()
         if not cid:
             return False                      # env-backed: nothing to refresh
@@ -252,6 +291,7 @@ class InfisicalSettings:
         SettingsError when the Infisical write fails; the cache is left untouched
         so the two can never diverge silently.
         """
+        self._require_prod()                  # never write through to a non-prod environment
         if key not in self.managed_keys:
             raise SettingsError(f"refusing to write unmanaged key {key!r}; "
                                 "see INFISICAL.md for the managed key inventory")
@@ -359,8 +399,12 @@ _default: InfisicalSettings | None = None
 
 
 def configure(**kwargs) -> InfisicalSettings:
+    """Install the module default.  A refused (non-prod) environment raises SettingsError
+    and leaves the previously configured settings, cache included, exactly as they were."""
     global _default
-    _default = InfisicalSettings(**kwargs)
+    candidate = InfisicalSettings(**kwargs)
+    candidate._require_prod()
+    _default = candidate
     return _default
 
 

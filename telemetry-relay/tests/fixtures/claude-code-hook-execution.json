@@ -1,0 +1,1 @@
+{"event":"hook_execution_start","note":"Noise the relay must drop (audit B.2, ~51% of agent-sessions volume). Benign values only.","resource":{"service.name":"claude-code-desktop"},"attributes":{"event.name":"hook_execution_start","session.id":"session-001"}}

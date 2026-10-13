@@ -407,7 +407,7 @@ def recall_contribute(text: str, category: str, app: str = "fleet", seat: str | 
         raise FleetRagError(f"category must be a string, not {type(category).__name__}")
     if category not in CONTRIB_CATEGORIES:
         raise FleetRagError("category must be one of " + "|".join(CONTRIB_CATEGORIES))
-    seat = (_opt_str("seat", seat) or os.environ.get("AGENT_SEAT") or "").strip().upper()
+    seat = search_log.canonical_seat(_opt_str("seat", seat) or os.environ.get("AGENT_SEAT") or "")
     if not seat:
         raise FleetRagError("seat is required (pass seat=... or set AGENT_SEAT)")
     if not _SEAT_RE.match(seat):

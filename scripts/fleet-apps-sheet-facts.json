@@ -1,0 +1,69 @@
+{
+  "_comment": "Curated facts for fleet-apps-sheet-sync.mjs that no registry file carries.  The sync reads this file; edit it, then re-run the sync.  Never put a secret value here, only names and paths.  Each fact names its owner ruling or source.",
+  "ascRecords": {
+    "6820885210": {
+      "status": "Successor, in progress",
+      "action": "Successor Usage Monitor Local app, in progress under the Simple With Us (SWU) domain with a slightly changed name.  It replaces usage-local (Usage Local Monitor, 6799230729).  Owner Oct 11.  Its bundle id and App Store data stay as they are."
+    },
+    "6820881005": {
+      "status": "Successor, in progress",
+      "action": "Successor Usage Monitor Client app, in progress under the Simple With Us (SWU) domain with a slightly changed name.  It replaces usage (Usage Client Monitor, 6799230435).  Owner Oct 11.  Its bundle id and App Store data stay as they are."
+    }
+  },
+  "appNotes": {
+    "usage": "Being replaced by the successor Usage Monitor Client app (ASC 6820881005, SWU domain, in progress; owner Oct 11).",
+    "usage-local": "Being replaced by the successor Usage Monitor Local app (ASC 6820885210, SWU domain, in progress; owner Oct 11)."
+  },
+  "seatPlatforms": {
+    "CLAUDE": "Claude Code",
+    "MONET": "Claude (Monet account and app)",
+    "CODEX": "Codex",
+    "AG": "Antigravity",
+    "CURSOR": "Cursor",
+    "GROK": "Grok (terminal Grok and Grok Build)",
+    "GROK-BUILD": "Grok Build (alias of GROK)",
+    "GROK-WEB": "Grok on the web and iOS",
+    "DSH": "DeepSeek Harness",
+    "HARNESS": "Harness",
+    "CLUTCH": "Clutch",
+    "GROK-BOT": "Grok Bot (cloud)",
+    "RENOIR": "Claude (Renoir account and app)",
+    "FX": "fx (Vercel Labs)",
+    "KIMI": "Kimi",
+    "MM": "MiniMax Code",
+    "MA": "Muse Assist (Meta cloud VM)",
+    "MC": "Muse Code",
+    "OPENCODE": "OpenCode",
+    "JET": "ChatGPT (OpenAI dot)",
+    "INSTINCT": "Instinct (hosted)",
+    "ECHO": "Instinct (hosted)"
+  },
+  "hostedSeats": {
+    "JET": {
+      "notesName": "Jet",
+      "zulipBotEmail": "openai-dot-bot@simplewithus.zulipchat.com",
+      "notes": "Its own identity, never a Codex default.  Wake-eligible (AFC #387) and bridged through the hosted MCP Worker (AFC #394, #403).  Its wake POSTs to https://agent-sync.jays.services/internal/wake/JET, which sends an OpenAI MCP Events zulip.mention to every subscribed ChatGPT chat (scripts/agent_sync/server/listener.toml)."
+    },
+    "INSTINCT": {
+      "notesName": "Instinct",
+      "zulipBotEmail": "instinct-owl-bot@simplewithus.zulipchat.com",
+      "notes": "Hosted seat (AFC #426, #427).  Echo is its partner bot; the two may merge."
+    },
+    "ECHO": {
+      "notesName": "Echo",
+      "zulipBotEmail": "instinct-bat-bot@simplewithus.zulipchat.com",
+      "notes": "Hosted seat, Instinct's partner bot (AFC #426, #427).  It may be retired when the two merge."
+    }
+  },
+  "macWake": {
+    "CLAUDE": "Mac listener:  live delivery, and a fresh headless claude -p wake.  Live-session rewake is off (rewake_verified = false).",
+    "*": "Mac listener:  inbox capture, no wake."
+  },
+  "unheldWake": {
+    "OPENCODE": "Not held by a listener yet:  the Mac listener holds it once Jay enables it.",
+    "GROK-BOT": "No listener."
+  },
+  "linearKeysMissing": {
+    "GROK-WEB": "Its Linear app keys are not in Infisical yet (checked Oct 11), so it signs as the shared Fleet app."
+  }
+}

@@ -23,29 +23,33 @@ per-release owner ask, **but only announce-then-deploy**:
 2. **Wait a short no-objection window** (~10 minutes) before triggering.
 3. **Avoid market hours** unless the change is a fix — deploys restart the scheduler
    mid-session otherwise.
-4. Then deploy, **health-verify, and update the boards** (the deployer owns the close-out).
+4. Then deploy, **health-verify, and update the Linear issues** (the deployer owns the close-out).
 
-**Back the announce with an atomic claim (added 2026-09-16, board item bd6d325e).** The
-Slack announce gives peers visibility, but it is not itself a lock — a poll-cadence gap is
+**Back the announce with a claim (added 2026-09-16, reworked for Linear at the cutover).** The
+Zulip announce gives peers visibility, but it is not itself a lock — a poll-cadence gap is
 exactly what let two lanes deploy the same commit 2 seconds apart on 2026-07-09 (Coolify's
-cancel API is broken, so both builds ran). THE BOARD's claim endpoint now rejects a second
-claim of an `in_progress` item by a different seat within a 20-minute lease (`PATCH
-/findings/<id>` → `409 conflict` when `status=in_progress` and the existing `addressed_by`
-differs from the incoming one; see `scripts/mac-collab/mac-collab-server.py`
-`_handle_finding_update`). Use that as the real lock instead of trusting the timing window
-alone:
+cancel API is broken, so both builds ran). The old board server rejected a second claim of an
+`in_progress` item with a `409` inside a 20-minute lease. That lock is gone with the server.
+Linear's `board claim` is check-then-set:  it exits `3` when another seat holds the issue In
+Progress, but two claims in the same second can both pass the check, and the later write
+replaces the earlier `claimed:` label. So the claim is a strong signal, not an atomic lock.
+Use it together with the announce and the no-objection window, and re-read the holder before
+you deploy:
 
 ```bash
 board file --title "DEPLOY LOCK: <app>" --app <app> --severity P2 --kind agent-report --by "$AGENT_SEAT" --env Mac
-board claim <id> --by "$AGENT_SEAT" --env Mac --where "deploying <commit>"   # 409 = someone already holds it, stop
+board claim <id> --by "$AGENT_SEAT" --env Mac --where "deploying <commit>"   # exit 3 = someone already holds it, stop
+sleep 10 && board show <id>        # the holder must still be you;  if it names another seat, stand down
 # ...announce, wait the window, deploy, health-verify...
 board status <id> completed --resolution "deployed <commit>"
 ```
 
-A `409` means another seat already claimed that app's deploy lock — stand down, do not
-also trigger, and go find them in `#agent-sync` instead of assuming your Slack post won.
-This does not require GitHub Environments or a new board `source_kind`; it reuses the
-claim conflict check that already exists.
+Exit `3`, or a holder that is not you after the re-read, means another seat claimed that app's
+deploy lock — stand down, do not also trigger, and go find them in `#agent-sync` instead of
+assuming your Zulip post won. Prefer reusing the app's open `DEPLOY LOCK` issue over filing a
+new one each time (`board list --app <app> --search "DEPLOY LOCK"`), so the history stays in
+one place. An atomic lock (a GitHub environment or a Coolify-side lock) is an open item for the
+owner.  This does not require GitHub Environments or a new `Kind` label.
 
 This replaces the unconditional "deploy immediately on merge" reading of the 2026-07-06
 directive; the older "never deploy without an explicit owner ask" lines in repo docs are equally

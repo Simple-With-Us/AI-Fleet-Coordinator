@@ -1,0 +1,2296 @@
+#!/usr/bin/env python3
+"""board -- the fleet work board CLI, backed by Linear.
+
+Same verbs, flags and text output lines as the mac-collab `board` it replaces,
+plus --json, `whoami`, `claim --steal --reason` and `status duplicate --of`.
+scripts/linear-board/README.md has the install steps, the frozen contract
+table and every environment variable.
+
+Usage:
+  board list [--app A] [--status S,S] [--severity P0,P1] [--kind K] [--mine SEAT]
+             [--label NAME ...] [--search TEXT] [--limit N] [--json]
+  board show <id> [--json]
+  board file --title T [--app A] [--severity P0..P4] [--desc D | --desc-file PATH|-]
+             [--fix F | --fix-file PATH|-] [--label NAME ...]
+             [--by SEAT] [--where LOC] [--env Mac|cloud] [--kind K] [--uid U] [--url URL]
+  board claim <id> --by SEAT [--where LOC] [--env Mac|cloud] [--session ID ...]
+             [--steal --reason TEXT]
+  board status <id> <open|in_progress|addressed|completed|deployed|wontfix|duplicate|parked>
+             [--by SEAT] [--resolution TEXT] [--of <id>] [--session ID ...]
+  board comment <id> --by SEAT (--text TEXT | --text-file PATH|-) [--where LOC]
+             [--env Mac|cloud] [--session ID ...]
+  board label add|remove <id> NAME [--by SEAT]
+  board stats
+  board whoami
+
+--desc-file, --fix-file and --text-file keep free text out of argv (and so out of
+`ps` and shell history).  PATH must be a regular file you own, mode 0600 or 0400,
+at most 64 KB of UTF-8;  `-` reads standard input, same cap.  --label, `label` and
+`list --label` take only the flat workspace labels needs-owner, ask-capture,
+fleet-report and stale-claim.  These are Linear-only (BOARD_BACKEND=mac-collab
+refuses them).
+
+Ids: a full board id (32 hex, with or without hyphens), a prefix of 8 or more
+hex characters, or a Linear identifier such as AFC-123.
+
+Identity: a Linear app that mints its own token by OAuth client credentials
+(design section 2).  Each seat has its own app, named for the seat bot (CLAUDE
+signs as "Claude"), when its credentials file <SEAT>.env sits beside Fleet.env;
+a seat with no app yet, and every read without AGENT_SEAT, uses the shared
+"Fleet" app.  Each app has its own token cache and lock.  The seat comes from
+AGENT_SEAT, which the five write verbs require and the read verbs do not.  The
+shared app cannot tell seats apart, so every issue and comment this CLI writes
+starts with a seat tag line ([CLAUDE·6db9ee77]), with a seat app too.  A seat
+app's writes are refused when Linear names another app as the viewer
+(swapped credentials).  A claim is a claimed:<TAG> label on the issue;
+seat:<TAG> labels only say who reported or touched it (the import put them on
+reporters too), so they are never read as a claim.  Writes are off unless
+LINEAR_BOARD_WRITES=1.  BOARD_BACKEND=mac-collab runs the old board CLI
+instead (rollback).
+
+Stdlib only, so cloud seats, the Grok Bot VM and BotFleet containers can run
+it from any AI-Fleet-Coordinator checkout: python3 scripts/linear-board/board.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import errno
+import fcntl
+import hashlib
+import http.client
+import json
+import os
+import re
+import stat
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from pathlib import Path
+
+try:
+    from zoneinfo import ZoneInfo
+    CENTRAL = ZoneInfo("America/Chicago")
+except Exception:  # pragma: no cover - zoneinfo data missing
+    CENTRAL = None
+
+# ----------------------------------------------------------------- constants
+
+GRAPHQL_URL = "https://api.linear.app/graphql"
+TOKEN_URL = "https://api.linear.app/oauth/token"
+# Design section 2: ONE scope string, fixed by the pilot.  Asking for a token
+# with a different string revokes every token the app holds, so it is a
+# constant here and is never read from the environment.
+SCOPE = "read,write,app:assignable,app:mentionable"
+WORKSPACE_URL_KEY = "simple-with-us"
+USER_AGENT = "swu-board-cli/1"
+LOOPBACK_RE = re.compile(r"http://127\.0\.0\.1:\d{1,5}(/[A-Za-z0-9._/-]*)?")
+
+EXIT_ERROR = 1
+EXIT_USAGE = 2          # bad flags, no AGENT_SEAT, --by mismatch, refused URL
+EXIT_CLAIM_HELD = 3     # another seat holds the claim
+EXIT_NO_CREDS = 4       # no Fleet credentials, or a write with another app's seat credentials
+EXIT_RATE_LIMIT = 5     # Linear rate limit outlasted LINEAR_BOARD_MAX_WAIT
+EXIT_AUTH = 6           # token refused, mint refused, or whoami check failed
+EXIT_WRITES_OFF = 7     # a write verb without LINEAR_BOARD_WRITES=1
+
+WRITE_VERBS = ("file", "claim", "status", "comment", "label")
+SESSION_ENV_VAR = "CLAUDE_CODE_SESSION_ID"
+
+# A claim is a `claimed:<SEAT>` label; `seat:<SEAT>` is attribution only.  The
+# import put seat labels on reporters as well as claimants (build_plan.seats),
+# so a seat label alone never says who holds an issue.
+CLAIM_PREFIX = "claimed:"
+SEAT_PREFIX = "seat:"
+# Imported claims that have no marker yet are read from the provenance footer's
+# "addressed by" line, normalized as the importer did (lm_common.normalize_seat,
+# design section 6; roster and aliases copied, read Sat, Oct 10, 2026).
+SEAT_ROSTER = {
+    "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "GROK-WEB", "CLUTCH", "FX", "MM", "MA", "MC",
+    "GROK-BOT", "INSTINCT",
+    "GB-HOUSEKEEPER", "GB-MONITOR", "GB-COMPILER", "GB-PLUMBER",
+    "BF-FIXER", "BF-DIRECTOR", "BF-COMPILER", "BF-DESIGNER", "BF-PUBLISHER", "BF-PLUMBER",
+    "BF-ORACLE", "BF-MONITOR", "BF-HOUSEKEEPER", "BF-DEPLOYER", "BF-BUILDER", "BF-PRODUCER",
+}
+BF_ROLES = {"DIRECTOR", "COMPILER", "FIXER", "DESIGNER", "PLUMBER", "PUBLISHER", "PRODUCER",
+            "DEPLOYER", "MONITOR", "HOUSEKEEPER", "ORACLE", "BUILDER"}
+SEAT_ALIASES = {"MINIMAX": "MM", "MUSE": "MA", "GROK-BUILD": "GROK", "ANTIGRAVITY": "AG",
+                "MUSE-ASSIST": "MA", "MUSE-CODE": "MC"}
+CLUTCH_LINEAGE = {"DSH", "DEEPSEEK", "HARNESS"}
+# Spellings of a seat tag that AGENT_SEAT and --by resolve to the tag the fleet signs with (owner 2026-10-11:  the
+# Instinct seat is shown as Wise (Instinct)).  Retagging to WISE later is a one-line swap here.
+SEAT_TAG_ALIASES = {"WISE": "INSTINCT"}
+# One Linear app per seat (owner 2026-10-10), named for the seat bot's display
+# name.  A seat's app is used when its credentials exist (<SEAT>.env beside
+# Fleet.env, or LINEAR_<SEAT>_CLIENT_ID and _SECRET in the environment, with
+# hyphens as underscores); its viewer must carry exactly this name before the
+# CLI writes with it.  A seat missing here, or with no credentials yet, uses
+# the shared Fleet app.
+SEAT_APP_NAMES = {
+    "CLAUDE": "Claude", "CODEX": "Codex", "CURSOR": "Cursor", "AG": "AG", "GROK": "Grok",
+    "GROK-WEB": "Grok Web", "CLUTCH": "Clutch", "MM": "MM", "FX": "Fx", "MC": "Muse Code",
+    "MA": "Muse Assist", "JET": "Jet", "OPENCODE": "OpenCode",
+    "ECHO": "Echo (Instinct)", "INSTINCT": "Wise (Instinct)",
+}
+# Other names the owner may give a seat's app (the seat tag and the credentials key names stay as they are).
+# The swapped-credentials check accepts the primary name above, any alias here, or the seat tag itself, and
+# ignores case, so renaming an app in Linear (OC or OpenCode, Antigravity or AG) never breaks its seat.
+# Every name must belong to one seat only:  a name two seats share would let their credentials swap unseen
+# (test_accepted_app_names_belong_to_one_seat guards this).
+SEAT_APP_ALIASES = {
+    "AG": ("Antigravity", "Antigravity (AG)"),
+    "MM": ("MiniMax", "MiniMax (MM)"),
+    "FX": ("FX.sh",),
+    "MC": ("Muse Code (MC)",),
+    "MA": ("Muse Assist (MA)",),
+    "JET": ("Jet (OpenAI dot)",),
+    "GROK": ("Grok (Build)", "Grok Build"),
+    "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
+    "OPENCODE": ("OC",),
+    "ECHO": ("Echo",),
+    "INSTINCT": ("Wise",),
+}
+
+
+def seat_app_names(seat: str) -> tuple:
+    """The display names a seat's Linear app may carry, the primary one first; empty for a seat with no app."""
+    app = SEAT_APP_NAMES.get(seat, "") if seat else ""
+    return (app, *SEAT_APP_ALIASES.get(seat, ())) if app else ()
+
+
+def app_name_ok(name, accepted, seat: str = "") -> bool:
+    """Whether a viewer name is one of the accepted display names or the seat tag, ignoring case."""
+    ok = {n.casefold() for n in accepted}
+    if seat:
+        ok.add(seat.casefold())
+    return isinstance(name, str) and name.casefold() in ok
+# The importer writes "Reported by x, addressed by y" through str.capitalize(),
+# so the line is lower case after its first letter; "Addressed by y" when there
+# was no reporter.  Linear hands bullets back as `*`.
+FOOTER_ADDRESSED_RE = re.compile(
+    r"(?im)^[ \t]*[*\-+][ \t]+(?:[^\n]*?,[ \t]+)?addressed by[ \t]+([^\n]+?)[ \t]*$")
+
+# Team routing, copied from the importer (lm_common.load_team_routing over
+# fleet-apps.json plus BOARD_SLUG_OVERRIDES, read Sat, Oct 10, 2026).  A slug
+# that matches nothing goes to AFC with an app:<slug> label, as the import did.
+# SWU is a team key with no BOARD_SLUG_TEAM entry:  the Simple With Us website
+# is filed by its key, not by slug.  FLL stays out on purpose:  fleetlink-legacy
+# has no Linear team of its own and files under FL.
+TEAM_KEYS = ("ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK", "FL", "CC", "SWU")
+FALLBACK_TEAM = "AFC"
+DEFAULT_APP = "fleet-infra"  # routes to OPS (design section 3)
+BOARD_SLUG_TEAM = {
+    "ai-fleet-coordinator": "AFC", "fleet": "AFC",
+    "autorotate": "AR", "autorotate-codes": "AR",
+    "botfleet": "BF", "botfleet-app": "BF",
+    "clutch": "CK", "dsh-runtime": "CK", "harness": "CK",
+    "codecaps": "CC",  # CodeCaps team CC (owner 2026-10-11)
+    "congress": "CT", "congress-trade": "CT",
+    "congress-trading-shared": "CTS", "cts": "CTS",
+    "contactlogo": "CL",
+    "dealdex": "DD", "dealdex-net": "DD",
+    "fleet-infra": "OPS", "fleet-ops": "OPS",
+    "fleetlink": "FL", "fleetlink-legacy": "FL",  # one FleetLink team (owner 2026-10-11), registry rows FL and FLL
+    "hog-hunter": "HH", "hoghunter": "HH",
+    "personal": "PS", "personal-site": "PS",
+    "socratic": "ST", "socratic-trade": "ST", "trading": "ST",
+    "usage": "UM", "usage-monitor": "UM",
+}
+
+# Board status <-> Linear workflow state (design section 3).  duplicate is
+# never a state write: it is a duplicate relation, which moves the issue.
+STATUS_TO_STATE = {
+    "open": "Todo", "in_progress": "In Progress", "addressed": "In Review",
+    "completed": "Done", "deployed": "Deployed", "wontfix": "Won't Fix",
+    "parked": "Parked", "backlog": "Backlog", "canceled": "Canceled",
+}
+STATE_TO_STATUS = {v: k for k, v in STATUS_TO_STATE.items()}
+STATE_TO_STATUS["Duplicate"] = "duplicate"
+LIST_STATUS_STATES = dict((k, [v]) for k, v in STATUS_TO_STATE.items())
+LIST_STATUS_STATES["open"] = ["Todo", "Backlog"]
+LIST_STATUS_STATES["duplicate"] = ["Duplicate"]
+STATUS_WORDS = ("open", "in_progress", "addressed", "completed", "deployed", "wontfix",
+                "duplicate", "parked", "backlog", "canceled")
+
+SEVERITIES = ("P0", "P1", "P2", "P3", "P4")
+SEV_PRIORITY = {"P0": 1, "P1": 2, "P2": 3, "P3": 4, "P4": 4}
+PRIORITY_ORDER = (1, 2, 3, 4, 0)  # Urgent, High, Medium, Low, none: the board's order
+KINDS = ("agent-report", "review-finding", "effort-row", "github-issue", "sentry")
+ENVS = {"mac": "Mac", "cloud": "Cloud"}
+LABEL_COLORS = {"seat": "#0284c7", "claimed": "#d97706", "app": "#7c3aed"}
+
+# The only labels `file --label`, `label add|remove` and `list --label` take (open-loops plan B1):  flat
+# workspace labels, no team and no parent group.  Everything else a seat could name is refused, so a
+# seat can never forge a claim (`claimed:*`), attribution (`seat:*`) or a member of the single-select
+# Kind, Severity and Env groups through this door.  `fleet-report` is a label, never a Kind.
+FLAT_LABELS = ("needs-owner", "ask-capture", "fleet-report", "stale-claim")
+FLAT_LABEL_COLORS = {"needs-owner": "#dc2626", "ask-capture": "#0d9488", "fleet-report": "#4f46e5",
+                     "stale-claim": "#6b7280"}
+# Closing a thread ends these two:  a decision answered or a captured ask handled stops waiting on the owner.
+CLOSING_STATUSES = ("completed", "deployed", "wontfix", "duplicate", "canceled")
+CLOSING_REMOVES = ("needs-owner", "ask-capture")
+# --desc-file, --fix-file and --text-file read at most this many bytes of UTF-8.
+INPUT_MAX_BYTES = 64 * 1024
+# Flags and the verb only the Linear backend has;  BOARD_BACKEND=mac-collab refuses them.
+LINEAR_ONLY_FLAGS = ("--desc-file", "--fix-file", "--text-file", "--label")
+
+OPEN_STATES = ("Todo", "Backlog", "In Progress")
+DONE_STATES = ("Done", "Deployed", "In Review")
+
+TAG_RE = re.compile(r"^\[([A-Z][A-Z0-9-]*)(?:·([0-9A-Za-z-]+))?\]\s*")
+MIGRATED_COMMENT_RE = re.compile(r"^\*\*(.+?)\*\* · ([^\n]*?)(?: \(([^\n]*)\))?\s*\n\n", re.S)
+HTML_COMMENT_RE = re.compile(r"\s*<!--.*?-->\s*", re.S)
+# Linear stores descriptions as rich text and hands back re-serialized
+# markdown:  `[CLAUDE]` comes back as `\[CLAUDE\]`, `~/x` as `\~/x` (seen on
+# imported issues, Sat, Oct 10, 2026).  Comment bodies come back as sent, but
+# both are unescaped before parsing, outside code spans only.
+CODE_SPAN_RE = re.compile(r"(`+)(.+?)\1", re.S)
+MD_ESCAPE_RE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!~|>])")
+IDENT_RE = re.compile(r"^[A-Za-z]{1,8}-\d+$")
+HEX_RE = re.compile(r"^[0-9a-f]+$")
+
+
+# ----------------------------------------------------------------- small helpers
+
+def die(msg: str, code: int = EXIT_ERROR) -> "NoReturn":  # noqa: F821
+    print(f"board: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def warn(msg: str) -> None:
+    print(f"board: warning: {msg}", file=sys.stderr)
+
+
+def env(name: str, default: str | None = None) -> str | None:
+    v = os.environ.get(name, "").strip()
+    return v if v else default
+
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(env(name, str(default)))
+    except ValueError:
+        die(f"{name} must be a number", EXIT_USAGE)
+
+
+def slugify(s: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
+
+
+# Any spelling of GROK followed by BUILD is an alias for the seat GROK (owner 2026-10-10).  A one-line
+# copy of the GROK row's `aliasPattern` in fleet-apps.json, because this script imports no package;
+# test_board.py keeps the two equal.
+GROK_ALIAS_PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
+GROK_ALIAS_RE = re.compile(GROK_ALIAS_PATTERN, re.IGNORECASE | re.ASCII)
+
+
+def norm_seat(s: str | None) -> str:
+    """The seat tag a value stands for, upper-cased.  Every GROK-BUILD spelling is GROK, so AGENT_SEAT,
+    --by and --mine all resolve to the one seat that signs GROK."""
+    v = (s or "").strip().strip("@[]<>`'\" ")
+    return "GROK" if GROK_ALIAS_RE.match(v) else SEAT_TAG_ALIASES.get(v.upper(), v.upper())
+
+
+def hyphenate(h32: str) -> str:
+    return f"{h32[:8]}-{h32[8:12]}-{h32[12:16]}-{h32[16:20]}-{h32[20:]}"
+
+
+def short_id(uid: str) -> str:
+    return (uid or "").replace("-", "")[:8]
+
+
+def det_uuid(kind: str, key: str) -> str:
+    """Deterministic, v4-shaped UUID, so a repeat create is idempotent."""
+    h = hashlib.sha256(f"linear-board:v1:{kind}:{key}".encode("utf-8")).digest()[:16]
+    return str(uuid.UUID(bytes=h, version=4))
+
+
+def parse_iso(s: str | None) -> dt.datetime | None:
+    if not s:
+        return None
+    try:
+        return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def central(when, with_day: bool = True) -> str:
+    """Owner clock: Central, 12-hour, am or pm, no zone name."""
+    if isinstance(when, (int, float)):
+        d = dt.datetime.fromtimestamp(when, dt.timezone.utc)
+    else:
+        d = parse_iso(when)
+        if d is None:
+            return str(when or "")
+    if CENTRAL is not None:
+        d = d.astimezone(CENTRAL)
+    hour = d.hour % 12 or 12
+    ampm = "am" if d.hour < 12 else "pm"
+    day = f"{d.strftime('%a')}, " if with_day else ""
+    return f"{day}{d.strftime('%b')} {d.day}, {hour}:{d.minute:02d}{ampm}"
+
+
+def auto_sessions(explicit: list[str] | None) -> list[str] | None:
+    if explicit:
+        return explicit
+    v = env(SESSION_ENV_VAR)
+    return [v] if v else None
+
+
+def session_tail(sessions: list[str] | None) -> str:
+    return f"  (sessions: {', '.join(sessions)})" if sessions else ""
+
+
+def endpoint(name: str, default: str) -> str:
+    """The production URL, or a loopback test mock.  Nothing else, so the
+    app tokens and client secrets can only ever go to Linear."""
+    v = env(name)
+    if not v:
+        return default
+    if LOOPBACK_RE.fullmatch(v):
+        return v
+    die(f"{name} may only point at http://127.0.0.1:<port>/... (a test mock); refusing {v!r}", EXIT_USAGE)
+
+
+def cache_dir() -> Path:
+    p = Path(env("LINEAR_BOARD_CACHE_DIR") or (Path.home() / ".cache" / "linear-board")).expanduser()
+    p.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return p
+
+
+def read_json_file(path: Path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def write_json_file(path: Path, obj) -> None:
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(obj))
+    os.replace(tmp, path)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect, so the Authorization header never follows a 3xx."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"redirect refused (HTTP {code})", headers, fp)
+
+
+def opener():
+    # ProxyHandler({}) ignores HTTP(S)_PROXY from the environment.
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
+
+# ----------------------------------------------------------------- seat
+
+def current_seat(required: bool = True) -> str:
+    """The seat in AGENT_SEAT.  The four write verbs require it, because every
+    write is signed with it and the CLI never guesses.  Reads (list, show,
+    stats, whoami) do not: they write nothing, and AGENT_SEAT is unset in plain
+    shells, in `zsh -lic`, and under the listener's `env -i`."""
+    seat = norm_seat(os.environ.get("AGENT_SEAT"))
+    if not seat:
+        if not required:
+            return ""
+        die("AGENT_SEAT is not set.  The board CLI writes as the seat in AGENT_SEAT and refuses to "
+            "guess it; export AGENT_SEAT=<your seat tag> (AGENT-SYNC Identity Rules).  Reads "
+            "(list, show, stats, whoami) work without it.", EXIT_USAGE)
+    if not re.fullmatch(r"[A-Z][A-Z0-9-]{0,31}", seat):
+        die(f"AGENT_SEAT={seat!r} is not a seat tag", EXIT_USAGE)
+    return seat
+
+
+def check_by(by: str | None, seat: str, flag: str = "--by") -> str:
+    if by is None:
+        return seat
+    if norm_seat(by) != seat:
+        die(f"{flag} {by} does not match AGENT_SEAT={seat}.  --by is never the source of identity; "
+            "run as that seat or drop the flag.", EXIT_USAGE)
+    return seat
+
+
+def seat_tag(seat: str, sessions: list[str] | None) -> str:
+    s8 = (sessions[0].replace("-", "")[:8]) if sessions else ""
+    return f"[{seat}·{s8}]" if s8 else f"[{seat}]"
+
+
+# ----------------------------------------------------------------- input files and flat labels
+
+def read_private_file(path: str, flag: str) -> bytes:
+    """The bytes of a file a seat handed over so its text stays out of argv:  a regular file owned by
+    the caller with mode exactly 0600 or 0400, at most INPUT_MAX_BYTES.  The checks run on the open
+    descriptor (O_NOFOLLOW refuses a symlink, O_NONBLOCK keeps a FIFO from hanging), so the file cannot
+    be swapped between the check and the read.  Anything else exits 2.  The text is never echoed."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            die(f"{flag} {path}: is a symbolic link;  pass the real file", EXIT_USAGE)
+        die(f"{flag} {path}: cannot open it ({e.strerror or type(e).__name__})", EXIT_USAGE)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            die(f"{flag} {path}: not a regular file", EXIT_USAGE)
+        if st.st_uid != os.geteuid():
+            die(f"{flag} {path}: not owned by you", EXIT_USAGE)
+        mode = stat.S_IMODE(st.st_mode)
+        if mode not in (0o600, 0o400):
+            die(f"{flag} {path}: mode {mode:04o} is not 0600 or 0400, so others may read or change it;  "
+                f"run chmod 600 on it first", EXIT_USAGE)
+        if st.st_size > INPUT_MAX_BYTES:
+            die(f"{flag} {path}: more than {INPUT_MAX_BYTES // 1024} KB", EXIT_USAGE)
+        data = b""
+        while len(data) <= INPUT_MAX_BYTES:
+            chunk = os.read(fd, INPUT_MAX_BYTES + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+        return data
+    finally:
+        os.close(fd)
+
+
+def read_text_input(src: str, flag: str) -> str:
+    """Text for --desc-file, --fix-file or --text-file:  the private file at `src`, or standard input
+    for `-`.  At most INPUT_MAX_BYTES of strict UTF-8, else exit 2."""
+    if src == "-":
+        data = sys.stdin.buffer.read(INPUT_MAX_BYTES + 1)
+        where = "standard input"
+    else:
+        data = read_private_file(src, flag)
+        where = src
+    if len(data) > INPUT_MAX_BYTES:
+        die(f"{flag} {where}: more than {INPUT_MAX_BYTES // 1024} KB", EXIT_USAGE)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        die(f"{flag} {where}: not valid UTF-8", EXIT_USAGE)
+
+
+def flat_label(raw: str | None, flag: str = "--label") -> str:
+    """The canonical name of an allowed flat label, or exit 2 saying why it is refused.  Matching ignores
+    case and surrounding spaces, so Needs-Owner is needs-owner and never a second label."""
+    name = (raw or "").strip()
+    low = name.lower()
+    if low in FLAT_LABELS:
+        return low
+    if low.startswith(CLAIM_PREFIX):
+        why = "a claimed:* label is a claim;  `board claim` writes it"
+    elif low.startswith(SEAT_PREFIX):
+        why = "a seat:* label is attribution;  `board claim` and `board file` write it"
+    elif low.split("/", 1)[0] in ("kind", "severity", "env") or low in ("kind", "severity", "env"):
+        why = "Kind, Severity and Env are single-select groups;  use --kind, --severity or --env"
+    elif low in KINDS:
+        why = "that is a Kind;  use --kind"
+    elif low.upper() in SEVERITIES:
+        why = "that is a Severity;  use --severity"
+    elif low in ENVS:
+        why = "that is an Env;  use --env"
+    else:
+        why = "it is not one of the flat labels this CLI may set"
+    die(f"{flag} {raw!r}: {why}.  Allowed:  {', '.join(FLAT_LABELS)}", EXIT_USAGE)
+
+
+def flat_labels(raws: list[str] | None, flag: str = "--label") -> list[str]:
+    """Validated, de-duplicated flat label names in the order given."""
+    out: list[str] = []
+    for raw in raws or []:
+        name = flat_label(raw, flag)
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def prepare_inputs(a) -> None:
+    """Validate flags and read every --*-file before any credential is read or request is sent, so a bad
+    input exits 2 having touched nothing.  Runs after the writes-off gate:  a gated write never reads a
+    file (or standard input)."""
+    if a.cmd in ("file", "list"):
+        a.labels = flat_labels(a.labels)
+    if a.cmd == "label":
+        a.label_name = flat_label(a.label_name, "NAME")
+    files = []
+    if a.cmd == "file":
+        files = [("--desc-file", a.desc_file, "desc"), ("--fix-file", a.fix_file, "fix")]
+    elif a.cmd == "comment":
+        files = [("--text-file", a.text_file, "text")]
+    files = [f for f in files if f[1] is not None]
+    if sum(1 for f in files if f[1] == "-") > 1:
+        die("only one of --desc-file and --fix-file can read standard input (-)", EXIT_USAGE)
+    for flag, src, attr in files:
+        text = read_text_input(src, flag)
+        if a.cmd == "comment" and not text.strip():
+            die(f"{flag} {'standard input' if src == '-' else src}: the comment text is empty", EXIT_USAGE)
+        setattr(a, attr, text)
+
+
+# ----------------------------------------------------------------- credentials and token
+
+def cred_path() -> Path:
+    return Path(env("LINEAR_FLEET_ENV") or (Path.home() / ".secrets" / "Linear" / "Fleet.env")).expanduser()
+
+
+def token_cache_path() -> Path:
+    return Path(env("LINEAR_FLEET_TOKEN_CACHE")
+                or (Path.home() / ".secrets" / "Linear" / "cache" / "Fleet.token")).expanduser()
+
+
+ID_KEYS = ("LINEAR_CLIENT_ID", "LINEAR_FLEET_CLIENT_ID")
+SECRET_KEYS = ("LINEAR_CLIENT_SECRET", "LINEAR_FLEET_CLIENT_SECRET")
+ENV_PAIR = "environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)"
+
+
+def seat_env_key(seat: str) -> str:
+    """The seat as it appears in variable names:  GROK-WEB is GROK_WEB."""
+    return seat.replace("-", "_")
+
+
+def fleet_app_name() -> str:
+    return env("LINEAR_FLEET_APP_NAME", "Fleet")
+
+
+class Identity:
+    """The Linear app a run acts as, where its credentials came from (`where`
+    is a path or variable names, never a value), the token cache that belongs
+    to it, and the viewer names Linear may answer with for it.
+
+    kind "seat":   the seat's own app, from <SEAT>.env or LINEAR_<SEAT>_CLIENT_ID.
+    kind "fleet":  the shared Fleet app, from Fleet.env.
+    kind "env":    LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET, a cloud runtime's
+                   pair, which may hold the seat's app or Fleet."""
+
+    def __init__(self, kind: str, seat: str, cid: str, sec: str, where: str, cache: Path,
+                 accept: tuple, label: str):
+        self.kind, self.seat, self.cid, self.sec = kind, seat, cid, sec
+        self.where, self.cache, self.accept, self.label = where, cache, accept, label
+
+
+def read_cred_file(p: Path, id_keys: tuple, secret_keys: tuple) -> tuple[str, str]:
+    vals: dict[str, str] = {}
+    try:
+        for line in p.read_text().splitlines():
+            s = line.strip()
+            if s.startswith("export "):
+                s = s[7:].strip()
+            if "=" not in s or s.startswith("#"):
+                continue
+            k, v = s.split("=", 1)
+            k = k.strip()
+            if k in id_keys or k in secret_keys:
+                vals[k] = v.strip().strip('"').strip("'")
+    except OSError as e:
+        die(f"cannot read {p} ({type(e).__name__})", EXIT_NO_CREDS)
+    return (next((vals[k] for k in id_keys if vals.get(k)), ""),
+            next((vals[k] for k in secret_keys if vals.get(k)), ""))
+
+
+def resolve_identity(seat: str = "") -> Identity:
+    """Which Linear app this run acts as.  Only OAuth client credentials of a
+    fleet app are read:  a personal or admin API key never is, from any file or
+    variable, so the CLI cannot act as Jay.  The first that applies wins:
+
+    1. LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET in the environment (a cloud
+       runtime's pair).  They may hold the seat's app or Fleet; the cache is
+       the Fleet one, as before.
+    2. With AGENT_SEAT naming a seat in SEAT_APP_NAMES:  <SEAT>.env beside
+       Fleet.env, then LINEAR_<SEAT>_CLIENT_ID and LINEAR_<SEAT>_CLIENT_SECRET
+       in the environment.  The cache is <SEAT>.token beside Fleet.token.
+    3. Fleet.env, the shared Fleet app (every read without AGENT_SEAT, and a
+       seat with no app yet)."""
+    fleet = fleet_app_name()
+    fleet_file = cred_path()
+    if fleet_file.suffix != ".env":
+        die(f"LINEAR_FLEET_ENV must name a .env file holding only the Fleet app's client credentials; "
+            f"refusing {fleet_file}", EXIT_USAGE)
+    app = SEAT_APP_NAMES.get(seat, "") if seat else ""
+    app_names = seat_app_names(seat)
+    cid_e = os.environ.get("LINEAR_CLIENT_ID", "").strip()
+    sec_e = os.environ.get("LINEAR_CLIENT_SECRET", "").strip()
+    if cid_e and sec_e:
+        return Identity("env", seat, cid_e, sec_e, ENV_PAIR, token_cache_path(),
+                        tuple(n for n in (*app_names, fleet) if n), "LINEAR_CLIENT_ID app")
+    seat_file = fleet_file.parent / f"{seat}.env" if app else None
+    k = seat_env_key(seat)
+    if app:
+        seat_cache = token_cache_path().parent / f"{seat}.token"
+        if seat_file.is_file():
+            cid, sec = read_cred_file(seat_file, ("LINEAR_CLIENT_ID", f"LINEAR_{k}_CLIENT_ID"),
+                                      ("LINEAR_CLIENT_SECRET", f"LINEAR_{k}_CLIENT_SECRET"))
+            if not (cid and sec):
+                die(f"{seat_file} has no LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET.  Put the {app} app's "
+                    f"client credentials in it, or move it aside so {seat} uses the shared {fleet} app.",
+                    EXIT_NO_CREDS)
+            return Identity("seat", seat, cid, sec, str(seat_file), seat_cache, app_names, f"{app} seat app")
+        cid_s = os.environ.get(f"LINEAR_{k}_CLIENT_ID", "").strip()
+        sec_s = os.environ.get(f"LINEAR_{k}_CLIENT_SECRET", "").strip()
+        if cid_s and sec_s:
+            return Identity("seat", seat, cid_s, sec_s,
+                            f"environment (LINEAR_{k}_CLIENT_ID, LINEAR_{k}_CLIENT_SECRET)",
+                            seat_cache, app_names, f"{app} seat app")
+    if fleet_file.is_file():
+        cid, sec = read_cred_file(fleet_file, ID_KEYS, SECRET_KEYS)
+        if cid and sec:
+            return Identity("fleet", seat, cid, sec, str(fleet_file), token_cache_path(), (fleet,),
+                            f"shared {fleet} app")
+    state = "has no LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET" if fleet_file.is_file() else "is missing"
+    seat_part = (f", and {seat} has no app credentials of its own ({seat_file}, or LINEAR_{k}_CLIENT_ID and "
+                 f"LINEAR_{k}_CLIENT_SECRET)") if app else ""
+    die(f"no Fleet credentials: {fleet_file} {state}, and LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET are not "
+        f"set{seat_part}.  Jay creates the Fleet Linear app and its client credentials first (linear-migration "
+        "design section 2).  Until then use BOARD_BACKEND=mac-collab.", EXIT_NO_CREDS)
+
+
+def _read_cache(fd: int) -> dict:
+    os.lseek(fd, 0, os.SEEK_SET)
+    raw = b""
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        raw += chunk
+    try:
+        cache = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        cache = {}
+    return cache if isinstance(cache, dict) else {}
+
+
+def _write_cache(fd: int, cache: dict) -> None:
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.ftruncate(fd, 0)
+    os.write(fd, json.dumps(cache).encode())
+    os.fsync(fd)
+
+
+class Auth:
+    """The token of one identity, from that identity's own flock-protected
+    cache file, so two seats on one host never share a token or a lock.
+    Mints at most once per 24 hours per host and cache file (design section
+    2).  The token is never printed."""
+
+    def __init__(self, token_url: str, ident: Identity | None = None):
+        self.token_url = token_url
+        # None:  resolved with no seat at the first request, so a caller that
+        # names none (relabel_claims.py) acts as the shared Fleet app.
+        self.ident = ident
+        self.token: str | None = None
+        self.info: dict = {}
+        self.where = ""
+
+    def identity(self) -> Identity:
+        if self.ident is None:
+            self.ident = resolve_identity("")
+        return self.ident
+
+    @property
+    def label(self) -> str:
+        return self.ident.label if self.ident else f"shared {fleet_app_name()} app"
+
+    @staticmethod
+    def _fingerprint(cid: str, sec: str) -> str:
+        return hashlib.sha256(f"linear-board:creds:{cid}:{sec}".encode()).hexdigest()[:16]
+
+    def _open(self) -> int:
+        path = self.identity().cache
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.fchmod(fd, 0o600)
+        return fd
+
+    @staticmethod
+    def _close(fd: int) -> None:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+    def get(self, failed: str | None = None) -> str:
+        if self.token and self.token != failed:
+            return self.token
+        ident = self.identity()
+        self.where = ident.where
+        fp = self._fingerprint(ident.cid, ident.sec)
+        fd = self._open()
+        try:
+            cache = _read_cache(fd)
+            now = time.time()
+            tok = cache.get("access_token")
+            same = cache.get("cred_fp") == fp
+            if tok and same and tok != failed and float(cache.get("expires_at") or 0) - now > 3600:
+                self.token, self.info = tok, cache
+                return tok
+            minted = float(cache.get("minted_at") or 0)
+            if same and now - minted < 86400 and env("LINEAR_BOARD_REMINT") != "1":
+                why = f"Linear refused the cached {ident.label} token" if tok and tok == failed else \
+                      f"the cached {ident.label} token is unusable"
+                die(f"{why}, and this host minted it {central(minted)}, under 24 hours ago.  Not minting "
+                    "again (design section 2: at most one mint a day per host).  If the app was rotated, "
+                    "update its credentials file; to force one mint, rerun with LINEAR_BOARD_REMINT=1.",
+                    EXIT_AUTH)
+            new = self._mint(ident)
+            cache = {
+                "access_token": new["access_token"],
+                "token_type": new.get("token_type") or "Bearer",
+                "scope": new.get("scope") or SCOPE,
+                "minted_at": now,
+                "expires_at": now + float(new.get("expires_in") or 30 * 86400),
+                "mint_count": int(cache.get("mint_count") or 0) + 1,
+                "cred_fp": fp,
+            }
+            _write_cache(fd, cache)
+            self.token, self.info = cache["access_token"], cache
+            return self.token
+        finally:
+            self._close(fd)
+
+    def remember_viewer(self, viewer: dict, org: dict) -> None:
+        """Keep who Linear says the current token belongs to in that token's
+        cache entry.  A mint writes a fresh entry, so the record never
+        outlives its token, and the write check costs one viewer request per
+        mint rather than one per write."""
+        if not self.token:
+            return
+        fd = self._open()
+        try:
+            cache = _read_cache(fd)
+            if cache.get("access_token") != self.token:
+                return
+            cache["viewer"] = {"name": viewer.get("name"), "app": bool(viewer.get("app")),
+                               "workspace": org.get("urlKey")}
+            _write_cache(fd, cache)
+            self.info = cache
+        finally:
+            self._close(fd)
+
+    def viewer(self, L: "Linear") -> dict:
+        """{name, app, workspace} for the current token:  from its cache entry,
+        or one viewer request that is then kept there."""
+        self.get()
+        v = self.info.get("viewer")
+        if isinstance(v, dict) and v.get("name"):
+            return v
+        try:
+            d = L.call(Q_WHOAMI)
+        except GqlError as e:
+            die(f"cannot confirm which Linear app the credentials in {self.where} belong to: {e}", EXIT_AUTH)
+        vw, org = d.get("viewer") or {}, d.get("organization") or {}
+        self.remember_viewer(vw, org)
+        return {"name": vw.get("name"), "app": bool(vw.get("app")), "workspace": org.get("urlKey")}
+
+    def _mint(self, ident: Identity) -> dict:
+        body = urllib.parse.urlencode({
+            "grant_type": "client_credentials", "client_id": ident.cid, "client_secret": ident.sec,
+            "scope": SCOPE,
+        }).encode()
+        req = urllib.request.Request(self.token_url, data=body, method="POST", headers={
+            "Content-Type": "application/x-www-form-urlencoded", "User-Agent": USER_AGENT})
+        timeout = env_float("LINEAR_BOARD_TIMEOUT", 60)
+        try:
+            with opener().open(req, timeout=timeout) as r:
+                js = json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            try:
+                js = json.loads(e.read() or b"{}")
+            except ValueError:
+                js = {}
+            err = str(js.get("error") or "")[:80]
+            desc = str(js.get("error_description") or "")[:200]
+            die(f"minting the {ident.label} token failed: HTTP {e.code} {err} {desc}".rstrip(), EXIT_AUTH)
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
+            die(f"cannot reach Linear to mint the {ident.label} token ({type(e).__name__})", EXIT_ERROR)
+        if not isinstance(js, dict) or not js.get("access_token"):
+            die(f"minting the {ident.label} token failed: Linear answered without an access token", EXIT_AUTH)
+        return js
+
+
+def write_identity_problem(ident: Identity, v: dict) -> str:
+    """Why this identity may not write, from what Linear says its viewer is;
+    empty when it may."""
+    name = v.get("name")
+    want = " or ".join(repr(n) for n in ident.accept)
+    if not v.get("app"):
+        why = f"Linear says the credentials in {ident.where} belong to a person ({name!r}), not an app"
+    elif not app_name_ok(name, ident.accept, ident.seat):
+        why = f"Linear says the credentials in {ident.where} belong to the {name!r} app, not {want}"
+    elif v.get("workspace") != WORKSPACE_URL_KEY:
+        why = f"the credentials in {ident.where} act in workspace {v.get('workspace')!r}, not {WORKSPACE_URL_KEY!r}"
+    else:
+        return ""
+    if ident.kind == "seat":
+        fix = (f"They look swapped with another seat's.  Put the {' or '.join(ident.accept)} app's client credentials "
+               f"there, or move them aside so {ident.seat} writes as the shared {fleet_app_name()} app.")
+    else:
+        fix = ("Set LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET to this seat's app or the shared "
+               f"{fleet_app_name()} app, or unset them.")
+    return f"{why}.  {fix}"
+
+
+def check_write_identity(L: "Linear", auth: Auth) -> None:
+    """Before a write, a seat app (or the environment's pair) must be the app
+    it claims to be:  swapped credentials would sign one seat's words as
+    another's.  Reads skip this.  The shared Fleet app is not checked here,
+    as before."""
+    ident = auth.identity()
+    if ident.kind == "fleet":
+        return
+    problem = write_identity_problem(ident, auth.viewer(L))
+    if problem:
+        die(f"refusing to write as {ident.seat}: {problem}  Reads still work.", EXIT_NO_CREDS)
+
+
+# ----------------------------------------------------------------- GraphQL client
+
+class GqlError(Exception):
+    def __init__(self, errors: list, data=None):
+        self.errors = [e for e in (errors or []) if isinstance(e, dict)] or [{"message": "unknown error"}]
+        self.data = data
+        super().__init__("; ".join((e.get("message") or "error")[:300] for e in self.errors))
+
+    def not_found(self) -> bool:
+        for e in self.errors:
+            code = str((e.get("extensions") or {}).get("code") or "").upper()
+            if code in ("NOT_FOUND", "ENTITY_NOT_FOUND") or \
+                    re.search(r"not found|could not find|does not exist", e.get("message") or "", re.I):
+                return True
+        return False
+
+
+def _err_code(e: dict) -> str:
+    ext = e.get("extensions") or {}
+    return str(ext.get("code") or ext.get("type") or "").upper().replace(" ", "_")
+
+
+def _is_ratelimit(e: dict) -> bool:
+    return _err_code(e) == "RATELIMITED" or "rate limit" in (e.get("message") or "").lower()
+
+
+def _is_auth_error(e: dict) -> bool:
+    return _err_code(e) in ("AUTHENTICATION_ERROR", "UNAUTHENTICATED")
+
+
+class Linear:
+    def __init__(self, auth: Auth, url: str):
+        self.auth = auth
+        self.url = url
+        self.opener = opener()
+        self.timeout = env_float("LINEAR_BOARD_TIMEOUT", 60)
+        self.base_delay = env_float("LINEAR_BOARD_BACKOFF_BASE", 2.0)
+        self.max_wait = env_float("LINEAR_BOARD_MAX_WAIT", 90.0)
+        self.requests = 0
+        # Mutations of the running verb that already landed, so a give-up part
+        # way through a multi-step verb says what was applied instead of
+        # "not applied".  `rerun` is the advice that goes with them.
+        self.landed: list[str] = []
+        self.rerun = "Rerunning the same command is safe and finishes the rest."
+
+    def partial(self) -> str:
+        if not self.landed:
+            return ""
+        return ("  The command stopped part way.  Already applied: " + "; ".join(self.landed) + ".  "
+                + self.rerun)
+
+    def fail(self, msg: str, code: int = EXIT_ERROR) -> "NoReturn":  # noqa: F821
+        """die(), naming any mutation of this verb that already landed."""
+        die(msg + self.partial(), code)
+
+    def _post(self, body: bytes, token: str):
+        req = urllib.request.Request(self.url, data=body, method="POST", headers={
+            "Content-Type": "application/json", "Authorization": f"Bearer {token}",
+            "User-Agent": USER_AGENT})
+        self.requests += 1
+        try:
+            with self.opener.open(req, timeout=self.timeout) as r:
+                raw = r.read()
+                return r.status, (json.loads(raw) if raw else {}), {k.lower(): v for k, v in r.headers.items()}
+        except urllib.error.HTTPError as e:
+            if 300 <= e.code < 400:
+                die(f"Linear answered with a redirect (HTTP {e.code}); refusing to follow it")
+            raw = e.read() or b""
+            try:
+                js = json.loads(raw)
+            except ValueError:
+                js = {}
+            return e.code, (js if isinstance(js, dict) else {}), {k.lower(): v for k, v in (e.headers or {}).items()}
+
+    @staticmethod
+    def _reset_at(hdrs: dict) -> float | None:
+        stamps = []
+        for h in ("x-ratelimit-requests-reset", "x-ratelimit-complexity-reset",
+                  "x-ratelimit-endpoint-requests-reset"):
+            v = hdrs.get(h)
+            if v and v.isdigit():
+                stamps.append(int(v) / 1000.0)
+        ra = hdrs.get("retry-after")
+        if ra and re.fullmatch(r"\d+(\.\d+)?", ra):
+            stamps.append(time.time() + float(ra))
+        return max(stamps) if stamps else None
+
+    def call(self, query: str, variables: dict | None = None) -> dict:
+        """Data of one GraphQL operation.  Raises GqlError on GraphQL errors.
+        Retries Linear's rate limit (HTTP 400 RATELIMITED, or 429), 5xx and
+        transport errors with backoff, never past LINEAR_BOARD_MAX_WAIT."""
+        body = json.dumps({"query": query, "variables": variables or {}}).encode()
+        deadline = time.time() + self.max_wait
+        delay = self.base_delay
+        token = self.auth.get()
+        reminted = False
+        for _ in range(12):
+            try:
+                status, js, hdrs = self._post(body, token)
+            except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+                if time.time() + delay > deadline:
+                    self.fail(f"no usable response from Linear ({type(e).__name__}); the last request was not "
+                              "confirmed.  Raise LINEAR_BOARD_TIMEOUT or LINEAR_BOARD_MAX_WAIT on a loaded host.")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            errs = js.get("errors") or []
+            if status == 429 or any(_is_ratelimit(e) for e in errs):
+                reset = self._reset_at(hdrs)
+                wait = max((reset - time.time()) if reset else 0, delay)
+                if time.time() + wait > deadline:
+                    when = central(reset) if reset else "within the hour"
+                    die(f"Linear rate limit: the {self.auth.label}'s budget resets {when}."
+                        + (self.partial() or "  This request was not applied; rerun it after the reset."),
+                        EXIT_RATE_LIMIT)
+                time.sleep(wait)
+                delay = min(delay * 2, 30)
+                continue
+            if status == 401 or any(_is_auth_error(e) for e in errs):
+                if reminted:
+                    die(f"Linear refused a freshly minted {self.auth.label} token; check the app in Linear's API settings",
+                        EXIT_AUTH)
+                token = self.auth.get(failed=token)
+                reminted = True
+                continue
+            if status == 403:
+                die(f"Linear answered 403: the {self.auth.label} may not do this (scope or team access)", EXIT_AUTH)
+            if status >= 500:
+                if time.time() + delay > deadline:
+                    self.fail(f"Linear answered HTTP {status} until LINEAR_BOARD_MAX_WAIT ran out")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            data = js.get("data")
+            if errs or data is None:
+                raise GqlError(errs or [{"message": f"HTTP {status} with no data"}], data)
+            return data
+        self.fail("gave up after repeated retries against Linear")
+
+    def paginate(self, query: str, variables: dict, path: tuple, page: int, limit: int | None = None):
+        """Yield nodes of the connection at `path`, following endCursor."""
+        after = None
+        got = 0
+        while True:
+            data = self.call(query, dict(variables, first=page, after=after))
+            conn = data
+            for k in path:
+                conn = (conn or {}).get(k)
+            if not conn:
+                return
+            for n in conn.get("nodes") or []:
+                yield n
+                got += 1
+                if limit is not None and got >= limit:
+                    return
+            info = conn.get("pageInfo") or {}
+            if not info.get("hasNextPage") or not info.get("endCursor"):
+                return
+            after = info["endCursor"]
+
+
+# ----------------------------------------------------------------- GraphQL text
+# Every connection names an explicit first:, and every list follows pageInfo.
+
+F_ISSUE = """
+fragment BoardIssue on Issue {
+  id identifier title url priority createdAt updatedAt
+  state { id name type }
+  team { id key name }
+  labels(first: 50) { nodes { id name parent { name } } }
+}"""
+Q_ISSUE = """query BoardIssue($id: String!) {
+  issue(id: $id) {
+    ...BoardIssue
+    description
+    attachments(first: 50) { nodes { url title } }
+    relations(first: 50) { nodes { type relatedIssue { id identifier } } }
+    inverseRelations(first: 50) { nodes { type issue { id identifier } } }
+  }
+}""" + F_ISSUE
+Q_COMMENTS = """query BoardComments($id: String!, $first: Int!, $after: String) {
+  issue(id: $id) {
+    comments(first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { id body createdAt user { id name app } }
+    }
+  }
+}"""
+Q_LIST = """query BoardList($filter: IssueFilter, $first: Int!, $after: String) {
+  issues(filter: $filter, first: $first, after: $after, orderBy: createdAt) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ...BoardIssue }
+  }
+}""" + F_ISSUE
+Q_COUNT = """query BoardCount($filter: IssueFilter, $first: Int!, $after: String) {
+  issues(filter: $filter, first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id }
+  }
+}"""
+Q_TEAMS = """query BoardTeams($first: Int!, $after: String) {
+  teams(first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id key name issueCount states(first: 50) { nodes { id name type } } }
+  }
+}"""
+Q_LABELS = """query BoardLabels($first: Int!, $after: String) {
+  issueLabels(first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id name isGroup parent { name } team { key } }
+  }
+}"""
+Q_WHOAMI = """query BoardWhoami {
+  viewer { id name displayName email app }
+  organization { name urlKey }
+}"""
+Q_UID_ATTACHMENT = """query BoardUidAttachment($url: String!, $first: Int!, $after: String) {
+  attachmentsForURL(url: $url, first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { issue { id identifier team { key } } }
+  }
+}"""
+Q_COMMENT_ONE = """query BoardCommentOne($id: String!) { comment(id: $id) { id } }"""
+M_CREATE = """mutation BoardFile($input: IssueCreateInput!) {
+  issueCreate(input: $input) { success issue { ...BoardIssue } }
+}""" + F_ISSUE
+M_UPDATE = """mutation BoardUpdate($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) { success issue { ...BoardIssue } }
+}""" + F_ISSUE
+M_COMMENT = """mutation BoardComment($input: CommentCreateInput!) {
+  commentCreate(input: $input) { success comment { id } }
+}"""
+M_RELATE = """mutation BoardRelate($input: IssueRelationCreateInput!) {
+  issueRelationCreate(input: $input) { success issueRelation { id } }
+}"""
+M_ATTACH = """mutation BoardAttach($input: AttachmentCreateInput!) {
+  attachmentCreate(input: $input) { success attachment { id } }
+}"""
+M_LABEL = """mutation BoardLabelCreate($input: IssueLabelCreateInput!) {
+  issueLabelCreate(input: $input) { success issueLabel { id name } }
+}"""
+
+
+# ----------------------------------------------------------------- workspace ids (non-secret cache)
+
+def label_key(node: dict) -> str:
+    parent = (node.get("parent") or {}).get("name")
+    return f"{parent}/{node['name']}" if parent else node["name"]
+
+
+class Workspace:
+    """Team, workflow-state and label ids, cached for a day in the
+    non-secret cache dir so each verb spends its requests on the work."""
+
+    TTL = 86400
+
+    def __init__(self, L: Linear):
+        self.L = L
+        self.teams: dict = {}
+        self.labels: dict = {}
+        # Workspace-level labels with no team and no parent group, by lower-case name:  the only place a
+        # flat label (needs-owner and the rest) is looked up.  A team-scoped label of the same name can
+        # only be put on that team's issues, so it never counts.
+        self.flat: dict = {}
+        self.fresh = False
+        self._load()
+
+    def _path(self) -> Path:
+        return cache_dir() / "workspace.json"
+
+    def _load(self, refresh: bool = False) -> None:
+        d = None if refresh else read_json_file(self._path())
+        # A cache written before flat labels existed has no "flat" key:  it is stale, read Linear once.
+        if d and d.get("api") == self.L.url and time.time() - float(d.get("at") or 0) < self.TTL \
+                and "flat" in d:
+            self.teams, self.labels, self.flat = d.get("teams") or {}, d.get("labels") or {}, d.get("flat") or {}
+            return
+        teams = {}
+        for t in self.L.paginate(Q_TEAMS, {}, ("teams",), 50):
+            teams[t["key"]] = {"id": t["id"], "name": t["name"],
+                               "states": {s["name"]: s["id"] for s in (t.get("states") or {}).get("nodes") or []}}
+        workspace_labels: dict = {}
+        team_labels: dict = {}
+        flat: dict = {}
+        for lb in self.L.paginate(Q_LABELS, {}, ("issueLabels",), 250):
+            (team_labels if lb.get("team") else workspace_labels).setdefault(label_key(lb), lb["id"])
+            if not lb.get("team") and not lb.get("parent") and not lb.get("isGroup"):
+                flat.setdefault(str(lb["name"]).lower(), lb["id"])
+        labels = dict(team_labels, **workspace_labels)  # a workspace label wins over a team label
+        self.teams, self.labels, self.flat, self.fresh = teams, labels, flat, True
+        write_json_file(self._path(), {"api": self.L.url, "at": time.time(), "teams": teams, "labels": labels,
+                                       "flat": flat})
+
+    def team(self, key: str) -> dict:
+        if key not in self.teams and not self.fresh:
+            self._load(refresh=True)
+        if key not in self.teams:
+            die(f"Linear has no team {key} visible to the {self.L.auth.label} (teams must be public)")
+        return self.teams[key]
+
+    def state_id(self, team_key: str, name: str) -> str:
+        t = self.team(team_key)
+        if name not in t["states"] and not self.fresh:
+            self._load(refresh=True)
+            t = self.team(team_key)
+        if name not in t["states"]:
+            die(f"team {team_key} has no workflow state {name!r}")
+        return t["states"][name]
+
+    def label_id(self, key: str, create: bool = False) -> str | None:
+        if key not in self.labels and not self.fresh:
+            self._load(refresh=True)
+        if key in self.labels:
+            return self.labels[key]
+        if not create:
+            return None
+        group = key.split(":", 1)[0]
+        lid = det_uuid("label", key)
+        try:
+            self.L.call(M_LABEL, {"input": {"id": lid, "name": key, "color": LABEL_COLORS.get(group, "#6b7280")}})
+        except GqlError as e:
+            self._load(refresh=True)
+            if key in self.labels:
+                return self.labels[key]
+            die(f"could not create label {key!r}: {e}")
+        self.labels[key] = lid
+        d = read_json_file(self._path()) or {}
+        if d.get("api") == self.L.url:
+            d.setdefault("labels", {})[key] = lid
+            write_json_file(self._path(), d)
+        return lid
+
+    def flat_label_id(self, name: str) -> str:
+        """The id of the flat workspace label `name` (one of FLAT_LABELS, already validated).  Looked up
+        at workspace level;  when Linear has none, created once as a flat workspace label (no team, no
+        parent group) under a fixed id and cached, so every later run, and a racing one, finds it."""
+        if name not in self.flat and not self.fresh:
+            self._load(refresh=True)
+        if name in self.flat:
+            return self.flat[name]
+        lid = det_uuid("label", name)
+        try:
+            self.L.call(M_LABEL, {"input": {"id": lid, "name": name,
+                                            "color": FLAT_LABEL_COLORS.get(name, "#6b7280")}})
+        except GqlError as e:
+            self._load(refresh=True)
+            if name in self.flat:
+                return self.flat[name]
+            die(f"could not create label {name!r}: {e}")
+        self.flat[name] = lid
+        self.labels.setdefault(name, lid)
+        d = read_json_file(self._path()) or {}
+        if d.get("api") == self.L.url:
+            d.setdefault("flat", {})[name] = lid
+            d.setdefault("labels", {}).setdefault(name, lid)
+            write_json_file(self._path(), d)
+        return lid
+
+
+# ----------------------------------------------------------------- ids
+
+class IdIndex:
+    """board-ids.txt: one imported board id per line, plus the Linear UUID
+    after a tab when the import merged that row into another issue.  Seen ids
+    (issues this host listed or showed) extend it, so a prefix printed by
+    `list` resolves even for issues created after the import."""
+
+    def __init__(self):
+        self.targets: dict[str, str] = {}
+        path = Path(env("LINEAR_BOARD_IDS") or (Path(__file__).resolve().parent / "board-ids.txt"))
+        self._read(path)
+        self._read(cache_dir() / "seen-ids.tsv")
+
+    def _read(self, path: Path) -> None:
+        try:
+            text = path.read_text()
+        except OSError:
+            return
+        for line in text.splitlines():
+            parts = line.strip().split("\t")
+            if not parts or not parts[0] or parts[0].startswith("#"):
+                continue
+            b = parts[0].replace("-", "").lower()
+            if not re.fullmatch(r"[0-9a-f]{32}", b):
+                continue
+            lin = parts[1].replace("-", "").lower() if len(parts) > 1 and parts[1] else b
+            if not re.fullmatch(r"[0-9a-f]{32}", lin):
+                continue
+            self.targets.setdefault(b, hyphenate(lin))
+            self.targets.setdefault(lin, hyphenate(lin))
+
+    def resolve(self, raw: str) -> str:
+        """The key for issue(id:): a Linear UUID or an identifier."""
+        s = (raw or "").strip()
+        if IDENT_RE.match(s):
+            return s.upper()
+        h = s.lower().replace("-", "")
+        if not HEX_RE.match(h or "x"):
+            die(f"{raw!r} is not a board id, a hex prefix of one, or an identifier like AFC-123", EXIT_USAGE)
+        if len(h) == 32:
+            return self.targets.get(h) or hyphenate(h)
+        if len(h) < 8:
+            die(f"id prefix {raw!r} is too short; use 8 or more hex characters or the identifier", EXIT_USAGE)
+        hits = sorted({v for k, v in self.targets.items() if k.startswith(h)})
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            shown = ", ".join(x.replace("-", "") for x in hits[:5])
+            die(f"id prefix {raw!r} is ambiguous ({len(hits)} issues: {shown}); give more characters", EXIT_USAGE)
+        die(f"no imported board id starts with {raw!r}.  Issues created in Linear have no board id: use the "
+            "identifier `board list` prints (AFC-123) or the full id.", EXIT_ERROR)
+
+
+def remember(issues: list[dict]) -> None:
+    """Record ids this host has shown, bounded to the newest 5,000."""
+    if not issues:
+        return
+    path = cache_dir() / "seen-ids.tsv"
+    try:
+        with open(path, "a") as f:
+            for n in issues:
+                if n.get("id"):
+                    f.write(f"{n['id']}\t{n['id']}\t{n.get('identifier') or ''}\n")
+        lines = path.read_text().splitlines()
+        if len(lines) > 6000:
+            write_tail = "\n".join(lines[-5000:]) + "\n"
+            tmp = path.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(write_tail)
+            os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def fetch_issue(L: Linear, key: str, raw: str) -> dict:
+    try:
+        d = L.call(Q_ISSUE, {"id": key})
+    except GqlError as e:
+        if e.not_found():
+            die(f"no issue {raw}", EXIT_ERROR)
+        raise
+    if not d.get("issue"):
+        die(f"no issue {raw}", EXIT_ERROR)
+    return d["issue"]
+
+
+# ----------------------------------------------------------------- mapping issues to board rows
+
+def labels_of(n: dict) -> list[str]:
+    return [label_key(x) for x in ((n.get("labels") or {}).get("nodes") or [])]
+
+
+def group_value(n: dict, group: str) -> str | None:
+    for k in labels_of(n):
+        if k.startswith(group + "/"):
+            return k.split("/", 1)[1]
+    return None
+
+
+def seats_of(n: dict) -> list[str]:
+    """Attribution only:  seats that reported or touched the issue.  Never a claim."""
+    return [k[len(SEAT_PREFIX):] for k in labels_of(n) if k.startswith(SEAT_PREFIX)]
+
+
+def claim_markers(n: dict) -> list[str]:
+    """The seats holding a `claimed:<SEAT>` label, the only claim record `list`
+    and `--mine` can see (they fetch no description or comments)."""
+    return sorted(k[len(CLAIM_PREFIX):] for k in labels_of(n) if k.startswith(CLAIM_PREFIX))
+
+
+def roster_seat(raw: str | None) -> str | None:
+    """One raw attribution token from an imported footer -> roster tag or None
+    (the importer's lm_common.normalize_seat, live claim)."""
+    s = re.sub(r"\(.*?\)", "", str(raw or ""))
+    s = s.strip().strip("@[]<>`'\" \t").split("·")[0].strip()
+    if not s:
+        return None
+    s = re.split(r"\s+", s)[0].strip("@[]<>`'\"").upper()
+    s = SEAT_ALIASES.get(s, s)
+    if s in BF_ROLES:
+        s = "BF-" + s
+    if s in CLUTCH_LINEAGE:
+        return "CLUTCH"
+    return s if s in SEAT_ROSTER else None
+
+
+def footer_claimants(description: str | None) -> list[str]:
+    """Seats named on an "addressed by" line of an imported issue's provenance
+    footer, normalized as the importer did.  Only the footer is read, never
+    the body."""
+    out: list[str] = []
+    for m in FOOTER_ADDRESSED_RE.finditer(split_description(description)["footer"]):
+        for part in re.split(r"[,/&+;]| and ", m.group(1)):
+            seat = roster_seat(part)
+            if seat and seat not in out:
+                out.append(seat)
+    return out
+
+
+def holders_of(n: dict) -> list[str]:
+    """Who holds the claim on `n`.  The claimed:<SEAT> labels when there are
+    any (the CLI writes them, one holder at a time).  Otherwise, for an In
+    Progress issue whose description is loaded, the imported footer's
+    "addressed by" seats, which is how the board recorded claims.  seat:<SEAT>
+    labels are never read as a claim."""
+    marks = claim_markers(n)
+    if marks:
+        return marks
+    if (n.get("state") or {}).get("name") == "In Progress":
+        return footer_claimants(n.get("description"))
+    return []
+
+
+def severity_of(n: dict) -> str | None:
+    """Linear priority is the source (the UI edits it); the Severity label
+    only tells P3 from P4, which share priority Low."""
+    p = n.get("priority") or 0
+    if p == 4:
+        return "P4" if group_value(n, "Severity") == "P4" else "P3"
+    return {1: "P0", 2: "P1", 3: "P2"}.get(p)
+
+
+def status_of(n: dict) -> str:
+    name = (n.get("state") or {}).get("name") or ""
+    return STATE_TO_STATUS.get(name) or name.lower().replace(" ", "_").replace("'", "")
+
+
+def app_of(n: dict) -> str:
+    for k in labels_of(n):
+        if k.startswith("app:"):
+            return k.split(":", 1)[1]
+    return (n.get("team") or {}).get("key") or ""
+
+
+def row_dict(n: dict) -> dict:
+    seats = seats_of(n)
+    return {
+        "id": n.get("id"), "identifier": n.get("identifier"), "url": n.get("url"),
+        "title": n.get("title"), "severity": severity_of(n), "status": status_of(n),
+        "state": (n.get("state") or {}).get("name"), "app": app_of(n),
+        "team": (n.get("team") or {}).get("key"), "source_kind": group_value(n, "Kind"),
+        "env": group_value(n, "Env"), "addressed_by": ",".join(claim_markers(n)) or None,
+        "seats": seats, "labels": labels_of(n), "priority": n.get("priority"),
+        "created_at": n.get("createdAt"), "updated_at": n.get("updatedAt"),
+    }
+
+
+def fmt_row(r: dict) -> str:
+    sev = r.get("severity") or "--"
+    who = r.get("addressed_by") or ""
+    where = r.get("env") or ""
+    line = f"{short_id(r['id'])}  {sev:<3} {r.get('status', ''):<12} {r.get('app', '')}  {r.get('identifier') or ''}"
+    tail = " ".join(x for x in (f"@{who}" if who else "", where) if x)
+    title = (r.get("title") or "").replace("\n", " ")
+    if len(title) > 88:
+        title = title[:85] + "..."
+    return f"{line.rstrip()}\n     {title}" + (f"\n     {tail}" if tail else "")
+
+
+def md_unescape(s: str) -> str:
+    out, pos = [], 0
+    for m in CODE_SPAN_RE.finditer(s):
+        out.append(MD_ESCAPE_RE.sub(r"\1", s[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(MD_ESCAPE_RE.sub(r"\1", s[pos:]))
+    return "".join(out)
+
+
+def split_description(desc: str | None) -> dict:
+    body = md_unescape((desc or "").replace("\r\n", "\n"))
+    out = {"description": "", "recommended_fix": "", "footer": "", "reported_by": None}
+    i = body.rfind("\n---\n")
+    if i >= 0:
+        out["footer"] = HTML_COMMENT_RE.sub("\n", body[i + 5:]).strip()
+        body = body[:i]
+    m = re.search(r"(?m)^#{1,3} Recommended fix\s*$", body)
+    if m:
+        out["recommended_fix"] = body[m.end():].strip()
+        body = body[:m.start()]
+    body = body.strip()
+    tm = TAG_RE.match(body)
+    if tm:
+        out["reported_by"] = tm.group(1)
+        first, _, rest = body.partition("\n")
+        body = rest.strip()
+    if re.fullmatch(r"[_*]No description[^\n]*[_*]", body):
+        body = ""
+    out["description"] = body
+    if not out["reported_by"]:
+        rm = re.search(r"[Rr]eported by ([^,\n]+)", out["footer"])
+        if rm:
+            out["reported_by"] = rm.group(1).strip()
+    return out
+
+
+def parse_comment(c: dict) -> dict:
+    body = md_unescape((c.get("body") or "").replace("\r\n", "\n"))
+    author = ((c.get("user") or {}).get("name")) or "unknown"
+    where = ""
+    sessions = ""
+    tm = TAG_RE.match(body)
+    mm = MIGRATED_COMMENT_RE.match(body)
+    if tm:
+        author = tm.group(1)
+        body = body[tm.end():]
+        lines = body.rstrip().split("\n")
+        while lines and (not lines[-1].strip() or re.match(r"^(Where|Sessions): ", lines[-1])):
+            k, _, v = lines.pop().partition(": ")
+            if not v:
+                continue
+            if k == "Where":
+                where = v.strip()
+            else:
+                sessions = v.strip()
+        body = "\n".join(lines).strip()
+    elif mm:
+        author = mm.group(1)
+        where = mm.group(3) or ""
+        body = body[mm.end():]
+    body = HTML_COMMENT_RE.sub("\n", body).strip()
+    # `author` is the name a reader shows and the seat a tag line claims;  anyone who can write a comment can type a
+    # tag line, so a consumer that has to know WHO wrote it (the needs-owner notifier, for the owner's reply) reads
+    # `author_id` and `author_app`, which are Linear's own account fields and never come from the text.
+    user = c.get("user") or {}
+    author_id = user.get("id") if isinstance(user.get("id"), str) and user.get("id") else None
+    author_app = user.get("app") if isinstance(user.get("app"), bool) else None
+    return {"id": c.get("id"), "author": author, "text": body, "where": where,
+            "sessions": sessions, "created_at": c.get("createdAt"), "author_id": author_id, "author_app": author_app}
+
+
+def resolution_of(comments: list[dict]) -> str:
+    for c in reversed(comments):
+        t = c["text"]
+        m = re.match(r"^Resolution(?: \([^)]*\))?: ?(.*)$", t, re.S)
+        if m:
+            return m.group(1).strip()
+        if c["author"].startswith("Resolution"):
+            return t
+    return ""
+
+
+def location_of(comments: list[dict], footer: str) -> str:
+    for c in reversed(comments):
+        if c["text"].startswith("CLAIMED") and c["where"]:
+            return c["where"]
+    m = re.search(r"[Ll]ocation:? ([^\n]+)", footer or "")
+    return m.group(1).strip() if m else ""
+
+
+def all_comments(L: Linear, issue_id: str) -> list[dict]:
+    nodes = list(L.paginate(Q_COMMENTS, {"id": issue_id}, ("issue", "comments"), 100))
+    nodes.sort(key=lambda c: c.get("createdAt") or "")
+    return [parse_comment(c) for c in nodes]
+
+
+# ----------------------------------------------------------------- routing and filters
+
+def route_app(app: str | None) -> tuple[str, str | None]:
+    """(team key, fallback slug).  Team keys and board slugs both work."""
+    a = (app or DEFAULT_APP).strip()
+    if a.upper() in TEAM_KEYS:
+        return a.upper(), None
+    t = BOARD_SLUG_TEAM.get(a.lower()) or BOARD_SLUG_TEAM.get(slugify(a))
+    if t:
+        return t, None
+    return FALLBACK_TEAM, slugify(a) or "unknown"
+
+
+def and_filter(parts: list[dict]) -> dict:
+    parts = [p for p in parts if p]
+    if not parts:
+        return {}
+    return parts[0] if len(parts) == 1 else {"and": parts}
+
+
+def label_cond(name: str, group: str | None = None, names: list[str] | None = None) -> dict:
+    cond: dict = {"name": {"in": names}} if names else {"name": {"eq": name}}
+    if group:
+        cond["parent"] = {"name": {"eq": group}}
+    return {"labels": {"some": cond}}
+
+
+def split_csv(v: str | None) -> list[str]:
+    return [x.strip() for x in (v or "").split(",") if x.strip()]
+
+
+def list_filter(a) -> tuple[list[dict], list[str] | None]:
+    parts: list[dict] = []
+    if a.app:
+        team, fslug = route_app(a.app)
+        parts.append({"team": {"key": {"eq": team}}})
+        if fslug:
+            parts.append(label_cond(f"app:{fslug}"))
+    if a.status:
+        states: list[str] = []
+        for s in split_csv(a.status.lower()):
+            if s not in LIST_STATUS_STATES:
+                die(f"unknown status {s!r}; use {', '.join(STATUS_WORDS)}", EXIT_USAGE)
+            states += [x for x in LIST_STATUS_STATES[s] if x not in states]
+        parts.append({"state": {"name": {"in": states}}})
+    sevs = None
+    if a.severity:
+        sevs = [s.upper() for s in split_csv(a.severity)]
+        bad = [s for s in sevs if s not in SEVERITIES]
+        if bad:
+            die(f"unknown severity {', '.join(bad)}; use P0 to P4", EXIT_USAGE)
+    if a.source_kind:
+        kinds = split_csv(a.source_kind)
+        parts.append(label_cond("", "Kind", kinds))
+    if a.search:
+        parts.append({"title": {"containsIgnoreCase": a.search}})
+    if a.mine:
+        parts.append(label_cond(f"{CLAIM_PREFIX}{norm_seat(a.mine)}"))
+    for name in a.labels or []:
+        parts.append(label_cond(name))    # every --label must be on the issue
+    return parts, sevs
+
+
+# ----------------------------------------------------------------- verbs
+
+def cmd_list(L: Linear, a) -> int:
+    try:
+        limit = max(1, min(int(a.limit), 2000))
+    except ValueError:
+        die("--limit must be a number", EXIT_USAGE)
+    parts, sevs = list_filter(a)
+    prios = [p for p in PRIORITY_ORDER if not sevs or p in {SEV_PRIORITY[s] for s in sevs}]
+    rows: list[dict] = []
+    more = False
+    for p in prios:
+        filt = and_filter(parts + [{"priority": {"eq": p}}])
+        need = limit - len(rows) + 1
+        for n in L.paginate(Q_LIST, {"filter": filt}, ("issues",), min(50, max(need, 10))):
+            if sevs and severity_of(n) not in sevs:
+                continue
+            if len(rows) >= limit:
+                more = True
+                break
+            rows.append(n)
+        if more:
+            break
+    sev_rank = {s: i for i, s in enumerate(SEVERITIES)}
+    rows.sort(key=lambda n: n.get("createdAt") or "", reverse=True)
+    rows.sort(key=lambda n: sev_rank.get(severity_of(n) or "", 5))
+    remember(rows)
+    out = [row_dict(n) for n in rows]
+    if a.json:
+        print(json.dumps(out, indent=2))
+        return 0
+    total = str(len(out))
+    if more:
+        total = count_matching(L, parts, prios, sevs)
+    print(f"{len(out)} shown of {total} matching\n")
+    for r in out:
+        print(fmt_row(r))
+        print()
+    unmarked = sum(1 for r in out if r["state"] == "In Progress" and not r["addressed_by"] and r["seats"])
+    if unmarked:
+        warn(f"{unmarked} In Progress row(s) above have no claim marker, so no claimant is shown.  Imported "
+             "claims get a claimed:<SEAT> label in the cutover relabel (README); `board show <id>` reads the "
+             "claimant from the import footer meanwhile.")
+    return 0
+
+
+def count_matching(L: Linear, parts: list[dict], prios: list[int], sevs: list[str] | None) -> str:
+    """Bounded count (the shared app has one request budget for the fleet):
+    exact up to LINEAR_BOARD_COUNT_CAP, then 'N+'."""
+    cap = int(env_float("LINEAR_BOARD_COUNT_CAP", 1000))
+    filt = and_filter(parts + ([{"priority": {"in": prios}}] if sevs else []))
+    exact_by_priority = not sevs or ("P3" in sevs) == ("P4" in sevs)
+    n = 0
+    if exact_by_priority:
+        it = L.paginate(Q_COUNT, {"filter": filt}, ("issues",), 250)
+    else:
+        it = (x for x in L.paginate(Q_LIST, {"filter": filt}, ("issues",), 50) if severity_of(x) in sevs)
+    for _ in it:
+        n += 1
+        if n >= cap:
+            return f"{cap}+"
+    return str(n)
+
+
+def cmd_show(L: Linear, ids: IdIndex, a) -> int:
+    n = fetch_issue(L, ids.resolve(a.id), a.id)
+    remember([n])
+    comments = all_comments(L, n["id"])
+    parts = split_description(n.get("description"))
+    r = row_dict(n)
+    r["addressed_by"] = ",".join(holders_of(n)) or None
+    r.update({
+        "description": parts["description"], "recommended_fix": parts["recommended_fix"],
+        "resolution": resolution_of(comments), "reported_by": parts["reported_by"],
+        "location": location_of(comments, parts["footer"]), "provenance": parts["footer"],
+        "attachments": [x.get("url") for x in (n.get("attachments") or {}).get("nodes") or []],
+        "relations": ([{"type": x["type"], "issue": (x.get("relatedIssue") or {}).get("identifier"),
+                        "direction": "outgoing"} for x in (n.get("relations") or {}).get("nodes") or []]
+                      + [{"type": x["type"], "issue": (x.get("issue") or {}).get("identifier"),
+                          "direction": "incoming"} for x in (n.get("inverseRelations") or {}).get("nodes") or []]),
+        "comments": comments,
+    })
+    if a.json:
+        print(json.dumps(r, indent=2))
+        return 0
+    print(f"{r['severity'] or '--'}  {r['status']}  {r['app']}  ({r['source_kind']})")
+    print(r["title"])
+    print()
+    for label, key in (("Description", "description"), ("Fix", "recommended_fix"), ("Resolution", "resolution")):
+        if r.get(key):
+            print(f"--- {label} ---")
+            print(r[key])
+            print()
+    print("--- meta ---")
+    meta = [("identifier", r["identifier"]), ("url", r["url"]), ("team", r["team"]), ("state", r["state"]),
+            ("reported_by", r["reported_by"]), ("addressed_by", r["addressed_by"]), ("env", r["env"]),
+            ("location", r["location"]), ("source_url", ", ".join(r["attachments"])),
+            ("created_at", central(r["created_at"]) if r["created_at"] else ""),
+            ("updated_at", central(r["updated_at"]) if r["updated_at"] else ""),
+            ("labels", ", ".join(r["labels"]))]
+    for k, v in meta:
+        if v:
+            print(f"  {k}: {v}")
+    for rel in r["relations"]:
+        if rel["type"] == "duplicate":
+            words = "duplicate of" if rel["direction"] == "outgoing" else "duplicated by"
+        else:
+            words = f"{rel['type']} ({rel['direction']})"
+        print(f"  {words}: {rel['issue']}")
+    if r["provenance"]:
+        print("  provenance:")
+        for line in r["provenance"].splitlines():
+            if line.strip():
+                print(f"    {line.rstrip()}")
+    if comments:
+        print("\n--- comments ---")
+        for c in comments:
+            where = f" ({c['where']})" if c["where"] else ""
+            stamp = central(c["created_at"], with_day=False) if c["created_at"] else ""
+            print(f"  [{stamp}] {c['author']}{where}: {c['text']}")
+    return 0
+
+
+def norm_env(v: str | None) -> str | None:
+    if not v:
+        return None
+    e = ENVS.get(v.strip().lower())
+    if not e:
+        die(f"--env must be Mac or cloud, not {v!r}", EXIT_USAGE)
+    return e
+
+
+def uid_url(app_key: str, uid: str) -> str:
+    if re.match(r"^https?://", uid):
+        return uid
+    return f"https://board.jays.services/uid/{urllib.parse.quote(app_key, safe='')}/{urllib.parse.quote(uid, safe='')}"
+
+
+def find_existing(L: Linear, iid: str, team: str, uid: str, url: str) -> dict | None:
+    """The issue a repeat `file --uid` must return: its derived id, an
+    attachment with the uid URL, or an imported footer naming the uid."""
+    try:
+        d = L.call(Q_ISSUE, {"id": iid})
+        if d.get("issue"):
+            return d["issue"]
+    except GqlError as e:
+        if not e.not_found():
+            raise
+    for node in L.paginate(Q_UID_ATTACHMENT, {"url": url}, ("attachmentsForURL",), 25):
+        iss = node.get("issue") or {}
+        if (iss.get("team") or {}).get("key") == team:
+            return fetch_issue(L, iss["id"], iss.get("identifier") or iss["id"])
+    filt = {"and": [{"team": {"key": {"eq": team}}},
+                    {"description": {"contains": f"External uid: `{uid}`"}}]}
+    for n in L.paginate(Q_LIST, {"filter": filt}, ("issues",), 5, limit=1):
+        return n
+    return None
+
+
+def cmd_file(L: Linear, a, seat: str) -> int:
+    by = check_by(a.reported_by, seat)
+    team, fslug = route_app(a.app)
+    app_display = fslug or team
+    sev = (a.severity or "").upper() or None
+    if sev and sev not in SEVERITIES:
+        die("--severity must be P0 to P4", EXIT_USAGE)
+    kind = a.source_kind or "agent-report"
+    if kind not in KINDS:
+        hint = "  fleet-report is a label, not a kind:  use --label fleet-report." if kind == "fleet-report" else ""
+        die(f"--kind must be one of {', '.join(KINDS)}.{hint}", EXIT_USAGE)
+    env_label = norm_env(a.env)
+    title = a.title.strip()
+    if not title:
+        die("--title is empty", EXIT_USAGE)
+    ws = Workspace(L)
+    key_app = f"{team}:{fslug or ''}"
+    iid = det_uuid("issue", f"{key_app}:{a.external_uid}") if a.external_uid else str(uuid.uuid4())
+    url_for_uid = uid_url(app_display, a.external_uid) if a.external_uid else None
+    if a.external_uid:
+        found = find_existing(L, iid, team, a.external_uid, url_for_uid)
+        if found:
+            remember([found])
+            r = row_dict(found)
+            print(f"filed {found['id']}  ({r['severity'] or '--'} {r['app']})  {found.get('identifier') or ''}"
+                  f"  (already filed; unchanged)")
+            return 0
+    sessions = auto_sessions(None)
+    lines = [f"{seat_tag(by, sessions)} Filed with the board CLI.", ""]
+    full_title = title
+    if len(title) > 250:
+        title = title[:247] + "..."
+        lines += [f"**{full_title}**", ""]
+    lines.append((a.desc or "").strip() or "_No description given._")
+    if (a.fix or "").strip():
+        lines += ["", "## Recommended fix", "", a.fix.strip()]
+    foot = ["", "---", "", "**Filed with the board CLI**", "", f"- Reported by {by}",
+            f"- App: `{(a.app or DEFAULT_APP).strip()}` (team {team})", f"- Kind: {kind}"]
+    if env_label or a.location:
+        foot.append("- " + ", ".join(x for x in (f"Env {env_label}" if env_label else "",
+                                                  f"location {a.location}" if a.location else "") if x))
+    if a.external_uid:
+        foot.append(f"- External uid: `{a.external_uid}`")
+    if a.source_url:
+        foot.append(f"- Source URL: {a.source_url}")
+    foot += ["", f"<!-- board-cli: app={app_display} kind={kind} -->"]
+    label_ids = [ws.label_id(f"Kind/{kind}")]
+    if sev:
+        label_ids.append(ws.label_id(f"Severity/{sev}"))
+    if env_label:
+        label_ids.append(ws.label_id(f"Env/{env_label}"))
+    if fslug:
+        label_ids.append(ws.label_id(f"app:{fslug}", create=True))
+    # Flat labels are resolved here, after the repeat-uid return above, so a repeat creates nothing.
+    label_ids += [ws.flat_label_id(name) for name in a.labels or []]
+    inp = {
+        "id": iid, "teamId": ws.team(team)["id"], "title": title,
+        "description": "\n".join(lines + foot), "stateId": ws.state_id(team, "Todo"),
+        "labelIds": [x for x in label_ids if x],
+    }
+    if sev:
+        inp["priority"] = SEV_PRIORITY[sev]
+    try:
+        d = L.call(M_CREATE, {"input": inp})
+        issue = (d.get("issueCreate") or {}).get("issue")
+    except GqlError as e:
+        issue = None
+        try:
+            issue = L.call(Q_ISSUE, {"id": iid}).get("issue")
+        except GqlError:
+            pass
+        if not issue:
+            die(f"Linear refused the new issue: {e}")
+    if not issue:
+        issue = fetch_issue(L, iid, iid)
+    remember([issue])
+    # Say what was filed before the attachments, so a rate limit that stops the
+    # attach step cannot leave the caller without the id (and refiling it).
+    print(f"filed {issue['id']}  ({sev or '--'} {app_display})  {issue.get('identifier') or ''}", flush=True)
+    L.landed.append(f"filed {issue.get('identifier') or issue['id']} ({issue['id']})")
+    L.rerun = "The issue exists; do not file it again.  Only its attachments are missing."
+    for url, label in ((url_for_uid, f"board uid {a.external_uid}"), (a.source_url, "Source")):
+        if not url:
+            continue
+        try:
+            L.call(M_ATTACH, {"input": {"issueId": issue["id"], "url": url, "title": label}})
+        except GqlError as e:
+            warn(f"filed, but attaching {url} failed ({e}); the footer still carries it")
+    return 0
+
+
+def comment_id(issue_id: str, seat: str, verb: str, body: str, sessions: list[str] | None) -> str:
+    """Fixed id for a comment, from the issue, seat, verb, text and session (the
+    Central day when there is none), so rerunning a verb that stopped part way
+    cannot post it twice, while the same words next week still post."""
+    when = ",".join(sessions) if sessions else dt.datetime.now(CENTRAL or dt.timezone.utc).strftime("%Y-%m-%d")
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return det_uuid("comment", f"{issue_id}:{seat}:{verb}:{digest}:{when}")
+
+
+def post_comment(L: Linear, n: dict, body: str, seat: str, verb: str, sessions: list[str] | None) -> bool:
+    """Post `body` on issue `n` under a fixed id.  True when posted, False when
+    this exact comment is already there (an earlier run of the same command)."""
+    cid = comment_id(n["id"], seat, verb, body, sessions)
+    try:
+        L.call(M_COMMENT, {"input": {"id": cid, "issueId": n["id"], "body": body}})
+    except GqlError as e:
+        try:
+            if L.call(Q_COMMENT_ONE, {"id": cid}).get("comment"):
+                warn(f"the same {verb} comment from {seat} is already on {n['identifier']} (an earlier run "
+                     "of this command); not posting it again")
+                return False
+        except GqlError:
+            pass
+        L.fail(f"Linear refused the comment: {e}")
+    return True
+
+
+def comment_body(seat: str, sessions: list[str] | None, text: str, where: str | None = None,
+                 env_label: str | None = None) -> str:
+    body = f"{seat_tag(seat, sessions)} {text.strip()}"
+    loc = ", ".join(x for x in (env_label, where) if x)
+    extra = []
+    if loc:
+        extra.append(f"Where: {loc}")
+    if sessions:
+        extra.append(f"Sessions: {', '.join(sessions)}")
+    return body + "".join("\n\n" + x for x in extra)
+
+
+def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
+    by = check_by(a.addressed_by, seat)
+    if a.steal and not (a.reason or "").strip():
+        die("--steal needs --reason \"why you are taking it\"", EXIT_USAGE)
+    env_label = norm_env(a.env)
+    n = fetch_issue(L, ids.resolve(a.id), a.id)
+    team = n["team"]["key"]
+    # Who holds it: claimed:<SEAT> labels, else (In Progress) the import footer.
+    # seat:<SEAT> labels are attribution (reporters carry them too), never a claim.
+    holders = [s for s in holders_of(n) if s != by]
+    in_progress = (n.get("state") or {}).get("name") == "In Progress"
+    stolen = []
+    if in_progress and holders:
+        if not a.steal:
+            die(f"{short_id(n['id'])} ({n['identifier']}) is In Progress, claimed by {', '.join(holders)}.  "
+                "Ask that seat, or take it with --steal --reason \"...\".", EXIT_CLAIM_HELD)
+        stolen = holders
+    ws = Workspace(L)
+    current = {label_key(x): x["id"] for x in (n.get("labels") or {}).get("nodes") or []}
+    # One holder: add this seat's marker, drop every other seat's.  Attribution
+    # (seat:) labels are only ever added, so a claim or a steal never erases
+    # who reported or worked the issue.
+    added = [ws.label_id(f"{CLAIM_PREFIX}{by}", create=True), ws.label_id(f"{SEAT_PREFIX}{by}", create=True)]
+    removed = [lid for k, lid in current.items() if k.startswith(CLAIM_PREFIX) and k != f"{CLAIM_PREFIX}{by}"]
+    if "stale-claim" in current:
+        removed.append(current["stale-claim"])
+    if env_label:
+        added.append(ws.label_id(f"Env/{env_label}"))
+        removed += [lid for k, lid in current.items() if k.startswith("Env/") and k != f"Env/{env_label}"]
+    inp = {"stateId": ws.state_id(team, "In Progress"),
+           "addedLabelIds": [x for x in added if x and x not in current.values()],
+           "removedLabelIds": removed}
+    try:
+        L.call(M_UPDATE, {"id": n["id"], "input": inp})
+    except GqlError as e:
+        L.fail(f"Linear refused the claim: {e}")
+    L.landed.append(f"{n['identifier']} is In Progress with {by}'s claim label")
+    sessions = auto_sessions(a.session_ids)
+    text = "CLAIMED"
+    if stolen:
+        text += f" from {', '.join(stolen)}: {a.reason.strip()}"
+    post_comment(L, n, comment_body(by, sessions, text, a.location, env_label), by, "claim", sessions)
+    remember([n])
+    print(f"claimed {short_id(n['id'])} by {by} -> in_progress{session_tail(sessions)}  {n['identifier']}")
+    return 0
+
+
+_REF = (r"([A-Za-z]{2,4}-\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})")
+DUP_PHRASE_RE = re.compile(r"(?i)\bdup(?:e|licate)?\b(?:\s+(?:of|with))?\s*[:#]?\s*`?" + _REF + r"`?(?![\w-])")
+LONE_REF_RE = re.compile(r"(?i)^\s*`?" + _REF + r"`?\s*$")
+TEAM_IDENT_RE = re.compile(r"(?i)^([A-Za-z]{2,4})-\d+$")
+
+
+def _canon_ref(tok: str) -> str | None:
+    m = TEAM_IDENT_RE.match(tok)
+    if m:
+        return tok.upper() if m.group(1).upper() in TEAM_KEYS else None
+    return tok.lower()
+
+
+def duplicate_target(resolution: str | None) -> str | None:
+    """The canonical issue a `status duplicate` names in --resolution, when it
+    names exactly one.  Only after a "dup of" / "duplicate of" phrase, or when
+    the whole text is one id: a stray 8-hex word (a commit sha) is never taken."""
+    text = (resolution or "").strip()
+    if not text:
+        return None
+    toks = [m.group(1) for m in DUP_PHRASE_RE.finditer(text)]
+    lone = LONE_REF_RE.match(text)
+    if lone:
+        toks.append(lone.group(1))
+    found = {c for c in (_canon_ref(t) for t in toks) if c}
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def closing_label_ids(n: dict) -> list[str]:
+    """Ids of the labels on `n` that closing it removes (needs-owner, ask-capture), none for the rest."""
+    return [x["id"] for x in (n.get("labels") or {}).get("nodes") or [] if label_key(x) in CLOSING_REMOVES]
+
+
+def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
+    by = check_by(a.addressed_by, seat)
+    value = a.value.strip().lower()
+    if value not in STATUS_WORDS:
+        die(f"unknown status {a.value!r}; use {', '.join(STATUS_WORDS)}", EXIT_USAGE)
+    if a.of and value != "duplicate":
+        die("--of only goes with status duplicate", EXIT_USAGE)
+    of = a.of
+    if value == "duplicate" and not of:
+        of = duplicate_target(a.resolution)
+        if not of:
+            die("status duplicate needs --of <id of the issue it duplicates>: Linear only makes a Duplicate "
+                "through a relation to a canonical issue (the mac-collab board took a bare `duplicate`).  Name "
+                "it with --of, or write `dup of <id>` as the --resolution.  If the original is unknown, use "
+                "`status wontfix --resolution \"duplicate, original unknown\"`.", EXIT_USAGE)
+        warn(f"taking --of {of} from the --resolution text")
+    n = fetch_issue(L, ids.resolve(a.id), a.id)
+    sessions = auto_sessions(a.session_ids)
+    if value == "duplicate":
+        canon = fetch_issue(L, ids.resolve(of), of)
+        if canon["id"] == n["id"]:
+            die("an issue cannot duplicate itself", EXIT_USAGE)
+        # Linear refuses a direct move to Duplicate; the relation moves it.
+        rid = det_uuid("relation", f"duplicate:{n['id']}:{canon['id']}")
+        try:
+            L.call(M_RELATE, {"input": {"id": rid, "type": "duplicate", "issueId": n["id"],
+                                        "relatedIssueId": canon["id"]}})
+        except GqlError as e:
+            back = fetch_issue(L, n["id"], a.id)
+            if not any(x.get("type") == "duplicate" and (x.get("relatedIssue") or {}).get("id") == canon["id"]
+                       for x in (back.get("relations") or {}).get("nodes") or []):
+                die(f"Linear refused the duplicate relation: {e}")
+        L.landed.append(f"{n['identifier']} marked a duplicate of {canon['identifier']}")
+        state = (fetch_issue(L, n["id"], a.id).get("state") or {}).get("name")
+        if state != "Duplicate":
+            time.sleep(env_float("LINEAR_BOARD_DUP_WAIT", 3))
+            state = (fetch_issue(L, n["id"], a.id).get("state") or {}).get("name")
+        drop = closing_label_ids(n)
+        if drop:
+            try:
+                L.call(M_UPDATE, {"id": n["id"], "input": {"removedLabelIds": drop}})
+            except GqlError as e:
+                L.fail(f"Linear refused removing the open-loop labels: {e}")
+            L.landed.append(f"{n['identifier']} lost needs-owner and ask-capture")
+        text = f"Duplicate of {canon['identifier']}"
+        if a.resolution:
+            text = f"Resolution (duplicate of {canon['identifier']}): {a.resolution.strip()}"
+        post_comment(L, n, comment_body(by, sessions, text), by, "status", sessions)
+        if state != "Duplicate":
+            warn(f"the duplicate relation to {canon['identifier']} exists, but Linear left "
+                 f"{n['identifier']} in {state}.  It was not forced: Linear refuses a direct move to Duplicate.")
+            print(f"{short_id(n['id'])} -> {STATE_TO_STATUS.get(state, state)}{session_tail(sessions)}  "
+                  f"{n['identifier']}")
+            return 0
+        print(f"{short_id(n['id'])} -> duplicate{session_tail(sessions)}  {n['identifier']}")
+        return 0
+    ws = Workspace(L)
+    state_name = STATUS_TO_STATE[value]
+    inp = {"stateId": ws.state_id(n["team"]["key"], state_name)}
+    if value in ("open", "backlog"):
+        # Todo means unclaimed (design section 3): releasing drops the claim
+        # marker so a later move back to In Progress cannot inherit it.
+        released = [x["id"] for x in (n.get("labels") or {}).get("nodes") or []
+                    if label_key(x).startswith(CLAIM_PREFIX)]
+        if released:
+            inp["removedLabelIds"] = released
+    elif value in CLOSING_STATUSES:
+        # Closed:  the question was answered or the ask handled, so it stops waiting on the owner.
+        drop = closing_label_ids(n)
+        if drop:
+            inp["removedLabelIds"] = drop
+    try:
+        L.call(M_UPDATE, {"id": n["id"], "input": inp})
+    except GqlError as e:
+        die(f"Linear refused the status change: {e}")
+    L.landed.append(f"{n['identifier']} moved to {state_name}")
+    if a.resolution:
+        text = f"Resolution ({value}): {a.resolution.strip()}"
+    else:
+        text = f"Status: {value}"
+    post_comment(L, n, comment_body(by, sessions, text), by, "status", sessions)
+    print(f"{short_id(n['id'])} -> {value}{session_tail(sessions)}  {n['identifier']}")
+    return 0
+
+
+def cmd_comment(L: Linear, ids: IdIndex, a, seat: str) -> int:
+    by = check_by(a.author, seat)
+    if not a.text.strip():
+        die("--text is empty", EXIT_USAGE)
+    env_label = norm_env(a.env)
+    n = fetch_issue(L, ids.resolve(a.id), a.id)
+    sessions = auto_sessions(a.session_ids)
+    post_comment(L, n, comment_body(by, sessions, a.text, a.location, env_label), by, "comment", sessions)
+    print(f"commented on {short_id(n['id'])} as {by}{session_tail(sessions)}  {n['identifier']}")
+    return 0
+
+
+def cmd_label(L: Linear, ids: IdIndex, a, seat: str) -> int:
+    """`label add|remove <id> NAME`:  one flat workspace label (FLAT_LABELS) on or off an issue, with
+    addedLabelIds or removedLabelIds only (labelIds would replace every label).  `add` finds or creates
+    the label;  `remove` never creates one, and removing what is not there changes nothing."""
+    check_by(a.addressed_by, seat)
+    name = a.label_name
+    n = fetch_issue(L, ids.resolve(a.id), a.id)
+    have = [x["id"] for x in (n.get("labels") or {}).get("nodes") or [] if label_key(x) == name]
+    short = short_id(n["id"])
+    if a.action == "add":
+        if have:
+            print(f"{short} already has {name}  (unchanged)  {n['identifier']}")
+            return 0
+        inp = {"addedLabelIds": [Workspace(L).flat_label_id(name)]}
+    else:
+        if not have:
+            print(f"{short} does not have {name}  (unchanged)  {n['identifier']}")
+            return 0
+        inp = {"removedLabelIds": have}
+    try:
+        L.call(M_UPDATE, {"id": n["id"], "input": inp})
+    except GqlError as e:
+        die(f"Linear refused the label change: {e}")
+    remember([n])
+    if a.action == "add":
+        print(f"labeled {short} +{name}  {n['identifier']}")
+    else:
+        print(f"unlabeled {short} -{name}  {n['identifier']}")
+    return 0
+
+
+def cmd_stats(L: Linear) -> int:
+    """Live counts, cached for LINEAR_BOARD_STATS_TTL seconds (default 600).
+    The design's counts snapshot (section 5) replaces this when it exists."""
+    path = cache_dir() / "stats.json"
+    ttl = env_float("LINEAR_BOARD_STATS_TTL", 600)
+    c = read_json_file(path)
+    if not (c and c.get("api") == L.url and time.time() - float(c.get("at") or 0) < ttl):
+        teams = list(L.paginate(Q_TEAMS, {}, ("teams",), 50))
+        total = sum(int(t.get("issueCount") or 0) for t in teams)
+        apps = sorted(t["key"] for t in teams if int(t.get("issueCount") or 0) > 0)
+        open_f = {"state": {"name": {"in": list(OPEN_STATES)}}}
+
+        def count(f: dict) -> int:
+            return sum(1 for _ in L.paginate(Q_COUNT, {"filter": f}, ("issues",), 250))
+
+        st = {
+            "total": total,
+            "open": count(open_f),
+            "p0p1_open": count({"and": [open_f, {"priority": {"in": [1, 2]}}]}),
+            "done": count({"state": {"name": {"in": list(DONE_STATES)}}}),
+            "by_kind": {k: count({"and": [open_f, label_cond(k, "Kind")]}) for k in KINDS},
+            "apps": apps,
+        }
+        c = {"api": L.url, "at": time.time(), "stats": st}
+        write_json_file(path, c)
+    d = c["stats"]
+    print(f"total {d['total']}   open {d['open']}   P0/P1 open {d['p0p1_open']}   done {d['done']}")
+    print("  open items by kind:")
+    for k, v in sorted(d.get("by_kind", {}).items()):
+        print(f"  {k:<16} {v}")
+    print("  apps: " + ", ".join(d.get("apps", [])))
+    return 0
+
+
+def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
+    try:
+        d = L.call(Q_WHOAMI)
+    except GqlError as e:
+        die(f"whoami failed: {e}", EXIT_AUTH)
+    v = d.get("viewer") or {}
+    org = d.get("organization") or {}
+    auth.remember_viewer(v, org)
+    ident = auth.identity()
+    fleet = fleet_app_name()
+    app = SEAT_APP_NAMES.get(seat, "")
+    name = v.get("name")
+    writes = "enabled" if env("LINEAR_BOARD_WRITES") == "1" else "disabled (LINEAR_BOARD_WRITES=1 turns them on at cutover)"
+    info = auth.info or {}
+    if ident.kind == "seat":
+        identity = f"{name or app} (the {seat} seat's own Linear app)"
+    elif ident.kind == "env" and app and app_name_ok(name, seat_app_names(seat), seat):
+        identity = f"{name} (the {seat} seat's own Linear app, from the environment)"
+    elif ident.kind == "env" and name != fleet:
+        identity = f"unconfirmed (the environment's pair should be {' or '.join(map(repr, ident.accept))})"
+    else:
+        identity = (f"{fleet} (the shared app{', from the environment' if ident.kind == 'env' else ''}"
+                    f"{f'; fallback for {seat}' if seat else ''})")
+    print(f"seat:        {seat} (AGENT_SEAT)" if seat else
+          "seat:        (AGENT_SEAT is not set: reads work, the four write verbs refuse)")
+    print(f"identity:    {identity}")
+    print(f"backend:     linear ({L.url})")
+    print(f"writes:      {writes}")
+    print(f"viewer:      {name} ({'app user' if v.get('app') else 'NOT an app user'})  id {v.get('id')}")
+    print(f"workspace:   {org.get('name')} ({org.get('urlKey')})")
+    print(f"credentials: {auth.where}")
+    if info.get("minted_at"):
+        print(f"token:       minted {central(info['minted_at'])}, expires {central(info.get('expires_at') or 0)}, "
+              f"mints on this host: {info.get('mint_count')}")
+    print(f"token cache: {ident.cache}")
+    if seat and name == fleet and ident.kind == "env":
+        print(f"notice:      the environment's LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET are the shared {fleet} "
+              f"app's, not an app of {seat}'s own; writes still work and carry the {seat} tag.")
+    elif seat and name == fleet and ident.kind == "fleet":
+        where = f"no {seat}.env beside {cred_path().name}" if app else "none in the seat table"
+        print(f"notice:      {seat} has no Linear app yet ({where}), so it uses the shared {fleet} app; "
+              f"writes still work and carry the {seat} tag.")
+    problems = []
+    if not v.get("app"):
+        problems.append(f"the viewer is a person, not the {' or '.join(ident.accept)} app; refusing to act as a human")
+    elif not app_name_ok(name, ident.accept, ident.seat):
+        if ident.kind == "seat":
+            problems.append(f"the viewer is {name!r}, not the {' or '.join(map(repr, ident.accept))} app:  the credentials in {ident.where} "
+                            f"look swapped, so writes refuse (exit {EXIT_NO_CREDS}) until they are fixed; "
+                            "reads still work")
+        else:
+            problems.append(f"the viewer is {name!r}, not the {' or '.join(map(repr, ident.accept))} app")
+    if org.get("urlKey") != WORKSPACE_URL_KEY:
+        problems.append(f"the workspace is {org.get('urlKey')!r}, not {WORKSPACE_URL_KEY!r}")
+    for p in problems:
+        print(f"board: {p}", file=sys.stderr)
+    return EXIT_AUTH if problems else 0
+
+
+# ----------------------------------------------------------------- main
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="board", description="Fleet work board (Linear backend).")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    lp = sub.add_parser("list", help="list/filter items")
+    lp.add_argument("--app")
+    lp.add_argument("--status")
+    lp.add_argument("--severity")
+    lp.add_argument("--kind", dest="source_kind")
+    lp.add_argument("--search")
+    lp.add_argument("--mine", help="only items claimed by this seat (claimed:<TAG> label)")
+    lp.add_argument("--label", dest="labels", action="append", metavar="NAME",
+                    help=f"only items with this flat label ({', '.join(FLAT_LABELS)});  repeat to require several")
+    lp.add_argument("--limit", default="60")
+    lp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("show", help="one item + comments")
+    sp.add_argument("id")
+    sp.add_argument("--json", action="store_true")
+
+    fp = sub.add_parser("file", help="file a new finding/issue")
+    fp.add_argument("--title", required=True)
+    fp.add_argument("--app", default=DEFAULT_APP)
+    fp.add_argument("--severity")
+    desc_g = fp.add_mutually_exclusive_group()
+    desc_g.add_argument("--desc")
+    desc_g.add_argument("--desc-file", dest="desc_file", metavar="PATH",
+                        help="read the description from PATH, or standard input for -  (regular file you own, "
+                             "mode 0600 or 0400, 64 KB, UTF-8)")
+    fix_g = fp.add_mutually_exclusive_group()
+    fix_g.add_argument("--fix")
+    fix_g.add_argument("--fix-file", dest="fix_file", metavar="PATH",
+                       help="read the recommended fix from PATH, or standard input for -  (same rules)")
+    fp.add_argument("--label", dest="labels", action="append", metavar="NAME",
+                    help=f"add a flat workspace label ({', '.join(FLAT_LABELS)});  repeatable")
+    fp.add_argument("--by", dest="reported_by")
+    fp.add_argument("--where", dest="location")
+    fp.add_argument("--env")
+    fp.add_argument("--kind", dest="source_kind", default="agent-report")
+    fp.add_argument("--uid", dest="external_uid")
+    fp.add_argument("--url", dest="source_url")
+
+    session_help = f"session id to record (repeatable); ${SESSION_ENV_VAR} when omitted"
+    cp = sub.add_parser("claim", help="mark in_progress and put your seat on it")
+    cp.add_argument("id")
+    cp.add_argument("--by", dest="addressed_by", required=True)
+    cp.add_argument("--where", dest="location")
+    cp.add_argument("--env")
+    cp.add_argument("--session", dest="session_ids", action="append", help=session_help)
+    cp.add_argument("--steal", action="store_true", help="take a claim another seat holds (needs --reason)")
+    cp.add_argument("--reason")
+
+    stp = sub.add_parser("status", help="set status")
+    stp.add_argument("id")
+    stp.add_argument("value")
+    stp.add_argument("--by", dest="addressed_by")
+    stp.add_argument("--resolution")
+    stp.add_argument("--of", help="with duplicate: the id of the issue this one duplicates")
+    stp.add_argument("--session", dest="session_ids", action="append", help=session_help)
+
+    cmp_ = sub.add_parser("comment", help="comment on an item")
+    cmp_.add_argument("id")
+    cmp_.add_argument("--by", dest="author", required=True)
+    text_g = cmp_.add_mutually_exclusive_group(required=True)
+    text_g.add_argument("--text")
+    text_g.add_argument("--text-file", dest="text_file", metavar="PATH",
+                        help="read the comment from PATH, or standard input for -  (regular file you own, "
+                             "mode 0600 or 0400, 64 KB, UTF-8)")
+    cmp_.add_argument("--where", dest="location")
+    cmp_.add_argument("--env")
+    cmp_.add_argument("--session", dest="session_ids", action="append", help=session_help)
+
+    lbp = sub.add_parser("label", help=f"add or remove a flat label ({', '.join(FLAT_LABELS)})")
+    lbp.add_argument("action", choices=("add", "remove"))
+    lbp.add_argument("id")
+    lbp.add_argument("label_name", metavar="NAME")
+    lbp.add_argument("--by", dest="addressed_by")
+
+    sub.add_parser("stats", help="aggregate counts")
+    sub.add_parser("whoami", help="the Linear identity this CLI acts as")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if (env("BOARD_BACKEND") or "linear").lower() == "mac-collab":
+        linear_only = "label" if argv[:1] == ["label"] else \
+            next((f for f in (t.split("=", 1)[0] for t in argv) if f in LINEAR_ONLY_FLAGS), None)
+        if linear_only:
+            die(f"`{linear_only}` is Linear only:  BOARD_BACKEND=mac-collab runs the old board CLI, which has "
+                "no such flag or verb.  Unset BOARD_BACKEND to use it.", EXIT_USAGE)
+        old = Path(env("BOARD_MAC_COLLAB_CLI") or (Path.home() / "apps" / "mac-collab" / "board")).expanduser()
+        if not old.is_file():
+            die(f"BOARD_BACKEND=mac-collab, but the old board CLI is not at {old} (set BOARD_MAC_COLLAB_CLI)")
+        sys.stdout.flush()
+        os.execv(sys.executable, [sys.executable, str(old), *argv])
+    a = build_parser().parse_args(argv)
+    seat = current_seat(required=a.cmd in WRITE_VERBS)
+    if a.cmd in WRITE_VERBS and env("LINEAR_BOARD_WRITES") != "1":
+        die(f"`board {a.cmd}` is a write, and writes to Linear are off until cutover.  Use the mac-collab "
+            "board for writes until then; at cutover the CLI runs with LINEAR_BOARD_WRITES=1.", EXIT_WRITES_OFF)
+    for flag, val in (("--by", getattr(a, "reported_by", None)), ("--by", getattr(a, "addressed_by", None)),
+                      ("--by", getattr(a, "author", None))):
+        if val is not None:
+            check_by(val, seat, flag)
+    prepare_inputs(a)
+    token_url = endpoint("LINEAR_BOARD_TOKEN_URL", TOKEN_URL)
+    api_url = endpoint("LINEAR_BOARD_API_URL", GRAPHQL_URL)
+    auth = Auth(token_url, resolve_identity(seat))
+    L = Linear(auth, api_url)
+    try:
+        if a.cmd in WRITE_VERBS:
+            check_write_identity(L, auth)
+        if a.cmd == "whoami":
+            return cmd_whoami(L, auth, seat)
+        if a.cmd == "list":
+            return cmd_list(L, a)
+        if a.cmd == "stats":
+            return cmd_stats(L)
+        ids = IdIndex()
+        if a.cmd == "show":
+            return cmd_show(L, ids, a)
+        if a.cmd == "file":
+            return cmd_file(L, a, seat)
+        if a.cmd == "claim":
+            return cmd_claim(L, ids, a, seat)
+        if a.cmd == "status":
+            return cmd_status(L, ids, a, seat)
+        if a.cmd == "comment":
+            return cmd_comment(L, ids, a, seat)
+        if a.cmd == "label":
+            return cmd_label(L, ids, a, seat)
+    except GqlError as e:
+        die(f"Linear error: {e}")
+    return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

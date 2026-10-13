@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Renoir">
+  <defs>
+    <linearGradient id="dbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2a2a2c"/>
+      <stop offset="100%" stop-color="#151516"/>
+    </linearGradient>
+  </defs>
+  <!-- Dark app-tile chrome (Claude Code style) -->
+  <rect width="64" height="64" rx="14" fill="url(#dbg)"/>
+  <!-- Terminal prompt (bottom-left) -->
+  <g fill="#E8E6E3" transform="translate(8 46)">
+    <path d="M1.2 1.4 L7.6 7.2 L1.2 13" fill="none" stroke="#E8E6E3" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="10.5" y="11.2" width="7.5" height="2.1" rx="0.9"/>
+  </g>
+  <!-- Orange starburst / asterisk (Claude-family mark, solid) -->
+  <g transform="translate(34 28)" fill="#D97757">
+    <!-- 8 long rays + 8 short interstitial rays for denser asterisk -->
+    <g>
+      <rect x="-2.4" y="-16" width="4.8" height="32" rx="2.4" transform="rotate(0)"/>
+      <rect x="-2.4" y="-16" width="4.8" height="32" rx="2.4" transform="rotate(45)"/>
+      <rect x="-2.4" y="-16" width="4.8" height="32" rx="2.4" transform="rotate(90)"/>
+      <rect x="-2.4" y="-16" width="4.8" height="32" rx="2.4" transform="rotate(135)"/>
+    </g>
+    <g>
+      <rect x="-1.7" y="-13.5" width="3.4" height="27" rx="1.7" transform="rotate(22.5)"/>
+      <rect x="-1.7" y="-13.5" width="3.4" height="27" rx="1.7" transform="rotate(67.5)"/>
+      <rect x="-1.7" y="-13.5" width="3.4" height="27" rx="1.7" transform="rotate(112.5)"/>
+      <rect x="-1.7" y="-13.5" width="3.4" height="27" rx="1.7" transform="rotate(157.5)"/>
+    </g>
+    <circle r="3.2" fill="#151516"/>
+  </g>
+</svg>

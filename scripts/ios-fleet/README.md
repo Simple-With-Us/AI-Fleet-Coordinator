@@ -14,8 +14,9 @@ hand-maintained sheet is exactly why it never converged.
 | File | What it does |
 |---|---|
 | `sheet-rules.json` | The fleet's App Store / TestFlight rules as data.  **This is the file to edit** when a rule changes. |
-| `../scripts/fleet-apps-sheet-sync.mjs` | Regenerates the sheet: `RULES & STANDARDS`, `App Store Registry`, `TestFlight Builds`, `Icon Audit`, plus the preserved `Legacy pre-2026-10-02` tab. |
-| `../scripts/sheet-read.mjs` | Read-only dump of the sheet, for verifying a sync. |
+| `../fleet-apps-sheet-sync.mjs` | Regenerates the registry tabs:  `RULES & STANDARDS`, `App Store Registry`, `TestFlight Builds`, `Icon Audit`, `Fleet Apps` and `Seats and Bots`.  Clears each tab before writing it.  `--dry-run` writes nothing; `--no-asc` skips the two App Store Connect tabs. |
+| `../fleet-apps-sheet-facts.json` | Curated facts no registry file carries (successor ASC records, seat platforms, hosted seats).  Edit it, then re-run the sync. |
+| `../sheet-read.mjs` | Read-only dump of the sheet, for verifying a sync. |
 | `fleet-icon-audit.mjs` | The standing icon check.  Exits non-zero on errors. |
 | `fleet_icon_fix_alpha.py` | Stages an opaque version of any iOS 1024 icon that is genuinely transparent. |
 | `icon-lock.json` | Approved icon hash per app.  Change an icon on purpose, then re-run `--approve`. |
@@ -27,12 +28,21 @@ hand-maintained sheet is exactly why it never converged.
 Strictly private.  Service account `fleet-sheets-sync@jay-wedgeworth.iam.gserviceaccount.com`,
 key at `~/.secrets/google-sheets-sa.json`.  Never make it public and never query it anonymously.
 
-Runs automatically from `ios-fleet/publish-ios-versions.sh` after a successful manifest
-push.  Run it by hand any time:
+Runs from an AI-Fleet-Coordinator lane at origin/main (never from a stale copy; an old copy
+rolled the sheet back before):
 
 ```bash
-node /Users/jay/apps/fleet-apps-sheet-sync.mjs
+~/apps/lane new AFC <slug>        # then, inside the lane:
+node scripts/fleet-apps-sheet-sync.mjs --dry-run   # live vs new row counts, writes nothing
+node scripts/fleet-apps-sheet-sync.mjs             # backs up the workbook, then rewrites the tabs
 ```
+
+Then run the ops half from a Fleet-OPS lane:  `node scripts/fleet-sheet/fleet-ops-sheet-sync.mjs`.
+
+`ios-fleet/publish-ios-versions.sh` calls `~/apps/fleet-apps-sheet-sync.mjs` after a
+successful manifest push.  That file is a guarded shim:  it runs
+`~/Code/AI-Fleet-Coordinator/scripts/fleet-apps-sheet-sync.mjs` only when that tree is clean
+and at origin/main, and otherwise exits non-zero with the lane command.
 
 ## Why the rules block is generated
 
@@ -41,7 +51,8 @@ run.  That is precisely why the sheet could never hold a stable standards sectio
 rules block is now rendered from `sheet-rules.json`, so it is impossible to clobber.
 
 The old tab also had four hand-added rows (rows 18-21) written against a completely
-different column layout.  They are preserved untouched as `Legacy pre-2026-10-02`.
+different column layout.  They were kept as `Legacy pre-2026-10-02` for a while; that tab
+no longer exists.
 
 ## Why the repo, and not App Store Connect, is the icon source of truth
 
@@ -83,8 +94,9 @@ FLEET_ICON_AUDIT=off     # skip the check
 the Icon Audit tab until somebody deliberately re-approves.  That is what stops the slow
 rot: a rebrand that changes the icon can no longer land silently.
 
-The audit also compares lane worktrees under `~/apps/*` against the canonical tree, which
-is how the unlanded Hog Hunter icon branches were found.
+The audit also compares lane worktrees under `~/apps` (`~/apps/lanes/<Repo>/<seat>-<slug>`, and the older
+locations until the migration moves them) against the canonical tree, which is how the unlanded Hog Hunter
+icon branches were found.  It asks `git worktree list` for them, so it does not depend on folder names.
 
 ## Scan hygiene
 
@@ -98,6 +110,6 @@ worktrees under `.claude/worktrees/` duplicate the canonical tree.  Both are pru
 ```bash
 python3 fleet_icon_fix_alpha.py --app <key>          # stage the fix, inspect it
 # copy the staged file over the source in your worktree, commit
-node fleet-icon-audit.mjs --approve                  # accept the new icon
-node /Users/jay/apps/fleet-apps-sheet-sync.mjs       # refresh the sheet
+node fleet-icon-audit.mjs --approve                  # accept the new icon; land icon-lock.json by PR
+node ../fleet-apps-sheet-sync.mjs                    # refresh the sheet, from an AFC lane at origin/main
 ```

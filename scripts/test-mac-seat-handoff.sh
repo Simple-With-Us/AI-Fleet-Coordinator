@@ -22,14 +22,17 @@ bash -n "$CLAIM" || fail "mac-seat-claim.sh syntax"
 "$REQUEST" --help >/dev/null || fail "request-mac-seat --help"
 "$CLAIM" --help >/dev/null || fail "mac-seat-claim --help"
 
-"$REQUEST" --dry-run \
+# Capture first: `grep -q` closes the pipe at the first match, and under
+# pipefail the writer's SIGPIPE made this check fail intermittently.
+request_out="$("$REQUEST" --dry-run \
   --repo AI-Fleet-Coordinator \
   --title "contract test" \
   --prompt "noop" \
   --by AFC \
   --agent grok \
-  --no-slack \
-  2>&1 | grep -q 'DRY: gh issue create' || fail "request dry-run must show gh issue create"
+  --no-zulip \
+  2>&1)" || fail "request-mac-seat dry-run exited non-zero"
+grep -q 'DRY: gh issue create' <<<"$request_out" || fail "request dry-run must show gh issue create"
 
 "$CLAIM" --dry-run --by GROK --once --no-spawn 2>&1 \
   | grep -q 'no open needs-mac issues' \

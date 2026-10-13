@@ -1,0 +1,402 @@
+name: PR Autofix Reusable
+
+# The fleet's shared PR autofix.  When a review bot comments on an open pull request, ask Claude
+# Code (through the MiniMax Anthropic endpoint) to make the smallest change that answers it, and
+# push that change to the PR branch.  Callers live in each repo as a thin workflow that triggers on
+# the comment events and calls this file with `uses:`;  see docs/PR-AUTOFIX.md for the caller.
+#
+# Origin:  BotFleet's inline .github/workflows/autofix.yml, which replaced urcades/pr-autofix.
+# That action is pinned at its newest commit and could never get past its guard step:  it counts
+# earlier autofix commits with `grep -c ... || echo "0"`, and when there are none `grep -c` prints
+# 0 and exits 1, so the fallback prints a second 0.  The value became "0\n0", the second 0 landed
+# on a line of $GITHUB_OUTPUT that is not name=value, and the runner stopped with "Invalid format
+# '0'" on every run.  The same action also checked out the PR branch without asking whether the PR
+# was still open, so a late bot comment on a merged PR (whose branch is gone) failed at
+# `git checkout`.  Forking it is not allowed here, so its steps live in this file, written so a
+# comment can never reach $GITHUB_OUTPUT or an environment variable.
+#
+# The steps are inline on purpose.  A script in the calling repository would be read from whichever
+# PR branch is checked out, and an older branch does not have it.
+#
+# The event context in a reusable workflow is the caller's, so github.event.* below is the comment
+# event that started the caller.
+
+on:
+  workflow_call:
+    inputs:
+      allowed_bots:
+        description: >-
+          Comma-separated logins of the bots whose comments may start a run.  A repository's
+          .autofix.yml allowed_bots list, when it has one, replaces this.
+        type: string
+        default: "kody-ai[bot],chatgpt-codex-connector[bot],cursor[bot],claude[bot]"
+      max_iterations:
+        description: Most autofix commits allowed on one PR (trusted default-branch policy only).
+        type: number
+        default: 5
+      claude_code_version:
+        description: Version of @anthropic-ai/claude-code to install.
+        type: string
+        default: "2.1.295"
+      model:
+        description: >-
+          MiniMax model id for ANTHROPIC_MODEL.  Overridden by .github/pr-autofix-trusted.yml on the
+          default branch when that file sets model.
+        type: string
+        default: "MiniMax-M3.1-Flash-Preview"
+      max_turns:
+        description: >-
+          Claude Code turn budget.  Overridden by .github/pr-autofix-trusted.yml on the default
+          branch when that file sets max_turns.
+        type: number
+        default: 60
+      verify_command:
+        description: >-
+          Optional shell to run after the model edits and before push.  When empty, the trusted file
+          on the default branch may supply verify_command instead.
+        type: string
+        default: ""
+    secrets:
+      MINIMAX_API_KEY:
+        required: true
+      AUTOFIX_GITHUB_APP_PRIVATE_KEY:
+        required: false
+        description: >-
+          GitHub App private key whose installation pushes re-trigger CI.  Pair with the org/repo
+          variable SWU_AUTOFIX_GITHUB_APP_ID.
+
+jobs:
+  autofix:
+    # Same guards as the caller, repeated here so a caller that forgets them cannot spend a run on a
+    # closed PR or a human comment.
+    if: >
+      (github.event.issue.pull_request || github.event.pull_request) &&
+      (github.event.issue.state || github.event.pull_request.state) == 'open' &&
+      contains(fromJSON('["bot", "Bot"]'), github.event.comment.user.type || github.event.review.user.type || '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: pr-autofix-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      ANTHROPIC_BASE_URL: https://api.minimax.io/anthropic
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.MINIMAX_API_KEY }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      INPUT_ALLOWED_BOTS: ${{ inputs.allowed_bots }}
+      DEFAULT_MAX_ITERATIONS: ${{ inputs.max_iterations }}
+      INPUT_MODEL: ${{ inputs.model }}
+      INPUT_MAX_TURNS: ${{ inputs.max_turns }}
+      INPUT_VERIFY_COMMAND: ${{ inputs.verify_command }}
+    steps:
+      - name: Resolve The Pull Request
+        id: pr
+        run: |
+          set -euo pipefail
+          # An issue_comment event carries no head ref, and the PR can have merged or closed since
+          # the event fired, so ask for its current state.
+          info=$(gh pr view "$PR_NUMBER" --json state,headRefName,isCrossRepository,headRefOid)
+          state=$(jq -r '.state' <<< "$info")
+          cross=$(jq -r '.isCrossRepository' <<< "$info")
+          branch=$(jq -r '.headRefName' <<< "$info")
+          head_sha=$(jq -r '.headRefOid' <<< "$info")
+          if [ "$state" != "OPEN" ] || [ "$cross" = "true" ]; then
+            echo "::notice::PR #$PR_NUMBER is $state (from a fork: $cross), so there is nothing to push to"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo "proceed=true"
+            echo "branch=$branch"
+            echo "head_sha=$head_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Load Trusted Autofix Policy
+        id: trusted
+        if: steps.pr.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          model="$INPUT_MODEL"
+          turns="$INPUT_MAX_TURNS"
+          verify="$INPUT_VERIFY_COMMAND"
+          path=".github/pr-autofix-trusted.yml"
+          if gh api "repos/$GH_REPO/contents/$path?ref=$DEFAULT_BRANCH" --jq .content > "$RUNNER_TEMP/trusted.b64" 2>/dev/null; then
+            tr -d '\n' < "$RUNNER_TEMP/trusted.b64" | base64 -d > "$RUNNER_TEMP/trusted.yml"
+            file_model=$(awk '/^model:/ { print $2; exit }' "$RUNNER_TEMP/trusted.yml")
+            if [ -n "$file_model" ]; then model="$file_model"; fi
+            file_turns=$(awk '/^max_turns:/ { print $2; exit }' "$RUNNER_TEMP/trusted.yml")
+            case "$file_turns" in
+              '' | *[!0-9]*) ;;
+              *) turns="$file_turns" ;;
+            esac
+            if [ -z "$verify" ]; then
+              verify=$(awk '
+                /^verify_command:/ { capture = 1; next }
+                capture && /^[^[:space:]]/ { exit }
+                capture { print }
+              ' "$RUNNER_TEMP/trusted.yml")
+            fi
+            file_max=$(awk '/^max_iterations:/ { print $2; exit }' "$RUNNER_TEMP/trusted.yml")
+            case "$file_max" in
+              '' | *[!0-9]*) ;;
+              *) echo "max_iterations=$file_max" >> "$GITHUB_OUTPUT" ;;
+            esac
+          fi
+          {
+            echo "model=$model"
+            echo "max_turns=$turns"
+          } >> "$GITHUB_OUTPUT"
+          if [ -n "$verify" ]; then
+            printf '%s' "$verify" > "$RUNNER_TEMP/verify.sh"
+            echo "has_verify=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_verify=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint Autofix Push Token
+        id: push_token
+        if: steps.pr.outputs.proceed == 'true' && secrets.AUTOFIX_GITHUB_APP_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.SWU_AUTOFIX_GITHUB_APP_ID }}
+          private-key: ${{ secrets.AUTOFIX_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Check Out The PR Branch
+        if: steps.pr.outputs.proceed == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr.outputs.branch }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check The Comment And Build The Prompt
+        id: guard
+        if: steps.pr.outputs.proceed == 'true'
+        env:
+          TRUSTED_MAX_ITERATIONS: ${{ steps.trusted.outputs.max_iterations }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/autofix"
+          mkdir -p "$dir"
+
+          skip() {
+            echo "::notice::$1"
+            echo "should_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          # A pull_request_review carries .review, the two comment events carry .comment.  The text
+          # goes to a file, never to a step output or an environment variable:  an output line that
+          # is not name=value is the error this step used to die with, a body that repeated the
+          # heredoc delimiter could write outputs of its own, and one environment string tops out
+          # near 128 KB.
+          author=$(jq -r '(.review // .comment).user.login // empty' "$GITHUB_EVENT_PATH")
+          jq -r '(.review // .comment).body // empty' "$GITHUB_EVENT_PATH" > "$dir/comment.txt"
+          path=$(jq -r '.comment.path // empty' "$GITHUB_EVENT_PATH")
+          line=$(jq -r '.comment.line // .comment.original_line // empty' "$GITHUB_EVENT_PATH")
+
+          # jq prints an empty string as a blank line, so test for any non-blank character.
+          grep -q '[^[:space:]]' "$dir/comment.txt" || skip "Empty comment body, skipping"
+
+          # The caller's inputs are the defaults.  A repository's own .autofix.yml may override
+          # allowed_bots only.  Model, turn budget, iteration cap, and verify commands come from the
+          # trusted default-branch policy loaded above.
+          allowed="$INPUT_ALLOWED_BOTS"
+          max="$DEFAULT_MAX_ITERATIONS"
+          if [ -n "${TRUSTED_MAX_ITERATIONS:-}" ]; then max="$TRUSTED_MAX_ITERATIONS"; fi
+          if [ -f .autofix.yml ]; then
+            echo "::notice::Loading allowed_bots from .autofix.yml"
+            file_allowed=$(awk '
+              /^allowed_bots:/ { in_list = 1; next }
+              in_list && /^[[:space:]]*-/ {
+                sub(/^[[:space:]]*-[[:space:]]*/, "")
+                sub(/[[:space:]]*#.*$/, "")
+                sub(/[[:space:]]+$/, "")
+                print
+                next
+              }
+              in_list && /^[^[:space:]#-]/ { in_list = 0 }
+            ' .autofix.yml | tr -d "\"'" | paste -sd, -)
+            if [ -n "$file_allowed" ]; then allowed="$file_allowed"; fi
+          fi
+
+          # The list is authoritative:  only a listed bot may start a run.  An earlier version let
+          # any comment containing words like `error:` or `warning:` through regardless of author,
+          # which let an unrelated bot (a deploy or error-tracking app) start a paid run.  An empty
+          # list, which only a caller can produce by passing an empty input, allows every bot.
+          if [ -n "$allowed" ]; then
+            match=0
+            IFS=',' read -r -a bots <<< "$allowed"
+            for bot in "${bots[@]}"; do
+              bot=$(printf '%s' "$bot" | tr -d '[:space:]')
+              if [ "$bot" = "$author" ]; then match=1; break; fi
+            done
+            if [ "$match" -ne 1 ]; then
+              skip "Author '$author' is not in the allowed bot list, skipping"
+            fi
+          fi
+
+          # The cap is per PR:  count the autofix commits this branch has that the default branch
+          # does not.  grep -c prints the count and exits 1 when it is 0, so `|| true` and nothing
+          # else keeps the output a single number.  The subject test matches what the Commit step
+          # writes.
+          subjects=$(git log --format=%s "origin/$DEFAULT_BRANCH..HEAD")
+          prior=$(printf '%s\n' "$subjects" | grep -c '^autofix:' || true)
+          iteration=$((prior + 1))
+          if [ "$iteration" -gt "$max" ]; then
+            skip "Iteration limit reached ($iteration > $max), skipping"
+          fi
+
+          # The diff is context only, so cap it.
+          gh pr diff "$PR_NUMBER" 2> /dev/null | head -c 100000 > "$dir/pr.diff" || true
+          if [ "$(wc -c < "$dir/pr.diff")" -ge 100000 ]; then
+            echo "(diff truncated)" >> "$dir/pr.diff"
+          fi
+
+          {
+            echo "You are fixing a code review comment on a pull request.  Make minimal, targeted changes to address the comment."
+            echo
+            echo "## Review Comment"
+            cat "$dir/comment.txt"
+            if [ -n "$path" ]; then
+              echo
+              echo "## Location"
+              echo "File: $path"
+              if [ -n "$line" ]; then
+                echo "Line: $line"
+              fi
+            fi
+            if [ -s "$dir/pr.diff" ]; then
+              echo
+              echo "## PR Diff (for context)"
+              echo '```diff'
+              cat "$dir/pr.diff"
+              echo '```'
+            fi
+            echo
+            echo "## Instructions"
+            echo "- Read the relevant file(s) and understand the context"
+            echo "- Make the minimum change needed to address the review comment"
+            echo "- Do not refactor unrelated code"
+            echo "- Do not add comments explaining the fix unless the review asked for comments"
+            echo "- If the comment is unclear or you cannot determine a fix, make no changes"
+          } > "$dir/prompt.md"
+
+          {
+            echo "should_fix=true"
+            echo "iteration=$iteration"
+            echo "max_iterations=$max"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::Autofix iteration $iteration / $max for a comment by $author"
+
+      - name: Install Claude Code
+        if: steps.guard.outputs.should_fix == 'true'
+        env:
+          CLAUDE_CODE_VERSION: ${{ inputs.claude_code_version }}
+        run: npm install -g "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+
+      - name: Run The Fix
+        id: fix
+        if: steps.guard.outputs.should_fix == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          ANTHROPIC_MODEL: ${{ steps.trusted.outputs.model }}
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ steps.trusted.outputs.model }}
+          MAX_TURNS: ${{ steps.trusted.outputs.max_turns }}
+        run: |
+          set -euo pipefail
+          stream="$RUNNER_TEMP/claude-stream.ndjson"
+          out="$RUNNER_TEMP/claude-execution-output.json"
+          echo "::group::Claude Code output"
+          claude --print --dangerously-skip-permissions \
+            --max-turns "$MAX_TURNS" \
+            --allowed-tools "Edit,Write,Read,Bash,Grep,Glob" \
+            --output-format stream-json \
+            < "$RUNNER_TEMP/autofix/prompt.md" | tee "$stream"
+          echo "::endgroup::"
+          jq -s '.' "$stream" > "$out"
+
+      - name: Summarize Autofix Diagnostics
+        if: ${{ always() && steps.guard.outputs.should_fix == 'true' }}
+        id: diagnostics
+        uses: Simple-With-Us/congress-trading-shared/.github/actions/autofix-diagnostics@2644321a5107372bf7bda55909552f8abee4ad61
+
+      - name: Retain Sanitized Autofix Diagnostics
+        if: ${{ always() && steps.guard.outputs.should_fix == 'true' && steps.diagnostics.outputs.summary-path != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr-autofix-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.diagnostics.outputs.summary-path }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Validate Outcome Before Push
+        id: validate
+        if: steps.guard.outputs.should_fix == 'true'
+        env:
+          START_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          HAS_VERIFY: ${{ steps.trusted.outputs.has_verify }}
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.fix.outcome }}" != "success" ]; then
+            echo "::error::Claude Code exited unsuccessfully; refusing to push"
+            exit 1
+          fi
+          status="${{ steps.diagnostics.outputs.status }}"
+          if [ "$status" != "available" ]; then
+            echo "::error::Autofix diagnostics unavailable (status=$status); refusing to push"
+            exit 1
+          fi
+          summary="${{ steps.diagnostics.outputs.summary-path }}"
+          subtype=$(jq -r '.result.subtype // empty' "$summary")
+          is_error=$(jq -r '.result.is_error // empty' "$summary")
+          if [ "$subtype" != "success" ] || [ "$is_error" = "true" ]; then
+            echo "::error::Autofix result subtype=$subtype is_error=$is_error; refusing to push"
+            exit 1
+          fi
+          current=$(gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid)
+          if [ "$current" != "$START_HEAD_SHA" ]; then
+            echo "::error::PR head moved during autofix ($START_HEAD_SHA -> $current); refusing to push"
+            exit 1
+          fi
+          if [ "$HAS_VERIFY" = "true" ]; then
+            bash "$RUNNER_TEMP/verify.sh"
+          fi
+
+      - name: Commit And Push
+        id: push
+        if: steps.validate.outcome == 'success'
+        env:
+          BRANCH: ${{ steps.pr.outputs.branch }}
+          ITERATION: ${{ steps.guard.outputs.iteration }}
+          MAX_ITERATIONS: ${{ steps.guard.outputs.max_iterations }}
+          START_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          PUSH_TOKEN: ${{ steps.push_token.outputs.token || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          current=$(gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid)
+          if [ "$current" != "$START_HEAD_SHA" ]; then
+            echo "::error::PR head moved before push ($START_HEAD_SHA -> $current); aborting"
+            exit 1
+          fi
+          # GITHUB_TOKEN may not create or change files under .github/workflows, and GitHub rejects
+          # the whole push when one does.  Leave them out so the rest of the fix still lands.
+          git add -A -- . ':(exclude).github/workflows'
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "autofix: address review comment [$ITERATION/$MAX_ITERATIONS]"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GH_REPO}.git" "HEAD:refs/heads/$BRANCH"
+          if [ "${{ steps.push_token.outputs.token }}" = "" ]; then
+            echo "::warning::Pushed with GITHUB_TOKEN; CI will not re-run until SWU_AUTOFIX GitHub App credentials are configured"
+          fi

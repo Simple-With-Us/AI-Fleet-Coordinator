@@ -1,0 +1,102 @@
+---
+name: closeout
+description: Finish a Fx work unit — the Linear issue, the PR link, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
+---
+
+# Closeout (FX)
+
+> **This install is for `FX`.**  Chat tag `[FX·session8]`.  Notes `Fx`.  Branches `fx/`.  Lanes `~/apps/lanes/<Repo>/fx-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `fx-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/FX-zuliprc` (mode 600).  Session tag `[FX·session8]`, and the `agent-sync` CLI writes it for you.
+
+> **Runtime (fx).** Local Cursor IDE remains `[CURSOR]`.  Codex CLI remains `[CODEX]`.  Do not inherit those tags from a shared skill directory fx also scans (`~/.claude/skills`, `~/.codex/skills`).  Prefer `~/.fx/skills` for this seat.
+
+
+Start-of-work is a claim on the Linear issue and a post in its Zulip topic.  End-of-work is the same two surfaces, the PR that links the issue, plus Notes when the owner might ask "what happened?"
+
+## 1. Truth check
+
+- Merged to `main`?  Do **not** use commit ancestry after a squash-merge (`git merge-base --is-ancestor` lies because squash rewrites SHAs and `delete_branch_on_merge` removes the remote).  Use PR state, then a three-dot diff:
+
+```bash
+gh pr list --head "$BRANCH" --state all --json number,state,mergedAt,url
+git fetch origin
+git diff origin/main...HEAD    # three-dot: remaining unique work vs merge-base
+# helper: scripts/branch-landed.sh [repo] [branch]
+```
+
+A two-dot `git diff origin/main HEAD` on a stale lane is actively misleading.  Ancestry is still correct for "does this exact SHA exist on live/main" (deploy-verify).
+- Production verified?  (`deploy-verify`)  Completed ≠ Deployed.
+- Uncommitted files?  Commit or explicitly report why not (failing tests, secrets, owner hold).
+
+## 2. Linear
+
+```bash
+board status <id> completed --resolution "Landed in #<PR>.  <one line>."
+# or: deployed — only after health verify
+```
+
+The PR body carried `Fixes <ID>` when the PR finished the issue.  Once Linear's GitHub automation is on, that moves the issue to Done on merge;  before then, run the command above.  It is the same move done by hand and is safe to repeat.  A PR that carried only `Refs <ID>` never closes the issue, so run the command yourself, or leave the issue open on purpose.  Writes need `AGENT_SEAT`, and `--by` must equal it.
+
+- **Completed** = merged to main.
+- **Deployed** = released and verified (say how).
+- Correct a wrong status or resolution with a new `board comment` or `board status`, never by editing another seat's comment.
+
+Every imported GitHub issue has a Linear twin;  work and close the Linear issue, not the GitHub one.  A new GitHub issue filed after the cutover is copied into Linear one way, by Linear's GitHub sync, as an issue with its own id;  close that Linear issue, not the GitHub one.  Cross-app work gets an issue on each affected team, linked in the descriptions.
+
+There is no effort log to update and nothing for writeback to copy.  The effort logs are archived.
+
+## 3. The PR
+
+The PR body names the issue (`Fixes <ID>` or `Refs <ID>`), and the branch is `<seat>/<id>-<slug>`.  Say in the closeout post which of the two you used.
+
+## 4. Zulip
+
+Linear first, then the work topic — the same one you claimed in.
+
+```bash
+agent-sync post --topic "<ID> <subject>" $'repo:  <project>  |  DONE\npr: #<n>\nissue: <ID>\ngates: <what ran>\nwork: <what landed>'
+```
+
+Then resolve the topic when the issue reaches Deployed or Parked:  `agent-sync resolve --topic "<topic>"`.  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
+
+Not a fleet wake (`@**all**`) for a normal closeout.  The Slack-era helpers (`slack-sync.sh`, `agent-sync-websocket.py`, `agent-sync-poll.py`) are retired; `agent-sync` replaces them.
+
+## 5. Apple Notes
+
+Substantial work: living Completion note, `--update` in place.  Title `[APP, Fx] short topic`.  See `apple-notes`.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
+
+## 6. Mac local processes
+
+If this unit created, loaded, bootout, or retired a LaunchAgent, cron, login item, pm2 KeepAlive job, **or a helper other agents run**: add/update a row on `/Users/jay/apps/MAC-LOCAL-PROCESSES.md` **and** `--update "⭐️ Background Jobs Master List"` in the same change.  Say always-on vs on-demand.  Retire in place; never delete historical rows.
+
+Do not SIGKILL `com.jay.claude-remote-control`.
+
+## 7. Default-off features
+
+If you shipped a flag that is off, reserve a Planned enablement row (ST: also `docs/FEATURE-ENABLEMENT-BACKLOG.md`).
+
+## Parked, not done
+
+If you stop without merge: the issue stays accurate (`board status <id> open` to release it, or `parked`, plus a comment "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
+
+## Fleet recall (every closeout)
+
+If you learned a reusable lesson (gotcha, measured number, owner preference, runbook step), contribute it **now**.  Search first so you corroborate rather than duplicate.
+
+```bash
+recall contribute "<one paragraph>" --category lesson --app <slug>
+```
+
+or MCP `recall_contribute`.  40–4000 chars, one idea, category `lesson | preference | infrastructure | decision | runbook`.  Optional `url` (Linear issue or PR) is provenance, not a gate.  Owner 2026-09-02: this is the highest-yield write path.  Do not paste transcripts or secrets.
+
+## Canon
+
+- `/Users/jay/apps/AGENT-SYNC.md` — Linear and the claim lifecycle; Apple Notes; Mac local processes; always-commit
+- `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` — retired stub:  the effort logs are archived
+- Skills: `board-ops`, `apple-notes`, `deploy-verify`, `land-lane`
+
+## Living Handoff Morphing to Closeout
+
+Throughout execution, maintain a brief big-picture outline of task state. When the task is complete, this outline naturally becomes your **Closeout Report** by:
+1. Marking all milestones as completed with commit/PR references.
+2. Replacing in-flight WIP notes with live production deployment verification (`/api/health` 200, build SHA).
+3. If closing out work adopted from a peer, posting in that work topic with the envelope `[<SUB_TAG>·session8→<ORIGINAL_TAG>]` and an `@**<Original Seat Display Name>**` mention, so the original seat is actually woken.

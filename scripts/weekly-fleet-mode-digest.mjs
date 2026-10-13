@@ -22,7 +22,7 @@
 // Usage:
 //   node scripts/weekly-fleet-mode-digest.mjs [--dry-run] [--fixture path.json]
 //
-//   --dry-run   Prints the composed Slack message to stdout and exits 0
+//   --dry-run   Prints the composed Zulip message to stdout and exits 0
 //               WITHOUT posting.
 //   --fixture   Loads a local JSON fixture instead of hitting the network,
 //               for offline development/testing of the composition logic.
@@ -30,9 +30,9 @@
 //                        sentryRows: <events response `data` array or null> }
 //
 // Posting (no --dry-run): shells out to the canonical Mac-local relay
-// helper, per AGENT-SYNC.md -- never hand-rolls a Slack WebClient call and
-// never touches SLACK_BOT_TOKEN directly:
-//   AGENT_TAG=CLAUDE ~/apps/agent-sync-websocket.py --post "<message>"
+// helper, per AGENT-SYNC.md -- never hand-rolls a Zulip client call and
+// never reads a bot key directly:
+//   agent-sync post --as CLAUDE --channel agent-sync --topic "fleet-mode digest" "<message>"
 //
 // SECRETS: USAGE_READ_TOKEN and SENTRY_AUTH_TOKEN_FULLSCOPE are loaded
 // value-blind from environment first, then ~/.secrets/global-api-keys
@@ -62,6 +62,13 @@ const SENTRY_EVENTS_URL =
   `&query=${encodeURIComponent("message:*subagent*")}&statsPeriod=7d&sort=-count()`;
 
 const REQUEST_TIMEOUT_MS = 20_000;
+
+// Zulip requires a channel AND a topic on every message.  The digest is one
+// recurring post, so it threads in a single standing topic.
+const DIGEST_TOPIC = "fleet-mode digest";
+// cron and launchd run with a minimal PATH, so call the CLI by absolute path.
+const AGENT_SYNC_BIN =
+  process.env.AGENT_SYNC_BIN || `${process.env.HOME}/.local/bin/agent-sync`;
 
 // Claude-family tier vocabulary, mirroring
 // ~/.claude/hooks/subagent-economy-pretooluse.py's resolve_tier: bare tier
@@ -388,22 +395,26 @@ function composeMessage({ umResult, sentryResult, now = new Date() }) {
 
 // ---------------------------------------------------------------- post ---
 
-function postToSlack(text) {
+function postToZulip(text) {
+  // Posts through the agent-sync CLI as the CLAUDE seat, which resolves that
+  // seat's own ~/.secrets/Zulip/Claude-zuliprc.  No token is read here.
+  // Zulip needs a channel AND a topic on every message, so the topic is passed
+  // explicitly rather than left to the transport.
   const result = spawnSync(
-    join(homedir(), "apps", "agent-sync-websocket.py"),
-    ["--post", text],
+    AGENT_SYNC_BIN,
+    ["post", "--as", "CLAUDE", "--channel", "agent-sync", "--topic", DIGEST_TOPIC, text],
     {
-      env: { ...process.env, AGENT_TAG: "CLAUDE" },
+      env: { ...process.env },
       encoding: "utf8",
       timeout: 30_000,
     },
   );
   if (result.error) {
-    throw new Error(`agent-sync-websocket.py failed to launch: ${result.error.message}`);
+    throw new Error(`agent-sync failed to launch: ${result.error.message}`);
   }
   if (result.status !== 0) {
     throw new Error(
-      `agent-sync-websocket.py exited ${result.status}: ${(result.stderr || "").trim()}`,
+      `agent-sync exited ${result.status}: ${(result.stderr || "").trim()}`,
     );
   }
   return result.stdout;
@@ -445,8 +456,8 @@ async function main() {
     process.exit(0);
   }
 
-  log("posting to #agent-sync via agent-sync-websocket.py");
-  postToSlack(message);
+  log("posting to #agent-sync via agent-sync");
+  postToZulip(message);
   log("posted.");
 }
 

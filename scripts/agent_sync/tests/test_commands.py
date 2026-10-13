@@ -1,0 +1,862 @@
+"""Command behaviour against the fake server: post, reply, read, inbox, topics, follow, resolve, react."""
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import stat
+import unittest
+
+from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH
+from agent_sync.tests.harness import TAG, Harness
+
+# 2026-10-07 23:41 UTC is 6:41pm Central (daylight time), a Wednesday.
+OCT_7_2026_2341_UTC = 1_791_416_460
+
+
+class WhoamiAndListingTests(Harness):
+    def test_whoami_human(self) -> None:
+        result = self.run_cli("whoami")
+        self.assertEqual(result.code, 0, result.err)
+        for expected in ("Claude", BOT_EMAIL, "10", "CLAUDE", TAG, str(self.rc_path), self.fake.url):
+            self.assertIn(expected, result.out)
+
+    def test_whoami_without_a_session_says_so(self) -> None:
+        result = self.run_cli("whoami", env=self.env(CLAUDE_CODE_SESSION_ID=None))
+        self.assertEqual(result.code, 0, result.err)
+        self.assertIn("none", result.out)
+
+    def test_channels(self) -> None:
+        result = self.run_cli("channels")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertIn("#agent-sync", result.out)
+        self.assertIn("the other channel", result.out)
+
+    def test_topics_newest_first_with_max_id_and_limit(self) -> None:
+        first = self.fake.add_message("Codex", "agent-sync", "old topic", "x")
+        newest = self.fake.add_message("Codex", "agent-sync", "new topic", "x")
+        self.fake.add_message("Codex", "other", "elsewhere", "x")
+        result = self.run_cli("topics")
+        self.assertEqual(result.code, 0, result.err)
+        lines = [line.split(None, 1) for line in result.out.splitlines()]
+        self.assertEqual(lines, [[str(newest), "new topic"], [str(first), "old topic"]])
+        limited = self.run_cli("topics", "--limit", "1", "--json")
+        self.assertEqual(json.loads(limited.out), [{"name": "new topic", "max_id": newest}])
+
+    def test_subscribe_reports_joined_and_already(self) -> None:
+        result = self.run_cli("subscribe", "--channel", "agent-sync")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertIn("already subscribed to #agent-sync", result.out)
+
+    def test_subscribe_is_a_plain_post_by_default(self) -> None:
+        result = self.run_cli("subscribe", "--channel", "new-channel", "--channel", "agent-sync")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertIn("subscribed to #new-channel", result.out)
+        self.assertEqual(self.fake.requests_to("GET", "get_stream_id"), [])  # no pre-check unless asked for
+        payload = json.loads(self.fake.requests_to("POST", "users/me/subscriptions")[0].form["subscriptions"])
+        self.assertEqual(payload, [{"name": "new-channel"}, {"name": "agent-sync"}])
+
+    def test_subscribe_must_exist_refuses_a_channel_that_cannot_be_found(self) -> None:
+        refused = self.run_cli("subscribe", "--channel", "typo-channel", "--must-exist")
+        self.assertEqual(refused.code, 2)
+        self.assertIn("not found, or is not visible", refused.err)
+        self.assertEqual(self.fake.requests_to("POST", "users/me/subscriptions"), [])
+        allowed = self.run_cli("subscribe", "--channel", "other", "--must-exist")
+        self.assertEqual(allowed.code, 0, allowed.err)
+        self.assertEqual(len(self.fake.requests_to("POST", "users/me/subscriptions")), 1)
+
+
+class PostTests(Harness):
+    def last_post(self):
+        return self.fake.requests_to("POST", "messages")[-1]
+
+    def test_missing_topic_is_refused_before_any_request(self) -> None:
+        result = self.run_cli("post", "hello")
+        self.assertEqual(result.code, 2)
+        self.assertIn("--topic", result.err)
+        self.assertEqual(self.fake.requests, [])
+
+    def test_empty_and_blank_topics_are_refused(self) -> None:
+        for topic in ("", "   "):
+            with self.subTest(topic=topic):
+                result = self.run_cli("post", "--topic", topic, "hello")
+                self.assertEqual(result.code, 2)
+        self.assertEqual(self.fake.requests, [])
+
+    def test_topic_over_60_characters_is_refused_with_its_length(self) -> None:
+        result = self.run_cli("post", "--topic", "t" * 61, "hello")
+        self.assertEqual(result.code, 2)
+        self.assertIn("61", result.err)
+        self.assertEqual(self.fake.requests, [])
+
+    def test_topic_of_exactly_60_characters_is_accepted(self) -> None:
+        result = self.run_cli("post", "--topic", "t" * 60, "hello")
+        self.assertEqual(result.code, 0, result.err)
+
+    def test_text_is_required(self) -> None:
+        self.assertEqual(self.run_cli("post", "--topic", "t").code, 2)
+
+    def test_post_is_tagged_with_seat_and_session_and_goes_to_the_default_channel(self) -> None:
+        result = self.run_cli("post", "--topic", "AFC 18f61cf4 Zulip cutover", "hello", "there")
+        self.assertEqual(result.code, 0, result.err)
+        form = self.last_post().form
+        self.assertEqual(form["type"], "stream")
+        self.assertEqual(form["to"], "agent-sync")
+        self.assertEqual(form["topic"], "AFC 18f61cf4 Zulip cutover")
+        self.assertEqual(form["content"], "[CLAUDE·%s] hello there" % TAG)
+        message_id = self.fake.messages[-1]["id"]
+        self.assertIn("posted id %d" % message_id, result.out)
+
+    def test_post_records_the_id_in_the_session_ledger(self) -> None:
+        self.run_cli("post", "--topic", "t", "hello")
+        ledger = json.loads(self.state_path().read_text())["posted"]
+        self.assertEqual(ledger, [self.fake.messages[-1]["id"]])
+
+    def test_no_tag_and_no_session(self) -> None:
+        self.run_cli("post", "--topic", "t", "--no-tag", "raw text")
+        self.assertEqual(self.last_post().form["content"], "raw text")
+        self.run_cli("post", "--topic", "t", "plain", env=self.env(CLAUDE_CODE_SESSION_ID=None))
+        self.assertEqual(self.last_post().form["content"], "[CLAUDE] plain")
+        self.assertTrue(self.state_path(None).exists())
+
+    def test_to_adds_the_peer_to_the_tag_and_the_mention(self) -> None:
+        result = self.run_cli("post", "--topic", "t", "--to", "codex", "please look")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192CODEX] @**Codex** please look" % TAG)
+
+    def test_to_resolves_by_email_and_for_names_with_spaces(self) -> None:
+        self.run_cli("post", "--topic", "t", "--to", "jay@zulip.test", "hi")
+        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192JAY] @**Jay Wedgeworth** hi" % TAG)
+
+    def test_to_takes_the_grok_seat_tag_the_display_name_the_email_and_every_grok_build_spelling(self) -> None:
+        # The roster once told seats to mention @**GROK-BUILD**, which names nobody.  The bot is grok-build-bot@
+        # (seat tag GROK, owner 2026-10-08), its display name is "Grok" (owner 2026-10-10), and GROK-BUILD in any
+        # spelling is an alias for GROK (owner 2026-10-10;  test_seat_alias.py has the full table).
+        self.fake.users.remove(self.fake.user_named("Grok"))  # the harness's stand-in grok-bot@ also signs GROK, which the real realm has no such bot for
+        self.fake.add_user("grok-build-bot@zulip.test", "Grok", is_bot=True)
+        for raw in ("GROK", "Grok", "grok-build-bot@zulip.test", "GROK-BUILD", "Grok-Build", "grok_build", "Grok (Build)"):
+            with self.subTest(raw=raw):
+                result = self.run_cli("post", "--topic", "t", "--to", raw, "hi")
+                self.assertEqual(result.code, 0, result.err)
+                self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192GROK] @**Grok** hi" % TAG)
+        before = len(self.fake.requests_to("POST", "messages"))
+        for raw in ("GROKBUILDER", "grok2build", "grok-build-bot", "NOSUCHSEAT"):
+            with self.subTest(refused=raw):
+                refused = self.run_cli("post", "--topic", "t", "--to", raw, "hi")
+                self.assertEqual(refused.code, 2)
+                self.assertIn("no user or bot named", refused.err)
+        self.assertEqual(len(self.fake.requests_to("POST", "messages")), before)
+
+    def test_peer_labels_come_from_the_bot_email_not_the_display_name(self) -> None:
+        from agent_sync.cli import seat_tag_for
+        bot = lambda email, name: {"email": email, "full_name": name, "is_bot": True}
+        cases = {
+            ("mm-bot@simplewithus.zulipchat.com", "MiniMax"): "MM",
+            ("muse-assist-bot@simplewithus.zulipchat.com", "Rob (Muse)"): "MA",
+            ("ag-bot@simplewithus.zulipchat.com", "Antigravity"): "AG",
+            ("bf-builder-bot@simplewithus.zulipchat.com", "BF-Builder"): "BF-BUILDER",
+            ("compiler-grok-bot@simplewithus.zulipchat.com", "GB-Compiler"): "GB-COMPILER",
+            ("openai-dot-bot@simplewithus.zulipchat.com", "Jet (OpenAI dot)"): "JET",
+            ("instinct-bat-bot@simplewithus.zulipchat.com", "Echo"): "ECHO",
+            ("grok-build-bot@simplewithus.zulipchat.com", "Grok"): "GROK",
+            ("grok-web-bot@simplewithus.zulipchat.com", "Grok (Web/iOS)"): "GROK-WEB",
+            ("opencode-bot@simplewithus.zulipchat.com", "OpenCode"): "OPENCODE",
+        }
+        for (email, name), tag in cases.items():
+            with self.subTest(email=email):
+                self.assertEqual(seat_tag_for(bot(email, name)), tag)
+        self.assertEqual(seat_tag_for({"email": "jay@x", "full_name": "Jay Wedgeworth", "is_bot": False}), "JAY")
+
+    def test_two_recipients(self) -> None:
+        self.run_cli("post", "--topic", "t", "--to", "Codex", "--to", "Cursor", "both")
+        self.assertEqual(self.last_post().form["content"],
+                         "[CLAUDE·%s\u2192CODEX,CURSOR] @**Codex** @**Cursor** both" % TAG)
+
+    def test_unknown_recipient_lists_the_five_closest_names(self) -> None:
+        result = self.run_cli("post", "--topic", "t", "--to", "Codx", "hi")
+        self.assertEqual(result.code, 2)
+        self.assertIn("Codex", result.err)
+        listed = result.err.split("closest names:")[1].strip().split(", ")
+        self.assertEqual(len(listed), 5)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+
+    def test_fleet_adds_at_all_in_agent_sync_fleet(self) -> None:
+        result = self.run_cli("post", "--topic", "fleet", "--fleet", "wake up")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s] @**all** wake up" % TAG)
+        self.assertEqual(self.last_post().form["to"], "agent-sync")
+        self.assertEqual(self.fake.requests_to("GET", "user_groups"), [], "no user group lookup:  there is no fleet group")
+
+    def test_fleet_with_to_adds_the_peer_and_the_wildcard(self) -> None:
+        result = self.run_cli("post", "--topic", "fleet", "--fleet", "--to", "Codex", "HALT")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192CODEX] @**Codex** @**all** HALT" % TAG)
+
+    def test_fleet_topic_and_channel_match_without_case(self) -> None:
+        self.assertEqual(self.run_cli("post", "--topic", "Fleet", "--channel", "Agent-Sync", "--fleet", "x").code, 0)
+        self.assertIn("@**all**", self.last_post().form["content"])
+
+    def test_fleet_is_refused_outside_agent_sync_fleet_before_any_request(self) -> None:
+        for argv in (("--topic", "t"), ("--topic", "fleet2"), ("--topic", "roll call"),
+                     ("--topic", "fleet", "--channel", "general"), ("--topic", "fleet", "--channel", "sandbox")):
+            with self.subTest(argv=argv):
+                before = len(self.fake.requests)
+                result = self.run_cli("post", *argv, "--fleet", "--to", "Codex", "wake up")
+                self.assertEqual(result.code, 2)
+                self.assertIn("only works in #agent-sync \u203a fleet", result.err)
+                self.assertIn("--to", result.err)
+                self.assertEqual(len(self.fake.requests), before, "refused before any request, even the --to lookup")
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+
+    def test_text_with_at_all_but_no_fleet_flag_is_left_alone(self) -> None:
+        self.assertEqual(self.run_cli("post", "--topic", "t", "plain text").code, 0)
+        self.assertNotIn("@**all**", self.last_post().form["content"])
+
+    def test_fleet_refused_by_zulip_names_the_realm_setting_and_suggests_to(self) -> None:
+        self.fake.inject("POST", "messages", status=400, body={
+            "result": "error", "code": "STREAM_WILDCARD_MENTION_NOT_ALLOWED",
+            "msg": "You do not have permission to use channel wildcard mentions in this channel."})
+        result = self.run_cli("post", "--topic", "fleet", "--fleet", "wake up")
+        self.assertEqual(result.code, 5)
+        self.assertIn("can_mention_many_users_group", result.err)
+        self.assertIn("role:members", result.err, "names the value the fleet expects, not an admin-only claim")
+        self.assertNotIn("widen", result.err)
+        self.assertIn("--to NAME", result.err)
+        self.assertIn("dm --owner", result.err)
+        self.assertIn("You do not have permission", result.err)
+        self.assertEqual(len(self.fake.requests_to("POST", "messages")), 1, "not retried")
+
+    def test_fleet_refusal_is_recognised_by_message_when_the_code_is_missing(self) -> None:
+        self.fake.inject("POST", "messages", status=400, body={
+            "result": "error", "msg": "You do not have permission to use wildcard mentions in this channel."})
+        result = self.run_cli("post", "--topic", "fleet", "--fleet", "wake up")
+        self.assertEqual(result.code, 5)
+        self.assertIn("can_mention_many_users_group", result.err)
+
+    def test_other_errors_during_fleet_are_not_rewritten(self) -> None:
+        self.fake.inject("POST", "messages", status=400, body={"result": "error", "code": "BAD_REQUEST", "msg": "nope"})
+        result = self.run_cli("post", "--topic", "fleet", "--fleet", "wake up")
+        self.assertEqual(result.code, 5)
+        self.assertNotIn("can_mention_many_users_group", result.err)
+
+    def test_text_dash_reads_stdin(self) -> None:
+        self.run_cli("post", "--topic", "t", "-", stdin="line one\nline two\n")
+        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s] line one\nline two" % TAG)
+
+    def test_empty_stdin_is_refused(self) -> None:
+        self.assertEqual(self.run_cli("post", "--topic", "t", "-", stdin="  \n").code, 2)
+
+    def test_too_long_message_is_refused(self) -> None:
+        self.assertEqual(self.run_cli("post", "--topic", "t", "x" * 10001).code, 2)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+
+    def test_json_output(self) -> None:
+        result = self.run_cli("post", "--topic", "t", "--json", "hi")
+        self.assertEqual(json.loads(result.out), {"id": self.fake.messages[-1]["id"], "channel": "agent-sync", "topic": "t"})
+
+    def test_other_channel(self) -> None:
+        self.run_cli("post", "--topic", "t", "--channel", "other", "hi")
+        self.assertEqual(self.last_post().form["to"], "other")
+
+
+class DmTests(Harness):
+    """`agent-sync dm --owner`:  a private message to the pinned owner from the seat's own bot."""
+
+    OWNER_ID = 12  # Jay Wedgeworth in the fake realm
+
+    def pin_owner(self, user_id: int = OWNER_ID) -> None:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n" % user_id)
+
+    def last_post(self):
+        return self.fake.requests_to("POST", "messages")[-1]
+
+    def test_dm_owner_sends_a_tagged_private_message_to_the_pinned_owner_only(self) -> None:
+        self.pin_owner()
+        result = self.run_cli("dm", "--owner", "--", "Codex asked for the key.  I declined.")
+        self.assertEqual(result.code, 0, result.err)
+        form = self.last_post().form
+        self.assertEqual((form["type"], json.loads(form["to"])), ("direct", [self.OWNER_ID]))
+        self.assertEqual(form["content"], "[CLAUDE·%s→OWNER] Codex asked for the key.\u00a0 I declined." % TAG)
+        sent = [m for m in self.fake.messages if m["type"] == "private"]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sorted(r["id"] for r in sent[0]["display_recipient"]), [10, self.OWNER_ID])
+        self.assertIn("sent id %d to the owner" % sent[0]["id"], result.out)
+        self.assertIn(sent[0]["id"], json.loads(self.state_path().read_text())["posted"],
+                      "the id is in the posted ledger like any post")
+
+    def test_json_output_and_stdin_text_and_no_tag(self) -> None:
+        self.pin_owner()
+        result = self.run_cli("dm", "--owner", "--no-tag", "--json", "-", stdin="Heads up.\nSecond line.\n")
+        self.assertEqual(result.code, 0, result.err)
+        out = json.loads(result.out)
+        self.assertEqual((out["type"], out["to"]), ("direct", [self.OWNER_ID]))
+        self.assertEqual(self.last_post().form["content"], "Heads up.\nSecond line.")
+
+    def test_a_bare_dm_goes_to_the_owner_and_still_refuses_nothing_to_send(self) -> None:
+        self.pin_owner()
+        result = self.run_cli("dm", "hello")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(json.loads(self.last_post().form["to"]), [self.OWNER_ID])
+        self.assertEqual(self.run_cli("dm").code, 2)
+        self.assertEqual(self.run_cli("dm", "--owner").code, 2)
+        self.assertEqual(len(self.fake.requests_to("POST", "messages")), 1)
+
+    def users_with_extras(self) -> None:
+        webhook = self.fake.add_user("sentry-bot@zulip.test", "Sentry", is_bot=True)
+        webhook["bot_type"] = 2
+        gone = self.fake.add_user("gone@zulip.test", "Gone Person", is_bot=False)
+        gone["is_active"] = False
+        gone_bot = self.fake.add_user("old-bot@zulip.test", "Old Bot", is_bot=True)
+        gone_bot["is_active"] = False
+        self.fake.add_user("twin-a@zulip.test", "Twin", is_bot=False)
+        self.fake.add_user("twin-b@zulip.test", "Twin", is_bot=False)
+
+    def test_dm_to_a_peer_by_name_tag_email_or_user_id(self) -> None:
+        for raw, uid in (("Codex", 11), ("CODEX", 11), ("codex-bot@zulip.test", 11), ("11", 11), ("Cursor", 13)):
+            with self.subTest(raw=raw):
+                before = len(self.fake.requests_to("POST", "messages"))
+                result = self.run_cli("dm", "--to", raw, "--", "Review is up.  Please look.")
+                self.assertEqual(result.code, 0, result.err)
+                form = self.fake.requests_to("POST", "messages")[-1].form
+                self.assertEqual(len(self.fake.requests_to("POST", "messages")), before + 1)
+                self.assertEqual((form["type"], json.loads(form["to"])), ("direct", [uid]))
+                label = "CODEX" if uid == 11 else "CURSOR"
+                self.assertEqual(form["content"], "[CLAUDE\u00b7%s\u2192%s] Review is up.\u00a0 Please look." % (TAG, label))
+                self.assertIn("sent id", result.out)
+                self.assertNotIn("the owner", result.out)
+
+    def test_dm_to_a_peer_needs_no_pinned_owner(self) -> None:
+        self.assertEqual(self.run_cli("dm", "--to", "Codex", "hi").code, 0)
+        self.assertEqual(json.loads(self.last_post().form["to"]), [11])
+
+    def test_dm_group_is_one_conversation_with_every_label(self) -> None:
+        result = self.run_cli("dm", "--to", "Codex", "--to", "Grok", "--to", "codex-bot@zulip.test", "--json", "sync up")
+        self.assertEqual(result.code, 0, result.err)
+        out = json.loads(result.out)
+        self.assertEqual(out["to"], [11, 14], "a repeated recipient is sent once")
+        self.assertEqual(self.last_post().form["content"], "[CLAUDE\u00b7%s\u2192CODEX,GROK] sync up" % TAG)
+        self.assertEqual(len([m for m in self.fake.messages if m["type"] == "private"]), 1)
+
+    def test_dm_owner_plus_peers_makes_a_group_with_the_owner_label(self) -> None:
+        self.pin_owner()
+        result = self.run_cli("dm", "--owner", "--to", "Codex", "--no-tag", "hello")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(json.loads(self.last_post().form["to"]), [self.OWNER_ID, 11])
+        self.assertEqual(self.last_post().form["content"], "hello")
+        self.assertEqual(self.run_cli("dm", "--to", "Jay Wedgeworth", "hello").code, 0)
+        self.assertIn("\u2192OWNER]", self.last_post().form["content"])
+
+    def test_dm_refuses_webhook_bots_deactivated_users_self_and_unknowns_before_sending(self) -> None:
+        self.users_with_extras()
+        cases = (("Sentry", "webhook or integration bot"), ("sentry-bot@zulip.test", "webhook or integration bot"),
+                 ("Gone Person", "deactivated"), ("Old Bot", "deactivated"), ("Claude", "this bot itself"),
+                 ("10", "this bot itself"), ("Nobody Here", "no user or bot named"), ("Twin", "matches 2 users"))
+        for raw, fragment in cases:
+            with self.subTest(raw=raw):
+                result = self.run_cli("dm", "--to", raw, "hello")
+                self.assertEqual(result.code, 2)
+                self.assertIn(fragment, result.err)
+        # one bad name in a group refuses the whole message
+        self.assertEqual(self.run_cli("dm", "--to", "Codex", "--to", "Sentry", "hello").code, 2)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+
+    def test_dm_cap_is_eight_other_people(self) -> None:
+        for n in range(9):
+            self.fake.add_user("peer%d-bot@zulip.test" % n, "Peer %d" % n, is_bot=True)
+        names = ["Peer %d" % n for n in range(9)]
+        args = [x for n in names[:8] for x in ("--to", n)]
+        ok = self.run_cli("dm", *args, "eight is fine")
+        self.assertEqual(ok.code, 0, ok.err)
+        self.assertEqual(len(json.loads(self.last_post().form["to"])), 8)
+        over = self.run_cli("dm", *[x for n in names for x in ("--to", n)], "nine is not")
+        self.assertEqual(over.code, 2)
+        self.assertIn("at most 8", over.err)
+        self.assertEqual(len(self.fake.requests_to("POST", "messages")), 1)
+        self.pin_owner()
+        over_with_owner = self.run_cli("dm", "--owner", *args, "owner makes nine")
+        self.assertEqual(over_with_owner.code, 2)
+        self.assertEqual(len(self.fake.requests_to("POST", "messages")), 1)
+
+    def test_dm_to_a_peer_scans_for_secrets_and_a_gateway_error_names_the_recipient_check(self) -> None:
+        leaked = "AK" + "IA" + "ABCDEFGHIJ012345"
+        refused = self.run_cli("dm", "--to", "Codex", "key is %s" % leaked)
+        self.assertEqual(refused.code, 2)
+        self.assertNotIn(leaked, refused.err)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+        self.fake.inject("POST", "messages", status=502, body={"result": "error", "msg": "bad gateway"})
+        result = self.run_cli("dm", "--to", "Codex", "hello")
+        self.assertEqual(result.code, 5)
+        self.assertIn("not retried", result.err)
+        self.assertIn("dm-read", result.err)
+
+
+    def test_no_pinned_owner_is_refused_before_any_message(self) -> None:
+        for toml in (None, "[daemon]\nowner_user_id = 0\n"):
+            with self.subTest(toml=toml):
+                self.state_dir.mkdir(parents=True, exist_ok=True)
+                path = self.state_dir / "listener.toml"
+                if toml is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(toml)
+                result = self.run_cli("dm", "--owner", "hello")
+                self.assertEqual(result.code, 2)
+                self.assertIn("owner_user_id is not pinned", result.err)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+
+    def test_the_secret_scanner_and_the_length_cap_apply(self) -> None:
+        self.pin_owner()
+        leaked = "AK" + "IA" + "ABCDEFGHIJ012345"
+        refused = self.run_cli("dm", "--owner", "key is %s" % leaked)
+        self.assertEqual(refused.code, 2)
+        self.assertIn("refusing to post", refused.err)
+        self.assertNotIn(leaked, refused.err)
+        too_long = self.run_cli("dm", "--owner", "x" * 10001)
+        self.assertEqual(too_long.code, 2)
+        self.assertEqual(self.run_cli("dm", "--owner", "   ").code, 2)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+
+    def test_a_gateway_error_is_never_retried_and_says_to_check_first(self) -> None:
+        self.pin_owner()
+        self.fake.inject("POST", "messages", status=502, body={"result": "error", "msg": "bad gateway"})
+        result = self.run_cli("dm", "--owner", "hello")
+        self.assertEqual(result.code, 5)
+        self.assertIn("not retried", result.err)
+        self.assertIn("direct messages with the owner", result.err)
+        self.assertEqual(len(self.fake.requests_to("POST", "messages")), 1)
+
+    def test_a_timeout_says_the_dm_may_have_been_sent(self) -> None:
+        self.pin_owner()
+        self.fake.inject("POST", "messages", delay=1.5)
+        result = self.run_cli("dm", "--owner", "hello", timeout=0.4)
+        self.assertEqual(result.code, 6)
+        self.assertIn("not retried", result.err)
+
+
+class DmReadAndInboxTests(Harness):
+    def setUp(self) -> None:
+        super().setUp()
+        self.codex = self.fake.user_named("Codex")
+        self.grok = self.fake.user_named("Grok")
+
+    def test_dm_read_shows_the_one_to_one_conversation_with_untrusted_bodies(self) -> None:
+        first = self.fake.add_direct_message("Codex", "can you take AFC 1234?")
+        self.assertEqual(self.run_cli("dm", "--to", "Codex", "yes").code, 0)
+        mine = self.fake.messages[-1]["id"]
+        self.fake.add_direct_message("Cursor", "unrelated")
+        self.fake.add_direct_message("Codex", "group", recipients=[self.fake.me, self.grok])
+        result = self.run_cli("dm-read", "--with", "Codex", "--json")
+        self.assertEqual(result.code, 0, result.err)
+        rows = [json.loads(line) for line in result.out.splitlines()]
+        self.assertEqual([r["id"] for r in rows if r["content"].endswith(("AFC 1234?", "] yes"))], [first, mine])
+        self.assertTrue(all(r["dm"] for r in rows))
+        text = self.run_cli("dm-read", "--with", "Codex", "--exclude-self")
+        self.assertIn("DM with Codex", text.out)
+        self.assertNotIn("] yes", text.out)
+
+    def test_dm_read_new_advances_a_per_conversation_cursor(self) -> None:
+        self.fake.add_direct_message("Codex", "one")
+        self.assertIn("one", self.run_cli("dm-read", "--with", "Codex", "--new").out)
+        self.assertEqual(self.run_cli("dm-read", "--with", "Codex", "--new").out, "")
+        self.fake.add_direct_message("Codex", "two")
+        again = self.run_cli("dm-read", "--with", "Codex", "--new")
+        self.assertIn("two", again.out)
+        self.assertNotIn("one", again.out)
+
+    def test_dm_read_refuses_self_and_too_many_people(self) -> None:
+        self.assertEqual(self.run_cli("dm-read", "--with", "Claude").code, 2)
+        self.assertEqual(self.run_cli("dm-read", "--with", "Nobody Here").code, 2)
+        many = [x for n in range(9) for x in ("--with", str(11 + n))]
+        self.assertEqual(self.run_cli("dm-read", *many).code, 2)
+        self.assertEqual(self.run_cli("dm-read").code, 2)
+
+    def test_inbox_lists_dms_to_the_bot_with_mentions_but_not_its_own_dms(self) -> None:
+        mention = self.fake.add_message("Codex", "agent-sync", "ask", "@**Claude** look")
+        dm = self.fake.add_direct_message("Codex", "psst, in a DM")
+        self.fake.add_direct_message(self.fake.me, "my own DM", recipients=[self.codex])
+        result = self.run_cli("inbox", "--json")
+        self.assertEqual(result.code, 0, result.err)
+        rows = [json.loads(line) for line in result.out.splitlines()]
+        self.assertEqual([r["id"] for r in rows], [mention, dm])
+        self.assertEqual([r["dm"] for r in rows], [False, True])
+        later = self.fake.add_direct_message("Grok", "second DM")
+        again = self.run_cli("inbox", "--json")
+        self.assertEqual([json.loads(line)["id"] for line in again.out.splitlines()], [later])
+
+    def test_inbox_text_marks_a_dm_and_peek_does_not_advance(self) -> None:
+        self.fake.add_direct_message("Codex", "ping")
+        peek = self.run_cli("inbox", "--peek")
+        self.assertIn("DM with Codex", peek.out)
+        self.assertIn("ping", self.run_cli("inbox").out)
+        self.assertEqual(self.run_cli("inbox").out, "")
+
+
+class ReplyTests(Harness):
+    def test_reply_goes_to_the_channel_and_topic_of_the_original(self) -> None:
+        original = self.fake.add_message("Codex", "other", "AFC 12345678 Some work", "question?")
+        result = self.run_cli("reply", "--id", str(original), "answer")
+        self.assertEqual(result.code, 0, result.err)
+        sent = self.fake.requests_to("POST", "messages")[-1].form
+        self.assertEqual((sent["to"], sent["topic"]), ("other", "AFC 12345678 Some work"))
+        self.assertEqual(sent["content"], "[CLAUDE·%s] answer" % TAG)
+        self.assertIn(self.fake.messages[-1]["id"], json.loads(self.state_path().read_text())["posted"])
+
+    def test_reply_with_to_adds_the_mention(self) -> None:
+        original = self.fake.add_message("Codex", "agent-sync", "t", "q")
+        self.run_cli("reply", "--id", str(original), "--to", "Codex", "a")
+        self.assertEqual(self.fake.requests_to("POST", "messages")[-1].form["content"],
+                         "[CLAUDE·%s\u2192CODEX] @**Codex** a" % TAG)
+
+    def test_the_check_hint_after_a_timeout_cannot_smuggle_a_command_in_through_a_topic(self) -> None:
+        topic = "x' ; touch /tmp/agent-sync-pwned ; echo '"  # a topic any member of the realm can set
+        original = self.fake.add_message("Codex", "other", topic, "question?")
+        self.fake.inject("POST", "messages", delay=1.5)
+        result = self.run_cli("reply", "--id", str(original), "answer", timeout=0.4)
+        self.assertEqual(result.code, 6)
+        hint = result.err.split("Check whether it posted: ", 1)[1].strip()
+        self.assertEqual(shlex.split(hint),
+                         ["agent-sync", "read", "--channel", "other", "--topic", topic, "--include-self"])
+
+    def test_the_check_hint_quotes_an_ordinary_apostrophe_and_a_channel_with_spaces(self) -> None:
+        self.fake.inject("POST", "messages", delay=1.5)
+        result = self.run_cli("post", "--topic", "Jay's fix", "--channel", "my channel", "a", timeout=0.4)
+        self.assertEqual(result.code, 6)
+        hint = result.err.split("Check whether it posted: ", 1)[1].strip()
+        self.assertEqual(shlex.split(hint),
+                         ["agent-sync", "read", "--channel", "my channel", "--topic", "Jay's fix", "--include-self"])
+
+    def test_the_success_line_shows_server_supplied_names_safely(self) -> None:
+        original = self.fake.add_message("Codex", "agent-sync", "red\x1b[31mtopic", "q")
+        result = self.run_cli("reply", "--id", str(original), "a")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertNotIn("\x1b", result.out)
+        self.assertIn("red\\x1b[31mtopic", result.out)
+
+    def test_reply_refuses_direct_messages(self) -> None:
+        dm = self.fake.add_direct_message("Codex", "psst")
+        result = self.run_cli("reply", "--id", str(dm), "hi")
+        self.assertEqual(result.code, 2)
+        self.assertIn("channel-only", result.err)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+
+    def test_reply_to_a_missing_message_is_an_api_error(self) -> None:
+        self.assertEqual(self.run_cli("reply", "--id", "424242", "hi").code, 5)
+
+
+class ReadTests(Harness):
+    def test_default_shows_the_newest_messages_in_order(self) -> None:
+        ids = [self.fake.add_message("Codex", "agent-sync", "t", "message %d" % n) for n in range(5)]
+        self.fake.add_message("Codex", "agent-sync", "other topic", "not me")
+        result = self.run_cli("read", "--topic", "t", "--limit", "3")
+        self.assertEqual(result.code, 0, result.err)
+        shown = [int(line.rsplit("id ", 1)[1]) for line in result.out.splitlines() if line.startswith("#")]
+        self.assertEqual(shown, ids[-3:])
+
+    def test_human_format_is_two_lines_plus_body_and_a_blank_line(self) -> None:
+        message_id = self.fake.add_message("Codex", "agent-sync", "my topic", "the body\nsecond line",
+                                           timestamp=OCT_7_2026_2341_UTC)
+        result = self.run_cli("read", "--topic", "my topic")
+        self.assertEqual(result.out, "#agent-sync › my topic · id %d\nCodex [bot] · Wed, Oct 7, 6:41pm\n"
+                                     "the body\nsecond line\n\n" % message_id)
+        for abbreviation in ("CDT", "CST", " CT"):
+            self.assertNotIn(abbreviation, result.out)
+
+    def test_human_sender_and_mention_marker(self) -> None:
+        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "hey @**Claude** look", timestamp=OCT_7_2026_2341_UTC)
+        out = self.run_cli("read", "--topic", "t").out
+        self.assertIn("Jay Wedgeworth [human] · Wed, Oct 7, 6:41pm · @you", out)
+
+    def test_control_characters_are_shown_not_sent_to_the_terminal(self) -> None:
+        self.fake.add_message("Codex", "agent-sync", "t", "before \x1b[31mred\x1b[0m after\tkeep")
+        out = self.run_cli("read", "--topic", "t").out
+        self.assertNotIn("\x1b", out)
+        self.assertIn("\\x1b[31mred", out)
+        self.assertIn("after\tkeep", out)
+
+    def test_json_lines(self) -> None:
+        message_id = self.fake.add_message("Codex", "agent-sync", "t", "hi @**Claude**")
+        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "plain")
+        lines = [json.loads(line) for line in self.run_cli("read", "--topic", "t", "--json").out.splitlines()]
+        self.assertEqual(len(lines), 2)
+        first = lines[0]
+        self.assertEqual(first["id"], message_id)
+        self.assertEqual((first["channel"], first["topic"]), ("agent-sync", "t"))
+        self.assertEqual((first["sender_email"], first["sender_full_name"]), ("codex-bot@zulip.test", "Codex"))
+        self.assertIs(first["is_bot"], True)
+        self.assertIs(lines[1]["is_bot"], False)
+        self.assertEqual(first["content"], "hi @**Claude**")
+        self.assertIn("mentioned", first["flags"])
+        self.assertIs(first["sibling"], False)
+        self.assertEqual(first["timestamp"], EPOCH + message_id)
+
+    def test_content_is_requested_raw(self) -> None:
+        self.run_cli("read", "--topic", "t")
+        self.assertEqual(self.fake.requests_to("GET", "messages")[0].query["apply_markdown"], "false")
+
+    def test_since_returns_messages_after_the_id_only(self) -> None:
+        ids = [self.fake.add_message("Codex", "agent-sync", "t", "m%d" % n) for n in range(4)]
+        result = self.run_cli("read", "--topic", "t", "--since", str(ids[1]))
+        shown = [int(line.rsplit("id ", 1)[1]) for line in result.out.splitlines() if line.startswith("#")]
+        self.assertEqual(shown, ids[2:])
+        query = self.fake.requests_to("GET", "messages")[-1].query
+        self.assertEqual((query["anchor"], query["include_anchor"], query["num_before"]), (str(ids[1]), "false", "0"))
+
+    def test_since_and_new_are_mutually_exclusive(self) -> None:
+        self.assertEqual(self.run_cli("read", "--topic", "t", "--since", "5", "--new").code, 2)
+
+    def test_new_advances_the_session_cursor(self) -> None:
+        first = [self.fake.add_message("Codex", "agent-sync", "t", "a%d" % n) for n in range(2)]
+        one = self.run_cli("read", "--topic", "t", "--new")
+        self.assertEqual(one.code, 0, one.err)
+        self.assertEqual(one.out.count("#agent-sync"), 2)
+        key = "agent-sync\u0000t"
+        self.assertEqual(json.loads(self.state_path().read_text())["cursors"][key], first[-1])
+        again = self.run_cli("read", "--topic", "t", "--new")
+        self.assertEqual(again.out, "")
+        later = self.fake.add_message("Codex", "agent-sync", "t", "b")
+        third = self.run_cli("read", "--topic", "t", "--new")
+        self.assertEqual(third.out.count("#agent-sync"), 1)
+        self.assertEqual(json.loads(self.state_path().read_text())["cursors"][key], later)
+
+    def test_cursors_are_per_session(self) -> None:
+        self.fake.add_message("Codex", "agent-sync", "t", "a")
+        self.run_cli("read", "--topic", "t", "--new")
+        other = self.run_cli("read", "--topic", "t", "--new", "--session", "99998888-0000")
+        self.assertEqual(other.out.count("#agent-sync"), 1)
+        self.assertTrue(self.state_path("99998888").exists())
+
+    def test_new_limit_pages_through_a_backlog_without_dropping_messages(self) -> None:
+        self.fake.add_message("Codex", "agent-sync", "t", "history")
+        self.run_cli("read", "--topic", "t", "--new")  # no cursor yet: shows history, sets the cursor
+        ids = [self.fake.add_message("Codex", "agent-sync", "t", "m%d" % n) for n in range(5)]
+        pages = []
+        for _ in range(3):
+            out = self.run_cli("read", "--topic", "t", "--new", "--limit", "2").out
+            pages.append([int(line.rsplit("id ", 1)[1]) for line in out.splitlines() if line.startswith("#")])
+        self.assertEqual(pages, [ids[0:2], ids[2:4], ids[4:5]])
+
+    def test_new_looks_past_a_whole_page_of_this_sessions_own_posts(self) -> None:
+        self.fake.add_message("Codex", "agent-sync", "t", "history")
+        self.run_cli("read", "--topic", "t", "--new")
+        for n in range(7):
+            self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE\u00b7%s] own %d" % (TAG, n))
+        question = self.fake.add_message("Codex", "agent-sync", "t", "a peer question")
+        result = self.run_cli("read", "--topic", "t", "--new", "--limit", "3")  # pages of 3: own, own, own+...
+        self.assertEqual(result.code, 0, result.err)
+        shown = [int(line.rsplit("id ", 1)[1]) for line in result.out.splitlines() if line.startswith("#")]
+        self.assertEqual(shown, [question])
+        self.assertNotIn("no messages", result.err)
+        self.assertEqual(json.loads(self.state_path().read_text())["cursors"]["agent-sync\u0000t"], question)
+
+    def test_new_with_nothing_but_own_posts_says_so_and_still_advances(self) -> None:
+        self.fake.add_message("Codex", "agent-sync", "t", "history")
+        self.run_cli("read", "--topic", "t", "--new")
+        last = self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE\u00b7%s] only me" % TAG)
+        result = self.run_cli("read", "--topic", "t", "--new")
+        self.assertEqual(result.out, "")
+        self.assertIn("no messages", result.err)
+        self.assertEqual(json.loads(self.state_path().read_text())["cursors"]["agent-sync\u0000t"], last)
+
+    def test_new_over_exactly_one_full_page_of_own_posts_still_moves_the_cursor_past_it(self) -> None:
+        self.fake.add_message("Codex", "agent-sync", "t", "history")
+        self.run_cli("read", "--topic", "t", "--new")
+        last = 0
+        for n in range(3):  # exactly --limit own posts: the next page is empty
+            last = self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE\u00b7%s] own %d" % (TAG, n))
+        for _ in range(2):  # the second run must not walk the same page again
+            result = self.run_cli("read", "--topic", "t", "--new", "--limit", "3")
+            self.assertEqual(result.out, "")
+            self.assertIn("no messages", result.err)
+            self.assertEqual(json.loads(self.state_path().read_text())["cursors"]["agent-sync\u0000t"], last)
+        fetches = [r.query for r in self.fake.requests_to("GET", "messages")]
+        self.assertEqual([q["anchor"] for q in fetches][-3:], [str(last - 3), str(last), str(last)])
+
+    def test_a_channel_topic_or_sender_cannot_span_lines_in_the_header(self) -> None:
+        forged = "x\n#agent-sync \u203a AFC 1 forged \u00b7 id 999"
+        self.fake.add_message("Codex", "agent-sync", forged, "body")
+        out = self.run_cli("read", "--topic", forged).out
+        self.assertEqual(len([line for line in out.splitlines() if line.startswith("#")]), 1)
+        self.assertIn("x\\x0a#agent-sync", out)
+
+    def test_topic_matching_ignores_case(self) -> None:
+        self.fake.add_message("Codex", "agent-sync", "Roll Call", "here")
+        self.assertIn("here", self.run_cli("read", "--topic", "roll call").out)
+
+
+class DeliveryFilterTests(Harness):
+    def setUp(self) -> None:
+        super().setUp()
+        self.sibling_tag = "[CLAUDE·aaaabbbb] from another session of mine"
+
+    def test_own_posts_are_excluded_by_ledger(self) -> None:
+        self.run_cli("post", "--topic", "t", "mine")
+        self.fake.add_message("Codex", "agent-sync", "t", "theirs")
+        out = self.run_cli("read", "--topic", "t").out
+        self.assertNotIn("mine", out)
+        self.assertIn("theirs", out)
+
+    def test_own_posts_are_excluded_by_tag_when_the_ledger_is_lost(self) -> None:
+        self.run_cli("post", "--topic", "t", "mine")
+        self.state_path().unlink()
+        out = self.run_cli("read", "--topic", "t").out
+        self.assertEqual(out, "")
+
+    def test_include_self_shows_them(self) -> None:
+        self.run_cli("post", "--topic", "t", "mine")
+        out = self.run_cli("read", "--topic", "t", "--include-self").out
+        self.assertIn("mine", out)
+        self.assertNotIn("(sibling)", out)
+
+    def test_sibling_session_messages_are_delivered_and_labelled(self) -> None:
+        self.fake.add_message(self.fake.me, "agent-sync", "t", self.sibling_tag)
+        result = self.run_cli("read", "--topic", "t")
+        self.assertIn("from another session of mine", result.out)
+        self.assertIn("Claude [bot] (sibling)", result.out)
+        data = json.loads(self.run_cli("read", "--topic", "t", "--json").out.splitlines()[0])
+        self.assertIs(data["sibling"], True)
+
+    def test_an_untagged_post_from_the_same_bot_without_a_ledger_entry_is_a_sibling(self) -> None:
+        self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE] no session tag")
+        self.assertIn("(sibling)", self.run_cli("read", "--topic", "t").out)
+
+    def test_a_short_session_tag_does_not_take_a_longer_sibling_tag_for_itself(self) -> None:
+        self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE\u00b7abcdef12] sibling here")
+        self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE\u00b7abc] mine")
+        self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE\u00b7abc->CODEX] @**Codex** mine, directed")
+        out = self.run_cli("read", "--topic", "t", "--session", "abc").out
+        self.assertIn("sibling here", out)
+        self.assertIn("(sibling)", out)
+        self.assertNotIn("mine", out)
+
+    def test_a_directed_tag_of_this_session_is_still_recognised_as_self(self) -> None:
+        self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE·%s->CODEX] @**Codex** hi" % TAG)
+        self.assertEqual(self.run_cli("read", "--topic", "t").out, "")
+
+
+class InboxTests(Harness):
+    def test_first_run_shows_newest_and_sets_the_cursor(self) -> None:
+        ids = [self.fake.add_message("Jay Wedgeworth", "agent-sync", "t%d" % n, "ping @**Claude** %d" % n) for n in range(3)]
+        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "no mention here")
+        result = self.run_cli("inbox", "--limit", "2")
+        self.assertEqual(result.code, 0, result.err)
+        shown = [int(line.rsplit("id ", 1)[1]) for line in result.out.splitlines() if line.startswith("#")]
+        self.assertEqual(shown, ids[-2:])
+        self.assertEqual(json.loads((self.state_dir / "CLAUDE" / "inbox.json").read_text()), {"cursor": ids[-1]})
+
+    def test_next_run_shows_only_newer_mentions(self) -> None:
+        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "old @**Claude**")
+        self.run_cli("inbox")
+        self.assertEqual(self.run_cli("inbox").out, "")
+        newer = self.fake.add_message("Codex", "other", "x", "new @**Claude**")
+        result = self.run_cli("inbox")
+        self.assertIn("new @**Claude**", result.out)
+        self.assertIn("@you", result.out)
+        self.assertEqual(self.run_cli("inbox").out, "")
+        self.assertEqual(json.loads((self.state_dir / "CLAUDE" / "inbox.json").read_text())["cursor"], newer)
+
+    def test_peek_does_not_advance_and_does_not_create_a_cursor(self) -> None:
+        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "hey @**Claude**")
+        self.assertIn("hey", self.run_cli("inbox", "--peek").out)
+        self.assertFalse((self.state_dir / "CLAUDE" / "inbox.json").exists())
+        self.assertIn("hey", self.run_cli("inbox").out)
+        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "again @**Claude**")
+        self.assertIn("again", self.run_cli("inbox", "--peek").out)
+        self.assertIn("again", self.run_cli("inbox", "--peek").out)
+
+    def test_the_inbox_cursor_is_seat_wide_not_per_session(self) -> None:
+        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "hey @**Claude**")
+        self.assertIn("hey", self.run_cli("inbox").out)
+        self.assertEqual(self.run_cli("inbox", "--session", "99998888-0000").out, "")
+        self.assertFalse((self.state_dir / "CLAUDE" / "99998888" / "inbox.json").exists())
+
+
+class TopicActionTests(Harness):
+    def test_follow_mute_unmute_payloads(self) -> None:
+        for command, policy in (("follow", "3"), ("mute", "1"), ("unmute", "0")):
+            with self.subTest(command=command):
+                result = self.run_cli(command, "--topic", "some topic")
+                self.assertEqual(result.code, 0, result.err)
+                form = self.fake.requests_to("POST", "user_topics")[-1].form
+                self.assertEqual(form, {"stream_id": "7", "topic": "some topic", "visibility_policy": policy})
+
+    def test_follow_on_another_channel_uses_its_stream_id(self) -> None:
+        self.run_cli("mute", "--topic", "t", "--channel", "other")
+        self.assertEqual(self.fake.requests_to("POST", "user_topics")[-1].form["stream_id"], "8")
+
+    def test_resolve_renames_the_topic_through_its_newest_message(self) -> None:
+        self.fake.add_message("Codex", "agent-sync", "AFC 12345678 Work", "a")
+        newest = self.fake.add_message("Codex", "agent-sync", "AFC 12345678 Work", "b")
+        result = self.run_cli("resolve", "--topic", "AFC 12345678 Work")
+        self.assertEqual(result.code, 0, result.err)
+        patch = self.fake.requests_to("PATCH", "messages/%d" % newest)[0]
+        self.assertEqual(patch.form, {"topic": "✔ AFC 12345678 Work", "propagate_mode": "change_all"})
+        self.assertEqual({m["subject"] for m in self.fake.messages}, {"✔ AFC 12345678 Work"})
+
+    def test_resolve_uses_the_real_spelling_of_the_topic_not_what_was_typed(self) -> None:
+        newest = self.fake.add_message("Codex", "agent-sync", "AFC Zulip cutover", "a")
+        result = self.run_cli("resolve", "--topic", "afc zulip cutover")
+        self.assertEqual(result.code, 0, result.err)
+        patch = self.fake.requests_to("PATCH", "messages/%d" % newest)[0]
+        self.assertEqual(patch.form["topic"], "✔ AFC Zulip cutover")
+        self.assertIn("✔ AFC Zulip cutover", result.out)
+
+    def test_resolve_refuses_an_already_resolved_topic(self) -> None:
+        result = self.run_cli("resolve", "--topic", "✔ done already")
+        self.assertEqual(result.code, 2)
+        self.assertEqual(self.fake.requests, [])
+
+    def test_resolve_refuses_an_empty_topic_and_a_name_that_would_be_too_long(self) -> None:
+        self.assertEqual(self.run_cli("resolve", "--topic", "nothing here").code, 2)
+        self.fake.add_message("Codex", "agent-sync", "t" * 60, "x")
+        self.assertEqual(self.run_cli("resolve", "--topic", "t" * 60).code, 2)
+
+    def test_react(self) -> None:
+        message_id = self.fake.add_message("Codex", "agent-sync", "t", "x")
+        self.assertEqual(self.run_cli("react", "--id", str(message_id), ":eyes:").code, 0)
+        request = self.fake.requests_to("POST", "messages/%d/reactions" % message_id)[0]
+        self.assertEqual(request.form, {"emoji_name": "eyes"})
+
+
+class StateFileTests(Harness):
+    def mode(self, path) -> int:
+        return stat.S_IMODE(os.stat(path).st_mode)
+
+    def test_directories_are_700_and_files_are_600(self) -> None:
+        old_umask = os.umask(0o000)  # a permissive umask must not leak into the modes
+        try:
+            self.run_cli("post", "--topic", "t", "hi")
+            self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "@**Claude**")
+            self.run_cli("read", "--topic", "t", "--new")
+            self.run_cli("inbox")
+        finally:
+            os.umask(old_umask)
+        for directory in (self.state_dir, self.state_dir / "CLAUDE", self.state_dir / "CLAUDE" / TAG):
+            with self.subTest(directory=str(directory)):
+                self.assertEqual(self.mode(directory), 0o700)
+        for file in (self.state_path(), self.state_dir / "CLAUDE" / "inbox.json"):
+            with self.subTest(file=str(file)):
+                self.assertEqual(self.mode(file), 0o600)
+        leftovers = [p.name for p in (self.state_dir / "CLAUDE" / TAG).iterdir()]
+        self.assertFalse([name for name in leftovers if name.startswith(".tmp-")], leftovers)
+
+    def test_loose_seat_and_session_directories_are_tightened_but_the_root_is_left_alone(self) -> None:
+        session_dir = self.state_dir / "CLAUDE" / TAG
+        session_dir.mkdir(parents=True)
+        for directory in (self.state_dir, self.state_dir / "CLAUDE", session_dir):
+            os.chmod(directory, 0o755)
+        self.assertEqual(self.run_cli("post", "--topic", "t", "hi").code, 0)
+        self.assertEqual(self.mode(self.state_dir), 0o755)  # a user-chosen root is not ours to change
+        self.assertEqual(self.mode(self.state_dir / "CLAUDE"), 0o700)
+        self.assertEqual(self.mode(session_dir), 0o700)
+        self.assertEqual(self.mode(self.state_path()), 0o600)
+
+    def test_read_only_commands_create_no_state(self) -> None:
+        self.run_cli("whoami")
+        self.run_cli("channels")
+        self.run_cli("read", "--topic", "t")
+        self.assertFalse(self.state_dir.exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

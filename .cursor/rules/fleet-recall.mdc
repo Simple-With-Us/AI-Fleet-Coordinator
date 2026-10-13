@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Fleet recall (shared agent memory)
 
-The fleet keeps one shared memory: the `fleet-agents` corpus, built from THE BOARD's resolutions,
+The fleet keeps one shared memory: the `fleet-agents` corpus, built from the old board's resolutions (Linear issues join when the `linear` recall source ships),
 the Apple Notes archive, every effort log, the protocol docs, the skills, and each seat's memory
 files, refreshed nightly.  Cursor has the `fleet-recall` MCP server registered and the `recall`
 CLI on PATH.
@@ -16,7 +16,7 @@ At the start of **every** turn, evaluate whether the request, error, or next pla
 matches any of the **4 Mandatory Search Triggers**:
 1. **Error / Stack Trace**: An error message, build failure, test failure, crash, exception, or non-zero exit code.
 2. **Infrastructure / Deployment**: Coolify, Hetzner, Docker, Caddy, Cloudflare, Infisical, Tailscale, pm2, ports, domains, or certificates.
-3. **Cross-App / Protocol Decisions**: Inter-agent sync conventions, effort log format, board protocol, seat tag policies, or owner preferences.
+3. **Cross-App / Protocol Decisions**: Inter-agent sync conventions, the archived effort log format, the Linear and `board` protocol, seat tag policies, or owner preferences.
 4. **Smells Familiar**: A problem, warning, or task that feels like it has been solved before or might have an established fleet pattern.
 
 **Action**: If ANY trigger fires, you MUST execute `recall "<query>"` or call MCP `recall_search(query=...)`
@@ -34,7 +34,7 @@ recall "how do we rotate the Coolify token" --app fleet --limit 3
 
 or call the MCP tool `recall_search(query, limit?, category?, app?, source?, seat?, since_days?)`.
 
-A hit is a lead, not a verdict: open the board row, note, or doc it cites before relying on it.
+A hit is a lead, not a verdict: open the Linear issue, note, or doc it cites before relying on it.
 
 Rank 1 is resemblance, not correctness.  For a ruling, preference, or infra-fact question, read
 the top 5 and never act on rank 1 alone.  Open the source for its date — a hit's `created_at` is
@@ -54,7 +54,7 @@ or `recall_contribute(text, category, app?, seat, title?, url?)`.  One idea, 40-
 category `lesson | preference | infrastructure | decision | runbook`.
 
 Never put secrets, tokens, or transcripts in a contribution.  Near-duplicates are refused, so
-search first and corroborate rather than repeat.  Facts that already have a home — board rows,
+search first and corroborate rather than repeat.  Facts that already have a home — old board rows,
 Notes, effort logs, docs — are ingested nightly; contribute directly only for a lesson with no
 natural home.
 

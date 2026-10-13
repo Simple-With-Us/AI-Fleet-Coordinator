@@ -20,7 +20,7 @@ Rules:
   then the short topic. **No** bare `App — topics` titles; **no** "session" in the title.
 - **Multiple apps** when more than one is impacted: list each acronym
   (`[ST, CT, UM, Grok] …`). Order = impact order (primary first).
-- **Agent display name** (Title Case, not the ALL-CAPS Slack tag):  
+- **Agent display name** (Title Case, not the ALL-CAPS chat tag):  
   `Grok` | `Grok Build` | `Monet` | `Claude` | `Codex` | `Cursor` | `AG` | `Kimi` | `Copilot` | `MiniMax` | `DeepSeek Harness` | …
 - **Never put the date in the title** — date lives on the **second row** (body).
 - **Never repeat the title as an H1 inside the body** — Notes already shows the title.
@@ -36,11 +36,11 @@ Rules:
 | `CL` | ContactLogo | `Simple-With-Us/ContactLogo` |
 | `BF` | BotFleet | `Simple-With-Us/BotFleet` |
 | `AR` | Autorotate (formerly TopSpin) | `Simple-With-Us/Autorotate` |
-| `AFC` | AI-Fleet-Coordinator (this repo / Mac collab / skill pack talking as the coordinator).  Former aliases `AFL` / `FLEET` / `AIFC` / `FC` are retired — `FLEET` especially, because `[SEAT->FLEET]` is a broadcast wake that costs every seat time. | `Simple-With-Us/AI-Fleet-Coordinator` |
+| `AFC` | AI-Fleet-Coordinator (this repo / Mac collab / skill pack).  Never a signing tag:  the coordinator posts as the CLAUDE bot.  Former aliases `AFL` / `FLEET` / `AIFC` / `FC` are retired — `FLEET` especially, because the `@**all**` fleet wake costs every seat time. | `Simple-With-Us/AI-Fleet-Coordinator` |
 | `OPS` | fleet-ops (sibling identity; do not invent a checkout here) | `Simple-With-Us/fleet-ops` |
 | `PS` | Personal-Site | `Simple-With-Us/Personal-Site` |
 | `CTS` | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |
-| `FLEET` | Slack wake: every listening seat on every platform must spend time (Grok Bot included, largely superseded by BotFleet — owner 2026-09-13).  Not the coordinator.  Not OPS. | `[SENDER->FLEET]` only.  Never a SENDER tag. |
+| `FLEET` | Zulip wake (`@**all**` in #agent-sync, topic `fleet`): every listening seat on every platform must spend time (Grok Bot included, largely superseded by BotFleet — owner 2026-09-13).  Not the coordinator.  Not OPS. | A recipient only.  Never a SENDER tag. |
 
 **Second row of the note (first body line) — ALWAYS the local create/update stamp + optional PR numbers:**
 

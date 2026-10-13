@@ -77,6 +77,8 @@ const ENDPOINTS = [
   // The gh-pages CNAME is codecaps.simplewithus.com; the github.io path is
   // case-sensitive and the lower-case /codecaps/ spelling 404s.
   { name: 'CodeCaps', url: 'https://codecaps.simplewithus.com/' },
+  // fleetlink.online answers 200 on / (the Worker has no /health route; it 404s).
+  { name: 'FleetLink', url: 'https://fleetlink.online/' },
   { name: 'Fleet Activity', url: 'https://simple-with-us.github.io/AI-Fleet-Coordinator/' },
   { name: 'Start Page', url: 'https://start.jays.services' },
   { name: 'The Board', url: 'https://mac.jays.services/board' },
@@ -93,24 +95,43 @@ const ENDPOINTS = [
 // when an app is onboarded — scripts/check-fleet-registry.py will not catch
 // drift in this copy.
 //
-// Hog Hunter is a local-only Mac app and CodeCaps is not registered in
-// fleet-apps.json yet.  CodeCaps is probed at github.io/codecaps/ (not the
-// retired agent-bar/ path).  Autorotate stays in APPS for GitHub; its public
-// probe is autorotate.vercel.app — autorotate.codes and Scout are retired.
+// Hog Hunter is a local-only Mac app.  CodeCaps is in APPS and is probed at
+// its custom domain (see ENDPOINTS), not the retired agent-bar/ path.
+// Autorotate stays in APPS for GitHub; its public probe is
+// autorotate.vercel.app — autorotate.codes and Scout are retired.
+// Every app now names the owner it actually lives under.  They are not all in
+// one place: the product repos sit in the Simple-With-Us org, while Fleet-OPS
+// is still on the personal account.  Guessing a single GITHUB_OWNER for all of
+// them was the bug behind a card that reported "PR count failed" and "run check
+// failed" on every row — the API answers a personal-owner request for an org
+// repo with a 301 to the new location, and apiJson() deliberately refuses to
+// follow redirects, so every lookup failed on a repo that exists and is
+// reachable.  `owner: null` falls back to env.GITHUB_OWNER.
+// The org that owns the product repos.  Personal-account repos leave `owner`
+// unset and fall back to env.GITHUB_OWNER.
+const ORG = 'Simple-With-Us';
+
 const APPS = [
-  { repo: 'Socratic-Trade', name: 'Socratic Trade', kind: 'product' },
-  { repo: 'Congress.Trade', name: 'Congress.Trade', kind: 'product' },
-  { repo: 'Usage-Monitor', name: 'Usage Monitor', kind: 'product' },
-  { repo: 'congress-trading-shared', name: 'congress-trading-shared', kind: 'library' },
-  { repo: 'DealDex', name: 'DealDex.net', kind: 'product' },
-  { repo: 'AI-Fleet-Coordinator', name: 'AI Fleet Coordinator', kind: 'infra' },
-  { repo: 'Personal-Site', name: 'Personal Site', kind: 'product' },
-  { repo: 'Autorotate', name: 'Autorotate.Codes', kind: 'product' },
-  { repo: 'ContactLogo', name: 'ContactLogo', kind: 'product' },
-  { repo: 'BotFleet', name: 'BotFleet.app', kind: 'product' },
-  { repo: 'HogHunter', name: 'Hog Hunter', kind: 'product' },
-  { repo: 'fleet-ops', name: 'Fleet Ops', kind: 'infra' },
-  { repo: 'Clutch', name: 'Clutch', kind: 'infra' },
+  { repo: 'Socratic-Trade', name: 'Socratic Trade', kind: 'product', owner: ORG },
+  { repo: 'Congress.Trade', name: 'Congress.Trade', kind: 'product', owner: ORG },
+  { repo: 'Usage-Monitor', name: 'Usage Monitor', kind: 'product', owner: ORG },
+  { repo: 'congress-trading-shared', name: 'congress-trading-shared', kind: 'library', owner: ORG },
+  { repo: 'DealDex', name: 'DealDex.net', kind: 'product', owner: ORG },
+  { repo: 'AI-Fleet-Coordinator', name: 'AI Fleet Coordinator', kind: 'infra', owner: ORG },
+  { repo: 'Personal-Site', name: 'Personal Site', kind: 'product', owner: ORG },
+  { repo: 'Autorotate', name: 'Autorotate.Codes', kind: 'product', owner: ORG },
+  { repo: 'ContactLogo', name: 'ContactLogo', kind: 'product', owner: ORG },
+  { repo: 'BotFleet', name: 'BotFleet.app', kind: 'product', owner: ORG },
+  { repo: 'HogHunter', name: 'Hog Hunter', kind: 'product', owner: ORG },
+  // Fleet-OPS, not fleet-ops: the repo was renamed, and it is still on the
+  // personal account rather than the org.
+  { repo: 'Fleet-OPS', name: 'Fleet Ops', kind: 'infra' },
+  { repo: 'Clutch', name: 'Clutch', kind: 'infra', owner: ORG },
+  { repo: 'CodeCaps', name: 'CodeCaps', kind: 'product', owner: ORG },
+  { repo: 'FleetLink', name: 'FleetLink.online', kind: 'product', owner: ORG },
+  // Legacy, live until cutover.  It is private and has no Actions workflow, so the
+  // GitHub card reads "1 with no run on main" (amber) until its row is retired.
+  { repo: 'fleetlink-legacy', name: 'FleetLink Legacy', kind: 'product', owner: ORG },
 ];
 
 // Vercel personal projects come back on the first call; team-scoped ones need
@@ -576,48 +597,64 @@ function coolifyState(status) {
 }
 
 /* ----------------------------------------------------------------- github */
-/* Subrequests: one org-wide PR search + one actions/runs call per repo.     */
-/* Worst case 1 + APPS.length = 13.  It used to be two per repo — 24 — and   */
-/* that alone was half the platform's budget.                                */
+/* Subrequests: one PR search per owner + one actions/runs call per repo.     */
+/* Worst case 2 + APPS.length = 18.  It used to be two calls per repo — 24 —   */
+/* and that alone was half the platform's budget.                             */
+
+const OWNER_SEARCHES = 2;  // personal account + Simple-With-Us
 
 async function checkGitHub(env) {
   if (!env.GITHUB_TOKEN) return notConfigured('GITHUB_TOKEN');
-  const owner = env.GITHUB_OWNER || 'Simple-With-Us';
+  const owner = env.GITHUB_OWNER || 'jaywedgeworth22';
   const headers = {
     Authorization: `Bearer ${env.GITHUB_TOKEN}`,
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': '2022-11-28',
   };
 
-  // One search for every open PR the owner has, grouped by repo afterwards.
-  const search = await apiJson(
-    `https://api.github.com/search/issues?q=${encodeURIComponent(`is:pr is:open user:${owner}`)}&per_page=100`,
+  // One search per owner the fleet actually spans, grouped by repo afterwards.
+  // Searching only the personal account missed every org repo; searching only
+  // the org missed Fleet-OPS.  Both are one subrequest each.
+  const owners = [...new Set([env.GITHUB_OWNER || 'jaywedgeworth22', ORG])];
+  const searches = await Promise.all(owners.map(o => apiJson(
+    `https://api.github.com/search/issues?q=${encodeURIComponent(`is:pr is:open user:${o}`)}&per_page=100`,
     { headers },
-  ).catch((err) => ({ __error: errText(err) }));
+  ).catch((err) => ({ __error: errText(err) }))));
 
   const prCounts = new Map();
   let openPrs = null;
   let prError = '';
   let prTruncated = false;
-  if (search && search.__error) {
-    prError = search.__error;
-  } else {
-    const found = search.items || [];
+  const found = [];
+  for (const search of searches) {
+    if (search && search.__error) {
+      prError = prError ? `${prError}; ${search.__error}` : search.__error;
+      continue;
+    }
+    found.push(...(search.items || []));
+  }
+  // A failed search must leave openPrs null so the summary says "PR count
+  // failed" rather than "0 open PRs" — a card claiming an empty backlog when
+  // the token is dead is worse than one admitting it could not look.
+  if (!prError) {
     for (const item of found) {
       // repository_url is https://api.github.com/repos/<owner>/<repo>
       const repo = String(item.repository_url || '').split('/').pop();
       if (repo) prCounts.set(repo, (prCounts.get(repo) || 0) + 1);
     }
-    openPrs = Number(search.total_count || 0);
-    // per_page caps at 100, so beyond that the per-repo split is partial even
-    // though the total is exact.  Say so rather than quietly under-reporting.
+    openPrs = searches.reduce((n, s) => n + Number(s.total_count || 0), 0);
+    // per_page caps at 100 per search, so beyond that the per-repo split is
+    // partial even though the total is exact.  Say so rather than quietly
+    // under-reporting.
     prTruncated = openPrs > found.length;
   }
 
   const items = await Promise.all(APPS.map(async (app) => {
+    const repoOwner = app.owner || owner;
     const row = {
       name: app.name,
       repo: app.repo,
+      owner: repoOwner,
       kind: app.kind,
       prs: prError ? null : (prCounts.get(app.repo) || 0),
       run: null,
@@ -626,7 +663,7 @@ async function checkGitHub(env) {
     if (prError) row.prError = prError;
 
     const runs = await apiJson(
-      `https://api.github.com/repos/${owner}/${app.repo}/actions/runs?branch=main&per_page=1`,
+      `https://api.github.com/repos/${repoOwner}/${app.repo}/actions/runs?branch=main&per_page=1`,
       { headers },
     ).catch((err) => ({ __error: errText(err) }));
 
@@ -919,7 +956,7 @@ const CHECKS = {
   },
   board: { cost: (env) => (env.MAC_COLLAB_TOKEN ? 2 : 0), run: (env) => checkBoard(env) },
   coolify: { cost: (env) => (env.COOLIFY_TOKEN ? 2 : 0), run: (env) => checkCoolify(env) },
-  github: { cost: (env) => (env.GITHUB_TOKEN ? 1 + APPS.length : 0), run: (env) => checkGitHub(env) },
+  github: { cost: (env) => (env.GITHUB_TOKEN ? OWNER_SEARCHES + APPS.length : 0), run: (env) => checkGitHub(env) },
   vercel: { cost: (env) => (env.VERCEL_TOKEN ? 2 + VERCEL_MAX_TEAMS : 0), run: (env) => checkVercel(env) },
   sentry: { cost: (env) => (env.SENTRY_AUTH_TOKEN ? 1 : 0), run: (env) => checkSentry(env) },
   pagerduty: { cost: (env) => (env.PAGERDUTY_API_KEY ? 1 : 0), run: (env) => checkPagerDuty(env) },

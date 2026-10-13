@@ -1,0 +1,67 @@
+name: Kody defer
+
+# Reusable workflow.  Call it from a pull_request_review_comment workflow.
+# The runner reads GITHUB_EVENT_PATH.  Do not interpolate comment bodies or
+# titles into a `run:` line.
+
+on:
+  workflow_call:
+    inputs:
+      blocked-severities:
+        description: Comma-separated severities that cannot be deferred
+        type: string
+        default: critical
+        required: false
+      tooling-ref:
+        description: Git ref of Simple-With-Us/AI-Fleet-Coordinator that provides scripts/kody-defer
+        type: string
+        default: main
+        required: false
+      dry-run:
+        description: Log intended writes and do not perform them
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: kody-defer-${{ github.event.pull_request.number }}-${{ github.event.comment.in_reply_to_id || github.event.comment.id }}
+  cancel-in-progress: false
+
+jobs:
+  defer:
+    if: >-
+      (github.event_name == 'pull_request_review_comment' || github.event_name == 'workflow_call') &&
+      github.event.action == 'created' &&
+      github.event.comment.user.type != 'Bot' &&
+      contains(github.event.comment.body, '/defer')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout Kody defer tooling
+        uses: actions/checkout@v7
+        with:
+          repository: Simple-With-Us/AI-Fleet-Coordinator
+          ref: ${{ inputs.tooling-ref }}
+          path: .kody-defer-tooling
+          sparse-checkout: scripts/kody-defer
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Defer the Kody finding
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          KODY_DEFER_BLOCKED_SEVERITIES: ${{ inputs.blocked-severities }}
+          KODY_DEFER_DRY_RUN: ${{ inputs.dry-run && '1' || '0' }}
+        run: node .kody-defer-tooling/scripts/kody-defer/defer.mjs
