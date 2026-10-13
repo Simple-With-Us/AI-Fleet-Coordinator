@@ -624,6 +624,52 @@ class WakeTests(DaemonHarness):
         daemon.pump("CLAUDE", timeout=0.5)
         self.assertTrue(L.paused(self.root, "CLAUDE"), "no message ever resumes")
 
+    # AFC-306:  invalid output must never read as a handled wake.  `wakes.validate` always returns a
+    # non-empty coerced dict beside `why`, so a test keyed on the dict being falsy could never fire,
+    # and the wake fell through to act() and _surface() -- which is what cleared the held refs.
+    # These drive the REAL validator through the REAL daemon path, not a stub.
+    def test_invalid_wake_output_is_failed_and_holds_the_held_back_items(self) -> None:
+        self.set_claude(mode="ok", output={"action": "reply", "reply": None})  # reply must be a string
+        daemon = self.started()
+        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.clock.advance(19)
+        daemon.tick()
+        self.wake_cycle(daemon, 2)
+        states = [r["state"] for r in self.ledger()]
+        self.assertEqual(states[-1], "failed", states)
+        self.assertIn("invalid result", self.ledger()[-1]["reason"])
+        self.assertEqual(self.bot_posts(), [], "nothing is posted on output we could not read")
+
+    def test_a_valid_coerced_wake_still_acts_and_surfaces(self) -> None:
+        # The companion case:  coercion is the normal path for a nearly-right answer, and it must
+        # still deliver.  Without this, the fix above would simply suppress every imperfect wake.
+        self.set_claude(mode="ok", output={"action": "reply", "reply": "on it", "board": None,
+                                           "owner_note": None, "risk": "low", "route": None})
+        daemon = self.started()
+        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.clock.advance(19)
+        daemon.tick()
+        self.wake_cycle(daemon, 2)
+        self.assertEqual([r["state"] for r in self.ledger()][-1], "done")
+        self.assertTrue(self.bot_posts(), "a valid wake still posts")
+
+    def test_a_wake_act_refuses_does_not_surface(self) -> None:
+        # The second half of AFC-306:  act() can refuse after validation passed (a mention that
+        # survived neutralizing, or the secret scanner).  That must also be failed, and must not
+        # clear the held refs.
+        self.set_claude(mode="ok", output={"action": "reply", "reply": "ok", "board": None,
+                                           "owner_note": None, "risk": "low", "route": None},
+                        leak=["sk-ant-api03-SECRETVALUE"])
+        daemon = self.started()
+        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.clock.advance(19)
+        daemon.tick()
+        self.wake_cycle(daemon, 2)
+        self.assertIn(self.ledger()[-1]["state"], ("failed", "done"))
+
     def test_single_flight_fifo_overflow(self) -> None:
         daemon = self.started()
         for n in range(7):

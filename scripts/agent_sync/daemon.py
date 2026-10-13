@@ -1603,11 +1603,13 @@ class Daemon:
         obj, why = W.validate(result.parsed)
         if why:
             self.log.write("wake-invalid", seat=runner.seat, wake_id=pending.wake_id, reason=why)
-        # Unusable output is a FAILED wake, not a done one.  `act` below also surfaces the seat's
-        # held-back items, and that is wrong on output nobody could read:  a wake whose answer we
-        # could not parse must not be the reason a queued item looks handled.  The wake is failed,
-        # the ledger says failed, and the held-back items stay held.
-        if why and not obj:
+        # Invalid output is a FAILED wake, not a done one, and the held refs must survive it.
+        # `wakes.validate` ALWAYS returns a non-empty coerced dict alongside `why`, so an earlier
+        # version's `why and not obj` test could never be true -- invalid output still fell through
+        # to act() and _surface(), which is exactly what Jet and Codex found on main (AFC-306).  The
+        # test is on `why` itself, and the gate is before act() so nothing is posted and no held item
+        # is cleared on output nobody could read.
+        if why:
             runner.ledger.append(pending.row("failed", self.clock.time(), reason="invalid result: %s" % why,
                                              cost_usd=result.cost_usd, exit=result.exit, secs=result.secs,
                                              held_back=held_count, adapter=adapter))
@@ -1618,10 +1620,26 @@ class Daemon:
             return
         outcome = self.act(runner, pending, obj, history=history)
         finished = self.clock.time()
-        runner.ledger.append(pending.row("done", finished, cost_usd=result.cost_usd, exit=result.exit,
+        # Surface the held-back items only when this wake actually handled its triggers.  A refusal
+        # inside act() (a mention that survived neutralizing, the secret scanner, a reply that could
+        # not be posted) is recorded as failed and leaves the held refs held, so the next wake sees
+        # them again instead of finding them already delivered.
+        refused = outcome.get("refused")
+        delivered = not refused and not (
+            pending.owner and not outcome.get("posted_id") and not outcome.get("draft_to"))
+        runner.ledger.append(pending.row("done" if delivered else "failed", finished,
+                                         cost_usd=result.cost_usd, exit=result.exit,
                                          secs=result.secs, action=obj["action"], risk=obj.get("risk"),
                                          coerced=obj.get("coerced"), invalid=why, held_back=held_count,
                                          adapter=adapter, **outcome))
+        if not delivered:
+            if pending.owner:
+                self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
+                                     "a wake was not delivered: %s" % A.clean_banner(
+                                         refused or "the reply was not posted", 60),
+                                     kind="wake-undelivered", key="wake-undelivered:%s" % pending.wake_id,
+                                     once_per=0)
+            return
         self._surface(runner, pending, listed, lost, finished)
 
     def trigger_row(self, runner: SeatRunner, pending: W.Pending) -> dict[str, Any] | None:
