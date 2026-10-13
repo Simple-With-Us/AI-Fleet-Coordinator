@@ -19,7 +19,7 @@ The server instance reuses everything in the listener:  the router, dedupe, the 
 
 ## Seat Partition
 
-[`agent-sync-partition.toml`](agent-sync-partition.toml) gives each seat to one instance:  `mac`, `server`, or `none` (no listener holds it).  Today the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM) are `mac`, and the eleven GB personas plus MA, JET, GROK-WEB, INSTINCT and ECHO are `server`.  The BF role bots and GROK-BUILD (the older code of the GROK seat) are `none`.  The server sample enables the five cloud seats (since Fri, Oct 9), MA, GROK-WEB, INSTINCT and ECHO with `wake = "inbox"` and JET with `wake = "http"` into the hosted MCP Worker, and (since Sat, Oct 10) all eleven GB personas with `wake = "http"`.
+[`agent-sync-partition.toml`](agent-sync-partition.toml) gives each seat to one instance:  `mac`, `server`, or `none` (no listener holds it).  Today the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM) are `mac`, and the twelve GB personas plus MA, JET, GROK-WEB, INSTINCT and ECHO are `server`.  The BF role bots and GROK-BUILD (the older code of the GROK seat) are `none`.  The server sample enables the five cloud seats (since Fri, Oct 9), MA, GROK-WEB, INSTINCT and ECHO with `wake = "inbox"` and JET with `wake = "http"` into the hosted MCP Worker, and (since Sat, Oct 10) all eleven GB personas with `wake = "http"`.
 
 **A seat must never be configured in both instances.**  If it were, two listeners would each hold a queue for the same bot and each wake it, so one message could be answered twice.  The partition fails closed, and it is enforced at start, at connect and on reload.
 
@@ -139,7 +139,7 @@ Every GB persona's routine is a Grok Bot routine webhook at `https://api2.cursor
 | `infisical_env.py` | Loads the listener's variables from Infisical at start (see [Infisical at Start](#infisical-at-start)), standard library only |
 | `apply_live_config.py` | Copies the sample's JET and GB seat sections into the live `/data/listener.toml`, leaving `[daemon]` (the pins) and every other section byte for byte (see [Activation Checklist](#activation-checklist-one-restart)) |
 | `healthcheck.py` | Unhealthy when `/data/listener/status.json` is missing or older than 60 seconds.  The daemon rewrites it every 2 seconds; a refused start never writes it |
-| `listener.toml` | The server sample:  the cloud seats MA, GROK-WEB, INSTINCT and ECHO enabled with `wake = "inbox"`, JET enabled with `wake = "http"` (its routine is the hosted MCP Worker), and all eleven GB personas enabled with `wake = "http"` on their `ZULIP_ALERT_GB_<ROLE>_ENDPOINT` and `_KEY` webhooks |
+| `listener.toml` | The server sample:  the cloud seats MA, GROK-WEB, INSTINCT and ECHO enabled with `wake = "inbox"`, JET enabled with `wake = "http"` (its routine is the hosted MCP Worker), and the eleven GB personas other than GB-ENGINEER enabled with `wake = "http"` on their `ZULIP_ALERT_GB_<ROLE>_ENDPOINT` and `_KEY` webhooks, with GB-ENGINEER held disabled until its routine key is inventoried |
 
 **Environment the container expects.**  The image sets these:
 
@@ -291,7 +291,7 @@ One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting a
    ```
    It backs up `/data/listener.toml` to `/data/listener.toml.bak-<UTC stamp>` (mode 600), checks the result with the listener's own parser and the partition, and refuses on any problem.  A second run prints `no changes`.
 5. **Restart** the app in Coolify (the new sections name variables the running daemon has not read).
-6. **Check** `docker exec "$C" agent-sync status`:  `listener: running`, `instance server; owner pinned: yes`, no `RED` line, all eleven personas and JET `connected` with `wake http (routine ready, <host>)`, MA, GROK-WEB, INSTINCT and ECHO `connected` with `wake inbox`, and no `disabled seats` line.  Any persona that is red for a credential reason:  set `enabled = false` in its section with the scoped `sed` above, restart, and note it under Open Questions.
+6. **Check** `docker exec "$C" agent-sync status`:  `listener: running`, `instance server; owner pinned: yes`, no `RED` line, the eleven enabled personas and JET `connected` with `wake http (routine ready, <host>)`, MA, GROK-WEB, INSTINCT and ECHO `connected` with `wake inbox`, and `GB-ENGINEER` the only line under `disabled seats`.  Any persona that is red for a credential reason:  set `enabled = false` in its section with the scoped `sed` above, restart, and note it under Open Questions.
 
 ## Sentry Heartbeat
 
