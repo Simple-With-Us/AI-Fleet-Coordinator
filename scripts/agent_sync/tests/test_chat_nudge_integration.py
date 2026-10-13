@@ -41,6 +41,8 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         self.assertEqual([row["state"] for row in nudge], ["started", "done"])
         self.assertEqual(nudge[0]["topic_key"], L.topic_key("agent-sync", "AFC-305"))
         self.assertEqual(nudge[0]["owner"], False)
+        self.assertEqual(nudge[-1]["cost_usd"], 0.0)
+        self.assertTrue(nudge[-1]["downstream_cost_unknown"])
 
     def test_cli_requires_explicit_target_grok_and_has_nudge_actions(self):
         parser = build_parser()

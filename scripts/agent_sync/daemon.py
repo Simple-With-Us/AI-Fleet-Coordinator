@@ -2649,10 +2649,10 @@ class Daemon:
                     return "busy"
                 row = {"wake_id": inner.wake_id, "owner": False, "topic_key": key,
                        "channel": binding["channel"], "topic": binding["topic"],
-                       "reserve_usd": float(runner.cfg.wake_max_usd), "ts": daemon.clock.time()}
+                       "reserve_usd": 0.0, "downstream_cost_unknown": True, "ts": daemon.clock.time()}
                 blocked = W.budget_block(runner.ledger.wakes(), runner.cfg.budget, owner=False, key=key,
                                          now=daemon.clock.time(), exclude=inner.wake_id,
-                                         run_max=runner.cfg.wake_max_usd)
+                                         run_max=0.0)
                 if blocked:
                     return "busy"
                 inner.pending = row
@@ -2681,12 +2681,12 @@ class Daemon:
                     outcome = "unknown"
                 if outcome == "deferred" and getattr(inner, "hold_reason", None):
                     outcome = "held"
-                # A permit denied before the prompt is a skipped wake; actual attempts reserve the
-                # seat's configured maximum until the transport result is recorded.
+                # Local delivery uses no model tokens.  Downstream chat spend is unmeasured; count
+                # limits still apply, but the listener USD ceiling does not cap that chat.
                 skipped = outcome in ("deferred", "held")
                 runner.ledger.append(dict(
                     inner.pending, state="skipped" if skipped else "done" if outcome == "accepted" else "failed",
-                    ts=daemon.clock.time(), cost_usd=0.0 if skipped else float(runner.cfg.wake_max_usd),
+                    ts=daemon.clock.time(), cost_usd=0.0,
                     adapter="chat-nudge", reason=("safety gate before prompt" if skipped else
                                                     None if outcome == "accepted" else "delivery %s" % outcome)))
                 return outcome
