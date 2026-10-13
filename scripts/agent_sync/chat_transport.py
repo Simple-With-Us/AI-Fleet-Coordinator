@@ -135,3 +135,31 @@ class GrokTransport:
             if client is not None:
                 # This closes only our stdio transport, not the shared leader or chat.
                 client.close()
+
+
+class ChatTransport:
+    """Dispatch only through the registered existing-owner transport for this platform."""
+
+    def __init__(self):
+        self.adapters = {}
+
+    def adapter(self, binding):
+        platform = binding.get("platform")
+        if platform not in self.adapters:
+            if platform == "grok-leader":
+                self.adapters[platform] = GrokTransport()
+            elif platform == "cursor-cloud":
+                from .cursor_chat_transport import CursorCloudTransport
+                self.adapters[platform] = CursorCloudTransport()
+            else:
+                raise ValueError("unsupported chat platform")
+        return self.adapters[platform]
+
+    def preflight(self, binding):
+        return self.adapter(binding).preflight(binding)
+
+    def send(self, binding, text, *, permit=None):
+        return self.adapter(binding).send(binding, text, permit=permit)
+
+    def receipt(self, binding, text):
+        return self.adapter(binding).receipt(binding, text)

@@ -452,7 +452,7 @@ MUSE_SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wak
 MUSE_PROMPT_SLOT = "<prompt-file>"
 MUSE_SCHEMA_SLOT = "<output-schema>"
 MUSE_WORKSPACE_SLOT = "<workspace>"
-MUSE_WAKE_POLICY_VERSION = 1
+MUSE_WAKE_POLICY_VERSION = "muse-chat-catalog-v2"
 
 
 def resolve_muse(explicit: str | None, wake_path: str) -> str | None:

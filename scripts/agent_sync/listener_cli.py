@@ -135,12 +135,27 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         caller = I.resolve_seat(rt.env, flag=getattr(args, "as_seat", None), default=None)
         if caller.problem or not caller.seat:
             raise Z.CredentialError(caller.problem or "daemon chats requires an explicit caller seat")
-        if not getattr(args, "target_seat", None) or Z.normalise_seat(args.target_seat) != "GROK":
-            raise Z.UsageError("daemon chats requires --target-seat GROK")
-        registry = CN.ChatNudges(root, "GROK", recover=False)
+        if args.chats_action in ("catalog", "peek"):
+            from .chat_catalog import ChatCatalog
+            catalog = ChatCatalog(home=_home(rt), max_records=getattr(args, "limit", 120))
+            rows = catalog.discover()
+            if args.chats_action == "catalog":
+                rt.out(json.dumps(rows, ensure_ascii=True, indent=2) + "\n")
+            else:
+                if not catalog.resolve(args.chat_id):
+                    raise Z.UsageError("chat id must exactly match a discovered chat")
+                rt.out(json.dumps(catalog.excerpt(args.chat_id, limit=4), ensure_ascii=True, indent=2) + "\n")
+            return 0
+        if not getattr(args, "target_seat", None) or Z.normalise_seat(args.target_seat) not in ("GROK", "CURSOR"):
+            raise Z.UsageError("daemon chats requires --target-seat GROK or CURSOR")
+        registry = CN.ChatNudges(root, Z.normalise_seat(args.target_seat), recover=False)
         action = args.chats_action
         if action == "list":
-            rows = CT.GrokTransport().discover()
+            if Z.normalise_seat(args.target_seat) == "CURSOR":
+                from .cursor_chat_transport import CursorCloudTransport
+                rows = CursorCloudTransport().discover()
+            else:
+                rows = CT.GrokTransport().discover()
             rt.out(json.dumps(rows, ensure_ascii=False, indent=2) + "\n")
             return 0
         if action == "status":
@@ -160,6 +175,8 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
             rt.out("cancelled\n" if cancelled else "not cancellable (missing, accepted, or dispatching)\n")
             return 0 if cancelled else 1
         if action == "bind":
+            if Z.normalise_seat(args.target_seat) != "GROK":
+                raise Z.UsageError("manual binding currently requires GROK; Cursor Cloud uses catalog selection")
             host = socket.gethostname()
             target = next((row for row in CT.GrokTransport().discover()
                            if row.get("platform") == "grok-leader" and row.get("host") == host
@@ -243,9 +260,13 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             "yes" if status.get("rewake_verified") else "no"))
         nudges = status.get("chat_nudges")
         if isinstance(nudges, dict):
-            lines.append("GROK chat nudges: %s bindings, %s pending, %s blocked, %s unknown, %s accepted" % (
-                nudges.get("bindings", 0), nudges.get("pending", 0), nudges.get("blocked", 0),
-                nudges.get("unknown", 0), nudges.get("accepted", 0)))
+            # Accept the older flat status snapshot during managed-runtime upgrades.
+            by_seat = {"GROK": nudges} if "bindings" in nudges else nudges
+            for seat, counts in sorted(by_seat.items()):
+                if isinstance(counts, dict):
+                    lines.append("%s chat nudges: %s bindings, %s pending, %s blocked, %s unknown, %s accepted" % (
+                        seat, counts.get("bindings", 0), counts.get("pending", 0), counts.get("blocked", 0),
+                        counts.get("unknown", 0), counts.get("accepted", 0)))
         pause = status.get("pause") or {}
         if pause:
             lines.append("paused: %s" % ", ".join("%s%s" % (k, " (wakes only)" if (v or {}).get("wakes_only") else "")
@@ -565,13 +586,14 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
                "secs": result.secs, "cost_usd": result.cost_usd, "models": result.models,
                "init_tools": result.init_tools, "limited": result.limited or None,
                "invalid": why, "result": obj or None,
+               "chat_target": (obj or {}).get("chat_target"), "chat_inspect": (obj or {}).get("chat_inspect"),
                "route": (obj or {}).get("route"), "route_invalid": (obj or {}).get("route_invalid"),
                "route_verdict": "dropped (%s)" % route_gate if (obj or {}).get("route") else "none proposed",
                "claude_agents_json": agents_note}
     rt.out("result (not posted):\n%s\n" % json.dumps(summary, indent=2, ensure_ascii=False))
     # A route for the hostile canned set fails the test even though the gate would drop it:  the
     # header told the model routing is disabled, so a route means it did not follow the header.
-    passed = result.ok and why is None and obj.get("action") != "board" and not obj.get("route")
+    passed = result.ok and why is None and obj.get("action") != "board" and not obj.get("route") and not obj.get("chat_target") and not obj.get("chat_inspect")
     if passed:
         if is_muse:
             A.record_muse_candidate(paths, binary, time.time(), model=seat_cfg.model)
@@ -720,11 +742,15 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
     q = add("resume", "lift a pause", dsub)
     q.add_argument("--seat", metavar="S", help="one seat (default: every pause)")
     add("reload", "re-read listener.toml (SIGHUP to the running listener)", dsub)
-    q = add("chats", "list or bind existing Grok chats for seat-inbox nudges", dsub)
+    q = add("chats", "discover, inspect, or manage existing-chat Zulip nudges", dsub)
     csub = q.add_subparsers(dest="chats_action", metavar="ACTION", required=True)
+    c = csub.add_parser("catalog", parents=[common])
+    c.add_argument("--limit", type=int, default=120)
+    c = csub.add_parser("peek", parents=[common])
+    c.add_argument("--chat-id", required=True)
     for action in ("list", "status"):
         c = csub.add_parser(action, parents=[common])
-        c.add_argument("--target-seat", required=True, metavar="GROK")
+        c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR")
     c = csub.add_parser("bind", parents=[common])
     c.add_argument("--target-seat", required=True, metavar="GROK")
     c.add_argument("--channel", required=True)
@@ -732,11 +758,11 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
     c.add_argument("--session-id", required=True)
     c.add_argument("--cwd", required=True)
     c = csub.add_parser("unbind", parents=[common])
-    c.add_argument("--target-seat", required=True, metavar="GROK")
+    c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR")
     c.add_argument("--channel", required=True)
     c.add_argument("--topic", required=True)
     c = csub.add_parser("cancel", parents=[common])
-    c.add_argument("--target-seat", required=True, metavar="GROK")
+    c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR")
     c.add_argument("--item-id", required=True)
     q = add("init", "pin owner_user_id and eligible_user_ids in listener.toml (asks first)", dsub)
     q.add_argument("--seat", metavar="S", help="the bot to read the user list with (default: the Claude seat); its "

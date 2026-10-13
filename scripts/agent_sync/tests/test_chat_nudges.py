@@ -128,6 +128,15 @@ class ChatNudgesTest(unittest.TestCase):
         self.assertEqual([item["message_id"] for item in items], ["3", "4"])
         self.assertEqual(items[0]["status"], "unknown")
 
+    def test_duplicate_selection_persists_terminal_pruning(self):
+        self.queue.enqueue_target(self.binding, 1, 10, owner=True)
+        self.queue.enqueue_target(self.binding, 2, 10, owner=True)
+        data = self.queue.snapshot()
+        data["items"][0].update(status="accepted", updated_at=20)
+        L.write_json(self.queue.path, data)
+        self.assertFalse(self.queue.enqueue_target(self.binding, 2, 20 + TERMINAL_KEEP_SECONDS + 1, owner=True))
+        self.assertEqual([item["message_id"] for item in self.queue.snapshot()["items"]], ["2"])
+
     def test_recent_terminal_records_are_retained_for_deduplication(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 10)
