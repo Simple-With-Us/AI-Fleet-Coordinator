@@ -764,9 +764,13 @@ class WakeTests(DaemonHarness):
             self.wake_cycle(daemon)
         self.assertEqual(self.bot_posts(), [])
         finals = [r for r in self.ledger() if r["state"] in ("done", "failed")]
-        self.assertEqual(finals[0]["invalid"], "keys extra extra")
-        self.assertEqual(finals[0]["action"], "none")
-        self.assertTrue(finals[1]["refused"].startswith("secret scanner"))
+        # AFC-306:  a schema violation is a FAILED wake even when the validator could coerce a usable
+        # object out of it.  `wakes.validate` always returns a non-empty coerced dict beside `why`,
+        # so recording this as `done` is what let an unreadable answer read as handled and cleared the
+        # held refs.  The validator's reason is preserved on the row.
+        self.assertEqual(finals[0]["state"], "failed")
+        self.assertIn("keys extra extra", finals[0]["reason"])
+        self.assertEqual(finals[1]["refused"].startswith("secret scanner"), True)
         self.assertEqual((finals[2]["state"], finals[2]["reason"]), ("failed", "the init event listed tools or MCP servers"))
 
     def test_escalation_notifies_the_owner_and_acks_an_owner_trigger(self) -> None:
