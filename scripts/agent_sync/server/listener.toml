@@ -194,7 +194,17 @@ wake = "http"
 routine = { url_env = "ZULIP_ALERT_GB_TRADER_ENDPOINT", key_env = "ZULIP_ALERT_GB_TRADER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 
-# GB-ENGINEER (Engineering seat, engineer-grok-bot@).  Disabled:  the seat has a Zulip bot
+# BF-DIRECTOR (BotFleet role, director-grok-bot@).  The one BotFleet seat the listener holds:  the
+# other ten are "none" because BotFleet drives its own roles, but the owner wants Director woken
+# from here (owner, Mon, Oct 13).  Disabled until ZULIP_ALERT_BF_DIRECTOR_ENDPOINT and
+# ZULIP_ALERT_BF_DIRECTOR_KEY are in Infisical; flipping enabled to true arms it.
+[seat.BF-DIRECTOR]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_BF_DIRECTOR_EMAIL, ZULIP_BF_DIRECTOR_API_KEY; the site from ZULIP_SITE
+wake = "http"
+routine = { url_env = "ZULIP_ALERT_BF_DIRECTOR_ENDPOINT", key_env = "ZULIP_ALERT_BF_DIRECTOR_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 # (~/.secrets/Zulip/GB-Engineer-zuliprc), but its ZULIP_ALERT_GB_ENGINEER_ENDPOINT and
 # ZULIP_ALERT_GB_ENGINEER_KEY have not passed an Infisical inventory yet.  Set enabled = true
 # once they do; apply_live_config.py copies this section to the live volume on the GB- prefix.
