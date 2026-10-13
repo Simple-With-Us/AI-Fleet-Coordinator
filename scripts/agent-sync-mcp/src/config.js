@@ -5,7 +5,7 @@
 // or malformed value makes `loadConfig` throw, and the Worker then answers 500
 // for every request (fail closed) rather than guessing.
 
-import { strictRedirectProblem, redirectUriProblem, isLoopbackRedirect } from "./policy.js";
+import { strictRedirectProblem, redirectUriProblem, isLoopbackRedirect, isCursorExactPair, CURSOR_CIMD_CLIENT } from "./policy.js";
 import { DEFAULT_CALLBACK_HOSTS, isHostPattern } from "./events.js";
 
 // D1:  the only hostname this Worker answers on.  It is a constant, not a var,
@@ -117,13 +117,16 @@ export function loadConfig(env) {
     const cimdClientIds = (entry?.cimd_client_ids ?? []).map(String);
     for (const uri of redirectUris) {
       const problem = redirectUriProblem(uri);
-      if (problem) throw new Error(`config: ${seat} redirect is not strict (${problem})`);
+      if (problem && !(cimdClientIds.includes(CURSOR_CIMD_CLIENT) && isCursorExactPair(CURSOR_CIMD_CLIENT, uri, seat))) {
+        throw new Error(`config: ${seat} redirect is not strict (${problem})`);
+      }
       const listed = redirectSeats.get(uri) ?? [];
       if (listed.includes(seat)) throw new Error(`config: ${seat} lists a redirect URI twice`);
       if (listed.length > 0 && !isLoopbackRedirect(uri)) throw new Error("config: a redirect URI is listed under two seats (only a 127.0.0.1 loopback redirect may be shared)");
       redirectSeats.set(uri, [...listed, seat]);
     }
     for (const id of cimdClientIds) {
+      if (id === CURSOR_CIMD_CLIENT && seat !== "CURSOR") throw new Error("config: Cursor CIMD belongs only to CURSOR");
       const problem = strictRedirectProblem(id);
       if (problem) throw new Error(`config: ${seat} CIMD client id is not a strict https URL (${problem})`);
       if (cimdOwner.has(id)) throw new Error("config: a CIMD client id is listed under two seats");

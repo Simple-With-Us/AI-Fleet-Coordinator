@@ -25,6 +25,17 @@ const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stat
 const JET_KEY = zulipShapedKey(11);
 const CURSOR_KEY = zulipShapedKey(12);
 const CURSOR_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";
+const CURSOR_CIMD_CLIENT = "https://cursor.com/oauth/mcp-client.json";
+const CURSOR_LOCALHOST_REDIRECT = "http://localhost:8787/callback";
+// Public metadata shape copied from Cursor's published document; never fetched live in this test.
+const CURSOR_CIMD = {
+  client_id: CURSOR_CIMD_CLIENT, client_name: "Cursor", client_uri: "https://cursor.com",
+  redirect_uris: [CURSOR_REDIRECT, "https://www.cursor.com/bot/mcp/oauth/callback",
+    "https://grok.com/connectors-oauth-exchange-code/", CURSOR_LOCALHOST_REDIRECT,
+    "http://127.0.0.1:8787/callback"],
+  grant_types: ["authorization_code", "refresh_token"], response_types: ["code"],
+  token_endpoint_auth_method: "none",
+};
 const CLAUDE_KEY = zulipShapedKey(29);
 const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
 const zulip = new FakeZulip({ bots: [
@@ -119,6 +130,7 @@ async function outboundFetch(request) {
     return Response.json(CHATGPT_CIMD);
   }
   if (request.url === GROK_CLIENT) return Response.json(GROK_CIMD);
+  if (request.url === CURSOR_CIMD_CLIENT) return Response.json(CURSOR_CIMD);
   if (request.url.startsWith(`${REALM}/`)) return zulip.fetch(request);
   if (request.url.startsWith(CALLBACK)) {
     const raw = await request.text();
@@ -1213,6 +1225,80 @@ try {
     for (const field of ["epoch", "paused", "armed", "armedUntil", "armedBy"]) {
       assert.equal(jetAfter[field], jetBefore[field], `Cursor must preserve Jet ${field}`);
     }
+  });
+
+  await step("Cursor exact CIMD localhost pair: mocked code exchange, refresh, callback narrowing and JET isolation", async () => {
+    // Everything dispatches locally with mocked Access, CIMD and Zulip; no real OAuth request.
+    assert.equal((await adminAction("arm", { seat: "JET" })).status, 303);
+    const j = pkce();
+    const jetHandle = await openConsent(j.challenge, "synthetic-jet-before-cursor-pair");
+    let res = await browser("/authorize", { method: "POST", form: { handle: jetHandle, seat: "JET", decision: "approve", scope: "zulip:read" } });
+    assert.equal(res.status, 302);
+    let loc = new URL(res.headers.get("location"));
+    const jet = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: j.verifier,
+      redirect_uri: CHATGPT_REDIRECT, client_id: CHATGPT_CLIENT, resource: RESOURCE });
+    assert.equal(jet.status, 200);
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
+    const jetGate = ns.get(ns.idFromName("JET"));
+    const jetBefore = await jetGate.getState();
+    const who = { clientId: CURSOR_CIMD_CLIENT, redirect: CURSOR_LOCALHOST_REDIRECT };
+    const c = pkce();
+    const fetches = outbound.filter((url) => url === CURSOR_CIMD_CLIENT).length;
+    res = await browser(`/authorize?${authorizeQuery(c.challenge, "synthetic-unarmed-cursor", who)}`);
+    assert.equal(res.status, 403);
+    assert.match(await res.text(), /No Connection Expected/);
+    assert.equal(outbound.filter((url) => url === CURSOR_CIMD_CLIENT).length, fetches);
+    assert.equal((await adminAction("arm", { seat: "CURSOR" })).status, 303);
+    for (const bad of [
+      { clientId: CHATGPT_CLIENT, redirect: CURSOR_LOCALHOST_REDIRECT },
+      { clientId: GROK_CLIENT, redirect: CURSOR_LOCALHOST_REDIRECT },
+      { clientId: "ManualCursor12345", redirect: CURSOR_LOCALHOST_REDIRECT },
+      ...CURSOR_CIMD.redirect_uris.filter((uri) => uri !== CURSOR_LOCALHOST_REDIRECT)
+        .map((redirect) => ({ clientId: CURSOR_CIMD_CLIENT, redirect })),
+      { clientId: CURSOR_CIMD_CLIENT, redirect: "http://localhost:8788/callback" },
+    ]) {
+      res = await browser(`/authorize?${authorizeQuery(c.challenge, "synthetic-rejected-pair", bad)}`);
+      assert.equal(res.status, 400);
+      await res.arrayBuffer();
+    }
+    res = await browser(`/authorize?${authorizeQuery(c.challenge, "synthetic-cursor-exact", who)}`);
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /localhost must resolve to the computer running this browser/);
+    const handle = html.match(/name="handle" value="([^"]+)"/)[1];
+    res = await browser("/authorize", { method: "POST", form: [["handle", handle], ["seat", "CURSOR"], ["decision", "approve"], ["scope", "zulip:read"], ["scope", "zulip:write"]] });
+    assert.equal(res.status, 302);
+    loc = new URL(res.headers.get("location"));
+    assert.equal(`${loc.origin}${loc.pathname}`, CURSOR_LOCALHOST_REDIRECT);
+    assert.equal(loc.searchParams.get("state"), "synthetic-cursor-exact");
+    const exchange = { grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: c.verifier,
+      redirect_uri: CURSOR_LOCALHOST_REDIRECT, client_id: CURSOR_CIMD_CLIENT, client_secret: "", resource: RESOURCE };
+    for (const wrong of [CURSOR_REDIRECT, "http://localhost:8788/callback", "http://127.0.0.1:8787/callback"]) {
+      assert.equal((await token({ ...exchange, redirect_uri: wrong })).status, 401);
+    }
+    assert.equal((await token({ ...exchange, client_id: CHATGPT_CLIENT })).status, 401);
+    const granted = await token(exchange);
+    assert.equal(granted.status, 200, JSON.stringify(Object.keys(granted.body)));
+    const identity = (await call(granted.body.access_token, "whoami")).json.result.structuredContent;
+    assert.equal(identity.seat, "CURSOR");
+    assert.equal(identity.email, "cursor-bot@simplewithus.zulipchat.com");
+    assert.equal(identity.role, 400);
+    assert.equal(identity.transport, "hosted");
+    const refreshed = await token({ grant_type: "refresh_token", refresh_token: granted.body.refresh_token,
+      client_id: CURSOR_CIMD_CLIENT, resource: RESOURCE });
+    assert.equal(refreshed.status, 200);
+    assert.notEqual(refreshed.body.refresh_token, granted.body.refresh_token);
+    assert.equal(await seatOf(refreshed.body.access_token), "CURSOR");
+    assert.equal(await seatOf(jet.body.access_token), "JET");
+    assert.equal(await seatOf(claudeHostedTokens.access_token), "CLAUDE");
+    const jetAfter = await jetGate.getState();
+    for (const field of ["epoch", "paused", "armed", "armedUntil", "armedBy"]) {
+      assert.equal(jetAfter[field], jetBefore[field], `Cursor exact pair must preserve Jet ${field}`);
+    }
+    const jetRefreshed = await token({ grant_type: "refresh_token", refresh_token: jet.body.refresh_token,
+      client_id: CHATGPT_CLIENT, resource: RESOURCE });
+    assert.equal(jetRefreshed.status, 200);
+    assert.equal(await seatOf(jetRefreshed.body.access_token), "JET");
   });
 
   await step("CLAUDE legacy key alias alone fails closed without borrowing another seat credential", async () => {

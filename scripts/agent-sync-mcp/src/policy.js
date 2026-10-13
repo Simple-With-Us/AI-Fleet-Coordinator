@@ -40,6 +40,18 @@ export function strictRedirectProblem(value) {
 // exact string and the OAuth library accepts any port on a loopback host.
 export const LOOPBACK_HOST = "127.0.0.1";
 
+// A proposed, exact Cursor pair.  Generic localhost redirects remain invalid.
+export const CURSOR_CIMD_CLIENT = "https://cursor.com/oauth/mcp-client.json";
+export const CURSOR_LOCALHOST_REDIRECT = "http://localhost:8787/callback";
+export function isCursorExactPair(clientId, redirectUri, seat) {
+  return seat === "CURSOR" && clientId === CURSOR_CIMD_CLIENT && redirectUri === CURSOR_LOCALHOST_REDIRECT;
+}
+function cursorPairMismatch(clientId, redirectUri, seat) {
+  return (clientId === CURSOR_CIMD_CLIENT || redirectUri === CURSOR_LOCALHOST_REDIRECT)
+    && !isCursorExactPair(clientId, redirectUri, seat);
+}
+
+
 /**
  * Why `value` is not an acceptable redirect URI, or "" when it is.  Every rule
  * of `strictRedirectProblem` applies, except that `http` is allowed when the
@@ -120,6 +132,7 @@ export function manualClientSeat(client) {
  */
 export function clientBoundToSeat(client, seat, redirectUri, config) {
   if (!client || typeof client.clientId !== "string") return false;
+  if (cursorPairMismatch(client.clientId, redirectUri, seat)) return false;
   const verdict = clientIdVerdict(client.clientId, config);
   if (!verdict.ok) return false;
   if (verdict.seat) return verdict.seat === seat;
@@ -259,7 +272,8 @@ export function preGateAuthorize(params, config) {
   // picks among `seats` by arming state (`resolveArmedSeat`).
   const listed = redirectSeats(config, redirectUri);
   if (listed.length === 0) return refuse("redirect_not_allowlisted");
-  if (redirectUriProblem(redirectUri)) return refuse("redirect_not_strict");
+  if (cursorPairMismatch(clientId, redirectUri, listed[0])) return refuse("cursor_pair_mismatch");
+  if (redirectUriProblem(redirectUri) && !isCursorExactPair(clientId, redirectUri, listed[0])) return refuse("redirect_not_strict");
   const seats = listed.filter((s) => config.hostedSeats.includes(s));
   if (seats.length === 0) return refuse("seat_not_hosted");
 
@@ -294,7 +308,9 @@ export function preGateAuthorize(params, config) {
 export function postGateAuthRequest(authRequest, config, seat) {
   if (!authRequest || typeof authRequest !== "object") return false;
   if (typeof seat !== "string" || !config.hostedSeats.includes(seat)) return false;
-  if (!redirectSeats(config, authRequest.redirectUri).includes(seat) || redirectUriProblem(authRequest.redirectUri)) return false;
+  if (cursorPairMismatch(authRequest.clientId, authRequest.redirectUri, seat)) return false;
+  if (!redirectSeats(config, authRequest.redirectUri).includes(seat)) return false;
+  if (redirectUriProblem(authRequest.redirectUri) && !isCursorExactPair(authRequest.clientId, authRequest.redirectUri, seat)) return false;
   const verdict = clientIdVerdict(authRequest.clientId, config);
   if (!verdict.ok || (verdict.seat && verdict.seat !== seat)) return false;
   if (authRequest.codeChallengeMethod !== "S256" || !authRequest.codeChallenge) return false;
@@ -358,6 +374,18 @@ export function gateTokenForm(form, authorization, config) {
   for (const candidate of [basicId, ...formIds]) {
     const verdict = clientIdVerdict(candidate, config);
     if (!verdict.ok) return { ok: false, reason: verdict.reason, clientId: candidate };
+  }
+  const ids = [basicId, ...formIds].filter(Boolean);
+  const redirects = form.getAll("redirect_uri");
+  if (ids.includes(CURSOR_CIMD_CLIENT) || redirects.includes(CURSOR_LOCALHOST_REDIRECT)) {
+    if (ids.length === 0 || ids.some((id) => id !== CURSOR_CIMD_CLIENT)
+        || config.cimdOwner.get(CURSOR_CIMD_CLIENT) !== "CURSOR"
+        || !redirectSeats(config, CURSOR_LOCALHOST_REDIRECT).includes("CURSOR")
+        || (form.get("grant_type") === "authorization_code" && redirects.length !== 1)
+        || redirects.length > 1
+        || redirects.some((uri) => !isCursorExactPair(CURSOR_CIMD_CLIENT, uri, "CURSOR"))) {
+      return { ok: false, reason: "cursor_pair_mismatch", clientId: ids[0] ?? "" };
+    }
   }
   const next = new URLSearchParams(form);
   const secrets = next.getAll("client_secret");
