@@ -112,6 +112,19 @@ def claude_env(env: Mapping[str, str], home: str, wake_path: str, *, seat: str |
     return out
 
 
+def result_reason(result: Mapping[str, Any]) -> str:
+    """Why a run ended in error, in the owner's own words when the provider gave them.
+
+    claude returns the human-facing reason as the result text ("You've hit your weekly limit ·
+    resets Oct 13 at 5pm (America/Chicago)"), so that text is the message.  `subtype` is the
+    fallback for a run that failed without saying why, and it is stripped of control characters
+    because provider output is not trusted to be printable."""
+    text = result.get("result")
+    if isinstance(text, str) and text.strip():
+        return clean_banner(text, 160)
+    return clean_banner(str(result.get("subtype") or "error"), 160)
+
+
 class RunResult:
     def __init__(self) -> None:
         self.refused: str | None = None  # why the run was refused (the init assertion, the model count)
@@ -127,6 +140,7 @@ class RunResult:
         self.stderr_sha = ""
         self.init_tools: list[Any] | None = None  # what the init event listed, for test-wake's record
         self.killed = False
+        self.limited = False  # the provider refused for a quota, not an internal fault
 
     @property
     def ok(self) -> bool:
@@ -264,10 +278,27 @@ class ClaudeRunner:
                 out.models = sorted(usage) if isinstance(usage, dict) else []
                 cost = out.result.get("total_cost_usd")
                 out.cost_usd = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else WAKE_MAX_BUDGET_USD
-                if len(out.models) != 1:
+                # A rate-limited run returns a `result` with `is_error` and NO modelUsage at all
+                # (verified Oct 11 2026 against claude 2.1.296 at its weekly cap:  exit 1, empty
+                # stderr, ~5 KB of stdout whose result text is "You've hit your weekly limit ...
+                # resets Oct 13 at 5pm").  The model-count assertion below would call that "modelUsage
+                # shows 0 models, not 1", which is true but says nothing useful:  it names an
+                # internal assertion instead of the cap that actually stopped the run, so the owner
+                # sees a refusal that reads like a broken adapter.  It is named first, from the
+                # result text, and the real message reaches the ledger, the banner and the owner.
+                if out.result.get("is_error"):
+                    out.error = result_reason(out.result)
+                    # No model ran, so nothing was billed and nothing was answered.  That is NOT by
+                    # itself proof of a quota: an authentication or configuration failure has the
+                    # same empty shape.  It is reported as `limited` because the CONSEQUENCE is the
+                    # same in every case that matters here — no marginal cost, and no fallback, since
+                    # a second runtime would meet the same broken credential.  The WORDING is kept
+                    # honest by quoting the provider rather than asserting a cause:  the banner says
+                    # what the provider said, and the snapshot gate (which knows the real quota
+                    # state) is what names "quota".
+                    out.limited = not out.models
+                elif len(out.models) != 1:
                     out.refused = "modelUsage shows %d models, not 1" % len(out.models)
-                elif out.result.get("is_error"):
-                    out.error = str(out.result.get("subtype") or "error")
                 else:
                     out.parsed = parse_result(out.result)
         if out.result is None or out.killed:
@@ -826,6 +857,254 @@ def quota_block(provider: str, now: float | None = None, path: str | None = None
     if state["known"] and state["exhausted"]:
         reset = state.get("reset_at")
         return "%s quota is exhausted%s" % (provider, (" until %s" % clean_banner(str(reset), 40)) if reset else "")
+    return None
+
+
+# --------------------------------------------------------------------------------------------
+# mcode exec:  the fallback runtime (AFC-291)
+# --------------------------------------------------------------------------------------------
+#
+#   mcode exec --prompt-mode work --permission off --output-format json
+#             --output-schema <schema> --max-steps N --timeout 4m --cwd <inert dir>
+#             -o <last-message file> --prompt
+#
+# The same contract shape as muse:  `--output-schema` shapes the final answer, `--permission off`
+# cannot block on a prompt, and Gate 0 proved the wake schema round-trips through it with zero
+# coercion and a populated `board` object.  `-o` writes the final message to its own file, which is
+# a cleaner transport than muse's MSP envelope:  the answer is read straight off disk.
+#
+# WHY IT IS THE FALLBACK AND NEVER THE PRIMARY (measured, Oct 11 2026):
+#   * mcode has NO sandbox toggle.  muse sandboxes by default and needs --disable-sandbox to turn it
+#     off;  mcode has no equivalent at all, so there is no switch to state the posture with.
+#   * mcode has NO --disable-shell, --disable-write or --disable-web-tools.  `--permission off`
+#     means "never ask", NOT "hold no tools".  An unattended wake that posts to a third-party cloud
+#     wants the stronger statement, and only muse can make it.
+#   * mcode cannot be HOME-isolated.  Pointing HOME at the inert workspace was tried and refused:
+#     "Sign in to MiniMax to use Agent features", because the credential lives under HOME.  muse
+#     drops every vendor and identity variable instead, so its run touches nothing but the wake.
+# Both facts are verified behaviour, not documentation reading, and they are the whole reason the
+# order is muse then mcode and never the reverse.
+
+MCODE_MAX_STEPS = 8
+MCODE_TIMEOUT = "4m"
+MCODE_PROMPT_MODE = "work"
+MCODE_PERMISSION = "off"
+MCODE_PROMPT_SLOT = "<prompt-file>"
+MCODE_SCHEMA_SLOT = "<output-schema>"
+MCODE_CWD_SLOT = "<cwd>"
+MCODE_LAST_SLOT = "<last-message>"
+
+
+def resolve_mcode(explicit: str | None, wake_path: str) -> str | None:
+    """The mcode binary:  the configured absolute path, else `mcode` on the fixed wake PATH."""
+    if explicit:
+        return explicit if os.path.isabs(explicit) and os.access(explicit, os.X_OK) else None
+    found = shutil.which("mcode", path=wake_path)
+    return os.path.abspath(found) if found else None
+
+
+def mcode_argv(mcode: str, prompt_path: str | None = None) -> list[str]:
+    """The fixed fallback argv.  The schema, the inert cwd and the last-message file are path slots
+    filled in by McodeRunner.run, so the argv prints and diffs as-is.
+
+    The prompt arrives on STDIN, not as a positional argument:  mcode has no `--prompt-file`, and
+    `--input -` is its documented stdin form.  Keeping the prompt off the command line also keeps it
+    out of any process listing for the life of the run."""
+    return [mcode, "exec",
+            "--prompt-mode", MCODE_PROMPT_MODE,
+            "--permission", MCODE_PERMISSION,
+            "--output-format", "json",
+            "--input", "-",
+            "--output-schema", MCODE_SCHEMA_SLOT,
+            "--max-steps", str(MCODE_MAX_STEPS),
+            "--timeout", MCODE_TIMEOUT,
+            "--cwd", MCODE_CWD_SLOT,
+            "-o", MCODE_LAST_SLOT]
+
+
+def mcode_env(env: Mapping[str, str], home: str, wake_path: str, *, seat: str | None = None) -> dict[str, str]:
+    """`env -i` plus a fixed list, the same shape as the other two.
+
+    Unlike muse, HOME must stay the real one:  mcode reads its sign-in from there and refuses to run
+    otherwise (verified).  That is a real difference in the lockdown, recorded rather than hidden."""
+    user = env.get("USER") or env.get("LOGNAME") or os.path.basename(home)
+    out = {"HOME": home, "USER": user, "LOGNAME": user, "LANG": "en_US.UTF-8",
+           "TMPDIR": env.get("TMPDIR") or "/tmp", "PATH": wake_path}
+    if seat:
+        out.update({"AGENT_LAUNCHER": WAKE_LAUNCHER, "AGENT_LAUNCH_SEAT": seat, "AGENT_SEAT": seat,
+                    "AGENT_SYNC_ATTACH": "0"})
+    return out
+
+
+def parse_mcode_result(status: str | None, text: str | None, stderr: str = "") -> tuple[str | None, list[str]]:
+    """(why the run failed, the model ids it names) from mcode's envelope and its last message.
+
+    mcode's `exec.result` reports `status` ("succeeded", or whatever went wrong) and `model`;  the
+    answer itself is the file `-o` wrote.  A failed status is returned as the reason, with the
+    first line of stderr when there is one, so a fallback failure is legible rather than a blank."""
+    models: list[str] = []
+    if status and status != "succeeded":
+        detail = clean_banner(stderr.splitlines()[0], 160) if stderr.splitlines() else ""
+        return ("%s%s" % (status, " (%s)" % detail if detail else ""), models)
+    return None, models
+
+
+class McodeRunner:
+    """Runs one headless mcode fallback.  Same lifecycle contract as the other two runners:  the
+    child gets its own process group, is tracked while it runs, and is killed on SIGTERM."""
+
+    def __init__(self, *, timeout: float = WAKE_TIMEOUT, clock: Callable[[], float] = time.monotonic,
+                 on_start: Callable[[subprocess.Popen[Any]], None] | None = None,
+                 on_exit: Callable[[subprocess.Popen[Any]], None] | None = None) -> None:
+        self.timeout = timeout
+        self.clock = clock
+        self.on_start = on_start
+        self.on_exit = on_exit
+
+    def run(self, argv: Sequence[str], env: Mapping[str, str], cwd: str, prompt: str,
+            schema: str | None = None) -> RunResult:
+        out = RunResult()
+        L.private_dir(cwd)
+        schema_path = os.path.join(cwd, "schema-mcode.json")
+        workspace = os.path.join(cwd, "workspace-mcode")
+        # A FRESH output file per attempt, and it is removed before the child starts.  A fixed name
+        # that survives a crash is a replay hazard:  the next run writes nothing, exits non-zero or
+        # dies, and the leftover valid answer from the PREVIOUS wake is read as this one's reply —
+        # an old "action: board" would then be acted on again.  The name carries the pid and clock so
+        # two attempts can never share it, and an unlink before launch makes "missing" mean "this
+        # attempt produced nothing" rather than "something was there".
+        last_path = os.path.join(cwd, "last-mcode-%d-%d.json" % (os.getpid(), int(self.clock() * 1000)))
+        try:
+            os.unlink(last_path)
+        except OSError:
+            pass
+        L.private_dir(workspace)
+        fd = os.open(schema_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(schema if schema is not None else schema_text())
+        argv = [schema_path if a == MCODE_SCHEMA_SLOT else workspace if a == MCODE_CWD_SLOT
+                else last_path if a == MCODE_LAST_SLOT else a for a in argv]
+        started = self.clock()
+        proc: subprocess.Popen[Any] | None = None
+        try:
+            try:
+                proc = subprocess.Popen(list(argv), cwd=cwd, env=dict(env),
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        start_new_session=True, close_fds=True)
+            except OSError as exc:
+                out.error = "could not start mcode (%s)" % (exc.strerror or type(exc).__name__)
+                return out
+            if self.on_start:
+                self.on_start(proc)
+            try:
+                stdout, stderr = proc.communicate(prompt.encode("utf-8"), timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                out.error = "timed out after %d seconds" % self.timeout
+                out.killed = True
+                _kill_group(proc)
+                stdout, stderr = proc.communicate(timeout=10)
+            out.exit = proc.returncode
+            out.stdout_len = len(stdout)
+            out.stderr_len = len(stderr)
+            err = stderr.decode("utf-8", "replace")
+            out.stderr_sha = hashlib.sha256(stderr).hexdigest()
+            status = None
+            model = None
+            envelopes = 0
+            for line in stdout.decode("utf-8", "replace").splitlines():
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    envelope = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(envelope, dict) and envelope.get("type") == "exec.result":
+                    envelopes += 1
+                    status = envelope.get("status") if isinstance(envelope.get("status"), str) else None
+                    found = envelope.get("model")
+                    model = found if isinstance(found, str) and found else None
+            text = None
+            try:
+                with open(last_path, encoding="utf-8") as fh:
+                    text = fh.read()
+            except OSError:
+                pass
+            why, _ = parse_mcode_result(status, text, err)
+            out.models = [model] if model else []
+            # Acceptance is strict, and each clause closes a way a stale or foreign answer could be
+            # taken for this run's:  a non-zero exit means the child failed whatever it left behind;
+            # a missing or duplicated envelope means we cannot tell which turn produced the file.
+            # Neither is recoverable by reading the file more carefully.
+            if out.exit not in (0, None):
+                out.error = "mcode exited %s" % out.exit
+            elif envelopes != 1:
+                out.error = "no result envelope (%d found)" % envelopes
+            elif status is None:
+                out.error = "result envelope named no status"
+            elif why:
+                out.error = "mcode %s" % why
+            elif not text:
+                out.error = "no parseable result"
+            else:
+                out.result = {"text": text}
+                out.parsed = parse_muse_result(text)  # the same JSON leniency;  the schema is the same
+        finally:
+            if proc is not None and self.on_exit:
+                self.on_exit(proc)
+            for path in (schema_path, last_path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            out.secs = round(self.clock() - started, 2)
+        out.cost_usd = 0.0  # subscription-backed, like the other two
+        return out
+
+
+def mcode_pin_state(paths: L.SeatPaths, mcode: str | None) -> dict[str, Any]:
+    """Why the fallback pin does or does not match the binary.  Same never-self-heal rule as the
+    other two, on its own file, so a fallback is only trusted once a person verified it."""
+    if not mcode:
+        return {"pinned": False, "why": "no_mcode", "pinned_mcode": None, "mcode": None}
+    current = binary_pin(mcode)
+    recorded = L.read_json(paths.wake_pin_mcode).get("mcode")
+    if not isinstance(recorded, str) or not recorded:
+        return {"pinned": False, "why": "not_pinned", "pinned_mcode": None, "mcode": current}
+    if recorded != current:
+        return {"pinned": False, "why": "pin_stale", "pinned_mcode": recorded, "mcode": current}
+    return {"pinned": True, "why": None, "pinned_mcode": recorded, "mcode": current}
+
+
+def mcode_pinned(paths: L.SeatPaths, mcode: str | None) -> bool:
+    if not mcode:
+        return False
+    return L.read_json(paths.wake_pin_mcode).get("mcode") == binary_pin(mcode)
+
+
+def record_mcode_pin(paths: L.SeatPaths, mcode: str, now: float, *, model: str | None = None) -> None:
+    L.write_json(paths.wake_pin_mcode, {"mcode": binary_pin(mcode), "at": now, "model": model})
+
+
+def record_mcode_candidate(paths: L.SeatPaths, mcode: str, now: float, *, model: str | None = None) -> None:
+    L.write_json(paths.wake_pin_candidate_mcode, {"mcode": binary_pin(mcode), "at": now, "model": model})
+
+
+def mcode_pin_candidate(paths: L.SeatPaths, mcode: str, now: float) -> str | None:
+    cand = L.read_json(paths.wake_pin_candidate_mcode)
+    if not cand:
+        return "no passing test-wake --run to pin; run that first"
+    at = cand.get("at")
+    if not isinstance(at, (int, float)) or now - float(at) > CANDIDATE_SECONDS or now < float(at):
+        return "the last passing test-wake --run is over a day old; run it again"
+    if cand.get("mcode") != binary_pin(mcode):
+        return "the mcode binary changed since the test (%s, tested %s); run test-wake --run again" % (
+            binary_pin(mcode), cand.get("mcode"))
+    record_mcode_pin(paths, mcode, now, model=cand.get("model") if isinstance(cand.get("model"), str) else None)
+    try:
+        os.unlink(paths.wake_pin_candidate_mcode)
+    except OSError:
+        pass
     return None
 
 
