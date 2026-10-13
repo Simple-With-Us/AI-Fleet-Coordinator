@@ -12,6 +12,7 @@ from . import live as L
 
 
 SUPPORTED_PLATFORM = "grok-leader"
+SUPPORTED_PLATFORMS = {"grok-leader", "cursor-cloud"}
 TERMINAL_KEEP_SECONDS = 90 * 86400
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
 _BINDING_FIELDS = ("channel", "topic", "platform", "host", "session_id", "cwd")
@@ -263,6 +264,27 @@ class ChatNudges:
             L.write_json(self.path, data)
             return True
 
+    def enqueue_target(self, binding: dict[str, str], message_id: str | int, now: float, *,
+                       owner: bool, stale: bool = False) -> bool:
+        """Queue a validated one-shot selection without creating a persistent topic binding."""
+        binding = self._binding(**binding)
+        if binding["platform"] not in SUPPORTED_PLATFORMS or not owner:
+            raise ValueError("selected chat requires a supported transport and owner authority")
+        message_id = str(message_id)
+        with L.locked(self.path):
+            data = self._read()
+            self._prune_terminal(data, now)
+            dedupe = self._dedupe_key(message_id, binding)
+            if any(row.get("dedupe_key") == dedupe for row in data["items"]):
+                return False
+            item_id = hashlib.sha256((dedupe + "\0nudge").encode("ascii")).hexdigest()
+            data["items"].append({"id": item_id, "dedupe_key": dedupe, "message_id": message_id,
+                "binding": binding, "text": nudge_text(binding["channel"], binding["topic"], message_id),
+                "owner": True, "stale": stale, "selection": True, "status": "pending", "hold_reason": None,
+                "created_at": float(now), "updated_at": float(now)})
+            L.write_json(self.path, data)
+        return True
+
     def dispatch_one(self, transport: NudgeTransport, now: float) -> dict[str, Any]:
         """Dispatch one item; the dispatch lock serializes send while the state lock stays brief."""
         saw_busy = False
@@ -288,12 +310,12 @@ class ChatNudges:
                         continue
                     active = data["bindings"].get(self._key(binding.get("channel", ""),
                                                               binding.get("topic", "")))
-                    if active != binding:
+                    if active != binding and not row.get("selection"):
                         row["hold_reason"] = "chat binding changed; queued destination was not rerouted"
                         row["updated_at"] = float(now)
                         saw_held = True
                         continue
-                    if binding.get("platform") != SUPPORTED_PLATFORM:
+                    if binding.get("platform") not in SUPPORTED_PLATFORMS:
                         row["hold_reason"] = "unsupported platform"
                         row["updated_at"] = float(now)
                         saw_held = True
@@ -345,7 +367,7 @@ class ChatNudges:
                     active = data["bindings"].get(self._key(binding["channel"], binding["topic"]))
                     if not item or item.get("status") != "pending":
                         continue
-                    if active != binding or item.get("binding") != binding or item.get("hold_reason"):
+                    if (active != binding and not item.get("selection")) or item.get("binding") != binding or item.get("hold_reason"):
                         item["hold_reason"] = "chat binding changed; queued destination was not rerouted"
                         item["updated_at"] = float(now)
                         L.write_json(self.path, data)
