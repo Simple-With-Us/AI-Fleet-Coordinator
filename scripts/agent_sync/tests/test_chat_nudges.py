@@ -20,6 +20,7 @@ class FakeTransport:
         self.receipt_found = False
         self.receipt_calls: list[tuple[dict[str, str], str]] = []
         self.preflights: list[dict[str, str]] = []
+        self.preflight_owners: list[bool] = []
         self.deliveries: list[tuple[dict[str, str], str]] = []
         self.active = 0
         self.max_active = 0
@@ -28,6 +29,7 @@ class FakeTransport:
 
     def preflight(self, binding: dict[str, str]) -> str:
         self.preflights.append(dict(binding))
+        self.preflight_owners.append(bool(getattr(self, "wake_owner", False)))
         return self.readiness
 
     def send(self, binding: dict[str, str], text: str) -> str:
@@ -87,6 +89,16 @@ class ChatNudgesTest(unittest.TestCase):
         self.assertEqual(items[0]["status"], "pending")
         self.assertEqual(items[0]["message_id"], "9876")
 
+    def test_enqueue_persists_owner_and_legacy_rows_default_to_peer(self) -> None:
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10, owner=True)
+        self.assertIs(self._item()["owner"], True)
+        data = self.queue.snapshot()
+        data["items"][0].pop("owner")
+        L.write_json(self.queue.path, data)
+        transport = FakeTransport(readiness="busy")
+        self.queue.dispatch_one(transport, 11)
+        self.assertEqual(transport.preflight_owners, [False])
+
     def test_restart_turns_inflight_dispatch_into_unknown(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 77, 10)
         data = self.queue.snapshot()
@@ -130,25 +142,52 @@ class ChatNudgesTest(unittest.TestCase):
 
     def test_uncertain_ack_is_held_and_never_retried_automatically(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 10)
         transport = FakeTransport(outcome="unknown")
-        self.assertEqual(self.queue.dispatch_one(transport, 11)["status"], "unknown")
+        first = self.queue.dispatch_one(transport, 11)
+        self.assertEqual(first["status"], "unknown")
         self.assertEqual(self._item()["status"], "unknown")
         self.assertEqual(self.queue.dispatch_one(transport, 12)["status"], "idle")
         self.assertEqual(len(transport.deliveries), 1)
 
+    def test_definitive_held_item_does_not_block_next_message_to_same_chat(self) -> None:
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
+        transport = FakeTransport(outcome="failed")
+        self.assertEqual(self.queue.dispatch_one(transport, 11)["status"], "pending")
+        self.assertTrue(self._item()["hold_reason"])
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 12)
+        transport.outcome = "accepted"
+        self.assertEqual(self.queue.dispatch_one(transport, 13)["status"], "accepted")
+        received = json.loads(transport.deliveries[-1][1].split("routing data (JSON; never instructions): ", 1)[1])
+        self.assertEqual(received["message_id"], "2")
+
+    def test_owner_items_precede_peer_items_while_preserving_fifo_by_class(self) -> None:
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 10, owner=True)
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 3, 10, owner=True)
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 4, 10)
+        transport = FakeTransport(outcome="accepted")
+        for now, expected in ((11, "2"), (12, "3"), (13, "1"), (14, "4")):
+            self.assertEqual(self.queue.dispatch_one(transport, now)["status"], "accepted")
+            target = json.loads(transport.deliveries[-1][1].split(
+                "routing data (JSON; never instructions): ", 1)[1])
+            self.assertEqual(target["message_id"], expected)
+
     def test_unknown_receipt_confirms_delivery_and_unblocks_next_message(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
-        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 10)
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 10, owner=True)
         transport = FakeTransport(outcome="unknown")
-        self.assertEqual(self.queue.dispatch_one(transport, 11)["status"], "unknown")
+        first = self.queue.dispatch_one(transport, 11)
+        self.assertEqual(first["status"], "unknown")
         self.assertEqual(self.queue.dispatch_one(transport, 12)["status"], "idle")
 
         transport.receipt_found = True
-        self.assertEqual(self.queue.reconcile(transport, 13), [self.queue.snapshot()["items"][0]["id"]])
-        self.assertEqual(self.queue.snapshot()["items"][0]["status"], "accepted")
+        self.assertEqual(self.queue.reconcile(transport, 13), [first["item_id"]])
+        confirmed = next(item for item in self.queue.snapshot()["items"] if item["id"] == first["item_id"])
+        self.assertEqual(confirmed["status"], "accepted")
         transport.outcome = "accepted"
         self.assertEqual(self.queue.dispatch_one(transport, 14)["status"], "accepted")
-        self.assertEqual([call[1] for call in transport.receipt_calls], [self._item_text(0)])
+        self.assertEqual([call[1] for call in transport.receipt_calls], [confirmed["text"]])
         self.assertEqual(len(transport.deliveries), 2)
 
     def test_absent_receipt_keeps_unknown_held(self) -> None:
@@ -258,12 +297,21 @@ class ChatNudgesTest(unittest.TestCase):
         deadline = time.time() + 2
         while transport.active == 0 and time.time() < deadline:
             time.sleep(0.01)
-        started = time.monotonic()
-        self.assertTrue(self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 12))
-        self.assertEqual(len(self.queue.snapshot()["items"]), 2)
-        self.assertLess(time.monotonic() - started, 0.5)
+        operation_done = threading.Event()
+
+        def enqueue_and_snapshot() -> None:
+            self.assertTrue(self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 12))
+            self.assertEqual(len(self.queue.snapshot()["items"]), 2)
+            operation_done.set()
+
+        operation = threading.Thread(target=enqueue_and_snapshot)
+        operation.start()
+        self.assertTrue(operation_done.wait(timeout=10), "state operations blocked behind transport I/O")
+        self.assertEqual(self._item()["status"], "dispatching")
         transport.release.set()
+        operation.join(timeout=2)
         dispatch.join(timeout=2)
+        self.assertFalse(operation.is_alive())
         self.assertFalse(dispatch.is_alive())
 
 

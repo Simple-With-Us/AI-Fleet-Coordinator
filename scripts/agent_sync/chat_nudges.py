@@ -174,9 +174,12 @@ class ChatNudges:
                     confirmed.append(item_id)
         return confirmed
 
-    def enqueue(self, channel: str, topic: str, message_id: str | int, now: float) -> bool:
+    def enqueue(self, channel: str, topic: str, message_id: str | int, now: float, *,
+                owner: bool = False) -> bool:
         if isinstance(message_id, bool) or not isinstance(message_id, (str, int)) or not str(message_id):
             raise ValueError("message_id must be a non-empty string or integer")
+        if not isinstance(owner, bool):
+            raise ValueError("owner must be a boolean")
         message_id = str(message_id)
         with L.locked(self.path):
             data = self._read()
@@ -190,6 +193,7 @@ class ChatNudges:
             data["items"].append({"id": item_id, "dedupe_key": dedupe, "message_id": message_id,
                                   "binding": dict(binding),
                                   "text": nudge_text(binding["channel"], binding["topic"], message_id),
+                                  "owner": owner,
                                   "status": "pending", "hold_reason": None,
                                   "created_at": float(now), "updated_at": float(now)})
             L.write_json(self.path, data)
@@ -202,19 +206,20 @@ class ChatNudges:
         with L.locked(self.path + ".dispatch"):
             with L.locked(self.path):
                 data = self._read()
-                blocked_destinations: set[str] = set()
-                candidates: list[tuple[str, dict[str, str]]] = []
+                groups: dict[str, dict[str, Any]] = {}
                 for row in data["items"]:
                     binding = row.get("binding")
                     if not isinstance(binding, dict):
                         continue
                     destination = self._dedupe_key("", binding)
-                    if destination in blocked_destinations:
+                    group = groups.setdefault(destination, {"blocked": False, "owners": [], "peers": []})
+                    status = row.get("status")
+                    if status in ("accepted", "cancelled"):
                         continue
-                    if row.get("status") in ("accepted", "cancelled"):
+                    if status in ("unknown", "dispatching"):
+                        group["blocked"] = True
                         continue
-                    blocked_destinations.add(destination)
-                    if row.get("status") != "pending" or row.get("hold_reason"):
+                    if status != "pending" or row.get("hold_reason"):
                         continue
                     active = data["bindings"].get(self._key(binding.get("channel", ""),
                                                               binding.get("topic", "")))
@@ -228,7 +233,15 @@ class ChatNudges:
                         row["updated_at"] = float(now)
                         saw_held = True
                         continue
-                    candidates.append((row["id"], dict(binding)))
+                    group["owners" if row.get("owner", False) else "peers"].append((row["id"], dict(binding)))
+                candidates: list[tuple[str, dict[str, str]]] = []
+                for group in groups.values():
+                    if group["blocked"]:
+                        continue
+                    # Owner nudges may bypass a peer budget hold.  Within each class, the stored
+                    # order stays FIFO.  Unknown/in-flight items block the destination above.
+                    candidates.extend(group["owners"])
+                    candidates.extend(group["peers"])
                 if saw_held:
                     L.write_json(self.path, data)
             for item_id, binding in candidates:
@@ -239,6 +252,7 @@ class ChatNudges:
                         latest = self._read()
                         dispatch_item = next((row for row in latest["items"] if row["id"] == item_id), None)
                     setattr(transport, "wake_created_at", dispatch_item.get("created_at") if dispatch_item else None)
+                    setattr(transport, "wake_owner", bool(dispatch_item.get("owner", False)) if dispatch_item else False)
                 except (AttributeError, TypeError):
                     pass
                 try:

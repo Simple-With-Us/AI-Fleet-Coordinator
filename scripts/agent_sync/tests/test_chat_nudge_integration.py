@@ -121,6 +121,23 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         self.assertEqual(runner.ledger.rows()[-1]["state"], "done")
         self.assertEqual(daemon.chat_nudges.snapshot()["items"][0]["status"], "accepted")
 
+    def test_owner_keeps_owner_allowance_when_peer_budget_is_exhausted(self):
+        daemon = self.daemon()
+        daemon.chat_nudges.bind("agent-sync", "topic", "grok-leader", "host", "existing", "/repo")
+        runner = self._grok_runner(daemon)
+        daemon._chat_transport = SimpleNamespace(preflight=lambda binding: "ready",
+                                                send=mock.Mock(return_value="accepted"))
+        for mid in (41, 42):
+            daemon.chat_nudges.enqueue("agent-sync", "topic", mid, self.clock.time())
+            self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "accepted")
+        daemon.chat_nudges.enqueue("agent-sync", "topic", 43, self.clock.time())
+        self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "busy")
+        daemon.chat_nudges.enqueue("agent-sync", "topic", 44, self.clock.time(), owner=True)
+        self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "accepted")
+        self.assertTrue(runner.ledger.rows()[-1]["owner"])
+        pending = [i["message_id"] for i in daemon.chat_nudges.snapshot()["items"] if i["status"] == "pending"]
+        self.assertEqual(pending, ["43"])
+
 
 if __name__ == "__main__":
     unittest.main()

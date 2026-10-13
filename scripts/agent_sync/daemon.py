@@ -967,7 +967,8 @@ class Daemon:
             if d.wake and not d.delivered_to and "wake" not in done:
                 matched = False
                 if runner.seat == "GROK" and not c.dm:
-                    matched = self.chat_nudges.enqueue(c.channel, c.topic, message["id"], now)
+                    matched = self.chat_nudges.enqueue(c.channel, c.topic, message["id"], now,
+                                                       owner=d.wake == "owner")
                 if not matched:
                     self.offer_wake(runner, row, owner=d.wake == "owner")
                 done.add("wake")
@@ -2645,18 +2646,19 @@ class Daemon:
                     return "busy"
                 if L.paused(daemon.root, runner.seat, wakes=True):
                     return "busy"
+                owner = getattr(inner, "wake_owner", False) is True
                 created_at = getattr(inner, "wake_created_at", None)
-                if isinstance(created_at, (int, float)) and \
+                if not owner and isinstance(created_at, (int, float)) and \
                         daemon.clock.time() - created_at > daemon.config.stale_after:
                     inner.hold_reason = "queued Zulip message became stale before chat delivery"
                     return "unsupported"
                 key = L.topic_key(binding["channel"], binding["topic"])
                 if daemon.loopguard.blocked(key, daemon.clock.time()):
                     return "busy"
-                row = {"wake_id": inner.wake_id, "owner": False, "topic_key": key,
+                row = {"wake_id": inner.wake_id, "owner": owner, "topic_key": key,
                        "channel": binding["channel"], "topic": binding["topic"],
                        "reserve_usd": 0.0, "downstream_cost_unknown": True, "ts": daemon.clock.time()}
-                blocked = W.budget_block(runner.ledger.wakes(), runner.cfg.budget, owner=False, key=key,
+                blocked = W.budget_block(runner.ledger.wakes(), runner.cfg.budget, owner=owner, key=key,
                                          now=daemon.clock.time(), exclude=inner.wake_id,
                                          run_max=0.0)
                 if blocked:
