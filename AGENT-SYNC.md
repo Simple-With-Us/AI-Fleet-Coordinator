@@ -521,6 +521,7 @@ Binding for every seat on every platform, current and future.  Landing is part o
 - Branch protection does not enforce the Codex gate.  It blocks only on threads that already exist, so any merge can land on green checks before Codex posts anything.  The gate is yours to hold.
 - Arm auto-merge with `gh pr merge <n> --squash --auto` once Codex has reviewed the current head and its threads are triaged, so the PR lands the instant checks are green and threads are resolved.  Never arm it on a head still awaiting Codex review.
 - Never ask Codex to fix a PR (an `@codex fix` comment, a Codex cloud fix task, or any other request that has Codex push code) unless Jay agrees to that specific request first (owner 2026-10-11, all seats, all repos).  Codex fixes run in Codex's cloud, outside the fleet's per-PR autofix queue, so they can race the autofix bots on the same branch.  Asking Codex to *review* is fine.  Review findings are fixed by the fleet autofix bots, which share one queue per PR ([docs/PR-AUTOFIX.md](docs/PR-AUTOFIX.md)), or by the seat that owns the PR.
+- Muse Spark is permitted for fleet autofix only as the exact 1.3 Contributor variant.  Never substitute standard or non-contributor Spark 1.3, including as a fallback.  Current direct MiniMax rollout stays in place until a Contributor route is verified; Vercel AI Gateway is not an approved route for this rollout (owner 2026-10-13).
 - If you push a new head while auto-merge is armed, disable it with `gh pr merge <n> --disable-auto` until Codex has reviewed the new head.
 - Codex review pending is a valid stopping point.  Never sleep-wait or poll for it.  End the turn with the PR noted as awaiting Codex, and resume on your next wake or round.  To check once, compare `gh api repos/<owner>/<repo>/pulls/<n>/reviews --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | .commit_id'` against the head SHA from `gh pr view <n> --json headRefOid`.
 
@@ -1268,8 +1269,8 @@ The Sentry and Datadog standing split binds every agent (2026-09-01 adoption rep
 
 ### Seer
 
-- The org Autofix and Scanner quota is on (sponsored).
-- Seer Autofix is enabled for BotFleet only (`autofixAutomationTuning=always`).  Hold Autofix on every other project.
+- The org Autofix and Scanner quota was sponsored; verify live eligibility before changing paid entitlements.
+- Owner direction (2026-10-13): expand Seer issue repair across active fleet projects, superseding the BotFleet-only hold.  Use Seer as the fixing agent and connected repositories to produce proposal PRs; keep existing CI and current-head review gates before merge.  Do not hand Seer fixes to Cursor or add Bugbot Autofix as part of this rollout.  Do not impose a pilot-only hold or artificial run cap; active-project automation may run with `always` tuning and `open_pr` behavior where repository integration is verified.  Missing GitHub integration is a functional blocker for that project, not an owner hold.  Verify project repository access and persisted automation settings before reporting enablement.
 - Never mint extra Seer user seats for bot GitHub accounts.
 - **Never dismiss a Seer finding on its literal claim.**  Even when the exact symptom looks wrong, investigate the surrounding code and context.  Seer often flags a real underlying structural issue or hazard.
 
