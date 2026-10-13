@@ -273,9 +273,11 @@ class ChatNudges:
         message_id = str(message_id)
         with L.locked(self.path):
             data = self._read()
-            self._prune_terminal(data, now)
+            pruned = self._prune_terminal(data, now)
             dedupe = self._dedupe_key(message_id, binding)
             if any(row.get("dedupe_key") == dedupe for row in data["items"]):
+                if pruned:
+                    L.write_json(self.path, data)
                 return False
             item_id = hashlib.sha256((dedupe + "\0nudge").encode("ascii")).hexdigest()
             data["items"].append({"id": item_id, "dedupe_key": dedupe, "message_id": message_id,
