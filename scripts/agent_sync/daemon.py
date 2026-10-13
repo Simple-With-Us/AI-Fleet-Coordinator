@@ -1666,7 +1666,15 @@ class Daemon:
             fail_invalid_output()
             return
         if not why and obj.get("chat_target") is not None:
-            chat_outcome = self.select_chat(runner, pending, obj, chat_context)
+            if adapter != "muse" or not is_muse:
+                chat_outcome = {"status": "held", "why": "chat selection requires a Muse wake"}
+            else:
+                try:
+                    chat_outcome = self.select_chat(runner, pending, obj, chat_context)
+                except (ValueError, OSError):
+                    # A queue or catalog filesystem failure must fail this wake cleanly; the
+                    # listener loop must remain alive and the ledger must not claim success.
+                    chat_outcome = {"status": "failed", "why": "chat queue unavailable"}
             runner.ledger.append(pending.row("done" if chat_outcome["status"] in ("queued", "already_queued") else "failed",
                 self.clock.time(), cost_usd=result.cost_usd, adapter=adapter, chat=chat_outcome))
             return

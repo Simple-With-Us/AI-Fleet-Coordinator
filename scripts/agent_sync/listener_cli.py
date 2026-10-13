@@ -260,9 +260,13 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             "yes" if status.get("rewake_verified") else "no"))
         nudges = status.get("chat_nudges")
         if isinstance(nudges, dict):
-            lines.append("GROK chat nudges: %s bindings, %s pending, %s blocked, %s unknown, %s accepted" % (
-                nudges.get("bindings", 0), nudges.get("pending", 0), nudges.get("blocked", 0),
-                nudges.get("unknown", 0), nudges.get("accepted", 0)))
+            # Accept the older flat status snapshot during managed-runtime upgrades.
+            by_seat = {"GROK": nudges} if "bindings" in nudges else nudges
+            for seat, counts in sorted(by_seat.items()):
+                if isinstance(counts, dict):
+                    lines.append("%s chat nudges: %s bindings, %s pending, %s blocked, %s unknown, %s accepted" % (
+                        seat, counts.get("bindings", 0), counts.get("pending", 0), counts.get("blocked", 0),
+                        counts.get("unknown", 0), counts.get("accepted", 0)))
         pause = status.get("pause") or {}
         if pause:
             lines.append("paused: %s" % ", ".join("%s%s" % (k, " (wakes only)" if (v or {}).get("wakes_only") else "")

@@ -29,6 +29,11 @@ def final_output(chat_inspect: Any = None) -> dict[str, Any]:
             "chat_inspect": chat_inspect}
 
 
+def target_output(chat_id: Any = CHAT_ID) -> dict[str, Any]:
+    return {"action": "none", "reply": None, "board": None, "owner_note": None, "risk": None,
+            "chat_target": chat_id}
+
+
 class FakeMuseRunner:
     def __init__(self, outputs, on_run=None) -> None:
         self.outputs = list(outputs)
@@ -39,11 +44,15 @@ class FakeMuseRunner:
         self.calls.append({"argv": list(argv), "env": dict(env), "cwd": cwd, "prompt": prompt, "schema": schema})
         if self.on_run:
             self.on_run(len(self.calls))
-        parsed, secs, cost = self.outputs.pop(0)
+        output = self.outputs.pop(0)
+        parsed, secs, cost = output[:3]
         result = A.RunResult()
         result.result = {"structured_output": parsed}
         result.parsed = parsed
         result.exit = 0
+        if len(output) > 3:
+            result.error = output[3]
+            result.result = None
         result.secs = secs
         result.cost_usd = cost
         result.models = ["muse-test"]
@@ -69,7 +78,8 @@ class FakeCatalog:
 
 def offered(*, read: bool = True, stale: bool = False) -> dict[str, Any]:
     return {"id": CHAT_ID, "seat": "CURSOR", "platform": "cursor-cloud", "host": "cursor-cloud",
-            "cwd": "cursor-cloud://bc-existing", "title": "Existing chat", "updated_at": None,
+            "cwd": "cursor-cloud://bc-existing", "session_id": "bc-existing",
+            "title": "Existing chat", "updated_at": None,
             "capabilities": {"read": read, "wake": True}, "status": "idle", "stale": stale}
 
 
@@ -181,6 +191,41 @@ class ChatInspectionTests(ListenerHarness):
         self.assertEqual(len(muse.calls), 2)
         self.assertEqual(catalog.excerpt_calls, [(CHAT_ID, 4)])
         self.assertFalse(any(row["state"] == "done" for row in daemon.seats["CLAUDE"].ledger.rows()))
+
+    def test_non_muse_fallback_cannot_select_chat_target(self):
+        daemon, muse, catalog, pending = self._setup_wake(
+            [(None, 1.0, 0.1, "primary failed")])
+        daemon.seats["CLAUDE"].cfg.fallback = "claude"
+        fallback = A.RunResult()
+        fallback.parsed = target_output()
+        fallback.result = {"structured_output": fallback.parsed}
+        fallback.exit = 0
+        daemon.run_fallback = lambda *_args: fallback
+        self._run(daemon, pending)
+        rows = daemon.seats["CLAUDE"].ledger.rows()
+        self.assertEqual(len(muse.calls), 1)
+        self.assertEqual(catalog.excerpt_calls, [])
+        self.assertFalse(any(row["state"] == "done" for row in rows))
+        failed = [row for row in rows if row["state"] == "failed"]
+        self.assertTrue(failed)
+        self.assertEqual(failed[-1]["chat"]["status"], "held")
+
+    def test_enqueue_oserror_records_failed_wake_without_escaping(self):
+        row = {**offered(), "seat": "CLAUDE"}
+        daemon, _, _, pending = self._setup_wake([(target_output(), 1.0, 0.1)], rows=[row])
+
+        class BrokenQueue:
+            def enqueue_target(self, *_args, **_kwargs):
+                raise OSError("private filesystem detail")
+
+        daemon.chat_queue = lambda _seat: BrokenQueue()
+        self._run(daemon, pending)
+        rows = daemon.seats["CLAUDE"].ledger.rows()
+        self.assertFalse(any(row["state"] == "done" for row in rows))
+        failed = [row for row in rows if row["state"] == "failed"]
+        self.assertTrue(failed)
+        self.assertEqual(failed[-1]["chat"]["status"], "failed")
+        self.assertNotIn("private filesystem detail", str(failed[-1]))
 
     def test_serialized_excerpt_is_escaped_and_bounded(self):
         prompt = daemon_prompt = "ORIGINAL PROMPT\n"
