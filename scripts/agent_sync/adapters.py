@@ -452,6 +452,7 @@ MUSE_SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wak
 MUSE_PROMPT_SLOT = "<prompt-file>"
 MUSE_SCHEMA_SLOT = "<output-schema>"
 MUSE_WORKSPACE_SLOT = "<workspace>"
+MUSE_WAKE_POLICY_VERSION = 1
 
 
 def resolve_muse(explicit: str | None, wake_path: str) -> str | None:
@@ -471,6 +472,7 @@ def muse_argv(muse: str, model: str) -> list[str]:
     (the enum of the schema's route seat) travels in the schema file itself (wakes.schema_text),
     which is why it is not an argv parameter here."""
     return [muse, "exec",
+            "-c", "run.toolset=[]",
             "--model", model,
             "--reasoning-effort", MUSE_REASONING_EFFORT,
             "--provider", MUSE_PROVIDER,
@@ -478,7 +480,7 @@ def muse_argv(muse: str, model: str) -> list[str]:
             "--output-schema", MUSE_SCHEMA_SLOT,
             "--json",
             "--approval-mode", "never",
-            "--disable-shell", "--disable-write", "--disable-web-tools",
+            "--disable-shell", "--disable-write", "--disable-web-tools", "--disable-reminders",
             "--no-session-log",
             "--workspace", MUSE_WORKSPACE_SLOT,
             "--max-model-steps", str(MUSE_MAX_MODEL_STEPS),
@@ -580,6 +582,12 @@ class MuseRunner:
     def run(self, argv: Sequence[str], env: Mapping[str, str], cwd: str, prompt: str,
             schema: str | None = None) -> RunResult:
         out = RunResult()
+        try:
+            with open(CONTRACT_PATH, encoding="utf-8") as fh:
+                contract = fh.read()
+        except (OSError, UnicodeError):
+            out.error = "wake contract unavailable"
+            return out
         L.private_dir(cwd)
         prompt_path = os.path.join(cwd, "prompt.md")
         schema_path = os.path.join(cwd, "schema.json")
@@ -587,7 +595,7 @@ class MuseRunner:
         L.private_dir(workspace)
         fd = os.open(prompt_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(prompt)
+            fh.write(contract.rstrip() + "\n\n--- BEGIN DAEMON WAKE PROMPT ---\n" + prompt)
         # The schema is written from the same source claude passes inline, so the two runtimes can
         # never drift onto different contracts.
         fd = os.open(schema_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -683,40 +691,71 @@ class MuseRunner:
         return out
 
 
+def muse_wake_fingerprint() -> str | None:
+    """Fingerprint the fixed Muse wake command and trusted inputs, or fail closed if unavailable.
+
+    Binary path and model are tracked separately.  The argv fingerprint uses stable placeholders
+    for those values while retaining every fixed flag and path slot; the policy version covers
+    runner semantics that are not represented by argv.
+    """
+    try:
+        with open(CONTRACT_PATH, "rb") as fh:
+            contract = fh.read()
+        # Ensure the bytes can be consumed by MuseRunner as UTF-8 before considering them pinnable.
+        contract.decode("utf-8")
+        schema = schema_text()
+    except (OSError, UnicodeError, ValueError):
+        return None
+    command = json.dumps({"policy_version": MUSE_WAKE_POLICY_VERSION,
+                          "argv": muse_argv("<muse>", "<model>"), "schema": schema},
+                         sort_keys=True, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256()
+    digest.update(command)
+    digest.update(b"\0")
+    digest.update(contract)
+    return digest.hexdigest()
+
+
 def muse_pin_state(paths: L.SeatPaths, muse: str | None) -> dict[str, Any]:
     """Why the muse pin does or does not match the binary.  Same discipline as the claude pin
     (AFC-256), on the muse seat's own file so a claude pin can never stand in for a muse one.
 
     `why` is None when pinned, else `no_muse` (no binary to pin), `not_pinned` (nothing recorded
-    yet) or `pin_stale` (a pin was recorded and the binary has since moved).  A seat whose muse pin
-    has never been verified HOLDS and says why:  it never self-heals, because the pin records that
-    a person checked this build's wake contract."""
+    yet) or `pin_stale` (the binary, command or contract changed).  A seat whose muse pin has never
+    been verified HOLDS and says why:  it never self-heals, because the pin records that a person
+    checked this build's wake contract."""
     if not muse:
         return {"pinned": False, "why": "no_muse", "pinned_muse": None, "muse": None}
     current = binary_pin(muse)
-    recorded = L.read_json(paths.wake_pin_muse).get("muse")
+    pin = L.read_json(paths.wake_pin_muse)
+    recorded = pin.get("muse")
     if not isinstance(recorded, str) or not recorded:
         return {"pinned": False, "why": "not_pinned", "pinned_muse": None, "muse": current}
-    if recorded != current:
+    recorded_fingerprint = pin.get("fingerprint")
+    current_fingerprint = muse_wake_fingerprint()
+    if (recorded != current or not isinstance(recorded_fingerprint, str) or not recorded_fingerprint
+            or current_fingerprint is None or recorded_fingerprint != current_fingerprint):
         return {"pinned": False, "why": "pin_stale", "pinned_muse": recorded, "muse": current}
     return {"pinned": True, "why": None, "pinned_muse": recorded, "muse": current}
 
 
 def muse_pinned(paths: L.SeatPaths, muse: str | None) -> bool:
-    if not muse:
-        return False
-    return L.read_json(paths.wake_pin_muse).get("muse") == binary_pin(muse)
+    return muse_pin_state(paths, muse)["pinned"]
 
 
-def record_muse_pin(paths: L.SeatPaths, muse: str, now: float, *, model: str | None = None) -> None:
+def record_muse_pin(paths: L.SeatPaths, muse: str, now: float, *, model: str | None = None,
+                    fingerprint: str | None = None) -> None:
     L.write_json(paths.wake_pin_muse, {"muse": binary_pin(muse), "at": now, "model": model,
-                                       "effort": MUSE_REASONING_EFFORT})
+                                       "effort": MUSE_REASONING_EFFORT,
+                                       "fingerprint": fingerprint if fingerprint is not None
+                                       else muse_wake_fingerprint()})
 
 
 def record_muse_candidate(paths: L.SeatPaths, muse: str, now: float, *, model: str | None = None) -> None:
     """A binary that passed `test-wake --run`, waiting for a person to read the result and pin it."""
     L.write_json(paths.wake_pin_candidate_muse, {"muse": binary_pin(muse), "at": now, "model": model,
-                                                 "effort": MUSE_REASONING_EFFORT})
+                                                 "effort": MUSE_REASONING_EFFORT,
+                                                 "fingerprint": muse_wake_fingerprint()})
 
 
 def muse_pin_candidate(paths: L.SeatPaths, muse: str, now: float) -> str | None:
@@ -724,13 +763,21 @@ def muse_pin_candidate(paths: L.SeatPaths, muse: str, now: float) -> str | None:
     cand = L.read_json(paths.wake_pin_candidate_muse)
     if not cand:
         return "no passing test-wake --run to pin; run that first"
+    current_fingerprint = muse_wake_fingerprint()
+    if current_fingerprint is None:
+        return "the wake contract or schema is unavailable; run test-wake --run again"
+    recorded_fingerprint = cand.get("fingerprint")
+    if not isinstance(recorded_fingerprint, str) or not recorded_fingerprint \
+            or recorded_fingerprint != current_fingerprint:
+        return "the muse wake command or contract changed since the test; run test-wake --run again"
     at = cand.get("at")
     if not isinstance(at, (int, float)) or now - float(at) > CANDIDATE_SECONDS or now < float(at):
         return "the last passing test-wake --run is over a day old; run it again"
     if cand.get("muse") != binary_pin(muse):
         return "the muse binary changed since the test (%s, tested %s); run test-wake --run again" % (
             binary_pin(muse), cand.get("muse"))
-    record_muse_pin(paths, muse, now, model=cand.get("model") if isinstance(cand.get("model"), str) else None)
+    record_muse_pin(paths, muse, now, model=cand.get("model") if isinstance(cand.get("model"), str) else None,
+                    fingerprint=recorded_fingerprint)
     try:
         os.unlink(paths.wake_pin_candidate_muse)
     except OSError:

@@ -300,18 +300,23 @@ The second local wake type.  Same contract, same schema file, same validator, sa
 cd ~/.agent-sync/<SEAT>/wake          # empty, mode 700, never a repo
 env -i HOME=$HOME USER=$USER LOGNAME=$USER LANG=en_US.UTF-8 TMPDIR=$TMPDIR \
     PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin \
-  muse exec \
+  muse-bin-1.4.7-R6101.1 exec \
+    -c 'run.toolset=[]' \
     --model muse-spark-1.3-contributor --reasoning-effort minimal --provider meta \
     --prompt-file <wake>/prompt.md --output-schema <wake>/schema.json \
     --json --approval-mode never \
-    --disable-shell --disable-write --disable-web-tools \
+    --disable-shell --disable-write --disable-web-tools --disable-reminders \
     --no-session-log --workspace <wake>/workspace \
     --max-model-steps 8 --no-foreign-personal-context
 ```
 
 The prompt and schema go in as **files**, not stdin and not an inline string:  `muse` has no equivalent of `--append-system-prompt-file`, so `MuseRunner` concatenates the wake contract with the daemon prompt into one private file and writes the schema beside it.  Both are mode 600 and both are deleted after the run.
 
-**Why this runtime** (owner 2026-10-11:  pick on technical merit;  cost is not the concern).  `--output-schema` shapes the final answer to a JSON schema, and that schema *is* the wake contract.  The sandbox is ON by default, so `--disable-sandbox` is what turns it off and the argv never passes it.  `--disable-shell`, `--disable-write` and `--no-session-log` are separate explicit switches, so "read this topic, touch nothing" is stated rather than inferred, and `--approval-mode never` cannot block on a prompt.  Constraint:  `--output-schema` is meta-provider only, and meta is the default;  the argv names it explicitly anyway.
+**Read boundary (Muse 1.4.7 canary).**  The read/write switches alone are insufficient:  a synthetic outside-workspace canary was disclosed by the baseline command.  With the empty toolset config placed after `exec` (`-c 'run.toolset=[]'`), the candidate returned exit 0 with a valid schema, did not disclose the outside marker, reported blocked/no access, and made no outside write.  This records the observed canary only;  it is not a complete adversarial proof.  Keep the sandbox enabled, and retain `--disable-shell`, `--disable-write`, `--disable-web-tools`, `--disable-reminders`, `--no-session-log`, and `--approval-mode never` as explicit controls.
+
+**Binary pin.**  Pin the versioned executable itself (for example, `muse-bin-1.4.7-R6101.1`), not an auto-updating `muse` launcher.  The `-c` setting is a Muse CLI config option and must follow `exec`;  before `exec`, it is parsed as a TUI option.  The argv above uses the versioned binary name as an example;  configuration should resolve and pin its absolute path.  Muse pins and passing candidates also include a fingerprint of the fixed argv, trusted contract, schema and runner policy version.  Legacy or mismatched fingerprints hold wakes until a fresh `test-wake --run` and reviewed `--pin`; they are never migrated automatically.
+
+**Why this runtime** (owner 2026-10-11:  pick on technical merit;  cost is not the concern).  `--output-schema` shapes the final answer to a JSON schema, and that schema *is* the wake contract.  Personal permission profiles can be unrestricted, so the wake boundary explicitly removes tools and does not depend on a default profile.  `--approval-mode never` cannot block on a prompt.  Constraint:  `--output-schema` is meta-provider only, and meta is the default;  the argv names it explicitly anyway.
 
 **Two runtime facts Gate 0 proved, each of which cost a run to learn.**  The first real `muse exec` with this schema returned a result `wakes.validate` accepted with zero coercion, and a second returned a fully populated `board` object, so the nested-object and enum branches round-trip too.
 

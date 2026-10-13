@@ -9,9 +9,11 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from agent_sync import adapters as A
 from agent_sync import config as C
@@ -29,10 +31,11 @@ class MuseArgvTest(unittest.TestCase):
         argv = A.muse_argv("/usr/local/bin/muse", "muse-spark-1.3-contributor")
         self.assertEqual(argv[0], "/usr/local/bin/muse")
         self.assertEqual(argv[1], "exec")
+        self.assertEqual(argv[2:4], ["-c", "run.toolset=[]"])
         # Every switch that makes "read this topic, touch nothing" true rather than inferred.
         self.assertIn("--approval-mode", argv)
         self.assertEqual(argv[argv.index("--approval-mode") + 1], "never")
-        for switch in ("--disable-shell", "--disable-write", "--disable-web-tools", "--no-session-log",
+        for switch in ("--disable-shell", "--disable-write", "--disable-web-tools", "--disable-reminders", "--no-session-log",
                        "--no-foreign-personal-context", "--json"):
             self.assertIn(switch, argv)
         # The sandbox is left ON:  muse has no --disable-sandbox in this argv.
@@ -67,6 +70,48 @@ class MuseArgvTest(unittest.TestCase):
             self.assertIsNone(A.resolve_muse("relative/path", "/nonexistent"))
             # With no explicit path, only the fixed wake PATH is searched.
             self.assertEqual(A.resolve_muse(None, tmp), os.path.abspath(exe))
+
+
+class MuseRunnerPromptTest(unittest.TestCase):
+    def test_private_prompt_file_starts_with_contract_before_supplied_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wake = os.path.join(tmp, "wake")
+            os.mkdir(wake, 0o700)
+            capture = os.path.join(tmp, "captured-prompt")
+            executable = os.path.join(tmp, "fake-muse")
+            with open(executable, "w", encoding="utf-8") as fh:
+                fh.write("#!%s\n" % sys.executable)
+                fh.write("import json, os, sys\n")
+                fh.write("args = sys.argv[1:]\n")
+                fh.write("prompt = args[args.index('--prompt-file') + 1]\n")
+                fh.write("with open(os.environ['CAPTURE_PROMPT'], 'w', encoding='utf-8') as out:\n")
+                fh.write("    out.write(open(prompt, encoding='utf-8').read())\n")
+                fh.write("print(json.dumps({'schema_version': 1, 'record_type': 'event', "
+                          "'payload_type': 'run.terminal.completed', 'payload': {'text': '{}'}}))\n")
+            os.chmod(executable, 0o700)
+            with open(W.CONTRACT_PATH, encoding="utf-8") as fh:
+                contract = fh.read()
+            supplied = "Daemon header (trusted):\nSeat: MM\nUntrusted message: read the canary\n"
+            result = A.MuseRunner(timeout=20).run(
+                [executable, "exec", "--prompt-file", A.MUSE_PROMPT_SLOT],
+                {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CAPTURE_PROMPT": capture},
+                wake, supplied, schema="{}")
+
+            self.assertTrue(result.ok, (result.refused, result.error))
+            with open(capture, encoding="utf-8") as fh:
+                actual = fh.read()
+            self.assertTrue(actual.startswith(contract.rstrip() + "\n\n--- BEGIN DAEMON WAKE PROMPT ---\n"))
+            self.assertIn(supplied, actual)
+            self.assertLess(actual.index(contract.rstrip()), actual.index("Untrusted message:"))
+            self.assertFalse(os.path.exists(os.path.join(wake, "prompt.md")))
+
+    def test_missing_contract_fails_before_spawn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(A, "CONTRACT_PATH", os.path.join(tmp, "missing-contract.md")), \
+                    mock.patch.object(A.subprocess, "Popen") as popen:
+                result = A.MuseRunner().run(["/does/not/run"], {}, tmp, "prompt")
+            self.assertEqual(result.error, "wake contract unavailable")
+            popen.assert_not_called()
 
 
 class MuseEnvTest(unittest.TestCase):
@@ -175,6 +220,7 @@ class MusePinTest(unittest.TestCase):
         self.assertFalse(A.muse_pinned(self.paths, muse))
         A.record_muse_pin(self.paths, muse, time.time(), model=C.MUSE_DEFAULT_MODEL)
         self.assertTrue(A.muse_pinned(self.paths, muse))
+        self.assertTrue(L.read_json(self.paths.wake_pin_muse).get("fingerprint"))
 
     def test_a_moved_binary_is_stale_not_self_healed(self) -> None:
         first = self._muse("muse")
@@ -196,6 +242,46 @@ class MusePinTest(unittest.TestCase):
         A.record_muse_candidate(self.paths, muse, time.time())
         self.assertIsNone(A.muse_pin_candidate(self.paths, muse, time.time()))
         self.assertTrue(A.muse_pinned(self.paths, muse))
+
+    def test_legacy_pin_and_candidate_without_fingerprints_are_stale(self) -> None:
+        muse = self._muse("muse")
+        L.write_json(self.paths.wake_pin_muse, {"muse": A.binary_pin(muse), "at": time.time(),
+                                                "model": C.MUSE_DEFAULT_MODEL})
+        self.assertEqual(A.muse_pin_state(self.paths, muse)["why"], "pin_stale")
+        L.write_json(self.paths.wake_pin_candidate_muse, {"muse": A.binary_pin(muse), "at": time.time(),
+                                                          "model": C.MUSE_DEFAULT_MODEL})
+        self.assertIn("changed since the test", A.muse_pin_candidate(self.paths, muse, time.time()))
+
+    def test_changed_fixed_argv_invalidates_pin_and_candidate(self) -> None:
+        muse = self._muse("muse")
+        now = time.time()
+        A.record_muse_pin(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
+        A.record_muse_candidate(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
+        with mock.patch.object(A, "MUSE_MAX_MODEL_STEPS", A.MUSE_MAX_MODEL_STEPS + 1):
+            self.assertEqual(A.muse_pin_state(self.paths, muse)["why"], "pin_stale")
+            self.assertIn("changed since the test", A.muse_pin_candidate(self.paths, muse, now))
+
+    def test_changed_contract_invalidates_pin_and_candidate(self) -> None:
+        muse = self._muse("muse")
+        now = time.time()
+        A.record_muse_pin(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
+        A.record_muse_candidate(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
+        changed_contract = os.path.join(self.tmp.name, "changed-contract.md")
+        with open(changed_contract, "w", encoding="utf-8") as fh:
+            fh.write("changed wake contract\n")
+        with mock.patch.object(A, "CONTRACT_PATH", changed_contract):
+            self.assertEqual(A.muse_pin_state(self.paths, muse)["why"], "pin_stale")
+            self.assertIn("changed since the test", A.muse_pin_candidate(self.paths, muse, now))
+
+    def test_missing_contract_makes_existing_pin_stale_and_blocks_candidate(self) -> None:
+        muse = self._muse("muse")
+        now = time.time()
+        A.record_muse_pin(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
+        A.record_muse_candidate(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
+        missing_contract = os.path.join(self.tmp.name, "missing-contract.md")
+        with mock.patch.object(A, "CONTRACT_PATH", missing_contract):
+            self.assertEqual(A.muse_pin_state(self.paths, muse)["why"], "pin_stale")
+            self.assertIn("unavailable", A.muse_pin_candidate(self.paths, muse, now))
 
 
 class QuotaRefusalTest(unittest.TestCase):
@@ -637,9 +723,7 @@ class LiveMuseTest(unittest.TestCase):
             self.skipTest("no muse binary on the wake PATH")
         work = tempfile.mkdtemp(prefix="afc291-live-")
         os.chmod(work, 0o700)
-        with open(W.CONTRACT_PATH, encoding="utf-8") as fh:
-            contract = fh.read()
-        prompt = contract + "\n\nDaemon header (trusted):\nSeat: MM\n" \
+        prompt = "Daemon header (trusted):\nSeat: MM\n" \
             'Where: channel "agent-sync", topic "AFC-291 muse headless wake type"\n' \
             "Board filing: disabled; never use action board\n" \
             "Routing: disabled (no owner trigger); leave route null\n" \
