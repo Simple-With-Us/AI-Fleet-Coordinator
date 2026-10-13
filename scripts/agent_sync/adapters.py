@@ -550,6 +550,12 @@ class MuseRunner:
     def run(self, argv: Sequence[str], env: Mapping[str, str], cwd: str, prompt: str,
             schema: str | None = None) -> RunResult:
         out = RunResult()
+        try:
+            with open(CONTRACT_PATH, encoding="utf-8") as fh:
+                contract = fh.read()
+        except (OSError, UnicodeError):
+            out.error = "wake contract unavailable"
+            return out
         L.private_dir(cwd)
         prompt_path = os.path.join(cwd, "prompt.md")
         schema_path = os.path.join(cwd, "schema.json")
@@ -557,7 +563,7 @@ class MuseRunner:
         L.private_dir(workspace)
         fd = os.open(prompt_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(prompt)
+            fh.write(contract.rstrip() + "\n\n--- BEGIN DAEMON WAKE PROMPT ---\n" + prompt)
         # The schema is written from the same source claude passes inline, so the two runtimes can
         # never drift onto different contracts.
         fd = os.open(schema_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

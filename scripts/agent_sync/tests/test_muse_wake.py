@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from agent_sync import adapters as A
 from agent_sync import config as C
@@ -67,6 +69,48 @@ class MuseArgvTest(unittest.TestCase):
             self.assertIsNone(A.resolve_muse("relative/path", "/nonexistent"))
             # With no explicit path, only the fixed wake PATH is searched.
             self.assertEqual(A.resolve_muse(None, tmp), os.path.abspath(exe))
+
+
+class MuseRunnerPromptTest(unittest.TestCase):
+    def test_private_prompt_file_starts_with_contract_before_supplied_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wake = os.path.join(tmp, "wake")
+            os.mkdir(wake, 0o700)
+            capture = os.path.join(tmp, "captured-prompt")
+            executable = os.path.join(tmp, "fake-muse")
+            with open(executable, "w", encoding="utf-8") as fh:
+                fh.write("#!%s\n" % sys.executable)
+                fh.write("import json, os, sys\n")
+                fh.write("args = sys.argv[1:]\n")
+                fh.write("prompt = args[args.index('--prompt-file') + 1]\n")
+                fh.write("with open(os.environ['CAPTURE_PROMPT'], 'w', encoding='utf-8') as out:\n")
+                fh.write("    out.write(open(prompt, encoding='utf-8').read())\n")
+                fh.write("print(json.dumps({'schema_version': 1, 'record_type': 'event', "
+                          "'payload_type': 'run.terminal.completed', 'payload': {'text': '{}'}}))\n")
+            os.chmod(executable, 0o700)
+            with open(W.CONTRACT_PATH, encoding="utf-8") as fh:
+                contract = fh.read()
+            supplied = "Daemon header (trusted):\nSeat: MM\nUntrusted message: read the canary\n"
+            result = A.MuseRunner(timeout=20).run(
+                [executable, "exec", "--prompt-file", A.MUSE_PROMPT_SLOT],
+                {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CAPTURE_PROMPT": capture},
+                wake, supplied, schema="{}")
+
+            self.assertTrue(result.ok, (result.refused, result.error))
+            with open(capture, encoding="utf-8") as fh:
+                actual = fh.read()
+            self.assertTrue(actual.startswith(contract.rstrip() + "\n\n--- BEGIN DAEMON WAKE PROMPT ---\n"))
+            self.assertIn(supplied, actual)
+            self.assertLess(actual.index(contract.rstrip()), actual.index("Untrusted message:"))
+            self.assertFalse(os.path.exists(os.path.join(wake, "prompt.md")))
+
+    def test_missing_contract_fails_before_spawn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(A, "CONTRACT_PATH", os.path.join(tmp, "missing-contract.md")), \
+                    mock.patch.object(A.subprocess, "Popen") as popen:
+                result = A.MuseRunner().run(["/does/not/run"], {}, tmp, "prompt")
+            self.assertEqual(result.error, "wake contract unavailable")
+            popen.assert_not_called()
 
 
 class MuseEnvTest(unittest.TestCase):
@@ -342,9 +386,7 @@ class LiveMuseTest(unittest.TestCase):
             self.skipTest("no muse binary on the wake PATH")
         work = tempfile.mkdtemp(prefix="afc291-live-")
         os.chmod(work, 0o700)
-        with open(W.CONTRACT_PATH, encoding="utf-8") as fh:
-            contract = fh.read()
-        prompt = contract + "\n\nDaemon header (trusted):\nSeat: MM\n" \
+        prompt = "Daemon header (trusted):\nSeat: MM\n" \
             'Where: channel "agent-sync", topic "AFC-291 muse headless wake type"\n' \
             "Board filing: disabled; never use action board\n" \
             "Routing: disabled (no owner trigger); leave route null\n" \
