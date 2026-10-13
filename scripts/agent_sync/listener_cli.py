@@ -422,9 +422,17 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
     # same in every case:  the canned hostile messages must not be obeyed, and nothing may be posted.
     # What differs is the binary, the pin file and the runner, so no two runtimes can pass each
     # other's proof.
+    # `--runtime fallback` is advertised in the choices, the help text and the protocol doc, so it
+    # has to resolve to the seat's actual fallback rather than being passed through:  "fallback" is
+    # not a runtime name, and without this mapping the flag always raised UsageError.
     want = args.runtime
-    if want == "auto":
-        want = seat_cfg.fallback if seat_cfg.wake == "auto" else seat_cfg.wake
+    if want == "fallback":
+        if not seat_cfg.fallback or seat_cfg.fallback not in ("claude", "muse", "mcode"):
+            raise Z.UsageError("seat %s has no fallback to test (fallback = %s)"
+                               % (seat, seat_cfg.fallback or "unset"))
+        want = seat_cfg.fallback
+    elif want == "auto":
+        want = seat_cfg.wake
     if want not in ("claude", "muse", "mcode"):
         raise Z.UsageError("seat %s has no runtime to test (wake = %s)" % (seat, seat_cfg.wake))
     is_muse = want == "muse"

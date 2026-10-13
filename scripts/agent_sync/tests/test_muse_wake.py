@@ -353,6 +353,18 @@ class McodeFallbackTest(unittest.TestCase):
         self.assertEqual(cfg.errors, [])
         self.assertEqual(cfg.seats["CLAUDE"].fallback, "mcode")
 
+    def test_runtime_fallback_resolves_rather_than_always_raising(self) -> None:
+        # Kody's blocking finding on PR #509:  `--runtime fallback` is advertised in the argparse
+        # choices, the help text and the protocol doc, but "fallback" is not a runtime name, so the
+        # flag fell straight through to UsageError and the self-test could never be run.
+        src = " ".join(inspect.getsource(__import__("agent_sync.listener_cli",
+                                                   fromlist=["cmd_test_wake"]).cmd_test_wake).split())
+        self.assertIn('if want == "fallback":', src)
+        self.assertIn("seat %s has no fallback to test", src)
+        # "auto" must map to the seat's own wake, and never to a literal "fallback".
+        self.assertIn("elif want == \"auto\":", src)
+        self.assertNotIn('seat_cfg.fallback if seat_cfg.wake == "auto"', src)
+
     def test_naming_a_fallback_is_not_enough_to_run_it(self) -> None:
         # Measured, not assumed:  asked to write a file under the exact wake argv, mcode wrote one.
         # `--permission off` means "never ask", so its tools are live while it composes an answer, and
