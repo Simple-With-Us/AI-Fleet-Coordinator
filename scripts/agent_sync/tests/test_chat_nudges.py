@@ -10,7 +10,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 
 from agent_sync import live as L
-from agent_sync.chat_nudges import ChatNudges, nudge_text
+from agent_sync.chat_nudges import ChatNudges, TERMINAL_KEEP_SECONDS, nudge_text
 
 
 class FakeTransport:
@@ -110,6 +110,36 @@ class ChatNudgesTest(unittest.TestCase):
         transport = FakeTransport(readiness="busy")
         self.queue.dispatch_one(transport, 11)
         self.assertEqual(transport.preflight_stale, [False])
+
+    def test_old_terminal_records_prune_but_unresolved_records_remain(self) -> None:
+        for message_id in (1, 2, 3):
+            self.queue.enqueue(self.binding["channel"], self.binding["topic"], message_id, 10)
+        data = self.queue.snapshot()
+        data["items"][0].update(status="accepted", updated_at=20)
+        data["items"][1].update(status="cancelled", updated_at=20)
+        data["items"][2].update(status="unknown", updated_at=20)
+        L.write_json(self.queue.path, data)
+
+        self.assertEqual(self.queue.dispatch_one(FakeTransport(),
+                                                   20 + TERMINAL_KEEP_SECONDS + 1)["status"], "idle")
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 4,
+                           20 + TERMINAL_KEEP_SECONDS + 1)
+        items = self.queue.snapshot()["items"]
+        self.assertEqual([item["message_id"] for item in items], ["3", "4"])
+        self.assertEqual(items[0]["status"], "unknown")
+
+    def test_recent_terminal_records_are_retained_for_deduplication(self) -> None:
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 10)
+        data = self.queue.snapshot()
+        data["items"][0].update(status="accepted", updated_at=20)
+        data["items"][1].update(status="cancelled", updated_at=20)
+        L.write_json(self.queue.path, data)
+
+        now = 20 + TERMINAL_KEEP_SECONDS - 1
+        self.assertTrue(self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, now))
+        self.assertTrue(self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, now))
+        self.assertEqual(len(self.queue.snapshot()["items"]), 2)
 
     def test_rename_moves_pending_and_keeps_unknown_text_unchanged(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)

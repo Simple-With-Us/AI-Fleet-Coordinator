@@ -12,6 +12,7 @@ from . import live as L
 
 
 SUPPORTED_PLATFORM = "grok-leader"
+TERMINAL_KEEP_SECONDS = 90 * 86400
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
 _BINDING_FIELDS = ("channel", "topic", "platform", "host", "session_id", "cwd")
 
@@ -87,6 +88,24 @@ class ChatNudges:
                     or not isinstance(item.get("dedupe_key"), str)):
                 raise ValueError("chat nudge item is invalid")
         return data
+
+    @staticmethod
+    def _prune_terminal(data: dict[str, Any], now: float) -> bool:
+        """Bound accepted/cancelled history while retaining unresolved work indefinitely."""
+        before = len(data["items"])
+        kept = []
+        for item in data["items"]:
+            if item.get("status") not in ("accepted", "cancelled"):
+                kept.append(item)
+                continue
+            terminal_at = item.get("updated_at", item.get("created_at"))
+            if not isinstance(terminal_at, (int, float)) or isinstance(terminal_at, bool) or \
+                    now - float(terminal_at) < TERMINAL_KEEP_SECONDS:
+                kept.append(item)
+        if len(kept) != before:
+            data["items"] = kept
+            return True
+        return False
 
     @staticmethod
     def _binding(channel: str, topic: str, platform: str, host: str, session_id: str,
@@ -222,11 +241,16 @@ class ChatNudges:
         message_id = str(message_id)
         with L.locked(self.path):
             data = self._read()
+            pruned = self._prune_terminal(data, float(now))
             binding = data["bindings"].get(self._key(channel, topic))
             if not isinstance(binding, dict):
+                if pruned:
+                    L.write_json(self.path, data)
                 return False
             dedupe = self._dedupe_key(message_id, binding)
             if any(item.get("dedupe_key") == dedupe for item in data["items"]):
+                if pruned:
+                    L.write_json(self.path, data)
                 return True
             item_id = hashlib.sha256((dedupe + "\0nudge").encode("ascii")).hexdigest()
             data["items"].append({"id": item_id, "dedupe_key": dedupe, "message_id": message_id,
@@ -246,6 +270,7 @@ class ChatNudges:
         with L.locked(self.path + ".dispatch"):
             with L.locked(self.path):
                 data = self._read()
+                pruned = self._prune_terminal(data, float(now))
                 groups: dict[str, dict[str, Any]] = {}
                 for row in data["items"]:
                     binding = row.get("binding")
@@ -282,7 +307,7 @@ class ChatNudges:
                     # order stays FIFO.  Unknown/in-flight items block the destination above.
                     candidates.extend(group["owners"])
                     candidates.extend(group["peers"])
-                if saw_held:
+                if saw_held or pruned:
                     L.write_json(self.path, data)
             for item_id, binding in candidates:
                 try:
