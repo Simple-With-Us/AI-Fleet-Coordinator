@@ -219,6 +219,7 @@ class MusePinTest(unittest.TestCase):
         self.assertFalse(A.muse_pinned(self.paths, muse))
         A.record_muse_pin(self.paths, muse, time.time(), model=C.MUSE_DEFAULT_MODEL)
         self.assertTrue(A.muse_pinned(self.paths, muse))
+        self.assertTrue(L.read_json(self.paths.wake_pin_muse).get("fingerprint"))
 
     def test_a_moved_binary_is_stale_not_self_healed(self) -> None:
         first = self._muse("muse")
@@ -240,6 +241,46 @@ class MusePinTest(unittest.TestCase):
         A.record_muse_candidate(self.paths, muse, time.time())
         self.assertIsNone(A.muse_pin_candidate(self.paths, muse, time.time()))
         self.assertTrue(A.muse_pinned(self.paths, muse))
+
+    def test_legacy_pin_and_candidate_without_fingerprints_are_stale(self) -> None:
+        muse = self._muse("muse")
+        L.write_json(self.paths.wake_pin_muse, {"muse": A.binary_pin(muse), "at": time.time(),
+                                                "model": C.MUSE_DEFAULT_MODEL})
+        self.assertEqual(A.muse_pin_state(self.paths, muse)["why"], "pin_stale")
+        L.write_json(self.paths.wake_pin_candidate_muse, {"muse": A.binary_pin(muse), "at": time.time(),
+                                                          "model": C.MUSE_DEFAULT_MODEL})
+        self.assertIn("changed since the test", A.muse_pin_candidate(self.paths, muse, time.time()))
+
+    def test_changed_fixed_argv_invalidates_pin_and_candidate(self) -> None:
+        muse = self._muse("muse")
+        now = time.time()
+        A.record_muse_pin(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
+        A.record_muse_candidate(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
+        with mock.patch.object(A, "MUSE_MAX_MODEL_STEPS", A.MUSE_MAX_MODEL_STEPS + 1):
+            self.assertEqual(A.muse_pin_state(self.paths, muse)["why"], "pin_stale")
+            self.assertIn("changed since the test", A.muse_pin_candidate(self.paths, muse, now))
+
+    def test_changed_contract_invalidates_pin_and_candidate(self) -> None:
+        muse = self._muse("muse")
+        now = time.time()
+        A.record_muse_pin(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
+        A.record_muse_candidate(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
+        changed_contract = os.path.join(self.tmp.name, "changed-contract.md")
+        with open(changed_contract, "w", encoding="utf-8") as fh:
+            fh.write("changed wake contract\n")
+        with mock.patch.object(A, "CONTRACT_PATH", changed_contract):
+            self.assertEqual(A.muse_pin_state(self.paths, muse)["why"], "pin_stale")
+            self.assertIn("changed since the test", A.muse_pin_candidate(self.paths, muse, now))
+
+    def test_missing_contract_makes_existing_pin_stale_and_blocks_candidate(self) -> None:
+        muse = self._muse("muse")
+        now = time.time()
+        A.record_muse_pin(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
+        A.record_muse_candidate(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
+        missing_contract = os.path.join(self.tmp.name, "missing-contract.md")
+        with mock.patch.object(A, "CONTRACT_PATH", missing_contract):
+            self.assertEqual(A.muse_pin_state(self.paths, muse)["why"], "pin_stale")
+            self.assertIn("unavailable", A.muse_pin_candidate(self.paths, muse, now))
 
 
 class QuotaGateTest(unittest.TestCase):
