@@ -39,7 +39,7 @@ test('static output contains only intended web assets and no repository data', (
   assert.equal(config.outputDirectory, 'public');
   const files = fs.readdirSync(path.join(root, 'public'), { recursive: true }).sort();
   const expectedLogos = ['logos/badges', ...LOGO_FILES].sort();
-  assert.deepEqual(files, ['index.html', 'logos', ...expectedLogos, 'robots.txt']);
+  assert.deepEqual(files, ['index.html', 'logos', ...expectedLogos, 'quota-display.mjs', 'robots.txt']);
   // Every declared logo must actually exist, so deleting one fails here rather
   // than shipping a 404 the page silently falls back from.
   for (const rel of LOGO_FILES) {
@@ -57,7 +57,7 @@ test('deployment input allowlist rejects private documents and future unknown fi
     execFileSync('git', ['init', '-q', temp]);
     fs.copyFileSync(path.join(root, '.vercelignore'), path.join(temp, '.gitignore'));
     const allowed = [
-      'public/index.html', 'public/robots.txt',
+      'public/index.html', 'public/quota-display.mjs', 'public/robots.txt',
       ...LOGO_FILES.map((f) => `public/${f}`),
       'api/quota.js', 'api/rag-snapshot.js', 'site-snapshot.json', 'vercel.json', 'vercel-ignore.sh',
     ];
