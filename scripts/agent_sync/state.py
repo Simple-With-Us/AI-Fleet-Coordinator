@@ -17,6 +17,9 @@ Cursors only ever move forward.  Sessions never share a state.json because the s
 differs; the inbox file is shared by every session of a seat, and the lock keeps even that free
 of lost updates.
 
+Native full-UUID ownership explicitly opts into retain_posted=True, which preserves all
+confirmed message IDs across resumes.  Other callers retain the newest 500 IDs.
+
 Python 3.11+, standard library only.
 """
 from __future__ import annotations
@@ -146,8 +149,9 @@ def _as_int(value: Any) -> int | None:
 class State:
     """Cursor and ledger store for one seat and one session tag."""
 
-    def __init__(self, root: Path, seat: str, tag: str | None) -> None:
+    def __init__(self, root: Path, seat: str, tag: str | None, *, retain_posted: bool = False) -> None:
         self.root = Path(root)
+        self.retain_posted = retain_posted
         self.seat = seat
         self.tag = tag
         self.seat_dir = self.root / seat
@@ -195,7 +199,7 @@ class State:
             ledger = data.get("posted")
             ids = {item for item in ledger if _as_int(item) is not None} if isinstance(ledger, list) else set()
             ids.add(int(message_id))
-            data["posted"] = sorted(ids)[-POSTED_LIMIT:]
+            data["posted"] = sorted(ids) if self.retain_posted else sorted(ids)[-POSTED_LIMIT:]
 
         self._update(self.path, mutate)
 

@@ -35,6 +35,7 @@ import re
 import threading
 import time
 import unicodedata
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -332,6 +333,7 @@ class Tools:
     """The seven tools for one seat, over one long-lived Agent.  Calls are serialized."""
 
     def __init__(self, agent: CLI.Agent, *, me: Mapping[str, Any], process_tag: str | None, session_source: str,
+                 codex_thread_meta: bool = False,
                  owner_user_id: int = 0, owner_clients: Iterable[str] = (), clock: Callable[[], float] = time.time,
                  sleep: Callable[[float], None] = time.sleep, log: Callable[[str], None] = lambda text: None) -> None:
         self.agent = agent
@@ -339,6 +341,14 @@ class Tools:
         self.me = dict(me)
         self.process_tag = process_tag
         self.session_source = session_source
+        if codex_thread_meta and self.seat != "CODEX":
+            raise ValueError("codex thread metadata is CODEX-only")
+        self.codex_thread_meta = codex_thread_meta
+        self.thread_id: str | None = None
+        self._process_source = session_source
+        self._process_state = agent.state
+        self._call_tag: str | None = None
+        self._call_state_key: str | None = None
         self.owner_user_id = owner_user_id
         self.owner_clients = set(owner_clients)
         self.clock = clock
@@ -355,7 +365,7 @@ class Tools:
         self._lock = threading.Lock()
 
     # ---- entry ----------------------------------------------------------------------------
-    def call(self, name: str, arguments: Any) -> dict[str, Any]:
+    def call(self, name: str, arguments: Any, *, meta: Any = None) -> dict[str, Any]:
         """Run one tool.  Returns the CallToolResult (no era fields).  Raises UnknownTool."""
         spec = self.by_name.get(name)
         if spec is None:
@@ -371,7 +381,8 @@ class Tools:
                 if problem:
                     raise ToolError("invalid_argument", problem)
                 arguments = coerce_integers(spec["inputSchema"], arguments)
-                self._use_tag(self.process_tag)
+                self._attribution(meta)
+                self._use_tag(self._call_tag)
                 result = getattr(self, "_tool_" + name)(with_defaults(spec["inputSchema"], arguments))
                 outcome = "ok"
             except Exception as exc:  # noqa: BLE001 - every failure becomes a tool error
@@ -379,7 +390,9 @@ class Tools:
                 result = self.error_result(error)
                 outcome = error.code
             finally:
-                self._use_tag(self.process_tag)
+                self.agent.tag, self.agent.state = self.process_tag, self._process_state
+                self.session_source = self._process_source
+                self.thread_id = self._call_tag = self._call_state_key = None
         self.log("%s %s %dms" % (name, outcome, int((time.monotonic() - started) * 1000)))
         return result
 
@@ -393,11 +406,36 @@ class Tools:
         return {"content": [{"type": "text", "text": text}], "structuredContent": dict(structured)}
 
     # ---- helpers ---------------------------------------------------------------------------
+    def _attribution(self, meta: Any) -> None:
+        """Native metadata controls attribution only; credential identity stays pinned."""
+        self._call_tag = self.process_tag
+        if not self.codex_thread_meta:
+            return
+        raw = meta.get("threadId") if isinstance(meta, dict) else None
+        if isinstance(raw, str) and len(raw) == 36:
+            try:
+                parsed = uuid.UUID(raw)
+            except ValueError:
+                pass
+            else:
+                if str(parsed) == raw:
+                    self.thread_id = raw
+        if self.thread_id is None:
+            if not self.process_tag:
+                raise ToolError("invalid_argument", "native Codex _meta.threadId must be a canonical UUID")
+            return  # Explicit owner attribution does not claim a native chat id.
+        self._call_state_key = "codex-thread-" + self.thread_id
+        if not self.process_tag:
+            self._call_tag = _sha(self.thread_id)[:8]
+            self.session_source = "codex_thread_meta_sha256"
+
     def _use_tag(self, tag: str | None) -> None:
-        """Point the Agent at a session tag:  its posts carry [SEAT·tag] and its ledger is that tag's."""
-        if tag != self.agent.tag:
+        """Display tags may be short; native Codex ledgers use the full verified UUID."""
+        state_key = self._call_state_key if tag == self._call_tag else None
+        key = state_key or tag
+        if tag != self.agent.tag or self.agent.state.tag != key:
             self.agent.tag = tag
-            self.agent.state = State(self.root, self.seat, tag)
+            self.agent.state = State(self.root, self.seat, key, retain_posted=bool(state_key))
 
     def _prefix(self) -> str:
         return self.agent.tag_prefix + "]"
@@ -470,11 +508,18 @@ class Tools:
             labels.extend(found_labels)
         return mentions, labels
 
-    def _is_self(self, message: Mapping[str, Any]) -> bool:
+    def _generic_is_self(self, message: Mapping[str, Any]) -> bool:
         return message.get("id") in self.posted_ids or self.agent.is_self(message)
 
+    def _remember_posted(self, message_id: int) -> None:
+        if not self.codex_thread_meta:
+            self.posted_ids.add(message_id)
+
     def _message_item(self, message: Mapping[str, Any]) -> dict[str, Any]:
-        j = self.agent.message_json(message)
+        # MCP does not expose CLI sibling/mention attribution.  Computing it
+        # would reread the full native ownership ledger for every shown item.
+        j = message
+        is_bot = self.agent.sender_is_bot(message)
         body, truncated = clean(j.get("content") or "", BODY_LIMIT)
         sender_id = _int(j.get("sender_id"))
         owner = bool(self.owner_user_id) and sender_id == self.owner_user_id \
@@ -482,10 +527,10 @@ class Tools:
         return {"id": _int(j.get("id")), "sender_id": sender_id,
                 "sender": clean(j.get("sender_full_name") or "", NAME_LIMIT)[0],
                 "sender_email": clean(j.get("sender_email") or "", NAME_LIMIT)[0],
-                "is_bot": j.get("is_bot") if isinstance(j.get("is_bot"), bool) else None,
+                "is_bot": is_bot if isinstance(is_bot, bool) else None,
                 "owner": owner, "time": CLI.format_time(float(j.get("timestamp") or 0)),
-                "channel": clean(j.get("channel") or "", NAME_LIMIT)[0],
-                "topic": clean(j.get("topic") or "", NAME_LIMIT)[0], "body": body, "truncated": truncated}
+                "channel": clean(CLI.message_channel(message) or "", NAME_LIMIT)[0],
+                "topic": clean(CLI.message_topic(message) or "", NAME_LIMIT)[0], "body": body, "truncated": truncated}
 
     def _messages_result(self, tool: str, args: list[tuple[str, Any]], messages: list[Mapping[str, Any]],
                          next_since_id: int | None) -> dict[str, Any]:
@@ -595,6 +640,9 @@ class Tools:
     def _key(self, explicit: str | None, parts: list[Any]) -> tuple[str, float]:
         if explicit:
             return "k:" + explicit, IDEM_EXPLICIT_TTL
+        if self.codex_thread_meta and self.thread_id:
+            # Keep the seat-wide ledger, but never deduplicate two chats by a short tag collision.
+            parts = ["codex-thread", self.thread_id, *parts]
         return "i:" + _sha(json.dumps(parts, ensure_ascii=False, sort_keys=True)), IDEM_IMPLICIT_TTL
 
     def _deliver(self, key: tuple[str, float], *, body: str, channel: str, topic: str, channel_id: int,
@@ -608,6 +656,12 @@ class Tools:
         if verdict == "duplicate" and row is not None:
             return {"id": int(row["id"]), "channel_id": int(row.get("channel_id") or channel_id), "duplicate": True}
         if verdict == "reconcile" and row is not None:
+            if self.codex_thread_meta:
+                # Sender/body (including a short tag) cannot distinguish a sibling's write.
+                self._idem_set(row_key, state="unknown")
+                raise ToolError("outcome_unknown", "the earlier native write has no confirmed message id.  "
+                                "Inspect read_topic with include_self true before another write; this key "
+                                "will neither adopt a body match nor resend while its row is retained.", check=check)
             try:
                 found = self._reconcile(row)
             except BaseException:
@@ -615,7 +669,7 @@ class Tools:
                 raise
             if found is not None:
                 self._idem_set(row_key, state="sent", id=found)
-                self.posted_ids.add(found)
+                self._remember_posted(found)
                 return {"id": found, "channel_id": int(row.get("channel_id") or channel_id), "duplicate": True}
             self._idem_set(row_key, **fields)
         try:
@@ -631,13 +685,18 @@ class Tools:
             if error.code == "outcome_unknown":
                 self._idem_set(row_key, state="unknown", ts=attempt)
                 error.check = dict(check)
-                error.message += "  Check with read_topic (include_self true) before posting again, or retry with " \
-                                 "the same idempotency_key:  the server looks for the first attempt before it resends."
+                if self.codex_thread_meta:
+                    error.message += "  Inspect read_topic (include_self true) before another write.  Retrying " \
+                                     "this key will hold the unknown outcome while its row is retained, without " \
+                                     "adopting a body match or resending."
+                else:
+                    error.message += "  Check with read_topic (include_self true) before posting again, or retry with " \
+                                     "the same idempotency_key:  the server looks for the first attempt before it resends."
             else:
                 self._idem_drop(row_key)
             raise error from None
         self._idem_set(row_key, state="sent", id=message_id, channel_id=channel_id)
-        self.posted_ids.add(message_id)
+        self._remember_posted(message_id)
         return {"id": message_id, "channel_id": channel_id, "duplicate": False}
 
     def _write_result(self, result: Mapping[str, Any]) -> dict[str, Any]:
@@ -648,6 +707,9 @@ class Tools:
         info = {"seat": self.seat, "email": self.agent.creds.email, "user_id": _int(self.me.get("user_id")) or 0,
                 "role": _int(self.me.get("role")) or 0, "realm": self.agent.realm, "transport": TRANSPORT,
                 "tag_prefix": self._prefix(), "session_source": self.session_source}
+        if self.codex_thread_meta:
+            info.update(thread_id=self.thread_id,
+                        tag_kind="explicit" if self.process_tag else "sha256_derived")
         return self.ok(json.dumps(info, ensure_ascii=False), info)
 
     def _tool_topics(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -668,7 +730,15 @@ class Tools:
         since_id = args.get("since_id")
         messages = self._page(CLI.topic_narrow(channel, topic), since_id, args["limit"])
         next_since_id = self._next_since(messages, since_id)
-        shown = [m for m in messages if args["include_self"] or not self._is_self(m)]
+        if args["include_self"]:
+            shown = messages
+        elif self.codex_thread_meta:
+            # Snapshot only this call's full-thread receipts once for the page.
+            # A short or reused display tag cannot prove native chat ownership.
+            posted = self.agent.state.posted()
+            shown = [m for m in messages if _int(m.get("id")) not in posted]
+        else:
+            shown = [m for m in messages if not self._generic_is_self(m)]
         return self._messages_result("read_topic", [("channel", channel), ("topic", topic)], shown, next_since_id)
 
     def _tool_inbox(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -683,7 +753,7 @@ class Tools:
         self._scan(text=args["text"], topic=topic, channel=channel)
         text = self._text(args["text"])
         to = list(args.get("to") or [])
-        self._use_tag(self.process_tag or Z.session_tag(args.get("session")))
+        self._use_tag(self._call_tag or Z.session_tag(args.get("session")))
         key = self._key(args.get("idempotency_key"), ["post", self.agent.tag, channel.casefold(), topic.casefold(),
                                                       text, to])
         row = self._idem_peek(key[0])
@@ -704,7 +774,7 @@ class Tools:
         self._scan(text=args["text"])
         text = self._text(args["text"])
         to = list(args.get("to") or [])
-        self._use_tag(self.process_tag or Z.session_tag(args.get("session")))
+        self._use_tag(self._call_tag or Z.session_tag(args.get("session")))
         key = self._key(args.get("idempotency_key"), ["reply", self.agent.tag, message_id, text, to])
         row = self._idem_peek(key[0])
         if row is not None:

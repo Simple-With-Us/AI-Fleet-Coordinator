@@ -762,7 +762,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--id", type=_message_id, required=True, metavar="MSGID", help="message to react to")
     p.add_argument("emoji", metavar="EMOJI", help="emoji name, for example eyes or thumbs_up")
 
-    add("mcp", "serve the agent-sync tools over MCP on stdin and stdout (an MCP client's config runs this, not a person)")
+    p = add("mcp", "serve the agent-sync tools over MCP on stdin and stdout (an MCP client's config runs this, not a person)")
+    p.add_argument("--codex-thread-meta", action="store_true",
+                   help="CODEX-only: attribute calls from native MCP _meta.threadId; no automatic nosession fallback")
 
     listener_cli.add_parsers(sub, common)
     return parser

@@ -190,7 +190,10 @@ class Server:
             if not isinstance(name, str):
                 return self.error(request_id, INVALID_PARAMS, "tools/call needs a tool name")
             try:
-                result = self.tools.call(name, params.get("arguments"))
+                if getattr(self.tools, "codex_thread_meta", False):
+                    result = self.tools.call(name, params.get("arguments"), meta=params.get("_meta"))
+                else:
+                    result = self.tools.call(name, params.get("arguments"))
             except T.UnknownTool:
                 shown = name if T._SAFE_NAME_RE.match(name) else "(name not shown)"
                 return self.error(request_id, INVALID_PARAMS, "Unknown tool: %s" % shown)
@@ -429,8 +432,15 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
     except Z.UsageError as exc:
         log(str(exc))
         return 2
+    codex_thread_meta = bool(getattr(args, "codex_thread_meta", False))
+    if codex_thread_meta and seat != "CODEX":
+        log("--codex-thread-meta is CODEX-only")
+        return 3
     ignored = [name for name in IGNORED_ENV if rt.env.get(name)]
     env = {name: value for name, value in rt.env.items() if name not in IGNORED_ENV}
+    if codex_thread_meta:
+        # A Claude engine/session variable must not become the Codex chat identity.
+        env.pop("CLAUDE_CODE_SESSION_ID", None)
     home = _home(env, rt.home)
     # The resolver (Agent -> Z.resolve_credentials) takes --rc, then env ZULIP_RC, then the seat's default
     # file.  The default is named here only so that a missing file reads "credential file not found: PATH"
@@ -446,6 +456,9 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
     session_id, source = getattr(args, "session", None), "flag"
     if not session_id:
         session_id, source = env.get("CLAUDE_CODE_SESSION_ID") or env.get("AGENT_SESSION"), "env"
+    if codex_thread_meta and session_id and not Z.session_tag(session_id):
+        log("explicit session has no usable tag; refusing shared nosession state")
+        return 2
     if not Z.session_tag(session_id):
         session_id, source = None, "none"
     agent_rt = CLI.Runtime(env=env, stdin=io.StringIO(""), stdout=io.StringIO(), stderr=io.StringIO(), home=home,
@@ -478,7 +491,8 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
             "owner keys" % (seat, role))
         return 3
     cfg = C.load(str(state_root(env, home)))
-    tools = T.Tools(agent, me=me, process_tag=agent.tag, session_source=source, owner_user_id=cfg.owner_user_id,
+    tools = T.Tools(agent, me=me, process_tag=agent.tag, session_source=source,
+                    codex_thread_meta=codex_thread_meta, owner_user_id=cfg.owner_user_id,
                     owner_clients=cfg.owner_clients, clock=clock, sleep=rt.sleep, log=lambda text: log(agent.client.scrub(text)))
     server = Server(tools, scrub=agent.client.scrub, log=log)
     log("serving seat %s as %s on stdio (session %s)" % (seat, agent.creds.email, agent.tag or "none"))
