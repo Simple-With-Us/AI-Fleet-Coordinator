@@ -39,6 +39,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from . import __version__
 from . import adapters as A
 from . import config as C
+from . import chat_nudges as CN
+from . import chat_transport as CT
 from . import heartbeat as HB
 from . import heldalert as HELDALERT
 from . import heldback as HELD
@@ -442,6 +444,7 @@ class Daemon:
             self.config.seats = {}
         self.reload_refused: list[str] = []
         self.seats: dict[str, SeatRunner] = {}
+        self.chat_nudges = CN.ChatNudges(self.root, "GROK", recover=False)
         self.coalescer = W.Coalescer(window=self.config.coalesce_seconds, max_window=self.config.coalesce_max_seconds,
                                      owner_window=self.config.owner_coalesce_seconds, new_id=self._new_wake_id)
         self.loopguard = W.LoopGuard(os.path.join(L.listener_dir(self.root), "loopguard.json"))
@@ -962,7 +965,12 @@ class Daemon:
                 self._append_seat_inbox(runner, [row])
                 done.add("inbox")
             if d.wake and not d.delivered_to and "wake" not in done:
-                self.offer_wake(runner, row, owner=d.wake == "owner")
+                matched = False
+                if runner.seat == "GROK" and not c.dm:
+                    matched = self.chat_nudges.enqueue(c.channel, c.topic, message["id"], now,
+                                                       owner=d.wake == "owner", stale=c.stale)
+                if not matched:
+                    self.offer_wake(runner, row, owner=d.wake == "owner")
                 done.add("wake")
 
     def _append_seat_inbox(self, runner: SeatRunner, rows: list[dict[str, Any]]) -> None:
@@ -1034,6 +1042,8 @@ class Daemon:
                     cursors[new_key] = max(value, cursors.get(new_key, value)) if isinstance(value, int) else value
 
             L.update_json(state_path, rename_cursor)
+        if runner.seat == "GROK":
+            self.chat_nudges.rename(old_channel, old_topic, new_channel, new_topic, self.clock.time())
         self.log.write("rename", seat=runner.seat, leases=renamed)
 
     # ---- wakes ---------------------------------------------------------------------------------
@@ -2405,6 +2415,16 @@ class Daemon:
     def status(self) -> dict[str, Any]:
         now = self.clock.time()
         seats: dict[str, Any] = {}
+        try:
+            nudge_state = self.chat_nudges.snapshot()
+            nudge_counts = {state: sum(1 for item in nudge_state["items"] if item.get("status") == state)
+                            for state in ("pending", "dispatching", "accepted", "unknown", "cancelled")}
+            nudge_counts["blocked"] = sum(1 for item in nudge_state["items"]
+                                          if item.get("status") in ("pending", "unknown")
+                                          and item.get("hold_reason"))
+            nudge_counts["bindings"] = len(nudge_state["bindings"])
+        except Exception:
+            nudge_counts = {"unavailable": True}
         for seat, runner in self.seats.items():
             views = runner.ledger.wakes()
             day = [v for v in views.values() if isinstance((v.get("times") or {}).get("started"), (int, float))
@@ -2472,6 +2492,7 @@ class Daemon:
                 "instance": self.config.instance, "disabled": sorted(self.config.disabled),
                 "config_errors": [self.scrub(e) for e in self.config.errors + self.refusal + self.reload_refused],
                 "owner_user_id": self.config.owner_user_id,
+                "chat_nudges": nudge_counts,
                 "loop_guard": self.loopguard.holding(now),
                 "rewake_verified": self.config.rewake_verified, "pause": L.read_json(pause_path(self.root)),
                 "seats": seats}
@@ -2591,12 +2612,109 @@ class Daemon:
             runner.disconnect()  # removed while a connect was in flight:  delete that queue too
 
     def worker_loop(self, runner: SeatRunner) -> None:
+        last_nudge = -1e9
         while not self._stopping(runner):
             with runner.jobs_cond:
                 if not runner.jobs:
                     runner.jobs_cond.wait(timeout=1.0)
-                    continue
-            self.run_jobs(runner.seat, limit=1)
+            if runner.jobs:
+                self.run_jobs(runner.seat, limit=1)
+            if runner.seat == "GROK" and self.clock.monotonic() - last_nudge >= 30.0:
+                last_nudge = self.clock.monotonic()
+                try:
+                    self.dispatch_chat_nudge(runner)
+                except Exception as exc:
+                    self.log.write("chat-nudge-dispatch-error", seat=runner.seat,
+                                   error=self.scrub(str(exc))[:200])
+
+    def dispatch_chat_nudge(self, runner: SeatRunner) -> dict[str, Any]:
+        """One serialized, owner-bound existing-chat nudge with normal wake safety checks."""
+        daemon = self
+        if any(item.get("status") == "unknown" for item in self.chat_nudges.snapshot()["items"]):
+            if not hasattr(self, "_chat_transport"):
+                self._chat_transport = CT.GrokTransport()
+            for item_id in self.chat_nudges.reconcile(self._chat_transport, self.clock.time()):
+                runner.ledger.append({"wake_id": item_id, "state": "done", "ts": self.clock.time(),
+                                      "adapter": "chat-nudge", "reason": "saved user-message receipt"})
+
+        class GuardedTransport:
+            def __init__(self) -> None:
+                self.wake_id = ""
+                self.pending: dict[str, Any] = {}
+
+            def preflight(inner, binding: dict[str, str]) -> str:
+                if (runner.seat != "GROK" or not runner.cfg.enabled or not runner.connected or runner.me is None
+                        or daemon.config.owner_user_id == 0 or runner.fatal):
+                    return "busy"
+                if L.paused(daemon.root, runner.seat, wakes=True):
+                    return "busy"
+                owner = getattr(inner, "wake_owner", False) is True
+                created_at = getattr(inner, "wake_created_at", None)
+                if not owner and isinstance(created_at, (int, float)) and \
+                        daemon.clock.time() - created_at > daemon.config.stale_after:
+                    inner.hold_reason = "queued Zulip message became stale before chat delivery"
+                    return "unsupported"
+                key = L.topic_key(binding["channel"], binding["topic"])
+                if daemon.loopguard.blocked(key, daemon.clock.time()):
+                    return "busy"
+                stale = getattr(inner, "wake_stale", False) is True
+                if owner and stale:
+                    for wake_id, view in runner.ledger.wakes().items():
+                        if wake_id != inner.wake_id and view.get("topic_key") == key and view.get("stale") and \
+                                isinstance(view.get("ts"), (int, float)) and \
+                                daemon.clock.time() - float(view["ts"]) < W.DAY:
+                            inner.hold_reason = "stale owner topic already surfaced today"
+                            return "unsupported"
+                row = {"wake_id": inner.wake_id, "owner": owner, "stale": stale, "topic_key": key,
+                       "channel": binding["channel"], "topic": binding["topic"],
+                       "reserve_usd": 0.0, "downstream_cost_unknown": True, "ts": daemon.clock.time()}
+                blocked = W.budget_block(runner.ledger.wakes(), runner.cfg.budget, owner=owner, key=key,
+                                         now=daemon.clock.time(), exclude=inner.wake_id,
+                                         run_max=0.0)
+                if blocked:
+                    return "busy"
+                inner.pending = row
+                if not hasattr(daemon, "_chat_transport"):
+                    daemon._chat_transport = CT.GrokTransport()
+                return daemon._chat_transport.preflight(binding)
+
+            def send(inner, binding: dict[str, str], text: str) -> str:
+                # Repeat every daemon gate immediately before accounting and transport; a pause,
+                # budget change or loop-guard trip may have raced the earlier preflight.
+                readiness = inner.preflight(binding)
+                if readiness == "busy":
+                    return "deferred"
+                if readiness != "ready":
+                    return "held"
+                now = daemon.clock.time()
+                row = dict(inner.pending, state="started", ts=now, adapter="chat-nudge")
+                runner.ledger.append(row)
+                try:
+                    if not hasattr(daemon, "_chat_transport"):
+                        daemon._chat_transport = CT.GrokTransport()
+                    outcome = daemon._chat_transport.send(
+                        binding, text,
+                        permit=lambda: inner.preflight(binding) == "ready")
+                except Exception:
+                    outcome = "unknown"
+                if outcome == "deferred" and getattr(inner, "hold_reason", None):
+                    outcome = "held"
+                # Local delivery uses no model tokens.  Downstream chat spend is unmeasured; count
+                # limits still apply, but the listener USD ceiling does not cap that chat.
+                skipped = outcome in ("deferred", "held")
+                runner.ledger.append(dict(
+                    inner.pending, state="skipped" if skipped else "done" if outcome == "accepted" else "failed",
+                    ts=daemon.clock.time(), cost_usd=0.0,
+                    adapter="chat-nudge", reason=("safety gate before prompt" if skipped else
+                                                    None if outcome == "accepted" else "delivery %s" % outcome)))
+                return outcome
+
+        transport = GuardedTransport()
+        result = self.chat_nudges.dispatch_one(transport, self.clock.time())
+        if result.get("status") != "idle":
+            self.log.write("chat-nudge", seat=runner.seat, status=result.get("status"),
+                           why=result.get("why"))
+        return result
 
     def refuse_start(self) -> int:
         """The seat partition failed:  say why on stderr and in the log, notify once a day, and
@@ -2654,6 +2772,7 @@ class Daemon:
             if self.refusal:  # the config changed while this listener waited
                 os.close(lock_fd)
                 return self.refuse_start()
+        self.chat_nudges.recover_interrupted()
         os.ftruncate(lock_fd, 0)
         os.write(lock_fd, str(os.getpid()).encode())
         self.install_excepthooks()
@@ -2666,7 +2785,8 @@ class Daemon:
                 # gets a new runner with fresh threads.
                 for seat, runner in list(self.seats.items()):
                     for role, target, wanted in (("poll", self.seat_loop, True),
-                                                 ("wake", self.worker_loop, runner.cfg.wake in C.WORKER_WAKES)):
+                                                 ("wake", self.worker_loop,
+                                                  runner.cfg.wake in C.WORKER_WAKES or runner.seat == "GROK")):
                         thread = runner.threads.get(role)
                         if wanted and (thread is None or not thread.is_alive()):
                             thread = threading.Thread(target=target, args=(runner,), name="%s-%s" % (role, seat),

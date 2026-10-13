@@ -38,3 +38,30 @@ Before dispatch, revalidate the selected record and preserve its recorded host a
 ## Remaining Work
 
 AFC-305 tracks registry implementation and dormant-chat resume coverage.  This audit does not claim those exist.  AFC-306 tracks the current listener defect that can mark held messages surfaced after invalid output or a refused action; coordinate with the overlapping PR #509 lane.  BF-2418 records native BotFleet enablement; BF-2419 tracks direct webhook ingress.  These gaps must remain explicit when reporting universal wake coverage.
+
+## Existing-Chat Nudge Delivery
+
+`agent-sync daemon chats` manages explicit per-seat topic bindings and the durable nudge queue.  A binding identifies a host, platform, session ID and workspace; titles are never routing keys.  Only an eligible wake on the exact topic enters this queue.  A bound nudge replaces the headless response for that message; unbound messages keep their existing routing.
+
+The first transport is `grok-leader`, through the shared Grok leader's existing `session/resume` and `session/prompt` methods.  It requires a live Grok process, the exact workspace, and idle session state.  Busy, permission-waiting, disconnected and unknown sessions remain pending.  It never invokes session creation, cancellation, a model change, or an additional agent owner.  A correlated prompt response or the exact nudge in the chat's saved real-user history confirms transport acceptance.  A timeout without either receipt remains uncertain and is never retried automatically.  The worker checks uncertain deliveries for later saved receipts.  Acceptance does not prove that the agent subsequently read or answered Zulip.
+
+The private per-seat `chat-nudges.json` stores bindings, message-ID deduplication and delivery state.  Restarting after an interrupted send marks it uncertain.  Removing or changing a binding does not redirect already queued work to a different chat.  The explicit cancel command retires a held or uncertain item without resending it; it cannot cancel a prompt already being dispatched.  Pause controls, loop protection and the seat's wake-count limits still apply.  Local nudge delivery costs no model tokens; downstream chat spend is unknown and is not capped by the listener's USD budget.
+
+Shellular's installed CLI has no supported local prompt API.  Its private `AI_PROMPT` queue is reached through an already-paired app and encrypted relay.  The fleet listener does not recreate that pairing protocol or import Shellular's private manager.  Other platform transports and dormant-chat resume remain explicit coverage gaps under AFC-305; listing a chat is not proof that its existing owner accepts injected messages.
+
+Local administration (keep the caller's own seat in `--as`; `--target-seat` selects the delivery identity):
+
+```sh
+agent-sync --as CODEX daemon chats list --target-seat GROK
+agent-sync --as CODEX daemon chats bind --target-seat GROK \
+  --channel agent-sync --topic 'ISSUE-123 Work Topic' \
+  --session-id '<discovered-session-id>' --cwd '<discovered-workspace>'
+agent-sync --as CODEX daemon chats status --target-seat GROK
+agent-sync --as CODEX daemon chats cancel --target-seat GROK --item-id '<held-item-id>'
+agent-sync --as CODEX daemon chats unbind --target-seat GROK \
+  --channel agent-sync --topic 'ISSUE-123 Work Topic'
+```
+
+AFC-307 separately tracks the older shared Grok prompt helper's uncorrelated `queued: true` result.  The new nudge transport bypasses that acceptance path.
+
+Topic renames and channel moves migrate explicit chat bindings and pending nudge text.  Conflicting destination bindings remain intact and affected old pending nudges are held for operator review.  Unknown or in-flight payloads remain unchanged for exact receipt reconciliation.  Stale owner backlog retains the normal once-per-topic/day suppression.
