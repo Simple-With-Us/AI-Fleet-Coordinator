@@ -5,7 +5,7 @@ description: Land a Codex feature branch to main across the fleet — seat workt
 
 # Land a feature branch (CODEX)
 
-> **This install is for `CODEX`.** Slack `[CODEX]`.  Notes `Codex`.  Branches `codex/`.  Worktrees `~/apps/<app>-codex`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `CODEX`.**  Chat tag `[CODEX·session8]`.  Notes `Codex`.  Branches `codex/`.  Lanes `~/apps/lanes/<Repo>/codex-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `codex-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Codex-zuliprc` (mode 600).  Session tag `[CODEX·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.
@@ -14,7 +14,7 @@ Seat: **CODEX**.  Branch: `codex/<slug>`.  Never `claude/`.  Never `monet/`.  Ne
 
 ## Preconditions
 
-1. You are in your Codex worktree (`~/apps/<prefix>-codex` or `~/apps/<prefix>-codex-<lane>`).  See `session-start`.
+1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, made with `~/apps/lane new`; a lane in an old place (`~/apps/lanes/<prefix>/`, which the migration moves, or a flat `~/apps/<prefix>-<seat>[-<lane>]`, which retires where it is) that already exists is fine).  See `session-start`.
 2. `git status` is clean except `.env.local` / `.dev.vars` (never commit those).
 3. `git config user.email` is `12656028+jaywedgeworth22@users.noreply.github.com`.
 
@@ -24,12 +24,12 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 
 ## Docs before the PR
 
-1. Live effort board → In Progress with honest status; mirror `docs/EFFORT-LOG.md` in the same commit (fleet-infra has no mirror).
+1. Linear issue → In Progress with honest status (`board claim <id> ...`, branch `<seat>/<id>-<slug>`).  The effort logs are archived, so there is no `docs/EFFORT-LOG.md` row to mirror.  The PR body says `Fixes <ID>` if it finishes the issue, `Refs <ID>` if not.
 2. `STATUS.md` stanza: what landed, next action.
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
 4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[APP, Codex] …`.
 
-Prose (commit body, PR body, rollout, Notes): two ASCII spaces between sentences.  Chat replies to the owner use `&nbsp;` plus a space.  See `owner-copy`.
+Prose: commit body, rollout docs and Notes source take two ASCII spaces between sentences.  PR titles, bodies and comments take a real U+00A0 plus a space (convert with the `perl` recipe in `sentence-gap`; never the `&nbsp;` entity there).  Chat replies to the owner use `&nbsp;` plus a space in a Markdown chat pane and two ASCII spaces in a terminal.  See `owner-copy`.
 
 ## Gate
 
@@ -77,7 +77,7 @@ gh pr create --fill
 
 CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#agent-sync` then tag.  Consumers pin the exact tag.
 
-`STATUS.md` / `PLAN.md` / `docs/EFFORT-LOG.md` often carry `merge=union` in `.gitattributes`.  Additive board edits usually combine.  Never delete another agent's row while resolving.  Up to 3 land attempts are fine.
+`STATUS.md` / `PLAN.md` (and the archived `docs/EFFORT-LOG.md`) often carry `merge=union` in `.gitattributes`.  Additive edits usually combine.  Never delete another agent's row while resolving.  Up to 3 land attempts are fine.
 
 ## Arm auto-merge
 
@@ -87,11 +87,11 @@ gh pr merge <N> --squash --auto
 
 Not `--admin`.  Branch protection is `enforce_admins: true` plus conversation resolution.  Unresolved review threads block forever.  Use `codex-triage` / `unstick-pr`.
 
-If the box is gating several lanes, post `[CODEX] gating now` with `repo:` (not `->FLEET` unless every listening seat on every platform must spend time).  Coordinator/ops self-id is `AFC`.
+If the box is gating several lanes, announce the full gate in #builds topic `gates`:  `agent-sync post --channel builds --topic gates "gating now (<repo>, <branch or purpose>)"`, then post `gate clear` in the same topic when it finishes.  The CLI writes the tag.  Wait on a peer's open `gating now` with `agent-sync wait --channel builds --topic gates --timeout 900`.  Use the fleet wake (`@**all**` in #agent-sync topic `fleet`) only when every listening seat on every platform must spend time.  Coordinator/ops self-id is `AFC`.
 
 ## After merge
 
-- Board row: **Completed** means merged to `main`, not "PR opened."
+- Linear issue: **Completed** (Done) means merged to `main`, not "PR opened."  A `Fixes <ID>` PR moves it on merge once Linear's GitHub automation is on;  otherwise run `board status <id> completed`.
 - **Deployed** only after the app's production target is verified (`deploy-verify`).
 - Merge to `main` auto-deploys ST / CT / UM on Coolify and DealDex on Vercel.  Do not double-trigger.  Personal-Site live origin is Vercel behind Cloudflare and is **not** "merge = live" — do not mint a second Vercel project.
 - Closeout: `closeout` skill.

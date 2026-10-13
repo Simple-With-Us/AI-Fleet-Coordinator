@@ -14,9 +14,9 @@ Access is the only thing standing in front of it.
 
 | Card | Source | What a row means |
 |---|---|---|
-| **Public Endpoints** | Direct HTTPS probe of 17 fleet surfaces, 8 s timeout, run in parallel | HTTP status and latency.  2xx and 3xx are up; a redirect to `cloudflareaccess.com` reads "Up, behind Access"; 401 and 403 read "Up, auth required"; a timeout is amber and reads "Timed out from Cloudflare". |
+| **Public Endpoints** | Direct HTTPS probe of 18 fleet surfaces, 8 s timeout, run in parallel | HTTP status and latency.  2xx and 3xx are up; a redirect to `cloudflareaccess.com` reads "Up, behind Access"; 401 and 403 read "Up, auth required"; a timeout is amber and reads "Timed out from Cloudflare". |
 | **Fleet Recall** | `GET /health`, `GET /recall/stats`, and a canary `POST /recall/search` for `fleet mode` on `recall.jays.services` | Point count, collection name and status, embedder and reranker health, per-source breakdown, and the canary hits.  The search box at the top of the card queries the live corpus. |
-| **The Board** | `GET /findings/stats` and `GET /findings?status=open,in_progress` on `mac.jays.services` | Open and in-progress counts by severity, plus the P0 and P1 rows that need attention. |
+| **The Board** (archive) | `GET /findings/stats` and `GET /findings?status=open,in_progress` on `mac.jays.services` | Open and in-progress counts by severity, plus the P0 and P1 rows that need attention.  Since the Linear cutover (owner 2026-10-10) this card shows the frozen archive, because THE BOARD is read-only and Linear is the system of record.  Replacing it needs the per-team counts job in `docs/protocols/linear-migration.md` section 5 (open issue), and the card goes away when the archive is retired at about day 30. |
 | **Coolify Applications** | `GET /api/v1/applications` and `/api/v1/servers` on `host.jays.services` | Container status (`running:healthy`, `exited:unhealthy`, …) per application, then server reachability. |
 | **GitHub Repositories** | One Search API call for every open PR the owner has, then the Actions API for the latest run on `main`, per repo in `fleet-apps.json` | Open PR count and the conclusion of the most recent `main` run.  The row links to that run.  Past 100 open PRs the total stays exact but the per-repo split is capped, and the card says so. |
 | **Vercel Projects** | `GET /v9/projects?limit=50`, retried per team when the personal scope is empty | Newest READY deployment when present (else `latestDeployments[0].readyState`) — READY is green, ERROR is red, everything else amber.  A **CANCELED** deployment is amber, not red: it is an abandoned or superseded build, and the production alias keeps serving the last READY one.  See "A canceled deploy is not a down service". |
@@ -57,11 +57,11 @@ seconds.  Worst case per section:
 
 | Section | Subrequests |
 |---|---|
-| `endpoints` | 17 — one per entry in `ENDPOINTS` |
+| `endpoints` | 18 — one per entry in `ENDPOINTS` |
 | `recall` | 3 — health, stats, canary search |
 | `board` | 2 |
 | `coolify` | 2 |
-| `github` | 14 — one PR search plus one Actions call per repo (it was 24) |
+| `github` | 17 — one PR search plus one Actions call per repo (it was 24) |
 | `vercel` | 6 — projects, teams, and up to four team-scoped calls |
 | `sentry` | 1 |
 | `pagerduty` | 1 |
@@ -143,6 +143,17 @@ org scope.  Do not re-paste those three into any app.  A credential that a card
 reports as 401/403 is a *credential* problem — fix the token, not the card.
 `SENTRY_ORG_TOKEN_MINIMAX` is also 403 on that org.
 
+A `301 redirect … not followed` is the opposite case and was *not* a credential
+problem.  It means the panel asked for a repo under the wrong owner: the product
+repos live in the `Simple-With-Us` org, while `Fleet-OPS` is still on the personal
+account.  GitHub answers a personal-owner request for an org repo with a 301 to
+the new location, and this worker deliberately does not follow redirects (see
+`apiJson`), so every row failed on a repo that exists and is reachable.  `APPS`
+now carries an `owner` per entry, and the PR search runs once per owner.  If a
+new repo 301s, it moved: give it the right `owner` rather than re-pasting the
+token.  `GITHUB_TOKEN` and `GITHUB_ADMIN_PAT` are both verified working against
+this card as of 2026-10-12.
+
 The Fleet Recall card needs three of these together: `RECALL_API_TOKEN` for the
 service bearer, and `CF_ACCESS_CLIENT_ID` plus `CF_ACCESS_CLIENT_SECRET` for the
 Cloudflare Access service token in front of the host.  `GET /health` is public and
@@ -150,7 +161,9 @@ is checked even when the other two are missing.
 
 Non-secret configuration lives in `wrangler.jsonc` under `vars`: `GITHUB_OWNER`,
 `SENTRY_ORG`, `DD_SITE`, and the `RECALL_BASE` / `BOARD_BASE` / `COOLIFY_BASE`
-hostnames.
+hostnames.  `GITHUB_OWNER` is only the *fallback* for app repos that do not
+declare an `owner` of their own — today that is `Fleet-OPS` alone, and the other
+15 repos sit in the `Simple-With-Us` org.
 
 ## Deploy
 
@@ -238,8 +251,14 @@ Deliberate absences and retired probes:
 - **Hog Hunter has no endpoint row.**  It is a local-only Mac app with no product
   domain.  CodeCaps is probed at its custom domain `codecaps.simplewithus.com`
   (the `gh-pages` branch carries that CNAME; the `github.io` path is
-  case-sensitive and the lower-case spelling 404s), and is not in
-  `fleet-apps.json` yet, so it has no `APPS` row either.
+  case-sensitive and the lower-case spelling 404s), and has an `APPS` row
+  now that it is in `fleet-apps.json`.
+- **`fleetlink-legacy` has an `APPS` row and no endpoint row.**  It is the private
+  repo of the live worker that fleetlink.online already serves, so the `FleetLink`
+  probe covers it.  The repo has no Actions workflow, so the GitHub card reads
+  "1 with no run on main" (amber) until the row is retired at cutover.
+- **FleetLink is probed at `https://fleetlink.online/`.**  The Worker has no
+  `/health` route (it answers 404), and `/` answers 200.
 - **Scout is retired (2026-09-09).**  Do not probe `scout.jays.services`.
 - **`autorotate.codes` is retired (NXDOMAIN).**  Probe `autorotate.vercel.app`
   instead; Autorotate remains in `APPS` for the GitHub card.

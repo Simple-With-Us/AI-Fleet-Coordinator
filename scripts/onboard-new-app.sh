@@ -2,14 +2,19 @@
 # onboard-new-app.sh — join a GitHub repo to the fleet.
 #
 # Mechanical half of docs/ONBOARDING-NEW-APP.md. Does not touch Infisical,
-# Coolify, ASC, or any secret value.
+# Coolify, ASC, or any secret value.  Infisical's only environment is prod:  the closing
+# checklist reminds the owner to delete a new project's dev and staging at creation.
 #
 # Usage:
 #   ./scripts/onboard-new-app.sh --repo DealDex --acronym DD \
-#       --code-dir DealDex --worktree-prefix dealdex \
-#       --board DEALDEX-EFFORT-LOG.md --slack-repo DealDex
+#       --code-dir DealDex --worktree-prefix dealdex
 #
-# Safe to re-run: skips existing clone / board / worktree / JSON row.
+# No effort log is created:  the effort logs are archived and Linear is the tracker, so a new
+# app gets a Linear team keyed by its acronym (a Jay-only step, printed at the end).
+#
+# Safe to re-run: skips existing clone / JSON row.  Creates no lane and no
+# folder under ~/Code other than the integration tree; make a lane per task with
+# ~/apps/lane new (docs/protocols/lane-map.md).
 
 set -euo pipefail
 
@@ -17,8 +22,6 @@ REPO=""
 ACRONYM=""
 CODE_DIR=""
 WORKTREE_PREFIX=""
-BOARD=""
-SLACK_REPO=""
 VISIBILITY="private"
 DESCRIPTION=""
 OWNER="${FLEET_OWNER:-jaywedgeworth22}"
@@ -30,7 +33,7 @@ CREATE_REPO=0
 here="$(cd "$(dirname "$0")/.." && pwd)"
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -40,8 +43,17 @@ while [ $# -gt 0 ]; do
     --acronym) ACRONYM="${2:-}"; shift 2 ;;
     --code-dir) CODE_DIR="${2:-}"; shift 2 ;;
     --worktree-prefix) WORKTREE_PREFIX="${2:-}"; shift 2 ;;
-    --board) BOARD="${2:-}"; shift 2 ;;
-    --slack-repo) SLACK_REPO="${2:-}"; shift 2 ;;
+    --board)
+      # Accepted so older command lines keep working.  The effort logs are archived, so a live
+      # board file is no longer created and the registry row carries no liveBoard.
+      echo "note: --board is ignored; the effort logs are archived and Linear is the tracker" >&2
+      shift 2 ;;
+    --slack-repo)
+      # Accepted so older command lines keep working.  The registry no longer has a
+      # separate chat name for an app:  status blocks write `repo:` with the GitHub
+      # repo name and topics use the acronym.
+      echo "note: --slack-repo is ignored; Slack is retired and the registry has no chat repo name" >&2
+      shift 2 ;;
     --visibility) VISIBILITY="${2:-}"; shift 2 ;;
     --description) DESCRIPTION="${2:-}"; shift 2 ;;
     --owner) OWNER="${2:-}"; shift 2 ;;
@@ -58,12 +70,8 @@ if [ -z "$REPO" ] || [ -z "$ACRONYM" ]; then
 fi
 CODE_DIR="${CODE_DIR:-$REPO}"
 WORKTREE_PREFIX="${WORKTREE_PREFIX:-$(echo "$REPO" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | cut -c1-16)}"
-BOARD="${BOARD:-$(printf '%s' "$REPO" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '-')-EFFORT-LOG.md}"
-SLACK_REPO="${SLACK_REPO:-$REPO}"
 
 CODE_PATH="$CODE_ROOT/$CODE_DIR"
-LIVE_BOARD="$APPS_ROOT/$BOARD"
-LANE="$APPS_ROOT/${WORKTREE_PREFIX}-grok"
 TODAY="$(date '+%Y-%m-%d')"
 
 run() {
@@ -116,52 +124,13 @@ if [ ! -f "$CODE_PATH/LICENSE" ] && [ "$REPO" != "Fleet-OPS" ]; then
   run cp "$here/LICENSE" "$CODE_PATH/LICENSE"
 fi
 
-run mkdir -p "$CODE_ROOT/copilot-worktrees/$CODE_DIR"
-
-# --- grok worktree ---
-if [ -d "$LANE" ]; then
-  echo "lane exists: $LANE"
-else
-  echo "creating grok lane $LANE"
-  run git -C "$CODE_PATH" worktree add -b "grok/fleet-onboard" "$LANE"
-fi
-
-# --- live board ---
-if [ -f "$LIVE_BOARD" ]; then
-  echo "live board exists: $LIVE_BOARD"
-else
-  echo "writing live board $LIVE_BOARD"
-  if [ "$DRY_RUN" -eq 0 ]; then
-    cat > "$LIVE_BOARD" <<EOF
-# ${REPO} Effort Log — cross-agent board
-Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this file
-(mirror: docs/EFFORT-LOG.md in the repo). As of ${TODAY}.
-
-## Deployed
-- (none)
-
-## Completed
-- (none)
-
-## In Progress
-- (none)
-
-## Planned / Reserved
-- (none)
-
-## Changelog of this log
-- ${TODAY} — bootstrapped by onboard-new-app.sh.
-EOF
-  fi
-fi
-
 # --- fleet-apps.json row ---
 if [ "$DRY_RUN" -eq 0 ]; then
-  python3 - "$here/fleet-apps.json" "$REPO" "$ACRONYM" "$CODE_DIR" "$WORKTREE_PREFIX" "$BOARD" "$SLACK_REPO" <<'PY'
+  python3 - "$here/fleet-apps.json" "$REPO" "$ACRONYM" "$CODE_DIR" "$WORKTREE_PREFIX" <<'PY'
 import json, sys
 from pathlib import Path
 path = Path(sys.argv[1])
-repo, acronym, code_dir, prefix, board, slack = sys.argv[2:8]
+repo, acronym, code_dir, prefix = sys.argv[2:6]
 data = json.loads(path.read_text())
 if any(a.get("repo") == repo for a in data.get("apps", [])):
     print(f"fleet-apps.json already has {repo}")
@@ -170,9 +139,7 @@ data.setdefault("apps", []).append({
     "repo": repo,
     "acronym": acronym,
     "displayName": repo,
-    "slackRepo": slack,
     "codeDir": code_dir,
-    "liveBoard": board,
     "worktreePrefix": prefix,
     "badgeClass": "repo-" + acronym.lower(),
     "digestColor": "#64748b",
@@ -188,10 +155,29 @@ fi
 
 echo
 echo "Next (this script does not finish these):"
-echo "  1. In the lane ($LANE): add AGENTS.md, docs/EFFORT-LOG.md, CI, effort-issues-sync"
-echo "     (copy from DealDex or Usage-Monitor; see docs/ONBOARDING-NEW-APP.md Phase 3)."
+echo "  1. Make a lane for the onboarding PR (this script creates none; $CODE_PATH stays on main)."
+echo "     The new registry row is only in this checkout until it merges and 'install_tools apply tools'"
+echo "     refreshes ~/apps/lane-tools, so the first lane comes from here:"
+echo "       cd $here/scripts && AGENT_SEAT=<TAG> FLEET_APPS_JSON=$here/fleet-apps.json \\"
+echo "         python3 -m fleet_lanes.lane new $REPO fleet-onboard"
+echo "     Afterwards: AGENT_SEAT=<TAG> ~/apps/lane new $REPO <slug>  (lands in ~/apps/lanes/$CODE_DIR/)."
+echo "     In that lane add AGENTS.md and CI (copy from DealDex or Usage-Monitor; see"
+echo "     docs/ONBOARDING-NEW-APP.md Phase 3).  There is no docs/EFFORT-LOG.md and no effort-issues-sync."
 echo "     After CI job \`verify\` exists: python3 $here/scripts/apply-github-ruleset.py --repo $OWNER/$REPO --kind product --checks verify"
-echo "  2. Patch registries listed in docs/ONBOARDING-NEW-APP.md Phase 4."
+echo "  2. Patch registries listed in docs/ONBOARDING-NEW-APP.md Phase 4.  AGENT-SYNC.md is not patched by hand:"
+echo "     it is being generated from Fleet-OPS handbook/, so its app rows are a pull request there"
+echo "     (handbook/appendix/reference-tables.md), and neither copy of AGENT-SYNC.md is edited directly."
 echo "  3. python3 $here/scripts/check-fleet-registry.py"
-echo "  4. PR the app + this coordinator repo. Slack claim/closeout."
-echo "  5. Owner dashboards (Infisical / Coolify / ASC) stay on the checklist."
+echo "  4. PR the app + this coordinator repo.  Claim the Linear issue (board claim) and close out in Zulip:  topic \"$ACRONYM-<n> <subject>\""
+echo "     in #agent-sync, posted with 'agent-sync post' (docs/protocols/zulip-fleet-guide.md)."
+echo "     If the app's PR numbers should link in Zulip, ask Jay about a linkifier for it: the guide's"
+echo "     Current Linkifiers table lists the acronyms that have one, and an unlisted \`$ACRONYM#n\` falls through"
+echo "     to the generic repo pattern.  Never change a linkifier without Jay's OK."
+echo "  5. Linear (Jay only):  create a public team with key $ACRONYM in the Simple With Us workspace, with the standard"
+echo "     states and label groups (docs/protocols/linear-migration.md section 3).  Until it exists, \`board file --app $REPO\`"
+echo "     files to AFC with an app:$REPO label."
+echo "  6. Owner dashboards (Infisical / Coolify / ASC) stay on the checklist."
+echo "     Infisical: prod is the only environment.  Right after the owner creates the app's project,"
+echo "     delete its default dev and staging environments (this script calls no Infisical API and deletes nothing)."
+echo "     Never set INFISICAL_ENV / INFISICAL_ENVIRONMENT to anything but prod;"
+echo "     python3 $here/scripts/check-infisical-env.py checks a repo for that."

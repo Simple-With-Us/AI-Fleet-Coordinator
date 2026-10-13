@@ -39,5 +39,15 @@ if [ ! -x "$NODE" ]; then
   exit 1
 fi
 
+# Fleet seats for every BotFleet bot (owner ruling 2026-10-11, "SEATS FOR ALL
+# BOTS").  BotFleet is a public product, so server/launch-identity.ts gives a
+# bot its fleet seat (AGENT_LAUNCH_SEAT, BF-<ROLE>) only when this is exactly
+# "1", and server/prompt-privacy.test.ts keeps it off by default for every
+# install that is not this operator Mac.  The switch therefore lives here, in
+# the Mac's launch config, and never in BotFleet's own defaults.  Set after the
+# "already healthy" exit above on purpose:  only the harness this script starts
+# can carry it.
+export BOTFLEET_FLEET_SEAT_PROMPTS=1
+
 cd "$ROOT"
 exec "$NODE" --experimental-strip-types server/index.ts

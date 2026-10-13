@@ -3,9 +3,11 @@ name: codex-triage
 description: Triage unresolved GitHub review threads (chatgpt-codex-connector, Cursor Bugbot, and any other review bot or human) — classify against current HEAD, fix real findings in one batch, reply, then resolve. Use when gating a merge, when branch protection blocks on conversation resolution, or when a bot re-reviews after push.
 ---
 
-# Review-thread triage (GROK-BUILD)
+# Review-thread triage (GROK)
 
-> **This install is for `GROK-BUILD`.** Slack `[GROK-BUILD]`.  Notes `Grok Build`.  Branches `grok-build/`.  Worktrees `~/apps/<app>-grok-build`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK·session8]`, and the `agent-sync` CLI writes it for you.
+
+> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
 Name is historical (`codex-connector`).  Apply to **every** unresolved thread on the PR: Codex, Cursor Bugbot, Copilot, humans.
@@ -45,7 +47,7 @@ gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadR
 gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -F t=<threadId>
 ```
 
-Reply shape (file/PR text = two ASCII spaces between sentences):
+Reply shape (review-thread replies are PR text: a real U+00A0 plus a space between sentences, converted with the `perl` recipe in `sentence-gap`; files stay on two ASCII spaces):
 
 - **Real:** `Fixed in <short-sha>.  <function>.  Test: test/foo.test.ts.`
 - **False positive:** why the rule does not apply, then resolve.
@@ -72,7 +74,7 @@ If the PR is not MERGED, open a follow-up from the same branch.  Expect squash-m
 
 ## 6. Stop at round 2–3
 
-Later rounds on a merged PR are mostly noise.  Triage genuine hazards; surface the rest to the owner (Notes + board comment).  Grok Build's job on these is the security/contract read, not infinite bot ping-pong.
+Later rounds on a merged PR are mostly noise.  Triage genuine hazards; surface the rest to the owner (Notes + a Linear comment).  Grok's job on these is the security/contract read, not infinite bot ping-pong.
 
 ## Canon
 

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.sim-idle-reaper</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/jay/apps/sim-idle-reaper.py</string>
+  </array>
+  <!-- Every 15 minutes.  Scheduled, not always-on:  idle between runs is correct, and
+       mac-process-watch.sh only keeps it loaded.  Not RunAtLoad, so a bootstrap never
+       shuts a simulator down by itself.  Rules and skips:  scripts/sim-idle-reaper.py. -->
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <false/>
+  <!-- Standard, not Background:  the background class starved com.jay.grok-idle-unload
+       at load average ~300 (see its plist). -->
+  <key>ProcessType</key>
+  <string>Standard</string>
+  <key>StandardOutPath</key>
+  <string>/Users/jay/Library/Logs/sim-idle-reaper.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/Library/Logs/sim-idle-reaper.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>DEVELOPER_DIR</key>
+    <string>/Applications/Xcode.app/Contents/Developer</string>
+  </dict>
+</dict>
+</plist>

@@ -66,7 +66,7 @@ and re-ingesting unchanged content is a no-op.  One extra point, `doc_id = meta/
 
 | Source | Where it comes from | Notes |
 |---|---|---|
-| `board` | `~/apps/mac-collab/findings.db` (title, body, resolution, status, severity, comments) | category `lesson` when resolved, else `finding`; url is the board |
+| `board` | `~/apps/mac-collab/findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (read-only after the Linear cutover; a `linear` source reading Linear through the read-only Fleet Reader app is planned) | category `lesson` when resolved, else `finding`; url is the board |
 | `apple-note` | every note in the iCloud folder **Coding**, exported by AppleScript without stealing focus, cached by modification date | app and seat parsed from the `[APP, Agent]` title convention |
 | `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Deduped by resolved path. |
 | `effort-log` | `~/apps/*-EFFORT-LOG.md` and the protocol | one doc per file, app from the filename |
@@ -160,7 +160,10 @@ a rare infra/policy scan of owner rulings only.
 
 The `fleet-recall` MCP server is registered in every CLI's global MCP config by
 `scripts/install-fleet-rag.sh` (stdio, `python3 ~/apps/fleet-rag/fleet-recall-mcp.py`, no
-tokens in any config file).  Tools:
+tokens in any config file).  OpenCode, Kimi Code, Copilot CLI, Muse Code, MiniMax and fx have their own formats, so the same script
+calls `python3 -m fleet_lanes.install_mcp` for them (each tool's native shape, a tool that is not installed is skipped, a
+hand-registered entry is left alone).  Clutch is not in the list: it carries `fleet-recall` as a native agent preset
+(`~/.clutch/dsh/.agent-presets/fleet-recall`), and a second copy would double the tools.  Tools:
 
 - `recall_search(query, limit=5, category?, app?, source?, seat?, since_days?)`
 - `recall_contribute(text, category, app="fleet", seat, title?, url?)`
@@ -385,7 +388,7 @@ and `FLEET_RAG_HANDOFF_FILE` override the defaults this repo ships for its owner
 
 | Routine | Schedule | What it does |
 |---|---|---|
-| Fleet RAG nightly ingest | daily 02:30 local | `recall ingest --all --prune`, reads `~/apps/fleet-rag/state/last-run.json`, retries once, files a P1 on the board on repeated failure |
+| Fleet RAG nightly ingest | daily 02:30 local | `recall ingest --all --prune`, reads `~/apps/fleet-rag/state/last-run.json`, retries once, files a P1 in Linear (`board file`) on repeated failure |
 | Fleet RAG weekly health + recall eval | Sundays 06:30 local | `recall doctor --platforms --box` / `stats` / `eval` / `digest --days 7`, checks `recall.jays.services/health` and yesterday's snapshot, writes the owner note "[FLEET, Oracle] Weekly recall digest", files a P1 on regressions |
 
 Both routines start with a preflight (added Tue, Sep 8, 2026): `recall doctor --platforms`, and when the `ingest:sentinel` (or `tei:rerank`) row says the direct path is skipped because Tailscale is logged out, `recall-tunnel up` plus the three tunnel URLs on every recall command, then `recall-tunnel down`.  Without it the nightly failed every night from Sep 3 to Sep 8 while the corpus itself stayed green.

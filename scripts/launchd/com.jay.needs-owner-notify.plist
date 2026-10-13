@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.needs-owner-notify</string>
+  <!-- The fallback notifier for needs-owner items (open-loops unit C6-2, Linear AFC-286).  Scheduled, not
+       always-on:  idle between runs is correct, and mac-process-watch.sh only keeps it loaded.  It runs the
+       stable copy that scripts/needs_owner/install.sh (its apply mode) puts at ~/apps/needs-owner, in isolated mode
+       (python3 -I), and does these things as CLAUDE:  posts a notice for an item whose own seat could not
+       (after 2 minutes), records the owner's answer (a tap on a low-stakes option, a message that
+       agent-sync verify-owner-msg passes, or a Linear comment by OWNER_LINEAR_USER_ID) as one Linear comment,
+       wakes the filing seat with one directed note, and mirrors Grok Bot needs-owner-request blocks into
+       Linear.  Caps, the pause and OWNER_LINEAR_USER_ID are Infisical knobs (NEEDS_OWNER_CAPS,
+       NEEDS_OWNER_NOTIFY_PAUSED).  Docs: docs/protocols/needs-owner.md.
+       Python 3.11 or newer is required, so this names Homebrew's python3 and not Apple's 3.9.
+       Load it with:  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.needs-owner-notify.plist -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/python3</string>
+    <string>-I</string>
+    <string>/Users/jay/apps/needs-owner/needs-owner</string>
+    <string>notify</string>
+  </array>
+  <!-- Every 5 minutes.  Not RunAtLoad:  bootstrapping must not send anything by itself.  A second copy cannot
+       overlap (the run holds ~/apps/needs-owner/state/notify.lock;  a lock older than 30 minutes is taken over). -->
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>RunAtLoad</key>
+  <false/>
+  <!-- Standard, not Background:  the background class starves jobs on this Mac under load (see
+       com.jay.grok-idle-unload).  Nice and LowPriorityIO yield to interactive work without the starvation. -->
+  <key>ProcessType</key>
+  <string>Standard</string>
+  <key>Nice</key>
+  <integer>5</integer>
+  <key>LowPriorityIO</key>
+  <true/>
+  <!-- The log holds ids and reason words only:  never a question, an option, a message or an answer.  A quiet run
+       writes one start line;  nothing is rotated, so a year is a few megabytes. -->
+  <key>StandardOutPath</key>
+  <string>/Users/jay/Library/Logs/needs-owner-notify.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/Library/Logs/needs-owner-notify.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- The tools it runs (board, agent-sync, infisical) live in ~/.local/bin and /opt/homebrew/bin. -->
+    <key>PATH</key>
+    <string>/Users/jay/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/jay</string>
+    <!-- The seat this agent acts as.  Only CLAUDE runs the notifier, and AGENT_LAUNCHER is deliberately not set. -->
+    <key>AGENT_SEAT</key>
+    <string>CLAUDE</string>
+  </dict>
+</dict>
+</plist>

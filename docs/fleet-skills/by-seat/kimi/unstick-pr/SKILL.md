@@ -5,8 +5,6 @@ description: Diagnose and repair a PR that will not merge — phantom vs real co
 
 # Unstick a blocked PR (KIMI)
 
-> **This install is for `KIMI`.** Slack `[KIMI]`.  Notes `Kimi`.  Branches `kimi/`.  Worktrees `~/apps/<app>-kimi`.  Do not inherit another seat's tag from a shared template.
-
 > **Retired seat.** Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
 
 
@@ -34,10 +32,10 @@ git merge-tree --write-tree origin/main origin/<branch>
 - Exit 0 = **PHANTOM**.  GitHub's mergeability cache stuck (common under concurrent push bursts).
 - Exit 1 with conflict markers = **REAL**.
 
-**Phantom fix:** merge `origin/main` in the Kimi worktree and push a fresh head SHA.
+**Phantom fix:** merge `origin/main` in your lane and push a fresh head SHA.
 
 ```bash
-cd ~/apps/<prefix>-kimi   # never ~/Code/<repo>
+cd "$(~/apps/lane path <app> <slug>)"   # your lane; never ~/Code/<repo>
 git fetch origin
 git merge origin/main --no-edit
 git push origin kimi/<slug>
@@ -45,7 +43,7 @@ git push origin kimi/<slug>
 
 GitHub recomputes in ~20–60s and re-dispatches CI.  If several PRs are stuck, push one at a time, ~10–15s apart.
 
-**Real conflict:** merge `origin/main` by hand in the worktree.  `STATUS.md`, `PLAN.md`, and `docs/EFFORT-LOG.md` often have `merge=union` — additive board prose combines.  Never delete another agent's row.  If code intent is unclear, abort and escalate on THE BOARD + `#agent-sync`.
+**Real conflict:** merge `origin/main` by hand in the worktree.  `STATUS.md`, `PLAN.md`, and the archived `docs/EFFORT-LOG.md` often have `merge=union` — additive prose combines.  Never delete another agent's row.  If code intent is unclear, abort and escalate with a Linear comment + `#agent-sync`.
 
 ### B) BLOCKED, checks green
 
@@ -76,7 +74,7 @@ gh pr view <N> --json autoMergeRequest
 
 ## 4. If it still hangs
 
-Repeat 1–3.  Comment on the matching board item.  Do not force-merge, do not disable protection, do not resolve threads without a reply.
+Repeat 1–3.  Comment on the matching Linear issue (`board comment <id> ...`).  Do not force-merge, do not disable protection, do not resolve threads without a reply.
 
 ## Canon
 

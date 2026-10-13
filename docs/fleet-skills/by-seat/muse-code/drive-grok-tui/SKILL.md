@@ -5,7 +5,7 @@ description: Drive a live Mac Grok TUI session from any local or cloud agent (Cl
 
 # Drive a live Grok TUI
 
-> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Distinct from **Muse Assistant** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.
+> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
 
 The Mac Grok TUI joins `~/.grok/leader.sock`.  Any agent can attach through
@@ -40,7 +40,7 @@ python3 ~/apps/grok-acp-runtime/grok-idle-unload.py --dry-run
 - Peek/tail/await never `session/load` a live chat (load hangs ~45s).
 - `cancel` is a `session/cancel` **notification** after `session/resume`.  Best-effort.  Idle chats ignore it.
 - `close` is `session/close`: unload that chat's MCP tools and keep the transcript on disk.  Refuses `$GROK_SESSION_ID` unless `--self`.  Refuses working / needs-input unless `--force`.
-- Hourly `com.jay.grok-idle-unload` closes **live** chats idle >12h.  It does not `/delete`.  `/resume` or `grok --resume ID` reloads tools.  `GROK_IDLE_UNLOAD_HOURS` overrides the threshold.
+- Hourly `com.jay.grok-idle-unload` closes chats that hold MCP processes and sit idle: 30 minutes for a zero-turn stub with no attached client, 4 hours for the rest.  It does not `/delete`.  `/resume` or `grok --resume ID` reloads tools.  `GROK_IDLE_UNLOAD_STUB_MINUTES` and `GROK_IDLE_UNLOAD_HOURS` override the thresholds.
 
 ## MCP (local or cloud)
 

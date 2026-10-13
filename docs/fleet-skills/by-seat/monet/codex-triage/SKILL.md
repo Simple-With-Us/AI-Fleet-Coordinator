@@ -5,7 +5,7 @@ description: Triage unresolved GitHub review threads (chatgpt-codex-connector, C
 
 # Review-thread triage (MONET)
 
-> **This install is for `MONET`.** Slack `[MONET]`.  Notes `Monet`.  Branches `monet/`.  Worktrees `~/apps/<app>-monet`.  Do not inherit another seat's tag from another seat's upload pack.
+> **Retired seat.**  Owner directive 2026-10-07: the Monet Claude account and app are no longer used, and `CLAUDE` is the only Claude seat.  Do not take work as MONET, do not leave MONET In Progress, and do not install this pack anywhere.  This catalog copy is inactive.
 
 
 Name is historical (`codex-connector`).  Apply to **every** unresolved thread on the PR: Codex, Cursor Bugbot, Copilot, humans.
@@ -45,7 +45,7 @@ gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadR
 gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -F t=<threadId>
 ```
 
-Reply shape (file/PR text = two ASCII spaces between sentences):
+Reply shape (review-thread replies are PR text: a real U+00A0 plus a space between sentences, converted with the `perl` recipe in `sentence-gap`; files stay on two ASCII spaces):
 
 - **Real:** `Fixed in <short-sha>.  <function>.  Test: test/foo.test.ts.`
 - **False positive:** why the rule does not apply, then resolve.
@@ -72,7 +72,7 @@ If the PR is not MERGED, open a follow-up from the same branch.  Expect squash-m
 
 ## 6. Stop at round 2–3
 
-Later rounds on a merged PR are mostly noise.  Triage genuine hazards; surface the rest to the owner (Notes + board comment).  Monet's job on these is the security/contract read, not infinite bot ping-pong.
+Later rounds on a merged PR are mostly noise.  Triage genuine hazards; surface the rest to the owner (Notes + a Linear comment).  Monet's job on these is the security/contract read, not infinite bot ping-pong.
 
 ## Canon
 

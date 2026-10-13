@@ -3,9 +3,11 @@ name: deploy-verify
 description: Verify production after a merge or deploy — per-app health URLs, Coolify vs Vercel vs library-tag, backup continuity, and known failure classes. Use after merging to main, after a Coolify/Vercel deploy, when health looks stale, or when the owner asks if prod is up. Do not treat Coolify API status as truth.
 ---
 
-# Deploy verification (GROK-BUILD)
+# Deploy verification (GROK)
 
-> **This install is for `GROK-BUILD`.** Slack `[GROK-BUILD]`.  Notes `Grok Build`.  Branches `grok-build/`.  Worktrees `~/apps/<app>-grok-build`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Grok-Build-zuliprc` (mode 600).  Session tag `[GROK·session8]`, and the `agent-sync` CLI writes it for you.
+
+> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
 Read `/Users/jay/apps/COOLIFY.md` before poking the API.  Prefer **public health + `docker ps` on the box** over Coolify UI/API `status` (that field goes stale).
@@ -34,7 +36,7 @@ If Infisical still has `COOLIFY_API_TOKEN` for metrics, it must equal `COOLIFY_S
 | UM | https://usage.jays.services | Coolify webhook.  UUID `<UM_COOLIFY_APP_UUID>`.  Render and the Oracle auto-deploy timer are retired. | `curl -fsS https://usage.jays.services/api/health` and `curl -fsS 'https://usage.jays.services/api/ready?strict=1'` |
 | DealDex | https://dealdex.net | **Vercel** on merge.  Do not Coolify.  `dealdex.vercel.app` is a different Next.js site. | `curl -sI https://dealdex.net` |
 | Personal-Site | https://jays.services | Vercel behind Cloudflare.  Production git deploys only when `site/` changed, at most once per hour.  Previews skipped.  Do not create a second Vercel project. | `curl -sI https://jays.services` |
-| CTS | published tag `vX.Y.Z` | Library.  Announce on Slack, then tag.  Consumers pin the tag. | n/a |
+| CTS | published tag `vX.Y.Z` | Library.  Announce in the Zulip work topic, then tag.  Consumers pin the tag. | n/a |
 | AFC | GitHub Pages digest | `fleet-activity-site.yml`, not Coolify. | `https://simple-with-us.github.io/AI-Fleet-Coordinator/` + `curl -s https://mac.jays.services/health` |
 
 Prefer live `GET /api/v1/applications` (via a helper that reads the token itself, or Coolify MCP) over memorized UUIDs.
@@ -66,7 +68,7 @@ Do not interpolate the token into a command you will see.  Prefer Coolify MCP or
 ssh -i ~/.ssh/hetzner root@<PROD_ORIGIN_IP> 'docker ps --format "{{.Names}} {{.Status}}"'
 ```
 
-**Zombie:** a deploy stuck `in_progress` blocks the queue (`concurrent_builds` serializes).  Post `#agent-sync` with the deployment id if you can see it from the box.
+**Zombie:** a deploy stuck `in_progress` blocks the queue (`concurrent_builds` serializes).  Post the deployment id in the app's Zulip work topic (`agent-sync post --topic "<ID> <subject>" …`) if you can see it from the box.
 
 **Silent freeze (ST #2545 class):** webhook 200 + healthy `/api/health` on an **old** sha.  Standing watch: ST `.github/workflows/deploy-freshness.yml`.  Do not hand-trigger; inspect the queue.
 
@@ -81,7 +83,7 @@ curl -s https://socratictrade.com/api/health \
   | jq '.checks.storage | {litestreamAgeSeconds, litestreamStatus, litestreamState, litestreamDegradedReasons}'
 ```
 
-`storageDegraded: true` or `stale`/`stopped` → escalate immediately on Slack + board.
+`storageDegraded: true` or `stale`/`stopped` → escalate immediately in the Zulip work topic + with a Linear comment.
 
 Litestream 0.5.12 is the pin after 0.5.14 leaked TCP sockets (2026-07-10).  Do not "upgrade" it casually.
 
@@ -101,7 +103,7 @@ Do not revert raised `tcp_mem` sysctl just because a deploy succeeded.
 
 ## 5. After verify
 
-Move the effort row to **Deployed** only when you say how you verified.  `closeout` skill.  Rollback: Coolify previous deployment / Vercel rollback — not Mac pm2, not `trading-publish.sh` (retired).
+Move the Linear issue to **Deployed** (`board status <id> deployed --resolution "..."`) only when you say how you verified.  `closeout` skill.  Rollback: Coolify previous deployment / Vercel rollback — not Mac pm2, not `trading-publish.sh` (retired).
 
 ## Canon
 

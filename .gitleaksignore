@@ -1,0 +1,30 @@
+# Dummy credentials in redaction-test fixtures, first commit of the Lane Map tooling PR (#359).
+# The values are made-up strings used to prove the installer redacts them; the fixtures are
+# split in the source from the next commit on.  Fingerprints are per commit, so these two lines
+# only silence that one historical commit.
+94de3f0fded4396bccc64b67b37dfc9bf260eeff:scripts/fleet_lanes/tests/test_install_rules.py:generic-api-key:333
+94de3f0fded4396bccc64b67b37dfc9bf260eeff:scripts/fleet_lanes/tests/test_install_tools.py:curl-auth-header:88
+# Same fixture file, second commit: the first split still left one fixture line matching.
+72b399bed9b3df142f59d6cb1f6386998adfe6f8:scripts/fleet_lanes/tests/test_install_rules.py:generic-api-key:334
+# Third commit of the PR: the same fixture line, before the lines were stored reversed.
+24f41fe2df1660ce6b3fe36f3098f58f7dbbe63c:scripts/fleet_lanes/tests/test_install_rules.py:generic-api-key:334
+# Squash commit of PR #359 on main (it carries the same fixture line before the lines were stored reversed).
+d8ba0dab24f7925c0c84e5a9dd8a42e8fe9e6889:scripts/fleet_lanes/tests/test_install_rules.py:generic-api-key:334
+# Heartbeat test fixture (PR #441): the squash commit on main carries a fixed made-up DSN key;  now generated per run.
+be0df36c940b30a8bb2e75750ba34a1eebeaa222:scripts/agent_sync/tests/test_heartbeat.py:generic-api-key:16
+# Route suggestion PR (#452), first commit:  the loop-guard note call in daemon.py is code, not a key
+# (generic-api-key misread its keyword arguments); the line is split from the next commit on.
+04a98dc842e64cf9d326a1296f42ca973a4c6f8d:scripts/agent_sync/daemon.py:generic-api-key:841
+# Fleet work backup PR (#454), review-fix commit:  a made-up 45 character string in the JSON credential field test
+# (generic-api-key read the variable name `token` as the keyword);  split from the next commit on.
+f5bc75267bdef2fd7a6d0adddfd4864b6a29c872:scripts/fleet-work-backup/test_fleet_work_backup.py:generic-api-key:487
+# F3 review-fix commit (PR #488):  a made-up 28 character filler for a Linear-key-shaped test string was read as a
+# generic API key (the variable was named `token`);  built from a short repeated block from the next commit on.
+304a30f2479f1329f92e980b34b67f1c8bafaf07:scripts/agent-sync-mcp/test/secretscan-parity.test.mjs:generic-api-key:56
+# Open-loops F7 (#494), first commit:  made-up signing keys in the publisher's tests (generic-api-key read the variable names KEY and
+# SIGNING_KEY as the keyword).  The constants are renamed from the next commit on;  fingerprints are per commit.
+1a73d8069eb95f16f494044b4a412f2007f08f09:scripts/fleet_facts/tests/test_cli.py:generic-api-key:15
+1a73d8069eb95f16f494044b4a412f2007f08f09:scripts/fleet_facts/tests/test_install.py:generic-api-key:133
+1a73d8069eb95f16f494044b4a412f2007f08f09:scripts/fleet_facts/tests/test_publish_contract.py:generic-api-key:23
+1a73d8069eb95f16f494044b4a412f2007f08f09:scripts/fleet_facts/tests/test_signing.py:generic-api-key:14
+1a73d8069eb95f16f494044b4a412f2007f08f09:scripts/fleet_facts/tests/test_publish.py:generic-api-key:29

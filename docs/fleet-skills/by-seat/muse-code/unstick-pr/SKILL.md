@@ -5,9 +5,9 @@ description: Diagnose and repair a PR that will not merge — phantom vs real co
 
 # Unstick a blocked PR (MC)
 
-> **This install is for `MC`.** Slack `[MC]`.  Notes `Muse Code`.  Branches `muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MC-zuliprc` (mode 600).  Session tag `[MC·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Distinct from **Muse Assistant** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.
+> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
 
 Works in every fleet repo.  Substitute owner/repo from `gh repo view --json nameWithOwner`.
@@ -34,10 +34,10 @@ git merge-tree --write-tree origin/main origin/<branch>
 - Exit 0 = **PHANTOM**.  GitHub's mergeability cache stuck (common under concurrent push bursts).
 - Exit 1 with conflict markers = **REAL**.
 
-**Phantom fix:** merge `origin/main` in the Muse Code worktree and push a fresh head SHA.
+**Phantom fix:** merge `origin/main` in your lane and push a fresh head SHA.
 
 ```bash
-cd ~/apps/<prefix>-muse-code   # never ~/Code/<repo>
+cd "$(~/apps/lane path <app> <slug>)"   # your lane; never ~/Code/<repo>
 git fetch origin
 git merge origin/main --no-edit
 git push origin muse-code/<slug>
@@ -45,7 +45,7 @@ git push origin muse-code/<slug>
 
 GitHub recomputes in ~20–60s and re-dispatches CI.  If several PRs are stuck, push one at a time, ~10–15s apart.
 
-**Real conflict:** merge `origin/main` by hand in the worktree.  `STATUS.md`, `PLAN.md`, and `docs/EFFORT-LOG.md` often have `merge=union` — additive board prose combines.  Never delete another agent's row.  If code intent is unclear, abort and escalate on THE BOARD + `#agent-sync`.
+**Real conflict:** merge `origin/main` by hand in the worktree.  `STATUS.md`, `PLAN.md`, and the archived `docs/EFFORT-LOG.md` often have `merge=union` — additive prose combines.  Never delete another agent's row.  If code intent is unclear, abort and escalate with a Linear comment + `#agent-sync`.
 
 ### B) BLOCKED, checks green
 
@@ -76,7 +76,7 @@ gh pr view <N> --json autoMergeRequest
 
 ## 4. If it still hangs
 
-Repeat 1–3.  Comment on the matching board item.  Do not force-merge, do not disable protection, do not resolve threads without a reply.
+Repeat 1–3.  Comment on the matching Linear issue (`board comment <id> ...`).  Do not force-merge, do not disable protection, do not resolve threads without a reply.
 
 ## Canon
 

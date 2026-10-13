@@ -184,5 +184,57 @@ class AdminGatingTests(_AdminCase):
         self.assertEqual(status, 401)
 
 
+class MainEnvironmentTests(unittest.TestCase):
+    """server.main() reads INFISICAL_ENVIRONMENT:  unset or empty means prod, any other slug
+    is refused with exit 2 and a log line, before the server binds."""
+
+    def _run(self, env):
+        seen = {}
+        logs = []
+        real = real_settings
+
+        def fake_configure(**kwargs):
+            seen.update(kwargs)
+            return real.configure(**kwargs)
+
+        def fake_init():
+            raise real.SettingsError("stop here")
+
+        fake = mock.Mock(wraps=real)
+        fake.PROD_ENVIRONMENT = real.PROD_ENVIRONMENT
+        fake.configure = fake_configure
+        fake.init_settings = fake_init
+        with mock.patch.dict("os.environ", env, clear=False), \
+                mock.patch.object(server, "infisical_settings", fake), \
+                mock.patch.object(server, "log", logs.append):
+            if "INFISICAL_ENVIRONMENT" not in env:
+                import os
+                os.environ.pop("INFISICAL_ENVIRONMENT", None)
+            code = server.main([])
+        real.reset_for_tests()
+        return code, seen, logs
+
+    def test_default_is_prod(self):
+        code, seen, logs = self._run({})
+        self.assertEqual(code, 2)                       # the fake init stops startup
+        self.assertEqual(seen["environment"], "prod")
+        self.assertIn("settings init failed: stop here", logs[0])
+
+    def test_empty_value_is_prod(self):
+        code, seen, _logs = self._run({"INFISICAL_ENVIRONMENT": " "})
+        self.assertEqual(seen["environment"], "prod")
+
+    def test_dev_and_staging_are_refused(self):
+        for slug in ("dev", "staging"):
+            code, _seen, logs = self._run({"INFISICAL_ENVIRONMENT": slug})
+            self.assertEqual(code, 2)
+            self.assertTrue(any("refusing Infisical environment" in line and repr(slug) in line
+                                for line in logs), logs)
+
+    def test_source_has_no_dev_default(self):
+        text = SERVER_PY.read_text()
+        self.assertNotIn('"INFISICAL_ENVIRONMENT", "dev"', text)
+
+
 if __name__ == "__main__":
     unittest.main()

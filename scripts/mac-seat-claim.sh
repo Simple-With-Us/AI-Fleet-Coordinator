@@ -26,8 +26,10 @@ OWNER="${GITHUB_OWNER:-jaywedgeworth22}"
 LOG_DIR="${HOME}/Library/Logs/mac-seat-claim"
 GROK_BIN="${GROK_BIN:-/Users/jay/.grok/bin/grok}"
 CURSOR_AGENT="${CURSOR_AGENT:-cursor-agent}"
-AGENT_SYNC_ENV="${AGENT_SYNC_ENV:-$HOME/.secrets/agent-sync.env}"
-AGENT_SYNC_POST_URL="${AGENT_SYNC_POST_URL:-https://agent-sync.jays.services/post}"
+# Zulip posting needs no shared secret: the agent-sync CLI reads the seat's own
+# ~/.secrets/Zulip/<file code>-zuliprc.  The old AGENT_SYNC_ENV / AGENT_SYNC_POST_URL
+# relay is retired and deliberately not referenced here.
+ZULIP_CHANNEL="${ZULIP_CHANNEL:-agent-sync}"
 
 BY=""
 REPO_FILTER=""
@@ -115,29 +117,21 @@ PY
 }
 
 post_agent_sync() {
+  # Post to Zulip with the seat's own bot via the agent-sync CLI.
+  # The CLI reads that seat's ~/.secrets/Zulip/<file code>-zuliprc itself, so
+  # there is no shared bearer token to parse, rotate, or leak in this script.
+  # (The old relay POST is retired; see AGENT-SYNC.md.)
   local text="$1"
-  [ -f "$AGENT_SYNC_ENV" ] || return 0
-  local token=""
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      AGENT_SYNC_POST_TOKEN=*) token="${line#AGENT_SYNC_POST_TOKEN=}" ;;
-    esac
-  done < "$AGENT_SYNC_ENV"
-  token="${token%\"}"; token="${token#\"}"; token="${token%\'}"; token="${token#\'}"
-  [ -n "$token" ] || return 0
+  local topic="${2:-mac seat claims}"
   if [ "$DRY_RUN" -eq 1 ]; then
-    printf 'DRY: agent-sync post by %s: %s\n' "$BY" "$text"
+    printf 'DRY: agent-sync post --as %s --channel %s --topic %q: %s\n' "$BY" "$ZULIP_CHANNEL" "$topic" "$text"
     return 0
   fi
-  export TEXT="$text" BY
-  curl -fsS -X POST "$AGENT_SYNC_POST_URL" \
-    -H "Authorization: Bearer ${token}" \
-    -H "Content-Type: application/json" \
-    -d "$(python3 - <<'PY'
-import json, os
-print(json.dumps({"text": os.environ["TEXT"], "username": os.environ["BY"]}))
-PY
-)" >/dev/null 2>&1 || true
+  command -v agent-sync >/dev/null 2>&1 || {
+    echo "mac-seat-claim: agent-sync not on PATH; skipping Zulip post" >&2
+    return 0
+  }
+  agent-sync post --as "$BY" --channel "$ZULIP_CHANNEL" --topic "$topic" "$text" >/dev/null 2>&1 || true
 }
 
 spawn_local_agent() {
@@ -179,7 +173,7 @@ spawn_local_agent() {
     echo $! >"${logfile}.pid"
   )
   echo "mac-seat-claim: spawned ${agent} pid $(cat "${logfile}.pid") log ${logfile}"
-  post_agent_sync "repo: ${issue_ref} | [${BY}] mac-seat claimed ${issue_ref}; spawned ${agent} -p (log ${logfile}).  Not claiming compile passed."
+  post_agent_sync "repo: ${issue_ref} | mac-seat claimed ${issue_ref}; spawned ${agent} -p (log ${logfile}).  Not claiming compile passed." "mac seat claims${REPO_FILTER:+ $REPO_FILTER}"
 }
 
 pick_issue() {

@@ -24,7 +24,7 @@ blocks force-push, and requires a pull request.  Two of them
 `main-protection` instead of the fleet name `default-main-protection`; both are
 now renamed, and both keep their own stricter required checks.
 
-Three repos — `Fleet-OPS`, `Kodus-Config`, `demo-repository` — are **private**,
+Two repos — `Fleet-OPS` and `Kodus-Config` — are **private**,
 and GitHub answers every ruleset and branch-protection request on them with:
 
 > Upgrade to GitHub Pro or make this repository public to enable this feature.
@@ -37,7 +37,7 @@ it stays visible without crying wolf.
 
 GitHub documents org-wide rulesets as a feature for *"customers on GitHub Team
 and GitHub Enterprise plans"*.  This org is on Free — which is also why the
-three private repos have no protection.  So there is **no server-side object to
+two private repos have no protection.  So there is **no server-side object to
 hold "the global minimum"**, and no setting to flip.
 
 That reframes the request: on Free, the baseline can only be held as *code that
@@ -170,9 +170,13 @@ confirm each mapping points at a real project; values were never read.
 | Personal-Site | `personal-site-miyr` | **0** | **empty** |
 | Clutch | `clutch` | **0** | **empty** |
 | AI-Fleet-Coordinator | `ai-fleet-coordinator-ox-z2` | **0** | **empty** |
-| Fleet-OPS | `fleet-ops-mwb-6` | **0** | empty |
-| Fleet Secrets | `fleet-secrets-ek1-v` | **0** | empty |
+| Fleet-OPS | `fleet-ops` (`8dae6d03-8f12-48b2-adf3-e5c1b881c8c5`) | **0** | empty |
 | Certificate Manager | `cert-manager-w-ppb` | **0** | empty |
+
+As of 2026-10-11, Infisical projects **Fleet Secrets** (`fleet-secrets-ek1-v`)
+and the old **Fleet-OPS** slug (`fleet-ops-mwb-6`) were merged into one
+**Fleet-OPS** project (`fleet-ops`, id unchanged at
+`8dae6d03-8f12-48b2-adf3-e5c1b881c8c5`).
 
 An empty project means the repo's GitHub secrets are still the only copy, so
 those repos cannot be migrated to Infisical-sourced CI until the project is

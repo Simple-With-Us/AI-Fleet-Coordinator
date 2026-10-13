@@ -27,6 +27,25 @@ import sys
 
 KNOWN_TIERS = {"haiku", "sonnet", "opus", "fable"}
 
+
+def resolve_tier(raw):
+    """Map a model value to its fleet tier.
+
+    Claude Code passes bare tier names (sonnet).  Cursor's Task tool only accepts
+    full model slugs, and the Claude slugs embed the tier name
+    (claude-sonnet-5-thinking-high).  Composer is Cursor's cheap sibling and
+    counts as the haiku tier.  Anything else returns None and is denied.
+    """
+    m = (raw or "").strip().lower()
+    if m in KNOWN_TIERS:
+        return m
+    for tier in KNOWN_TIERS:
+        if tier in m:
+            return tier
+    if m.startswith("composer"):
+        return "haiku"
+    return None
+
 TIER_GUIDANCE = (
     "Choose from the shape of the work.  "
     "SMALL (haiku): mechanical and well-specified -- a rename, a fixture update, a doc that "
@@ -78,10 +97,12 @@ def check_agent(tool_input):
             + DELEGATE_MORE
         )
 
-    if model not in KNOWN_TIERS:
+    if resolve_tier(model) is None:
         deny(
             f"`model: \"{model}\"` is not a tier this tool accepts.  Use one of: "
-            f"{', '.join(sorted(KNOWN_TIERS))}.  " + TIER_GUIDANCE
+            f"{', '.join(sorted(KNOWN_TIERS))} -- or a Cursor model slug containing one "
+            f"(claude-sonnet-5-thinking-high); composer-2.5-fast counts as haiku.  "
+            + TIER_GUIDANCE
         )
 
     # Blocking the main loop is the one thing that costs the owner their own
@@ -103,7 +124,7 @@ def check_agent(tool_input):
                 "itself, so one agent gets two worktrees -- the harness's, plus the lane it "
                 "actually works in.  The first is then pure setup cost and disk.  Keep exactly "
                 "one: isolation when the harness should own the checkout, or the instruction "
-                "when the agent needs a named lane under ~/apps."
+                "when the agent needs a named lane under ~/apps/lanes/<Repo>/."
             )
 
 

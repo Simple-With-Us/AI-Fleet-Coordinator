@@ -1,5 +1,29 @@
 # Status
 
+## 2026-10-11 CODEX — Coolify fleet CLI distribution (OPS-933)
+
+Adds a bounded, code-only release receiver and pusher for the existing Coolify SSH route.  The existing Mac runtime updater can opt in to push published board and Agent-Sync runtime files; releases activate atomically after isolated smoke checks and support pause and rollback.  Initial installation preserves Codex configuration and adds a CODEX-scoped local MCP wrapper.  Installation receipts and current host status are tracked in OPS-933, with the source rollout in `docs/rollouts/2026-10-11-coolify-fleet-cli-sync.md`; authentication and wake routing remain separate work.
+
+Updated: 2026-10-10 (CLAUDE — Linear replaces THE BOARD)
+
+## 2026-10-10 CLAUDE — Linear replaces THE BOARD (docs, skills, scripts)
+
+This entry lands with the cutover PR and is true only once the cutover has run.  Linear (workspace Simple With Us, one team per app, ids like `BF-123`) is the system of record, and `board` is now a Linear-backed CLI with the same verbs and flags (`scripts/linear-board/`).  Claims and closeouts are the Linear issue (`board claim`, `board status`), the PR (`Fixes <ID>` or `Refs <ID>`, branch `<seat>/<id>-<slug>`) and a Zulip post in the topic `<ID> <subject>`.  Writes need `AGENT_SEAT`.  The effort logs are archived, and `mac-collab-sync`, `mac-collab-writeback` and `effort-issues-sync` are retired.  The old board is a read-only archive for 14 days, with litestream running, and is retired at about day 30.  `AGENT-SYNC.md`, `EFFORT-LOG-PROTOCOL.md` (now a stub), `TEMPLATE-AGENTS.md`, the onboarding docs and prompts, the fleet skills (re-rendered) and `scripts/onboard-new-app.sh` / `check-fleet-registry.py` were updated together.  The cutover runbook and the non-repo patch bundle live outside git under `~/.local/share/linear-migration/cutover/`.
+
+Updated: 2026-10-08 (MM — top-level fleet docs moved from Slack to Zulip)
+
+## 2026-10-08 MM — Zulip terminology in the top-level fleet docs
+
+`TEMPLATE-AGENTS.md`, `FLEET-UI-COPY.md`, `EFFORT-LOG-PROTOCOL.md`, `README.md`, and this
+file now describe Zulip (`https://simplewithus.zulipchat.com`) instead of Slack:  the
+`agent-sync` CLI (`~/.local/bin/agent-sync`), the `[SEAT·session8]` tag, and posting by
+channel plus topic.  The retired Slack path — `slack-sync.sh`, `agent-sync-poll.py`,
+`agent-sync-websocket.py`, the pm2 `agent-sync-push` relay, `consumer.mjs`, the
+`slack-collab` MCP, and the Slack tokens they read — is no longer instructed anywhere in
+those five files.  Mechanics live in `AGENT-SYNC.md` § Chat: The Zulip Contract and
+`docs/protocols/zulip-fleet-guide.md`.  Entries below are dated history and describe Slack
+as it was at the time; they are not rewritten.
+
 Updated: 2026-09-18 (GROK — mac-collab-litestream inventory)
 
 ## 2026-09-18 GROK — mac-collab-litestream on the master list

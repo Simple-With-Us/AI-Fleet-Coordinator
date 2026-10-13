@@ -1,15 +1,11 @@
 ---
 name: unstick-pr
-description: Diagnose and repair a PR that will not merge — phantom vs real conflicts, unresolved review threads, CI dispatch misses, required-check failures, and known flakes. Use when mergeable is false, auto-merge sits idle, GitHub says CONFLICTING/BLOCKED/DIRTY, or a Monet/peer PR is green but stuck.
+description: Diagnose and repair a PR that will not merge — phantom vs real conflicts, unresolved review threads, CI dispatch misses, required-check failures, and known flakes. Use when mergeable is false, auto-merge sits idle, GitHub says CONFLICTING/BLOCKED/DIRTY, or a Claude/peer PR is green but stuck.
 ---
 
-# Unstick a blocked PR (MONET)
+# Unstick a blocked PR (CLAUDE)
 
-> **Shared `~/.claude/skills`.** Monet, Claude/Fable, and (when active) Renoir all load this directory.  Do not treat the word Monet in examples as proof of your seat.  Pin `AGENT_SEAT` / `AGENT_TAG` from the logged-in account before Slack or `board --by`:
-> - Monet → `MONET`, Notes `Monet`, `monet/`, `~/apps/<app>-monet`
-> - Claude / Fable → `CLAUDE`, Notes `Claude`, `claude/`, `~/apps/<app>-claude`
-> - Renoir → `RENOIR`, Notes `Renoir`, `renoir/`, `~/apps/<app>-renoir`
-> Cursor, Grok, Grok Bot, Codex, AG, DeepSeek, Kimi, and Fx have their own skill dirs and must not take identity from here.
+> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Claude-zuliprc` (mode 600).  Session tag `[CLAUDE·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Works in every fleet repo.  Substitute owner/repo from `gh repo view --json nameWithOwner`.
@@ -36,18 +32,18 @@ git merge-tree --write-tree origin/main origin/<branch>
 - Exit 0 = **PHANTOM**.  GitHub's mergeability cache stuck (common under concurrent push bursts).
 - Exit 1 with conflict markers = **REAL**.
 
-**Phantom fix:** merge `origin/main` in the Monet worktree and push a fresh head SHA.
+**Phantom fix:** merge `origin/main` in your lane and push a fresh head SHA.
 
 ```bash
-cd ~/apps/<prefix>-monet   # never ~/Code/<repo>
+cd "$(~/apps/lane path <app> <slug>)"   # your lane; never ~/Code/<repo>
 git fetch origin
 git merge origin/main --no-edit
-git push origin <monet|claude|renoir>/<slug>
+git push origin claude/<slug>
 ```
 
 GitHub recomputes in ~20–60s and re-dispatches CI.  If several PRs are stuck, push one at a time, ~10–15s apart.
 
-**Real conflict:** merge `origin/main` by hand in the worktree.  `STATUS.md`, `PLAN.md`, and `docs/EFFORT-LOG.md` often have `merge=union` — additive board prose combines.  Never delete another agent's row.  If code intent is unclear, abort and escalate on THE BOARD + `#agent-sync`.
+**Real conflict:** merge `origin/main` by hand in the worktree.  `STATUS.md`, `PLAN.md`, and the archived `docs/EFFORT-LOG.md` often have `merge=union` — additive prose combines.  Never delete another agent's row.  If code intent is unclear, abort and escalate with a Linear comment + `#agent-sync`.
 
 ### B) BLOCKED, checks green
 
@@ -78,7 +74,7 @@ gh pr view <N> --json autoMergeRequest
 
 ## 4. If it still hangs
 
-Repeat 1–3.  Comment on the matching board item.  Do not force-merge, do not disable protection, do not resolve threads without a reply.
+Repeat 1–3.  Comment on the matching Linear issue (`board comment <id> ...`).  Do not force-merge, do not disable protection, do not resolve threads without a reply.
 
 ## Canon
 

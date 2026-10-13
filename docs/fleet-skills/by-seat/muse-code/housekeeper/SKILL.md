@@ -5,16 +5,9 @@ description: Mac and Hetzner disk/RAM/CPU housekeeping. Run safe cleanup scripts
 
 # Housekeeper (disk, RAM, CPU)
 
-> **This install is for `MC`.** Slack `[MC]`.  Notes `Muse Code`.  Branches `muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Do not inherit another seat's tag from a shared template.
+> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MC-zuliprc` (mode 600).  Session tag `[MC·session8]`, and the `agent-sync` CLI writes it for you.
 
-> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  Worktrees `~/apps/<app>-muse-code`.  Distinct from **Muse Assistant** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.
-
-
-> **Shared `~/.claude/skills`.** Monet, Claude/Fable, and (when active) Renoir all load this directory.  Do not treat the word Monet in examples as proof of your seat.  Pin `AGENT_SEAT` / `AGENT_TAG` from the logged-in account before Slack or `board --by`:
-> - Monet → `MONET`, Notes `Monet`, `muse-code/`, `~/apps/<app>-muse-code`
-> - Claude / Fable → `CLAUDE`, Notes `Claude`, `claude/`, `~/apps/<app>-claude`
-> - Renoir → `RENOIR`, Notes `Renoir`, `renoir/`, `~/apps/<app>-renoir`
-> Cursor, Grok, Grok Bot, Codex, AG, DeepSeek, Kimi, and Fx have their own skill dirs and must not take identity from here.
+> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
 
 **Ownership split (2026-09-01).**  BF-Housekeeper (BotFleet) owns **this Mac**.  GB-HOUSEKEEPER (Grok Bot) owns the **Hetzner/Coolify host**.  Neither crosses.  During the Grok-Bot → BotFleet transition both must work, so they de-conflict through a shared lock rather than a schedule.
@@ -89,7 +82,7 @@ Bot id `d43849b8-5eeb-452b-ac4e-ed4724343838`.  Routines at 09:00 / 15:00 / 21:0
 
 When this wake includes a resource payload: start with that pressure.  Re-run the playbook.  Report before/after disk, swap, load, and what was deleted.
 
-Ask before: user Documents/photos, secrets, live dirty worktrees, CoreSimulator Devices, in-session `~/.grok/worktrees`, anything with `.janitor-keep`.  Do not persist TCPMSS.  Do not change sysctl or network settings.  Do not extra-ship.  Do not Slack unless kicking grok at a repo or after a completed app update.
+Ask before: user Documents/photos, secrets, live dirty worktrees, CoreSimulator Devices, in-session `~/.grok/worktrees`, anything with `.janitor-keep`.  Do not persist TCPMSS.  Do not change sysctl or network settings.  Do not extra-ship.  Do not post to Zulip unless kicking grok at a repo or after a completed app update.
 
 ## Grok Bot Housekeeper (`GB-HOUSEKEEPER`)
 

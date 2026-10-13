@@ -85,20 +85,22 @@ assert_origin "git@github.com:Simple-With-Us/Socratic-Trade.git" "Simple-With-Us
 assert_origin "https://github.com/Simple-With-Us/AI-Fleet-Coordinator.git" "Simple-With-Us/AI-Fleet-Coordinator"
 assert_origin "ssh://git@github.com/Simple-With-Us/BotFleet.git" "Simple-With-Us/BotFleet"
 
-# 2026-09-30: memory/load pressure gate.  Above JANITOR_MAX_LOAD (40) or at/above
-# JANITOR_MAX_SWAP_PCT (90) the janitor logs PRESSURE-SKIP, runs only the cheap
+# 2026-09-30: memory/load pressure gate.  Above JANITOR_MAX_LOAD (250 since 2026-10-07, was 40) or at/above
+# JANITOR_MAX_SWAP_PCT (98 since 2026-10-07, was 90) the janitor logs PRESSURE-SKIP, runs only the cheap
 # truncations, and exits before any git/gh/find-over-worktrees phase or CleanMyMac call.
-grep -qE '^JANITOR_MAX_LOAD=\$\{JANITOR_MAX_LOAD:-40\}' "$JANITOR" || fail "JANITOR_MAX_LOAD default 40 missing"
-grep -qE '^JANITOR_MAX_SWAP_PCT=\$\{JANITOR_MAX_SWAP_PCT:-90\}' "$JANITOR" || fail "JANITOR_MAX_SWAP_PCT default 90 missing"
+grep -qE '^JANITOR_MAX_LOAD=\$\{JANITOR_MAX_LOAD:-250\}' "$JANITOR" || fail "JANITOR_MAX_LOAD default 250 missing"
+grep -qE '^JANITOR_MAX_SWAP_PCT=\$\{JANITOR_MAX_SWAP_PCT:-98\}' "$JANITOR" || fail "JANITOR_MAX_SWAP_PCT default 98 missing"
 gate_line=$(grep -n "PRESSURE-SKIP load=" "$JANITOR" | head -1 | cut -d: -f1)
 [ -n "$gate_line" ] || fail "PRESSURE-SKIP log line missing"
-for fan in 'janitor_watchdog 30 "wt-fetch"' 'git -C "$r" worktree prune' 'cleanmymac clean dev' 'janitor_duk 10'; do
+for fan in 'janitor_watchdog 30 "wt-fetch"' 'git -C "$r" worktree prune' 'cleanmymac clean "$cmm_mod"' 'janitor_duk 10'; do
   fan_line=$(grep -nF "$fan" "$JANITOR" | head -1 | cut -d: -f1)
   [ -n "$fan_line" ] && [ "$gate_line" -lt "$fan_line" ] || fail "pressure gate must precede: $fan"
 done
-# `cleanmymac optimize ram` (RAM pressure -> swap) only ever behind the explicit opt-in.
-if ! grep -B1 -F -- '-- cleanmymac optimize ram' "$JANITOR" | grep -q 'RESOURCE_ALLOW_RAM_OPTIMIZE'; then
-  fail "cleanmymac optimize ram must be gated behind RESOURCE_ALLOW_RAM_OPTIMIZE=1"
+# `cleanmymac optimize ram` (RAM pressure -> swap) is structurally banned: the janitor must not
+# invoke it at all (the live script dropped even the opt-in path; the old test allowed it only
+# behind RESOURCE_ALLOW_RAM_OPTIMIZE=1).
+if grep -qF -- '-- cleanmymac optimize ram' "$JANITOR"; then
+  fail "cleanmymac optimize ram must not be invoked by the janitor"
 fi
 # Parsers, against synthetic sysctl output (no real sysctl, no real work).
 (

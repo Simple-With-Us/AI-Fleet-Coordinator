@@ -104,6 +104,86 @@ def _parse_ts(raw: Any) -> float:
         return 0.0
 
 
+def _newest_event_times(
+    path: Path,
+    kinds: tuple[str, ...],
+    *,
+    chunk: int = 256 * 1024,
+    max_bytes: int = 64 * 1024 * 1024,
+) -> dict[str, float]:
+    """Newest `ts` per event type, reading events.jsonl backwards.
+
+    events.jsonl holds ~1,000+ phase_changed lines per session, so a fixed
+    line tail can lose the last turn_started of a long turn.  This walks the
+    file from the end in chunks, parses only lines that mention a wanted type
+    and stops as soon as every type has been found (or max_bytes were read).
+    A type that never occurs is simply absent from the result.
+    """
+    found: dict[str, float] = {}
+    needles = {kind: ('"%s"' % kind).encode() for kind in kinds}
+    try:
+        fh = path.open("rb")
+    except OSError:
+        return found
+    with fh:
+        try:
+            pos = fh.seek(0, 2)
+        except OSError:
+            return found
+        carry = b""
+        read_total = 0
+        while pos > 0 and len(found) < len(kinds) and read_total < max_bytes:
+            step = min(chunk, pos)
+            pos -= step
+            read_total += step
+            try:
+                fh.seek(pos)
+                buf = fh.read(step) + carry
+            except OSError:
+                break
+            if pos > 0:
+                nl = buf.find(b"\n")
+                if nl < 0:
+                    carry = buf
+                    continue
+                carry, buf = buf[:nl], buf[nl + 1 :]
+            else:
+                carry = b""
+            for line in reversed(buf.split(b"\n")):
+                if not line.strip():
+                    continue
+                if not any(needle in line for needle in needles.values()):
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                kind = obj.get("type") if isinstance(obj, dict) else None
+                if kind in needles and kind not in found:
+                    found[kind] = _parse_ts(obj.get("ts"))
+                    if len(found) == len(kinds):
+                        break
+    return found
+
+
+def mcp_load_marks(session_id: str) -> JsonDict:
+    """When this session's MCP set was last loaded, from events.jsonl.
+
+    configAt = newest mcp_config_resolved, initAt = newest mcp_init_completed
+    (either may be None).  A resume or session/load logs both; it moves
+    neither summary updated_at nor any turn time.  mcp_server_starting is NOT
+    used: a crash-looping server emits it constantly.
+    """
+    path = find_session_dir(session_id)
+    if path is None:
+        return {"configAt": None, "initAt": None}
+    found = _newest_event_times(path / "events.jsonl", ("mcp_config_resolved", "mcp_init_completed"))
+    return {
+        "configAt": found.get("mcp_config_resolved") or None,
+        "initAt": found.get("mcp_init_completed") or None,
+    }
+
+
 def _attach_state_fields(row: JsonDict, state: JsonDict) -> None:
     row["turnState"] = state.get("turnState")
     row["phase"] = state.get("phase")
@@ -111,6 +191,9 @@ def _attach_state_fields(row: JsonDict, state: JsonDict) -> None:
         row["pendingTool"] = state.get("pendingTool")
     else:
         row.pop("pendingTool", None)
+    # Real turn activity counts as "not idle" even when summary.json lags.
+    row["turnStartedAt"] = state.get("turnStartedAt")
+    row["turnEndedAt"] = state.get("turnEndedAt")
 
 
 def peek_summary(session_id: str) -> JsonDict:
@@ -195,8 +278,11 @@ def turn_state(session_id: str) -> JsonDict:
             "pendingTool": None,
         }
     events = _jsonl_last(path / "events.jsonl", n=400)
-    last_started = 0.0
-    last_ended = 0.0
+    # A long turn pushes its turn_started out of any fixed tail, which made a
+    # busy chat read as idle; find the newest start and end over the whole file.
+    turn_times = _newest_event_times(path / "events.jsonl", ("turn_started", "turn_ended"))
+    last_started = turn_times.get("turn_started", 0.0)
+    last_ended = turn_times.get("turn_ended", 0.0)
     phase = None
     phase_ts = 0.0
     pending_tool = None
@@ -306,20 +392,133 @@ def is_self_session(session_id: str) -> bool:
     return bool(me) and session_id == me
 
 
-# Live TUI chats older than this unload MCP via session/close.  Disk stays.
-# /resume reloads tools.  Override with GROK_IDLE_UNLOAD_HOURS.
-DEFAULT_IDLE_UNLOAD_SEC = 12 * 3600
+# Loaded chats idle longer than this unload MCP via session/close.  Disk
+# stays; /resume reloads tools.  Override with GROK_IDLE_UNLOAD_HOURS.
+DEFAULT_IDLE_UNLOAD_SEC = 4 * 3600
+# A "stub" is a session that was created and never took a real user turn
+# (a client opened it and walked away).  It holds a full MCP set for nothing,
+# so it gets a much shorter clock.  Override with GROK_IDLE_UNLOAD_STUB_MINUTES
+# (0 turns the stub rule off).
+DEFAULT_STUB_IDLE_SEC = 30 * 60
 
 
 def updated_at_epoch(row: JsonDict) -> float:
     return _parse_ts(row.get("updatedAt") or row.get("updated_at"))
 
 
+def _epoch(raw: Any) -> float:
+    try:
+        return float(raw or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def last_activity_epoch(row: JsonDict) -> float:
+    """Latest sign of life: summary updated_at, the last turn start/end, or the
+    last time the chat was (re)loaded.
+
+    A resume or session/load moves neither summary updated_at nor any turn
+    time, so a chat resumed after a day of silence would otherwise look a day
+    idle the moment it is loaded.  row["loadedAt"] (set by the unload job from
+    the session's newest mcp_config_resolved / mcp_init_completed event and
+    the start time of its current MCP processes) is that floor.
+    """
+    return max(
+        updated_at_epoch(row),
+        _epoch(row.get("turnStartedAt")),
+        _epoch(row.get("turnEndedAt")),
+        _epoch(row.get("loadedAt")),
+    )
+
+
 def idle_age_seconds(row: JsonDict, now: float | None = None) -> float:
-    ts = updated_at_epoch(row)
+    ts = last_activity_epoch(row)
     if ts <= 0:
         return 0.0
     return max(0.0, (now if now is not None else time.time()) - ts)
+
+
+def pid_alive(pid: Any) -> bool:
+    """True when pid exists.  An unusable pid counts as alive (cannot tell)."""
+    try:
+        n = int(pid)
+    except (TypeError, ValueError):
+        return True
+    if n <= 0:
+        return True
+    try:
+        os.kill(n, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def apply_pid_liveness(rows: list[JsonDict]) -> list[JsonDict]:
+    """A row from active_sessions.json whose TUI pid is gone is not attached."""
+    for row in rows:
+        if row.get("live") and not pid_alive(row.get("pid")):
+            row["live"] = False
+            row["stalePid"] = True
+    return rows
+
+
+def count_real_user_turns(session_id: str) -> int | None:
+    """Real (non-synthetic) user messages in chat_history.jsonl.
+
+    Returns 0 for a session that only holds the system prompt plus synthetic
+    reminders (a stub), 1 as soon as any real user message is seen (the scan
+    stops there; histories reach 1 MB), and None when the file is missing or
+    unreadable (unknown, so never treated as a stub).
+    """
+    path = find_session_dir(session_id)
+    if path is None:
+        return None
+    hist = path / "chat_history.jsonl"
+    if not hist.is_file():
+        return None
+    try:
+        with hist.open("rb") as fh:
+            for raw in fh:
+                if b'"user"' not in raw[:64]:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if not isinstance(obj, dict) or obj.get("type") != "user":
+                    continue
+                if not obj.get("synthetic_reason"):
+                    return 1
+    except OSError:
+        return None
+    return 0
+
+
+def annotate_user_turns(rows: list[JsonDict]) -> list[JsonDict]:
+    """Set row["userTurns"] on loaded, unattached rows (the stub candidates)."""
+    for row in rows:
+        if row.get("live") or row.get("attached") or not row.get("loaded"):
+            continue
+        sid = str(row.get("sessionId") or "")
+        if sid:
+            row["userTurns"] = count_real_user_turns(sid)
+    return rows
+
+
+def is_stub_row(row: JsonDict) -> bool:
+    """No attached client, zero real user turns, and no turn ever started.
+
+    "Attached" is row["live"] (a TUI listed in active_sessions.json) or
+    row["attached"] (a connected grok client whose working directory is this
+    chat's; set by the unload job -- the leader exposes no connection list).
+    """
+    if row.get("live") or row.get("attached"):
+        return False
+    if row.get("userTurns") != 0:
+        return False
+    return not _epoch(row.get("turnStartedAt"))
 
 
 def unload_skip_reason(
@@ -328,11 +527,18 @@ def unload_skip_reason(
     now: float | None = None,
     max_idle_sec: float = DEFAULT_IDLE_UNLOAD_SEC,
     self_id: str | None = None,
+    stub_idle_sec: float | None = None,
 ) -> str | None:
-    """None = this live chat should session/close.  Else a skip reason.
+    """None = this chat should session/close.  Else a skip reason.
 
+    A chat is a candidate only when it holds MCP processes (row["loaded"],
+    set from the process table).
     Does not delete transcripts.  Unknown timestamps are skipped (not
-    unloaded).  Working / needs-input / pendingTool / this TUI stay up.
+    unloaded).  Working / needs-input / pendingTool / this TUI / a session
+    with background processes outside the leader stay up.
+
+    Clocks: a stub (see is_stub_row) unloads after stub_idle_sec when that is
+    set; everything else uses max_idle_sec.
     """
     sid = str(row.get("sessionId") or "").strip()
     if not sid:
@@ -340,16 +546,24 @@ def unload_skip_reason(
     me = self_id if self_id is not None else self_session_id()
     if me and sid == me:
         return "self"
-    if not row.get("live"):
-        return "not_live"
+    # Closing only frees something when the leader holds MCP processes for the
+    # chat.  `live` (a TUI) is an input to the skip rules, never a reason to
+    # close a chat that has nothing loaded.
+    if not row.get("loaded"):
+        return "not_loaded"
     state = str(row.get("turnState") or "unknown")
     if state in {"working", "needs-input"}:
         return "busy"
     if row.get("pendingTool"):
         return "pending_tool"
-    if updated_at_epoch(row) <= 0:
+    if row.get("backgroundPids"):
+        return "background_process"
+    if last_activity_epoch(row) <= 0:
         return "no_timestamp"
-    if idle_age_seconds(row, now) < float(max_idle_sec):
+    age = idle_age_seconds(row, now)
+    if stub_idle_sec and float(stub_idle_sec) > 0 and is_stub_row(row):
+        return None if age >= float(stub_idle_sec) else "fresh"
+    if age < float(max_idle_sec):
         return "fresh"
     return None
 
@@ -360,11 +574,16 @@ def select_idle_unload(
     now: float | None = None,
     max_idle_sec: float = DEFAULT_IDLE_UNLOAD_SEC,
     self_id: str | None = None,
+    stub_idle_sec: float | None = None,
 ) -> list[JsonDict]:
     out: list[JsonDict] = []
     for row in rows:
         if unload_skip_reason(
-            row, now=now, max_idle_sec=max_idle_sec, self_id=self_id
+            row,
+            now=now,
+            max_idle_sec=max_idle_sec,
+            self_id=self_id,
+            stub_idle_sec=stub_idle_sec,
         ) is None:
             out.append(row)
     return out

@@ -270,6 +270,57 @@
   .quota-status.exh { background: rgba(220,38,38,.12); color: #B91C1C; }
   .quota-status.low { background: rgba(217,119,6,.12); color: #B45309; }
   .quota-group { display: block; margin-top: 10px; }
+  .quota-provider-block { border-top: 1px solid var(--line); padding: 8px 4px; }
+  .quota-provider-block:first-child { border-top: none; }
+  .quota-cc-row {
+    display: grid;
+    grid-template-columns: minmax(92px, 1.15fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 14px;
+    align-items: start;
+  }
+  @media (max-width: 420px) {
+    .quota-cc-row { grid-template-columns: 1fr; gap: 10px; }
+  }
+  .quota-cc-id { display: flex; align-items: center; min-height: 28px; padding-top: 2px; }
+  .quota-cc-id .quota-id .n { font-size: 14px; font-weight: 600; }
+  .quota-cc-win { min-width: 0; }
+  .quota-cc-win-label { font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .02em; margin-bottom: 3px; }
+  .quota-cc-track { display: flex; align-items: center; gap: 6px; }
+  .qcap { flex: 1; display: flex; height: 5px; border-radius: 999px; overflow: visible; position: relative; background: rgba(0,0,0,.06); min-width: 40px; }
+  :root[data-theme="dark"] .qcap { background: rgba(255,255,255,.1); }
+  .qcap-inner { display: flex; width: 100%; height: 100%; border-radius: 999px; overflow: hidden; }
+  .qcap-used { flex-shrink: 0; background: #DC2626; }
+  .qcap-rem { flex: 1; background: #16A34A; }
+  .qcap-elapsed { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; background: #000000; pointer-events: none; z-index: 1; }
+  .qcap-pill {
+    flex: none; font-size: 11px; font-weight: 600; line-height: 1.2;
+    padding: 2px 7px; border-radius: 6px; font-variant-numeric: tabular-nums;
+  }
+  .qcap-pill-ok { background: rgba(22, 163, 74, .16); color: #15803D; }
+  .qcap-pill-low { background: rgba(217, 119, 6, .18); color: #B45309; }
+  .qcap-pill-exh { background: rgba(220, 38, 38, .14); color: #B91C1C; }
+  .qcap-pill-na { background: rgba(0, 0, 0, .06); color: var(--muted); }
+  :root[data-theme="dark"] .qcap-pill-na { background: rgba(255, 255, 255, .1); }
+  .quota-cc-win-reset { margin-top: 3px; font-size: 11.5px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
+  :root[data-theme="light"] .quota-cc-win-reset { color: #333333; }
+  .quota-cc-extras {
+    margin-top: 8px;
+    display: grid;
+    grid-template-columns: minmax(92px, 1.15fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 14px;
+  }
+  .quota-cc-extras .quota-cc-win { grid-column: span 1; }
+  @media (max-width: 420px) {
+    .quota-cc-extras { grid-template-columns: 1fr; }
+  }
+  .qcap-stale .qcap-used, .qcap-stale .qcap-rem { background: #9CA3AF; }
+  .qcap-exhausted .qcap-rem { background: #DC2626; }
+  .qcap-unknown .qcap-inner { background: var(--faint); opacity: .45; }
+  .qcap-unknown .qcap-used, .qcap-unknown .qcap-rem { background: transparent; }
+  .quota-stale-note { font-size: 11px; color: var(--faint); margin-top: 2px; }
+  .quota-older { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+  .quota-older summary { cursor: pointer; user-select: none; }
+  .quota-older-line { padding: 4px 0; border-top: 1px solid var(--line); color: var(--faint); }
 
   /* Provider identity — mark + human label, in place of the raw upstream slug.
      Both marks paint in `currentColor` so they follow the system theme: the
@@ -277,7 +328,9 @@
   .quota-id { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .quota-id .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pmark { flex: none; width: 17px; height: 17px; color: var(--text); opacity: .82; }
+  .pmark img { display: block; width: 100%; height: 100%; object-fit: contain; }
   .pmark svg { display: block; width: 100%; height: 100%; }
+  .quota-id .pmark.pmark-brand { opacity: 1; }
   .pmark-sm { width: 12px; height: 12px; opacity: .7; display: inline-block; vertical-align: -1px; margin-right: 5px; }
   /* Cursor ships as a raster; mask-image paints its alpha in currentColor. */
   .pmask { flex: none; width: 17px; height: 17px; background: currentColor; opacity: .82;
@@ -378,7 +431,7 @@
   </form>
   <p class="hint">
     <span><kbd>gh</kbd> GitHub</span>
-    <span><kbd>b</kbd> THE BOARD</span>
+    <span><kbd>b</kbd> Linear</span>
     <span><kbd>w</kbd> Wikipedia</span>
     <span><kbd>yt</kbd> YouTube</span>
     <span class="kb"><kbd>/</kbd> focus search</span>
@@ -413,7 +466,7 @@
           <div id="rag-seats"></div>
         </div>
       </div>
-      <div class="panel-foot">Snapshot from <code id="rag-snap-date"></code> · <a href="https://mac.jays.services/board" target="_blank" rel="noopener">THE BOARD</a> · <a href="https://activity.jays.services/" target="_blank" rel="noopener">Fleet Activity</a></div>
+      <div class="panel-foot">Snapshot from <code id="rag-snap-date"></code> · <a href="https://linear.app/simple-with-us" target="_blank" rel="noopener">Linear</a> · <a href="https://activity.jays.services/" target="_blank" rel="noopener">Fleet Activity</a></div>
     </div>
   </section>
 
@@ -452,7 +505,26 @@
   <footer>Source: <code>ai-fleet-coordinator/scripts/safari-start</code></footer>
 </div>
 
-<script>
+<script type="module">
+  import {
+    aggregateQuotas,
+    sortQuotaGroups,
+    formatResetCopy,
+    remainingPercentShort,
+    barColorState,
+    elapsedWindowFraction,
+    percentPillTone,
+    formatResetTimeLeft,
+    shouldShowExtraWindow,
+    findWindow,
+    primaryWindowKeys,
+    usedPercentFromPrimary,
+    staleReportedLabel,
+    windowBarLabel,
+    platformDisplayName,
+    extraWindowRowLabel,
+    olderSourcesForGroup,
+  } from "./quota-display.mjs";
   const NAME = "Jay";
   // Inside another page (an iframe), open everything in a new tab instead of navigating the frame.
   const FRAMED = (() => { try { return window.top !== window.self; } catch (e) { return true; } })();
@@ -497,10 +569,10 @@
   // One place to edit.  Each link: name, sub (shown small), url, mono (badge letters), color (badge background).
   const SECTIONS = [
     { title: "Fleet", links: [
-      { name: "THE BOARD",            sub: "mac.jays.services/board",        url: "https://mac.jays.services/board",                          mono: "TB", color: "#4F46E5", glyph: ICONS["oc-table-16"] },
-      { name: "#agent-sync",          sub: "Slack",                          url: "https://slack.com/app_redirect?channel=C0BEZDJDNKV",       mono: "#", color: "#4A154B" },
+      { name: "Linear",               sub: "linear.app/simple-with-us",      url: "https://linear.app/simple-with-us",                        mono: "LN", color: "#4F46E5", glyph: ICONS["oc-table-16"] },
+      { name: "#agent-sync",          sub: "Zulip",                          url: "https://simplewithus.zulipchat.com/#narrow/channel/642232-agent-sync", mono: "#", color: "#287D6B" },
       { name: "Fleet Apps Registry",  sub: "Google Sheet",                   url: "https://docs.google.com/spreadsheets/d/1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY/edit?usp=sharing", mono: "GS", color: "#0F9D58" },
-      { name: "Fleet Activity",       sub: "jaywedgeworth22.github.io",      url: "https://activity.jays.services/",  mono: "FA", color: "#2563EB", glyph: ICONS["oc-pulse-16"] },
+      { name: "Fleet Activity",       sub: "activity.jays.services",         url: "https://activity.jays.services/",  mono: "FA", color: "#2563EB", glyph: ICONS["oc-pulse-16"] },
       { name: "AI Fleet Coordinator", sub: "GitHub repo",                    url: "https://github.com/Simple-With-Us/ai-fleet-coordinator",  mono: "AF", color: "#111827", glyph: ICONS["oc-repo-16"] },
       { name: "Fleet Ops",            sub: "GitHub repo",                    url: "https://github.com/Simple-With-Us/fleet-ops",             mono: "OP", color: "#374151", glyph: ICONS["oc-repo-16"] },
     ]},
@@ -538,7 +610,7 @@
   // Search prefixes: "gh foo" searches GitHub, "gh" alone opens it.
   const PREFIX = {
     gh: { home: "https://github.com",                 q: s => "https://github.com/search?q=" + enc(s) },
-    b:  { home: "https://mac.jays.services/board" },  // no query: the board reads only app/kind/status/severity from the URL
+    b:  { home: "https://linear.app/simple-with-us" },  // no query: Linear has no URL search that matches this box
     w:  { home: "https://en.wikipedia.org",           q: s => "https://en.wikipedia.org/w/index.php?search=" + enc(s) },
     yt: { home: "https://www.youtube.com",            q: s => "https://www.youtube.com/results?search_query=" + enc(s) },
   };
@@ -789,48 +861,7 @@
   const RAG_ENDPOINT = "/api/rag-snapshot";
   const QUOTA_POLL_MS = 60_000;
 
-  function aggregateQuotas(windows) {
-    const byProvider = new Map();
-    for (const w of windows) {
-      const p = w.provider || w.sourceApp || "unknown";
-      if (!byProvider.has(p)) byProvider.set(p, { provider: p, models: [], exhausted: 0 });
-      const g = byProvider.get(p);
-      g.models.push(w);
-      if (w.isExhausted || (w.remainingPercent === 0 && !w.remainingUnknown)) g.exhausted += 1;
-    }
-    for (const g of byProvider.values()) {
-      const knowns = g.models.filter(m => !m.remainingUnknown && typeof m.remainingPercent === "number");
-      g.remainingPercent = knowns.length ? Math.min(...knowns.map(m => m.remainingPercent)) : null;
-      const resets = g.models.map(m => m.resetAt).filter(Boolean).map(s => new Date(s).getTime());
-      g.resetAt = resets.length ? new Date(Math.min(...resets)).toISOString() : null;
-    }
-    return [...byProvider.values()].sort((a, b) => {
-      const ar = a.remainingPercent == null ? 101 : a.remainingPercent;
-      const br = b.remainingPercent == null ? 101 : b.remainingPercent;
-      return ar - br;
-    });
-  }
-
-  // Countdown to a FUTURE instant — quota reset windows only.  Callers must
-  // pair it with a word like "in"; it has no sensible reading for a past time.
-  function relTime(iso) {
-    if (!iso) return "—";
-    const ms = new Date(iso).getTime() - Date.now();
-    if (Number.isNaN(ms)) return "—";
-    if (ms <= 0) return "resetting";
-    const s = Math.round(ms / 1000);
-    if (s < 60) return s + "s";
-    const m = Math.round(s / 60);
-    if (m < 60) return m + "m";
-    const h = Math.floor(m / 60);
-    if (h < 24) return h + "h " + (m % 60) + "m";
-    const d = Math.floor(h / 24);
-    return d + "d " + (h % 24) + "h";
-  }
-
-  // Elapsed time SINCE a past instant, for "... N ago" labels.  Kept separate
-  // from relTime() because the two measure opposite directions: passing a past
-  // timestamp to the countdown made every panel header read "resetting ago".
+  // Elapsed time SINCE a past instant, for "... N ago" labels.
   //
   // Units floor rather than round.  Elapsed time has not completed the next unit
   // yet, and rounding made a 90s-old snapshot claim "2m" (round(90/60) = 2) —
@@ -861,7 +892,6 @@
   // the raw key with no mark rather than guessing at a brand — the same
   // deliberate fallback PlatformLogo.swift makes.
   const OPENAI_MARK = "<svg fill=\"currentColor\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path fill-rule=\"evenodd\" d=\"M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V12.61a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0L3.6053 14.026a4.504 4.504 0 0 1-1.2645-6.1304zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7865a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7818a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V5.9955a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.3805a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z\"/></svg>";
-  const CLAUDE_MARK = "<svg fill=\"currentColor\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z\"/></svg>";
   const GROK_MARK = "<svg fill=\"currentColor\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path fill-rule=\"evenodd\" d=\"M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815\"/></svg>";
   const GEMINI_MARK = "<svg fill=\"currentColor\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z\"/><path d=\"M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z\"/><path d=\"M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z\"/><path d=\"M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z\"/></svg>";
   const MINIMAX_MARK = "<svg fill=\"currentColor\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path fill-rule=\"nonzero\" d=\"M16.278 2c1.156 0 2.093.927 2.093 2.07v12.501a.74.74 0 00.744.709.74.74 0 00.743-.709V9.099a2.06 2.06 0 012.071-2.049A2.06 2.06 0 0124 9.1v6.561a.649.649 0 01-.652.645.649.649 0 01-.653-.645V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v7.472a2.037 2.037 0 01-2.048 2.026 2.037 2.037 0 01-2.048-2.026v-12.5a.785.785 0 00-.788-.753.785.785 0 00-.789.752l-.001 15.904A2.037 2.037 0 0113.441 22a2.037 2.037 0 01-2.048-2.026V18.04c0-.356.292-.645.652-.645.36 0 .652.289.652.645v1.934c0 .263.142.506.372.638.23.131.514.131.744 0a.734.734 0 00.372-.638V4.07c0-1.143.937-2.07 2.093-2.07zm-5.674 0c1.156 0 2.093.927 2.093 2.07v11.523a.648.648 0 01-.652.645.648.648 0 01-.652-.645V4.07a.785.785 0 00-.789-.78.785.785 0 00-.789.78v14.013a2.06 2.06 0 01-2.07 2.048 2.06 2.06 0 01-2.071-2.048V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v3.8a2.06 2.06 0 01-2.071 2.049A2.06 2.06 0 010 12.9v-1.378c0-.357.292-.646.652-.646.36 0 .653.29.653.646V12.9c0 .418.343.757.766.757s.766-.339.766-.757V9.099a2.06 2.06 0 012.07-2.048 2.06 2.06 0 012.071 2.048v8.984c0 .419.343.758.767.758.423 0 .766-.339.766-.758V4.07c0-1.143.937-2.07 2.093-2.07z\"/></svg>";
@@ -879,8 +909,8 @@
   // "xAI" beside the Grok mark was the tell that this table had been written
   // from company names instead.
   const PROVIDERS = {
-    "anthropic":            { label: "Claude",              mark: CLAUDE_MARK },
-    "claude":               { label: "Claude",              mark: CLAUDE_MARK },
+    "anthropic":            { label: "Claude",              logo: "claude.svg" },
+    "claude":               { label: "Claude",              logo: "claude.svg" },
     "openai":               { label: "Codex",               mark: OPENAI_MARK },
     "codex":                { label: "Codex",               mark: OPENAI_MARK },
     "xai":                  { label: "Grok",                mark: GROK_MARK },
@@ -895,9 +925,9 @@
     "deepseek":             { label: "DeepSeek",            mark: DEEPSEEK_MARK },
     "kimi":                 { label: "Kimi Code",           mark: null },
     "cursor":               { label: "Cursor",              mark: CURSOR_MARK },
-    "muse":                 { label: "Muse Assistant",      mark: null, logo: "muse-assist.png" },
-    "muse-assist":          { label: "Muse Assistant",      mark: null, logo: "muse-assist.png" },
-    "muse-assistant":       { label: "Muse Assistant",      mark: null, logo: "muse-assist.png" },
+    "muse":                 { label: "Muse Assist",         mark: null, logo: "muse-assist.png" },
+    "muse-assist":          { label: "Muse Assist",         mark: null, logo: "muse-assist.png" },
+    "muse-assistant":       { label: "Muse Assist",         mark: null, logo: "muse-assist.png" },
     "muse-code":            { label: "Muse Code",           mark: null, logo: "muse.svg" },
   };
 
@@ -916,19 +946,19 @@
       wrap.appendChild(el("span", "n", slug || "unknown"));
       return wrap;
     }
-    if (info.mark) {
+    if (info.logo) {
+      const m = el("img", "pmark pmark-brand");
+      m.src = "/logos/" + info.logo;
+      m.alt = "";
+      m.setAttribute("aria-hidden", "true");
+      wrap.appendChild(m);
+    } else if (info.mark) {
       const m = el("span", "pmark");
       m.innerHTML = info.mark;
       m.setAttribute("aria-hidden", "true");
       wrap.appendChild(m);
     } else if (slug === "cursor") {
       const m = el("span", "pmask");
-      m.setAttribute("aria-hidden", "true");
-      wrap.appendChild(m);
-    } else if (info.logo) {
-      const m = el("img", "pmark");
-      m.src = "/logos/" + info.logo;
-      m.alt = "";
       m.setAttribute("aria-hidden", "true");
       wrap.appendChild(m);
     }
@@ -967,42 +997,142 @@
     return "ok";
   }
 
-  function renderQuotas(payload) {
-    const body = document.getElementById("quotas-body");
-    const meta = document.getElementById("quota-meta");
-    const dot = document.getElementById("quota-dot");
-    body.replaceChildren();
-    if (!payload || !payload.windows) {
-      body.appendChild(el("div", "panel-empty", "Quota data unavailable."));
-      meta.textContent = "stale";
-      dot.className = "live-dot stale";
-      return;
+  function buildQuotaCapsule(primary, windowKey, rawKey) {
+    const state = barColorState(primary);
+    const wrap = el("div", "qcap qcap-" + state);
+    const inner = el("div", "qcap-inner");
+    const used = usedPercentFromPrimary(primary);
+    if (used != null) {
+      const usedEl = el("div", "qcap-used");
+      usedEl.style.width = used + "%";
+      inner.appendChild(usedEl);
+      inner.appendChild(el("div", "qcap-rem"));
     }
-    const groups = aggregateQuotas(payload.windows);
-    const left = el("div");
-    body.append(left);
+    wrap.appendChild(inner);
+    const elapsed = elapsedWindowFraction(primary && primary.resetAt, windowKey, rawKey);
+    if (elapsed != null) {
+      const marker = el("div", "qcap-elapsed");
+      marker.style.left = (elapsed * 100) + "%";
+      wrap.appendChild(marker);
+    }
+    return wrap;
+  }
+
+  function renderQuotaWindowCell(win, labelText) {
+    const p = win && win.primary;
+    const cell = el("div", "quota-cc-win");
+    cell.appendChild(el("div", "quota-cc-win-label", labelText));
+    const track = el("div", "quota-cc-track");
+    track.appendChild(buildQuotaCapsule(p, win && win.windowKey, win && win.rawKey));
+    track.appendChild(el("span", "qcap-pill qcap-pill-" + percentPillTone(p), remainingPercentShort(p)));
+    cell.appendChild(track);
+    cell.appendChild(el("div", "quota-cc-win-reset", formatResetTimeLeft(p && p.resetAt)));
+    if (p && p.rawKey) cell.title = (win.displayName || labelText) + " · " + p.rawKey;
+    return cell;
+  }
+
+  function renderQuotaGroupBlock(group) {
+    const block = el("div", "quota-provider-block");
+    const row = el("div", "quota-cc-row");
+    const idCell = el("div", "quota-cc-id");
+    idCell.appendChild(providerId(group.provider));
+    const nameEl = idCell.querySelector(".n");
+    if (nameEl) nameEl.textContent = platformDisplayName(group.provider, group.providerLabel);
+    row.appendChild(idCell);
+
+    for (const key of primaryWindowKeys()) {
+      const win = findWindow(group, key);
+      const label = windowBarLabel(key);
+      if (win && label) row.appendChild(renderQuotaWindowCell(win, label));
+    }
+    block.appendChild(row);
+
+    const extras = (group.windows || []).filter(shouldShowExtraWindow);
+    if (extras.length) {
+      const extraWrap = el("div", "quota-cc-extras");
+      extraWrap.appendChild(el("div"));
+      for (const win of extras) {
+        extraWrap.appendChild(renderQuotaWindowCell(win, extraWindowRowLabel(win)));
+      }
+      block.appendChild(extraWrap);
+    }
+
+    let stalePrimary = null;
+    for (const w of group.windows || []) {
+      if (w.primary && w.primary.freshness === "stale") {
+        stalePrimary = w.primary;
+        break;
+      }
+    }
+    const staleLabel = staleReportedLabel(stalePrimary, relTimeAgo);
+    if (staleLabel) block.appendChild(el("div", "quota-stale-note", staleLabel));
+
+    const older = olderSourcesForGroup(group);
+    if (older.length) {
+      const det = el("details", "quota-older");
+      det.appendChild(el("summary", null, "Show Older Sources"));
+      const list = el("div", "quota-older-list");
+      for (const { window: win, source: src } of older) {
+        const line = el("div", "quota-older-line");
+        line.textContent = (win.displayName || win.windowKey) + " · " + (src.sourceLabel || src.source);
+        list.appendChild(line);
+      }
+      det.appendChild(list);
+      block.appendChild(det);
+    }
+    return block;
+  }
+
+  function renderLegacyQuotaRows(windows, container) {
+    const groups = aggregateQuotas(windows);
     for (const g of groups) {
       const row = el("div", "quota-row");
       const name = el("div", "quota-name");
       name.append(providerId(g.provider));
-      name.append(el("small", null, g.models.length + (g.models.length === 1 ? " model" : " models") + (g.exhausted ? " · " + g.exhausted + " exhausted" : "")));
+      const legacyName = name.querySelector(".n");
+      if (legacyName) legacyName.textContent = platformDisplayName(g.provider, null);
       const val = el("div", "quota-val");
       if (g.remainingPercent == null) {
-        val.appendChild(el("b", null, "n/a"));
+        val.appendChild(el("b", null, "Unknown"));
         val.appendChild(el("span", "quota-status", "unknown"));
       } else if (g.remainingPercent === 0) {
         val.appendChild(el("b", null, "0%"));
         val.appendChild(el("span", "quota-status exh", "exhausted"));
       } else {
         val.appendChild(el("b", null, Math.round(g.remainingPercent) + "%"));
-        val.appendChild(el("span", "quota-status " + (g.remainingPercent < 25 ? "low" : ""), "in " + relTime(g.resetAt)));
+        const resetCopy = formatResetCopy(g.resetAt);
+        val.appendChild(el("span", "quota-status " + (g.remainingPercent < 25 ? "low" : ""), resetCopy));
       }
       const bar = el("div", "quota-bar");
       const fill = el("div", "quota-fill " + quotaClass(g.remainingPercent));
       fill.style.width = (g.remainingPercent == null ? 4 : Math.max(2, g.remainingPercent)) + "%";
       bar.appendChild(fill);
       row.append(name, val, bar);
-      left.appendChild(row);
+      container.appendChild(row);
+    }
+  }
+
+  function renderQuotas(payload) {
+    const body = document.getElementById("quotas-body");
+    const meta = document.getElementById("quota-meta");
+    const dot = document.getElementById("quota-dot");
+    body.replaceChildren();
+    const hasGroups = payload && Array.isArray(payload.quotaGroups) && payload.quotaGroups.length > 0;
+    const hasWindows = payload && Array.isArray(payload.windows) && payload.windows.length > 0;
+    if (!payload || (!hasGroups && !hasWindows)) {
+      body.appendChild(el("div", "panel-empty", "Quota data unavailable."));
+      meta.textContent = "stale";
+      dot.className = "live-dot stale";
+      return;
+    }
+    const left = el("div");
+    body.append(left);
+    if (hasGroups) {
+      for (const g of sortQuotaGroups(payload.quotaGroups)) {
+        left.appendChild(renderQuotaGroupBlock(g));
+      }
+    } else {
+      renderLegacyQuotaRows(payload.windows, left);
     }
     meta.textContent = "live · " + relTimeAgo(payload.generatedAt);
     dot.className = "live-dot";

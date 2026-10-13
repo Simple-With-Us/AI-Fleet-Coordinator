@@ -6,12 +6,12 @@ description: >-
 
 # Fleet recall
 
-> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`.  If this session is **Grok Build**, pin `AGENT_SEAT=GROK-BUILD`, tag `[GROK-BUILD]`, branches `grok-build/`, worktrees `~/apps/<app>-grok-build`.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
+> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
 The fleet has one shared memory: the `fleet-agents` collection in the self-hosted Qdrant on the
-Hetzner box, embedded by the self-hosted bge-m3 endpoint.  It holds every board row with its
-resolution, the Apple Notes archive, every effort log, the fleet protocol docs, the skills, and
+Hetzner box, embedded by the self-hosted bge-m3 endpoint.  It holds every row of the old board with its
+resolution (Linear issues join when the `linear` recall source ships), the Apple Notes archive, every effort log, the fleet protocol docs, the skills, and
 each seat's memory files, refreshed nightly by the BotFleet bot Oracle.  Canonical doc:
 `docs/RAG-FLEET-INFRA.md` in AI-Fleet-Coordinator.
 
@@ -24,7 +24,7 @@ One targeted `recall_search` before you act costs seconds; re-deriving a lesson 
 At the start of every turn or task kickoff, evaluate these 4 triggers.  If ANY trigger matches, running `recall_search` is **mandatory** before inspecting code or executing trial-and-error diagnostic commands:
 1. **Error / Blocker Encounter**: Any 4xx/5xx HTTP error, test/build failure, timeout, crash trace, or Sentry issue.
 2. **Infrastructure & Platform**: Touching Coolify, LaunchAgents, pm2, Cloudflare Access/tunnels, Tailscale, Sentry, Qdrant, TEI, Redis, or secrets/auth.
-3. **Cross-Repo & Architectural Patterns**: Modifying shared protocols (AGENT-SYNC, effort logs, board sync) or touching unfamiliar sibling repositories.
+3. **Cross-Repo & Architectural Patterns**: Modifying shared protocols (AGENT-SYNC, the Linear and `board` integration) or touching unfamiliar sibling repositories.
 4. **Pre-Owner Query**: Before asking the owner a question regarding preferred conventions, architectural decisions, or environment history.
 
 ### Permitted Bypass:
