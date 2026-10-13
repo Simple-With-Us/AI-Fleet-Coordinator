@@ -49,9 +49,12 @@ class GrokTransport:
             if not self._live_pid(active.get("pid")):
                 continue
             state = self.disk.turn_state(sid)
+            status = state.get("turnState", "unknown")
+            if status == "idle" and not state.get("turnEndedAt"):
+                status = "unknown"  # An empty/missing event history cannot prove that a chat is idle.
             rows.append({"platform": "grok-leader", "host": socket.gethostname(),
                          "session_id": sid, "cwd": cwd, "pid": active["pid"],
-                         "state": state.get("turnState", "unknown"),
+                         "state": status,
                          "pending_permission": bool(state.get("pendingTool")),
                          "self": self.disk.is_self_session(sid)})
         return rows

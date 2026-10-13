@@ -8,7 +8,7 @@ from agent_sync.chat_transport import GrokTransport
 class TransportTests(unittest.TestCase):
     def transport(self, state="idle", live=True):
         transport = GrokTransport.__new__(GrokTransport)
-        transport.disk = SimpleNamespace(load_active=lambda: [{"sessionId": "chat-1", "cwd": "/work", "pid": 123}], turn_state=lambda _: {"turnState": state}, is_self_session=lambda _: False)
+        transport.disk = SimpleNamespace(load_active=lambda: [{"sessionId": "chat-1", "cwd": "/work", "pid": 123}], turn_state=lambda _: {"turnState": state, "turnEndedAt": 1}, is_self_session=lambda _: False)
         transport._live_pid = lambda _: live
         client = Mock()
         transport.leader = SimpleNamespace(LeaderStdio=lambda: client, _initialize=Mock(), _resume=Mock())
@@ -66,3 +66,10 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(transport.send(binding, "nudge", permit=lambda: False), "deferred")
         client.request.assert_not_called()
         client.close.assert_called_once()
+
+    def test_empty_event_history_cannot_prove_idle(self):
+        transport, binding, client = self.transport()
+        transport.disk.turn_state = lambda _: {"turnState": "idle"}
+        self.assertEqual(transport.preflight(binding), "busy")
+        self.assertEqual(transport.send(binding, "nudge"), "deferred")
+        client.request.assert_not_called()
