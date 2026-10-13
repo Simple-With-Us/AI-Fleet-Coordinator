@@ -440,6 +440,7 @@ def muse_argv(muse: str, model: str) -> list[str]:
     (the enum of the schema's route seat) travels in the schema file itself (wakes.schema_text),
     which is why it is not an argv parameter here."""
     return [muse, "exec",
+            "-c", "run.toolset=[]",
             "--model", model,
             "--reasoning-effort", MUSE_REASONING_EFFORT,
             "--provider", MUSE_PROVIDER,
@@ -447,7 +448,7 @@ def muse_argv(muse: str, model: str) -> list[str]:
             "--output-schema", MUSE_SCHEMA_SLOT,
             "--json",
             "--approval-mode", "never",
-            "--disable-shell", "--disable-write", "--disable-web-tools",
+            "--disable-shell", "--disable-write", "--disable-web-tools", "--disable-reminders",
             "--no-session-log",
             "--workspace", MUSE_WORKSPACE_SLOT,
             "--max-model-steps", str(MUSE_MAX_MODEL_STEPS),

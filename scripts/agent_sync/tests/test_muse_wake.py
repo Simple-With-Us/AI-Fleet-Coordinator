@@ -28,10 +28,11 @@ class MuseArgvTest(unittest.TestCase):
         argv = A.muse_argv("/usr/local/bin/muse", "muse-spark-1.3-contributor")
         self.assertEqual(argv[0], "/usr/local/bin/muse")
         self.assertEqual(argv[1], "exec")
+        self.assertEqual(argv[2:4], ["-c", "run.toolset=[]"])
         # Every switch that makes "read this topic, touch nothing" true rather than inferred.
         self.assertIn("--approval-mode", argv)
         self.assertEqual(argv[argv.index("--approval-mode") + 1], "never")
-        for switch in ("--disable-shell", "--disable-write", "--disable-web-tools", "--no-session-log",
+        for switch in ("--disable-shell", "--disable-write", "--disable-web-tools", "--disable-reminders", "--no-session-log",
                        "--no-foreign-personal-context", "--json"):
             self.assertIn(switch, argv)
         # The sandbox is left ON:  muse has no --disable-sandbox in this argv.
