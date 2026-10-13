@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import socket
 import subprocess
@@ -70,6 +71,38 @@ class GrokTransport:
         # A disconnected or unavailable chat can become available later; keep it pending.
         return "busy"
 
+    def receipt(self, binding: dict[str, str], text: str) -> bool:
+        """Confirm the exact nudge in the destination's real user history, never assistant output."""
+        if binding.get("platform") != "grok-leader" or binding.get("host") != socket.gethostname():
+            return False
+        path = self.disk.find_session_dir(binding.get("session_id", ""))
+        if path is None:
+            return False
+        try:
+            with (path / "chat_history.jsonl").open("rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                fh.seek(max(0, size - 2 * 1024 * 1024))
+                if fh.tell():
+                    fh.readline()  # Skip a partial first line in the bounded tail.
+                for raw in fh:
+                    try:
+                        row = json.loads(raw)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if not isinstance(row, dict) or row.get("type") != "user" or row.get("synthetic_reason"):
+                        continue
+                    content = row.get("content")
+                    if isinstance(content, list):
+                        content = "".join(part.get("text", "") for part in content
+                                          if isinstance(part, dict) and part.get("type") == "text"
+                                          and isinstance(part.get("text"), str))
+                    if content == text:
+                        return True
+        except OSError:
+            return False
+        return False
+
     def send(self, binding: dict[str, str], text: str, *,
              permit: Callable[[], bool] | None = None) -> str:
         # Repeat the check immediately before connecting.  A leader queues a racing prompt;
@@ -95,6 +128,8 @@ class GrokTransport:
                            "prompt": [{"type": "text", "text": text}]}, timeout=30)
             return "accepted"
         except (OSError, RuntimeError, TimeoutError, subprocess.SubprocessError):
+            if sent and self.receipt(binding, text):
+                return "accepted"
             return "unknown" if sent else "failed"
         finally:
             if client is not None:

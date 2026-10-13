@@ -17,6 +17,8 @@ class FakeTransport:
     def __init__(self, *, readiness: str = "ready", outcome: str = "accepted") -> None:
         self.readiness = readiness
         self.outcome = outcome
+        self.receipt_found = False
+        self.receipt_calls: list[tuple[dict[str, str], str]] = []
         self.preflights: list[dict[str, str]] = []
         self.deliveries: list[tuple[dict[str, str], str]] = []
         self.active = 0
@@ -40,6 +42,10 @@ class FakeTransport:
         finally:
             with self.guard:
                 self.active -= 1
+
+    def receipt(self, binding: dict[str, str], text: str) -> bool:
+        self.receipt_calls.append((dict(binding), text))
+        return self.receipt_found
 
 
 class ChatNudgesTest(unittest.TestCase):
@@ -129,6 +135,62 @@ class ChatNudgesTest(unittest.TestCase):
         self.assertEqual(self._item()["status"], "unknown")
         self.assertEqual(self.queue.dispatch_one(transport, 12)["status"], "idle")
         self.assertEqual(len(transport.deliveries), 1)
+
+    def test_unknown_receipt_confirms_delivery_and_unblocks_next_message(self) -> None:
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 10)
+        transport = FakeTransport(outcome="unknown")
+        self.assertEqual(self.queue.dispatch_one(transport, 11)["status"], "unknown")
+        self.assertEqual(self.queue.dispatch_one(transport, 12)["status"], "idle")
+
+        transport.receipt_found = True
+        self.assertEqual(self.queue.reconcile(transport, 13), [self.queue.snapshot()["items"][0]["id"]])
+        self.assertEqual(self.queue.snapshot()["items"][0]["status"], "accepted")
+        transport.outcome = "accepted"
+        self.assertEqual(self.queue.dispatch_one(transport, 14)["status"], "accepted")
+        self.assertEqual([call[1] for call in transport.receipt_calls], [self._item_text(0)])
+        self.assertEqual(len(transport.deliveries), 2)
+
+    def test_absent_receipt_keeps_unknown_held(self) -> None:
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 7, 10)
+        transport = FakeTransport(outcome="unknown")
+        self.queue.dispatch_one(transport, 11)
+        self.assertEqual(self.queue.reconcile(transport, 12), [])
+        self.assertEqual(self._item()["status"], "unknown")
+        self.assertEqual(self.queue.dispatch_one(transport, 13)["status"], "idle")
+
+    def test_explicit_cancel_unblocks_destination_without_reusing_same_message(self) -> None:
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 9, 10)
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 10, 10)
+        transport = FakeTransport(outcome="unknown")
+        first = self.queue.dispatch_one(transport, 11)
+        self.assertEqual(first["status"], "unknown")
+        self.assertTrue(self.queue.cancel(first["item_id"], 12))
+        self.assertFalse(self.queue.cancel(first["item_id"], 12))
+        self.assertTrue(self.queue.enqueue(self.binding["channel"], self.binding["topic"], 9, 13))
+        self.assertEqual(len(self.queue.snapshot()["items"]), 2)
+        transport.outcome = "accepted"
+        self.assertEqual(self.queue.dispatch_one(transport, 14)["status"], "accepted")
+        self.assertEqual(self.queue.snapshot()["items"][0]["status"], "cancelled")
+        self.assertEqual(len(transport.deliveries), 2)
+
+    def test_cancel_refuses_dispatching_item(self) -> None:
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 21, 10)
+        transport = FakeTransport()
+        transport.release = threading.Event()
+        first = threading.Thread(target=self.queue.dispatch_one, args=(transport, 11))
+        first.start()
+        deadline = time.time() + 2
+        while transport.active == 0 and time.time() < deadline:
+            time.sleep(0.01)
+        item_id = self._item()["id"]
+        self.assertFalse(self.queue.cancel(item_id, 12))
+        transport.release.set()
+        first.join(timeout=2)
+        self.assertFalse(first.is_alive())
+
+    def _item_text(self, index: int) -> str:
+        return self.queue.snapshot()["items"][index]["text"]
 
     def test_definite_rejection_is_held_without_automatic_retry(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)

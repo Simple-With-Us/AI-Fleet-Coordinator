@@ -146,7 +146,7 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         if action == "status":
             snapshot = registry.snapshot()
             counts = {state: sum(1 for item in snapshot["items"] if item.get("status") == state)
-                      for state in ("pending", "dispatching", "accepted", "unknown")}
+                      for state in ("pending", "dispatching", "accepted", "unknown", "cancelled")}
             counts["blocked"] = sum(1 for item in snapshot["items"]
                                     if item.get("status") in ("pending", "unknown") and item.get("hold_reason"))
             rt.out(json.dumps({"counts": counts, **snapshot}, ensure_ascii=False, indent=2) + "\n")
@@ -155,6 +155,10 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
             removed = registry.unbind(args.channel, args.topic)
             rt.out("unbound\n" if removed else "no binding\n")
             return 0
+        if action == "cancel":
+            cancelled = registry.cancel(args.item_id, time.time())
+            rt.out("cancelled\n" if cancelled else "not cancellable (missing, accepted, or dispatching)\n")
+            return 0 if cancelled else 1
         if action == "bind":
             host = socket.gethostname()
             target = next((row for row in CT.GrokTransport().discover()
@@ -731,6 +735,9 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
     c.add_argument("--target-seat", required=True, metavar="GROK")
     c.add_argument("--channel", required=True)
     c.add_argument("--topic", required=True)
+    c = csub.add_parser("cancel", parents=[common])
+    c.add_argument("--target-seat", required=True, metavar="GROK")
+    c.add_argument("--item-id", required=True)
     q = add("init", "pin owner_user_id and eligible_user_ids in listener.toml (asks first)", dsub)
     q.add_argument("--seat", metavar="S", help="the bot to read the user list with (default: the Claude seat); its "
                                                "credentials come from --rc, ZULIP_RC, then its listener.toml source "

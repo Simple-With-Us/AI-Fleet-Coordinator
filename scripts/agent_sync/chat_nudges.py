@@ -19,6 +19,7 @@ _BINDING_FIELDS = ("channel", "topic", "platform", "host", "session_id", "cwd")
 class NudgeTransport(Protocol):
     def preflight(self, binding: dict[str, str]) -> str: ...
     def send(self, binding: dict[str, str], text: str) -> str: ...
+    def receipt(self, binding: dict[str, str], text: str) -> bool: ...
 
 
 def nudge_text(channel: str, topic: str, message_id: str) -> str:
@@ -79,7 +80,7 @@ class ChatNudges:
                 raise ValueError("chat nudge binding is invalid")
         for item in data["items"]:
             if (not isinstance(item, dict) or item.get("status") not in
-                    {"pending", "dispatching", "accepted", "unknown"}
+                    {"pending", "dispatching", "accepted", "unknown", "cancelled"}
                     or not isinstance(item.get("binding"), dict)
                     or not isinstance(item.get("text"), str)
                     or not isinstance(item.get("id"), str)
@@ -130,6 +131,49 @@ class ChatNudges:
         data = self._read()
         return json.loads(json.dumps(data, ensure_ascii=False))
 
+    def cancel(self, item_id: str, now: float) -> bool:
+        """Cancel a held/pending item.  An in-flight or accepted delivery cannot be recalled."""
+        if not isinstance(item_id, str) or not item_id:
+            return False
+        with L.locked(self.path):
+            data = self._read()
+            item = next((row for row in data["items"] if row.get("id") == item_id), None)
+            if not item or item.get("status") not in ("pending", "unknown"):
+                return False
+            item["status"] = "cancelled"
+            item["hold_reason"] = "cancelled by operator"
+            item["updated_at"] = float(now)
+            L.write_json(self.path, data)
+            return True
+
+    def reconcile(self, transport: NudgeTransport, now: float) -> list[str]:
+        """Confirm unknown deliveries only when transport finds the exact nudge text in history."""
+        confirmed: list[str] = []
+        with L.locked(self.path + ".reconcile"):
+            with L.locked(self.path):
+                data = self._read()
+                unknown = [(row["id"], dict(row["binding"]), row["text"])
+                           for row in data["items"] if row.get("status") == "unknown"]
+            for item_id, binding, text in unknown:
+                try:
+                    found = bool(transport.receipt(binding, text))
+                except Exception:
+                    found = False
+                if not found:
+                    continue
+                with L.locked(self.path):
+                    data = self._read()
+                    item = next((row for row in data["items"] if row.get("id") == item_id), None)
+                    if not item or item.get("status") != "unknown":
+                        continue
+                    item["status"] = "accepted"
+                    item["hold_reason"] = None
+                    item["reconciled_at"] = float(now)
+                    item["updated_at"] = float(now)
+                    L.write_json(self.path, data)
+                    confirmed.append(item_id)
+        return confirmed
+
     def enqueue(self, channel: str, topic: str, message_id: str | int, now: float) -> bool:
         if isinstance(message_id, bool) or not isinstance(message_id, (str, int)) or not str(message_id):
             raise ValueError("message_id must be a non-empty string or integer")
@@ -167,7 +211,7 @@ class ChatNudges:
                     destination = self._dedupe_key("", binding)
                     if destination in blocked_destinations:
                         continue
-                    if row.get("status") == "accepted":
+                    if row.get("status") in ("accepted", "cancelled"):
                         continue
                     blocked_destinations.add(destination)
                     if row.get("status") != "pending" or row.get("hold_reason"):

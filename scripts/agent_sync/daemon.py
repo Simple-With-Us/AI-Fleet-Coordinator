@@ -2415,7 +2415,7 @@ class Daemon:
         try:
             nudge_state = self.chat_nudges.snapshot()
             nudge_counts = {state: sum(1 for item in nudge_state["items"] if item.get("status") == state)
-                            for state in ("pending", "dispatching", "accepted", "unknown")}
+                            for state in ("pending", "dispatching", "accepted", "unknown", "cancelled")}
             nudge_counts["blocked"] = sum(1 for item in nudge_state["items"]
                                           if item.get("status") in ("pending", "unknown")
                                           and item.get("hold_reason"))
@@ -2627,6 +2627,12 @@ class Daemon:
     def dispatch_chat_nudge(self, runner: SeatRunner) -> dict[str, Any]:
         """One serialized, owner-bound existing-chat nudge with normal wake safety checks."""
         daemon = self
+        if any(item.get("status") == "unknown" for item in self.chat_nudges.snapshot()["items"]):
+            if not hasattr(self, "_chat_transport"):
+                self._chat_transport = CT.GrokTransport()
+            for item_id in self.chat_nudges.reconcile(self._chat_transport, self.clock.time()):
+                runner.ledger.append({"wake_id": item_id, "state": "done", "ts": self.clock.time(),
+                                      "adapter": "chat-nudge", "reason": "saved user-message receipt"})
 
         class GuardedTransport:
             def __init__(self) -> None:

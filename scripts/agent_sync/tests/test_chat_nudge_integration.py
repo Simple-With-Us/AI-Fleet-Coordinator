@@ -50,6 +50,9 @@ class ChatNudgeIntegrationTests(DaemonHarness):
                                   "--channel", "agent-sync", "--topic", "AFC-305",
                                   "--session-id", "session", "--cwd", "/repo"])
         self.assertEqual(args.target_seat, "GROK")
+        cancel = parser.parse_args(["daemon", "chats", "cancel", "--target-seat", "GROK",
+                                    "--item-id", "a" * 64])
+        self.assertEqual(cancel.item_id, "a" * 64)
         with self.assertRaises(SystemExit):
             parser.parse_args(["daemon", "chats", "status"])
 
@@ -102,6 +105,21 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "pending")
         self.assertEqual(runner.ledger.rows()[-1]["state"], "skipped")
         self.assertEqual(daemon.chat_nudges.snapshot()["items"][0]["status"], "pending")
+
+    def test_late_saved_receipt_updates_ledger_without_resend(self):
+        daemon = self.daemon()
+        daemon.chat_nudges.bind("agent-sync", "topic", "grok-leader", "host", "existing", "/repo")
+        daemon.chat_nudges.enqueue("agent-sync", "topic", 41, self.clock.time())
+        runner = self._grok_runner(daemon)
+        fake = SimpleNamespace(preflight=lambda binding: "ready", send=mock.Mock(return_value="unknown"),
+                               receipt=mock.Mock(return_value=False))
+        daemon._chat_transport = fake
+        self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "unknown")
+        fake.receipt.return_value = True
+        self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "idle")
+        self.assertEqual(fake.send.call_count, 1)
+        self.assertEqual(runner.ledger.rows()[-1]["state"], "done")
+        self.assertEqual(daemon.chat_nudges.snapshot()["items"][0]["status"], "accepted")
 
 
 if __name__ == "__main__":

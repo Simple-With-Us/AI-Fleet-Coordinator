@@ -1,5 +1,8 @@
 """Existing-chat sends must never infer acceptance from a timeout."""
 import socket
+import json
+import tempfile
+from pathlib import Path
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -9,6 +12,7 @@ class TransportTests(unittest.TestCase):
     def transport(self, state="idle", live=True):
         transport = GrokTransport.__new__(GrokTransport)
         transport.disk = SimpleNamespace(load_active=lambda: [{"sessionId": "chat-1", "cwd": "/work", "pid": 123}], turn_state=lambda _: {"turnState": state, "turnEndedAt": 1}, is_self_session=lambda _: False)
+        transport.disk.find_session_dir = lambda _: None
         transport._live_pid = lambda _: live
         client = Mock()
         transport.leader = SimpleNamespace(LeaderStdio=lambda: client, _initialize=Mock(), _resume=Mock())
@@ -73,3 +77,23 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(transport.preflight(binding), "busy")
         self.assertEqual(transport.send(binding, "nudge"), "deferred")
         client.request.assert_not_called()
+
+    def test_long_turn_with_saved_user_receipt_is_accepted(self):
+        transport, binding, client = self.transport()
+        client.request.side_effect = TimeoutError()
+        with tempfile.TemporaryDirectory() as directory:
+            transport.disk.find_session_dir = lambda _: Path(directory)
+            (Path(directory) / "chat_history.jsonl").write_text(json.dumps(
+                {"type": "user", "content": [{"type": "text", "text": "nudge"}]}))
+            self.assertEqual(transport.send(binding, "nudge"), "accepted")
+        self.assertEqual(client.request.call_count, 1)
+
+    def test_assistant_or_synthetic_copy_is_not_receipt(self):
+        transport, binding, _ = self.transport()
+        with tempfile.TemporaryDirectory() as directory:
+            transport.disk.find_session_dir = lambda _: Path(directory)
+            for row in ({"type": "assistant", "content": "nudge"},
+                        {"type": "user", "content": "nudge", "synthetic_reason": "reminder"},
+                        {"type": "user", "content": "another message"}):
+                (Path(directory) / "chat_history.jsonl").write_text(json.dumps(row))
+                self.assertFalse(transport.receipt(binding, "nudge"))
