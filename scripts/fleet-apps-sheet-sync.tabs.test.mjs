@@ -38,6 +38,19 @@ test("Fleet Apps lists every fleet-apps.json app, FleetLink included", () => {
   assert.match(fll[6], /No team/);
 });
 
+test("a BotFleet seat with a Linear app shows that name, and a persona without one stays an em dash", () => {
+  const col = seatsRows[0].indexOf("Linear App");
+  assert.ok(col > 0);
+  const bf = seatsRows.slice(1).filter(r => r.length > 1 && String(r[0]).startsWith("BF-"));
+  assert.ok(bf.length > 0);
+  for (const row of bf) {
+    assert.equal(row[col], seatAppNames[row[0]], row[0]);
+    assert.notEqual(row[col], "—", row[0]);
+  }
+  assert.equal(seatsRows.find(r => r[0] === "BF-FIXER")[col], "BF-Fixer");
+  assert.equal(seatsRows.find(r => r[0] === "GB-HOUSEKEEPER")[col], "—");
+});
+
 test("Seats and Bots covers every partition seat and every fleet-apps.json seat", () => {
   const tags = new Set(seatsRows.slice(1).filter(r => r.length > 1).map(r => r[0]));
   for (const s of fleetApps.seats) assert.ok(tags.has(s.tag), `missing ${s.tag}`);
