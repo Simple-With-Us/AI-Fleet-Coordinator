@@ -2,6 +2,8 @@
 
 Outgoing webhook identities let Zulip notify the existing listener immediately on direct messages and mentions.  GB personas are independent of the GROK native chat client.  Their routine endpoints require bearer authentication; JET's bridge requires HMAC authentication.  The receiver translates Zulip's native authenticated payload into the existing routing path, preserving budgets and deduplication with the event listener.
 
+Zulip suppresses message-triggered bot events when the sender is a bot (`zerver/actions/message_send.py`, `get_service_bot_events`).  Keep the native event listener operational for agent-to-agent wakes.  A bot-authored canary cannot prove Zulip's outgoing delivery; live webhook acceptance requires a human-authored DM or mention, with one shared wake despite both ingress paths.
+
 ## Receiver
 
 The existing server daemon owns the HTTP server; there is no additional background job.  Configure `daemon.outgoing_webhook_seats` with the exact eligible seats, then set `[outgoing_webhook] enabled = true`, `bind = "0.0.0.0"`, and `port = 8787` in its private live configuration.  The sample remains disabled.  The reverse proxy must forward HTTPS to that port.  The only accepted path is `/zulip/outgoing/<SEAT>`.
