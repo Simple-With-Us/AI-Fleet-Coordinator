@@ -32,6 +32,15 @@ _DISCOVERY_COMPLETE = False
 _DISCOVERY_MAX_PAGES = 20
 
 
+def discovery_wait_budget() -> float:
+    """Seconds one caller may block on a single leader walk.
+
+    Pages share that budget inside one helper process.  Wake intake must not
+    multiply it by `_DISCOVERY_MAX_PAGES`.
+    """
+    return _DISCOVERY_OUTER_TIMEOUT + 1.0
+
+
 def _module(name: str, filename: str) -> Any:
     spec = importlib.util.spec_from_file_location(name, _RUNTIME / filename)
     if spec is None or spec.loader is None:
@@ -157,14 +166,14 @@ class GrokTransport:
             thread.start()
 
     def discover(self, *, force: bool = False, wait: bool = True, limit: int = 160,
-                 session_id: str | None = None) -> list[dict[str, Any]]:
+                 session_id: str | None = None, timeout: float | None = None) -> list[dict[str, Any]]:
         """List chats owned by the shared leader, then conservatively derive turn state.
 
         active_sessions.json tracks attached TUIs, not chats known to the leader, and is
         empty in leader mode.  It is therefore not an inventory or proof of promptability.
         A failed or malformed leader list is an error, never an empty-success fallback.
         One refresh walks up to 20 pages before publishing, so a partial page is never
-        a fresh wakeable inventory.
+        a fresh wakeable inventory.  `timeout` cannot extend the wait past one walk.
         """
         global _DISCOVERY_SESSIONS, _DISCOVERY_UPDATED, _DISCOVERY_LAST_ATTEMPT, _DISCOVERY_ERROR
         global _DISCOVERY_CURSOR, _DISCOVERY_SEEN_CURSORS, _DISCOVERY_CANDIDATE_SESSIONS, _DISCOVERY_COMPLETE
@@ -179,7 +188,10 @@ class GrokTransport:
                     _DISCOVERY_SEEN_CURSORS = set()
                     _DISCOVERY_CANDIDATE_SESSIONS = []
                     _DISCOVERY_COMPLETE = False
-        deadline = time.monotonic() + _DISCOVERY_OUTER_TIMEOUT + 1.0
+        budget = discovery_wait_budget()
+        if timeout is not None:
+            budget = min(budget, max(0.0, float(timeout)))
+        deadline = time.monotonic() + budget
         requested = False
         while True:
             # force applies only to the first schedule.  Later iterations just
@@ -244,15 +256,18 @@ class GrokTransport:
                                  and not pending and not self_session})
         return rows
 
-    def preflight(self, binding: dict[str, str], *, force: bool = False) -> str:
+    def preflight(self, binding: dict[str, str]) -> str:
         if binding.get("platform") != "grok-leader" or binding.get("host") != socket.gethostname():
             return "unsupported"
         target_session_id = binding.get("session_id")
+        # A missing id is a bad binding.  "unsupported" is only another host or platform,
+        # and "busy" would leave the nudge pending forever.
         if not isinstance(target_session_id, str) or not target_session_id:
-            return "unsupported"
+            return "invalid"
         try:
-            rows = self.discover(force=force, wait=False, limit=1,
-                                 session_id=target_session_id)
+            # Read the shared snapshot.  A force reset here would wipe it and, because
+            # this check does not wait, every send would look pending.
+            rows = self.discover(wait=False, limit=1, session_id=target_session_id)
         except Exception:
             return "busy"  # Discovery pending/unavailable is transient; leave the nudge queued.
         for row in rows:

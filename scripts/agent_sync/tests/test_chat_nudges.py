@@ -198,6 +198,15 @@ class ChatNudgesTest(unittest.TestCase):
         self.assertIn("delivery is uncertain", item["hold_reason"])
         self.assertEqual(restarted.dispatch_one(FakeTransport(), 11)["status"], "idle")
 
+    def test_invalid_binding_readiness_is_held_not_retried(self) -> None:
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
+        transport = FakeTransport(readiness="invalid")
+        result = self.queue.dispatch_one(transport, 11)
+        self.assertEqual(result["status"], "held")
+        self.assertEqual(self._item()["status"], "pending")
+        self.assertTrue(self._item()["hold_reason"])
+        self.assertEqual(transport.deliveries, [])
+
     def test_busy_transport_keeps_item_pending(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
         transport = FakeTransport(readiness="busy")

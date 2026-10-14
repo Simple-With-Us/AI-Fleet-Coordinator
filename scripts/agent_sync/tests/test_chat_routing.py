@@ -1,6 +1,7 @@
 from __future__ import annotations
 from types import SimpleNamespace
 from unittest import mock
+from agent_sync import chat_transport as CT
 from agent_sync import wakes as W
 from agent_sync.tests.test_daemon import DaemonHarness
 
@@ -25,13 +26,14 @@ class ChatRoutingTests(DaemonHarness):
     def test_owner_catalog_excerpt_and_exact_selection_queue_once(self):
         d, r, p, target = self.setup_route()
         context = d.chat_context(r, p)
-        d._chat_catalog.discover.assert_called_once_with(wait_grok=True)
+        d._chat_catalog.discover.assert_called_once_with(
+            wait_grok=True, grok_timeout=CT.discovery_wait_budget())
         self.assertNotIn('recent_messages', context[0])
         d._chat_catalog.excerpt.assert_not_called()
         obj = {'chat_target': target['id'], 'risk': None, 'route': None}
         self.assertEqual(d.select_chat(r, p, obj, context)['status'], 'queued')
         self.assertEqual(d._chat_catalog.discover.call_args,
-                         mock.call(force=True, wait_grok=True))
+                         mock.call(force=True, wait_grok=True, grok_timeout=CT.discovery_wait_budget()))
         self.assertEqual(d.select_chat(r, p, obj, context)['status'], 'already_queued')
         queue = d.chat_queue('GROK')
         self.assertEqual(len(queue.snapshot()['items']), 1)

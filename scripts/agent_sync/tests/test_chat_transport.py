@@ -253,6 +253,63 @@ class TransportTests(unittest.TestCase):
         self.assertLessEqual(client.request.call_args_list[1].kwargs["timeout"], 5)
         client.close.assert_called_once()
 
+    def test_leader_client_returns_earlier_pages_when_a_later_page_times_out(self):
+        helper_path = CT._RUNTIME / "leader-client.py"
+        spec = importlib.util.spec_from_file_location("test_grok_leader_page_timeout", helper_path)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        client = SimpleNamespace(request=Mock(side_effect=[
+            {"sessions": [{"sessionId": "chat-1", "cwd": "/one"}], "nextCursor": "page-2"},
+            TimeoutError("no ACP result for session/list"),
+        ]), close=Mock())
+        helper.LeaderStdio = Mock(return_value=client)
+        helper._initialize = Mock(return_value={})
+        stdout = io.StringIO()
+        with patch.object(sys, "argv", [str(helper_path), "--rpc-timeout", "5", "list", "--all-pages"]), \
+                redirect_stdout(stdout):
+            helper.main()
+        payload = json.loads(stdout.getvalue())
+        self.assertFalse(payload["complete"])
+        self.assertEqual([row["sessionId"] for row in payload["sessions"]], ["chat-1"])
+        self.assertEqual(payload["error"], "leader pagination budget exceeded")
+        helper.LeaderStdio.assert_called_once()
+        self.assertEqual(client.request.call_count, 2)
+        client.close.assert_called_once()
+
+    def test_leader_client_first_page_timeout_does_not_look_complete(self):
+        helper_path = CT._RUNTIME / "leader-client.py"
+        spec = importlib.util.spec_from_file_location("test_grok_leader_first_timeout", helper_path)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        client = SimpleNamespace(request=Mock(side_effect=TimeoutError("no ACP result")), close=Mock())
+        helper.LeaderStdio = Mock(return_value=client)
+        helper._initialize = Mock(return_value={})
+        with patch.object(sys, "argv", [str(helper_path), "--rpc-timeout", "5", "list", "--all-pages"]):
+            with self.assertRaises(TimeoutError):
+                helper.main()
+        client.close.assert_called_once()
+
+    def test_leader_client_rejects_a_non_string_pagination_cursor(self):
+        helper_path = CT._RUNTIME / "leader-client.py"
+        spec = importlib.util.spec_from_file_location("test_grok_leader_bad_cursor", helper_path)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        client = SimpleNamespace(request=Mock(return_value={
+            "sessions": [{"sessionId": "chat-1", "cwd": "/one"}], "nextCursor": 5,
+        }), close=Mock())
+        helper.LeaderStdio = Mock(return_value=client)
+        helper._initialize = Mock(return_value={})
+        stdout = io.StringIO()
+        with patch.object(sys, "argv", [str(helper_path), "list", "--all-pages"]), \
+                redirect_stdout(stdout):
+            helper.main()
+        payload = json.loads(stdout.getvalue())
+        self.assertFalse(payload["complete"])
+        self.assertEqual(payload["error"], "leader returned invalid pagination cursor")
+        self.assertEqual([row["sessionId"] for row in payload["sessions"]], ["chat-1"])
+        self.assertIsNone(payload["nextCursor"])
+        client.close.assert_called_once()
+
     def test_discovery_fails_closed_on_leader_errors_or_bad_data(self):
         transport = GrokTransport.__new__(GrokTransport)
         transport.disk = SimpleNamespace(load_active=lambda: [], turn_state=lambda _: {},
@@ -411,12 +468,87 @@ class TransportTests(unittest.TestCase):
             client.request.assert_not_called()
 
     def test_target_must_match(self):
-        for field, value in [("host", "other-host"), ("platform", "shellular"), ("cwd", "/other"), ("session_id", "other")]:
+        for field, value, expected in (("host", "other-host", "unsupported"),
+                                       ("platform", "shellular", "unsupported"),
+                                       ("cwd", "/other", "busy"),
+                                       ("session_id", "other", "busy")):
             transport, binding, client = self.transport()
             binding[field] = value
-            self.assertNotEqual(transport.preflight(binding), "ready")
+            self.assertEqual(transport.preflight(binding), expected)
             transport.send(binding, "nudge")
             client.request.assert_not_called()
+        for value in ("", None, 12):
+            transport, binding, client = self.transport()
+            binding["session_id"] = value
+            self.assertEqual(transport.preflight(binding), "invalid")
+            self.assertEqual(transport.send(binding, "nudge"), "deferred")
+            client.request.assert_not_called()
+        transport, binding, client = self.transport()
+        del binding["session_id"]
+        self.assertEqual(transport.preflight(binding), "invalid")
+        self.assertEqual(transport.send(binding, "nudge"), "deferred")
+        client.request.assert_not_called()
+
+    def test_preflight_reads_a_fresh_snapshot_without_resetting_it(self):
+        transport = GrokTransport.__new__(GrokTransport)
+        transport.disk = SimpleNamespace(load_active=lambda: [],
+                                         turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},
+                                         is_self_session=lambda _: False)
+        with CT._DISCOVERY_LOCK:
+            CT._DISCOVERY_SESSIONS = [{"sessionId": "chat-1", "cwd": "/work"}]
+            CT._DISCOVERY_UPDATED = time.monotonic()
+            CT._DISCOVERY_LAST_ATTEMPT = CT._DISCOVERY_UPDATED
+            CT._DISCOVERY_ERROR = None
+            CT._DISCOVERY_COMPLETE = True
+        binding = {"platform": "grok-leader", "host": socket.gethostname(),
+                   "session_id": "chat-1", "cwd": "/work"}
+        with patch("agent_sync.chat_transport.subprocess.run") as run:
+            self.assertEqual(transport.preflight(binding), "ready")
+            run.assert_not_called()
+        self.assertEqual(CT._DISCOVERY_SESSIONS, [{"sessionId": "chat-1", "cwd": "/work"}])
+        with self.assertRaises(TypeError):
+            transport.preflight(binding, force=True)
+
+    def test_stale_snapshot_stays_busy_when_a_refresh_is_inside_the_interval(self):
+        transport = GrokTransport.__new__(GrokTransport)
+        transport.disk = SimpleNamespace(load_active=lambda: [],
+                                         turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},
+                                         is_self_session=lambda _: False)
+        with CT._DISCOVERY_LOCK:
+            CT._DISCOVERY_SESSIONS = [{"sessionId": "chat-1", "cwd": "/work"}]
+            CT._DISCOVERY_UPDATED = time.monotonic()
+            CT._DISCOVERY_LAST_ATTEMPT = CT._DISCOVERY_UPDATED
+            CT._DISCOVERY_ERROR = "leader pagination incomplete"
+            CT._DISCOVERY_COMPLETE = False
+        binding = {"platform": "grok-leader", "host": socket.gethostname(),
+                   "session_id": "chat-1", "cwd": "/work"}
+        with patch("agent_sync.chat_transport.subprocess.run") as run:
+            self.assertEqual(transport.preflight(binding), "busy")
+            run.assert_not_called()
+        self.assertEqual(CT._DISCOVERY_SESSIONS[0]["sessionId"], "chat-1")
+
+    def test_discover_wait_stops_at_one_budget_not_each_page(self):
+        transport = GrokTransport.__new__(GrokTransport)
+        transport.disk = SimpleNamespace(load_active=lambda: [], turn_state=lambda _: {},
+                                         is_self_session=lambda _: False)
+        release = threading.Event()
+
+        def fake_run(_command, **_kwargs):
+            release.wait(5)
+            return self.leader_result([{"sessionId": "chat-1", "cwd": "/work"}])
+
+        try:
+            with patch.object(CT, "_DISCOVERY_MAX_PAGES", 20), \
+                    patch("agent_sync.chat_transport.subprocess.run", side_effect=fake_run):
+                started = time.monotonic()
+                with self.assertRaisesRegex(RuntimeError, "pending"):
+                    transport.discover(wait=True, timeout=0.25)
+                self.assertLess(time.monotonic() - started, 1.5)
+            self.assertLess(CT.discovery_wait_budget(),
+                            CT._DISCOVERY_MAX_PAGES * CT._DISCOVERY_OUTER_TIMEOUT)
+        finally:
+            release.set()
+            CT._DISCOVERY_DONE.wait(2)
 
     def test_failed_resume(self):
         transport, binding, client = self.transport()

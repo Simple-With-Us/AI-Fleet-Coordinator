@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from agent_sync import chat_transport as CT
 from agent_sync.chat_catalog import ChatCatalog, _stable_id
 
 
@@ -75,6 +76,31 @@ class ChatCatalogTests(unittest.TestCase):
         catalog = self.catalog(grok_transport=grok, cursor_transport=FakeCursor())
         catalog.discover(force=True, wait_grok=True)
         self.assertEqual(grok.kwargs, [{"wait": True, "force": True, "limit": 160}])
+
+    def test_timed_out_forced_rescan_marks_the_previous_grok_row_stale(self):
+        grok = FakeGrok([{"session_id": "chat-1", "cwd": "/repo", "state": "idle",
+                          "turn_ended_at": 1, "wake": True, "title": "Work"}])
+        catalog = self.catalog(grok_transport=grok, cursor_transport=FakeCursor())
+        first = catalog.discover(wait_grok=True)
+        self.assertTrue(next(row for row in first if row["session_id"] == "chat-1")["capabilities"]["wake"])
+
+        class PendingGrok:
+            def __init__(self) -> None:
+                self.kwargs = None
+
+            def discover(self, **kwargs):
+                self.kwargs = kwargs
+                raise RuntimeError("Grok leader discovery pending")
+
+        pending = PendingGrok()
+        catalog._grok = pending
+        rows = catalog.discover(force=True, wait_grok=True, grok_timeout=CT.discovery_wait_budget())
+        self.assertEqual(pending.kwargs["timeout"], CT.discovery_wait_budget())
+        self.assertTrue(pending.kwargs["wait"])
+        self.assertTrue(pending.kwargs["force"])
+        again = next(row for row in rows if row["session_id"] == "chat-1")
+        self.assertTrue(again["stale"])
+        self.assertFalse(again["capabilities"]["wake"])
 
     def test_claude_codex_ids_and_text_allowlist(self):
         write_jsonl(self.home / ".claude/projects/p1/claude-session.jsonl", [

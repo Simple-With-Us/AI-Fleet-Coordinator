@@ -328,27 +328,70 @@ def main():
             cursor = args.cursor or None
             seen = set()
             complete = False
-            for _ in range(20 if args.all_pages else 1):
-                params = {}
-                if args.cwd:
-                    params["cwd"] = args.cwd
-                if cursor:
-                    params["cursor"] = cursor
-                listed = client.request("session/list", params, timeout=_timeout(20.0))
-                sessions.extend(slim_session(s) for s in (listed.get("sessions") or []))
-                next_cursor = listed.get("nextCursor")
-                if not isinstance(next_cursor, str) or not next_cursor:
-                    complete = True
-                    break
-                if next_cursor in seen:
-                    break
-                seen.add(next_cursor)
-                cursor = next_cursor
-                if not args.all_pages:
-                    break
-            print(json.dumps({"ok": True, "count": len(sessions), "sessions": sessions,
-                              "complete": complete,
-                              "nextCursor": cursor if not complete else None}, indent=2))
+            error = None
+            # Leave a moment after the shared deadline so this process can print the
+            # pages it already has before the caller kills it.
+            flush_reserve = 0.25
+            try:
+                for _ in range(20 if args.all_pages else 1):
+                    if _BUDGET_DEADLINE is not None:
+                        remaining = _BUDGET_DEADLINE - time.time()
+                        if remaining <= flush_reserve:
+                            error = "leader pagination budget exceeded"
+                            break
+                        page_timeout = remaining - flush_reserve
+                    else:
+                        page_timeout = 20.0
+                    params = {}
+                    if args.cwd:
+                        params["cwd"] = args.cwd
+                    if cursor:
+                        params["cursor"] = cursor
+                    try:
+                        listed = client.request("session/list", params, timeout=page_timeout)
+                    except Exception as exc:
+                        if not sessions:
+                            raise
+                        error = ("leader pagination budget exceeded" if isinstance(exc, TimeoutError)
+                                 else "leader list unavailable")
+                        break
+                    if not isinstance(listed, dict):
+                        error = "leader returned invalid session list"
+                        break
+                    sessions.extend(slim_session(s) for s in (listed.get("sessions") or [])
+                                    if isinstance(s, dict))
+                    next_cursor = listed.get("nextCursor")
+                    if next_cursor is None or next_cursor == "":
+                        complete = True
+                        cursor = None
+                        break
+                    if not isinstance(next_cursor, str):
+                        # A non-string cursor is not the end of the inventory.  Mark the
+                        # pages already fetched incomplete so they cannot wake a chat.
+                        error = "leader returned invalid pagination cursor"
+                        break
+                    if next_cursor in seen:
+                        error = "leader repeated pagination cursor"
+                        break
+                    seen.add(next_cursor)
+                    cursor = next_cursor
+                    if not args.all_pages:
+                        break
+                else:
+                    if args.all_pages:
+                        error = "leader session list exceeded page cap"
+            except Exception:
+                if not sessions:
+                    raise
+                error = error or "leader list unavailable"
+                complete = False
+            payload = {"ok": True, "count": len(sessions), "sessions": sessions,
+                       "complete": complete and error is None,
+                       "nextCursor": cursor if isinstance(cursor, str) and cursor and not complete else None}
+            if error:
+                payload["error"] = error
+                payload["complete"] = False
+            print(json.dumps(payload, indent=2))
             return
         if args.cmd == "load":
             # Idle / disk sessions only.  Live TUI chats hang on session/load — use prompt.
