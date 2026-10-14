@@ -71,6 +71,7 @@ GB-ENGINEER = "server"
 #
 # The eleven BF seats are the ten role seats plus BF-DIRECTOR (AGENT-SYNC.md, owner 2026-10-09).
 # BF-PRODUCER is not one of them and is deliberately absent here and from the board's roster.
+# All eleven are outgoing-webhook senders.  That allowlist does not hold a queue.
 BF-BUILDER = "none"
 BF-COMPILER = "none"
 BF-DEPLOYER = "none"
