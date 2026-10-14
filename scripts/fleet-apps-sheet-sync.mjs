@@ -562,8 +562,14 @@ export function buildSeatsTab({ fleetApps, partition, serverSeats, seatAppNames,
       email = `bf-${role}-bot@${ZULIP_DOMAIN}`;
       file = zulipFileCode(tag);
     }
+    // A BF or GB tag with no seat app prints an em dash.  Those rows are not the shared Fleet
+    // app's coding seats.  A tag that SEAT_APP_NAMES names shows that app, so a BotFleet seat
+    // registered in the board CLI is not left looking as if it had none.
+    const linearCell = seatAppNames[tag]
+      ? linearFor(tag)
+      : (tag.startsWith("BF-") || tag.startsWith("GB-") ? "—" : linearFor(tag));
     active.push([tag, name, group, platform, "active", "none (no lanes)", email, credFor(tag, instance, file),
-      instance, wakeFor(tag, instance), tag.startsWith("BF-") || tag.startsWith("GB-") ? "—" : linearFor(tag), h.notes || ""]);
+      instance, wakeFor(tag, instance), linearCell, h.notes || ""]);
   }
   rows.push(...active, ...retired);
   rows.push([]);
