@@ -185,7 +185,7 @@ class TransportTests(unittest.TestCase):
                      self.leader_result([{"sessionId": "chat-2", "cwd": "/two"}], next_cursor="repeat")]
         with patch("agent_sync.chat_transport.subprocess.run", side_effect=responses) as run:
             rows = transport.discover()
-        self.assertEqual([row["session_id"] for row in rows], ["chat-1"])
+        self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
         self.assertEqual(run.call_count, 2)
         self.assertTrue(rows[0]["stale"])
 

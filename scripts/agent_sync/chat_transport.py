@@ -110,10 +110,10 @@ class GrokTransport:
                     error = "leader pagination budget exceeded"
                     break
                 sessions, next_cursor = cls._read_leader_sessions(cursor, timeout=remaining)
+                cls._merge_sessions(candidate, sessions)
                 if next_cursor is not None and next_cursor in seen:
                     error = "leader repeated pagination cursor"
                     break
-                cls._merge_sessions(candidate, sessions)
                 if next_cursor is None:
                     complete = True
                     break
