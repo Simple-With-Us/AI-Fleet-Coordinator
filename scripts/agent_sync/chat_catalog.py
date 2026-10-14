@@ -297,7 +297,8 @@ class ChatCatalog:
                                   source=str(path), internal_path=str(path), excerpts=self._parse_text_events(events, "codex")))
         return rows or [self._unavailable("codex", "CODEX", "no local rollout transcripts")]
 
-    def _scan_grok(self) -> list[dict[str, Any]]:
+    def _scan_grok(self, *, wait: bool = False, force: bool = False,
+                   timeout: float | None = None) -> list[dict[str, Any]]:
         if self._grok is None:
             try:
                 from .chat_transport import GrokTransport
@@ -305,19 +306,25 @@ class ChatCatalog:
             except Exception:
                 return [self._unavailable("grok-leader", "GROK", "transport unavailable")]
         try:
-            live = self._grok.discover()
+            # Daemon catalog refreshes stay asynchronous.  The transport publishes a
+            # snapshot only after its bounded page walk finishes, and state reads stay
+            # inside the catalog cap.  One-shot callers and a forced rescan can wait.
+            # `timeout` caps that wait at one walk so a slow leader cannot stall intake.
+            kwargs: dict[str, Any] = {"wait": wait, "force": force, "limit": MAX_FILES_PER_SOURCE}
+            if timeout is not None:
+                kwargs["timeout"] = timeout
+            live = self._grok.discover(**kwargs)
         except Exception:
             return [self._unavailable("grok-leader", "GROK", "discovery failed")]
         rows = []
         for item in live[:MAX_FILES_PER_SOURCE]:
             sid, cwd = item.get("session_id"), item.get("cwd")
-            if not isinstance(sid, str) or not isinstance(cwd, str) or not cwd.startswith("/"):
+            if not isinstance(sid, str) or not sid:
                 continue
             state = item.get("state")
-            wake = state == "idle" and not item.get("pending_permission") and not item.get("self")
             folder = self._find_grok_session(sid)
-            title = "Grok chat " + sid[:12]
-            updated = 0.0
+            title = _safe_text(item.get("title"), max_chars=180) or "Grok chat " + sid[:12]
+            updated = _timestamp(item.get("updated_at"))
             excerpts: list[dict[str, str]] = []
             if folder:
                 summary = self._read_json(folder / "summary.json")
@@ -327,8 +334,15 @@ class ChatCatalog:
                 if not cwd and isinstance(info.get("cwd"), str):
                     cwd = info["cwd"]
                 excerpts = self._parse_text_events(_jsonl(folder / "chat_history.jsonl"), "grok-leader")
+            if not isinstance(cwd, str) or not cwd.startswith("/"):
+                cwd = None
+            wake = (item.get("wake") is True and state == "idle" and bool(item.get("turn_ended_at")) and bool(cwd)
+                    and not item.get("pending_permission") and not item.get("self"))
             rows.append(self._row("grok-leader", "GROK", sid, cwd=cwd, title=title,
-                                  updated_at=updated, status=state or "unknown", wake=wake,
+                                  updated_at=updated,
+                                  status="stale" if item.get("stale") else
+                                  (state or "unknown") if folder else "metadata-only",
+                                  wake=wake,
                                   source="grok-live", internal_path=str(folder) if folder else None,
                                   excerpts=excerpts))
         if not rows:
@@ -543,9 +557,11 @@ class ChatCatalog:
                                   status="metadata-only", wake=False, source="fx-session-metadata"))
         return rows or [self._unavailable("fx", "FX", "no Fx sessions")]
 
-    def _scan(self) -> None:
+    def _scan(self, *, wait_grok: bool = False, force_grok: bool = False,
+              grok_timeout: float | None = None) -> None:
         self._availability = {}
-        groups = [self._scan_claude(), self._scan_codex(), self._scan_grok(), self._scan_cursor(),
+        groups = [self._scan_claude(), self._scan_codex(),
+                  self._scan_grok(wait=wait_grok, force=force_grok, timeout=grok_timeout), self._scan_cursor(),
                   self._scan_muse(), self._scan_minimax(), self._scan_fx()]
         # Explicit availability rows ensure unsupported/empty stores remain visible.
         groups.append(self._scan_cursor_local())
@@ -582,12 +598,13 @@ class ChatCatalog:
         self._last_scan = self._clock()
         self._expires = self._last_scan + self.ttl
 
-    def discover(self, force: bool = False) -> list[dict[str, Any]]:
+    def discover(self, force: bool = False, *, wait_grok: bool = False,
+                 grok_timeout: float | None = None) -> list[dict[str, Any]]:
         now = self._clock()
         if force or now >= self._expires:
             previous = self._records
             try:
-                self._scan()
+                self._scan(wait_grok=wait_grok, force_grok=force, grok_timeout=grok_timeout)
             except Exception:
                 if previous and now - self._last_scan <= STALE_TTL:
                     self._records = previous

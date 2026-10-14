@@ -1899,7 +1899,9 @@ class Daemon:
             if not hasattr(self, "_chat_catalog"):
                 from .chat_catalog import ChatCatalog
                 self._chat_catalog = ChatCatalog(home=self.home, scrub=self.scrub, max_records=120)
-            rows = self._chat_catalog.discover()
+            # One leader walk, not one timeout per page.  A still-pending leader is an
+            # unavailable catalog row, so this wake continues instead of stalling intake.
+            rows = self._chat_catalog.discover(wait_grok=True, grok_timeout=CT.discovery_wait_budget())
             # Rank only against actual owner trigger text, never a peer's embedded instructions.
             owner_text = " ".join(str(m.get("content") or "") for m in history or []
                                   if m.get("id") in pending.owner_ids).lower()
@@ -1964,7 +1966,9 @@ class Daemon:
         target = None
         if not reason:
             try:
-                self._chat_catalog.discover(force=True)
+                # Same one-walk budget as chat_context.  Overrun leaves the row stale and held.
+                self._chat_catalog.discover(force=True, wait_grok=True,
+                                            grok_timeout=CT.discovery_wait_budget())
                 target = self._chat_catalog.resolve(target_id)
             except Exception:
                 reason = "chat catalog could not be refreshed"

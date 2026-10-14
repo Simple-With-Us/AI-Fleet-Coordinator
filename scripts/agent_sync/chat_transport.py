@@ -6,10 +6,39 @@ import json
 import os
 import socket
 import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 _RUNTIME = Path(__file__).resolve().parents[1] / "grok-acp-runtime"
+_DISCOVERY_TIMEOUT = 25.0  # leader-client's supported total RPC budget; list can take 14-22s.
+_DISCOVERY_OUTER_TIMEOUT = _DISCOVERY_TIMEOUT + 2.0
+_DISCOVERY_REFRESH_INTERVAL = 5.0
+_DISCOVERY_STALE_AFTER = 30.0
+_DISCOVERY_LOCK = threading.Lock()
+_DISCOVERY_DONE = threading.Event()
+_DISCOVERY_DONE.set()
+_DISCOVERY_SESSIONS: list[dict[str, Any]] | None = None
+_DISCOVERY_UPDATED = 0.0
+_DISCOVERY_LAST_ATTEMPT = 0.0
+_DISCOVERY_ERROR: str | None = None
+_DISCOVERY_RUNNING = False
+_DISCOVERY_CURSOR: str | None = None
+_DISCOVERY_SEEN_CURSORS: set[str] = set()
+_DISCOVERY_CANDIDATE_SESSIONS: list[dict[str, Any]] | None = None
+_DISCOVERY_COMPLETE = False
+_DISCOVERY_MAX_PAGES = 20
+
+
+def discovery_wait_budget() -> float:
+    """Seconds one caller may block on a single leader walk.
+
+    Pages share that budget inside one helper process.  Wake intake must not
+    multiply it by `_DISCOVERY_MAX_PAGES`.
+    """
+    return _DISCOVERY_OUTER_TIMEOUT + 1.0
 
 
 def _module(name: str, filename: str) -> Any:
@@ -29,43 +58,221 @@ class GrokTransport:
         self.leader = None
 
     @staticmethod
-    def _live_pid(pid: Any) -> bool:
-        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
-            return False
+    def _read_leader_sessions(
+        cursor: str | None = None, *, timeout: float | None = None
+    ) -> tuple[list[dict[str, Any]], str | None, bool]:
+        rpc_timeout = min(_DISCOVERY_TIMEOUT, timeout or _DISCOVERY_TIMEOUT)
+        command = [sys.executable, str(_RUNTIME / "leader-client.py"),
+                   "--rpc-timeout", str(rpc_timeout), "list", "--all-pages"]
+        if cursor:
+            command.extend(["--cursor", cursor])
         try:
-            result = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "comm="],
-                                    capture_output=True, text=True, timeout=3, check=False)
-            return result.returncode == 0 and Path(result.stdout.strip()).name in {"grok", "grok-build"}
-        except (OSError, subprocess.SubprocessError):
-            return False
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    timeout=timeout or _DISCOVERY_OUTER_TIMEOUT, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError("Grok leader discovery failed") from exc
+        try:
+            payload = json.loads(result.stdout)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Grok leader returned invalid discovery data") from exc
+        if result.returncode != 0 or not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError("Grok leader discovery unavailable")
+        sessions = payload.get("sessions")
+        if not isinstance(sessions, list):
+            raise RuntimeError("Grok leader returned invalid session list")
+        next_cursor = payload.get("nextCursor")
+        if next_cursor is not None and (not isinstance(next_cursor, str) or not next_cursor):
+            raise RuntimeError("Grok leader returned invalid pagination cursor")
+        complete = payload.get("complete")
+        if not isinstance(complete, bool):
+            raise RuntimeError("Grok leader returned invalid completion status")
+        return [row for row in sessions if isinstance(row, dict)], next_cursor, complete
 
-    def discover(self) -> list[dict[str, Any]]:
-        """Read active-session metadata only.  Disk history alone never makes a chat wakeable."""
+    @staticmethod
+    def _merge_sessions(candidate: list[dict[str, Any]], sessions: list[dict[str, Any]]) -> None:
+        known = {row.get("sessionId"): index for index, row in enumerate(candidate)
+                 if isinstance(row.get("sessionId"), str)}
+        for row in sessions:
+            sid = row.get("sessionId")
+            if isinstance(sid, str) and sid in known:
+                candidate[known[sid]] = dict(row)
+            else:
+                candidate.append(dict(row))
+
+    @classmethod
+    def _refresh(cls) -> None:
+        """Walk every leader page, then publish once.
+
+        A first page is not an inventory.  Callers keep the previous complete
+        snapshot (or see pending) until this walk finishes, repeats a cursor,
+        or reaches the page cap.
+        """
+        global _DISCOVERY_SESSIONS, _DISCOVERY_UPDATED, _DISCOVERY_ERROR, _DISCOVERY_RUNNING
+        global _DISCOVERY_CURSOR, _DISCOVERY_SEEN_CURSORS, _DISCOVERY_CANDIDATE_SESSIONS, _DISCOVERY_COMPLETE
+        candidate: list[dict[str, Any]] = []
+        cursor: str | None = None
+        error: str | None = None
+        complete = False
+        deadline = time.monotonic() + _DISCOVERY_TIMEOUT
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                error = "leader pagination budget exceeded"
+            else:
+                sessions, cursor, complete = cls._read_leader_sessions(cursor, timeout=remaining)
+                cls._merge_sessions(candidate, sessions)
+                if not complete:
+                    error = "leader pagination incomplete"
+        except Exception:
+            error = ("leader pagination budget exceeded" if time.monotonic() >= deadline
+                     else "leader list unavailable")
+            complete = False
+        with _DISCOVERY_LOCK:
+            publish_partial = (not complete and bool(candidate)
+                               and error in ("leader pagination incomplete",
+                                             "leader pagination budget exceeded"))
+            if complete or publish_partial:
+                _DISCOVERY_SESSIONS = candidate
+                _DISCOVERY_UPDATED = time.monotonic()
+            if complete:
+                _DISCOVERY_ERROR = None
+                _DISCOVERY_COMPLETE = True
+            else:
+                _DISCOVERY_ERROR = error or "leader list unavailable"
+                _DISCOVERY_COMPLETE = False
+            _DISCOVERY_CURSOR = None
+            _DISCOVERY_SEEN_CURSORS = set()
+            _DISCOVERY_CANDIDATE_SESSIONS = None
+            _DISCOVERY_RUNNING = False
+            _DISCOVERY_DONE.set()
+
+    @classmethod
+    def _schedule_refresh(cls, *, force: bool) -> None:
+        global _DISCOVERY_LAST_ATTEMPT, _DISCOVERY_RUNNING, _DISCOVERY_COMPLETE
+        now = time.monotonic()
+        with _DISCOVERY_LOCK:
+            if _DISCOVERY_RUNNING:
+                return
+            if not force and now - _DISCOVERY_LAST_ATTEMPT < _DISCOVERY_REFRESH_INTERVAL:
+                return
+            # A new walk keeps the last good rows until it publishes.  The page
+            # interval applies to full refreshes, not to each cursor page.
+            if _DISCOVERY_COMPLETE:
+                _DISCOVERY_COMPLETE = False
+            _DISCOVERY_LAST_ATTEMPT = now
+            _DISCOVERY_RUNNING = True
+            _DISCOVERY_DONE.clear()
+            thread = threading.Thread(target=cls._refresh, name="grok-leader-discovery", daemon=True)
+            thread.start()
+
+    def discover(self, *, force: bool = False, wait: bool = True, limit: int = 160,
+                 session_id: str | None = None, timeout: float | None = None) -> list[dict[str, Any]]:
+        """List chats owned by the shared leader, then conservatively derive turn state.
+
+        active_sessions.json tracks attached TUIs, not chats known to the leader, and is
+        empty in leader mode.  It is therefore not an inventory or proof of promptability.
+        A failed or malformed leader list is an error, never an empty-success fallback.
+        One refresh walks up to 20 pages before publishing, so a partial page is never
+        a fresh wakeable inventory.  `timeout` cannot extend the wait past one walk.
+        """
+        global _DISCOVERY_SESSIONS, _DISCOVERY_UPDATED, _DISCOVERY_LAST_ATTEMPT, _DISCOVERY_ERROR
+        global _DISCOVERY_CURSOR, _DISCOVERY_SEEN_CURSORS, _DISCOVERY_CANDIDATE_SESSIONS, _DISCOVERY_COMPLETE
+        if force:
+            with _DISCOVERY_LOCK:
+                if not _DISCOVERY_RUNNING:
+                    _DISCOVERY_SESSIONS = None
+                    _DISCOVERY_UPDATED = 0.0
+                    _DISCOVERY_LAST_ATTEMPT = 0.0
+                    _DISCOVERY_ERROR = None
+                    _DISCOVERY_CURSOR = None
+                    _DISCOVERY_SEEN_CURSORS = set()
+                    _DISCOVERY_CANDIDATE_SESSIONS = []
+                    _DISCOVERY_COMPLETE = False
+        budget = discovery_wait_budget()
+        if timeout is not None:
+            budget = min(budget, max(0.0, float(timeout)))
+        deadline = time.monotonic() + budget
+        requested = False
+        while True:
+            # force applies only to the first schedule.  Later iterations just
+            # observe the walk already in flight.
+            self._schedule_refresh(force=force and not requested)
+            requested = True
+            with _DISCOVERY_LOCK:
+                running = _DISCOVERY_RUNNING
+                complete = _DISCOVERY_COMPLETE
+                error = _DISCOVERY_ERROR
+                have_sessions = _DISCOVERY_SESSIONS is not None
+            if not running and (complete or error or have_sessions or not wait):
+                break
+            if not wait or time.monotonic() >= deadline:
+                break
+            _DISCOVERY_DONE.wait(deadline - time.monotonic())
+        with _DISCOVERY_LOCK:
+            sessions = [dict(row) for row in _DISCOVERY_SESSIONS] if _DISCOVERY_SESSIONS is not None else None
+            updated = _DISCOVERY_UPDATED
+            error = _DISCOVERY_ERROR
+        if sessions is None:
+            if wait and error:
+                raise RuntimeError(error)
+            raise RuntimeError("Grok leader discovery pending")
+        stale = error is not None or time.monotonic() - updated > _DISCOVERY_STALE_AFTER
+
+        # Limit/filter before touching disk.  turn_state reads the session event log, and
+        # preflight only needs the one exact session selected by its durable binding.
+        if session_id is not None:
+            sessions = [row for row in sessions if row.get("sessionId") == session_id]
+        else:
+            sessions = sessions[:max(0, min(int(limit), 1000))]
+
         rows = []
-        for active in self.disk.load_active():
-            sid = active.get("sessionId")
-            cwd = active.get("cwd")
-            if not isinstance(sid, str) or not sid or not isinstance(cwd, str) or not os.path.isabs(cwd):
+        active_ids = {row.get("sessionId") for row in self.disk.load_active()
+                      if isinstance(row, dict) and isinstance(row.get("sessionId"), str)}
+        for session in sessions:
+            if not isinstance(session, dict):
                 continue
-            if not self._live_pid(active.get("pid")):
+            sid = session.get("sessionId")
+            cwd = session.get("cwd")
+            if not isinstance(sid, str) or not sid:
                 continue
+            if not isinstance(cwd, str) or not os.path.isabs(cwd):
+                cwd = None
             state = self.disk.turn_state(sid)
             status = state.get("turnState", "unknown")
             if status == "idle" and not state.get("turnEndedAt"):
-                status = "unknown"  # An empty/missing event history cannot prove that a chat is idle.
+                status = "unknown"  # A dead/missing TUI pid and empty history cannot prove idle.
+            pending = bool(state.get("pendingTool")) or status == "needs-input"
+            self_session = self.disk.is_self_session(sid)
+            attached = sid in active_ids
+            if stale:
+                status = "unknown"
             rows.append({"platform": "grok-leader", "host": socket.gethostname(),
-                         "session_id": sid, "cwd": cwd, "pid": active["pid"],
-                         "state": status,
-                         "pending_permission": bool(state.get("pendingTool")),
-                         "self": self.disk.is_self_session(sid)})
+                         "session_id": sid, "cwd": cwd,
+                         "title": session.get("title") if isinstance(session.get("title"), str) else "",
+                         "updated_at": session.get("updatedAt"), "state": status,
+                         "turn_ended_at": state.get("turnEndedAt"), "attached": attached,
+                         "pending_permission": pending, "self": self_session, "stale": stale,
+                         "wake": not stale and bool(cwd) and status == "idle" and bool(state.get("turnEndedAt"))
+                                 and not pending and not self_session})
         return rows
 
     def preflight(self, binding: dict[str, str]) -> str:
         if binding.get("platform") != "grok-leader" or binding.get("host") != socket.gethostname():
             return "unsupported"
-        for row in self.discover():
+        target_session_id = binding.get("session_id")
+        # A missing id is a bad binding.  "unsupported" is only another host or platform,
+        # and "busy" would leave the nudge pending forever.
+        if not isinstance(target_session_id, str) or not target_session_id:
+            return "invalid"
+        try:
+            # Read the shared snapshot.  A force reset here would wipe it and, because
+            # this check does not wait, every send would look pending.
+            rows = self.discover(wait=False, limit=1, session_id=target_session_id)
+        except Exception:
+            return "busy"  # Discovery pending/unavailable is transient; leave the nudge queued.
+        for row in rows:
             if row["session_id"] == binding.get("session_id") and row["cwd"] == binding.get("cwd"):
-                if row["self"] or row["pending_permission"] or row["state"] != "idle":
+                if row.get("stale") or row.get("self") or row.get("pending_permission") or not row.get("wake"):
                     return "busy"
                 return "ready"
         # A disconnected or unavailable chat can become available later; keep it pending.

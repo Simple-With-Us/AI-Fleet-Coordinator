@@ -65,7 +65,7 @@ class FakeCatalog:
         self.excerpts = excerpts or []
         self.excerpt_calls: list[tuple[str, int]] = []
 
-    def discover(self, force=False):
+    def discover(self, force=False, *, wait_grok=False, grok_timeout=None):
         return self.rows
 
     def resolve(self, chat_id):

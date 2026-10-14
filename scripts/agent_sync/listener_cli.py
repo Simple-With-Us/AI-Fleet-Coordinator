@@ -138,7 +138,9 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         if args.chats_action in ("catalog", "peek"):
             from .chat_catalog import ChatCatalog
             catalog = ChatCatalog(home=_home(rt), max_records=getattr(args, "limit", 120))
-            rows = catalog.discover()
+            # This is a one-shot CLI process, unlike the daemon's nonblocking catalog refresh.
+            # Wait for the bounded leader lookup so `catalog`/`peek` can actually inspect Grok.
+            rows = catalog.discover(wait_grok=True)
             if args.chats_action == "catalog":
                 rt.out(json.dumps(rows, ensure_ascii=True, indent=2) + "\n")
             else:
@@ -178,7 +180,7 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
             if Z.normalise_seat(args.target_seat) != "GROK":
                 raise Z.UsageError("manual binding currently requires GROK; Cursor Cloud uses catalog selection")
             host = socket.gethostname()
-            target = next((row for row in CT.GrokTransport().discover()
+            target = next((row for row in CT.GrokTransport().discover(limit=1, session_id=args.session_id)
                            if row.get("platform") == "grok-leader" and row.get("host") == host
                            and row.get("session_id") == args.session_id and row.get("cwd") == args.cwd
                            and not row.get("self")), None)
