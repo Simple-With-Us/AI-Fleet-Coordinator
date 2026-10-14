@@ -172,6 +172,27 @@ class TransportTests(unittest.TestCase):
         self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
         self.assertTrue(all(row["stale"] and not row["wake"] for row in rows))
 
+    def test_failed_walk_discards_cursor_before_forced_new_inventory(self):
+        transport = GrokTransport.__new__(GrokTransport)
+        transport.disk = SimpleNamespace(load_active=lambda: [],
+                                         turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},
+                                         is_self_session=lambda _: False)
+        with patch.object(CT, "_DISCOVERY_MAX_PAGES", 2), \
+                patch("agent_sync.chat_transport.subprocess.run",
+                      side_effect=[self.leader_result([{"sessionId": "old-page", "cwd": "/old"}],
+                                                      next_cursor="page-2"), RuntimeError("temporary list failure")]):
+            with self.assertRaisesRegex(RuntimeError, "leader list unavailable"):
+                transport.discover(force=True)
+        with CT._DISCOVERY_LOCK:
+            self.assertIsNone(CT._DISCOVERY_CURSOR)
+            self.assertEqual(CT._DISCOVERY_SEEN_CURSORS, set())
+            self.assertIsNone(CT._DISCOVERY_CANDIDATE_SESSIONS)
+        with patch("agent_sync.chat_transport.subprocess.run", return_value=self.leader_result([
+                {"sessionId": "fresh-page", "cwd": "/fresh"}])) as run:
+            rows = transport.discover(force=True)
+        self.assertEqual([row["session_id"] for row in rows], ["fresh-page"])
+        self.assertNotIn("--cursor", run.call_args.args[0])
+
     def test_leader_client_passes_cursor_and_preserves_next_cursor(self):
         helper_path = CT._RUNTIME / "leader-client.py"
         spec = importlib.util.spec_from_file_location("test_grok_leader_client", helper_path)
