@@ -1280,7 +1280,7 @@ class ContainerTests(unittest.TestCase):
     def test_the_dockerfile(self) -> None:
         text = (SERVER_DIR / "Dockerfile").read_text()
         lines = [l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith("#")]
-        self.assertEqual(lines[0], "FROM python:3.12-slim")
+        self.assertEqual(lines[0], "FROM python:3.14-slim")
         users = [l.split()[1] for l in lines if l.startswith("USER ")]
         self.assertEqual(users, ["agentsync"], "the daemon runs as a non-root user")
         self.assertIn("COPY scripts/agent_sync /app/scripts/agent_sync", lines)

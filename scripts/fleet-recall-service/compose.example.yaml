@@ -1,5 +1,5 @@
 # fleet-recall-service on Coolify (Docker Compose resource).  No build pipeline: the stock
-# python:3.12-slim image fetches the public repo tarball at start and runs bootstrap.sh from it
+# python:3.14-slim image fetches the public repo tarball at start and runs bootstrap.sh from it
 # (which also installs the pinned gitleaks binary before starting the server).
 #
 # Coolify: project l11qegr5vie93o7dqlfjgd6n / environment production / server jxzqcs3h6g1wiipnnblhismp,

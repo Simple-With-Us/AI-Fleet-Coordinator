@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet-recall-service bootstrap for a plain python:3.12-slim container (no git, no curl, no pip).
+# fleet-recall-service bootstrap for a plain python:3.14-slim container (no git, no curl, no pip).
 #
 # 1. Fetch the public repo tarball with python urllib (reused if RECALL_TARBALL already exists).
 # 2. Extract scripts/fleet_rag and scripts/fleet-recall-service into RECALL_APP_DIR.
