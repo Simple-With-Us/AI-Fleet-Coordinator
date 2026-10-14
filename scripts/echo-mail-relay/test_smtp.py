@@ -6,7 +6,9 @@ from email.message import EmailMessage
 def main():
     seat = sys.argv[1]
     dest = {'echo':'jaywedgeworth@mail.instinct.com','wise':'wedgeworth@mail.instinct.com'}[seat]
-    marker = '/data/smtp-test-'+seat+'-20261013.attempt'
+    attempt = sys.argv[2] if len(sys.argv)>2 else 'initial'
+    if attempt not in ('initial','starttls-reconciled'): raise ValueError('unsupported attempt')
+    marker = '/data/smtp-test-'+seat+'-20261013-'+attempt+'.attempt'
     fd = os.open(marker, os.O_CREAT|os.O_EXCL|os.O_WRONLY, 0o600)
     os.write(fd,b'attempted\n'); os.fsync(fd); os.close(fd)
     msg = EmailMessage()
@@ -19,10 +21,10 @@ def main():
             smtp.ehlo(); smtp.starttls(context=ssl.create_default_context()); smtp.ehlo()
             smtp.login(os.environ['RELAY_SMTP_USERNAME'],os.environ['RELAY_SMTP_PASSWORD'])
             if smtp.send_message(msg): raise RuntimeError('recipient_refused')
-        Path('/data/smtp-test-'+seat+'-20261013.result').write_text('accepted '+str(msg['Message-ID']))
+        Path('/data/smtp-test-'+seat+'-20261013-'+attempt+'.result').write_text('accepted '+str(msg['Message-ID']))
         print('SMTP accepted',seat,str(msg['Message-ID']),int(time.time()))
     except Exception as error:
-        Path('/data/smtp-test-'+seat+'-20261013.result').write_text('unconfirmed '+type(error).__name__)
+        Path('/data/smtp-test-'+seat+'-20261013-'+attempt+'.result').write_text('unconfirmed '+type(error).__name__)
         print('SMTP test not confirmed; inspect before any retry',seat)
         sys.exit(1)
 if __name__=='__main__':main()
