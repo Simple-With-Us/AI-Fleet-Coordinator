@@ -11,7 +11,7 @@ The listener runs as two instances of the same package (`scripts/agent_sync`), b
 - **mac** is the LaunchAgent on the owner's Mac.  It holds the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM):  live delivery into Claude sessions and the tool-less `claude -p` wake for CLAUDE, and inbox capture for the other eight.
 - **server** is a container on the Coolify box (Hetzner).  It holds the Grok Bot (GB) personas and the five cloud seats (MA, JET, GROK-WEB, INSTINCT and ECHO).  A cloud seat has a queue and inbox capture and no wake, except JET, which is woken through the hosted MCP Worker (see [Cloud Seats](#cloud-seats)).  A GB persona is woken on an @-mention or a DM by calling its Grok Bot routine webhook.  The routine then replies in Zulip with the persona's own key.
 
-The ten BotFleet role bots are held by neither instance.  BF-DIRECTOR is the exception:  the server sample holds it, disabled, so the owner can wake it once its routine endpoint and key are in Infisical (owner, Mon, Oct 13).
+The ten BotFleet role bots are held by neither instance.  BF-DIRECTOR is the exception:  the server sample holds it, disabled, so the owner can wake it once its routine endpoint and key are in Infisical (owner, Mon, Oct 13).  All eleven, including BF-DIRECTOR, stay in `outgoing_webhook_seats` so a migrated type-3 bot can wake other seats.  That allowlist does not enable BF-DIRECTOR's queue.
 
 Fri, Oct 9:  the Mac instance picks up the everyone-wakes rule (see [DMs](#dms)) from `main` automatically.  This server instance is deployed by hand, so it keeps the old rule (only pinned seat bots eligible, bot DMs never wake) until the owner approves a manual redeploy.
 
@@ -291,7 +291,7 @@ One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting a
    ```
    It backs up `/data/listener.toml` to `/data/listener.toml.bak-<UTC stamp>` (mode 600), checks the result with the listener's own parser and the partition, and refuses on any problem.  A second run prints `no changes`.
 5. **Restart** the app in Coolify (the new sections name variables the running daemon has not read).
-6. **Check** `docker exec "$C" agent-sync status`:  `listener: running`, `instance server; owner pinned: yes`, no `RED` line, the eleven enabled personas and JET `connected` with `wake http (routine ready, <host>)`, MA, GROK-WEB, INSTINCT and ECHO `connected` with `wake inbox`, and `GB-ENGINEER` the only line under `disabled seats`.  BF-DIRECTOR is disabled in the sample and is not one of the sections this apply copies, so it does not appear here.  Any persona that is red for a credential reason:  set `enabled = false` in its section with the scoped `sed` above, restart, and note it under Open Questions.
+6. **Check** `docker exec "$C" agent-sync status`:  `listener: running`, `instance server; owner pinned: yes`, no `RED` line, the eleven enabled personas and JET `connected` with `wake http (routine ready, <host>)`, MA, GROK-WEB, INSTINCT and ECHO `connected` with `wake inbox`, and `GB-ENGINEER` the only line under `disabled seats`.  BF-DIRECTOR is disabled in the sample and is not one of the sections this apply copies, so it does not appear here.  Its sender eligibility is the live `[daemon] outgoing_webhook_seats` list, which this apply also leaves untouched.  Any persona that is red for a credential reason:  set `enabled = false` in its section with the scoped `sed` above, restart, and note it under Open Questions.
 
 ## Sentry Heartbeat
 

@@ -194,6 +194,21 @@ class FleetBotIdsTests(unittest.TestCase):
         self.assertEqual(R.fleet_bot_ids(users, self.tags, 0,
                                         outgoing_webhook_seats=allowed), set())
 
+    def test_migrated_bf_director_is_an_eligible_peer_sender(self) -> None:
+        from pathlib import Path
+        import tomllib
+        sample = Path(__file__).resolve().parents[1] / "server" / "listener.toml"
+        config = C.from_dict(tomllib.loads(sample.read_text()))
+        users = {60: realm_bot(60, "bf-director-bot@zulip.test", bot_type=3)}
+        eligible = R.fleet_bot_ids(users, self.tags, OWNER,
+                                  outgoing_webhook_seats=config.outgoing_webhook_seats)
+        self.assertEqual(eligible, {60})
+        classified = R.classify(msg(sender=60, content=DIRECT[0], flags=DIRECT[1]), ME,
+                                ctx(eligible_user_ids=eligible, is_bot={60: True}))
+        self.assertTrue(classified.direct)
+        self.assertTrue(classified.eligible)
+        self.assertFalse(classified.owner)
+
     def test_a_bot_the_owner_does_not_own_is_not_a_fleet_bot(self) -> None:
         """The trust anchor:  a bot someone else created under a fleet-looking email never counts, and with no
         owner pinned nothing counts."""
@@ -206,7 +221,7 @@ class FleetBotIdsTests(unittest.TestCase):
         self.assertEqual(R.fleet_bot_ids(users, self.tags, 0), set(), "no owner pinned, no fleet bots")
 
     def test_the_tags_cover_the_partition_and_the_fleet_seats(self) -> None:
-        for tag in ("CLAUDE", "JET", "GB-DIRECTOR", "BF-BUILDER", "ECHO", "INSTINCT", "GROK-WEB", "GROK-BUILD", "MA", "OPENCODE"):
+        for tag in ("CLAUDE", "JET", "GB-DIRECTOR", "BF-BUILDER", "BF-DIRECTOR", "ECHO", "INSTINCT", "GROK-WEB", "GROK-BUILD", "MA", "OPENCODE"):
             with self.subTest(tag=tag):
                 self.assertIn(tag, self.tags)
         self.assertEqual(C.fleet_tags(None), frozenset(C.FLEET_SEATS), "no partition, only the fixed seats")
