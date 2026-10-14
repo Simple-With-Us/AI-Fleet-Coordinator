@@ -311,13 +311,12 @@ class ChatCatalog:
         rows = []
         for item in live[:MAX_FILES_PER_SOURCE]:
             sid, cwd = item.get("session_id"), item.get("cwd")
-            if not isinstance(sid, str) or not isinstance(cwd, str) or not cwd.startswith("/"):
+            if not isinstance(sid, str) or not sid:
                 continue
             state = item.get("state")
-            wake = state == "idle" and not item.get("pending_permission") and not item.get("self")
             folder = self._find_grok_session(sid)
-            title = "Grok chat " + sid[:12]
-            updated = 0.0
+            title = _safe_text(item.get("title"), max_chars=180) or "Grok chat " + sid[:12]
+            updated = _timestamp(item.get("updated_at"))
             excerpts: list[dict[str, str]] = []
             if folder:
                 summary = self._read_json(folder / "summary.json")
@@ -327,8 +326,13 @@ class ChatCatalog:
                 if not cwd and isinstance(info.get("cwd"), str):
                     cwd = info["cwd"]
                 excerpts = self._parse_text_events(_jsonl(folder / "chat_history.jsonl"), "grok-leader")
+            if not isinstance(cwd, str) or not cwd.startswith("/"):
+                cwd = None
+            wake = (state == "idle" and bool(item.get("turn_ended_at")) and bool(cwd)
+                    and not item.get("pending_permission") and not item.get("self"))
             rows.append(self._row("grok-leader", "GROK", sid, cwd=cwd, title=title,
-                                  updated_at=updated, status=state or "unknown", wake=wake,
+                                  updated_at=updated, status=(state or "unknown") if folder else "metadata-only",
+                                  wake=wake,
                                   source="grok-live", internal_path=str(folder) if folder else None,
                                   excerpts=excerpts))
         if not rows:

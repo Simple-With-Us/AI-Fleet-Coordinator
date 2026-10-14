@@ -107,7 +107,7 @@ class ChatCatalogTests(unittest.TestCase):
         self.assertEqual(catalog.excerpt(row["id"]), [{"role": "assistant", "text": "visible final"}])
 
     def test_discovery_is_ttl_cached_and_ids_are_stable(self):
-        transport = FakeGrok([{"session_id": "session-a", "cwd": "/repo", "state": "idle"}])
+        transport = FakeGrok([{"session_id": "session-a", "cwd": "/repo", "state": "idle", "turn_ended_at": 1}])
         catalog = self.catalog(grok_transport=transport, cursor_transport=FakeCursor())
         first = catalog.discover()
         catalog.discover()
@@ -124,7 +124,7 @@ class ChatCatalogTests(unittest.TestCase):
                 {"type": "user", "message": {"content": f"question {index}"}}
             ])
         catalog = self.catalog(grok_transport=FakeGrok([
-            {"session_id": "live-grok", "cwd": "/repo", "state": "idle"}
+            {"session_id": "live-grok", "cwd": "/repo", "state": "idle", "turn_ended_at": 1}
         ]), cursor_transport=FakeCursor())
         rows = catalog.discover()
         self.assertLessEqual(len(rows), 24)
@@ -132,14 +132,27 @@ class ChatCatalogTests(unittest.TestCase):
 
     def test_grok_requires_live_idle_existing_nonself_session(self):
         rows = [
-            {"session_id": "idle", "cwd": "/repo", "state": "idle"},
+            {"session_id": "idle", "cwd": "/repo", "state": "idle", "turn_ended_at": 1},
             {"session_id": "busy", "cwd": "/repo", "state": "busy"},
-            {"session_id": "self", "cwd": "/repo", "state": "idle", "self": True},
-            {"session_id": "permission", "cwd": "/repo", "state": "idle", "pending_permission": True},
+            {"session_id": "self", "cwd": "/repo", "state": "idle", "turn_ended_at": 1, "self": True},
+            {"session_id": "permission", "cwd": "/repo", "state": "idle", "turn_ended_at": 1, "pending_permission": True},
         ]
         catalog = self.catalog(grok_transport=FakeGrok(rows), cursor_transport=FakeCursor())
         got = [row for row in catalog.discover() if row["platform"] == "grok-leader"]
         self.assertEqual([row["capabilities"]["wake"] for row in got], [True, False, False, False])
+
+    def test_grok_leader_chat_without_workspace_is_visible_but_not_wakeable(self):
+        catalog = self.catalog(grok_transport=FakeGrok([
+            {"session_id": "no-cwd", "cwd": None, "title": "Leader-only session", "updated_at": 99,
+             "state": "idle", "turn_ended_at": 1}
+        ]), cursor_transport=FakeCursor())
+        row = next(row for row in catalog.discover() if row["platform"] == "grok-leader")
+        self.assertEqual(row["session_id"], "no-cwd")
+        self.assertIsNone(row["cwd"])
+        self.assertEqual(row["title"], "Leader-only session")
+        self.assertEqual(row["updated_at"], 99)
+        self.assertFalse(row["capabilities"]["read"])
+        self.assertFalse(row["capabilities"]["wake"])
 
     def test_cursor_excerpt_filters_roles_and_cloud_wake_states(self):
         transport = FakeCursor([

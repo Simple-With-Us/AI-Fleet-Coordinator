@@ -6,10 +6,14 @@ import json
 import os
 import socket
 import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 _RUNTIME = Path(__file__).resolve().parents[1] / "grok-acp-runtime"
+_DISCOVERY_TIMEOUT = 8.0
+_DISCOVERY_TTL = 2.0
 
 
 def _module(name: str, filename: str) -> Any:
@@ -27,6 +31,8 @@ class GrokTransport:
     def __init__(self) -> None:
         self.disk = _module("agent_sync_grok_disk", "session_disk.py")
         self.leader = None
+        self._discovery_rows: list[dict[str, Any]] | None = None
+        self._discovery_at = 0.0
 
     @staticmethod
     def _live_pid(pid: Any) -> bool:
@@ -39,33 +45,72 @@ class GrokTransport:
         except (OSError, subprocess.SubprocessError):
             return False
 
-    def discover(self) -> list[dict[str, Any]]:
-        """Read active-session metadata only.  Disk history alone never makes a chat wakeable."""
+    def discover(self, *, force: bool = False) -> list[dict[str, Any]]:
+        """List chats owned by the shared leader, then conservatively derive turn state.
+
+        active_sessions.json tracks attached TUIs, not chats known to the leader, and is
+        empty in leader mode.  It is therefore not an inventory or proof of promptability.
+        A failed or malformed leader list is an error, never an empty-success fallback.
+        """
+        now = time.monotonic()
+        cached = getattr(self, "_discovery_rows", None)
+        if not force and cached is not None and now - getattr(self, "_discovery_at", 0.0) < _DISCOVERY_TTL:
+            return [dict(row) for row in cached]
+
+        command = [sys.executable, str(_RUNTIME / "leader-client.py"),
+                   "--rpc-timeout", str(_DISCOVERY_TIMEOUT), "list"]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    timeout=_DISCOVERY_TIMEOUT + 2, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError("Grok leader discovery failed") from exc
+        try:
+            payload = json.loads(result.stdout)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Grok leader returned invalid discovery data") from exc
+        if result.returncode != 0 or not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError("Grok leader discovery unavailable")
+        sessions = payload.get("sessions")
+        if not isinstance(sessions, list):
+            raise RuntimeError("Grok leader returned invalid session list")
+
         rows = []
-        for active in self.disk.load_active():
-            sid = active.get("sessionId")
-            cwd = active.get("cwd")
-            if not isinstance(sid, str) or not sid or not isinstance(cwd, str) or not os.path.isabs(cwd):
+        active = {row.get("sessionId"): row for row in self.disk.load_active()
+                  if isinstance(row, dict) and isinstance(row.get("sessionId"), str)}
+        for session in sessions:
+            if not isinstance(session, dict):
                 continue
-            if not self._live_pid(active.get("pid")):
+            sid = session.get("sessionId")
+            cwd = session.get("cwd")
+            if not isinstance(sid, str) or not sid:
                 continue
+            if not isinstance(cwd, str) or not os.path.isabs(cwd):
+                cwd = None
             state = self.disk.turn_state(sid)
             status = state.get("turnState", "unknown")
             if status == "idle" and not state.get("turnEndedAt"):
-                status = "unknown"  # An empty/missing event history cannot prove that a chat is idle.
+                status = "unknown"  # A dead/missing TUI pid and empty history cannot prove idle.
+            pending = bool(state.get("pendingTool")) or status == "needs-input"
+            self_session = self.disk.is_self_session(sid)
+            attached = sid in active and self._live_pid(active[sid].get("pid"))
             rows.append({"platform": "grok-leader", "host": socket.gethostname(),
-                         "session_id": sid, "cwd": cwd, "pid": active["pid"],
-                         "state": status,
-                         "pending_permission": bool(state.get("pendingTool")),
-                         "self": self.disk.is_self_session(sid)})
+                         "session_id": sid, "cwd": cwd,
+                         "title": session.get("title") if isinstance(session.get("title"), str) else "",
+                         "updated_at": session.get("updatedAt"), "state": status,
+                         "turn_ended_at": state.get("turnEndedAt"), "attached": attached,
+                         "pending_permission": pending, "self": self_session,
+                         "wake": bool(cwd) and status == "idle" and bool(state.get("turnEndedAt"))
+                                 and not pending and not self_session})
+        self._discovery_rows = [dict(row) for row in rows]
+        self._discovery_at = time.monotonic()
         return rows
 
-    def preflight(self, binding: dict[str, str]) -> str:
+    def preflight(self, binding: dict[str, str], *, force: bool = False) -> str:
         if binding.get("platform") != "grok-leader" or binding.get("host") != socket.gethostname():
             return "unsupported"
-        for row in self.discover():
+        for row in self.discover(force=force):
             if row["session_id"] == binding.get("session_id") and row["cwd"] == binding.get("cwd"):
-                if row["self"] or row["pending_permission"] or row["state"] != "idle":
+                if row["self"] or row["pending_permission"] or not row["wake"]:
                     return "busy"
                 return "ready"
         # A disconnected or unavailable chat can become available later; keep it pending.
@@ -117,7 +162,7 @@ class GrokTransport:
             client = self.leader.LeaderStdio()
             self.leader._initialize(client, timeout=15)
             self.leader._resume(client, binding["session_id"], binding["cwd"], timeout=15)
-            if self.preflight(binding) != "ready":
+            if self.preflight(binding, force=True) != "ready":
                 return "deferred"
             if permit is not None and not permit():
                 return "deferred"
