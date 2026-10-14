@@ -184,6 +184,11 @@ class GrokTransport:
                 if _DISCOVERY_ERROR:
                     break
         with _DISCOVERY_LOCK:
+            if pages >= _DISCOVERY_MAX_PAGES and not _DISCOVERY_COMPLETE and _DISCOVERY_CANDIDATE_SESSIONS:
+                # Keep every fetched page visible but mark it stale/non-wakeable: the page cap
+                # prevents this one-shot call from claiming it saw the complete inventory.
+                _DISCOVERY_SESSIONS = [dict(row) for row in _DISCOVERY_CANDIDATE_SESSIONS]
+                _DISCOVERY_ERROR = "leader page limit reached"
             sessions = [dict(row) for row in _DISCOVERY_SESSIONS] if _DISCOVERY_SESSIONS is not None else None
             updated = _DISCOVERY_UPDATED
             error = _DISCOVERY_ERROR
