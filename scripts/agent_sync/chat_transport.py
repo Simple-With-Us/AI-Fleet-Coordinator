@@ -244,14 +244,14 @@ class GrokTransport:
                                  and not pending and not self_session})
         return rows
 
-    def preflight(self, binding: dict[str, str], *, force: bool = False) -> str:
+    def preflight(self, binding: dict[str, str]) -> str:
         if binding.get("platform") != "grok-leader" or binding.get("host") != socket.gethostname():
             return "unsupported"
         target_session_id = binding.get("session_id")
         if not isinstance(target_session_id, str) or not target_session_id:
-            return "unsupported"
+            return "busy"
         try:
-            rows = self.discover(force=force, wait=False, limit=1,
+            rows = self.discover(wait=False, limit=1,
                                  session_id=target_session_id)
         except Exception:
             return "busy"  # Discovery pending/unavailable is transient; leave the nudge queued.

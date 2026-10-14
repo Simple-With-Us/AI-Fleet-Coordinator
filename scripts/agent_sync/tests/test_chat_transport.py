@@ -418,6 +418,12 @@ class TransportTests(unittest.TestCase):
             transport.send(binding, "nudge")
             client.request.assert_not_called()
 
+        transport, binding, client = self.transport()
+        del binding["session_id"]
+        self.assertEqual(transport.preflight(binding), "busy")
+        self.assertEqual(transport.send(binding, "nudge"), "deferred")
+        client.request.assert_not_called()
+
     def test_failed_resume(self):
         transport, binding, client = self.transport()
         transport.leader._resume.side_effect = RuntimeError("unavailable")
