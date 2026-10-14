@@ -51,8 +51,11 @@ from typing import Any, Iterable, Mapping, Sequence
 from . import live as L
 
 # The refusals that hold a wake back:  every budget wakes.budget_block names, and a full FIFO.
+# `usd_per_day` is gone with the dollar axis (owner 2026-10-13):  wake accounting is frequency-only,
+# so a dollar total can no longer produce a hold reason.  Kept out of the set deliberately -- a
+# reason nothing can emit is worse than no reason at all.
 HOLD_REASONS = frozenset({"wakes_per_hour", "wakes_per_day", "per_topic_per_hour", "owner_per_day",
-                          "owner_per_topic_per_hour", "usd_per_day", "overflow"})
+                          "owner_per_topic_per_hour", "overflow"})
 FILE_NAME = "held-back.json"
 NAME_LIMIT = 100  # channel, topic and sender, as in the wake body
 LINK_LIMIT = 200  # a longer link is sent as "" (never cut):  the message id is enough to find it

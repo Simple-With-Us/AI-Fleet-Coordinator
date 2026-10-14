@@ -289,9 +289,11 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             routes = ""
             if s.get("wake") == "claude":
                 routes = "  routes 24h %s%s" % (s.get("routes_24h", 0), "" if s.get("route_enabled", True) else " (routing off)")
-            lines.append("%-12s %s  last event %s  cursor %s  wake %s%s  wakes 24h %s ($%.2f of $%.2f)%s" % (
+            lines.append("%-12s %s  last event %s  cursor %s  wake %s%s  wakes 24h %s (cap %s/day, %s/hour)%s" % (
                 seat, "connected" if s.get("connected") else "DOWN", _when(s.get("last_event")), s.get("cursor"),
-                s.get("wake"), state, s.get("wakes_24h"), float(s.get("cost_24h") or 0), float(s.get("usd_per_day") or 0),
+                s.get("wake"), state, s.get("wakes_24h"),
+                int((s.get("budget") or {}).get("wakes_per_day", 0)),
+                int((s.get("budget") or {}).get("wakes_per_hour", 0)),
                 routes))
             for red in s.get("red") or []:
                 lines.append("  RED %s" % red)
@@ -583,7 +585,7 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
         agents_note = "usable (%d rows)" % len(agents_rows) if agents_rows is not None else "not usable"
     obj, why = W.validate(result.parsed) if result.ok else ({}, None)
     summary = {"runtime": want, "refused": result.refused, "error": result.error, "exit": result.exit,
-               "secs": result.secs, "cost_usd": result.cost_usd, "models": result.models,
+               "secs": result.secs, "models": result.models,
                "init_tools": result.init_tools, "limited": result.limited or None,
                "invalid": why, "result": obj or None,
                "chat_target": (obj or {}).get("chat_target"), "chat_inspect": (obj or {}).get("chat_inspect"),
@@ -658,10 +660,9 @@ def cmd_wakes(rt: Any, args: argparse.Namespace) -> int:
             L.escape_line(str(view.get("channel") or "")), L.escape_line(str(view.get("topic") or "")))
         notes = (" catch-up" if view.get("catch_up") else "") + (
             " by %s" % view["by"] if view.get("state") == "surfaced" and view.get("by") else "")
-        rt.out("%s  %-9s %s  triggers %s%s%s  %s%s%s\n" % (
+        rt.out("%s  %-9s %s  triggers %s%s%s  %s%s\n" % (
             _when(view.get("ts")), view.get("state"), where, ",".join(str(i) for i in view.get("trigger_ids") or []),
             " (owner)" if view.get("owner") else "", notes, "action %s " % view["action"] if view.get("action") else "",
-            "$%.3f " % float(view["cost_usd"]) if isinstance(view.get("cost_usd"), (int, float)) else "",
             "(%s)" % view["reason"] if view.get("reason") else ""))
     if held:
         rt.out("%s now:  %s\n" % (seat, held))

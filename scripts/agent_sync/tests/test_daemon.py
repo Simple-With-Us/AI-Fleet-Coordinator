@@ -472,7 +472,8 @@ class WakeTests(DaemonHarness):
         states = [r["state"] for r in self.ledger()]
         self.assertEqual(states, ["queued", "accepted", "started", "done"])
         done = self.ledger()[-1]
-        self.assertEqual((done["action"], done["cost_usd"]), ("reply", 0.03))
+        self.assertEqual(done["action"], "reply")
+        self.assertNotIn("cost_usd", done, "wake rows are no longer costed (owner 2026-10-13)")
         post = self.bot_posts()[-1]
         self.assertEqual(post["id"], done["posted_id"])
         self.assertEqual((post["display_recipient"], post["subject"]), ("agent-sync", "t"))
@@ -533,29 +534,45 @@ class WakeTests(DaemonHarness):
         self.assertEqual(self.ledger()[-1]["reason"], "owner_not_pinned")
         self.assertEqual(self.dumps(), [])
 
-    def test_usd_per_day_stops_even_owner_wakes(self) -> None:
+    def test_owner_wakes_are_bounded_by_count_not_by_dollars(self) -> None:
+        """Owner 2026-10-13:  no dollar axis.  Eight finished owner wakes across eight topics are
+        well inside every count cap, so the next one runs;  under the old `usd_per_day` this same
+        setup was held back on a figure that was never a real cost."""
         daemon = self.started()
         now = self.clock.time()
         for n in range(8):
             daemon.seats["CLAUDE"].ledger.append({"ts": now - 100, "wake_id": "old%d" % n, "seat": "CLAUDE",
-                                                  "state": "started", "owner": True, "topic_key": "k%d" % n})
+                                                  "state": "done", "owner": True, "topic_key": "k%d" % n,
+                                                  "times": {"accepted": now - 100}})
         self.fake.add_direct_message("Jay Wedgeworth", "please answer", deliver=True)
         self.pump_until(daemon, lambda: any(r["state"] == "queued" for r in self.ledger()))
         self.wake_cycle(daemon, 6)
-        self.assertEqual((self.ledger()[-1]["state"], self.ledger()[-1]["reason"]), ("held_back", "usd_per_day"))
-        self.assertEqual(self.dumps(), [])
+        self.assertNotEqual(self.ledger()[-1].get("reason"), "usd_per_day")
+        self.assertEqual([r.get("state") for r in self.ledger()][-1], "done")
 
-    def test_usd_per_day_counts_waiting_wakes_so_two_owner_wakes_cannot_overshoot(self) -> None:
-        self.write_config(budget="usd_per_day = 0.30")  # each run costs 0.03, so only the reservation stops the second
+    def test_two_owner_wakes_are_not_held_by_a_dollar_budget(self) -> None:
+        self.write_config(budget="usd_per_day = 0.30")  # deliberately absurd; it must now be inert
         daemon = self.started()
         jay = self.fake.user_named("Jay Wedgeworth")
         self.fake.add_message(jay, "agent-sync", "one", MENTION)
         self.fake.add_message(jay, "agent-sync", "two", MENTION)
         self.pump_until(daemon, lambda: sum(1 for r in self.ledger() if r["state"] == "queued") >= 2)
         self.wake_cycle(daemon, 6)
-        self.assertEqual(len(self.dumps()), 1)
-        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], ["usd_per_day"])
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], [])
         self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
+
+    def test_waiting_wakes_are_no_longer_reserved_against_a_dollar_budget(self) -> None:
+        """The reservation that used to stop the second owner wake is gone with the dollar axis:  a
+        waiting wake costs nothing to hold, so the count caps alone decide."""
+        self.write_config(budget="usd_per_day = 0.30")
+        daemon = self.started()
+        jay = self.fake.user_named("Jay Wedgeworth")
+        self.fake.add_message(jay, "agent-sync", "one", MENTION)
+        self.fake.add_message(jay, "agent-sync", "two", MENTION)
+        self.pump_until(daemon, lambda: sum(1 for r in self.ledger() if r["state"] == "queued") >= 2)
+        self.wake_cycle(daemon, 6)
+        self.assertEqual(len(self.dumps()), 2, "two owner wakes on two topics are inside every count cap")
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], [])
 
     def test_a_restored_accepted_wake_is_checked_again_before_it_runs(self) -> None:
         now = self.clock.time()
@@ -572,8 +589,12 @@ class WakeTests(DaemonHarness):
         daemon = self.started()
         self.assertEqual(len(daemon.seats["CLAUDE"].jobs), 2)
         daemon.run_jobs("CLAUDE")
-        self.assertEqual(len(self.dumps()), 1, "1.70 spent + 0.25 waiting + 0.25 is over 2.00, so only one runs")
-        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], ["usd_per_day"])
+        # Both restored wakes run.  The old assertion held one back because "1.70 spent + 0.25 waiting
+        # + 0.25 is over 2.00" -- a dollar sum over figures that were never real costs.  With the
+        # dollar axis gone, a re-check before the run is bounded by the COUNT caps, and two wakes on
+        # two topics sit well inside them.
+        self.assertEqual(len(self.dumps()), 2)
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], [])
 
     def test_the_wake_runs_the_pinned_realpath_not_the_symlink(self) -> None:
         versions = self.tmp / "versions"
