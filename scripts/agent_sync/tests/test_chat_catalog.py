@@ -67,14 +67,14 @@ class ChatCatalogTests(unittest.TestCase):
         catalog = self.catalog(grok_transport=grok, cursor_transport=FakeCursor())
         rows = catalog.discover(wait_grok=True)
         self.assertTrue(any(row["session_id"] == "chat-1" for row in rows))
-        self.assertEqual(grok.kwargs, [{"wait": True, "force": False}])
+        self.assertEqual(grok.kwargs, [{"wait": True, "force": False, "limit": 160}])
 
     def test_forced_catalog_scan_forwards_to_grok_transport(self):
         grok = FakeGrok([{"session_id": "chat-1", "cwd": "/repo", "state": "idle",
                           "turn_ended_at": 1, "wake": True}])
         catalog = self.catalog(grok_transport=grok, cursor_transport=FakeCursor())
         catalog.discover(force=True, wait_grok=True)
-        self.assertEqual(grok.kwargs, [{"wait": True, "force": True}])
+        self.assertEqual(grok.kwargs, [{"wait": True, "force": True, "limit": 160}])
 
     def test_claude_codex_ids_and_text_allowlist(self):
         write_jsonl(self.home / ".claude/projects/p1/claude-session.jsonl", [

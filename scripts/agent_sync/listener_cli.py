@@ -180,7 +180,7 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
             if Z.normalise_seat(args.target_seat) != "GROK":
                 raise Z.UsageError("manual binding currently requires GROK; Cursor Cloud uses catalog selection")
             host = socket.gethostname()
-            target = next((row for row in CT.GrokTransport().discover()
+            target = next((row for row in CT.GrokTransport().discover(limit=1, session_id=args.session_id)
                            if row.get("platform") == "grok-leader" and row.get("host") == host
                            and row.get("session_id") == args.session_id and row.get("cwd") == args.cwd
                            and not row.get("self")), None)

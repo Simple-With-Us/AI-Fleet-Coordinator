@@ -306,9 +306,9 @@ class ChatCatalog:
                 return [self._unavailable("grok-leader", "GROK", "transport unavailable")]
         try:
             # Daemon catalog refreshes stay asynchronous.  The transport publishes a
-            # snapshot only after its bounded page walk finishes.  One-shot callers
-            # and a forced rescan can wait, and force starts a fresh walk.
-            live = self._grok.discover(wait=wait, force=force)
+            # snapshot only after its bounded page walk finishes, and state reads stay
+            # inside the catalog cap.  One-shot callers and a forced rescan can wait.
+            live = self._grok.discover(wait=wait, force=force, limit=MAX_FILES_PER_SOURCE)
         except Exception:
             return [self._unavailable("grok-leader", "GROK", "discovery failed")]
         rows = []
