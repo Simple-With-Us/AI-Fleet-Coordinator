@@ -596,6 +596,16 @@ class SeatAliasTests(unittest.TestCase):
         grok = next(r for r in rows if r["tag"] == "GROK")
         self.assertEqual(load_cli().GROK_ALIAS_PATTERN, grok["aliasPattern"])
 
+    def test_every_botfleet_roster_seat_has_its_own_linear_app(self):
+        """A BF seat in SEAT_ROSTER that is missing from SEAT_APP_NAMES signs its writes as Fleet."""
+        cli = load_cli()
+        bf = sorted(s for s in cli.SEAT_ROSTER if s.startswith("BF-"))
+        self.assertIn("BF-PRODUCER", bf)
+        self.assertEqual([s for s in bf if s not in cli.SEAT_APP_NAMES], [])
+        for seat in bf:
+            role = seat.split("-", 1)[1]
+            self.assertEqual(cli.SEAT_APP_NAMES[seat], "BF-" + role[:1] + role[1:].lower(), seat)
+
 
 class SafetyTests(BoardTest):
     def test_writes_require_agent_seat(self):
@@ -1408,11 +1418,29 @@ class SeatAppTests(BoardTest):
         self.assertNotIn("notice:", p.stdout)
         self.board("list", drop=("AGENT_SEAT",))
         self.assertEqual(self.callers_since(n), {CLIENT_ID})
-        # a seat outside the app table never reads a file of its name
-        (self.creds.parent / "BF-FIXER.env").write_text("LINEAR_CLIENT_ID=bf-fixer-id\nLINEAR_CLIENT_SECRET=bf-fixer-secret\n")
-        p = self.as_seat("BF-FIXER", "whoami")
-        self.assertIn("notice:      BF-FIXER has no Linear app yet (none in the seat table)", p.stdout)
+        # a seat outside the app table never reads a file of its name.  GB-HOUSEKEEPER is the live
+        # example:  it is in SEAT_ROSTER, and it has no SEAT_APP_NAMES entry, so resolve_identity
+        # must fall back to Fleet without ever reading GB-HOUSEKEEPER.env.
+        cli = load_cli()
+        self.assertIn("GB-HOUSEKEEPER", cli.SEAT_ROSTER)
+        self.assertNotIn("GB-HOUSEKEEPER", cli.SEAT_APP_NAMES)
+        (self.creds.parent / "GB-HOUSEKEEPER.env").write_text(
+            "LINEAR_CLIENT_ID=gb-housekeeper-id\nLINEAR_CLIENT_SECRET=gb-housekeeper-secret\n")
+        p = self.as_seat("GB-HOUSEKEEPER", "whoami")
+        self.assertIn("notice:      GB-HOUSEKEEPER has no Linear app yet (none in the seat table)", p.stdout)
+        self.assertIn(f"credentials: {self.creds}", p.stdout)
+        self.assertNotIn("GB-HOUSEKEEPER.env", p.stdout)
         self.assertEqual(self.mock.mints_by, {CLIENT_ID: 1})
+
+    def test_botfleet_producer_uses_its_own_app_not_fleet(self):
+        name = load_cli().SEAT_APP_NAMES["BF-PRODUCER"]
+        producer, _ = self.seat_app("BF-PRODUCER", name)
+        p = self.as_seat("BF-PRODUCER", "whoami")
+        self.assertIn(f"identity:    {name} (the BF-PRODUCER seat's own Linear app)", p.stdout)
+        self.assertIn(f"credentials: {self.creds.parent / 'BF-PRODUCER.env'}", p.stdout)
+        self.assertNotIn("notice:", p.stdout)
+        self.assertNotIn("fallback", p.stdout)
+        self.assertEqual(self.mock.mints_by, {producer: 1})
 
     def test_grok_web_hyphen_and_grok_build_alias(self):
         gw, gw_sec = self.seat_app("GROK-WEB", "Grok Web")

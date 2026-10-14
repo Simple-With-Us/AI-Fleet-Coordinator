@@ -920,9 +920,12 @@ class PartitionTests(ServerHarness):
         self.assertIsNone(error)
         self.assertEqual(partition["CLAUDE"], "mac")
         gb = sorted(s for s in partition if s.startswith("GB-"))
-        self.assertEqual(len(gb), 11)
+        self.assertEqual(len(gb), 12)
         self.assertEqual({partition[s] for s in gb}, {"server"})
-        self.assertEqual({v for s, v in partition.items() if s.startswith("BF-")}, {"none"})
+        bf = {s: v for s, v in partition.items() if s.startswith("BF-")}
+        self.assertEqual({s for s, v in bf.items() if v == "server"}, {"BF-DIRECTOR"},
+                         "the server holds only BF-DIRECTOR of the BotFleet seats (owner, Mon, Oct 13)")
+        self.assertEqual({s for s, v in bf.items() if v == "none"}, set(bf) - {"BF-DIRECTOR"})
         self.assertEqual({s for s, v in partition.items() if v == "mac"}, set(launchd.READER_SEATS),
                          "the Mac holds every Mac seat (owner, Thu, Oct 8)")
         for seat in ["MA", "JET", "GROK-WEB", "ECHO", "INSTINCT"]:
@@ -936,8 +939,11 @@ class PartitionTests(ServerHarness):
         self.assertEqual(server.errors, [])
         self.assertEqual(server.instance, "server")
         self.assertEqual(C.partition_errors(server, partition, env_instance="server"), [])
-        self.assertEqual(sorted(server.seats), sorted(list(gb) + list(CLOUD_SEATS)),
-                         "the enabled seats are all eleven GB personas and the five cloud seats")
+        self.assertEqual(sorted(server.disabled), ["BF-DIRECTOR", "GB-ENGINEER"],
+                         "the only disabled personas are BF-DIRECTOR and GB-ENGINEER, whose routine "
+                         "keys are not inventoried yet")
+        self.assertEqual(sorted(server.seats), sorted([s for s in gb if s != "GB-ENGINEER"] + list(CLOUD_SEATS)),
+                         "the enabled seats are the other eleven GB personas and the five cloud seats")
         for seat in CLOUD_SEATS:
             seat_cfg = server.seats[seat]
             code = C.env_code(seat)
@@ -952,8 +958,6 @@ class PartitionTests(ServerHarness):
                                  ("inbox", "env", "server", None), "%s has capture only, no wake adapter" % seat)
             self.assertEqual((seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
                              ("ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"), seat)
-        self.assertEqual(sorted(server.disabled), [],
-                         "no persona is disabled:  GB-COMPILER and GB-DIRECTOR were fixed in Infisical on Sat, Oct 10")
         for seat in gb:
             seat_cfg = server.seats.get(seat) or server.disabled[seat]
             code = C.env_code(seat)
