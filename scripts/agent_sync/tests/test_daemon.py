@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_sync import adapters as A
+from agent_sync import heldback as HELD
 from agent_sync import live as L
 from agent_sync import wakes as W
 from agent_sync import zulip as Z
@@ -59,6 +60,24 @@ class DaemonHarness(ListenerHarness):
 
     def bot_posts(self):
         return [m for m in self.fake.messages if m["sender_id"] == 10]
+
+    def seed_held(self, message_id: int = 900001) -> int:
+        """One held-back record the next delivered wake should surface."""
+        HELD.hold(self.seat_paths(), {
+            "wake_ids": ["w-seed"], "message_id": message_id, "owner": False,
+            "topic_key": L.topic_key("agent-sync", "earlier"), "dm": False,
+            "channel": "agent-sync", "topic": "earlier",
+            "stream_id": self.fake.streams["agent-sync"], "sender_full_name": "Codex",
+            "zulip_link": "", "reason": "wakes_per_hour", "at": int(self.clock.time()),
+        }, cap=200, now=self.clock.time())
+        return message_id
+
+    def held_ids(self) -> list[int]:
+        data = HELD.load(self.seat_paths())
+        return [entry["message_id"] for entry in data["records"] + data["overflow"]]
+
+    def terminal_wakes(self) -> list[dict[str, Any]]:
+        return [row for row in self.ledger() if row["state"] in ("done", "failed")]
 
 
 class RoutingTests(DaemonHarness):
@@ -453,7 +472,8 @@ class WakeTests(DaemonHarness):
         states = [r["state"] for r in self.ledger()]
         self.assertEqual(states, ["queued", "accepted", "started", "done"])
         done = self.ledger()[-1]
-        self.assertEqual((done["action"], done["cost_usd"]), ("reply", 0.03))
+        self.assertEqual(done["action"], "reply")
+        self.assertNotIn("cost_usd", done, "wake rows are no longer costed (owner 2026-10-13)")
         post = self.bot_posts()[-1]
         self.assertEqual(post["id"], done["posted_id"])
         self.assertEqual((post["display_recipient"], post["subject"]), ("agent-sync", "t"))
@@ -514,29 +534,45 @@ class WakeTests(DaemonHarness):
         self.assertEqual(self.ledger()[-1]["reason"], "owner_not_pinned")
         self.assertEqual(self.dumps(), [])
 
-    def test_usd_per_day_stops_even_owner_wakes(self) -> None:
+    def test_owner_wakes_are_bounded_by_count_not_by_dollars(self) -> None:
+        """Owner 2026-10-13:  no dollar axis.  Eight finished owner wakes across eight topics are
+        well inside every count cap, so the next one runs;  under the old `usd_per_day` this same
+        setup was held back on a figure that was never a real cost."""
         daemon = self.started()
         now = self.clock.time()
         for n in range(8):
             daemon.seats["CLAUDE"].ledger.append({"ts": now - 100, "wake_id": "old%d" % n, "seat": "CLAUDE",
-                                                  "state": "started", "owner": True, "topic_key": "k%d" % n})
+                                                  "state": "done", "owner": True, "topic_key": "k%d" % n,
+                                                  "times": {"accepted": now - 100}})
         self.fake.add_direct_message("Jay Wedgeworth", "please answer", deliver=True)
         self.pump_until(daemon, lambda: any(r["state"] == "queued" for r in self.ledger()))
         self.wake_cycle(daemon, 6)
-        self.assertEqual((self.ledger()[-1]["state"], self.ledger()[-1]["reason"]), ("held_back", "usd_per_day"))
-        self.assertEqual(self.dumps(), [])
+        self.assertNotEqual(self.ledger()[-1].get("reason"), "usd_per_day")
+        self.assertEqual([r.get("state") for r in self.ledger()][-1], "done")
 
-    def test_usd_per_day_counts_waiting_wakes_so_two_owner_wakes_cannot_overshoot(self) -> None:
-        self.write_config(budget="usd_per_day = 0.30")  # each run costs 0.03, so only the reservation stops the second
+    def test_two_owner_wakes_are_not_held_by_a_dollar_budget(self) -> None:
+        self.write_config(budget="usd_per_day = 0.30")  # deliberately absurd; it must now be inert
         daemon = self.started()
         jay = self.fake.user_named("Jay Wedgeworth")
         self.fake.add_message(jay, "agent-sync", "one", MENTION)
         self.fake.add_message(jay, "agent-sync", "two", MENTION)
         self.pump_until(daemon, lambda: sum(1 for r in self.ledger() if r["state"] == "queued") >= 2)
         self.wake_cycle(daemon, 6)
-        self.assertEqual(len(self.dumps()), 1)
-        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], ["usd_per_day"])
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], [])
         self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
+
+    def test_waiting_wakes_are_no_longer_reserved_against_a_dollar_budget(self) -> None:
+        """The reservation that used to stop the second owner wake is gone with the dollar axis:  a
+        waiting wake costs nothing to hold, so the count caps alone decide."""
+        self.write_config(budget="usd_per_day = 0.30")
+        daemon = self.started()
+        jay = self.fake.user_named("Jay Wedgeworth")
+        self.fake.add_message(jay, "agent-sync", "one", MENTION)
+        self.fake.add_message(jay, "agent-sync", "two", MENTION)
+        self.pump_until(daemon, lambda: sum(1 for r in self.ledger() if r["state"] == "queued") >= 2)
+        self.wake_cycle(daemon, 6)
+        self.assertEqual(len(self.dumps()), 2, "two owner wakes on two topics are inside every count cap")
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], [])
 
     def test_a_restored_accepted_wake_is_checked_again_before_it_runs(self) -> None:
         now = self.clock.time()
@@ -553,8 +589,12 @@ class WakeTests(DaemonHarness):
         daemon = self.started()
         self.assertEqual(len(daemon.seats["CLAUDE"].jobs), 2)
         daemon.run_jobs("CLAUDE")
-        self.assertEqual(len(self.dumps()), 1, "1.70 spent + 0.25 waiting + 0.25 is over 2.00, so only one runs")
-        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], ["usd_per_day"])
+        # Both restored wakes run.  The old assertion held one back because "1.70 spent + 0.25 waiting
+        # + 0.25 is over 2.00" -- a dollar sum over figures that were never real costs.  With the
+        # dollar axis gone, a re-check before the run is bounded by the COUNT caps, and two wakes on
+        # two topics sit well inside them.
+        self.assertEqual(len(self.dumps()), 2)
+        self.assertEqual([r.get("reason") for r in self.ledger() if r["state"] == "held_back"], [])
 
     def test_the_wake_runs_the_pinned_realpath_not_the_symlink(self) -> None:
         versions = self.tmp / "versions"
@@ -623,6 +663,122 @@ class WakeTests(DaemonHarness):
         self.fake.add_direct_message(codex, "agent-sync resume", recipients=[self.fake.me], deliver=True)
         daemon.pump("CLAUDE", timeout=0.5)
         self.assertTrue(L.paused(self.root, "CLAUDE"), "no message ever resumes")
+
+    # AFC-306:  invalid output must never read as a handled wake.  `wakes.validate` always returns a
+    # non-empty coerced dict beside `why`, so a test keyed on the dict being falsy could never fire,
+    # and the wake fell through to act() and _surface() -- which is what cleared the held refs.
+    # These drive the REAL validator through the REAL daemon path, not a stub.
+    def test_invalid_wake_output_is_failed_and_holds_the_held_back_items(self) -> None:
+        self.set_claude(mode="ok", output={"action": "reply", "reply": None})  # reply must be a string
+        daemon = self.started()
+        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.clock.advance(19)
+        daemon.tick()
+        self.wake_cycle(daemon, 2)
+        states = [r["state"] for r in self.ledger()]
+        self.assertEqual(states[-1], "failed", states)
+        self.assertIn("invalid result", self.ledger()[-1]["reason"])
+        self.assertEqual(self.bot_posts(), [], "nothing is posted on output we could not read")
+
+    def test_a_valid_coerced_wake_still_acts_and_surfaces(self) -> None:
+        # The companion case:  coercion is the normal path for a nearly-right answer, and it must
+        # still deliver.  Without this, the fix above would simply suppress every imperfect wake.
+        self.set_claude(mode="ok", output={"action": "reply", "reply": "on it", "board": None,
+                                           "owner_note": None, "risk": "low", "route": None})
+        daemon = self.started()
+        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.clock.advance(19)
+        daemon.tick()
+        self.wake_cycle(daemon, 2)
+        self.assertEqual([r["state"] for r in self.ledger()][-1], "done")
+        self.assertTrue(self.bot_posts(), "a valid wake still posts")
+
+    def test_a_wake_act_refuses_does_not_surface(self) -> None:
+        # The second half of AFC-306:  act() can refuse after validation passed (a mention that
+        # survived neutralizing, or the secret scanner).  That must also be failed, and must not
+        # clear the held refs.  The secret sits in the reply, which is what the scanner reads.
+        held_id = 900001
+        self.write_config(extra_daemon="held_alert_minutes = 0")
+        self.set_claude(mode="ok", output={"action": "reply", "reply": "here you go: " + self.key,
+                                           "board": None, "owner_note": None, "risk": "low",
+                                           "route": None})
+        daemon = self.started()
+        self.seed_held(held_id)
+        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.clock.advance(19)
+        daemon.tick()
+        self.wake_cycle(daemon, 2)
+        row = self.terminal_wakes()[-1]
+        self.assertEqual(row["state"], "failed", row)
+        self.assertTrue(str(row.get("refused") or "").startswith("secret scanner"), row)
+        self.assertEqual(self.bot_posts(), [])
+        self.assertEqual(self.held_ids(), [held_id])
+        self.assertFalse(any(entry["state"] == "surfaced" for entry in self.ledger()))
+
+    def test_an_owner_wake_with_no_reply_is_done_and_surfaces_held_items(self) -> None:
+        # action none attempts no channel reply.  A missing posted_id is success, and the held
+        # refs this wake listed are surfaced.
+        held_id = 900001
+        self.write_config(extra_daemon="held_alert_minutes = 0")
+        self.set_claude(mode="ok", output={"action": "none", "reply": None, "board": None,
+                                           "owner_note": None, "risk": None})
+        daemon = self.started()
+        self.seed_held(held_id)
+        self.fake.add_message(self.fake.user_named("Jay Wedgeworth"), "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.wake_cycle(daemon, 6)
+        row = self.terminal_wakes()[-1]
+        self.assertEqual((row["state"], row.get("action")), ("done", "none"), row)
+        self.assertIsNone(row.get("posted_id"))
+        self.assertNotIn("refused", row)
+        self.assertEqual(self.bot_posts(), [])
+        self.assertEqual(self.held_ids(), [])
+        self.assertTrue(any(entry["state"] == "surfaced" for entry in self.ledger()))
+        kinds = [item["kind"] for item in L.read_jsonl(self.seat_paths().owner_queue)]
+        self.assertNotIn("wake-undelivered", kinds)
+
+    def test_an_owner_board_only_wake_is_done_without_a_reply(self) -> None:
+        held_id = 900002
+        self.write_config(extra_daemon="held_alert_minutes = 0")
+        self.set_claude(mode="ok", output={"action": "board", "reply": None, "owner_note": None, "risk": None,
+                                           "board": {"title": "Fix it", "severity": "P2", "desc": "details"}})
+        daemon = self.started()
+        self.seed_held(held_id)
+        self.fake.add_message(self.fake.user_named("Jay Wedgeworth"), "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.wake_cycle(daemon, 6)
+        row = self.terminal_wakes()[-1]
+        self.assertEqual(row["state"], "done", row)
+        self.assertEqual(row.get("board_skipped"), "board_per_day")
+        self.assertIsNone(row.get("posted_id"))
+        self.assertEqual(self.bot_posts(), [])
+        self.assertEqual(self.held_ids(), [])
+        kinds = [item["kind"] for item in L.read_jsonl(self.seat_paths().owner_queue)]
+        self.assertNotIn("wake-undelivered", kinds)
+
+    def test_a_reply_that_fails_to_post_is_failed_and_keeps_held_items(self) -> None:
+        held_id = 900003
+        self.write_config(extra_daemon="held_alert_minutes = 0")
+        self.set_claude(mode="ok", output=reply_output("this reply will not land"))
+        daemon = self.started()
+        self.seed_held(held_id)
+        self.fake.inject("POST", "messages", status=400,
+                         body={"result": "error", "msg": "rejected", "code": "BAD_REQUEST"})
+        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.clock.advance(19)
+        daemon.tick()
+        self.wake_cycle(daemon, 2)
+        row = self.terminal_wakes()[-1]
+        self.assertEqual(row["state"], "failed", row)
+        self.assertNotIn("refused", row)
+        self.assertIsNone(row.get("posted_id"))
+        self.assertEqual(self.bot_posts(), [])
+        self.assertEqual(self.held_ids(), [held_id])
+        self.assertFalse(any(entry["state"] == "surfaced" for entry in self.ledger()))
 
     def test_single_flight_fifo_overflow(self) -> None:
         daemon = self.started()
@@ -718,8 +874,13 @@ class WakeTests(DaemonHarness):
             self.wake_cycle(daemon)
         self.assertEqual(self.bot_posts(), [])
         finals = [r for r in self.ledger() if r["state"] in ("done", "failed")]
-        self.assertEqual(finals[0]["invalid"], "keys extra extra")
-        self.assertEqual(finals[0]["action"], "none")
+        # AFC-306:  a schema violation is a FAILED wake even when the validator could coerce a usable
+        # object out of it.  `wakes.validate` always returns a non-empty coerced dict beside `why`,
+        # so recording this as `done` is what let an unreadable answer read as handled and cleared the
+        # held refs.  The validator's reason is preserved on the row.
+        self.assertEqual(finals[0]["state"], "failed")
+        self.assertIn("keys extra extra", finals[0]["reason"])
+        self.assertEqual(finals[1]["state"], "failed")
         self.assertTrue(finals[1]["refused"].startswith("secret scanner"))
         self.assertEqual((finals[2]["state"], finals[2]["reason"]), ("failed", "the init event listed tools or MCP servers"))
 
@@ -785,6 +946,55 @@ class WakeTests(DaemonHarness):
         self.pump_until(daemon, lambda: not daemon.loopguard.blocked(TOPIC_KEY))
         self.fake.add_message("Codex", "agent-sync", "t", MENTION + " now")
         self.pump_until(daemon, lambda: len(self.ledger()) >= 2)
+
+    def test_a_quota_hold_dms_the_sender_and_does_not_banner(self) -> None:
+        self.write_config(seats="""\
+[seat.CLAUDE]
+bot = "Claude"
+wake = "claude"
+model = "sonnet"
+provider = "Claude Code"
+""")
+        daemon = self.started()
+        now = self.clock.time()
+        pending = W.Pending("q1", "CLAUDE", {"channel": "agent-sync", "topic": "t", "type": "stream"},
+                            owner=False, now=now, due=now)
+        pending.add({"id": 55, "sender_id": 11, "ts": now}, False)
+        quota = {"known": True, "exhausted": True, "remaining": 0.0, "reset_at": "2026-10-14T18:00:00Z",
+                 "reason": "weekly", "source": "codecaps"}
+        reason = "Claude Code quota is exhausted until 2026-10-14T18:00:00Z"
+        with mock.patch("agent_sync.daemon.A.provider_quota", return_value=quota):
+            daemon._drop(daemon.seats["CLAUDE"], pending, reason, now)
+            daemon._drop(daemon.seats["CLAUDE"], pending, reason, now)
+        dms = [m for m in self.fake.messages if m["type"] == "private" and m["sender_id"] == 10]
+        self.assertEqual(len(dms), 1, "one DM per sender per window, and the call must not raise")
+        self.assertEqual(sorted(r["id"] for r in dms[0]["display_recipient"]), [10, 11])
+        self.assertIn("cannot answer right now", dms[0]["content"])
+        self.assertIn("Claude Code", dms[0]["content"])
+        self.assertEqual([m for m in self.bot_posts() if m["type"] == "stream"], [])
+        self.assertFalse(any("cannot answer right now" in arg for banner in self.banners for arg in banner))
+        self.assertTrue(any("was not run" in banner[8] for banner in self.banners))
+        kinds = [item["kind"] for item in L.read_jsonl(self.seat_paths().owner_queue)]
+        self.assertIn("wake-quota-hold", kinds)
+
+    def test_a_quota_worded_hold_stays_silent_unless_the_snapshot_is_exhausted(self) -> None:
+        self.write_config(seats="""\
+[seat.CLAUDE]
+bot = "Claude"
+wake = "claude"
+model = "sonnet"
+provider = "Claude Code"
+""")
+        daemon = self.started()
+        now = self.clock.time()
+        pending = W.Pending("q2", "CLAUDE", {"channel": "agent-sync", "topic": "t", "type": "stream"},
+                            owner=False, now=now, due=now)
+        pending.add({"id": 56, "sender_id": 11, "ts": now}, False)
+        quiet = {"known": True, "exhausted": False, "remaining": 40.0, "reset_at": None,
+                 "reason": None, "source": "codecaps"}
+        with mock.patch("agent_sync.daemon.A.provider_quota", return_value=quiet):
+            daemon._drop(daemon.seats["CLAUDE"], pending, "Claude Code quota is exhausted", now)
+        self.assertEqual([m for m in self.fake.messages if m["type"] == "private"], [])
 
 
 class JetWakeTests(DaemonHarness):

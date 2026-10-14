@@ -949,19 +949,22 @@ class HeldBackClaudeTests(HeldMixin, DaemonHarness):
         self.assertIn("Held back: 2 earlier wakes of this seat", prompt)
         self.assertEqual(self.held(), [], "the catch-up surfaced its trigger and the two it listed")
 
-    def test_a_catch_up_that_would_pass_usd_per_day_is_never_run(self) -> None:
-        self.configure("usd_per_day = 0.30", "ttl_hours = 12")  # each run reserves $0.25 and costs $0.03
+    def test_a_dollar_ceiling_no_longer_stops_a_catch_up(self) -> None:
+        """Owner 2026-10-13:  no dollar axis.  The same setup that used to hold a catch-up for 12 hours
+        now runs it, because what bounds a seat is frequency -- and a stale $0.30 ceiling in the
+        config must not silently keep doing the job of a cap that no longer exists."""
+        self.configure("usd_per_day = 0.30", "ttl_hours = 12")  # deliberately absurd; now inert
         daemon = self.started()
         for topic in ("a", "b", "c"):
             self.mention(daemon, topic)
             self.wake_cycle(daemon)
-        self.assertEqual(len(self.dumps()), 2)
-        self.assertEqual([r["reason"] for r in self.rows("held_back")], ["usd_per_day"])
+        self.assertEqual(len(self.dumps()), 3, "three wakes on three topics are inside every count cap")
+        self.assertEqual([r["reason"] for r in self.rows("held_back")], [])
         for _ in range(13):
             self.step(daemon, 3600)
-        self.assertEqual(len(self.dumps()), 2, "the dollar ceiling holds:  no catch-up ran")
+        self.assertEqual(len(self.dumps()), 3, "and the catch-up is not held back a day by a dead ceiling")
+        self.assertEqual(len(self.rows("expired")), 0, "nothing sat held long enough to expire")
         self.assertEqual(self.catch_ups(), [])
-        self.assertEqual(len(self.rows("expired")), 1)
         self.assertEqual(self.held(), [])
 
     def test_on_the_mac_the_digest_is_one_banner_an_hour(self) -> None:

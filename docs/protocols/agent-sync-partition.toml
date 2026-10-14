@@ -70,7 +70,8 @@ GB-ENGINEER = "server"
 # BF-<ROLE> seat at launch, which is the part that is native to it.
 #
 # The eleven BF seats are the ten role seats plus BF-DIRECTOR (AGENT-SYNC.md, owner 2026-10-09).
-# BF-PRODUCER is not one of them and is deliberately absent here and from the board's roster.
+# BF-PRODUCER is not one of them.  It stays off this partition and off the eleven-seat
+# outgoing-webhook allowlist.  It stays on the board roster so its Linear app signs its writes.
 # All eleven are outgoing-webhook senders.  That allowlist does not hold a queue.
 BF-BUILDER = "none"
 BF-COMPILER = "none"

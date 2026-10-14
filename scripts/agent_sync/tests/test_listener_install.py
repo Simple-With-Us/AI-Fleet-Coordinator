@@ -282,7 +282,8 @@ class LocalReadTests(ListenerHarness):
         self.assertEqual(result.code, 0, result.err)
         self.assertIn("done", result.out)
         self.assertIn("action reply", result.out)
-        self.assertIn("$0.030", result.out)
+        self.assertNotIn("$", result.out)
+        self.assertNotIn("0.030", result.out)
 
 
 class PluginTests(unittest.TestCase):

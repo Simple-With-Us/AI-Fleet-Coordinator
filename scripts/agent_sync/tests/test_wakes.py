@@ -235,30 +235,36 @@ class BudgetTests(unittest.TestCase):
         topic = {str(i): self.view(str(i), now - 60 * i, owner=True, cost=0.0) for i in range(6)}
         self.assertEqual(W.budget_block(topic, self.budget, owner=True, key="k", now=now), "owner_per_topic_per_hour")
 
-    def test_usd_per_day_stops_owner_wakes_too(self) -> None:
-        now = 100_000.0
-        spent = {str(i): self.view(str(i), now - 5000 * (i + 1), owner=True, key="k%d" % i, cost=0.25) for i in range(7)}
-        self.assertIsNone(W.budget_block(spent, self.budget, owner=True, key="new", now=now), "1.75 + 0.25 fits 2.00")
-        spent["x"] = self.view("x", now - 100, owner=True, key="kx", cost=0.01)
-        self.assertEqual(W.budget_block(spent, self.budget, owner=True, key="new", now=now), "usd_per_day")
-        started = {"s": dict(self.view("s", now - 10, owner=True), state="started", reserved_usd=0.25)}
-        self.assertEqual(W.spent_today(started.values(), now), 0.25, "a started run reserves its maximum")
+    def test_dollars_no_longer_bound_a_seat(self) -> None:
+        """Owner 2026-10-13:  wake accounting is frequency-only.
 
-    def test_accepted_wakes_reserve_their_maximum_against_usd_per_day(self) -> None:
+        The dollar axis never measured anything real -- a subscription-backed wake is 0.0 and a
+        metered one's per-run maximum is approximate -- while what costs downstream is the fan-out.
+        An arbitrary dollar total must not stop a wake."""
+        now = 100_000.0
+        spent = {str(i): self.view(str(i), now - 5000 * (i + 1), owner=True, key="k%d" % i, cost=999.99)
+                 for i in range(7)}
+        self.assertIsNone(W.budget_block(spent, self.budget, owner=True, key="new", now=now))
+
+    def test_the_count_caps_still_bound_a_seat(self) -> None:
+        # Frequency IS the budget now, so prove the cap that replaced the dollar ceiling bites.
+        now = 100_000.0
+        cap = int(self.budget["owner_per_day"])
+        many = {str(i): self.view(str(i), now - 60 * (i + 1) - 1, owner=True, key="k%d" % i) for i in range(cap)}
+        self.assertEqual(W.budget_block(many, self.budget, owner=True, key="new", now=now), "owner_per_day")
+
+    def test_accepted_wakes_are_not_charged_a_reservation(self) -> None:
+        # Nothing is reserved any more:  a queued wake costs nothing to hold, and the eviction
+        # machinery that used to spend `reserve_usd` has nothing to spend.
         now = 100_000.0
         views = {"done": self.view("done", now - 100, owner=True, key="k0", cost=1.75)}
         for n in range(4):
             views["a%d" % n] = {"wake_id": "a%d" % n, "state": "accepted", "owner": True, "topic_key": "k%d" % (n + 1),
                                 "ts": now - 10, "times": {"queued": now - 15, "accepted": now - 10}}
-        self.assertEqual(W.reserved_usd(views.values()), 1.0)
-        self.assertEqual(W.budget_block(views, self.budget, owner=True, key="new", now=now), "usd_per_day",
-                         "1.75 spent + 4 x 0.25 waiting leaves no room for a fifth")
+        self.assertIsNone(W.budget_block(views, self.budget, owner=True, key="new", now=now))
         for n in range(3):
-            self.assertEqual(W.budget_block(views, self.budget, owner=True, key="k%d" % (n + 1), now=now,
-                                            exclude="a%d" % n), "usd_per_day")
-            views["a%d" % n]["state"] = "dropped"
-        self.assertIsNone(W.budget_block(views, self.budget, owner=True, key="k4", now=now, exclude="a3"),
-                          "the last one fits once the others are gone, and it never counts itself")
+            self.assertIsNone(W.budget_block(views, self.budget, owner=True, key="k%d" % (n + 1), now=now,
+                                             exclude="a%d" % n))
 
     def test_board_budget_defaults_to_zero(self) -> None:
         self.assertEqual(W.board_block({}, self.budget, 1000.0), "board_per_day")
@@ -339,7 +345,7 @@ class LedgerAndGuardTests(unittest.TestCase):
         self.assertEqual([v["wake_id"] for v in crashed], ["w1"])
         views = ledger.wakes()
         self.assertEqual(views["w1"]["state"], "failed")
-        self.assertEqual(views["w1"]["cost_usd"], 0.25)
+        self.assertNotIn("cost_usd", views["w1"], "a crashed wake is no longer costed")
         self.assertEqual(W.Pending.from_view(reload[0]).trigger_ids, [6])
         again, crashed_again = ledger.recover(200.0)
         self.assertEqual(crashed_again, [], "a second restart finds nothing new to fail")
@@ -414,6 +420,20 @@ class NotifyAndBoardTests(unittest.TestCase):
         self.assertFalse(notifier.notify("CLAUDE", "t", "again", kind="k"), "once a day per key")
         queue = L.read_jsonl(L.SeatPaths(self.root, "CLAUDE").owner_queue)
         self.assertEqual(len(queue), 1)
+
+    def test_banners_false_keeps_the_rate_limit_and_skips_the_banner(self) -> None:
+        calls: list[list[str]] = []
+        notifier = A.Notifier(self.root, clock=lambda: 1000.0, runner=calls.append, banners=True)
+        self.assertTrue(notifier.notify("CLAUDE", "agent-sync CLAUDE", "quota text",
+                                        kind="wake-quota-hold", key="quota-hold:CLAUDE:11", banners=False))
+        self.assertEqual(calls, [], "this call records the notice and does not display it")
+        queue = L.read_jsonl(L.SeatPaths(self.root, "CLAUDE").owner_queue)
+        self.assertEqual([(row["kind"], row["text"]) for row in queue], [("wake-quota-hold", "quota text")])
+        self.assertFalse(notifier.notify("CLAUDE", "agent-sync CLAUDE", "quota text",
+                                         kind="wake-quota-hold", key="quota-hold:CLAUDE:11", banners=False))
+        self.assertEqual(len(L.read_jsonl(L.SeatPaths(self.root, "CLAUDE").owner_queue)), 1)
+        self.assertTrue(notifier.notify("CLAUDE", "agent-sync CLAUDE", "other", kind="other", key="other"))
+        self.assertEqual(len(calls), 1, "a later notice still banners")
 
     def test_board_argv_is_a_list_with_a_validated_app(self) -> None:
         acronyms = {"AFC", "BF", "CT", "ST"}

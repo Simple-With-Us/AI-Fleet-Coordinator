@@ -71,6 +71,10 @@ LIVE_DIR_KEEP = 86400.0
 AGENTS_CACHE_SECONDS = 30.0
 LEASE_HEARTBEAT_LIMIT = 15 * 60.0
 POST_SPACING = 3.0
+# How long a sender is left alone after being told this seat's quota is spent.  Without it a hot
+# topic would produce one DM per message for every sender in it, which is the exact spam the caps
+# exist to prevent -- and a seat that cannot answer is the worst possible time to add traffic.
+QUOTA_HOLD_TELL_WINDOW = 3600.0
 HELD_TICK_SECONDS = 30.0  # held-back upkeep:  expiry, the owner digest and the catch-up check
 SEAT_INBOX_ROTATE_BYTES = 1 << 20
 SEAT_INBOX_ROTATE_SECONDS = 7 * 86400
@@ -1227,8 +1231,7 @@ class Daemon:
                 overflow = True
             else:
                 overflow = False
-                runner.ledger.append(pending.row("accepted", now, reserve_usd=runner.cfg.wake_max_usd,
-                                                 adapter=runner.cfg.wake))
+                runner.ledger.append(pending.row("accepted", now, adapter=runner.cfg.wake))
                 runner.jobs.append(pending)
                 runner.jobs_cond.notify_all()
         if overflow:
@@ -1357,6 +1360,53 @@ class Daemon:
         self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
                              "a wake was not run (%s); the message is in the seat inbox" % reason,
                              kind="wake-" + reason, key="wake:%s:%s" % (runner.seat, reason))
+        # A quota hold is the one reason worth telling the SENDER about:  the person or bot who asked
+        # learns why they got no reply instead of watching it disappear.  Every other hold (a stale
+        # pin, a pause, a count cap) is a configuration fact the owner notice above already covers.
+        if "quota" in reason or "exhausted" in reason:
+            self._tell_requester(runner, pending, reason, now)
+
+
+    def _tell_requester(self, runner: SeatRunner, pending: W.Pending, reason: str, now: float) -> None:
+        """Tell whoever sent the message that this seat cannot answer right now, and when it can.
+
+        Owner 2026-10-13:  a person or a bot that messages a seat whose provider quota is spent should
+        be told, instead of watching their message go nowhere.  The DM names the reason and the reset
+        time when the provider gave one, so the sender knows whether to wait or re-plan.
+
+        Rules that keep this from becoming noise:  it is a DM to the trigger SENDER and never a post
+        into their topic (a wake that could not run must not add traffic to the conversation that woke
+        it);  it fires once per seat per window, not once per message;  and it stays silent unless the
+        provider snapshot actually says exhausted, so a hold for a pin or a pause is never dressed up
+        as a quota story."""
+        if runner.fatal or runner.client is None or runner.me is None:
+            return
+        if not runner.cfg.provider:
+            return
+        quota = A.provider_quota(runner.cfg.provider, now)
+        if not quota["known"] or not quota["exhausted"]:
+            return  # never invent an explanation the provider did not give
+        when = quota.get("reset_at")
+        text = ("%s cannot answer right now: its %s quota is exhausted%s.  Your message is in its inbox and "
+                "will be picked up when the quota resets." % (
+                    runner.seat, runner.cfg.provider,
+                    " until %s" % A.clean_banner(str(when), 40) if when else ""))
+        sender = pending.sender_id
+        if not isinstance(sender, int) or sender == runner.me.user_id:
+            return
+        key = "quota-hold:%s:%s" % (runner.seat, sender)
+        try:
+            if not self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat, text,
+                                        kind="wake-quota-hold", key=key, once_per=QUOTA_HOLD_TELL_WINDOW,
+                                        trigger_ids=pending.trigger_ids, sender_id=sender, banners=False):
+                return  # already told this sender recently
+            result = runner.client.post("messages", {"type": "direct", "to": [sender], "content": text})
+            if result.get("id"):
+                self.log.write("wake-quota-hold-told", seat=runner.seat, wake_id=pending.wake_id,
+                               sender_id=sender, reset_at=when)
+        except Z.AgentSyncError as exc:
+            self.log.write("wake-quota-hold-tell-failed", seat=runner.seat, wake_id=pending.wake_id,
+                           sender_id=sender, error=self.scrub(str(exc)))
 
     def _guard_drop(self, runner: SeatRunner, item: Mapping[str, Any], key: str, reason: str, owner: bool,
                     now: float) -> None:
@@ -1522,7 +1572,7 @@ class Daemon:
         if not pending.owner and pending.trigger_ts is not None and now - pending.trigger_ts > self.config.stale_after:
             return "stale"  # a stale non-owner item never wakes, even after a restart
         return W.budget_block(runner.ledger.wakes(), runner.cfg.budget, owner=pending.owner, key=pending.key,
-                              now=now, exclude=pending.wake_id, run_max=runner.cfg.wake_max_usd)
+                              now=now, exclude=pending.wake_id)
 
     def takeover(self, runner: SeatRunner, pending: W.Pending) -> str | None:
         """A live session that took over:  a lease on the topic, or for a mention trigger, a
@@ -1675,7 +1725,7 @@ class Daemon:
         try:
             history = self.history(runner, pending)
         except Z.AgentSyncError as exc:
-            runner.ledger.append(pending.row("failed", now, reason="history: %s" % self.scrub(str(exc)), cost_usd=0.0))
+            runner.ledger.append(pending.row("failed", now, reason="history: %s" % self.scrub(str(exc))))
             return
         board_on = runner.cfg.budget.get("board_per_day", 0) > 0
         users = runner.users
@@ -1757,7 +1807,7 @@ class Daemon:
         done = self.clock.time()
         if result.refused or result.error:
             runner.ledger.append(pending.row("failed", done, reason=result.refused or result.error,
-                                             cost_usd=result.cost_usd, exit=result.exit, secs=result.secs,
+                                             exit=result.exit, secs=result.secs,
                                              held_back=held_count, limited=result.limited or None,
                                              adapter=adapter))
             if result.limited:
@@ -1782,44 +1832,57 @@ class Daemon:
         obj, why = W.validate(result.parsed)
         if why:
             self.log.write("wake-invalid", seat=runner.seat, wake_id=pending.wake_id, reason=why)
-        # Unusable output is a FAILED wake, not a done one.  `act` below also surfaces the seat's
-        # held-back items, and that is wrong on output nobody could read:  a wake whose answer we
-        # could not parse must not be the reason a queued item looks handled.  The wake is failed,
-        # the ledger says failed, and the held-back items stay held.
-        def fail_invalid_output() -> None:
+        # Invalid output fails the wake before act(), and the held refs stay held.  wakes.validate
+        # always returns a non-empty dict alongside `why` (the action-none sentinel), so a gate of
+        # `why and not obj` never fired and an unreadable answer still reached act() and _surface()
+        # (AFC-306).  A chat_target or chat_inspect on that output fails the same way:  nothing is
+        # selected, nothing is posted, and the held items stay for the next wake.
+        if why:
             runner.ledger.append(pending.row("failed", self.clock.time(), reason="invalid result: %s" % why,
-                                             cost_usd=result.cost_usd, exit=result.exit, secs=result.secs,
+                                             exit=result.exit, secs=result.secs,
                                              held_back=held_count, adapter=adapter))
             if pending.owner:
                 self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
                                      "a wake could not be read (%s); nothing was posted" % A.clean_banner(why, 60),
                                      kind="wake-invalid", key="wake-invalid:%s" % pending.wake_id, once_per=0)
-        raw_control = result.parsed if isinstance(result.parsed, dict) else {}
-        if why and any(raw_control.get(key) is not None for key in ("chat_target", "chat_inspect")):
-            fail_invalid_output()
             return
-        if why and not obj:
-            fail_invalid_output()
-            return
-        if not why and obj.get("chat_target") is not None:
+        if obj.get("chat_target") is not None:
             if adapter != "muse" or not is_muse:
                 chat_outcome = {"status": "held", "why": "chat selection requires a Muse wake"}
             else:
                 try:
                     chat_outcome = self.select_chat(runner, pending, obj, chat_context)
-                except (ValueError, OSError):
-                    # A queue or catalog filesystem failure must fail this wake cleanly; the
-                    # listener loop must remain alive and the ledger must not claim success.
+                except Exception:
+                    # A queue, catalog, or binding failure (KeyError, TypeError, OSError, and the
+                    # rest) must fail this wake cleanly.  The listener loop stays alive, and the
+                    # ledger must not claim success or drop the held refs.
                     chat_outcome = {"status": "failed", "why": "chat queue unavailable"}
             runner.ledger.append(pending.row("done" if chat_outcome["status"] in ("queued", "already_queued") else "failed",
                 self.clock.time(), cost_usd=result.cost_usd, adapter=adapter, chat=chat_outcome))
             return
         outcome = self.act(runner, pending, obj, history=history)
         finished = self.clock.time()
-        runner.ledger.append(pending.row("done", finished, cost_usd=result.cost_usd, exit=result.exit,
+        # Held refs are surfaced only after the wake handled its triggers.  A refusal (a mention
+        # that survived neutralizing, the secret scanner) and a reply that was attempted but did
+        # not land are failed, and the held refs stay held.  An owner wake that attempted no reply
+        # is delivered:  action none, a board item with no reply text, or a route-only result.
+        refused = outcome.get("refused")
+        attempted = bool(outcome.pop("reply_attempted", False))
+        landed = bool(outcome.get("posted_id") or outcome.get("draft_to"))
+        delivered = not refused and (landed or not attempted)
+        runner.ledger.append(pending.row("done" if delivered else "failed", finished,
+                                         exit=result.exit,
                                          secs=result.secs, action=obj["action"], risk=obj.get("risk"),
                                          coerced=obj.get("coerced"), invalid=why, held_back=held_count,
                                          adapter=adapter, **outcome))
+        if not delivered:
+            if pending.owner:
+                self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat,
+                                     "a wake was not delivered: %s" % A.clean_banner(
+                                         refused or "the reply was not posted", 60),
+                                     kind="wake-undelivered", key="wake-undelivered:%s" % pending.wake_id,
+                                     once_per=0)
+            return
         self._surface(runner, pending, listed, lost, finished)
 
     def chat_queue(self, seat: str) -> CN.ChatNudges:
@@ -2051,6 +2114,7 @@ class Daemon:
                 self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat, "a wake reply was refused by the "
                                      "secret scanner", kind="wake-secret", key="secret:%s" % pending.wake_id, once_per=0)
             else:
+                outcome["reply_attempted"] = True
                 outcome["posted_id"] = self.post(runner, pending, text)
         board = obj.get("board")
         if obj.get("action") == "board" and isinstance(board, dict):
@@ -2072,6 +2136,7 @@ class Daemon:
                     dm_note = ("%s  (Route to %s dropped: %s.)" % (dm_note.strip(), route.get("seat"), gate)).strip()
                 outcome.update(self.dm_owner(runner, pending, dm_note, risk, history))
             if pending.owner and not outcome["posted_id"] and not lease_id:
+                outcome["reply_attempted"] = True
                 outcome["posted_id"] = self.post(runner, pending, W.compose_reply(runner.seat, trigger, W.OWNER_ACK))
         # The route comes last, after the reply:  two posts, because a `·wake`-tagged post never wakes
         # anyone and the route post must wake its target.
@@ -2777,10 +2842,12 @@ class Daemon:
                 "last_event": runner.last_event_wall, "wake": runner.cfg.wake, "routine": routine,
                 "pinned": (pin or muse_pin or {}).get("pinned"), "pin": pin or muse_pin,
                 "claude": claude, "muse": muse, "provider": runner.cfg.provider, "quota": quota,
-                "wakes_24h": len(day), "cost_24h": W.spent_today(views.values(), now),
+                "wakes_24h": len(day),
                 "routes_24h": W.routes_in(views.values(), now),
                 "route_enabled": bool(self.config.route_enabled and runner.cfg.route_enabled),
-                "usd_per_day": runner.cfg.budget["usd_per_day"], "budget": runner.cfg.budget, "live": runner.cfg.live,
+                # No dollar figures in the status at all (owner 2026-10-13):  the per-run cost of a wake was
+                # never a real signal, while the COUNT caps are what actually bound a seat.
+                "budget": runner.cfg.budget, "live": runner.cfg.live,
                 "jobs": len(runner.jobs), "running": runner.running.wake_id if runner.running else None,
                 "paused": L.paused(self.root, seat), "wakes_paused": L.paused(self.root, seat, wakes=True),
                 "held_back": HELD.summary(runner.paths, now), "leases": leases, "red": red,
