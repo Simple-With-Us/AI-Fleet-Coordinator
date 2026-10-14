@@ -297,7 +297,7 @@ class ChatCatalog:
                                   source=str(path), internal_path=str(path), excerpts=self._parse_text_events(events, "codex")))
         return rows or [self._unavailable("codex", "CODEX", "no local rollout transcripts")]
 
-    def _scan_grok(self, *, wait: bool = False) -> list[dict[str, Any]]:
+    def _scan_grok(self, *, wait: bool = False, force: bool = False) -> list[dict[str, Any]]:
         if self._grok is None:
             try:
                 from .chat_transport import GrokTransport
@@ -306,9 +306,9 @@ class ChatCatalog:
                 return [self._unavailable("grok-leader", "GROK", "transport unavailable")]
         try:
             # Daemon catalog refreshes stay asynchronous.  The transport publishes a
-            # snapshot only after its bounded page walk finishes.  One-shot CLI callers
-            # wait for that walk before exiting.
-            live = self._grok.discover(wait=wait)
+            # snapshot only after its bounded page walk finishes.  One-shot callers
+            # and a forced rescan can wait, and force starts a fresh walk.
+            live = self._grok.discover(wait=wait, force=force)
         except Exception:
             return [self._unavailable("grok-leader", "GROK", "discovery failed")]
         rows = []
@@ -552,9 +552,9 @@ class ChatCatalog:
                                   status="metadata-only", wake=False, source="fx-session-metadata"))
         return rows or [self._unavailable("fx", "FX", "no Fx sessions")]
 
-    def _scan(self, *, wait_grok: bool = False) -> None:
+    def _scan(self, *, wait_grok: bool = False, force_grok: bool = False) -> None:
         self._availability = {}
-        groups = [self._scan_claude(), self._scan_codex(), self._scan_grok(wait=wait_grok), self._scan_cursor(),
+        groups = [self._scan_claude(), self._scan_codex(), self._scan_grok(wait=wait_grok, force=force_grok), self._scan_cursor(),
                   self._scan_muse(), self._scan_minimax(), self._scan_fx()]
         # Explicit availability rows ensure unsupported/empty stores remain visible.
         groups.append(self._scan_cursor_local())
@@ -596,7 +596,7 @@ class ChatCatalog:
         if force or now >= self._expires:
             previous = self._records
             try:
-                self._scan(wait_grok=wait_grok)
+                self._scan(wait_grok=wait_grok, force_grok=force)
             except Exception:
                 if previous and now - self._last_scan <= STALE_TTL:
                     self._records = previous

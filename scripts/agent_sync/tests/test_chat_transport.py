@@ -159,6 +159,19 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
         self.assertTrue(rows[0]["stale"])
 
+    def test_page_cap_publishes_fetched_rows_but_disables_wake(self):
+        transport = GrokTransport.__new__(GrokTransport)
+        transport.disk = SimpleNamespace(load_active=lambda: [],
+                                         turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},
+                                         is_self_session=lambda _: False)
+        responses = [self.leader_result([{"sessionId": "chat-1", "cwd": "/one"}], next_cursor="page-2"),
+                     self.leader_result([{"sessionId": "chat-2", "cwd": "/two"}], next_cursor="page-3")]
+        with patch.object(CT, "_DISCOVERY_MAX_PAGES", 2), \
+                patch("agent_sync.chat_transport.subprocess.run", side_effect=responses):
+            rows = transport.discover()
+        self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
+        self.assertTrue(all(row["stale"] and not row["wake"] for row in rows))
+
     def test_leader_client_passes_cursor_and_preserves_next_cursor(self):
         helper_path = CT._RUNTIME / "leader-client.py"
         spec = importlib.util.spec_from_file_location("test_grok_leader_client", helper_path)
@@ -210,19 +223,28 @@ class TransportTests(unittest.TestCase):
         transport.disk = SimpleNamespace(load_active=lambda: [],
                                          turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},
                                          is_self_session=lambda _: False)
-        with patch("agent_sync.chat_transport.subprocess.run", return_value=self.leader_result([
-            {"sessionId": "chat-1", "cwd": "/work"}
-        ])):
-            # The shared list can finish before this non-waiting read observes it.
-            try:
-                rows = transport.discover(wait=False)
-            except RuntimeError as exc:
-                self.assertIn("pending", str(exc))
+        started, release = threading.Event(), threading.Event()
+
+        def page(command, **_kwargs):
+            if "--cursor" in command:
+                return self.leader_result([{"sessionId": "chat-2", "cwd": "/two"}])
+            started.set()
+            release.wait()
+            return self.leader_result([{"sessionId": "chat-1", "cwd": "/work"}],
+                                      next_cursor="page-2")
+
+        try:
+            with patch("agent_sync.chat_transport.subprocess.run", side_effect=page):
+                with self.assertRaisesRegex(RuntimeError, "pending"):
+                    transport.discover(wait=False)
+                self.assertTrue(started.wait(1))
+                release.set()
                 self.assertTrue(CT._DISCOVERY_DONE.wait(1))
                 rows = transport.discover(wait=False)
-            else:
-                self.assertTrue(CT._DISCOVERY_DONE.wait(1))
-        self.assertTrue(rows[0]["wake"])
+            self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
+            self.assertTrue(all(row["wake"] and not row["stale"] for row in rows))
+        finally:
+            release.set()
 
     def test_fresh_shared_snapshot_is_immediate_and_refresh_errors_disable_wake(self):
         sessions = [{"sessionId": "chat-1", "cwd": "/work"}]
