@@ -7,7 +7,7 @@
 # no pip install step.  The one binary added is gitleaks (pinned via GITLEAKS_VERSION), so the
 # contribute gate in the container matches the Mac seats; the build fails if it cannot be
 # installed (override with --build-arg RECALL_GITLEAKS_REQUIRED=0 to tolerate that).
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ARG GITLEAKS_VERSION=8.30.1
 ARG RECALL_GITLEAKS_REQUIRED=1

@@ -20,7 +20,7 @@
 # per-service networks, so the host Tailscale address is the working default below.
 services:
   recall-api:
-    image: python:3.12-slim
+    image: python:3.14-slim
     restart: unless-stopped
     command:
       - python3
