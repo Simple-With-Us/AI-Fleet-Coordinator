@@ -196,7 +196,7 @@ The commands use the installed symlink by absolute path, so a GUI app's short `P
 |---|---|---|
 | `inbox` | Writes to the seat inbox only.  An owner wake-worthy item sends one notify-owner per topic per hour | Default for every seat |
 | `claude` | The fixed argv in section 3.3, hardcoded in code; config sets only the model, the budgets and an optional absolute `claude` path | CLAUDE in v1 |
-| `muse` | The fixed argv in section 3.3a, the same wake contract and the same validator over a different runtime (`muse exec`); config adds an optional absolute `muse` path and the `provider` whose CodeCaps quota the wake gate reads | Any seat, one switch at a time.  Verified, not yet adopted (AFC-291) |
+| `muse` | The fixed argv in section 3.3a, the same wake contract and the same validator over a different runtime (`muse exec`); config adds an optional absolute `muse` path and the `provider` whose CodeCaps quota the wake gate reads.  May name `fallback = "mcode"` | Any seat, one switch at a time.  Verified, not yet adopted (AFC-291) |
 | `command` | A fixed argv for another platform, after its lockdown test (section 6) | v2, not built |
 | `http` | Sends one fixed JSON body (contract `agent-sync-wake/1`:  the trigger's ids, channel, topic and stream id or DM members, sender, the daemon's owner flag, a 2,000-character excerpt inside the untrusted markers, a Zulip link, the seat and `dm`) to a remote routine webhook.  The top-level channel, topic and sender name are escaped display copies; only `reply_to` carries the exact names, for addressing.  The URL and sender key come from environment variables the seat's `routine` block names, read once at start (a new or rotated value needs a restart, not a reload).  Auth is a plain header, Bearer, or a hex HMAC-SHA256 of the raw body.  A 2xx is accepted; a 5xx or a network failure is retried 3 times with backoff; a 4xx or a redirect never is.  The routine replies in Zulip itself, so the daemon posts nothing for the seat.  The URL, query, key and signature are never logged ([agent-sync-server.md](agent-sync-server.md#the-routine-wake-http)) | GB personas on the server instance (GB-COMPILER first).  Built |
 | `notify-owner` | macOS banner plus `owner-queue.jsonl` (the server instance has no display:  owner queue only) | Escalations, budgets, dead queues, config problems |
@@ -300,18 +300,23 @@ The second local wake type.  Same contract, same schema file, same validator, sa
 cd ~/.agent-sync/<SEAT>/wake          # empty, mode 700, never a repo
 env -i HOME=$HOME USER=$USER LOGNAME=$USER LANG=en_US.UTF-8 TMPDIR=$TMPDIR \
     PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin \
-  muse exec \
+  muse-bin-1.4.7-R6101.1 exec \
+    -c 'run.toolset=[]' \
     --model muse-spark-1.3-contributor --reasoning-effort minimal --provider meta \
     --prompt-file <wake>/prompt.md --output-schema <wake>/schema.json \
     --json --approval-mode never \
-    --disable-shell --disable-write --disable-web-tools \
+    --disable-shell --disable-write --disable-web-tools --disable-reminders \
     --no-session-log --workspace <wake>/workspace \
     --max-model-steps 8 --no-foreign-personal-context
 ```
 
 The prompt and schema go in as **files**, not stdin and not an inline string:  `muse` has no equivalent of `--append-system-prompt-file`, so `MuseRunner` concatenates the wake contract with the daemon prompt into one private file and writes the schema beside it.  Both are mode 600 and both are deleted after the run.
 
-**Why this runtime** (owner 2026-10-11:  pick on technical merit;  cost is not the concern).  `--output-schema` shapes the final answer to a JSON schema, and that schema *is* the wake contract.  The sandbox is ON by default, so `--disable-sandbox` is what turns it off and the argv never passes it.  `--disable-shell`, `--disable-write` and `--no-session-log` are separate explicit switches, so "read this topic, touch nothing" is stated rather than inferred, and `--approval-mode never` cannot block on a prompt.  Constraint:  `--output-schema` is meta-provider only, and meta is the default;  the argv names it explicitly anyway.
+**Read boundary (Muse 1.4.7 canary).**  The read/write switches alone are insufficient:  a synthetic outside-workspace canary was disclosed by the baseline command.  With the empty toolset config placed after `exec` (`-c 'run.toolset=[]'`), the candidate returned exit 0 with a valid schema, did not disclose the outside marker, reported blocked/no access, and made no outside write.  This records the observed canary only;  it is not a complete adversarial proof.  Keep the sandbox enabled, and retain `--disable-shell`, `--disable-write`, `--disable-web-tools`, `--disable-reminders`, `--no-session-log`, and `--approval-mode never` as explicit controls.
+
+**Binary pin.**  Pin the versioned executable itself (for example, `muse-bin-1.4.7-R6101.1`), not an auto-updating `muse` launcher.  The `-c` setting is a Muse CLI config option and must follow `exec`;  before `exec`, it is parsed as a TUI option.  The argv above uses the versioned binary name as an example;  configuration should resolve and pin its absolute path.  Muse pins and passing candidates also include a fingerprint of the fixed argv, trusted contract, schema and runner policy version.  Legacy or mismatched fingerprints hold wakes until a fresh `test-wake --run` and reviewed `--pin`; they are never migrated automatically.
+
+**Why this runtime** (owner 2026-10-11:  pick on technical merit;  cost is not the concern).  `--output-schema` shapes the final answer to a JSON schema, and that schema *is* the wake contract.  Personal permission profiles can be unrestricted, so the wake boundary explicitly removes tools and does not depend on a default profile.  `--approval-mode never` cannot block on a prompt.  Constraint:  `--output-schema` is meta-provider only, and meta is the default;  the argv names it explicitly anyway.
 
 **Two runtime facts Gate 0 proved, each of which cost a run to learn.**  The first real `muse exec` with this schema returned a result `wakes.validate` accepted with zero coercion, and a second returned a fully populated `board` object, so the nested-object and enum branches round-trip too.
 
@@ -326,7 +331,36 @@ The prompt and schema go in as **files**, not stdin and not an inline string:  `
 
 **Run control.**  Stateless, no session log, no resume.  The child runs in its own process group and is killed after 240 seconds, like the claude run.  The envelope is MSP, not stream-json:  the answer is the `text` of the `run.terminal.completed` record, a terminal record with any other name is a refusal that names itself, and `run.model.configured` names the model actually asked for (recorded in the ledger row, so a wake that silently ran a different model than the seat configured is visible).
 
+**Quota refusals report the quota, not an assertion** (added Oct 11 2026 after a live incident).  When a provider is at its cap, claude returns a `result` with `is_error` and **no** `modelUsage`, and its result text is the human message — "You've hit your weekly limit · resets Oct 13 at 5pm (America/Chicago)".  The old model-count check fired first and reported "modelUsage shows 0 models, not 1", which is true but names an internal assertion instead of the cap, so the owner was left debugging an adapter that was working.  `is_error` is now checked **before** the model count:  the run is marked `limited`, the provider's own words and reset reach the ledger, the log and a `wake-limited` banner, and the failure is not debited the run maximum.  The same provider gate above stops the next run before a child exists.
+
 **Not adopted by this change.**  No existing seat's `wake =` value changes.  A seat moves to `muse` only when the owner switches it over deliberately, after `test-wake --run` and `--pin`.
+
+### 3.3b The mcode Fallback (`fallback = "mcode"`)
+
+A wake may name one fallback runtime, tried **only when the primary could not produce a usable answer** — a crashed runtime, an unparseable result, a missing or unpinned binary.  `mcode` is the only value `KNOWN_FALLBACKS` accepts.
+
+**What does and does not fall back.**  Only a fault another runtime could plausibly answer:  the binary could not start, the child produced no parseable result, or it ran past the deadline (`FALLBACKABLE_FAULTS`).  That is an **allowlist**, not a blocklist of known error words.  A blocklist keyed on message text breaks in the expensive direction:  a genuine cap whose wording nobody anticipated would read as "some other fault", the fallback would run, and a second wake would be spent on a provider with nothing left.  Under an allowlist, anything unrecognised simply does not fall back.
+
+**A provider quota never falls back**, and that decision is **structural, not textual**.  `RunResult.limited` is true when a run returns an error result in which **no model ran** (`modelUsage: {}`) — the measured signature of a capped provider, verified against claude 2.1.296 at its weekly cap.  A vendor rewording its limit message therefore cannot flip the decision, which substring matching could never guarantee.  A **safety refusal** never falls back either:  the daemon killed that child on purpose because it listed tools, ran a hook, or never emitted an init event, and re-running it elsewhere would be trying to get around a guard that just fired.
+
+**Containment:  the fallback is held unless the config says otherwise.**  This is the finding that decides the design, and it was measured rather than argued.  Asked to write a file under the exact wake argv, **mcode wrote one** — `--permission off` means "never ask", so its tools are live *while it composes its answer*, and a parent cannot undo a side effect that already happened inside the child.  The refusal is the runtime's, and it arrives after the fact.  So separate entrypoints do not contain this, and the fallback is not trusted by default:  a seat must set `fallback_uncontained_ok = true` **in addition to** pinning the binary before the fallback ever runs.  Until then the fallback is held and the hold is logged (`wake-fallback-held`, reason `uncontained`), never silently skipped.  `muse` needs none of this because it states the posture with switches rather than with a promise.
+
+**Fallback-only is structural, not a naming convention.**  `KNOWN_WAKES` omits `mcode` so the config refuses it, but that is only a promise.  `PRIMARY_RUNTIMES` at the dispatch is the choke point every wake passes through:  a wake whose type is not in it is dropped with `wake_type_not_runnable` rather than falling through the `else`.  The fallback runs only through `run_fallback`, a different method with a different gate.
+
+```
+mcode exec --prompt-mode work --permission off --output-format json --input - \
+  --output-schema <schema> --max-steps 8 --timeout 4m --cwd <inert dir> -o <last-message>
+```
+
+**Same contract, proven.**  Gate 0 ran a real `mcode exec` with the actual wake schema:  it round-tripped through `wakes.validate` with zero coercion and a populated `board` object, and on the hostile deploy-and-bypass-PR request it returned `escalate` / `risk: high` / a dropped board payload, exactly as the contract requires.  The prompt arrives on **stdin** (`--input -`), not as an argument:  mcode has no `--prompt-file`, which is an argv mistake the first fallback run caught in 0.7 s.  `-o` writes the final message to a file, a cleaner transport than muse's MSP envelope.
+
+**Why mcode is fallback-only, and never the reverse** — measured, not read:
+
+- **No sandbox toggle.**  muse sandboxes by default and needs `--disable-sandbox` to turn it off;  mcode has no equivalent, so there is no switch to state the posture with.
+- **No `--disable-shell` / `--disable-write` / `--disable-web-tools`.**  `--permission off` means "never ask", not "hold no tools".  Only muse can state the strong lockdown an unattended wake that posts to a third-party cloud needs.
+- **Cannot be HOME-isolated.**  Pointing HOME at the inert workspace was tried and mcode refused:  "Sign in to MiniMax to use Agent features", because the credential lives under HOME.  muse drops every vendor and identity variable instead.
+
+Its own pin files (`wake-pin-mcode.json`), verified before it is ever trusted, on the same never-self-heal rule as the primaries.  When the fallback answers, the ledger and log name it (`adapter`), so a wake answered by the fallback is never mistaken for the primary.  Any seat may name it — the CLAUDE seat at its weekly cap is exactly the case it exists for.
 
 ### 3.4 Ledger and Reporting
 
@@ -468,6 +502,7 @@ live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, 
 # model = "muse-spark-1.3-contributor"    # the default; the plain muse-spark-1.3 is 15x dearer
 # muse = "/absolute/path/to/muse"          # optional; else muse on the wake PATH
 # provider = "MiniMax"                     # the CodeCaps provider the quota gate reads
+# fallback = "mcode"                       # optional; the mcode fallback (section 3.3b)
 ```
 
 (TOML inline tables must sit on one line; the sample does.)
@@ -480,7 +515,7 @@ The Mac sample also carries `instance = "mac"` in `[daemon]`.  The sample enable
 | `agent-sync daemon install [--dry-run] [--python P] [--bin B]` and `uninstall [--dry-run]` | Writes or removes the plist, the log files and the sample config, and prints the `launchctl bootstrap` or `bootout` command.  Never runs launchctl |
 | `agent-sync daemon init [--seat S] [--rc PATH] [--yes]` | Writes the config template if missing, reads the user list as the `--seat` bot (credentials from `--rc`, then `ZULIP_RC`, then the seat's own source in `listener.toml` whether or not the seat is enabled, which for `creds = "env"` is its `email_env` and `key_env`; the key must be that seat's own bot or init refuses), pins `owner_user_id` and the optional `eligible_user_ids` after confirmation, lists credential files found by name without enabling them, and checks each listed bot's file mode, role and #agent-sync subscription |
 | `agent-sync daemon pause [--seat S] [--wakes-only]`, `resume [--seat S]`, `reload` | Kill switch and reload |
-| `agent-sync daemon test-wake --seat S [--topic T] [--run \| --pin]` | Prints the argv, environment names and prompt.  `--run` runs it on canned hostile messages, applies the init and hook assertions (claude) or the MSP envelope checks (muse) and the validator, checks `claude agents --json` on a claude seat, and prints the result without posting; it never pins.  `--pin` then pins the binary that passed, after a person has read the result |
+| `agent-sync daemon test-wake --seat S [--runtime claude\|muse\|mcode\|fallback] [--topic T] [--run \| --pin]` | Prints the argv, environment names and prompt.  `--run` runs the chosen runtime on canned hostile messages, applies the init and hook assertions (claude) or the envelope checks (muse, mcode) and the validator, checks `claude agents --json` on a claude seat, and prints the result without posting; it never pins.  `--pin` then pins the binary that passed, after a person has read the result.  `--runtime fallback` verifies the fallback on its own |
 | `agent-sync daemon status` or `agent-sync status [--json] [--probe] [--seat S]` | Running or not, LaunchAgent and plugin versions, per bot:  connected, last event, cursor, wake adapter and pin, wakes and cost in 24 hours; leases with watcher state; pause state; config errors in red |
 | `agent-sync attach [--topic T ...] [--mentions] [--platform P] [--lease ID]` | Writes or updates the lease.  Also `--wait [--timeout S]`, `--drain [--replay N]`, `--rewake` and `--hook EVENT` |
 | `agent-sync detach (--topic T ... \| --all)` | Removes topics or the lease |

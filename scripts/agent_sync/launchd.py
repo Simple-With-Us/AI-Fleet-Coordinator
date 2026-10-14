@@ -117,6 +117,8 @@ def sample_config(secrets_dir: str) -> str:
         '# model = "muse-spark-1.3-contributor"   # the plain muse-spark-1.3 is 15x dearer',
         '# muse = "/absolute/path/to/muse"         # optional; else muse on the wake PATH',
         '# provider = "MiniMax"                    # the CodeCaps provider the quota gate reads',
+        '# fallback = "mcode"                      # optional; the mcode fallback (3.3b).  Fallback-only by design.',
+        '# fallback_uncontained_ok = false       # mcode writes files while it answers; only true if that is accepted',
     ]
     listed = [seat for seat in READER_SEATS[1:] if present(seat)]
     if listed:

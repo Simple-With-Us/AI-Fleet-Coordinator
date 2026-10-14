@@ -1165,6 +1165,12 @@ def _dm_check_user(agent: Agent, user: Mapping[str, Any], raw: str) -> None:
     if not user.get("is_active", True):
         raise UsageError("%r is a deactivated user; a direct message to them would never be read" % raw)
     if user.get("is_bot") and user.get("bot_type", GENERIC_BOT) != GENERIC_BOT:
+        cfg = listener_cli._load(agent.rt)
+        allowed = getattr(cfg, "outgoing_webhook_seats", ())
+        uid = user.get("user_id")
+        if uid in ROUTER.fleet_bot_ids({uid: user}, allowed, cfg.owner_user_id,
+                                       outgoing_webhook_seats=allowed):
+            return
         raise UsageError("%r is a webhook or integration bot, not a fleet seat; direct messages go to people and "
                          "fleet bots only" % raw)
 

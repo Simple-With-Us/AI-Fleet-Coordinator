@@ -99,6 +99,18 @@ class InstallTests(ListenerHarness):
         self.assertEqual(len(self.banners), 1, "one notify-owner for a bad config")
 
 
+    def test_status_displays_per_seat_nudge_counts_and_legacy_snapshot(self):
+        path = os.path.join(self.root, "listener", "status.json")
+        counts = {"bindings": 2, "pending": 3, "blocked": 4, "unknown": 5, "accepted": 6}
+        for snapshot in ({"GROK": counts, "CURSOR": dict(counts, pending=7)}, counts):
+            L.write_json(path, {"chat_nudges": snapshot})
+            result = self.run_cli("daemon", "status")
+            self.assertEqual(result.code, 0, result.err)
+            self.assertIn("GROK chat nudges: 2 bindings, 3 pending, 4 blocked, 5 unknown, 6 accepted", result.out)
+            if "CURSOR" in snapshot:
+                self.assertIn("CURSOR chat nudges: 2 bindings, 7 pending", result.out)
+
+
 class InitAndTestWakeTests(ListenerHarness):
     def test_init_pins_the_owner_and_the_fleet_bots_after_confirmation(self) -> None:
         self.fake.users.append({"user_id": 20, "email": "sentry-bot@zulip.test", "full_name": "Sentry", "is_bot": True,

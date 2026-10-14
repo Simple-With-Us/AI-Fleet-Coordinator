@@ -37,6 +37,10 @@ except ImportError:  # pragma: no cover - Python 3.10 and older
 
 KNOWN_WAKES = ("inbox", "claude", "http", "muse")
 WORKER_WAKES = ("claude", "http", "muse")  # adapters that run on a per-seat wake worker thread
+# The runtimes a wake may name as its fallback (AFC-291).  `muse` is the primary and `mcode` is the
+# fallback:  both shape the answer with `--output-schema`, but only muse can state "hold no tools",
+# so the order is fixed and a seat may not invert it (checked against the wake type in from_dict).
+KNOWN_FALLBACKS = ("mcode",)
 INSTANCES = ("mac", "server")
 PARTITION_VALUES = ("mac", "server", "none")
 ENV_INSTANCE = "AGENT_SYNC_INSTANCE"  # set by the LaunchAgent (mac) and the container image (server)
@@ -92,6 +96,7 @@ ROUTINE_DEFAULT_HEADER = {"header": "X-Routine-Key", "bearer": "Authorization", 
 ROUTINE_RESERVED_HEADERS = frozenset({"host", "content-length", "content-type", "transfer-encoding", "connection",
                                       "user-agent", "idempotency-key", "cookie"})
 ROUTINE_TIMEOUT_DEFAULT = 15.0
+OUTGOING_WEBHOOK_DEFAULT_PORT = 8787
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
 _BOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
@@ -130,7 +135,9 @@ class SeatConfig:
                  creds: str = "file", email_env: str | None = None, key_env: str | None = None,
                  site_env: str = DEFAULT_SITE_ENV, routine: RoutineConfig | None = None,
                  route_enabled: bool = True, held_back: dict[str, Any] | None = None,
-                 muse: str | None = None, provider: str | None = None) -> None:
+                 muse: str | None = None, provider: str | None = None,
+                 mcode: str | None = None, fallback: str | None = None,
+                 fallback_uncontained_ok: bool = False) -> None:
         self.seat = seat
         self.bot = bot
         self.wake = wake
@@ -139,6 +146,14 @@ class SeatConfig:
         self.live = live
         self.claude = claude  # an absolute path to the claude binary, else resolved on the wake PATH
         self.muse = muse  # an absolute path to the muse binary, else resolved on the wake PATH
+        self.mcode = mcode  # an absolute path to the mcode binary, else resolved on the wake PATH
+        # The fallback runtime, tried only when the primary could not produce a usable answer.  It is
+        # never consulted for a quota refusal:  a capped provider stays capped whatever runs.
+        self.fallback = fallback
+        # The fallback runtime's tools are live while it answers and a parent cannot undo a side
+        # effect that already happened inside the child, so trusting it is an explicit, named risk
+        # rather than a default.  False means the fallback is held and the hold is logged.
+        self.fallback_uncontained_ok = fallback_uncontained_ok
         self.provider = provider  # the CodeCaps provider name this seat's quota is read under
         self.instance = instance
         self.enabled = enabled
@@ -217,6 +232,10 @@ class Config:
         self.held_alert_minutes = float(HELD_ALERT_DEFAULT_MINUTES)
         self.held_alert_seat: str | None = None
         self.auto_subscribe = True  # daemon.auto_subscribe:  held seats join every public channel (owner 2026-10-10)
+        self.outgoing_webhook_seats: frozenset[str] = frozenset()
+        self.outgoing_webhook_enabled = False
+        self.outgoing_webhook_bind = "127.0.0.1"
+        self.outgoing_webhook_port = OUTGOING_WEBHOOK_DEFAULT_PORT
 
     @property
     def ok(self) -> bool:
@@ -392,6 +411,40 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.auto_subscribe must be true or false")
     else:
         cfg.auto_subscribe = auto_sub
+    webhook_seats = daemon.get("outgoing_webhook_seats", [])
+    if not isinstance(webhook_seats, list) or not all(isinstance(value, str) for value in webhook_seats):
+        errors.append("daemon.outgoing_webhook_seats must be a list of seat names")
+    else:
+        normalized = [value.upper() for value in webhook_seats]
+        invalid = [value for value in normalized if not _SEAT_RE.fullmatch(value)]
+        if invalid:
+            errors.append("daemon.outgoing_webhook_seats contains an invalid seat name")
+        elif len(set(normalized)) != len(normalized):
+            errors.append("daemon.outgoing_webhook_seats must not contain duplicates")
+        else:
+            cfg.outgoing_webhook_seats = frozenset(normalized)
+    webhook = raw.get("outgoing_webhook") or {}
+    if not isinstance(webhook, dict):
+        errors.append("[outgoing_webhook] must be a table")
+        webhook = {}
+    unknown_webhook = set(webhook) - {"enabled", "bind", "port"}
+    if unknown_webhook:
+        errors.append("[outgoing_webhook] has unknown setting(s): %s" % ", ".join(sorted(unknown_webhook)))
+    webhook_enabled = webhook.get("enabled", False)
+    if not isinstance(webhook_enabled, bool):
+        errors.append("outgoing_webhook.enabled must be true or false")
+    else:
+        cfg.outgoing_webhook_enabled = webhook_enabled
+    webhook_bind = webhook.get("bind", "127.0.0.1")
+    if not isinstance(webhook_bind, str) or not webhook_bind or len(webhook_bind) > 253:
+        errors.append("outgoing_webhook.bind must be a host or IP address")
+    else:
+        cfg.outgoing_webhook_bind = webhook_bind
+    webhook_port = webhook.get("port", OUTGOING_WEBHOOK_DEFAULT_PORT)
+    if isinstance(webhook_port, bool) or not isinstance(webhook_port, int) or not 1 <= webhook_port <= 65535:
+        errors.append("outgoing_webhook.port must be an integer from 1 to 65535")
+    else:
+        cfg.outgoing_webhook_port = webhook_port
     cfg.presence = L.presence_topics(raw)
     platform = ((raw.get("platform") or {}).get("claude-code") or {}) if isinstance(raw.get("platform"), dict) else {}
     seat = platform.get("seat") if isinstance(platform, dict) else None
@@ -474,13 +527,37 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             problems.append("seat.%s.muse must be an absolute path" % seat_name)
         if wake != "muse" and "muse" in section:
             problems.append("seat.%s.muse applies only to wake = \"muse\"" % seat_name)
+        mcode = section.get("mcode")
+        if mcode is not None and (not isinstance(mcode, str) or not os.path.isabs(mcode)):
+            problems.append("seat.%s.mcode must be an absolute path" % seat_name)
+        if "mcode" in section and wake not in ("claude", "muse"):
+            problems.append("seat.%s.mcode applies only to wake = \"claude\" or \"muse\"" % seat_name)
+        # The fallback runtime, tried only when the primary could not produce a usable answer.  It
+        # is never consulted for a quota refusal:  a capped provider stays capped whatever runs.
+        fallback = section.get("fallback")
+        if fallback is not None and fallback not in KNOWN_FALLBACKS:
+            problems.append("seat.%s.fallback must be one of %s" % (seat_name, ", ".join(KNOWN_FALLBACKS)))
+        if fallback is not None and wake not in WORKER_WAKES:
+            problems.append("seat.%s.fallback applies only to a wake that runs a turn" % seat_name)
+        if fallback is not None and fallback == wake:
+            problems.append("seat.%s.fallback may not be its own wake type" % seat_name)
+        # Naming a fallback is not enough to run it.  mcode's tools are live while it answers, and a
+        # parent cannot undo a side effect that already happened inside the child, so the fallback
+        # runtime is not contained to the posture an unattended wake needs (measured: asked to write
+        # a file under the wake argv, it wrote one).  A seat must say so explicitly in the config
+        # before the fallback is ever trusted, on top of pinning the binary.
+        if "fallback_uncontained_ok" in section and fallback is None:
+            problems.append("seat.%s.fallback_uncontained_ok applies only with a fallback" % seat_name)
+        uncontained = section.get("fallback_uncontained_ok", False)
+        if not isinstance(uncontained, bool):
+            problems.append("seat.%s.fallback_uncontained_ok must be true or false" % seat_name)
         provider = section.get("provider")
         if provider is not None:
             if not isinstance(provider, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,60}", provider):
                 problems.append("seat.%s.provider must be a provider name such as \"Claude Code\" or \"MiniMax\""
                                 % seat_name)
-            elif wake != "muse":
-                problems.append("seat.%s.provider applies only to wake = \"muse\"" % seat_name)
+            elif wake not in ("claude", "muse"):
+                problems.append("seat.%s.provider applies only to wake = \"claude\" or \"muse\"" % seat_name)
         budget = dict(BUDGET_DEFAULTS)
         given = section.get("budget", {})
         if not isinstance(given, dict):
@@ -512,7 +589,8 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         seat_cfg = SeatConfig(seat_name, bot, wake, model, budget, L.live_limits(raw, seat_name), claude,
                               instance=seat_instance or cfg.instance, enabled=enabled, creds=creds,
                               email_env=email_env, key_env=key_env, site_env=site_env, routine=routine,
-                              route_enabled=route_enabled, held_back=held_back, muse=muse, provider=provider)
+                              route_enabled=route_enabled, held_back=held_back, muse=muse, provider=provider,
+                              mcode=mcode, fallback=fallback, fallback_uncontained_ok=uncontained)
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg
     _refuse_shared_env(cfg)
     return cfg

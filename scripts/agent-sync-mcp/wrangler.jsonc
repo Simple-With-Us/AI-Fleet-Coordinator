@@ -99,12 +99,12 @@
     // A manual Grok form still works through the /admin fallback client, which
     // takes the redirect URIs listed here (ARMING-JAY.md).
     "SEATS": {
-      // Cursor Cloud only: static public PKCE client created on /admin.
-      // Official callback verified 2026-10-11 at cursor.com/docs/mcp.md.
-      // No desktop callback, CIMD URL, DCR or wake credential is added.
+      // PROPOSAL ONLY: explicit owner approval is required before enabling.
+      // Keep the static Cloud callback; the new CIMD is restricted by policy
+      // to its exact localhost callback.  No other published redirects added.
       "CURSOR": {
-        "redirect_uris": ["https://www.cursor.com/agents/mcp/oauth/callback"],
-        "cimd_client_ids": []
+        "redirect_uris": ["https://www.cursor.com/agents/mcp/oauth/callback", "http://localhost:8787/callback"],
+        "cimd_client_ids": ["https://cursor.com/oauth/mcp-client.json"]
       },
       // Hosted Claude apps only.  Use an independently tagged public manual
       // client; no native callback or guessed CIMD identity is added.

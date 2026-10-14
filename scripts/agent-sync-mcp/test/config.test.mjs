@@ -168,15 +168,15 @@ test("package.json pins exact versions (fleet two-week rule, see README)", () =>
 });
 
 
-test("Cursor Cloud has only its exact web callback and a separate bot binding", () => {
+test("Cursor retains its static web callback and adds only the exact CIMD localhost pair", () => {
   const cfg = loadConfig(wranglerConfig().vars);
   const callback = "https://www.cursor.com/agents/mcp/oauth/callback";
-  assert.deepEqual(cfg.seats.CURSOR.redirectUris, [callback]);
-  assert.deepEqual(cfg.seats.CURSOR.cimdClientIds, []);
+  assert.deepEqual(cfg.seats.CURSOR.redirectUris, [callback, "http://localhost:8787/callback"]);
+  assert.deepEqual(cfg.seats.CURSOR.cimdClientIds, ["https://cursor.com/oauth/mcp-client.json"]);
   assert.equal(cfg.redirectOwner.get(callback), "CURSOR");
   assert.equal(cfg.botEmails.CURSOR, "cursor-bot@simplewithus.zulipchat.com");
   assert.deepEqual(SEAT_SECRETS.CURSOR, { key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR" });
-  for (const wrong of ["https://cursor.com/agents/mcp/oauth/callback", `${callback}/`, "http://localhost:8787/callback"]) {
+  for (const wrong of ["https://cursor.com/agents/mcp/oauth/callback", `${callback}/`, "http://localhost:8788/callback"]) {
     assert.equal(cfg.redirectSeats.has(wrong), false);
   }
 });

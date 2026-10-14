@@ -27,7 +27,7 @@ Deploy and operate:  [DEPLOY.md](DEPLOY.md).  Connect a client:  [ARMING-JAY.md]
 
 ## OAuth and the kill switch (Phase 0, unchanged)
 
-OAuth 2.1 with CIMD for ChatGPT and Grok, DCR off, a hand-registered public client for Grok's manual form, S256 PKCE for every client, an exact redirect allowlist, `/authorize` and `/admin` behind a path-scoped Access app that the Worker re-verifies, a single-use 10-minute arming window, one grant per seat (D6), the grant epoch, pause, and `MCP_DISABLED`.  Phase 2 adds three things:
+OAuth 2.1 with CIMD for ChatGPT and Grok, plus the owner-approved exact CURSOR CIMD/localhost pair when enabled (see ARMING-JAY.md), DCR off, a hand-registered public client for Grok's manual form, S256 PKCE for every client, an exact redirect allowlist, `/authorize` and `/admin` behind a path-scoped Access app that the Worker re-verifies, a single-use 10-minute arming window, one grant per seat (D6), the grant epoch, pause, and `MCP_DISABLED`.  Phase 2 adds three things:
 
 - Every new grant carries `phase: 2` in its props;  a grant without it (any Phase 0 stub grant) gets 401 on `/mcp` and `invalid_grant` on refresh, so no stub grant reaches the real tools (spec 6, Phase 0 exit).
 - A refresh that fails as `refresh_token_mismatch` or `client_mismatch` (a replayed or stolen refresh token) pauses that seat (spec 3.5 step 3).  The seat is read from the refresh token's own `seat:grant:secret` prefix, because the library's `onError` names no seat.
