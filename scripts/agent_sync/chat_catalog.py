@@ -305,7 +305,9 @@ class ChatCatalog:
             except Exception:
                 return [self._unavailable("grok-leader", "GROK", "transport unavailable")]
         try:
-            live = self._grok.discover()
+            # Leader session/list can take 14-22s under load.  The transport refreshes it
+            # asynchronously; catalog reads stay bounded and expose pending/stale state.
+            live = self._grok.discover(wait=False)
         except Exception:
             return [self._unavailable("grok-leader", "GROK", "discovery failed")]
         rows = []
@@ -328,10 +330,12 @@ class ChatCatalog:
                 excerpts = self._parse_text_events(_jsonl(folder / "chat_history.jsonl"), "grok-leader")
             if not isinstance(cwd, str) or not cwd.startswith("/"):
                 cwd = None
-            wake = (state == "idle" and bool(item.get("turn_ended_at")) and bool(cwd)
+            wake = (item.get("wake") is True and state == "idle" and bool(item.get("turn_ended_at")) and bool(cwd)
                     and not item.get("pending_permission") and not item.get("self"))
             rows.append(self._row("grok-leader", "GROK", sid, cwd=cwd, title=title,
-                                  updated_at=updated, status=(state or "unknown") if folder else "metadata-only",
+                                  updated_at=updated,
+                                  status="stale" if item.get("stale") else
+                                  (state or "unknown") if folder else "metadata-only",
                                   wake=wake,
                                   source="grok-live", internal_path=str(folder) if folder else None,
                                   excerpts=excerpts))

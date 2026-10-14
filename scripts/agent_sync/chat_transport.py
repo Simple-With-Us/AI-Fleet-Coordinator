@@ -7,13 +7,24 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
 
 _RUNTIME = Path(__file__).resolve().parents[1] / "grok-acp-runtime"
-_DISCOVERY_TIMEOUT = 8.0
-_DISCOVERY_TTL = 2.0
+_DISCOVERY_TIMEOUT = 25.0  # leader-client's supported total RPC budget; list can take 14-22s.
+_DISCOVERY_OUTER_TIMEOUT = _DISCOVERY_TIMEOUT + 2.0
+_DISCOVERY_REFRESH_INTERVAL = 5.0
+_DISCOVERY_STALE_AFTER = 30.0
+_DISCOVERY_LOCK = threading.Lock()
+_DISCOVERY_DONE = threading.Event()
+_DISCOVERY_DONE.set()
+_DISCOVERY_SESSIONS: list[dict[str, Any]] | None = None
+_DISCOVERY_UPDATED = 0.0
+_DISCOVERY_LAST_ATTEMPT = 0.0
+_DISCOVERY_ERROR: str | None = None
+_DISCOVERY_RUNNING = False
 
 
 def _module(name: str, filename: str) -> Any:
@@ -31,37 +42,14 @@ class GrokTransport:
     def __init__(self) -> None:
         self.disk = _module("agent_sync_grok_disk", "session_disk.py")
         self.leader = None
-        self._discovery_rows: list[dict[str, Any]] | None = None
-        self._discovery_at = 0.0
 
     @staticmethod
-    def _live_pid(pid: Any) -> bool:
-        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
-            return False
-        try:
-            result = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "comm="],
-                                    capture_output=True, text=True, timeout=3, check=False)
-            return result.returncode == 0 and Path(result.stdout.strip()).name in {"grok", "grok-build"}
-        except (OSError, subprocess.SubprocessError):
-            return False
-
-    def discover(self, *, force: bool = False) -> list[dict[str, Any]]:
-        """List chats owned by the shared leader, then conservatively derive turn state.
-
-        active_sessions.json tracks attached TUIs, not chats known to the leader, and is
-        empty in leader mode.  It is therefore not an inventory or proof of promptability.
-        A failed or malformed leader list is an error, never an empty-success fallback.
-        """
-        now = time.monotonic()
-        cached = getattr(self, "_discovery_rows", None)
-        if not force and cached is not None and now - getattr(self, "_discovery_at", 0.0) < _DISCOVERY_TTL:
-            return [dict(row) for row in cached]
-
+    def _read_leader_sessions() -> list[dict[str, Any]]:
         command = [sys.executable, str(_RUNTIME / "leader-client.py"),
                    "--rpc-timeout", str(_DISCOVERY_TIMEOUT), "list"]
         try:
             result = subprocess.run(command, capture_output=True, text=True,
-                                    timeout=_DISCOVERY_TIMEOUT + 2, check=False)
+                                    timeout=_DISCOVERY_OUTER_TIMEOUT, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
             raise RuntimeError("Grok leader discovery failed") from exc
         try:
@@ -73,10 +61,64 @@ class GrokTransport:
         sessions = payload.get("sessions")
         if not isinstance(sessions, list):
             raise RuntimeError("Grok leader returned invalid session list")
+        return [row for row in sessions if isinstance(row, dict)]
+
+    @classmethod
+    def _refresh(cls) -> None:
+        global _DISCOVERY_SESSIONS, _DISCOVERY_UPDATED, _DISCOVERY_ERROR, _DISCOVERY_RUNNING
+        try:
+            sessions = cls._read_leader_sessions()
+        except Exception:
+            with _DISCOVERY_LOCK:
+                _DISCOVERY_ERROR = "leader list unavailable"
+        else:
+            with _DISCOVERY_LOCK:
+                _DISCOVERY_SESSIONS = [dict(row) for row in sessions]
+                _DISCOVERY_UPDATED = time.monotonic()
+                _DISCOVERY_ERROR = None
+        finally:
+            with _DISCOVERY_LOCK:
+                _DISCOVERY_RUNNING = False
+                _DISCOVERY_DONE.set()
+
+    @classmethod
+    def _schedule_refresh(cls, *, force: bool) -> None:
+        global _DISCOVERY_LAST_ATTEMPT, _DISCOVERY_RUNNING
+        now = time.monotonic()
+        with _DISCOVERY_LOCK:
+            if _DISCOVERY_RUNNING:
+                return
+            if not force and now - _DISCOVERY_LAST_ATTEMPT < _DISCOVERY_REFRESH_INTERVAL:
+                return
+            _DISCOVERY_LAST_ATTEMPT = now
+            _DISCOVERY_RUNNING = True
+            _DISCOVERY_DONE.clear()
+            thread = threading.Thread(target=cls._refresh, name="grok-leader-discovery", daemon=True)
+            thread.start()
+
+    def discover(self, *, force: bool = False, wait: bool = True) -> list[dict[str, Any]]:
+        """List chats owned by the shared leader, then conservatively derive turn state.
+
+        active_sessions.json tracks attached TUIs, not chats known to the leader, and is
+        empty in leader mode.  It is therefore not an inventory or proof of promptability.
+        A failed or malformed leader list is an error, never an empty-success fallback.
+        """
+        self._schedule_refresh(force=force)
+        if wait:
+            _DISCOVERY_DONE.wait(_DISCOVERY_OUTER_TIMEOUT + 1.0)
+        with _DISCOVERY_LOCK:
+            sessions = [dict(row) for row in _DISCOVERY_SESSIONS] if _DISCOVERY_SESSIONS is not None else None
+            updated = _DISCOVERY_UPDATED
+            error = _DISCOVERY_ERROR
+        if sessions is None:
+            if wait and error:
+                raise RuntimeError(error)
+            raise RuntimeError("Grok leader discovery pending")
+        stale = error is not None or time.monotonic() - updated > _DISCOVERY_STALE_AFTER
 
         rows = []
-        active = {row.get("sessionId"): row for row in self.disk.load_active()
-                  if isinstance(row, dict) and isinstance(row.get("sessionId"), str)}
+        active_ids = {row.get("sessionId") for row in self.disk.load_active()
+                      if isinstance(row, dict) and isinstance(row.get("sessionId"), str)}
         for session in sessions:
             if not isinstance(session, dict):
                 continue
@@ -92,25 +134,29 @@ class GrokTransport:
                 status = "unknown"  # A dead/missing TUI pid and empty history cannot prove idle.
             pending = bool(state.get("pendingTool")) or status == "needs-input"
             self_session = self.disk.is_self_session(sid)
-            attached = sid in active and self._live_pid(active[sid].get("pid"))
+            attached = sid in active_ids
+            if stale:
+                status = "unknown"
             rows.append({"platform": "grok-leader", "host": socket.gethostname(),
                          "session_id": sid, "cwd": cwd,
                          "title": session.get("title") if isinstance(session.get("title"), str) else "",
                          "updated_at": session.get("updatedAt"), "state": status,
                          "turn_ended_at": state.get("turnEndedAt"), "attached": attached,
-                         "pending_permission": pending, "self": self_session,
-                         "wake": bool(cwd) and status == "idle" and bool(state.get("turnEndedAt"))
+                         "pending_permission": pending, "self": self_session, "stale": stale,
+                         "wake": not stale and bool(cwd) and status == "idle" and bool(state.get("turnEndedAt"))
                                  and not pending and not self_session})
-        self._discovery_rows = [dict(row) for row in rows]
-        self._discovery_at = time.monotonic()
         return rows
 
     def preflight(self, binding: dict[str, str], *, force: bool = False) -> str:
         if binding.get("platform") != "grok-leader" or binding.get("host") != socket.gethostname():
             return "unsupported"
-        for row in self.discover(force=force):
+        try:
+            rows = self.discover(force=force, wait=False)
+        except Exception:
+            return "busy"  # Discovery pending/unavailable is transient; leave the nudge queued.
+        for row in rows:
             if row["session_id"] == binding.get("session_id") and row["cwd"] == binding.get("cwd"):
-                if row["self"] or row["pending_permission"] or not row["wake"]:
+                if row.get("stale") or row.get("self") or row.get("pending_permission") or not row.get("wake"):
                     return "busy"
                 return "ready"
         # A disconnected or unavailable chat can become available later; keep it pending.
@@ -162,7 +208,7 @@ class GrokTransport:
             client = self.leader.LeaderStdio()
             self.leader._initialize(client, timeout=15)
             self.leader._resume(client, binding["session_id"], binding["cwd"], timeout=15)
-            if self.preflight(binding, force=True) != "ready":
+            if self.preflight(binding) != "ready":
                 return "deferred"
             if permit is not None and not permit():
                 return "deferred"

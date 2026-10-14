@@ -1,16 +1,32 @@
 """Existing-chat sends must never infer acceptance from a timeout."""
 import json
 import socket
+import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from agent_sync import chat_transport as CT
 from agent_sync.chat_transport import GrokTransport
 
 
 class TransportTests(unittest.TestCase):
+    def setUp(self):
+        self.reset_discovery()
+
+    @staticmethod
+    def reset_discovery():
+        with CT._DISCOVERY_LOCK:
+            CT._DISCOVERY_SESSIONS = None
+            CT._DISCOVERY_UPDATED = 0.0
+            CT._DISCOVERY_LAST_ATTEMPT = 0.0
+            CT._DISCOVERY_ERROR = None
+            CT._DISCOVERY_RUNNING = False
+            CT._DISCOVERY_DONE.set()
+
     def transport(self, state="idle", *, ended=1, attached=()):
         transport = GrokTransport.__new__(GrokTransport)
         active = [{"sessionId": sid, "pid": 123} for sid in attached]
@@ -48,7 +64,7 @@ class TransportTests(unittest.TestCase):
             {"sessionId": "chat-1", "cwd": "/work", "title": "Existing chat", "updatedAt": 9},
             {"sessionId": "chat-no-cwd", "title": "Workspace unavailable"},
         ])) as run:
-            rows = transport.discover()
+            rows = transport.discover(wait=True)
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["session_id"], "chat-1")
         self.assertTrue(rows[0]["wake"])
@@ -56,7 +72,8 @@ class TransportTests(unittest.TestCase):
         self.assertIsNone(rows[1]["cwd"])
         self.assertFalse(rows[1]["wake"])
         self.assertEqual(run.call_args.args[0][-1], "list")
-        self.assertEqual(run.call_args.kwargs["timeout"], 10)
+        self.assertEqual(run.call_args.kwargs["timeout"], 27)
+        self.assertIn("25.0", run.call_args.args[0])
 
     def test_discovery_fails_closed_on_leader_errors_or_bad_data(self):
         transport = GrokTransport.__new__(GrokTransport)
@@ -66,7 +83,7 @@ class TransportTests(unittest.TestCase):
                        SimpleNamespace(returncode=0, stdout="not-json", stderr="")):
             with self.subTest(result=result), patch("agent_sync.chat_transport.subprocess.run", return_value=result):
                 with self.assertRaises(RuntimeError):
-                    transport.discover()
+                    transport.discover(wait=True, force=True)
 
     def test_leader_listed_busy_unknown_and_no_history_are_not_wakeable(self):
         for state, ended, expected in (("working", 1, False), ("needs-input", 1, False),
@@ -82,8 +99,53 @@ class TransportTests(unittest.TestCase):
             with self.subTest(state=state, ended=ended), patch(
                     "agent_sync.chat_transport.subprocess.run",
                     return_value=self.leader_result([{"sessionId": "chat-1", "cwd": "/work"}])):
-                row = transport.discover()[0]
+                self.reset_discovery()
+                row = transport.discover(wait=True)[0]
                 self.assertEqual(row["wake"], expected)
+
+    def test_async_discovery_returns_pending_then_uses_leader_result(self):
+        transport = GrokTransport.__new__(GrokTransport)
+        transport.disk = SimpleNamespace(load_active=lambda: [],
+                                         turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},
+                                         is_self_session=lambda _: False)
+        with patch("agent_sync.chat_transport.subprocess.run", return_value=self.leader_result([
+            {"sessionId": "chat-1", "cwd": "/work"}
+        ])):
+            with self.assertRaisesRegex(RuntimeError, "pending"):
+                transport.discover(wait=False)
+            self.assertTrue(CT._DISCOVERY_DONE.wait(1))
+            row = transport.discover(wait=False)[0]
+        self.assertTrue(row["wake"])
+
+    def test_fresh_shared_snapshot_is_immediate_and_refresh_errors_disable_wake(self):
+        sessions = [{"sessionId": "chat-1", "cwd": "/work"}]
+        with CT._DISCOVERY_LOCK:
+            CT._DISCOVERY_SESSIONS = sessions
+            CT._DISCOVERY_UPDATED = time.monotonic()
+            CT._DISCOVERY_LAST_ATTEMPT = CT._DISCOVERY_UPDATED
+            CT._DISCOVERY_ERROR = None
+        transport = GrokTransport.__new__(GrokTransport)
+        transport.disk = SimpleNamespace(load_active=lambda: [],
+                                         turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},
+                                         is_self_session=lambda _: False)
+        with patch("agent_sync.chat_transport.subprocess.run") as run:
+            self.assertTrue(transport.discover(wait=False)[0]["wake"])
+            run.assert_not_called()
+        with CT._DISCOVERY_LOCK:
+            CT._DISCOVERY_ERROR = "leader list unavailable"
+        row = transport.discover(wait=False)[0]
+        self.assertTrue(row["stale"])
+        self.assertFalse(row["wake"])
+
+    def test_discovery_failure_is_retryable_preflight_not_permanent_failure(self):
+        transport, binding, client = self.transport()
+        transport.discover = GrokTransport.discover.__get__(transport, GrokTransport)
+        with patch("agent_sync.chat_transport.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired("leader-list", timeout=27)):
+            self.assertEqual(transport.preflight(binding), "busy")
+            self.assertTrue(CT._DISCOVERY_DONE.wait(1))
+            self.assertEqual(transport.send(binding, "nudge"), "deferred")
+        client.request.assert_not_called()
 
     def test_correlated_success(self):
         transport, binding, client = self.transport()
