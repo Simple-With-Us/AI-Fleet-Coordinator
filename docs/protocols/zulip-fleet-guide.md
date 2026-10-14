@@ -173,7 +173,7 @@ The mention column is the bot's exact display name in the realm, checked against
 
 ### BotFleet (BF) Bots
 
-Ten role bots are in Zulip.  Emails follow `bf-<role>-bot@`; files follow `BF-<Role>`.  The mention is the name:  `@**BF-Plumber**`.
+Eleven role bots are in Zulip (realm verified 2026-10-13).  Emails follow `bf-<role>-bot@`; files follow `BF-<Role>`.  The mention is the name:  `@**BF-Plumber**`.
 
 | Name | Platform | Owns | Bot email | File code |
 | --- | --- | --- | --- | --- |
@@ -181,7 +181,7 @@ Ten role bots are in Zulip.  Emails follow `bf-<role>-bot@`; files follow `BF-<R
 | BF-Compiler | BotFleet | BF builds | bf-compiler-bot@ | BF-Compiler |
 | BF-Deployer | BotFleet | BF deploys | bf-deployer-bot@ | BF-Deployer |
 | BF-Designer | BotFleet | Pending (not yet stated) | bf-designer-bot@ | BF-Designer |
-| BF-Director | BotFleet | BF fleet routing | Pending (OPEN):  in BotFleet's roster, no Zulip bot | — |
+| BF-Director | BotFleet | BF fleet routing | bf-director-bot@ | BF-Director |
 | BF-Fixer | BotFleet | BF bugs / hotfixes | bf-fixer-bot@ | BF-Fixer |
 | BF-Housekeeper | BotFleet | BF cron / host hygiene | bf-housekeeper-bot@ | BF-Housekeeper |
 | BF-Monitor | BotFleet | BF probes / alerts | bf-monitor-bot@ | BF-Monitor |
@@ -964,7 +964,7 @@ Each row is in force as described under "Until then" until you approve or change
 | --- | --- | --- | --- |
 | 1 | Let member bots send the fleet wake `@**all**` (realm setting `can_mention_many_users_group`).  Ruled Fri, Oct 9:  the wake is `@**all**` in #agent-sync › `fleet` and notifies you too, with no `fleet` user group (Zulip Cloud Free does not allow one). | Resolved 2026-10-09 | Done:  the setting is `role:members` and `wildcard_mention_policy` is 2 (checked live Fri, Oct 9), so every member bot can send it.  If Zulip ever refuses it, `--fleet` exits 5 naming the setting, and wakes @-mention each bot in #agent-sync › `fleet` (`--to`) or use `dm --owner` for an emergency. |
 | 2 | Grok seats:  terminal Grok, GROK and GROK-BUILD are one seat signing GROK (bot grok-build-bot@, display name `Grok`;  GROK-BUILD in any spelling is an alias for GROK, owner 2026-10-10); Grok on web and iOS is the separate cloud seat GROK-WEB (bot grok-web-bot@). | Resolved 2026-10-08 | Owner ruling. |
-| 3 | BF-Director is in BotFleet's roster but has no Zulip bot.  Duties for BF-Builder, BF-Designer, BF-Oracle, and BF-Publisher are not stated. | OPEN | BF routing has no Zulip voice; route nothing to those four by duty. |
+| 3 | BF-Director has an active member-role Zulip bot (verified 2026-10-13).  Duties for BF-Builder, BF-Designer, BF-Oracle, and BF-Publisher are not stated. | PARTIAL | Director can speak as its own bot; route nothing to those four by duty until their assignments are stated. |
 | 4 | Copy every bot key into Infisical. | Resolved 2026-10-09 | Done:  project "AI Fleet Coordinator", environment `prod`, folder `/zulip`, as `ZULIP_<CODE>_EMAIL` and `ZULIP_<CODE>_API_KEY`. |
 | 5 | Linear linkifier:  pattern `<TEAM>-<n>`, URL `https://linear.app/simple-with-us/issue/{id}`. | OPEN | Proposed;  Jay adds it. |
 | 6 | Claims flow:  the Linear claim first, then the CLAIMED post;  the PR links the issue.  The old triple claim ended at the cutover. | DEFAULT | In force. |

@@ -37,11 +37,23 @@ def seat_for_email(email: str) -> str:
 
 ROLES = ('COMPILER', 'DIRECTOR', 'TRADER', 'DEPLOYER', 'DESIGNER', 'ORACLE',
          'PUBLISHER', 'PLUMBER', 'FIXER', 'HOUSEKEEPER', 'MONITOR', 'ENGINEER')
-ALLOWED = frozenset({'JET', *(f'GB-{role}' for role in ROLES)})
+BF_ROLES = ('BUILDER', 'COMPILER', 'DEPLOYER', 'DESIGNER', 'DIRECTOR', 'FIXER',
+            'HOUSEKEEPER', 'MONITOR', 'ORACLE', 'PLUMBER', 'PUBLISHER')
+ALLOWED = frozenset({'JET', *(f'GB-{role}' for role in ROLES),
+                     *(f'BF-{role}' for role in BF_ROLES)})
 
 
 class MigrationError(Exception):
     """Only fixed, secret-free messages may be passed here."""
+
+
+def validate_target(seat: str, email: str, endpoint_url: str) -> None:
+    """Both native BotFleet and the fleet receiver bind the exact uppercase seat path."""
+    endpoint = urllib.parse.urlsplit(endpoint_url)
+    if (seat not in ALLOWED or endpoint.scheme != 'https' or not endpoint.hostname
+            or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment
+            or endpoint.path != '/zulip/outgoing/' + seat or seat_for_email(email) != seat):
+        raise MigrationError('Endpoint or canonical email does not match the selected seat')
 
 
 def private_file(path: Path) -> None:
@@ -286,11 +298,7 @@ def main(argv=None):
     parser.add_argument('--consumers-verified', action='store_true',
                         help='Required for retire, after deployment and real wake verification')
     args = parser.parse_args(argv)
-    endpoint = urllib.parse.urlsplit(args.endpoint)
-    if (endpoint.scheme != 'https' or not endpoint.hostname or endpoint.username or endpoint.password
-            or endpoint.query or endpoint.fragment or endpoint.path != '/zulip/outgoing/' + args.seat
-            or seat_for_email(args.email) != args.seat):
-        raise MigrationError('Endpoint or canonical email does not match the selected seat')
+    validate_target(args.seat, args.email, args.endpoint)
     private_file(args.owner_rc)
     client = Z.ZulipClient(Z.read_zuliprc(args.owner_rc), Z.REALM)
     owner = client.request('GET', 'users/me')
