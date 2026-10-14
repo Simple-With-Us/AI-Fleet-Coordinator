@@ -27,7 +27,9 @@
 
 [daemon]
 instance = "server"
-outgoing_webhook_seats = ["JET", "GB-COMPILER", "GB-DIRECTOR", "GB-TRADER", "GB-DEPLOYER", "GB-DESIGNER", "GB-ORACLE", "GB-PUBLISHER", "GB-PLUMBER", "GB-FIXER", "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ENGINEER"]
+# Sender eligibility also includes the eleven BF bots.  That allowlist does not enable a queue:
+# only BF-DIRECTOR has a server section, and it stays disabled.
+outgoing_webhook_seats = ["JET", "GB-COMPILER", "GB-DIRECTOR", "GB-TRADER", "GB-DEPLOYER", "GB-DESIGNER", "GB-ORACLE", "GB-PUBLISHER", "GB-PLUMBER", "GB-FIXER", "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ENGINEER", "BF-BUILDER", "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-DIRECTOR", "BF-FIXER", "BF-HOUSEKEEPER", "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER"]
 owner_user_id = 0                 # pinned by `agent-sync daemon init`, never derived at runtime
 eligible_user_ids = []            # optional extra pins:  every fleet bot is eligible at runtime (owner 2026-10-09)
 owner_clients = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]
@@ -203,9 +205,10 @@ budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner
 
 # BF-DIRECTOR (BotFleet role).  The one BotFleet seat the listener holds:  the other ten are
 # "none" because BotFleet drives its own roles, but the owner wants Director woken from here
-# (owner, Mon, Oct 13).  AGENT-SYNC.md records that this seat has no Zulip bot yet.  Disabled
-# until ZULIP_ALERT_BF_DIRECTOR_ENDPOINT and ZULIP_ALERT_BF_DIRECTOR_KEY are in Infisical;
-# flipping enabled to true arms it.
+# (owner, Mon, Oct 13).  The Zulip guide records bf-director-bot@ (realm verified 2026-10-13).
+# Disabled until ZULIP_ALERT_BF_DIRECTOR_ENDPOINT and ZULIP_ALERT_BF_DIRECTOR_KEY are in
+# Infisical; flipping enabled to true arms it.  outgoing_webhook_seats includes this seat so a
+# migrated type-3 bot can wake other seats while this section stays off.
 [seat.BF-DIRECTOR]
 instance = "server"
 enabled = false

@@ -926,9 +926,11 @@ class PartitionTests(ServerHarness):
         self.assertEqual(len(gb), 12)
         self.assertEqual({partition[s] for s in gb}, {"server"})
         bf = {s: v for s, v in partition.items() if s.startswith("BF-")}
+        bf_names = set(bf)
+        self.assertEqual(len(bf), 11)
         self.assertEqual({s for s, v in bf.items() if v == "server"}, {"BF-DIRECTOR"},
                          "the server holds only BF-DIRECTOR of the BotFleet seats (owner, Mon, Oct 13)")
-        self.assertEqual({s for s, v in bf.items() if v == "none"}, set(bf) - {"BF-DIRECTOR"})
+        self.assertEqual({s for s, v in bf.items() if v == "none"}, bf_names - {"BF-DIRECTOR"})
         self.assertEqual({s for s, v in partition.items() if v == "mac"}, set(launchd.READER_SEATS),
                          "the Mac holds every Mac seat (owner, Thu, Oct 8)")
         for seat in ["MA", "JET", "GROK-WEB", "ECHO", "INSTINCT"]:
@@ -938,9 +940,13 @@ class PartitionTests(ServerHarness):
         self.assertEqual(mac.instance, "mac")
         self.assertEqual(C.partition_errors(mac, partition, env_instance="mac"), [])
         self.assertEqual(sorted(mac.seats), ["CLAUDE"])
+        self.assertTrue(bf_names <= mac.outgoing_webhook_seats,
+                        "a fresh Mac sample accepts migrated BF senders without holding their queues")
         server = C.from_dict(tomllib.loads((SERVER_DIR / "listener.toml").read_text()))
         self.assertEqual(server.errors, [])
         self.assertEqual(server.instance, "server")
+        self.assertTrue(bf_names <= server.outgoing_webhook_seats)
+        self.assertFalse(bf_names & set(server.seats), "BF sender eligibility must not create server consumers")
         self.assertEqual(C.partition_errors(server, partition, env_instance="server"), [])
         self.assertEqual(sorted(server.disabled), ["BF-DIRECTOR", "GB-ENGINEER"],
                          "the only disabled personas are BF-DIRECTOR and GB-ENGINEER, whose routine "
