@@ -2,7 +2,7 @@ import unittest,tempfile,json,hmac,hashlib
 from relay import Relay
 class Tests(unittest.TestCase):
  def setUp(self):
-  self.tmp=tempfile.TemporaryDirectory();self.path=self.tmp.name+'/db';self.env={'ECHO_LISTENER_HMAC_KEY':'listener-test','ECHO_ZULIP_WEBHOOK_TOKEN':'webhook-test','ECHO_BOT_EMAIL':'bot@example.test'};self.r=Relay(self.path,self.env,clock=lambda:1000)
+  self.tmp=tempfile.TemporaryDirectory();self.path=self.tmp.name+'/db';self.env={'ECHO_LISTENER_HMAC_KEY':'listener-test','ECHO_ZULIP_WEBHOOK_TOKEN':'webhook-test','ECHO_BOT_EMAIL':'bot@example.test','RELAY_DELIVERY_ENABLED':'true'};self.r=Relay(self.path,self.env,clock=lambda:1000)
  def tearDown(self):self.r.db.close();self.tmp.cleanup()
  def listener(self,mid=7):
   raw=json.dumps({'contract':'agent-sync-wake/1','seat':'ECHO','message_id':mid,'trigger_ids':[mid],'sent_at':1000}).encode();sig=hmac.new(b'listener-test',raw,hashlib.sha256).hexdigest();return raw,sig
@@ -24,4 +24,10 @@ class Tests(unittest.TestCase):
   raw,sig=self.listener();self.r.clock=lambda:2000
   with self.assertRaises(ValueError):self.r.accept('/listener/echo',raw,sig)
   with self.assertRaises(ValueError):self.r.accept('/zulip/echo',b'x'*300000)
+ def test_disabled_does_not_attempt(self):
+  self.env['RELAY_DELIVERY_ENABLED']='false';self.r.accept('/zulip/echo',self.native());self.assertFalse(self.r.once());self.assertEqual(self.r.db.execute('select attempts from outbox').fetchone()[0],0)
+ def test_readiness_checks_source_reads(self):
+  self.env.pop('ECHO_ZULIP_WEBHOOK_TOKEN');self.env.update(RELAY_SMTP_USERNAME='test@example.test',RELAY_SMTP_PASSWORD='test');self.assertFalse(self.r.health()['ok']);self.env['ECHO_ZULIP_API_KEY']='test';self.assertTrue(self.r.health()['ok'])
+ def test_rate_cap_is_durable(self):
+  self.r.accept('/zulip/echo',self.native(7));self.r.accept('/zulip/echo',self.native(8));self.r.send_email=lambda *a:'mail';self.r.once();self.assertFalse(self.r.once());other=Relay(self.path,self.env,clock=lambda:1000);self.assertFalse(other.once());other.db.close()
 if __name__=='__main__':unittest.main()
