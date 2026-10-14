@@ -7,7 +7,7 @@ def main():
     seat = sys.argv[1]
     dest = {'echo':'jaywedgeworth@mail.instinct.com','wise':'wedgeworth@mail.instinct.com'}[seat]
     attempt = sys.argv[2] if len(sys.argv)>2 else 'initial'
-    if attempt not in ('initial','starttls-reconciled'): raise ValueError('unsupported attempt')
+    if attempt not in ('initial','starttls-reconciled','app-password-corrected'): raise ValueError('unsupported attempt')
     marker = '/data/smtp-test-'+seat+'-20261013-'+attempt+'.attempt'
     fd = os.open(marker, os.O_CREAT|os.O_EXCL|os.O_WRONLY, 0o600)
     os.write(fd,b'attempted\n'); os.fsync(fd); os.close(fd)
@@ -19,7 +19,7 @@ def main():
     try:
         with smtplib.SMTP('smtp.gmail.com',587,timeout=20) as smtp:
             smtp.ehlo(); smtp.starttls(context=ssl.create_default_context()); smtp.ehlo()
-            smtp.login(os.environ['RELAY_SMTP_USERNAME'],os.environ['RELAY_SMTP_PASSWORD'])
+            smtp.login(os.environ['RELAY_SMTP_USERNAME'],os.environ['RELAY_SMTP_PASSWORD'].replace(' ', ''))
             if smtp.send_message(msg): raise RuntimeError('recipient_refused')
         Path('/data/smtp-test-'+seat+'-20261013-'+attempt+'.result').write_text('accepted '+str(msg['Message-ID']))
         print('SMTP accepted',seat,str(msg['Message-ID']),int(time.time()))

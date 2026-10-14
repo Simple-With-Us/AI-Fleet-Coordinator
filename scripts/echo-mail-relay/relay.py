@@ -83,7 +83,7 @@ class Relay:
         if self.env.get('RELAY_DELIVERY_ENABLED') != 'true':
             raise RuntimeError('mail_disabled')
         sender = self.env.get('RELAY_SMTP_USERNAME', '')
-        password = self.env.get('RELAY_SMTP_PASSWORD', '')
+        password = self.env.get('RELAY_SMTP_PASSWORD', '').replace(' ', '')
         if not sender or not password: raise RuntimeError('mail_configuration_missing')
         # One fixed recipient, no HTML or headers from external message content.
         email = EmailMessage()
