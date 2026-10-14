@@ -63,10 +63,10 @@ GB-TRADER = "server"
 # routine endpoint and key pass an Infisical inventory (see its listener.toml note).
 GB-ENGINEER = "server"
 
-# BotFleet role bots:  held by no listener instance ("none").  Earlier versions of this comment
-# said BotFleet handled them natively; it does not yet.  BotFleet's source has no wake path, no
-# agent-sync reference and no Linear integration, so nothing wakes a BF seat today and the owner
-# has to prompt them to check messages by hand (owner, Mon, Oct 13).  BotFleet still assigns the
+# BotFleet role bots.  The ten seats below are "none" (no listener holds them).  Earlier versions
+# of this comment said BotFleet handled them natively; it does not yet.  BotFleet's source has no
+# wake path, no agent-sync reference and no Linear integration, so nothing wakes those ten today
+# and the owner has to prompt them by hand (owner, Mon, Oct 13).  BotFleet still assigns the
 # BF-<ROLE> seat at launch, which is the part that is native to it.
 #
 # The eleven BF seats are the ten role seats plus BF-DIRECTOR (AGENT-SYNC.md, owner 2026-10-09).
