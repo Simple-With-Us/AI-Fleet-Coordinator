@@ -42,8 +42,9 @@ test("Seats and Bots covers every partition seat and every fleet-apps.json seat"
   const tags = new Set(seatsRows.slice(1).filter(r => r.length > 1).map(r => r[0]));
   for (const s of fleetApps.seats) assert.ok(tags.has(s.tag), `missing ${s.tag}`);
   for (const t of Object.keys(partition)) assert.ok(tags.has(t), `missing ${t}`);
-  assert.equal([...tags].filter(t => t.startsWith("BF-")).length, 10);
-  assert.equal([...tags].filter(t => t.startsWith("GB-")).length, 11);
+  // Eleven BF seats:  the ten role seats plus BF-DIRECTOR.  Twelve GB personas, GB-ENGINEER included.
+  assert.equal([...tags].filter(t => t.startsWith("BF-")).length, 11);
+  assert.equal([...tags].filter(t => t.startsWith("GB-")).length, 12);
 });
 
 test("Grok shows as plain Grok, GROK-BUILD as a retired alias, retired seats as retired", () => {

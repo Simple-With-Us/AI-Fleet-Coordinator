@@ -59,19 +59,32 @@ GB-MONITOR = "server"
 GB-PLUMBER = "server"
 GB-ORACLE = "server"
 GB-TRADER = "server"
+# GB-ENGINEER holds a seat like the rest but stays disabled in the server sample until its
+# routine endpoint and key pass an Infisical inventory (see its listener.toml note).
+GB-ENGINEER = "server"
 
-# BotFleet role bots:  BotFleet handles them natively, not either listener instance.
+# BotFleet role bots.  The ten seats below are "none" (no listener holds them).  Earlier versions
+# of this comment said BotFleet handled them natively; it does not yet.  BotFleet's source has no
+# wake path, no agent-sync reference and no Linear integration, so nothing wakes those ten today
+# and the owner has to prompt them by hand (owner, Mon, Oct 13).  BotFleet still assigns the
+# BF-<ROLE> seat at launch, which is the part that is native to it.
+#
+# The eleven BF seats are the ten role seats plus BF-DIRECTOR (AGENT-SYNC.md, owner 2026-10-09).
+# BF-PRODUCER is not one of them and is deliberately absent here and from the board's roster.
 BF-BUILDER = "none"
 BF-COMPILER = "none"
 BF-DEPLOYER = "none"
 BF-DESIGNER = "none"
-BF-DIRECTOR = "none"
 BF-FIXER = "none"
 BF-HOUSEKEEPER = "none"
 BF-MONITOR = "none"
 BF-ORACLE = "none"
 BF-PLUMBER = "none"
 BF-PUBLISHER = "none"
+# BF-DIRECTOR is the one BotFleet seat the server listener holds, so the owner can wake it rather
+# than prompt it by hand (owner, Mon, Oct 13).  Its server sample stays disabled until its routine
+# endpoint and key are in Infisical.
+BF-DIRECTOR = "server"
 
 # GROK-BUILD is the older code of the GROK seat (terminal Grok and Grok Build are one seat,
 # owner 2026-10-08); listed as none so neither name can be held twice.  Every input spelling of
