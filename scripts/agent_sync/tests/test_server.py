@@ -685,7 +685,10 @@ class LedgerAndSecrecyTests(ServerHarness):
         started = [r for r in self.ledger(SEAT) if r["state"] == "started"]
         self.assertEqual({r["reserved_usd"] for r in started}, {0.0})
         accepted = [r for r in self.ledger(SEAT) if r["state"] == "accepted"]
-        self.assertEqual({(r["reserve_usd"], r["adapter"]) for r in accepted}, {(0.0, "http")})
+        self.assertTrue(accepted)
+        self.assertEqual({r.get("adapter") for r in accepted}, {"http"})
+        self.assertTrue(all("reserve_usd" not in r for r in accepted),
+                        "accepted rows no longer carry a dollar reservation")
 
     def test_a_malformed_routine_url_never_stops_the_daemon_and_never_leaks(self) -> None:
         # An unbalanced IPv6 bracket makes urlsplit raise ValueError.  Before the fix the hiding

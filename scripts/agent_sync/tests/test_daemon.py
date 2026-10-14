@@ -947,6 +947,55 @@ class WakeTests(DaemonHarness):
         self.fake.add_message("Codex", "agent-sync", "t", MENTION + " now")
         self.pump_until(daemon, lambda: len(self.ledger()) >= 2)
 
+    def test_a_quota_hold_dms_the_sender_and_does_not_banner(self) -> None:
+        self.write_config(seats="""\
+[seat.CLAUDE]
+bot = "Claude"
+wake = "claude"
+model = "sonnet"
+provider = "Claude Code"
+""")
+        daemon = self.started()
+        now = self.clock.time()
+        pending = W.Pending("q1", "CLAUDE", {"channel": "agent-sync", "topic": "t", "type": "stream"},
+                            owner=False, now=now, due=now)
+        pending.add({"id": 55, "sender_id": 11, "ts": now}, False)
+        quota = {"known": True, "exhausted": True, "remaining": 0.0, "reset_at": "2026-10-14T18:00:00Z",
+                 "reason": "weekly", "source": "codecaps"}
+        reason = "Claude Code quota is exhausted until 2026-10-14T18:00:00Z"
+        with mock.patch("agent_sync.daemon.A.provider_quota", return_value=quota):
+            daemon._drop(daemon.seats["CLAUDE"], pending, reason, now)
+            daemon._drop(daemon.seats["CLAUDE"], pending, reason, now)
+        dms = [m for m in self.fake.messages if m["type"] == "private" and m["sender_id"] == 10]
+        self.assertEqual(len(dms), 1, "one DM per sender per window, and the call must not raise")
+        self.assertEqual(sorted(r["id"] for r in dms[0]["display_recipient"]), [10, 11])
+        self.assertIn("cannot answer right now", dms[0]["content"])
+        self.assertIn("Claude Code", dms[0]["content"])
+        self.assertEqual([m for m in self.bot_posts() if m["type"] == "stream"], [])
+        self.assertFalse(any("cannot answer right now" in arg for banner in self.banners for arg in banner))
+        self.assertTrue(any("was not run" in banner[8] for banner in self.banners))
+        kinds = [item["kind"] for item in L.read_jsonl(self.seat_paths().owner_queue)]
+        self.assertIn("wake-quota-hold", kinds)
+
+    def test_a_quota_worded_hold_stays_silent_unless_the_snapshot_is_exhausted(self) -> None:
+        self.write_config(seats="""\
+[seat.CLAUDE]
+bot = "Claude"
+wake = "claude"
+model = "sonnet"
+provider = "Claude Code"
+""")
+        daemon = self.started()
+        now = self.clock.time()
+        pending = W.Pending("q2", "CLAUDE", {"channel": "agent-sync", "topic": "t", "type": "stream"},
+                            owner=False, now=now, due=now)
+        pending.add({"id": 56, "sender_id": 11, "ts": now}, False)
+        quiet = {"known": True, "exhausted": False, "remaining": 40.0, "reset_at": None,
+                 "reason": None, "source": "codecaps"}
+        with mock.patch("agent_sync.daemon.A.provider_quota", return_value=quiet):
+            daemon._drop(daemon.seats["CLAUDE"], pending, "Claude Code quota is exhausted", now)
+        self.assertEqual([m for m in self.fake.messages if m["type"] == "private"], [])
+
 
 class JetWakeTests(DaemonHarness):
     """Owner 2026-10-09:  Jet is eligible like the other seat bots, so its direct mention wakes within the

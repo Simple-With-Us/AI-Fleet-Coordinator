@@ -421,6 +421,20 @@ class NotifyAndBoardTests(unittest.TestCase):
         queue = L.read_jsonl(L.SeatPaths(self.root, "CLAUDE").owner_queue)
         self.assertEqual(len(queue), 1)
 
+    def test_banners_false_keeps_the_rate_limit_and_skips_the_banner(self) -> None:
+        calls: list[list[str]] = []
+        notifier = A.Notifier(self.root, clock=lambda: 1000.0, runner=calls.append, banners=True)
+        self.assertTrue(notifier.notify("CLAUDE", "agent-sync CLAUDE", "quota text",
+                                        kind="wake-quota-hold", key="quota-hold:CLAUDE:11", banners=False))
+        self.assertEqual(calls, [], "this call records the notice and does not display it")
+        queue = L.read_jsonl(L.SeatPaths(self.root, "CLAUDE").owner_queue)
+        self.assertEqual([(row["kind"], row["text"]) for row in queue], [("wake-quota-hold", "quota text")])
+        self.assertFalse(notifier.notify("CLAUDE", "agent-sync CLAUDE", "quota text",
+                                         kind="wake-quota-hold", key="quota-hold:CLAUDE:11", banners=False))
+        self.assertEqual(len(L.read_jsonl(L.SeatPaths(self.root, "CLAUDE").owner_queue)), 1)
+        self.assertTrue(notifier.notify("CLAUDE", "agent-sync CLAUDE", "other", kind="other", key="other"))
+        self.assertEqual(len(calls), 1, "a later notice still banners")
+
     def test_board_argv_is_a_list_with_a_validated_app(self) -> None:
         acronyms = {"AFC", "BF", "CT", "ST"}
         self.assertEqual(A.board_app("CT#2316 sentry", acronyms), "CT")

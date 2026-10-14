@@ -1846,22 +1846,16 @@ class Daemon:
                                      "a wake could not be read (%s); nothing was posted" % A.clean_banner(why, 60),
                                      kind="wake-invalid", key="wake-invalid:%s" % pending.wake_id, once_per=0)
             return
-        raw_control = result.parsed if isinstance(result.parsed, dict) else {}
-        if why and any(raw_control.get(key) is not None for key in ("chat_target", "chat_inspect")):
-            fail_invalid_output()
-            return
-        if why:
-            fail_invalid_output()
-            return
-        if not why and obj.get("chat_target") is not None:
+        if obj.get("chat_target") is not None:
             if adapter != "muse" or not is_muse:
                 chat_outcome = {"status": "held", "why": "chat selection requires a Muse wake"}
             else:
                 try:
                     chat_outcome = self.select_chat(runner, pending, obj, chat_context)
-                except (ValueError, OSError):
-                    # A queue or catalog filesystem failure must fail this wake cleanly; the
-                    # listener loop must remain alive and the ledger must not claim success.
+                except Exception:
+                    # A queue, catalog, or binding failure (KeyError, TypeError, OSError, and the
+                    # rest) must fail this wake cleanly.  The listener loop stays alive, and the
+                    # ledger must not claim success or drop the held refs.
                     chat_outcome = {"status": "failed", "why": "chat queue unavailable"}
             runner.ledger.append(pending.row("done" if chat_outcome["status"] in ("queued", "already_queued") else "failed",
                 self.clock.time(), cost_usd=result.cost_usd, adapter=adapter, chat=chat_outcome))

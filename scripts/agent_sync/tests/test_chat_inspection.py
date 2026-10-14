@@ -135,7 +135,7 @@ class ChatInspectionTests(ListenerHarness):
         self.assertEqual(sum(1 for row in daemon.seats["CLAUDE"].ledger.rows() if row["state"] == "done"), 1)
         done = [row for row in daemon.seats["CLAUDE"].ledger.rows() if row["state"] == "done"][-1]
         self.assertAlmostEqual(done["secs"], 3.25)
-        self.assertAlmostEqual(done["cost_usd"], 0.30)
+        self.assertNotIn("cost_usd", done, "ledger rows are not costed (owner 2026-10-13)")
 
     def test_unknown_or_unreadable_chat_is_rejected_without_excerpt_or_action(self):
         for rows, selected in (([], CHAT_ID), ([offered(read=False)], CHAT_ID),
@@ -226,6 +226,36 @@ class ChatInspectionTests(ListenerHarness):
         self.assertTrue(failed)
         self.assertEqual(failed[-1]["chat"]["status"], "failed")
         self.assertNotIn("private filesystem detail", str(failed[-1]))
+
+    def test_a_catalog_row_missing_a_binding_field_fails_the_wake(self):
+        # select_chat indexes required binding fields.  A partial catalog row raises KeyError,
+        # which must become a failed ledger row rather than kill the wake thread.
+        row = {**offered(), "seat": "CLAUDE"}
+        row.pop("platform")
+        daemon, _, _, pending = self._setup_wake([(target_output(), 1.0, 0.1)], rows=[row])
+        self._run(daemon, pending)
+        rows = daemon.seats["CLAUDE"].ledger.rows()
+        self.assertFalse(any(entry["state"] == "done" for entry in rows))
+        failed = [entry for entry in rows if entry["state"] == "failed"]
+        self.assertTrue(failed)
+        self.assertEqual(failed[-1]["chat"]["status"], "failed")
+        self.assertEqual(failed[-1]["chat"]["why"], "chat queue unavailable")
+        self.assertNotIn("KeyError", str(failed[-1]))
+
+    def test_invalid_output_with_a_chat_target_fails_before_selection(self):
+        bad = {"action": "reply", "reply": "hi", "board": None, "owner_note": None, "risk": None,
+               "chat_target": CHAT_ID}
+        daemon, _, catalog, pending = self._setup_wake([(bad, 1.0, 0.1)])
+        self._run(daemon, pending)
+        rows = daemon.seats["CLAUDE"].ledger.rows()
+        failed = [entry for entry in rows if entry["state"] == "failed"]
+        self.assertTrue(failed)
+        self.assertIn("invalid result", failed[-1]["reason"])
+        self.assertIn("chat_target", failed[-1]["reason"])
+        self.assertFalse(any(entry["state"] == "done" for entry in rows))
+        self.assertEqual(catalog.excerpt_calls, [])
+        self.assertEqual(daemon.chat_queue("CLAUDE").snapshot()["items"], [])
+        self.assertEqual(daemon.chat_queue("CURSOR").snapshot()["items"], [])
 
     def test_serialized_excerpt_is_escaped_and_bounded(self):
         prompt = daemon_prompt = "ORIGINAL PROMPT\n"

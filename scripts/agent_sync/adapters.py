@@ -1533,7 +1533,8 @@ class Notifier:
 
     def notify(self, seat: str, title: str, text: str, *, kind: str, key: str | None = None,
                once_per: float = 86400.0, note: str | None = None, trigger_ids: Sequence[int] = (),
-               sender_id: Any = None, owner: bool = False, risk: str | None = None) -> bool:
+               sender_id: Any = None, owner: bool = False, risk: str | None = None,
+               banners: bool | None = None) -> bool:
         now = self.clock()
         key = key or "%s:%s" % (seat, kind)
         with self.lock:
@@ -1565,7 +1566,10 @@ class Notifier:
                 L.write_json(meta, data)
             argv = osascript_argv(self.osascript, text, title)
             self.sent.append(argv)
-        if self.banners:
+        # `banners` overrides the instance flag for this one call.  A quota notice still needs the
+        # once-per record, and must not pop a macOS banner or flip the shared flag other threads read.
+        show = self.banners if banners is None else banners
+        if show:
             self.runner(argv)
         return True
 
