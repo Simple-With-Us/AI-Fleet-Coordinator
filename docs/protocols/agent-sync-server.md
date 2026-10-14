@@ -133,7 +133,7 @@ Every GB persona's routine is a Grok Bot routine webhook at `https://api2.cursor
 
 | File | Role |
 |---|---|
-| `Dockerfile` | `python:3.12-slim`, non-root user `agentsync` (uid 10001), copies `scripts/agent-sync`, `scripts/agent_sync` and the partition file under `/app`.  `HEALTHCHECK` runs `healthcheck.py`.  `ENTRYPOINT` is `entrypoint.sh`; `CMD` is `daemon run --wait-lock` |
+| `Dockerfile` | `python:3.14-slim`, non-root user `agentsync` (uid 10001), copies `scripts/agent-sync`, `scripts/agent_sync` and the partition file under `/app`.  `HEALTHCHECK` runs `healthcheck.py`.  `ENTRYPOINT` is `entrypoint.sh`; `CMD` is `daemon run --wait-lock` |
 | `Dockerfile.dockerignore` | Keeps only those paths in the build context (BuildKit); the tests stay out |
 | `entrypoint.sh` | On first start, copies the sample config onto the volume as `$AGENT_SYNC_CONFIG`, never overwriting one.  With the Infisical machine identity set, it execs `infisical_env.py`, which execs `agent-sync`; otherwise it execs `agent-sync` directly.  Exec form all the way, so `agent-sync` is PID 1 and SIGTERM reaches the daemon, which deletes its queues |
 | `infisical_env.py` | Loads the listener's variables from Infisical at start (see [Infisical at Start](#infisical-at-start)), standard library only |
@@ -221,7 +221,7 @@ These are optional, and best left unset:
 - Owner notes (`notify-owner`) go to `/data/<SEAT>/owner-queue.jsonl` only, the held-back digest included.
 - `agent-sync daemon reload` re-reads `listener.toml` and nothing else.  Use it only when every variable the new config names was already in the container when it started (for example after `daemon init`).  Anything that adds or changes a variable needs a restart.
 
-**Editing `/data/listener.toml`.**  `python:3.12-slim` has no text editor, so the Coolify terminal and `docker exec` have none either.  Never run a global `sed` on the file:  `s/enabled = false/enabled = true/` would enable every disabled section at once.  Scope every edit to one section with a sed range, from the seat's header to the next `[seat.` header:
+**Editing `/data/listener.toml`.**  `python:3.14-slim` has no text editor, so the Coolify terminal and `docker exec` have none either.  Never run a global `sed` on the file:  `s/enabled = false/enabled = true/` would enable every disabled section at once.  Scope every edit to one section with a sed range, from the seat's header to the next `[seat.` header:
 
 ```
 sed -i '/^\[seat\.GB-FIXER\]$/,/^\[seat\./ s/^enabled = false/enabled = true/' /data/listener.toml

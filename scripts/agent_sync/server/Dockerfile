@@ -10,7 +10,7 @@
 # loaded from Infisical by the entrypoint when Coolify sets the INFISICAL_* machine identity
 # (server/infisical_env.py), else as runtime-only Coolify variables.  ZULIP_SITE is a Coolify
 # variable either way.  State, the config and the logs live on the /data volume.
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

@@ -97,7 +97,7 @@ Logs go to stdout as `time method path status`; no bodies, headers, query string
   atomically to `/usr/local/bin/gitleaks`.  A failure is logged as `bootstrap: gitleaks: … --
   continuing WITHOUT gitleaks` and the server starts anyway.  `RECALL_GITLEAKS_ONLY=1` runs only
   that step (what the `Dockerfile` uses).
-- `compose.example.yaml` — the Coolify resource: stock `python:3.12-slim`, a `python -c` command
+- `compose.example.yaml` — the Coolify resource: stock `python:3.14-slim`, a `python -c` command
   that downloads the tarball, extracts `bootstrap.sh`, and execs it; healthcheck on `/health`;
   1 CPU / 1 GiB; `restart: unless-stopped`; `expose: 8080` with no host binding
 - `Dockerfile` — COPY-based image for anyone who prefers a build (`docker build -f
