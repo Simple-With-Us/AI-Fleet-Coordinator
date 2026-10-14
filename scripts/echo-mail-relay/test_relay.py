@@ -15,9 +15,9 @@ class Tests(unittest.TestCase):
  def test_cross_transport_dedup_and_restart(self):
   self.r.accept('/listener/echo',*self.listener());self.r.accept('/zulip/echo',self.native());other=Relay(self.path,self.env);self.assertEqual(other.health()['pending'],1);other.db.close()
  def test_normalization_drops_token(self):
-  self.r.accept('/zulip/echo',self.native());raw=self.r.db.execute('select body from outbox').fetchone()[0];self.assertNotIn('DO NOT STORE',raw)
+  self.r.accept('/zulip/echo',self.native());raw=self.r.db.execute('select body from outbox_v2').fetchone()[0];self.assertNotIn('DO NOT STORE',raw)
  def test_fetch_full_message_and_mail(self):
-  self.r.accept('/listener/echo',*self.listener());seen=[];self.r.read_message=lambda mid:{'id':mid,'content':'full'};self.r.send_email=lambda mid,msg:seen.append(msg) or 'mail';self.r.once();self.assertEqual(seen,[{'id':7,'content':'full'}]);self.assertEqual(self.r.health()['pending'],0)
+  self.r.accept('/listener/echo',*self.listener());seen=[];self.r.read_message=lambda mid,seat:{'id':mid,'content':'full'};self.r.send_email=lambda mid,msg,seat:seen.append(msg) or 'mail';self.r.once();self.assertEqual(seen,[{'id':7,'content':'full'}]);self.assertEqual(self.r.health()['pending'],0)
  def test_failed_delivery_stays_pending(self):
   self.r.accept('/zulip/echo',self.native());self.r.send_email=lambda *a:(_ for _ in ()).throw(RuntimeError('secret'));self.r.once();self.assertEqual(self.r.health()['pending'],1);self.assertNotIn('secret',str(self.r.health()))
  def test_stale_and_oversize(self):
@@ -25,9 +25,16 @@ class Tests(unittest.TestCase):
   with self.assertRaises(ValueError):self.r.accept('/listener/echo',raw,sig)
   with self.assertRaises(ValueError):self.r.accept('/zulip/echo',b'x'*300000)
  def test_disabled_does_not_attempt(self):
-  self.env['RELAY_DELIVERY_ENABLED']='false';self.r.accept('/zulip/echo',self.native());self.assertFalse(self.r.once());self.assertEqual(self.r.db.execute('select attempts from outbox').fetchone()[0],0)
+  self.env['RELAY_DELIVERY_ENABLED']='false';self.r.accept('/zulip/echo',self.native());self.assertFalse(self.r.once());self.assertEqual(self.r.db.execute('select attempts from outbox_v2').fetchone()[0],0)
  def test_readiness_checks_source_reads(self):
   self.env.pop('ECHO_ZULIP_WEBHOOK_TOKEN');self.env.update(RELAY_SMTP_USERNAME='test@example.test',RELAY_SMTP_PASSWORD='test');self.assertFalse(self.r.health()['ok']);self.env['ECHO_ZULIP_API_KEY']='test';self.assertTrue(self.r.health()['ok'])
  def test_rate_cap_is_durable(self):
   self.r.accept('/zulip/echo',self.native(7));self.r.accept('/zulip/echo',self.native(8));self.r.send_email=lambda *a:'mail';self.r.once();self.assertFalse(self.r.once());other=Relay(self.path,self.env,clock=lambda:1000);self.assertFalse(other.once());other.db.close()
+ def test_seat_isolation(self):
+  self.env.update(WISE_ZULIP_WEBHOOK_TOKEN='wise-test',WISE_BOT_EMAIL='wise@example.test')
+  raw=self.native().decode().replace('webhook-test','wise-test').replace('bot@example.test','wise@example.test').encode()
+  self.r.accept('/zulip/echo',self.native());self.r.accept('/zulip/wise',raw)
+  self.assertEqual(self.r.health()['pending'],2)
+  with self.assertRaises(PermissionError):self.r.accept('/zulip/wise',self.native())
+  self.assertEqual(self.r.db.execute('select count(distinct seat) from outbox_v2').fetchone()[0],2)
 if __name__=='__main__':unittest.main()
