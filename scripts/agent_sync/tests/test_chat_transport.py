@@ -147,6 +147,19 @@ class TransportTests(unittest.TestCase):
             self.assertEqual(transport.send(binding, "nudge"), "deferred")
         client.request.assert_not_called()
 
+    def test_successful_singleflight_refresh_allows_one_later_send(self):
+        transport, binding, client = self.transport()
+        transport.discover = GrokTransport.discover.__get__(transport, GrokTransport)
+        with patch("agent_sync.chat_transport.subprocess.run", return_value=self.leader_result([
+                {"sessionId": "chat-1", "cwd": "/work"}])) as run:
+            # The first preflight is retryable while the shared background list is in flight.
+            # Once it completes, a subsequent attempt consumes that fresh snapshot and sends.
+            self.assertEqual(transport.preflight(binding), "busy")
+            self.assertTrue(CT._DISCOVERY_DONE.wait(1))
+            self.assertEqual(transport.send(binding, "nudge"), "accepted")
+        self.assertEqual(run.call_count, 1)
+        client.request.assert_called_once()
+
     def test_correlated_success(self):
         transport, binding, client = self.transport()
         self.assertEqual(transport.send(binding, "nudge"), "accepted")
