@@ -61,6 +61,7 @@ class TransportTests(unittest.TestCase):
     def leader_result(sessions, *, ok=True, returncode=0, next_cursor=None):
         return SimpleNamespace(returncode=returncode,
                                stdout=json.dumps({"ok": ok, "sessions": sessions,
+                                                  "complete": next_cursor is None,
                                                   "nextCursor": next_cursor}), stderr="")
 
     def test_discovery_uses_leader_list_when_active_sessions_is_empty(self):
@@ -81,7 +82,7 @@ class TransportTests(unittest.TestCase):
         self.assertFalse(rows[0]["attached"])
         self.assertIsNone(rows[1]["cwd"])
         self.assertFalse(rows[1]["wake"])
-        self.assertEqual(run.call_args.args[0][-1], "list")
+        self.assertEqual(run.call_args.args[0][-2:], ["list", "--all-pages"])
         self.assertLessEqual(run.call_args.kwargs["timeout"], 25.0)
         self.assertAlmostEqual(float(run.call_args.args[0][run.call_args.args[0].index("--rpc-timeout") + 1]),
                                run.call_args.kwargs["timeout"], places=3)
@@ -91,13 +92,13 @@ class TransportTests(unittest.TestCase):
         transport.disk = SimpleNamespace(load_active=lambda: [],
                                          turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 10},
                                          is_self_session=lambda _: False)
-        responses = [self.leader_result([{"sessionId": "chat-1", "cwd": "/one"}], next_cursor="page-2"),
-                     self.leader_result([{"sessionId": "chat-2", "cwd": "/two"}])]
-        with patch("agent_sync.chat_transport.subprocess.run", side_effect=responses) as run:
+        response = self.leader_result([{"sessionId": "chat-1", "cwd": "/one"},
+                                       {"sessionId": "chat-2", "cwd": "/two"}])
+        with patch("agent_sync.chat_transport.subprocess.run", return_value=response) as run:
             rows = transport.discover()
         self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
-        self.assertEqual(run.call_count, 2)
-        self.assertEqual(run.call_args_list[1].args[0][-2:], ["--cursor", "page-2"])
+        self.assertEqual(run.call_count, 1)
+        self.assertIn("--all-pages", run.call_args.args[0])
 
     def test_background_refresh_hides_partial_pages_until_the_walk_finishes(self):
         transport = GrokTransport.__new__(GrokTransport)
@@ -105,20 +106,15 @@ class TransportTests(unittest.TestCase):
                                          turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 10},
                                          is_self_session=lambda _: False)
         release = threading.Event()
-        second_page = threading.Event()
-
-        def fake_run(command, **_kwargs):
-            if "--cursor" in command:
-                second_page.set()
-                release.wait()
-                return self.leader_result([{"sessionId": "chat-2", "cwd": "/two"}])
-            return self.leader_result([{"sessionId": "chat-1", "cwd": "/one"}], next_cursor="page-2")
+        def fake_run(_command, **_kwargs):
+            release.wait()
+            return self.leader_result([{"sessionId": "chat-1", "cwd": "/one"},
+                                       {"sessionId": "chat-2", "cwd": "/two"}])
 
         try:
             with patch("agent_sync.chat_transport.subprocess.run", side_effect=fake_run) as run:
                 with self.assertRaisesRegex(RuntimeError, "pending"):
                     transport.discover(wait=False)
-                self.assertTrue(second_page.wait(2), "the walk stopped after the first page")
                 with self.assertRaisesRegex(RuntimeError, "pending"):
                     transport.discover(wait=False)
                 release.set()
@@ -126,11 +122,11 @@ class TransportTests(unittest.TestCase):
                 rows = transport.discover(wait=False)
             self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
             self.assertTrue(all(row["wake"] and not row["stale"] for row in rows))
-            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_count, 1)
         finally:
             release.set()
 
-    def test_pagination_uses_one_total_budget_and_publishes_partial_rows_stale(self):
+    def test_discovery_helper_receives_one_total_budget(self):
         transport = GrokTransport.__new__(GrokTransport)
         transport.disk = SimpleNamespace(load_active=lambda: [],
                                          turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 10},
@@ -138,42 +134,31 @@ class TransportTests(unittest.TestCase):
         clock = {"now": 100.0}
         budgets = []
 
-        def fake_list(cursor=None, *, timeout):
-            budgets.append(timeout)
-            clock["now"] += 0.6
-            sid = "chat-1" if cursor is None else "chat-2"
-            return ([{"sessionId": sid, "cwd": "/one"}], "page-2" if cursor is None else "page-3")
+        def fake_run(_command, **kwargs):
+            budgets.append(kwargs["timeout"])
+            clock["now"] += 1.1
+            raise subprocess.TimeoutExpired("leader-list", timeout=kwargs["timeout"])
 
         with patch.object(CT, "_DISCOVERY_TIMEOUT", 1.0), \
                 patch("agent_sync.chat_transport.time.monotonic", side_effect=lambda: clock["now"]), \
-                patch.object(GrokTransport, "_read_leader_sessions", side_effect=fake_list):
-            GrokTransport._refresh()
-            CT._DISCOVERY_LAST_ATTEMPT = clock["now"]
-            rows = transport.discover(wait=False)
+                patch("agent_sync.chat_transport.subprocess.run", side_effect=fake_run):
+            with self.assertRaisesRegex(RuntimeError, "leader pagination budget exceeded"):
+                transport.discover(wait=True)
 
-        self.assertEqual(len(budgets), 2)
+        self.assertEqual(len(budgets), 1)
         self.assertAlmostEqual(budgets[0], 1.0)
-        self.assertAlmostEqual(budgets[1], 0.4)
         self.assertEqual(CT._DISCOVERY_ERROR, "leader pagination budget exceeded")
-        self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
-        self.assertTrue(all(row["stale"] for row in rows))
-        self.assertTrue(all(not row["wake"] for row in rows))
 
     def test_page_cap_marks_the_inventory_stale(self):
         transport = GrokTransport.__new__(GrokTransport)
         transport.disk = SimpleNamespace(load_active=lambda: [],
                                          turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 10},
                                          is_self_session=lambda _: False)
-        calls = {"n": 0}
-
-        def fake_run(_command, **_kwargs):
-            calls["n"] += 1
-            return self.leader_result([{"sessionId": "chat-%d" % calls["n"], "cwd": "/work"}],
-                                      next_cursor="cursor-%d" % calls["n"])
-
-        with patch("agent_sync.chat_transport.subprocess.run", side_effect=fake_run):
+        partial = self.leader_result([{"sessionId": "chat-%d" % n, "cwd": "/work"}
+                                      for n in range(CT._DISCOVERY_MAX_PAGES)], next_cursor="page-21")
+        with patch("agent_sync.chat_transport.subprocess.run", return_value=partial) as run:
             rows = transport.discover(wait=True)
-        self.assertEqual(calls["n"], CT._DISCOVERY_MAX_PAGES)
+        self.assertEqual(run.call_count, 1)
         self.assertEqual(len(rows), CT._DISCOVERY_MAX_PAGES)
         self.assertTrue(all(row["stale"] and not row["wake"] for row in rows))
 
@@ -181,12 +166,12 @@ class TransportTests(unittest.TestCase):
         transport = GrokTransport.__new__(GrokTransport)
         transport.disk = SimpleNamespace(load_active=lambda: [], turn_state=lambda _: {},
                                          is_self_session=lambda _: False)
-        responses = [self.leader_result([{"sessionId": "chat-1", "cwd": "/one"}], next_cursor="repeat"),
-                     self.leader_result([{"sessionId": "chat-2", "cwd": "/two"}], next_cursor="repeat")]
-        with patch("agent_sync.chat_transport.subprocess.run", side_effect=responses) as run:
+        response = self.leader_result([{"sessionId": "chat-1", "cwd": "/one"},
+                                       {"sessionId": "chat-2", "cwd": "/two"}], next_cursor="repeat")
+        with patch("agent_sync.chat_transport.subprocess.run", return_value=response) as run:
             rows = transport.discover()
         self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_count, 1)
         self.assertTrue(rows[0]["stale"])
 
     def test_page_cap_replaces_old_snapshot_with_fetched_stale_rows(self):
@@ -199,10 +184,9 @@ class TransportTests(unittest.TestCase):
             CT._DISCOVERY_UPDATED = time.monotonic()
             CT._DISCOVERY_LAST_ATTEMPT = 0.0
             CT._DISCOVERY_COMPLETE = True
-        responses = [self.leader_result([{"sessionId": "chat-1", "cwd": "/one"}], next_cursor="page-2"),
-                     self.leader_result([{"sessionId": "chat-2", "cwd": "/two"}], next_cursor="page-3")]
-        with patch.object(CT, "_DISCOVERY_MAX_PAGES", 2), \
-                patch("agent_sync.chat_transport.subprocess.run", side_effect=responses):
+        response = self.leader_result([{"sessionId": "chat-1", "cwd": "/one"},
+                                       {"sessionId": "chat-2", "cwd": "/two"}], next_cursor="page-3")
+        with patch("agent_sync.chat_transport.subprocess.run", return_value=response):
             rows = transport.discover()
         self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
         self.assertTrue(all(row["stale"] and not row["wake"] for row in rows))
@@ -212,10 +196,7 @@ class TransportTests(unittest.TestCase):
         transport.disk = SimpleNamespace(load_active=lambda: [],
                                          turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},
                                          is_self_session=lambda _: False)
-        with patch.object(CT, "_DISCOVERY_MAX_PAGES", 2), \
-                patch("agent_sync.chat_transport.subprocess.run",
-                      side_effect=[self.leader_result([{"sessionId": "old-page", "cwd": "/old"}],
-                                                      next_cursor="page-2"), RuntimeError("temporary list failure")]):
+        with patch("agent_sync.chat_transport.subprocess.run", side_effect=RuntimeError("temporary list failure")):
             with self.assertRaisesRegex(RuntimeError, "leader list unavailable"):
                 transport.discover(force=True)
         with CT._DISCOVERY_LOCK:
@@ -226,7 +207,7 @@ class TransportTests(unittest.TestCase):
                 {"sessionId": "fresh-page", "cwd": "/fresh"}])) as run:
             rows = transport.discover(force=True)
         self.assertEqual([row["session_id"] for row in rows], ["fresh-page"])
-        self.assertNotIn("--cursor", run.call_args.args[0])
+        self.assertIn("--all-pages", run.call_args.args[0])
 
     def test_leader_client_passes_cursor_and_preserves_next_cursor(self):
         helper_path = CT._RUNTIME / "leader-client.py"
@@ -244,6 +225,32 @@ class TransportTests(unittest.TestCase):
             helper.main()
         client.request.assert_called_once_with("session/list", {"cursor": "page-2"}, timeout=20.0)
         self.assertEqual(json.loads(stdout.getvalue())["nextCursor"], "page-3")
+        client.close.assert_called_once()
+
+    def test_leader_client_walks_all_pages_on_one_initialized_connection(self):
+        helper_path = CT._RUNTIME / "leader-client.py"
+        spec = importlib.util.spec_from_file_location("test_grok_leader_all_pages", helper_path)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        client = SimpleNamespace(request=Mock(side_effect=[
+            {"sessions": [{"sessionId": "chat-1", "cwd": "/one"}], "nextCursor": "page-2"},
+            {"sessions": [{"sessionId": "chat-2", "cwd": "/two"}], "nextCursor": None},
+        ]), close=Mock())
+        helper.LeaderStdio = Mock(return_value=client)
+        helper._initialize = Mock(return_value={})
+        stdout = io.StringIO()
+        with patch.object(sys, "argv", [str(helper_path), "--rpc-timeout", "5", "list", "--all-pages"]), \
+                redirect_stdout(stdout):
+            helper.main()
+        payload = json.loads(stdout.getvalue())
+        self.assertTrue(payload["complete"])
+        self.assertEqual([row["sessionId"] for row in payload["sessions"]], ["chat-1", "chat-2"])
+        helper.LeaderStdio.assert_called_once()
+        helper._initialize.assert_called_once_with(client)
+        self.assertEqual(client.request.call_count, 2)
+        self.assertEqual(client.request.call_args_list[1].args[1], {"cursor": "page-2"})
+        self.assertLessEqual(client.request.call_args_list[0].kwargs["timeout"], 5)
+        self.assertLessEqual(client.request.call_args_list[1].kwargs["timeout"], 5)
         client.close.assert_called_once()
 
     def test_discovery_fails_closed_on_leader_errors_or_bad_data(self):
@@ -281,13 +288,11 @@ class TransportTests(unittest.TestCase):
                                          is_self_session=lambda _: False)
         started, release = threading.Event(), threading.Event()
 
-        def page(command, **_kwargs):
-            if "--cursor" in command:
-                return self.leader_result([{"sessionId": "chat-2", "cwd": "/two"}])
+        def page(_command, **_kwargs):
             started.set()
             release.wait()
-            return self.leader_result([{"sessionId": "chat-1", "cwd": "/work"}],
-                                      next_cursor="page-2")
+            return self.leader_result([{"sessionId": "chat-1", "cwd": "/work"},
+                                       {"sessionId": "chat-2", "cwd": "/two"}])
 
         try:
             with patch("agent_sync.chat_transport.subprocess.run", side_effect=page):

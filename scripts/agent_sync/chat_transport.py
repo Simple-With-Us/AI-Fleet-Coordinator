@@ -51,10 +51,10 @@ class GrokTransport:
     @staticmethod
     def _read_leader_sessions(
         cursor: str | None = None, *, timeout: float | None = None
-    ) -> tuple[list[dict[str, Any]], str | None]:
+    ) -> tuple[list[dict[str, Any]], str | None, bool]:
         rpc_timeout = min(_DISCOVERY_TIMEOUT, timeout or _DISCOVERY_TIMEOUT)
         command = [sys.executable, str(_RUNTIME / "leader-client.py"),
-                   "--rpc-timeout", str(rpc_timeout), "list"]
+                   "--rpc-timeout", str(rpc_timeout), "list", "--all-pages"]
         if cursor:
             command.extend(["--cursor", cursor])
         try:
@@ -74,7 +74,10 @@ class GrokTransport:
         next_cursor = payload.get("nextCursor")
         if next_cursor is not None and (not isinstance(next_cursor, str) or not next_cursor):
             raise RuntimeError("Grok leader returned invalid pagination cursor")
-        return [row for row in sessions if isinstance(row, dict)], next_cursor
+        complete = payload.get("complete")
+        if not isinstance(complete, bool):
+            raise RuntimeError("Grok leader returned invalid completion status")
+        return [row for row in sessions if isinstance(row, dict)], next_cursor, complete
 
     @staticmethod
     def _merge_sessions(candidate: list[dict[str, Any]], sessions: list[dict[str, Any]]) -> None:
@@ -98,40 +101,26 @@ class GrokTransport:
         global _DISCOVERY_SESSIONS, _DISCOVERY_UPDATED, _DISCOVERY_ERROR, _DISCOVERY_RUNNING
         global _DISCOVERY_CURSOR, _DISCOVERY_SEEN_CURSORS, _DISCOVERY_CANDIDATE_SESSIONS, _DISCOVERY_COMPLETE
         candidate: list[dict[str, Any]] = []
-        seen: set[str] = set()
         cursor: str | None = None
         error: str | None = None
         complete = False
         deadline = time.monotonic() + _DISCOVERY_TIMEOUT
         try:
-            for _ in range(_DISCOVERY_MAX_PAGES):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    error = "leader pagination budget exceeded"
-                    break
-                sessions, next_cursor = cls._read_leader_sessions(cursor, timeout=remaining)
-                cls._merge_sessions(candidate, sessions)
-                if next_cursor is not None and next_cursor in seen:
-                    error = "leader repeated pagination cursor"
-                    break
-                if next_cursor is None:
-                    complete = True
-                    break
-                seen.add(next_cursor)
-                cursor = next_cursor
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                error = "leader pagination budget exceeded"
             else:
-                error = "leader session list exceeded page cap"
-        except subprocess.TimeoutExpired:
-            error = "leader pagination budget exceeded"
-            complete = False
+                sessions, cursor, complete = cls._read_leader_sessions(cursor, timeout=remaining)
+                cls._merge_sessions(candidate, sessions)
+                if not complete:
+                    error = "leader pagination incomplete"
         except Exception:
             error = ("leader pagination budget exceeded" if time.monotonic() >= deadline
                      else "leader list unavailable")
             complete = False
         with _DISCOVERY_LOCK:
             publish_partial = (not complete and bool(candidate)
-                               and error in ("leader repeated pagination cursor",
-                                             "leader session list exceeded page cap",
+                               and error in ("leader pagination incomplete",
                                              "leader pagination budget exceeded"))
             if complete or publish_partial:
                 _DISCOVERY_SESSIONS = candidate

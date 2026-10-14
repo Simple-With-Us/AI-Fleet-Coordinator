@@ -276,6 +276,7 @@ def main():
     ls = sub.add_parser("list")
     ls.add_argument("--cwd", default="")
     ls.add_argument("--cursor", default="")
+    ls.add_argument("--all-pages", action="store_true", help="walk leader pages on this one initialized connection")
     ld = sub.add_parser("load")
     ld.add_argument("--session-id", required=True)
     ld.add_argument("--cwd", default="/Users/jay")
@@ -323,17 +324,31 @@ def main():
             }, indent=2))
             return
         if args.cmd == "list":
-            params = {}
-            if args.cwd:
-                params["cwd"] = args.cwd
-            if args.cursor:
-                params["cursor"] = args.cursor
-            listed = client.request("session/list", params, timeout=_timeout(20.0))
-            sessions = [slim_session(s) for s in (listed.get("sessions") or [])]
-            next_cursor = listed.get("nextCursor")
+            sessions = []
+            cursor = args.cursor or None
+            seen = set()
+            complete = False
+            for _ in range(20 if args.all_pages else 1):
+                params = {}
+                if args.cwd:
+                    params["cwd"] = args.cwd
+                if cursor:
+                    params["cursor"] = cursor
+                listed = client.request("session/list", params, timeout=_timeout(20.0))
+                sessions.extend(slim_session(s) for s in (listed.get("sessions") or []))
+                next_cursor = listed.get("nextCursor")
+                if not isinstance(next_cursor, str) or not next_cursor:
+                    complete = True
+                    break
+                if next_cursor in seen:
+                    break
+                seen.add(next_cursor)
+                cursor = next_cursor
+                if not args.all_pages:
+                    break
             print(json.dumps({"ok": True, "count": len(sessions), "sessions": sessions,
-                              "nextCursor": next_cursor if isinstance(next_cursor, str) and next_cursor else None},
-                             indent=2))
+                              "complete": complete,
+                              "nextCursor": cursor if not complete else None}, indent=2))
             return
         if args.cmd == "load":
             # Idle / disk sessions only.  Live TUI chats hang on session/load — use prompt.
