@@ -82,8 +82,9 @@ class TransportTests(unittest.TestCase):
         self.assertIsNone(rows[1]["cwd"])
         self.assertFalse(rows[1]["wake"])
         self.assertEqual(run.call_args.args[0][-1], "list")
-        self.assertEqual(run.call_args.kwargs["timeout"], 27)
-        self.assertIn("25.0", run.call_args.args[0])
+        self.assertLessEqual(run.call_args.kwargs["timeout"], 25.0)
+        self.assertAlmostEqual(float(run.call_args.args[0][run.call_args.args[0].index("--rpc-timeout") + 1]),
+                               run.call_args.kwargs["timeout"], places=3)
 
     def test_discovery_walks_bounded_cursor_pages(self):
         transport = GrokTransport.__new__(GrokTransport)
@@ -128,6 +129,35 @@ class TransportTests(unittest.TestCase):
             self.assertEqual(run.call_count, 2)
         finally:
             release.set()
+
+    def test_pagination_uses_one_total_budget_and_publishes_partial_rows_stale(self):
+        transport = GrokTransport.__new__(GrokTransport)
+        transport.disk = SimpleNamespace(load_active=lambda: [],
+                                         turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 10},
+                                         is_self_session=lambda _: False)
+        clock = {"now": 100.0}
+        budgets = []
+
+        def fake_list(cursor=None, *, timeout):
+            budgets.append(timeout)
+            clock["now"] += 0.6
+            sid = "chat-1" if cursor is None else "chat-2"
+            return ([{"sessionId": sid, "cwd": "/one"}], "page-2" if cursor is None else "page-3")
+
+        with patch.object(CT, "_DISCOVERY_TIMEOUT", 1.0), \
+                patch("agent_sync.chat_transport.time.monotonic", side_effect=lambda: clock["now"]), \
+                patch.object(GrokTransport, "_read_leader_sessions", side_effect=fake_list):
+            GrokTransport._refresh()
+            CT._DISCOVERY_LAST_ATTEMPT = clock["now"]
+            rows = transport.discover(wait=False)
+
+        self.assertEqual(len(budgets), 2)
+        self.assertAlmostEqual(budgets[0], 1.0)
+        self.assertAlmostEqual(budgets[1], 0.4)
+        self.assertEqual(CT._DISCOVERY_ERROR, "leader pagination budget exceeded")
+        self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
+        self.assertTrue(all(row["stale"] for row in rows))
+        self.assertTrue(all(not row["wake"] for row in rows))
 
     def test_page_cap_marks_the_inventory_stale(self):
         transport = GrokTransport.__new__(GrokTransport)

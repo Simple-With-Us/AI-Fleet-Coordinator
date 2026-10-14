@@ -49,14 +49,17 @@ class GrokTransport:
         self.leader = None
 
     @staticmethod
-    def _read_leader_sessions(cursor: str | None = None) -> tuple[list[dict[str, Any]], str | None]:
+    def _read_leader_sessions(
+        cursor: str | None = None, *, timeout: float | None = None
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        rpc_timeout = min(_DISCOVERY_TIMEOUT, timeout or _DISCOVERY_TIMEOUT)
         command = [sys.executable, str(_RUNTIME / "leader-client.py"),
-                   "--rpc-timeout", str(_DISCOVERY_TIMEOUT), "list"]
+                   "--rpc-timeout", str(rpc_timeout), "list"]
         if cursor:
             command.extend(["--cursor", cursor])
         try:
             result = subprocess.run(command, capture_output=True, text=True,
-                                    timeout=_DISCOVERY_OUTER_TIMEOUT, check=False)
+                                    timeout=timeout or _DISCOVERY_OUTER_TIMEOUT, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
             raise RuntimeError("Grok leader discovery failed") from exc
         try:
@@ -99,9 +102,14 @@ class GrokTransport:
         cursor: str | None = None
         error: str | None = None
         complete = False
+        deadline = time.monotonic() + _DISCOVERY_TIMEOUT
         try:
             for _ in range(_DISCOVERY_MAX_PAGES):
-                sessions, next_cursor = cls._read_leader_sessions(cursor)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    error = "leader pagination budget exceeded"
+                    break
+                sessions, next_cursor = cls._read_leader_sessions(cursor, timeout=remaining)
                 if next_cursor is not None and next_cursor in seen:
                     error = "leader repeated pagination cursor"
                     break
@@ -113,13 +121,18 @@ class GrokTransport:
                 cursor = next_cursor
             else:
                 error = "leader session list exceeded page cap"
+        except subprocess.TimeoutExpired:
+            error = "leader pagination budget exceeded"
+            complete = False
         except Exception:
-            error = "leader list unavailable"
+            error = ("leader pagination budget exceeded" if time.monotonic() >= deadline
+                     else "leader list unavailable")
             complete = False
         with _DISCOVERY_LOCK:
             publish_partial = (not complete and bool(candidate)
                                and error in ("leader repeated pagination cursor",
-                                             "leader session list exceeded page cap"))
+                                             "leader session list exceeded page cap",
+                                             "leader pagination budget exceeded"))
             if complete or publish_partial:
                 _DISCOVERY_SESSIONS = candidate
                 _DISCOVERY_UPDATED = time.monotonic()
@@ -177,7 +190,7 @@ class GrokTransport:
                     _DISCOVERY_SEEN_CURSORS = set()
                     _DISCOVERY_CANDIDATE_SESSIONS = []
                     _DISCOVERY_COMPLETE = False
-        deadline = time.monotonic() + _DISCOVERY_MAX_PAGES * (_DISCOVERY_OUTER_TIMEOUT + 1.0)
+        deadline = time.monotonic() + _DISCOVERY_OUTER_TIMEOUT + 1.0
         requested = False
         while True:
             # force applies only to the first schedule.  Later iterations just
