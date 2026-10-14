@@ -544,10 +544,14 @@ class JetPinnedReviewTest(unittest.TestCase):
         import inspect
         from agent_sync.daemon import Daemon
         src = inspect.getsource(Daemon.run_wake)
-        self.assertIn("if why and not obj:", src)
         self.assertIn("invalid result: %s", src)
-        # The failure must be recorded and returned BEFORE act() is reached.
-        self.assertLess(src.index("if why and not obj:"), src.index("outcome = self.act("))
+        # wakes.validate always returns a dict, so `why and not obj` is dead.  The gate is `why`
+        # itself, and the failure is recorded and returned before act() is reached.
+        self.assertNotIn("if why and not obj:", src)
+        fail_at = src.index("invalid result: %s")
+        act_at = src.index("outcome = self.act(")
+        self.assertLess(fail_at, act_at)
+        self.assertIn("return", src[fail_at:act_at])
 
     def test_empty_usage_is_not_asserted_to_be_a_quota(self) -> None:
         # Finding 5.  No model ran proves no marginal cost and no fallback; it does NOT prove the
