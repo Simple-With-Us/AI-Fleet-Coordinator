@@ -59,8 +59,12 @@ GB-MONITOR = "server"
 GB-PLUMBER = "server"
 GB-ORACLE = "server"
 GB-TRADER = "server"
+# GB-ENGINEER holds a seat like the rest but stays disabled in the server sample until its
+# routine endpoint and key pass an Infisical inventory (see its listener.toml note).
+GB-ENGINEER = "server"
 
-# BotFleet role bots:  BotFleet handles them natively, not either listener instance.
+# BotFleet handles all eleven BF seats through its native Zulip listener and outgoing receiver.
+# They are eligible senders but neither agent-sync instance holds their queues.
 BF-BUILDER = "none"
 BF-COMPILER = "none"
 BF-DEPLOYER = "none"

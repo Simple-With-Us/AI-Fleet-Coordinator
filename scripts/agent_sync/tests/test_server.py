@@ -920,7 +920,7 @@ class PartitionTests(ServerHarness):
         self.assertIsNone(error)
         self.assertEqual(partition["CLAUDE"], "mac")
         gb = sorted(s for s in partition if s.startswith("GB-"))
-        self.assertEqual(len(gb), 11)
+        self.assertEqual(len(gb), 12)
         self.assertEqual({partition[s] for s in gb}, {"server"})
         bf = {s for s in partition if s.startswith("BF-")}
         self.assertEqual(len(bf), 11)
@@ -941,8 +941,10 @@ class PartitionTests(ServerHarness):
         self.assertTrue(bf <= server.outgoing_webhook_seats)
         self.assertFalse(bf & set(server.seats), "BF sender eligibility must not create server consumers")
         self.assertEqual(C.partition_errors(server, partition, env_instance="server"), [])
-        self.assertEqual(sorted(server.seats), sorted(list(gb) + list(CLOUD_SEATS)),
-                         "the enabled seats are all eleven GB personas and the five cloud seats")
+        self.assertEqual(sorted(server.disabled), ["GB-ENGINEER"],
+                         "GB-ENGINEER remains disabled until its routine keys are inventoried")
+        self.assertEqual(sorted(server.seats), sorted([s for s in gb if s != "GB-ENGINEER"] + list(CLOUD_SEATS)),
+                         "the enabled seats are the other eleven GB personas and the five cloud seats")
         for seat in CLOUD_SEATS:
             seat_cfg = server.seats[seat]
             code = C.env_code(seat)
@@ -957,8 +959,6 @@ class PartitionTests(ServerHarness):
                                  ("inbox", "env", "server", None), "%s has capture only, no wake adapter" % seat)
             self.assertEqual((seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
                              ("ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"), seat)
-        self.assertEqual(sorted(server.disabled), [],
-                         "no persona is disabled:  GB-COMPILER and GB-DIRECTOR were fixed in Infisical on Sat, Oct 10")
         for seat in gb:
             seat_cfg = server.seats.get(seat) or server.disabled[seat]
             code = C.env_code(seat)

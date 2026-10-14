@@ -24,7 +24,7 @@ REPO = Path(__file__).resolve().parents[3]
 SERVER_DIR = REPO / "scripts" / "agent_sync" / "server"
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "server-listener-live-oct9.toml"
 TARGETS = ["JET"] + ["GB-" + r for r in ("DIRECTOR", "FIXER", "DESIGNER", "COMPILER", "HOUSEKEEPER", "PUBLISHER",
-                                          "DEPLOYER", "MONITOR", "PLUMBER", "ORACLE", "TRADER")]
+                                          "DEPLOYER", "MONITOR", "PLUMBER", "ORACLE", "TRADER", "ENGINEER")]
 UNTOUCHED = ["MA", "GROK-WEB", "INSTINCT", "ECHO"]
 
 
@@ -302,7 +302,8 @@ class ApplyLiveConfigTests(unittest.TestCase):
             self.assertEqual(new["seat." + seat], sample["seat." + seat], seat)
         cfg = C.from_dict(tomllib.loads(after))
         self.assertEqual(cfg.errors, [])
-        self.assertEqual(sorted(cfg.disabled), [], "all eleven personas are enabled")
+        self.assertEqual(sorted(cfg.disabled), ["GB-ENGINEER"],
+                         "the other eleven personas are enabled; GB-ENGINEER rides along disabled")
         self.assertEqual(AL.problems(after), [])
         code, out = self.run_main("--apply")
         self.assertEqual(code, 0, out)
