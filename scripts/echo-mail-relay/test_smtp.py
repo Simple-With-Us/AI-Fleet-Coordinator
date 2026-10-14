@@ -15,7 +15,8 @@ def main():
     msg['Message-ID'] = '<echo-relay-smtp-test-'+seat+'-20261013@relay.invalid>'
     msg.set_content('ECHO relay SMTP test.  Synthetic event only; no Zulip message content.  Normal event delivery is still disabled.')
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com',465,timeout=20,context=ssl.create_default_context()) as smtp:
+        with smtplib.SMTP('smtp.gmail.com',587,timeout=20) as smtp:
+            smtp.ehlo(); smtp.starttls(context=ssl.create_default_context()); smtp.ehlo()
             smtp.login(os.environ['RELAY_SMTP_USERNAME'],os.environ['RELAY_SMTP_PASSWORD'])
             if smtp.send_message(msg): raise RuntimeError('recipient_refused')
         Path('/data/smtp-test-'+seat+'-20261013.result').write_text('accepted '+str(msg['Message-ID']))
