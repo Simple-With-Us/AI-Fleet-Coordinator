@@ -23,4 +23,10 @@ The receiver authenticates the token and receiving bot email, then fsyncs only t
 5. Verify the new `users/me` identity, channel posting, a real DM or mention through Zulip, one accepted wake, and a reply from the new bot ID.  Verify event-listener convergence does not produce a second wake.
 6. Only then run `retire --consumers-verified` to deactivate the renamed identity.  Keep the private recovery journal outside the repository.
 
-BotFleet retains its native listener until its own authenticated inbound webhook receiver exists.  Replacing identities alone cannot make an unsupported platform receive a webhook.  Engineer registration is coordinated with the existing seat-registration change; an allowlist entry alone does not enable a listener seat.
+## BotFleet Native Receiver
+
+The migration helper explicitly supports the eleven registered BF seats: `BF-BUILDER`, `BF-COMPILER`, `BF-DEPLOYER`, `BF-DESIGNER`, `BF-DIRECTOR`, `BF-FIXER`, `BF-HOUSEKEEPER`, `BF-MONITOR`, `BF-ORACLE`, `BF-PLUMBER`, and `BF-PUBLISHER`.  A family prefix alone never authorizes a new role.  GB and JET migrations retain their existing behavior.
+
+BotFleet's native receiver uses the same exact `/zulip/outgoing/<SEAT>` path on the BotFleet deployment's HTTPS host.  Use an uppercase seat matching the canonical `bf-<role>-bot@` identity.  Query strings, fragments, URL credentials, alternate paths, and another seat's path are rejected.  The receiver must independently bind that seat to a configured bot, its email, and its service token; the helper's allowlist is not a runtime registration mechanism.
+
+Deploy and verify BotFleet's native receiver and outgoing-bot identity compatibility before staging any BF identity.  Publish the same `ZULIP_BF_<ROLE>_EMAIL`, `ZULIP_BF_<ROLE>_API_KEY`, and `ZULIP_OUTGOING_BF_<ROLE>_TOKEN` entries in Infisical prod `/zulip`; the helper installs the corresponding mode-600 `BF-<Role>-zuliprc`.  Refresh BotFleet's credential consumers, validate the new user ID and actual delivery, then retire the renamed bot.  Keep BotFleet's native Zulip listener operational for bot-authored messages and shared deduplication.  This helper extension alone does not establish that a receiver is deployed or any identity has been converted.
