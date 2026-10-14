@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import redirect_stdout
@@ -97,6 +98,55 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
         self.assertEqual(run.call_args_list[1].args[0][-2:], ["--cursor", "page-2"])
 
+    def test_background_refresh_hides_partial_pages_until_the_walk_finishes(self):
+        transport = GrokTransport.__new__(GrokTransport)
+        transport.disk = SimpleNamespace(load_active=lambda: [],
+                                         turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 10},
+                                         is_self_session=lambda _: False)
+        release = threading.Event()
+        second_page = threading.Event()
+
+        def fake_run(command, **_kwargs):
+            if "--cursor" in command:
+                second_page.set()
+                release.wait()
+                return self.leader_result([{"sessionId": "chat-2", "cwd": "/two"}])
+            return self.leader_result([{"sessionId": "chat-1", "cwd": "/one"}], next_cursor="page-2")
+
+        try:
+            with patch("agent_sync.chat_transport.subprocess.run", side_effect=fake_run) as run:
+                with self.assertRaisesRegex(RuntimeError, "pending"):
+                    transport.discover(wait=False)
+                self.assertTrue(second_page.wait(2), "the walk stopped after the first page")
+                with self.assertRaisesRegex(RuntimeError, "pending"):
+                    transport.discover(wait=False)
+                release.set()
+                self.assertTrue(CT._DISCOVERY_DONE.wait(2))
+                rows = transport.discover(wait=False)
+            self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
+            self.assertTrue(all(row["wake"] and not row["stale"] for row in rows))
+            self.assertEqual(run.call_count, 2)
+        finally:
+            release.set()
+
+    def test_page_cap_marks_the_inventory_stale(self):
+        transport = GrokTransport.__new__(GrokTransport)
+        transport.disk = SimpleNamespace(load_active=lambda: [],
+                                         turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 10},
+                                         is_self_session=lambda _: False)
+        calls = {"n": 0}
+
+        def fake_run(_command, **_kwargs):
+            calls["n"] += 1
+            return self.leader_result([{"sessionId": "chat-%d" % calls["n"], "cwd": "/work"}],
+                                      next_cursor="cursor-%d" % calls["n"])
+
+        with patch("agent_sync.chat_transport.subprocess.run", side_effect=fake_run):
+            rows = transport.discover(wait=True)
+        self.assertEqual(calls["n"], CT._DISCOVERY_MAX_PAGES)
+        self.assertEqual(len(rows), CT._DISCOVERY_MAX_PAGES)
+        self.assertTrue(all(row["stale"] and not row["wake"] for row in rows))
+
     def test_discovery_stops_on_repeated_pagination_cursor(self):
         transport = GrokTransport.__new__(GrokTransport)
         transport.disk = SimpleNamespace(load_active=lambda: [], turn_state=lambda _: {},
@@ -163,11 +213,16 @@ class TransportTests(unittest.TestCase):
         with patch("agent_sync.chat_transport.subprocess.run", return_value=self.leader_result([
             {"sessionId": "chat-1", "cwd": "/work"}
         ])):
-            with self.assertRaisesRegex(RuntimeError, "pending"):
-                transport.discover(wait=False)
-            self.assertTrue(CT._DISCOVERY_DONE.wait(1))
-            row = transport.discover(wait=False)[0]
-        self.assertTrue(row["wake"])
+            # The shared list can finish before this non-waiting read observes it.
+            try:
+                rows = transport.discover(wait=False)
+            except RuntimeError as exc:
+                self.assertIn("pending", str(exc))
+                self.assertTrue(CT._DISCOVERY_DONE.wait(1))
+                rows = transport.discover(wait=False)
+            else:
+                self.assertTrue(CT._DISCOVERY_DONE.wait(1))
+        self.assertTrue(rows[0]["wake"])
 
     def test_fresh_shared_snapshot_is_immediate_and_refresh_errors_disable_wake(self):
         sessions = [{"sessionId": "chat-1", "cwd": "/work"}]
@@ -176,6 +231,7 @@ class TransportTests(unittest.TestCase):
             CT._DISCOVERY_UPDATED = time.monotonic()
             CT._DISCOVERY_LAST_ATTEMPT = CT._DISCOVERY_UPDATED
             CT._DISCOVERY_ERROR = None
+            CT._DISCOVERY_COMPLETE = True
         transport = GrokTransport.__new__(GrokTransport)
         transport.disk = SimpleNamespace(load_active=lambda: [],
                                          turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},

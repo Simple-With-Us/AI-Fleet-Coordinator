@@ -305,8 +305,9 @@ class ChatCatalog:
             except Exception:
                 return [self._unavailable("grok-leader", "GROK", "transport unavailable")]
         try:
-            # Daemon catalog refreshes stay asynchronous; one-shot CLI callers may wait for
-            # the bounded, paginated leader inventory before exiting.
+            # Daemon catalog refreshes stay asynchronous.  The transport publishes a
+            # snapshot only after its bounded page walk finishes.  One-shot CLI callers
+            # wait for that walk before exiting.
             live = self._grok.discover(wait=wait)
         except Exception:
             return [self._unavailable("grok-leader", "GROK", "discovery failed")]

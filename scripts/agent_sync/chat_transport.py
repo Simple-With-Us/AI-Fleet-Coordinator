@@ -73,64 +73,80 @@ class GrokTransport:
             raise RuntimeError("Grok leader returned invalid pagination cursor")
         return [row for row in sessions if isinstance(row, dict)], next_cursor
 
+    @staticmethod
+    def _merge_sessions(candidate: list[dict[str, Any]], sessions: list[dict[str, Any]]) -> None:
+        known = {row.get("sessionId"): index for index, row in enumerate(candidate)
+                 if isinstance(row.get("sessionId"), str)}
+        for row in sessions:
+            sid = row.get("sessionId")
+            if isinstance(sid, str) and sid in known:
+                candidate[known[sid]] = dict(row)
+            else:
+                candidate.append(dict(row))
+
     @classmethod
     def _refresh(cls) -> None:
+        """Walk every leader page, then publish once.
+
+        A first page is not an inventory.  Callers keep the previous complete
+        snapshot (or see pending) until this walk finishes, repeats a cursor,
+        or reaches the page cap.
+        """
         global _DISCOVERY_SESSIONS, _DISCOVERY_UPDATED, _DISCOVERY_ERROR, _DISCOVERY_RUNNING
-        global _DISCOVERY_CURSOR, _DISCOVERY_CANDIDATE_SESSIONS, _DISCOVERY_COMPLETE
-        with _DISCOVERY_LOCK:
-            cursor = _DISCOVERY_CURSOR
+        global _DISCOVERY_CURSOR, _DISCOVERY_SEEN_CURSORS, _DISCOVERY_CANDIDATE_SESSIONS, _DISCOVERY_COMPLETE
+        candidate: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        cursor: str | None = None
+        error: str | None = None
+        complete = False
         try:
-            sessions, next_cursor = cls._read_leader_sessions(cursor)
+            for _ in range(_DISCOVERY_MAX_PAGES):
+                sessions, next_cursor = cls._read_leader_sessions(cursor)
+                if next_cursor is not None and next_cursor in seen:
+                    error = "leader repeated pagination cursor"
+                    break
+                cls._merge_sessions(candidate, sessions)
+                if next_cursor is None:
+                    complete = True
+                    break
+                seen.add(next_cursor)
+                cursor = next_cursor
+            else:
+                error = "leader session list exceeded page cap"
         except Exception:
-            with _DISCOVERY_LOCK:
-                _DISCOVERY_ERROR = "leader list unavailable"
-        else:
-            with _DISCOVERY_LOCK:
-                if next_cursor is not None and next_cursor in _DISCOVERY_SEEN_CURSORS:
-                    _DISCOVERY_ERROR = "leader repeated pagination cursor"
-                else:
-                    if _DISCOVERY_CANDIDATE_SESSIONS is None:
-                        _DISCOVERY_CANDIDATE_SESSIONS = []
-                    known = {row.get("sessionId"): index for index, row in enumerate(_DISCOVERY_CANDIDATE_SESSIONS)
-                             if isinstance(row.get("sessionId"), str)}
-                    for row in sessions:
-                        sid = row.get("sessionId")
-                        if isinstance(sid, str) and sid in known:
-                            _DISCOVERY_CANDIDATE_SESSIONS[known[sid]] = dict(row)
-                        else:
-                            _DISCOVERY_CANDIDATE_SESSIONS.append(dict(row))
-                    _DISCOVERY_CURSOR = next_cursor
-                    if next_cursor is not None:
-                        _DISCOVERY_SEEN_CURSORS.add(next_cursor)
-                        if _DISCOVERY_SESSIONS is None:
-                            _DISCOVERY_SESSIONS = [dict(row) for row in _DISCOVERY_CANDIDATE_SESSIONS]
-                            _DISCOVERY_UPDATED = time.monotonic()
-                    else:
-                        _DISCOVERY_SESSIONS = [dict(row) for row in _DISCOVERY_CANDIDATE_SESSIONS]
-                        _DISCOVERY_CANDIDATE_SESSIONS = None
-                        _DISCOVERY_UPDATED = time.monotonic()
-                        _DISCOVERY_COMPLETE = True
-                        _DISCOVERY_ERROR = None
-        finally:
-            with _DISCOVERY_LOCK:
-                _DISCOVERY_RUNNING = False
-                _DISCOVERY_DONE.set()
+            error = "leader list unavailable"
+            complete = False
+        with _DISCOVERY_LOCK:
+            publish_partial = (not complete and bool(candidate) and _DISCOVERY_SESSIONS is None
+                               and error in ("leader repeated pagination cursor",
+                                             "leader session list exceeded page cap"))
+            if complete or publish_partial:
+                _DISCOVERY_SESSIONS = candidate
+                _DISCOVERY_UPDATED = time.monotonic()
+            if complete:
+                _DISCOVERY_ERROR = None
+                _DISCOVERY_COMPLETE = True
+            else:
+                _DISCOVERY_ERROR = error or "leader list unavailable"
+                _DISCOVERY_COMPLETE = False
+            _DISCOVERY_CURSOR = None
+            _DISCOVERY_SEEN_CURSORS = set()
+            _DISCOVERY_CANDIDATE_SESSIONS = None
+            _DISCOVERY_RUNNING = False
+            _DISCOVERY_DONE.set()
 
     @classmethod
     def _schedule_refresh(cls, *, force: bool) -> None:
-        global _DISCOVERY_LAST_ATTEMPT, _DISCOVERY_RUNNING, _DISCOVERY_CURSOR
-        global _DISCOVERY_SEEN_CURSORS, _DISCOVERY_CANDIDATE_SESSIONS, _DISCOVERY_COMPLETE
+        global _DISCOVERY_LAST_ATTEMPT, _DISCOVERY_RUNNING, _DISCOVERY_COMPLETE
         now = time.monotonic()
         with _DISCOVERY_LOCK:
             if _DISCOVERY_RUNNING:
                 return
             if not force and now - _DISCOVERY_LAST_ATTEMPT < _DISCOVERY_REFRESH_INTERVAL:
                 return
+            # A new walk keeps the last good rows until it publishes.  The page
+            # interval applies to full refreshes, not to each cursor page.
             if _DISCOVERY_COMPLETE:
-                # Start a new paginated inventory refresh without discarding the last good rows.
-                _DISCOVERY_CURSOR = None
-                _DISCOVERY_SEEN_CURSORS = set()
-                _DISCOVERY_CANDIDATE_SESSIONS = []
                 _DISCOVERY_COMPLETE = False
             _DISCOVERY_LAST_ATTEMPT = now
             _DISCOVERY_RUNNING = True
@@ -144,6 +160,8 @@ class GrokTransport:
         active_sessions.json tracks attached TUIs, not chats known to the leader, and is
         empty in leader mode.  It is therefore not an inventory or proof of promptability.
         A failed or malformed leader list is an error, never an empty-success fallback.
+        One refresh walks up to 20 pages before publishing, so a partial page is never
+        a fresh wakeable inventory.
         """
         global _DISCOVERY_SESSIONS, _DISCOVERY_UPDATED, _DISCOVERY_LAST_ATTEMPT, _DISCOVERY_ERROR
         global _DISCOVERY_CURSOR, _DISCOVERY_SEEN_CURSORS, _DISCOVERY_CANDIDATE_SESSIONS, _DISCOVERY_COMPLETE
@@ -158,31 +176,23 @@ class GrokTransport:
                     _DISCOVERY_SEEN_CURSORS = set()
                     _DISCOVERY_CANDIDATE_SESSIONS = []
                     _DISCOVERY_COMPLETE = False
-        pages = 0
+        deadline = time.monotonic() + _DISCOVERY_MAX_PAGES * (_DISCOVERY_OUTER_TIMEOUT + 1.0)
+        requested = False
         while True:
-            if pages >= _DISCOVERY_MAX_PAGES:
-                break
+            # force applies only to the first schedule.  Later iterations just
+            # observe the walk already in flight.
+            self._schedule_refresh(force=force and not requested)
+            requested = True
             with _DISCOVERY_LOCK:
-                complete = _DISCOVERY_COMPLETE
-            # A completed warm cache needs no second refresh in the same call.  A newly
-            # requested inventory may start a periodic refresh before returning it.
-            if complete and pages > 0:
-                break
-            self._schedule_refresh(force=force or pages > 0)
-            with _DISCOVERY_LOCK:
-                complete = _DISCOVERY_COMPLETE
                 running = _DISCOVERY_RUNNING
-            if complete or pages >= _DISCOVERY_MAX_PAGES:
+                complete = _DISCOVERY_COMPLETE
+                error = _DISCOVERY_ERROR
+                have_sessions = _DISCOVERY_SESSIONS is not None
+            if not running and (complete or error or have_sessions or not wait):
                 break
-            if not running and not wait:
+            if not wait or time.monotonic() >= deadline:
                 break
-            if not wait:
-                break
-            _DISCOVERY_DONE.wait(_DISCOVERY_OUTER_TIMEOUT + 1.0)
-            pages += 1
-            with _DISCOVERY_LOCK:
-                if _DISCOVERY_ERROR:
-                    break
+            _DISCOVERY_DONE.wait(deadline - time.monotonic())
         with _DISCOVERY_LOCK:
             sessions = [dict(row) for row in _DISCOVERY_SESSIONS] if _DISCOVERY_SESSIONS is not None else None
             updated = _DISCOVERY_UPDATED
