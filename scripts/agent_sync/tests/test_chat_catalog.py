@@ -22,9 +22,11 @@ class FakeGrok:
     def __init__(self, rows=None) -> None:
         self.rows = rows or []
         self.calls = 0
+        self.kwargs = []
 
     def discover(self, **_kwargs):
         self.calls += 1
+        self.kwargs.append(_kwargs)
         return list(self.rows)
 
 
@@ -58,6 +60,14 @@ class ChatCatalogTests(unittest.TestCase):
 
     def catalog(self, **kwargs):
         return ChatCatalog(home=self.home, host="test-host", clock=self.clock, **kwargs)
+
+    def test_one_shot_discovery_can_wait_for_grok_leader(self):
+        grok = FakeGrok([{"session_id": "chat-1", "cwd": "/repo", "state": "idle",
+                          "turn_ended_at": 1, "wake": True}])
+        catalog = self.catalog(grok_transport=grok, cursor_transport=FakeCursor())
+        rows = catalog.discover(wait_grok=True)
+        self.assertTrue(any(row["session_id"] == "chat-1" for row in rows))
+        self.assertEqual(grok.kwargs, [{"wait": True}])
 
     def test_claude_codex_ids_and_text_allowlist(self):
         write_jsonl(self.home / ".claude/projects/p1/claude-session.jsonl", [

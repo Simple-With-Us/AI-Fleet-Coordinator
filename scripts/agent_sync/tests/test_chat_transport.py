@@ -1,10 +1,14 @@
 """Existing-chat sends must never infer acceptance from a timeout."""
 import json
+import importlib.util
+import io
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -25,6 +29,10 @@ class TransportTests(unittest.TestCase):
             CT._DISCOVERY_LAST_ATTEMPT = 0.0
             CT._DISCOVERY_ERROR = None
             CT._DISCOVERY_RUNNING = False
+            CT._DISCOVERY_CURSOR = None
+            CT._DISCOVERY_SEEN_CURSORS = set()
+            CT._DISCOVERY_CANDIDATE_SESSIONS = None
+            CT._DISCOVERY_COMPLETE = False
             CT._DISCOVERY_DONE.set()
 
     def transport(self, state="idle", *, ended=1, attached=()):
@@ -49,9 +57,10 @@ class TransportTests(unittest.TestCase):
                            "session_id": "chat-1", "cwd": "/work"}, client
 
     @staticmethod
-    def leader_result(sessions, *, ok=True, returncode=0):
+    def leader_result(sessions, *, ok=True, returncode=0, next_cursor=None):
         return SimpleNamespace(returncode=returncode,
-                               stdout=json.dumps({"ok": ok, "sessions": sessions}), stderr="")
+                               stdout=json.dumps({"ok": ok, "sessions": sessions,
+                                                  "nextCursor": next_cursor}), stderr="")
 
     def test_discovery_uses_leader_list_when_active_sessions_is_empty(self):
         transport = GrokTransport.__new__(GrokTransport)
@@ -74,6 +83,49 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][-1], "list")
         self.assertEqual(run.call_args.kwargs["timeout"], 27)
         self.assertIn("25.0", run.call_args.args[0])
+
+    def test_discovery_walks_bounded_cursor_pages(self):
+        transport = GrokTransport.__new__(GrokTransport)
+        transport.disk = SimpleNamespace(load_active=lambda: [],
+                                         turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 10},
+                                         is_self_session=lambda _: False)
+        responses = [self.leader_result([{"sessionId": "chat-1", "cwd": "/one"}], next_cursor="page-2"),
+                     self.leader_result([{"sessionId": "chat-2", "cwd": "/two"}])]
+        with patch("agent_sync.chat_transport.subprocess.run", side_effect=responses) as run:
+            rows = transport.discover()
+        self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[1].args[0][-2:], ["--cursor", "page-2"])
+
+    def test_discovery_stops_on_repeated_pagination_cursor(self):
+        transport = GrokTransport.__new__(GrokTransport)
+        transport.disk = SimpleNamespace(load_active=lambda: [], turn_state=lambda _: {},
+                                         is_self_session=lambda _: False)
+        responses = [self.leader_result([{"sessionId": "chat-1", "cwd": "/one"}], next_cursor="repeat"),
+                     self.leader_result([{"sessionId": "chat-2", "cwd": "/two"}], next_cursor="repeat")]
+        with patch("agent_sync.chat_transport.subprocess.run", side_effect=responses) as run:
+            rows = transport.discover()
+        self.assertEqual([row["session_id"] for row in rows], ["chat-1"])
+        self.assertEqual(run.call_count, 2)
+        self.assertTrue(rows[0]["stale"])
+
+    def test_leader_client_passes_cursor_and_preserves_next_cursor(self):
+        helper_path = CT._RUNTIME / "leader-client.py"
+        spec = importlib.util.spec_from_file_location("test_grok_leader_client", helper_path)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        client = SimpleNamespace(request=Mock(return_value={
+            "sessions": [{"sessionId": "chat-2", "cwd": "/two"}], "nextCursor": "page-3"
+        }), close=Mock())
+        helper.LeaderStdio = lambda: client
+        helper._initialize = Mock(return_value={})
+        stdout = io.StringIO()
+        with patch.object(sys, "argv", [str(helper_path), "list", "--cursor", "page-2"]), \
+                redirect_stdout(stdout):
+            helper.main()
+        client.request.assert_called_once_with("session/list", {"cursor": "page-2"}, timeout=20.0)
+        self.assertEqual(json.loads(stdout.getvalue())["nextCursor"], "page-3")
+        client.close.assert_called_once()
 
     def test_discovery_fails_closed_on_leader_errors_or_bad_data(self):
         transport = GrokTransport.__new__(GrokTransport)
@@ -137,6 +189,23 @@ class TransportTests(unittest.TestCase):
         self.assertTrue(row["stale"])
         self.assertFalse(row["wake"])
 
+    def test_completed_inventory_refreshes_and_replaces_old_rows(self):
+        transport = GrokTransport.__new__(GrokTransport)
+        transport.disk = SimpleNamespace(load_active=lambda: [],
+                                         turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},
+                                         is_self_session=lambda _: False)
+        with CT._DISCOVERY_LOCK:
+            CT._DISCOVERY_SESSIONS = [{"sessionId": "chat-1", "cwd": "/work"}]
+            CT._DISCOVERY_UPDATED = time.monotonic()
+            CT._DISCOVERY_LAST_ATTEMPT = 0.0
+            CT._DISCOVERY_COMPLETE = True
+        with patch("agent_sync.chat_transport.subprocess.run", return_value=self.leader_result([
+                {"sessionId": "chat-2", "cwd": "/work"}])) as run:
+            rows = transport.discover(wait=True)
+        self.assertEqual([row["session_id"] for row in rows], ["chat-2"])
+        self.assertTrue(rows[0]["wake"])
+        run.assert_called_once()
+
     def test_discovery_failure_is_retryable_preflight_not_permanent_failure(self):
         transport, binding, client = self.transport()
         transport.discover = GrokTransport.discover.__get__(transport, GrokTransport)
@@ -152,10 +221,13 @@ class TransportTests(unittest.TestCase):
         transport.discover = GrokTransport.discover.__get__(transport, GrokTransport)
         with patch("agent_sync.chat_transport.subprocess.run", return_value=self.leader_result([
                 {"sessionId": "chat-1", "cwd": "/work"}])) as run:
-            # The first preflight is retryable while the shared background list is in flight.
-            # Once it completes, a subsequent attempt consumes that fresh snapshot and sends.
-            self.assertEqual(transport.preflight(binding), "busy")
+            # The shared background list may finish before or after the first preflight reads;
+            # either way, its completed fresh snapshot permits one send.
+            readiness = transport.preflight(binding)
+            self.assertIn(readiness, ("busy", "ready"))
             self.assertTrue(CT._DISCOVERY_DONE.wait(1))
+            with CT._DISCOVERY_LOCK:
+                self.assertTrue(CT._DISCOVERY_COMPLETE)
             self.assertEqual(transport.send(binding, "nudge"), "accepted")
         self.assertEqual(run.call_count, 1)
         client.request.assert_called_once()

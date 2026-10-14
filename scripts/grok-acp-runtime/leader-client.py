@@ -275,6 +275,7 @@ def main():
     sub.add_parser("handshake")
     ls = sub.add_parser("list")
     ls.add_argument("--cwd", default="")
+    ls.add_argument("--cursor", default="")
     ld = sub.add_parser("load")
     ld.add_argument("--session-id", required=True)
     ld.add_argument("--cwd", default="/Users/jay")
@@ -325,9 +326,14 @@ def main():
             params = {}
             if args.cwd:
                 params["cwd"] = args.cwd
+            if args.cursor:
+                params["cursor"] = args.cursor
             listed = client.request("session/list", params, timeout=_timeout(20.0))
             sessions = [slim_session(s) for s in (listed.get("sessions") or [])]
-            print(json.dumps({"ok": True, "count": len(sessions), "sessions": sessions}, indent=2))
+            next_cursor = listed.get("nextCursor")
+            print(json.dumps({"ok": True, "count": len(sessions), "sessions": sessions,
+                              "nextCursor": next_cursor if isinstance(next_cursor, str) and next_cursor else None},
+                             indent=2))
             return
         if args.cmd == "load":
             # Idle / disk sessions only.  Live TUI chats hang on session/load — use prompt.

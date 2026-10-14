@@ -138,7 +138,9 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         if args.chats_action in ("catalog", "peek"):
             from .chat_catalog import ChatCatalog
             catalog = ChatCatalog(home=_home(rt), max_records=getattr(args, "limit", 120))
-            rows = catalog.discover()
+            # This is a one-shot CLI process, unlike the daemon's nonblocking catalog refresh.
+            # Wait for the bounded leader lookup so `catalog`/`peek` can actually inspect Grok.
+            rows = catalog.discover(wait_grok=True)
             if args.chats_action == "catalog":
                 rt.out(json.dumps(rows, ensure_ascii=True, indent=2) + "\n")
             else:
