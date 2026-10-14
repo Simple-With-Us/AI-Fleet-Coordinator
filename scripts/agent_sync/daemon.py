@@ -466,6 +466,7 @@ class Daemon:
         os.chmod(webhook_parent, 0o700)
         self.webhook_spool = OW.DurableSpool(os.path.join(webhook_parent, "outgoing-webhook"))
         self.webhook_retry_at: dict[tuple[str, int], float] = {}
+        self.webhook_drain_retry_at = 0.0
         self.outgoing_webhook_server: OW.OutgoingWebhookServer | None = None
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
@@ -634,7 +635,20 @@ class Daemon:
     def _drain_outgoing_webhook_spool(self, *, limit: int = 16) -> None:
         """Fetch authoritative Zulip messages, then use the same router/dedup path as native events."""
         now = self.clock.monotonic()
-        for row in self.webhook_spool.pending()[:limit]:
+        if self.webhook_drain_retry_at > now:
+            return
+        try:
+            # Scan the bounded spool (10k max) for work that can run now.  A disconnected seat or
+            # one message in backoff must not pin every ready seat behind it.
+            rows = self.webhook_spool.pending()
+        except OSError:
+            self.webhook_drain_retry_at = now + 5.0
+            self.log.write("outgoing-webhook-drain-deferred", reason="spool-io")
+            return
+        requests = 0
+        for row in rows:
+            if requests >= max(0, limit):
+                break
             seat, message_id = row["seat"], row["message_id"]
             key = (seat, message_id)
             if self.webhook_retry_at.get(key, 0.0) > now:
@@ -642,33 +656,44 @@ class Daemon:
             runner = self.seats.get(seat)
             if runner is None or runner.client is None or runner.me is None:
                 continue
+            requests += 1
             try:
                 response = runner.client.get("messages/%d" % message_id, {"apply_markdown": False},
                                              timeout=min(5.0, self.http_timeout))
             except Z.ApiError as exc:
                 if exc.status is not None and exc.status < 500 and exc.status != 429:
-                    self.webhook_spool.remove(seat, message_id)
-                    self.webhook_retry_at.pop(key, None)
-                    self.log.write("outgoing-webhook-message-unavailable", seat=seat, id=message_id)
+                    try:
+                        self.webhook_spool.remove(seat, message_id)
+                        self.webhook_retry_at.pop(key, None)
+                        self.log.write("outgoing-webhook-message-unavailable", seat=seat, id=message_id)
+                    except OSError:
+                        self.webhook_retry_at[key] = now + 5.0
+                        self.log.write("outgoing-webhook-drain-deferred", seat=seat, id=message_id,
+                                       reason="spool-io")
                 else:
                     self.webhook_retry_at[key] = now + 5.0
                 continue
             except (Z.NetworkError, OSError):
                 self.webhook_retry_at[key] = now + 5.0
                 continue
-            message = response.get("message") if isinstance(response, dict) else None
-            if not isinstance(message, dict) or message.get("id") != message_id:
-                message = None
-            if message is None:
+            try:
+                message = response.get("message") if isinstance(response, dict) else None
+                if not isinstance(message, dict) or message.get("id") != message_id:
+                    message = None
+                if message is None:
+                    self.webhook_spool.remove(seat, message_id)
+                    self.webhook_retry_at.pop(key, None)
+                    self.log.write("outgoing-webhook-message-unavailable", seat=seat, id=message_id)
+                    continue
+                # Do not advance the native event cursor here.  If this arrives out of order, earlier
+                # Zulip events still route; the matching native event advances the cursor on dedup.
+                self._route_message(runner, message, advance_cursor=False)
                 self.webhook_spool.remove(seat, message_id)
                 self.webhook_retry_at.pop(key, None)
-                self.log.write("outgoing-webhook-message-unavailable", seat=seat, id=message_id)
-                continue
-            # Do not advance the native event cursor here.  If this arrives out of order, earlier
-            # Zulip events still route; the matching native event advances the cursor on dedup.
-            self._route_message(runner, message, advance_cursor=False)
-            self.webhook_spool.remove(seat, message_id)
-            self.webhook_retry_at.pop(key, None)
+            except OSError:
+                self.webhook_retry_at[key] = now + 5.0
+                self.log.write("outgoing-webhook-drain-deferred", seat=seat, id=message_id,
+                               reason="spool-io")
 
     def reload(self) -> None:
         new = C.load(self.root, self.config_path)

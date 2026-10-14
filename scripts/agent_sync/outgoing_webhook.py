@@ -9,6 +9,7 @@ import hmac
 import json
 import os
 import re
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
@@ -41,36 +42,59 @@ class DurableSpool:
         return "%s-%d.json" % (normalized, message_id)
 
     def add(self, seat: str, message_id: int) -> bool:
-        """Persist identity only; return False when this accepted event already has a spool file."""
+        """Atomically persist identity; return False only for a valid existing event row."""
         name = self._name(seat, message_id)
         payload = json.dumps({"seat": seat.upper(), "message_id": message_id},
                              sort_keys=True, separators=(",", ":")).encode("utf-8")
         path = os.path.join(self.directory, name)
         with self.lock:
             pending_count = sum(1 for item in os.listdir(self.directory) if _FILE_RE.fullmatch(item))
-            if pending_count >= MAX_PENDING_EVENTS:
+            exists = os.path.exists(path)
+            if pending_count >= MAX_PENDING_EVENTS and not exists:
                 raise OverflowError("webhook spool is full")
-            try:
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            except FileExistsError:
+            if exists and self._valid_file(path, seat.upper(), message_id):
+                self._fsync_directory()
                 return False
+            fd, temp_path = tempfile.mkstemp(prefix=".outgoing-", suffix=".tmp", dir=self.directory)
             try:
-                view = memoryview(payload)
-                while view:
-                    written = os.write(fd, view)
-                    view = view[written:]
-                os.fsync(fd)
-            except BaseException:
-                os.close(fd)
                 try:
-                    os.unlink(path)
-                except OSError:
+                    view = memoryview(payload)
+                    while view:
+                        written = os.write(fd, view)
+                        view = view[written:]
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                if exists:
+                    # A prior crash may have left a torn final-name file.  Replace it atomically
+                    # with the fully synced row so a redelivery cannot be acknowledged and lost.
+                    os.replace(temp_path, path)
+                else:
+                    try:
+                        os.link(temp_path, path)
+                    except FileExistsError:
+                        if self._valid_file(path, seat.upper(), message_id):
+                            self._fsync_directory()
+                            return False
+                        os.replace(temp_path, path)
+                    else:
+                        os.unlink(temp_path)
+            finally:
+                try:
+                    os.unlink(temp_path)
+                except FileNotFoundError:
                     pass
-                raise
-            else:
-                os.close(fd)
             self._fsync_directory()
         return True
+
+    @staticmethod
+    def _valid_file(path: str, seat: str, message_id: int) -> bool:
+        try:
+            with open(path, "rb") as fh:
+                row = json.loads(fh.read(2048).decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            return False
+        return row == {"seat": seat, "message_id": message_id}
 
     def pending(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []

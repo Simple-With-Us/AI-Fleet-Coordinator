@@ -97,6 +97,17 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
             restarted.remove("BF-BUILDER", 456)
             self.assertEqual(restarted.pending(), [])
 
+    def test_redelivery_repairs_torn_final_file_atomically(self):
+        with tempfile.TemporaryDirectory() as directory:
+            spool = OW.DurableSpool(directory)
+            torn = Path(directory) / "CLAUDE-789.json"
+            torn.write_bytes(b'{"seat":"CLAUDE",')
+
+            self.assertTrue(spool.add("CLAUDE", 789))
+            restarted = OW.DurableSpool(directory)
+            self.assertEqual(restarted.pending(), [{"seat": "CLAUDE", "message_id": 789}])
+            self.assertFalse(restarted.add("CLAUDE", 789))
+
     def test_duplicate_webhook_deliveries_are_acknowledged_without_duplicate_spool_rows(self):
         token = secrets.token_hex(24)
         with tempfile.TemporaryDirectory() as directory:
@@ -147,6 +158,49 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         self.assertEqual([row["id"] for row in self.inbox("CLAUDE")].count(msg_id), 1)
         self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", BOT_EMAIL, msg_id), "duplicate")
         self.assertEqual(daemon.webhook_spool.pending(), [])
+
+    def test_spool_remove_io_error_is_deferred_and_native_event_still_routes(self):
+        self.write_config(extra_daemon='outgoing_webhook_seats = ["CLAUDE"]')
+        daemon = self.daemon()
+        self.assertTrue(daemon.connect_seat("CLAUDE"))
+        runner = daemon.seats["CLAUDE"]
+        msg_id = self.fake.add_message("Jay Wedgeworth", "agent-sync", "AFC-309 spool retry",
+                                       "wake Codex", deliver=False)
+        self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", BOT_EMAIL, msg_id), "accepted")
+        original_remove = daemon.webhook_spool.remove
+
+        def fail_remove(_seat: str, _message_id: int) -> None:
+            raise OSError("simulated fsync failure")
+
+        daemon.webhook_spool.remove = fail_remove
+        daemon._drain_outgoing_webhook_spool(limit=1)
+        self.assertEqual(daemon.webhook_spool.pending(), [{"seat": "CLAUDE", "message_id": msg_id}])
+        self.assertGreater(daemon.webhook_retry_at[("CLAUDE", msg_id)], daemon.clock.monotonic())
+        daemon.webhook_spool.remove = original_remove
+
+        actual = self.fake._find(msg_id)
+        daemon.handle_events(runner, [{"type": "message", "message": actual}])
+        self.assertEqual(runner.cursor, msg_id)
+
+    def test_disconnected_and_backoff_heads_do_not_starve_ready_spool_rows(self):
+        self.write_config(extra_daemon='outgoing_webhook_seats = ["CLAUDE"]')
+        daemon = self.daemon()
+        self.assertTrue(daemon.connect_seat("CLAUDE"))
+        runner = daemon.seats["CLAUDE"]
+        first_id = self.fake.add_message("Jay Wedgeworth", "agent-sync", "AFC-309 retry head",
+                                         "older deferred event", deliver=False)
+        later_id = self.fake.add_message("Jay Wedgeworth", "agent-sync", "AFC-309 ready tail",
+                                         "ready event", deliver=False)
+        daemon.webhook_spool.add("GONE", 1)
+        daemon.webhook_spool.add("CLAUDE", first_id)
+        daemon.webhook_spool.add("CLAUDE", later_id)
+        daemon.webhook_retry_at[("CLAUDE", first_id)] = daemon.clock.monotonic() + 5.0
+
+        daemon._drain_outgoing_webhook_spool(limit=1)
+
+        self.assertFalse((Path(daemon.webhook_spool.directory) / ("CLAUDE-%d.json" % later_id)).exists())
+        self.assertTrue((Path(daemon.webhook_spool.directory) / ("CLAUDE-%d.json" % first_id)).exists())
+        self.assertTrue(any(row["id"] == later_id for row in self.inbox("CLAUDE")))
 
     def test_webhook_wrong_bot_email_is_rejected_before_spooling(self):
         self.write_config(extra_daemon='outgoing_webhook_seats = ["CLAUDE"]')
