@@ -77,18 +77,20 @@ class GrokTransport:
     def _refresh(cls) -> None:
         global _DISCOVERY_SESSIONS, _DISCOVERY_UPDATED, _DISCOVERY_ERROR, _DISCOVERY_RUNNING
         global _DISCOVERY_CURSOR, _DISCOVERY_CANDIDATE_SESSIONS, _DISCOVERY_COMPLETE
-        with _DISCOVERY_LOCK:
-            cursor = _DISCOVERY_CURSOR
         try:
-            sessions, next_cursor = cls._read_leader_sessions(cursor)
-        except Exception:
-            with _DISCOVERY_LOCK:
-                _DISCOVERY_ERROR = "leader list unavailable"
-        else:
-            with _DISCOVERY_LOCK:
-                if next_cursor is not None and next_cursor in _DISCOVERY_SEEN_CURSORS:
-                    _DISCOVERY_ERROR = "leader repeated pagination cursor"
-                else:
+            for page in range(_DISCOVERY_MAX_PAGES):
+                with _DISCOVERY_LOCK:
+                    cursor = _DISCOVERY_CURSOR
+                try:
+                    sessions, next_cursor = cls._read_leader_sessions(cursor)
+                except Exception:
+                    with _DISCOVERY_LOCK:
+                        _DISCOVERY_ERROR = "leader list unavailable"
+                    break
+                with _DISCOVERY_LOCK:
+                    if next_cursor is not None and next_cursor in _DISCOVERY_SEEN_CURSORS:
+                        _DISCOVERY_ERROR = "leader repeated pagination cursor"
+                        break
                     if _DISCOVERY_CANDIDATE_SESSIONS is None:
                         _DISCOVERY_CANDIDATE_SESSIONS = []
                     known = {row.get("sessionId"): index for index, row in enumerate(_DISCOVERY_CANDIDATE_SESSIONS)
@@ -105,12 +107,17 @@ class GrokTransport:
                         if _DISCOVERY_SESSIONS is None:
                             _DISCOVERY_SESSIONS = [dict(row) for row in _DISCOVERY_CANDIDATE_SESSIONS]
                             _DISCOVERY_UPDATED = time.monotonic()
+                        if page + 1 >= _DISCOVERY_MAX_PAGES:
+                            _DISCOVERY_SESSIONS = [dict(row) for row in _DISCOVERY_CANDIDATE_SESSIONS]
+                            _DISCOVERY_ERROR = "leader page limit reached"
+                            break
                     else:
                         _DISCOVERY_SESSIONS = [dict(row) for row in _DISCOVERY_CANDIDATE_SESSIONS]
                         _DISCOVERY_CANDIDATE_SESSIONS = None
                         _DISCOVERY_UPDATED = time.monotonic()
                         _DISCOVERY_COMPLETE = True
                         _DISCOVERY_ERROR = None
+                        break
         finally:
             with _DISCOVERY_LOCK:
                 _DISCOVERY_RUNNING = False
@@ -158,37 +165,10 @@ class GrokTransport:
                     _DISCOVERY_SEEN_CURSORS = set()
                     _DISCOVERY_CANDIDATE_SESSIONS = []
                     _DISCOVERY_COMPLETE = False
-        pages = 0
-        while True:
-            if pages >= _DISCOVERY_MAX_PAGES:
-                break
-            with _DISCOVERY_LOCK:
-                complete = _DISCOVERY_COMPLETE
-            # A completed warm cache needs no second refresh in the same call.  A newly
-            # requested inventory may start a periodic refresh before returning it.
-            if complete and pages > 0:
-                break
-            self._schedule_refresh(force=force or pages > 0)
-            with _DISCOVERY_LOCK:
-                complete = _DISCOVERY_COMPLETE
-                running = _DISCOVERY_RUNNING
-            if complete or pages >= _DISCOVERY_MAX_PAGES:
-                break
-            if not running and not wait:
-                break
-            if not wait:
-                break
-            _DISCOVERY_DONE.wait(_DISCOVERY_OUTER_TIMEOUT + 1.0)
-            pages += 1
-            with _DISCOVERY_LOCK:
-                if _DISCOVERY_ERROR:
-                    break
+        self._schedule_refresh(force=force)
+        if wait:
+            _DISCOVERY_DONE.wait((_DISCOVERY_OUTER_TIMEOUT + 1.0) * _DISCOVERY_MAX_PAGES)
         with _DISCOVERY_LOCK:
-            if pages >= _DISCOVERY_MAX_PAGES and not _DISCOVERY_COMPLETE and _DISCOVERY_CANDIDATE_SESSIONS:
-                # Keep every fetched page visible but mark it stale/non-wakeable: the page cap
-                # prevents this one-shot call from claiming it saw the complete inventory.
-                _DISCOVERY_SESSIONS = [dict(row) for row in _DISCOVERY_CANDIDATE_SESSIONS]
-                _DISCOVERY_ERROR = "leader page limit reached"
             sessions = [dict(row) for row in _DISCOVERY_SESSIONS] if _DISCOVERY_SESSIONS is not None else None
             updated = _DISCOVERY_UPDATED
             error = _DISCOVERY_ERROR

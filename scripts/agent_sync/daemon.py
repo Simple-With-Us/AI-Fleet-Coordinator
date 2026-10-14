@@ -1836,7 +1836,7 @@ class Daemon:
             if not hasattr(self, "_chat_catalog"):
                 from .chat_catalog import ChatCatalog
                 self._chat_catalog = ChatCatalog(home=self.home, scrub=self.scrub, max_records=120)
-            rows = self._chat_catalog.discover()
+            rows = self._chat_catalog.discover(wait_grok=True)
             # Rank only against actual owner trigger text, never a peer's embedded instructions.
             owner_text = " ".join(str(m.get("content") or "") for m in history or []
                                   if m.get("id") in pending.owner_ids).lower()
@@ -1901,7 +1901,7 @@ class Daemon:
         target = None
         if not reason:
             try:
-                self._chat_catalog.discover(force=True)
+                self._chat_catalog.discover(force=True, wait_grok=True)
                 target = self._chat_catalog.resolve(target_id)
             except Exception:
                 reason = "chat catalog could not be refreshed"

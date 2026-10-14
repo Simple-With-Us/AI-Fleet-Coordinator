@@ -5,6 +5,7 @@ import io
 import socket
 import subprocess
 import sys
+import threading
 import tempfile
 import time
 import unittest
@@ -173,14 +174,24 @@ class TransportTests(unittest.TestCase):
         transport.disk = SimpleNamespace(load_active=lambda: [],
                                          turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},
                                          is_self_session=lambda _: False)
-        with patch("agent_sync.chat_transport.subprocess.run", return_value=self.leader_result([
-            {"sessionId": "chat-1", "cwd": "/work"}
-        ])):
+        started, release = threading.Event(), threading.Event()
+
+        def page(command, **_kwargs):
+            if "--cursor" in command:
+                return self.leader_result([{"sessionId": "chat-2", "cwd": "/two"}])
+            started.set()
+            release.wait(1)
+            return self.leader_result([{"sessionId": "chat-1", "cwd": "/work"}],
+                                      next_cursor="page-2")
+
+        with patch("agent_sync.chat_transport.subprocess.run", side_effect=page):
             with self.assertRaisesRegex(RuntimeError, "pending"):
                 transport.discover(wait=False)
+            self.assertTrue(started.wait(1))
+            release.set()
             self.assertTrue(CT._DISCOVERY_DONE.wait(1))
-            row = transport.discover(wait=False)[0]
-        self.assertTrue(row["wake"])
+            rows = transport.discover(wait=False)
+        self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
 
     def test_fresh_shared_snapshot_is_immediate_and_refresh_errors_disable_wake(self):
         sessions = [{"sessionId": "chat-1", "cwd": "/work"}]
