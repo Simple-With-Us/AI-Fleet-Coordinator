@@ -16,3 +16,5 @@ Build from repository root with Dockerfile scripts/echo-mail-relay/Dockerfile. R
 Tests: cd scripts/echo-mail-relay && python3 -m unittest -v
 
 Deployment gates: owner-approved sender and provider key; working hosting access; active ECHO identity validation after any bot replacement; secure route-key provisioning; endpoint smoke tests; recipient email receipt/wake. Code is preparation, not evidence that these passed.
+
+Wise routes: /listener/wise and /zulip/wise. WISE_LISTENER_HMAC_KEY, WISE_ZULIP_WEBHOOK_TOKEN, WISE_BOT_EMAIL and WISE_ZULIP_API_KEY are separate from ECHO credentials. Wise delivers only to wedgeworth@mail.instinct.com; Echo only to jaywedgeworth@mail.instinct.com. Outbox v2 uses (seat,id); legacy Echo rows are preserved. SMTP delivery is disabled until explicit enablement and verified receipts.

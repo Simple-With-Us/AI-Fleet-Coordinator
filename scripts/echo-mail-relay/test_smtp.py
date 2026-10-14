@@ -1,5 +1,6 @@
 """Manual, one-shot synthetic test only. Never called by the service."""
 import os, smtplib, ssl, sys, time
+from pathlib import Path
 from email.message import EmailMessage
 def main():
     seat=sys.argv[1]
@@ -17,7 +18,8 @@ def main():
       refused=smtp.send_message(msg)
       if refused:raise RuntimeError()
      print('SMTP accepted',seat,str(msg['Message-ID']),int(time.time()))
-    except Exception:
+    except Exception as error:
+        Path('/data/smtp-test-'+seat+'-20261013.result').write_text('unconfirmed '+type(error).__name__)
      print('SMTP test not confirmed; inspect before any retry',seat);sys.exit(1)
 
 if __name__=='__main__':main()
