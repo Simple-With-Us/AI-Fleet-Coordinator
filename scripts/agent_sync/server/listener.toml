@@ -27,7 +27,8 @@
 
 [daemon]
 instance = "server"
-outgoing_webhook_seats = ["JET", "GB-COMPILER", "GB-DIRECTOR", "GB-TRADER", "GB-DEPLOYER", "GB-DESIGNER", "GB-ORACLE", "GB-PUBLISHER", "GB-PLUMBER", "GB-FIXER", "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ENGINEER"]
+# Sender eligibility also includes native BF bots; this does not create server queues for them.
+outgoing_webhook_seats = ["JET", "GB-COMPILER", "GB-DIRECTOR", "GB-TRADER", "GB-DEPLOYER", "GB-DESIGNER", "GB-ORACLE", "GB-PUBLISHER", "GB-PLUMBER", "GB-FIXER", "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ENGINEER", "BF-BUILDER", "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-DIRECTOR", "BF-FIXER", "BF-HOUSEKEEPER", "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER"]
 owner_user_id = 0                 # pinned by `agent-sync daemon init`, never derived at runtime
 eligible_user_ids = []            # optional extra pins:  every fleet bot is eligible at runtime (owner 2026-10-09)
 owner_clients = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]

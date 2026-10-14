@@ -922,7 +922,10 @@ class PartitionTests(ServerHarness):
         gb = sorted(s for s in partition if s.startswith("GB-"))
         self.assertEqual(len(gb), 11)
         self.assertEqual({partition[s] for s in gb}, {"server"})
-        self.assertEqual({v for s, v in partition.items() if s.startswith("BF-")}, {"none"})
+        bf = {s for s in partition if s.startswith("BF-")}
+        self.assertEqual(len(bf), 11)
+        self.assertIn("BF-DIRECTOR", bf)
+        self.assertEqual({partition[s] for s in bf}, {"none"})
         self.assertEqual({s for s, v in partition.items() if v == "mac"}, set(launchd.READER_SEATS),
                          "the Mac holds every Mac seat (owner, Thu, Oct 8)")
         for seat in ["MA", "JET", "GROK-WEB", "ECHO", "INSTINCT"]:
@@ -935,6 +938,8 @@ class PartitionTests(ServerHarness):
         server = C.from_dict(tomllib.loads((SERVER_DIR / "listener.toml").read_text()))
         self.assertEqual(server.errors, [])
         self.assertEqual(server.instance, "server")
+        self.assertTrue(bf <= server.outgoing_webhook_seats)
+        self.assertFalse(bf & set(server.seats), "BF sender eligibility must not create server consumers")
         self.assertEqual(C.partition_errors(server, partition, env_instance="server"), [])
         self.assertEqual(sorted(server.seats), sorted(list(gb) + list(CLOUD_SEATS)),
                          "the enabled seats are all eleven GB personas and the five cloud seats")
