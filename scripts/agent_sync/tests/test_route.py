@@ -76,6 +76,27 @@ class RouteHarness(DaemonHarness):
 
 
 class RouteHonoredTests(RouteHarness):
+    def test_a_route_only_owner_wake_is_done_without_a_channel_reply(self) -> None:
+        # A route with action none posts the route and attempts no channel reply.  The missing
+        # posted_id must stay a done wake, and the owner must not hear wake-undelivered.
+        self.set_claude(mode="ok", output={"action": "none", "reply": None, "board": None,
+                                           "owner_note": None, "risk": None,
+                                           "route": {"seat": "CODEX",
+                                                     "reason": "Jay wants a look at the CT build failure."}})
+        daemon = self.start()
+        mid = self.owner_says(daemon)
+        self.wake_cycle(daemon, 6)
+        finals = [row for row in self.ledger() if row["state"] in ("done", "failed")]
+        done = finals[-1]
+        self.assertEqual(done["state"], "done", done)
+        self.assertEqual(done["action"], "none")
+        self.assertIsNone(done.get("posted_id"))
+        self.assertEqual(done["route"]["status"], "posted")
+        posts = self.stream_posts()
+        self.assertEqual(len(posts), 1, [post["content"] for post in posts])
+        self.assertTrue(posts[0]["content"].startswith("[CLAUDE·route→CODEX] re=%d\n" % mid), posts[0]["content"])
+        self.assertNotIn("wake-undelivered", [item["kind"] for item in self.owner_queue()])
+
     def test_an_owner_triggered_route_posts_the_reply_then_the_route_and_notes_the_owner(self) -> None:
         self.set_claude(mode="ok", output=routed())
         daemon = self.start()

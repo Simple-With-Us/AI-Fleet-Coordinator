@@ -1811,13 +1811,14 @@ class Daemon:
             return
         outcome = self.act(runner, pending, obj, history=history)
         finished = self.clock.time()
-        # Surface the held-back items only when this wake actually handled its triggers.  A refusal
-        # inside act() (a mention that survived neutralizing, the secret scanner, a reply that could
-        # not be posted) is recorded as failed and leaves the held refs held, so the next wake sees
-        # them again instead of finding them already delivered.
+        # Held refs are surfaced only after the wake handled its triggers.  A refusal (a mention
+        # that survived neutralizing, the secret scanner) and a reply that was attempted but did
+        # not land are failed, and the held refs stay held.  An owner wake that attempted no reply
+        # is delivered:  action none, a board item with no reply text, or a route-only result.
         refused = outcome.get("refused")
-        delivered = not refused and not (
-            pending.owner and not outcome.get("posted_id") and not outcome.get("draft_to"))
+        attempted = bool(outcome.pop("reply_attempted", False))
+        landed = bool(outcome.get("posted_id") or outcome.get("draft_to"))
+        delivered = not refused and (landed or not attempted)
         runner.ledger.append(pending.row("done" if delivered else "failed", finished,
                                          cost_usd=result.cost_usd, exit=result.exit,
                                          secs=result.secs, action=obj["action"], risk=obj.get("risk"),
@@ -2062,6 +2063,7 @@ class Daemon:
                 self.notifier.notify(runner.seat, "agent-sync %s" % runner.seat, "a wake reply was refused by the "
                                      "secret scanner", kind="wake-secret", key="secret:%s" % pending.wake_id, once_per=0)
             else:
+                outcome["reply_attempted"] = True
                 outcome["posted_id"] = self.post(runner, pending, text)
         board = obj.get("board")
         if obj.get("action") == "board" and isinstance(board, dict):
@@ -2083,6 +2085,7 @@ class Daemon:
                     dm_note = ("%s  (Route to %s dropped: %s.)" % (dm_note.strip(), route.get("seat"), gate)).strip()
                 outcome.update(self.dm_owner(runner, pending, dm_note, risk, history))
             if pending.owner and not outcome["posted_id"] and not lease_id:
+                outcome["reply_attempted"] = True
                 outcome["posted_id"] = self.post(runner, pending, W.compose_reply(runner.seat, trigger, W.OWNER_ACK))
         # The route comes last, after the reply:  two posts, because a `·wake`-tagged post never wakes
         # anyone and the route post must wake its target.

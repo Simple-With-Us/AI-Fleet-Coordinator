@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_sync import adapters as A
+from agent_sync import heldback as HELD
 from agent_sync import live as L
 from agent_sync import wakes as W
 from agent_sync import zulip as Z
@@ -59,6 +60,24 @@ class DaemonHarness(ListenerHarness):
 
     def bot_posts(self):
         return [m for m in self.fake.messages if m["sender_id"] == 10]
+
+    def seed_held(self, message_id: int = 900001) -> int:
+        """One held-back record the next delivered wake should surface."""
+        HELD.hold(self.seat_paths(), {
+            "wake_ids": ["w-seed"], "message_id": message_id, "owner": False,
+            "topic_key": L.topic_key("agent-sync", "earlier"), "dm": False,
+            "channel": "agent-sync", "topic": "earlier",
+            "stream_id": self.fake.streams["agent-sync"], "sender_full_name": "Codex",
+            "zulip_link": "", "reason": "wakes_per_hour", "at": int(self.clock.time()),
+        }, cap=200, now=self.clock.time())
+        return message_id
+
+    def held_ids(self) -> list[int]:
+        data = HELD.load(self.seat_paths())
+        return [entry["message_id"] for entry in data["records"] + data["overflow"]]
+
+    def terminal_wakes(self) -> list[dict[str, Any]]:
+        return [row for row in self.ledger() if row["state"] in ("done", "failed")]
 
 
 class RoutingTests(DaemonHarness):
@@ -658,17 +677,87 @@ class WakeTests(DaemonHarness):
     def test_a_wake_act_refuses_does_not_surface(self) -> None:
         # The second half of AFC-306:  act() can refuse after validation passed (a mention that
         # survived neutralizing, or the secret scanner).  That must also be failed, and must not
-        # clear the held refs.
-        self.set_claude(mode="ok", output={"action": "reply", "reply": "ok", "board": None,
-                                           "owner_note": None, "risk": "low", "route": None},
-                        leak=["sk-ant-api03-SECRETVALUE"])
+        # clear the held refs.  The secret sits in the reply, which is what the scanner reads.
+        held_id = 900001
+        self.write_config(extra_daemon="held_alert_minutes = 0")
+        self.set_claude(mode="ok", output={"action": "reply", "reply": "here you go: " + self.key,
+                                           "board": None, "owner_note": None, "risk": "low",
+                                           "route": None})
         daemon = self.started()
+        self.seed_held(held_id)
         self.fake.add_message("Codex", "agent-sync", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.clock.advance(19)
         daemon.tick()
         self.wake_cycle(daemon, 2)
-        self.assertIn(self.ledger()[-1]["state"], ("failed", "done"))
+        row = self.terminal_wakes()[-1]
+        self.assertEqual(row["state"], "failed", row)
+        self.assertTrue(str(row.get("refused") or "").startswith("secret scanner"), row)
+        self.assertEqual(self.bot_posts(), [])
+        self.assertEqual(self.held_ids(), [held_id])
+        self.assertFalse(any(entry["state"] == "surfaced" for entry in self.ledger()))
+
+    def test_an_owner_wake_with_no_reply_is_done_and_surfaces_held_items(self) -> None:
+        # action none attempts no channel reply.  A missing posted_id is success, and the held
+        # refs this wake listed are surfaced.
+        held_id = 900001
+        self.write_config(extra_daemon="held_alert_minutes = 0")
+        self.set_claude(mode="ok", output={"action": "none", "reply": None, "board": None,
+                                           "owner_note": None, "risk": None})
+        daemon = self.started()
+        self.seed_held(held_id)
+        self.fake.add_message(self.fake.user_named("Jay Wedgeworth"), "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.wake_cycle(daemon, 6)
+        row = self.terminal_wakes()[-1]
+        self.assertEqual((row["state"], row.get("action")), ("done", "none"), row)
+        self.assertIsNone(row.get("posted_id"))
+        self.assertNotIn("refused", row)
+        self.assertEqual(self.bot_posts(), [])
+        self.assertEqual(self.held_ids(), [])
+        self.assertTrue(any(entry["state"] == "surfaced" for entry in self.ledger()))
+        kinds = [item["kind"] for item in L.read_jsonl(self.seat_paths().owner_queue)]
+        self.assertNotIn("wake-undelivered", kinds)
+
+    def test_an_owner_board_only_wake_is_done_without_a_reply(self) -> None:
+        held_id = 900002
+        self.write_config(extra_daemon="held_alert_minutes = 0")
+        self.set_claude(mode="ok", output={"action": "board", "reply": None, "owner_note": None, "risk": None,
+                                           "board": {"title": "Fix it", "severity": "P2", "desc": "details"}})
+        daemon = self.started()
+        self.seed_held(held_id)
+        self.fake.add_message(self.fake.user_named("Jay Wedgeworth"), "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.wake_cycle(daemon, 6)
+        row = self.terminal_wakes()[-1]
+        self.assertEqual(row["state"], "done", row)
+        self.assertEqual(row.get("board_skipped"), "board_per_day")
+        self.assertIsNone(row.get("posted_id"))
+        self.assertEqual(self.bot_posts(), [])
+        self.assertEqual(self.held_ids(), [])
+        kinds = [item["kind"] for item in L.read_jsonl(self.seat_paths().owner_queue)]
+        self.assertNotIn("wake-undelivered", kinds)
+
+    def test_a_reply_that_fails_to_post_is_failed_and_keeps_held_items(self) -> None:
+        held_id = 900003
+        self.write_config(extra_daemon="held_alert_minutes = 0")
+        self.set_claude(mode="ok", output=reply_output("this reply will not land"))
+        daemon = self.started()
+        self.seed_held(held_id)
+        self.fake.inject("POST", "messages", status=400,
+                         body={"result": "error", "msg": "rejected", "code": "BAD_REQUEST"})
+        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.clock.advance(19)
+        daemon.tick()
+        self.wake_cycle(daemon, 2)
+        row = self.terminal_wakes()[-1]
+        self.assertEqual(row["state"], "failed", row)
+        self.assertNotIn("refused", row)
+        self.assertIsNone(row.get("posted_id"))
+        self.assertEqual(self.bot_posts(), [])
+        self.assertEqual(self.held_ids(), [held_id])
+        self.assertFalse(any(entry["state"] == "surfaced" for entry in self.ledger()))
 
     def test_single_flight_fifo_overflow(self) -> None:
         daemon = self.started()
@@ -770,7 +859,8 @@ class WakeTests(DaemonHarness):
         # held refs.  The validator's reason is preserved on the row.
         self.assertEqual(finals[0]["state"], "failed")
         self.assertIn("keys extra extra", finals[0]["reason"])
-        self.assertEqual(finals[1]["refused"].startswith("secret scanner"), True)
+        self.assertEqual(finals[1]["state"], "failed")
+        self.assertTrue(finals[1]["refused"].startswith("secret scanner"))
         self.assertEqual((finals[2]["state"], finals[2]["reason"]), ("failed", "the init event listed tools or MCP servers"))
 
     def test_escalation_notifies_the_owner_and_acks_an_owner_trigger(self) -> None:
