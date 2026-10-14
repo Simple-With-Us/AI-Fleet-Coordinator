@@ -96,6 +96,7 @@ ROUTINE_DEFAULT_HEADER = {"header": "X-Routine-Key", "bearer": "Authorization", 
 ROUTINE_RESERVED_HEADERS = frozenset({"host", "content-length", "content-type", "transfer-encoding", "connection",
                                       "user-agent", "idempotency-key", "cookie"})
 ROUTINE_TIMEOUT_DEFAULT = 15.0
+OUTGOING_WEBHOOK_DEFAULT_PORT = 8787
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
 _BOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
@@ -231,6 +232,10 @@ class Config:
         self.held_alert_minutes = float(HELD_ALERT_DEFAULT_MINUTES)
         self.held_alert_seat: str | None = None
         self.auto_subscribe = True  # daemon.auto_subscribe:  held seats join every public channel (owner 2026-10-10)
+        self.outgoing_webhook_seats: frozenset[str] = frozenset()
+        self.outgoing_webhook_enabled = False
+        self.outgoing_webhook_bind = "127.0.0.1"
+        self.outgoing_webhook_port = OUTGOING_WEBHOOK_DEFAULT_PORT
 
     @property
     def ok(self) -> bool:
@@ -406,6 +411,40 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.auto_subscribe must be true or false")
     else:
         cfg.auto_subscribe = auto_sub
+    webhook_seats = daemon.get("outgoing_webhook_seats", [])
+    if not isinstance(webhook_seats, list) or not all(isinstance(value, str) for value in webhook_seats):
+        errors.append("daemon.outgoing_webhook_seats must be a list of seat names")
+    else:
+        normalized = [value.upper() for value in webhook_seats]
+        invalid = [value for value in normalized if not _SEAT_RE.fullmatch(value)]
+        if invalid:
+            errors.append("daemon.outgoing_webhook_seats contains an invalid seat name")
+        elif len(set(normalized)) != len(normalized):
+            errors.append("daemon.outgoing_webhook_seats must not contain duplicates")
+        else:
+            cfg.outgoing_webhook_seats = frozenset(normalized)
+    webhook = raw.get("outgoing_webhook") or {}
+    if not isinstance(webhook, dict):
+        errors.append("[outgoing_webhook] must be a table")
+        webhook = {}
+    unknown_webhook = set(webhook) - {"enabled", "bind", "port"}
+    if unknown_webhook:
+        errors.append("[outgoing_webhook] has unknown setting(s): %s" % ", ".join(sorted(unknown_webhook)))
+    webhook_enabled = webhook.get("enabled", False)
+    if not isinstance(webhook_enabled, bool):
+        errors.append("outgoing_webhook.enabled must be true or false")
+    else:
+        cfg.outgoing_webhook_enabled = webhook_enabled
+    webhook_bind = webhook.get("bind", "127.0.0.1")
+    if not isinstance(webhook_bind, str) or not webhook_bind or len(webhook_bind) > 253:
+        errors.append("outgoing_webhook.bind must be a host or IP address")
+    else:
+        cfg.outgoing_webhook_bind = webhook_bind
+    webhook_port = webhook.get("port", OUTGOING_WEBHOOK_DEFAULT_PORT)
+    if isinstance(webhook_port, bool) or not isinstance(webhook_port, int) or not 1 <= webhook_port <= 65535:
+        errors.append("outgoing_webhook.port must be an integer from 1 to 65535")
+    else:
+        cfg.outgoing_webhook_port = webhook_port
     cfg.presence = L.presence_topics(raw)
     platform = ((raw.get("platform") or {}).get("claude-code") or {}) if isinstance(raw.get("platform"), dict) else {}
     seat = platform.get("seat") if isinstance(platform, dict) else None

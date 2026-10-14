@@ -46,6 +46,7 @@ from . import heartbeat as HB
 from . import heldalert as HELDALERT
 from . import heldback as HELD
 from . import live as L
+from . import outgoing_webhook as OW
 from . import router as R
 from . import secretscan
 from . import subscribe_all as SUB
@@ -238,6 +239,10 @@ class SeatRunner:
             raise RoleRefused("users/me for seat %s answered as a different user; refusing it" % self.seat)
         if role_refused(me):
             raise RoleRefused(role_refusal(self.seat, role))
+        bot_type = me.get("bot_type", R.GENERIC_BOT)
+        if bot_type != R.GENERIC_BOT and not (bot_type == 3 and
+                                              self.seat in self.daemon.config.outgoing_webhook_seats):
+            raise RoleRefused("the bot type for seat %s is not enabled by daemon.outgoing_webhook_seats" % self.seat)
         # A seat holds only its own bot.  The partition is checked by seat name, so a section
         # under another name (bot = "GB-Compiler" in [seat.CLAUDE], or email_env and key_env
         # pointed at another seat's variables) would otherwise hold a bot that another seat or
@@ -456,6 +461,13 @@ class Daemon:
         self.children: set[subprocess.Popen[Any]] = set()  # every running wake child, one per waking seat
         self.child_lock = threading.Lock()
         self.router_queue: queue.Queue[tuple[str, str, Any]] = queue.Queue()
+        webhook_parent = L.listener_dir(self.root)
+        L.private_dir(webhook_parent)
+        os.chmod(webhook_parent, 0o700)
+        self.webhook_spool = OW.DurableSpool(os.path.join(webhook_parent, "outgoing-webhook"))
+        self.webhook_retry_at: dict[tuple[str, int], float] = {}
+        self.webhook_drain_retry_at = 0.0
+        self.outgoing_webhook_server: OW.OutgoingWebhookServer | None = None
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {"reap": -1e9, "status": -1e9, "grace": -1e9, "prune": -1e9, "held": -1e9}
@@ -572,6 +584,117 @@ class Daemon:
             gone.stop.set()  # its poller and wake worker exit instead of reconnecting
             gone.disconnect()
 
+    def _configure_outgoing_webhook(self) -> None:
+        """Start the optional receiver using only tokens for explicitly allowlisted seats."""
+        old = self.outgoing_webhook_server
+        self.outgoing_webhook_server = None
+        if old is not None:
+            old.close()
+        if not self.config.outgoing_webhook_enabled:
+            return
+        tokens: dict[str, str] = {}
+        for seat in sorted(self.config.outgoing_webhook_seats):
+            if seat not in self.seats:
+                continue
+            name = "ZULIP_OUTGOING_%s_TOKEN" % C.env_code(seat)
+            token = self.env.get(name) or ""
+            if token:
+                tokens[seat] = token
+                self.hide_values([token])
+        if not tokens:
+            self.log.write("outgoing-webhook-deny-all", reason="no configured seat token")
+        try:
+            server = OW.OutgoingWebhookServer(self.config.outgoing_webhook_bind,
+                                               self.config.outgoing_webhook_port,
+                                               tokens, self._accept_outgoing_webhook, self.log.write)
+            server.start()
+        except OSError as exc:
+            self.log.write("outgoing-webhook-error", error=type(exc).__name__)
+            return
+        self.outgoing_webhook_server = server
+        host, port = server.address
+        self.log.write("outgoing-webhook-started", bind=host, port=port, seats=sorted(tokens))
+
+    def _accept_outgoing_webhook(self, seat: str, bot_email: str, message_id: int) -> str:
+        """Persist an authenticated webhook ID.  Message content comes only from a later REST read."""
+        runner = self.seats.get(seat)
+        if (runner is None or seat not in self.config.outgoing_webhook_seats or runner.creds is None or
+                runner.me is None or runner.client is None):
+            return "unavailable"
+        if not isinstance(bot_email, str) or bot_email.casefold() != runner.creds.email.casefold():
+            return "rejected"
+        if runner.cursor is not None and message_id <= runner.cursor:
+            return "duplicate"
+        try:
+            added = self.webhook_spool.add(seat, message_id)
+        except (OSError, ValueError, OverflowError):
+            return "unavailable"
+        self.router_queue.put(("outgoing-webhook", None, None))
+        return "accepted" if added else "duplicate"
+
+    def _drain_outgoing_webhook_spool(self, *, limit: int = 16) -> None:
+        """Fetch authoritative Zulip messages, then use the same router/dedup path as native events."""
+        now = self.clock.monotonic()
+        if self.webhook_drain_retry_at > now:
+            return
+        try:
+            # Scan the bounded spool (10k max) for work that can run now.  A disconnected seat or
+            # one message in backoff must not pin every ready seat behind it.
+            rows = self.webhook_spool.pending()
+        except OSError:
+            self.webhook_drain_retry_at = now + 5.0
+            self.log.write("outgoing-webhook-drain-deferred", reason="spool-io")
+            return
+        requests = 0
+        for row in rows:
+            if requests >= max(0, limit):
+                break
+            seat, message_id = row["seat"], row["message_id"]
+            key = (seat, message_id)
+            if self.webhook_retry_at.get(key, 0.0) > now:
+                continue
+            runner = self.seats.get(seat)
+            if runner is None or runner.client is None or runner.me is None:
+                continue
+            requests += 1
+            try:
+                response = runner.client.get("messages/%d" % message_id, {"apply_markdown": False},
+                                             timeout=min(5.0, self.http_timeout))
+            except Z.ApiError as exc:
+                if exc.status is not None and exc.status < 500 and exc.status != 429:
+                    try:
+                        self.webhook_spool.remove(seat, message_id)
+                        self.webhook_retry_at.pop(key, None)
+                        self.log.write("outgoing-webhook-message-unavailable", seat=seat, id=message_id)
+                    except OSError:
+                        self.webhook_retry_at[key] = now + 5.0
+                        self.log.write("outgoing-webhook-drain-deferred", seat=seat, id=message_id,
+                                       reason="spool-io")
+                else:
+                    self.webhook_retry_at[key] = now + 5.0
+                continue
+            except (Z.NetworkError, OSError):
+                self.webhook_retry_at[key] = now + 5.0
+                continue
+            try:
+                message = response.get("message") if isinstance(response, dict) else None
+                if not isinstance(message, dict) or message.get("id") != message_id:
+                    message = None
+                if message is None:
+                    self.webhook_spool.remove(seat, message_id)
+                    self.webhook_retry_at.pop(key, None)
+                    self.log.write("outgoing-webhook-message-unavailable", seat=seat, id=message_id)
+                    continue
+                # Do not advance the native event cursor here.  If this arrives out of order, earlier
+                # Zulip events still route; the matching native event advances the cursor on dedup.
+                self._route_message(runner, message, advance_cursor=False)
+                self.webhook_spool.remove(seat, message_id)
+                self.webhook_retry_at.pop(key, None)
+            except OSError:
+                self.webhook_retry_at[key] = now + 5.0
+                self.log.write("outgoing-webhook-drain-deferred", seat=seat, id=message_id,
+                               reason="spool-io")
+
     def reload(self) -> None:
         new = C.load(self.root, self.config_path)
         refused = self.partition_check(new)
@@ -588,6 +711,7 @@ class Daemon:
         self.config = new
         self.config_notified = False
         self._apply_config()
+        self._configure_outgoing_webhook()
         self.log.write("reloaded", seats=sorted(self.seats), errors=len(self.config.errors))
 
     def _recover_ledgers(self) -> None:
@@ -767,9 +891,11 @@ class Daemon:
         """The eligible senders besides the owner:  every fleet bot in the seat's realm user list
         (router.fleet_bot_ids over the partition's tags, owned by the owner), plus the optional
         eligible_user_ids pins.  Cached until the user list, the tags or the owner pin changes."""
-        key = (runner.users_version, self.fleet_tags, self.config.owner_user_id)
+        key = (runner.users_version, self.fleet_tags, self.config.owner_user_id,
+               self.config.outgoing_webhook_seats)
         if runner.fleet_cache is None or runner.fleet_cache[0] != key:
-            runner.fleet_cache = (key, R.fleet_bot_ids(runner.users, self.fleet_tags, self.config.owner_user_id))
+            runner.fleet_cache = (key, R.fleet_bot_ids(runner.users, self.fleet_tags, self.config.owner_user_id,
+                                                       outgoing_webhook_seats=self.config.outgoing_webhook_seats))
         return set(self.config.eligible_user_ids) | runner.fleet_cache[1]
 
     def context(self, runner: SeatRunner) -> R.Context:
@@ -866,10 +992,19 @@ class Daemon:
         runner.flush_cursor(force=True)
 
     def route_message(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        self._route_message(runner, message, advance_cursor=True)
+
+    def _route_message(self, runner: SeatRunner, message: Mapping[str, Any], *, advance_cursor: bool) -> None:
         message_id = message.get("id")
         if not isinstance(message_id, int) or runner.me is None:
             return
-        if message_id <= runner.floor or message_id in runner.ring:
+        if message_id <= runner.floor:
+            return
+        if message_id in runner.ring:
+            # A webhook may route the authoritative message before Zulip's event arrives.  The
+            # later native event is still responsible for advancing the event cursor.
+            if advance_cursor:
+                runner.advance(message_id)
             return
         runner.ring.add(message_id)
         self._note_probe(runner, message)
@@ -885,7 +1020,8 @@ class Daemon:
         else:
             self._append_seat_inbox(runner, [self._quarantine_item(message)])
             self.log.write("quarantined", seat=runner.seat, id=message_id)
-        runner.advance(message_id)
+        if advance_cursor:
+            runner.advance(message_id)
 
     def _quarantine_item(self, message: Mapping[str, Any]) -> dict[str, Any]:
         return {"id": message.get("id"), "kind": "message", "quarantined": True, "channel": Z.message_channel(message),
@@ -2014,7 +2150,8 @@ class Daemon:
             return "unknown_seat", None, None
         if seat == runner.seat:
             return "self", None, None
-        bots = R.fleet_bots_by_seat(runner.users, self.fleet_tags, self.config.owner_user_id).get(seat) or []
+        bots = R.fleet_bots_by_seat(runner.users, self.fleet_tags, self.config.owner_user_id,
+                                    outgoing_webhook_seats=self.config.outgoing_webhook_seats).get(seat) or []
         if not bots:
             return "bot_inactive", None, None
         mode, why = self.route_mode(seat)
@@ -2935,6 +3072,7 @@ class Daemon:
             if self.refusal:  # the config changed while this listener waited
                 os.close(lock_fd)
                 return self.refuse_start()
+        self._configure_outgoing_webhook()
         for seat in ("GROK", "CURSOR"):
             self.chat_queue(seat).recover_interrupted()
         os.ftruncate(lock_fd, 0)
@@ -2968,6 +3106,8 @@ class Daemon:
                     self.route_backfill(runner, payload)
                 elif runner is not None and kind == "events":
                     self.handle_events(runner, payload)
+                elif kind == "outgoing-webhook" or not kind:
+                    self._drain_outgoing_webhook_spool(limit=1)
                 self.tick()
         finally:
             self.shutdown()
@@ -2976,6 +3116,9 @@ class Daemon:
 
     def shutdown(self) -> None:
         self.stop.set()
+        if self.outgoing_webhook_server is not None:
+            self.outgoing_webhook_server.close()
+            self.outgoing_webhook_server = None
         with self.child_lock:
             children = list(self.children)
         for child in children:

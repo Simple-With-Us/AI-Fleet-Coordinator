@@ -27,6 +27,7 @@
 
 [daemon]
 instance = "server"
+outgoing_webhook_seats = ["JET", "GB-COMPILER", "GB-DIRECTOR", "GB-TRADER", "GB-DEPLOYER", "GB-DESIGNER", "GB-ORACLE", "GB-PUBLISHER", "GB-PLUMBER", "GB-FIXER", "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ENGINEER"]
 owner_user_id = 0                 # pinned by `agent-sync daemon init`, never derived at runtime
 eligible_user_ids = []            # optional extra pins:  every fleet bot is eligible at runtime (owner 2026-10-09)
 owner_clients = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]
@@ -52,6 +53,12 @@ presence_topics = [["agent-sync", "roll call"], ["agent-sync", "fleet"], ["build
 # Zulip itself.  Read one inside the container with `agent-sync inbox --local --as <SEAT>`.  Their
 # variables are ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY, and they reach the container only when the
 # app restarts (a reload does not read the environment).  The partition gives all five to "server".
+# Enable only after the public reverse proxy is ready.  Empty tokens deny every seat.
+[outgoing_webhook]
+enabled = false
+bind = "0.0.0.0"
+port = 8787
+
 [seat.MA]
 instance = "server"
 creds = "env"                     # ZULIP_MA_EMAIL, ZULIP_MA_API_KEY (muse-assist-bot@)

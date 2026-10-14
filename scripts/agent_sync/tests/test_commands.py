@@ -326,6 +326,19 @@ class DmTests(Harness):
                 self.assertIn("sent id", result.out)
                 self.assertNotIn("the owner", result.out)
 
+    def test_dm_to_outgoing_seat_requires_allowlist_and_owner(self) -> None:
+        self.pin_owner()
+        path = self.state_dir / "listener.toml"
+        path.write_text(path.read_text() + 'outgoing_webhook_seats = ["JET"]\n')
+        bot = self.fake.add_user("openai-dot-bot@zulip.test", "Jet", is_bot=True)
+        bot.update(bot_type=3, bot_owner_id=self.OWNER_ID)
+        self.assertEqual(self.run_cli("dm", "--to", "Jet", "hello").code, 0)
+        bot["bot_owner_id"] = 999
+        self.assertEqual(self.run_cli("dm", "--to", "Jet", "hello").code, 2)
+        bot["bot_owner_id"] = self.OWNER_ID
+        self.pin_owner()
+        self.assertEqual(self.run_cli("dm", "--to", "Jet", "hello").code, 2)
+
     def test_dm_to_a_peer_needs_no_pinned_owner(self) -> None:
         self.assertEqual(self.run_cli("dm", "--to", "Codex", "hi").code, 0)
         self.assertEqual(json.loads(self.last_post().form["to"]), [11])
