@@ -117,7 +117,7 @@ class GrokTransport:
             error = "leader list unavailable"
             complete = False
         with _DISCOVERY_LOCK:
-            publish_partial = (not complete and bool(candidate) and _DISCOVERY_SESSIONS is None
+            publish_partial = (not complete and bool(candidate)
                                and error in ("leader repeated pagination cursor",
                                              "leader session list exceeded page cap"))
             if complete or publish_partial:

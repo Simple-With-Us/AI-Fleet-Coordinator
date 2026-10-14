@@ -159,11 +159,16 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
         self.assertTrue(rows[0]["stale"])
 
-    def test_page_cap_publishes_fetched_rows_but_disables_wake(self):
+    def test_page_cap_replaces_old_snapshot_with_fetched_stale_rows(self):
         transport = GrokTransport.__new__(GrokTransport)
         transport.disk = SimpleNamespace(load_active=lambda: [],
                                          turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},
                                          is_self_session=lambda _: False)
+        with CT._DISCOVERY_LOCK:
+            CT._DISCOVERY_SESSIONS = [{"sessionId": "old-chat", "cwd": "/old"}]
+            CT._DISCOVERY_UPDATED = time.monotonic()
+            CT._DISCOVERY_LAST_ATTEMPT = 0.0
+            CT._DISCOVERY_COMPLETE = True
         responses = [self.leader_result([{"sessionId": "chat-1", "cwd": "/one"}], next_cursor="page-2"),
                      self.leader_result([{"sessionId": "chat-2", "cwd": "/two"}], next_cursor="page-3")]
         with patch.object(CT, "_DISCOVERY_MAX_PAGES", 2), \
