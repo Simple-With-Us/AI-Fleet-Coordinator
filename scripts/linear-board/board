@@ -134,6 +134,13 @@ SEAT_APP_NAMES = {
     "GROK-WEB": "Grok Web", "CLUTCH": "Clutch", "MM": "MM", "FX": "Fx", "MC": "Muse Code",
     "MA": "Muse Assist", "JET": "Jet", "OPENCODE": "OpenCode",
     "ECHO": "Echo (Instinct)", "INSTINCT": "Wise (Instinct)",
+    # The eleven BotFleet role seats (AGENT-SYNC.md, owner 2026-10-09):  the ten role seats plus
+    # BF-DIRECTOR.  Each is named for its own seat tag, which app_name_ok accepts directly, so a
+    # rename in Linear to BF-Fixer, BF-Compiler or any casing still matches its seat.
+    "BF-BUILDER": "BF-Builder", "BF-COMPILER": "BF-Compiler", "BF-DEPLOYER": "BF-Deployer",
+    "BF-DESIGNER": "BF-Designer", "BF-DIRECTOR": "BF-Director", "BF-FIXER": "BF-Fixer",
+    "BF-HOUSEKEEPER": "BF-Housekeeper", "BF-MONITOR": "BF-Monitor", "BF-ORACLE": "BF-Oracle",
+    "BF-PLUMBER": "BF-Plumber", "BF-PUBLISHER": "BF-Publisher",
 }
 # Other names the owner may give a seat's app (the seat tag and the credentials key names stay as they are).
 # The swapped-credentials check accepts the primary name above, any alias here, or the seat tag itself, and

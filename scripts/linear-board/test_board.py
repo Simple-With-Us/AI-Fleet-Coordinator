@@ -1408,10 +1408,13 @@ class SeatAppTests(BoardTest):
         self.assertNotIn("notice:", p.stdout)
         self.board("list", drop=("AGENT_SEAT",))
         self.assertEqual(self.callers_since(n), {CLIENT_ID})
-        # a seat outside the app table never reads a file of its name
-        (self.creds.parent / "BF-FIXER.env").write_text("LINEAR_CLIENT_ID=bf-fixer-id\nLINEAR_CLIENT_SECRET=bf-fixer-secret\n")
-        p = self.as_seat("BF-FIXER", "whoami")
-        self.assertIn("notice:      BF-FIXER has no Linear app yet (none in the seat table)", p.stdout)
+        # a seat outside the app table never reads a file of its name.  GB-ENGINEER is the live
+        # example:  it is in SEAT_ROSTER so its name is recognized, but it calls the Linear API
+        # directly rather than through this CLI, so it has no app entry and must fall back.
+        (self.creds.parent / "GB-ENGINEER.env").write_text(
+            "LINEAR_CLIENT_ID=gb-engineer-id\nLINEAR_CLIENT_SECRET=gb-engineer-secret\n")
+        p = self.as_seat("GB-ENGINEER", "whoami")
+        self.assertIn("notice:      GB-ENGINEER has no Linear app yet (none in the seat table)", p.stdout)
         self.assertEqual(self.mock.mints_by, {CLIENT_ID: 1})
 
     def test_grok_web_hyphen_and_grok_build_alias(self):
