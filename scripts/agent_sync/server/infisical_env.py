@@ -13,6 +13,7 @@ The allowlist is built from the seat partition (every seat it gives to "server")
 (BotFleet bots, Mac seats, webhook HEADER entries, generic names) ever reaches the container:
 
     ZULIP_<CODE>_EMAIL, ZULIP_<CODE>_API_KEY            a seat's Zulip pair
+    ZULIP_OUTGOING_<CODE>_TOKEN                         an optional Zulip outgoing-webhook token
     ZULIP_ALERT_<CODE>_ENDPOINT, ZULIP_ALERT_<CODE>_KEY  a Grok Bot routine webhook (URL and bare key)
     <CODE>_ROUTINE_URL, <CODE>_ROUTINE_KEY               the listener's default routine names
     SENTRY_FLEET_DSN, AGENT_SYNC_SENTRY_DSN              the Sentry Crons heartbeat's DSN (heartbeat.py); not per seat
@@ -68,6 +69,7 @@ def allowed_names(codes: set[str]) -> set[str]:
     names: set[str] = set(SHARED_NAMES)
     for code in codes:
         names |= {"ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code,
+                  "ZULIP_OUTGOING_%s_TOKEN" % code,
                   "ZULIP_ALERT_%s_ENDPOINT" % code, "ZULIP_ALERT_%s_KEY" % code,
                   "%s_ROUTINE_URL" % code, "%s_ROUTINE_KEY" % code}
     return names

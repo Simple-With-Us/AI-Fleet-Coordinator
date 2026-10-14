@@ -108,11 +108,11 @@ GENERIC_BOT = 1  # Zulip bot_type:  2 incoming webhook, 3 outgoing webhook, 4 em
 
 
 def fleet_bots_by_seat(users: Mapping[int, Mapping[str, Any]], tags: Iterable[str],
-                       owner_user_id: int) -> dict[str, list[dict[str, Any]]]:
+                       owner_user_id: int, *, outgoing_webhook_seats: Iterable[str] = ()) -> dict[str, list[dict[str, Any]]]:
     """seat tag -> the fleet bots (as fleet_bot_ids decides) that sign as it, canonical email first:
     the bot whose email local part is the seat's own (`codex-bot@` for CODEX), then by user id.  One
     seat can have two bots (`grok-build-bot@` also signs as GROK)."""
-    ids = fleet_bot_ids(users, tags, owner_user_id)
+    ids = fleet_bot_ids(users, tags, owner_user_id, outgoing_webhook_seats=outgoing_webhook_seats)
     found: dict[str, list[dict[str, Any]]] = {}
     for uid in sorted(ids):
         user = dict(users[uid], user_id=uid)
@@ -127,20 +127,25 @@ def fleet_bots_by_seat(users: Mapping[int, Mapping[str, Any]], tags: Iterable[st
     return found
 
 
-def fleet_bot_ids(users: Mapping[int, Mapping[str, Any]], tags: Iterable[str], owner_user_id: int) -> set[int]:
-    """User ids of the fleet bots in a realm user list:  active generic bots that the owner owns
-    (`bot_owner_id`) and whose email maps to one of `tags` (config.fleet_tags).  Webhook and embedded
+def fleet_bot_ids(users: Mapping[int, Mapping[str, Any]], tags: Iterable[str], owner_user_id: int, *,
+                  outgoing_webhook_seats: Iterable[str] = ()) -> set[int]:
+    """User ids of the fleet bots in a realm user list:  active registered bots that the owner owns
+    (`bot_owner_id`) and whose email maps to one of `tags` (config.fleet_tags).  Outgoing webhook bots count only for explicitly enabled seats.  Incoming webhook and embedded
     bots never count, whatever their email, and neither does a person.  The owner check is the trust
     anchor:  a bot someone else creates under a fleet-looking email is not a fleet bot, and with no
     owner pinned there are none."""
     wanted = set(tags)
+    outgoing = set(outgoing_webhook_seats) & wanted
     found: set[int] = set()
     if not isinstance(owner_user_id, int) or owner_user_id <= 0:
         return found
     for uid, user in users.items():
         if not isinstance(uid, int) or isinstance(uid, bool) or user.get("is_bot") is not True:
             continue
-        if user.get("is_active", True) is False or user.get("bot_type", GENERIC_BOT) != GENERIC_BOT:
+        if user.get("is_active", True) is False:
+            continue
+        bot_type = user.get("bot_type", GENERIC_BOT)
+        if bot_type != GENERIC_BOT and not (bot_type == 3 and seat_tag_for(user) in outgoing):
             continue
         if user.get("bot_owner_id") != owner_user_id:
             continue

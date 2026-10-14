@@ -176,6 +176,24 @@ class FleetBotIdsTests(unittest.TestCase):
         }
         self.assertEqual(R.fleet_bot_ids(users, self.tags, OWNER), set())
 
+    def test_outgoing_bots_require_explicit_seat_and_owner(self) -> None:
+        users = {
+            50: realm_bot(50, "compiler-grok-bot@zulip.test", bot_type=3),
+            51: realm_bot(51, "openai-dot-bot@zulip.test", bot_type=3),
+            52: realm_bot(52, "cursor-bot@zulip.test", bot_type=3),
+            53: realm_bot(53, "compiler-grok-bot@zulip.test", bot_type=3, bot_owner=CODEX),
+            54: realm_bot(54, "compiler-grok-bot@zulip.test", bot_type=2),
+            55: realm_bot(55, "compiler-grok-bot@zulip.test", bot_type=3, active=False),
+        }
+        allowed = {"GB-COMPILER", "JET"}
+        self.assertEqual(R.fleet_bot_ids(users, self.tags, OWNER), set())
+        self.assertEqual(R.fleet_bot_ids(users, self.tags, OWNER,
+                                        outgoing_webhook_seats=allowed), {50, 51})
+        self.assertEqual(set(R.fleet_bots_by_seat(users, self.tags, OWNER,
+                                                 outgoing_webhook_seats=allowed)), allowed)
+        self.assertEqual(R.fleet_bot_ids(users, self.tags, 0,
+                                        outgoing_webhook_seats=allowed), set())
+
     def test_a_bot_the_owner_does_not_own_is_not_a_fleet_bot(self) -> None:
         """The trust anchor:  a bot someone else created under a fleet-looking email never counts, and with no
         owner pinned nothing counts."""
