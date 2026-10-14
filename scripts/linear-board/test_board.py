@@ -600,10 +600,7 @@ class SeatAliasTests(unittest.TestCase):
         """A BF seat in SEAT_ROSTER that is missing from SEAT_APP_NAMES signs its writes as Fleet."""
         cli = load_cli()
         bf = sorted(s for s in cli.SEAT_ROSTER if s.startswith("BF-"))
-        self.assertEqual(len(bf), 11, bf)
-        self.assertNotIn("BF-PRODUCER", bf)
-        self.assertNotIn("BF-PRODUCER", cli.SEAT_APP_NAMES)
-        self.assertNotIn("PRODUCER", cli.BF_ROLES)
+        self.assertIn("BF-PRODUCER", bf)
         self.assertEqual([s for s in bf if s not in cli.SEAT_APP_NAMES], [])
         for seat in bf:
             role = seat.split("-", 1)[1]
@@ -1435,15 +1432,15 @@ class SeatAppTests(BoardTest):
         self.assertNotIn("GB-HOUSEKEEPER.env", p.stdout)
         self.assertEqual(self.mock.mints_by, {CLIENT_ID: 1})
 
-    def test_a_botfleet_roster_seat_uses_its_own_app_not_fleet(self):
-        name = load_cli().SEAT_APP_NAMES["BF-PUBLISHER"]
-        publisher, _ = self.seat_app("BF-PUBLISHER", name)
-        p = self.as_seat("BF-PUBLISHER", "whoami")
-        self.assertIn(f"identity:    {name} (the BF-PUBLISHER seat's own Linear app)", p.stdout)
-        self.assertIn(f"credentials: {self.creds.parent / 'BF-PUBLISHER.env'}", p.stdout)
+    def test_botfleet_producer_uses_its_own_app_not_fleet(self):
+        name = load_cli().SEAT_APP_NAMES["BF-PRODUCER"]
+        producer, _ = self.seat_app("BF-PRODUCER", name)
+        p = self.as_seat("BF-PRODUCER", "whoami")
+        self.assertIn(f"identity:    {name} (the BF-PRODUCER seat's own Linear app)", p.stdout)
+        self.assertIn(f"credentials: {self.creds.parent / 'BF-PRODUCER.env'}", p.stdout)
         self.assertNotIn("notice:", p.stdout)
         self.assertNotIn("fallback", p.stdout)
-        self.assertEqual(self.mock.mints_by, {publisher: 1})
+        self.assertEqual(self.mock.mints_by, {producer: 1})
 
     def test_grok_web_hyphen_and_grok_build_alias(self):
         gw, gw_sec = self.seat_app("GROK-WEB", "Grok Web")
