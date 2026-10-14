@@ -145,7 +145,8 @@ class GrokTransport:
             thread = threading.Thread(target=cls._refresh, name="grok-leader-discovery", daemon=True)
             thread.start()
 
-    def discover(self, *, force: bool = False, wait: bool = True) -> list[dict[str, Any]]:
+    def discover(self, *, force: bool = False, wait: bool = True, limit: int = 160,
+                 session_id: str | None = None) -> list[dict[str, Any]]:
         """List chats owned by the shared leader, then conservatively derive turn state.
 
         active_sessions.json tracks attached TUIs, not chats known to the leader, and is
@@ -177,6 +178,13 @@ class GrokTransport:
                 raise RuntimeError(error)
             raise RuntimeError("Grok leader discovery pending")
         stale = error is not None or time.monotonic() - updated > _DISCOVERY_STALE_AFTER
+
+        # Limit/filter before touching disk.  turn_state reads the session event log, and
+        # preflight only needs the one exact session selected by its durable binding.
+        if session_id is not None:
+            sessions = [row for row in sessions if row.get("sessionId") == session_id]
+        else:
+            sessions = sessions[:max(0, min(int(limit), 1000))]
 
         rows = []
         active_ids = {row.get("sessionId") for row in self.disk.load_active()
@@ -212,8 +220,12 @@ class GrokTransport:
     def preflight(self, binding: dict[str, str], *, force: bool = False) -> str:
         if binding.get("platform") != "grok-leader" or binding.get("host") != socket.gethostname():
             return "unsupported"
+        target_session_id = binding.get("session_id")
+        if not isinstance(target_session_id, str) or not target_session_id:
+            return "unsupported"
         try:
-            rows = self.discover(force=force, wait=False)
+            rows = self.discover(force=force, wait=False, limit=1,
+                                 session_id=target_session_id)
         except Exception:
             return "busy"  # Discovery pending/unavailable is transient; leave the nudge queued.
         for row in rows:

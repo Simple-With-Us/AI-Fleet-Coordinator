@@ -230,6 +230,24 @@ class TransportTests(unittest.TestCase):
         self.assertTrue(rows[0]["wake"])
         run.assert_called_once()
 
+    def test_preflight_reads_only_the_exact_bound_session_state(self):
+        transport = GrokTransport.__new__(GrokTransport)
+        inspected = []
+        transport.disk = SimpleNamespace(load_active=lambda: [],
+                                         turn_state=lambda sid: (inspected.append(sid) or
+                                                                 {"turnState": "idle", "turnEndedAt": 1}),
+                                         is_self_session=lambda _: False)
+        with CT._DISCOVERY_LOCK:
+            CT._DISCOVERY_SESSIONS = [{"sessionId": "chat-1", "cwd": "/one"},
+                                      {"sessionId": "chat-2", "cwd": "/two"}]
+            CT._DISCOVERY_UPDATED = time.monotonic()
+            CT._DISCOVERY_LAST_ATTEMPT = CT._DISCOVERY_UPDATED
+            CT._DISCOVERY_COMPLETE = True
+        binding = {"platform": "grok-leader", "host": socket.gethostname(),
+                   "session_id": "chat-2", "cwd": "/two"}
+        self.assertEqual(transport.preflight(binding), "ready")
+        self.assertEqual(inspected, ["chat-2"])
+
     def test_discovery_failure_is_retryable_preflight_not_permanent_failure(self):
         transport, binding, client = self.transport()
         transport.discover = GrokTransport.discover.__get__(transport, GrokTransport)

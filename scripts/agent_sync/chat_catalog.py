@@ -307,7 +307,7 @@ class ChatCatalog:
         try:
             # Daemon catalog refreshes stay asynchronous; one-shot CLI callers may wait for
             # the bounded, paginated leader inventory before exiting.
-            live = self._grok.discover(wait=wait, force=force)
+            live = self._grok.discover(wait=wait, force=force, limit=MAX_FILES_PER_SOURCE)
         except Exception:
             return [self._unavailable("grok-leader", "GROK", "discovery failed")]
         rows = []
