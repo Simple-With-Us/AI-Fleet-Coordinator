@@ -112,7 +112,9 @@ export class ZulipClient {
       sendParams = { ...sendParams, content: sentenceGap(sendParams.content) };
     }
     const encoded = encodeParams(sendParams);
-    const url = `${REALM}/api/v1/${path}${method === "GET" && encoded ? `?${encoded}` : ""}`;
+    // GET carries its parameters in the query;  DELETE in the body and the query too (zulip.py does the
+    // same, so a server variant that reads only one of them still sees them).
+    const url = `${REALM}/api/v1/${path}${(method === "GET" || method === "DELETE") && encoded ? `?${encoded}` : ""}`;
     const started = this.now();
     for (let attempt = 1; ; attempt++) {
       let response;
