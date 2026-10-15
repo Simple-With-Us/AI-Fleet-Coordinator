@@ -62,6 +62,7 @@ import { HostedTools } from "./hosted-tools.js";
 import { IdentityRouter, loadDelegatedCredentials } from "./delegated-identities.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromEnv } from "./recall.js";
+import { fleetlinkClientFromEnv } from "./fleetlink.js";
 import { LinearClient, linearClientFromEnv, LINEAR_SEATS, linearSecretNames } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
@@ -244,6 +245,9 @@ async function serveMcp(request, env, ctx) {
     // every other tool works as before (AFC-289).
     linear: linearClientFromEnv(env, seat, { gate: seatGate }),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
+    // Null without FLEETLINK_AGENT_SECRET:  the FleetLink tools then answer
+    // not_configured and every other tool works as before (AFC-328).
+    fleetlink: fleetlinkClientFromEnv(env),
   });
   const delegatedCredentials = seat === "CURSOR" ? loadDelegatedCredentials(env) : null;
   const routedTools = seat === "CURSOR" ? new IdentityRouter({
@@ -280,6 +284,7 @@ async function serveMcp(request, env, ctx) {
         gate: roleGate,
         cf: tools.cf,
         recall: tools.recall,
+        fleetlink: tools.fleetlink,
         linear,
         linearWrites: tools.linearWrites,
       });

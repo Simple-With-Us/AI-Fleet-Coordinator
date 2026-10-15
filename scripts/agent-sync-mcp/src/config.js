@@ -97,7 +97,7 @@ export function loadConfig(env) {
     throw new Error("config: AGENT_SYNC_CURSOR_TOOL_BUDGETS must be an object");
   }
   for (const [kind, policy] of Object.entries(cursorToolBudgets)) {
-    if (!["write", "read", "react", "recall", "linear_write", "linear_read"].includes(kind)
+    if (!["write", "read", "react", "recall", "linear_write", "linear_read", "fleetlink"].includes(kind)
       || !policy || typeof policy !== "object" || Array.isArray(policy)
       || Object.keys(policy).some((key) => !["hour", "day", "spacingMs"].includes(key))
       || !Number.isInteger(policy.hour) || policy.hour < 1 || policy.hour > 100000

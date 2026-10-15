@@ -179,6 +179,8 @@ export const BUDGETS = Object.freeze({
   read: Object.freeze([{ windowMs: HOUR_MS, limit: 300 }]),
   linear_write: Object.freeze([{ windowMs: HOUR_MS, limit: 20 }, { windowMs: DAY_MS, limit: 120 }]),
   linear_read: Object.freeze([{ windowMs: HOUR_MS, limit: 300 }]),
+  // FleetLink writes (AFC-328):  shares, files, upload URLs.  Own lane, read spacing.
+  fleetlink: Object.freeze([{ windowMs: HOUR_MS, limit: 60 }, { windowMs: DAY_MS, limit: 300 }]),
 });
 
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -222,8 +224,8 @@ export async function reserve(store, { kind, policy }, now = Date.now()) {
       return { ok: false, code: "budget_exhausted", resetAt: iso(Math.min(...inWindow.map(stamp)) + windowMs), window: windowMs === HOUR_MS ? "hour" : "day" };
     }
   }
-  const lane = kind.startsWith("linear_") ? kind : kind === "read" ? "read" : "write";
-  const spacing = policy?.spacingMs ?? (kind.endsWith("read") ? READ_SPACING_MS : WRITE_SPACING_MS);
+  const lane = kind.startsWith("linear_") || kind === "fleetlink" ? kind : kind === "read" ? "read" : "write";
+  const spacing = policy?.spacingMs ?? (kind.endsWith("read") || kind === "fleetlink" ? READ_SPACING_MS : WRITE_SPACING_MS);
   let last = await store.get(`last:${lane}`);
   if (!Number.isFinite(last) || last > now + Math.max(MAX_WAIT_MS, 10 * spacing)) last = null; // the clock moved back
   const slot = last === null ? now : Math.max(now, last + spacing);
