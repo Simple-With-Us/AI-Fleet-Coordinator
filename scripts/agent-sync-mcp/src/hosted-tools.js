@@ -549,7 +549,7 @@ export class HostedTools {
     const recallState = this.recall ? "configured" : "unconfigured";
     const info = {
       seat: this.seat,
-      authenticated_seat: this.callerSeat,
+      ...(this.callerSeat === "CURSOR" ? { authenticated_seat: this.callerSeat } : {}),
       email: this.email,
       user_id: this.me?.user_id ?? 0,
       role: this.me?.role ?? 0,
@@ -1234,7 +1234,7 @@ export class HostedTools {
     const viewer = await this.linearCall(() => client.viewer());
     const info = {
       seat: this.seat,
-      authenticated_seat: this.callerSeat,
+      ...(this.callerSeat === "CURSOR" ? { authenticated_seat: this.callerSeat } : {}),
       app: viewer.name,
       viewer_id: viewer.id,
       workspace: viewer.workspace || LINEAR_WORKSPACE_URL_KEY,
