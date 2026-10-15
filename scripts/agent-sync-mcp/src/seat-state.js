@@ -170,6 +170,8 @@ export const BUDGETS = Object.freeze({
     { windowMs: DAY_MS, limit: 40 },
   ]),
   read: Object.freeze([{ windowMs: HOUR_MS, limit: 300 }]),
+  linear_write: Object.freeze([{ windowMs: HOUR_MS, limit: 20 }, { windowMs: DAY_MS, limit: 120 }]),
+  linear_read: Object.freeze([{ windowMs: HOUR_MS, limit: 300 }]),
 });
 
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -181,32 +183,53 @@ const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
  * and the budget entry are written before this returns, and the method does no
  * outside I/O, so concurrent calls of one seat get distinct slots.
  */
-export async function reserve(store, { kind }, now = Date.now()) {
+export async function reserve(store, { kind, policy }, now = Date.now()) {
   if (!Object.hasOwn(BUDGETS, kind)) throw new Error("unknown call kind");
   if ((await store.get("paused")) === true) return { ok: false, code: "paused" };
   const cooldown = await store.get("cooldown_until");
   if (Number.isFinite(cooldown) && cooldown > now) {
     return { ok: false, code: "rate_limited", retryAfterS: Math.max(1, Math.ceil((cooldown - now) / 1000)) };
   }
-  const windows = BUDGETS[kind];
+  const windows = policy
+    ? [{ windowMs: HOUR_MS, limit: policy.hour }, ...(policy.day ? [{ windowMs: DAY_MS, limit: policy.day }] : [])]
+    : BUDGETS[kind];
   const longest = Math.max(...windows.map((w) => w.windowMs));
-  const history = ((await store.get(`budget:${kind}`)) ?? []).filter((t) => Number.isFinite(t) && t > now - longest && t <= now + MINUTE_MS);
+  const stamp = (entry) => Array.isArray(entry) ? entry[0] : entry;
+  const count = (entry) => Array.isArray(entry) ? entry[1] : 1;
+  let history = ((await store.get(`budget:${kind}`)) ?? []).filter((entry) =>
+    Number.isFinite(stamp(entry)) && Number.isInteger(count(entry)) && count(entry) > 0
+    && stamp(entry) > now - longest && stamp(entry) <= now + MINUTE_MS);
+  // Minute buckets bound storage for large shared-seat budgets.  Round up so
+  // expiry is conservative by at most a minute, never an early extra allowance.
+  if (policy) {
+    const buckets = new Map();
+    for (const entry of history) {
+      const minute = Math.ceil(stamp(entry) / MINUTE_MS) * MINUTE_MS;
+      buckets.set(minute, (buckets.get(minute) ?? 0) + count(entry));
+    }
+    history = [...buckets];
+  }
   for (const { windowMs, limit } of windows) {
-    const inWindow = history.filter((t) => t > now - windowMs);
-    if (inWindow.length >= limit) {
-      return { ok: false, code: "budget_exhausted", resetAt: iso(Math.min(...inWindow) + windowMs), window: windowMs === HOUR_MS ? "hour" : "day" };
+    const inWindow = history.filter((entry) => stamp(entry) > now - windowMs);
+    if (inWindow.reduce((total, entry) => total + count(entry), 0) >= limit) {
+      return { ok: false, code: "budget_exhausted", resetAt: iso(Math.min(...inWindow.map(stamp)) + windowMs), window: windowMs === HOUR_MS ? "hour" : "day" };
     }
   }
-  const lane = kind === "read" ? "read" : "write";
-  const spacing = lane === "read" ? READ_SPACING_MS : WRITE_SPACING_MS;
+  const lane = kind.startsWith("linear_") ? kind : kind === "read" ? "read" : "write";
+  const spacing = policy?.spacingMs ?? (kind.endsWith("read") ? READ_SPACING_MS : WRITE_SPACING_MS);
   let last = await store.get(`last:${lane}`);
-  if (!Number.isFinite(last) || last > now + 10 * spacing) last = null; // the clock moved back
+  if (!Number.isFinite(last) || last > now + Math.max(MAX_WAIT_MS, 10 * spacing)) last = null; // the clock moved back
   const slot = last === null ? now : Math.max(now, last + spacing);
   const waitMs = slot - now;
   if (waitMs > MAX_WAIT_MS) {
     return { ok: false, code: "rate_limited", retryAfterS: Math.max(1, Math.ceil((waitMs - MAX_WAIT_MS) / 1000)) };
   }
-  history.push(now);
+  if (policy) {
+    const minute = Math.ceil(now / MINUTE_MS) * MINUTE_MS;
+    const bucket = history.find((entry) => stamp(entry) === minute);
+    if (bucket) bucket[1]++;
+    else history.push([minute, 1]);
+  } else history.push(now);
   await store.put(`last:${lane}`, slot);
   await store.put(`budget:${kind}`, history);
   return { ok: true, waitMs };
