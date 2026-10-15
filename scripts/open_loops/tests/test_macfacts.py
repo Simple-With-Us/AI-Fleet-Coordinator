@@ -3,7 +3,7 @@ import json
 import os
 import unittest
 
-from open_loops import macfacts
+from open_loops import macfacts, urls
 from open_loops.facts import build_facts
 
 from .builders import FAKE_KEY, NOW, Sandbox, World, ago, doctor_checkout, doctor_report
@@ -104,7 +104,7 @@ class Load(Sandbox):
         def fetch(url, headers):
             seen.append((url, dict(headers)))
             return self.path.read_bytes()
-        good = "https://raw.githubusercontent.com/Simple-With-Us/fleet-loops-data/main/gb/mac-facts.json"
+        good = urls.MAC_FACTS_RAW_URL
         env = dict(ENV, GH_TOKEN="fake-token")
         self.assertEqual(self.load(good, env=env, fetch=fetch)["status"], "ok")
         self.assertEqual(seen[0][1]["Authorization"], "Bearer fake-token")
@@ -119,7 +119,7 @@ class Load(Sandbox):
     def test_a_fetch_error_is_ignored_with_its_reason(self):
         def fetch(url, headers):
             raise macfacts.FetchError("HTTP 404")
-        got = self.load("https://api.github.com/repos/Simple-With-Us/fleet-loops-data/contents/gb/mac-facts.json", fetch=fetch)
+        got = self.load(urls.MAC_FACTS_API_URL, fetch=fetch)
         self.assertEqual((got["status"], got["reason"]), ("absent", "ignored:  HTTP 404"))
 
     def test_an_unreadable_path_and_a_folder_are_ignored(self):

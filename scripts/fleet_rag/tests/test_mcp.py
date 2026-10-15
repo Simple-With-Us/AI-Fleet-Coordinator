@@ -76,6 +76,7 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(tools[0]["inputSchema"]["required"], ["query"])
         self.assertEqual(tools[2]["inputSchema"]["required"], ["text", "category"])
         self.assertEqual(tools[2]["inputSchema"]["properties"]["force"]["type"], "boolean")
+        self.assertNotIn("default", tools[2]["inputSchema"]["properties"]["force"])
         self.assertIn("duplicate", tools[2]["description"])
 
         stats = json.loads(by_id[4]["result"]["content"][0]["text"])
@@ -369,6 +370,38 @@ class SearchOptionsTests(unittest.TestCase):
         self.assertEqual([h["doc_id"] for h in two["hits"]].count("doc/pm2-env"), 2)
         self.assertEqual(two["mode"], "hybrid")
         self.assertTrue(all(h["group_hits"] == 3 for h in two["hits"] if h["doc_id"] == "doc/pm2-env"))
+
+
+class ContributeFallbackKwargsTests(unittest.TestCase):
+    """force is local-only; fallback kwargs must not retain it after contribute_with_guard."""
+
+    def load(self):
+        loader = importlib.machinery.SourceFileLoader("fleet_recall_mcp_fallback_test", str(SERVER))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        return mod
+
+    def test_force_stripped_from_shared_work_before_fallback(self):
+        mod = self.load()
+        snapshots = {}
+
+        def fake_call_with_fallback(name, kwargs, run_local):
+            snapshots["before_local"] = dict(kwargs)
+            out = run_local()
+            snapshots["after_local"] = dict(kwargs)
+            return out
+
+        good = "x" * 60
+        with mock.patch.dict(os.environ, {"AGENT_SEAT": "TESTSEAT", "FLEET_RECALL_FAKE": "1"}):
+            recall_api.install_fake_backend()
+            with mock.patch.object(mod.public_fallback, "call_with_fallback", fake_call_with_fallback):
+                mod.call_tool(
+                    "recall_contribute",
+                    {"text": good, "category": "lesson", "force": False},
+                )
+        self.assertIn("force", snapshots["before_local"])
+        self.assertNotIn("force", snapshots["after_local"])
 
 
 class DuplicateGuardTests(unittest.TestCase):

@@ -9,8 +9,7 @@ Updated **2026-10-08**: the installer **specializes identity per seat** (Zulip b
 | Antigravity / Gemini | `[AG]` | `~/.gemini/skills` | `ag/` | Lane folders `antigravity-<slug>` |
 | Codex | `[CODEX]` | `~/.codex/skills` | `codex/` | |
 | fx TUI | `[FX]` | `~/.fx/skills` | `fx/` | Quote-safe YAML `>-` descriptions; set `context_limits.skill_catalog_bytes` to `off` in `~/.fx/settings.json` so the full catalog is not truncated |
-| Grok TUI | `[GROK]` | `~/.grok/skills` | `grok/` | Grok Build fork → `[GROK-BUILD]` |
-| Grok Build | `[GROK-BUILD]` | `~/.grok-build/skills` | `grok-build/` | |
+| Grok TUI / Grok Build | `[GROK]` | `~/.grok/skills` (Grok Build pack at `~/.grok-build/skills` signs GROK too) | `grok/` (`grok-build/` branches stay readable) | GROK-BUILD in any spelling is an alias for GROK, not a seat tag |
 | Claude Code CLI | `[CLAUDE]` | `~/.claude/skills` | `claude/` | Shared library.  Other tools (fx) scan it, so the copy carries a banner telling them to take identity from their own pack |
 | Monet | `[MONET]` | `docs/fleet-skills/by-seat/monet/` (catalog only) | `monet/` | Retired 2026-10-07.  Never installed, do not take work |
 | Claude / Fable | `[CLAUDE]` | `docs/fleet-skills/by-seat/claude/` | `claude/` | Upload on **CLAUDE** login |

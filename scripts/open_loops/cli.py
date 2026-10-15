@@ -34,6 +34,7 @@ from .render import BRIEF_LIMIT, render_markdown
 from .send import EXIT_LINT, EXIT_REFUSED, run_send
 
 C2_ENV = "OPEN_LOOPS_C2_ID"
+MAC_FACTS_ENV = "OPEN_LOOPS_MAC_FACTS_URL"
 
 
 def _c2_file() -> Path:
@@ -58,8 +59,10 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="{gather,render,lint,send}")
     g = sub.add_parser("gather", help="gather the facts", description="Gather read-only facts (schema 1).")
     g.add_argument("--no-mac", action="store_true", help="cloud host:  skip the Mac-only parts")
-    g.add_argument("--mac-facts", metavar="PATH|URL", help="the signed gb/mac-facts.json (a path, or an https URL on api.github.com or "
-                   "raw.githubusercontent.com);  verified with `fleet-facts verify` using $FLEET_FACTS_SIGNING_KEY, else ignored")
+    g.add_argument("--mac-facts", metavar="PATH|URL",
+                   help="the signed gb/mac-facts.json (a path, or an https URL on api.github.com or raw.githubusercontent.com);  "
+                   "with --no-mac, defaults to $%s;  verified with `fleet-facts verify` using $FLEET_FACTS_SIGNING_KEY, else ignored"
+                   % MAC_FACTS_ENV)
     g.add_argument("--launch-at", metavar="TIME", help="when the claim clock starts (ISO 8601 with a zone;  default $%s)" % LAUNCH_ENV)
     g.add_argument("--json", action="store_true", help="print the facts as JSON")
     g.add_argument("--out", metavar="PATH", help="write the facts to this file (mode 0600) instead of printing them")
@@ -112,7 +115,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _gather(args: argparse.Namespace) -> int:
     launch = args.launch_at or os.environ.get(LAUNCH_ENV) or None
-    facts = build_facts(no_mac=args.no_mac, mac_facts=args.mac_facts, launch_at=launch)
+    mac_facts = args.mac_facts
+    if mac_facts is None and args.no_mac:
+        mac_facts = os.environ.get(MAC_FACTS_ENV) or None
+    facts = build_facts(no_mac=args.no_mac, mac_facts=mac_facts, launch_at=launch)
     for item in facts["missing"]:
         sys.stderr.write("open-loops: Missing:  %s (%s)\n" % (item["source"], item["reason"]))
     text = json.dumps(facts, indent=2) + "\n"

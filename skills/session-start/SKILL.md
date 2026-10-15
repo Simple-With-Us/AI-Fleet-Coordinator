@@ -6,7 +6,7 @@ description: >-
 
 # Session start (Universal)
 
-This universal skill applies across all agent platforms and seats.  Identify your active seat (**AG**, **CURSOR**, **CODEX**, **GROK**, **GROK-BUILD**, **CLAUDE**, **<YOUR_AGENT_TAG>**, **RENOIR**, **DSH**, **MM**, **FX**, or a Grok Bot `[GB-<NAME>]` role), use your own Zulip session tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-CONDUCTOR]`, `[DSH·session8]`, `[MM·session8]`), your seat's own bot and `~/.secrets/Zulip/<file code>-zuliprc`, branch prefix (`<seat>/<slug>`), lane (`~/apps/lanes/<Repo>/<seat>-<slug>`), and Apple Notes name (`Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`, `DeepSeek Harness`, `MiniMax`, `Fx`, or the GB role in Title Case).
+This universal skill applies across all agent platforms and seats.  Identify your active seat (**AG**, **CURSOR**, **CODEX**, **GROK**, **CLAUDE**, **<YOUR_AGENT_TAG>**, **RENOIR**, **DSH**, **MM**, **FX**, or a Grok Bot `[GB-<NAME>]` role).  Terminal Grok and Grok Build are one seat, **GROK** (GROK-BUILD in any spelling is an alias, not a tag).  Use your own Zulip session tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-CONDUCTOR]`, `[DSH·session8]`, `[MM·session8]`), your seat's own bot and `~/.secrets/Zulip/<file code>-zuliprc`, branch prefix (`<seat>/<slug>`), lane (`~/apps/lanes/<Repo>/<seat>-<slug>`), and Apple Notes name (`Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`, `DeepSeek Harness`, `MiniMax`, `Fx`, or the GB role in Title Case).
 
 ## 1. Identity
 
@@ -78,7 +78,7 @@ Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and its 
 
 1. **Linear** — `board list --app <app>` then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/<Repo>/<seat>-<slug> @ <branch>"`.  If nothing exists: `board file --title "..." --app <app> --severity P1 --by "$AGENT_SEAT" --env Mac --where "..." --desc "..."`, then claim it.  The claim sets In Progress and the `claimed:<SEAT>` label; it exits 3 if another seat holds the issue.
 2. **Zulip** — open the work topic and post the claim (below).  There is no effort log and no separate GitHub issue to mark; a GitHub issue filed after the cutover is already a Linear issue.
-3. **Branch and PR** — branch `<seat>/<id>-<slug>` (`claude/afc-123-zulip-cutover`), and the PR body says `Fixes <ID>` when it finishes the issue or `Refs <ID>` for partial work.
+3. **Branch and PR** — branch `<seat>/<id>-<slug>` (`<branch-prefix>/afc-123-zulip-cutover`), and the PR body says `Fixes <ID>` when it finishes the issue or `Refs <ID>` for partial work.
 
 Post in the work topic (`<ID> <subject>`, for example `AFC-123 claim title`, at most 58 characters):
 

@@ -2,7 +2,7 @@
 
 Read-only gatherers for the fleet's open-loops digest, and the one definition of a claim's activity.
 Built for open-loops unit F6 (AFC-283).  Python 3.11 or newer, standard library only.  C2-1 (the digest), C4-1
-(claim expiry) and C5 (the landing sweep) call it;  F7 (AFC-287) publishes the Mac side of it, signed (see "Publishing the Mac facts").
+(claim expiry) and C5 (the landing sweep) call it;  F7 (AFC-285) publishes the Mac side of it, signed (see "Publishing the Mac facts").
 
 ```
 fleet-facts gather [--part NAME]... [--no-mac] [--json]

@@ -108,6 +108,9 @@ def build_facts(*, no_mac: bool = False, mac_facts: str | None = None, launch_at
     document = ff_gather.build(parts, no_mac=not local_mac, run=run, now=current, sleep=sleep)
 
     book = urls.UrlBook()
+    mac_facts_url: str | None = None
+    if mac_facts and mac_facts.startswith("https://"):
+        mac_facts_url = book.add(mac_facts)
     answers: dict[str, dict] = {name: _not_built(name, _answer(document, name)) for name in parts}
     for name in LOCAL_MAC_PARTS:
         if name in answers:
@@ -163,6 +166,8 @@ def build_facts(*, no_mac: bool = False, mac_facts: str | None = None, launch_at
         "unpushed_over_a_day": unpushed, "claims": claim_block, "owner_asks": asks_block,
         "full_list_url": book.add(urls.FULL_LIST_URL),
     }
+    if mac_facts_url is not None:
+        facts["mac_facts_url"] = mac_facts_url
     facts["urls"] = book.sorted()
     redacted, paths = safety.redact(facts)
     # What fleet_facts already withheld (paths into its own document) is kept, so the count is the whole story.
