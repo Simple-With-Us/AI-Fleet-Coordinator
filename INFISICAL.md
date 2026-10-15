@@ -156,6 +156,23 @@ Set a new value in the Infisical UI/API, or `POST /admin/settings` (write-throug
 
 Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or point `INFISICAL_MACHINE_IDENTITY` at your handoff file and leave `INFISICAL_ENVIRONMENT` unset (it is `prod`).  Local runs read prod, so treat the secrets there as live.  Any other slug is refused:  `init()`, `set()` and every fetch raise `SettingsError` before the network, `refresh()` logs the refusal and keeps the last-known-good cache, and `configure()` leaves the previous settings in place.  Never commit real values.
 
+## Mac `global-api-keys` sync (`scripts/infisical-secrets-sync.sh`)
+
+The LaunchAgent `com.jay.infisical-secrets-sync` copies selected secrets from Infisical
+into `~/.secrets/global-api-keys` for Mac-local jobs that still read that handoff file.
+Infisical remains the source of truth;  the file is derived and write-once rules apply where
+noted in the sync map.
+
+| Key | Kind | Status |
+|---|---|---|
+| `RESTIC_FLEET_WORK_PASSWORD` | secret | **to be filled by admin** (write-once in the sync map after the first good copy;  `fleet_work_backup.py new-password` sets it in Infisical without printing) |
+| `B2_FLEET_WORK_BUCKET_NAME` | env config | **to be filled by admin** (dedicated bucket for fleet-work-backup;  not `B2_FLEET_BUCKET_NAME`) |
+| `B2_FLEET_WORK_KEY_ID` | secret | **to be filled by admin** (scoped B2 application key, prefix `fleet-work-backup/`) |
+| `B2_FLEET_WORK_APPLICATION_KEY` | secret | **to be filled by admin** |
+
+Consumer:  `scripts/fleet-work-backup/` (`fleet_work_backup.py`, `install.py`).  Runbook:
+`scripts/fleet-work-backup/README.md`.  Linear OPS-907.
+
 ## Hosted CLAUDE Zulip identity (AFC-296)
 
 Canonical location: AI Fleet Coordinator, `prod`, `/zulip`.  These inventory
