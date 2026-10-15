@@ -85,7 +85,7 @@ Rules the shape depends on:
 
 | Pairing | Method | Notes |
 |---|---|---|
-| Sentry → Zulip | Zulip Sentry integration via a Sentry Internal Integration (alert-rule action + `issue` webhook) | Bot already exists.  Whether Seer RCA payloads render is unconfirmed; test one. |
+| Sentry → Zulip | Zulip Sentry integration via Sentry Internal Integrations, each enabled as an alert-rule action | The webhook URL fixes the stream, so create one Internal Integration per destination: `#alerts`, `#trading`, `#agent-sync`.  The Sentry bot already exists.  Whether Seer RCA payloads render is unconfirmed; test one. |
 | BetterStack → Zulip | BetterStack outgoing webhook with a `{"text": …}` template to Zulip `slack_incoming` | Untested.  Replace the dead Slack integration with it. |
 | BetterStack ↔ Sentry | No native incident pairing either way | Split ownership instead of bridging (table above).  Optional: BetterStack incoming webhook can open incidents from a Sentry Internal Integration. |
 | BetterStack → PagerDuty | Outgoing webhook to PagerDuty Events API v2 | Only if BetterStack keeps prod URLs and PagerDuty stays the pager.  The reverse (PagerDuty → BetterStack) is native but not needed. |
@@ -103,10 +103,10 @@ Rules the shape depends on:
 
 ### Phase 0 — restore lost alerts (live config, owner OK needed)
 
-1. Re-point Sentry workflows to the Zulip Sentry integration: `3930668` and `3932162` → `#alerts`; `3645269` and `3645774` → `#trading`.
-2. Attach the five unwatched Sentry uptime monitors to a workflow that posts to `#alerts`.
+1. Create three Sentry Internal Integrations for Zulip, one per stream (`#alerts`, `#trading`, `#agent-sync`), because each webhook URL is bound to one stream.  Re-point `3930668` and `3932162` to the `#alerts` one and `3645269` and `3645774` to the `#trading` one.
+2. Attach the five unwatched Sentry uptime monitors to a workflow that posts to `#alerts`.  This includes `contactlogo.com`, which BetterStack also probes; it stays watched until Phase 2 decides whether its Sentry monitor is removed.
 3. Add one low-priority workflow for the 68 unwatched crons → `#alerts`, no paging.
-4. Route the four agent-telemetry workflows to `#agent-sync` in addition to email.
+4. Route the four agent-telemetry workflows to the `#agent-sync` integration in addition to email.
 5. Replace BetterStack's Slack integration with the Zulip webhook.
 6. Remove the retired Fleet Board resource from `status.simplewithus.com` and delete or archive its monitor, then confirm the aggregate returns to operational.
 7. Wire PagerDuty → Zulip `#incident-response` and Linear → Zulip `#issues` using the existing bots.
