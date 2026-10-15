@@ -238,12 +238,15 @@ surfaces now route every call through `public_fallback.call_with_fallback`, whic
    too (a rejected bearer, Access rejecting the service token, the box itself down), produces
    one plain-English, actionable line instead of a second opaque exception.
 
-The public tool contract is a subset of the local one (no `per_doc` / `rerank` /
-`prefer_lessons` / `force` -- see `scripts/fleet-recall-service/server.py` TOOLS), so those
-knobs are silently dropped on a call that actually falls back, and the local near-duplicate
-contribute guard (`contribute_guard.near_duplicate`, a Qdrant call of its own, not part of the
-shared tool contract) is skipped on a believed-down Tailscale rather than run against an
-unreachable backend.  `recall doctor`, with or without `--platforms`, is unaffected -- it still
+The public search route accepts every `recall_search` keyword, including `per_doc`,
+`rerank`, and `prefer_lessons` (see `scripts/fleet-recall-service/server.py` TOOLS).
+The service drops `force` before argument validation, so a caller that supplies it
+is not answered `400 unknown argument(s): force`.  The near-duplicate guard stays on
+the local CLI and stdio MCP, and the stdio schema does not default `force`.  The
+public fallback also drops the key before the HTTP call.  The local near-duplicate
+contribute guard (`contribute_guard.near_duplicate`, a Qdrant call of its own) is
+skipped on a believed-down Tailscale rather than run against an unreachable backend.
+`recall doctor`, with or without `--platforms`, is unaffected -- it still
 reports `UNREACHABLE` / `ERROR` / `FAIL` truthfully; a diagnostic tool should never paper over
 what it is diagnosing.  The Hetzner-side `fleet-recall-service` imports `recall_api` directly
 and never goes through this module: it already sits next to Qdrant/TEI with no Tailscale hop

@@ -212,6 +212,83 @@ class LeaderExtractTests(unittest.TestCase):
         self.assertIn("wait=False", src)
         self.assertIn("--wait", src)
 
+    def test_queue_receipt_correlates(self) -> None:
+        mod = _load_leader()
+        self.assertTrue(mod.queue_receipt_correlates(
+            {"method": "_x.ai/queue/changed", "params": {"sessionId": "s1"}},
+            "s1",
+        ))
+        self.assertTrue(mod.queue_receipt_correlates(
+            {"method": "_x.ai/queue/changed", "params": {}},
+            "s1",
+        ))
+        self.assertFalse(mod.queue_receipt_correlates(
+            {"method": "_x.ai/queue/changed", "params": {"sessionId": "other"}},
+            "s1",
+        ))
+        self.assertFalse(mod.queue_receipt_correlates({"method": "session/update", "params": {}}, "s1"))
+        self.assertFalse(mod.queue_receipt_correlates(
+            {"method": "_x.ai/sessions/changed", "params": {}},
+            "s1",
+        ))
+
+    def _prompt_client(self, mod, messages):
+        class _FakeStdin:
+            def write(self, *_args):
+                return None
+
+            def flush(self):
+                return None
+
+        class _FakeProc:
+            stdin = _FakeStdin()
+
+            def poll(self):
+                return None
+
+        client = mod.LeaderStdio.__new__(mod.LeaderStdio)
+        client.p = _FakeProc()
+        idx = 0
+
+        def fake_read(_deadline):
+            nonlocal idx
+            if idx >= len(messages):
+                return None
+            msg = messages[idx]
+            idx += 1
+            return msg
+
+        client._next = lambda: 7
+        client._read_msg = fake_read
+        return client
+
+    def test_prompt_live_accepts_correlated_queue_receipt(self) -> None:
+        mod = _load_leader()
+        client = self._prompt_client(mod, [
+            {"method": "session/update", "params": {}},
+            {"method": "_x.ai/queue/changed", "params": {"sessionId": "s1"}},
+        ])
+        out = client.prompt_live("s1", "hi", timeout=2.0, wait=False)
+        self.assertTrue(out["queued"])
+
+    def test_prompt_live_jsonrpc_response_is_acceptance(self) -> None:
+        mod = _load_leader()
+        client = self._prompt_client(mod, [
+            {"jsonrpc": "2.0", "id": 7, "result": {"accepted": True}},
+        ])
+        out = client.prompt_live("s1", "hi", timeout=2.0, wait=False)
+        self.assertFalse(out["queued"])
+        self.assertEqual(out["result"], {"accepted": True})
+
+    def test_prompt_live_timeout_without_receipt(self) -> None:
+        mod = _load_leader()
+        client = self._prompt_client(mod, [
+            {"method": "session/update", "params": {}},
+            {"method": "_x.ai/sessions/changed", "params": {}},
+        ])
+        with self.assertRaises(TimeoutError):
+            client.prompt_live("s1", "hi", timeout=0.05, wait=False)
+
 
 if __name__ == "__main__":
     unittest.main()

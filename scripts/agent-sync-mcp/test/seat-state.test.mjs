@@ -215,3 +215,35 @@ test("token refusals are counted apart and cannot push an authorize row out of t
   assert.deepEqual(rows.map((r) => [r.reason, r.count]), [["client_id_shape", 1], ["authorization_not_basic", 7]]);
   assert.equal((await S.refusals(store2)).length, 0, "token rows never reach the authorize log");
 });
+
+
+test("Cursor Linear allowance has independent counters and spacing from Zulip", async () => {
+  const store = S.memoryStore();
+  const policy = { hour: 2000, day: 20000, spacingMs: 100 };
+  for (let i = 0; i < 20; i++) {
+    assert.equal((await S.reserve(store, { kind: "write" }, T0 + i * 3000)).ok, true);
+  }
+  const now = T0 + 60000;
+  assert.equal((await S.reserve(store, { kind: "write" }, now)).code, "budget_exhausted");
+  for (let i = 0; i < 40; i++) {
+    const result = await S.reserve(store, { kind: "linear_write", policy }, now);
+    assert.equal(result.ok, true);
+    assert.equal(result.waitMs, i * 100);
+  }
+  assert.equal((await S.reserve(store, { kind: "write", policy: { hour: 100, day: 600 } }, now)).ok, true);
+  const limited = S.memoryStore();
+  await limited.put("budget:linear_write", Array(2000).fill(now));
+  const exhausted = await S.reserve(limited, { kind: "linear_write", policy }, now);
+  assert.equal(exhausted.code, "budget_exhausted");
+  assert.equal(exhausted.window, "hour");
+  assert.equal((await S.reserve(limited, { kind: "linear_write", policy }, now + S.HOUR_MS + 1)).ok, true);
+});
+
+
+test("high shared-seat limits compact history without losing counts", async () => {
+  const store = S.memoryStore();
+  await store.put("budget:linear_write", Array(19000).fill(T0));
+  const policy = { hour: 20000, day: 40000, spacingMs: 100 };
+  assert.equal((await S.reserve(store, { kind: "linear_write", policy }, T0)).ok, true);
+  assert.deepEqual(await store.get("budget:linear_write"), [[T0, 19001]]);
+});

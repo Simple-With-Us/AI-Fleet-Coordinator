@@ -76,6 +76,7 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(tools[0]["inputSchema"]["required"], ["query"])
         self.assertEqual(tools[2]["inputSchema"]["required"], ["text", "category"])
         self.assertEqual(tools[2]["inputSchema"]["properties"]["force"]["type"], "boolean")
+        self.assertNotIn("default", tools[2]["inputSchema"]["properties"]["force"])
         self.assertIn("duplicate", tools[2]["description"])
 
         stats = json.loads(by_id[4]["result"]["content"][0]["text"])

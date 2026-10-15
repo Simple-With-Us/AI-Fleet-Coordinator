@@ -52,7 +52,7 @@ ROSTER = [
     ("Codex", "codex", "Codex"),
     ("Antigravity", "ag", "AG"),
     ("Cursor", "cursor", "Cursor"),
-    ("GROK-BUILD", "grok-build", "Grok-Build"),
+    ("Grok", "grok-build", "Grok-Build"),
     ("Clutch", "clutch", "Clutch"),
     ("FX", "fx", "FX"),
     ("MiniMax", "mm", "MM"),

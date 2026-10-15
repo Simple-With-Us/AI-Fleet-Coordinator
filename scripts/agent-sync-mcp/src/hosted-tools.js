@@ -1,3 +1,4 @@
+import { apiSchema, apiQuery, apiMutation } from "./linear-api.js";
 // The seven agent-sync tools for one hosted seat (spec sections 1, 3.6 to 3.9).
 // A port of scripts/agent_sync/mcp/tools.py over the Zulip REST API, with the
 // hosted rules on top:  the seat only from the grant, the channel rule (any
@@ -320,8 +321,14 @@ export class HostedTools {
     this.me = { user_id: me.user_id, role: me.role };
   }
 
+  // Keep Cursor's parallel Linear work separate from its Zulip allowance.
+  async reserveLinear(kind) {
+    return this.reserve(this.seat === "CURSOR" ? `linear_${kind}` : kind);
+  }
+
   async reserve(kind) {
-    const slot = await this.gate.reserve({ kind });
+    const policy = this.seat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;
+    const slot = await this.gate.reserve({ kind, ...(policy ? { policy } : {}) });
     if (!slot?.ok) {
       if (slot?.code === "budget_exhausted") {
         throw new ToolError("budget_exhausted", `This seat's ${kind} budget for the ${slot.window ?? "hour"} is spent.  Try again after reset_at.`, { retryable: true, resetAt: slot.resetAt });
@@ -1098,9 +1105,13 @@ export class HostedTools {
     return issue;
   }
 
+  async tool_linear_schema(args, audit) { return apiSchema(this, args, audit); }
+  async tool_linear_query(args, audit) { return apiQuery(this, args, audit); }
+  async tool_linear_mutation(args, audit) { return apiMutation(this, args, audit); }
+
   async tool_linear_whoami(args, audit) {
     const client = this.requireLinear();
-    await this.reserve("read");
+    await this.reserveLinear("read");
     const viewer = await this.linearCall(() => client.viewer());
     const info = {
       seat: this.seat,
@@ -1113,7 +1124,7 @@ export class HostedTools {
   }
 
   async tool_linear_list(args, audit) {
-    await this.reserve("read");
+    await this.reserveLinear("read");
     const filter = {};
     if (args.team) filter.team = { key: { eq: args.team.toUpperCase() } };
     if (args.status) {
@@ -1149,7 +1160,7 @@ export class HostedTools {
   }
 
   async tool_linear_show(args, audit) {
-    await this.reserve("read");
+    await this.reserveLinear("read");
     const issue = await this.linearIssue(args.id);
     const data = await this.linearCall(() => this.requireLinear().call(Q_COMMENTS, { id: issue.id, first: args.comment_limit }));
     const comments = (data?.issue?.comments?.nodes ?? []).map(commentItem);
@@ -1180,7 +1191,7 @@ export class HostedTools {
     if (begun.verdict === "busy") throw new ToolError("rate_limited", "the same write is already in flight in another chat of this seat", { retryable: true, retryAfterS: 30 });
     if (begun.verdict === "duplicate") return { ...begun.row, duplicate: true };
     try {
-      await this.reserve("write");
+      await this.reserveLinear("write");
     } catch (error) {
       await this.safely(() => this.gate.idemDrop({ key: idem.key }));
       throw error;
