@@ -213,8 +213,12 @@ export class HostedTools {
    * @param {object|null} [o.linear]       a LinearClient for this seat, or null when it has no Linear app
    * @param {boolean} [o.linearWrites]     the LINEAR_TOOLS_WRITES switch, off by default
    */
-  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, cf = {}, recall = null, linear = null, linearWrites = false, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
+  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, callerSeat = seat, callerGate = gate, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
     this.seat = seat;
+    this.callerSeat = callerSeat;
+    this.callerGate = callerGate;
+    this.delegatedLinear = delegatedLinear === true;
+    this.linearCredentialNames = linearCredentialNames;
     this.scopes = new Set(scopes ?? []);
     this.clientId = clientId ?? "";
     this.grantRef = grantRef ?? "";
@@ -238,6 +242,7 @@ export class HostedTools {
     this.usersCache = usersCache;
     this.channelsCache = channelsCache;
     this.linearWorkspaceCache = linearWorkspaceCache;
+    this.linearViewerConfirmed = false;
     this.me = null;
   }
 
@@ -280,6 +285,9 @@ export class HostedTools {
       if (problem) throw new ToolError("invalid_argument", problem);
       this.requireScope(publicName);
       if (this.paused) throw new ToolError("paused", "This seat is paused.  Jay can unpause it in Agent-Sync Admin.");
+      // Every delegated service call first verifies the selected role's own
+      // Zulip bot is present, matches its email and is a member (role 400).
+      if (this.callerGate !== this.gate) await this.ensureSeat();
       const preparedArgs = withDefaults(spec.inputSchema, args);
       result = Object.hasOwn(LINEAR_MCP_BY_NAME, publicName)
         ? await callLinearMcp(this, publicName, preparedArgs, audit)
@@ -314,6 +322,8 @@ export class HostedTools {
     const latency = this.now() - started;
     const row = {
       seat: this.seat,
+      authenticated_seat: this.callerSeat,
+      acting_identity: this.seat,
       grant_ref: this.grantRef,
       client_id: this.clientId,
       latency_ms: latency,
@@ -322,7 +332,8 @@ export class HostedTools {
       ...audit,
     };
     await this.safely(() => this.gate.auditCall(row));
-    this.log({ event: "tool", seat: this.seat, tool: publicName, outcome: row.error_code ?? "ok", latency_ms: latency, grant_ref: this.grantRef });
+    if (this.callerGate !== this.gate) await this.safely(() => this.callerGate.auditCall(row));
+    this.log({ event: "tool", seat: this.seat, authenticated_seat: this.callerSeat, acting_identity: this.seat, tool: publicName, outcome: row.error_code ?? "ok", latency_ms: latency, grant_ref: this.grantRef });
     return result;
   }
 
@@ -406,12 +417,22 @@ export class HostedTools {
 
   // Keep Cursor's parallel Linear work separate from its Zulip allowance.
   async reserveLinear(kind) {
-    return this.reserve(this.seat === "CURSOR" ? `linear_${kind}` : kind);
+    return this.reserve(this.callerSeat === "CURSOR" ? `linear_${kind}` : kind);
   }
 
   async reserve(kind) {
+    // A delegated persona cannot multiply the authenticated CURSOR grant's
+    // allowance.  Its own gate is a second, independent limit and token cache.
+    if (this.callerGate !== this.gate) {
+      const callerPolicy = this.callerSeat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;
+      await this.reserveOn(this.callerGate, kind, callerPolicy);
+    }
     const policy = this.seat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;
-    const slot = await this.gate.reserve({ kind, ...(policy ? { policy } : {}) });
+    await this.reserveOn(this.gate, kind, policy);
+  }
+
+  async reserveOn(gate, kind, policy) {
+    const slot = await gate.reserve({ kind, ...(policy ? { policy } : {}) });
     if (!slot?.ok) {
       if (slot?.code === "budget_exhausted") {
         throw new ToolError("budget_exhausted", `This seat's ${kind} budget for the ${slot.window ?? "hour"} is spent.  Try again after reset_at.`, { retryable: true, resetAt: slot.resetAt });
@@ -523,11 +544,12 @@ export class HostedTools {
   async tool_whoami(args, audit) {
     await this.ensureSeat();
     await this.reserve("read");
-    const linearEnabled = LINEAR_SEATS.includes(this.seat);
+    const linearEnabled = this.delegatedLinear || LINEAR_SEATS.includes(this.seat);
     const linearState = linearEnabled ? (this.linear ? "configured" : "unavailable") : "unconfigured";
     const recallState = this.recall ? "configured" : "unconfigured";
     const info = {
       seat: this.seat,
+      authenticated_seat: this.callerSeat,
       email: this.email,
       user_id: this.me?.user_id ?? 0,
       role: this.me?.role ?? 0,
@@ -1095,11 +1117,11 @@ export class HostedTools {
    * from the arguments.
    */
   requireLinear() {
-    if (!LINEAR_SEATS.includes(this.seat)) {
+    if (!this.delegatedLinear && !LINEAR_SEATS.includes(this.seat)) {
       throw new ToolError("not_configured", `Linear tools are not enabled for ${this.seat}.  The owner adds the seat to LINEAR_SEATS at deploy (scripts/agent-sync-mcp/DEPLOY.md).  The Zulip tools still work.`);
     }
     if (this.linear) return this.linear;
-    const names = LINEAR_SECRETS[this.seat];
+    const names = this.linearCredentialNames ?? LINEAR_SECRETS[this.seat];
     throw new ToolError("not_configured", `No Linear credentials are installed for ${this.seat}.  The owner sets ${names?.clientId ?? "the seat's client id"} and ${names?.clientSecret ?? "its secret"} as Worker secrets (scripts/agent-sync-mcp/DEPLOY.md).  The Zulip tools still work.`);
   }
 
@@ -1115,6 +1137,12 @@ export class HostedTools {
   /** One Linear call, its failure as a ToolError.  Never leaks a response body. */
   async linearCall(fn, { write = false } = {}) {
     try {
+      if (this.delegatedLinear && !this.linearViewerConfirmed) {
+        // Reads need attribution too:  a swapped app credential must never
+        // serve data under the selected GB identity.
+        await this.requireLinear().confirmViewer();
+        this.linearViewerConfirmed = true;
+      }
       return await fn();
     } catch (error) {
       throw mapLinearError(error, { write, known: this.known });
@@ -1206,6 +1234,7 @@ export class HostedTools {
     const viewer = await this.linearCall(() => client.viewer());
     const info = {
       seat: this.seat,
+      authenticated_seat: this.callerSeat,
       app: viewer.name,
       viewer_id: viewer.id,
       workspace: viewer.workspace || LINEAR_WORKSPACE_URL_KEY,

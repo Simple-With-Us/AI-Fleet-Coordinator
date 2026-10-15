@@ -15,7 +15,17 @@ Deploy and operate:  [DEPLOY.md](DEPLOY.md).  Connect a client:  [ARMING-JAY.md]
 
 The public hosted Zulip tools are `whoami`, `zulip_topics`, `zulip_read_topic`, `zulip_inbox`, `zulip_post`, `zulip_reply` and `zulip_react`.  The six legacy names without `zulip_` remain accepted as hidden aliases, but are omitted from `tools/list`.  The hosted `inbox` description says it lists DMs (spec 1.2);  its schema otherwise follows `tools.json`.
 
-- **Identity.**  The seat comes only from the grant's props, and only `SEAT_SECRETS` turns a seat into a key.  No schema takes a seat;  an extra argument is an `invalid_argument` tool error.
+- **Identity.**  The authenticated seat comes only from the grant's props, and only `SEAT_SECRETS` turns an OAuth seat into a key.  On a CURSOR connection, each advertised tool accepts optional `identity`, default `CURSOR`, with a fixed enum of the eleven active `GB-*` Grok Bot personas.  `agent_sync_identities` lists the choices and each service's configured or missing state without credentials.  Other connections cannot select an identity.  GB identities are acting roles under the CURSOR grant, never OAuth seats.
+- **Delegated calls.**  The server removes `identity` before the inner tool validates arguments or calls an upstream service.  It creates a new `HostedTools` context for each selected call using that role's exact Zulip bot key and email, its own Linear app pair and token cache, its own pause gate, tag, idempotency rows, role check and service limits.  Missing role credentials fail closed.  Linear viewer verification requires the canonical `GB-ROLE` app name, case-insensitive, on reads and writes.  The original CURSOR scopes, grant epoch, revocation and pause remain the authority;  every delegated reservation also charges CURSOR's pooled budget before the role budget, so choosing another persona cannot multiply CURSOR's allowance.  Audits record `authenticated_seat` and `acting_identity` without arguments or credentials.  MCP event subscriptions and wakes remain bound to CURSOR.
+
+For example, a CURSOR connection can select Fixer for one call:
+
+```json
+{"name":"whoami","arguments":{"identity":"GB-FIXER"}}
+```
+
+The result reports `seat: GB-FIXER` and `authenticated_seat: CURSOR`.  Omitting `identity` on the next call uses CURSOR.
+
 - **Seat binding (3.6).**  Before the first Zulip call and every 10 minutes after, `users/me` for the seat's key must be a bot, this seat's email and tag, and a member (role 400), never an administrator or owner.  A refusal is cached, audited and answered `not_authorized`.
 - **Channels (D4, owner ruling Sat, Oct 10, 2026).**  Any public channel the seat's own bot is subscribed to, read from Zulip (`users/me/subscriptions`, `invite_only` false) per seat and cached 60 seconds (`src/channels.js`), minus the stream ids in `CHANNELS_DENY` (a JSON array in `wrangler.jsonc`, empty by default).  Private channels never, even when the bot is in one.  A channel name resolves to its stream id through the freshly read set (case-insensitive, current names), and every narrow and every post uses the id;  a renamed channel keeps its id, and its old name stops resolving after the refresh.  `reply` and `react` fetch the target and check its stream id;  `inbox` runs one `is:mentioned` query across every channel and keeps only allowed stream ids, so private-channel mentions never reach the client, and its `next_since_id` moves past what it filtered out.  MCP Events wakes use the same set, read at delivery time.  Direct messages are the one deliberate exception (spec 1.2):  `inbox` adds a separate `is:dm` query, and `dm_list`, `dm_read` and `dm_send` work on DM conversations the bot is in.
 - **Untrusted content.**  Every Zulip-authored string comes back inside one nonce fence, folded, de-markered and escaped;  `structuredContent` carries integers only, and writes echo no Zulip text.
@@ -41,6 +51,7 @@ OAuth 2.1 with CIMD for ChatGPT and Grok, plus CURSOR's owner-approved exact CIM
 | `src/config.js` | constants, `SEAT_SECRETS`, `PROPS_PHASE` and `loadConfig(env)` (fails closed) |
 | `src/contract.js` | the shared contract, ported from the stdio server:  schema check, fence, error model, secret scan, mentions, tags, the Central clock |
 | `src/hosted-tools.js` | the seven stdio tools, plus hosted recall, DM and Linear tools, for one seat |
+| `src/delegated-identities.js` | fixed CURSOR persona list, per-call routing, discovery and credential status |
 | `src/dm.js` | Zulip direct messages:  the three hosted-only tool specs and the hosted `inbox` description |
 | `src/recall.js` | fleet recall:  the three hosted-only tool specs, the recall REST client (exact origin, no redirects, 10-second timeout), error mapping and the recall fence |
 | `src/linear.js` | Linear access:  the hosted-only convenience tools and broad GraphQL schema/query/mutation tools, using the seat's grant-bound Linear app identity |

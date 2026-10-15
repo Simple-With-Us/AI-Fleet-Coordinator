@@ -454,7 +454,7 @@ export async function linearTokenClear(store) {
 // ---- per-call audit (spec 3.9), kept 90 days
 
 const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10);
-const CALL_FIELDS = ["seat", "grant_ref", "client_id", "tool", "channel_id", "topic", "message_id", "outcome", "error_code", "error_message", "retryable", "retry_after_s", "reset_at", "upstream_status", "exception_class", "latency_ms", "body_len", "idem_ref", "recipient_ids", "asn", "country"];
+const CALL_FIELDS = ["seat", "authenticated_seat", "acting_identity", "grant_ref", "client_id", "tool", "channel_id", "topic", "message_id", "outcome", "error_code", "error_message", "retryable", "retry_after_s", "reset_at", "upstream_status", "exception_class", "latency_ms", "body_len", "idem_ref", "recipient_ids", "asn", "country"];
 const utf8JsonBytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 const arrayJsonBytes = (rows) => 2 + rows.reduce((bytes, row) => bytes + utf8JsonBytes(row), 0) + Math.max(0, rows.length - 1);
 
