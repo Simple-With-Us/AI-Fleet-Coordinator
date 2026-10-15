@@ -180,6 +180,8 @@ class SpecializeTests(unittest.TestCase):
         self.assertNotIn("You are **GROK-BOT**", grok_bot)
         self.assertNotIn("You are **CURSOR**", grok_bot)
         self.assertNotIn("You are **MONET**", grok_bot)
+        self.assertIn(f"{BRANCH_PREFIX}/{BRANCH_EXAMPLE_SLUG}", grok_bot)
+        self.assertNotIn("claude/afc-123-zulip-cutover", grok_bot)
 
     def test_kimi_retired_banner(self) -> None:
         out = specialize_from_monet(_session(), SEATS["kimi"], skill_name="session-start")
@@ -1122,6 +1124,8 @@ class RepoPlatformCopiesTests(unittest.TestCase):
             self.assertIn(wanted, text, wanted)
         for foreign in ("CLAUDE", "CURSOR", "Claude-zuliprc", "`[CLAUDE·session8]`"):
             self.assertNotIn(foreign, text, foreign)
+        self.assertIn("minimax/afc-123-zulip-cutover", text)
+        self.assertNotIn("claude/afc-123-zulip-cutover", text)
 
     def test_tracked_platform_copies_match_fresh_render(self) -> None:
         stale: list[str] = []
