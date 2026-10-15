@@ -84,7 +84,8 @@ STARTED_AT=$(date +%s)
 
 log() {
   local msg="$*"
-  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$msg"
+  # stderr only: find_app_container and other helpers print ids on stdout for $(...) capture.
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$msg" >&2
   if command -v logger >/dev/null 2>&1; then
     logger -t "$LOG_TAG" -- "$msg" || true
   fi

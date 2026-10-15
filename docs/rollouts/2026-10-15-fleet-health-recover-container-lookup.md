@@ -22,6 +22,7 @@
 ```bash
 bash -n scripts/host/fleet-health-recover.sh
 bash scripts/host/test-fleet-health-body.sh
+# log() -> stderr so $(find_app_container) stays a single id (PR #562 review)
 ```
 
 ## Next Steps & Blockers
