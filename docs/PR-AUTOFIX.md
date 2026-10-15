@@ -36,7 +36,11 @@ jobs:
   autofix:
     if: >
       (github.event.issue.pull_request || github.event.pull_request) &&
-      contains(fromJSON('["bot", "Bot"]'), github.event.comment.user.type || github.event.review.user.type || '')
+      (github.event.issue.state == 'open' || github.event.pull_request.state == 'open') &&
+      (
+        (github.event_name == 'pull_request_review' && contains(fromJSON('["bot", "Bot"]'), github.event.review.user.type)) ||
+        (github.event_name != 'pull_request_review' && contains(fromJSON('["bot", "Bot"]'), github.event.comment.user.type))
+      )
     permissions:
       contents: write
       pull-requests: read
