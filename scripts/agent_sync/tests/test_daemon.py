@@ -1786,3 +1786,19 @@ class HostWakeTests(DaemonHarness):
             self.assertEqual(daemon._wake_block(runner, pending, now), "host_busy")
             self.clock.advance(5 * 60)
             self.assertIsNone(daemon._wake_block(runner, pending, self.clock.time()))
+
+    def test_host_busy_max_age_survives_a_catch_up_wake_id(self) -> None:
+        """Catch-up mints a new wake_id each pass; defer age must follow the topic, not the id."""
+        self.write_config(extra_daemon="host_wake_defer_max_minutes = 5\n")
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        hot = HL.HostLoad(load1=60.0, cores=10)
+        now = self.clock.time()
+        first = self._pending()
+        retry = W.Pending("w-catch-up", "CLAUDE", {"channel": "agent-sync", "topic": "t"}, owner=False,
+                          now=now, due=now)
+        retry.add({"id": 99, "ts": now}, False)
+        with mock.patch.object(HL, "read_host_load", return_value=hot):
+            self.assertEqual(daemon._wake_block(runner, first, now), "host_busy")
+            self.clock.advance(5 * 60)
+            self.assertIsNone(daemon._wake_block(runner, retry, self.clock.time()))
