@@ -162,7 +162,7 @@ Three forms are accepted everywhere an id is expected, by `board`, by `linear_sh
 
 ## Teams
 
-One team per app.  `--app` takes a team key (`AFC`, `FL`) or a board slug (`socratic-trade`); `fleet-infra` routes to OPS; an unknown slug goes to AFC with an `app:<slug>` label.  Teams live:  AFC, AR, BF, CC, CK, CL, CT, CTS, DD, FL, HH, OPS, PS, ST, SWU, UM.
+One team per app.  `--app` takes a team key (`AFC`, `FL`) or a board slug (`socratic-trade`); `fleet-infra` routes to OPS; an unknown slug goes to AFC with an `app:<slug>` label.  Teams live:  AFC, AR, BF, CC, CLUTCH, CL, CT, CTS, DD, FL, HH, OPS, PS, ST, SWU, UM.
 
 `fleet-apps.json` is the source of truth for the acronym-to-repo mapping.  Do not infer a repo from an acronym.
 

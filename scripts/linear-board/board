@@ -226,14 +226,14 @@ FOOTER_ADDRESSED_RE = re.compile(
 # SWU is a team key with no BOARD_SLUG_TEAM entry:  the Simple With Us website
 # is filed by its key, not by slug.  FLL stays out on purpose:  fleetlink-legacy
 # has no Linear team of its own and files under FL.
-TEAM_KEYS = ("ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK", "FL", "CC", "SWU")
+TEAM_KEYS = ("ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CLUTCH", "FL", "CC", "SWU")
 FALLBACK_TEAM = "AFC"
 DEFAULT_APP = "fleet-infra"  # routes to OPS (design section 3)
 BOARD_SLUG_TEAM = {
     "ai-fleet-coordinator": "AFC", "fleet": "AFC",
     "autorotate": "AR", "autorotate-codes": "AR",
     "botfleet": "BF", "botfleet-app": "BF",
-    "clutch": "CK", "dsh-runtime": "CK", "harness": "CK",
+    "clutch": "CLUTCH", "dsh-runtime": "CLUTCH", "harness": "CLUTCH",
     "codecaps": "CC",  # CodeCaps team CC (owner 2026-10-11)
     "congress": "CT", "congress-trade": "CT",
     "congress-trading-shared": "CTS", "cts": "CTS",

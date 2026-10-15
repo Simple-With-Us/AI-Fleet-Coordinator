@@ -83,7 +83,7 @@ Work topic format, at most 58 characters (Zulip's hard limit is 60, and resolvin
 
 - `#n`:  the GitHub issue or PR number when the work has no Linear issue.  Write the full repo name (`congress-trading-shared#12`, `CodeCaps#12`) and let the generic pattern link it — the acronym rows are shadowed and dead ([Current Linkifiers](#current-linkifiers)).  `CT#2316` becomes a link, but to a repo named `CT`, which is wrong; write `Congress.Trade#2316`.
 - `ID`:  the Linear issue id, which already names the app (`BF-123`, `AFC-123`).  **It does not linkify today**:  there is no Linear linkifier, so the id is plain text.  Name the issue anyway, because it is how a human finds the record; a wrong slug is worse than a missing one ([Current Linkifiers](#current-linkifiers), [How Linkifiers Work](#how-linkifiers-work)).
-- `APP`:  when the work has no Linear issue, the app acronym from `fleet-apps.json` (ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, CK, HH, OPS) followed by the subject, as for any non-work topic.
+- `APP`:  when the work has no Linear issue, the app acronym from `fleet-apps.json` (ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, CLUTCH, HH, OPS) followed by the subject, as for any non-work topic.
 - Examples:  `AFC-123 Zulip cutover`, `Congress.Trade#2316 sentry` (a GitHub PR with no Linear issue), `ST restart-loop`, `board down 2026-10-07`.
 - Resolving adds `✔ ` to the front, and a resolved name over 60 characters is refused, which is why work topics stop at 58.
 
@@ -1090,7 +1090,7 @@ Each row is in force as described under "Until then" until you approve or change
 | 14 | Proposed linkifiers (Sentry org slug and PagerDuty subdomain TBD). | PROPOSED (v2.2) | None added. |
 | 15 | Clean pass on Muse patterns that capture the whole `CT#123` as `{id}`. | Superseded (v4) | Moot:  those rows never match, because rule 5116 claims the text first ([Current Linkifiers](#current-linkifiers)). |
 | 16 | Extra acks carried from AGENT-SYNC:  🔄 `counterclockwise` (re-running), 🚀 `rocket` (shipped), ⚠️ `warning` (problem).  Names verified live 2026-10-07. | DEFAULT | Optional; `check`, `eyes`, `check_mark` remain the core three. |
-| 17 | Clutch's acronym:  `fleet-apps.json` says CK, but the live linkifier is `CC#`. | Pending (new in v3) | Topics use `CK`.  The `CC#` linkifier is in any case dead (row 26), so write `Clutch#n` for a GitHub link. |
+| 17 | Clutch's acronym:  `fleet-apps.json` said `CK` until 2026-10-15, when the owner ruled the acronym is `CLUTCH` everywhere. | Resolved 2026-10-15 | `CLUTCH#n` is the canonical GitHub linkifier; `CK#` and `CC#` stay live as legacy aliases so old messages keep rendering.  Topics use `CLUTCH`. |
 | 18 | AFC ops automation (it signed `[AFC]` in Slack) has no Zulip bot.  The coordinator is CLAUDE and posts as its own bot. | Pending (new in v3) | AFC automation does not post to Zulip. |
 | 19 | Echo and Instinct show admin.  Intended? | Resolved 2026-10-09 | Owner ruling:  every bot is a member, so neither is an admin now. |
 | 20 | Whether MA, Echo, and Instinct take your instructions from Zulip (Zulip-native) or only from their own chat (CLI seat). | Pending (new in v3) | Treated as CLI seats. |

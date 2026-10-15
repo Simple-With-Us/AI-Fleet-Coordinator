@@ -254,7 +254,7 @@ REPO_BADGE: dict[str, tuple[str, str]] = {
     "AI-Fleet-Coordinator": ("AFC", "repo-fleet"),
     "BotFleet": ("BF", "repo-bf"),
     "HogHunter": ("HH", "repo-hh"),
-    "Clutch": ("CK", "repo-clutch"),
+    "Clutch": ("CLUTCH", "repo-clutch"),
     "codecaps": ("CC", "repo-cc"),
 }
 
@@ -369,9 +369,11 @@ REPO_STRIP_ALIASES: dict[str, tuple[str, ...]] = {
     "Clutch": (
         "Clutch",
         "clutch",
-        "CK",
+        "CLUTCH",
         # Retired name.  Every fetched item is now assigned repo "Clutch", so the
         # old Harness prefixes on historical titles must strip under this key.
+        # "CK" is the retired acronym:  historical "CK: ..." titles must still strip.
+        "CK",
         "Harness",
         "harness",
         "HR",
