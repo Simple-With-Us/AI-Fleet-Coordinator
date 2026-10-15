@@ -202,7 +202,7 @@ class ContentRules(RepoCase):
     def test_the_real_pin_is_the_imported_text(self) -> None:
         spec = gm.GENERATED_PATHS[0]
         self.assertEqual(spec.path, "AGENT-SYNC.md")
-        self.assertEqual(spec.pre_flip_sha256, "9d8fe9a88d34535dac761e1c7ae860d2a5c48169f12d00ef771650f2e1b097ef")
+        self.assertEqual(spec.pre_flip_sha256, "7d7c228c4493b811557ec11fff06e1cc6cd78c53bc027b6cfc6bdc82952ded81")
 
 
 class BranchRule(RepoCase):

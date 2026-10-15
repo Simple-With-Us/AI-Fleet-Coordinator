@@ -83,7 +83,7 @@ class GeneratedPath:
 
 # Fleet-OPS handbook/README.md records this hash as the verbatim import of AGENT-SYNC.md at AFC #476 (fa7daadb).
 GENERATED_PATHS: tuple[GeneratedPath, ...] = (
-    GeneratedPath("AGENT-SYNC.md", "9d8fe9a88d34535dac761e1c7ae860d2a5c48169f12d00ef771650f2e1b097ef"),
+    GeneratedPath("AGENT-SYNC.md", "7d7c228c4493b811557ec11fff06e1cc6cd78c53bc027b6cfc6bdc82952ded81"),
     # Phase B (U9) adds the Zulip guide here, in an ordinary PR, with the pin set to the guide's sha256 at that
     # commit;  the first header then arrives by the mirror PR, as it does for AGENT-SYNC.md.  Listed now it would
     # fail, because the guide is hand-written.

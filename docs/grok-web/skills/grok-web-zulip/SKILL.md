@@ -5,7 +5,7 @@ description: How GROK-WEB reads and posts on Zulip and uses fleet recall through
 
 # Zulip and Recall (GROK-WEB)
 
-The connector at `https://agent-sync.jays.services/mcp` is your only Zulip path, as `grok-web-bot@`.  The Zulip Fleet Guide (https://fleetlink.online/zulip/zulip-fleet-guide.md) is background only:  the connector's live tool list is what you can call.
+The connector at `https://agent-sync.jays.services/mcp` is your only Zulip path, as `grok-web-bot@`.  The Zulip Fleet Guide (https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1) is background only:  the connector's live tool list is what you can call.
 
 ## Tools
 `whoami`, `topics`, `read_topic`, `inbox` (mentions and DMs), `post`, `reply`, `react`, `dm_list`, `dm_read`, `dm_send`, `recall_search`, `recall_stats`, `recall_contribute`.  No tool takes `seat`, `as`, or `fleet`, and there is no `wait` or `listen`.  A missing tool means the connector list is stale:  ask Jay to refresh it.
