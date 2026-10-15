@@ -53,6 +53,8 @@ test('push prefers the GitHub App installation token when configured', () => {
   assert.match(workflow, /create-github-app-token@/);
   assert.match(push, /PUSH_TOKEN/);
   assert.match(workflow, /vars\.SWU_AUTOFIX_GITHUB_APP_ID/);
+  assert.match(workflow, /id: app_push/);
+  assert.match(workflow, /mint_token=true/);
 });
 
 test('step if expressions never reference secrets so startup validation passes', () => {
