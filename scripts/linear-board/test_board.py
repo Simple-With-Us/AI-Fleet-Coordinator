@@ -590,6 +590,13 @@ class SeatAliasTests(unittest.TestCase):
             got = cli.list_filter(cli.build_parser().parse_args(["list", "--mine", raw]))
             self.assertEqual(got, want, raw)
 
+    def test_mine_wise_includes_legacy_instinct_claim_label(self):
+        cli = load_cli()
+        want = cli.list_filter(cli.build_parser().parse_args(["list", "--mine", "WISE"]))
+        self.assertIn({"labels": {"some": {"name": {"in": ["claimed:WISE", "claimed:INSTINCT"]}}}}, want[0])
+        got = cli.list_filter(cli.build_parser().parse_args(["list", "--mine", "Instinct"]))
+        self.assertEqual(got, want)
+
     def test_pattern_is_the_one_in_fleet_apps_json(self):
         """The board script imports no package, so it carries its own copy of the GROK row's aliasPattern."""
         rows = json.loads((HERE.parents[1] / "fleet-apps.json").read_text())["seats"]
@@ -977,6 +984,20 @@ class WriteTests(BoardTest):
         self.assertEqual(d["location"], "Mac, ~/apps/lanes/X @ claude/x")
         rows = json.loads(self.board("list", "--json", "--mine", "CLAUDE").stdout)
         self.assertEqual([r["identifier"] for r in rows], ["OPS-10"])
+
+    def test_claim_legacy_instinct_label_is_wise_own_claim(self):
+        # An In Progress issue carrying the legacy claimed:INSTINCT label:  WISE
+        # claims it as its own without --steal, and the legacy label is replaced.
+        iss = self.mock.issues[hy(B_B)]
+        iss["labels"] = [lid for lid in iss["labels"]
+                         if self.mock.labels[lid]["name"] != "claimed:CODEX"]
+        iss["labels"].append(self.mock._label("claimed:INSTINCT", None))
+        p = self.board("claim", "OPS-11", "--by", "WISE", "--env", "cloud",
+                         extra={"AGENT_SEAT": "WISE"})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        names = self.label_names(self.mock.issues[hy(B_B)])
+        self.assertIn("claimed:WISE", names)
+        self.assertNotIn("claimed:INSTINCT", names)
 
     def test_claim_refused_when_held_then_steal(self):
         p = self.board("claim", "OPS-11", "--by", "CLAUDE", code=3)

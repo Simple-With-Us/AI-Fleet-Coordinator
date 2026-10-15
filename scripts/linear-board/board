@@ -1585,7 +1585,12 @@ def list_filter(a) -> tuple[list[dict], list[str] | None]:
     if a.search:
         parts.append({"title": {"containsIgnoreCase": a.search}})
     if a.mine:
-        parts.append(label_cond(f"{CLAIM_PREFIX}{norm_seat(a.mine)}"))
+        canonical = norm_seat(a.mine)
+        labels = [f"{CLAIM_PREFIX}{canonical}"]
+        # Legacy spellings (claimed:INSTINCT) resolve to the canonical tag.
+        labels += sorted(f"{CLAIM_PREFIX}{a}" for a, t in SEAT_TAG_ALIASES.items()
+                         if t == canonical and a != canonical)
+        parts.append(label_cond(labels[0]) if len(labels) == 1 else label_cond("", names=labels))
     for name in a.labels or []:
         parts.append(label_cond(name))    # every --label must be on the issue
     return parts, sevs
@@ -1889,7 +1894,7 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
     team = n["team"]["key"]
     # Who holds it: claimed:<SEAT> labels, else (In Progress) the import footer.
     # seat:<SEAT> labels are attribution (reporters carry them too), never a claim.
-    holders = [s for s in holders_of(n) if s != by]
+    holders = [s for s in holders_of(n) if norm_seat(s) != by]  # claimed:INSTINCT is WISE's own claim
     in_progress = (n.get("state") or {}).get("name") == "In Progress"
     stolen = []
     if in_progress and holders:
