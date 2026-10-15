@@ -225,6 +225,9 @@ class RegistryDataTests(unittest.TestCase):
             if row.get("retired"):
                 continue
             for prefix in row.get("branchPrefixes", []):
+                # ECHO and WISE both claim instinct/ (owner decision Sun, Oct 11, 2026).
+                if prefix == "instinct/" and tag in ("ECHO", "WISE") and seen.get(prefix) in ("ECHO", "WISE"):
+                    continue
                 self.assertNotIn(prefix, seen, "%s and %s both claim branch prefix %s" % (tag, seen.get(prefix), prefix))
                 seen[prefix] = tag
 
@@ -248,7 +251,7 @@ class RegistryDataTests(unittest.TestCase):
 
 class BoardAliasTests(RealRegistryCase):
     """The board script imports no package, so it keeps its own SEAT_ALIASES, SEAT_TAG_ALIASES (INSTINCT to
-    WISE, owner 2026-10-14) and BF_ROLES.  Nothing merges them into the registry here;  this keeps every
+    WISE, owner 2026-10-15) and BF_ROLES.  Nothing merges them into the registry here;  this keeps every
     target resolvable through strict_seat so the two cannot drift apart unnoticed."""
 
     @classmethod
@@ -269,7 +272,7 @@ class BoardAliasTests(RealRegistryCase):
             with self.subTest(alias=alias):
                 self.assertEqual(I.strict_seat(target, registry=self.reg), target)
                 self.assertEqual(I.seat_app(target, registry=self.reg), "instinct")
-                self.assertEqual(I.strict_seat(alias, registry=self.reg), target)
+                self.assertEqual(I.strict_seat(alias, registry=self.reg), target)  # INSTINCT stays an accepted spelling (fleet-apps.json)
 
     def test_every_bf_role_gives_a_botfleet_seat(self) -> None:
         self.assertTrue(self.board.BF_ROLES)

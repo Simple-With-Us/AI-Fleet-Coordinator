@@ -47,7 +47,7 @@ CLOUD_SEATS = {
     "MA": ("muse-assist-bot@zulip.test", "Muse Assist"),
     "JET": ("openai-dot-bot@zulip.test", "Jet Dot"),
     "GROK-WEB": ("grok-web-bot@zulip.test", "Grok Web"),
-    "WISE": ("instinct-owl-bot@zulip.test", "Instinct Owl"),
+    "WISE": ("instinct-owl-bot@zulip.test", "Wise Owl"),
     "ECHO": ("instinct-bat-bot@zulip.test", "Echo Bat"),
 }
 

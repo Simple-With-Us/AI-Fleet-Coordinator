@@ -47,7 +47,7 @@ export const LINEAR_SECRETS = Object.freeze({
   JET: Object.freeze({ clientId: "LINEAR_JET_CLIENT_ID", clientSecret: "LINEAR_JET_CLIENT_SECRET" }),
   "GROK-WEB": Object.freeze({ clientId: "LINEAR_GROK_WEB_CLIENT_ID", clientSecret: "LINEAR_GROK_WEB_CLIENT_SECRET" }),
   ECHO: Object.freeze({ clientId: "LINEAR_ECHO_CLIENT_ID", clientSecret: "LINEAR_ECHO_CLIENT_SECRET" }),
-  WISE: Object.freeze({ clientId: "LINEAR_WISE_CLIENT_ID", clientSecret: "LINEAR_WISE_CLIENT_SECRET" }),
+  WISE: Object.freeze({ clientId: "LINEAR_INSTINCT_CLIENT_ID", clientSecret: "LINEAR_INSTINCT_CLIENT_SECRET" }),
   CURSOR: Object.freeze({ clientId: "LINEAR_CURSOR_CLIENT_ID", clientSecret: "LINEAR_CURSOR_CLIENT_SECRET" }),
 });
 
@@ -156,12 +156,12 @@ export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),
   "GROK-WEB": Object.freeze(["Grok (Web/iOS)", "Grok Web/iOS"]),
   ECHO: Object.freeze(["Echo"]),
-  WISE: Object.freeze(["Wise (Instinct)", "Wise-Instinct", "Echo-Instinct"]),
+  WISE: Object.freeze(["Wise (Instinct)", "Wise-Instinct", "Echo-Instinct", "Instinct"]),
   MA: Object.freeze(["Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"]),
 });
 export const SEAT_TAG_ALIASES = Object.freeze({ INSTINCT: "WISE", "WISE-INSTINCT": "WISE", "ECHO-INSTINCT": "WISE", "MUSE-ASSIST": "MA", ROB: "MA", "ROB-MUSE": "MA" });
 
-/** The seat tag a spelling resolves to, including accepted human aliases. */
+/** The seat tag a spelling resolves to, including accepted human aliases.  WISE is the tag; INSTINCT is retired. */
 export function seatTagForSeat(seat) {
   const tag = String(seat ?? "").trim().toUpperCase();
   return SEAT_TAG_ALIASES[tag] ?? tag;

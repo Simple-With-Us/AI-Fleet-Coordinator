@@ -381,7 +381,7 @@ const EMAIL_TAG_OVERRIDES = Object.freeze({
   "muse-assist": "MA",
   "openai-dot": "JET",
   "instinct-bat": "ECHO",
-  "instinct-owl": "WISE",
+  "instinct-owl": "WISE",   // the bot is instinct-owl-bot@;  WISE is the seat tag
   "grok-build": "GROK",
 });
 

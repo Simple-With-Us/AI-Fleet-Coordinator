@@ -130,7 +130,9 @@ SEAT_ALIASES = {"MINIMAX": "MM", "MUSE": "MA", "GROK-BUILD": "GROK", "ANTIGRAVIT
                 "MUSE-ASSIST": "MA", "ROB": "MA", "ROB-MUSE": "MA", "MUSE-CODE": "MC",
                 "INSTINCT": "WISE", "WISE-INSTINCT": "WISE", "ECHO-INSTINCT": "WISE"}
 CLUTCH_LINEAGE = {"DSH", "DEEPSEEK", "HARNESS"}
-# Older internal seat tags accepted for compatibility; output uses the canonical key.
+# Spellings of a seat tag that AGENT_SEAT and --by resolve to the tag the fleet signs with.  The tag is
+# WISE (owner 2026-10-15) and INSTINCT is the retired spelling, kept so existing references keep resolving.
+# Output uses the canonical key.
 SEAT_TAG_ALIASES = {"INSTINCT": "WISE"}
 # Retired seat tags keep their SEAT_ALIASES entries for roster_seat (old footer
 # attribution), but norm_seat resolves them as typed (SeatAliasTests).
@@ -172,7 +174,7 @@ SEAT_APP_ALIASES = {
     "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
     "OPENCODE": ("OC",),
     "ECHO": (),
-    "WISE": ("Wise (Instinct)", "Wise-Instinct", "Echo-Instinct"),
+    "WISE": ("Wise (Instinct)", "Wise-Instinct", "Echo-Instinct", "Instinct"),
 }
 
 

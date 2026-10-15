@@ -419,7 +419,7 @@ test("a manual client's seat comes only from its /admin name tag on a hand-shape
   assert.equal(manualClientSeat({ clientId: "https://evil.example/c.json", clientName: "x (manual form, ECHO)" }), "", "a CIMD document names itself, so it never has a tag");
 });
 
-test("client binding:  a client bound to ECHO cannot mint an WISE grant", () => {
+test("client binding:  a client bound to ECHO cannot mint a WISE grant", () => {
   const echoClient = { clientId: "AbCdEf1234567890", clientName: "Echo (manual form, ECHO)" };
   const instinctClient = { clientId: "ZyXwVu9876543210", clientName: "Wise (manual form, WISE)" };
   const untagged = { clientId: "QqQqQqQq12345678", clientName: "Old client" };

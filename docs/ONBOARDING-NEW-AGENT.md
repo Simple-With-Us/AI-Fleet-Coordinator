@@ -70,8 +70,7 @@ The key has three parts:
 - `bySeat`:  one app for every **live** `seats` row.  `check-fleet-registry.py` fails
   CI for a live seat without one, and for an entry that is not a live seat.
 - `extraSeats`:  real seats that have no `seats` row because they are hosted or
-  owner-run (`JET` is `chatgpt`).  ECHO and WISE have live rows and share the
-  `instinct` app.
+  owner-run (`JET` is `chatgpt`, `ECHO` and `WISE` are one app, `instinct`).
 - `patterns`:  families made of a role.  `BF-*` is `botfleet` (bot `bf-<role>-bot@`)
   and `GB-*` is `grok-bot` (bot `<role>-grok-bot@`).  The patterns accept any
   well-formed role, so they cannot catch a misspelled one.

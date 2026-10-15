@@ -1135,7 +1135,7 @@ try {
     let handle = page.match(/name="handle" value="([^"]+)"/)[1];
     // A tampered seat on the form is refused (the armed seat is ECHO).
     const tampered = await browser("/authorize", { method: "POST", form: { handle, seat: "WISE", decision: "approve", scope: "zulip:read" } });
-    assert.equal(tampered.status, 409, "the armed seat is ECHO, so an WISE approval is refused");
+    assert.equal(tampered.status, 409, "the armed seat is ECHO, so a WISE approval is refused");
     await tampered.arrayBuffer();
     assert.equal((await echoGate.getState()).armed, true, "a refused consent does not spend the window");
     page = await (await browser(`/authorize?${authorizeQuery(e.challenge, "e-ok2", { clientId: echoClient, redirect: LOOP })}`)).text();

@@ -18,7 +18,8 @@ export const RESOURCE_METADATA_URL = `${ISSUER}/.well-known/oauth-protected-reso
 export const SCOPES = Object.freeze(["zulip:read", "zulip:write"]);
 
 // Seats this Worker can ever serve.  HOSTED_SEATS (a var) narrows it further.
-// ECHO and WISE are identities of one third-party app, each with its own Zulip bot.
+// ECHO and WISE are two identities of one third-party app (Instinct), each
+// with its own Zulip bot (instinct-bat-bot and instinct-owl-bot).
 export const KNOWN_SEATS = Object.freeze(["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE"]);
 
 // Phase 0 durations.
@@ -46,7 +47,7 @@ export const SEAT_SECRETS = Object.freeze({
   JET: Object.freeze({ key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" }),
   "GROK-WEB": Object.freeze({ key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" }),
   ECHO: Object.freeze({ key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" }),
-  WISE: Object.freeze({ key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE" }),
+  WISE: Object.freeze({ key: "ZULIP_KEY_INSTINCT", email: "ZULIP_EMAIL_INSTINCT" }),
 });
 
 // The shared HMAC key the server listener signs each seat's wake with
@@ -57,7 +58,7 @@ export const WAKE_SECRETS = Object.freeze({
   JET: "WAKE_HMAC_KEY_JET",
   "GROK-WEB": "WAKE_HMAC_KEY_GROK_WEB",
   ECHO: "WAKE_HMAC_KEY_ECHO",
-  WISE: "WAKE_HMAC_KEY_WISE",
+  WISE: "WAKE_HMAC_KEY_INSTINCT",
 });
 
 // What /admin and a manual client's name call each seat's app.
