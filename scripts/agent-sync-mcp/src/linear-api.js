@@ -1,11 +1,12 @@
 // General Linear GraphQL tools share the existing seat-bound transport.
 import { Kind, print } from "graphql";
 import { ToolError, okResult, sha256Hex, stableJson, scanSecret, newNonce } from "./contract.js";
-import { linearClean, linearEnvelope, Q_ISSUE } from "./linear.js";
+import { LinearError, linearClean, linearEnvelope, Q_ISSUE } from "./linear.js";
 import { prepareGraphql } from "./linear-graphql.js";
 
 const PROTECTED_LABEL = /^(?:claimed:|seat:|stale-claim$)/i;
 const SECRET_FIELD = /secret|token|password|credential|authorization|cookie|api_?key/i;
+const DEFINITIVE_MUTATION_FAILURE_KINDS = new Set(["unauthorized", "rate_limited", "mint"]);
 const typeRef = (depth) => `kind name${depth ? ` ofType { ${typeRef(depth - 1)} }` : ""}`;
 const TYPE_QUERY = `query AgentSyncSchema($name: String!) {
   __type(name: $name) {
@@ -185,8 +186,19 @@ export async function apiMutation(tools, args, audit) {
   try { await tools.reserveLinear("write"); }
   catch (error) { await tools.gate.linearApiDrop({ storageKey: begun.storageKey }); throw error; }
   let data;
+  let definitiveFailure = false;
   try {
-    data = cleanData(tools, await tools.linearCall(() => client.call(prepared.query, prepared.variables, { retryOn401: false }), { write: true }));
+    data = cleanData(tools, await tools.linearCall(async () => {
+      try {
+        return await client.call(prepared.query, prepared.variables, { retryOn401: false });
+      } catch (error) {
+        if (error instanceof LinearError && ([401, 429].includes(error.status) || DEFINITIVE_MUTATION_FAILURE_KINDS.has(error.kind))) {
+          await tools.gate.linearApiDrop({ storageKey: begun.storageKey });
+          definitiveFailure = true;
+        }
+        throw error;
+      }
+    }, { write: true }));
     if (JSON.stringify(data).length > 64000) {
       // Keep a completed marker even when the requested response is too large.
       data = { mutation_completed: true, operation, response_omitted: "Select fewer fields to inspect this resource with linear_query." };
@@ -195,6 +207,7 @@ export async function apiMutation(tools, args, audit) {
       ? data : { mutation_completed: true, operation, response_omitted: "Use linear_query to inspect this completed mutation's resource." };
     await tools.gate.linearApiSet({ storageKey: begun.storageKey, changes: { state: "sent", data: cached } });
   } catch (error) {
+    if (definitiveFailure) throw error;
     await tools.safely(() => tools.gate.linearApiSet({ storageKey: begun.storageKey, changes: { state: "unknown" } }));
     throw new ToolError("outcome_unknown", `The mutation may have reached Linear.  Check its result before using another idempotency key.  ${tools.scrub(error.message ?? "Upstream failure.")}`);
   }

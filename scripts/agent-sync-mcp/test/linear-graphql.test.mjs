@@ -98,9 +98,10 @@ test("rejects operation-kind bypasses and requires the requested single operatio
 
 test("requires exactly one mutation root and blocks protected and batch roots", () => {
   rejected("mutation M { projectUpdate(id: \"p\", input: {}) { success } otherUpdate { success } }", {}, "mutation");
-  for (const root of ["apiKeyCreate", "OAuthClientUpdate", "applicationCreate", "integrationUpdate", "ssoCreate", "scimUpdate", "organizationUpdate", "userUpdate", "teamMembershipUpdate", "authenticationUpdate"]) {
+  for (const root of ["apiKeyCreate", "OAuthClientUpdate", "applicationCreate", "integrationUpdate", "ssoCreate", "scimUpdate", "organizationUpdate", "userUpdate", "teamMembershipUpdate", "authenticationUpdate", "airbyteIntegrationConnect", "createOrganizationFromOnboarding"]) {
     rejected(`mutation M { ${root} { success } }`, {}, "mutation");
   }
+  assert.equal(prepareGraphql("mutation M { issueUpdate(id: \"i\", input: {}) { success } }", {}, "mutation").roots[0].name.value, "issueUpdate");
   rejected("mutation M { issueBatchUpdate { success } }", {}, "mutation");
   rejected("mutation M { projectBulkUpdate { success } }", {}, "mutation");
 });

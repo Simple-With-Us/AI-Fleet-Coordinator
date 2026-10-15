@@ -171,6 +171,40 @@ test("unknown mutation outcomes are retained and never automatically replayed", 
   assert.equal(requests.length, 1);
 });
 
+test("HTTP 401 and 429 failures release the idempotency key and preserve mapped retry details", async () => {
+  for (const [failure, code, retryAfter] of [
+    [new LinearError("unauthorized", { status: 401 }), "not_authorized", undefined],
+    [new LinearError("rate_limited", { status: 429, retryAfterS: 17 }), "rate_limited", 17],
+  ]) {
+    const { tools, client, requests } = harness();
+    client.failure = failure;
+    const first = await tools.call("linear_mutation", input());
+    assert.equal(first.isError, true);
+    const firstError = JSON.parse(first.content[0].text);
+    assert.equal(firstError.code, code);
+    if (retryAfter !== undefined) assert.equal(firstError.retry_after_s, retryAfter);
+
+    client.failure = null;
+    const retry = await tools.call("linear_mutation", input());
+    assert.equal(retry.isError, undefined, JSON.stringify(retry));
+    assert.equal(requests.length, 2);
+  }
+});
+
+test("GraphQL execution errors remain unknown and the same key is not replayed", async () => {
+  const { tools, client, requests } = harness();
+  client.failure = new LinearError("unexpected", { status: 200, message: "resolver failed" });
+  const first = await tools.call("linear_mutation", input());
+  assert.equal(first.isError, true);
+  assert.equal(JSON.parse(first.content[0].text).code, "outcome_unknown");
+
+  client.failure = null;
+  const retry = await tools.call("linear_mutation", input());
+  assert.equal(retry.isError, true);
+  assert.equal(JSON.parse(retry.content[0].text).code, "outcome_unknown");
+  assert.equal(requests.length, 1);
+});
+
 test("an oversized first response can be recovered with the same key and a larger output limit", async () => {
   const { tools, client, requests } = harness();
   client.result = { data: "x".repeat(2000) };

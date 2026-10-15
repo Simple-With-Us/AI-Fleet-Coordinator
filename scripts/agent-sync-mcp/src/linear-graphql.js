@@ -5,7 +5,10 @@ const DOCUMENT_LIMIT = 24000;
 const VARIABLES_LIMIT = 24000;
 const MAX_DEPTH = 16;
 const MAX_FIELDS = 500;
-const BLOCKED_MUTATION_ROOT = /^(?:apiKey|oauth|application|integration|sso|scim|organization|user|teamMembership|authentication|webhook|workspace|role|permission|session|accessToken)/i;
+// Match protected categories anywhere in a root name. Linear's schema includes
+// non-prefixed admin roots such as airbyteIntegrationConnect and
+// createOrganizationFromOnboarding.
+const BLOCKED_MUTATION_ROOT = /(?:apiKey|oauth|application|integration|sso|scim|organization|user|teamMembership|authentication|webhook|workspace|role|permission|session|accessToken)/i;
 
 function invalid(message) {
   throw new ToolError("invalid_argument", message);
