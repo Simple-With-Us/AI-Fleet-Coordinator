@@ -58,6 +58,7 @@ test('mint step never references secrets in its if guard', () => {
   const mint = steps.find((step) => step.includes('id: push_token'));
   assert(mint);
   assert.match(mint, /vars\.SWU_AUTOFIX_GITHUB_APP_ID/);
+  assert.match(mint, /continue-on-error: true/);
   const ifLine = mint.split('\n').find((line) => line.trimStart().startsWith('if:'));
   assert(ifLine);
   assert.doesNotMatch(ifLine, /secrets\./);
