@@ -372,6 +372,43 @@ def enrich_sessions(sessions: list[JsonDict]) -> list[JsonDict]:
     return merged
 
 
+def user_message_receipt(session_id: str, text: str) -> bool:
+    """True when the exact prompt text appears as a real user message on disk."""
+    path = find_session_dir(session_id)
+    if path is None or not text:
+        return False
+    hist = path / "chat_history.jsonl"
+    if not hist.is_file():
+        return False
+    try:
+        with hist.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 2 * 1024 * 1024))
+            if fh.tell():
+                fh.readline()
+            for raw in fh:
+                try:
+                    row = json.loads(raw)
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                if not isinstance(row, dict) or row.get("type") != "user" or row.get("synthetic_reason"):
+                    continue
+                content = row.get("content")
+                if isinstance(content, list):
+                    content = "".join(
+                        part.get("text", "")
+                        for part in content
+                        if isinstance(part, dict) and part.get("type") == "text"
+                        and isinstance(part.get("text"), str)
+                    )
+                if content == text:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def prefix_prompt(text: str, from_name: str | None) -> str:
     name = (from_name or os.environ.get("AGENT_TAG") or os.environ.get("AGENT_SEAT") or "remote").strip()
     if not name:

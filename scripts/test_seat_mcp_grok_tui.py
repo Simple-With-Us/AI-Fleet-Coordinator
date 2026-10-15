@@ -211,6 +211,8 @@ class LeaderExtractTests(unittest.TestCase):
         self.assertIn("def prompt_live", src)
         self.assertIn("wait=False", src)
         self.assertIn("--wait", src)
+        self.assertIn("correlated_queue_notification", src)
+        self.assertNotIn("if queued or not wait:", src)
 
 
 if __name__ == "__main__":

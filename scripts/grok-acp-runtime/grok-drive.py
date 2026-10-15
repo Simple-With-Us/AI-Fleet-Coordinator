@@ -144,6 +144,11 @@ def cmd_prompt(args):
         argv.append("--wait")
     data, code = run_json(argv, timeout=float(args.timeout) + 20)
     data = dict(data or {})
+    if code != 0 and not data.get("receipt"):
+        data.setdefault(
+            "error",
+            data.get("error") or "no correlated receipt for session/prompt (timeout or leader error)",
+        )
     data["turnState"] = st.get("turnState")
     data["from"] = args.from_name or os.environ.get("AGENT_TAG") or os.environ.get("AGENT_SEAT") or "remote"
     if args.await_reply and data.get("ok"):
