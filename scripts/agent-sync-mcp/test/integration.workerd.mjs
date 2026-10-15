@@ -1035,7 +1035,7 @@ try {
     assert.equal((await adminAction("create_manual_client", { seat: "WISE" })).status, 303);
     const admin = await (await browser("/admin")).text();
     const echoClient = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Echo \(manual form, ECHO\)<\/td><td>ECHO<\/td><td>http:\/\/127\.0\.0\.1:8737\/callback</)[1];
-    const instinctClient = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Instinct \(manual form, WISE\)<\/td><td>WISE</)[1];
+    const instinctClient = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Wise \(manual form, WISE\)<\/td><td>WISE</)[1];
     const refusalLog = async () => (await (await browser("/admin")).text()).split("Refused Authorize Requests")[1].split("Refused Token Requests")[0];
     const open = (clientId, state) => browser(`/authorize?${authorizeQuery(pkce().challenge, state, { clientId, redirect: LOOP })}`);
 

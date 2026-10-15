@@ -421,7 +421,7 @@ test("a manual client's seat comes only from its /admin name tag on a hand-shape
 
 test("client binding:  a client bound to ECHO cannot mint an WISE grant", () => {
   const echoClient = { clientId: "AbCdEf1234567890", clientName: "Echo (manual form, ECHO)" };
-  const instinctClient = { clientId: "ZyXwVu9876543210", clientName: "Instinct (manual form, WISE)" };
+  const instinctClient = { clientId: "ZyXwVu9876543210", clientName: "Wise (manual form, WISE)" };
   const untagged = { clientId: "QqQqQqQq12345678", clientName: "Old client" };
   assert.equal(clientBoundToSeat(echoClient, "ECHO", LOOP, instinctConfig), true);
   assert.equal(clientBoundToSeat(echoClient, "WISE", LOOP, instinctConfig), false);
