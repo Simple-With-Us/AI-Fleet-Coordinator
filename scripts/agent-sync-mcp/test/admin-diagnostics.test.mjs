@@ -160,3 +160,39 @@ test("concurrent call audits and diagnostic increments are atomic", async () => 
   const [diag] = await state.diagnosticTail(store, 40, now + 100);
   assert.equal(diag.count, 100);
 });
+
+test("call and error audit arrays stay within independent UTF-8 storage byte caps", async () => {
+  const store = state.memoryStore();
+  const now = Date.parse("2026-10-15T12:00:00Z");
+  const unicode = "🚀".repeat(120);
+  const message = "🧪".repeat(300);
+  for (let i = 0; i < 400; i++) {
+    await state.auditCall(store, {
+      seat: unicode, grant_ref: unicode, client_id: unicode, tool: "topics", topic: unicode,
+      outcome: "error", error_code: `failure_${i}`, error_message: message, message_id: i,
+    }, now + i);
+  }
+
+  const day = new Date(now).toISOString().slice(0, 10);
+  let calls = await store.get(`calls:${day}`);
+  let errors = await store.get("errors");
+  const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+  assert.ok(bytes(calls) <= state.CALLS_STORAGE_MAX_BYTES);
+  assert.ok(bytes(errors) <= state.ERRORS_STORAGE_MAX_BYTES);
+  assert.ok(calls.length < 400, "large call bucket was trimmed by bytes");
+  assert.ok(errors.length < 100, "error array was trimmed by bytes before reaching its row cap");
+  assert.equal(errors.at(-1).error_code, "failure_399", "newest retained error stays at the tail");
+  assert.equal(calls.at(-1).message_id, 399, "newest call row is retained");
+
+  for (let i = 400; i < 430; i++) {
+    await state.auditCall(store, {
+      seat: unicode, client_id: unicode, tool: "topics", topic: unicode, outcome: "ok", message_id: i,
+    }, now + i);
+  }
+  calls = await store.get(`calls:${day}`);
+  errors = await store.get("errors");
+  assert.ok(bytes(calls) <= state.CALLS_STORAGE_MAX_BYTES);
+  assert.ok(bytes(errors) <= state.ERRORS_STORAGE_MAX_BYTES);
+  assert.equal(errors.at(-1).error_code, "failure_399", "success traffic does not displace newest retained error");
+  assert.equal(calls.at(-1).message_id, 429);
+});

@@ -159,6 +159,8 @@ export const ROLE_TTL_MS = 10 * MINUTE_MS; // spec 3.6:  users/me on first use a
 export const CALL_RETENTION_DAYS = 90; // spec 3.9
 const CALLS_PER_DAY_CAP = 5000;
 const ERROR_AUDIT_CAP = 100;
+export const CALLS_STORAGE_MAX_BYTES = 1024 * 1024;
+export const ERRORS_STORAGE_MAX_BYTES = 256 * 1024;
 const ERROR_MESSAGE_MAX = 300;
 const GEO_CAP = 50;
 
@@ -453,6 +455,8 @@ export async function linearTokenClear(store) {
 
 const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10);
 const CALL_FIELDS = ["seat", "grant_ref", "client_id", "tool", "channel_id", "topic", "message_id", "outcome", "error_code", "error_message", "retryable", "retry_after_s", "reset_at", "upstream_status", "exception_class", "latency_ms", "body_len", "idem_ref", "recipient_ids", "asn", "country"];
+const utf8JsonBytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+const arrayJsonBytes = (rows) => 2 + rows.reduce((bytes, row) => bytes + utf8JsonBytes(row), 0) + Math.max(0, rows.length - 1);
 
 /**
  * One row per tool call.  Only the spec 3.9 fields are kept (never a body, a
@@ -501,7 +505,9 @@ async function auditCallInner(store, row, now) {
       if (ids.length) clean[field] = ids;
       continue;
     }
-    clean[field] = typeof value === "string" ? value.slice(0, 120) : value;
+    if (typeof value === "string") clean[field] = [...value].slice(0, 120).join("");
+    else if (typeof value === "number" && Number.isFinite(value)) clean[field] = value;
+    else if (typeof value === "boolean") clean[field] = value;
   }
   const day = dayKey(now);
   const days = ((await store.get("call_days")) ?? []).filter((d) => typeof d === "string");
@@ -509,14 +515,26 @@ async function auditCallInner(store, row, now) {
   const cutoff = dayKey(now - CALL_RETENTION_DAYS * DAY_MS);
   const keep = [];
   for (const d of days.sort()) {
-    if (d < cutoff) await store.put(`calls:${d}`, null);
+    if (d < cutoff) {
+      await store.put(`calls:${d}`, null);
+      await store.put(`calls_bytes:${d}`, null);
+    }
     else keep.push(d);
   }
   await store.put("call_days", keep);
   const bucket = (await store.get(`calls:${day}`)) ?? [];
+  const meta = await store.get(`calls_bytes:${day}`);
+  let encodedBytes = meta && meta.count === bucket.length && Number.isSafeInteger(meta.bytes) && meta.bytes >= 0
+    ? meta.bytes
+    : arrayJsonBytes(bucket);
   bucket.push(clean);
-  while (bucket.length > CALLS_PER_DAY_CAP) bucket.shift();
+  encodedBytes += utf8JsonBytes(clean) + (bucket.length > 1 ? 1 : 0);
+  while (bucket.length > CALLS_PER_DAY_CAP || encodedBytes > CALLS_STORAGE_MAX_BYTES) {
+    if (bucket.length <= 1) break; // A single sanitized audit row is far below the byte cap.
+    encodedBytes -= utf8JsonBytes(bucket.shift()) + 1;
+  }
   await store.put(`calls:${day}`, bucket);
+  await store.put(`calls_bytes:${day}`, { count: bucket.length, bytes: encodedBytes });
 
   if (clean.outcome === "error") {
     const cutoffMs = now - CALL_RETENTION_DAYS * DAY_MS;
@@ -526,7 +544,11 @@ async function auditCallInner(store, row, now) {
       if (clean[field] !== undefined) errorRow[field] = clean[field];
     }
     errors.push(errorRow);
-    while (errors.length > ERROR_AUDIT_CAP) errors.shift();
+    let encodedErrorBytes = arrayJsonBytes(errors);
+    while (errors.length > ERROR_AUDIT_CAP || encodedErrorBytes > ERRORS_STORAGE_MAX_BYTES) {
+      if (errors.length <= 1) break; // Sanitized error rows are individually well below the cap.
+      encodedErrorBytes -= utf8JsonBytes(errors.shift()) + 1;
+    }
     await store.put("errors", errors);
   }
 
