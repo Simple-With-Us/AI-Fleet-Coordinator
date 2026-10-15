@@ -29,7 +29,7 @@ function fixture(scopes = ['zulip:read', 'zulip:write']) {
 }
 
 const argsFor = (entry) => Object.fromEntries(Object.entries(entry.args).filter(([, a]) => a.required).map(([name, a]) => [name,
-  a.schema.type === 'object' ? { name: 'Example', title: 'Example', description: 'Details' } : a.schema.type === 'boolean' ? true : a.schema.type === 'integer' ? 1 : 'resource',
+  a.schema.type === 'object' ? {} : a.schema.type === 'boolean' ? true : a.schema.type === 'integer' ? 1 : 'resource',
 ]));
 
 test('named tool catalog is unique, discoverable, closed and bound to the seat', () => {
@@ -127,4 +127,15 @@ test('save aliases reject empty IDs and incompatible create-only arguments', asy
   if (extra) {
     assert.throws(() => buildNamedOperation('linear_save_project', { id: 'resource', input: {}, [extra]: 'unsupported' }), /not supported for this save operation/);
   }
+});
+
+
+test('attachment-from-upload alias consumes the previously uploaded asset URL', async () => {
+  const { tools, requests } = fixture();
+  const result = await tools.call('linear_create_attachment_from_upload', { input: { issueId: 'issue', url: 'https://uploads.example.test/asset', title: 'Uploaded asset' }, idempotency_key: 'attach-uploaded' });
+  assert.notEqual(result.isError, true);
+  assert.match(requests[0].query, /attachmentCreate/);
+  assert.equal(requests[0].variables.input.url, 'https://uploads.example.test/asset');
+  assert.match(LINEAR_NAMED_BY_NAME.linear_create_attachment_from_upload.description, /already uploaded asset/);
+  assert.match(LINEAR_NAMED_BY_NAME.linear_create_attachment_from_upload.description, /does not upload file bytes/);
 });

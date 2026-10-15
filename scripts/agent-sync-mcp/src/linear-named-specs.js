@@ -48,7 +48,9 @@ const WRITE_ALIASES = {
 function synonymCommands(commands, names) {
   return Object.entries(names).flatMap(([name, target]) => {
     const original = commands.find((c) => c.name === target);
-    return original ? [{ ...original, name, description: `${original.description}  Alias of ${target}.` }] : [];
+    return original ? [{ ...original, name, description: name === 'linear_create_attachment_from_upload'
+      ? 'Create an attachment record for an already uploaded asset.  Set input.url to the assetUrl from linear_prepare_attachment_upload and input.issueId to the target issue.  This does not upload file bytes.'
+      : `${original.description}  Alias of ${target}.` }] : [];
   });
 }
 const writes = [...LINEAR_WRITE_COMMANDS, ...aliases(LINEAR_WRITE_COMMANDS)];

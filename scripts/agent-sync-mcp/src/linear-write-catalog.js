@@ -35,11 +35,11 @@ export const LINEAR_WRITE_COMMANDS = Object.freeze([
 
   command("create_document", "Create Document", "documentCreate", { input: input("DocumentCreateInput") }, "success document { id title }", "Create a Linear document."),
   command("update_document", "Update Document", "documentUpdate", { id: id(), input: input("DocumentUpdateInput") }, "success document { id title }", "Update a Linear document."),
-  command("delete_document", "Delete Document", "documentDelete", { id: id(), ifParentDocumentId: text() }, "success entity { id }", "Delete a Linear document.", true),
+  command("delete_document", "Delete Document", "documentDelete", { id: id() }, "success entity { id }", "Delete a Linear document.", true),
   command("unarchive_document", "Restore Document", "documentUnarchive", { id: id() }, "success entity { id }", "Restore an archived Linear document."),
 
   command("create_project", "Create Project", "projectCreate", {
-    input: input("ProjectCreateInput"), slackChannelName: text(),
+    input: input("ProjectCreateInput"), slackChannelName: { ...text(), description: "Creates and links a Slack channel with this name." },
   }, "success project { id name }", "Create a Linear project."),
   command("update_project", "Update Project", "projectUpdate", { id: id(), input: input("ProjectUpdateInput") }, "success project { id name }", "Update a Linear project."),
   command("delete_project", "Delete Project", "projectDelete", { id: id() }, "success entity { id }", "Delete a Linear project.", true),

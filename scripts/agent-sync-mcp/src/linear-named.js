@@ -1,3 +1,4 @@
+import { assertPublicInputs } from "./linear-public-inputs.js";
 import { parse, Kind } from 'graphql';
 import { ToolError } from './contract.js';
 import { apiQuery, apiMutation } from './linear-api.js';
@@ -34,6 +35,7 @@ export function buildNamedOperation(name, args) {
     definitions.push(`$${key}: ${arg.required && !arg.type.endsWith("!") ? `${arg.type}!` : arg.type}`);
     parameters.push(`${key}: $${key}`);
   }
+  assertPublicInputs(command, variables);
   const fields = args.selection ?? command.selection;
   const operation = entry.write ? 'mutation' : 'query';
   const document = `${operation} AgentSyncNamed${definitions.length ? `(${definitions.join(', ')})` : ''} { ${command.root}${parameters.length ? `(${parameters.join(', ')})` : ''}${fields ? ` { ${selectedFields(fields)} }` : ''} }`;

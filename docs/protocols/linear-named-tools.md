@@ -15,7 +15,7 @@ AFC-318 adds 175 named commands to the hosted Agent Sync MCP, alongside the exis
 
 linear_prepare_attachment_upload prepares private, short-lived signed upload metadata.  It does not upload file bytes or make assets public.  Use the returned method-specific headers and URL only with a trusted upload client, then create the attachment record using the resulting asset URL.  Keep signed URLs/headers out of logs and public posts; use a fresh preparation request after expiry.  The create_attachment_from_upload alias creates the record and assumes the bytes have already been uploaded.
 
-Releases and agent skills are present in the public schema but may depend on workspace plan or preview availability.  Internal diff/review APIs are excluded.  Documentation search and image extraction are not public GraphQL roots and are not advertised as working API commands.  Deprecated cycle creation is excluded because Linear says it is unsupported.  Workspace credential/access administration, batch roots and internal-only arguments remain outside this catalog.
+Releases and agent skills are present in the public schema but may depend on workspace plan or preview availability.  Internal diff/review APIs are excluded.  Documentation search and image extraction are not public GraphQL roots and are not advertised as working API commands.  Deprecated cycle creation is excluded because Linear says it is unsupported.  Workspace credential/access administration, batch roots and internal-only arguments and typed input fields remain outside this catalog.
 
 ## Catalog
 
@@ -195,7 +195,7 @@ Releases and agent skills are present in the public schema but may depend on wor
 | `linear_save_status_update` | Write | `projectUpdateCreate` | Create or update a project update.  Supply id to update; omit id to create.  Alias of linear_save_project_update. |
 | `linear_delete_status_update` | Write | `projectUpdateDelete` | Delete a Linear project update.  Alias of linear_delete_project_update. |
 | `linear_mark_notification` | Write | `notificationUpdate` | Update a Linear notification.  Alias of linear_update_notification. |
-| `linear_create_attachment_from_upload` | Write | `attachmentCreate` | Create an attachment record on a Linear issue.  This does not upload file bytes.  Alias of linear_create_attachment. |
+| `linear_create_attachment_from_upload` | Write | `attachmentCreate` | Create an attachment record for an already uploaded asset.  Set input.url to the assetUrl from linear_prepare_attachment_upload and input.issueId to the target issue.  This does not upload file bytes. |
 
 ## Sources
 
