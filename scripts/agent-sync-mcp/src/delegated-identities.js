@@ -10,6 +10,8 @@ export const GB_IDENTITIES = Object.freeze([
 ]);
 export const CURSOR_IDENTITIES = Object.freeze(["CURSOR", ...GB_IDENTITIES]);
 const GB_SET = new Set(GB_IDENTITIES);
+export const GB_CREDENTIAL_BUNDLE = "GB_IDENTITY_CREDENTIALS";
+export const GB_CREDENTIAL_BUNDLE_MAX_BYTES = 5 * 1024;
 
 export function delegatedNames(identity) {
   if (!GB_SET.has(identity)) return null;
@@ -22,18 +24,52 @@ export function delegatedNames(identity) {
   });
 }
 
-const installed = (env, name) => typeof env?.[name] === "string" && env[name].trim().length > 0;
-
-export function delegatedStatus(env, identity) {
-  const names = delegatedNames(identity);
-  if (!names) return null;
-  const email = String(env?.[names.zulipEmail] ?? "").trim().toLowerCase();
+function completeRole(identity, fields) {
+  if (!Array.isArray(fields) || fields.length !== 4 || fields.some((value) => typeof value !== "string" || !value.trim())) return null;
+  const [email, zulipKey, linearClientId, linearClientSecret] = fields.map((value) => value.trim());
   const expectedEmail = `${identity.slice(3).toLowerCase()}-grok-bot@simplewithus.zulipchat.com`;
-  return {
-    identity,
-    zulip: installed(env, names.zulipKey) && email === expectedEmail ? "configured" : "missing",
-    linear: installed(env, names.linearClientId) && installed(env, names.linearClientSecret) ? "configured" : "missing",
-  };
+  if (email.toLowerCase() !== expectedEmail) return null;
+  return Object.freeze({ email: expectedEmail, zulipKey, linearClientId, linearClientSecret });
+}
+
+/**
+ * Parse once for this authenticated request.  The encrypted Worker secret is
+ * {"v":1,"r":{"GB-ROLE":[email,zulipKey,linearClientId,linearClientSecret]}}.
+ * A present but invalid bundle never falls back to legacy bindings.  Legacy
+ * rows are accepted only when all four fields belong to the same fixed role.
+ */
+export function loadDelegatedCredentials(env) {
+  const roles = new Map();
+  const raw = env?.[GB_CREDENTIAL_BUNDLE];
+  if (raw !== undefined && raw !== null) {
+    try {
+      if (typeof raw !== "string" || new TextEncoder().encode(raw).byteLength > GB_CREDENTIAL_BUNDLE_MAX_BYTES) throw new Error("invalid bundle");
+      const bundle = JSON.parse(raw);
+      if (bundle?.v !== 1 || !bundle.r || typeof bundle.r !== "object" || Array.isArray(bundle.r)
+        || Object.keys(bundle.r).length !== GB_IDENTITIES.length) throw new Error("invalid bundle");
+      for (const identity of GB_IDENTITIES) {
+        const role = completeRole(identity, bundle.r[identity]);
+        if (!role) throw new Error("invalid role");
+        roles.set(identity, role);
+      }
+      return { source: "bundle", valid: true, roles };
+    } catch {
+      // Never include parsing errors or values in diagnostics.
+      return { source: "bundle", valid: false, roles: new Map() };
+    }
+  }
+  for (const identity of GB_IDENTITIES) {
+    const names = delegatedNames(identity);
+    const row = completeRole(identity, [env?.[names.zulipEmail], env?.[names.zulipKey], env?.[names.linearClientId], env?.[names.linearClientSecret]]);
+    if (row) roles.set(identity, row);
+  }
+  return { source: "legacy", valid: true, roles };
+}
+
+export function delegatedStatus(credentials, identity) {
+  if (!GB_SET.has(identity)) return null;
+  const configured = credentials.valid && credentials.roles.has(identity);
+  return { identity, zulip: configured ? "configured" : "missing", linear: configured ? "configured" : "missing" };
 }
 
 const DISCOVERY = Object.freeze({
@@ -76,10 +112,10 @@ export const CURSOR_TOOLS_BY_NAME = Object.freeze(Object.fromEntries(CURSOR_TOOL
 
 /** All routing state belongs to this request.  `createRole` is server owned. */
 export class IdentityRouter {
-  constructor({ callerTools, env, createRole }) {
+  constructor({ callerTools, credentials, createRole }) {
     this.callerTools = callerTools;
     this.seat = callerTools.seat;
-    this.env = env;
+    this.credentials = credentials;
     this.createRole = createRole;
   }
 
@@ -102,7 +138,7 @@ export class IdentityRouter {
       }
       const identities = [
         { identity: "CURSOR", zulip: this.callerTools.zulip ? "configured" : "missing", linear: this.callerTools.linear ? "configured" : "missing", recall: this.callerTools.recall ? "configured" : "missing" },
-        ...GB_IDENTITIES.map((identity) => ({ ...delegatedStatus(this.env, identity), recall: this.callerTools.recall ? "configured" : "missing" })),
+        ...GB_IDENTITIES.map((identity) => ({ ...delegatedStatus(this.credentials, identity), recall: this.callerTools.recall ? "configured" : "missing" })),
       ];
       const info = { authenticated_seat: "CURSOR", identities };
       await this.callerTools.safely(() => this.callerTools.gate.auditCall({

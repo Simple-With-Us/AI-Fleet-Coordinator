@@ -59,7 +59,7 @@ import { verifyAccessJwt } from "./access.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy } from "./pages.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
-import { IdentityRouter, delegatedNames, delegatedStatus } from "./delegated-identities.js";
+import { IdentityRouter, loadDelegatedCredentials } from "./delegated-identities.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromEnv } from "./recall.js";
 import { LinearClient, linearClientFromEnv, LINEAR_SEATS, linearSecretNames } from "./linear.js";
@@ -245,33 +245,31 @@ async function serveMcp(request, env, ctx) {
     linear: linearClientFromEnv(env, seat, { gate: seatGate }),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
   });
+  const delegatedCredentials = seat === "CURSOR" ? loadDelegatedCredentials(env) : null;
   const routedTools = seat === "CURSOR" ? new IdentityRouter({
     callerTools: tools,
-    env,
+    credentials: delegatedCredentials,
     createRole: async (identity) => {
-      const names = delegatedNames(identity);
-      if (!names) throw new ToolError("invalid_argument", "Unknown identity.");
-      const status = delegatedStatus(env, identity);
-      if (status.zulip !== "configured") throw new ToolError("not_configured", `Zulip credentials are missing for ${identity}.`);
+      const roleCredentials = delegatedCredentials.roles.get(identity);
+      if (!roleCredentials) throw new ToolError("not_configured", `Credentials are missing for ${identity}.`);
       const roleGate = env.SEAT_GATE.get(env.SEAT_GATE.idFromName(identity));
       const roleState = await roleGate.getState();
       if (roleState.paused) throw new ToolError("paused", `The ${identity} identity is paused.`);
-      const roleKey = env[names.zulipKey].trim();
-      const roleEmail = env[names.zulipEmail].trim().toLowerCase();
+      const roleKey = roleCredentials.zulipKey;
+      const roleEmail = roleCredentials.email;
       const roleConfig = { ...config, botEmails: { ...config.botEmails, [identity]: roleEmail } };
-      const linear = status.linear === "configured" ? new LinearClient({
+      const linear = new LinearClient({
         seat: identity,
-        clientId: env[names.linearClientId].trim(),
-        clientSecret: env[names.linearClientSecret].trim(),
+        clientId: roleCredentials.linearClientId,
+        clientSecret: roleCredentials.linearClientSecret,
         gate: roleGate,
         fetch: globalThis.fetch.bind(globalThis),
-      }) : null;
+      });
       return new HostedTools({
         seat: identity,
         callerSeat: "CURSOR",
         callerGate: seatGate,
         delegatedLinear: true,
-        linearCredentialNames: { clientId: names.linearClientId, clientSecret: names.linearClientSecret },
         scopes,
         clientId: typeof auth.clientId === "string" ? auth.clientId : "",
         grantRef: tools.grantRef,
