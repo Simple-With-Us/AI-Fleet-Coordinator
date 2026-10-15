@@ -77,8 +77,11 @@ async function protectLabels(tools, prepared) {
   const name = prepared.roots[0].name.value;
   const issueMutation = /^issue/i.test(name);
   const args = prepared.args;
-  if (/^issueLabel/i.test(name) && !["issueLabelCreate", "issueLabelUpdate", "issueLabelDelete", "issueLabelArchive", "issueLabelUnarchive"].includes(name)) {
+  if (/^issueLabel/i.test(name) && !["issueLabelCreate", "issueLabelUpdate", "issueLabelDelete", "issueLabelArchive", "issueLabelUnarchive", "issueLabelRetire", "issueLabelRestore"].includes(name)) {
     throw new ToolError("invalid_argument", "This label administration operation requires a dedicated fleet-aware tool.");
+  }
+  if (/^issueLabel/i.test(name) && args.replaceTeamLabels === true) {
+    throw new ToolError("invalid_argument", "Replacing team labels can alter protected fleet ownership labels.  Update ordinary labels individually.");
   }
   const labelIds = new Set();
   let replacesLabels = false;

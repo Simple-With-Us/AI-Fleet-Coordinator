@@ -1,3 +1,5 @@
+import { parse as parseGraphql } from "graphql";
+import { LINEAR_NAMED_TOOLS } from "../src/linear-named-specs.js";
 // One workerd integration test (spec 6, Worker suite).
 // Runs the bundled Worker in Miniflare (from the pinned wrangler) with fake
 // Access certificates, ChatGPT's and Grok's real CIMD documents and a fake
@@ -22,7 +24,7 @@ import { FakeLinear, opOf } from "./fake-linear.mjs";
 
 const TOOLS = CONTRACT.tools;
 // The hosted server lists tools.json, followed by hosted-only recall, DM and Linear tools.
-const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation"];
+const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name)];
 const JET_KEY = zulipShapedKey(11);
 const CURSOR_KEY = zulipShapedKey(12);
 const CURSOR_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";
@@ -52,6 +54,11 @@ linear.graphqlResponse = (entry) => {
   }
   if (op?.name === "AgentSyncIntegrationMutation") {
     return linear.json(200, { data: { projectUpdate: { success: true, project: { id: "project-1", name: "Fleet integration fixture", description: entry.body?.variables?.input?.description ?? "" } } } });
+  }
+  if (op?.name === "AgentSyncNamed") {
+    const root = parseGraphql(entry.body.query).definitions[0].selectionSet.selections[0].name.value;
+    if (root === "projects") return linear.json(200, { data: { projects: { nodes: [{ id: "project-named", name: "Named API fixture" }], pageInfo: { hasNextPage: false, endCursor: null } } } });
+    if (root === "projectCreate") return linear.json(200, { data: { projectCreate: { success: true, project: { id: "project-named", name: entry.body.variables.input.name } } } });
   }
   return linearGraphqlResponse(entry);
 };
@@ -974,6 +981,21 @@ try {
       assert.equal(replay.json.result.isError, undefined);
       assert.match(replay.json.result.content[0].text, /Previously completed mutation; not repeated\./);
       assert.equal(linear.mutations().length, 1, "the same idempotency key must not send a second mutation through the Worker/DO path");
+    });
+
+    await step("named Linear commands share the authenticated API path and durable replay guard", async () => {
+      const listed = await call(t.body.access_token, "linear_list_projects", { first: 2 });
+      assert.equal(listed.json.result.isError, undefined, JSON.stringify(listed.json));
+      assert.match(listed.json.result.content[0].text, /Named API fixture/);
+      const before = linear.mutations().length;
+      const args = { input: { name: "Named API fixture", description: "Created using a named command." }, idempotency_key: "workerd-named-project-create" };
+      const created = await call(t.body.access_token, "linear_save_project", args);
+      assert.equal(created.json.result.isError, undefined, JSON.stringify(created.json));
+      assert.equal(linear.mutations().length, before + 1);
+      assert.match(linear.mutations().at(-1).body.variables.input.description, /^\[GROK-WEB\]/);
+      const replay = await call(t.body.access_token, "linear_save_project", args);
+      assert.equal(replay.json.result.isError, undefined);
+      assert.equal(linear.mutations().length, before + 1);
     });
 
     // Direct messages through the Worker:  send as Grok's own bot, read the conversation back, see Jay's answer in inbox.

@@ -1,3 +1,4 @@
+import { LINEAR_NAMED_TOOLS } from "../src/linear-named-specs.js";
 // Fleet recall on the hosted server (spec 1.1) against a fake recall service:
 // the tool list, scope mapping, seat forcing, argument checks, the
 // not-configured error, upstream error mapping, the recall fence,
@@ -125,7 +126,7 @@ const noSecrets = (text) => {
 test("the hosted list is tools.json, then the three recall tools, then the three DM tools, then the Linear tools, closed inputs, no identity arguments", () => {
   assert.deepEqual(
     HOSTED_TOOL_LIST.map((t) => t.name),
-    [...TOOLS.tools.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation"],
+    [...TOOLS.tools.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name)],
   );
   // tools.json, the stdio contract, is untouched:  the Linear tools are hosted-only,
   // the way recall and dm are, because the Python stdio server cannot run them.

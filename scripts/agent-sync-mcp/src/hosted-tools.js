@@ -1,3 +1,5 @@
+import { LINEAR_NAMED_BY_NAME } from "./linear-named-specs.js";
+import { callNamedLinear } from "./linear-named.js";
 import { apiSchema, apiQuery, apiMutation } from "./linear-api.js";
 // The seven agent-sync tools for one hosted seat (spec sections 1, 3.6 to 3.9).
 // A port of scripts/agent_sync/mcp/tools.py over the Zulip REST API, with the
@@ -247,7 +249,10 @@ export class HostedTools {
       if (problem) throw new ToolError("invalid_argument", problem);
       this.requireScope(name);
       if (this.paused) throw new ToolError("paused", "This seat is paused.  Jay can unpause it in Agent-Sync Admin.");
-      result = await this[`tool_${name}`](withDefaults(spec.inputSchema, args), audit);
+      const preparedArgs = withDefaults(spec.inputSchema, args);
+      result = Object.hasOwn(LINEAR_NAMED_BY_NAME, name)
+        ? await callNamedLinear(this, name, preparedArgs, audit)
+        : await this[`tool_${name}`](preparedArgs, audit);
       audit.outcome = "ok";
     } catch (error) {
       const mapped = mapException(error, { write: HOSTED_WRITE_TOOLS.has(name) });
