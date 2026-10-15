@@ -1,4 +1,4 @@
-"""Bounded, owner-gated two-stage Muse chat inspection."""
+"""Bounded two-stage Muse chat inspection."""
 from __future__ import annotations
 
 import sys
@@ -148,13 +148,16 @@ class ChatInspectionTests(ListenerHarness):
                 self.assertEqual(catalog.excerpt_calls, [])
                 self.assertFalse(any(row["state"] == "done" for row in daemon.seats["CLAUDE"].ledger.rows()))
 
-    def test_peer_only_trigger_cannot_request_inspection(self):
+    def test_peer_only_trigger_may_request_one_bounded_inspection(self):
+        transcript = [{"role": "user", "text": "Peer request context."}]
         daemon, muse, catalog, pending = self._setup_wake(
-            [(inspect_output(), 1.0, 0.1)], owner=False)
+            [(inspect_output(), 1.0, 0.1), (final_output(), 1.0, 0.1)],
+            excerpts=transcript, owner=False)
         self._run(daemon, pending)
-        self.assertEqual(len(muse.calls), 1)
-        self.assertEqual(catalog.excerpt_calls, [])
-        self.assertFalse(any(row["state"] == "done" for row in daemon.seats["CLAUDE"].ledger.rows()))
+        self.assertEqual(len(muse.calls), 2)
+        self.assertEqual(catalog.excerpt_calls, [(CHAT_ID, 4)])
+        self.assertIn("UNTRUSTED CHAT EXCERPT", muse.calls[1]["prompt"])
+        self.assertTrue(any(row["state"] == "done" for row in daemon.seats["CLAUDE"].ledger.rows()))
 
     def test_private_dm_selection_to_another_seat_is_held_as_unreadable(self):
         row = {**offered(), "seat": "CODEX", "platform": "codex", "host": "mac"}
