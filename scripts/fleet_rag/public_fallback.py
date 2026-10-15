@@ -48,10 +48,10 @@ This module gives those two surfaces a fast, actionable alternative:
 Only recall_search / recall_stats / recall_contribute are covered (the shared tool contract).
 The public service's recall_search route now accepts every recall_search() keyword, including
 `per_doc`, `rerank`, and `prefer_lessons` (see `scripts/fleet-recall-service/server.py` TOOLS).
-The CLI-only `--force` dedup-guard override has no public twin -- it is silently dropped when a
-call actually falls back, and the near-duplicate contribute guard
-(a local-only nicety, not part of the shared tool contract) is skipped rather than run against
-an unreachable backend.
+The CLI-only `--force` dedup-guard override is accepted and ignored by the public service
+(the near-duplicate guard does not run there).  This module still drops `force` before the
+HTTP call, so a fallback never depends on that acceptance, and the guard itself (a local-only
+nicety) is skipped rather than run against an unreachable backend.
 
 The Hetzner-side `fleet-recall-service` imports `recall_api` directly and never goes through
 this module: it already runs on the box next to Qdrant/TEI and has no Tailscale hop to lose.
@@ -138,7 +138,8 @@ REST_METHOD = {"recall_search": "POST", "recall_stats": "GET", "recall_contribut
 # The public tool contract mirrors the local one (scripts/fleet-recall-service/server.py TOOLS)
 # for recall_search -- every recall_search() keyword argument has a public route.  recall_
 # contribute stays a deliberate subset: `force` is a local-only dedup-guard nicety (see the
-# module docstring) with no public twin.
+# module docstring).  The public service accepts and ignores it, but a fallback still drops
+# the key so an older service cannot 400 on "unknown argument(s): force".
 PUBLIC_ALLOWED_ARGS = {
     "recall_search": {"query", "limit", "category", "app", "source", "seat", "since_days",
                       "per_doc", "rerank", "prefer_lessons"},

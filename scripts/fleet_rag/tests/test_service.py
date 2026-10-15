@@ -585,6 +585,23 @@ class RestTests(_ServiceCase):
         self.assertEqual(status, 400)
         self.assertIn("category", body["error"])
 
+    def test_contribute_accepts_force_and_does_not_store_it(self):
+        """A client-injected force flag used to 400 the whole write path."""
+        for force in (False, True):
+            recall_api.FakeQdrant.upserts.clear()
+            status, _, body = self.request(
+                "POST", "/recall/contribute",
+                {"text": GOOD_TEXT, "category": "lesson", "seat": "CURSOR", "force": force})
+            self.assertEqual(status, 200, body)
+            self.assertTrue(body["ok"])
+            self.assertTrue(body["doc_id"].startswith("contrib/CURSOR/"))
+            self.assertNotIn("force", recall_api.FakeQdrant.upserts[0][0]["payload"])
+        status, _, body = self.request(
+            "POST", "/recall/contribute",
+            {"text": GOOD_TEXT, "category": "lesson", "seat": "CURSOR", "force": "yes"})
+        self.assertEqual(status, 400)
+        self.assertIn("force must be a boolean", body["error"])
+
     def test_backend_failure_is_502_class_only(self):
         class Boom(FakeQdrant):
             def query_hybrid(self, *a, **k):
@@ -655,6 +672,9 @@ class McpTests(_ServiceCase):
             self.assertTrue(t["description"])
         self.assertEqual(tools[0]["inputSchema"]["required"], ["query"])
         self.assertEqual(tools[2]["inputSchema"]["required"], ["text", "category", "seat"])
+        force = tools[2]["inputSchema"]["properties"]["force"]
+        self.assertEqual(force["type"], "boolean")
+        self.assertNotIn("default", force)
         _, _, body = self.rpc("server/discover", rid=9)
         self.assertEqual(body["result"]["protocolVersions"], list(server.PROTOCOL_VERSIONS))
         self.assertEqual(len(body["result"]["tools"]), 3)
@@ -674,7 +694,8 @@ class McpTests(_ServiceCase):
         self.assertEqual(len(res["structuredContent"]["hits"]), 2)
 
         _, _, body = self.rpc("tools/call", {"name": "recall_contribute",
-                                             "arguments": {"text": GOOD_TEXT, "category": "lesson", "seat": "GROK"}}, rid=4)
+                                             "arguments": {"text": GOOD_TEXT, "category": "lesson", "seat": "GROK",
+                                                           "force": False}}, rid=4)
         res = body["result"]
         self.assertFalse(res["isError"])
         self.assertTrue(res["structuredContent"]["doc_id"].startswith("contrib/GROK/"))

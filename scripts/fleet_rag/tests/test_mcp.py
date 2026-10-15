@@ -76,6 +76,7 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(tools[0]["inputSchema"]["required"], ["query"])
         self.assertEqual(tools[2]["inputSchema"]["required"], ["text", "category"])
         self.assertEqual(tools[2]["inputSchema"]["properties"]["force"]["type"], "boolean")
+        self.assertNotIn("default", tools[2]["inputSchema"]["properties"]["force"])
         self.assertIn("duplicate", tools[2]["description"])
 
         stats = json.loads(by_id[4]["result"]["content"][0]["text"])
@@ -418,6 +419,27 @@ class DuplicateGuardTests(unittest.TestCase):
         resp = mod.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                            "params": {"name": "recall_contribute", "arguments": args}})
         return resp["result"]
+
+    def test_public_fallback_is_not_handed_force(self):
+        """The guard sees force.  The public fallback must not, or the service 400s."""
+        mod = self.load()
+        captured: dict = {}
+
+        def spy(name, kwargs, run_local, status_probe=None):
+            captured["name"] = name
+            captured["kwargs"] = dict(kwargs)
+            return run_local()
+
+        text = ("pm2 start does not re-read env from the ecosystem file; restart with --update-env "
+                "so the cached PATH is replaced.")
+        with mock.patch.object(mod.public_fallback, "call_with_fallback", spy):
+            res = self.call(mod, {"text": text, "category": "lesson", "force": False})
+        self.assertFalse(res["isError"])
+        self.assertEqual(captured["name"], "recall_contribute")
+        self.assertNotIn("force", captured["kwargs"])
+        self.assertEqual(captured["kwargs"]["category"], "lesson")
+        body = json.loads(res["content"][0]["text"])
+        self.assertEqual(body["status"], "duplicate")
 
     def test_duplicate_then_force(self):
         mod = self.load()
