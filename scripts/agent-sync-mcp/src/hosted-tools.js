@@ -229,10 +229,23 @@ export class HostedTools {
   /** Run one tool.  Returns a CallToolResult.  Throws UnknownTool. */
   async call(name, rawArgs) {
     const spec = Object.hasOwn(HOSTED_TOOLS_BY_NAME, name) ? HOSTED_TOOLS_BY_NAME[name] : null;
-    if (!spec) throw new UnknownTool(name);
+    if (!spec) {
+      await this.safely(() => this.gate.auditCall({
+        seat: this.seat,
+        grant_ref: this.grantRef,
+        client_id: this.clientId,
+        tool: "unknown_tool",
+        outcome: "error",
+        error_code: "unknown_tool",
+        error_message: "Unknown tool name.",
+        retryable: false,
+      }));
+      throw new UnknownTool(name);
+    }
     const started = this.now();
     // Per call, so two calls in one request never share audit fields.
     const audit = { tool: name };
+    let requestArgs = rawArgs;
     let result;
     try {
       let args = rawArgs === undefined || rawArgs === null ? {} : rawArgs;
@@ -243,6 +256,7 @@ export class HostedTools {
         args = { ...args };
         delete args.seat;
       }
+      requestArgs = args;
       const problem = schemaProblem(spec.inputSchema, args);
       if (problem) throw new ToolError("invalid_argument", problem);
       this.requireScope(name);
@@ -260,6 +274,18 @@ export class HostedTools {
       result = errorResult(mapped, (text) => this.scrub(text));
       audit.outcome = "error";
       audit.error_code = mapped.code;
+      audit.error_message = this.auditErrorMessage(mapped.message, requestArgs);
+      audit.retryable = mapped.retryable === true;
+      if (Number.isFinite(mapped.retryAfterS)) audit.retry_after_s = mapped.retryAfterS;
+      if (mapped.resetAt !== null && mapped.resetAt !== undefined) audit.reset_at = mapped.resetAt;
+      const upstreamStatus = mapped.extra?.status;
+      if (Number.isInteger(upstreamStatus)) audit.upstream_status = upstreamStatus;
+      if (!(error instanceof ToolError) && mapped.code === "internal") {
+        const exceptionClass = typeof error?.name === "string" ? error.name : "Error";
+        if (/^[A-Za-z][A-Za-z0-9_.]{0,39}$/.test(exceptionClass) && !scanSecret(exceptionClass, this.known)) {
+          audit.exception_class = exceptionClass;
+        }
+      }
     }
     const latency = this.now() - started;
     const row = {
@@ -290,6 +316,25 @@ export class HostedTools {
     let out = String(text);
     for (const value of this.known) if (value) out = out.split(value).join("[redacted]");
     return out;
+  }
+
+  auditErrorMessage(message, args) {
+    const raw = String(message ?? "");
+    if (scanSecret(raw, this.known)) return "Error message omitted after secret scan.";
+    let safe = this.scrub(raw);
+    const values = [];
+    const collect = (value) => {
+      if (typeof value === "string" && value.length) values.push(value);
+      else if (typeof value === "number" && Number.isFinite(value)) values.push(String(value));
+      else if (typeof value === "boolean") values.push(String(value));
+      else if (Array.isArray(value)) value.forEach(collect);
+      else if (value && typeof value === "object") Object.values(value).forEach(collect);
+    };
+    collect(args);
+    values.sort((a, b) => b.length - a.length);
+    for (const value of values) safe = safe.split(value).join("[argument]");
+    if (scanSecret(safe, this.known)) return "Error message omitted after secret scan.";
+    return [...safe.replace(/[\u0000-\u001f\u007f]/g, " ")].slice(0, 300).join("");
   }
 
   requireScope(name) {

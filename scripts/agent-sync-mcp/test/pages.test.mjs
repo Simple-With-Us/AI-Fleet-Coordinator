@@ -118,8 +118,9 @@ test("admin page keeps authorize and token refusals apart and shows the Access e
     tokenRefusals: [{ ts: 0, where: "token", reason: "cimd_client_not_allowlisted", client_id: "https://<evil>/c.json", count: 41 }],
   });
   const html = await res.text();
-  const [authorizePart, tokenPart] = html.split("Refused Token Requests");
-  assert.ok(authorizePart.includes("Refused Authorize Requests"));
+  const [beforeAuthorize, afterAuthorize] = html.split("<h2>Refused Authorize Requests</h2>");
+  const [authorizePart, tokenPart] = afterAuthorize.split("<h2>Refused Token Requests (Unauthenticated, Counted)</h2>");
+  assert.ok(beforeAuthorize.includes("Status Overview"));
   assert.ok(authorizePart.includes("mail@jays.services") && authorizePart.includes("https://grok.com/cb"));
   assert.ok(authorizePart.includes("<th>Resource</th>") && authorizePart.includes("https://x.example/&#60;mcp&#62;"), "the resource the client sent, escaped");
   assert.ok(!authorizePart.includes("&#60;evil&#62;"), "token rows are not in the authorize table");
@@ -151,4 +152,100 @@ test("admin page offers a manual client per hosted seat and shows each client's 
   assert.match(html, /name="action" value="create_manual_client"><input type="hidden" name="seat" value="ECHO">/);
   assert.match(html, /shared with another seat of the same app/);
   assert.equal((html.match(/Sync Redirects/g) ?? []).length, 1, "an untagged client gets no sync button");
+});
+
+test("admin status distinguishes no traffic, mixed outcomes, readiness, and retained error history", async () => {
+  const noTraffic = await adminPage({
+    ...adminFacts,
+    seats: [{ seat: "JET", paused: false, keyInstalled: true, role: { ok: true }, grants: [], linearEnabled: true, linearConfigured: true, linearWrites: false, recallConfigured: false }],
+    statusCalls: [], statusErrors: [], generatedAt: Date.parse("2026-10-09T20:05:00Z"),
+  }).text();
+  assert.match(noTraffic, /No Recent Traffic/);
+  assert.match(noTraffic, /quiet seat is not verified healthy/);
+  assert.match(noTraffic, /Needs setup: grant/);
+  assert.match(noTraffic, /credential configured/);
+  const configuredQuiet = await adminPage({
+    ...adminFacts,
+    seats: [{ seat: "JET", paused: false, keyInstalled: true, role: { ok: true }, grants: [{ client: "Client", scope: [], createdAt: 0 }] }],
+    statusCalls: [], generatedAt: Date.parse("2026-10-09T20:05:00Z"),
+  }).text();
+  assert.match(configuredQuiet, /Configured; no recent traffic/);
+  assert.doesNotMatch(configuredQuiet, /class="status-state state-ready"/);
+
+  const mixed = await adminPage({
+    ...adminFacts,
+    seats: [{ seat: "JET", paused: false, keyInstalled: true, role: { ok: true }, grants: [{ client: "Client", scope: ["zulip:read"], createdAt: 0 }], linearEnabled: false, linearConfigured: false, linearWrites: false, recallConfigured: true }],
+    statusCalls: [
+      { ts: Date.parse("2026-10-09T20:00:00Z"), seat: "JET", tool: "zulip_send", error_code: "ok" },
+      { ts: Date.parse("2026-10-09T20:05:00Z"), seat: "JET", tool: "linear_query", error_code: "budget_exhausted", error_message: "Budget spent", retryable: true, reset_at: Date.parse("2026-10-09T21:00:00Z") },
+    ],
+    statusErrors: [{ ts: Date.parse("2026-10-09T20:05:00Z"), seat: "JET", tool: "linear_query", error_code: "budget_exhausted", error_message: "Budget spent", retryable: true, reset_at: Date.parse("2026-10-09T21:00:00Z"), check: { name: "query-budget", params: { limit: 3 } }, upstream_status: 429 }],
+    refusals: [{ ts: Date.parse("2026-10-09T20:04:00Z"), seat: "JET", reason: "redirect_not_allowlisted", client_id: "manual-client" }],
+    audits: [{ ts: Date.parse("2026-10-09T20:06:00Z"), event: "event_delivery", seat: "JET", outcome: "failed", reason: "callback_error", retryable: true, retry_after_s: 20 }],
+    runtimeErrors: [{ ts: Date.parse("2026-10-09T20:06:30Z"), kind: "wake_callback", reason: "callback_timeout", count: 2 }],
+    generatedAt: Date.parse("2026-10-09T20:07:00Z"),
+  }).text();
+  assert.match(mixed, /Recorded Failures/);
+  assert.match(mixed, /Last Success/);
+  assert.match(mixed, /Fri, Oct 9, 3:00pm/);
+  assert.match(mixed, /Wait until the displayed reset time/);
+  assert.match(mixed, /Retryable/);
+  assert.match(mixed, /Reset Fri, Oct 9, 4:00pm/);
+  assert.match(mixed, /Upstream HTTP 429/);
+  assert.ok(mixed.includes('Check {&#34;name&#34;:&#34;query-budget&#34;,&#34;params&#34;:{&#34;limit&#34;:3}}'));
+  assert.match(mixed, /Authorize Refusal/);
+  assert.match(mixed, /Wake Delivery/);
+  assert.match(mixed, /wake_callback/);
+  assert.match(mixed, /2 occurrences/);
+  assert.match(mixed, /History Coverage/);
+  assert.equal((mixed.match(/Budget spent/g) ?? []).length, 1, "separate error tail is deduplicated against the latest call sample");
+});
+
+test("status diagnostics escape untrusted fields and disclose failed sample collection", async () => {
+  const html = await adminPage({
+    ...adminFacts,
+    seats: [{ seat: `<img src=x onerror=alert(1)>`, paused: true, keyInstalled: false, role: null, grants: [] }],
+    statusCalls: [{ ts: 0, seat: "<script>", tool: "<img>", error_code: "custom", error_message: `<svg onload=alert(1)>`, client_id: `" onmouseover="x` }],
+    diagnosticsUnavailable: true,
+  }).text();
+  assert.match(html, /Diagnostics Unavailable/);
+  assert.match(html, /diagnostic sample could not be loaded/);
+  assert.match(html, /Configuration fields do not verify service health/);
+  assert.ok(!html.includes("<img src=x"));
+  assert.ok(!html.includes("<svg onload"));
+  assert.ok(!html.includes("<script>"));
+  assert.doesNotMatch(html, /<script\b/i);
+});
+
+test("later seat failures and unavailable diagnostics override a successful call", async () => {
+  const seat = { seat: "JET", paused: false, keyInstalled: true, role: { ok: true }, grants: [{ client: "Client", scope: [], createdAt: 0 }] };
+  const successfulCall = { ts: Date.parse("2026-10-09T20:05:00Z"), seat: "JET", tool: "zulip_read", error_code: "ok" };
+  const afterRefusal = await adminPage({
+    ...adminFacts,
+    seats: [seat],
+    statusCalls: [successfulCall],
+    statusAudits: [{ ts: Date.parse("2026-10-09T20:06:00Z"), seat: "JET", event: "mcp_refused", detail: { reason: "paused" } }],
+    generatedAt: Date.parse("2026-10-09T20:07:00Z"),
+  }).text();
+  assert.match(afterRefusal, /Recent failure/);
+  assert.match(afterRefusal, /MCP Refusal/);
+
+  const unavailable = await adminPage({
+    ...adminFacts,
+    seats: [{ ...seat, diagnosticsUnavailable: true }],
+    statusCalls: [successfulCall],
+    generatedAt: Date.parse("2026-10-09T20:07:00Z"),
+  }).text();
+  assert.match(unavailable, /Diagnostics unavailable/);
+  assert.doesNotMatch(unavailable, /<p class="status-state state-ready">Recent success/);
+});
+
+test("wake release retries are visible with actionable callback guidance", async () => {
+  const html = await adminPage({
+    ...adminFacts,
+    statusAudits: [{ ts: Date.parse("2026-10-09T20:06:00Z"), seat: "JET", event: "event_wake_released", detail: {} }],
+  }).text();
+  assert.match(html, /Wake Delivery/);
+  assert.match(html, /delivery attempt failed and the wake was released for retry/);
+  assert.match(html, /Check the listener&#39;s callback and the Zulip channel delivery/);
 });

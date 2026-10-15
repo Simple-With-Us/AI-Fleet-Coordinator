@@ -134,6 +134,18 @@ export class SeatGate extends DurableObject {
     return state.callTail(this.store, limit);
   }
 
+  errorTail(limit) {
+    return state.errorTail(this.store, limit);
+  }
+
+  recordDiagnostic(entry) {
+    return state.recordDiagnostic(this.store, entry);
+  }
+
+  diagnosticTail(limit) {
+    return state.diagnosticTail(this.store, limit);
+  }
+
   eventSubRoom(options) {
     return state.eventSubRoom(this.store, options);
   }
