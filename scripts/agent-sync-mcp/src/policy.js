@@ -380,6 +380,10 @@ export function gateTokenForm(form, authorization, config) {
   }
   const ids = [basicId, ...formIds].filter(Boolean);
   const redirects = form.getAll("redirect_uri");
+  if (redirects.includes(CURSOR_CLOUD_REDIRECT)
+      && ids.some((id) => isUrlShapedClientId(id) && id !== CURSOR_CIMD_CLIENT)) {
+    return { ok: false, reason: "cursor_pair_mismatch", clientId: ids[0] ?? "" };
+  }
   if (ids.includes(CURSOR_CIMD_CLIENT)) {
     if (ids.length === 0 || ids.some((id) => id !== CURSOR_CIMD_CLIENT)
         || config.cimdOwner.get(CURSOR_CIMD_CLIENT) !== "CURSOR"
