@@ -1256,7 +1256,7 @@ try {
     const jetBefore = await jetGate.getState();
     assert.equal((await adminAction("create_manual_client", { seat: "CURSOR" })).status, 303);
     const admin = await (await browser("/admin")).text();
-    const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Cursor Cloud \(manual form, CURSOR\)<\/td><td>CURSOR<\/td>/)[1];
+    const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Cursor Cloud \(manual form, CURSOR\)<\/td><td>Cursor &amp; Grok Bots<\/td>/)[1];
     assert.equal((await adminAction("arm", { seat: "CURSOR" })).status, 303);
     const c = pkce();
     const who = { clientId, redirect: CURSOR_REDIRECT };
