@@ -57,6 +57,14 @@ test('push prefers the GitHub App installation token when configured', () => {
   assert.match(workflow, /mint_token=true/);
 });
 
+test('bot guard reads review.user only on pull_request_review events', () => {
+  assert.match(job, /github\.event_name == 'pull_request_review'/);
+  assert.match(job, /github\.event\.review\.user\.type/);
+  assert.match(job, /github\.event_name != 'pull_request_review'/);
+  assert.match(job, /github\.event\.comment\.user\.type/);
+  assert.doesNotMatch(job, /github\.event\.comment\.user\.type \|\| github\.event\.review\.user\.type/);
+});
+
 test('step if expressions never reference secrets so startup validation passes', () => {
   for (const step of steps) {
     const ifLine = step
