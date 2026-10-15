@@ -207,6 +207,9 @@ def call_tool(name: str, args: JsonDict) -> JsonDict:
     if not isinstance(args, dict):
         raise FleetRagError("arguments must be an object")
     args = dict(args)
+    if name == "recall_contribute":
+        # Local-only MCP duplicate-guard knob; never part of the public REST contract.
+        args.pop("force", None)
     unknown = set(args) - _ALLOWED_ARGS[name]
     if unknown:
         raise FleetRagError("unknown argument(s): " + ", ".join(sorted(unknown)))
