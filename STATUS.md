@@ -329,3 +329,8 @@ Owner still uploads on the MONET login.  Board `f78464cb`.  Rollout:
 ## 2026-08-20 CURSOR — Cross-app coordination follow-ups (pointer)
 
 Socratic.Trade audit #2802 follow-ups are in ST PR #2941, Congress.Trade #2064, Usage-Monitor #1245.  Pins still CTS v2.5.2.  Pin-check is fail-closed but not a required merge check.  DealDex stays protocol-only / Vercel.
+
+## 2026-10-14 21:59 - Linear app-actor token grant + first mints
+- STANDING GRANT (Jay, iMessage 9:58 PM): seat Linear apps may mint/rotate their OWN app-actor tokens anytime; rotation monthly. Scope: app-actor/bot tokens for seat apps only. Personal-actor and scope changes still gated per-Jay.
+- Minted: LINEAR_APP_TOKEN_WISE (read; viewer "Wise  (Instinct)") + LINEAR_APP_TOKEN_ECHO (read,write; viewer "Echo (Instinct)"), client_credentials actor=application, ~30d expiry. Stored in Infisical Fleet-OPS prod. OPS-757 read unblocked and completed.
+- Monthly rotation: lane wake wakeschedule-01M4YR0M6Y58AYQDQSC5ZGSTK3 (1st of month 09:00 CT).
