@@ -53,7 +53,8 @@ export const LINEAR_SECRETS = Object.freeze({
 
 /** The Worker secret names for a seat, or null when the seat has no Linear app. */
 export function linearSecretNames(seat) {
-  return Object.hasOwn(LINEAR_SECRETS, seat) ? LINEAR_SECRETS[seat] : null;
+  const canonical = seatTagForSeat(seat);
+  return Object.hasOwn(LINEAR_SECRETS, canonical) ? LINEAR_SECRETS[canonical] : null;
 }
 
 // Seats whose Linear tools are live.  GROK-WEB first (owner 2026-10-11):  it is
@@ -148,17 +149,19 @@ export const SEAT_APP_NAMES = Object.freeze({
   "GROK-WEB": "Grok Web",
   ECHO: "Echo (Instinct)",
   WISE: "Wise (Instinct)",
+  MA: "Muse Assist",
   CURSOR: "Cursor",
 });
 export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),
   "GROK-WEB": Object.freeze(["Grok (Web/iOS)", "Grok Web/iOS"]),
   ECHO: Object.freeze(["Echo"]),
-  WISE: Object.freeze(["Instinct"]),
+  WISE: Object.freeze(["Wise", "Wise-Instinct", "Echo-Instinct", "Instinct"]),
+  MA: Object.freeze(["Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"]),
 });
-export const SEAT_TAG_ALIASES = Object.freeze({ INSTINCT: "WISE" });
+export const SEAT_TAG_ALIASES = Object.freeze({ INSTINCT: "WISE", "WISE-INSTINCT": "WISE", "ECHO-INSTINCT": "WISE", "MUSE-ASSIST": "MA", ROB: "MA", "ROB-MUSE": "MA" });
 
-/** The seat tag a spelling resolves to.  WISE is the tag (owner 2026-10-15);  INSTINCT is retired. */
+/** The seat tag a spelling resolves to, including accepted human aliases.  WISE is the tag; INSTINCT is retired. */
 export function seatTagForSeat(seat) {
   const tag = String(seat ?? "").trim().toUpperCase();
   return SEAT_TAG_ALIASES[tag] ?? tag;
@@ -166,14 +169,16 @@ export function seatTagForSeat(seat) {
 
 /** The display names a seat's Linear app may carry; empty for a seat with no app. */
 export function seatAppNames(seat) {
-  const app = SEAT_APP_NAMES[seat];
-  return app ? Object.freeze([app, ...(SEAT_APP_ALIASES[seat] ?? [])]) : Object.freeze([]);
+  const canonical = seatTagForSeat(seat);
+  const app = SEAT_APP_NAMES[canonical];
+  return app ? Object.freeze([app, ...(SEAT_APP_ALIASES[canonical] ?? [])]) : Object.freeze([]);
 }
 
 /** Whether a viewer name is one of the accepted names or the seat tag, ignoring case. */
 export function appNameOk(name, seat) {
-  const accepted = new Set(seatAppNames(seat).map((n) => n.toLowerCase()));
-  accepted.add(seatTagForSeat(seat).toLowerCase());
+  const canonical = seatTagForSeat(seat);
+  const accepted = new Set(seatAppNames(canonical).map((n) => n.toLowerCase()));
+  accepted.add(canonical.toLowerCase());
   return typeof name === "string" && accepted.has(name.toLowerCase());
 }
 

@@ -272,8 +272,7 @@ class BoardAliasTests(RealRegistryCase):
             with self.subTest(alias=alias):
                 self.assertEqual(I.strict_seat(target, registry=self.reg), target)
                 self.assertEqual(I.seat_app(target, registry=self.reg), "instinct")
-                with self.assertRaises(I.UnknownSeat):
-                    I.strict_seat(alias, registry=self.reg)  # INSTINCT is retired, never a seat here
+                self.assertEqual(I.strict_seat(alias, registry=self.reg), target)  # INSTINCT stays an accepted spelling (fleet-apps.json)
 
     def test_every_bf_role_gives_a_botfleet_seat(self) -> None:
         self.assertTrue(self.board.BF_ROLES)

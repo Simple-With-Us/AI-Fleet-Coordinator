@@ -127,12 +127,16 @@ SEAT_ROSTER = {
 BF_ROLES = {"DIRECTOR", "COMPILER", "FIXER", "DESIGNER", "PLUMBER", "PUBLISHER",
             "DEPLOYER", "MONITOR", "HOUSEKEEPER", "ORACLE", "BUILDER", "PRODUCER"}
 SEAT_ALIASES = {"MINIMAX": "MM", "MUSE": "MA", "GROK-BUILD": "GROK", "ANTIGRAVITY": "AG",
-                "MUSE-ASSIST": "MA", "MUSE-CODE": "MC"}
+                "MUSE-ASSIST": "MA", "ROB": "MA", "ROB-MUSE": "MA", "MUSE-CODE": "MC",
+                "INSTINCT": "WISE", "WISE-INSTINCT": "WISE", "ECHO-INSTINCT": "WISE"}
 CLUTCH_LINEAGE = {"DSH", "DEEPSEEK", "HARNESS"}
-# Spellings of a seat tag that AGENT_SEAT and --by resolve to the tag the fleet signs with (owner 2026-10-11:  the
-# Instinct seat is shown as Wise (Instinct)).  The tag is WISE (owner 2026-10-15) and INSTINCT is the
-# retired spelling, kept so existing references keep resolving.
+# Spellings of a seat tag that AGENT_SEAT and --by resolve to the tag the fleet signs with.  The tag is
+# WISE (owner 2026-10-15) and INSTINCT is the retired spelling, kept so existing references keep resolving.
+# Output uses the canonical key.
 SEAT_TAG_ALIASES = {"INSTINCT": "WISE"}
+# Retired seat tags keep their SEAT_ALIASES entries for roster_seat (old footer
+# attribution), but norm_seat resolves them as typed (SeatAliasTests).
+RETIRED_SEAT_TAGS = frozenset(("MINIMAX", "MUSE", "ANTIGRAVITY"))
 # One Linear app per seat (owner 2026-10-10), named for the seat bot's display
 # name.  A seat's app is used when its credentials exist (<SEAT>.env beside
 # Fleet.env, or LINEAR_<SEAT>_CLIENT_ID and _SECRET in the environment, with
@@ -164,13 +168,13 @@ SEAT_APP_ALIASES = {
     "MM": ("MiniMax", "MiniMax (MM)"),
     "FX": ("FX.sh",),
     "MC": ("Muse Code (MC)",),
-    "MA": ("Muse Assist (MA)",),
+    "MA": ("Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"),
     "JET": ("Jet (OpenAI dot)",),
     "GROK": ("Grok (Build)", "Grok Build"),
     "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
     "OPENCODE": ("OC",),
     "ECHO": ("Echo",),
-    "WISE": ("Instinct",),
+    "WISE": ("Wise", "Wise-Instinct", "Echo-Instinct", "Instinct"),
 }
 
 
@@ -310,7 +314,12 @@ def norm_seat(s: str | None) -> str:
     """The seat tag a value stands for, upper-cased.  Every GROK-BUILD spelling is GROK, so AGENT_SEAT,
     --by and --mine all resolve to the one seat that signs GROK."""
     v = (s or "").strip().strip("@[]<>`'\" ")
-    return "GROK" if GROK_ALIAS_RE.match(v) else SEAT_TAG_ALIASES.get(v.upper(), v.upper())
+    upper = v.upper()
+    if GROK_ALIAS_RE.match(v):
+        return "GROK"
+    if upper in RETIRED_SEAT_TAGS:
+        return upper
+    return SEAT_ALIASES.get(upper, SEAT_TAG_ALIASES.get(upper, upper))
 
 
 def hyphenate(h32: str) -> str:
@@ -1576,7 +1585,12 @@ def list_filter(a) -> tuple[list[dict], list[str] | None]:
     if a.search:
         parts.append({"title": {"containsIgnoreCase": a.search}})
     if a.mine:
-        parts.append(label_cond(f"{CLAIM_PREFIX}{norm_seat(a.mine)}"))
+        canonical = norm_seat(a.mine)
+        labels = [f"{CLAIM_PREFIX}{canonical}"]
+        # Legacy spellings (claimed:INSTINCT) resolve to the canonical tag.
+        labels += sorted(f"{CLAIM_PREFIX}{a}" for a, t in SEAT_TAG_ALIASES.items()
+                         if t == canonical and a != canonical)
+        parts.append(label_cond(labels[0]) if len(labels) == 1 else label_cond("", names=labels))
     for name in a.labels or []:
         parts.append(label_cond(name))    # every --label must be on the issue
     return parts, sevs
@@ -1880,7 +1894,7 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
     team = n["team"]["key"]
     # Who holds it: claimed:<SEAT> labels, else (In Progress) the import footer.
     # seat:<SEAT> labels are attribution (reporters carry them too), never a claim.
-    holders = [s for s in holders_of(n) if s != by]
+    holders = [s for s in holders_of(n) if norm_seat(s) != by]  # claimed:INSTINCT is WISE's own claim
     in_progress = (n.get("state") or {}).get("name") == "In Progress"
     stolen = []
     if in_progress and holders:

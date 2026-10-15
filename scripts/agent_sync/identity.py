@@ -65,6 +65,17 @@ GROK_ALIAS_PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
 _GROK_ALIAS_RE = re.compile(GROK_ALIAS_PATTERN, re.IGNORECASE | re.ASCII)
 GROK_SEAT = "GROK"
 
+# Human and legacy spellings accepted anywhere a seat name is resolved.  Keep
+# the output canonical so claims, labels, branches and posts carry one key.
+SEAT_NAME_ALIASES = {
+    "INSTINCT": "WISE",
+    "WISE-INSTINCT": "WISE",
+    "ECHO-INSTINCT": "WISE",
+    "MUSE-ASSIST": "MA",
+    "ROB": "MA",
+    "ROB-MUSE": "MA",
+}
+
 
 def is_grok_alias(raw: Any) -> bool:
     """True when `raw` is a spelling of the retired GROK-BUILD tag."""
@@ -73,11 +84,14 @@ def is_grok_alias(raw: Any) -> bool:
 
 def canonical_seat(raw: Any) -> str:
     """The seat tag a name stands for, upper-cased:  every GROK-BUILD spelling is GROK, anything
-    else is only trimmed and upper-cased (callers still validate it as a token).  This is the one
-    input boundary:  --as, --seat, --to, AGENT_SEAT, AGENT_LAUNCH_SEAT, AGENT_TAG and the hooks'
-    platform default all pass through it, and output (labels, --by, branches) only ever sees GROK."""
+    else it resolves published aliases and upper-cases (callers still validate it as a token).  This
+    is the one input boundary:  --as, --seat, --to, AGENT_SEAT, AGENT_LAUNCH_SEAT, AGENT_TAG and the
+    hooks' platform default all pass through it, and output only ever sees canonical seat keys."""
     text = str(raw or "").strip()
-    return GROK_SEAT if _GROK_ALIAS_RE.match(text) else text.upper()
+    if _GROK_ALIAS_RE.match(text):
+        return GROK_SEAT
+    upper = text.upper()
+    return SEAT_NAME_ALIASES.get(upper, upper)
 
 # Bot email local parts (minus the "-bot" Zulip appends) whose seat tag is not just the upper-cased
 # local part.  Display names are cosmetic (owner 2026-10-07), so labels come from emails, never names.

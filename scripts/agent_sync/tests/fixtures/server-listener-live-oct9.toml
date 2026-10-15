@@ -75,7 +75,7 @@ wake = "inbox"
 
 [seat.WISE]
 instance = "server"
-creds = "env"                     # ZULIP_INSTINCT_EMAIL, ZULIP_INSTINCT_API_KEY (instinct-owl-bot@)
+creds = "env"                     # ZULIP_WISE_EMAIL, ZULIP_WISE_API_KEY (Wise bot)
 wake = "inbox"
 
 # Echo is Instinct's partner bot and may be retired when the two merge.  Kept minimal on purpose.

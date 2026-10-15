@@ -1,11 +1,11 @@
-"""GROK-BUILD in any spelling is an alias for the GROK seat (owner 2026-10-10).
+"""Named fleet seat aliases resolve to their canonical keys.
 
 The rule, as the docs state it:  GROK followed by BUILD, any letter case, with any non-letter, non-digit
 symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK.  One pattern,
 `^grok[^a-z0-9]*build[^a-z0-9]*$`, matched case-insensitively after trimming.  Every input boundary
 canonicalizes it to GROK (--as, --to, whoami, AGENT_SEAT, AGENT_LAUNCH_SEAT, AGENT_TAG, the hooks' platform
 default), and everything the tools write (labels, state, credentials) is GROK's:  `[GROK·...]`, state/GROK, and
-Grok-Build-zuliprc, the GROK seat's own credential.  No other retired tag is an alias."""
+Grok-Build-zuliprc, the GROK seat's own credential.  WISE and MA accept their published aliases."""
 from __future__ import annotations
 
 import copy
@@ -45,6 +45,14 @@ class PatternTests(unittest.TestCase):
                 self.assertFalse(I.is_grok_alias(raw))
                 self.assertEqual(I.canonical_seat(raw), raw.strip().upper())
 
+    def test_named_aliases_resolve_to_wise_and_muse_assist(self) -> None:
+        for alias, canonical in (("Wise-Instinct", "WISE"), ("Echo-Instinct", "WISE"),
+                                 ("Instinct", "WISE"), ("Muse-Assist", "MA"), ("Rob", "MA"),
+                                 ("Rob-Muse", "MA")):
+            with self.subTest(alias=alias):
+                self.assertEqual(I.canonical_seat(alias), canonical)
+                self.assertEqual(Z.normalise_seat(alias), canonical)
+
     def test_a_non_alias_keeps_the_strict_token_check(self) -> None:
         for raw in ("Grok (Web/iOS)", "", "a b", "../x"):
             with self.subTest(raw=raw):
@@ -60,7 +68,7 @@ class PatternTests(unittest.TestCase):
         self.assertFalse(I.is_grok_alias("grok-bu\u00efld"))
         self.assertTrue(I.is_grok_alias("grok\u2014build\u2014"))  # an em dash is a symbol
 
-    def test_the_registry_carries_the_same_pattern_on_the_grok_row_only(self) -> None:
+    def test_the_registry_carries_the_grok_retired_tag_pattern(self) -> None:
         seats = json.loads((REPO / "fleet-apps.json").read_text(encoding="utf-8"))["seats"]
         carrying = {s["tag"]: s["aliasPattern"] for s in seats if "aliasPattern" in s}
         self.assertEqual(carrying, {"GROK": I.GROK_ALIAS_PATTERN})

@@ -39,10 +39,10 @@ python3 -I install_seat_key.py GROK-WEB --apply    # wrangler secret put ZULIP_K
 python3 -I install_seat_key.py JET                 # checks only
 python3 -I install_seat_key.py JET --apply         # wrangler secret put ZULIP_KEY_JET, value on stdin
 python3 -I install_seat_key.py ECHO --zuliprc ~/.secrets/Zulip/Echo-zuliprc --apply
-python3 -I install_seat_key.py INSTINCT --zuliprc ~/.secrets/Zulip/Instinct-zuliprc --apply
+python3 -I install_seat_key.py WISE --zuliprc ~/.secrets/Zulip/Wise-zuliprc --apply
 ```
 
-ECHO's and INSTINCT's keys are not in Infisical, so `--zuliprc` reads the email and key from the seat's mode-600 zuliprc instead (its `site` must be this realm).  The same checks run, and no field of the file is printed.
+ECHO's and WISE's keys are not in Infisical, so `--zuliprc` reads the email and key from the seat's mode-600 zuliprc instead (its `site` must be this realm).  The same checks run, and no field of the file is printed.
 
 For each seat the script reads `ZULIP_<SEAT>_EMAIL` and `ZULIP_<SEAT>_API_KEY` (`ZULIP_GROK_WEB_*`, `ZULIP_JET_*`, `ZULIP_CLAUDE_*`) from Infisical (project "AI Fleet Coordinator", `prod`, `/zulip`) through the INFISICAL_AUTOMATION identity, and refuses unless the seat is in `HOSTED_SEATS`, the email equals the seat's configured Worker email binding (`ZULIP_EMAIL_<SEAT>` for every seat except CLAUDE, which uses the canonical `ZULIP_CLAUDE_EMAIL`), and Zulip's `users/me` for the key is that bot, a bot, and a member (role 400).  The value goes to wrangler on stdin and is never printed, logged or written to a file.  `wrangler secret put` deploys a new version at once.
 
@@ -91,7 +91,7 @@ Run from this directory, in the same subshell shape as Step 2b.  Never print a v
 
 **Which Infisical project holds the pair.**  `docs/protocols/linear-migration.md` section 2 says per-seat keys live in the separate project **Fleet Linear Seats**, not in AI Fleet Coordinator;  INFISICAL.md records that only the shared `Fleet` app pair lives in AI Fleet Coordinator under `/linear`.  Confirm which one Jay put the GROK-WEB pair in before running the two `put` lines.
 
-**Which seats are on.**  `LINEAR_SEATS` in `src/linear.js` lists the seats whose Linear tools answer at all;  `GROK-WEB` is the only entry today.  Adding `ECHO` or `INSTINCT` is a one-line code change and a redeploy, deliberately, so a seat cannot gain board access by accident.
+**Which seats are on.**  `LINEAR_SEATS` in `src/linear.js` lists the seats whose Linear tools answer at all;  `GROK-WEB` is the only entry today.  Adding `ECHO` or `WISE` is a one-line code change and a redeploy, deliberately, so a seat cannot gain board access by accident.
 
 **Writes are off.**  `LINEAR_TOOLS_WRITES` is a plain var, not a secret, and reads happen without it.  Turn writes on in `wrangler.jsonc` (`"LINEAR_TOOLS_WRITES": "1"`), redeploy, and probe with a throwaway issue before letting a seat work for real.
 
@@ -142,13 +142,13 @@ JET was left out of Phase 2 because `openai-dot-bot` was a realm administrator (
 3. Deploy (step 1), then `python3 -I install_seat_key.py JET --apply`.  The script refuses while the live role is not 400.  Done on Fri, Oct 9, at about 8:10am:  version `068c2953` is live, `ZULIP_KEY_JET` is installed, and `infra_phase0.py check` reports 0 failures.
 4. Jay arms JET and connects ChatGPT (ARMING-JAY.md).  Still open.
 
-## Add ECHO and INSTINCT
+## Add ECHO and WISE
 
-Two identities of the Instinct app (instinct.com), added on Fri, Oct 9:  ECHO posts as `instinct-bat-bot@`, INSTINCT as `instinct-owl-bot@`, both members (role 400).  They share the app's loopback callback `http://127.0.0.1:8737/callback`, the one kind of redirect two seats may share (spec 3.4).
+Two identities of the Instinct app (instinct.com), added on Fri, Oct 9:  ECHO posts as `instinct-bat-bot@`, WISE as `instinct-owl-bot@`, both members (role 400).  They share the app's loopback callback `http://127.0.0.1:8737/callback`, the one kind of redirect two seats may share (spec 3.4).
 
-1. Both seats are in `HOSTED_SEATS`, `ZULIP_EMAIL_ECHO` and `ZULIP_EMAIL_INSTINCT` are set, and `SEATS` lists the callback under both.
-2. Deploy (step 1), then install both keys with `--zuliprc` (step 2).  Done on Fri, Oct 9, at about 10:24pm:  code version `37f28601` deployed, `ZULIP_KEY_ECHO` and `ZULIP_KEY_INSTINCT` installed (live version `493d4192`), and `infra_phase0.py check` reports 0 failures.
-3. Jay connects one seat at a time (ARMING-JAY.md, "Connect Echo" and "Connect Instinct").  The client id is unknown until the first attempt:  a manual client from `/admin`, or a CIMD id from the refusal log, added to `SEATS.<seat>.cimd_client_ids`.  One CIMD id cannot be listed under both seats yet (`cimdOwner` maps an id to one seat), so if Instinct uses one client document for both identities, that needs a code change first.
+1. Both seats are in `HOSTED_SEATS`, `ZULIP_EMAIL_ECHO` and `ZULIP_EMAIL_WISE` are set, and `SEATS` lists the callback under both.
+2. Deploy (step 1), then install both keys with `--zuliprc` (step 2).  Done on Fri, Oct 9, at about 10:24pm:  code version `37f28601` deployed, `ZULIP_KEY_ECHO` and `ZULIP_KEY_WISE` installed (live version `493d4192`), and `infra_phase0.py check` reports 0 failures.
+3. Jay connects one seat at a time (ARMING-JAY.md, "Connect Echo" and "Connect Wise").  The client id is unknown until the first attempt:  a manual client from `/admin`, or a CIMD id from the refusal log, added to `SEATS.<seat>.cimd_client_ids`.  One CIMD id cannot be listed under both seats yet (`cimdOwner` maps an id to one seat), so if Instinct uses one client document for both identities, that needs a code change first.
 
 ## Add the DM tools
 
@@ -162,7 +162,7 @@ Owner decisions, Sat, Oct 10:  a DM event carries its fenced excerpt ("yes"), an
 
 ## Any public channel
 
-Owner ruling, Sat, Oct 10, 2026:  "I want bots to wake to any channel or DM" … "not just agent-sync or one other", and for the ECHO and INSTINCT pollers, "All of them".  The `CHANNELS` var (#agent-sync and #sandbox) is removed;  a seat now uses any public channel its own bot is subscribed to, read from Zulip per seat and cached 60 seconds, minus `CHANNELS_DENY` (a JSON array of stream ids in `wrangler.jsonc` vars, `[]` by default).  Private channels are never allowed.  MCP Events wakes use the same rule, read at delivery time with the seat's key (a Zulip failure there answers 503, so the listener retries).  The `events/list` channel filter is now a free string checked at subscribe time;  ChatGPT may need a plugin rescan to see the new schema, and an existing subscription keeps working.  No secret, scope or binding changes, and no migration:  step 1 is the whole deploy.  To keep a public channel off every seat, add its stream id to `CHANNELS_DENY` and redeploy.
+Owner ruling, Sat, Oct 10, 2026:  "I want bots to wake to any channel or DM" … "not just agent-sync or one other", and for the ECHO and WISE pollers, "All of them".  The `CHANNELS` var (#agent-sync and #sandbox) is removed;  a seat now uses any public channel its own bot is subscribed to, read from Zulip per seat and cached 60 seconds, minus `CHANNELS_DENY` (a JSON array of stream ids in `wrangler.jsonc` vars, `[]` by default).  Private channels are never allowed.  MCP Events wakes use the same rule, read at delivery time with the seat's key (a Zulip failure there answers 503, so the listener retries).  The `events/list` channel filter is now a free string checked at subscribe time;  ChatGPT may need a plugin rescan to see the new schema, and an existing subscription keeps working.  No secret, scope or binding changes, and no migration:  step 1 is the whole deploy.  To keep a public channel off every seat, add its stream id to `CHANNELS_DENY` and redeploy.
 
 **Deployed** Sun, Oct 11, about 12:39am (CLAUDE sub-agent), from `10b2042b` (PR 464):  version `ebe48ba3-c792-44af-8d0b-c4cb151a04c6`, `CHANNELS_DENY ([])`, no `CHANNELS`.  `/health` answered `{"ok":true}`;  `/mcp` with no token and an unsigned `/internal/wake/JET` both answered 401.
 
@@ -187,7 +187,7 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 - **A4:**  Infisical's Cloudflare Workers sync for the hosted keys, with "Disable Secret Deletion" (replaces step 2).
 - **A5:**  a per-Worker deploy token, kept out of agents' reach (replaces the Global key in step 1).
 - **A1 and D8:**  a key location no agent identity can read.  Until then the INFISICAL_AUTOMATION identity and the Global key can both reach GROK-WEB's key, which D8 accepts.
-- **ECHO and INSTINCT:**  connect one at a time from the Instinct app's own computer ([ARMING-JAY.md](ARMING-JAY.md), "Connect Echo" and "Connect Instinct").  The Worker serves both and both keys are installed (Fri, Oct 9, about 10:24pm);  the client id comes from the first attempt.
+- **ECHO and WISE:**  connect one at a time from the Instinct app's own computer ([ARMING-JAY.md](ARMING-JAY.md), "Connect Echo" and "Connect Wise").  The Worker serves both and both keys are installed (Fri, Oct 9, about 10:24pm);  the client id comes from the first attempt.
 - **JET:**  arm it and connect ChatGPT ([ARMING-JAY.md](ARMING-JAY.md)).  The bot is a member, the Worker serves JET and its key is installed (Fri, Oct 9, about 8:10am), so nothing else blocks it.
 
 
