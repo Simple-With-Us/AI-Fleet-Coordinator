@@ -292,3 +292,14 @@ test("personal passes through to FleetLink for create_share, create_link and upl
   assert.equal(errorOf(await tools.call("fleetlink_create_share", { markdown: "x", personal: "yes" })).code, "invalid_argument");
   assert.match(hostedInstructions("JET"), /Fleet team, where Jay and every other seat can read, edit and overwrite/);
 });
+
+test("the FleetLink tools mirror FleetLink's own served list (fleetlink-tools.json, copied from FleetLink docs/mcp-tools.json)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const pinned = JSON.parse(readFileSync(new URL("../fleetlink-tools.json", import.meta.url), "utf8")).tools;
+  assert.deepEqual(FLEETLINK_TOOLS.map((t) => t.name).sort(), pinned.map((t) => t.name).sort(), "FleetLink added or removed a tool:  mirror it in src/fleetlink.js");
+  for (const spec of pinned) {
+    const mine = FLEETLINK_TOOLS.find((t) => t.name === spec.name);
+    assert.deepEqual(Object.keys(mine.inputSchema.properties).sort(), spec.properties, `${spec.name} arguments differ from FleetLink's`);
+    assert.deepEqual([...(mine.inputSchema.required ?? [])].sort(), [...spec.required].sort(), `${spec.name} required arguments differ`);
+  }
+});
