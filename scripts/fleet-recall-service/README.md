@@ -16,7 +16,7 @@ service is the one that does not depend on the Mac.
 | GET | `/health` | none | `{ok, name, version, fleet_rag, collection, points, backend_ok, mcp, recall}` — `points` is the live count, cached 30 s; `ok` is the process, `backend_ok` is Qdrant |
 | GET | `/recall/stats` | bearer | `recall_stats()` |
 | POST | `/recall/search` | bearer | `recall_search(**body)` — `query` required; `limit`, `category`, `app`, `source`, `seat`, `since_days` |
-| POST | `/recall/contribute` | bearer | `recall_contribute(**body)` — `text`, `category`, **`seat` required**; `app`, `title`, `url` |
+| POST | `/recall/contribute` | bearer | `recall_contribute(**body)` — `text`, `category`, **`seat` required**; `app`, `title`, `url`.  `force`, if present, is dropped before validation (the local duplicate-guard knob; not part of this tool schema) |
 | POST | `/mcp` | bearer | streamable-HTTP JSON-RPC: `initialize` (sets `MCP-Session-Id`), `notifications/*` (202), `ping`, `tools/list`, `tools/call`, `server/discover` — same framing as seat-mcp, so a client can swap the URL |
 
 Auth is `Authorization: Bearer <RECALL_API_TOKEN>` on everything except `/health`, compared in
