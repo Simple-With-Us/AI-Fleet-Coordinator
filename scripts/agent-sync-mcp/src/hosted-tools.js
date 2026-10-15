@@ -1111,6 +1111,17 @@ export class HostedTools {
   }
 
   /**
+   * Scan caller text and the tagged, mention-neutralized body Linear will post.
+   * Mention neutralization can decode percent-encoded profile slugs, so the
+   * second scan catches secrets that only appear after decode.
+   */
+  scanLinearText(text, session, { field = "body" } = {}) {
+    const raw = String(text ?? "").trim();
+    if (raw) this.scanLinear({ [field]: raw });
+    if (raw) this.scanLinear({ [field]: this.linearBody(raw, session) });
+  }
+
+  /**
    * The workspace cache (teams, states and labels), keyed by seat in this
    * isolate.  It holds ids only, never a token, and an entry older than an hour
    * is refetched:  Jay can rename a team without a deploy.
@@ -1300,6 +1311,7 @@ export class HostedTools {
     }
     const priority = args.severity ? SEV_PRIORITY[args.severity] : undefined;
     const input = { teamId: teamRow.id, title: args.title.trim(), description: this.linearFileBody(args, slug, team), stateId: state.id };
+    this.scanLinear({ description: input.description });
     if (labelIds.length) input.labelIds = labelIds;
     if (priority !== undefined) input.priority = priority;
     if (args.severity) {
@@ -1341,7 +1353,6 @@ export class HostedTools {
 
   async tool_linear_claim(args, audit) {
     this.requireLinearWrites();
-    this.scanLinear({ comment: args.comment });
     const issue = await this.linearIssue(args.id);
     const seat = seatTagForSeat(this.seat);
     const keys = linearLabelKeys(issue);
@@ -1372,6 +1383,7 @@ export class HostedTools {
       }
     }
     const state = await this.linearState(workspace, issue.team?.id ?? null, "in_progress");
+    this.scanLinearText(args.comment?.trim() ? `CLAIMED\n\n${args.comment.trim()}` : "CLAIMED", args.session, { field: "comment" });
     const body = this.linearBody(`CLAIMED${args.comment?.trim() ? `\n\n${args.comment.trim()}` : ""}`, args.session);
     audit.body_len = [...body].length;
     const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, body]);
@@ -1390,8 +1402,8 @@ export class HostedTools {
 
   async tool_linear_comment(args, audit) {
     this.requireLinearWrites();
-    this.scanLinear({ body: args.body });
     const issue = await this.linearIssue(args.id);
+    this.scanLinearText(args.body, args.session);
     const body = this.linearBody(args.body.trim(), args.session);
     audit.body_len = [...body].length;
     const idem = await this.idemKey(null, ["linear_comment", this.seat, issue.id, body]);

@@ -517,6 +517,17 @@ test("mapLinearError surfaces an actionable message for App user not valid Graph
   assert.match(tool.message, /app \(bot\) user/);
   assert.equal(tool.extra.linear_code, "INVALID_INPUT");
   assert.deepEqual(tool.extra.linear_path, ["commentCreate"]);
+  assert.doesNotMatch(tool.message, /App user not valid.*App user not valid/);
+});
+
+test("a percent-encoded secret inside a profile URL is refused after mention neutralization", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-secret-profile", identifier: "AFC-322" });
+  const key = `lin_api_${"c".repeat(20)}`;
+  const profile = `https://linear.app/simple-with-us/profiles/${encodeURIComponent(key)}`;
+  const error = toolError(await tools.call("linear_comment", { id: "AFC-322", body: `see ${profile}` }), "refused_secret");
+  assert.match(error.message, /body/);
+  assert.equal(fake.requests.length, 0);
 });
 
 test("linear_comment neutralizes a profile URL before commentCreate so Linear does not refuse the mention", async () => {

@@ -932,7 +932,15 @@ export function mapLinearError(error, { write = false, known = [] } = {}) {
 
 /** A tool-facing refusal string for GraphQL validation errors (never echoes the mutation body). */
 function linearRefusalMessage(error, known) {
-  const parts = [error.graphql?.userPresentableMessage, error.graphql?.message, error.upstreamMessage].filter((v) => typeof v === "string" && v.trim());
+  const parts = [];
+  const seen = new Set();
+  for (const part of [error.graphql?.userPresentableMessage, error.graphql?.message, error.upstreamMessage]) {
+    if (typeof part !== "string" || !part.trim()) continue;
+    const key = part.trim();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    parts.push(key);
+  }
   const combined = parts.join(" ");
   const scrubbed = combined && !scanSecret(combined, known) ? linearClean(combined, MESSAGE_LIMIT_SAFE)[0] : null;
   if (scrubbed && /app user not valid/i.test(scrubbed)) {
