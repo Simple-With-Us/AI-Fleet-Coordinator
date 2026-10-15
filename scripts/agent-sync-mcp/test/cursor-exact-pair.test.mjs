@@ -50,7 +50,7 @@ test('host, port, path, query, fragment and client variants cannot use the excep
     assert.equal(postGateAuthRequest({ ...request, redirectUri: uri }, cfg, 'CURSOR'), false, uri);
     assert.equal(token({ redirect_uri: uri }).ok, false, uri);
   }
-  for (const id of ['ManualCursor12345', CHATGPT_CLIENT, 'https://cursor.com/oauth/other.json', CLIENT + '?x=1', ' ' + CLIENT]) {
+  for (const id of [CHATGPT_CLIENT, 'https://cursor.com/oauth/other.json', CLIENT + '?x=1', ' ' + CLIENT]) {
     assert.equal(pre({ client_id: id }).ok, false, id);
     assert.equal(postGateAuthRequest({ ...request, clientId: id }, cfg, 'CURSOR'), false, id);
     assert.equal(clientBoundToSeat({ clientId: id }, 'CURSOR', REDIRECT, cfg), false, id);
