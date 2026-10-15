@@ -280,3 +280,15 @@ CLAUDE uses its own grant, epoch and bot credential.  Existing seats, JET grants
 wake keys, callbacks, subscriptions and Linear permissions need no migration.
 No CODEX callback or client is provisioned; see
 [hosted and server access](../../docs/protocols/claude-codex-bridge-access.md).
+
+
+## Cursor Shared-Agent Budgets (AFC-312)
+
+The owner authorized higher CURSOR limits for approximately 40 agents.
+Store `AGENT_SYNC_CURSOR_TOOL_BUDGETS` in AFC Infisical `prod` `/zulip` first,
+then provision the same Worker binding through stdin.  See INFISICAL.md for
+approved limits.  Deploy the merged budget code before expecting the setting
+to take effect.  It is read and validated with the existing startup config;
+no runtime Infisical request is made per tool call.  Cursor Linear operations
+use distinct counters and pacing; existing exhausted Zulip counters are retained.
+Verify production CURSOR audit outcomes for both reads and writes after deployment.

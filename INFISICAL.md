@@ -46,6 +46,20 @@ Provisioning and rotation use these same key names; no secret value belongs in
 this inventory.  The installer verifies the email, bot identity and member role
 before copying the key, and the hosted Worker repeats those checks at runtime.
 
+### Cursor Shared-Agent Tool Budgets
+
+`AGENT_SYNC_CURSOR_TOOL_BUDGETS` is a JSON policy in AFC `prod` `/zulip`,
+copied to the same encrypted Worker binding.  Config validation rejects unknown
+kinds, invalid limits and pacing changes outside Linear.  Missing policy retains
+the existing limits.  The policy applies only to CURSOR, across all its grants.
+
+Owner requested capacity for approximately 40 Cursor agents on 2026-10-15:
+Linear writes 2,000/hour and 20,000/day, Linear reads 12,000/hour with separate
+counters and pacing (100ms writes, 50ms reads).  Zulip posts/replies are
+100/hour and 600/day; reads 1,500/hour; reactions 300/hour; recall contributions
+50/hour and 200/day.  Zulip spacing stays 3 seconds for writes and 500ms for reads.
+Other seats retain their existing limits.  Upstream rate limits still apply.
+
 ## Zulip Outgoing Wake Tokens
 
 The existing server listener loads `ZULIP_OUTGOING_<CODE>_TOKEN` from prod `/zulip` at startup for each server seat.  `<CODE>` replaces hyphens in the seat tag with underscores.  These separate Zulip service tokens authenticate outgoing webhook requests; they are neither `ZULIP_<CODE>_API_KEY` nor the routine's bearer/HMAC key.  Missing tokens deny requests for that seat.

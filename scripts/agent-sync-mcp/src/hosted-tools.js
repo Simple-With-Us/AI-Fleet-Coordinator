@@ -320,8 +320,14 @@ export class HostedTools {
     this.me = { user_id: me.user_id, role: me.role };
   }
 
+  // Keep Cursor's parallel Linear work separate from its Zulip allowance.
+  async reserveLinear(kind) {
+    return this.reserve(this.seat === "CURSOR" ? `linear_${kind}` : kind);
+  }
+
   async reserve(kind) {
-    const slot = await this.gate.reserve({ kind });
+    const policy = this.seat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;
+    const slot = await this.gate.reserve({ kind, ...(policy ? { policy } : {}) });
     if (!slot?.ok) {
       if (slot?.code === "budget_exhausted") {
         throw new ToolError("budget_exhausted", `This seat's ${kind} budget for the ${slot.window ?? "hour"} is spent.  Try again after reset_at.`, { retryable: true, resetAt: slot.resetAt });
@@ -1100,7 +1106,7 @@ export class HostedTools {
 
   async tool_linear_whoami(args, audit) {
     const client = this.requireLinear();
-    await this.reserve("read");
+    await this.reserveLinear("read");
     const viewer = await this.linearCall(() => client.viewer());
     const info = {
       seat: this.seat,
@@ -1113,7 +1119,7 @@ export class HostedTools {
   }
 
   async tool_linear_list(args, audit) {
-    await this.reserve("read");
+    await this.reserveLinear("read");
     const filter = {};
     if (args.team) filter.team = { key: { eq: args.team.toUpperCase() } };
     if (args.status) {
@@ -1149,7 +1155,7 @@ export class HostedTools {
   }
 
   async tool_linear_show(args, audit) {
-    await this.reserve("read");
+    await this.reserveLinear("read");
     const issue = await this.linearIssue(args.id);
     const data = await this.linearCall(() => this.requireLinear().call(Q_COMMENTS, { id: issue.id, first: args.comment_limit }));
     const comments = (data?.issue?.comments?.nodes ?? []).map(commentItem);
@@ -1180,7 +1186,7 @@ export class HostedTools {
     if (begun.verdict === "busy") throw new ToolError("rate_limited", "the same write is already in flight in another chat of this seat", { retryable: true, retryAfterS: 30 });
     if (begun.verdict === "duplicate") return { ...begun.row, duplicate: true };
     try {
-      await this.reserve("write");
+      await this.reserveLinear("write");
     } catch (error) {
       await this.safely(() => this.gate.idemDrop({ key: idem.key }));
       throw error;
