@@ -291,7 +291,17 @@ export const ZULIP_FULL_METHODS = {
     await this.ensureSeat();
     const streamId = await this.channelId(channel);
     audit.channel_id = streamId;
-    const latest = await this.newestInTopic(streamId, topic);
+    // Unresolving by the plain name means the check-marked topic resolve left;
+    // the name as given is the fallback.
+    let latest;
+    if (!resolve && !topic.startsWith(RESOLVED_PREFIX.trim())) {
+      try {
+        latest = await this.newestInTopic(streamId, `${RESOLVED_PREFIX}${topic}`);
+      } catch (error) {
+        if (!(error instanceof ToolError)) throw error;
+      }
+    }
+    latest ??= await this.newestInTopic(streamId, topic);
     const next = resolvedName(String(latest.subject ?? latest.topic ?? ""), resolve);
     audit.message_id = latest.id;
     await this.reserve("write");

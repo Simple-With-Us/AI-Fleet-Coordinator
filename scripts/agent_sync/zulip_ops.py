@@ -196,7 +196,16 @@ def set_resolved(agent: Any, channel: str, topic: str, resolve: bool) -> dict[st
     """Resolve (prefix the check mark) or unresolve (drop it) a whole topic, by its real spelling."""
     if resolve:
         resolved_name(topic, True)  # refuse the obvious cases before any request
-    latest = newest_in_topic(agent, channel, topic)
+        latest = newest_in_topic(agent, channel, topic)
+    elif topic.startswith(RESOLVED_PREFIX.strip()):
+        latest = newest_in_topic(agent, channel, topic)
+    else:
+        # Unresolving by the plain name means the topic as resolve left it:  the
+        # check-marked spelling.  Fall back to the name as given.
+        try:
+            latest = newest_in_topic(agent, channel, RESOLVED_PREFIX + topic)
+        except UsageError:
+            latest = newest_in_topic(agent, channel, topic)
     new_topic = resolved_name(Z.message_topic(latest), resolve)
     agent.client.patch("messages/%d" % latest["id"], {"topic": new_topic, "propagate_mode": "change_all"})
     return {"id": latest["id"], "channel_id": latest.get("stream_id"), "topic": new_topic}

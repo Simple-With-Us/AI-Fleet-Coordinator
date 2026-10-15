@@ -192,6 +192,11 @@ test("move, resolve and unresolve stay inside allowed channels;  unreact and fla
   toolError(await tools.call("zulip_resolve_topic", { channel: "design", topic: "✔ new" }), "invalid_argument");
   ok(await tools.call("zulip_unresolve_topic", { channel: "design", topic: "✔ new" }), "zulip_unresolve_topic");
   assert.equal(a.subject, "new");
+  // Unresolving by the plain name finds the check-marked topic.
+  ok(await tools.call("zulip_resolve_topic", { channel: "design", topic: "new" }), "zulip_resolve_topic");
+  ok(await tools.call("zulip_unresolve_topic", { channel: "design", topic: "new" }), "zulip_unresolve_topic");
+  assert.equal(a.subject, "new");
+  toolError(await tools.call("zulip_unresolve_topic", { channel: "design", topic: "new" }), "invalid_argument");
   ok(await tools.call("zulip_react", { message_id: a.id, emoji: "eyes" }), "zulip_react");
   ok(await tools.call("zulip_unreact", { message_id: a.id, emoji: "eyes" }), "zulip_unreact");
   ok(await tools.call("zulip_unreact", { message_id: a.id, emoji: "eyes" }), "zulip_unreact");

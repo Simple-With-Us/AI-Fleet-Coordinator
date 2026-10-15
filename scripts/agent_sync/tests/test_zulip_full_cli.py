@@ -68,6 +68,11 @@ class MessageCommandTests(Harness):
         self.assertEqual(un.code, 0, un.err)
         self.assertEqual(json.loads(un.out)["topic"], "new name")
         self.assertEqual(self.run_cli("unresolve", "--topic", "new name").code, 2)  # not resolved
+        # Unresolving by the plain name finds the check-marked topic (found live in #sandbox).
+        self.assertEqual(self.run_cli("resolve", "--topic", "new name").code, 0)
+        plain = self.run_cli("unresolve", "--topic", "new name", "--json")
+        self.assertEqual(plain.code, 0, plain.err)
+        self.assertEqual(json.loads(plain.out)["topic"], "new name")
 
     def test_unreact_is_idempotent(self) -> None:
         mid = self.fake.add_message("Codex", "agent-sync", "t", "x")
