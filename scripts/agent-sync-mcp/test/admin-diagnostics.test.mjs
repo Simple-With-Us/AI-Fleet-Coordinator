@@ -56,6 +56,27 @@ test("scanner-flagged diagnostics use generic text and request values are omitte
   assert.equal(rows[0].error_message, "bad message [argument]: [argument]");
 });
 
+test("audit message redaction is bounded for deep and cyclic request objects", async () => {
+  const { tools } = harness();
+  let deep = { secret: "private-value" };
+  for (let i = 0; i < 20; i++) deep = { child: deep };
+  assert.equal(
+    tools.auditErrorMessage("request failed", deep),
+    "Error message omitted because request arguments exceeded audit bounds.",
+  );
+  const cyclic = { text: "private-value" };
+  cyclic.self = cyclic;
+  assert.equal(
+    tools.auditErrorMessage("request failed", cyclic),
+    "Error message omitted because request arguments exceeded audit bounds.",
+  );
+  const broad = Array.from({ length: 1001 }, (_, i) => `value-${i}`);
+  assert.equal(
+    tools.auditErrorMessage("request failed", broad),
+    "Error message omitted because request arguments exceeded audit bounds.",
+  );
+});
+
 test("auditCall validates diagnostics, bounds error text, and caps retry metadata", async () => {
   const store = state.memoryStore();
   const now = Date.parse("2026-10-15T12:00:00Z");

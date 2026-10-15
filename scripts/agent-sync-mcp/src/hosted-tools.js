@@ -323,14 +323,28 @@ export class HostedTools {
     if (scanSecret(raw, this.known)) return "Error message omitted after secret scan.";
     let safe = this.scrub(raw);
     const values = [];
-    const collect = (value) => {
+    const pending = [{ value: args, depth: 0 }];
+    const seen = new WeakSet();
+    let visited = 0;
+    while (pending.length) {
+      const { value, depth } = pending.pop();
+      if (++visited > 1000 || depth > 16) return "Error message omitted because request arguments exceeded audit bounds.";
       if (typeof value === "string" && value.length) values.push(value);
       else if (typeof value === "number" && Number.isFinite(value)) values.push(String(value));
       else if (typeof value === "boolean") values.push(String(value));
-      else if (Array.isArray(value)) value.forEach(collect);
-      else if (value && typeof value === "object") Object.values(value).forEach(collect);
-    };
-    collect(args);
+      else if (value && typeof value === "object") {
+        if (seen.has(value)) return "Error message omitted because request arguments exceeded audit bounds.";
+        seen.add(value);
+        let children;
+        try {
+          children = Array.isArray(value) ? value : Object.values(value);
+        } catch {
+          return "Error message omitted because request arguments exceeded audit bounds.";
+        }
+        if (visited + pending.length + children.length > 1000) return "Error message omitted because request arguments exceeded audit bounds.";
+        for (const child of children) pending.push({ value: child, depth: depth + 1 });
+      }
+    }
     values.sort((a, b) => b.length - a.length);
     for (const value of values) safe = safe.split(value).join("[argument]");
     if (scanSecret(safe, this.known)) return "Error message omitted after secret scan.";
