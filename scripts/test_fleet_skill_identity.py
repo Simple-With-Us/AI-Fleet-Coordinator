@@ -159,6 +159,8 @@ class SpecializeTests(unittest.TestCase):
         self.assertNotIn("You are **GROK-BOT**", grok_bot)
         self.assertNotIn("You are **CURSOR**", grok_bot)
         self.assertNotIn("You are **MONET**", grok_bot)
+        self.assertIn("cursor/afc-123-zulip-cutover", grok_bot)
+        self.assertNotIn("claude/afc-123-zulip-cutover", grok_bot)
 
     def test_kimi_retired_banner(self) -> None:
         out = specialize_from_monet(_session(), SEATS["kimi"], skill_name="session-start")

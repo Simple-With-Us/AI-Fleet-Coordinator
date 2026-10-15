@@ -898,6 +898,7 @@ def _specialize_grok_bot(text: str, seat: Seat, skill_name: str) -> str:
         ("AGENT_TAG=MONET", pin),
         ("--by MONET", f"--by {BY_SEAT}"),
         ("--mine MONET", f"--mine {BY_SEAT}"),
+        ("claude/afc-123-zulip-cutover", "cursor/afc-123-zulip-cutover"),
         ("claim:  monet/<slug>", f"claim:  {BRANCH_PREFIX}/<slug>"),
         ("`--by` for this seat is `MONET`", "`--by` for this seat is `$AGENT_TAG`"),
         ("[MONET·session8", "[$AGENT_TAG·session8"),
