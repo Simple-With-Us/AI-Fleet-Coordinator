@@ -282,3 +282,13 @@ test("a malformed or event-stream answer:  SSE data lines are read, anything els
   const notObject = new FleetLinkClient({ secret: SECRET, fetch: async () => new Response(JSON.stringify({ jsonrpc: "2.0", result: { content: [{ type: "text", text: "[1,2]" }] } }), { status: 200 }) });
   await assert.rejects(notObject.call("JET", "fleetlink_whoami", {}), (e) => e.kind === "unexpected");
 });
+
+test("personal passes through to FleetLink for create_share, create_link and upload_url;  a non-boolean is refused here", async () => {
+  const { tools, upstream } = harness();
+  for (const [name, args] of [["fleetlink_create_share", { markdown: "draft", personal: true }], ["fleetlink_create_link", { url: "https://example.com", personal: true }], ["fleetlink_upload_url", { path: "a.zip", personal: true }]]) {
+    assert.equal((await tools.call(name, args)).isError, undefined, name);
+    assert.equal(upstream.calls.at(-1).body.params.arguments.personal, true, name);
+  }
+  assert.equal(errorOf(await tools.call("fleetlink_create_share", { markdown: "x", personal: "yes" })).code, "invalid_argument");
+  assert.match(hostedInstructions("JET"), /Fleet team, where Jay and every other seat can read, edit and overwrite/);
+});
