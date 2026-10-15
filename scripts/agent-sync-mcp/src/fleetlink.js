@@ -215,17 +215,20 @@ const RpcResult = z.looseObject({
   }),
 });
 const ToolData = z.record(z.string(), z.unknown());
+// Only slug and url are required;  any other field that does not parse is
+// dropped on its own (catch), so one odd field never hides the whole share.
+const lenient = (schema) => schema.optional().catch(undefined);
 const ShareData = z.looseObject({
   slug: z.string(),
   url: z.string(),
-  kind: z.string().optional(),
-  visibility: z.string().optional(),
-  team: z.looseObject({ id: z.string(), name: z.string().nullable().optional(), access: z.string().optional() }).nullable().optional(),
-  owner: z.looseObject({ id: z.string() }).optional(),
-  can_edit: z.boolean().optional(),
-  can_manage: z.boolean().optional(),
-  expires_at: z.string().nullable().optional(),
-  file_count: z.number().int().optional(),
+  kind: lenient(z.string()),
+  visibility: lenient(z.string()),
+  team: lenient(z.looseObject({ id: z.string(), name: z.string().nullable().optional(), access: z.string().optional() }).nullable()),
+  owner: lenient(z.looseObject({ id: z.string() })),
+  can_edit: lenient(z.boolean()),
+  can_manage: lenient(z.boolean()),
+  expires_at: lenient(z.string().nullable()),
+  file_count: lenient(z.number().int()),
 });
 const SlugList = z.array(z.looseObject({ slug: z.string() })).max(200);
 const TeamList = z.array(z.looseObject({ id: z.string() })).max(100);

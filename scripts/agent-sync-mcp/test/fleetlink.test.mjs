@@ -295,11 +295,22 @@ test("personal passes through to FleetLink for create_share, create_link and upl
 
 test("the FleetLink tools mirror FleetLink's own served list (fleetlink-tools.json, copied from FleetLink docs/mcp-tools.json)", async () => {
   const { readFileSync } = await import("node:fs");
-  const pinned = JSON.parse(readFileSync(new URL("../fleetlink-tools.json", import.meta.url), "utf8")).tools;
+  const { z } = await import("zod");
+  const Pinned = z.object({ note: z.string().optional(), tools: z.array(z.object({ name: z.string(), properties: z.array(z.string()), required: z.array(z.string()) }).strict()).min(1) }).strict();
+  const pinned = Pinned.parse(JSON.parse(readFileSync(new URL("../fleetlink-tools.json", import.meta.url), "utf8"))).tools;
   assert.deepEqual(FLEETLINK_TOOLS.map((t) => t.name).sort(), pinned.map((t) => t.name).sort(), "FleetLink added or removed a tool:  mirror it in src/fleetlink.js");
   for (const spec of pinned) {
     const mine = FLEETLINK_TOOLS.find((t) => t.name === spec.name);
-    assert.deepEqual(Object.keys(mine.inputSchema.properties).sort(), spec.properties, `${spec.name} arguments differ from FleetLink's`);
+    assert.deepEqual(Object.keys(mine.inputSchema.properties).sort(), [...spec.properties].sort(), `${spec.name} arguments differ from FleetLink's`);
     assert.deepEqual([...(mine.inputSchema.required ?? [])].sort(), [...spec.required].sort(), `${spec.name} required arguments differ`);
   }
+});
+
+test("one malformed share field is dropped on its own, never the whole share summary", async () => {
+  const { tools } = harness({ respond: () => ({ data: { share: { ...SHARE, file_count: "lots", team: "nope" } } }) });
+  const result = await tools.call("fleetlink_get_share", { slug: "jet-findings" });
+  assert.equal(result.structuredContent.share.slug, "jet-findings");
+  assert.equal(result.structuredContent.share.file_count, 0);
+  assert.equal(result.structuredContent.share.team, null);
+  assert.equal(result.structuredContent.share.can_edit, true);
 });
