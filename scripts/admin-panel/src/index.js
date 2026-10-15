@@ -132,6 +132,12 @@ const APPS = [
   // Legacy, live until cutover.  It is private and has no Actions workflow, so the
   // GitHub card reads "1 with no run on main" (amber) until its row is retired.
   { repo: 'fleetlink-legacy', name: 'FleetLink Legacy', kind: 'product', owner: ORG },
+  // The fleet marketing site.  It deploys to GitHub Pages from this repo, so
+  // it has a workflow and a card like any other; it is listed here because the
+  // registry carries a row for it (lane new needs one), not because it is a
+  // shipped app.  ENDPOINTS has no probe for it: the catalog is static and has
+  // no health endpoint, the way fleetlink-legacy has none either.
+  { repo: 'Simple-With-Us', name: 'Simple With Us', kind: 'marketing', owner: ORG },
 ];
 
 // Vercel personal projects come back on the first call; team-scoped ones need

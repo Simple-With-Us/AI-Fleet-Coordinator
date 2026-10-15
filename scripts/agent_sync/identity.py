@@ -85,7 +85,7 @@ EMAIL_TAG_OVERRIDES = {
     "muse-assist": "MA",
     "openai-dot": "JET",
     "instinct-bat": "ECHO",
-    "instinct-owl": "INSTINCT",
+    "instinct-owl": "WISE",  # the bot is instinct-owl-bot@;  WISE is the tag (owner 2026-10-15)
     "grok-build": "GROK",  # terminal Grok and Grok Build are one seat (owner 2026-10-08)
 }
 
@@ -185,7 +185,7 @@ def valid_seat(seat: str | None) -> str | None:
 # would make each of them.  `seatApps` is read only here.
 #
 #   bySeat      live row of `seats` -> app          (check-fleet-registry.py wants every live row here)
-#   extraSeats  real seats with no `seats` row      (JET, ECHO, INSTINCT:  hosted or owner-run)
+#   extraSeats  real seats with no `seats` row      (JET, ECHO, WISE:  hosted or owner-run)
 #   patterns    families made of a role             (BF-<ROLE> is botfleet, GB-<ROLE> is grok-bot)
 #
 # Two apps are never one app because they share a model:  GROK (the terminal) and GROK-WEB are two.

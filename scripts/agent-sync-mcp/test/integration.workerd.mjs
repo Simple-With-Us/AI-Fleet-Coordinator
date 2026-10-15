@@ -171,7 +171,7 @@ function startWorker(upstream, bindingOverrides = {}) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET, ...bindingOverrides }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET, ...bindingOverrides }),
         outboundService: outboundFetch,
       },
     ],
@@ -1025,7 +1025,7 @@ try {
     assert.equal(r.json.result._meta["agent-sync/error"].code, "paused");
   });
 
-  await step("ECHO and INSTINCT share one loopback callback:  the armed seat decides, and a client is bound to its seat", async () => {
+  await step("ECHO and WISE share one loopback callback:  the armed seat decides, and a client is bound to its seat", async () => {
     const LOOP = "http://127.0.0.1:8737/callback";
     const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
     const echoGate = ns.get(ns.idFromName("ECHO"));
