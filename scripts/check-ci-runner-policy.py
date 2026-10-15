@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """check-ci-runner-policy.py -- flag a live local Mac Actions runner that
-contradicts AGENT-SYNC.md's "Local Mac Runner PERMANENTLY BANNED" policy.
+contradicts AGENT-SYNC.md's local-Mac self-hosted runner ban.
 
 Compares the live process inventory (default ~/apps/MAC-LOCAL-PROCESSES.md,
 which is NOT tracked in this repo) against the ban stated in this repo's
@@ -40,10 +40,14 @@ DEAD_STATUS_RE = re.compile(
     r"Retired|Disabled|Uninstalled|Banned|de-registered|deregistered|Old Mac CI label",
     re.I,
 )
+LOCAL_MAC_RUNNER_BAN_RE = re.compile(
+    r"local\s+mac\s+(?:self-hosted\s+)?runners?\s+(?:are\s+|is\s+)?permanently\s+banned",
+    re.I,
+)
 
 
 def policy_states_ban(policy_text: str) -> bool:
-    return "Local Mac Runner PERMANENTLY BANNED" in policy_text
+    return bool(LOCAL_MAC_RUNNER_BAN_RE.search(policy_text))
 
 
 def scan_inventory(text: str) -> list[tuple[int, str]]:

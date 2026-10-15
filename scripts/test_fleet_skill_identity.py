@@ -902,6 +902,17 @@ class AgentSeatPinTests(unittest.TestCase):
             self.assertIn("claim:  <branch-prefix>/<slug>", out, key)
             self.assertNotIn(f"claim:  {seat.prefix}/", out, key)
 
+    def test_branch_name_example_uses_seat_prefix_not_claude(self) -> None:
+        example = "afc-123-zulip-cutover"
+        for key, seat in SEATS.items():
+            if seat.retired:
+                continue
+            for skill_name in ("board-ops", "session-start", "fleet-coordination"):
+                out = specialize_from_monet(_load_skill(skill_name), seat, skill_name=skill_name)
+                self.assertIn(f"{seat.prefix}/{example}", out, f"{key}/{skill_name}")
+                if seat.prefix != "claude":
+                    self.assertNotIn(f"claude/{example}", out, f"{key}/{skill_name}")
+
     def test_grok_bot_has_no_platform_default(self) -> None:
         out = specialize_from_monet(_session(), SEATS["grok-bot"], skill_name="session-start")
         self.assertIn('else SEAT="${AGENT_SEAT:-${AGENT_TAG:?set GB-', self._block(out))
