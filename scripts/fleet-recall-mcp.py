@@ -145,11 +145,18 @@ def call_tool(name: str, args: dict) -> dict:
         return res
     if name == "recall_stats":
         return public_fallback.call_with_fallback("recall_stats", {}, recall_api.recall_stats)
+    # MCP hosts may inject schema defaults (force=false) into arguments.  Pop force here on the
+    # same dict call_with_fallback forwards to the public REST twin -- contribute_with_guard used
+    # to pop it only from a copy, so force could still ride along on fallback kwargs.
+    args = dict(args)
+    force = args.pop("force", False)
+    if not isinstance(force, bool):
+        raise FleetRagError("force must be a boolean")
     return public_fallback.call_with_fallback(
-        "recall_contribute", args, lambda: contribute_with_guard(dict(args)))
+        "recall_contribute", args, lambda: contribute_with_guard(args, force))
 
 
-def contribute_with_guard(args: dict) -> dict:
+def contribute_with_guard(args: dict, force: bool = False) -> dict:
     """recall_contribute behind the near-duplicate guard; force=true skips the guard.
 
     The guard itself talks to Qdrant directly (not through recall_api.recall_contribute), so a
@@ -159,9 +166,6 @@ def contribute_with_guard(args: dict) -> dict:
     call entirely for the same reason: no point waiting out a local retry storm for a dedup
     check the public service does not perform anyway.
     """
-    force = args.pop("force", False)
-    if not isinstance(force, bool):
-        raise FleetRagError("force must be a boolean")
     text = args.get("text")
     guard = None
     in_range = isinstance(text, str) and recall_api.CONTRIB_MIN <= len(text.strip()) <= recall_api.CONTRIB_MAX

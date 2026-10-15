@@ -207,6 +207,11 @@ def call_tool(name: str, args: JsonDict) -> JsonDict:
     if not isinstance(args, dict):
         raise FleetRagError("arguments must be an object")
     args = dict(args)
+    if name == "recall_contribute":
+        # Local MCP surfaces (fleet-recall-mcp.py) accept `force` for the near-duplicate guard;
+        # it is not part of this service's contract and must not 400 when a client injects the
+        # schema default.
+        args.pop("force", None)
     unknown = set(args) - _ALLOWED_ARGS[name]
     if unknown:
         raise FleetRagError("unknown argument(s): " + ", ".join(sorted(unknown)))

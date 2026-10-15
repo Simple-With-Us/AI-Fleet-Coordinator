@@ -128,6 +128,16 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(out[0]["result"]["protocolVersion"], "2025-06-18")
         self.assertEqual(len(out[1]["result"]["tools"]), 3)
 
+    def test_injected_force_false_still_contributes(self):
+        good = ("bf2413-force-default: MCP hosts inject force=false from the tool schema; "
+                "the write path must ignore it and store the lesson.")
+        out, _ = run_server([{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                               "params": {"name": "recall_contribute",
+                                          "arguments": {"text": good, "category": "lesson", "force": False}}}])
+        body = json.loads(out[0]["result"]["content"][0]["text"])
+        self.assertFalse(out[0]["result"]["isError"])
+        self.assertEqual(body["status"], "completed")
+
     def test_missing_seat_is_tool_error_not_crash(self):
         msgs = [
             {"jsonrpc": "2.0", "id": 1, "method": "tools/call",

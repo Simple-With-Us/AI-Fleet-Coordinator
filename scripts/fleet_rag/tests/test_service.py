@@ -577,6 +577,15 @@ class RestTests(_ServiceCase):
         self.assertEqual(len(again["hits"]), 1)
         self.assertEqual(again["hits"][0]["seat"], "CURSOR")
 
+    def test_contribute_ignores_injected_force_default(self):
+        status, _, body = self.request(
+            "POST", "/recall/contribute",
+            {"text": GOOD_TEXT, "category": "lesson", "seat": "cursor", "force": False},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["status"], "completed")
+
     def test_contribute_validation(self):
         status, _, body = self.request("POST", "/recall/contribute", {"text": "too short", "category": "lesson", "seat": "X"})
         self.assertEqual(status, 400)
