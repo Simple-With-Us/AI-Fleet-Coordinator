@@ -268,8 +268,8 @@ class ChatNudges:
                        owner: bool, stale: bool = False) -> bool:
         """Queue a validated one-shot selection without creating a persistent topic binding."""
         binding = self._binding(**binding)
-        if binding["platform"] not in SUPPORTED_PLATFORMS or not owner:
-            raise ValueError("selected chat requires a supported transport and owner authority")
+        if binding["platform"] not in SUPPORTED_PLATFORMS:
+            raise ValueError("selected chat requires a supported transport")
         message_id = str(message_id)
         with L.locked(self.path):
             data = self._read()
@@ -282,7 +282,7 @@ class ChatNudges:
             item_id = hashlib.sha256((dedupe + "\0nudge").encode("ascii")).hexdigest()
             data["items"].append({"id": item_id, "dedupe_key": dedupe, "message_id": message_id,
                 "binding": binding, "text": nudge_text(binding["channel"], binding["topic"], message_id),
-                "owner": True, "stale": stale, "selection": True, "status": "pending", "hold_reason": None,
+                "owner": owner, "stale": stale, "selection": True, "status": "pending", "hold_reason": None,
                 "created_at": float(now), "updated_at": float(now)})
             L.write_json(self.path, data)
         return True

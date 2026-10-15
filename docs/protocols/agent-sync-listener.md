@@ -296,6 +296,8 @@ The mention is the daemon's own, with the user id so a duplicate display name ca
 
 The second local wake type.  Same contract, same schema file, same validator, same posting path as `claude`;  a different runtime spawns it.  The model still gets no tools, still returns JSON, and the daemon still validates, posts and files.
 
+**Owner routing policy (2026-10-14).**  Every DM or explicit bot mention, from Jay or a peer, should be captured by the addressed bot's seat inbox and routed through Muse.  The routing runtime does not change the addressed seat's Zulip identity.  Peer-triggered chat selection may use bounded metadata only, requires `risk: low`, and cannot inspect transcript excerpts; private DMs may select only that seat's own chat.  This code path is implemented, but rollout is not complete:  the live Mac configuration currently enables Muse only for CLAUDE, leaves AG, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM in inbox-only mode, and the Coolify server seats remain inbox-only.  Keep each seat inbox as the durable receipt until its own Muse configuration and adapter are verified.  See [Zulip Message Routing And Wake Flow](zulip-wake-routing.md).
+
 ```
 cd ~/.agent-sync/<SEAT>/wake          # empty, mode 700, never a repo
 env -i HOME=$HOME USER=$USER LOGNAME=$USER LANG=en_US.UTF-8 TMPDIR=$TMPDIR \

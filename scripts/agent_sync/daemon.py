@@ -1893,7 +1893,7 @@ class Daemon:
     def chat_context(self, runner: SeatRunner, pending: W.Pending,
                      history: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         """Metadata-only context for a tool-less owner wake; never read transcript bodies here."""
-        if runner.cfg.wake != "muse" or not pending.owner_ids or pending.route_tagged:
+        if runner.cfg.wake != "muse" or not pending.trigger_ids or pending.route_tagged:
             return []
         try:
             if not hasattr(self, "_chat_catalog"):
@@ -1902,18 +1902,22 @@ class Daemon:
             # One leader walk, not one timeout per page.  A still-pending leader is an
             # unavailable catalog row, so this wake continues instead of stalling intake.
             rows = self._chat_catalog.discover(wait_grok=True, grok_timeout=CT.discovery_wait_budget())
-            # Rank only against actual owner trigger text, never a peer's embedded instructions.
-            owner_text = " ".join(str(m.get("content") or "") for m in history or []
-                                  if m.get("id") in pending.owner_ids).lower()
-            words = set(re.findall(r"[a-z0-9_-]{3,}", owner_text)) - {"the", "this", "chat", "please", "wake", "read"}
+            # Every direct message or explicit bot mention may wake Muse.  Its trigger is
+            # untrusted input; it may rank bounded metadata but never grants excerpt access.
+            trigger_text = " ".join(str(m.get("content") or "") for m in history or []
+                                    if m.get("id") in pending.trigger_ids).lower()
+            words = set(re.findall(r"[a-z0-9_-]{3,}", trigger_text)) - {"the", "this", "chat", "please", "wake", "read"}
             def relevance(row):
                 metadata = " ".join(str(row.get(k) or "") for k in
                                     ("id", "session_id", "seat", "platform", "cwd", "title")).lower()
-                exact = bool(owner_text and any(str(row.get(k) or "never-match") in owner_text
+                exact = bool(trigger_text and any(str(row.get(k) or "never-match") in trigger_text
                                                for k in ("id", "session_id")))
                 return (exact, sum(word in metadata for word in words),
                         bool((row.get("capabilities") or {}).get("wake")))
             rows = sorted(rows, key=relevance, reverse=True)[:24]
+            if not pending.owner_ids:
+                # Peer triggers see only destinations that advertise a verified wake path.
+                rows = [row for row in rows if (row.get("capabilities") or {}).get("wake") is True]
             context = []
             remaining = 24000
             for row in rows:
@@ -1955,8 +1959,10 @@ class Daemon:
         target_id = obj.get("chat_target")
         reason = None
         offered = next((row for row in context if row.get("id") == target_id), None)
-        if runner.cfg.wake != "muse" or not pending.owner_ids or pending.route_tagged:
-            reason = "chat selection requires an owner-triggered Muse wake"
+        if runner.cfg.wake != "muse" or not pending.trigger_ids or pending.route_tagged:
+            reason = "chat selection requires an addressed Muse wake"
+        elif not pending.owner_ids and obj.get("risk") != "low":
+            reason = "peer-triggered chat selection requires low risk"
         elif pending.type == "private" and offered and offered.get("seat") != runner.seat:
             reason = "private owner DM is not readable by a different seat bot"
         elif obj.get("risk") in ("high", "uncertain") or obj.get("route") is not None:
@@ -1989,7 +1995,7 @@ class Daemon:
         binding = {key: target[key] for key in ("platform", "host", "session_id", "cwd")}
         binding.update(channel=pending.channel or "direct message", topic=pending.topic or "message %s" % message_id)
         added = self.chat_queue(destination.seat).enqueue_target(binding, message_id, self.clock.time(),
-                                                               owner=True, stale=pending.stale)
+                                                               owner=bool(pending.owner_ids), stale=pending.stale)
         if not added:
             return {"status": "already_queued", "id": target_id, "seat": destination.seat}
         self.notifier.notify(runner.seat, "Chat Wake Queued", "Zulip reminder queued for the selected existing chat",
