@@ -1,7 +1,7 @@
 import { parse as parseGraphql } from "graphql";
 import { LINEAR_NAMED_TOOLS } from "../src/linear-named-specs.js";
 import { LINEAR_MCP_TOOLS } from "../src/linear-mcp-specs.js";
-import { ZULIP_PUBLIC_TOOLS } from "../src/zulip-tool-specs.js";
+import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS } from "../src/zulip-tool-specs.js";
 // One workerd integration test (spec 6, Worker suite).
 // Runs the bundled Worker in Miniflare (from the pinned wrangler) with fake
 // Access certificates, ChatGPT's and Grok's real CIMD documents and a fake
@@ -25,8 +25,11 @@ import { FakeZulip, REALM, STREAMS, OWNER_ID, zulipShapedKey } from "./fake-zuli
 import { FakeLinear, opOf } from "./fake-linear.mjs";
 
 const TOOLS = CONTRACT.tools;
-// The hosted server lists tools.json, followed by hosted-only recall, DM and Linear tools.
-const HOSTED_NAMES = ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name)];
+// The hosted server lists the first ten tools.json tools, hosted-only recall and Linear tools, then
+// the rest of tools.json and the listener tools (AFC-330).
+const HOSTED_NAMES = ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name),
+  // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only listener tools.
+  ...TOOLS.slice(10).map((t) => `zulip_${t.name}`), "listener_status", "listener_inbox", "listener_owner_queue", "listener_wakes", "listener_held_back"];
 const JET_KEY = zulipShapedKey(11);
 const CURSOR_KEY = zulipShapedKey(12);
 const CURSOR_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";
@@ -500,7 +503,7 @@ try {
     assert.equal(list.status, 200);
     const tools = list.json.result.tools;
     assert.deepEqual(tools.map((t) => t.name), HOSTED_NAMES);
-    for (const spec of ZULIP_PUBLIC_TOOLS) {
+    for (const spec of [...ZULIP_PUBLIC_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS]) {
       const served = tools.find((item) => item.name === spec.name);
       assert.ok(served, spec.name);
       assert.deepEqual(Object.fromEntries(Object.keys(spec).map((key) => [key, served[key]])), spec, spec.name);

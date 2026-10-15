@@ -147,6 +147,11 @@ class ListenerReadApiTests(Harness):
         status, body = self.signed("/listener/v1/CLAUDE/wakes", "state=dropped")
         self.assertEqual([w["wake_id"] for w in body["view"]["items"]], ["w2"])
 
+    def test_the_worker_signs_the_same_way(self) -> None:
+        # scripts/agent-sync-mcp/test/listener.test.mjs checks the same vector with WebCrypto.
+        self.assertEqual(API.sign("k" * 40, "/listener/v1/JET/inbox", "limit=5", "1790000000"),
+                         "b7b32d02d578e3550352539bf603995eded846f2b540d04931cf16a827c263a3")
+
     def test_refusals(self) -> None:
         self.assertEqual(self.signed("/listener/v1/CLAUDE/status", key="w" * 40)[0], 401)  # another key
         self.assertEqual(self.signed("/listener/v1/CLAUDE/status", ts=self.now - 400)[0], 401)  # stale

@@ -20,6 +20,25 @@ export const MAX_ATTEMPTS = 2;
 const OUTBOUND_TEXT_PATH = /^(?:messages|scheduled_messages)(?:\/\d+)?$/;
 const PATH_RE = /^[A-Za-z0-9_/-]{1,80}$/;
 
+// The only endpoints the hosted tools call, per method (AFC-330).  Anything else is refused before
+// any request, so no tool (and no bug in one) can reach an admin endpoint with a seat's key.
+export const ALLOWED_PATHS = Object.freeze({
+  GET: [/^users\/me$/, /^users$/, /^users\/me\/subscriptions$/, /^users\/me\/\d+\/topics$/, /^messages$/, /^messages\/\d+$/,
+    /^messages\/\d+\/history$/, /^streams$/, /^streams\/\d+$/, /^streams\/\d+\/members$/, /^users\/\d+\/presence$/,
+    /^user_groups$/, /^realm\/emoji$/, /^scheduled_messages$/, /^drafts$/],
+  POST: [/^messages$/, /^messages\/\d+\/reactions$/, /^messages\/flags$/, /^messages\/flags\/narrow$/, /^user_topics$/,
+    /^users\/me\/status$/, /^user_uploads$/, /^scheduled_messages$/, /^drafts$/, /^typing$/],
+  PATCH: [/^messages\/\d+$/, /^scheduled_messages\/\d+$/, /^drafts\/\d+$/],
+  DELETE: [/^messages\/\d+$/, /^messages\/\d+\/reactions$/, /^users\/me\/subscriptions$/, /^scheduled_messages\/\d+$/, /^drafts\/\d+$/],
+});
+const UPLOAD_NAME_RE = /^[A-Za-z0-9._ -]{1,100}$/;
+
+/** Is `method path` one the hosted tools may call? */
+export function pathAllowed(method, path) {
+  if (typeof path !== "string" || !PATH_RE.test(path) || path.includes("..")) return false;
+  return (ALLOWED_PATHS[method] ?? []).some((re) => re.test(path));
+}
+
 /** zulip.py encode_params:  strings as they are, booleans and numbers as text, the rest as JSON. */
 export function encodeParams(params) {
   const out = new URLSearchParams();
@@ -69,11 +88,27 @@ export class ZulipClient {
     return this.request("POST", path, params);
   }
 
+  patch(path, params) {
+    return this.request("PATCH", path, params);
+  }
+
+  delete(path, params) {
+    return this.request("DELETE", path, params);
+  }
+
+  /** POST user_uploads with one file part.  Returns Zulip's answer ({uri, url, filename}). */
+  upload(filename, bytes, contentType = "application/octet-stream") {
+    if (!UPLOAD_NAME_RE.test(filename) || !filename.replace(/[ .]/g, "")) throw new ApiError("bad upload name", { status: 0, code: "BAD_PATH" });
+    const form = new FormData();
+    form.append("filename", new Blob([bytes], { type: /^[A-Za-z0-9.+-]{1,60}\/[A-Za-z0-9.+-]{1,60}$/.test(contentType) ? contentType : "application/octet-stream" }), filename);
+    return this.request("POST", "user_uploads", null, { form });
+  }
+
   /** One API call.  Returns the parsed JSON on result "success";  throws ApiError or NetworkError. */
-  async request(method, path, params) {
-    if (!PATH_RE.test(path) || path.includes("..")) throw new ApiError("bad API path", { status: 0, code: "BAD_PATH" });
+  async request(method, path, params, { form = null } = {}) {
+    if (!pathAllowed(method, path)) throw new ApiError("bad API path", { status: 0, code: "BAD_PATH" });
     let sendParams = params ?? {};
-    if (method === "POST" && typeof sendParams.content === "string" && OUTBOUND_TEXT_PATH.test(path)) {
+    if ((method === "POST" || method === "PATCH") && typeof sendParams.content === "string" && OUTBOUND_TEXT_PATH.test(path)) {
       sendParams = { ...sendParams, content: sentenceGap(sendParams.content) };
     }
     const encoded = encodeParams(sendParams);
@@ -89,9 +124,10 @@ export class ZulipClient {
           headers: {
             Authorization: basicHeader(this.email, this.#key),
             "User-Agent": "agent-sync-mcp (hosted)",
-            ...(method === "GET" ? {} : { "Content-Type": "application/x-www-form-urlencoded" }),
+            // A multipart upload sets its own boundary header.
+            ...(method === "GET" || form ? {} : { "Content-Type": "application/x-www-form-urlencoded" }),
           },
-          ...(method === "GET" ? {} : { body: encoded }),
+          ...(method === "GET" ? {} : { body: form ?? encoded }),
         });
       } catch (error) {
         const timeout = error?.name === "TimeoutError" || error?.name === "AbortError";
