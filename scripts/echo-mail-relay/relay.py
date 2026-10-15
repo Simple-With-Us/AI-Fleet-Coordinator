@@ -179,6 +179,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:self.response(503,{'error':'unavailable'})
 
 def main():
+    try: __import__('os').remove('/data/capture.jsonl')
+    except OSError: pass
     os.umask(0o077)
     if os.environ.get('ECHO_LISTENER_HMAC_KEY') and os.environ.get('ECHO_LISTENER_HMAC_KEY') == os.environ.get('ECHO_ZULIP_WEBHOOK_TOKEN'):
         raise RuntimeError('Ingress credentials must differ')
