@@ -8,7 +8,7 @@ AFC-318 adds 175 named commands to the hosted Agent Sync MCP, alongside the exis
 - Get commands accept the resource ID.  Read results and write receipts are scrubbed, bounded and fenced as untrusted data.
 - Write commands require an explicit idempotency_key.  The same key must be reused for retries of the same intended change; uncertain outcomes are never automatically replayed.
 - Save commands create when id is omitted and update when id is supplied.  The input object follows the corresponding create/update type in linear_schema.
-- Optional selection chooses GraphQL response fields without allowing extra operations.  Use linear_schema to inspect available fields and input types.
+- Optional selection chooses GraphQL response fields without allowing extra operations.  Use linear_schema to inspect available fields and input types.  Selection syntax is checked locally; Linear validates whether selected fields exist on the response type and returns schema errors for invalid fields.
 - Existing app identity checks, tool scopes, budgets, write switch and fleet ownership-label guards apply to every wrapper.
 
 ## Uploads And Availability

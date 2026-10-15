@@ -46,8 +46,8 @@ export const LINEAR_WRITE_COMMANDS = Object.freeze([
   command("archive_project", "Archive Project", "projectArchive", { id: id(), trash: flag() }, "success entity { id }", "Archive a Linear project.  Set trash only when moving it to trash is intended.", true),
   command("unarchive_project", "Restore Project", "projectUnarchive", { id: id() }, "success entity { id }", "Restore an archived Linear project."),
 
-  command("create_issue_label", "Create Issue Label", "issueLabelCreate", { input: input("IssueLabelCreateInput"), replaceTeamLabels: flag() }, "success issueLabel { id name }", "Create a Linear issue label."),
-  command("update_issue_label", "Update Issue Label", "issueLabelUpdate", { id: id(), input: input("IssueLabelUpdateInput"), replaceTeamLabels: flag() }, "success issueLabel { id name }", "Update a Linear issue label."),
+  command("create_issue_label", "Create Issue Label", "issueLabelCreate", { input: input("IssueLabelCreateInput") }, "success issueLabel { id name }", "Create a Linear issue label."),
+  command("update_issue_label", "Update Issue Label", "issueLabelUpdate", { id: id(), input: input("IssueLabelUpdateInput") }, "success issueLabel { id name }", "Update a Linear issue label."),
   command("delete_issue_label", "Delete Issue Label", "issueLabelDelete", { id: id() }, "success", "Delete a Linear issue label.", true),
   command("retire_issue_label", "Retire Issue Label", "issueLabelRetire", { id: id() }, "success issueLabel { id name }", "Retire a Linear issue label.", true),
   command("restore_issue_label", "Restore Issue Label", "issueLabelRestore", { id: id() }, "success issueLabel { id name }", "Restore a retired Linear issue label."),
