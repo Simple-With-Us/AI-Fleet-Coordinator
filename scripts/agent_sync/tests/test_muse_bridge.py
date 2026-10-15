@@ -151,5 +151,25 @@ class BridgeDedupeTest(unittest.TestCase):
         self.assertNotEqual(echo, plain)
 
 
+class BridgeBinaryTest(unittest.TestCase):
+    def _bindir(self, *names: str) -> str:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        for name in names:
+            path = os.path.join(tmp.name, name)
+            with open(path, "w", encoding="utf-8"):
+                pass
+            os.chmod(path, 0o755)
+        return tmp.name
+
+    def test_prefers_newest_versioned_binary_over_shim(self) -> None:
+        bindir = self._bindir("muse", "muse-bin-1.4.7-R6101.1", "muse-bin-1.4.9-R6297.1")
+        self.assertEqual(MBM.resolve_bridge_muse(bindir),
+                         os.path.realpath(os.path.join(bindir, "muse-bin-1.4.9-R6297.1")))
+
+    def test_falls_back_without_versioned_binary(self) -> None:
+        self.assertIsNone(MBM.resolve_bridge_muse(self._bindir()))
+
+
 if __name__ == "__main__":
     raise SystemExit(unittest.main())

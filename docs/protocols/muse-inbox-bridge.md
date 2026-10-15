@@ -62,6 +62,49 @@ contract, or schema changes, the bridge holds all new events until a fresh canar
 ordinary CLAUDE pin remains independent.  Inbox rows and uncertain decisions stay durable for
 operator review; do not manually advance a gap cursor without reconciling the missing messages.
 
+The canary needs working headless Muse auth: the pinned `muse-bin-*` build must run
+non-interactively from a LaunchAgent context.  If `probe` reports `missing meta credentials`,
+refresh the Meta login (`muse login`) or provision `META_API_KEY` for the listener context, then
+re-run `probe` before `pin`.  The resolver prefers the newest versioned `muse-bin-*` build on the
+wake PATH so the pin always names a real build, never the `muse` launcher shim.
+
+## Runtime Sequence
+
+One addressed inbox row travels exactly one path.  Every arrow spans a
+durable write, so a restart resumes instead of redelivering.
+
+```text
+seat listener (Mac or server)          Mac bridge worker            server listener
+classifies DM/mention                  (muse-bridge-mac loop)       (native dispatch tick)
+writes seat-inbox row
+[muse_bridge] + wake_worthy
+        |                                    |                              |
+        |  export (<=8 rows/seat,            |                              |
+        |  6,000 chars, gap on               |                              |
+        |  rotation loss)                    |                              |
+        |----------------------------------->|                              |
+        |  Mac persists cursor +             |                              |
+        |  (source seat, msg ID)             |                              |
+        |  decision BEFORE delivery          |                              |
+        |                                    | one pinned tool-less         |
+        |                                    | Muse call: exact             |
+        |                                    | resource ID or hold          |
+        |                                    |                              |
+        |  submit(source seat,                |                              |
+        |  msg ID, seq, kind)                |                              |
+        |--------------------------------------------------------------->  |
+        |                                    |                  server reopens
+        |                                    |                  its own row,
+        |                                    |                  claims native
+        |                                    |                  durably, then
+        |                                    |                  SeatRunner +
+        |                                    |                  seat budget
+        |                                    |                  chat_selected/
+        |  Mac chat-nudge queue <-------------|  held receipts stay durable
+        |  (source-qualified                   for operator review
+        |  dedupe key)
+```
+
 ## Scope And Gaps
 
 Echo is the first server source.  An Echo DM reaches Muse, but today the catalog has no verified

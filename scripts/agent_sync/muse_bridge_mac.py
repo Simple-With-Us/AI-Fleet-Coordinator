@@ -38,6 +38,32 @@ _REMOTE_COMMAND = (
 )
 
 
+def resolve_bridge_muse(wake_path: str) -> str | None:
+    """The real versioned Muse binary for the bridge pin, never the launcher shim.
+
+    The bridge pin binds one versioned build so an upgrade holds new events
+    until a fresh canary is pinned.  Falls back to the ordinary resolver when
+    no versioned build is on the wake PATH.
+    """
+    candidates: list[str] = []
+    for directory in wake_path.split(os.pathsep):
+        if not directory or not os.path.isdir(directory):
+            continue
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        for name in names:
+            if not name.startswith("muse-bin-"):
+                continue
+            path = os.path.join(directory, name)
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                candidates.append(os.path.realpath(path))
+    if candidates:
+        return sorted(candidates)[-1]
+    return A.resolve_muse(None, wake_path)
+
+
 def fingerprint() -> str | None:
     """Separate contract pin: deploying this bridge never invalidates CLAUDE's live Muse pin."""
     try:
@@ -63,7 +89,7 @@ def pin_state(root: str, binary: str | None, model: str) -> tuple[bool, str]:
 
 def probe_pin(root: str, env: Mapping[str, str], home: str, wake_path: str) -> dict[str, Any]:
     """Operator-run positive canary for the bridge contract; never run during ordinary startup."""
-    binary = A.resolve_muse(None, wake_path)
+    binary = resolve_bridge_muse(wake_path)
     digest = fingerprint()
     if not binary or not digest:
         raise ValueError("bridge binary or contract unavailable")
@@ -87,7 +113,8 @@ def probe_pin(root: str, env: Mapping[str, str], home: str, wake_path: str) -> d
     obj, why = W.validate(result.parsed)
     if not result.ok or why or obj.get("action") != "none" or obj.get("chat_target") != native_id or \
             obj.get("risk") != "low" or result.models != [model]:
-        raise ValueError("bridge canary did not select its exact fixed resource")
+        raise ValueError("bridge canary did not select its exact fixed resource: %s" %
+                         (result.error or "unexpected selection"))
     candidate = {"muse": A.binary_pin(binary), "fingerprint": digest, "model": model,
                  "effort": A.MUSE_REASONING_EFFORT, "at": time.time()}
     L.write_json(os.path.join(L.listener_dir(root), CANDIDATE_NAME), candidate)
@@ -98,7 +125,7 @@ def pin_candidate(root: str, env: Mapping[str, str], home: str, wake_path: str) 
     """Pin only a fresh canary of this exact binary, model, effort, and bridge contract."""
     candidate_path = os.path.join(L.listener_dir(root), CANDIDATE_NAME)
     candidate = L.read_json(candidate_path)
-    binary = A.resolve_muse(None, wake_path)
+    binary = resolve_bridge_muse(wake_path)
     now = time.time()
     if (not binary or candidate.get("muse") != A.binary_pin(binary) or
             candidate.get("fingerprint") != fingerprint() or
@@ -337,7 +364,7 @@ class MacBridge:
         if cfg.instance != "mac" or not cfg.muse_bridge_enabled:
             return
         model = C.MUSE_DEFAULT_MODEL
-        binary = A.resolve_muse(None, self.daemon.wake_path)
+        binary = resolve_bridge_muse(self.daemon.wake_path)
         pinned, why = pin_state(self.daemon.root, binary, model)
         if not pinned:
             if getattr(self, "_last_pin_reason", None) != why:
@@ -384,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "pin":
         result = pin_candidate(root, env, home, wake_path)
     else:
-        result = dict(zip(("pinned", "reason"), pin_state(root, A.resolve_muse(None, wake_path),
+        result = dict(zip(("pinned", "reason"), pin_state(root, resolve_bridge_muse(wake_path),
                                                           C.MUSE_DEFAULT_MODEL)))
     sys.stdout.write(json.dumps(result, sort_keys=True) + "\n")
     return 0
