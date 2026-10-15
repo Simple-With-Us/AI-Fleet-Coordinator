@@ -47,8 +47,11 @@ export function isCursorExactPair(clientId, redirectUri, seat) {
   return seat === "CURSOR" && clientId === CURSOR_CIMD_CLIENT && redirectUri === CURSOR_CLOUD_REDIRECT;
 }
 function cursorPairMismatch(clientId, redirectUri, seat) {
-  return clientId === CURSOR_CIMD_CLIENT
-    && !isCursorExactPair(clientId, redirectUri, seat);
+  return (clientId === CURSOR_CIMD_CLIENT
+    && !isCursorExactPair(clientId, redirectUri, seat))
+    || (redirectUri === CURSOR_CLOUD_REDIRECT
+      && isUrlShapedClientId(clientId)
+      && !isCursorExactPair(clientId, redirectUri, seat));
 }
 
 
