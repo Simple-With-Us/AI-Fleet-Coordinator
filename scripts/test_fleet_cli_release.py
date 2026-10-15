@@ -51,6 +51,19 @@ class ReleaseTests(unittest.TestCase):
                      "scripts/agent_sync/.env", "scripts/agent_sync/cache.sqlite"]:
             self.assertFalse(release.allowed_path(path), path)
 
+    def test_board_ships_with_its_agent_sync_catalog(self):
+        # `board commands`, `board run` and `board mcp` read these beside board;  a release without them
+        # would leave those verbs dead on the host.
+        root = Path(__file__).resolve().parent.parent
+        for name in ("named-commands.json", "official-mcp-tools.json", "public-inputs.json"):
+            path = "scripts/linear-board/catalog/" + name
+            self.assertTrue(release.allowed_path(path), path)
+            self.assertIn(path, release.REQUIRED)
+            self.assertLessEqual((root / path).stat().st_size, release.MAX_FILE_BYTES, path)
+        for path in ("scripts/linear-board/catalog/other.json", "scripts/linear-board/testdata/agent-sync-fixtures.json",
+                     "scripts/linear-board/catalog/../board"):
+            self.assertFalse(release.allowed_path(path), path)
+
     def test_rejects_digest_and_path_before_writing(self):
         self.bundle["files"]["../../escape"] = next(iter(self.bundle["files"].values()))
         with self.assertRaisesRegex(release.Refused, "refused_path"):

@@ -1,0 +1,827 @@
+{
+  "count": 11,
+  "generated_by": "scripts/agent-sync-mcp/scripts/export-linear-catalog.mjs",
+  "local_fields": [
+    "idempotency_key",
+    "max_chars",
+    "session"
+  ],
+  "prefix": "linear_",
+  "protocol_version": "2025-03-26",
+  "regenerate": "cd scripts/agent-sync-mcp && node scripts/export-linear-catalog.mjs",
+  "sources": [
+    "src/linear-mcp-specs.js",
+    "src/linear-mcp-client.js"
+  ],
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Exact lookup for a Linear diff. Use with review URLs, GitHub PR URLs, Linear full identifiers, UUIDs, or slugs.  Uses this seat's Linear app and existing API budgets.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "maxProperties": 100,
+        "properties": {
+          "max_chars": {
+            "default": 24000,
+            "maximum": 64000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          "urlOrId": {
+            "description": "Linear review URL, diff slug, pull request ID, Linear full identifier, or GitHub PR URL",
+            "maxLength": 24000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "urlOrId"
+        ],
+        "type": "object"
+      },
+      "kind": "read",
+      "name": "linear_get_diff",
+      "title": "Linear Get Diff",
+      "upstream_name": "get_diff"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List Linear diff pull requests visible to the authenticated user  Uses this seat's Linear app and existing API budgets.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "maxProperties": 100,
+        "properties": {
+          "author": {
+            "description": "Filter by author ID, name, email, or \"me\"",
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Omit for the first page. To continue, pass the previous response's cursor when hasNextPage is true",
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "description": "Maximum number of results to return per page",
+            "maximum": 250,
+            "type": "number"
+          },
+          "max_chars": {
+            "default": 24000,
+            "maximum": 64000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          "orderBy": {
+            "default": "updatedAt",
+            "description": "Timestamp to sort results by: creation time or last update time",
+            "enum": [
+              "createdAt",
+              "updatedAt"
+            ],
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "owner": {
+            "description": "Filter returned diffs by repository owner",
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "query": {
+            "description": "Broad search by title, branch, PR number, or bare slug",
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "repo": {
+            "description": "Filter returned diffs by repository name",
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "reviewState": {
+            "description": "Reviewer state; requires reviewer and defaults to pending when reviewer is set",
+            "enum": [
+              "pending",
+              "approved",
+              "changesRequested",
+              "commented",
+              "dismissed"
+            ],
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "reviewer": {
+            "description": "Filter by reviewer ID, name, email, or \"me\"",
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "status": {
+            "description": "Filter returned diffs by pull request status",
+            "maxLength": 24000,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "kind": "read",
+      "name": "linear_list_diffs",
+      "title": "Linear List Diffs",
+      "upstream_name": "list_diffs"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Exact lookup for diff threads and the authenticated user's drafts. Use with review URLs, GitHub PR URLs, Linear full identifiers, UUIDs, or slugs.  Uses this seat's Linear app and existing API budgets.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "maxProperties": 100,
+        "properties": {
+          "max_chars": {
+            "default": 24000,
+            "maximum": 64000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          "orderBy": {
+            "default": "updatedAt",
+            "description": "Sort: createdAt | updatedAt",
+            "enum": [
+              "createdAt",
+              "updatedAt"
+            ],
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "resolved": {
+            "description": "Filter returned threads by resolved state",
+            "type": "boolean"
+          },
+          "threadId": {
+            "description": "Optional Linear comment UUID of any comment in the thread (not its `externalThreadId`); a reply's UUID resolves to its thread root",
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "urlOrId": {
+            "description": "Linear review URL, diff slug, pull request ID, Linear full identifier, or GitHub PR URL",
+            "maxLength": 24000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "urlOrId"
+        ],
+        "type": "object"
+      },
+      "kind": "read",
+      "name": "linear_get_diff_threads",
+      "title": "Linear Get Diff Threads",
+      "upstream_name": "get_diff_threads"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Create, reply to, or edit a comment or persisted draft on a Linear diff. Set draft to true to save without submitting. Provide draftId to edit or submit a persisted draft, and commentId only to edit a submitted comment. Submitting an inline draft reuses its saved anchor; submitting a reply draft requires parentId again.  Uses this seat's Linear app and existing API budgets.  Requires an idempotency key; uncertain outcomes are never automatically replayed.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "maxProperties": 100,
+        "properties": {
+          "anchor": {
+            "additionalProperties": {},
+            "description": "Optional comment anchor copied from a diff thread or built for a file or diff hunk",
+            "maxProperties": 100,
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "anchorContent": {
+            "description": "Exact source text of the anchor's end line; stored with an inline draft so it can be re-anchored after the diff receives new revisions",
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "body": {
+            "description": "Content as Markdown. Do not escape the string — use literal newlines and special characters, not escape sequences",
+            "maxLength": 24000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "commentId": {
+            "description": "Existing comment ID to edit",
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "draft": {
+            "default": false,
+            "description": "Save as a private persisted draft without submitting",
+            "type": "boolean"
+          },
+          "draftId": {
+            "description": "Existing persisted draft ID to edit or submit",
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "type": "string"
+          },
+          "max_chars": {
+            "default": 24000,
+            "maximum": 64000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          "parentId": {
+            "description": "Top-level comment ID to reply to; also required when submitting a persisted reply draft",
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "session": {
+            "maxLength": 80,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "type": "string"
+          },
+          "urlOrId": {
+            "description": "Linear review URL, diff slug, pull request ID, Linear full identifier, or GitHub PR URL",
+            "maxLength": 24000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "body",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "kind": "write",
+      "name": "linear_save_diff_comment",
+      "title": "Linear Save Diff Comment",
+      "upstream_name": "save_diff_comment"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Resolve or reopen a top-level comment thread on a Linear diff  Uses this seat's Linear app and existing API budgets.  Requires an idempotency key; uncertain outcomes are never automatically replayed.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "maxProperties": 100,
+        "properties": {
+          "idempotency_key": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "type": "string"
+          },
+          "max_chars": {
+            "default": 24000,
+            "maximum": 64000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          "resolved": {
+            "default": true,
+            "description": "True to resolve the thread; false to reopen it",
+            "type": "boolean"
+          },
+          "session": {
+            "maxLength": 80,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "type": "string"
+          },
+          "threadId": {
+            "description": "Top-level diff thread/comment ID",
+            "maxLength": 24000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "kind": "write",
+      "name": "linear_resolve_diff_thread",
+      "title": "Linear Resolve Diff Thread",
+      "upstream_name": "resolve_diff_thread"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Delete a comment or persisted draft from a Linear diff  Uses this seat's Linear app and existing API budgets.  Requires an idempotency key; uncertain outcomes are never automatically replayed.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "maxProperties": 100,
+        "properties": {
+          "commentId": {
+            "description": "Submitted diff comment ID to delete",
+            "maxLength": 24000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "draftId": {
+            "description": "Persisted diff comment draft ID to delete",
+            "maxLength": 24000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "type": "string"
+          },
+          "max_chars": {
+            "default": 24000,
+            "maximum": 64000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          "session": {
+            "maxLength": 80,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "kind": "write",
+      "name": "linear_delete_diff_comment",
+      "title": "Linear Delete Diff Comment",
+      "upstream_name": "delete_diff_comment"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Approve a Linear diff, request changes, or submit a review comment  Uses this seat's Linear app and existing API budgets.  Requires an idempotency key; uncertain outcomes are never automatically replayed.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "maxProperties": 100,
+        "properties": {
+          "body": {
+            "description": "Content as Markdown. Do not escape the string — use literal newlines and special characters, not escape sequences. Required when requesting changes or commenting",
+            "maxLength": 24000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "decision": {
+            "description": "Review decision: approved, changesRequested, or commented",
+            "enum": [
+              "approved",
+              "changesRequested",
+              "commented"
+            ],
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "type": "string"
+          },
+          "max_chars": {
+            "default": 24000,
+            "maximum": 64000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          "session": {
+            "maxLength": 80,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "type": "string"
+          },
+          "urlOrId": {
+            "description": "Linear review URL, diff slug, pull request ID, Linear full identifier, or GitHub PR URL",
+            "maxLength": 24000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "urlOrId",
+          "decision",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "kind": "write",
+      "name": "linear_submit_diff_review",
+      "title": "Linear Submit Diff Review",
+      "upstream_name": "submit_diff_review"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Update a Linear diff's title, description, reviewer requests, issue links, or status. Provide at least one update. Combined updates can partially succeed; inspect the result before retrying. Use merge_diff to merge and submit_diff_review to approve or request changes.  Uses this seat's Linear app and existing API budgets.  Requires an idempotency key; uncertain outcomes are never automatically replayed.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "maxProperties": 100,
+        "properties": {
+          "addedIssueLinks": {
+            "description": "Add issue links or change the relationship of an existing link",
+            "items": {
+              "additionalProperties": false,
+              "maxProperties": 100,
+              "properties": {
+                "issue": {
+                  "description": "Linear issue identifier or UUID",
+                  "maxLength": 24000,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": {
+                  "description": "Relationship: closes, contributes, links, or reopens",
+                  "enum": [
+                    "closes",
+                    "contributes",
+                    "links",
+                    "reopens"
+                  ],
+                  "maxLength": 24000,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "issue",
+                "type"
+              ],
+              "type": "object"
+            },
+            "maxItems": 25,
+            "minItems": 1,
+            "type": "array"
+          },
+          "addedReviewRequests": {
+            "description": "Request or re-request reviews; existing pending requests are unchanged",
+            "items": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "maxProperties": 100,
+                  "properties": {
+                    "user": {
+                      "description": "Workspace user ID, name, email, or \"me\"",
+                      "maxLength": 24000,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "user"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "maxProperties": 100,
+                  "properties": {
+                    "externalUserId": {
+                      "description": "External user ID from get_diff reviewer metadata",
+                      "format": "uuid",
+                      "maxLength": 24000,
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "externalUserId"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "maxProperties": 100,
+                  "properties": {
+                    "githubTeamId": {
+                      "description": "GitHub team ID from get_diff reviewer metadata",
+                      "format": "uuid",
+                      "maxLength": 24000,
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "githubTeamId"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "maxItems": 25,
+            "minItems": 1,
+            "type": "array"
+          },
+          "description": {
+            "description": "New description as Markdown; an empty string clears it",
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "type": "string"
+          },
+          "max_chars": {
+            "default": 24000,
+            "maximum": 64000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          "removedIssueLinks": {
+            "description": "Linear issue identifiers or UUIDs to unlink",
+            "items": {
+              "maxLength": 24000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 25,
+            "minItems": 1,
+            "type": "array"
+          },
+          "removedReviewRequests": {
+            "description": "Withdraw pending review requests; submitted reviews are preserved",
+            "items": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "maxProperties": 100,
+                  "properties": {
+                    "user": {
+                      "description": "Workspace user ID, name, email, or \"me\"",
+                      "maxLength": 24000,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "user"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "maxProperties": 100,
+                  "properties": {
+                    "externalUserId": {
+                      "description": "External user ID from get_diff reviewer metadata",
+                      "format": "uuid",
+                      "maxLength": 24000,
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "externalUserId"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "maxProperties": 100,
+                  "properties": {
+                    "githubTeamId": {
+                      "description": "GitHub team ID from get_diff reviewer metadata",
+                      "format": "uuid",
+                      "maxLength": 24000,
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "githubTeamId"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "maxItems": 25,
+            "minItems": 1,
+            "type": "array"
+          },
+          "session": {
+            "maxLength": 80,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "type": "string"
+          },
+          "statusAction": {
+            "description": "Status transition to perform after metadata is updated",
+            "enum": [
+              "markReadyForReview",
+              "convertToDraft",
+              "close",
+              "reopen"
+            ],
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "title": {
+            "description": "New diff title",
+            "maxLength": 24000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "urlOrId": {
+            "description": "Linear review URL, diff slug, pull request ID, Linear full identifier, or GitHub PR URL",
+            "maxLength": 24000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "urlOrId",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "kind": "write",
+      "name": "linear_update_diff",
+      "title": "Linear Update Diff",
+      "upstream_name": "update_diff"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Merge a Linear diff or add it to the repository's merge queue  Uses this seat's Linear app and existing API budgets.  Requires an idempotency key; uncertain outcomes are never automatically replayed.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "maxProperties": 100,
+        "properties": {
+          "idempotency_key": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "type": "string"
+          },
+          "max_chars": {
+            "default": 24000,
+            "maximum": 64000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          "mergeMethod": {
+            "description": "Merge method; omit to use the repository default",
+            "enum": [
+              "MERGE",
+              "REBASE",
+              "SQUASH"
+            ],
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "session": {
+            "maxLength": 80,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "type": "string"
+          },
+          "urlOrId": {
+            "description": "Linear review URL, diff slug, pull request ID, Linear full identifier, or GitHub PR URL",
+            "maxLength": 24000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "urlOrId",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "kind": "write",
+      "name": "linear_merge_diff",
+      "title": "Linear Merge Diff",
+      "upstream_name": "merge_diff"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Extract and fetch images from markdown content. Use this to view screenshots, diagrams, or other images embedded in Linear issues, comments, or documents. Pass the markdown content (e.g., issue description) and receive the images as viewable data.  Uses this seat's Linear app and existing API budgets.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "maxProperties": 100,
+        "properties": {
+          "markdown": {
+            "description": "Markdown content containing image references (e.g., issue description, comment body)",
+            "maxLength": 24000,
+            "type": "string"
+          },
+          "max_chars": {
+            "default": 24000,
+            "maximum": 64000,
+            "minimum": 1000,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "markdown"
+        ],
+        "type": "object"
+      },
+      "kind": "read",
+      "name": "linear_extract_images",
+      "title": "Linear Extract Images",
+      "upstream_name": "extract_images"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Search Linear's product documentation for feature and usage guidance. Returns up to five results with titles, URLs, and content snippets per page.  Uses this seat's Linear app and existing API budgets.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "maxProperties": 100,
+        "properties": {
+          "max_chars": {
+            "default": 24000,
+            "maximum": 64000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          "page": {
+            "default": 0,
+            "description": "Zero-based page number. Increment by one to fetch the next page for the same query",
+            "type": "number"
+          },
+          "query": {
+            "description": "Feature name, topic, or question to search for in Linear's product documentation",
+            "maxLength": 24000,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "kind": "read",
+      "name": "linear_search_documentation",
+      "title": "Linear Search Documentation",
+      "upstream_name": "search_documentation"
+    }
+  ],
+  "url": "https://mcp.linear.app/mcp"
+}

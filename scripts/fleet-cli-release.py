@@ -25,14 +25,19 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_FILES = 128
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
+# The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
+# (exported from scripts/agent-sync-mcp by scripts/export-linear-catalog.mjs).
+LINEAR_CATALOG = ("named-commands.json", "official-mcp-tools.json", "public-inputs.json")
 EXACT = frozenset({
     "scripts/agent-sync", "scripts/linear-board/board", "scripts/linear-board/board-ids.txt",
     "fleet-apps.json", "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
     "scripts/agent_sync/mcp/tools.json", "scripts/agent_sync/mcp/fixtures.jsonl",
     "scripts/agent_sync/wake/wake-schema.json",
+    *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
 })
 REQUIRED = frozenset({
     "scripts/agent-sync", "scripts/linear-board/board", "fleet-apps.json",
+    *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
     "scripts/agent_sync/__init__.py", "scripts/agent_sync/cli.py",
     "scripts/agent_sync/mcp/stdio.py", "scripts/agent_sync/mcp/tools.json",
     "scripts/fleet-cli-release.py",
