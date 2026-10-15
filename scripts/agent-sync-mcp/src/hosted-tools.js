@@ -1353,6 +1353,7 @@ export class HostedTools {
 
   async tool_linear_claim(args, audit) {
     this.requireLinearWrites();
+    this.scanLinearText(args.comment?.trim() ? `CLAIMED\n\n${args.comment.trim()}` : "CLAIMED", args.session, { field: "comment" });
     const issue = await this.linearIssue(args.id);
     const seat = seatTagForSeat(this.seat);
     const keys = linearLabelKeys(issue);
@@ -1383,7 +1384,6 @@ export class HostedTools {
       }
     }
     const state = await this.linearState(workspace, issue.team?.id ?? null, "in_progress");
-    this.scanLinearText(args.comment?.trim() ? `CLAIMED\n\n${args.comment.trim()}` : "CLAIMED", args.session, { field: "comment" });
     const body = this.linearBody(`CLAIMED${args.comment?.trim() ? `\n\n${args.comment.trim()}` : ""}`, args.session);
     audit.body_len = [...body].length;
     const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, body]);

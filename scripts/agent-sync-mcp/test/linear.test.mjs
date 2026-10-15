@@ -520,6 +520,14 @@ test("mapLinearError surfaces an actionable message for App user not valid Graph
   assert.doesNotMatch(tool.message, /App user not valid.*App user not valid/);
 });
 
+test("a claim comment that holds a Linear key is refused before any Linear request", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-claim-secret", identifier: "AFC-323" });
+  const error = toolError(await tools.call("linear_claim", { id: "AFC-323", comment: `lin_api_${"d".repeat(20)}` }), "refused_secret");
+  assert.match(error.message, /comment/);
+  assert.equal(fake.requests.length, 0);
+});
+
 test("a percent-encoded secret inside a profile URL is refused after mention neutralization", async () => {
   const { tools, fake } = harness();
   fake.addIssue({ id: "issue-secret-profile", identifier: "AFC-322" });
