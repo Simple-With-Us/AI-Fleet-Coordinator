@@ -1,8 +1,12 @@
+import { parse as parseGraphql } from "graphql";
+import { LINEAR_NAMED_TOOLS } from "../src/linear-named-specs.js";
+import { LINEAR_MCP_TOOLS } from "../src/linear-mcp-specs.js";
+import { ZULIP_PUBLIC_TOOLS } from "../src/zulip-tool-specs.js";
 // One workerd integration test (spec 6, Worker suite).
 // Runs the bundled Worker in Miniflare (from the pinned wrangler) with fake
 // Access certificates, ChatGPT's and Grok's real CIMD documents and a fake
 // Zulip (test/fake-zulip.mjs) served by a mocked outbound fetch, then walks
-// the OAuth flow and the seven tools, ending with a post as GROK-WEB.
+// the OAuth flow and hosted tools, ending with a post as GROK-WEB.
 //
 //   npm ci --ignore-scripts && npm run test:workerd
 //
@@ -18,10 +22,11 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import CONTRACT from "../../agent_sync/mcp/tools.json" with { type: "json" };
 import { ROOT, wranglerConfig, testEnv, browserPostOrigin, CHATGPT_CLIENT, CHATGPT_REDIRECT, RESOURCE } from "./helpers.mjs";
 import { FakeZulip, REALM, STREAMS, OWNER_ID, zulipShapedKey } from "./fake-zulip.mjs";
+import { FakeLinear, opOf } from "./fake-linear.mjs";
 
 const TOOLS = CONTRACT.tools;
-// The hosted server lists tools.json, then the hosted-only recall tools (src/recall.js), then the DM tools (src/dm.js).
-const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status"];
+// The hosted server lists tools.json, followed by hosted-only recall, DM and Linear tools.
+const HOSTED_NAMES = ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name)];
 const JET_KEY = zulipShapedKey(11);
 const CURSOR_KEY = zulipShapedKey(12);
 const CURSOR_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";
@@ -42,6 +47,23 @@ const zulip = new FakeZulip({ bots: [
   { email: "cursor-bot@simplewithus.zulipchat.com", full_name: "Cursor", key: CURSOR_KEY },
   { email: "claude-bot@simplewithus.zulipchat.com", full_name: "Claude", key: CLAUDE_KEY },
 ] });
+const linear = new FakeLinear();
+const linearGraphqlResponse = linear.graphqlResponse.bind(linear);
+linear.graphqlResponse = (entry) => {
+  const op = opOf(entry.body?.query);
+  if (op?.name === "AgentSyncIntegrationQuery") {
+    return linear.json(200, { data: { viewer: { id: "grok-web-viewer", name: "Grok Web" } } });
+  }
+  if (op?.name === "AgentSyncIntegrationMutation") {
+    return linear.json(200, { data: { projectUpdate: { success: true, project: { id: "project-1", name: "Fleet integration fixture", description: entry.body?.variables?.input?.description ?? "" } } } });
+  }
+  if (op?.name === "AgentSyncNamed") {
+    const root = parseGraphql(entry.body.query).definitions[0].selectionSet.selections[0].name.value;
+    if (root === "projects") return linear.json(200, { data: { projects: { nodes: [{ id: "project-named", name: "Named API fixture" }], pageInfo: { hasNextPage: false, endCursor: null } } } });
+    if (root === "projectCreate") return linear.json(200, { data: { projectCreate: { success: true, project: { id: "project-named", name: entry.body.variables.input.name } } } });
+  }
+  return linearGraphqlResponse(entry);
+};
 
 const HOST = "https://agent-sync.jays.services";
 const TEAM = "silent-frost-37e0.cloudflareaccess.com";
@@ -130,6 +152,7 @@ async function outboundFetch(request) {
   }
   if (request.url === GROK_CLIENT) return Response.json(GROK_CIMD);
   if (request.url === CURSOR_CIMD_CLIENT) return Response.json(CURSOR_CIMD);
+  if (request.url.startsWith("https://api.linear.app/")) return linear.fetch(request);
   if (request.url.startsWith(`${REALM}/`)) return zulip.fetch(request);
   if (request.url.startsWith(CALLBACK)) {
     const raw = await request.text();
@@ -171,7 +194,7 @@ function startWorker(upstream, bindingOverrides = {}) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET, ...bindingOverrides }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
         outboundService: outboundFetch,
       },
     ],
@@ -417,7 +440,7 @@ try {
     assert.equal(spaced.status, 401);
     assert.deepEqual(outbound.filter((u) => u.includes("evil.example")), [], "no document fetch for any trick");
     const admin = await (await browser("/admin")).text();
-    const [authorizePart, tokenPart] = admin.split("Refused Token Requests");
+    const [authorizePart, tokenPart] = admin.split("<h2>Refused Authorize Requests</h2>")[1].split("Refused Token Requests");
     assert.ok(tokenPart.includes("authorization_not_basic") && tokenPart.includes("cimd_client_not_allowlisted"), "token refusals are in the counted table");
     assert.ok(!authorizePart.includes("authorization_not_basic"), "and not in the authorize log");
   });
@@ -477,17 +500,13 @@ try {
     assert.equal(list.status, 200);
     const tools = list.json.result.tools;
     assert.deepEqual(tools.map((t) => t.name), HOSTED_NAMES);
-    for (const t of TOOLS) {
-      // Era fields aside, every tool is exactly the stdio server's contract, except that the
-      // hosted inbox says it lists DMs (spec 1.2) where the stdio one says they are left out.
-      const served = Object.fromEntries(Object.keys(t).map((k) => [k, tools.find((x) => x.name === t.name)[k]]));
-      if (t.name === "inbox") {
-        assert.match(served.description, /direct messages sent to it/);
-        assert.deepEqual({ ...served, description: null }, { ...t, description: null });
-      } else assert.deepEqual(served, t, t.name);
+    for (const spec of ZULIP_PUBLIC_TOOLS) {
+      const served = tools.find((item) => item.name === spec.name);
+      assert.ok(served, spec.name);
+      assert.deepEqual(Object.fromEntries(Object.keys(spec).map((key) => [key, served[key]])), spec, spec.name);
     }
-    for (const name of ["dm_list", "dm_read", "dm_send"]) assert.ok(tools.find((x) => x.name === name).outputSchema, name);
-    assert.match(init.json.result.instructions, /Direct messages \(dm_list, dm_read, dm_send/);
+    for (const name of ["zulip_dm_list", "zulip_dm_read", "zulip_dm_send"]) assert.ok(tools.find((item) => item.name === name).outputSchema, name);
+    assert.match(init.json.result.instructions, /Direct messages \(zulip_dm_list, zulip_dm_read, zulip_dm_send/);
     const who = await call(tokens.access_token, "whoami");
     assert.equal(who.json.result.structuredContent.seat, "JET");
     assert.equal(who.json.result.structuredContent.transport, "hosted");
@@ -927,6 +946,56 @@ try {
     assert.match(read.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
     const off = await call(t.body.access_token, "post", { channel: "general", topic: "t", text: "x" });
     assert.equal(off.json.result._meta["agent-sync/error"].code, "channel_not_allowed");
+
+    await step("hosted Linear query and mutation use GROK-WEB credentials, with a durable idempotent replay", async () => {
+      linear.requests.length = 0;
+      const queried = await call(t.body.access_token, "linear_query", {
+        query: "query AgentSyncIntegrationQuery { viewer { id name } }",
+        variables: {},
+      });
+      assert.equal(queried.status, 200, JSON.stringify(queried.json));
+      assert.equal(queried.json.result.isError, undefined);
+      assert.match(queried.json.result.content[0].text, /BEGIN_UNTRUSTED_LINEAR nonce=[0-9a-f]{16}/);
+      assert.match(queried.json.result.content[0].text, /grok-web-viewer/);
+      assert.equal(linear.calls().length, 1);
+      assert.match(linear.calls()[0].authorization, /^Bearer fake-linear-token-/);
+
+      const mutationArgs = {
+        mutation: "mutation AgentSyncIntegrationMutation($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { success project { id name description } } }",
+        variables: { id: "project-1", input: { description: "Updated through hosted Agent Sync." } },
+        idempotency_key: "workerd-linear-project-update-1",
+      };
+      const first = await call(t.body.access_token, "linear_mutation", mutationArgs);
+      assert.equal(first.status, 200, JSON.stringify(first.json));
+      assert.equal(first.json.result.isError, undefined);
+      assert.match(first.json.result.content[0].text, /BEGIN_UNTRUSTED_LINEAR nonce=[0-9a-f]{16}/);
+      assert.equal(linear.mutations().length, 1);
+      const sent = linear.mutations()[0];
+      assert.equal(sent.authorization, linear.calls()[0].authorization);
+      assert.match(sent.body.variables.input.description, /^\[GROK-WEB\]/);
+
+      const replay = await call(t.body.access_token, "linear_mutation", mutationArgs);
+      assert.equal(replay.status, 200, JSON.stringify(replay.json));
+      assert.equal(replay.json.result.isError, undefined);
+      assert.match(replay.json.result.content[0].text, /Previously completed mutation; not repeated\./);
+      assert.equal(linear.mutations().length, 1, "the same idempotency key must not send a second mutation through the Worker/DO path");
+    });
+
+    await step("named Linear commands share the authenticated API path and durable replay guard", async () => {
+      const listed = await call(t.body.access_token, "linear_list_projects", { first: 2 });
+      assert.equal(listed.json.result.isError, undefined, JSON.stringify(listed.json));
+      assert.match(listed.json.result.content[0].text, /Named API fixture/);
+      const before = linear.mutations().length;
+      const args = { input: { name: "Named API fixture", description: "Created using a named command." }, idempotency_key: "workerd-named-project-create" };
+      const created = await call(t.body.access_token, "linear_save_project", args);
+      assert.equal(created.json.result.isError, undefined, JSON.stringify(created.json));
+      assert.equal(linear.mutations().length, before + 1);
+      assert.match(linear.mutations().at(-1).body.variables.input.description, /^\[GROK-WEB\]/);
+      const replay = await call(t.body.access_token, "linear_save_project", args);
+      assert.equal(replay.json.result.isError, undefined);
+      assert.equal(linear.mutations().length, before + 1);
+    });
+
     // Direct messages through the Worker:  send as Grok's own bot, read the conversation back, see Jay's answer in inbox.
     const dmSent = await call(t.body.access_token, "dm_send", { user_ids: [OWNER_ID], text: "Direct note from Grok.  Please read." });
     assert.equal(dmSent.status, 200, JSON.stringify(dmSent.json));
@@ -1187,7 +1256,7 @@ try {
     const jetBefore = await jetGate.getState();
     assert.equal((await adminAction("create_manual_client", { seat: "CURSOR" })).status, 303);
     const admin = await (await browser("/admin")).text();
-    const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Cursor Cloud \(manual form, CURSOR\)<\/td><td>CURSOR<\/td>/)[1];
+    const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Cursor Cloud \(manual form, CURSOR\)<\/td><td>Cursor &#38; Grok Bots<\/td>/)[1];
     assert.equal((await adminAction("arm", { seat: "CURSOR" })).status, 303);
     const c = pkce();
     const who = { clientId, redirect: CURSOR_REDIRECT };
@@ -1324,6 +1393,21 @@ try {
       assert.match(result._meta["agent-sync/error"].message, /No Zulip key is installed for CLAUDE/);
     }
     assert.equal(zulip.requests.length, before, "neither the legacy alias nor JET/CURSOR keys may supply CLAUDE egress");
+  });
+
+  await step("admin status displays retained tool errors and pre-tool refusals without credentials", async () => {
+    const html = await (await browser("/admin")).text();
+    assert.match(html, /Status Overview/);
+    assert.match(html, /Recent Errors And Refusals/);
+    assert.match(html, /No Zulip key is installed for CLAUDE/);
+    assert.match(html, /Cause:/);
+    assert.match(html, /Remedy:/);
+    assert.ok(!html.includes(CLAUDE_KEY) && !html.includes(JET_KEY) && !html.includes(CURSOR_KEY));
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE");
+    const errors = await ns.get(ns.idFromName("CLAUDE")).errorTail(10);
+    assert.equal(errors.length, 2);
+    assert.equal(errors[0].error_code, "not_authorized");
+    assert.match(errors[0].error_message, /No Zulip key/);
   });
 
   console.log(`\n${passed} passed`);

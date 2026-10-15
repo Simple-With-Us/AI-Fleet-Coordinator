@@ -26,6 +26,7 @@ from session_disk import (  # noqa: E402
     poll_after_inject,
     poll_until_idle,
     prefix_prompt,
+    prompt_inject_receipt,
     turn_state,
 )
 
@@ -144,6 +145,16 @@ def cmd_prompt(args):
         argv.append("--wait")
     data, code = run_json(argv, timeout=float(args.timeout) + 20)
     data = dict(data or {})
+    if not data.get("ok") and data.get("unknown") and prompt_inject_receipt(
+            args.session_id, text, before_started):
+        data = {
+            "ok": True,
+            "queued": True,
+            "sessionId": args.session_id,
+            "cwd": args.cwd,
+            "text": "",
+            "receipt": "disk",
+        }
     data["turnState"] = st.get("turnState")
     data["from"] = args.from_name or os.environ.get("AGENT_TAG") or os.environ.get("AGENT_SEAT") or "remote"
     if args.await_reply and data.get("ok"):

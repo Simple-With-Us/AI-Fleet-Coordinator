@@ -59,9 +59,10 @@ import { verifyAccessJwt } from "./access.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy } from "./pages.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
+import { IdentityRouter, loadDelegatedCredentials } from "./delegated-identities.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromEnv } from "./recall.js";
-import { linearClientFromEnv } from "./linear.js";
+import { LinearClient, linearClientFromEnv, LINEAR_SEATS, linearSecretNames } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS } from "./events.js";
@@ -188,6 +189,13 @@ async function checkTokenExchange(env, { grantType, props, userId, grantId }) {
   }
 }
 
+// Persist only fixed reason codes for pre-tool failures.  This must never
+// change the response if diagnostics storage itself is unavailable.
+async function recordDiagnostic(env, entry) {
+  try { await gate(env, GATE_LOG_NAME).recordDiagnostic(entry); }
+  catch { console.log(JSON.stringify({ event: "diagnostic_unavailable", kind: entry.kind })); }
+}
+
 // ---------------------------------------------------------------- /mcp
 
 async function serveMcp(request, env, ctx) {
@@ -200,7 +208,16 @@ async function serveMcp(request, env, ctx) {
   }
   const seatGate = gate(env, seat);
   const result = await seatGate.check({ epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase });
-  if (result.code !== "ok" && result.code !== "paused") return invalidToken("This grant is no longer valid.");
+  if (result.code !== "ok" && result.code !== "paused") {
+    const refused = invalidToken("This grant is no longer valid.");
+    try {
+      await seatGate.audit({ event: "mcp_refused", reason: result.code, status: 401 });
+      refused.headers.set("X-Agent-Sync-Diagnostic", "recorded");
+    } catch {
+      console.log(JSON.stringify({ event: "diagnostic_unavailable", kind: "mcp_refused", seat }));
+    }
+    return refused;
+  }
 
   const scopes = Array.isArray(auth.scope) ? auth.scope.map(String) : [];
   // The key comes from the seat in the verified props, through SEAT_SECRETS only.
@@ -228,6 +245,46 @@ async function serveMcp(request, env, ctx) {
     linear: linearClientFromEnv(env, seat, { gate: seatGate }),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
   });
+  const delegatedCredentials = seat === "CURSOR" ? loadDelegatedCredentials(env) : null;
+  const routedTools = seat === "CURSOR" ? new IdentityRouter({
+    callerTools: tools,
+    credentials: delegatedCredentials,
+    createRole: async (identity) => {
+      const roleCredentials = delegatedCredentials.roles.get(identity);
+      if (!roleCredentials) throw new ToolError("not_configured", `Credentials are missing for ${identity}.`);
+      const roleGate = env.SEAT_GATE.get(env.SEAT_GATE.idFromName(identity));
+      const roleState = await roleGate.getState();
+      if (roleState.paused) throw new ToolError("paused", `The ${identity} identity is paused.`);
+      const roleKey = roleCredentials.zulipKey;
+      const roleEmail = roleCredentials.email;
+      const roleConfig = { ...config, botEmails: { ...config.botEmails, [identity]: roleEmail } };
+      const linear = new LinearClient({
+        seat: identity,
+        clientId: roleCredentials.linearClientId,
+        clientSecret: roleCredentials.linearClientSecret,
+        gate: roleGate,
+        fetch: globalThis.fetch.bind(globalThis),
+      });
+      return new HostedTools({
+        seat: identity,
+        callerSeat: "CURSOR",
+        callerGate: seatGate,
+        delegatedLinear: true,
+        scopes,
+        clientId: typeof auth.clientId === "string" ? auth.clientId : "",
+        grantRef: tools.grantRef,
+        paused: tools.paused,
+        config: roleConfig,
+        zulip: new ZulipClient({ email: roleEmail, key: roleKey }),
+        key: roleKey,
+        gate: roleGate,
+        cf: tools.cf,
+        recall: tools.recall,
+        linear,
+        linearWrites: tools.linearWrites,
+      });
+    },
+  }) : tools;
   const authInfo = {
     token: auth.token,
     clientId: auth.clientId,
@@ -251,7 +308,7 @@ async function serveMcp(request, env, ctx) {
     clientId: typeof auth.clientId === "string" ? auth.clientId : "",
     logRefusal: (row) => logRefusal(env, row),
   }) : null;
-  const response = await serveMcpRequest(request, tools, authInfo, events);
+  const response = await serveMcpRequest(request, routedTools, authInfo, events);
   if (response.status === 403 && request.headers.has("origin")) {
     // Records whether any client sends a browser Origin (spec 3.2).
     console.log(JSON.stringify({ event: "mcp_origin_refused", origin_host: logSafe(safeHost(request.headers.get("origin")), 120) }));
@@ -288,14 +345,27 @@ async function serveWake(request, env, ctx, config) {
   if (!seat || !config.hostedSeats.includes(seat) || !Object.hasOwn(WAKE_SECRETS, seat)) return notFound();
   const rawKey = env[WAKE_SECRETS[seat]];
   const key = typeof rawKey === "string" ? rawKey.trim() : "";
-  if (!key) return notFound();
-  if (request.method !== "POST") return textResponse("Method Not Allowed", 405, { Allow: "POST" });
+  if (!key) {
+    await recordDiagnostic(env, { kind: "wake", reason: "wake_key_missing", seat, status: 404 });
+    return notFound();
+  }
+  if (request.method !== "POST") {
+    await recordDiagnostic(env, { kind: "wake", reason: "method_not_allowed", seat, status: 405 });
+    return textResponse("Method Not Allowed", 405, { Allow: "POST" });
+  }
   const declared = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(declared) && declared > WAKE_MAX_BODY) return textResponse("Payload Too Large", 413);
+  if (Number.isFinite(declared) && declared > WAKE_MAX_BODY) {
+    await recordDiagnostic(env, { kind: "wake", reason: "payload_too_large", seat, status: 413 });
+    return textResponse("Payload Too Large", 413);
+  }
   const bytes = await readBodyBytes(request, WAKE_MAX_BODY);
-  if (bytes === null) return textResponse("Payload Too Large", 413);
+  if (bytes === null) {
+    await recordDiagnostic(env, { kind: "wake", reason: "payload_too_large", seat, status: 413 });
+    return textResponse("Payload Too Large", 413);
+  }
   const checked = await verifyWake({ bytes, signature: request.headers.get(WAKE_SIGNATURE_HEADER), key, seat });
   if (!checked.ok) {
+    await recordDiagnostic(env, { kind: "wake", reason: checked.reason, seat, status: checked.status });
     console.log(JSON.stringify({ event: "wake_refused", seat, reason: checked.reason }));
     return checked.status === 404 ? notFound() : textResponse(checked.status === 401 ? "Unauthorized" : "Bad Request", checked.status);
   }
@@ -595,32 +665,55 @@ async function serveAdmin(request, env, config, oauth, email) {
   if (path === "/admin" && request.method === "GET") {
     const csrf = newCsrf();
     const done = new URL(request.url).searchParams.get("done");
+    const generatedAt = Date.now();
     const seats = [];
     const audits = [];
     const calls = [];
-    for (const seat of config.hostedSeats) {
+    const statusErrors = [];
+    const configured = (name) => typeof env[name] === "string" && env[name].trim() !== "";
+    const recallConfigured = recallClientFromEnv(env) !== null;
+    // Collect seats independently so a diagnostic read failure is visible on
+    // the page rather than hiding every other seat behind an admin 500.
+    await Promise.all(config.hostedSeats.map(async (seat) => {
       const g = gate(env, seat);
-      const st = await g.getState();
-      const grants = await listAllGrants(oauth, seat);
-      const keyName = SEAT_SECRETS[seat].key;
+      const pair = linearSecretNames(seat);
+      const facts = {
+        seat, keyInstalled: configured(SEAT_SECRETS[seat].key), grants: [],
+        linearEnabled: LINEAR_SEATS.includes(seat),
+        linearConfigured: Boolean(pair && configured(pair.clientId) && configured(pair.clientSecret)),
+        linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
+        recallConfigured,
+      };
+      const reads = await Promise.allSettled([
+        g.getState(), listAllGrants(oauth, seat), g.roleStatus(),
+        g.tail(40), g.callTail(100), g.errorTail(50),
+      ]);
+      const value = (i, fallback) => reads[i].status === "fulfilled" ? reads[i].value : fallback;
+      const grants = value(1, []);
       seats.push({
-        seat,
-        ...st,
-        keyInstalled: typeof env[keyName] === "string" && env[keyName].trim() !== "",
-        role: await g.roleStatus(),
+        ...facts, ...value(0, {}), role: value(2, null),
+        diagnosticsUnavailable: reads.some((r) => r.status === "rejected"),
+        unavailableFields: ["state", "grants", "role", "audits", "calls", "errors"].filter((_, i) => reads[i].status === "rejected"),
         grants: grants.map((x) => ({ client: x.metadata?.client_name ?? x.clientId, scope: x.scope ?? [], createdAt: toMs(x.createdAt) })),
       });
-      for (const row of await g.tail(15)) {
+      for (const row of value(3, [])) {
         const { ts, event, ...detail } = row;
         audits.push({ ts, seat, event, detail });
       }
-      calls.push(...(await g.callTail(25)));
-    }
+      calls.push(...value(4, []));
+      statusErrors.push(...value(5, []));
+    }));
+    seats.sort((a, b) => config.hostedSeats.indexOf(a.seat) - config.hostedSeats.indexOf(b.seat));
     audits.sort((a, b) => b.ts - a.ts);
     calls.sort((a, b) => b.ts - a.ts);
     const clients = (await oauth.listClients()).items ?? [];
-    const refusals = await gate(env, GATE_LOG_NAME).refusals(30);
-    const tokenRefusals = await gate(env, GATE_LOG_NAME).tokenRefusals(15);
+    const logGate = gate(env, GATE_LOG_NAME);
+    const globalReads = await Promise.allSettled([
+      logGate.refusals(30), logGate.tokenRefusals(30), logGate.diagnosticTail(50),
+    ]);
+    const globalValue = (i) => globalReads[i].status === "fulfilled" ? globalReads[i].value : [];
+    const [refusals, tokenRefusals, runtimeErrors] = [0, 1, 2].map(globalValue);
+    const diagnosticsUnavailable = globalReads.some((r) => r.status === "rejected");
     return adminPage(
       {
         email,
@@ -630,6 +723,12 @@ async function serveAdmin(request, env, config, oauth, email) {
         tokenRefusals,
         audits: audits.slice(0, 40),
         calls: calls.slice(0, 40),
+        statusCalls: calls,
+        statusErrors,
+        runtimeErrors,
+        statusAudits: audits,
+        generatedAt,
+        diagnosticsUnavailable,
         csrf,
         notice: DONE_NOTICES[done] ?? "",
         manualSeats: config.hostedSeats.map((seat) => {
@@ -726,15 +825,25 @@ async function gateToken(request, env, config) {
   if (env.TOKEN_RATE_LIMITER) {
     const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
     const { success } = await env.TOKEN_RATE_LIMITER.limit({ key: `token:${ip}` });
-    if (!success) return oauthJsonError("temporarily_unavailable", "Too many token requests.", 429, { "Retry-After": "60" });
+    if (!success) {
+      await recordDiagnostic(env, { kind: "token", reason: "token_rate_limited", status: 429 });
+      return oauthJsonError("temporarily_unavailable", "Too many token requests.", 429, { "Retry-After": "60" });
+    }
   }
   if (!isFormContentType(request.headers.get("content-type"))) {
+    await recordDiagnostic(env, { kind: "token", reason: "invalid_content_type", status: 400 });
     return oauthJsonError("invalid_request", "Content-Type must be application/x-www-form-urlencoded", 400);
   }
   const declared = Number(request.headers.get("content-length") ?? "0");
-  if (declared > MAX_TOKEN_BODY) return oauthJsonError("invalid_request", "Request body too large.", 413);
+  if (declared > MAX_TOKEN_BODY) {
+    await recordDiagnostic(env, { kind: "token", reason: "payload_too_large", status: 413 });
+    return oauthJsonError("invalid_request", "Request body too large.", 413);
+  }
   const text = await readLimited(request, MAX_TOKEN_BODY);
-  if (text === null) return oauthJsonError("invalid_request", "Request body too large.", 413);
+  if (text === null) {
+    await recordDiagnostic(env, { kind: "token", reason: "payload_too_large", status: 413 });
+    return oauthJsonError("invalid_request", "Request body too large.", 413);
+  }
   const result = gateTokenForm(new URLSearchParams(text), request.headers.get("authorization"), config);
   if (!result.ok) {
     await logRefusal(env, { where: "token", reason: result.reason, clientId: result.clientId, redirectUri: "" });
@@ -774,6 +883,15 @@ async function pauseOnRefreshMismatch(env, config, form, response) {
   }
 }
 
+async function fetchProvider(request, env, ctx) {
+  try { return await providerFor(env).fetch(request, env, ctx); }
+  catch (error) {
+    const route = classifyPath(new URL(request.url).pathname);
+    await recordDiagnostic(env, { kind: route === "token" ? "token" : route === "mcp" ? "mcp" : "provider", reason: "internal_error", status: 500 });
+    throw error;
+  }
+}
+
 // ---------------------------------------------------------------- entry
 
 export default {
@@ -794,17 +912,51 @@ export default {
       if (request.method !== "GET" && request.method !== "HEAD") return textResponse("Method Not Allowed", 405, { Allow: "GET, HEAD" });
       return new Response(request.method === "HEAD" ? null : '{"ok":true}', { status: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
     }
-    if (route === "mcp" && config.mcpDisabled) return textResponse("The agent-sync MCP server is turned off.", 503, { "Retry-After": "3600" });
+    if (route === "mcp" && config.mcpDisabled) {
+      await recordDiagnostic(env, { kind: "mcp", reason: "mcp_disabled", status: 503 });
+      return textResponse("The agent-sync MCP server is turned off.", 503, { "Retry-After": "3600" });
+    }
     if (route === "wake") return serveWake(request, env, ctx, config);
     if (route === "token") {
       const gated = await gateToken(request, env, config);
       if (gated instanceof Response) return gated;
-      if (gated instanceof Request) return providerFor(env).fetch(gated, env, ctx);
-      const response = await providerFor(env).fetch(gated.request, env, ctx);
+      if (gated instanceof Request) {
+        const response = await fetchProvider(gated, env, ctx);
+        if (response.status >= 400) await recordDiagnostic(env, { kind: "token", reason: "method_not_allowed", status: response.status });
+        return response;
+      }
+      const response = await fetchProvider(gated.request, env, ctx);
+      if (response.status >= 400) {
+        let code = "oauth_error";
+        let alreadyRecorded = false;
+        try {
+          const body = await response.clone().json();
+          alreadyRecorded = ["This seat is paused.", "This grant is no longer valid."].includes(body?.error_description);
+          if (["invalid_request", "invalid_client", "invalid_grant", "invalid_scope", "unauthorized_client", "unsupported_grant_type", "temporarily_unavailable", "server_error"].includes(body?.error)) code = body.error;
+        } catch { /* No raw provider response is persisted. */ }
+        if (!alreadyRecorded) await recordDiagnostic(env, { kind: "token", reason: code, status: response.status });
+      }
       await pauseOnRefreshMismatch(env, config, gated.form, response);
       return response;
     }
-    return providerFor(env).fetch(request, env, ctx);
+    const response = await fetchProvider(request, env, ctx);
+    // An unauthenticated MCP discovery 401 is normal OAuth negotiation.
+    // Count only failed requests that actually supplied authorization.
+    if (route === "mcp" && response.status >= 400 && request.headers.has("authorization") && response.headers.get("X-Agent-Sync-Diagnostic") !== "recorded") {
+      let knownToolFailure = false;
+      if (response.status === 400) {
+        // Unknown tool calls already have a fixed, safe per-seat error row.
+        try { knownToolFailure = /"message"\s*:\s*"Unknown tool"/.test(await response.clone().text()); }
+        catch { /* Keep the generic protocol failure when unreadable. */ }
+      }
+      if (!knownToolFailure) await recordDiagnostic(env, { kind: "mcp", reason: `mcp_http_${response.status}`, status: response.status });
+    }
+    if (response.headers.has("X-Agent-Sync-Diagnostic")) {
+      const headers = new Headers(response.headers);
+      headers.delete("X-Agent-Sync-Diagnostic");
+      return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+    }
+    return response;
   },
 };
 

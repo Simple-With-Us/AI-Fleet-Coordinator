@@ -133,12 +133,14 @@ class PostTests(Harness):
         # (seat tag GROK, owner 2026-10-08), its display name is "Grok" (owner 2026-10-10), and GROK-BUILD in any
         # spelling is an alias for GROK (owner 2026-10-10;  test_seat_alias.py has the full table).
         self.fake.users.remove(self.fake.user_named("Grok"))  # the harness's stand-in grok-bot@ also signs GROK, which the real realm has no such bot for
-        self.fake.add_user("grok-build-bot@zulip.test", "Grok", is_bot=True)
-        for raw in ("GROK", "Grok", "grok-build-bot@zulip.test", "GROK-BUILD", "Grok-Build", "grok_build", "Grok (Build)"):
-            with self.subTest(raw=raw):
-                result = self.run_cli("post", "--topic", "t", "--to", raw, "hi")
-                self.assertEqual(result.code, 0, result.err)
-                self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192GROK] @**Grok** hi" % TAG)
+        for display, mention in (("Grok", "@**Grok**"), ("Grok (Build)", "@**Grok (Build)**")):
+            self.fake.users = [u for u in self.fake.users if u.get("email") != "grok-build-bot@zulip.test"]
+            self.fake.add_user("grok-build-bot@zulip.test", display, is_bot=True)
+            for raw in ("GROK", "Grok", "grok-build-bot@zulip.test", "GROK-BUILD", "Grok-Build", "grok_build", "Grok (Build)"):
+                with self.subTest(display=display, raw=raw):
+                    result = self.run_cli("post", "--topic", "t", "--to", raw, "hi")
+                    self.assertEqual(result.code, 0, result.err)
+                    self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192GROK] %s hi" % (TAG, mention))
         before = len(self.fake.requests_to("POST", "messages"))
         for raw in ("GROKBUILDER", "grok2build", "grok-build-bot", "NOSUCHSEAT"):
             with self.subTest(refused=raw):

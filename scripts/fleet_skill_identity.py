@@ -903,6 +903,7 @@ def _specialize_grok_bot(text: str, seat: Seat, skill_name: str) -> str:
         ("AGENT_TAG=MONET", pin),
         ("--by MONET", f"--by {BY_SEAT}"),
         ("--mine MONET", f"--mine {BY_SEAT}"),
+        ("claude/afc-123-zulip-cutover", "cursor/afc-123-zulip-cutover"),
         ("claim:  monet/<slug>", f"claim:  {BRANCH_PREFIX}/<slug>"),
         (BRANCH_EXAMPLE_CANONICAL, f"{BRANCH_PREFIX}/{BRANCH_EXAMPLE_SLUG}"),
         ("`--by` for this seat is `MONET`", "`--by` for this seat is `$AGENT_TAG`"),
@@ -1145,6 +1146,11 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
         ("--mine MONET", f"--mine {BY_SEAT}"),
         ("`--by` for this seat is `MONET`",
          f"`--by` for this seat is your verified seat (`{seat.tag}` in an ordinary {seat.notes} session)"),
+        ("claude/afc-123-zulip-cutover", f"{seat.prefix}/afc-123-zulip-cutover"),
+        (
+            f"{BRANCH_PREFIX}/{BRANCH_EXAMPLE_SLUG}",
+            f"{seat.prefix}/{BRANCH_EXAMPLE_SLUG}",
+        ),
         ("claim:  monet/<slug>", f"claim:  {BRANCH_PREFIX}/<slug>"),
         (
             BRANCH_EXAMPLE_CANONICAL,
@@ -1311,8 +1317,10 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
     universal_identity = (
         "This universal skill applies across all agent platforms and seats.  "
         "Identify your active seat (**AG**, **CURSOR**, **CODEX**, **GROK**, "
-        "**GROK-BUILD**, **CLAUDE**, **MONET**, **RENOIR**, **DSH**, **MM**, "
-        "**FX**, or a Grok Bot `[GB-<NAME>]` role), use your own Zulip session "
+        "**CLAUDE**, **<YOUR_AGENT_TAG>**, **RENOIR**, **DSH**, **MM**, "
+        "**FX**, or a Grok Bot `[GB-<NAME>]` role).  "
+        "Terminal Grok and Grok Build are one seat, **GROK** (GROK-BUILD in any spelling is an alias, not a tag).  "
+        "Use your own Zulip session "
         "tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-CONDUCTOR]`, "
         "`[DSH·session8]`, `[MM·session8]`), your seat's own bot and "
         "`~/.secrets/Zulip/<file code>-zuliprc`, branch "
@@ -1341,6 +1349,11 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         ("AGENT_TAG=MONET", "AGENT_TAG=<YOUR_TAG>"),
         ("--by MONET", f"--by {BY_SEAT}"),
         ("--mine MONET", f"--mine {BY_SEAT}"),
+        ("claude/afc-123-zulip-cutover", "<seat>/afc-123-zulip-cutover"),
+        (
+            f"{BRANCH_PREFIX}/{BRANCH_EXAMPLE_SLUG}",
+            f"<seat>/{BRANCH_EXAMPLE_SLUG}",
+        ),
         ("claim:  monet/<slug>", f"claim:  {BRANCH_PREFIX}/<slug>"),
         (
             BRANCH_EXAMPLE_CANONICAL,
