@@ -181,12 +181,12 @@ jobs:
         python3 scripts/mac-collab/test_app_normalization.py
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
-    # Pure-logic suites of the hosted agent-sync MCP Worker (allowlists, Host
-    # check, arming, epoch, Access JWT, pages, tools).  They import no package,
-    # so no npm ci.  The workerd flow (npm run test:workerd) runs in its own
-    # path-filtered workflow, agent-sync-mcp.yml.
+    # Hosted agent-sync MCP Worker unit tests (including GraphQL document
+    # parsing).  Install its pinned dependencies before running the suites.
     - name: agent-sync MCP Worker unit tests
-      run: node --test scripts/agent-sync-mcp/test/*.test.mjs
+      run: |
+        npm ci --ignore-scripts --prefix scripts/agent-sync-mcp
+        node --test scripts/agent-sync-mcp/test/*.test.mjs
     - name: Verify operator dashboard deployment boundary
       run: node --test tests/deployment-boundary.test.cjs
     - name: Agent quota display unit tests

@@ -1,6 +1,6 @@
 # agent-sync MCP Worker
 
-The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at `https://agent-sync.jays.services/mcp` that cloud-only seats add as a custom MCP connector.  It serves the same seven tools as the stdio server (`agent-sync mcp`), from the same `scripts/agent_sync/mcp/tools.json` (the hosted `inbox` also lists DMs, so its description differs), and each seat posts as its own Zulip bot.  It also serves three hosted-only Zulip direct-message tools (`dm_list`, `dm_read`, `dm_send`;  spec 1.2) and three hosted-only fleet recall tools (`recall_search`, `recall_stats`, `recall_contribute`;  spec 1.1).
+The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at `https://agent-sync.jays.services/mcp` that cloud-only seats add as a custom MCP connector.  It serves the same seven tools as the stdio server (`agent-sync mcp`), from the same `scripts/agent_sync/mcp/tools.json` (the hosted `inbox` also lists DMs, so its description differs), and each seat posts as its own Zulip bot.  It also serves three hosted-only Zulip direct-message tools (`dm_list`, `dm_read`, `dm_send`;  spec 1.2), three hosted-only fleet recall tools (`recall_search`, `recall_stats`, `recall_contribute`;  spec 1.1), seven hosted-only Linear convenience tools, and three hosted-only broad Linear API tools.
 
 | Seat | Bot | State |
 | --- | --- | --- |
@@ -40,12 +40,13 @@ OAuth 2.1 with CIMD for ChatGPT and Grok, plus CURSOR's owner-approved exact CIM
 | `src/index.js` | entry:  Host check, routing, token gate, provider, `/mcp`, `/authorize`, `/admin`, the refresh-mismatch pause |
 | `src/config.js` | constants, `SEAT_SECRETS`, `PROPS_PHASE` and `loadConfig(env)` (fails closed) |
 | `src/contract.js` | the shared contract, ported from the stdio server:  schema check, fence, error model, secret scan, mentions, tags, the Central clock |
-| `src/hosted-tools.js` | the seven tools, plus the recall and DM tools, for one seat |
+| `src/hosted-tools.js` | the seven stdio tools, plus hosted recall, DM and Linear tools, for one seat |
 | `src/dm.js` | Zulip direct messages:  the three hosted-only tool specs and the hosted `inbox` description |
 | `src/recall.js` | fleet recall:  the three hosted-only tool specs, the recall REST client (exact origin, no redirects, 10-second timeout), error mapping and the recall fence |
+| `src/linear.js` | Linear access:  the hosted-only convenience tools and broad GraphQL schema/query/mutation tools, using the seat's grant-bound Linear app identity |
 | `src/zulip.js` | Zulip egress:  the compiled realm only, no redirects, 15-second timeout, the 429 budget |
 | `src/textfmt.js` | the outbound sentence gap (port of `scripts/agent_sync/textfmt.py`) |
-| `src/mcp.js` | a low-level SDK `Server` per request:  `tools/list` from `tools.json` plus the recall and DM tools, `tools/call` to the hosted tools |
+| `src/mcp.js` | a low-level SDK `Server` per request:  `tools/list` from `tools.json` plus hosted recall, DM and Linear tools, `tools/call` to the hosted tools |
 | `src/seat-state.js`, `src/seat-gate.js` | the `SeatGate` Durable Object:  arming, epoch, pause, spacing, budgets, cooldown, idempotency, role cache, audit, MCP Events subscriptions, the access re-check before each delivery attempt, and the wake_id claims (claimed with a 15-second lease, then settled or handed back) |
 | `src/events.js` | MCP Events (spec 3.12):  the `zulip.mention` definition, events/list, subscribe and unsubscribe, callback verification, the callback host guard, Standard Webhooks signing, the channel allowlist for wakes, delivery inside the listener's request with retries and 410 handling, and the answer to the listener (503 asks it to retry) |
 | `src/wake.js` | the server listener's signed wake (`POST /internal/wake/<SEAT>`, `agent-sync-wake/1`, hex HMAC-SHA256 in `X-Agent-Sync-Signature`, 5-minute window, optional `stream_id`) |
@@ -57,12 +58,37 @@ OAuth 2.1 with CIMD for ChatGPT and Grok, plus CURSOR's owner-approved exact CIM
 
 ```bash
 cd scripts/agent-sync-mcp
-node --test test/*.test.mjs                      # no install needed (ci.yml runs this)
+npm ci --ignore-scripts && node --test test/*.test.mjs
 npm ci --ignore-scripts && npm run test:workerd  # one Miniflare flow over the bundled Worker
 ```
 
 - The unit suites run the shared golden fixtures (`scripts/agent_sync/mcp/fixtures.jsonl`:  fence, secret, mentions, schema, error map, inbox and the hosted channel rule) against the hosted tools and a fake Zulip (`test/fake-zulip.mjs`), plus seat binding, spacing, budgets, idempotency and reconcile, 429, audit and leak checks, the sentence gap against the Python suite's own tables, and the secret scanner against the Python scanner's samples (`test/secretscan-parity.test.mjs`;  both skipped where `python3` is missing).
 - The workerd flow (also in `.github/workflows/agent-sync-mcp.yml`) walks the Phase 0 OAuth flow, checks `tools/list` against `tools.json`, a `seat` argument as a tool error, an unknown tool as a protocol error, the scope challenge, pause, epoch and revoke, then Grok's client metadata document through consent to a `post` as GROK-WEB in `#sandbox` (checked at the fake Zulip:  GROK-WEB's own key, the tag, the sentence gap), a tool error through the real SDK client, and a replayed refresh token pausing the seat.
+
+## Linear GraphQL Tools
+
+The hosted connector adds `linear_schema`, `linear_query` and `linear_mutation` after the Linear convenience tools.  `linear_schema` reads a type's field definitions (defaults to `Query`) and can filter fields or limit the result.  `linear_query` runs a GraphQL query document with variables.  `linear_mutation` runs a mutation document with variables and requires an `idempotency_key`.
+
+For example, read projects with `linear_query`:
+
+```json
+{
+  "query": "query Projects { projects(first: 10) { nodes { id name } } }",
+  "variables": {}
+}
+```
+
+Or update a project with `linear_mutation`:
+
+```json
+{
+  "mutation": "mutation UpdateProject($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { success project { id name } } }",
+  "variables": { "id": "project-id", "input": { "name": "Updated project name" } },
+  "idempotency_key": "update-project-2026-10-15"
+}
+```
+
+These tools use the same grant-bound identity, authentication, budgets and secret scanning as the existing Linear tools.  A mutation is available only when Linear writes are enabled and the seat has its own app identity.  App permissions still limit which schema fields and operations are available.  Fleet claim and seat-label changes remain protected and must use the existing `linear_claim` convenience tool.
 
 ## Versions and the two-week rule
 
@@ -90,3 +116,7 @@ The spec names `workers-oauth-provider` v1.2.3.  1.1.0 covers everything Phase 0
 - The 1.2.0 redirect policy:  our exact allowlist is stricter.
 
 Move to 1.2.3 once it is eligible (Wed, Oct 21) or if Phase 0 shows a client the workarounds do not cover.  When you do:  drop `allowImplicitFlow` and `allowPlainPKCE` from `providerFor` (1.2.0 removed them;  passing `true` throws), update the config test that pins `allowPlainPKCE: false`, pass `env` to `tokenExchangeCallback` instead of the per-`env` provider cache, and re-check that `createClient` accepts our redirect URIs under the 1.2.0 redirect policy.  The 1.2.0 to 1.2.3 release notes contain no security fix on a path Phase 0 uses:  #340 (redirect validation in `createClient`) is covered by the strict `SEATS` validation, #368 (a token with no scope) only reduces privilege here, and #344 (a `userId` containing `:`) does not apply to JET or GROK-WEB.
+
+Queries support aliases, fragments, filters and pagination from the live Linear schema.  Subscriptions, binary file transfer, credential/access administration and batch/bulk mutation roots are excluded.  Each mutation has one root field; body and description inputs receive the seat tag.  Generic mutations cannot change protected fleet claim labels.
+
+Idempotency keys are seat-scoped for 24 hours.  A completed retry returns the saved response or completion receipt.  An uncertain upstream outcome is never automatically replayed; inspect Linear before choosing a new key.  Response size and GraphQL complexity are bounded, and Linear’s upstream permissions and rate limits still apply.

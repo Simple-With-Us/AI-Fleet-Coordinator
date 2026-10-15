@@ -2,7 +2,7 @@
 // Runs the bundled Worker in Miniflare (from the pinned wrangler) with fake
 // Access certificates, ChatGPT's and Grok's real CIMD documents and a fake
 // Zulip (test/fake-zulip.mjs) served by a mocked outbound fetch, then walks
-// the OAuth flow and the seven tools, ending with a post as GROK-WEB.
+// the OAuth flow and hosted tools, ending with a post as GROK-WEB.
 //
 //   npm ci --ignore-scripts && npm run test:workerd
 //
@@ -18,10 +18,11 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import CONTRACT from "../../agent_sync/mcp/tools.json" with { type: "json" };
 import { ROOT, wranglerConfig, testEnv, browserPostOrigin, CHATGPT_CLIENT, CHATGPT_REDIRECT, RESOURCE } from "./helpers.mjs";
 import { FakeZulip, REALM, STREAMS, OWNER_ID, zulipShapedKey } from "./fake-zulip.mjs";
+import { FakeLinear, opOf } from "./fake-linear.mjs";
 
 const TOOLS = CONTRACT.tools;
-// The hosted server lists tools.json, then the hosted-only recall tools (src/recall.js), then the DM tools (src/dm.js).
-const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status"];
+// The hosted server lists tools.json, followed by hosted-only recall, DM and Linear tools.
+const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation"];
 const JET_KEY = zulipShapedKey(11);
 const CURSOR_KEY = zulipShapedKey(12);
 const CURSOR_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";
@@ -42,6 +43,18 @@ const zulip = new FakeZulip({ bots: [
   { email: "cursor-bot@simplewithus.zulipchat.com", full_name: "Cursor", key: CURSOR_KEY },
   { email: "claude-bot@simplewithus.zulipchat.com", full_name: "Claude", key: CLAUDE_KEY },
 ] });
+const linear = new FakeLinear();
+const linearGraphqlResponse = linear.graphqlResponse.bind(linear);
+linear.graphqlResponse = (entry) => {
+  const op = opOf(entry.body?.query);
+  if (op?.name === "AgentSyncIntegrationQuery") {
+    return linear.json(200, { data: { viewer: { id: "grok-web-viewer", name: "Grok Web" } } });
+  }
+  if (op?.name === "AgentSyncIntegrationMutation") {
+    return linear.json(200, { data: { projectUpdate: { success: true, project: { id: "project-1", name: "Fleet integration fixture", description: entry.body?.variables?.input?.description ?? "" } } } });
+  }
+  return linearGraphqlResponse(entry);
+};
 
 const HOST = "https://agent-sync.jays.services";
 const TEAM = "silent-frost-37e0.cloudflareaccess.com";
@@ -130,6 +143,7 @@ async function outboundFetch(request) {
   }
   if (request.url === GROK_CLIENT) return Response.json(GROK_CIMD);
   if (request.url === CURSOR_CIMD_CLIENT) return Response.json(CURSOR_CIMD);
+  if (request.url.startsWith("https://api.linear.app/")) return linear.fetch(request);
   if (request.url.startsWith(`${REALM}/`)) return zulip.fetch(request);
   if (request.url.startsWith(CALLBACK)) {
     const raw = await request.text();
@@ -171,7 +185,7 @@ function startWorker(upstream, bindingOverrides = {}) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET, ...bindingOverrides }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
         outboundService: outboundFetch,
       },
     ],
@@ -927,6 +941,41 @@ try {
     assert.match(read.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
     const off = await call(t.body.access_token, "post", { channel: "general", topic: "t", text: "x" });
     assert.equal(off.json.result._meta["agent-sync/error"].code, "channel_not_allowed");
+
+    await step("hosted Linear query and mutation use GROK-WEB credentials, with a durable idempotent replay", async () => {
+      linear.requests.length = 0;
+      const queried = await call(t.body.access_token, "linear_query", {
+        query: "query AgentSyncIntegrationQuery { viewer { id name } }",
+        variables: {},
+      });
+      assert.equal(queried.status, 200, JSON.stringify(queried.json));
+      assert.equal(queried.json.result.isError, undefined);
+      assert.match(queried.json.result.content[0].text, /BEGIN_UNTRUSTED_LINEAR nonce=[0-9a-f]{16}/);
+      assert.match(queried.json.result.content[0].text, /grok-web-viewer/);
+      assert.equal(linear.calls().length, 1);
+      assert.match(linear.calls()[0].authorization, /^Bearer fake-linear-token-/);
+
+      const mutationArgs = {
+        mutation: "mutation AgentSyncIntegrationMutation($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { success project { id name description } } }",
+        variables: { id: "project-1", input: { description: "Updated through hosted Agent Sync." } },
+        idempotency_key: "workerd-linear-project-update-1",
+      };
+      const first = await call(t.body.access_token, "linear_mutation", mutationArgs);
+      assert.equal(first.status, 200, JSON.stringify(first.json));
+      assert.equal(first.json.result.isError, undefined);
+      assert.match(first.json.result.content[0].text, /BEGIN_UNTRUSTED_LINEAR nonce=[0-9a-f]{16}/);
+      assert.equal(linear.mutations().length, 1);
+      const sent = linear.mutations()[0];
+      assert.equal(sent.authorization, linear.calls()[0].authorization);
+      assert.match(sent.body.variables.input.description, /^\[GROK-WEB\]/);
+
+      const replay = await call(t.body.access_token, "linear_mutation", mutationArgs);
+      assert.equal(replay.status, 200, JSON.stringify(replay.json));
+      assert.equal(replay.json.result.isError, undefined);
+      assert.match(replay.json.result.content[0].text, /Previously completed mutation; not repeated\./);
+      assert.equal(linear.mutations().length, 1, "the same idempotency key must not send a second mutation through the Worker/DO path");
+    });
+
     // Direct messages through the Worker:  send as Grok's own bot, read the conversation back, see Jay's answer in inbox.
     const dmSent = await call(t.body.access_token, "dm_send", { user_ids: [OWNER_ID], text: "Direct note from Grok.  Please read." });
     assert.equal(dmSent.status, 200, JSON.stringify(dmSent.json));
