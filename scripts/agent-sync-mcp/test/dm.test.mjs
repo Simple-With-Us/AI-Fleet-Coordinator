@@ -13,6 +13,7 @@ import { ZulipClient } from "../src/zulip.js";
 import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { TOOLS, TOOLS_BY_NAME, ERROR_META_KEY, schemaProblem, basicForms } from "../src/contract.js";
+import { LINEAR_TOOLS } from "../src/linear.js";
 import { DM_TOOLS, DM_MAX_RECIPIENTS } from "../src/dm.js";
 import { FakeZulip, BOT_EMAIL, OWNER_ID, zulipShapedKey } from "./fake-zulip.mjs";
 import { ROOT, testEnv } from "./helpers.mjs";
@@ -104,8 +105,8 @@ const dmPosts = (fake) => fake.requestsTo("POST", "messages");
 
 test("the DM tools:  closed inputs, output schemas, no identity arguments, read and write split", () => {
   assert.deepEqual(DM_TOOLS.map((t) => t.name), ["dm_list", "dm_read", "dm_send"]);
-  // The three DM tools sit before the seven hosted-only Linear tools.
-assert.deepEqual(HOSTED_TOOL_LIST.slice(-10, -7).map((t) => t.name), ["dm_list", "dm_read", "dm_send"]);
+  // The three DM tools sit immediately before the hosted Linear tools.
+  assert.deepEqual(HOSTED_TOOL_LIST.slice(-(LINEAR_TOOLS.length + 3), -LINEAR_TOOLS.length).map((t) => t.name), ["dm_list", "dm_read", "dm_send"]);
   for (const tool of DM_TOOLS) {
     assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
     assert.ok(tool.outputSchema, tool.name);

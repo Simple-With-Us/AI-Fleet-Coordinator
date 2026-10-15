@@ -1,3 +1,4 @@
+import { apiSchema, apiQuery, apiMutation } from "./linear-api.js";
 // The seven agent-sync tools for one hosted seat (spec sections 1, 3.6 to 3.9).
 // A port of scripts/agent_sync/mcp/tools.py over the Zulip REST API, with the
 // hosted rules on top:  the seat only from the grant, the channel rule (any
@@ -1103,6 +1104,10 @@ export class HostedTools {
     if (!issue) throw new ToolError("not_found", `no Linear issue matches "${id}".`);
     return issue;
   }
+
+  async tool_linear_schema(args, audit) { return apiSchema(this, args, audit); }
+  async tool_linear_query(args, audit) { return apiQuery(this, args, audit); }
+  async tool_linear_mutation(args, audit) { return apiMutation(this, args, audit); }
 
   async tool_linear_whoami(args, audit) {
     const client = this.requireLinear();
