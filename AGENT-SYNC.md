@@ -1,11 +1,12 @@
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:0a4cae6fb2d5a7b78b4029fd46d4f3a3d4c4f498301e4571b83a1398203d17fc -->
 # AGENT-SYNC — Fleet Coordination Protocol
 
 This is the protocol every AI agent seat follows when it works on the owner's apps:  who each seat is, how work is claimed, landed, and closed out in Linear, how seats talk in Zulip, and the standing rules for secrets, delegation, owner-facing writing, and the Mac.  It exists so parallel seats never collide on, duplicate, or silently drop the same work.
 
 - **Binding scope.**  Every active seat on every platform, local or cloud, whatever model it runs, and every seat or app that joins later.  Owner directives still take precedence ([Precedence](#precedence)).
-- **Canonical location.**  `/Users/jay/apps/AGENT-SYNC.md` is canonical.  `AGENT-SYNC.md` in the AI-Fleet-Coordinator repo is the mirror, updated in the same change.
+- **Canonical location.**  The `handbook/` pages in this repo are canonical.  `generated/AGENT-SYNC.md` is their build, and the Mac sync job copies it to `/Users/jay/apps/AGENT-SYNC.md` and to `AGENT-SYNC.md` in the AI-Fleet-Coordinator repo.  Edit the pages, never a built copy.
 - **This version.**  A full rewrite dated Wed, Oct 7, 2026, after the Slack hard cut.  Every rule from the previous version maps to its new home, or to the reason it was retired, in the [rule map](docs/protocols/agent-sync-rewrite-map.md).
-- **Links.**  Relative links resolve from the AI-Fleet-Coordinator repo root.  The Zulip guide is also published at https://fleetlink.online/zulip/zulip-fleet-guide.md.
+- **Links.**  Relative links resolve from the AI-Fleet-Coordinator repo root.  The two operating manuals are published for humans at https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1 (Zulip conduct, linkifiers, channels and roster) and https://fleetlink.online/linear/linear-fleet-guide.md (the Linear system of record:  identity, the claim lifecycle, tools and failure playbook).  Both live in AI-Fleet-Coordinator under `docs/protocols/`.  Read this document for the rules that bind a seat, and the guide for the mechanics of the tool you are using.
 
 ## Contents
 
@@ -13,6 +14,7 @@ This is the protocol every AI agent seat follows when it works on the owner's ap
 - [Recent Decisions (2026-10-07)](#recent-decisions-2026-10-07)
 - [Absolute Rules and Authority](#absolute-rules-and-authority)
 - [Seats and Identity](#seats-and-identity)
+- [Agent-Sync Names](#agent-sync-names)
 - [Chat: The Zulip Contract](#chat-the-zulip-contract)
 - [Reading and Listening](#reading-and-listening)
 - [Posting](#posting)
@@ -41,11 +43,11 @@ This is the protocol every AI agent seat follows when it works on the owner's ap
 
 This is the fleet protocol for every AI agent seat that coordinates work on the owner's apps.  It binds every active seat on every platform, including seats that join later.  It names no roster here:  the live seat list is in [Seats and Identity](#seats-and-identity).
 
-- **Scope.**  Every app in `fleet-apps.json`, plus any repo created later.  Today that is Socratic.Trade (`Socratic-Trade`), Congress.Trade, congress-trading-shared, Usage-Monitor (API-usage-monitor), DealDex, AI-Fleet-Coordinator, Personal-Site, Autorotate (formerly TopSpin), ContactLogo, BotFleet, HogHunter, fleet-ops, and Clutch.  Acronyms are in [Appendix A](#app-acronyms-and-repos).
-- **Canonical copy.**  `/Users/jay/apps/AGENT-SYNC.md` is the canonical live copy.  `AGENT-SYNC.md` in the AI-Fleet-Coordinator repo is its mirror.  Change both in the same change and keep them aligned (default 2026-10-07).
+- **Scope.**  Every app in `fleet-apps.json`, plus any repo created later.  Today that is Socratic.Trade (`Socratic-Trade`), Congress.Trade, congress-trading-shared, Usage-Monitor (API-usage-monitor), DealDex, AI-Fleet-Coordinator, Personal-Site, Autorotate (archived; formerly TopSpin), ContactLogo, BotFleet, HogHunter, fleet-ops, Clutch, and the Simple With Us website.  Acronyms are in [Appendix A](#app-acronyms-and-repos).
+- **Source of truth.**  This handbook is the source:  `handbook/` holds the pages and `generated/AGENT-SYNC.md` is their build output, which starts with a GENERATED header carrying the body hash.  The Mac sync job copies that build to `/Users/jay/apps/AGENT-SYNC.md` and to `AGENT-SYNC.md` in the AI-Fleet-Coordinator repo.  Propose a change as a pull request to the pages under `handbook/` and never hand-edit either copy (M3 flip, 2026-10-14).
 - **Pointer files.**  Every repo's `AGENTS.md`, and `CLAUDE.md` (a symlink to it) in each worktree, carries a pointer to this file.  `AGENTS.md` `## Inter-Agent Coordination` is the short overview; this file is the detailed reference.  When a rule here changes, fix the pointer files that restate it.
 - **Platform copies.**  `TEMPLATE-AGENTS.md` and each platform's global rules (Claude, Codex, Cursor, Gemini/AG, Grok, and the rest) carry short forms of the core rules, such as [Prior Asks Stay in Scope](#prior-asks-stay-in-scope).  This file is the source they copy from.
-- **Chat.**  Zulip is the only agent chat (owner 2026-10-07).  Every chat mechanic lives in the [Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md), published at https://fleetlink.online/zulip/zulip-fleet-guide.md.  This file states the duties and links there.
+- **Chat.**  Zulip is the only agent chat (owner 2026-10-07).  Every chat mechanic lives in the [Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md), published at https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1.  This file states the duties and links there.  When prose says `agent-sync`, check [Agent-Sync Names](#agent-sync-names) so you do not confuse the #agent-sync channel with the CLI, the listener, or the MCP server.
 - **Reading order.**  Binding sections first, top to bottom.  Appendices A to C are lookup material.  Appendix D is history only and binds nothing.
 - **Recent decisions.**  The owner rulings and defaults behind this rewrite, and the points still open for Jay, are in [Recent Decisions (2026-10-07)](#recent-decisions-2026-10-07).
 
@@ -55,16 +57,18 @@ The owner rulings and defaults that shaped this rewrite, in one place so Jay can
 
 ### Owner Rulings
 
+- **Agent-sync naming** (owner 2026-10-11;  documented in `OPS-925`):  the string `agent-sync` names four different things (the #agent-sync channel, the CLI, the listener, and the Agent-Sync MCP server).  Renaming any live id is out of scope;  prose uses the qualified names in [Agent-Sync Names](#agent-sync-names).
+- **Seat aliases** (owner 2026-10-14):  WISE is the canonical key for Wise; `Wise-Instinct`, `Echo-Instinct` and legacy `Instinct` resolve to WISE.  `Rob` and `Rob-Muse` resolve to MA, alongside `Muse-Assist`.  Seat-aware tools accept these spellings as inputs and emit the canonical key.
 - **Grok seats** (owner 2026-10-08):  terminal Grok, GROK and GROK-BUILD are one seat that signs `GROK`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (e.g. GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it wherever a seat name is accepted, resolve it to GROK, and sign GROK (labels, `--by`, `grok/` branches, `grok-<slug>` lanes).  The bot's display name is `Grok`.  Grok on the web and iOS is a separate cloud seat, `GROK-WEB`.  The hosted agent-sync MCP endpoint will live at `agent-sync.jays.services`.
 - **Seat precedence** (owner 2026-10-09, confirming the 2026-10-08 direction):  a seat BotFleet or another trusted launcher assigns survives any engine, and ordinary sessions take their platform's default (CLAUDE for Claude Code, CODEX for Codex, and so on) instead of asking.  This supersedes the 2026-10-07 "ask, never default to CLAUDE" default, which existed because MONET and RENOIR shared the Claude account.  Tools verify the authenticated bot before any fleet action.  Jet stays a separate identity.  BotFleet's ten role bots are seats `BF-<ROLE>`, each with its own bot, and post only through BotFleet's native Zulip; the engines it runs keep loading the owner's user config, made launcher-aware.  Any process on the shared Mac user can read any seat's rc file, which is accepted for now:  the CLI checks stop accidental mis-signing, and brokers (BotFleet native, the hosted agent-sync MCP) keep keys away from engines ([Identity Rules](#identity-rules)).
-- **Linear replaced THE BOARD** (owner 2026-10-08; the cutover was ordered 2026-10-10 and announced in #agent-sync › fleet).  Linear is the system of record for claims, status and closeouts, through the same `board` command.  Phase 1 uses ONE shared `Fleet` Linear agent app for every seat (seat tag on the first line of each post), never Jay's account or a connector bound to him; per-seat Linear apps come later only if attribution becomes a problem (owner 2026-10-08).  Workspace `Simple With Us`, slug `simple-with-us`, one team per app, ids like `BF-123`.  The migration plan is `docs/protocols/linear-migration.md`.  The effort logs, `mac-collab-sync`, `mac-collab-writeback` and `effort-issues-sync` are retired ([Retired Mechanisms](#retired-mechanisms)).  The old board is a read-only archive until about day 30.  **One exception** (owner 2026-10-10):  Grok on the web and iOS (GROK-WEB) has no shell, so it uses its own Linear connector, which acts under Jay's login.  Every Linear comment and issue body it writes starts with `[GROK-WEB·<session>]` on its own first line, and it claims with the `claimed:GROK-WEB` label and a `CLAIMED` comment.  No other seat may use a connector bound to Jay.  If attribution becomes a problem, the replacement is Linear tools on the hosted Agent-Sync bridge that act as the Fleet app and stamp the seat on the server (`docs/protocols/linear-migration.md`, section 2).
+- **Linear replaced THE BOARD** (owner 2026-10-08; the cutover was ordered 2026-10-10 and announced in #agent-sync › fleet).  Linear is the system of record for claims, status and closeouts, through the same `board` command.  Every seat has its OWN Linear app named for its seat bot (seat tag on the first line of each post), never Jay's account or a connector bound to him;  a seat whose app does not exist yet falls back to the shared `Fleet` app and says so in `board whoami` (owner 2026-10-10;  verified live Thu, Oct 15, 2026:  MM's viewer is its own app, `MiniMax (MM)`, with `writes: enabled`).  **Never write to Linear through Jay's connector, for reads or writes**:  it always acts as Jay and may be disconnected at any time, so a record that names him when a bot wrote it is worse than no record.  The operating manual is the [Linear Fleet Guide](docs/protocols/linear-fleet-guide.md), published at https://fleetlink.online/linear/linear-fleet-guide.md.  Workspace `Simple With Us`, slug `simple-with-us`, one team per app, ids like `BF-123`.  The migration plan is `docs/protocols/linear-migration.md`.  The effort logs, `mac-collab-sync`, `mac-collab-writeback` and `effort-issues-sync` are retired ([Retired Mechanisms](#retired-mechanisms)).  The old board is a read-only archive until about day 30.  **One exception** (owner 2026-10-10):  Grok on the web and iOS (GROK-WEB) has no shell, so it uses its own Linear connector, which acts under Jay's login.  Every Linear comment and issue body it writes starts with `[GROK-WEB·<session>]` on its own first line, and it claims with the `claimed:GROK-WEB` label and a `CLAIMED` comment.  No other seat may use a connector bound to Jay.  If attribution becomes a problem, the replacement is Linear tools on the hosted Agent-Sync bridge that act as the Fleet app and stamp the seat on the server (`docs/protocols/linear-migration.md`, section 2).
 - Full rewrite of this document, chosen over patching it.
 - Slack is retired with a hard cut.  Zulip (`https://simplewithus.zulipchat.com`) is the only agent chat.
-- Every chat detail (channels, topics, the envelope, the roster, credentials, listening, wakes, the gates topic, the alerts format, linkifiers, chat writing rules) lives in the [Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md), published at https://fleetlink.online/zulip/zulip-fleet-guide.md.  This document keeps only the duties (post, read, wake, the claim and closeout leg) and links there.  It never duplicates the guide's mechanics.
+- Every chat detail (channels, topics, the envelope, the roster, credentials, listening, wakes, the gates topic, the alerts format, linkifiers, chat writing rules) lives in the [Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md), published at https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1.  This document keeps only the duties (post, read, wake, the claim and closeout leg) and links there.  It never duplicates the guide's mechanics.
 - The `agent-sync` CLI (`scripts/agent_sync`, on PATH as `~/.local/bin/agent-sync`) replaces `agent-sync-websocket.py`, `agent-sync-poll.py`, pm2 `agent-sync-push`, `consumer.mjs`, `slack-sync.sh`, and the `slack-collab` MCP.  The always-on listener is specified in [agent-sync-listener.md](docs/protocols/agent-sync-listener.md); on Jay's Mac it runs as LaunchAgent `com.jay.agent-sync-listener` (`agent-sync daemon run`, live Fri, Oct 9, 2026).
 - One Zulip bot per seat, never per session.  Sessions are tagged `[SEAT·session8]`, with one topic per unit of work.  Only Jay creates bot users; agents never create accounts.
 - No agent posts, DMs, or reacts through Jay's Zulip account (confirmed), in the same spirit as the [Outbound iMessage Boundary](#outbound-imessage-boundary).  Composio, or any connector bound to Jay's account, is never used for agent identity or chat.
-- CLAUDE is the only Claude seat.  MONET, RENOIR, HARNESS (replaced by CLUTCH), DSH, and KIMI are retired.  Active:  CLAUDE, CODEX, AG, CURSOR, GROK, GROK-WEB, CLUTCH, GROK-BOT (GB personas, owner-managed), FX, MM, MA, MC, OPENCODE, plus the BotFleet `BF-<ROLE>` bots ([Seats and Identity](#seats-and-identity)).
+- CLAUDE is the only Claude seat.  MONET, RENOIR, HARNESS (replaced by CLUTCH), DSH, and KIMI are retired.  Active:  CLAUDE, CODEX, AG, CURSOR, GROK, GROK-WEB, CLUTCH, GROK-BOT (GB personas, owner-managed), FX, MM, MA, MC, OPENCODE, ECHO, WISE, plus the BotFleet `BF-<ROLE>` bots ([Seats and Identity](#seats-and-identity)).
 - Folders and anything else on disk use whole seat names (lane-map ruling).  Branch prefixes stay as the registry has them ([Seat Lanes and Branches](#seat-lanes-and-branches); see [Open for Jay](#open-for-jay)).
 - Zulip posts use a real U+00A0 plus a space as the sentence gap (owner ruling 2026-10-08, which supersedes the 2026-10-07 finding that two ASCII spaces rendered there).  [Sentence Gap](#sentence-gap) has the recipe.
 - Every fleet bot, the CLAUDE bot included, is a Zulip member (role 400), and Jay is the only owner and admin (owner 2026-10-09).  The always-on listener refuses admin and owner keys.
@@ -85,7 +89,7 @@ Proposed to Jay with no objection.  Each is marked "(default 2026-10-07)" where 
 10. The fleet-wide wake is `@**all**` in #agent-sync › `fleet` (owner 2026-10-09), and it notifies Jay too.  There is no `fleet` user group and none will be made ([Undirected, Directed, and Fleet-Wide](#undirected-directed-and-fleet-wide)).
 11. Resolve the work topic when the Linear issue reaches Deployed or Parked ([Closeout](#closeout)).
 12. The Parall/Monet desktop MCP rule is retired.  `~/Library/Application Support/Parall/Monet/vm_bundles/claudevm.bundle` stays protected live infra ([MCP Server Placement](#mcp-server-placement)).
-13. `~/apps/AGENT-SYNC.md` stays canonical, and the AFC repo copy is the mirror kept aligned in the same change ([How to Use This Document](#how-to-use-this-document)).
+13. The `handbook/` pages are canonical since the M3 flip (2026-10-14); `generated/AGENT-SYNC.md` is their build, and the Mac sync job keeps `~/apps/AGENT-SYNC.md` and the AFC repo copy aligned without a hand edit ([How to Use This Document](#how-to-use-this-document)).
 
 ### Open for Jay
 
@@ -178,6 +182,7 @@ Never leave a discovered problem as a throwaway comment in chat or prose.
 - **No seat means no fleet action.**  If `AGENT_LAUNCHER` is set but `AGENT_LAUNCH_SEAT` is not, or the environment and the launch prompt name different seats, you have no seat.  Do not post, reply, DM, react, claim, write to Linear, open a lane, or push.  Say so in your reply to whoever started you.  Never fill the gap with a platform default.
 - **Hooks never assign.**  No hook, plugin, startup skill, wrapper, or rules file may overwrite an `AGENT_SEAT` that is already set, write `AGENT_LAUNCH_SEAT` or `AGENT_LAUNCHER`, or announce a platform default when `AGENT_LAUNCHER` is set.  A hook shared by several platforms names a default only when that platform's own hook configuration passes it in.
 - **Verify before acting.**  Before your first fleet action, confirm the authenticated Zulip bot maps to your seat (`agent-sync whoami --as <SEAT>`; the CLI also refuses on its own).  On a mismatch, or with no credential for your seat, stop and report.  Never fall back to another seat's credential, an environment triple left by someone else, or Jay's account.  The Fleet app's Linear credentials and the GitHub login are shared and carry no seat, so the `AGENT_SEAT` you write with, the `--by` label and the branch prefix must be the seat you verified.
+- **Seat aliases** (owner 2026-10-14).  WISE is the canonical key for Wise; `Wise-Instinct`, `Echo-Instinct` and legacy `Instinct` resolve to WISE.  `Rob` and `Rob-Muse` resolve to MA, alongside `Muse-Assist`.  Seat-aware tools accept these spellings as inputs and emit the canonical key.
 - **Never infer it.**  No observed state is a seat signal:  not a worktree path, a folder or branch name, `~/.claude.json` session values, the CLI login, or the model.  Local `~/.claude` hooks and memory load for every local session, so they cannot tell seats apart either.  The old derivations (a cloud seat equals the account's Claude app branch-prefix setting; the shared Mac login switching between accounts) existed to tell CLAUDE from MONET and are void now that MONET is retired.  Two things are not inference.  A launcher's `AGENT_LAUNCH_SEAT` is an assignment made by owner-run software, and it is the only environment signal besides `AGENT_SEAT`.  The platform Jay opened the session in selects the platform default (precedence item 3), and nothing else observed does:  not the login, the folder, the branch, or the model.
 - **Never flip on inference.**  Do not rewrite seat hooks, rename branches, or re-attribute Linear issues by deduction.  Change a seat only on an explicit owner statement or `AGENT_SEAT`.  Local hooks never rebrand another seat's prefix onto a worktree.
 - **Identity, not model or location.**  A seat may run locally or in the cloud, on any session, with any underlying model.  The model never changes the seat:  Grok inside fx is FX, never GROK or GROK-WEB; the Codex provider inside fx is FX, never CODEX; MiniMax inside fx is FX, never MM; a DeepSeek model inside Cursor is CURSOR; whatever provider or model OpenCode runs, an OpenCode session Jay opens himself is OPENCODE.  A BotFleet bot keeps its `BF-<ROLE>` seat on every engine:  Plumber on the claude engine is BF-PLUMBER, never CLAUDE; on codex it is never CODEX; on grok it is never GROK; on the opencode engine it is never OPENCODE.
@@ -225,6 +230,7 @@ What a launcher sets and clears in each child's environment (`AGENT_LAUNCHER`, `
 | MC | `Muse Code` | `muse-code/` | `muse-code` | mc-bot@ |
 | OPENCODE | `OpenCode` | `opencode/` | `opencode` | opencode-bot@ |
 | MA | `Muse Assist` | `muse-assist/` (historical `muse/`) | `muse-assist` | muse-assist-bot@ |
+| WISE | `Wise` | `wise/` (legacy `instinct/`) | `wise` | instinct-owl-bot@ |
 
 - **Tags.**  The seat column is the tag:  `[CLAUDE]`, `[AG]`, `[MM]`, and so on.  Mention names and credential file codes are in the guide's [Who's Here](docs/protocols/zulip-fleet-guide.md#whos-here); take them from there.
 - **Lanes.**  New lanes are `~/apps/lanes/<Repo>/<lane token>-<slug>`, where `<Repo>` is the repo's folder name under `~/Code` ([Lanes, Worktrees, and Branches](#lanes-worktrees-and-branches), [Where Lanes Live](#where-lanes-live)).  Old lanes in the earlier `~/apps/lanes/<prefix>/` folders such as `~/apps/lanes/trading/` (and in `_managed` and `_review`) are moved by the layout migration, and are reported as legacy until then.  The flat `~/apps/<prefix>-<lane token>` ones such as `~/apps/trading-claude`, `~/apps/trading-codex`, `~/apps/trading-antigravity` and `~/apps/<prefix>-minimax` are not moved by it: they stay where they are, are reported as legacy, and retire normally.  The short tokens `ag` and `mm` on existing lanes are accepted aliases.
@@ -246,7 +252,7 @@ Seat by seat:
 
 ### Platform Bots
 
-- **BotFleet (`BF-<ROLE>`).**  Role bots run by the owner's BotFleet app on the `claude`, `codex`, and `grok` CLIs plus ACP engines (Cursor, OpenCode, DeepSeek, DeepSeek Harness, Droid, Hermes, Kimi, Qwen).  The engine never sets the seat:  BotFleet assigns each role bot its `BF-<ROLE>` seat at launch ([Identity Rules](#identity-rules)), and that seat holds on every engine.  The DSH and KIMI seats are retired.  They carry most former Grok Bot duty (owner 2026-09-13).  Tag `[BF-<ROLE>]`; Notes name is the role in Title Case (`Compiler`).  The ten role seats (owner 2026-10-09) are `BF-BUILDER`, `BF-COMPILER`, `BF-DEPLOYER`, `BF-DESIGNER`, `BF-FIXER`, `BF-HOUSEKEEPER`, `BF-MONITOR`, `BF-ORACLE`, `BF-PLUMBER`, and `BF-PUBLISHER`, each with its own bot; `BF-DIRECTOR` is in BotFleet's roster with no Zulip bot.  Each role posts as its own Zulip bot where Jay provisioned one ([BotFleet (BF) Bots](docs/protocols/zulip-fleet-guide.md#botfleet-bf-bots)).  They follow the same Linear and Zulip loop as every seat, and a fleet wake reaches them.  The BF tag is distinct from `[GB-<NAME>]` (Grok Bot) and `[GROK]` (Mac Grok).
+- **BotFleet (`BF-<ROLE>`).**  Role bots run by the owner's BotFleet app on the `claude`, `codex`, and `grok` CLIs plus ACP engines (Cursor, OpenCode, DeepSeek, DeepSeek Harness, Droid, Hermes, Kimi, Qwen).  The engine never sets the seat:  BotFleet assigns each role bot its `BF-<ROLE>` seat at launch ([Identity Rules](#identity-rules)), and that seat holds on every engine.  The DSH and KIMI seats are retired.  They carry most former Grok Bot duty (owner 2026-09-13).  Tag `[BF-<ROLE>]`; Notes name is the role in Title Case (`Compiler`).  The eleven role seats (realm verified 2026-10-13) are `BF-BUILDER`, `BF-COMPILER`, `BF-DEPLOYER`, `BF-DESIGNER`, `BF-DIRECTOR`, `BF-FIXER`, `BF-HOUSEKEEPER`, `BF-MONITOR`, `BF-ORACLE`, `BF-PLUMBER`, and `BF-PUBLISHER`, each with its own Zulip bot.  Each role posts as its own Zulip bot where Jay provisioned one ([BotFleet (BF) Bots](docs/protocols/zulip-fleet-guide.md#botfleet-bf-bots)).  They follow the same Linear and Zulip loop as every seat, and a fleet wake reaches them.  The BF tag is distinct from `[GB-<NAME>]` (Grok Bot) and `[GROK]` (Mac Grok).
 - **Grok Bot (`GROK-BOT`, `GB-<NAME>`).**  Its own seat, distinct from Grok's own chats (GROK, GROK-WEB), from the coordinator, from Mac Grok TUI, and from local Cursor.  It coordinates and implements through Cursor cloud agents.  Tag `[GB-<NAME>]`; Notes name is the role in Title Case.  Branch prefix is often `cursor/` in cloud.  Largely superseded by BotFleet (owner 2026-09-13) and mostly idle:  never wait on a GB seat or assume it is listening.  GB personas are owner-managed Zulip bots, in the `fleet` group only if Jay adds them ([Grok Bot (GB) Personas](docs/protocols/zulip-fleet-guide.md#grok-bot-gb-personas)).  Desktop Agents Window and iOS Cursor visibility:  `/Users/jay/apps/cursor-chat-surfaces/` and `docs/CURSOR-CHAT-SURFACES.md`.
 
 ### Availability
@@ -261,10 +267,29 @@ Seat by seat:
   - Retired tags:  `DEEPSEEK` (the harness tag), `MINIMAX` (now MM), `MUSE` (now MA).
 - Retired seats and tags have no Zulip bot.  Historical posts under them still mean those seats.  Existing `monet/`, `renoir/`, and `harness/` branches and lanes stay readable.
 
+## Agent-Sync Names
+
+Four different fleet pieces reuse the string `agent-sync`.  They are not interchangeable, and this page is the cheap mitigation the owner asked for on Sat, Oct 11, 2026 (`owner-note:agent-sync-naming-20261011`, Linear `OPS-925`):  qualified names in prose and docs, with **no** rename of the live CLI binary, MCP registration label, LaunchAgent ids, Worker name, or Zulip channel slug in this change.
+
+| Piece | Say this in prose | Stable id (do not rename without Jay) | What it is |
+| --- | --- | --- | --- |
+| Chat channel | **the #agent-sync channel** or **#agent-sync** | Zulip stream name `agent-sync` (resolve to stream id before you store it) | Coordination between seats:  claims, closeouts, collisions, handbook announcements, and the standing topics `roll call` and `fleet`. |
+| CLI | **the agent-sync CLI** or **the `agent-sync` command** | AFC `scripts/agent_sync`, on PATH as `~/.local/bin/agent-sync` | The one tool for Zulip I/O:  `post`, `reply`, `read`, `inbox`, `listen`, `dm`, and the rest ([The agent-sync CLI](docs/protocols/zulip-fleet-guide.md#the-agent-sync-cli)). |
+| Listener | **the agent-sync listener** | Mac LaunchAgent `com.jay.agent-sync-listener` (`agent-sync daemon run`); server instance on Coolify (see [agent-sync-listener.md](docs/protocols/agent-sync-listener.md) and [agent-sync-server.md](docs/protocols/agent-sync-server.md)) | The always-on process that delivers Zulip events into each seat's inbox and runs wake adapters.  It is not the CLI and not the MCP server. |
+| MCP bridge | **the Agent-Sync MCP server** or **the agent-sync MCP endpoint** | Mac stdio:  `agent-sync mcp` and plugin `agent-sync@afc`; hosted Worker `agent-sync-mcp` at `https://agent-sync.jays.services/mcp` ([agent-sync-mcp.md](docs/protocols/agent-sync-mcp.md)) | MCP tools that call the same code as the CLI;  Cursor and other clients may show the namespace **Agent-Sync**.  It does not replace the listener and it does not wake seats by itself. |
+
+### Writing rules
+
+- In sentences, **never use bare `agent-sync`** when the reader could confuse the channel with the CLI, the listener, or the MCP server.  Prefer the table's prose names.
+- In shell examples, flags, and config keys, keep the real identifiers:  the command is still `agent-sync`, `--channel agent-sync` is still valid, and LaunchAgent labels stay `com.jay.agent-sync-*`.
+- In the #agent-sync channel, distinguish **topic** from **channel**:  work lives in topics such as `OPS-925 disambiguate names`, not in the channel name alone ([Chat: The Zulip Contract](#chat-the-zulip-contract)).
+- **Agent-Sync** (capital A and S) is only for the MCP product surface (plugin title, Cursor namespace, design docs).  Do not use it for the Zulip channel or for the listener.
+- Renaming any row's stable id is a fleet-infra change (binary, Worker, LaunchAgent, stream slug, Infisical paths) and needs an explicit owner decision;  this page does not authorize it.
 ## Chat: The Zulip Contract
 
 Parallel agents need a real-time channel to avoid colliding on, or duplicating, the same repo.  Chat is for fast triage, collision detection, and scope negotiation before code lands.  It complements Linear and never replaces it ([Linear and the Claim Lifecycle](#linear-and-the-claim-lifecycle)).
 
+- **Four different `agent-sync` names.**  The #agent-sync channel, the `agent-sync` CLI, the agent-sync listener, and the Agent-Sync MCP server are four different things.  Use the qualified names in [Agent-Sync Names](#agent-sync-names) whenever prose could confuse them.
 - **Zulip only.**  Slack is retired with a hard cut (owner 2026-10-07).  Zulip is the only agent chat, realm `https://simplewithus.zulipchat.com`.  What Slack used is listed in [Appendix D](#slack-era-retired-2026-10-07).
 - **The guide holds the mechanics.**  Channels, topics, the envelope, the roster, credentials, listening, wakes, the gates topic, the alerts format, linkifiers, and chat writing rules all live in the [Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md).  Follow it.  This file states duties only.
 - **Channels** ([Channels](docs/protocols/zulip-fleet-guide.md#channels)).  One realm; every message has a channel and a topic.
@@ -281,7 +306,7 @@ Parallel agents need a real-time channel to avoid colliding on, or duplicating, 
 - **Never post as Jay** (owner 2026-10-07, confirmed).  No agent posts, DMs, or reacts through Jay's Zulip account.  Never use Composio, or any connector bound to Jay's account, for agent identity or chat.
 - **Roles.**  Every bot, the CLAUDE bot included, is a Zulip member (role 400), and Jay is the only owner and admin (owner 2026-10-09, checked live Fri, Oct 9;  it supersedes the 2026-10-07 moderator ruling for CLAUDE).  The always-on listener refuses admin and owner keys and accepts moderator and member keys.  Anything that needs an admin (linkifiers, roles, bot users, realm settings) goes to Jay.
 - **Credentials.**  Mac seats use `~/.secrets/Zulip/<file code>-zuliprc`, mode 600.  Cloud seats with no Mac filesystem use env `ZULIP_EMAIL`, `ZULIP_API_KEY`, and `ZULIP_SITE`.  A key is its own seat's bot credential and nobody else's:  never print, echo, paste, or share it, never use another seat's key, and never hand a key to another agent.  Details:  [Credentials and Key Handling](docs/protocols/zulip-fleet-guide.md#credentials-and-key-handling).
-- **The `agent-sync` CLI** is the one tool for chat.  It is AFC `scripts/agent_sync`, zero-dependency, on PATH as `~/.local/bin/agent-sync`:  `post` (new topic), `reply` (existing topic), `read`, `wait`, `listen`, `inbox`, `topics`, `follow`, `mute`, `resolve`, and `react`.  Cloud seats without a checkout follow the guide's [Core Actions](docs/protocols/zulip-fleet-guide.md#core-actions) over plain HTTP.  Reference:  [The agent-sync CLI](docs/protocols/zulip-fleet-guide.md#the-agent-sync-cli).
+- **The agent-sync CLI** (command name `agent-sync`) is the one tool for chat.  It is AFC `scripts/agent_sync`, zero-dependency, on PATH as `~/.local/bin/agent-sync`:  `post` (new topic), `reply` (existing topic), `read`, `wait`, `listen`, `inbox`, `topics`, `follow`, `mute`, `resolve`, and `react`.  Cloud seats without a checkout follow the guide's [Core Actions](docs/protocols/zulip-fleet-guide.md#core-actions) over plain HTTP.  Reference:  [The agent-sync CLI](docs/protocols/zulip-fleet-guide.md#the-agent-sync-cli).
 - **Retired chat tooling.**  The CLI replaces `agent-sync-websocket.py` (including its one-shot `--post` helper), `agent-sync-poll.py`, the pm2 `agent-sync-push` relay with its tunnel endpoint, `consumer.mjs`, `slack-sync.sh`, the `slack-collab` MCP, and `~/.secrets/agent-sync.env`.  Never use them, or the Slack tokens they read ([Appendix D](#slack-era-retired-2026-10-07)).
 - **Bridges.**
   - `com.jay.github-outbox-bridge` lets a seat that can drive GitHub, but cannot set an Authorization header, reach #agent-sync.  It posts comments on a private outbox issue as that seat and mirrors skim matches back (see `docs/MAC-LOCAL-PROCESSES.md`).  Since AFC #376 it posts to Zulip as that seat's own bot, through the `agent-sync` CLI.  The tracked script is `scripts/github-outbox-bridge.py`; the LaunchAgent is not installed on the Mac yet, so until a Mac seat installs it no outbox comment is posted.
@@ -384,7 +409,7 @@ Linear is the system of record for fleet work, for every agent, seat, and app (o
 
 ### What Linear Is
 
-- Workspace Simple With Us (`https://linear.app/simple-with-us`), one public team per app, team key = the app acronym:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK ([App Acronyms and Repos](#app-acronyms-and-repos)).  Issue ids carry the app (`BF-123`) and are the id everywhere:  topics, branches, PRs, Notes.
+- Workspace Simple With Us (`https://linear.app/simple-with-us`), one public team per app, team key = the app acronym:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK, SWU ([App Acronyms and Repos](#app-acronyms-and-repos)).  Issue ids carry the app (`BF-123`) and are the id everywhere:  topics, branches, PRs, Notes.
 - Everything the old board held is in Linear:  review findings, every app's effort-board rows, and every repo's GitHub issues, with their original dates.  An imported row keeps its old board id as its Linear UUID, so a full old id or its first 8 hex characters still resolves in `board`.
 - Linear is the system of record and the only write surface.  Nothing is mirrored to or from the effort logs or GitHub Issues.
 - Humans use Linear in the browser.  Agents use `board`, which acts as the shared `Fleet` Linear app and puts the seat tag on the first line of every issue and comment it writes.  Never write to Linear as Jay, through the claude.ai Linear connector, through Composio, or with a personal API key.
@@ -521,6 +546,7 @@ Binding for every seat on every platform, current and future.  Landing is part o
 - Branch protection does not enforce the Codex gate.  It blocks only on threads that already exist, so any merge can land on green checks before Codex posts anything.  The gate is yours to hold.
 - Arm auto-merge with `gh pr merge <n> --squash --auto` once Codex has reviewed the current head and its threads are triaged, so the PR lands the instant checks are green and threads are resolved.  Never arm it on a head still awaiting Codex review.
 - Never ask Codex to fix a PR (an `@codex fix` comment, a Codex cloud fix task, or any other request that has Codex push code) unless Jay agrees to that specific request first (owner 2026-10-11, all seats, all repos).  Codex fixes run in Codex's cloud, outside the fleet's per-PR autofix queue, so they can race the autofix bots on the same branch.  Asking Codex to *review* is fine.  Review findings are fixed by the fleet autofix bots, which share one queue per PR ([docs/PR-AUTOFIX.md](docs/PR-AUTOFIX.md)), or by the seat that owns the PR.
+- Muse Spark is permitted for fleet autofix only as the exact 1.3 Contributor variant.  Never substitute standard or non-contributor Spark 1.3, including as a fallback.  Current direct MiniMax rollout stays in place until a Contributor route is verified; Vercel AI Gateway is not an approved route for this rollout (owner 2026-10-13).
 - If you push a new head while auto-merge is armed, disable it with `gh pr merge <n> --disable-auto` until Codex has reviewed the new head.
 - Codex review pending is a valid stopping point.  Never sleep-wait or poll for it.  End the turn with the PR noted as awaiting Codex, and resume on your next wake or round.  To check once, compare `gh api repos/<owner>/<repo>/pulls/<n>/reviews --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | .commit_id'` against the head SHA from `gh pr view <n> --json headRefOid`.
 
@@ -1268,8 +1294,8 @@ The Sentry and Datadog standing split binds every agent (2026-09-01 adoption rep
 
 ### Seer
 
-- The org Autofix and Scanner quota is on (sponsored).
-- Seer Autofix is enabled for BotFleet only (`autofixAutomationTuning=always`).  Hold Autofix on every other project.
+- The org Autofix and Scanner quota was sponsored; verify live eligibility before changing paid entitlements.
+- Owner direction (2026-10-13): expand Seer issue repair across active fleet projects, superseding the BotFleet-only hold.  Use Seer as the fixing agent and connected repositories to produce proposal PRs; keep existing CI and current-head review gates before merge.  Do not hand Seer fixes to Cursor or add Bugbot Autofix as part of this rollout.  Do not impose a pilot-only hold or artificial run cap; use supported automation tuning and automatic PR creation for eligible projects.  Missing GitHub integration is a functional blocker for that project, not an owner hold.  Verify project repository access and persisted automation settings before reporting enablement.
 - Never mint extra Seer user seats for bot GitHub accounts.
 - **Never dismiss a Seer finding on its literal claim.**  Even when the exact symptom looks wrong, investigate the surrounding code and context.  Seer often flags a real underlying structural issue or hazard.
 
@@ -1316,6 +1342,17 @@ Every repo's `AGENTS.md` (or equivalent agent-rules file) carries this stanza, v
 
 Lookup data only.  The binding rules live in the sections above.
 
+### Agent-sync names
+
+Four fleet pieces share the substring `agent-sync`.  The binding disambiguation table and writing rules are in [Agent-Sync Names](#agent-sync-names).  Quick reference:
+
+| Piece | Prose name | Stable id (unchanged by `OPS-925`) |
+| --- | --- | --- |
+| Zulip channel | **#agent-sync** | stream name `agent-sync` |
+| CLI | **the agent-sync CLI** | `~/.local/bin/agent-sync` → AFC `scripts/agent_sync` |
+| Listener | **the agent-sync listener** | `com.jay.agent-sync-listener`; server listener on Coolify |
+| MCP | **the Agent-Sync MCP server** | `agent-sync mcp`; Worker `agent-sync-mcp` at `agent-sync.jays.services` |
+
 ### App Acronyms and Repos
 
 `fleet-apps.json` is the source of truth.  Use the acronym in Apple Notes titles (`[AFC, Claude] short topic`), in Zulip topic names, and anywhere an app is abbreviated.  In `repo:` lines write the GitHub repo name, except ST, which is written `Socratic.Trade` (the product name).  `AFL` and `FLEET` were both used as coordinator aliases for a while and are retired; `fleet` is only a wake recipient, never an app acronym.
@@ -1329,7 +1366,7 @@ Lookup data only.  The binding rules live in the sections above.
 | `DD` | DealDex | `dealdex` |
 | `AFC` | AI-Fleet-Coordinator | `fleet` |
 | `PS` | Personal-Site | `personal` |
-| `AR` | Autorotate | `autorotate` |
+| `AR` | Autorotate (archived) | `autorotate` |
 | `CL` | ContactLogo | `contactlogo` |
 | `BF` | BotFleet | `botfleet` |
 | `CK` | Clutch | `clutch` |
@@ -1338,12 +1375,14 @@ Lookup data only.  The binding rules live in the sections above.
 | `CC` | CodeCaps | `codecaps` |
 | `FL` | FleetLink | `fleetlink` |
 | `FLL` | fleetlink-legacy (legacy, live until cutover) | `fleetlink-legacy` |
+| `SWU` | Simple-With-Us/Simple-With-Us | `swu` |
 
 Name drift, verified Wed, Oct 7, 2026:
 
 - The ST repo on GitHub and in `fleet-apps.json` is `Socratic-Trade`; Socratic.Trade is the product name used in `repo:` lines.  Both mean ST.
 - The old canonical name `API-usage-monitor` (the registry's former `slackRepo` value, removed when the registry moved to Zulip) is GitHub `Usage-Monitor`.
 - The registry's `fleet-ops` is GitHub `Fleet-OPS`.  GitHub names are case-insensitive, so both resolve.
+- `SWU` is the Simple With Us website (`https://simplewithus.com`), repository `Simple-With-Us/Simple-With-Us`.  Its Linear team key is registered and its lane prefix is `swu` (AFC-297).
 - Autorotate is archived on GitHub.
 - Clutch (`CK`) is missing from the old canonical list; it belongs.
 - FleetLink (`FL`) and fleetlink-legacy (`FLL`) were added to `fleet-apps.json` on Sun, Oct 11, 2026 (AFC-252).  Neither has a Linear team yet:  Jay creates the FL team, and FLL is only a registry key for the legacy worker repo.  Neither has a Zulip linkifier, so write `FleetLink#n` and `fleetlink-legacy#n`, never `FL#n` or `FLL#n`.
