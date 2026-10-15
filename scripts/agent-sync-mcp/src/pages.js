@@ -1,5 +1,5 @@
 // HTML for the consent page, the arming notice and /admin.
-import { renderStatusOverview } from "./status.js";
+import { callSeatLabel, renderStatusOverview } from "./status.js";
 //
 // Pure module.  Every page is static HTML with no script.  Every string that
 // could come from a client (a CIMD document, a registration, a query string)
@@ -218,7 +218,7 @@ export function adminPage({ email, seats, clients, refusals, tokenRefusals = [],
     ? calls
         .map(
           (c) =>
-            `<tr><td>${escapeHtml(ownerTime(c.ts))}</td><td>${escapeHtml(c.seat)}</td><td>${escapeHtml(c.tool)}</td><td>${escapeHtml(c.error_code ?? "ok")}</td><td>${escapeHtml(c.channel_id ?? "")}</td><td>${escapeHtml(c.topic ?? "")}</td><td>${escapeHtml(c.message_id ?? "")}</td><td>${escapeHtml(c.latency_ms ?? "")}</td><td><code>${escapeHtml(c.grant_ref ?? "")}</code></td><td>${escapeHtml([c.asn ?? "", c.country ?? ""].join(" ").trim())}</td></tr>`,
+            `<tr><td>${escapeHtml(ownerTime(c.ts))}</td><td>${escapeHtml(callSeatLabel(c, ""))}</td><td>${escapeHtml(c.tool)}</td><td>${escapeHtml(c.error_code ?? "ok")}</td><td>${escapeHtml(c.channel_id ?? "")}</td><td>${escapeHtml(c.topic ?? "")}</td><td>${escapeHtml(c.message_id ?? "")}</td><td>${escapeHtml(c.latency_ms ?? "")}</td><td><code>${escapeHtml(c.grant_ref ?? "")}</code></td><td>${escapeHtml([c.asn ?? "", c.country ?? ""].join(" ").trim())}</td></tr>`,
         )
         .join("")
     : `<tr><td colspan="10">No tool calls yet.</td></tr>`;

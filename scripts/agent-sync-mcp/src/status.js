@@ -65,11 +65,18 @@ function formatRetry(record, e) {
   return bits.join(" · ") || "No retry guidance recorded";
 }
 
+/** Show delegation only when the authenticated caller differs from the actor. */
+export function callSeatLabel(record, missing = "—") {
+  const caller = record.authenticated_seat ?? record.seat ?? missing;
+  const actor = record.acting_identity ?? record.seat ?? caller;
+  return caller !== actor ? `${actor} via ${caller}` : record.seat ?? caller;
+}
+
 function seatSummary(seat, calls, diagnostics, generatedAt, diagnosticsUnavailable, e) {
-  const ordered = [...calls].filter((c) => c.seat === seat.seat).sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+  const ordered = [...calls].filter((c) => (c.authenticated_seat ?? c.seat) === seat.seat).sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
   const last = ordered[0];
   const success = ordered.find((c) => !failure(c));
-  const seatDiagnostics = diagnostics.filter((c) => c.seat === seat.seat && Number.isFinite(c.ts));
+  const seatDiagnostics = diagnostics.filter((c) => (c.authenticated_seat ?? c.seat) === seat.seat && Number.isFinite(c.ts));
   const error = [...ordered.filter(failure), ...seatDiagnostics].sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))[0];
   const unavailableFields = new Set(seat.unavailableFields ?? []);
   const fieldUnavailable = (name) => unavailableFields.has(name);
@@ -137,7 +144,7 @@ function recentErrors(rows, e) {
     ].filter(Boolean).join(" · ");
     return `<article class="error-card"><header><strong>${e.escape(r.kind)}</strong><time>${e.escape(e.time(r.ts) || "Unknown time")}${Number.isFinite(r.count) && r.count > 1 ? ` · ${e.escape(r.count)} occurrences` : ""}</time></header>
 <p><b>Cause:</b> ${e.escape(detail.cause)}</p><p><b>Remedy:</b> ${e.escape(detail.remedy)}</p>
-<p class="error-meta">${e.escape(r.seat ?? "—")} · ${e.escape(r.client ?? r.client_id ?? "—")} · ${e.escape(r.tool ?? "—")} · ${e.escape(detail.code)} · ${e.escape(formatRetry(r, e))}${supplemental ? ` · ${e.escape(supplemental)}` : ""}</p></article>`;
+<p class="error-meta">${e.escape(callSeatLabel(r))} · ${e.escape(r.client ?? r.client_id ?? "—")} · ${e.escape(r.tool ?? "—")} · ${e.escape(detail.code)} · ${e.escape(formatRetry(r, e))}${supplemental ? ` · ${e.escape(supplemental)}` : ""}</p></article>`;
   }).join("") || `<p>No Recent Errors In Retained Sample.</p>`;
 }
 

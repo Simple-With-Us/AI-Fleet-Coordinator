@@ -59,9 +59,10 @@ import { verifyAccessJwt } from "./access.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy } from "./pages.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
+import { IdentityRouter, delegatedNames, delegatedStatus } from "./delegated-identities.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromEnv } from "./recall.js";
-import { linearClientFromEnv, LINEAR_SEATS, linearSecretNames } from "./linear.js";
+import { LinearClient, linearClientFromEnv, LINEAR_SEATS, linearSecretNames } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS } from "./events.js";
@@ -244,6 +245,48 @@ async function serveMcp(request, env, ctx) {
     linear: linearClientFromEnv(env, seat, { gate: seatGate }),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
   });
+  const routedTools = seat === "CURSOR" ? new IdentityRouter({
+    callerTools: tools,
+    env,
+    createRole: async (identity) => {
+      const names = delegatedNames(identity);
+      if (!names) throw new ToolError("invalid_argument", "Unknown identity.");
+      const status = delegatedStatus(env, identity);
+      if (status.zulip !== "configured") throw new ToolError("not_configured", `Zulip credentials are missing for ${identity}.`);
+      const roleGate = env.SEAT_GATE.get(env.SEAT_GATE.idFromName(identity));
+      const roleState = await roleGate.getState();
+      if (roleState.paused) throw new ToolError("paused", `The ${identity} identity is paused.`);
+      const roleKey = env[names.zulipKey].trim();
+      const roleEmail = env[names.zulipEmail].trim().toLowerCase();
+      const roleConfig = { ...config, botEmails: { ...config.botEmails, [identity]: roleEmail } };
+      const linear = status.linear === "configured" ? new LinearClient({
+        seat: identity,
+        clientId: env[names.linearClientId].trim(),
+        clientSecret: env[names.linearClientSecret].trim(),
+        gate: roleGate,
+        fetch: globalThis.fetch.bind(globalThis),
+      }) : null;
+      return new HostedTools({
+        seat: identity,
+        callerSeat: "CURSOR",
+        callerGate: seatGate,
+        delegatedLinear: true,
+        linearCredentialNames: { clientId: names.linearClientId, clientSecret: names.linearClientSecret },
+        scopes,
+        clientId: typeof auth.clientId === "string" ? auth.clientId : "",
+        grantRef: tools.grantRef,
+        paused: tools.paused,
+        config: roleConfig,
+        zulip: new ZulipClient({ email: roleEmail, key: roleKey }),
+        key: roleKey,
+        gate: roleGate,
+        cf: tools.cf,
+        recall: tools.recall,
+        linear,
+        linearWrites: tools.linearWrites,
+      });
+    },
+  }) : tools;
   const authInfo = {
     token: auth.token,
     clientId: auth.clientId,
@@ -267,7 +310,7 @@ async function serveMcp(request, env, ctx) {
     clientId: typeof auth.clientId === "string" ? auth.clientId : "",
     logRefusal: (row) => logRefusal(env, row),
   }) : null;
-  const response = await serveMcpRequest(request, tools, authInfo, events);
+  const response = await serveMcpRequest(request, routedTools, authInfo, events);
   if (response.status === 403 && request.headers.has("origin")) {
     // Records whether any client sends a browser Origin (spec 3.2).
     console.log(JSON.stringify({ event: "mcp_origin_refused", origin_host: logSafe(safeHost(request.headers.get("origin")), 120) }));
