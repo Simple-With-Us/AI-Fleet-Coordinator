@@ -9,6 +9,7 @@
 // Spec:  docs/protocols/agent-sync-mcp.md sections 3.4, 3.5 and 3.10.
 
 import { ARM_WINDOW_MS, GRANT_MAX_AGE_MS, PROPS_PHASE } from "./config.js";
+import { scanSecret } from "./contract.js";
 
 const AUDIT_CAP = 200;
 // Authorize refusals come from a request that passed Cloudflare Access, so the
@@ -157,6 +158,10 @@ const LINEAR_API_CLEANUP_INTERVAL_MS = MINUTE_MS;
 export const ROLE_TTL_MS = 10 * MINUTE_MS; // spec 3.6:  users/me on first use and every 10 minutes
 export const CALL_RETENTION_DAYS = 90; // spec 3.9
 const CALLS_PER_DAY_CAP = 5000;
+const ERROR_AUDIT_CAP = 100;
+export const CALLS_STORAGE_MAX_BYTES = 1024 * 1024;
+export const ERRORS_STORAGE_MAX_BYTES = 256 * 1024;
+const ERROR_MESSAGE_MAX = 300;
 const GEO_CAP = 50;
 
 // D5 budgets, per seat.  `write` is post and reply, `react` is reactions,
@@ -449,25 +454,60 @@ export async function linearTokenClear(store) {
 // ---- per-call audit (spec 3.9), kept 90 days
 
 const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10);
-const CALL_FIELDS = ["seat", "grant_ref", "client_id", "tool", "channel_id", "topic", "message_id", "outcome", "error_code", "latency_ms", "body_len", "idem_ref", "recipient_ids", "asn", "country"];
+const CALL_FIELDS = ["seat", "grant_ref", "client_id", "tool", "channel_id", "topic", "message_id", "outcome", "error_code", "error_message", "retryable", "retry_after_s", "reset_at", "upstream_status", "exception_class", "latency_ms", "body_len", "idem_ref", "recipient_ids", "asn", "country"];
+const utf8JsonBytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+const arrayJsonBytes = (rows) => 2 + rows.reduce((bytes, row) => bytes + utf8JsonBytes(row), 0) + Math.max(0, rows.length - 1);
 
 /**
  * One row per tool call.  Only the spec 3.9 fields are kept (never a body, a
  * key, a token or a header), and a change of ASN or country within one grant
  * is flagged in the event log.
  */
-export async function auditCall(store, row, now = Date.now()) {
+async function auditCallInner(store, row, now) {
   const clean = { ts: now };
   for (const field of CALL_FIELDS) {
     const value = row[field];
     if (value === undefined || value === null) continue;
+    if (field === "error_message") {
+      if (typeof value !== "string") continue;
+      const message = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+      clean[field] = scanSecret(message) ? "Error message omitted after secret scan." : [...message].slice(0, ERROR_MESSAGE_MAX).join("");
+      continue;
+    }
+    if (field === "retryable") {
+      if (typeof value === "boolean") clean[field] = value;
+      continue;
+    }
+    if (field === "retry_after_s") {
+      if (Number.isFinite(value) && value >= 0) clean[field] = Math.min(value, 3600);
+      continue;
+    }
+    if (field === "reset_at") {
+      if (Number.isFinite(value)) clean[field] = value;
+      else if (typeof value === "string" && value.length <= 40 && Number.isFinite(Date.parse(value))) clean[field] = value;
+      continue;
+    }
+    if (field === "upstream_status") {
+      if (Number.isInteger(value) && value >= 100 && value <= 599) clean[field] = value;
+      continue;
+    }
+    if (field === "exception_class") {
+      if (typeof value === "string" && /^[A-Za-z][A-Za-z0-9_.]{0,39}$/.test(value)) clean[field] = value;
+      continue;
+    }
+    if (field === "error_code") {
+      if (typeof value === "string" && /^[a-z][a-z0-9_]{0,59}$/.test(value)) clean[field] = value;
+      continue;
+    }
     if (field === "recipient_ids") {
       // The user ids a DM tool addressed (spec 1.2):  integers only, at most 8.  Never a name or a body.
       const ids = Array.isArray(value) ? value.filter((v) => Number.isSafeInteger(v)).slice(0, 8) : [];
       if (ids.length) clean[field] = ids;
       continue;
     }
-    clean[field] = typeof value === "string" ? value.slice(0, 120) : value;
+    if (typeof value === "string") clean[field] = [...value].slice(0, 120).join("");
+    else if (typeof value === "number" && Number.isFinite(value)) clean[field] = value;
+    else if (typeof value === "boolean") clean[field] = value;
   }
   const day = dayKey(now);
   const days = ((await store.get("call_days")) ?? []).filter((d) => typeof d === "string");
@@ -475,14 +515,42 @@ export async function auditCall(store, row, now = Date.now()) {
   const cutoff = dayKey(now - CALL_RETENTION_DAYS * DAY_MS);
   const keep = [];
   for (const d of days.sort()) {
-    if (d < cutoff) await store.put(`calls:${d}`, null);
+    if (d < cutoff) {
+      await store.put(`calls:${d}`, null);
+      await store.put(`calls_bytes:${d}`, null);
+    }
     else keep.push(d);
   }
   await store.put("call_days", keep);
   const bucket = (await store.get(`calls:${day}`)) ?? [];
+  const meta = await store.get(`calls_bytes:${day}`);
+  let encodedBytes = meta && meta.count === bucket.length && Number.isSafeInteger(meta.bytes) && meta.bytes >= 0
+    ? meta.bytes
+    : arrayJsonBytes(bucket);
   bucket.push(clean);
-  while (bucket.length > CALLS_PER_DAY_CAP) bucket.shift();
+  encodedBytes += utf8JsonBytes(clean) + (bucket.length > 1 ? 1 : 0);
+  while (bucket.length > CALLS_PER_DAY_CAP || encodedBytes > CALLS_STORAGE_MAX_BYTES) {
+    if (bucket.length <= 1) break; // A single sanitized audit row is far below the byte cap.
+    encodedBytes -= utf8JsonBytes(bucket.shift()) + 1;
+  }
   await store.put(`calls:${day}`, bucket);
+  await store.put(`calls_bytes:${day}`, { count: bucket.length, bytes: encodedBytes });
+
+  if (clean.outcome === "error") {
+    const cutoffMs = now - CALL_RETENTION_DAYS * DAY_MS;
+    const errors = ((await store.get("errors")) ?? []).filter((entry) => entry && Number.isFinite(entry.ts) && entry.ts > cutoffMs);
+    const errorRow = { ts: clean.ts };
+    for (const field of ["seat", "grant_ref", "client_id", "tool", "error_code", "error_message", "retryable", "retry_after_s", "reset_at", "upstream_status", "exception_class"]) {
+      if (clean[field] !== undefined) errorRow[field] = clean[field];
+    }
+    errors.push(errorRow);
+    let encodedErrorBytes = arrayJsonBytes(errors);
+    while (errors.length > ERROR_AUDIT_CAP || encodedErrorBytes > ERRORS_STORAGE_MAX_BYTES) {
+      if (errors.length <= 1) break; // Sanitized error rows are individually well below the cap.
+      encodedErrorBytes -= utf8JsonBytes(errors.shift()) + 1;
+    }
+    await store.put("errors", errors);
+  }
 
   let geoChanged = false;
   if (clean.grant_ref && (clean.asn !== undefined || clean.country !== undefined)) {
@@ -501,6 +569,12 @@ export async function auditCall(store, row, now = Date.now()) {
   return { geoChanged };
 }
 
+/** Serialize the full audit read/modify/write sequence across concurrent RPCs. */
+export async function auditCall(store, row, now = Date.now()) {
+  if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
+  return store.transaction((txn) => auditCallInner(txn, row, now));
+}
+
 /** The newest call rows, newest first. */
 export async function callTail(store, limit = 40) {
   const days = ((await store.get("call_days")) ?? []).filter((d) => typeof d === "string").sort().reverse();
@@ -511,6 +585,62 @@ export async function callTail(store, limit = 40) {
     if (out.length >= limit) break;
   }
   return out;
+}
+
+/** The newest retained diagnostic error rows, independent of successful-call volume. */
+export async function errorTail(store, limit = 50, now = Date.now()) {
+  const max = Number.isInteger(limit) ? Math.max(0, Math.min(limit, ERROR_AUDIT_CAP)) : 50;
+  if (max === 0) return [];
+  const cutoff = now - CALL_RETENTION_DAYS * DAY_MS;
+  const errors = ((await store.get("errors")) ?? []).filter((entry) => entry && Number.isFinite(entry.ts) && entry.ts > cutoff);
+  return errors.slice(-max).reverse();
+}
+
+const DIAGNOSTIC_CAP = 100;
+const SAFE_DIAGNOSTIC_KIND = /^[a-z][a-z0-9_-]{0,39}$/i;
+const SAFE_DIAGNOSTIC_REASON = /^[a-z0-9_:-]{1,80}$/i;
+const SAFE_DIAGNOSTIC_SEAT = /^[A-Z][A-Z0-9_-]{0,39}$/;
+
+/** Aggregate safe, low-cardinality failures in the global log gate. */
+async function recordDiagnosticInner(store, { kind, reason, seat, status } = {}, now = Date.now()) {
+  if (typeof kind !== "string" || !SAFE_DIAGNOSTIC_KIND.test(kind)) throw new TypeError("invalid diagnostic kind");
+  if (typeof reason !== "string" || !SAFE_DIAGNOSTIC_REASON.test(reason)) throw new TypeError("invalid diagnostic reason");
+  if (seat !== undefined && seat !== null && (typeof seat !== "string" || !SAFE_DIAGNOSTIC_SEAT.test(seat))) throw new TypeError("invalid diagnostic seat");
+  if (status !== undefined && status !== null && (!Number.isInteger(status) || status < 100 || status > 599)) throw new TypeError("invalid diagnostic status");
+
+  const cutoff = now - CALL_RETENTION_DAYS * DAY_MS;
+  const rows = ((await store.get("diagnostics")) ?? []).filter((row) => row && Number.isFinite(row.ts) && row.ts > cutoff);
+  const rowSeat = seat ?? null;
+  const key = `${kind}\0${reason}\0${rowSeat ?? ""}`;
+  const index = rows.findIndex((row) => `${row.kind}\0${row.reason}\0${row.seat ?? ""}` === key);
+  if (index >= 0) {
+    const [row] = rows.splice(index, 1);
+    row.count = Math.min(Number.MAX_SAFE_INTEGER, (Number.isSafeInteger(row.count) ? row.count : 0) + 1);
+    row.ts = now;
+    if (status !== undefined && status !== null) row.status = status;
+    rows.push(row);
+  } else {
+    const row = { kind, reason, seat: rowSeat, count: 1, ts: now };
+    if (status !== undefined && status !== null) row.status = status;
+    rows.push(row);
+  }
+  while (rows.length > DIAGNOSTIC_CAP) rows.shift();
+  await store.put("diagnostics", rows);
+}
+
+/** Serialize diagnostic aggregation so concurrent failures cannot lose counts. */
+export async function recordDiagnostic(store, entry, now = Date.now()) {
+  if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
+  return store.transaction((txn) => recordDiagnosticInner(txn, entry, now));
+}
+
+/** Newest aggregated diagnostics first, bounded to the retained 90-day window. */
+export async function diagnosticTail(store, limit = 40, now = Date.now()) {
+  const max = Number.isInteger(limit) ? Math.max(0, Math.min(limit, DIAGNOSTIC_CAP)) : 40;
+  if (max === 0) return [];
+  const cutoff = now - CALL_RETENTION_DAYS * DAY_MS;
+  const rows = ((await store.get("diagnostics")) ?? []).filter((row) => row && Number.isFinite(row.ts) && row.ts > cutoff);
+  return rows.slice(-max).reverse();
 }
 
 // ---------------------------------------------------------------- MCP Events (src/events.js)

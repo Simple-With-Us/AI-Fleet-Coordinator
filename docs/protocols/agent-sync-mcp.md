@@ -144,6 +144,14 @@ The hosted server supports the enabled seats listed in `LINEAR_SEATS` in `src/li
 - **Fence.**  Issue titles, descriptions and comments are attacker-controllable by anyone who can open an issue, so everything Linear returns comes between `BEGIN_UNTRUSTED_LINEAR` and `END_UNTRUSTED_LINEAR` markers with the same nonce rule, and the server `instructions` gain one sentence saying so.
 - **Audit.**  One row per call like every other tool, plus `body_len` and `idem_ref`.  Never a body, a token or a credential;  the Linear client secrets join the scrub list, so no error text can carry one.
 
+### 1.4 Admin Status And Error Diagnostics
+
+AFC-316 adds a server-rendered status overview to the existing Access-protected `/admin` page.  It separates configuration, observed traffic and recent successes from failures and missing telemetry.  Each seat shows Zulip key/role/grant state, Linear/recall configuration and last observed call/success/error.  A refresh button loads a new snapshot without scripts or weaker CSP.
+
+The unified diagnostic list combines tool failures, authorize/token refusals, failed grant checks and wake delivery/validation failures.  Known codes have concrete cause/remedy guidance; newly recorded tool failures also retain bounded, secret-scanned messages, retry/reset metadata and upstream HTTP status.  Raw tool arguments, bodies, headers, tokens and queries remain excluded.  Unknown tool names are recorded only as the fixed `unknown_tool` code.
+
+Tool error history is capped independently at 100 rows per seat for 90 days; the page reads up to 50 per seat alongside up to 100 recent calls.  Aggregated pre-tool diagnostics are capped at 100 route/reason/seat entries for 90 days.  Read/modify/write updates use storage transactions.  Successful traffic does not evict the error tail.  UTF-8 byte limits also bound daily call arrays to 1 MiB and error arrays to 256 KiB, retaining newest rows under heavy traffic.  Unauthenticated errors remain unassigned counters, and ordinary initial OAuth discovery 401s are not errors.  Cloudflare Access denials and client-side failures that never reach the Worker are not observable here.
+
 ## 2. Local Stdio Server (`agent-sync mcp`)
 
 **Shape:**

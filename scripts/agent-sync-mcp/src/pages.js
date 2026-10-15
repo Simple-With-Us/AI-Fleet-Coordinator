@@ -1,4 +1,5 @@
 // HTML for the consent page, the arming notice and /admin.
+import { renderStatusOverview } from "./status.js";
 //
 // Pure module.  Every page is static HTML with no script.  Every string that
 // could come from a client (a CIMD document, a registration, a query string)
@@ -12,8 +13,8 @@ export const SENTENCE_GAP = "\u00a0 ";
 // One fixed stylesheet, allowed by hash so the CSP can keep `default-src 'none'`.
 // test/pages.test.mjs recomputes the hash, so editing the CSS without updating
 // STYLE_HASH fails the build instead of shipping an unstyled page.
-export const STYLE = "body{font:16px/1.5 system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;background:#fff;color:#1a1a1a}h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:2rem}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:.35rem .5rem;text-align:left;vertical-align:top}code{background:#f3f3f3;padding:0 .2rem}.warn{background:#fff4e5;border:1px solid #f0c36d;padding:.6rem .8rem}.ok{color:#196c2e}button{font:inherit;padding:.4rem .9rem;margin:.2rem .3rem .2rem 0}form.inline{display:inline}";
-export const STYLE_HASH = "sha256-WLgZxQAwJjcNpjZQCMQmYZWDXVFD2o7FUF7qGOsLOyc=";
+export const STYLE = "body{font:16px/1.5 system-ui,sans-serif;max-width:70rem;margin:2rem auto;padding:0 1rem;background:#fff;color:#1a1a1a}h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:2rem}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:.35rem .5rem;text-align:left;vertical-align:top}code{background:#f3f3f3;padding:0 .2rem}.warn{background:#fff4e5;border:1px solid #f0c36d;padding:.6rem .8rem}.ok{color:#196c2e}button{font:inherit;padding:.4rem .9rem;margin:.2rem .3rem .2rem 0}form.inline{display:inline}.status-overview{border:1px solid #bbb;border-radius:.6rem;padding:1rem;margin:1rem 0 2rem}.overview-heading{display:flex;align-items:center;justify-content:space-between;gap:1rem}.overview-heading h2{margin:.25rem 0}.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:.8rem}.status-card,.error-card{border:1px solid #ddd;border-radius:.45rem;padding:.7rem .85rem;min-width:0}.status-card h3,.error-card p{margin:.2rem 0 .5rem}.status-state{font-weight:700}.state-ready{color:#196c2e}.state-attention{color:#8a4b00}.state-neutral{color:#333}.status-card dl{display:grid;grid-template-columns:minmax(6rem,auto) 1fr;gap:.2rem .7rem;margin:.4rem 0}.status-card dt{font-weight:600}.status-card dd{margin:0;overflow-wrap:anywhere}.coverage,.error-meta{color:#555;font-size:.9rem}.error-list{display:grid;gap:.55rem}.error-card header{display:flex;justify-content:space-between;gap:1rem}.error-card time{white-space:nowrap}.status-overview{overflow-wrap:anywhere}@media(max-width:38rem){.overview-heading{align-items:flex-start;flex-direction:column}.error-card header{flex-direction:column;gap:0}.status-card dl{grid-template-columns:1fr}.status-card dd{margin-bottom:.35rem}table{display:block;overflow-x:auto;white-space:nowrap}}";
+export const STYLE_HASH = "sha256-lOWOx8xDUO+3/MiJwMf86j8davwVAoufyOVOsW+w/JY=";
 
 export const PAGE_CSP = `default-src 'none'; style-src '${STYLE_HASH}'; frame-ancestors 'none'; base-uri 'none'`;
 
@@ -153,19 +154,21 @@ function actionButton(csrf, action, label, fields = {}) {
 }
 
 /** /admin (spec 3.9):  seat state, keys, grants, clients, refusals, tool calls, audit. */
-export function adminPage({ email, seats, clients, refusals, tokenRefusals = [], audits, calls = [], csrf, notice, manualSeats = [] }, headers) {
+export function adminPage({ email, seats, clients, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [] }, headers) {
   const seatRows = seats
     .map((s) => {
-      const grants = s.grants.length
+      const unavailable = new Set(s.unavailableFields ?? []);
+      const stateUnknown = unavailable.has("state");
+      const grants = unavailable.has("grants") ? "Unknown (diagnostic read failed)" : s.grants.length
         ? s.grants.map((g) => `${escapeHtml(g.client)} <small>(${escapeHtml(g.scope.join(" "))}, ${escapeHtml(ownerTime(g.createdAt))})</small>`).join("<br>")
         : "none";
-      const armed = s.armed ? `<span class="ok">Armed until ${escapeHtml(ownerTime(s.armedUntil))}</span>` : "Not armed";
-      const role = s.role ? (s.role.ok ? `role ${escapeHtml(s.role.role)}, checked ${escapeHtml(ownerTime(s.role.checked_at))}` : `<span class="warn">refused:  ${escapeHtml(s.role.reason)}</span>`) : "not checked yet";
+      const armed = stateUnknown ? "Unknown" : s.armed ? `<span class="ok">Armed until ${escapeHtml(ownerTime(s.armedUntil))}</span>` : "Not armed";
+      const role = unavailable.has("role") ? "Unknown (diagnostic read failed)" : s.role ? (s.role.ok ? `role ${escapeHtml(s.role.role)}, checked ${escapeHtml(ownerTime(s.role.checked_at))}` : `<span class="warn">refused:  ${escapeHtml(s.role.reason)}</span>`) : "not checked yet";
       const key = s.keyInstalled ? `Installed<br><small>${role}</small>` : `<span class="warn">Missing</span>`;
-      return `<tr><td><strong>${escapeHtml(s.seat)}</strong></td><td>${armed}</td><td>${s.paused ? "Paused" : "Live"}</td><td>${escapeHtml(s.epoch)}</td><td>${key}</td><td>${grants}</td><td>${[
+      return `<tr><td><strong>${escapeHtml(s.seat)}</strong></td><td>${armed}</td><td>${stateUnknown ? "Unknown" : s.paused ? "Paused" : "Live"}</td><td>${stateUnknown ? "Unknown" : escapeHtml(s.epoch)}</td><td>${key}</td><td>${grants}</td><td>${[
         actionButton(csrf, "arm", "Arm", { seat: s.seat }),
         s.armed ? actionButton(csrf, "disarm", "Disarm", { seat: s.seat }) : "",
-        s.paused ? actionButton(csrf, "unpause", "Unpause", { seat: s.seat }) : actionButton(csrf, "pause", "Pause", { seat: s.seat }),
+        stateUnknown ? "" : s.paused ? actionButton(csrf, "unpause", "Unpause", { seat: s.seat }) : actionButton(csrf, "pause", "Pause", { seat: s.seat }),
         actionButton(csrf, "revoke", "Revoke All And Bump Epoch", { seat: s.seat }),
       ].join("")}</td></tr>`;
     })
@@ -219,9 +222,15 @@ export function adminPage({ email, seats, clients, refusals, tokenRefusals = [],
         .map((a) => `<tr><td>${escapeHtml(ownerTime(a.ts))}</td><td>${escapeHtml(a.seat)}</td><td>${escapeHtml(a.event)}</td><td><code>${escapeHtml(JSON.stringify(a.detail ?? {}))}</code></td></tr>`)
         .join("")
     : `<tr><td colspan="4">No events yet.</td></tr>`;
+  const statusOverview = renderStatusOverview({ seats, statusCalls, statusErrors, refusals, tokenRefusals, audits: statusAudits, runtimeErrors, generatedAt, diagnosticsUnavailable }, {
+    escape: escapeHtml,
+    time: ownerTime,
+    gap: SENTENCE_GAP,
+  });
   const body = `<h1>Agent-Sync Admin</h1>
 <p>Signed in as ${escapeHtml(email)}.${SENTENCE_GAP}A seat serves tools only with its key installed and a live member role.</p>
 ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
+${statusOverview}
 <h2>Seats</h2>
 <table><tr><th>Seat</th><th>Arming</th><th>State</th><th>Epoch</th><th>Zulip Key</th><th>Grants</th><th>Actions</th></tr>${seatRows}</table>
 <h2>Hand-Registered Clients (Manual Forms)</h2>

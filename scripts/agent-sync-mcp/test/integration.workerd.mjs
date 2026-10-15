@@ -438,7 +438,7 @@ try {
     assert.equal(spaced.status, 401);
     assert.deepEqual(outbound.filter((u) => u.includes("evil.example")), [], "no document fetch for any trick");
     const admin = await (await browser("/admin")).text();
-    const [authorizePart, tokenPart] = admin.split("Refused Token Requests");
+    const [authorizePart, tokenPart] = admin.split("<h2>Refused Authorize Requests</h2>")[1].split("Refused Token Requests");
     assert.ok(tokenPart.includes("authorization_not_basic") && tokenPart.includes("cimd_client_not_allowlisted"), "token refusals are in the counted table");
     assert.ok(!authorizePart.includes("authorization_not_basic"), "and not in the authorize log");
   });
@@ -1395,6 +1395,21 @@ try {
       assert.match(result._meta["agent-sync/error"].message, /No Zulip key is installed for CLAUDE/);
     }
     assert.equal(zulip.requests.length, before, "neither the legacy alias nor JET/CURSOR keys may supply CLAUDE egress");
+  });
+
+  await step("admin status displays retained tool errors and pre-tool refusals without credentials", async () => {
+    const html = await (await browser("/admin")).text();
+    assert.match(html, /Status Overview/);
+    assert.match(html, /Recent Errors And Refusals/);
+    assert.match(html, /No Zulip key is installed for CLAUDE/);
+    assert.match(html, /Cause:/);
+    assert.match(html, /Remedy:/);
+    assert.ok(!html.includes(CLAUDE_KEY) && !html.includes(JET_KEY) && !html.includes(CURSOR_KEY));
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE");
+    const errors = await ns.get(ns.idFromName("CLAUDE")).errorTail(10);
+    assert.equal(errors.length, 2);
+    assert.equal(errors[0].error_code, "not_authorized");
+    assert.match(errors[0].error_message, /No Zulip key/);
   });
 
   console.log(`\n${passed} passed`);
