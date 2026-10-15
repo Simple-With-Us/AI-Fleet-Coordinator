@@ -47,7 +47,7 @@ Agent-Sync runs one listener that owns the Zulip credentials assigned to its con
 
 Muse can receive a bounded list of existing chats and request one exact destination.  The listener refreshes that record before queueing a fixed reminder.  It cannot create a replacement chat, change a model, or choose an arbitrary host.  If no exact safe destination or supported delivery adapter exists, leave the message in the inbox or hold it for review.
 
-The chat catalog is not a universal wake transport.  It can list stores that do not support delivery; only records marked fresh and wake-capable can be selected.  Transcript inspection is a separate, more sensitive capability and remains restricted by the routing policy.
+The chat catalog is not a universal wake transport.  It can list stores that do not support delivery; only records marked fresh and wake-capable can be selected.  Muse may inspect one exact, listed read-capable excerpt for an owner or peer trigger when it helps resolve the request.  Muse makes the relevance and safety judgment once; the listener enforces the exact target, read capability, excerpt bounds, and fixed routing constraints.
 
 ### Codex Delivery
 
@@ -59,7 +59,7 @@ Codex does not currently have a native Zulip listener.  Its Zulip bot can receiv
 - [Zulip Wake Audit](zulip-wake-audit-2026-10-13.md) — current transport and catalog capabilities.
 - [Agent-Sync Listener](agent-sync-listener.md) — listener lifecycle, budgets, and routing controls.
 - [BotFleet Outgoing Webhook Migration](zulip-outgoing-migration.md) — receiver readiness and bot cutover gates.
-- [AFC-305 Universal Chat Routing](https://linear.app/simple-with-us/issue/AFC-305) — existing-chat discovery and wake coverage work.
+- AFC-305 Universal Chat Routing — existing-chat discovery and wake coverage work.
 
 ## Published Copy
 

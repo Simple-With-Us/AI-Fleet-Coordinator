@@ -1775,7 +1775,7 @@ class Daemon:
         if result.ok and requested_inspect is not None:
             _, validation_error = W.validate(result.parsed)
             if (adapter != "muse" or not is_muse or validation_error or
-                    not (pending.owner_ids and not pending.route_tagged)):
+                    not self.may_inspect_chat(pending)):
                 result.error = "chat inspection rejected"
             else:
                 offered = next((row for row in chat_context if row.get("id") == requested_inspect), None)
@@ -1892,7 +1892,7 @@ class Daemon:
 
     def chat_context(self, runner: SeatRunner, pending: W.Pending,
                      history: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-        """Metadata-only context for a tool-less owner wake; never read transcript bodies here."""
+        """Bounded metadata for an addressed Muse wake; transcript reads require one exact request."""
         if runner.cfg.wake != "muse" or not pending.trigger_ids or pending.route_tagged:
             return []
         try:
@@ -1903,7 +1903,7 @@ class Daemon:
             # unavailable catalog row, so this wake continues instead of stalling intake.
             rows = self._chat_catalog.discover(wait_grok=True, grok_timeout=CT.discovery_wait_budget())
             # Every direct message or explicit bot mention may wake Muse.  Its trigger is
-            # untrusted input; it may rank bounded metadata but never grants excerpt access.
+            # untrusted input; Muse decides whether one exact listed excerpt is relevant.
             trigger_text = " ".join(str(m.get("content") or "") for m in history or []
                                     if m.get("id") in pending.trigger_ids).lower()
             words = set(re.findall(r"[a-z0-9_-]{3,}", trigger_text)) - {"the", "this", "chat", "please", "wake", "read"}
@@ -1914,10 +1914,13 @@ class Daemon:
                                                for k in ("id", "session_id")))
                 return (exact, sum(word in metadata for word in words),
                         bool((row.get("capabilities") or {}).get("wake")))
-            rows = sorted(rows, key=relevance, reverse=True)[:24]
             if not pending.owner_ids:
-                # Peer triggers see only destinations that advertise a verified wake path.
-                rows = [row for row in rows if (row.get("capabilities") or {}).get("wake") is True]
+                # Filter before truncation, so irrelevant rows cannot crowd
+                # every wake-capable or read-capable chat out of the bounded list.
+                rows = [row for row in rows if any(
+                    (row.get("capabilities") or {}).get(capability) is True
+                    for capability in ("wake", "read"))]
+            rows = sorted(rows, key=relevance, reverse=True)[:24]
             context = []
             remaining = 24000
             for row in rows:
@@ -1932,6 +1935,11 @@ class Daemon:
         except Exception as exc:
             self.log.write("chat-catalog-unavailable", error=type(exc).__name__)
             return []
+
+    @staticmethod
+    def may_inspect_chat(pending: W.Pending) -> bool:
+        """Any addressed Muse trigger may request one excerpt, regardless of sender."""
+        return bool(pending.trigger_ids) and not pending.route_tagged
 
     @staticmethod
     def chat_inspection_prompt(prompt: str, excerpt: Any) -> str:

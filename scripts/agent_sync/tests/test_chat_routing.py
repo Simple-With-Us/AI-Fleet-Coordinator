@@ -41,7 +41,7 @@ class ChatRoutingTests(DaemonHarness):
         transport = SimpleNamespace(preflight=lambda b: 'ready', send=lambda b,t: 'accepted')
         self.assertEqual(queue.dispatch_one(transport, self.clock.time())['status'], 'accepted')
 
-    def test_peer_can_select_safe_existing_chat_but_cannot_inspect_transcript(self):
+    def test_peer_can_select_safe_existing_chat_and_request_one_excerpt(self):
         d, r, p, target = self.setup_route()
         p.owner_ids = []
         context = d.chat_context(r, p)
@@ -50,6 +50,12 @@ class ChatRoutingTests(DaemonHarness):
         self.assertEqual(d.select_chat(r, p, {'chat_target': target['id'], 'risk': 'low'}, context)['status'], 'queued')
         item = d.chat_queue('GROK').snapshot()['items'][0]
         self.assertFalse(item['owner'])
+        self.assertTrue(d.may_inspect_chat(p))
+        routed = W.Pending('routed', 'CLAUDE', {'channel': 'agent-sync', 'topic': 'work'}, owner=False,
+                           now=self.clock.time(), due=self.clock.time())
+        routed.add({'id': 43}, True)
+        routed.route_tagged = True
+        self.assertFalse(d.may_inspect_chat(routed))
 
     def test_unknown_readonly_stale_and_changed_targets_hold(self):
         for change in ('unknown', 'readonly', 'stale', 'changed', 'unsafe', 'double-route'):
