@@ -356,6 +356,34 @@ Added Oct 11 2026 (AFC-257).  The held-back records of this instance used to be 
 
 Code:  `scripts/agent_sync/heldalert.py` (the state, the composer and the rules), `daemon._held_alert` (the post, called once per held tick after every seat's own upkeep), tests in `scripts/agent_sync/tests/test_heldalert.py`.
 
+## The Read API (AFC-330)
+
+Owner, Thu, Oct 15:  agents should "fully interact with the listener (or the listener's records regarding that platform/bot)".  On a Mac the CLI and the stdio MCP read the records from the local state root (`agent-sync listener ...`, the `listener_*` tools).  The hosted Worker has no disk here, so this instance can serve a small read API for it:  `scripts/agent_sync/listener_api.py`, started by the daemon when `[listener_api] enabled = true`.
+
+- **Endpoints.**  `GET /listener/v1/<SEAT>/<record>`, where `record` is `status`, `inbox`, `owner-queue`, `wakes` or `held-back`, with the query parameters each takes (`since_seq`, `limit`;  `all`, `limit`;  `since_hours`, `state`, `limit`;  `limit`).  The answer is `{contract: "agent-sync-read/1", seat, record, view}`, the same view `agent-sync listener ... --json` prints, with `Cache-Control: no-store`.  Read-only:  nothing a request carries moves a cursor or clears an entry.  Anything but GET is 405.
+- **Authentication, per seat.**  `X-Agent-Sync-Timestamp` (unix seconds) and `X-Agent-Sync-Signature`, the lowercase hex HMAC-SHA256 of `agent-sync-read/1\nGET\n<path>\n<raw query>\n<timestamp>`, good for five minutes either side.  The key is the one this listener already shares with the Worker for the seat's wakes:  the seat's routine `key_env` when its routine is `hmac-sha256` (`JET_ROUTINE_KEY`), else `<CODE>_ROUTINE_KEY`;  on the Worker it is `WAKE_HMAC_KEY_<SEAT>`.  A seat without a key of at least 32 characters is 404, as is an unknown seat or path;  a bad or stale signature is 401.  A signature names one seat, one record and one exact query, so it cannot read another seat or widen a limit.  Keys join the log scrub list;  the log records the seat and record of each read and each refusal's reason, never a key, a signature or a body.
+- **Port.**  8788 (`EXPOSE 8787 8788` in the image), separate from the outgoing-webhook receiver on 8787.  `[listener_api] bind` defaults to `127.0.0.1`;  the sample sets `0.0.0.0` so the proxy can reach it once enabled.
+
+**Deploy (not done;  each step is Jay's or needs his OK).**
+
+1. **Merge, then redeploy the listener in Coolify.**  The change is under `scripts/agent_sync/`, a Watch Path, but nothing auto-deploys here (see [Coolify Setup](#coolify-setup), step 1), so press Redeploy.  The new container takes the lock over as usual (step 8).  With `[listener_api]` absent from the live volume nothing new listens yet.
+2. **Keys.**  JET already has `JET_ROUTINE_KEY` (the same value as the Worker's `WAKE_HMAC_KEY_JET`), so JET needs nothing new.  For GROK-WEB, ECHO and WISE, generate one key each (`openssl rand -hex 32`), store it in Infisical `prod` `/zulip` as `GROK_WEB_ROUTINE_KEY`, `ECHO_ROUTINE_KEY` and `WISE_ROUTINE_KEY`, and put the same value on the Worker as `WAKE_HMAC_KEY_GROK_WEB`, `WAKE_HMAC_KEY_ECHO` and `WAKE_HMAC_KEY_INSTINCT` (WISE's secret keeps its old name).  Note that a Worker wake key also turns on MCP Events for that seat (spec 3.12), and those three seats have `wake = "inbox"`, so their clients would see an event that never fires;  start with JET alone unless Jay accepts that.
+3. **Enable it on the live volume.**  Append the section (once;  check with the `grep` first):
+   ```
+   C=$(docker ps --filter name=l40rxd4rbj1pnogmbtetzmsf --format '{{.Names}}')
+   docker exec "$C" grep -c '^\[listener_api\]$' /data/listener.toml      # must print 0
+   printf '\n[listener_api]\nenabled = true\nbind = "0.0.0.0"\nport = 8788\n' | docker exec -i "$C" sh -c 'cat >> /data/listener.toml'
+   ```
+   Then **restart the app** (a reload starts the server, but new key variables reach the container only on a restart).  The log shows `listener-api-started` with the seats that have keys, or `listener-api-deny-all`.
+4. **Reverse proxy.**  Give the app a domain for port 8788 only, for example `https://listener.jays.services:8788` in Coolify's Domains field (Coolify's Traefik terminates TLS and forwards to the container's 8788), plus a proxied Cloudflare DNS record for the name on the Coolify host.  This replaces "no domain" in Coolify Setup step 2 for this one port;  8787 stays unrouted until the outgoing webhook is enabled.  Route nothing but `/listener/v1/`.
+5. **Check from inside the container**, then from outside:
+   ```
+   docker exec "$C" python3 -c 'import os,sys,time,urllib.request as u;sys.path.insert(0,"/app/scripts");from agent_sync import listener_api as A;p="/listener/v1/JET/status";t=str(int(time.time()));r=u.Request("http://127.0.0.1:8788"+p,headers={A.TIMESTAMP_HEADER:t,A.SIGNATURE_HEADER:A.sign(os.environ["JET_ROUTINE_KEY"],p,"",t)});print(u.urlopen(r).status)'
+   curl -s -o /dev/null -w '%{http_code}\n' https://listener.jays.services/listener/v1/JET/status    # 401:  unsigned
+   ```
+   The first prints `200` and nothing else (`JET_ROUTINE_KEY` is one of the Coolify variables, so `docker exec` sees it);  the second prints `401`.
+6. **Point the Worker at it** (`scripts/agent-sync-mcp/DEPLOY.md`, "Listener read API").
+
 ## Open Questions
 
 - **Routine request format.**  Settled for the Grok Bot routines (Sat, Oct 10):  `POST` to `ZULIP_ALERT_GB_<ROLE>_ENDPOINT` with `Authorization: Bearer <ZULIP_ALERT_GB_<ROLE>_KEY>`.  If the routine needs a different body shape, a mapping layer is needed:  the body is a fixed contract on purpose.  Unknown:  whether the routine dedupes on `Idempotency-Key`.
