@@ -30,7 +30,7 @@ class TestLoginForm(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.secrets = Path(cls.tmp.name) / "mac-collab.env"
         cls.secrets.write_text(
-            'MAC_COLLAB_TOKEN="%s"\nMAC_COLLAB_TOKEN_INSTINCT="%s"\n' % (ROOT_TOKEN, SEAT_TOKEN),
+            'MAC_COLLAB_TOKEN="%s"\nMAC_COLLAB_TOKEN_WISE="%s"\n' % (ROOT_TOKEN, SEAT_TOKEN),
             encoding="utf-8",
         )
         cls._orig = (server.SECRETS, server.AUDIT_LOG, os.environ.get("MAC_COLLAB_TOKEN"))
