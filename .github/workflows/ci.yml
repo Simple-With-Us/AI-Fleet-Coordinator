@@ -18,7 +18,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v7
       with:
-        python-version: '3.14'
+        python-version: '3.15'
     # AGENT-SYNC.md is generated from Fleet-OPS handbook/ and mirrored here by the sync job's pull request from
     # handbook-sync/mirror.  The mirror must start with the GENERATED header, its body must hash to the header, and
     # only that branch may change it.  To change policy, open a PR to Fleet-OPS handbook/ (its README has the rules).
