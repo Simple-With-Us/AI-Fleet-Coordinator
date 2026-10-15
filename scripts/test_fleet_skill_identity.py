@@ -21,6 +21,9 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
 from fleet_skill_identity import (  # noqa: E402
     _SEAT_PIN_SOURCE,
+    BRANCH_EXAMPLE_CANONICAL,
+    BRANCH_EXAMPLE_SLUG,
+    BRANCH_PREFIX,
     COORDINATOR_SELF_ID,
     FORBIDDEN_LOCAL_IOS_SHIP,
     GB_ROLE_TAGS,
@@ -84,6 +87,24 @@ class SpecializeTests(unittest.TestCase):
         self.assertIn("not `[GROK-BOT]`", out)
         self.assertNotIn("two different Claude accounts", out)
         self.assertIn("This install is for `CURSOR`", out)
+
+    def test_branch_worked_example_matches_seat_prefix(self) -> None:
+        peer_literal = "claude/afc-123-zulip-cutover"
+        self.assertEqual(BRANCH_EXAMPLE_CANONICAL, f"monet/{BRANCH_EXAMPLE_SLUG}")
+        skills = ("session-start", "board-ops", "fleet-coordination")
+        for skill_name in skills:
+            base = _load_skill(skill_name)
+            for key, seat in SEATS.items():
+                if key == "claude_shared" or seat.retired:
+                    continue
+                out = specialize_from_monet(base, seat, skill_name=skill_name)
+                if seat.mode == "grok_bot":
+                    want = f"{BRANCH_PREFIX}/{BRANCH_EXAMPLE_SLUG}"
+                else:
+                    want = f"{seat.prefix}/{BRANCH_EXAMPLE_SLUG}"
+                self.assertIn(want, out, f"{key} {skill_name}")
+                if seat.mode != "grok_bot" and seat.prefix != "claude":
+                    self.assertNotIn(peer_literal, out, f"{key} {skill_name}")
 
     def test_ag_suffix_is_antigravity(self) -> None:
         out = specialize_from_monet(_session(), SEATS["ag"], skill_name="session-start")
@@ -1054,6 +1075,27 @@ class RepoPlatformCopiesTests(unittest.TestCase):
         ):
             self.assertIn(os.path.join(ROOT, rel), by_dest, rel)
             self.assertEqual(by_dest[os.path.join(ROOT, rel)], SEATS[key], rel)
+
+    def test_nine_trees_never_teach_claude_branch_example(self) -> None:
+        peer_literal = "claude/afc-123-zulip-cutover"
+        skills = ("session-start", "board-ops", "fleet-coordination")
+        for dest, seat in repo_platform_copies(ROOT):
+            if seat.prefix == "claude":
+                continue
+            for skill_name in skills:
+                path = Path(dest, skill_name, "SKILL.md")
+                self.assertTrue(path.is_file(), path)
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn(
+                    peer_literal,
+                    text,
+                    f"{seat.tag} {skill_name} in {path}",
+                )
+                self.assertIn(
+                    f"{seat.prefix}/{BRANCH_EXAMPLE_SLUG}",
+                    text,
+                    f"{seat.tag} {skill_name} in {path}",
+                )
 
     def test_minimax_tree_is_rendered_for_mm(self) -> None:
         """The tree MiniMax Code reads first inside this repo must say MM."""
