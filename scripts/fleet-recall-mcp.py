@@ -89,12 +89,9 @@ TOOLS = [
                 "seat": {"type": "string", "description": "Uppercase seat tag; defaults to $AGENT_SEAT."},
                 "title": {"type": "string"},
                 "url": {"type": "string", "description": "Source link (PR, board item, doc), optional."},
-                # No schema default.  A default of false is filled in by MCP
-                # clients and then forwarded to the public service, which answers
-                # 400 unknown argument(s): force.  Omit means the guard runs.
                 "force": {"type": "boolean",
-                          "description": "Store even when a near-duplicate contribution already exists.  "
-                                         "Omit it to refuse near-duplicates."},
+                          "description": "Store even when a near-duplicate contribution already exists "
+                                         "(omit unless you mean to skip the duplicate guard)."},
             },
             "required": ["text", "category"],
         },
@@ -149,13 +146,9 @@ def call_tool(name: str, args: dict) -> dict:
         return res
     if name == "recall_stats":
         return public_fallback.call_with_fallback("recall_stats", {}, recall_api.recall_stats)
-    # `force` is local to contribute_with_guard.  That helper pops it only
-    # from its own copy, so the dict handed to the public fallback must already
-    # omit it.  The fallback also drops unknown keys; doing it here keeps a
-    # later allow-list change from forwarding the flag to the service.
-    public_args = {k: v for k, v in args.items() if k != "force"}
+    work = dict(args)
     return public_fallback.call_with_fallback(
-        "recall_contribute", public_args, lambda: contribute_with_guard(dict(args)))
+        "recall_contribute", work, lambda: contribute_with_guard(work))
 
 
 def contribute_with_guard(args: dict) -> dict:

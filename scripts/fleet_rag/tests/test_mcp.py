@@ -372,6 +372,38 @@ class SearchOptionsTests(unittest.TestCase):
         self.assertTrue(all(h["group_hits"] == 3 for h in two["hits"] if h["doc_id"] == "doc/pm2-env"))
 
 
+class ContributeFallbackKwargsTests(unittest.TestCase):
+    """force is local-only; fallback kwargs must not retain it after contribute_with_guard."""
+
+    def load(self):
+        loader = importlib.machinery.SourceFileLoader("fleet_recall_mcp_fallback_test", str(SERVER))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        return mod
+
+    def test_force_stripped_from_shared_work_before_fallback(self):
+        mod = self.load()
+        snapshots = {}
+
+        def fake_call_with_fallback(name, kwargs, run_local):
+            snapshots["before_local"] = dict(kwargs)
+            out = run_local()
+            snapshots["after_local"] = dict(kwargs)
+            return out
+
+        good = "x" * 60
+        with mock.patch.dict(os.environ, {"AGENT_SEAT": "TESTSEAT", "FLEET_RECALL_FAKE": "1"}):
+            recall_api.install_fake_backend()
+            with mock.patch.object(mod.public_fallback, "call_with_fallback", fake_call_with_fallback):
+                mod.call_tool(
+                    "recall_contribute",
+                    {"text": good, "category": "lesson", "force": False},
+                )
+        self.assertIn("force", snapshots["before_local"])
+        self.assertNotIn("force", snapshots["after_local"])
+
+
 class DuplicateGuardTests(unittest.TestCase):
     """recall_contribute answers {"status": "duplicate"} for a near-duplicate unless force=true."""
 
@@ -419,27 +451,6 @@ class DuplicateGuardTests(unittest.TestCase):
         resp = mod.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                            "params": {"name": "recall_contribute", "arguments": args}})
         return resp["result"]
-
-    def test_public_fallback_is_not_handed_force(self):
-        """The guard sees force.  The public fallback must not, or the service 400s."""
-        mod = self.load()
-        captured: dict = {}
-
-        def spy(name, kwargs, run_local, status_probe=None):
-            captured["name"] = name
-            captured["kwargs"] = dict(kwargs)
-            return run_local()
-
-        text = ("pm2 start does not re-read env from the ecosystem file; restart with --update-env "
-                "so the cached PATH is replaced.")
-        with mock.patch.object(mod.public_fallback, "call_with_fallback", spy):
-            res = self.call(mod, {"text": text, "category": "lesson", "force": False})
-        self.assertFalse(res["isError"])
-        self.assertEqual(captured["name"], "recall_contribute")
-        self.assertNotIn("force", captured["kwargs"])
-        self.assertEqual(captured["kwargs"]["category"], "lesson")
-        body = json.loads(res["content"][0]["text"])
-        self.assertEqual(body["status"], "duplicate")
 
     def test_duplicate_then_force(self):
         mod = self.load()

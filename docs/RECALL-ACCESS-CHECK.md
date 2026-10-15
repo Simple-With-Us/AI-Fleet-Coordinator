@@ -132,7 +132,7 @@ curl -sS https://recall.jays.services/recall/search \
 | `403` with `error code: 1010` | Cloudflare rejected your user agent — send a real `User-Agent`, not the language default |
 | `mode: "hybrid+rerank"` in a search result | grouping, lesson boost, and the cross-encoder are all engaged |
 | `status: "duplicate"` from contribute | a near-identical lesson exists; read it, and pass `force` only if yours genuinely adds something |
-| `unknown argument(s): force` | the contribute call carried `force` and the service rejected it.  The service accepts the flag and ignores it (the guard is local).  The stdio schema has no default, so a client must not fill one in |
+| `unknown argument(s): force` | the contribute body included `force` and an older service rejected the key.  The current service drops `force` before validation.  The stdio schema does not default it |
 | `refusing: … looks like a secret` | the gitleaks gate fired — rephrase without credential-shaped strings (bare hex ids can trip it, board `9e80ac0c`) |
 
 ---

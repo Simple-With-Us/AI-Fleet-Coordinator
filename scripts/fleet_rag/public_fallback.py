@@ -418,6 +418,8 @@ def call_public(name: str, kwargs: dict) -> dict:
 def _fallback(name: str, kwargs: dict, why: str) -> dict:
     allowed = PUBLIC_ALLOWED_ARGS.get(name, set())
     public_kwargs = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    if name == "recall_contribute":
+        public_kwargs.pop("force", None)
     try:
         return call_public(name, public_kwargs)
     except FleetRagError as pub_err:

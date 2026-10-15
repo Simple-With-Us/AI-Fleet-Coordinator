@@ -166,15 +166,6 @@ TOOLS: list[JsonDict] = [
                 "seat": {"type": "string", "description": "Your uppercase seat tag (required)."},
                 "title": {"type": "string"},
                 "url": {"type": "string", "description": "Source link (PR, board item, doc), optional."},
-                # No schema default.  Clients that fill defaults would otherwise
-                # inject force=false into every call.  The key is accepted and
-                # dropped below: this service does not run the local near-duplicate
-                # guard, and rejecting the key 400s those clients.
-                "force": {"type": "boolean",
-                          "description": "Accepted so a client that supplies it is not rejected.  "
-                                         "This service does not run the near-duplicate guard (the "
-                                         "local CLI and stdio MCP do), so the value does not change "
-                                         "the result."},
             },
             "required": ["text", "category", "seat"],
         },
@@ -216,6 +207,9 @@ def call_tool(name: str, args: JsonDict) -> JsonDict:
     if not isinstance(args, dict):
         raise FleetRagError("arguments must be an object")
     args = dict(args)
+    if name == "recall_contribute":
+        # Local-only MCP duplicate-guard knob; never part of the public REST contract.
+        args.pop("force", None)
     unknown = set(args) - _ALLOWED_ARGS[name]
     if unknown:
         raise FleetRagError("unknown argument(s): " + ", ".join(sorted(unknown)))
@@ -236,12 +230,6 @@ def call_tool(name: str, args: JsonDict) -> JsonDict:
         # Never fall back to the service process's own AGENT_SEAT for a remote caller.
         raise FleetRagError("seat is required on this surface (cloud callers have no AGENT_SEAT); "
                             "pass your uppercase seat tag, e.g. GROK, CURSOR, CLAUDE")
-    # `force` is the local near-duplicate override.  Pop it after the boolean
-    # check so recall_contribute (which does not take it) is never called with
-    # an unknown keyword, and so a client that injected the stdio schema
-    # default is stored instead of answered 400.
-    _bool(args, "force")
-    args.pop("force", None)
     return recall_api.recall_contribute(**args)
 
 
