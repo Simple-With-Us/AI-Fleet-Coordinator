@@ -666,8 +666,15 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
 
     def test_grok_roster_mention_is_grok_build_not_grok_build_tag(self) -> None:
         text = Path(GUIDE).read_text(encoding="utf-8")
-        self.assertNotIn("@**GROK-BUILD**", text)
-        grok_row = [line for line in text.splitlines() if line.strip().startswith("| GROK |")]
+        start = text.index("### Agent Seats")
+        end = text.index("### BotFleet (BF) Bots")
+        markdown_rows = [line for line in text[start:end].splitlines() if line.strip().startswith("|")]
+        self.assertNotIn(
+            "@**GROK-BUILD**",
+            "\n".join(markdown_rows),
+            "the Who's Here table must not use a GROK-BUILD mention",
+        )
+        grok_row = [line for line in markdown_rows if line.strip().startswith("| GROK |")]
         self.assertEqual(len(grok_row), 1)
         self.assertIn("@**Grok (Build)**", grok_row[0])
 

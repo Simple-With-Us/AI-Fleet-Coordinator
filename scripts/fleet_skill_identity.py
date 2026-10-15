@@ -1301,8 +1301,10 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
     universal_identity = (
         "This universal skill applies across all agent platforms and seats.  "
         "Identify your active seat (**AG**, **CURSOR**, **CODEX**, **GROK**, "
-        "**GROK-BUILD**, **CLAUDE**, **MONET**, **RENOIR**, **DSH**, **MM**, "
-        "**FX**, or a Grok Bot `[GB-<NAME>]` role), use your own Zulip session "
+        "**CLAUDE**, **<YOUR_AGENT_TAG>**, **RENOIR**, **DSH**, **MM**, "
+        "**FX**, or a Grok Bot `[GB-<NAME>]` role).  "
+        "Terminal Grok and Grok Build are one seat, **GROK** (GROK-BUILD in any spelling is an alias, not a tag).  "
+        "Use your own Zulip session "
         "tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-CONDUCTOR]`, "
         "`[DSH·session8]`, `[MM·session8]`), your seat's own bot and "
         "`~/.secrets/Zulip/<file code>-zuliprc`, branch "
