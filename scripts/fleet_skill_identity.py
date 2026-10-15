@@ -903,6 +903,7 @@ def _specialize_grok_bot(text: str, seat: Seat, skill_name: str) -> str:
         ("AGENT_TAG=MONET", pin),
         ("--by MONET", f"--by {BY_SEAT}"),
         ("--mine MONET", f"--mine {BY_SEAT}"),
+        ("claude/afc-123-zulip-cutover", "cursor/afc-123-zulip-cutover"),
         ("claim:  monet/<slug>", f"claim:  {BRANCH_PREFIX}/<slug>"),
         (BRANCH_EXAMPLE_CANONICAL, f"{BRANCH_PREFIX}/{BRANCH_EXAMPLE_SLUG}"),
         ("`--by` for this seat is `MONET`", "`--by` for this seat is `$AGENT_TAG`"),
@@ -1145,6 +1146,11 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
         ("--mine MONET", f"--mine {BY_SEAT}"),
         ("`--by` for this seat is `MONET`",
          f"`--by` for this seat is your verified seat (`{seat.tag}` in an ordinary {seat.notes} session)"),
+        ("claude/afc-123-zulip-cutover", f"{seat.prefix}/afc-123-zulip-cutover"),
+        (
+            f"{BRANCH_PREFIX}/{BRANCH_EXAMPLE_SLUG}",
+            f"{seat.prefix}/{BRANCH_EXAMPLE_SLUG}",
+        ),
         ("claim:  monet/<slug>", f"claim:  {BRANCH_PREFIX}/<slug>"),
         (
             BRANCH_EXAMPLE_CANONICAL,
@@ -1343,6 +1349,11 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         ("AGENT_TAG=MONET", "AGENT_TAG=<YOUR_TAG>"),
         ("--by MONET", f"--by {BY_SEAT}"),
         ("--mine MONET", f"--mine {BY_SEAT}"),
+        ("claude/afc-123-zulip-cutover", "<seat>/afc-123-zulip-cutover"),
+        (
+            f"{BRANCH_PREFIX}/{BRANCH_EXAMPLE_SLUG}",
+            f"<seat>/{BRANCH_EXAMPLE_SLUG}",
+        ),
         ("claim:  monet/<slug>", f"claim:  {BRANCH_PREFIX}/<slug>"),
         (
             BRANCH_EXAMPLE_CANONICAL,
