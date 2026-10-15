@@ -1028,9 +1028,8 @@ export class HostedTools {
       const kind = typeof value === "string" && value ? scanSecret(value, this.known) : null;
       if (kind) throw new ToolError("refused_secret", `refusing to publish:  the ${field} looks like it contains ${kind}`);
     }
-    for (const field of ["content", "text", "markdown"]) {
-      if (typeof args[field] === "string") audit.body_len = args[field].length;
-    }
+    const bodyLength = ["content", "text", "markdown"].reduce((n, field) => n + (typeof args[field] === "string" ? args[field].length : 0), 0);
+    if (bodyLength) audit.body_len = bodyLength;
     await this.reserve(write ? "fleetlink" : "read");
     let out;
     try {
