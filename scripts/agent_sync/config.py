@@ -137,7 +137,7 @@ class SeatConfig:
                  route_enabled: bool = True, held_back: dict[str, Any] | None = None,
                  muse: str | None = None, provider: str | None = None,
                  mcode: str | None = None, fallback: str | None = None,
-                 fallback_uncontained_ok: bool = False) -> None:
+                 fallback_uncontained_ok: bool = False, muse_bridge: bool = False) -> None:
         self.seat = seat
         self.bot = bot
         self.wake = wake
@@ -162,6 +162,7 @@ class SeatConfig:
         self.key_env = key_env
         self.site_env = site_env
         self.routine = routine
+        self.muse_bridge = muse_bridge  # default-off central decision path; original adapter stays configured
         self.route_enabled = route_enabled  # the per-seat kill switch for wake route suggestions
         self.held_back: dict[str, Any] = held_back if held_back is not None else held_back_defaults(wake)
 
@@ -207,6 +208,8 @@ class SeatConfig:
 class Config:
     def __init__(self) -> None:
         self.raw: dict[str, Any] = {}
+        self.muse_bridge_enabled = False
+        self.muse_bridge_remote_seats: tuple[str, ...] = ()
         self.errors: list[str] = []
         self.instance = "mac"
         self.owner_user_id = 0
@@ -352,6 +355,21 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
     cfg = Config()
     cfg.raw = dict(raw)
     errors = cfg.errors
+    bridge = raw.get("muse_bridge") or {}
+    if not isinstance(bridge, dict):
+        errors.append("[muse_bridge] must be a table")
+        bridge = {}
+    bridge_enabled = bridge.get("enabled", False)
+    if not isinstance(bridge_enabled, bool):
+        errors.append("muse_bridge.enabled must be true or false")
+    else:
+        cfg.muse_bridge_enabled = bridge_enabled
+    remote_seats = bridge.get("remote_seats", [])
+    if not isinstance(remote_seats, list) or not all(isinstance(s, str) and _SEAT_RE.fullmatch(s)
+                                                     for s in remote_seats) or len(set(remote_seats)) != len(remote_seats):
+        errors.append("muse_bridge.remote_seats must be unique canonical seat names")
+    else:
+        cfg.muse_bridge_remote_seats = tuple(remote_seats)
     daemon = raw.get("daemon") or {}
     if not isinstance(daemon, dict):
         errors.append("[daemon] must be a table")
@@ -361,6 +379,8 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.instance must be one of %s" % ", ".join(INSTANCES))
     else:
         cfg.instance = instance
+    if cfg.instance == "server" and cfg.muse_bridge_remote_seats:
+        errors.append("muse_bridge.remote_seats is for the Mac bridge only")
     owner = daemon.get("owner_user_id", 0)
     if isinstance(owner, bool) or not isinstance(owner, int) or owner < 0:
         errors.append("daemon.owner_user_id must be a user id (0 means not pinned yet)")
@@ -514,6 +534,10 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if not isinstance(route_enabled, bool):
             problems.append("seat.%s.route_enabled must be true or false" % seat_name)
             route_enabled = True
+        muse_bridge = section.get("muse_bridge", False)
+        if not isinstance(muse_bridge, bool):
+            problems.append("seat.%s.muse_bridge must be true or false" % seat_name)
+            muse_bridge = False
         creds = section.get("creds", "file")
         if creds not in ("file", "env"):
             problems.append("seat.%s.creds must be \"file\" (a zuliprc) or \"env\" (environment variables)" % seat_name)
@@ -627,7 +651,8 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                               instance=seat_instance or cfg.instance, enabled=enabled, creds=creds,
                               email_env=email_env, key_env=key_env, site_env=site_env, routine=routine,
                               route_enabled=route_enabled, held_back=held_back, muse=muse, provider=provider,
-                              mcode=mcode, fallback=fallback, fallback_uncontained_ok=uncontained)
+                              mcode=mcode, fallback=fallback, fallback_uncontained_ok=uncontained,
+                              muse_bridge=muse_bridge)
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg
     _refuse_shared_env(cfg)
     return cfg

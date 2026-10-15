@@ -61,6 +61,10 @@ enabled = false
 bind = "0.0.0.0"
 port = 8787
 
+# AFC-326 is a separate, explicit cutover.  This sample and existing live volumes stay off.
+[muse_bridge]
+enabled = false
+
 [seat.MA]
 instance = "server"
 creds = "env"                     # ZULIP_MA_EMAIL, ZULIP_MA_API_KEY (muse-assist-bot@)
@@ -98,6 +102,7 @@ wake = "inbox"
 instance = "server"
 creds = "env"                     # ZULIP_ECHO_EMAIL, ZULIP_ECHO_API_KEY (instinct-bat-bot@)
 wake = "inbox"
+muse_bridge = false               # enable only after the Mac pull, Muse pin and receipt gate pass
 
 # Grok Bot (GB) personas (Sat, Oct 10):  each is woken on an @-mention or a DM through its Grok Bot routine webhook,
 # POST agent-sync-wake/1 with Authorization: Bearer <ZULIP_ALERT_GB_<ROLE>_KEY>.  The routine replies in Zulip with the

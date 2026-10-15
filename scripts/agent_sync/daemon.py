@@ -41,6 +41,8 @@ from . import __version__
 from . import adapters as A
 from . import config as C
 from . import chat_nudges as CN
+from . import muse_bridge as MB
+from . import muse_bridge_mac as MBM
 from . import chat_transport as CT
 from . import heartbeat as HB
 from . import heldalert as HELDALERT
@@ -476,7 +478,9 @@ class Daemon:
         self.outgoing_webhook_server: OW.OutgoingWebhookServer | None = None
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
-        self.last_tick = {"reap": -1e9, "status": -1e9, "grace": -1e9, "prune": -1e9, "held": -1e9}
+        self.last_tick = {"reap": -1e9, "status": -1e9, "grace": -1e9, "prune": -1e9,
+                          "held": -1e9, "muse_bridge": -1e9}
+        self.muse_bridge_thread: threading.Thread | None = None
         self.config_notified = False
         self.reload_requested = False
         self.acronyms = A.fleet_acronyms()
@@ -1050,6 +1054,7 @@ class Daemon:
                 "owner_api": c.owner_api, "ts": ts, "time": format_time(float(ts or 0)),
                 "content": message.get("content"), "flags": list(message.get("flags") or []), "classes": c.labels(),
                 "stale": c.stale, "wake_worthy": d.wake_worthy, "wake_owner": d.wake_owner,
+                "muse_bridge": bool(d.wake and not d.delivered_to and MB.enabled(self.config, runner.seat)),
                 "routed_at": self.clock.time()}
 
     def _route(self, runner: SeatRunner, message: Mapping[str, Any], done: set[Any] | None = None) -> None:
@@ -1108,6 +1113,10 @@ class Daemon:
             if "inbox" not in done:
                 self._append_seat_inbox(runner, [row])
                 done.add("inbox")
+            if d.wake and not d.delivered_to and "wake" not in done and MB.enabled(self.config, runner.seat):
+                # The inbox is the durable source for the central router.  Keep the original wake
+                # adapter configured, but never start it in parallel with a bridge decision.
+                done.add("wake")
             if d.wake and not d.delivered_to and "wake" not in done:
                 matched = False
                 if runner.seat in ("GROK", "CURSOR") and not c.dm:
@@ -2725,6 +2734,49 @@ class Daemon:
         return pending
 
     # ---- periodic work -------------------------------------------------------------------------
+    def _muse_bridge_native(self) -> None:
+        """Consume one approved server routine using the addressed seat's original runner."""
+        decision = MB.claim_native(self.root)
+        if decision is None:
+            return
+        seat, message_id, receipt = decision["source_seat"], decision["id"], decision["receipt"]
+        runner = self.seats.get(seat)
+        row = MB.find_source(self.root, self.config, seat, message_id)
+        if runner is None or row is None or row.get("seq") != decision.get("seq") or runner.cfg.wake != "http":
+            MB.finish_native(self.root, receipt, "held")
+            self.log.write("muse-bridge-held", seat=seat, id=message_id, reason="source_changed")
+            return
+        now = self.clock.time()
+        pending = W.Pending("muse-bridge-" + receipt[:32], seat, row, owner=row.get("owner") is True,
+                            now=now, due=now)
+        pending.add(row, row.get("owner") is True)
+        try:
+            self.run_wake(runner, pending)
+        except Exception as exc:
+            # The pre-dispatch claim remains uncertain after an exception.  A retry could invoke the
+            # external routine twice, so an operator must inspect its receipt first.
+            self.log.write("muse-bridge-dispatch-uncertain", seat=seat, id=message_id,
+                           error=self.scrub(type(exc).__name__))
+            return
+        view = runner.ledger.wakes().get(pending.wake_id) or {}
+        if view.get("state") == "done":
+            state = "done" if view.get("routine_delivered") is True else \
+                "held" if view.get("routine_delivered") is False else "uncertain"
+        else:
+            state = "held" if view.get("state") in ("held_back", "dropped", "skipped") else \
+                "failed" if view.get("state") == "failed" else "uncertain"
+        MB.finish_native(self.root, receipt, state)
+        self.log.write("muse-bridge-dispatch", seat=seat, id=message_id, state=state)
+
+    def _muse_bridge_mac_loop(self) -> None:
+        bridge = MBM.MacBridge(self)
+        while not self.stop.is_set():
+            try:
+                bridge.run_once()
+            except Exception as exc:  # an unavailable server or model must leave inbox cursors untouched
+                self.log.write("muse-bridge-error", error=self.scrub(type(exc).__name__))
+            self.stop.wait(5.0)
+
     def tick(self) -> None:
         now = self.clock.time()
         if self.reload_requested:
@@ -2736,6 +2788,13 @@ class Daemon:
             self.last_tick["reap"] = now
             for runner in self.seats.values():
                 self.reap(runner)
+        if self.config.instance == "server" and self.config.muse_bridge_enabled and \
+                now - self.last_tick["muse_bridge"] >= 2:
+            self.last_tick["muse_bridge"] = now
+            try:
+                self._muse_bridge_native()
+            except Exception as exc:  # the bridge must not stop ordinary listener routing
+                self.log.write("muse-bridge-error", error=self.scrub(type(exc).__name__))
         if now - self.last_tick["grace"] >= 30:
             self.last_tick["grace"] = now
             for runner in self.seats.values():
@@ -2921,6 +2980,7 @@ class Daemon:
             seats[seat] = {
                 "bot": runner.cfg.bot, "creds": runner.cfg.creds, "connected": runner.connected, "cursor": runner.cursor,
                 "last_event": runner.last_event_wall, "wake": runner.cfg.wake, "routine": routine,
+                "muse_bridge": MB.enabled(self.config, seat),
                 "pinned": (pin or muse_pin or {}).get("pinned"), "pin": pin or muse_pin,
                 "claude": claude, "muse": muse, "provider": runner.cfg.provider, "quota": quota,
                 "wakes_24h": len(day),
@@ -2937,6 +2997,12 @@ class Daemon:
         # once for the whole instance:  a topic at its cap stops waking, and status must say which.
         return {"pid": os.getpid(), "version": __version__, "started": self.started_at, "updated": now,
                 "instance": self.config.instance, "disabled": sorted(self.config.disabled),
+                "muse_bridge": {"enabled": self.config.muse_bridge_enabled,
+                                "remote_seats": list(self.config.muse_bridge_remote_seats),
+                                "pin": (MBM.pin_state(self.root, A.resolve_muse(None, self.wake_path),
+                                                      C.MUSE_DEFAULT_MODEL)[1]
+                                        if self.config.instance == "mac" and self.config.muse_bridge_enabled
+                                        else "inactive")},
                 "config_errors": [self.scrub(e) for e in self.config.errors + self.refusal + self.reload_refused],
                 "owner_user_id": self.config.owner_user_id,
                 "chat_nudges": all_nudges,
@@ -3230,6 +3296,11 @@ class Daemon:
                        instance=self.config.instance)
         try:
             while not self.stop.is_set():
+                if self.config.instance == "mac" and self.config.muse_bridge_enabled and \
+                        (self.muse_bridge_thread is None or not self.muse_bridge_thread.is_alive()):
+                    self.muse_bridge_thread = threading.Thread(target=self._muse_bridge_mac_loop,
+                                                                name="muse-bridge", daemon=True)
+                    self.muse_bridge_thread.start()
                 # Threads belong to a runner object, not a seat name:  a seat removed by a reload
                 # keeps its old threads only until they see runner.stop, and a seat added back
                 # gets a new runner with fresh threads.

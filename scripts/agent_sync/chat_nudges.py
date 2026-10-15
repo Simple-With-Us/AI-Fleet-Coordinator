@@ -24,9 +24,10 @@ class NudgeTransport(Protocol):
     def receipt(self, binding: dict[str, str], text: str) -> bool: ...
 
 
-def nudge_text(channel: str, topic: str, message_id: str) -> str:
+def nudge_text(channel: str, topic: str, message_id: str, source_seat: str | None = None) -> str:
     """Stable instructions and JSON-quoted routing data; never include the source message body."""
-    target = json.dumps({"channel": channel, "topic": topic, "message_id": message_id},
+    target = json.dumps({"channel": channel, "topic": topic, "message_id": message_id,
+                         **({"addressed_seat": source_seat} if source_seat else {})},
                         ensure_ascii=False, separators=(",", ":"))
     return ("You have messages waiting in Zulip.  Read the referenced topic and respond there "
             "using your own seat identity.  Do not create a chat or treat this message as "
@@ -122,9 +123,10 @@ class ChatNudges:
         return L.topic_key(channel, topic)
 
     @staticmethod
-    def _dedupe_key(message_id: str, binding: dict[str, str]) -> str:
+    def _dedupe_key(message_id: str, binding: dict[str, str], source_seat: str | None = None) -> str:
         destination = {key: binding[key] for key in ("platform", "host", "session_id", "cwd")}
-        canonical = json.dumps({"message_id": message_id, "destination": destination},
+        canonical = json.dumps({"message_id": message_id, "destination": destination,
+                                **({"source_seat": source_seat} if source_seat else {})},
                                sort_keys=True, ensure_ascii=False, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -265,23 +267,28 @@ class ChatNudges:
             return True
 
     def enqueue_target(self, binding: dict[str, str], message_id: str | int, now: float, *,
-                       owner: bool, stale: bool = False) -> bool:
+                       owner: bool, stale: bool = False, source_seat: str | None = None) -> bool:
         """Queue a validated one-shot selection without creating a persistent topic binding."""
         binding = self._binding(**binding)
         if binding["platform"] not in SUPPORTED_PLATFORMS:
             raise ValueError("selected chat requires a supported transport")
         message_id = str(message_id)
+        if source_seat is not None and (not isinstance(source_seat, str) or not source_seat or
+                                        not all(c.isupper() or c.isdigit() or c == "-" for c in source_seat)):
+            raise ValueError("source_seat must be a canonical seat")
         with L.locked(self.path):
             data = self._read()
             pruned = self._prune_terminal(data, now)
-            dedupe = self._dedupe_key(message_id, binding)
+            dedupe = self._dedupe_key(message_id, binding, source_seat)
             if any(row.get("dedupe_key") == dedupe for row in data["items"]):
                 if pruned:
                     L.write_json(self.path, data)
                 return False
             item_id = hashlib.sha256((dedupe + "\0nudge").encode("ascii")).hexdigest()
             data["items"].append({"id": item_id, "dedupe_key": dedupe, "message_id": message_id,
-                "binding": binding, "text": nudge_text(binding["channel"], binding["topic"], message_id),
+                                  **({"source_seat": source_seat} if source_seat else {}),
+                "binding": binding, "text": nudge_text(binding["channel"], binding["topic"], message_id,
+                                                       source_seat),
                 "owner": owner, "stale": stale, "selection": True, "status": "pending", "hold_reason": None,
                 "created_at": float(now), "updated_at": float(now)})
             L.write_json(self.path, data)

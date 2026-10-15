@@ -260,6 +260,10 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
         lines.append("status updated %s; instance %s; owner pinned: %s; rewake verified: %s" % (
             _when(status.get("updated")), status.get("instance") or "mac", "yes" if status.get("owner_user_id") else "NO",
             "yes" if status.get("rewake_verified") else "no"))
+        bridge = status.get("muse_bridge") or {}
+        if bridge.get("enabled"):
+            lines.append("Muse inbox bridge: enabled; pin %s; remote seats %s" % (
+                bridge.get("pin") or "?", ", ".join(bridge.get("remote_seats") or []) or "none"))
         nudges = status.get("chat_nudges")
         if isinstance(nudges, dict):
             # Accept the older flat status snapshot during managed-runtime upgrades.
@@ -293,7 +297,7 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                 routes = "  routes 24h %s%s" % (s.get("routes_24h", 0), "" if s.get("route_enabled", True) else " (routing off)")
             lines.append("%-12s %s  last event %s  cursor %s  wake %s%s  wakes 24h %s (cap %s/day, %s/hour)%s" % (
                 seat, "connected" if s.get("connected") else "DOWN", _when(s.get("last_event")), s.get("cursor"),
-                s.get("wake"), state, s.get("wakes_24h"),
+                s.get("wake"), state + (" (Muse bridge)" if s.get("muse_bridge") else ""), s.get("wakes_24h"),
                 int((s.get("budget") or {}).get("wakes_per_day", 0)),
                 int((s.get("budget") or {}).get("wakes_per_hour", 0)),
                 routes))
