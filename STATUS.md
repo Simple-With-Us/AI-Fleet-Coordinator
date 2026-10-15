@@ -3,9 +3,10 @@
 ## 2026-10-15 CURSOR — fleet-work-backup Mac watch wiring (OPS-907)
 
 Closes the remaining coordinator-repo work for fleet-work-backup:  `mac-process-watch.sh`
-expects `com.jay.fleet-work-backup`, `INFISICAL.md` lists the four synced keys, and
-`MAC-LOCAL-PROCESSES.md` names the dedicated bucket correctly.  The backup code path merged
-earlier (#454–#482);  the live Mac install (B2 key, Infisical values, restic init, TCC,
+expects `com.jay.fleet-work-backup`, and `INFISICAL.md` lists the four synced keys.  The
+repo mirror `docs/MAC-LOCAL-PROCESSES.md` was not refreshed in this PR (the live row is
+updated at install time per README step 9).  The backup code path merged earlier
+(#454–#482);  the live Mac install (B2 key, Infisical values, restic init, TCC,
 LaunchAgent) is still owner-run per `scripts/fleet-work-backup/README.md`.
 
 Rollout: `docs/rollouts/2026-10-15-fleet-work-backup-mac-watch.md`.
