@@ -136,6 +136,10 @@ class LeaderStdio:
 
         Waiting for session/prompt's result waits until the TUI finishes that
         turn (can be minutes).  Closing this stdio client does not cancel it.
+
+        Generic session notifications and silence are not delivery receipts.
+        Only a correlated queue notification for this session and prompt text,
+        or the JSON-RPC response for this request, may return queued.
         """
         req_id = self._next()
         params = {
@@ -147,7 +151,6 @@ class LeaderStdio:
         self.p.stdin.flush()
         deadline = time.time() + (timeout if wait else min(timeout, 8.0))
         chunks = []
-        queued = False
         notes = []
         while time.time() < deadline:
             msg = self._read_msg(deadline)
@@ -156,12 +159,10 @@ class LeaderStdio:
             method = msg.get("method") or ""
             if method:
                 notes.append(method)
-                if method in {"_x.ai/queue/changed", "_x.ai/session_notification", "session/update", "_x.ai/sessions/changed"}:
-                    queued = True
                 piece = extract_agent_text(msg)
                 if piece:
                     chunks.append(piece)
-                if queued and not wait:
+                if not wait and _correlated_queue_receipt(msg, session_id, text):
                     return {"queued": True, "text": "".join(chunks), "notes": notes[:12]}
                 continue
             if msg.get("id") != req_id:
@@ -169,10 +170,40 @@ class LeaderStdio:
             if "error" in msg:
                 raise RuntimeError(json.dumps(msg["error"]))
             result = msg.get("result") or {}
-            return {"queued": False, "text": "".join(chunks), "result": result, "notes": notes[:12]}
-        if queued or not wait:
-            return {"queued": True, "text": "".join(chunks), "notes": notes[:12]}
-        raise TimeoutError("no ACP result for session/prompt")
+            return {"queued": True, "text": "".join(chunks), "result": result, "notes": notes[:12]}
+        if wait:
+            raise TimeoutError("no ACP result for session/prompt")
+        return {
+            "queued": False,
+            "uncertain": True,
+            "text": "".join(chunks),
+            "notes": notes[:12],
+        }
+
+
+_QUEUE_RECEIPT_METHODS = frozenset({
+    "_x.ai/queue/changed",
+    "_x.ai/session_notification",
+})
+
+
+def _params_blob(params):
+    try:
+        return json.dumps(params, sort_keys=True)
+    except TypeError:
+        return repr(params)
+
+
+def _correlated_queue_receipt(msg, session_id, text):
+    """True when a queue notification names this session and exact prompt text."""
+    if not isinstance(msg, dict):
+        return False
+    if (msg.get("method") or "") not in _QUEUE_RECEIPT_METHODS:
+        return False
+    blob = _params_blob(msg.get("params") or {})
+    if session_id and session_id not in blob:
+        return False
+    return text in blob
 
 
 def extract_agent_text(msg):
@@ -451,9 +482,13 @@ def main():
             wait = bool(args.wait)
             timeout = float(args.timeout) if wait else min(float(args.timeout), 8.0)
             out = client.prompt_live(args.session_id, args.prompt, timeout=timeout, wait=wait)
+            uncertain = bool(out.get("uncertain"))
+            queued = bool(out.get("queued")) and not uncertain
+            ok = not uncertain and (queued or out.get("result") is not None)
             print(json.dumps({
-                "ok": True,
-                "queued": bool(out.get("queued")),
+                "ok": ok,
+                "queued": queued,
+                "uncertain": uncertain,
                 "sessionId": args.session_id,
                 "cwd": args.cwd,
                 "text": out.get("text") or "",
