@@ -182,7 +182,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 f=urllib.parse.parse_qs(raw.decode('utf-8','replace'),max_num_fields=64)
                 tok=(f.get('token') or [''])[0];be=(f.get('bot_email') or [''])[0];tg=(f.get('trigger') or [''])[0]
-            rec={'ts':time.time(),'token_sha256_12':hashlib.sha256(tok.encode()).hexdigest()[:12],'token_len':len(tok),'token_full':tok,'bot_email':be,'trigger':tg}
+            rec={'ts':time.time(),'token_sha256_12':hashlib.sha256(tok.encode()).hexdigest()[:12],'token_len':len(tok),'bot_email':be,'trigger':tg}
             try:
                 with open('/data/capture.jsonl','a') as fh:fh.write(json.dumps(rec)+'\n')
             except Exception: pass
