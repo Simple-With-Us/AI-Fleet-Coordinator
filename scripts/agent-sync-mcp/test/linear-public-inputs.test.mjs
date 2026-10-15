@@ -32,7 +32,7 @@ test("static metadata includes public read and write input types and restricted 
   assert.ok(INTERNAL_INPUT_FIELDS.IssueFilter.includes("searchableContent"));
 });
 
-test("public write inputs reject restricted fields without echoing supplied names or values", () => {
+test("public write inputs identify restricted schema fields without echoing supplied values", () => {
   const secretLike = "private-example-do-not-echo";
   const cases = [
     ["linear_create_issue", { input: { title: "x", descriptionData: secretLike } }],
@@ -52,7 +52,7 @@ test("public write inputs reject restricted fields without echoing supplied name
     assert.ok(caught instanceof ToolError, name);
     assert.equal(caught.code, "invalid_argument", name);
     assert.ok(!caught.message.includes(secretLike), name);
-    assert.ok(!caught.message.includes("leadTeamId"), name);
+    assert.match(caught.message, /^Linear input contains a restricted field \([A-Za-z]+\.[A-Za-z]+\)\.$/, name);
   }
 });
 
@@ -86,4 +86,11 @@ test("typed input traversal is bounded by depth and total node count", () => {
   rejects(command, { input: { name: "view", filterData: nested } }, "Linear input exceeds the validation limit.");
   const wide = { and: Array.from({ length: 1001 }, () => ({})) };
   rejects(command, { input: { name: "view", filterData: wide } }, "Linear input exceeds the validation limit.");
+});
+
+
+test("GraphQL singleton list coercion remains available for public typed inputs", () => {
+  const command = named(LINEAR_READ_COMMANDS, "linear_list_issues");
+  const value = { filter: { and: { title: { contains: "Fleet" } }, id: { in: "issue-id" } } };
+  assert.doesNotThrow(() => assertPublicInputs(command, value));
 });

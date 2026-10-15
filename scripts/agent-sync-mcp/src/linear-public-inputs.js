@@ -26,7 +26,11 @@ export function assertPublicInputs(command, values) {
     if (value === null || value === undefined) continue;
     const type = originalType.replace(/!$/, "");
     if (type.startsWith("[") && type.endsWith("]")) {
-      if (!Array.isArray(value)) invalid("Linear input has an invalid list value.");
+      if (!Array.isArray(value)) {
+        // GraphQL coerces a non-list input to a one-item list.
+        pending.push({ type: type.slice(1, -1), value, depth: depth + 1 });
+        continue;
+      }
       if (seen.has(value)) invalid("Linear input is cyclic or exceeds the validation limit.");
       seen.add(value);
       if (visited + pending.length + value.length > 1000) invalid("Linear input exceeds the validation limit.");
@@ -48,7 +52,7 @@ export function assertPublicInputs(command, values) {
     catch { invalid("Linear input has an invalid object value."); }
     const hidden = INTERNAL_INPUT_FIELDS[name] || [];
     for (const [field, fieldValue] of entries) {
-      if (hidden.includes(field)) invalid("Linear input contains a restricted field.");
+      if (hidden.includes(field)) invalid(`Linear input contains a restricted field (${name}.${field}).`);
       if (!Object.hasOwn(fields, field)) invalid("Linear input contains an unknown field.");
       const fieldType = fields[field];
       pending.push({ type: fieldType, value: fieldValue, depth: depth + 1 });
