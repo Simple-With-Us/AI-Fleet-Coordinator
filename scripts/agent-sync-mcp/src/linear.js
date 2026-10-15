@@ -46,6 +46,7 @@ export const LINEAR_SECRETS = Object.freeze({
   "GROK-WEB": Object.freeze({ clientId: "LINEAR_GROK_WEB_CLIENT_ID", clientSecret: "LINEAR_GROK_WEB_CLIENT_SECRET" }),
   ECHO: Object.freeze({ clientId: "LINEAR_ECHO_CLIENT_ID", clientSecret: "LINEAR_ECHO_CLIENT_SECRET" }),
   INSTINCT: Object.freeze({ clientId: "LINEAR_INSTINCT_CLIENT_ID", clientSecret: "LINEAR_INSTINCT_CLIENT_SECRET" }),
+  CURSOR: Object.freeze({ clientId: "LINEAR_CURSOR_CLIENT_ID", clientSecret: "LINEAR_CURSOR_CLIENT_SECRET" }),
 });
 
 /** The Worker secret names for a seat, or null when the seat has no Linear app. */
