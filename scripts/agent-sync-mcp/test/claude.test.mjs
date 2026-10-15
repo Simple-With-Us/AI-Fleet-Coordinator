@@ -88,6 +88,6 @@ test("CLAUDE canonical email is required; other seats keep their existing bindin
     JET: { key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" },
     "GROK-WEB": { key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" },
     ECHO: { key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" },
-    INSTINCT: { key: "ZULIP_KEY_INSTINCT", email: "ZULIP_EMAIL_INSTINCT" },
+    WISE: { key: "ZULIP_KEY_INSTINCT", email: "ZULIP_EMAIL_INSTINCT" },
   });
 });

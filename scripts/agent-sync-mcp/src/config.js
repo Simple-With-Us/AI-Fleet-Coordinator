@@ -18,9 +18,9 @@ export const RESOURCE_METADATA_URL = `${ISSUER}/.well-known/oauth-protected-reso
 export const SCOPES = Object.freeze(["zulip:read", "zulip:write"]);
 
 // Seats this Worker can ever serve.  HOSTED_SEATS (a var) narrows it further.
-// ECHO and INSTINCT are two identities of one third-party app (Instinct), each
+// ECHO and WISE are two identities of one third-party app (Instinct), each
 // with its own Zulip bot (instinct-bat-bot and instinct-owl-bot).
-export const KNOWN_SEATS = Object.freeze(["JET", "GROK-WEB", "ECHO", "INSTINCT", "CURSOR", "CLAUDE"]);
+export const KNOWN_SEATS = Object.freeze(["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE"]);
 
 // Phase 0 durations.
 export const ARM_WINDOW_MS = 10 * 60 * 1000;
@@ -47,7 +47,7 @@ export const SEAT_SECRETS = Object.freeze({
   JET: Object.freeze({ key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" }),
   "GROK-WEB": Object.freeze({ key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" }),
   ECHO: Object.freeze({ key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" }),
-  INSTINCT: Object.freeze({ key: "ZULIP_KEY_INSTINCT", email: "ZULIP_EMAIL_INSTINCT" }),
+  WISE: Object.freeze({ key: "ZULIP_KEY_INSTINCT", email: "ZULIP_EMAIL_INSTINCT" }),
 });
 
 // The shared HMAC key the server listener signs each seat's wake with
@@ -58,11 +58,11 @@ export const WAKE_SECRETS = Object.freeze({
   JET: "WAKE_HMAC_KEY_JET",
   "GROK-WEB": "WAKE_HMAC_KEY_GROK_WEB",
   ECHO: "WAKE_HMAC_KEY_ECHO",
-  INSTINCT: "WAKE_HMAC_KEY_INSTINCT",
+  WISE: "WAKE_HMAC_KEY_INSTINCT",
 });
 
 // What /admin and a manual client's name call each seat's app.
-export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", INSTINCT: "Instinct" });
+export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", WISE: "Wise" });
 
 const BOT_EMAIL_RE = /^[a-z0-9-]+-bot@simplewithus\.zulipchat\.com$/;
 

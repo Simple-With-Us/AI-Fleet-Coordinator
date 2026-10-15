@@ -266,8 +266,9 @@ test("the seat comes from the client, never from an argument", async () => {
   for (const other of ["Wise (Instinct)", "Wise", "Jet", "Echo (Instinct)", ""]) assert.equal(appNameOk(other, "GROK-WEB"), false, other);
   // WISE is one seat under two spellings, so a body can never name one seat in
   // the tag line and another in the claim label.
-  assert.equal(seatTagForSeat("WISE"), "INSTINCT");
-  assert.equal(seatTagForSeat("wise"), "INSTINCT");
+  assert.equal(seatTagForSeat("INSTINCT"), "WISE");   // WISE is the tag;  INSTINCT is retired
+  assert.equal(seatTagForSeat("instinct"), "WISE");
+  assert.equal(seatTagForSeat("WISE"), "WISE");
   assert.equal(seatTagForSeat("GROK-WEB"), "GROK-WEB");
   assert.equal(appNameOk("Wise (Instinct)", seatTagForSeat("WISE")), true);
 });

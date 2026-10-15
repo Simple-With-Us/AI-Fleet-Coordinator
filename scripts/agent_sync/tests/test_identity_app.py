@@ -136,24 +136,24 @@ class SeatAppTests(RealRegistryCase):
         self.assertNotIn("JET", rows)
 
     def test_echo_and_instinct_are_regular_seats_with_rows_and_apps(self) -> None:
-        # ECHO and INSTINCT moved from extraSeats to the seats table (owner decision Sun, Oct 11, 2026).
+        # ECHO and WISE moved from extraSeats to the seats table (owner decision Sun, Oct 11, 2026).
         self.assertEqual(self.app("ECHO"), "instinct")
-        self.assertEqual(self.app("INSTINCT"), "instinct")
+        self.assertEqual(self.app("WISE"), "instinct")
         rows = {s["tag"] for s in registry_data()["seats"]}
         self.assertIn("ECHO", rows)
-        self.assertIn("INSTINCT", rows)
+        self.assertIn("WISE", rows)
 
     def test_grok_and_grok_web_are_two_apps_and_echo_with_instinct_is_one(self) -> None:
         self.assertNotEqual(self.app("GROK"), self.app("GROK-WEB"))
         self.assertEqual((self.app("GROK"), self.app("GROK-WEB")), ("grok-terminal", "grok-web"))
-        self.assertEqual(self.app("ECHO"), self.app("INSTINCT"))
+        self.assertEqual(self.app("ECHO"), self.app("WISE"))
         self.assertNotIn(self.app("GROK-WEB"), {self.app("GROK-BOT"), self.app("CURSOR")})
 
     def test_the_plan_table_is_what_the_registry_says(self) -> None:
         want = {"CLAUDE": "claude-code", "CODEX": "codex", "CURSOR": "cursor", "GROK": "grok-terminal",
                 "GROK-WEB": "grok-web", "AG": "antigravity", "MM": "minimax-code", "MC": "muse-code",
                 "MA": "muse-assist", "CLUTCH": "clutch", "FX": "fx", "OPENCODE": "opencode", "GROK-BOT": "grok-bot",
-                "ECHO": "instinct", "INSTINCT": "instinct"}
+                "ECHO": "instinct", "WISE": "instinct"}
         self.assertEqual(dict(self.reg.by_seat), want)
         self.assertEqual(dict(self.reg.extra), {"JET": "chatgpt"})
 
@@ -178,7 +178,7 @@ class SeatAppTests(RealRegistryCase):
                     self.assertEqual(self.app(tag), app)
 
     def test_the_hosted_seat_signs_the_tag_the_registry_lists(self) -> None:
-        # ECHO and INSTINCT were hosted seats; they moved to the seats table (owner decision Sun, Oct 11, 2026).
+        # ECHO and WISE were hosted seats; they moved to the seats table (owner decision Sun, Oct 11, 2026).
         for local, tag, app in (("openai-dot", "JET", "chatgpt"), ("muse-assist", "MA", "muse-assist"),
                                 ("grok-build", "GROK", "grok-terminal"), ("mm", "MM", "minimax-code")):
             with self.subTest(tag=tag):
@@ -188,7 +188,7 @@ class SeatAppTests(RealRegistryCase):
 
     def test_echo_and_instinct_bot_emails_still_map_to_their_tags(self) -> None:
         # Their bot emails keep working after the move from extraSeats to the seats table.
-        for local, tag in (("instinct-bat", "ECHO"), ("instinct-owl", "INSTINCT")):
+        for local, tag in (("instinct-bat", "ECHO"), ("instinct-owl", "WISE")):
             with self.subTest(tag=tag):
                 got = I.seat_tag_for({"is_bot": True, "email": "%s-bot@%s" % (local, HOST), "full_name": "x"})
                 self.assertEqual(got, tag)
@@ -206,10 +206,10 @@ class RegistryDataTests(unittest.TestCase):
     def test_no_bf_gb_or_hosted_seat_has_a_row_in_seats(self) -> None:
         for tag in self.seats:
             self.assertFalse(tag.startswith(("BF-", "GB-")), tag)
-        # ECHO and INSTINCT moved to the seats table (owner decision Sun, Oct 11, 2026); JET stays hosted.
+        # ECHO and WISE moved to the seats table (owner decision Sun, Oct 11, 2026); JET stays hosted.
         self.assertNotIn("JET", self.seats)
         self.assertIn("ECHO", self.seats)
-        self.assertIn("INSTINCT", self.seats)
+        self.assertIn("WISE", self.seats)
 
     def test_no_seats_row_carries_an_app_field(self) -> None:
         # `app` would collide with the top-level `apps` (ST, CT, BF) and `--app`.
@@ -225,8 +225,8 @@ class RegistryDataTests(unittest.TestCase):
             if row.get("retired"):
                 continue
             for prefix in row.get("branchPrefixes", []):
-                # ECHO and INSTINCT both claim instinct/ (owner decision Sun, Oct 11, 2026).
-                if prefix == "instinct/" and tag in ("ECHO", "INSTINCT") and seen.get(prefix) in ("ECHO", "INSTINCT"):
+                # ECHO and WISE both claim instinct/ (owner decision Sun, Oct 11, 2026).
+                if prefix == "instinct/" and tag in ("ECHO", "WISE") and seen.get(prefix) in ("ECHO", "WISE"):
                     continue
                 self.assertNotIn(prefix, seen, "%s and %s both claim branch prefix %s" % (tag, seen.get(prefix), prefix))
                 seen[prefix] = tag
@@ -250,8 +250,8 @@ class RegistryDataTests(unittest.TestCase):
 
 
 class BoardAliasTests(RealRegistryCase):
-    """The board script imports no package, so it keeps its own SEAT_ALIASES, SEAT_TAG_ALIASES (WISE to
-    INSTINCT, owner 2026-10-11) and BF_ROLES.  Nothing merges them into the registry here;  this keeps every
+    """The board script imports no package, so it keeps its own SEAT_ALIASES, SEAT_TAG_ALIASES (INSTINCT to
+    WISE, owner 2026-10-15) and BF_ROLES.  Nothing merges them into the registry here;  this keeps every
     target resolvable through strict_seat so the two cannot drift apart unnoticed."""
 
     @classmethod
@@ -267,13 +267,13 @@ class BoardAliasTests(RealRegistryCase):
                 self.assertTrue(I.seat_app(target, registry=self.reg))
 
     def test_every_seat_tag_alias_target_resolves(self) -> None:
-        self.assertEqual(self.board.SEAT_TAG_ALIASES, {"WISE": "INSTINCT"})
+        self.assertEqual(self.board.SEAT_TAG_ALIASES, {"INSTINCT": "WISE"})
         for alias, target in self.board.SEAT_TAG_ALIASES.items():
             with self.subTest(alias=alias):
                 self.assertEqual(I.strict_seat(target, registry=self.reg), target)
                 self.assertEqual(I.seat_app(target, registry=self.reg), "instinct")
                 with self.assertRaises(I.UnknownSeat):
-                    I.strict_seat(alias, registry=self.reg)  # WISE is the board's spelling, never a seat here
+                    I.strict_seat(alias, registry=self.reg)  # INSTINCT is retired, never a seat here
 
     def test_every_bf_role_gives_a_botfleet_seat(self) -> None:
         self.assertTrue(self.board.BF_ROLES)

@@ -6,7 +6,7 @@ For Jay, to give an existing seat.  One paste moves a Mac seat off Slack and ont
 
 1. Find the seat's row below and copy its four values.
 2. Paste the prompt into a session of that seat, replacing `<SEAT>`, `<BOT>`, `<CODE>`, and `<RULES>` with the row's values.
-3. A seat that is not on a Mac (MA, JET, GROK-WEB, INSTINCT, ECHO, the GB personas) does not use this prompt:  it has no zuliprc file.  Its credentials come from environment variables or a hosted bridge (see the guide's Credentials and Key Handling).
+3. A seat that is not on a Mac (MA, JET, GROK-WEB, WISE, ECHO, the GB personas) does not use this prompt:  it has no zuliprc file.  Its credentials come from environment variables or a hosted bridge (see the guide's Credentials and Key Handling).
 
 ## Substitution Table
 

@@ -139,7 +139,7 @@ class SeatTests(Harness):
         written = {
             "CLAUDE": "Claude", "CODEX": "Codex", "AG": "AG", "CURSOR": "Cursor", "GROK": "Grok-Build",
             "GROK-WEB": "Grok-Web", "CLUTCH": "Clutch", "FX": "FX", "MM": "MM", "MC": "MC", "MA": "MA",
-            "OPENCODE": "OpenCode", "ECHO": "Echo", "INSTINCT": "Instinct", "GB-COMPILER": "GB-Compiler",
+            "OPENCODE": "OpenCode", "ECHO": "Echo", "WISE": "Wise", "GB-COMPILER": "GB-Compiler",
             "BF-BUILDER": "BF-Builder", "BF-DEPLOYER": "BF-Deployer", "BF-DESIGNER": "BF-Designer",
             "BF-FIXER": "BF-Fixer", "BF-HOUSEKEEPER": "BF-Housekeeper",
             "BF-MONITOR": "BF-Monitor", "BF-ORACLE": "BF-Oracle", "BF-PLUMBER": "BF-Plumber",

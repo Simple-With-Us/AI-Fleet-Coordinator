@@ -1,7 +1,7 @@
 import { LINEAR_MCP_TOOLS, LINEAR_MCP_READ_TOOLS, LINEAR_MCP_WRITE_TOOLS } from "./linear-mcp-specs.js";
 import { LINEAR_NAMED_TOOLS, LINEAR_NAMED_COMMANDS } from "./linear-named-specs.js";
 // Linear tools for hosted seats, so a seat with no shell (GROK-WEB first, then
-// ECHO and INSTINCT) works the board as its own bot app and never as Jay.
+// ECHO and WISE) works the board as its own bot app and never as Jay.
 // Every rule here is ported from scripts/linear-board/board, which stays the
 // reference implementation:  the scope string, the team routing, the state
 // mapping, the claim label, the flat label whitelist and the one-mint-a-day
@@ -47,7 +47,7 @@ export const LINEAR_SECRETS = Object.freeze({
   JET: Object.freeze({ clientId: "LINEAR_JET_CLIENT_ID", clientSecret: "LINEAR_JET_CLIENT_SECRET" }),
   "GROK-WEB": Object.freeze({ clientId: "LINEAR_GROK_WEB_CLIENT_ID", clientSecret: "LINEAR_GROK_WEB_CLIENT_SECRET" }),
   ECHO: Object.freeze({ clientId: "LINEAR_ECHO_CLIENT_ID", clientSecret: "LINEAR_ECHO_CLIENT_SECRET" }),
-  INSTINCT: Object.freeze({ clientId: "LINEAR_INSTINCT_CLIENT_ID", clientSecret: "LINEAR_INSTINCT_CLIENT_SECRET" }),
+  WISE: Object.freeze({ clientId: "LINEAR_INSTINCT_CLIENT_ID", clientSecret: "LINEAR_INSTINCT_CLIENT_SECRET" }),
   CURSOR: Object.freeze({ clientId: "LINEAR_CURSOR_CLIENT_ID", clientSecret: "LINEAR_CURSOR_CLIENT_SECRET" }),
 });
 
@@ -147,18 +147,18 @@ export const SEAT_APP_NAMES = Object.freeze({
   JET: "Jet",
   "GROK-WEB": "Grok Web",
   ECHO: "Echo (Instinct)",
-  INSTINCT: "Wise (Instinct)",
+  WISE: "Wise (Instinct)",
   CURSOR: "Cursor",
 });
 export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),
   "GROK-WEB": Object.freeze(["Grok (Web/iOS)", "Grok Web/iOS"]),
   ECHO: Object.freeze(["Echo"]),
-  INSTINCT: Object.freeze(["Wise"]),
+  WISE: Object.freeze(["Instinct"]),
 });
-export const SEAT_TAG_ALIASES = Object.freeze({ WISE: "INSTINCT" });
+export const SEAT_TAG_ALIASES = Object.freeze({ INSTINCT: "WISE" });
 
-/** The seat tag a spelling resolves to, so WISE and INSTINCT are one seat. */
+/** The seat tag a spelling resolves to.  WISE is the tag (owner 2026-10-15);  INSTINCT is retired. */
 export function seatTagForSeat(seat) {
   const tag = String(seat ?? "").trim().toUpperCase();
   return SEAT_TAG_ALIASES[tag] ?? tag;

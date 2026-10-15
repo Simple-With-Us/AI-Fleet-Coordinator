@@ -47,7 +47,7 @@ CLOUD_SEATS = {
     "MA": ("muse-assist-bot@zulip.test", "Muse Assist"),
     "JET": ("openai-dot-bot@zulip.test", "Jet Dot"),
     "GROK-WEB": ("grok-web-bot@zulip.test", "Grok Web"),
-    "INSTINCT": ("instinct-owl-bot@zulip.test", "Instinct Owl"),
+    "WISE": ("instinct-owl-bot@zulip.test", "Wise Owl"),
     "ECHO": ("instinct-bat-bot@zulip.test", "Echo Bat"),
 }
 
@@ -933,7 +933,7 @@ class PartitionTests(ServerHarness):
         self.assertEqual({s for s, v in bf.items() if v == "none"}, bf_names - {"BF-DIRECTOR"})
         self.assertEqual({s for s, v in partition.items() if v == "mac"}, set(launchd.READER_SEATS),
                          "the Mac holds every Mac seat (owner, Thu, Oct 8)")
-        for seat in ["MA", "JET", "GROK-WEB", "ECHO", "INSTINCT"]:
+        for seat in ["MA", "JET", "GROK-WEB", "ECHO", "WISE"]:
             self.assertEqual(partition.get(seat), "server", "%s is a cloud seat" % seat)
         self.assertEqual(partition.get("GROK-BUILD"), "none", "the retired GROK-BUILD code is held by no instance")
         mac = C.from_dict(tomllib.loads(launchd.sample_config(str(self.secrets_dir))))
@@ -987,7 +987,7 @@ class PartitionTests(ServerHarness):
 
 
 # --------------------------------------------------------------------------------------------
-# The cloud seats (MA, JET, GROK-WEB, INSTINCT and ECHO)
+# The cloud seats (MA, JET, GROK-WEB, WISE and ECHO)
 # --------------------------------------------------------------------------------------------
 
 class CloudSeatHarness(ServerHarness):
@@ -1102,7 +1102,7 @@ class CloudSeatTests(CloudSeatHarness):
         daemon = self.server_daemon(env=self.cloud_env())
         self.assertFalse(daemon.connect_seat("JET"))
         self.assertIn("refuses admin and owner keys", daemon.seats["JET"].error)
-        for seat in ("MA", "GROK-WEB", "INSTINCT", "ECHO"):
+        for seat in ("MA", "GROK-WEB", "WISE", "ECHO"):
             self.assertTrue(daemon.connect_seat(seat), "%s: %s" % (seat, daemon.seats[seat].error))
         self.assertNotIn(self.cloud["JET"]["user_id"], [r["user_id"] for r in self.fake.registrations])
 
@@ -1116,11 +1116,11 @@ class CloudSeatTests(CloudSeatHarness):
 
     def test_a_key_that_belongs_to_another_cloud_bot_is_refused_at_connect(self) -> None:
         env = self.cloud_env()
-        env["ZULIP_ECHO_EMAIL"] = CLOUD_SEATS["INSTINCT"][0]
-        env["ZULIP_ECHO_API_KEY"] = self.cloud_keys["INSTINCT"]
+        env["ZULIP_ECHO_EMAIL"] = CLOUD_SEATS["WISE"][0]
+        env["ZULIP_ECHO_API_KEY"] = self.cloud_keys["WISE"]
         daemon = self.server_daemon(env=env)
         self.assertFalse(daemon.connect_seat("ECHO"), "Echo's section holding Instinct's key never gets a queue")
-        self.assertIn("belongs to the bot of seat INSTINCT", daemon.seats["ECHO"].error)
+        self.assertIn("belongs to the bot of seat WISE", daemon.seats["ECHO"].error)
         self.assertEqual(self.fake.registrations, [])
 
 

@@ -114,7 +114,7 @@ SEAT_PREFIX = "seat:"
 # no credentials here; adding a name costs nothing and keeps them in the set.
 SEAT_ROSTER = {
     "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "GROK-WEB", "CLUTCH", "FX", "MM", "MA", "MC",
-    "GROK-BOT", "INSTINCT",
+    "GROK-BOT", "WISE",
     "GB-HOUSEKEEPER", "GB-MONITOR", "GB-COMPILER", "GB-PLUMBER",
     "GB-ENGINEER", "GB-FIXER", "GB-PUBLISHER",
     "GB-DIRECTOR", "GB-DESIGNER", "GB-DEPLOYER", "GB-ORACLE", "GB-TRADER",
@@ -130,8 +130,9 @@ SEAT_ALIASES = {"MINIMAX": "MM", "MUSE": "MA", "GROK-BUILD": "GROK", "ANTIGRAVIT
                 "MUSE-ASSIST": "MA", "MUSE-CODE": "MC"}
 CLUTCH_LINEAGE = {"DSH", "DEEPSEEK", "HARNESS"}
 # Spellings of a seat tag that AGENT_SEAT and --by resolve to the tag the fleet signs with (owner 2026-10-11:  the
-# Instinct seat is shown as Wise (Instinct)).  Retagging to WISE later is a one-line swap here.
-SEAT_TAG_ALIASES = {"WISE": "INSTINCT"}
+# Instinct seat is shown as Wise (Instinct)).  The tag is WISE (owner 2026-10-15) and INSTINCT is the
+# retired spelling, kept so existing references keep resolving.
+SEAT_TAG_ALIASES = {"INSTINCT": "WISE"}
 # One Linear app per seat (owner 2026-10-10), named for the seat bot's display
 # name.  A seat's app is used when its credentials exist (<SEAT>.env beside
 # Fleet.env, or LINEAR_<SEAT>_CLIENT_ID and _SECRET in the environment, with
@@ -142,7 +143,7 @@ SEAT_APP_NAMES = {
     "CLAUDE": "Claude", "CODEX": "Codex", "CURSOR": "Cursor", "AG": "AG", "GROK": "Grok",
     "GROK-WEB": "Grok Web", "CLUTCH": "Clutch", "MM": "MM", "FX": "Fx", "MC": "Muse Code",
     "MA": "Muse Assist", "JET": "Jet", "OPENCODE": "OpenCode",
-    "ECHO": "Echo (Instinct)", "INSTINCT": "Wise (Instinct)",
+    "ECHO": "Echo (Instinct)", "WISE": "Wise (Instinct)",
     # BotFleet seats in SEAT_ROSTER.  AGENT-SYNC.md (owner 2026-10-09) names the ten role seats
     # plus BF-DIRECTOR.  BF-PRODUCER is on that same roster (BF_ROLES turns a bare PRODUCER into
     # it), so it has an app too:  a write from that seat must not sign as the shared Fleet app.
@@ -169,7 +170,7 @@ SEAT_APP_ALIASES = {
     "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
     "OPENCODE": ("OC",),
     "ECHO": ("Echo",),
-    "INSTINCT": ("Wise",),
+    "WISE": ("Instinct",),
 }
 
 
