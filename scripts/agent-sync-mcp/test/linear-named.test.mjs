@@ -51,7 +51,7 @@ test('every named adapter builds the expected operation and retains required var
     assert.equal(operation.operation, entry.write ? 'mutation' : 'query', entry.name);
     assert.equal(operation.selectionSet.selections.length, 1, entry.name);
     assert.equal(operation.selectionSet.selections[0].name.value, entry.root, entry.name);
-    for (const definition of operation.variableDefinitions) {
+    for (const definition of operation.variableDefinitions ?? []) {
       if (entry.args[definition.variable.name.value].required) assert.equal(definition.type.kind, 'NonNullType', entry.name);
     }
   }

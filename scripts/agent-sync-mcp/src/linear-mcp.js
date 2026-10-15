@@ -160,8 +160,9 @@ export async function callLinearMcp(tools, name, args, audit) {
       responseError = error;
       normalized = { texts: ["Linear MCP returned, but its response could not be displayed.  Inspect the diff for the resulting changes."], images: [] };
     }
-    const receipt = JSON.stringify(normalized.texts).length <= 8000
-      ? { texts: normalized.texts }
+    const candidate = { texts: normalized.texts };
+    const receipt = new TextEncoder().encode(JSON.stringify(candidate)).byteLength <= 8192
+      ? candidate
       : { operation_returned: true, upstream_tool: spec.upstreamName };
     await tools.gate.linearApiSet({ storageKey: begun.storageKey, changes: { state: "sent", data: receipt } });
   } catch (error) {

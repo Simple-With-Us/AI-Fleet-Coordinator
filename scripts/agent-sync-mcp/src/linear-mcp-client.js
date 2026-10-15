@@ -160,7 +160,7 @@ async function post(fetchImpl, token, body, { phase, protocolVersion, sessionId,
       method: "POST",
       headers,
       body: JSON.stringify(body),
-      redirect: "error",
+      redirect: "manual",
       signal: timeoutSignal(timeoutMs),
     });
   } catch (error) {
@@ -258,7 +258,7 @@ export async function callOfficialLinear(client, name, args, { write = false, fe
         ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
       },
       body: JSON.stringify({ jsonrpc: JSON_RPC_VERSION, method: "notifications/initialized" }),
-      redirect: "error",
+      redirect: "manual",
       signal: timeoutSignal(boundedTimeout),
     });
   } catch (error) {

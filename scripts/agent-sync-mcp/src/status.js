@@ -87,7 +87,7 @@ function seatSummary(seat, calls, diagnostics, generatedAt, diagnosticsUnavailab
   const recentSuccess = hasRecent && !currentError && !diagnosticsUnavailable;
   const readiness = readsUnknown ? "Diagnostics unavailable" : seat.paused ? "Paused" : !configured ? `Needs setup: ${missing.join(", ")}` : currentError ? "Recent failure" : recentSuccess ? "Recent success" : "Configured; no recent traffic";
   const tone = recentSuccess ? "state-ready" : "state-attention";
-  return `<article class="status-card"><h3>${e.escape(seat.seat)}</h3><p class="status-state ${tone}">${e.escape(readiness)}</p>
+  return `<article class="status-card"><h3>${e.escape(e.seatLabel ? e.seatLabel(seat.seat) : seat.seat)}</h3><p class="status-state ${tone}">${e.escape(readiness)}</p>
 <dl><dt>Seat</dt><dd>${fieldUnavailable("state") ? "Unknown" : seat.paused ? "Paused" : "Unpaused"}</dd>
 <dt>Zulip Key</dt><dd>${seat.keyInstalled ? "Installed" : "Missing"}</dd>
 <dt>Member Role</dt><dd>${fieldUnavailable("role") ? "Unknown" : seat.role?.ok ? `Verified (${e.escape(seat.role.role ?? "member")})` : `Not verified${seat.role?.reason ? `: ${e.escape(seat.role.reason)}` : ""}`}</dd>
