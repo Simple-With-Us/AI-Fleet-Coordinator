@@ -930,13 +930,6 @@ export function mapLinearError(error, { write = false, known = [] } = {}) {
   return new ToolError("upstream_error", `Linear answered HTTP ${error.status}`, { retryable: !write, extra: { status: error.status } });
 }
 
-/** An upstream message, cleaned and cut, or null when it is empty or looks like it holds a secret. */
-function upstreamMessage(message, known) {
-  if (typeof message !== "string" || !message.trim()) return null;
-  if (scanSecret(message, known)) return null;
-  return linearClean(message.trim(), MESSAGE_LIMIT_SAFE)[0];
-}
-
 /** A tool-facing refusal string for GraphQL validation errors (never echoes the mutation body). */
 function linearRefusalMessage(error, known) {
   const parts = [error.graphql?.userPresentableMessage, error.graphql?.message, error.upstreamMessage].filter((v) => typeof v === "string" && v.trim());
