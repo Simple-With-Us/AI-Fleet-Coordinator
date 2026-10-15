@@ -56,6 +56,11 @@ BY_SEAT = '"$AGENT_SEAT"'
 # The placeholder for the reader's branch prefix in example claim posts.  A
 # launched bot's prefix is its launcher's to name, so no render hard-codes one.
 BRANCH_PREFIX = "<branch-prefix>"
+# Worked example in branch-naming prose.  Canonical pack uses the MONET prefix;
+# specialize_from_monet rewrites it per seat so non-CLAUDE trees never teach
+# `claude/…` as the reader's own prefix.
+BRANCH_EXAMPLE_SLUG = "afc-123-zulip-cutover"
+BRANCH_EXAMPLE_CANONICAL = f"monet/{BRANCH_EXAMPLE_SLUG}"
 
 
 def _seat_block(default_arm: str, ordinary: str, extra: str = "") -> str:
@@ -899,6 +904,7 @@ def _specialize_grok_bot(text: str, seat: Seat, skill_name: str) -> str:
         ("--by MONET", f"--by {BY_SEAT}"),
         ("--mine MONET", f"--mine {BY_SEAT}"),
         ("claim:  monet/<slug>", f"claim:  {BRANCH_PREFIX}/<slug>"),
+        (BRANCH_EXAMPLE_CANONICAL, f"{BRANCH_PREFIX}/{BRANCH_EXAMPLE_SLUG}"),
         ("`--by` for this seat is `MONET`", "`--by` for this seat is `$AGENT_TAG`"),
         ("[MONET·session8", "[$AGENT_TAG·session8"),
         ("[MONET->", "[$AGENT_TAG->"),
@@ -1140,6 +1146,10 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
         ("`--by` for this seat is `MONET`",
          f"`--by` for this seat is your verified seat (`{seat.tag}` in an ordinary {seat.notes} session)"),
         ("claim:  monet/<slug>", f"claim:  {BRANCH_PREFIX}/<slug>"),
+        (
+            BRANCH_EXAMPLE_CANONICAL,
+            f"{seat.prefix}/{BRANCH_EXAMPLE_SLUG}",
+        ),
         ("[MONET·session8", f"[{seat.tag}·session8"),
         ("[MONET->", f"[{seat.tag}->"),
         ("[MONET]", f"[{seat.tag}]"),
@@ -1332,6 +1342,10 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         ("--by MONET", f"--by {BY_SEAT}"),
         ("--mine MONET", f"--mine {BY_SEAT}"),
         ("claim:  monet/<slug>", f"claim:  {BRANCH_PREFIX}/<slug>"),
+        (
+            BRANCH_EXAMPLE_CANONICAL,
+            f"{BRANCH_PREFIX}/{BRANCH_EXAMPLE_SLUG}",
+        ),
         ("`--by` for this seat is `MONET`", "`--by` for this seat is `<YOUR_TAG>`"),
         ("[MONET·session8", "[<YOUR_TAG>·session8"),
         ("[MONET->", "[<YOUR_TAG>->"),
