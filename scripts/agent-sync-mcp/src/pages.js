@@ -157,16 +157,18 @@ function actionButton(csrf, action, label, fields = {}) {
 export function adminPage({ email, seats, clients, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [] }, headers) {
   const seatRows = seats
     .map((s) => {
-      const grants = s.grants.length
+      const unavailable = new Set(s.unavailableFields ?? []);
+      const stateUnknown = unavailable.has("state");
+      const grants = unavailable.has("grants") ? "Unknown (diagnostic read failed)" : s.grants.length
         ? s.grants.map((g) => `${escapeHtml(g.client)} <small>(${escapeHtml(g.scope.join(" "))}, ${escapeHtml(ownerTime(g.createdAt))})</small>`).join("<br>")
         : "none";
-      const armed = s.armed ? `<span class="ok">Armed until ${escapeHtml(ownerTime(s.armedUntil))}</span>` : "Not armed";
-      const role = s.role ? (s.role.ok ? `role ${escapeHtml(s.role.role)}, checked ${escapeHtml(ownerTime(s.role.checked_at))}` : `<span class="warn">refused:  ${escapeHtml(s.role.reason)}</span>`) : "not checked yet";
+      const armed = stateUnknown ? "Unknown" : s.armed ? `<span class="ok">Armed until ${escapeHtml(ownerTime(s.armedUntil))}</span>` : "Not armed";
+      const role = unavailable.has("role") ? "Unknown (diagnostic read failed)" : s.role ? (s.role.ok ? `role ${escapeHtml(s.role.role)}, checked ${escapeHtml(ownerTime(s.role.checked_at))}` : `<span class="warn">refused:  ${escapeHtml(s.role.reason)}</span>`) : "not checked yet";
       const key = s.keyInstalled ? `Installed<br><small>${role}</small>` : `<span class="warn">Missing</span>`;
-      return `<tr><td><strong>${escapeHtml(s.seat)}</strong></td><td>${armed}</td><td>${s.paused ? "Paused" : "Live"}</td><td>${escapeHtml(s.epoch)}</td><td>${key}</td><td>${grants}</td><td>${[
+      return `<tr><td><strong>${escapeHtml(s.seat)}</strong></td><td>${armed}</td><td>${stateUnknown ? "Unknown" : s.paused ? "Paused" : "Live"}</td><td>${stateUnknown ? "Unknown" : escapeHtml(s.epoch)}</td><td>${key}</td><td>${grants}</td><td>${[
         actionButton(csrf, "arm", "Arm", { seat: s.seat }),
         s.armed ? actionButton(csrf, "disarm", "Disarm", { seat: s.seat }) : "",
-        s.paused ? actionButton(csrf, "unpause", "Unpause", { seat: s.seat }) : actionButton(csrf, "pause", "Pause", { seat: s.seat }),
+        stateUnknown ? "" : s.paused ? actionButton(csrf, "unpause", "Unpause", { seat: s.seat }) : actionButton(csrf, "pause", "Pause", { seat: s.seat }),
         actionButton(csrf, "revoke", "Revoke All And Bump Epoch", { seat: s.seat }),
       ].join("")}</td></tr>`;
     })

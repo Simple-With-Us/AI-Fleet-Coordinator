@@ -275,3 +275,12 @@ test("failed state, role, and grant reads render unknown instead of missing or u
   assert.doesNotMatch(html, /Unpaused|Needs setup: role|Needs setup: grant/);
   assert.match(html, /Diagnostics unavailable/);
 });
+
+
+test("legacy seat controls also show unknown when diagnostic state reads fail", async () => {
+  const html = await adminPage({ ...adminFacts, seats: [{ seat: "JET", grants: [], keyInstalled: true, diagnosticsUnavailable: true, unavailableFields: ["state", "role", "grants"] }] }).text();
+  const table = html.split('<h2>Seats</h2>')[1].split('<h2>Hand-Registered')[0];
+  assert.doesNotMatch(table, />Live<|name="action" value="pause"|name="action" value="unpause"/);
+  assert.match(table, /Unknown/);
+  assert.match(table, /diagnostic read failed/);
+});
