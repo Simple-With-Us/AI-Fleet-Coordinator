@@ -120,3 +120,17 @@ Move to 1.2.3 once it is eligible (Wed, Oct 21) or if Phase 0 shows a client the
 Queries support aliases, fragments, filters and pagination from the live Linear schema.  Subscriptions, binary file transfer, credential/access administration and batch/bulk mutation roots are excluded.  Each mutation has one root field; body and description inputs receive the seat tag.  Generic mutations cannot change protected fleet claim labels.
 
 Idempotency keys are seat-scoped for 24 hours.  A completed retry returns the saved response or completion receipt.  An uncertain upstream outcome is never automatically replayed; inspect Linear before choosing a new key.  Response size and GraphQL complexity are bounded, and Linear’s upstream permissions and rate limits still apply.
+
+## Named Linear Commands
+
+The hosted tool list also includes named resource commands for issues, comments, attachments, documents, projects, labels, milestones, cycles, teams/users, templates, notifications, status updates, initiatives, releases and agent skills.  See the [complete command catalog](../../docs/protocols/linear-named-tools.md) for every name, underlying API root and availability notes.
+
+Named reads expose bounded filters/pagination and an optional response-field selection.  Named writes require an idempotency key and use the existing mutation checks; save aliases create or update according to whether id is supplied.  Upload preparation returns private signed metadata only; it does not transfer file bytes.  Internal diff APIs and unsupported cycle creation are not exposed.
+
+## Admin Status And Diagnostics
+
+Open `/admin#status-overview` through the existing Cloudflare Access admin gate.  The status overview shows each seat’s installed credentials, last observed role check, grants, recent calls and independently retained last errors.  Configuration is shown separately from recent successful activity; a quiet seat is not verified healthy.  Refresh Status reloads the server-rendered snapshot.
+
+Recent Errors And Refusals combines safe tool diagnostics, authorize/token refusals, rejected MCP requests and wake delivery/validation failures.  It shows cause, remedy, retry/reset guidance and upstream HTTP status when recorded.  Failed token/wake requests with no authenticated seat are shown as unassigned counters rather than attributed to an agent.  Normal unauthenticated MCP discovery is excluded.
+
+Detailed tool errors are bounded and scrubbed before storage; raw arguments, message bodies, headers, credentials and queries are not stored.  A separate last-100-error tail per seat survives successful-call traffic, expires after 90 days, and is sampled up to 50 rows per seat by the admin page.  Serialized daily call arrays are bounded to 1 MiB and error arrays to 256 KiB, pruning oldest rows before a storage value can overflow.  Global pre-tool failures are aggregated into at most 100 reason/route/seat rows with the same retention bound.  The page shows bounded samples, not an exhaustive incident ledger; older calls have only their original error codes.  Cloudflare Access denials and client-local failures before the Worker are outside this page’s visibility.
