@@ -74,6 +74,7 @@ export async function apiQuery(tools, args) {
 
 async function protectLabels(tools, prepared) {
   const name = prepared.roots[0].name.value;
+  const issueMutation = /^issue/i.test(name);
   const args = prepared.args;
   if (/^issueLabel/i.test(name) && !["issueLabelCreate", "issueLabelUpdate", "issueLabelDelete", "issueLabelArchive", "issueLabelUnarchive"].includes(name)) {
     throw new ToolError("invalid_argument", "This label administration operation requires a dedicated fleet-aware tool.");
@@ -86,7 +87,7 @@ async function protectLabels(tools, prepared) {
       if (/^(?:creatorId|authorId|actorId|createdById|createAsUser)$/i.test(key)) {
         throw new ToolError("invalid_argument", "Linear author identity is fixed by this seat's app credential.");
       }
-      if (/^(?:added|removed)?labelIds?$/i.test(key)) {
+      if (issueMutation && /^(?:added|removed)?labelIds?$/i.test(key)) {
         if (key === "labelIds") replacesLabels = true;
         for (const id of Array.isArray(child) ? child : [child]) {
           if (typeof id !== "string") throw new ToolError("invalid_argument", "Label identifiers must be strings.");

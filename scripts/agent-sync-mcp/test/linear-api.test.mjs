@@ -22,7 +22,10 @@ function harness({ scopes = ["zulip:read", "zulip:write"], writes = true } = {})
     result: { projectUpdate: { success: true, project: { id: "p1", name: "Updated" } } },
     async call(query, variables) {
       requests.push({ query, variables: structuredClone(variables) });
-      if (query.includes("AgentSyncLabel")) return { issueLabel: { id: variables.id, name: labels.get(variables.id) } };
+      if (query.includes("AgentSyncLabel")) {
+        const name = labels.get(variables.id);
+        return { issueLabel: name ? { id: variables.id, name } : null };
+      }
       if (query.includes("BoardIssue")) return { issue: { labels: { nodes: client.issueLabels ?? [] } } };
       if (query.includes("AgentSyncSchema")) return { __type: client.type };
       if (client.failure) throw client.failure;
@@ -143,6 +146,19 @@ test("ordinary label additions are allowed but replacing a claimed issue's label
   second.client.issueLabels = [{ id: "claimed", name: "claimed:CURSOR" }];
   assert.equal((await second.tools.call("linear_mutation", input({ mutation: 'mutation { issueUpdate(id:"i1",input:{labelIds:["ordinary"]}) { success } }', variables: {} }))).isError, true);
   assert.ok(second.requests.every((request) => !request.query.startsWith("mutation")));
+});
+
+test("project label IDs are not looked up as issue labels", async () => {
+  const { tools, requests } = harness();
+  const document = 'mutation Update($input: ProjectUpdateInput!) { projectUpdate(id: "p1", input: $input) { success project { id name } } }';
+  const result = await tools.call("linear_mutation", input({
+    mutation: document,
+    variables: { input: { labelIds: ["project-label-id"] } },
+  }));
+  assert.equal(result.isError, undefined);
+  assert.equal(requests.length, 1);
+  assert.match(requests[0].query, /^mutation/);
+  assert.deepEqual(requests[0].variables.input.labelIds, ["project-label-id"]);
 });
 
 test("unknown mutation outcomes are retained and never automatically replayed", async () => {
