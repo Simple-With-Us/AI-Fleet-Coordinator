@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" role="img" aria-labelledby="title desc">
+  <title id="title">Zulip message and wake routing</title>
+  <desc id="desc">A direct message or bot mention reaches either BotFleet's native listener or the Agent-Sync listener. Agent-Sync records it in the addressed bot's inbox, then a Muse-enabled seat can inspect bounded chat metadata and request a wake-capable existing chat. Unsupported or unsafe deliveries remain in the inbox. Codex has no native listener.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0 0 L10 5 L0 10 z" fill="#536579"/></marker>
+    <marker id="dash-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0 0 L10 5 L0 10 z" fill="#8a5b00"/></marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172b3a; }
+      .title { font-size: 30px; font-weight: 700; }
+      .lane { font-size: 20px; font-weight: 700; }
+      .box-title { font-size: 18px; font-weight: 650; }
+      .body { font-size: 15px; }
+      .small { font-size: 13px; }
+      .event { fill: #eef4f8; stroke: #47647b; stroke-width: 2; }
+      .bf { fill: #e7f5ee; stroke: #2e7652; stroke-width: 2; }
+      .as { fill: #edf0ff; stroke: #495bb2; stroke-width: 2; }
+      .hold { fill: #fff5df; stroke: #9a6b10; stroke-width: 2; }
+      .gap { fill: #fcebea; stroke: #a13d37; stroke-width: 2; }
+      .arrow { fill: none; stroke: #536579; stroke-width: 2.5; marker-end: url(#arrow); }
+      .optional { fill: none; stroke: #8a5b00; stroke-width: 2.5; stroke-dasharray: 8 7; marker-end: url(#dash-arrow); }
+    </style>
+  </defs>
+  <rect width="1200" height="900" rx="24" fill="#ffffff"/>
+  <text x="52" y="62" class="title">Zulip Message And Wake Routing</text>
+  <rect x="52" y="90" width="1096" height="84" rx="14" class="event"/>
+  <text x="600" y="124" text-anchor="middle" class="box-title">Human or agent sends a DM or explicitly mentions a bot</text>
+  <text x="600" y="151" text-anchor="middle" class="body">Zulip delivers the event to the addressed bot identity.  An ordinary unmentioned post wakes nobody.</text>
+
+  <path d="M600 174 V198 H300 V218" class="arrow"/>
+  <path d="M600 174 V198 H900 V218" class="arrow"/>
+  <text x="70" y="226" class="lane">BotFleet role bot</text>
+  <text x="670" y="226" class="lane">Agent-Sync seat bot</text>
+
+  <rect x="52" y="246" width="496" height="86" rx="14" class="bf"/>
+  <text x="300" y="280" text-anchor="middle" class="box-title">BotFleet native event queue</text>
+  <text x="300" y="307" text-anchor="middle" class="body">Role bot's own Zulip identity and event cursor</text>
+  <path d="M300 332 V366" class="arrow"/>
+  <rect x="52" y="370" width="496" height="100" rx="14" class="bf"/>
+  <text x="300" y="407" text-anchor="middle" class="box-title">BotFleet server listener</text>
+  <text x="300" y="435" text-anchor="middle" class="body">Deduplicate, screen, queue while busy, wake that role</text>
+  <path d="M300 470 V504" class="arrow"/>
+  <rect x="52" y="508" width="496" height="86" rx="14" class="bf"/>
+  <text x="300" y="542" text-anchor="middle" class="box-title">Role replies through its Zulip bot</text>
+  <text x="300" y="569" text-anchor="middle" class="body">Keep the native listener for bot-authored messages</text>
+  <rect x="52" y="644" width="496" height="112" rx="14" class="hold"/>
+  <text x="300" y="681" text-anchor="middle" class="box-title">Optional outgoing-webhook ingress</text>
+  <text x="300" y="710" text-anchor="middle" class="body">Fast acknowledge → authenticated queue → same dedupe path</text>
+  <text x="300" y="735" text-anchor="middle" class="small">Use only after receiver deployment and real DM/mention verification</text>
+  <path d="M300 644 V604" class="optional"/>
+
+  <rect x="652" y="246" width="496" height="86" rx="14" class="as"/>
+  <text x="900" y="280" text-anchor="middle" class="box-title">Addressed seat's durable inbox</text>
+  <text x="900" y="307" text-anchor="middle" class="body">Agent-Sync records the message under that bot's identity</text>
+  <path d="M900 332 V366" class="arrow"/>
+  <rect x="652" y="370" width="496" height="100" rx="14" class="as"/>
+  <text x="900" y="407" text-anchor="middle" class="box-title">Agent-Sync listener → Muse wake router</text>
+  <text x="900" y="435" text-anchor="middle" class="body">Owner policy: every DM or explicit bot mention enters Muse</text>
+  <path d="M900 470 V504" class="arrow"/>
+  <rect x="652" y="508" width="496" height="100" rx="14" class="as"/>
+  <text x="900" y="545" text-anchor="middle" class="box-title">Bounded existing-chat catalog</text>
+  <text x="900" y="573" text-anchor="middle" class="body">Select one exact, fresh, wake-capable existing chat</text>
+  <path d="M820 608 V646" class="arrow"/>
+  <path d="M980 608 V646" class="arrow"/>
+  <rect x="652" y="650" width="238" height="106" rx="14" class="bf"/>
+  <text x="771" y="686" text-anchor="middle" class="box-title">Supported destination</text>
+  <text x="771" y="714" text-anchor="middle" class="body">Queue fixed reminder</text>
+  <text x="771" y="739" text-anchor="middle" class="small">Resume existing session only</text>
+  <rect x="910" y="650" width="238" height="106" rx="14" class="hold"/>
+  <text x="1029" y="686" text-anchor="middle" class="box-title">Unsafe or unavailable</text>
+  <text x="1029" y="714" text-anchor="middle" class="body">Keep in inbox or hold</text>
+  <text x="1029" y="739" text-anchor="middle" class="small">Never invent a session</text>
+  <rect x="652" y="790" width="496" height="64" rx="14" class="gap"/>
+  <text x="900" y="818" text-anchor="middle" class="box-title">Codex has no native Zulip listener</text>
+  <text x="900" y="841" text-anchor="middle" class="small">A Codex inbox receipt is not proof that a Codex task was woken</text>
+</svg>

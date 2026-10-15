@@ -114,8 +114,8 @@ Pollers:  call `inbox` every N minutes with the previous `next_since_id` as `sin
 ## Connect Cursor Cloud (CURSOR)
 
 For the static Cloud path, use the **personal** MCP dropdown at [cursor.com/agents](https://cursor.com/agents).
-The separately approved exact CIMD/localhost path is described below; it does
-not establish that the same Cloud surface owns a local callback receiver.
+The exact CIMD/Cloud callback path is described below.  Cursor owns the HTTPS
+callback; there is no localhost receiver to configure or edit.
 Name this connection **Cursor Cloud**.  It serves the existing CURSOR bot,
 `cursor-bot@simplewithus.zulipchat.com`; it does not choose a seat from the client.
 
@@ -161,28 +161,28 @@ Agent-Sync enforces S256 PKCE; a client that omits the challenge is refused.
 The static manual client uses only this HTTPS callback.  DCR remains off and
 no wake credentials are added.
 
-### Exact CIMD/localhost flow
+### Exact CIMD/Cloud callback flow
 
-This extension requires owner approval before enablement and the matching code
-and configuration deployed.  Cursor's [published client metadata](https://cursor.com/oauth/mcp-client.json)
-identifies the public client `https://cursor.com/oauth/mcp-client.json`; the bridge
-permits it only with `http://localhost:8787/callback`, only as CURSOR.  Its other
-published callbacks are refused, including the HTTPS Cloud callback for this
-CIMD client.  The existing manual-client HTTPS path above remains available.
+Jay approved this exact pair on 2026-10-14 after Cursor's refused-request log
+identified its published client and fixed Cloud callback.  Cursor's [published
+client metadata](https://cursor.com/oauth/mcp-client.json) identifies the
+public client `https://cursor.com/oauth/mcp-client.json`; Agent-Sync permits it
+only with `https://www.cursor.com/agents/mcp/oauth/callback`, only as CURSOR.
+Other callbacks in that metadata remain refused.  The same HTTPS callback also
+continues to work with the existing manually registered public client.
 
 1. In Cursor, use the same MCP URL and scopes, no secret and no custom headers.
    Let its OAuth flow select the published CIMD ID; do not create a manual
-   client for that ID or override the callback.  Use a fresh Cursor-originated
-   connection on the computer whose browser receives the localhost redirect.
+   client for that ID or edit the callback.  Start a fresh Cursor-originated
+   connection so the server records the current client and callback.
 2. Arm only CURSOR immediately before starting authentication.  Approve only
-   when consent shows CURSOR, the exact CIMD ID, `localhost:8787` and the two Zulip
-   scopes.  Localhost must resolve to this computer; approval does not verify
-   that Cursor's receiver is listening.  Do not replay/edit an old authorize URL,
-   start a substitute listener, or send a code-bearing URL to an agent.
+   when consent shows CURSOR, the exact CIMD ID, the callback
+   `https://www.cursor.com/agents/mcp/oauth/callback`, and the two Zulip scopes.
+   Do not replay an old authorize URL or send a code-bearing URL to an agent.
 3. Complete Cursor's own redirect and perform the `whoami` acceptance above.
-   The published pair or a state label cannot prove which surface initiated the
-   request.  A listening receiver and actual hosted identity remain unproven
-   until this owner-originated flow succeeds from the intended surface.
+   The published pair alone does not prove which surface initiated the request;
+   the actual hosted identity remains unproven until this owner-originated flow
+   succeeds from the intended Cursor surface.
 
 ## Linear
 

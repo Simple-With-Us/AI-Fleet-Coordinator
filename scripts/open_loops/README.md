@@ -37,7 +37,7 @@ The facts document (schema 1):
 | `unpushed_over_a_day` | lanes with unpushed commits or dirty tracked files older than 24 hours that nobody touched in the last 2 hours, minus what `not_on_github` already lists;  a lane whose age cannot be told is counted in `unknown_age`, never as young (the installed lane doctor reports no ages yet, so today every such lane lands there) |
 | `claims` | the 36-hour and 48-hour bands from `fleet_facts.activity`, plus `unknown`, with `clock_started` and, until claim expiry launches, the note "ages, not releases" |
 | `owner_asks` | C3's open asks, absent until C3 exists |
-| `full_list_url`, `urls` | the full-list link, and **every** URL in the document:  only the gatherer makes URLs.  Linear links are the short form `https://linear.app/<workspace>/issue/<ID>` (no title slug), about 600 characters less in a full DM |
+| `full_list_url`, `mac_facts_url`, `urls` | the full-list link;  when `--mac-facts` is an https URL, that URL too;  and **every** URL in the document:  only the gatherer makes URLs.  Linear links are the short form `https://linear.app/<workspace>/issue/<ID>` (no title slug), about 600 characters less in a full DM.  The canonical Mac facts URLs live in `urls.py` (`MAC_FACTS_API_URL` for a token, `MAC_FACTS_RAW_URL` for a public raw fetch) |
 | `redacted` | paths whose secret-shaped text was withheld (F3 `redact_fields`) |
 
 **Missing is shown, never zero.**  A count is `null` when its source could not be read.  `missing` lists every failed
@@ -64,7 +64,8 @@ folder name, never its path.
 
 For GB-Deployer, which cannot read this Mac:  `--no-mac --mac-facts <fleet-loops-data gb/mac-facts.json>`, a file or an
 https URL on `api.github.com` or `raw.githubusercontent.com` (no redirect;  a token from `FLEET_LOOPS_DATA_TOKEN`,
-`GH_TOKEN` or `GITHUB_TOKEN` is sent to those hosts only).  The file is used **only if all of these hold**, otherwise it
+`GH_TOKEN` or `GITHUB_TOKEN` is sent to those hosts only).  With `--no-mac` alone, `gather` also reads
+`OPEN_LOOPS_MAC_FACTS_URL` (set it to `urls.MAC_FACTS_API_URL` in the routine environment).  The file is used **only if all of these hold**, otherwise it
 is ignored (`mac_facts` is `absent` with the reason, and its lanes and C1 parts are Missing):
 
 1. it can be read (a regular file or response under 8 MB);

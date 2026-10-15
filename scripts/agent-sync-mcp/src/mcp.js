@@ -15,6 +15,7 @@
 import { createMcpHandler } from "agents/mcp/server";
 import { Server, ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/server";
 import { UnknownTool, HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, hostedInstructions } from "./hosted-tools.js";
+import { CURSOR_TOOL_LIST, CURSOR_TOOLS_BY_NAME } from "./delegated-identities.js";
 import { PUBLIC_HOST } from "./config.js";
 import { EventError } from "./events.js";
 import { z } from "zod";
@@ -52,16 +53,21 @@ async function asProtocolError(fn) {
 
 /** One Server per request, bound to that request's seat, tools and (optionally) events. */
 export function buildServer(tools, events = null) {
+  const cursorRouted = tools.seat === "CURSOR" && tools.createRole instanceof Function;
+  const toolList = cursorRouted ? CURSOR_TOOL_LIST : HOSTED_TOOL_LIST;
+  const toolMap = cursorRouted ? CURSOR_TOOLS_BY_NAME : HOSTED_TOOLS_BY_NAME;
   const server = new Server(
     { name: "agent-sync", version: SERVER_VERSION },
-    { capabilities: events ? { tools: {}, events: {} } : { tools: {} }, instructions: hostedInstructions(tools.seat) },
+    { capabilities: events ? { tools: {}, events: {} } : { tools: {} }, instructions: hostedInstructions(tools.seat) + (cursorRouted
+      ? "  On this CURSOR connection, call agent_sync_identities to see available Grok Bot personas.  Pass identity on a tool call to act as one persona; omitting it acts as CURSOR.  The CURSOR grant and pooled limits still govern every call."
+      : "") },
   );
   if (events) {
     server.setRequestHandler("events/list", { params: EventParams.list }, async () => events.list());
     server.setRequestHandler("events/subscribe", { params: EventParams.subscribe }, (params) => asProtocolError(() => events.subscribe(params)));
     server.setRequestHandler("events/unsubscribe", { params: EventParams.unsubscribe }, (params) => asProtocolError(() => events.unsubscribe(params)));
   }
-  server.setRequestHandler("tools/list", async () => ({ tools: [...HOSTED_TOOL_LIST] }));
+  server.setRequestHandler("tools/list", async () => ({ tools: [...toolList] }));
   server.setRequestHandler("tools/call", async (request) => {
     const name = request.params?.name;
     let result;
@@ -71,7 +77,7 @@ export function buildServer(tools, events = null) {
       if (error instanceof UnknownTool) throw new ProtocolError(ProtocolErrorCode.InvalidParams, "Unknown tool");
       throw error;
     }
-    return server.projectCallToolResult(result, result.isError ? undefined : HOSTED_TOOLS_BY_NAME[name]?.outputSchema);
+    return server.projectCallToolResult(result, result.isError ? undefined : toolMap[name]?.outputSchema);
   });
   return server;
 }

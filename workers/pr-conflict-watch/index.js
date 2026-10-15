@@ -1,10 +1,11 @@
 // pr-conflict-watch: GitHub webhook receiver that alerts #agent-sync Slack
-// the moment a PR's mergeable_state turns dirty/blocked/unstable.
+// the moment a PR's mergeable_state turns dirty (merge conflict).
 // Env bindings (Worker secrets): GITHUB_WEBHOOK_SECRET, GITHUB_TOKEN, SLACK_BOT_TOKEN
 // KV binding: PR_STATE
 
+import { decideStateTransition } from "./state.js";
+
 const SLACK_CHANNEL = "C0BEZDJDNKV"; // #agent-sync
-const BAD_STATES = new Set(["dirty", "blocked", "unstable"]);
 
 async function verifySignature(request, secret) {
   const sigHeader = request.headers.get("x-hub-signature-256") || "";
@@ -68,25 +69,27 @@ async function handlePr(owner, repo, number, env) {
   if (!result) return;
   const prev = await env.PR_STATE.get(kvKey);
 
-  if (result.state === "closed") {
-    if (prev) await env.PR_STATE.delete(kvKey);
+  const action = decideStateTransition(prev, result.state);
+  if (action === "noop") return;
+
+  if (action === "clear") {
+    await env.PR_STATE.delete(kvKey);
     return;
   }
 
-  if (BAD_STATES.has(result.state)) {
-    if (prev !== result.state) {
-      await env.PR_STATE.put(kvKey, result.state, { expirationTtl: 60 * 60 * 24 * 14 });
-      const pr = result.pr;
-      await postSlack(
-        env.SLACK_BOT_TOKEN,
-        `[PR-WATCH] repo: ${repo} -- PR #${number} "${pr.title}" -- ${result.state} (${pr.html_url})`
-      );
-    }
-  } else if (prev && BAD_STATES.has(prev)) {
-    // recovered
-    await env.PR_STATE.delete(kvKey);
-    await postSlack(env.SLACK_BOT_TOKEN, `[PR-WATCH] repo: ${repo} -- PR #${number} recovered -> ${result.state}`);
+  if (action === "alert") {
+    await env.PR_STATE.put(kvKey, result.state, { expirationTtl: 60 * 60 * 24 * 14 });
+    const pr = result.pr;
+    await postSlack(
+      env.SLACK_BOT_TOKEN,
+      `[PR-WATCH] repo: ${repo} -- PR #${number} "${pr.title}" -- ${result.state} (${pr.html_url})`
+    );
+    return;
   }
+
+  // recover: left dirty (only state we store)
+  await env.PR_STATE.delete(kvKey);
+  await postSlack(env.SLACK_BOT_TOKEN, `[PR-WATCH] repo: ${repo} -- PR #${number} recovered -> ${result.state}`);
 }
 
 export default {

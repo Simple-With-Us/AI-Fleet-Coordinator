@@ -52,8 +52,12 @@ def _timeout(default):
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from session_disk import peek_summary as disk_peek
+    from session_disk import prompt_inject_receipt as disk_prompt_receipt
+    from session_disk import turn_state as disk_turn_state
 except Exception:
     disk_peek = None
+    disk_prompt_receipt = None
+    disk_turn_state = None
 
 
 class LeaderStdio:
@@ -136,6 +140,7 @@ class LeaderStdio:
 
         Waiting for session/prompt's result waits until the TUI finishes that
         turn (can be minutes).  Closing this stdio client does not cancel it.
+        Generic session notifications and silence are not queue acknowledgements.
         """
         req_id = self._next()
         params = {
@@ -147,7 +152,6 @@ class LeaderStdio:
         self.p.stdin.flush()
         deadline = time.time() + (timeout if wait else min(timeout, 8.0))
         chunks = []
-        queued = False
         notes = []
         while time.time() < deadline:
             msg = self._read_msg(deadline)
@@ -156,13 +160,11 @@ class LeaderStdio:
             method = msg.get("method") or ""
             if method:
                 notes.append(method)
-                if method in {"_x.ai/queue/changed", "_x.ai/session_notification", "session/update", "_x.ai/sessions/changed"}:
-                    queued = True
+                if queue_receipt_correlates(msg, session_id) and not wait:
+                    return {"queued": True, "text": "".join(chunks), "notes": notes[:12]}
                 piece = extract_agent_text(msg)
                 if piece:
                     chunks.append(piece)
-                if queued and not wait:
-                    return {"queued": True, "text": "".join(chunks), "notes": notes[:12]}
                 continue
             if msg.get("id") != req_id:
                 continue
@@ -170,9 +172,22 @@ class LeaderStdio:
                 raise RuntimeError(json.dumps(msg["error"]))
             result = msg.get("result") or {}
             return {"queued": False, "text": "".join(chunks), "result": result, "notes": notes[:12]}
-        if queued or not wait:
-            return {"queued": True, "text": "".join(chunks), "notes": notes[:12]}
-        raise TimeoutError("no ACP result for session/prompt")
+        raise TimeoutError("no ACP result for session/prompt within %.0fs" % (timeout if wait else min(timeout, 8.0)))
+
+
+def queue_receipt_correlates(msg, session_id):
+    """True when a notification is a queue receipt for this session/prompt."""
+    if not isinstance(msg, dict):
+        return False
+    if msg.get("method") != "_x.ai/queue/changed":
+        return False
+    params = msg.get("params") or {}
+    if not isinstance(params, dict):
+        return False
+    sid = params.get("sessionId") or params.get("session_id")
+    if sid is None:
+        return True
+    return str(sid) == str(session_id)
 
 
 def extract_agent_text(msg):
@@ -447,10 +462,27 @@ def main():
             }, indent=2))
             return
         if args.cmd == "prompt":
+            before_started = 0.0
+            if disk_turn_state is not None:
+                before_started = float(disk_turn_state(args.session_id).get("turnStartedAt") or 0.0)
             _resume(client, args.session_id, args.cwd)
             wait = bool(args.wait)
             timeout = float(args.timeout) if wait else min(float(args.timeout), 8.0)
-            out = client.prompt_live(args.session_id, args.prompt, timeout=timeout, wait=wait)
+            try:
+                out = client.prompt_live(args.session_id, args.prompt, timeout=timeout, wait=wait)
+            except TimeoutError:
+                if disk_prompt_receipt is not None and disk_prompt_receipt(
+                        args.session_id, args.prompt, before_started):
+                    print(json.dumps({
+                        "ok": True,
+                        "queued": True,
+                        "sessionId": args.session_id,
+                        "cwd": args.cwd,
+                        "text": "",
+                        "receipt": "disk",
+                    }, indent=2))
+                    return
+                raise
             print(json.dumps({
                 "ok": True,
                 "queued": bool(out.get("queued")),
@@ -468,5 +500,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(json.dumps({"ok": False, "at": _now_iso(), "error": str(e)}), file=sys.stderr)
+        payload = {"ok": False, "at": _now_iso(), "error": str(e)}
+        if isinstance(e, TimeoutError):
+            payload["unknown"] = True
+        print(json.dumps(payload), file=sys.stderr)
         sys.exit(1)

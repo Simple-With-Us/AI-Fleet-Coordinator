@@ -71,8 +71,11 @@ jobs:
     # closed PR or a human comment.
     if: >
       (github.event.issue.pull_request || github.event.pull_request) &&
-      (github.event.issue.state || github.event.pull_request.state) == 'open' &&
-      contains(fromJSON('["bot", "Bot"]'), github.event.comment.user.type || github.event.review.user.type || '')
+      (github.event.issue.state == 'open' || github.event.pull_request.state == 'open') &&
+      (
+        (github.event_name == 'pull_request_review' && contains(fromJSON('["bot", "Bot"]'), github.event.review.user.type)) ||
+        (github.event_name != 'pull_request_review' && contains(fromJSON('["bot", "Bot"]'), github.event.comment.user.type))
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -158,9 +161,24 @@ jobs:
             echo "has_verify=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Check Autofix App Credentials
+        id: app_push
+        if: steps.pr.outputs.proceed == 'true' && vars.SWU_AUTOFIX_GITHUB_APP_ID != ''
+        env:
+          AUTOFIX_APP_PRIVATE_KEY: ${{ secrets.AUTOFIX_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AUTOFIX_APP_PRIVATE_KEY" ]; then
+            echo "::notice::SWU_AUTOFIX_GITHUB_APP_ID is set but AUTOFIX_GITHUB_APP_PRIVATE_KEY is empty; skipping App-token mint"
+            echo "mint_token=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "mint_token=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Mint Autofix Push Token
         id: push_token
-        if: steps.pr.outputs.proceed == 'true' && secrets.AUTOFIX_GITHUB_APP_PRIVATE_KEY != ''
+        # Step if cannot reference secrets (AFC-308 startup validation).  app_push confirms the key.
+        if: steps.app_push.outputs.mint_token == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ vars.SWU_AUTOFIX_GITHUB_APP_ID }}

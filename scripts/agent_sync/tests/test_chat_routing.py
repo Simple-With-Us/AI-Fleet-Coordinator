@@ -41,13 +41,21 @@ class ChatRoutingTests(DaemonHarness):
         transport = SimpleNamespace(preflight=lambda b: 'ready', send=lambda b,t: 'accepted')
         self.assertEqual(queue.dispatch_one(transport, self.clock.time())['status'], 'accepted')
 
-    def test_peer_cannot_read_catalog_or_select_chat(self):
+    def test_peer_can_select_safe_existing_chat_and_request_one_excerpt(self):
         d, r, p, target = self.setup_route()
         p.owner_ids = []
-        self.assertEqual(d.chat_context(r, p), [])
-        self.assertEqual(d.select_chat(r, p, {'chat_target': target['id']}, [target])['status'], 'held')
-        d._chat_catalog.discover.assert_not_called()
-        self.assertEqual(d.chat_queue('GROK').snapshot()['items'], [])
+        context = d.chat_context(r, p)
+        self.assertEqual([row['id'] for row in context], [target['id']])
+        self.assertEqual(d.select_chat(r, p, {'chat_target': target['id'], 'risk': 'medium'}, context)['status'], 'held')
+        self.assertEqual(d.select_chat(r, p, {'chat_target': target['id'], 'risk': 'low'}, context)['status'], 'queued')
+        item = d.chat_queue('GROK').snapshot()['items'][0]
+        self.assertFalse(item['owner'])
+        self.assertTrue(d.may_inspect_chat(p))
+        routed = W.Pending('routed', 'CLAUDE', {'channel': 'agent-sync', 'topic': 'work'}, owner=False,
+                           now=self.clock.time(), due=self.clock.time())
+        routed.add({'id': 43}, True)
+        routed.route_tagged = True
+        self.assertFalse(d.may_inspect_chat(routed))
 
     def test_unknown_readonly_stale_and_changed_targets_hold(self):
         for change in ('unknown', 'readonly', 'stale', 'changed', 'unsafe', 'double-route'):
@@ -68,6 +76,8 @@ class ChatRoutingTests(DaemonHarness):
         obj = {'action': 'none', 'reply': None, 'board': None, 'owner_note': None, 'risk': None,
                'chat_target': 'a' * 64}
         self.assertIsNone(W.validate(obj)[1])
+        self.assertIsNone(W.validate(dict(obj, risk='low'))[1])
+        self.assertIsNotNone(W.validate(dict(obj, risk='high'))[1])
         self.assertIsNotNone(W.validate(dict(obj, chat_target='../../new-chat'))[1])
         self.assertIsNotNone(W.validate(dict(obj, chat_target={'id': 'a'*64}))[1])
 

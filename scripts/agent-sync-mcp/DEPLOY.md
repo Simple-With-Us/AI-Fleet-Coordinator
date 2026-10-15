@@ -196,9 +196,10 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 Jay approved the CURSOR hosted seat, its exact Cloud callback, bounded client
 registration, tests and deployment on 2026-10-11.  The live preflight at version
 `22c6b6d6-9db4-435b-b6a0-f8dbf7645c35` had no `ZULIP_KEY_CURSOR` binding.
-This task does not read or copy CURSOR's existing bot key.  The separate exact
-CIMD/localhost extension requires explicit owner approval before merge or
-production enablement; the earlier static Cloud approval does not enable it.
+This task does not read or copy CURSOR's existing bot key.  Jay approved the
+exact published CIMD client plus Cloud callback pair on 2026-10-14 by supplying
+the refused-request entry.  The allowlist remains bound to CURSOR and that one
+exact pair.
 
 1. Merge and deploy the CURSOR code/config through steps 0–1.  Preserve the live
    OAuth KV namespace, SeatGate bindings/migrations, all existing secrets,
@@ -214,18 +215,16 @@ production enablement; the earlier static Cloud approval does not enable it.
    `python3 -I install_seat_key.py CURSOR --apply` (not run by CODEX for this task).
    It checks the configured email, own-seat bot identity and member role before
    writing through stdin; the hosted Worker repeats those checks at runtime.
-3. Follow **Connect Cursor Cloud** in ARMING-JAY.md: retain the public manual
-   client for the HTTPS Cloud path, or use the approved exact CURSOR CIMD/localhost
-   pair.  Before enabling that extension, run unit and mocked workerd exchange/
-   refresh checks, including callback/client substitutions and JET isolation.
-   Complete Access/consent through a fresh Cursor-originated flow on the receiver's
-   computer; do not replay an authorize URL.  Public client IDs may be
+3. Follow **Connect Cursor Cloud** in ARMING-JAY.md.  Either the manual public
+   client or the exact CURSOR CIMD pair may use the HTTPS Cloud callback.  The
+   CIMD callback is fixed by Cursor and must not be edited.  Complete Access and
+   consent through a fresh Cursor-originated flow; do not replay an authorize URL.
+   Public client IDs may be
    copied; bot keys, Access PINs, codes, and tokens must remain in secure inputs.
 4. Record the deployed version and the actual Cursor-side `whoami` result.
    Keep AFC-294 pending if the key, interactive consent, or live identity check
-   is unfinished.  Unit/workerd fake-Zulip tests do not prove a listening callback
-   receiver or production identity.  Native OAuth completion does not establish
-   Cloud authentication; verify from the intended Cursor surface.
+   is unfinished.  Unit/workerd fake-Zulip tests do not prove browser consent
+   or production identity.  Verify from the intended Cursor surface.
 
 No Cursor wake key or event callback host is added; this connection does not
 modify the listener or Jet's ongoing subscription.  Hosted Linear provisioning
@@ -281,3 +280,25 @@ CLAUDE uses its own grant, epoch and bot credential.  Existing seats, JET grants
 wake keys, callbacks, subscriptions and Linear permissions need no migration.
 No CODEX callback or client is provisioned; see
 [hosted and server access](../../docs/protocols/claude-codex-bridge-access.md).
+
+
+## Cursor Shared-Agent Budgets (AFC-312)
+
+The owner authorized higher CURSOR limits for approximately 40 agents.
+Store `AGENT_SYNC_CURSOR_TOOL_BUDGETS` in AFC Infisical `prod` `/zulip` first,
+then provision the same Worker binding through stdin.  See INFISICAL.md for
+approved limits.  Deploy the merged budget code before expecting the setting
+to take effect.  It is read and validated with the existing startup config;
+no runtime Infisical request is made per tool call.  Cursor Linear operations
+use distinct counters and pacing; existing exhausted Zulip counters are retained.
+Verify production CURSOR audit outcomes for both reads and writes after deployment.
+
+## Cursor Grok Bot Identity Routing (AFC-322)
+
+One CURSOR OAuth installation offers per-call `identity` selection.  `agent_sync_identities` reports `CURSOR` and the eleven active Grok Bot personas with Zulip and Linear configured or missing states.  The identities are `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE` and `GB-TRADER`.  `GB-ENGINEER` is disabled and `BF-*` identities belong to BotFleet, so neither appears.  No OAuth client, callback, token, grant, scope or `HOSTED_SEATS` entry is added for a GB identity.
+
+The source remains the 22 `ZULIP_GB_<ROLE>_EMAIL` and `ZULIP_GB_<ROLE>_API_KEY` values in the **AI Fleet Coordinator** Infisical project, `prod` `/zulip`, plus the 22 `LINEAR_GB_<ROLE>_CLIENT_ID` and `LINEAR_GB_<ROLE>_CLIENT_SECRET` values in that project's `prod` `/linear`.  The earlier separate **Fleet Linear Seats** project guidance does not apply to these GB pairs.  Each role's email must equal `<role>-grok-bot@simplewithus.zulipchat.com`;  its Zulip key must authenticate that member bot (role 400), and its Linear viewer must name the selected `GB-ROLE` app.
+
+Install **one** encrypted Worker secret named `GB_IDENTITY_CREDENTIALS`.  Its JSON object has `v: 1` and an `r` object keyed by exactly the eleven roles above;  each role value is the four-string array `[email, zulipKey, linearClientId, linearClientSecret]`.  The UTF-8 payload is capped at 5 KiB.  Build it only in memory from the 44 verified Infisical source values and pass it to `wrangler secret put GB_IDENTITY_CREDENTIALS` on stdin;  never print or save the payload.  The Worker parses the bundle once per authenticated CURSOR request.  A present malformed or incomplete bundle fails closed;  legacy per-role bindings are considered only when the bundle binding is absent, and then only complete four-field rows are used.  Do not mix credentials between sources or roles.  This single binding stays below the Free plan's 64 binding limit where 44 separate bindings could not fit.
+
+`agent_sync_identities` exposes configured or missing status, never values.  The shared `LINEAR_TOOLS_WRITES` switch still controls writes.  All selected tool calls charge the original CURSOR budget and the role's own gate.  The deployment and production acceptance check are separate from this code change.

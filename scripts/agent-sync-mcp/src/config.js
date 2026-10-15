@@ -90,6 +90,23 @@ function parseList(env, name) {
  * The result is frozen, so request code cannot mutate policy.
  */
 export function loadConfig(env) {
+  const cursorToolBudgets = env.AGENT_SYNC_CURSOR_TOOL_BUDGETS
+    ? parseJsonVar(env, "AGENT_SYNC_CURSOR_TOOL_BUDGETS") : {};
+  if (!cursorToolBudgets || typeof cursorToolBudgets !== "object" || Array.isArray(cursorToolBudgets)) {
+    throw new Error("config: AGENT_SYNC_CURSOR_TOOL_BUDGETS must be an object");
+  }
+  for (const [kind, policy] of Object.entries(cursorToolBudgets)) {
+    if (!["write", "read", "react", "recall", "linear_write", "linear_read"].includes(kind)
+      || !policy || typeof policy !== "object" || Array.isArray(policy)
+      || Object.keys(policy).some((key) => !["hour", "day", "spacingMs"].includes(key))
+      || !Number.isInteger(policy.hour) || policy.hour < 1 || policy.hour > 100000
+      || (policy.day !== undefined && (!Number.isInteger(policy.day) || policy.day < policy.hour || policy.day > 1000000))
+      || (policy.spacingMs !== undefined && (!Number.isInteger(policy.spacingMs) || policy.spacingMs < 50 || policy.spacingMs > 6000))
+      || (!["linear_write", "linear_read"].includes(kind) && policy.spacingMs !== undefined)) {
+      throw new Error("config: invalid CURSOR tool budget policy");
+    }
+    Object.freeze(policy);
+  }
   if (env.PUBLIC_HOST !== undefined && env.PUBLIC_HOST !== PUBLIC_HOST) {
     throw new Error("config: PUBLIC_HOST var does not match the compiled hostname");
   }
@@ -183,6 +200,7 @@ export function loadConfig(env) {
 
   return Object.freeze({
     host: PUBLIC_HOST,
+    cursorToolBudgets: Object.freeze(cursorToolBudgets),
     issuer: ISSUER,
     resource: RESOURCE,
     resourceMetadataUrl: RESOURCE_METADATA_URL,

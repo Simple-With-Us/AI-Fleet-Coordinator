@@ -12,9 +12,12 @@ import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { ERROR_META_KEY, schemaProblem } from "../src/contract.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
-import { FakeLinear, TOKEN_URL, GRAPHQL_URL } from "./fake-linear.mjs";
+import { FakeLinear, TOKEN_URL, GRAPHQL_URL, opOf } from "./fake-linear.mjs";
 import { testEnv } from "./helpers.mjs";
-import { LINEAR_TOOLS, LINEAR_SCOPE, FLAT_LABELS, LinearClient, LinearError, appNameOk, seatTagForSeat, routeApp, commentId } from "../src/linear.js";
+import {
+  LINEAR_TOOLS, LINEAR_SCOPE, FLAT_LABELS, LinearClient, LinearError, appNameOk, seatTagForSeat, routeApp, commentId,
+  neutralizeLinearMentions, linearGraphqlErrorMeta, mapLinearError, linearCommentCreateInput, M_COMMENT,
+} from "../src/linear.js";
 
 const config = loadConfig(testEnv());
 const CLIENT_ID = "lin_fake_client_id";
@@ -485,4 +488,107 @@ test("commentId is fixed per issue, seat, verb, body and session, and different 
   assert.equal(await at("CLAIMED", { session: "", day: "2026-10-09" }), noSession);
   assert.notEqual(await at("CLAIMED", { session: "", day: "2026-10-10" }), noSession);
   assert.match(today, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+});
+
+test("neutralizeLinearMentions turns profile URLs and markdown profile links into plain @Name", () => {
+  assert.equal(
+    neutralizeLinearMentions("ping https://linear.app/simple-with-us/profiles/cursor please"),
+    "ping @cursor please",
+  );
+  assert.equal(
+    neutralizeLinearMentions("see [Cursor](https://linear.app/simple-with-us/profiles/cursor) for context"),
+    "see @Cursor for context",
+  );
+  assert.equal(linearCommentCreateInput("issue-1", "cid-1", "https://linear.app/simple-with-us/profiles/jet").body.includes("/profiles/"), false);
+});
+
+test("mapLinearError surfaces an actionable message for App user not valid GraphQL refusals", () => {
+  const err = new LinearError("unexpected", {
+    status: 200,
+    message: "App user not valid",
+    graphql: linearGraphqlErrorMeta({
+      message: "App user not valid",
+      path: ["commentCreate"],
+      extensions: { code: "INVALID_INPUT", userPresentableMessage: "App user not valid" },
+    }),
+  });
+  const tool = mapLinearError(err);
+  assert.equal(tool.code, "invalid_argument");
+  assert.match(tool.message, /app \(bot\) user/);
+  assert.equal(tool.extra.linear_code, "INVALID_INPUT");
+  assert.deepEqual(tool.extra.linear_path, ["commentCreate"]);
+  assert.doesNotMatch(tool.message, /App user not valid.*App user not valid/);
+});
+
+test("a claim comment that holds a Linear key is refused before any Linear request", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-claim-secret", identifier: "AFC-323" });
+  const error = toolError(await tools.call("linear_claim", { id: "AFC-323", comment: `lin_api_${"d".repeat(20)}` }), "refused_secret");
+  assert.match(error.message, /comment/);
+  assert.equal(fake.requests.length, 0);
+});
+
+test("a percent-encoded secret inside a profile URL is refused after mention neutralization", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-secret-profile", identifier: "AFC-322" });
+  const key = `lin_api_${"c".repeat(20)}`;
+  const profile = `https://linear.app/simple-with-us/profiles/${encodeURIComponent(key)}`;
+  const error = toolError(await tools.call("linear_comment", { id: "AFC-322", body: `see ${profile}` }), "refused_secret");
+  assert.match(error.message, /body/);
+  assert.equal(fake.requests.length, 0);
+});
+
+test("linear_comment neutralizes a profile URL before commentCreate so Linear does not refuse the mention", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-mention", identifier: "AFC-320" });
+  const profile = "https://linear.app/simple-with-us/profiles/grok-web";
+  ok(await tools.call("linear_comment", { id: "AFC-320", body: `please review ${profile}` }), "linear_comment");
+  const input = fake.mutations().at(-1).body.variables.input;
+  assert.ok(!String(input.body).includes("/profiles/"));
+  assert.match(input.body, /@grok-web/);
+});
+
+test("linear_comment logs GraphQL metadata when Linear still refuses (scrubbed, no body)", async () => {
+  const logs = [];
+  const fake = new FakeLinear();
+  const zulip = new FakeZulip();
+  const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
+  const gate = memoryGate(clock);
+  const client = new LinearClient({
+    seat: "GROK-WEB",
+    clientId: CLIENT_ID,
+    clientSecret: CLIENT_SECRET,
+    gate,
+    fetch: fake.fetch,
+    now: () => clock.now,
+    log: (row) => logs.push(row),
+  });
+  fake.failNext(
+    (entry) => opOf(entry.body?.query)?.name === "BoardComment",
+    () => fake.json(200, {
+      errors: [{
+        message: "App user not valid",
+        path: ["commentCreate"],
+        extensions: { code: "INVALID_INPUT", userPresentableMessage: "App user not valid" },
+      }],
+    }),
+  );
+  await assert.rejects(() => client.call(M_COMMENT, { input: { id: "00000000-0000-4000-8000-000000000001", issueId: "issue-x", body: "hello" } }), (error) => error instanceof LinearError);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].event, "linear_graphql_error");
+  assert.equal(logs[0].code, "INVALID_INPUT");
+  assert.equal(logs[0].path?.[0], "commentCreate");
+});
+
+test("only Cursor gets separate Linear budgets and its configured override", async () => {
+  const cursor = harness({ seat: "CURSOR" });
+  cursor.tools.config = { ...config, cursorToolBudgets: { linear_write: { hour: 2000, day: 20000, spacingMs: 100 } } };
+  await cursor.tools.reserveLinear("write");
+  assert.equal((await cursor.gate.store.get("budget:linear_write")).length, 1);
+  assert.equal(await cursor.gate.store.get("budget:write"), undefined);
+  const other = harness();
+  other.tools.config = cursor.tools.config;
+  await other.tools.reserveLinear("write");
+  assert.equal((await other.gate.store.get("budget:write")).length, 1);
+  assert.equal(await other.gate.store.get("budget:linear_write"), undefined);
 });

@@ -464,6 +464,55 @@ def apply_pid_liveness(rows: list[JsonDict]) -> list[JsonDict]:
     return rows
 
 
+def _normalize_user_content(content: Any) -> str:
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str)
+        )
+    if isinstance(content, str):
+        return content
+    return ""
+
+
+def user_prompt_receipt(session_id: str, text: str) -> bool:
+    """True when chat_history.jsonl contains this exact real user message."""
+    path = find_session_dir(session_id)
+    if path is None:
+        return False
+    hist = path / "chat_history.jsonl"
+    if not hist.is_file():
+        return False
+    try:
+        with hist.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 2 * 1024 * 1024))
+            if fh.tell():
+                fh.readline()
+            for raw in fh:
+                try:
+                    row = json.loads(raw)
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                if not isinstance(row, dict) or row.get("type") != "user" or row.get("synthetic_reason"):
+                    continue
+                if _normalize_user_content(row.get("content")) == text:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def prompt_inject_receipt(session_id: str, text: str, before_started: float = 0.0) -> bool:
+    """Disk evidence that a live prompt was accepted after an inject attempt."""
+    started = float(turn_state(session_id).get("turnStartedAt") or 0.0)
+    if started > before_started:
+        return True
+    return user_prompt_receipt(session_id, text)
+
+
 def count_real_user_turns(session_id: str) -> int | None:
     """Real (non-synthetic) user messages in chat_history.jsonl.
 

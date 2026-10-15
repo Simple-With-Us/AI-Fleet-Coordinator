@@ -90,6 +90,18 @@ export class SeatGate extends DurableObject {
     return state.idemPeek(this.store, options);
   }
 
+  linearApiBegin(options) {
+    return state.linearApiBegin(this.store, options);
+  }
+
+  linearApiSet(options) {
+    return state.linearApiSet(this.store, options);
+  }
+
+  linearApiDrop(options) {
+    return state.linearApiDrop(this.store, options);
+  }
+
   roleGet() {
     return state.roleGet(this.store);
   }
@@ -120,6 +132,18 @@ export class SeatGate extends DurableObject {
 
   callTail(limit) {
     return state.callTail(this.store, limit);
+  }
+
+  errorTail(limit) {
+    return state.errorTail(this.store, limit);
+  }
+
+  recordDiagnostic(entry) {
+    return state.recordDiagnostic(this.store, entry);
+  }
+
+  diagnosticTail(limit) {
+    return state.diagnosticTail(this.store, limit);
   }
 
   eventSubRoom(options) {

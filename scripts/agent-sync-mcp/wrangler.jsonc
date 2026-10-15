@@ -98,11 +98,10 @@
     // A manual Grok form still works through the /admin fallback client, which
     // takes the redirect URIs listed here (ARMING-JAY.md).
     "SEATS": {
-      // PROPOSAL ONLY: explicit owner approval is required before enabling.
-      // Keep the static Cloud callback; the new CIMD is restricted by policy
-      // to its exact localhost callback.  No other published redirects added.
+      // Cursor's published CIMD client and static manual client share only
+      // Cursor's exact Cloud callback.  No other published redirects are enabled.
       "CURSOR": {
-        "redirect_uris": ["https://www.cursor.com/agents/mcp/oauth/callback", "http://localhost:8787/callback"],
+        "redirect_uris": ["https://www.cursor.com/agents/mcp/oauth/callback"],
         "cimd_client_ids": ["https://cursor.com/oauth/mcp-client.json"]
       },
       // Hosted Claude apps only.  Use an independently tagged public manual

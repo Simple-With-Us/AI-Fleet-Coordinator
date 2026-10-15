@@ -1,6 +1,6 @@
 # agent-sync MCP Worker
 
-The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at `https://agent-sync.jays.services/mcp` that cloud-only seats add as a custom MCP connector.  It serves the same seven tools as the stdio server (`agent-sync mcp`), from the same `scripts/agent_sync/mcp/tools.json` (the hosted `inbox` also lists DMs, so its description differs), and each seat posts as its own Zulip bot.  It also serves three hosted-only Zulip direct-message tools (`dm_list`, `dm_read`, `dm_send`;  spec 1.2) and three hosted-only fleet recall tools (`recall_search`, `recall_stats`, `recall_contribute`;  spec 1.1).
+The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at `https://agent-sync.jays.services/mcp` that cloud-only seats add as a custom MCP connector.  It serves the same seven Zulip tools as the stdio server (`agent-sync mcp`), with public hosted names prefixed `zulip_`; old unprefixed names remain hidden aliases for compatible calls.  `whoami` remains unprefixed and reports shared seat/configuration metadata together with the verified Zulip identity.  Hosted inventory also includes three DM tools, three fleet recall tools, seven Linear convenience tools, three broad Linear API tools, 175 named Linear commands and 11 fixed official Linear MCP tools:  209 hosted tools total, including 196 Linear tools.
 
 | Seat | Bot | State |
 | --- | --- | --- |
@@ -13,9 +13,20 @@ Deploy and operate:  [DEPLOY.md](DEPLOY.md).  Connect a client:  [ARMING-JAY.md]
 
 ## Tools
 
-`whoami`, `topics`, `read_topic`, `inbox`, `post`, `reply`, `react`, exactly as `tools.json` defines them (spec section 1), except that the hosted `inbox` description says it lists DMs (spec 1.2);  its schema is the same.  `tools/list` serves that file, so both transports list the same schemas, and a test pins it.
+The public hosted Zulip tools are `whoami`, `zulip_topics`, `zulip_read_topic`, `zulip_inbox`, `zulip_post`, `zulip_reply` and `zulip_react`.  The six legacy names without `zulip_` remain accepted as hidden aliases, but are omitted from `tools/list`.  The hosted `inbox` description says it lists DMs (spec 1.2);  its schema otherwise follows `tools.json`.
 
-- **Identity.**  The seat comes only from the grant's props, and only `SEAT_SECRETS` turns a seat into a key.  No schema takes a seat;  an extra argument is an `invalid_argument` tool error.
+- **Identity.**  The authenticated seat comes only from the grant's props, and only `SEAT_SECRETS` turns an OAuth seat into a key.  On a CURSOR connection, each advertised tool accepts optional `identity`, default `CURSOR`, with a fixed enum of the eleven active `GB-*` Grok Bot personas.  `agent_sync_identities` lists the choices and each service's configured or missing state without credentials.  Other connections cannot select an identity.  GB identities are acting roles under the CURSOR grant, never OAuth seats.
+- **Delegated calls.**  The server removes `identity` before the inner tool validates arguments or calls an upstream service.  It creates a new `HostedTools` context for each selected call using that role's exact Zulip bot key and email, its own Linear app pair and token cache, its own pause gate, tag, idempotency rows, role check and service limits.  Missing role credentials fail closed.  Linear viewer verification requires the canonical `GB-ROLE` app name, case-insensitive, on reads and writes.  The original CURSOR scopes, grant epoch, revocation and pause remain the authority;  every delegated reservation also charges CURSOR's pooled budget before the role budget, so choosing another persona cannot multiply CURSOR's allowance.  Audits record `authenticated_seat` and `acting_identity` without arguments or credentials.  MCP event subscriptions and wakes remain bound to CURSOR.
+- **Credential bundle.**  The 11 GB roles use one encrypted `GB_IDENTITY_CREDENTIALS` Worker secret, built from their own Infisical Zulip and Linear values.  Its versioned compact JSON contains exactly four fields per fixed role and is limited to 5 KiB.  An invalid present bundle fails closed;  complete legacy four-field rows are accepted only while the bundle binding is absent.  The server parses it once per authenticated CURSOR request and never returns its values.
+
+For example, a CURSOR connection can select Fixer for one call:
+
+```json
+{"name":"whoami","arguments":{"identity":"GB-FIXER"}}
+```
+
+The result reports `seat: GB-FIXER` and `authenticated_seat: CURSOR`.  Omitting `identity` on the next call uses CURSOR.
+
 - **Seat binding (3.6).**  Before the first Zulip call and every 10 minutes after, `users/me` for the seat's key must be a bot, this seat's email and tag, and a member (role 400), never an administrator or owner.  A refusal is cached, audited and answered `not_authorized`.
 - **Channels (D4, owner ruling Sat, Oct 10, 2026).**  Any public channel the seat's own bot is subscribed to, read from Zulip (`users/me/subscriptions`, `invite_only` false) per seat and cached 60 seconds (`src/channels.js`), minus the stream ids in `CHANNELS_DENY` (a JSON array in `wrangler.jsonc`, empty by default).  Private channels never, even when the bot is in one.  A channel name resolves to its stream id through the freshly read set (case-insensitive, current names), and every narrow and every post uses the id;  a renamed channel keeps its id, and its old name stops resolving after the refresh.  `reply` and `react` fetch the target and check its stream id;  `inbox` runs one `is:mentioned` query across every channel and keeps only allowed stream ids, so private-channel mentions never reach the client, and its `next_since_id` moves past what it filtered out.  MCP Events wakes use the same set, read at delivery time.  Direct messages are the one deliberate exception (spec 1.2):  `inbox` adds a separate `is:dm` query, and `dm_list`, `dm_read` and `dm_send` work on DM conversations the bot is in.
 - **Untrusted content.**  Every Zulip-authored string comes back inside one nonce fence, folded, de-markered and escaped;  `structuredContent` carries integers only, and writes echo no Zulip text.
@@ -27,7 +38,7 @@ Deploy and operate:  [DEPLOY.md](DEPLOY.md).  Connect a client:  [ARMING-JAY.md]
 
 ## OAuth and the kill switch (Phase 0, unchanged)
 
-OAuth 2.1 with CIMD for ChatGPT and Grok, plus the owner-approved exact CURSOR CIMD/localhost pair when enabled (see ARMING-JAY.md), DCR off, a hand-registered public client for Grok's manual form, S256 PKCE for every client, an exact redirect allowlist, `/authorize` and `/admin` behind a path-scoped Access app that the Worker re-verifies, a single-use 10-minute arming window, one grant per seat (D6), the grant epoch, pause, and `MCP_DISABLED`.  Phase 2 adds three things:
+OAuth 2.1 with CIMD for ChatGPT and Grok, plus CURSOR's owner-approved exact CIMD/Cloud callback pair (see ARMING-JAY.md), DCR off, a hand-registered public client for Grok's manual form, S256 PKCE for every client, an exact redirect allowlist, `/authorize` and `/admin` behind a path-scoped Access app that the Worker re-verifies, a single-use 10-minute arming window, one grant per seat (D6), the grant epoch, pause, and `MCP_DISABLED`.  Phase 2 adds three things:
 
 - Every new grant carries `phase: 2` in its props;  a grant without it (any Phase 0 stub grant) gets 401 on `/mcp` and `invalid_grant` on refresh, so no stub grant reaches the real tools (spec 6, Phase 0 exit).
 - A refresh that fails as `refresh_token_mismatch` or `client_mismatch` (a replayed or stolen refresh token) pauses that seat (spec 3.5 step 3).  The seat is read from the refresh token's own `seat:grant:secret` prefix, because the library's `onError` names no seat.
@@ -40,12 +51,14 @@ OAuth 2.1 with CIMD for ChatGPT and Grok, plus the owner-approved exact CURSOR C
 | `src/index.js` | entry:  Host check, routing, token gate, provider, `/mcp`, `/authorize`, `/admin`, the refresh-mismatch pause |
 | `src/config.js` | constants, `SEAT_SECRETS`, `PROPS_PHASE` and `loadConfig(env)` (fails closed) |
 | `src/contract.js` | the shared contract, ported from the stdio server:  schema check, fence, error model, secret scan, mentions, tags, the Central clock |
-| `src/hosted-tools.js` | the seven tools, plus the recall and DM tools, for one seat |
+| `src/hosted-tools.js` | the seven stdio tools, plus hosted recall, DM and Linear tools, for one seat |
+| `src/delegated-identities.js` | fixed CURSOR persona list, per-call routing, discovery and credential status |
 | `src/dm.js` | Zulip direct messages:  the three hosted-only tool specs and the hosted `inbox` description |
 | `src/recall.js` | fleet recall:  the three hosted-only tool specs, the recall REST client (exact origin, no redirects, 10-second timeout), error mapping and the recall fence |
+| `src/linear.js` | Linear access:  the hosted-only convenience tools and broad GraphQL schema/query/mutation tools, using the seat's grant-bound Linear app identity |
 | `src/zulip.js` | Zulip egress:  the compiled realm only, no redirects, 15-second timeout, the 429 budget |
 | `src/textfmt.js` | the outbound sentence gap (port of `scripts/agent_sync/textfmt.py`) |
-| `src/mcp.js` | a low-level SDK `Server` per request:  `tools/list` from `tools.json` plus the recall and DM tools, `tools/call` to the hosted tools |
+| `src/mcp.js` | a low-level SDK `Server` per request:  `tools/list` from `tools.json` plus hosted recall, DM and Linear tools, `tools/call` to the hosted tools |
 | `src/seat-state.js`, `src/seat-gate.js` | the `SeatGate` Durable Object:  arming, epoch, pause, spacing, budgets, cooldown, idempotency, role cache, audit, MCP Events subscriptions, the access re-check before each delivery attempt, and the wake_id claims (claimed with a 15-second lease, then settled or handed back) |
 | `src/events.js` | MCP Events (spec 3.12):  the `zulip.mention` definition, events/list, subscribe and unsubscribe, callback verification, the callback host guard, Standard Webhooks signing, the channel allowlist for wakes, delivery inside the listener's request with retries and 410 handling, and the answer to the listener (503 asks it to retry) |
 | `src/wake.js` | the server listener's signed wake (`POST /internal/wake/<SEAT>`, `agent-sync-wake/1`, hex HMAC-SHA256 in `X-Agent-Sync-Signature`, 5-minute window, optional `stream_id`) |
@@ -57,12 +70,37 @@ OAuth 2.1 with CIMD for ChatGPT and Grok, plus the owner-approved exact CURSOR C
 
 ```bash
 cd scripts/agent-sync-mcp
-node --test test/*.test.mjs                      # no install needed (ci.yml runs this)
+npm ci --ignore-scripts && node --test test/*.test.mjs
 npm ci --ignore-scripts && npm run test:workerd  # one Miniflare flow over the bundled Worker
 ```
 
 - The unit suites run the shared golden fixtures (`scripts/agent_sync/mcp/fixtures.jsonl`:  fence, secret, mentions, schema, error map, inbox and the hosted channel rule) against the hosted tools and a fake Zulip (`test/fake-zulip.mjs`), plus seat binding, spacing, budgets, idempotency and reconcile, 429, audit and leak checks, the sentence gap against the Python suite's own tables, and the secret scanner against the Python scanner's samples (`test/secretscan-parity.test.mjs`;  both skipped where `python3` is missing).
 - The workerd flow (also in `.github/workflows/agent-sync-mcp.yml`) walks the Phase 0 OAuth flow, checks `tools/list` against `tools.json`, a `seat` argument as a tool error, an unknown tool as a protocol error, the scope challenge, pause, epoch and revoke, then Grok's client metadata document through consent to a `post` as GROK-WEB in `#sandbox` (checked at the fake Zulip:  GROK-WEB's own key, the tag, the sentence gap), a tool error through the real SDK client, and a replayed refresh token pausing the seat.
+
+## Linear GraphQL Tools
+
+The hosted connector adds `linear_schema`, `linear_query` and `linear_mutation` after the Linear convenience tools.  `linear_schema` reads a type's field definitions (defaults to `Query`) and can filter fields or limit the result.  `linear_query` runs a GraphQL query document with variables.  `linear_mutation` runs a mutation document with variables and requires an `idempotency_key`.
+
+For example, read projects with `linear_query`:
+
+```json
+{
+  "query": "query Projects { projects(first: 10) { nodes { id name } } }",
+  "variables": {}
+}
+```
+
+Or update a project with `linear_mutation`:
+
+```json
+{
+  "mutation": "mutation UpdateProject($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { success project { id name } } }",
+  "variables": { "id": "project-id", "input": { "name": "Updated project name" } },
+  "idempotency_key": "update-project-2026-10-15"
+}
+```
+
+These tools use the same grant-bound identity, authentication, budgets and secret scanning as the existing Linear tools.  A mutation is available only when Linear writes are enabled and the seat has its own app identity.  App permissions still limit which schema fields and operations are available.  Fleet claim and seat-label changes remain protected and must use the existing `linear_claim` convenience tool.
 
 ## Versions and the two-week rule
 
@@ -90,3 +128,25 @@ The spec names `workers-oauth-provider` v1.2.3.  1.1.0 covers everything Phase 0
 - The 1.2.0 redirect policy:  our exact allowlist is stricter.
 
 Move to 1.2.3 once it is eligible (Wed, Oct 21) or if Phase 0 shows a client the workarounds do not cover.  When you do:  drop `allowImplicitFlow` and `allowPlainPKCE` from `providerFor` (1.2.0 removed them;  passing `true` throws), update the config test that pins `allowPlainPKCE: false`, pass `env` to `tokenExchangeCallback` instead of the per-`env` provider cache, and re-check that `createClient` accepts our redirect URIs under the 1.2.0 redirect policy.  The 1.2.0 to 1.2.3 release notes contain no security fix on a path Phase 0 uses:  #340 (redirect validation in `createClient`) is covered by the strict `SEATS` validation, #368 (a token with no scope) only reduces privilege here, and #344 (a `userId` containing `:`) does not apply to JET or GROK-WEB.
+
+Queries support aliases, fragments, filters and pagination from the live Linear schema.  Subscriptions, binary file transfer, credential/access administration and batch/bulk mutation roots are excluded from this GraphQL interface.  Each mutation has one root field; body and description inputs receive the seat tag.  Generic mutations cannot change protected fleet claim labels.  Eleven additional fixed tools forward the official Linear MCP surface:  nine diff/review tools (`get_diff`, `list_diffs`, `get_diff_threads`, `save_diff_comment`, `resolve_diff_thread`, `delete_diff_comment`, `submit_diff_review`, `update_diff`, `merge_diff`), `extract_images` (Markdown input with image-block output), and `search_documentation`.
+
+The official MCP bridge uses the same per-seat cached app token and does not require another manual OAuth flow.  Linear and GitHub permissions still govern what each call can do.  Writes require idempotency keys; partial or uncertain outcomes are never automatically replayed.  The transport accepts only the fixed tool allowlist, bounds requests and responses, and does not log upstream payloads.  The image tool takes Markdown, not an issue ID.
+
+FleetLink is tracked separately as AFC-320 and remains parked until the site supports multiuser access; this Worker does not implement it.
+
+Idempotency keys are seat-scoped for 24 hours.  A completed retry returns the saved response or completion receipt.  An uncertain upstream outcome is never automatically replayed; inspect Linear before choosing a new key.  Response size and GraphQL complexity are bounded, and Linear’s upstream permissions and rate limits still apply.
+
+## Named Linear Commands
+
+The hosted tool list also includes named resource commands for issues, comments, attachments, documents, projects, labels, milestones, cycles, teams/users, templates, notifications, status updates, initiatives, releases and agent skills.  See the [complete command catalog](../../docs/protocols/linear-named-tools.md) for every name, underlying API root and availability notes.
+
+Named reads expose bounded filters/pagination and an optional response-field selection.  Named writes require an idempotency key and use the existing mutation checks; save aliases create or update according to whether id is supplied.  Upload preparation returns private signed metadata only; it does not transfer file bytes.  Internal diff APIs and unsupported cycle creation are not exposed.
+
+## Admin Status And Diagnostics
+
+Open `/admin#status-overview` through the existing Cloudflare Access admin gate.  The status overview shows each seat’s installed credentials, last observed role check, grants, recent calls and independently retained last errors.  Configuration is shown separately from recent successful activity; a quiet seat is not verified healthy.  Refresh Status reloads the server-rendered snapshot.
+
+Recent Errors And Refusals combines safe tool diagnostics, authorize/token refusals, rejected MCP requests and wake delivery/validation failures.  It shows cause, remedy, retry/reset guidance and upstream HTTP status when recorded.  Failed token/wake requests with no authenticated seat are shown as unassigned counters rather than attributed to an agent.  Normal unauthenticated MCP discovery is excluded.
+
+Detailed tool errors are bounded and scrubbed before storage; raw arguments, message bodies, headers, credentials and queries are not stored.  A separate last-100-error tail per seat survives successful-call traffic, expires after 90 days, and is sampled up to 50 rows per seat by the admin page.  Serialized daily call arrays are bounded to 1 MiB and error arrays to 256 KiB, pruning oldest rows before a storage value can overflow.  Global pre-tool failures are aggregated into at most 100 reason/route/seat rows with the same retention bound.  The page shows bounded samples, not an exhaustive incident ledger; older calls have only their original error codes.  Cloudflare Access denials and client-local failures before the Worker are outside this page’s visibility.

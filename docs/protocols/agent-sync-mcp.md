@@ -9,7 +9,7 @@ Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet 
 | Topic | Decision |
 | --- | --- |
 | Tool contract | One checked-in `tools.json` (schemas and annotations) plus shared golden fixtures.  Both transports load the schemas and both test suites run the fixtures. |
-| Tools | `whoami`, `topics`, `read_topic`, `inbox`, `post`, `reply`, `react`.  The hosted server adds fleet recall (section 1.1), Zulip direct messages (section 1.2, owner ruling Sat, Oct 10), and Linear (section 1.3, owner ruling Sun, Oct 11):  `linear_whoami`, `linear_list`, `linear_show`, `linear_file`, `linear_claim`, `linear_comment`, `linear_status`.  No admin, user, channel-management, upload, delete, `wait` or `listen` tools. |
+| Tools | The hosted public Zulip names are `whoami`, `zulip_topics`, `zulip_read_topic`, `zulip_inbox`, `zulip_post`, `zulip_reply`, `zulip_react`; the six previous unprefixed names remain hidden compatibility aliases.  `whoami` reports shared seat/configuration metadata and the verified Zulip identity.  Hosted-only tools also include fleet recall (section 1.1), direct messages (section 1.2), Linear GraphQL and named commands (section 1.3), and 11 fixed official Linear MCP tools (section 1.4).  Zulip has no admin, user, channel-management, upload, delete, `wait` or `listen` tools. |
 | Mac seats | A local stdio server, `agent-sync mcp`.  It is zero-dependency, dual-era MCP, reuses the CLI code, and keeps the keys in `~/.secrets/Zulip`. |
 | Cloud seats | One Cloudflare Worker using `workers-oauth-provider` (Phase 0 pins 1.1.0 under the fleet's two-week rule, with the 1.2.x workarounds listed in `scripts/agent-sync-mcp/README.md`;  move to 1.2.3 once it is eligible, Wed, Oct 21).  It is its own OAuth 2.1 authorization server.  Jay arms a seat, then binds the grant to it on a consent page behind Access. |
 | Keys | Infisical is canonical, in a location no agent identity can read.  Its Cloudflare Workers sync gives the Worker copies of the hosted seats' keys only. |
@@ -21,19 +21,19 @@ Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet 
 
 ## 1. Tool Contract (Shared by Both Transports)
 
-**Source of truth.**  `scripts/agent_sync/mcp/tools.json` holds names, descriptions, `inputSchema`, `outputSchema` and annotations.  `scripts/agent_sync/mcp/fixtures.jsonl` holds golden cases:  marker escapes, secret-scan refusals, mention neutralization, envelope shape and error mapping.  Python loads the JSON at startup.  The Worker imports the same file at bundle time (Phase 0 proves this works through `createMcpHandler`).  Both test suites must pass the fixtures and assert that `tools/list` deep-equals `tools.json`, which is how drift is caught.
+**Source of truth.**  `scripts/agent_sync/mcp/tools.json` holds the stdio tool names, descriptions, `inputSchema`, `outputSchema` and annotations.  The hosted Worker publishes the Zulip names with `zulip_` prefixes, keeps the original unprefixed names as hidden compatibility aliases, and leaves `whoami` unprefixed.  `scripts/agent_sync/mcp/fixtures.jsonl` holds golden cases:  marker escapes, secret-scan refusals, mention neutralization, envelope shape and error mapping.  Python loads the JSON at startup; hosted `tools/list` uses the public names and hosted schemas.
 
 **Identity never travels in arguments.**  No schema has `seat`, `as`, `rc`, `no_tag` or `fleet`.  Every schema sets `additionalProperties: false`, so an injected `seat` argument is a validation error.
 
-| Tool | CLI verb | Arguments (defaults) | Annotations | Returns |
+| Hosted public tool (stdio name) | CLI verb | Arguments (defaults) | Annotations | Returns |
 | --- | --- | --- | --- | --- |
-| `whoami` | `whoami` | none | readOnly | seat, bot email, Zulip role, realm, transport, tag prefix |
-| `topics` | `topics` | `channel` ("agent-sync"), `limit` 1–100 (30) | readOnly | envelope with one `{name, max_id, resolved}` line per topic |
-| `read_topic` | `read` | `channel` ("agent-sync"), `topic` (required, at most 60 characters), `since_id`, `limit` 1–50 (20), `include_self` (false:  stdio hides this session's posts, hosted hides this bot's) | readOnly | envelope, `next_since_id` |
-| `inbox` | `inbox --peek` | `since_id`, `limit` 1–50 (20) | readOnly | envelope of channel mentions of this bot, `next_since_id` |
-| `post` | `post` | `channel` ("agent-sync"), `topic` (required), `text` (required), `to` (up to 5 names or seat tags), `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
-| `reply` | `reply` | `message_id` (required), `text`, `to`, `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
-| `react` | `react` | `message_id`, `emoji` (`^[a-z0-9_+-]{1,60}$`) | write, idempotent | `{id, emoji}` |
+| `whoami` | `whoami` | none | readOnly | shared seat/configuration metadata and verified Zulip identity |
+| `zulip_topics` | `topics` | `channel` ("agent-sync"), `limit` 1–100 (30) | readOnly | envelope with one `{name, max_id, resolved}` line per topic |
+| `zulip_read_topic` | `read` | `channel` ("agent-sync"), `topic` (required, at most 60 characters), `since_id`, `limit` 1–50 (20), `include_self` (false:  stdio hides this session's posts, hosted hides this bot's) | readOnly | envelope, `next_since_id` |
+| `zulip_inbox` | `inbox --peek` | `since_id`, `limit` 1–50 (20) | readOnly | envelope of channel mentions of this bot, `next_since_id` |
+| `zulip_post` | `post` | `channel` ("agent-sync"), `topic` (required), `text` (required), `to` (up to 5 names or seat tags), `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
+| `zulip_reply` | `reply` | `message_id` (required), `text`, `to`, `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
+| `zulip_react` | `react` | `message_id`, `emoji` (`^[a-z0-9_+-]{1,60}$`) | write, idempotent | `{id, emoji}` |
 
 **Stateless reads.**  The tools keep no server-side cursors.  Callers pass `since_id` in and get `next_since_id` out.  A hosted grant is shared by every chat on that account, so a server cursor would let one chat consume another chat's messages.  In stdio, reads never move the CLI's session or inbox cursors, so the MCP server and the typed CLI do not steal from each other.  `post` and `reply` only seed an unset session cursor, exactly as the CLI's `_send` does.
 
@@ -127,7 +127,7 @@ Added Sat, Oct 10, by owner ruling:  "all should have DM tools".  Every hosted s
 
 ### 1.3 Linear (Hosted Only)
 
-Added Sun, Oct 11, so a seat with no shell works the fleet's board instead of acting as Jay through a connector.  GROK-WEB is the only seat enabled today (`LINEAR_SEATS` in `src/linear.js`);  ECHO and WISE are the same pattern and follow when the owner says so.  Seven tools, prefixed `linear_` so they cannot collide with the Zulip ones:  `linear_whoami`, `linear_list`, `linear_show`, `linear_file`, `linear_claim`, `linear_comment`, `linear_status`.
+The hosted server supports the enabled seats listed in `LINEAR_SEATS` in `src/linear.js`, each using its own Linear app credentials.  Seven issue convenience tools remain:  `linear_whoami`, `linear_list`, `linear_show`, `linear_file`, `linear_claim`, `linear_comment`, `linear_status`.  AFC-314 adds `linear_schema` for current GraphQL type discovery, `linear_query` for general reads, and `linear_mutation` for one mutation root per request.  This extends coverage to projects, cycles, documents, relations and other schema features within the app's permissions.
 
 **The specs live in `src/linear.js`, not in `tools.json`.**  That file is the Python stdio server's whole tool list — `stdio.py` serves `tools/list` from it verbatim and `tools.py` dispatches with a bare `getattr(self, "_tool_" + name)` — so an entry there would advertise tools the stdio server cannot run.  `recall.js` and `dm.js` are hosted-only for the same reason.
 
@@ -138,10 +138,25 @@ Added Sun, Oct 11, so a seat with no shell works the fleet's board instead of ac
 - **`duplicate` is never a state write.**  It is a duplicate relation to the issue named by `of`, which is required (`board:1950-1987`).  Releasing to `open` or `backlog` drops the claim markers;  a closing status drops `needs-owner` and `ask-capture` (`board:1991-2002`).
 - **Token handling.**  Client credentials mint through `client_credentials` with the fixed scope.  The token is cached in the seat's Durable Object, not KV, because the DO's input gate is what serializes the mint;  Linear allows one mint per app per 24 hours, so a cached token minted under a day ago is never replaced, not even after a 401.  A 401 retries exactly once and only when the cache still holds the token that failed.  Jay forces a new mint by rotating the app's credentials, which changes the fingerprint.
 - **Idempotency.**  Comments post under a fixed id derived from issue, seat, verb, body digest and session (the Central day when there is none), so a rerun of a verb that stopped part way cannot post twice while the same words next week still post (`board:1813-1819`).  Duplicate relations use a fixed id for the same reason.
-- **The flat label whitelist.**  Only `needs-owner`, `ask-capture`, `fleet-report` and `stale-claim` are nameable, so no seat can forge `claimed:*`, `seat:*` or a member of the single-select Kind, Severity and Env groups through this door.  A claim label is reachable only through `linear_claim`.
+- **The convenience tools’ flat label whitelist.**  Only `needs-owner`, `ask-capture`, `fleet-report` and `stale-claim` are nameable, so no seat can forge `claimed:*`, `seat:*` or a member of the single-select Kind, Severity and Env groups through this door.  A claim label is reachable only through `linear_claim`.
+- **General API safeguards.**  Parsed GraphQL operations reject mutation/subscription documents on the query path, multiple mutation roots, excessive complexity, credential/access administration and batch/bulk roots.  Mutation inputs cannot override the actor or alter protected claim/seat labels.  Body and description fields are seat-tagged.  An explicit seat-scoped idempotency key binds the request for 24 hours; uncertain outcomes are never automatically replayed.  Results are bounded, scrubbed and fenced, with no arbitrary remote payload in trusted structured metadata.  Binary uploads and subscriptions are not implemented.
 - **Writes are off by default** behind `LINEAR_TOOLS_WRITES`, mirroring the CLI's `LINEAR_BOARD_WRITES=1`, and they share the seat's write budget and spacing.  Reads need no switch.
 - **Fence.**  Issue titles, descriptions and comments are attacker-controllable by anyone who can open an issue, so everything Linear returns comes between `BEGIN_UNTRUSTED_LINEAR` and `END_UNTRUSTED_LINEAR` markers with the same nonce rule, and the server `instructions` gain one sentence saying so.
 - **Audit.**  One row per call like every other tool, plus `body_len` and `idem_ref`.  Never a body, a token or a credential;  the Linear client secrets join the scrub list, so no error text can carry one.
+
+### 1.4 Official Linear MCP Tools (Hosted Only)
+
+AFC-319 forwards exactly 11 tools from Linear’s official MCP service: `get_diff`, `list_diffs`, `get_diff_threads`, `save_diff_comment`, `resolve_diff_thread`, `delete_diff_comment`, `submit_diff_review`, `update_diff`, `merge_diff`, `extract_images` and `search_documentation`.  The nine diff/review tools provide the diff workflow; `extract_images` takes Markdown and returns image blocks; documentation search is `search_documentation`.  These fixed names are not arbitrary upstream tool proxying.
+
+The bridge uses the same per-seat cached Linear app token as the hosted Linear tools and requires no additional manual OAuth flow.  Linear and GitHub permissions still apply.  Writes require idempotency keys; partial or uncertain outcomes are never automatically replayed.  Responses are bounded and transport errors do not expose raw upstream payloads.  This adds 11 tools to the 175 named commands and existing 10 Linear tools: 196 Linear tools and 209 hosted tools total.  AFC-320 tracks a future FleetLink integration, parked until the site supports multiuser access; it is not part of this implementation.
+
+### 1.5 Admin Status And Error Diagnostics
+
+AFC-316 adds a server-rendered status overview to the existing Access-protected `/admin` page.  It separates configuration, observed traffic and recent successes from failures and missing telemetry.  Each seat shows Zulip key/role/grant state, Linear/recall configuration and last observed call/success/error.  A refresh button loads a new snapshot without scripts or weaker CSP.
+
+The unified diagnostic list combines tool failures, authorize/token refusals, failed grant checks and wake delivery/validation failures.  Known codes have concrete cause/remedy guidance; newly recorded tool failures also retain bounded, secret-scanned messages, retry/reset metadata and upstream HTTP status.  Raw tool arguments, bodies, headers, tokens and queries remain excluded.  Unknown tool names are recorded only as the fixed `unknown_tool` code.
+
+Tool error history is capped independently at 100 rows per seat for 90 days; the page reads up to 50 per seat alongside up to 100 recent calls.  Aggregated pre-tool diagnostics are capped at 100 route/reason/seat entries for 90 days.  Read/modify/write updates use storage transactions.  Successful traffic does not evict the error tail.  UTF-8 byte limits also bound daily call arrays to 1 MiB and error arrays to 256 KiB, retaining newest rows under heavy traffic.  Unauthenticated errors remain unassigned counters, and ordinary initial OAuth discovery 401s are not errors.  Cloudflare Access denials and client-side failures that never reach the Worker are not observable here.
 
 ## 2. Local Stdio Server (`agent-sync mcp`)
 
@@ -263,7 +278,7 @@ Later these go into an installer modeled on `scripts/install-fleet-rag.sh`, with
 3. **`parseAuthRequest`** validates the client, its exact registered redirect URI, the resource and PKCE for public clients.
 4. **Our gate** then refuses unless:
    - `code_challenge` is non-empty and `code_challenge_method` is `S256`, for every client.  The library lets confidential clients skip PKCE.
-   - `redirect_uri` exactly equals an allowlisted string, after a `URL` parse requiring `https`, no userinfo, port, query or fragment.  The generic exception is a native app's loopback callback (RFC 8252 section 7.3):  `http` on the IPv4 literal `127.0.0.1` with an explicit port and a path, canonical, no userinfo, query or fragment.  `localhost`, `[::1]`, other 127/8 addresses and a missing port remain refused by that generic rule.  One separate exception binds only seat CURSOR, client `https://cursor.com/oauth/mcp-client.json`, and redirect `http://localhost:8787/callback`, with exact equality in config, preauthorization, restored consent/client binding and token forms.  No manual client or other seat may reuse it; the Cursor CIMD cannot use other callbacks.  Authorization-code exchange must supply the exact callback; refresh may omit it, but a supplied callback must match.  A CIMD client id is always `https`.  The Instinct app's `http://127.0.0.1:8737/callback` is listed for ECHO and WISE (Fri, Oct 9).  The library accepts any port on a loopback host, so this exact-string check is the only port pin.  ChatGPT's older shared one is `https://chatgpt.com/connector_platform_oauth_redirect`, and its newer connectors send their own pair (`https://chatgpt.com/connector/oauth/<id>` with the client document `https://chatgpt.com/oauth/<id>/client.json`).  Each connector's pair is added by hand from the refused-redirect log as exact strings, never a pattern;  Jay's was added on Fri, Oct 9.  Grok's is added the same way.
+   - `redirect_uri` exactly equals an allowlisted string, after a `URL` parse requiring `https`, no userinfo, port, query or fragment.  The generic exception is a native app's loopback callback (RFC 8252 section 7.3):  `http` on the IPv4 literal `127.0.0.1` with an explicit port and a path, canonical, no userinfo, query or fragment.  `localhost`, `[::1]`, other 127/8 addresses and a missing port remain refused by that generic rule.  The separate CURSOR CIMD binding permits only client `https://cursor.com/oauth/mcp-client.json` with callback `https://www.cursor.com/agents/mcp/oauth/callback`, exactly, and only for seat CURSOR.  The same callback supports CURSOR's manual public client.  Other Cursor CIMD callbacks, including localhost, remain refused.  Authorization-code exchange must supply the exact callback; refresh may omit it, but a supplied callback must match.  A CIMD client id is always `https`.  The Instinct app's `http://127.0.0.1:8737/callback` is listed for ECHO and WISE (Fri, Oct 9).  The library accepts any port on a loopback host, so this exact-string check is the only port pin.  ChatGPT's older shared one is `https://chatgpt.com/connector_platform_oauth_redirect`, and its newer connectors send their own pair (`https://chatgpt.com/connector/oauth/<id>` with the client document `https://chatgpt.com/oauth/<id>/client.json`).  Each connector's pair is added by hand from the refused-redirect log as exact strings, never a pattern;  Jay's was added on Fri, Oct 9.  Grok's is added the same way.
    - ChatGPT uses that stable redirect and stable CIMD id only while the metadata `issuer` equals `resourceMetadata.authorization_servers[0]` byte for byte and every redirect carries `iss` (a Worker test pins this).  Otherwise it falls back to `/connector/oauth/{callback_id}`.  If Phase 0 sees that form anyway, Jay allowlists the exact URI from the log.
    - `resource` equals `https://<host>/mcp`, and the scope is within `zulip:read zulip:write`.
    - Every refusal logs the `redirect_uri`, client_id and client_name to `/admin` (no bodies), so Jay can allowlist Grok's after its first attempt.
@@ -396,19 +411,18 @@ The stdio kill switch is to remove the config entry, or rotate the key.
 CURSOR retains its static public manual-client path through
 `https://www.cursor.com/agents/mcp/oauth/callback`.  The separate exact-pair
 extension permits only Cursor's published CIMD
-`https://cursor.com/oauth/mcp-client.json` with `http://localhost:8787/callback`,
-bound only to CURSOR.  It requires explicit owner approval before enablement;
-publication of other callbacks in that metadata does not allow them here.
-S256, blank/omitted client secret, DCR off, owner arming and consent remain required.
+`https://cursor.com/oauth/mcp-client.json` with the same HTTPS Cloud callback,
+bound only to CURSOR.  Jay approved this exact pair on 2026-10-14 from Cursor's
+refused-request log; publication of other callbacks in that metadata does not
+allow them here.  S256, blank/omitted client secret, DCR off, owner arming and
+consent remain required.
 Both paths map only to `ZULIP_EMAIL_CURSOR` / `ZULIP_KEY_CURSOR` and the existing
 `cursor-bot@simplewithus.zulipchat.com` member bot.  Jet's grants, subscription,
 wake HMAC key, callbacks and access policy are unaffected.
 
-Support and mocked tests do not prove a listening localhost receiver or a working
-Cloud connection.  Approve the localhost flow only on Cursor's own computer;
-localhost must resolve to that browser's computer.  Secure key provisioning and
-actual `whoami` acceptance remain owner checks.  A successful native flow does
-not establish Cloud authentication: verify from the intended Cursor surface.
+Support and mocked tests do not prove a working Cloud connection.  Secure key
+provisioning and actual `whoami` acceptance remain owner checks.  Verify from the
+intended Cursor surface.
 See [ARMING-JAY.md](../../scripts/agent-sync-mcp/ARMING-JAY.md#connect-cursor-cloud-cursor)
 and [DEPLOY.md](../../scripts/agent-sync-mcp/DEPLOY.md#add-cursor-cloud-afc-294).
 No Cursor event callback or wake key is provisioned by this connection.
@@ -455,7 +469,7 @@ No Cursor event callback or wake key is provisioned by this connection.
 | Consent phishing | An attacker adds this URL in their own ChatGPT and sends Jay the genuine authorize link | Arming window; Access session (30 days since the owner ruling on Fri, Oct 9, 2026, was 15 minutes, so the arming window and consent step carry this weight); exact redirect allowlist; CIMD client allowlist; DCR off; escaped helper-built consent with CSP; one grant per seat (D6) | Jay opens an attacker's link inside his own 10-minute arming window |
 | Compromised or over-shared connector | Another dot or persona on the account, or a breached ChatGPT or xAI account | Per-account limit stated (section 4); member role;  the channel rule (public channels the bot is subscribed to) plus `CHANNELS_DENY`;  budgets; audit; pause, revoke and rotate | Acts as that one seat until noticed |
 | Loopback callback (ECHO, WISE) | `http://127.0.0.1:8737/callback` is plain http, any program on the machine that opens the consent link can listen on that port, and two seats share it | Exact string, IPv4 literal only, explicit port (no `localhost`, which a hosts file can repoint);  PKCE S256, so a code caught on the port is useless without the app's verifier;  Access sign-in, single-use 10-minute arming and consent;  the consent page says the tokens go to "a program on the computer running this browser (127.0.0.1:8737)", so Jay approves only from the app's own machine;  exactly one sharing seat armed, re-checked on Approve;  client bound to the resolved seat | Jay approves from a browser on a machine where another local program holds port 8737 first and runs its own PKCE flow inside his arming window |
-| Cursor localhost callback | A hosts-file/DNS change can repoint localhost; another local program can own port 8787 | Only exact CURSOR+CIMD+callback; no manual or sibling client; S256, Access, single-use arming and consent, exact token callback; consent warns that localhost must reach the browser computer and does not verify a receiver | Local receiver or name-resolution compromise; native consent does not prove Cloud authentication |
+| Cursor Cloud callback | A different app or seat attempts to reuse Cursor's public callback | Exact callback allowlist bound to CURSOR; exact CIMD client ID plus callback pairing; S256, Access, single-use arming and consent; exact token callback | Cursor Cloud or callback handling may fail after consent; native consent does not prove Cloud authentication |
 | Key leakage | A key in a log, error, topic, props or tool result | Keys only in Worker secrets and mode-600 files; topic and channel scanned; topic logged only after the scan; scrubbed errors; no bodies or headers logged; fixture-key grep tests; realm lock with no redirects | Cloudflare or Infisical compromise |
 
 ## 6. Rollout, Tests and Owner Decisions

@@ -9,6 +9,7 @@
 // Spec:  docs/protocols/agent-sync-mcp.md sections 3.4, 3.5 and 3.10.
 
 import { ARM_WINDOW_MS, GRANT_MAX_AGE_MS, PROPS_PHASE } from "./config.js";
+import { scanSecret } from "./contract.js";
 
 const AUDIT_CAP = 200;
 // Authorize refusals come from a request that passed Cloudflare Access, so the
@@ -152,9 +153,15 @@ export const WRITE_SPACING_MS = 3000; // posts, replies and reactions (spec 3.7)
 export const READ_SPACING_MS = 500;
 export const MAX_WAIT_MS = 6000; // a call waits at most this long for its slot
 export const PENDING_FRESH_MS = 30_000; // a pending row younger than this is a write in flight
+const LINEAR_API_DATA_MAX_BYTES = 8192;
+const LINEAR_API_CLEANUP_INTERVAL_MS = MINUTE_MS;
 export const ROLE_TTL_MS = 10 * MINUTE_MS; // spec 3.6:  users/me on first use and every 10 minutes
 export const CALL_RETENTION_DAYS = 90; // spec 3.9
 const CALLS_PER_DAY_CAP = 5000;
+const ERROR_AUDIT_CAP = 100;
+export const CALLS_STORAGE_MAX_BYTES = 1024 * 1024;
+export const ERRORS_STORAGE_MAX_BYTES = 256 * 1024;
+const ERROR_MESSAGE_MAX = 300;
 const GEO_CAP = 50;
 
 // D5 budgets, per seat.  `write` is post and reply, `react` is reactions,
@@ -170,6 +177,8 @@ export const BUDGETS = Object.freeze({
     { windowMs: DAY_MS, limit: 40 },
   ]),
   read: Object.freeze([{ windowMs: HOUR_MS, limit: 300 }]),
+  linear_write: Object.freeze([{ windowMs: HOUR_MS, limit: 20 }, { windowMs: DAY_MS, limit: 120 }]),
+  linear_read: Object.freeze([{ windowMs: HOUR_MS, limit: 300 }]),
 });
 
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -181,32 +190,53 @@ const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
  * and the budget entry are written before this returns, and the method does no
  * outside I/O, so concurrent calls of one seat get distinct slots.
  */
-export async function reserve(store, { kind }, now = Date.now()) {
+export async function reserve(store, { kind, policy }, now = Date.now()) {
   if (!Object.hasOwn(BUDGETS, kind)) throw new Error("unknown call kind");
   if ((await store.get("paused")) === true) return { ok: false, code: "paused" };
   const cooldown = await store.get("cooldown_until");
   if (Number.isFinite(cooldown) && cooldown > now) {
     return { ok: false, code: "rate_limited", retryAfterS: Math.max(1, Math.ceil((cooldown - now) / 1000)) };
   }
-  const windows = BUDGETS[kind];
+  const windows = policy
+    ? [{ windowMs: HOUR_MS, limit: policy.hour }, ...(policy.day ? [{ windowMs: DAY_MS, limit: policy.day }] : [])]
+    : BUDGETS[kind];
   const longest = Math.max(...windows.map((w) => w.windowMs));
-  const history = ((await store.get(`budget:${kind}`)) ?? []).filter((t) => Number.isFinite(t) && t > now - longest && t <= now + MINUTE_MS);
+  const stamp = (entry) => Array.isArray(entry) ? entry[0] : entry;
+  const count = (entry) => Array.isArray(entry) ? entry[1] : 1;
+  let history = ((await store.get(`budget:${kind}`)) ?? []).filter((entry) =>
+    Number.isFinite(stamp(entry)) && Number.isInteger(count(entry)) && count(entry) > 0
+    && stamp(entry) > now - longest && stamp(entry) <= now + MINUTE_MS);
+  // Minute buckets bound storage for large shared-seat budgets.  Round up so
+  // expiry is conservative by at most a minute, never an early extra allowance.
+  if (policy) {
+    const buckets = new Map();
+    for (const entry of history) {
+      const minute = Math.ceil(stamp(entry) / MINUTE_MS) * MINUTE_MS;
+      buckets.set(minute, (buckets.get(minute) ?? 0) + count(entry));
+    }
+    history = [...buckets];
+  }
   for (const { windowMs, limit } of windows) {
-    const inWindow = history.filter((t) => t > now - windowMs);
-    if (inWindow.length >= limit) {
-      return { ok: false, code: "budget_exhausted", resetAt: iso(Math.min(...inWindow) + windowMs), window: windowMs === HOUR_MS ? "hour" : "day" };
+    const inWindow = history.filter((entry) => stamp(entry) > now - windowMs);
+    if (inWindow.reduce((total, entry) => total + count(entry), 0) >= limit) {
+      return { ok: false, code: "budget_exhausted", resetAt: iso(Math.min(...inWindow.map(stamp)) + windowMs), window: windowMs === HOUR_MS ? "hour" : "day" };
     }
   }
-  const lane = kind === "read" ? "read" : "write";
-  const spacing = lane === "read" ? READ_SPACING_MS : WRITE_SPACING_MS;
+  const lane = kind.startsWith("linear_") ? kind : kind === "read" ? "read" : "write";
+  const spacing = policy?.spacingMs ?? (kind.endsWith("read") ? READ_SPACING_MS : WRITE_SPACING_MS);
   let last = await store.get(`last:${lane}`);
-  if (!Number.isFinite(last) || last > now + 10 * spacing) last = null; // the clock moved back
+  if (!Number.isFinite(last) || last > now + Math.max(MAX_WAIT_MS, 10 * spacing)) last = null; // the clock moved back
   const slot = last === null ? now : Math.max(now, last + spacing);
   const waitMs = slot - now;
   if (waitMs > MAX_WAIT_MS) {
     return { ok: false, code: "rate_limited", retryAfterS: Math.max(1, Math.ceil((waitMs - MAX_WAIT_MS) / 1000)) };
   }
-  history.push(now);
+  if (policy) {
+    const minute = Math.ceil(now / MINUTE_MS) * MINUTE_MS;
+    const bucket = history.find((entry) => stamp(entry) === minute);
+    if (bucket) bucket[1]++;
+    else history.push([minute, 1]);
+  } else history.push(now);
   await store.put(`last:${lane}`, slot);
   await store.put(`budget:${kind}`, history);
   return { ok: true, waitMs };
@@ -274,6 +304,92 @@ export async function idemPeek(store, { key }, now = Date.now()) {
   return row && row.state === "sent" ? { ...row } : null;
 }
 
+// ---- per-key Linear GraphQL mutation idempotency rows
+
+const linearApiDay = (now) => Math.floor(now / DAY_MS);
+const linearApiPrefix = "linear-api:";
+const linearApiStorageKey = (day, key) => `${linearApiPrefix}${String(day).padStart(10, "0")}:${key}`;
+
+function validLinearApiKey(key) {
+  return typeof key === "string" && /^[a-f0-9]{64}$/i.test(key);
+}
+
+async function cleanupLinearApiRows(store, day, now) {
+  if (typeof store.list !== "function" || typeof store.delete !== "function") return;
+  const last = await store.get("linear-api-cleanup-at");
+  if (Number.isFinite(last) && now - last < LINEAR_API_CLEANUP_INTERVAL_MS) return;
+  const end = linearApiStorageKey(day - 1, "");
+  const rows = await store.list({ prefix: linearApiPrefix, end, limit: 64 });
+  const keys = [...rows.keys()];
+  if (keys.length) await store.delete(keys);
+  await store.put("linear-api-cleanup-at", now);
+}
+
+/** Start or inspect one generic Linear mutation idempotency record. */
+export async function linearApiBegin(store, { key, request_sha, operation }, now = Date.now()) {
+  if (!validLinearApiKey(key)) throw new TypeError("Linear API idempotency key must be a 64-character SHA-256 hex digest.");
+  await cleanupLinearApiRows(store, linearApiDay(now), now);
+  const day = linearApiDay(now);
+  return store.transaction(async (txn) => {
+    const candidates = [linearApiStorageKey(day, key), linearApiStorageKey(day - 1, key)];
+    let storageKey;
+    let row;
+    for (const candidate of candidates) {
+      const existing = await txn.get(candidate);
+      if (existing && existing.expires > now) {
+        storageKey = candidate;
+        row = existing;
+        break;
+      }
+    }
+
+    if (row) {
+      if (row.request_sha !== request_sha) return { verdict: "conflict", storageKey, row: { ...row } };
+      if (row.state === "sent") return { verdict: "duplicate", storageKey, row: { ...row } };
+      if (row.state === "pending" && now - (row.claimed_at ?? 0) < PENDING_FRESH_MS) {
+        return { verdict: "busy", storageKey, row: { ...row } };
+      }
+      if (row.state === "pending" || row.state === "unknown") return { verdict: "reconcile", storageKey, row: { ...row } };
+    }
+
+    storageKey = linearApiStorageKey(day, key);
+    row = { request_sha, operation: String(operation ?? ""), state: "pending", claimed_at: now, expires: now + DAY_MS };
+    await txn.put(storageKey, row);
+    return { verdict: "send", storageKey, row: { ...row } };
+  });
+}
+
+/** Update a per-key Linear mutation record without enlarging it unboundedly. */
+export async function linearApiSet(store, { storageKey, changes }, now = Date.now()) {
+  if (typeof storageKey !== "string" || !storageKey.startsWith(linearApiPrefix)) throw new TypeError("Invalid Linear API storage key.");
+  if (!changes || typeof changes !== "object" || Array.isArray(changes)) throw new TypeError("Linear API changes must be an object.");
+  for (const name of Object.keys(changes)) {
+    if (name !== "state" && name !== "data") throw new TypeError("Linear API changes may update only state and data.");
+  }
+  if (Object.hasOwn(changes, "state") && !["pending", "unknown", "sent"].includes(changes.state)) {
+    throw new TypeError("Invalid Linear API mutation state.");
+  }
+  if (Object.hasOwn(changes, "data")) {
+    let encoded;
+    try { encoded = JSON.stringify(changes.data); } catch { throw new TypeError("Linear API cached data must be JSON data."); }
+    if (typeof encoded !== "string" || new TextEncoder().encode(encoded).byteLength > LINEAR_API_DATA_MAX_BYTES) {
+      throw new TypeError("Linear API cached data exceeds 8192 bytes.");
+    }
+  }
+  const row = await store.get(storageKey);
+  if (!row) return null;
+  Object.assign(row, changes);
+  await store.put(storageKey, row);
+  return { ...row };
+}
+
+/** Remove one exact per-key Linear mutation record. */
+export async function linearApiDrop(store, { storageKey }, now = Date.now()) {
+  if (typeof storageKey !== "string" || !storageKey.startsWith(linearApiPrefix)) throw new TypeError("Invalid Linear API storage key.");
+  await store.delete(storageKey);
+  return { dropped: true };
+}
+
 // ---- role cache (spec 3.6)
 
 export async function roleGet(store, now = Date.now()) {
@@ -338,25 +454,60 @@ export async function linearTokenClear(store) {
 // ---- per-call audit (spec 3.9), kept 90 days
 
 const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10);
-const CALL_FIELDS = ["seat", "grant_ref", "client_id", "tool", "channel_id", "topic", "message_id", "outcome", "error_code", "latency_ms", "body_len", "idem_ref", "recipient_ids", "asn", "country"];
+const CALL_FIELDS = ["seat", "authenticated_seat", "acting_identity", "grant_ref", "client_id", "tool", "channel_id", "topic", "message_id", "outcome", "error_code", "error_message", "retryable", "retry_after_s", "reset_at", "upstream_status", "exception_class", "latency_ms", "body_len", "idem_ref", "recipient_ids", "asn", "country"];
+const utf8JsonBytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+const arrayJsonBytes = (rows) => 2 + rows.reduce((bytes, row) => bytes + utf8JsonBytes(row), 0) + Math.max(0, rows.length - 1);
 
 /**
  * One row per tool call.  Only the spec 3.9 fields are kept (never a body, a
  * key, a token or a header), and a change of ASN or country within one grant
  * is flagged in the event log.
  */
-export async function auditCall(store, row, now = Date.now()) {
+async function auditCallInner(store, row, now) {
   const clean = { ts: now };
   for (const field of CALL_FIELDS) {
     const value = row[field];
     if (value === undefined || value === null) continue;
+    if (field === "error_message") {
+      if (typeof value !== "string") continue;
+      const message = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+      clean[field] = scanSecret(message) ? "Error message omitted after secret scan." : [...message].slice(0, ERROR_MESSAGE_MAX).join("");
+      continue;
+    }
+    if (field === "retryable") {
+      if (typeof value === "boolean") clean[field] = value;
+      continue;
+    }
+    if (field === "retry_after_s") {
+      if (Number.isFinite(value) && value >= 0) clean[field] = Math.min(value, 3600);
+      continue;
+    }
+    if (field === "reset_at") {
+      if (Number.isFinite(value)) clean[field] = value;
+      else if (typeof value === "string" && value.length <= 40 && Number.isFinite(Date.parse(value))) clean[field] = value;
+      continue;
+    }
+    if (field === "upstream_status") {
+      if (Number.isInteger(value) && value >= 100 && value <= 599) clean[field] = value;
+      continue;
+    }
+    if (field === "exception_class") {
+      if (typeof value === "string" && /^[A-Za-z][A-Za-z0-9_.]{0,39}$/.test(value)) clean[field] = value;
+      continue;
+    }
+    if (field === "error_code") {
+      if (typeof value === "string" && /^[a-z][a-z0-9_]{0,59}$/.test(value)) clean[field] = value;
+      continue;
+    }
     if (field === "recipient_ids") {
       // The user ids a DM tool addressed (spec 1.2):  integers only, at most 8.  Never a name or a body.
       const ids = Array.isArray(value) ? value.filter((v) => Number.isSafeInteger(v)).slice(0, 8) : [];
       if (ids.length) clean[field] = ids;
       continue;
     }
-    clean[field] = typeof value === "string" ? value.slice(0, 120) : value;
+    if (typeof value === "string") clean[field] = [...value].slice(0, 120).join("");
+    else if (typeof value === "number" && Number.isFinite(value)) clean[field] = value;
+    else if (typeof value === "boolean") clean[field] = value;
   }
   const day = dayKey(now);
   const days = ((await store.get("call_days")) ?? []).filter((d) => typeof d === "string");
@@ -364,14 +515,42 @@ export async function auditCall(store, row, now = Date.now()) {
   const cutoff = dayKey(now - CALL_RETENTION_DAYS * DAY_MS);
   const keep = [];
   for (const d of days.sort()) {
-    if (d < cutoff) await store.put(`calls:${d}`, null);
+    if (d < cutoff) {
+      await store.put(`calls:${d}`, null);
+      await store.put(`calls_bytes:${d}`, null);
+    }
     else keep.push(d);
   }
   await store.put("call_days", keep);
   const bucket = (await store.get(`calls:${day}`)) ?? [];
+  const meta = await store.get(`calls_bytes:${day}`);
+  let encodedBytes = meta && meta.count === bucket.length && Number.isSafeInteger(meta.bytes) && meta.bytes >= 0
+    ? meta.bytes
+    : arrayJsonBytes(bucket);
   bucket.push(clean);
-  while (bucket.length > CALLS_PER_DAY_CAP) bucket.shift();
+  encodedBytes += utf8JsonBytes(clean) + (bucket.length > 1 ? 1 : 0);
+  while (bucket.length > CALLS_PER_DAY_CAP || encodedBytes > CALLS_STORAGE_MAX_BYTES) {
+    if (bucket.length <= 1) break; // A single sanitized audit row is far below the byte cap.
+    encodedBytes -= utf8JsonBytes(bucket.shift()) + 1;
+  }
   await store.put(`calls:${day}`, bucket);
+  await store.put(`calls_bytes:${day}`, { count: bucket.length, bytes: encodedBytes });
+
+  if (clean.outcome === "error") {
+    const cutoffMs = now - CALL_RETENTION_DAYS * DAY_MS;
+    const errors = ((await store.get("errors")) ?? []).filter((entry) => entry && Number.isFinite(entry.ts) && entry.ts > cutoffMs);
+    const errorRow = { ts: clean.ts };
+    for (const field of ["seat", "authenticated_seat", "acting_identity", "grant_ref", "client_id", "tool", "error_code", "error_message", "retryable", "retry_after_s", "reset_at", "upstream_status", "exception_class"]) {
+      if (clean[field] !== undefined) errorRow[field] = clean[field];
+    }
+    errors.push(errorRow);
+    let encodedErrorBytes = arrayJsonBytes(errors);
+    while (errors.length > ERROR_AUDIT_CAP || encodedErrorBytes > ERRORS_STORAGE_MAX_BYTES) {
+      if (errors.length <= 1) break; // Sanitized error rows are individually well below the cap.
+      encodedErrorBytes -= utf8JsonBytes(errors.shift()) + 1;
+    }
+    await store.put("errors", errors);
+  }
 
   let geoChanged = false;
   if (clean.grant_ref && (clean.asn !== undefined || clean.country !== undefined)) {
@@ -390,6 +569,12 @@ export async function auditCall(store, row, now = Date.now()) {
   return { geoChanged };
 }
 
+/** Serialize the full audit read/modify/write sequence across concurrent RPCs. */
+export async function auditCall(store, row, now = Date.now()) {
+  if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
+  return store.transaction((txn) => auditCallInner(txn, row, now));
+}
+
 /** The newest call rows, newest first. */
 export async function callTail(store, limit = 40) {
   const days = ((await store.get("call_days")) ?? []).filter((d) => typeof d === "string").sort().reverse();
@@ -400,6 +585,62 @@ export async function callTail(store, limit = 40) {
     if (out.length >= limit) break;
   }
   return out;
+}
+
+/** The newest retained diagnostic error rows, independent of successful-call volume. */
+export async function errorTail(store, limit = 50, now = Date.now()) {
+  const max = Number.isInteger(limit) ? Math.max(0, Math.min(limit, ERROR_AUDIT_CAP)) : 50;
+  if (max === 0) return [];
+  const cutoff = now - CALL_RETENTION_DAYS * DAY_MS;
+  const errors = ((await store.get("errors")) ?? []).filter((entry) => entry && Number.isFinite(entry.ts) && entry.ts > cutoff);
+  return errors.slice(-max).reverse();
+}
+
+const DIAGNOSTIC_CAP = 100;
+const SAFE_DIAGNOSTIC_KIND = /^[a-z][a-z0-9_-]{0,39}$/i;
+const SAFE_DIAGNOSTIC_REASON = /^[a-z0-9_:-]{1,80}$/i;
+const SAFE_DIAGNOSTIC_SEAT = /^[A-Z][A-Z0-9_-]{0,39}$/;
+
+/** Aggregate safe, low-cardinality failures in the global log gate. */
+async function recordDiagnosticInner(store, { kind, reason, seat, status } = {}, now = Date.now()) {
+  if (typeof kind !== "string" || !SAFE_DIAGNOSTIC_KIND.test(kind)) throw new TypeError("invalid diagnostic kind");
+  if (typeof reason !== "string" || !SAFE_DIAGNOSTIC_REASON.test(reason)) throw new TypeError("invalid diagnostic reason");
+  if (seat !== undefined && seat !== null && (typeof seat !== "string" || !SAFE_DIAGNOSTIC_SEAT.test(seat))) throw new TypeError("invalid diagnostic seat");
+  if (status !== undefined && status !== null && (!Number.isInteger(status) || status < 100 || status > 599)) throw new TypeError("invalid diagnostic status");
+
+  const cutoff = now - CALL_RETENTION_DAYS * DAY_MS;
+  const rows = ((await store.get("diagnostics")) ?? []).filter((row) => row && Number.isFinite(row.ts) && row.ts > cutoff);
+  const rowSeat = seat ?? null;
+  const key = `${kind}\0${reason}\0${rowSeat ?? ""}`;
+  const index = rows.findIndex((row) => `${row.kind}\0${row.reason}\0${row.seat ?? ""}` === key);
+  if (index >= 0) {
+    const [row] = rows.splice(index, 1);
+    row.count = Math.min(Number.MAX_SAFE_INTEGER, (Number.isSafeInteger(row.count) ? row.count : 0) + 1);
+    row.ts = now;
+    if (status !== undefined && status !== null) row.status = status;
+    rows.push(row);
+  } else {
+    const row = { kind, reason, seat: rowSeat, count: 1, ts: now };
+    if (status !== undefined && status !== null) row.status = status;
+    rows.push(row);
+  }
+  while (rows.length > DIAGNOSTIC_CAP) rows.shift();
+  await store.put("diagnostics", rows);
+}
+
+/** Serialize diagnostic aggregation so concurrent failures cannot lose counts. */
+export async function recordDiagnostic(store, entry, now = Date.now()) {
+  if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
+  return store.transaction((txn) => recordDiagnosticInner(txn, entry, now));
+}
+
+/** Newest aggregated diagnostics first, bounded to the retained 90-day window. */
+export async function diagnosticTail(store, limit = 40, now = Date.now()) {
+  const max = Number.isInteger(limit) ? Math.max(0, Math.min(limit, DIAGNOSTIC_CAP)) : 40;
+  if (max === 0) return [];
+  const cutoff = now - CALL_RETENTION_DAYS * DAY_MS;
+  const rows = ((await store.get("diagnostics")) ?? []).filter((row) => row && Number.isFinite(row.ts) && row.ts > cutoff);
+  return rows.slice(-max).reverse();
 }
 
 // ---------------------------------------------------------------- MCP Events (src/events.js)
@@ -682,7 +923,8 @@ export async function eventSubsSummary(store, now = Date.now()) {
 /** A Map-backed store for tests. */
 export function memoryStore() {
   const map = new Map();
-  return {
+  let transactionTail = Promise.resolve();
+  const store = {
     map,
     async get(key) {
       const v = map.get(key);
@@ -691,5 +933,18 @@ export function memoryStore() {
     async put(key, value) {
       map.set(key, structuredClone(value));
     },
+    async delete(keys) {
+      for (const key of Array.isArray(keys) ? keys : [keys]) map.delete(key);
+    },
+    async list({ prefix = "", end, limit = 1000 } = {}) {
+      return new Map([...map.entries()].filter(([key]) => key.startsWith(prefix) && (!end || key < end))
+        .sort(([a], [b]) => a.localeCompare(b)).slice(0, limit).map(([key, value]) => [key, structuredClone(value)]));
+    },
+    transaction(callback) {
+      const result = transactionTail.then(() => callback(store));
+      transactionTail = result.catch(() => undefined);
+      return result;
+    },
   };
+  return store;
 }

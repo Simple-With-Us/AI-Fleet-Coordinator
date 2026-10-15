@@ -45,6 +45,7 @@ from . import chat_transport as CT
 from . import heartbeat as HB
 from . import heldalert as HELDALERT
 from . import heldback as HELD
+from . import host_load as HL
 from . import live as L
 from . import outgoing_webhook as OW
 from . import router as R
@@ -464,6 +465,7 @@ class Daemon:
         self.start_cache: dict[int, tuple[float, int]] = {}
         self.children: set[subprocess.Popen[Any]] = set()  # every running wake child, one per waking seat
         self.child_lock = threading.Lock()
+        self.host_defer_since: dict[str, float] = {}  # seat:topic_key -> first host_busy hold (seconds)
         self.router_queue: queue.Queue[tuple[str, str, Any]] = queue.Queue()
         webhook_parent = L.listener_dir(self.root)
         L.private_dir(webhook_parent)
@@ -1333,6 +1335,7 @@ class Daemon:
                            lost=lost)
 
     def _drop(self, runner: SeatRunner, pending: W.Pending, reason: str, now: float) -> None:
+        self._clear_host_defer(runner, pending)
         runner.ledger.append(pending.row("dropped", now, reason=reason))
         self.log.write("wake-dropped", seat=runner.seat, wake_id=pending.wake_id, reason=reason)
         if reason == "stale":
@@ -1521,6 +1524,63 @@ class Daemon:
                                          runner.paths.wake_dir, prompt, schema=schema)
         return None
 
+    def _reserved_worker_wakes(self, *, exclude_seat: str | None = None) -> int:
+        """Seats with a muse or claude wake running or already accepted into the queue."""
+        count = 0
+        for seat_runner in self.seats.values():
+            if seat_runner.seat == exclude_seat:
+                continue
+            if seat_runner.cfg.wake not in ("claude", "muse"):
+                continue
+            with seat_runner.jobs_cond:
+                if seat_runner.running is not None or seat_runner.jobs:
+                    count += 1
+        return count
+
+    def _host_defer_key(self, runner: SeatRunner, pending: W.Pending) -> str:
+        """Stable across catch-up retries, which mint a new wake_id each pass."""
+        return "%s:%s" % (runner.seat, pending.key)
+
+    def _prune_host_defer(self, now: float) -> None:
+        max_age = self.config.host_wake_defer_max_minutes * 60.0
+        if max_age <= 0:
+            return
+        stale = [key for key, since in self.host_defer_since.items() if now - since > max_age * 2]
+        for key in stale:
+            self.host_defer_since.pop(key, None)
+
+    def _host_wake_block(self, runner: SeatRunner, pending: W.Pending, now: float) -> str | None:
+        """Defer peer worker wakes while the Mac is saturated or the global slot cap is full."""
+        if not self.config.host_wake_defer or self.config.instance != "mac":
+            return None
+        if runner.cfg.wake not in ("claude", "muse"):
+            return None
+        if pending.owner:
+            return None
+        if self.config.host_wake_max_running > 0:
+            reserved = self._reserved_worker_wakes(exclude_seat=runner.seat)
+            if reserved >= self.config.host_wake_max_running:
+                return "host_wake_slots"
+        defer_key = self._host_defer_key(runner, pending)
+        self._prune_host_defer(now)
+        load = HL.read_host_load()
+        reason = HL.host_busy_reason(load, max_per_core=self.config.host_wake_load_per_core)
+        if reason is None:
+            self.host_defer_since.pop(defer_key, None)
+            return None
+        since = self.host_defer_since.get(defer_key)
+        if since is None:
+            since = now
+            self.host_defer_since[defer_key] = since
+        max_age = self.config.host_wake_defer_max_minutes * 60.0
+        if max_age > 0 and now - since >= max_age:
+            self.host_defer_since.pop(defer_key, None)
+            return None
+        return "host_busy"
+
+    def _clear_host_defer(self, runner: SeatRunner, pending: W.Pending) -> None:
+        self.host_defer_since.pop(self._host_defer_key(runner, pending), None)
+
     def _quota_reason(self, runner: SeatRunner) -> str | None:
         """Why this seat's provider has nothing left, or None.  Read from the CodeCaps snapshot
         (Jay 2026-10-11:  no reason to try to wake an agent that cannot run), checked before the
@@ -1571,6 +1631,9 @@ class Daemon:
             return "loop_guard"
         if not pending.owner and pending.trigger_ts is not None and now - pending.trigger_ts > self.config.stale_after:
             return "stale"  # a stale non-owner item never wakes, even after a restart
+        host_reason = self._host_wake_block(runner, pending, now)
+        if host_reason:
+            return host_reason
         return W.budget_block(runner.ledger.wakes(), runner.cfg.budget, owner=pending.owner, key=pending.key,
                               now=now, exclude=pending.wake_id)
 
@@ -1775,7 +1838,7 @@ class Daemon:
         if result.ok and requested_inspect is not None:
             _, validation_error = W.validate(result.parsed)
             if (adapter != "muse" or not is_muse or validation_error or
-                    not (pending.owner_ids and not pending.route_tagged)):
+                    not self.may_inspect_chat(pending)):
                 result.error = "chat inspection rejected"
             else:
                 offered = next((row for row in chat_context if row.get("id") == requested_inspect), None)
@@ -1892,8 +1955,8 @@ class Daemon:
 
     def chat_context(self, runner: SeatRunner, pending: W.Pending,
                      history: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-        """Metadata-only context for a tool-less owner wake; never read transcript bodies here."""
-        if runner.cfg.wake != "muse" or not pending.owner_ids or pending.route_tagged:
+        """Bounded metadata for an addressed Muse wake; transcript reads require one exact request."""
+        if runner.cfg.wake != "muse" or not pending.trigger_ids or pending.route_tagged:
             return []
         try:
             if not hasattr(self, "_chat_catalog"):
@@ -1902,17 +1965,24 @@ class Daemon:
             # One leader walk, not one timeout per page.  A still-pending leader is an
             # unavailable catalog row, so this wake continues instead of stalling intake.
             rows = self._chat_catalog.discover(wait_grok=True, grok_timeout=CT.discovery_wait_budget())
-            # Rank only against actual owner trigger text, never a peer's embedded instructions.
-            owner_text = " ".join(str(m.get("content") or "") for m in history or []
-                                  if m.get("id") in pending.owner_ids).lower()
-            words = set(re.findall(r"[a-z0-9_-]{3,}", owner_text)) - {"the", "this", "chat", "please", "wake", "read"}
+            # Every direct message or explicit bot mention may wake Muse.  Its trigger is
+            # untrusted input; Muse decides whether one exact listed excerpt is relevant.
+            trigger_text = " ".join(str(m.get("content") or "") for m in history or []
+                                    if m.get("id") in pending.trigger_ids).lower()
+            words = set(re.findall(r"[a-z0-9_-]{3,}", trigger_text)) - {"the", "this", "chat", "please", "wake", "read"}
             def relevance(row):
                 metadata = " ".join(str(row.get(k) or "") for k in
                                     ("id", "session_id", "seat", "platform", "cwd", "title")).lower()
-                exact = bool(owner_text and any(str(row.get(k) or "never-match") in owner_text
+                exact = bool(trigger_text and any(str(row.get(k) or "never-match") in trigger_text
                                                for k in ("id", "session_id")))
                 return (exact, sum(word in metadata for word in words),
                         bool((row.get("capabilities") or {}).get("wake")))
+            if not pending.owner_ids:
+                # Filter before truncation, so irrelevant rows cannot crowd
+                # every wake-capable or read-capable chat out of the bounded list.
+                rows = [row for row in rows if any(
+                    (row.get("capabilities") or {}).get(capability) is True
+                    for capability in ("wake", "read"))]
             rows = sorted(rows, key=relevance, reverse=True)[:24]
             context = []
             remaining = 24000
@@ -1928,6 +1998,11 @@ class Daemon:
         except Exception as exc:
             self.log.write("chat-catalog-unavailable", error=type(exc).__name__)
             return []
+
+    @staticmethod
+    def may_inspect_chat(pending: W.Pending) -> bool:
+        """Any addressed Muse trigger may request one excerpt, regardless of sender."""
+        return bool(pending.trigger_ids) and not pending.route_tagged
 
     @staticmethod
     def chat_inspection_prompt(prompt: str, excerpt: Any) -> str:
@@ -1955,8 +2030,10 @@ class Daemon:
         target_id = obj.get("chat_target")
         reason = None
         offered = next((row for row in context if row.get("id") == target_id), None)
-        if runner.cfg.wake != "muse" or not pending.owner_ids or pending.route_tagged:
-            reason = "chat selection requires an owner-triggered Muse wake"
+        if runner.cfg.wake != "muse" or not pending.trigger_ids or pending.route_tagged:
+            reason = "chat selection requires an addressed Muse wake"
+        elif not pending.owner_ids and obj.get("risk") != "low":
+            reason = "peer-triggered chat selection requires low risk"
         elif pending.type == "private" and offered and offered.get("seat") != runner.seat:
             reason = "private owner DM is not readable by a different seat bot"
         elif obj.get("risk") in ("high", "uncertain") or obj.get("route") is not None:
@@ -1989,7 +2066,7 @@ class Daemon:
         binding = {key: target[key] for key in ("platform", "host", "session_id", "cwd")}
         binding.update(channel=pending.channel or "direct message", topic=pending.topic or "message %s" % message_id)
         added = self.chat_queue(destination.seat).enqueue_target(binding, message_id, self.clock.time(),
-                                                               owner=True, stale=pending.stale)
+                                                               owner=bool(pending.owner_ids), stale=pending.stale)
         if not added:
             return {"status": "already_queued", "id": target_id, "seat": destination.seat}
         self.notifier.notify(runner.seat, "Chat Wake Queued", "Zulip reminder queued for the selected existing chat",

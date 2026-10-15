@@ -36,7 +36,11 @@ jobs:
   autofix:
     if: >
       (github.event.issue.pull_request || github.event.pull_request) &&
-      contains(fromJSON('["bot", "Bot"]'), github.event.comment.user.type || github.event.review.user.type || '')
+      (github.event.issue.state == 'open' || github.event.pull_request.state == 'open') &&
+      (
+        (github.event_name == 'pull_request_review' && contains(fromJSON('["bot", "Bot"]'), github.event.review.user.type)) ||
+        (github.event_name != 'pull_request_review' && contains(fromJSON('["bot", "Bot"]'), github.event.comment.user.type))
+      )
     permissions:
       contents: write
       pull-requests: read
@@ -103,7 +107,7 @@ Sanitized diagnostics (no raw transcripts) are uploaded as a short-lived artifac
 
 ## CI on autofix commits
 
-Pushes made with the workflow `GITHUB_TOKEN` do not trigger other workflows.  When `SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY` and `SWU_AUTOFIX_GITHUB_APP_ID` are configured, the reusable workflow mints a GitHub App installation token and pushes with that instead so required checks run on the new head.  Without the App, the push still lands but logs a warning that CI must be re-triggered manually.
+Pushes made with the workflow `GITHUB_TOKEN` do not trigger other workflows.  When `SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY` and `SWU_AUTOFIX_GITHUB_APP_ID` are configured, the reusable workflow mints a GitHub App installation token and pushes with that instead so required checks run on the new head.  The mint step is gated on the org variable `SWU_AUTOFIX_GITHUB_APP_ID`, not on the secret, because GitHub rejects workflow startup when a step `if` references `secrets`.  A preceding shell step reads the private key from the environment and skips mint when the variable is set but the secret is empty, so the run falls back to `GITHUB_TOKEN` push with a notice.  Without the App, the push still lands but logs a warning that CI must be re-triggered manually.
 
 ## What It Skips
 
