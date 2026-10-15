@@ -1,6 +1,6 @@
 """Two authenticated wake transports, one durable fixed-destination mail outbox."""
 import base64, hashlib, hmac, json, os, sqlite3, threading, time, urllib.request
-import smtplib, ssl
+import smtplib, ssl, urllib.parse
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -32,7 +32,13 @@ class Relay:
         if len(raw) > MAX_BODY: raise ValueError('oversize')
         seat = route.rsplit('/',1)[-1].upper()
         if seat not in DESTINATIONS: raise ValueError('unknown seat')
-        body = json.loads(raw)
+        try:
+            body = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            form = urllib.parse.parse_qs(raw.decode('utf-8'), max_num_fields=64)
+            body = {k: v[0] for k, v in form.items() if v}
+            if isinstance(body.get('message'), str):
+                body['message'] = json.loads(body['message'])
         if not isinstance(body, dict): raise ValueError('invalid shape')
         if route == '/listener/'+seat.lower():
             key = self.env.get(seat+'_LISTENER_HMAC_KEY', '')
@@ -48,7 +54,8 @@ class Relay:
             key = self.env.get(seat+'_ZULIP_WEBHOOK_TOKEN', '')
             token = body.get('token')
             if not key or not isinstance(token, str) or not hmac.compare_digest(key, token): raise PermissionError()
-            if body.get('bot_email') != self.env.get(seat+'_BOT_EMAIL') or body.get('trigger') not in ('mention', 'direct_message'): raise ValueError('wrong bot or trigger')
+            accepted = {self.env.get(seat+'_BOT_EMAIL',''), self.env.get(seat+'_ZULIP_WEBHOOK_BOT_EMAIL','')} - {''}
+            if body.get('bot_email') not in accepted or body.get('trigger') not in ('mention', 'direct_message'): raise ValueError('wrong bot or trigger')
             msg = body.get('message')
             if not isinstance(msg, dict): raise ValueError('invalid message')
             rows = [(msg.get('id'), {'fetch': False, 'message': self.normalize(msg)})]

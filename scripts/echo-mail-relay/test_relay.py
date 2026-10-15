@@ -37,4 +37,8 @@ class Tests(unittest.TestCase):
   self.assertEqual(self.r.health()['pending'],2)
   with self.assertRaises(PermissionError):self.r.accept('/zulip/wise',self.native())
   self.assertEqual(self.r.db.execute('select count(distinct seat) from outbox_v2').fetchone()[0],2)
+  def test_native_form_encoded(self):
+    import urllib.parse as up
+    form=up.urlencode({'token':'webhook-test','bot_email':'bot@example.test','trigger':'direct_message','message':json.dumps({'id':11,'type':'private','content':'hi','timestamp':999})}).encode()
+    self.r.accept('/zulip/echo',form);self.assertEqual(self.r.db.execute('select id from outbox_v2 where id=11').fetchone()[0],11)
 if __name__=='__main__':unittest.main()
