@@ -133,6 +133,24 @@ class Gather(Cli):
         self.assertEqual(facts["sources"]["mac_facts"]["status"], "absent")
         self.assertIn("mac_facts", [m["source"] for m in facts["missing"]])
 
+    def test_no_mac_reads_mac_facts_from_the_environment_when_the_flag_is_omitted(self):
+        from open_loops import urls
+
+        doc = {"schema": 1, "generated_at": ago(1, self.now), "sig": "00",
+               "sources": {"lanes": {"status": "ok", "reason": None}, "autopush": {"status": "ok", "reason": None}},
+               "lanes": {"attention": []}, "autopush": {"document": {"lanes": [], "refused": []}}}
+        path = self.write("gb-mac-facts.json", json.dumps(doc))
+        proc = self.run_cli("gather", "--json", "--no-mac", OPEN_LOOPS_MAC_FACTS_URL=str(path), FLEET_FACTS_SIGNING_KEY=FAKE_KEY)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        facts = json.loads(proc.stdout)
+        self.assertEqual(facts["sources"]["mac_facts"]["status"], "ok")
+        self.assertNotIn("mac_facts_url", facts)
+        from open_loops.facts import build_facts
+
+        with_url = build_facts(no_mac=True, mac_facts=urls.MAC_FACTS_API_URL)
+        self.assertEqual(with_url["mac_facts_url"], urls.MAC_FACTS_API_URL)
+        self.assertIn(urls.MAC_FACTS_API_URL, with_url["urls"])
+
 
 class Render(Cli):
     def test_render_prints_the_full_list(self):

@@ -103,7 +103,7 @@ Before starting substantial work, reserve your lane on two durable surfaces:
 
 1. **Linear issue (`board claim`):**
    - `board list --app <app>`, then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "claimed: <Day, Mon D, YYYY> <lane path> @ <branch>"`.  If nothing exists, `board file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label and exits 3 if another seat holds the issue (`--steal --reason` overrides on purpose).
-   - Branch `<seat>/<id>-<slug>` (`cursor/afc-123-zulip-cutover`).  The PR body says `Fixes <ID>` when it finishes the issue, `Refs <ID>` for partial work; only `Fixes` closes it on merge (once Linear's GitHub automation is on).
+   - Branch `<seat>/<id>-<slug>` (`<branch-prefix>/afc-123-zulip-cutover`).  The PR body says `Fixes <ID>` when it finishes the issue, `Refs <ID>` for partial work; only `Fixes` closes it on merge (once Linear's GitHub automation is on).
    - Linear is the only writable work tracker.  There is no separate GitHub issue leg or effort-log row; effort logs are archived history and must not be edited.
 2. **Zulip `#agent-sync`, work topic (`<ID> <subject>`, at most 58 characters):**
    Post a standardized claim block.  One topic per unit of work; a reply is a post to the same channel and topic.

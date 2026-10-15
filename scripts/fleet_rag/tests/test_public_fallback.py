@@ -654,6 +654,21 @@ class CallWithFallbackTests(unittest.TestCase):
         self.assertIn("CF_ACCESS_CLIENT_SECRET", msg)
         local.assert_not_called()
 
+    def test_recall_contribute_drops_force_on_fallback(self):
+        local = mock.Mock(side_effect=FleetRagError("ConnectionRefusedError reaching 100.69.77.26:8081"))
+        captured = {}
+
+        def fake_call_public(name, kwargs):
+            captured.update(name=name, kwargs=kwargs)
+            return {"id": "x", "doc_id": "contrib/X/d/1", "status": "completed"}
+
+        kwargs = {"text": "x" * 60, "category": "lesson", "seat": "CURSOR", "force": False}
+        with mock.patch.object(public_fallback, "call_public", fake_call_public):
+            public_fallback.call_with_fallback(
+                "recall_contribute", kwargs, local, status_probe=lambda: None)
+        self.assertEqual(captured["name"], "recall_contribute")
+        self.assertNotIn("force", captured["kwargs"])
+
     def test_recall_search_kwargs_pass_through_on_fallback(self):
         """per_doc / rerank / prefer_lessons now have a public route and must reach it; a
         None-valued optional (since_days) and any genuinely unknown key are still dropped."""

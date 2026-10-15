@@ -371,6 +371,38 @@ class SearchOptionsTests(unittest.TestCase):
         self.assertTrue(all(h["group_hits"] == 3 for h in two["hits"] if h["doc_id"] == "doc/pm2-env"))
 
 
+class ContributeFallbackKwargsTests(unittest.TestCase):
+    """force is local-only; fallback kwargs must not retain it after contribute_with_guard."""
+
+    def load(self):
+        loader = importlib.machinery.SourceFileLoader("fleet_recall_mcp_fallback_test", str(SERVER))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        return mod
+
+    def test_force_stripped_from_shared_work_before_fallback(self):
+        mod = self.load()
+        snapshots = {}
+
+        def fake_call_with_fallback(name, kwargs, run_local):
+            snapshots["before_local"] = dict(kwargs)
+            out = run_local()
+            snapshots["after_local"] = dict(kwargs)
+            return out
+
+        good = "x" * 60
+        with mock.patch.dict(os.environ, {"AGENT_SEAT": "TESTSEAT", "FLEET_RECALL_FAKE": "1"}):
+            recall_api.install_fake_backend()
+            with mock.patch.object(mod.public_fallback, "call_with_fallback", fake_call_with_fallback):
+                mod.call_tool(
+                    "recall_contribute",
+                    {"text": good, "category": "lesson", "force": False},
+                )
+        self.assertIn("force", snapshots["before_local"])
+        self.assertNotIn("force", snapshots["after_local"])
+
+
 class DuplicateGuardTests(unittest.TestCase):
     """recall_contribute answers {"status": "duplicate"} for a near-duplicate unless force=true."""
 
