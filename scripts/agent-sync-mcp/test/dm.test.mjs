@@ -13,7 +13,6 @@ import { ZulipClient } from "../src/zulip.js";
 import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { TOOLS, TOOLS_BY_NAME, ERROR_META_KEY, schemaProblem, basicForms } from "../src/contract.js";
-import { LINEAR_TOOLS } from "../src/linear.js";
 import { DM_TOOLS, DM_MAX_RECIPIENTS } from "../src/dm.js";
 import { FakeZulip, BOT_EMAIL, OWNER_ID, zulipShapedKey } from "./fake-zulip.mjs";
 import { ROOT, testEnv } from "./helpers.mjs";
@@ -105,8 +104,7 @@ const dmPosts = (fake) => fake.requestsTo("POST", "messages");
 
 test("the DM tools:  closed inputs, output schemas, no identity arguments, read and write split", () => {
   assert.deepEqual(DM_TOOLS.map((t) => t.name), ["dm_list", "dm_read", "dm_send"]);
-  // The three DM tools sit immediately before the hosted Linear tools.
-  assert.deepEqual(HOSTED_TOOL_LIST.slice(-(LINEAR_TOOLS.length + 3), -LINEAR_TOOLS.length).map((t) => t.name), ["dm_list", "dm_read", "dm_send"]);
+  assert.deepEqual(HOSTED_TOOL_LIST.filter((t) => t.name.startsWith("zulip_dm_")).map((t) => t.name), ["zulip_dm_list", "zulip_dm_read", "zulip_dm_send"]);
   for (const tool of DM_TOOLS) {
     assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
     assert.ok(tool.outputSchema, tool.name);
@@ -114,7 +112,7 @@ test("the DM tools:  closed inputs, output schemas, no identity arguments, read 
   }
   assert.ok(HOSTED_READ_TOOLS.has("dm_list") && HOSTED_READ_TOOLS.has("dm_read") && !HOSTED_WRITE_TOOLS.has("dm_read"));
   assert.ok(HOSTED_WRITE_TOOLS.has("dm_send") && !HOSTED_READ_TOOLS.has("dm_send"));
-  assert.match(hostedInstructions("JET"), /Direct messages \(dm_list, dm_read, dm_send/);
+  assert.match(hostedInstructions("JET"), /Direct messages \(zulip_dm_list, zulip_dm_read, zulip_dm_send/);
   // The stdio contract is untouched, and the hosted inbox differs from it in its description only.
   const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/tools.json"), "utf8"));
   assert.deepEqual(TOOLS, file);
@@ -354,14 +352,14 @@ test("dm_send:  text that looks like a secret is refused before any request, and
   ok(await tools.call("dm_send", { user_ids: [jay.user_id], text: "the body that must not be stored" }), "dm_send");
   ok(await tools.call("dm_read", { user_ids: [jay.user_id] }), "dm_read");
   const [read, sent, , refusedRow] = await S.callTail(gate.store, 10);
-  assert.equal(sent.tool, "dm_send");
+  assert.equal(sent.tool, "zulip_dm_send");
   assert.deepEqual(sent.recipient_ids, [jay.user_id]);
   assert.equal(sent.message_id, fake.messages.at(-1).id);
   assert.equal(sent.outcome, "ok");
   assert.ok(Number.isInteger(sent.body_len) && /^[0-9a-f]{12}$/.test(sent.idem_ref));
   assert.equal(sent.channel_id, undefined);
   assert.equal(sent.topic, undefined);
-  assert.equal(read.tool, "dm_read");
+  assert.equal(read.tool, "zulip_dm_read");
   assert.deepEqual(read.recipient_ids, [jay.user_id]);
   assert.equal(refusedRow.error_code, "refused_secret");
   const everything = JSON.stringify([await S.callTail(gate.store, 20), logs, await S.tail(gate.store, 50)]);
@@ -405,7 +403,7 @@ test("dm_send:  outcome_unknown names dm_read, and a retry with the same key rec
   });
   const error = toolError(await tools.call("dm_send", { user_ids: [jay.user_id], text: "once only", idempotency_key: "flaky-0001" }), "outcome_unknown");
   assert.deepEqual(error.check, { user_ids: [jay.user_id], include_self: true });
-  assert.match(error.message, /dm_read/);
+  assert.match(error.message, /zulip_dm_read/);
   const landed = fake.messages.at(-1).id;
   const again = ok(await tools.call("dm_send", { user_ids: [jay.user_id], text: "once only", idempotency_key: "flaky-0001" }), "dm_send");
   assert.deepEqual(again, { id: landed, user_ids: [jay.user_id], duplicate: true });

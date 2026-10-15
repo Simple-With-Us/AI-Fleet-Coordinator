@@ -471,6 +471,11 @@ test("whoami:  the seat from the grant, the hosted transport and the bare tag", 
     transport: "hosted",
     tag_prefix: "[GROK-WEB]",
     session_source: "none",
+    integrations: {
+      zulip: { configured: true, state: "configured" },
+      linear: { configured: false, state: "unavailable" },
+      recall: { configured: false, state: "unconfigured" },
+    },
   });
 });
 
@@ -663,7 +668,7 @@ test("audit:  one row per call with the spec 3.9 fields, no body, no key, a secr
   const rows = await S.callTail(gate.store, 10);
   assert.equal(rows.length, 3);
   const [read, refused, post] = rows;
-  assert.equal(post.tool, "post");
+  assert.equal(post.tool, "zulip_post");
   assert.equal(post.topic, "audited");
   assert.equal(post.channel_id, STREAMS.sandbox);
   assert.equal(post.outcome, "ok");

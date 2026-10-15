@@ -9,7 +9,7 @@ Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet 
 | Topic | Decision |
 | --- | --- |
 | Tool contract | One checked-in `tools.json` (schemas and annotations) plus shared golden fixtures.  Both transports load the schemas and both test suites run the fixtures. |
-| Tools | `whoami`, `topics`, `read_topic`, `inbox`, `post`, `reply`, `react`.  The hosted server adds fleet recall (section 1.1), Zulip direct messages (section 1.2, owner ruling Sat, Oct 10), and Linear (section 1.3, owner ruling Sun, Oct 11):  `linear_whoami`, `linear_list`, `linear_show`, `linear_file`, `linear_claim`, `linear_comment`, `linear_status`, `linear_schema`, `linear_query`, `linear_mutation`.  Zulip has no admin, user, channel-management, upload, delete, `wait` or `listen` tools. |
+| Tools | The hosted public Zulip names are `whoami`, `zulip_topics`, `zulip_read_topic`, `zulip_inbox`, `zulip_post`, `zulip_reply`, `zulip_react`; the six previous unprefixed names remain hidden compatibility aliases.  `whoami` reports shared seat/configuration metadata and the verified Zulip identity.  Hosted-only tools also include fleet recall (section 1.1), direct messages (section 1.2), Linear GraphQL and named commands (section 1.3), and 11 fixed official Linear MCP tools (section 1.4).  Zulip has no admin, user, channel-management, upload, delete, `wait` or `listen` tools. |
 | Mac seats | A local stdio server, `agent-sync mcp`.  It is zero-dependency, dual-era MCP, reuses the CLI code, and keeps the keys in `~/.secrets/Zulip`. |
 | Cloud seats | One Cloudflare Worker using `workers-oauth-provider` (Phase 0 pins 1.1.0 under the fleet's two-week rule, with the 1.2.x workarounds listed in `scripts/agent-sync-mcp/README.md`;  move to 1.2.3 once it is eligible, Wed, Oct 21).  It is its own OAuth 2.1 authorization server.  Jay arms a seat, then binds the grant to it on a consent page behind Access. |
 | Keys | Infisical is canonical, in a location no agent identity can read.  Its Cloudflare Workers sync gives the Worker copies of the hosted seats' keys only. |
@@ -21,19 +21,19 @@ Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet 
 
 ## 1. Tool Contract (Shared by Both Transports)
 
-**Source of truth.**  `scripts/agent_sync/mcp/tools.json` holds names, descriptions, `inputSchema`, `outputSchema` and annotations.  `scripts/agent_sync/mcp/fixtures.jsonl` holds golden cases:  marker escapes, secret-scan refusals, mention neutralization, envelope shape and error mapping.  Python loads the JSON at startup.  The Worker imports the same file at bundle time (Phase 0 proves this works through `createMcpHandler`).  Both test suites must pass the fixtures and assert that `tools/list` deep-equals `tools.json`, which is how drift is caught.
+**Source of truth.**  `scripts/agent_sync/mcp/tools.json` holds the stdio tool names, descriptions, `inputSchema`, `outputSchema` and annotations.  The hosted Worker publishes the Zulip names with `zulip_` prefixes, keeps the original unprefixed names as hidden compatibility aliases, and leaves `whoami` unprefixed.  `scripts/agent_sync/mcp/fixtures.jsonl` holds golden cases:  marker escapes, secret-scan refusals, mention neutralization, envelope shape and error mapping.  Python loads the JSON at startup; hosted `tools/list` uses the public names and hosted schemas.
 
 **Identity never travels in arguments.**  No schema has `seat`, `as`, `rc`, `no_tag` or `fleet`.  Every schema sets `additionalProperties: false`, so an injected `seat` argument is a validation error.
 
-| Tool | CLI verb | Arguments (defaults) | Annotations | Returns |
+| Hosted public tool (stdio name) | CLI verb | Arguments (defaults) | Annotations | Returns |
 | --- | --- | --- | --- | --- |
-| `whoami` | `whoami` | none | readOnly | seat, bot email, Zulip role, realm, transport, tag prefix |
-| `topics` | `topics` | `channel` ("agent-sync"), `limit` 1–100 (30) | readOnly | envelope with one `{name, max_id, resolved}` line per topic |
-| `read_topic` | `read` | `channel` ("agent-sync"), `topic` (required, at most 60 characters), `since_id`, `limit` 1–50 (20), `include_self` (false:  stdio hides this session's posts, hosted hides this bot's) | readOnly | envelope, `next_since_id` |
-| `inbox` | `inbox --peek` | `since_id`, `limit` 1–50 (20) | readOnly | envelope of channel mentions of this bot, `next_since_id` |
-| `post` | `post` | `channel` ("agent-sync"), `topic` (required), `text` (required), `to` (up to 5 names or seat tags), `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
-| `reply` | `reply` | `message_id` (required), `text`, `to`, `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
-| `react` | `react` | `message_id`, `emoji` (`^[a-z0-9_+-]{1,60}$`) | write, idempotent | `{id, emoji}` |
+| `whoami` | `whoami` | none | readOnly | shared seat/configuration metadata and verified Zulip identity |
+| `zulip_topics` | `topics` | `channel` ("agent-sync"), `limit` 1–100 (30) | readOnly | envelope with one `{name, max_id, resolved}` line per topic |
+| `zulip_read_topic` | `read` | `channel` ("agent-sync"), `topic` (required, at most 60 characters), `since_id`, `limit` 1–50 (20), `include_self` (false:  stdio hides this session's posts, hosted hides this bot's) | readOnly | envelope, `next_since_id` |
+| `zulip_inbox` | `inbox --peek` | `since_id`, `limit` 1–50 (20) | readOnly | envelope of channel mentions of this bot, `next_since_id` |
+| `zulip_post` | `post` | `channel` ("agent-sync"), `topic` (required), `text` (required), `to` (up to 5 names or seat tags), `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
+| `zulip_reply` | `reply` | `message_id` (required), `text`, `to`, `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
+| `zulip_react` | `react` | `message_id`, `emoji` (`^[a-z0-9_+-]{1,60}$`) | write, idempotent | `{id, emoji}` |
 
 **Stateless reads.**  The tools keep no server-side cursors.  Callers pass `since_id` in and get `next_since_id` out.  A hosted grant is shared by every chat on that account, so a server cursor would let one chat consume another chat's messages.  In stdio, reads never move the CLI's session or inbox cursors, so the MCP server and the typed CLI do not steal from each other.  `post` and `reply` only seed an unset session cursor, exactly as the CLI's `_send` does.
 
@@ -144,7 +144,13 @@ The hosted server supports the enabled seats listed in `LINEAR_SEATS` in `src/li
 - **Fence.**  Issue titles, descriptions and comments are attacker-controllable by anyone who can open an issue, so everything Linear returns comes between `BEGIN_UNTRUSTED_LINEAR` and `END_UNTRUSTED_LINEAR` markers with the same nonce rule, and the server `instructions` gain one sentence saying so.
 - **Audit.**  One row per call like every other tool, plus `body_len` and `idem_ref`.  Never a body, a token or a credential;  the Linear client secrets join the scrub list, so no error text can carry one.
 
-### 1.4 Admin Status And Error Diagnostics
+### 1.4 Official Linear MCP Tools (Hosted Only)
+
+AFC-319 forwards exactly 11 tools from Linear’s official MCP service: `get_diff`, `list_diffs`, `get_diff_threads`, `save_diff_comment`, `resolve_diff_thread`, `delete_diff_comment`, `submit_diff_review`, `update_diff`, `merge_diff`, `extract_images` and `search_documentation`.  The nine diff/review tools provide the diff workflow; `extract_images` takes Markdown and returns image blocks; documentation search is `search_documentation`.  These fixed names are not arbitrary upstream tool proxying.
+
+The bridge uses the same per-seat cached Linear app token as the hosted Linear tools and requires no additional manual OAuth flow.  Linear and GitHub permissions still apply.  Writes require idempotency keys; partial or uncertain outcomes are never automatically replayed.  Responses are bounded and transport errors do not expose raw upstream payloads.  This adds 11 tools to the 175 named commands and existing 10 Linear tools: 196 Linear tools and 209 hosted tools total.  AFC-320 tracks a future FleetLink integration, parked until the site supports multiuser access; it is not part of this implementation.
+
+### 1.5 Admin Status And Error Diagnostics
 
 AFC-316 adds a server-rendered status overview to the existing Access-protected `/admin` page.  It separates configuration, observed traffic and recent successes from failures and missing telemetry.  Each seat shows Zulip key/role/grant state, Linear/recall configuration and last observed call/success/error.  A refresh button loads a new snapshot without scripts or weaker CSP.
 

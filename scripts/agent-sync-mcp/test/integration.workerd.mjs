@@ -1,5 +1,6 @@
 import { parse as parseGraphql } from "graphql";
 import { LINEAR_NAMED_TOOLS } from "../src/linear-named-specs.js";
+import { LINEAR_MCP_TOOLS } from "../src/linear-mcp-specs.js";
 // One workerd integration test (spec 6, Worker suite).
 // Runs the bundled Worker in Miniflare (from the pinned wrangler) with fake
 // Access certificates, ChatGPT's and Grok's real CIMD documents and a fake
@@ -24,7 +25,7 @@ import { FakeLinear, opOf } from "./fake-linear.mjs";
 
 const TOOLS = CONTRACT.tools;
 // The hosted server lists tools.json, followed by hosted-only recall, DM and Linear tools.
-const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name)];
+const HOSTED_NAMES = ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name)];
 const JET_KEY = zulipShapedKey(11);
 const CURSOR_KEY = zulipShapedKey(12);
 const CURSOR_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";
