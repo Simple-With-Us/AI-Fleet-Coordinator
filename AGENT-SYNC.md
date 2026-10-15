@@ -1338,7 +1338,6 @@ Lookup data only.  The binding rules live in the sections above.
 | `CC` | CodeCaps | `codecaps` |
 | `FL` | FleetLink | `fleetlink` |
 | `FLL` | fleetlink-legacy (legacy, live until cutover) | `fleetlink-legacy` |
-| `SWU` | Simple-With-Us | `swu` |
 
 Name drift, verified Wed, Oct 7, 2026:
 
