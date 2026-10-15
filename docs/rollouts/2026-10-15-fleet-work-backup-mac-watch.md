@@ -14,8 +14,10 @@ watch list and the Infisical inventory documents the four synced keys.
 - `scripts/mac-process-watch.sh`:  add `com.jay.fleet-work-backup` to `expect_scheduled` and
   `~/apps/fleet-work-backup/fleet_work_backup.py` to `expect_files` (same pattern as
   `com.jay.fleet-gdrive-backup`).
-- `docs/MAC-LOCAL-PROCESSES.md`:  correct `B2_FLEET_WORK_BUCKET_NAME`, note
-  `expect_scheduled`, list all four credential names.
+- `docs/MAC-LOCAL-PROCESSES.md`:  not edited in this PR (the row still names the
+  legacy shared bucket key;  refreshing it trips the commit secret scan on the
+  owner-confirmed bucket placeholder).  Update the live `~/apps/MAC-LOCAL-PROCESSES.md`
+  and Apple Note at install time per README step 9.
 - `INFISICAL.md`:  inventory table for the fleet-work-backup keys synced by
   `infisical-secrets-sync.sh`.
 
