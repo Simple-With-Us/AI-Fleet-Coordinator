@@ -47,7 +47,7 @@ held_alert_seat = "MA"            # whose bot carries it:  MA posts for the whol
                                   # an @-mention, and #alerts is a presence topic, so it never wakes a seat.
 presence_topics = [["agent-sync", "roll call"], ["agent-sync", "fleet"], ["builds", "gates"], ["alerts", "*"]]
 
-# Cloud seats (MA, GROK-WEB, INSTINCT and ECHO):  enabled with wake = "inbox".  JET is the same, but its
+# Cloud seats (MA, GROK-WEB, WISE and ECHO):  enabled with wake = "inbox".  JET is the same, but its
 # wake is "http" (see its block).  Each holds a queue,
 # so its @-mentions and DMs are captured at zero tokens under /data/<SEAT>/, and its key is checked at
 # connect (a member or moderator bot, and the key's own bot must be the seat).  They have no wake
@@ -88,7 +88,7 @@ instance = "server"
 creds = "env"                     # ZULIP_GROK_WEB_EMAIL, ZULIP_GROK_WEB_API_KEY (grok-web-bot@)
 wake = "inbox"
 
-[seat.INSTINCT]
+[seat.WISE]
 instance = "server"
 creds = "env"                     # ZULIP_INSTINCT_EMAIL, ZULIP_INSTINCT_API_KEY (instinct-owl-bot@)
 wake = "inbox"

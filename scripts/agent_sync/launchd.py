@@ -22,7 +22,7 @@ LABEL = "com.jay.agent-sync-listener"
 # Fleet seats with a reader on this Mac (they can be enabled), then bots that have none.
 READER_SEATS = ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC"]  # the Mac seats (partition "mac")
 NO_READER = ["BF-BUILDER", "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-FIXER", "BF-HOUSEKEEPER",
-             "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER", "MA", "JET", "ECHO", "INSTINCT", "GROK-WEB"]
+             "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER", "MA", "JET", "ECHO", "WISE", "GROK-WEB"]
 DEFAULT_PYTHON = "/opt/homebrew/bin/python3"
 
 

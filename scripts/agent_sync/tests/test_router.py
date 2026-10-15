@@ -154,7 +154,7 @@ class FleetBotIdsTests(unittest.TestCase):
             10: realm_bot(10, "claude-bot@zulip.test"),
             21: realm_bot(21, "compiler-grok-bot@zulip.test"),   # GB-COMPILER
             22: realm_bot(22, "instinct-bat-bot@zulip.test"),    # ECHO
-            23: realm_bot(23, "instinct-owl-bot@zulip.test"),    # INSTINCT
+            23: realm_bot(23, "instinct-owl-bot@zulip.test"),    # WISE
             24: realm_bot(24, "bf-fixer-bot@zulip.test"),        # BF-FIXER (partition: none)
             25: realm_bot(25, "grok-web-bot@zulip.test"),        # GROK-WEB
             26: realm_bot(26, "openai-dot-bot@zulip.test"),      # JET
@@ -221,7 +221,7 @@ class FleetBotIdsTests(unittest.TestCase):
         self.assertEqual(R.fleet_bot_ids(users, self.tags, 0), set(), "no owner pinned, no fleet bots")
 
     def test_the_tags_cover_the_partition_and_the_fleet_seats(self) -> None:
-        for tag in ("CLAUDE", "JET", "GB-DIRECTOR", "BF-BUILDER", "BF-DIRECTOR", "ECHO", "INSTINCT", "GROK-WEB", "GROK-BUILD", "MA", "OPENCODE"):
+        for tag in ("CLAUDE", "JET", "GB-DIRECTOR", "BF-BUILDER", "BF-DIRECTOR", "ECHO", "WISE", "GROK-WEB", "GROK-BUILD", "MA", "OPENCODE"):
             with self.subTest(tag=tag):
                 self.assertIn(tag, self.tags)
         self.assertEqual(C.fleet_tags(None), frozenset(C.FLEET_SEATS), "no partition, only the fixed seats")
