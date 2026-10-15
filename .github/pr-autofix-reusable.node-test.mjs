@@ -51,5 +51,9 @@ test('job concurrency serializes autofix writers per pull request', () => {
 
 test('push prefers the GitHub App installation token when configured', () => {
   assert.match(workflow, /create-github-app-token@/);
+  const mint = steps.find((step) => step.includes('id: push_token'));
+  assert(mint);
+  assert.match(mint, /vars\.SWU_AUTOFIX_GITHUB_APP_ID/);
+  assert.doesNotMatch(mint, /if:.*secrets\./);
   assert.match(push, /PUSH_TOKEN/);
 });

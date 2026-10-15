@@ -103,7 +103,7 @@ Sanitized diagnostics (no raw transcripts) are uploaded as a short-lived artifac
 
 ## CI on autofix commits
 
-Pushes made with the workflow `GITHUB_TOKEN` do not trigger other workflows.  When `SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY` and `SWU_AUTOFIX_GITHUB_APP_ID` are configured, the reusable workflow mints a GitHub App installation token and pushes with that instead so required checks run on the new head.  Without the App, the push still lands but logs a warning that CI must be re-triggered manually.
+Pushes made with the workflow `GITHUB_TOKEN` do not trigger other workflows.  When `SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY` and `SWU_AUTOFIX_GITHUB_APP_ID` are configured, the reusable workflow mints a GitHub App installation token and pushes with that instead so required checks run on the new head.  The mint step is gated on the app id variable (not the private-key secret:  reusable workflows cannot reference `secrets` in step `if:` expressions).  Without the App, the push still lands but logs a warning that CI must be re-triggered manually.
 
 ## What It Skips
 
