@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Tests for scripts/check-ci-runner-policy.py.
+
+    python3 scripts/test_check_ci_runner_policy.py
+
+Pins policy_states_ban() against AGENT-SYNC.md's CI Runners ban line and scan_inventory().
+"""
+from __future__ import annotations
+
+import importlib.machinery
+import importlib.util
+import sys
+import unittest
+from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parent
+SCRIPT = SCRIPTS / "check-ci-runner-policy.py"
+
+
+def _load():
+    sys.path.insert(0, str(SCRIPTS))
+    loader = importlib.machinery.SourceFileLoader("check_ci_runner_policy", str(SCRIPT))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = mod
+    loader.exec_module(mod)
+    return mod
+
+
+mod = _load()
+AGENT_SYNC = (SCRIPTS.parent / "AGENT-SYNC.md").read_text()
+
+
+class PolicyBan(unittest.TestCase):
+    def test_live_agent_sync_states_ban(self) -> None:
+        self.assertTrue(mod.policy_states_ban(AGENT_SYNC))
+
+    def test_current_wording_without_markdown(self) -> None:
+        self.assertTrue(
+            mod.policy_states_ban(
+                "- Local Mac self-hosted runners are permanently banned.  Never start."
+            )
+        )
+
+    def test_legacy_permanently_banned_heading_still_matches(self) -> None:
+        self.assertTrue(
+            mod.policy_states_ban("Local Mac Runner PERMANENTLY BANNED for all repos.")
+        )
+
+    def test_missing_ban_is_false(self) -> None:
+        self.assertFalse(mod.policy_states_ban("# CI\n- Use coolify runners only.\n"))
+
+
+class ScanInventory(unittest.TestCase):
+    def test_live_runner_row_is_offender(self) -> None:
+        row = "| actions.runner.foo | mac-xcode26 | Always-on |"
+        hits = mod.scan_inventory(row)
+        self.assertEqual(len(hits), 1)
+
+    def test_retired_runner_row_is_ignored(self) -> None:
+        row = "| actions.runner.foo | mac-xcode26 | Retired |"
+        self.assertEqual(mod.scan_inventory(row), [])
+
+
+if __name__ == "__main__":
+    unittest.main()
