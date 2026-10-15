@@ -168,10 +168,10 @@ test("package.json pins exact versions (fleet two-week rule, see README)", () =>
 });
 
 
-test("Cursor retains its static web callback and adds only the exact CIMD localhost pair", () => {
+test("Cursor binds its CIMD client to its exact Cloud callback", () => {
   const cfg = loadConfig(wranglerConfig().vars);
   const callback = "https://www.cursor.com/agents/mcp/oauth/callback";
-  assert.deepEqual(cfg.seats.CURSOR.redirectUris, [callback, "http://localhost:8787/callback"]);
+  assert.deepEqual(cfg.seats.CURSOR.redirectUris, [callback]);
   assert.deepEqual(cfg.seats.CURSOR.cimdClientIds, ["https://cursor.com/oauth/mcp-client.json"]);
   assert.equal(cfg.redirectOwner.get(callback), "CURSOR");
   assert.equal(cfg.botEmails.CURSOR, "cursor-bot@simplewithus.zulipchat.com");

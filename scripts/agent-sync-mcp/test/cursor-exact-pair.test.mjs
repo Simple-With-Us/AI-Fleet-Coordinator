@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { consentPage } from '../src/pages.js';
 import { loadConfig } from '../src/config.js';
-import { CURSOR_CIMD_CLIENT as CLIENT, CURSOR_LOCALHOST_REDIRECT as REDIRECT, isCursorExactPair,
+import { CURSOR_CIMD_CLIENT as CLIENT, CURSOR_CLOUD_REDIRECT as REDIRECT, isCursorExactPair,
   redirectUriProblem, isLoopbackRedirect, preGateAuthorize, postGateAuthRequest,
   clientBoundToSeat, gateTokenForm, resolveArmedSeat } from '../src/policy.js';
 import { testEnv, authorizeParams, CHALLENGE, RESOURCE, CHATGPT_CLIENT, CHATGPT_REDIRECT } from './helpers.mjs';
@@ -29,28 +29,28 @@ test('exact Cursor pair passes every client/consent gate only as CURSOR, and sti
   assert.equal(resolveArmedSeat(pre().seats, new Set(['JET'])).reason, 'not_armed');
   assert.equal(resolveArmedSeat(pre().seats, new Set(['CURSOR'])).seat, 'CURSOR');
 });
-test('localhost remains globally invalid and config binds its exception to exact CURSOR CIMD', () => {
-  assert.equal(redirectUriProblem(REDIRECT), 'not https');
+test('Cursor CIMD uses the exact HTTPS Cloud callback and localhost remains invalid', () => {
+  assert.equal(redirectUriProblem(REDIRECT), '');
   assert.equal(isLoopbackRedirect(REDIRECT), false);
   const env = testEnv();
   const bad = (entry, seat = 'CURSOR') => loadConfig({ ...env, SEATS: {
     ...env.SEATS, CURSOR: { redirect_uris: [], cimd_client_ids: [] }, [seat]: entry } });
-  assert.throws(() => bad({ redirect_uris: [REDIRECT], cimd_client_ids: [] }), /not strict/);
-  assert.throws(() => bad({ redirect_uris: [REDIRECT], cimd_client_ids: [CLIENT] }, 'JET'), /not strict/);
+  assert.throws(() => bad({ redirect_uris: ['http://localhost:8787/callback'], cimd_client_ids: [] }), /not strict/);
+  assert.throws(() => bad({ redirect_uris: [REDIRECT], cimd_client_ids: [CLIENT] }, 'JET'), /Cursor CIMD belongs/);
   assert.throws(() => bad({ redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [CLIENT] }, 'JET'), /Cursor CIMD belongs/);
 });
 test('host, port, path, query, fragment and client variants cannot use the exception', () => {
-  const variants = ['http://localhost:8788/callback', REDIRECT + '/', 'http://localhost:8787/other',
-    'http://LOCALHOST:8787/callback', 'http://localhost/callback', 'http://localhost:08787/callback',
-    'http://127.0.0.1:8787/callback', 'http://[::1]:8787/callback', 'https://localhost:8787/callback',
-    REDIRECT + '?x=1', REDIRECT + '#x', 'http://localhost:8787/%63allback', 'http://user@localhost:8787/callback',
-    'http://localhost.evil.test:8787/callback', ' ' + REDIRECT];
+  const variants = ['https://cursor.com/agents/mcp/oauth/callback', 'https://www.cursor.com/agents/mcp/oauth/callback/',
+    'https://www.cursor.com/agents/mcp/other', 'https://www.cursor.com:443/agents/mcp/oauth/callback',
+    'https://user@www.cursor.com/agents/mcp/oauth/callback', 'https://www.cursor.com/agents/mcp/oauth/callback?x=1',
+    'https://www.cursor.com/agents/mcp/oauth/callback#x', ' https://www.cursor.com/agents/mcp/oauth/callback',
+    'http://localhost:8787/callback', 'http://127.0.0.1:8787/callback', 'http://[::1]:8787/callback'];
   for (const uri of variants) {
     assert.equal(pre({ redirect_uri: uri }).ok, false, uri);
     assert.equal(postGateAuthRequest({ ...request, redirectUri: uri }, cfg, 'CURSOR'), false, uri);
     assert.equal(token({ redirect_uri: uri }).ok, false, uri);
   }
-  for (const id of ['ManualCursor12345', CHATGPT_CLIENT, 'https://cursor.com/oauth/other.json', CLIENT + '?x=1', ' ' + CLIENT]) {
+  for (const id of [CHATGPT_CLIENT, 'https://cursor.com/oauth/other.json', CLIENT + '?x=1', ' ' + CLIENT]) {
     assert.equal(pre({ client_id: id }).ok, false, id);
     assert.equal(postGateAuthRequest({ ...request, clientId: id }, cfg, 'CURSOR'), false, id);
     assert.equal(clientBoundToSeat({ clientId: id }, 'CURSOR', REDIRECT, cfg), false, id);
@@ -66,7 +66,7 @@ test('S256, resource and scopes remain enforced before and after consent', () =>
 test('code-token gate requires exact pair; refresh permits absent redirect but no substitutions', () => {
   assert.equal(token().ok, true);
   assert.equal(token({ client_secret: '' }).form.has('client_secret'), false);
-  assert.equal(token({ redirect_uri: 'https://www.cursor.com/agents/mcp/oauth/callback' }).ok, false);
+  assert.equal(token({ redirect_uri: 'https://cursor.com/agents/mcp/oauth/callback' }).ok, false);
   assert.equal(gateTokenForm(new URLSearchParams({ grant_type: 'authorization_code', client_id: CLIENT }), null, cfg).ok, false);
   const repeated = new URLSearchParams({ grant_type: 'authorization_code', client_id: CLIENT, redirect_uri: REDIRECT });
   repeated.append('redirect_uri', REDIRECT);
@@ -75,7 +75,7 @@ test('code-token gate requires exact pair; refresh permits absent redirect but n
   assert.equal(token({}, 'Basic ' + btoa(encodeURIComponent(CLIENT) + ':')).ok, true);
   const refresh = new URLSearchParams({ grant_type: 'refresh_token', client_id: CLIENT, refresh_token: 'synthetic-unused-token' });
   assert.equal(gateTokenForm(refresh, null, cfg).ok, true);
-  refresh.set('redirect_uri', 'https://www.cursor.com/agents/mcp/oauth/callback');
+  refresh.set('redirect_uri', 'https://www.cursor.com/agents/mcp/oauth/callback/');
   assert.equal(gateTokenForm(refresh, null, cfg).ok, false);
 });
 test('static HTTPS, JET, 127.0.0.1 and exact-pair native consent wording remain intact', () => {
@@ -83,23 +83,23 @@ test('static HTTPS, JET, 127.0.0.1 and exact-pair native consent wording remain 
   const https = 'https://www.cursor.com/agents/mcp/oauth/callback';
   assert.equal(pre({ client_id: manual.clientId, redirect_uri: https }).ok, true);
   assert.equal(clientBoundToSeat(manual, 'CURSOR', https, cfg), true);
-  assert.equal(pre({ redirect_uri: https }).ok, false, 'new CIMD is exact-pair only');
+  assert.equal(pre({ redirect_uri: https }).ok, true, 'published CIMD is allowed only as the exact CURSOR pair');
   assert.equal(pre({ client_id: CHATGPT_CLIENT, redirect_uri: CHATGPT_REDIRECT }).ok, true);
   assert.equal(redirectUriProblem('http://127.0.0.1:8737/callback'), '');
   assert.equal(isLoopbackRedirect('http://127.0.0.1:8737/callback'), true);
   assert.equal(isCursorExactPair(CLIENT, REDIRECT, 'CURSOR'), true);
   const source = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8');
-  assert.match(source, /loopback: isLoopbackRedirect\(authRequest.redirectUri\) \|\| isCursorExactPair\(authRequest.clientId, authRequest.redirectUri, seat\)/);
+  assert.match(source, /loopback: isLoopbackRedirect\(authRequest.redirectUri\)/);
   assert.match(source, /allowPlainPKCE: false/);
   assert.match(source, /disallowPublicClientRegistration: true/);
 });
 
-test('localhost consent warns that the callback must resolve to this browser computer', async () => {
+test('Cursor Cloud consent displays its HTTPS callback without a localhost warning', async () => {
   const response = consentPage({ clientName: 'Cursor', clientDomain: 'cursor.com', clientId: CLIENT,
-    redirectHost: 'localhost:8787', loopback: true, scopes: ['zulip:read'], seat: 'CURSOR',
+    redirectHost: 'www.cursor.com', loopback: false, scopes: ['zulip:read'], seat: 'CURSOR',
     handle: 'synthetic-unused-consent', replacing: [] }, new Headers());
   const html = await response.text();
-  assert.match(html, /localhost must resolve to the computer running this browser/);
-  assert.match(html, /app&#39;s own computer|app's own computer/);
+  assert.match(html, /www\.cursor\.com/);
+  assert.doesNotMatch(html, /localhost must resolve/);
   assert.doesNotMatch(html, /127\.0\.0\.1 always/);
 });
