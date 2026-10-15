@@ -206,6 +206,16 @@
       "hasAppIcon": false,
       "kind": "product",
       "notes": "LEGACY, in maintenance until cutover.  Private repo of the live fleet-share-api worker that serves fleetlink.online and fleetlink.app (its wrangler.toml routes both zones);  the P0 auth hotfix of 2026-10-08 landed here.  Its row exists so lane new can make hotfix lanes.  Retire it with the Offboarding steps in docs/ONBOARDING-NEW-APP.md when FleetLink replaces it.  FLL is a registry key only and Jay may rename it:  no Linear team (file a hotfix under FL or AFC), no Zulip linkifier (FLL#n would link to a repo named FLL, so use fleetlink-legacy#n), no digestColor and no public feed.  Its integration tree is ~/Code/fleetlink-legacy, a plain clone of origin/main that agents never edit."
+    },
+    {
+      "repo": "Simple-With-Us",
+      "acronym": "SWU",
+      "displayName": "Simple With Us",
+      "codeDir": "Simple-With-Us",
+      "worktreePrefix": "swu",
+      "hasAppIcon": false,
+      "kind": "marketing",
+      "notes": "The fleet marketing repo:  the static catalog at https://simplewithus.com/ and one page per app.  It holds no product code;  each shipped tool lives in its own fleet repo.  Its row exists so lane new can make marketing-site lanes (AFC-297), and it is the reason the handbook records the swu lane prefix.  SWU is a registry key and the Linear team for Simple With Us website work.  No digestColor, no badge class and no public-activity feed:  it is not a shipped app, and a digest row for the catalog would crowd out the tools it lists.  Its integration tree is ~/Code/Simple-With-Us, reset by a daemon, so all agent work happens in a lane."
     }
   ],
   "seats": [
