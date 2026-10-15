@@ -63,7 +63,6 @@ if [ "${1:-}" = "--coolify-fallback" ]; then
   coolify_fallback_needed "$docker_ok"
   exit $?
 fi
-
 APP_NAME="${APP_NAME:?set APP_NAME}"
 APP_UUID="${APP_UUID:?set APP_UUID}"
 RESOURCE_NAME="${RESOURCE_NAME:?set RESOURCE_NAME}"
@@ -85,7 +84,8 @@ STARTED_AT=$(date +%s)
 
 log() {
   local msg="$*"
-  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$msg"
+  # stderr only: find_app_container and other helpers print ids on stdout for $(...) capture.
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$msg" >&2
   if command -v logger >/dev/null 2>&1; then
     logger -t "$LOG_TAG" -- "$msg" || true
   fi
@@ -185,17 +185,36 @@ check_one() {
 }
 
 find_app_container() {
-  local id
-  id=$(docker ps -q --filter "label=coolify.resourceName=${RESOURCE_NAME}" 2>/dev/null | head -1 || true)
-  if [[ -n "$id" ]]; then
-    printf '%s\n' "$id"
-    return 0
+  # Coolify labels the container; the Docker *name* is usually the application UUID.
+  # Older host copies grepped for a literal "socratic-app" name and missed ST entirely
+  # (board ST-9 / 4ca246e5), then fell through to Coolify API restart loops.
+  local id filter
+  for filter in \
+    "label=coolify.resourceName=${RESOURCE_NAME}" \
+    "label=coolify.name=${RESOURCE_NAME}"; do
+    id=$(docker ps -q --filter "$filter" 2>/dev/null | head -1 || true)
+    if [[ -n "$id" ]]; then
+      printf '%s\n' "$id"
+      return 0
+    fi
+  done
+  if [[ -n "${APP_UUID:-}" ]]; then
+    id=$(docker ps -q --filter "name=${APP_UUID}" 2>/dev/null | head -1 || true)
+    if [[ -n "$id" ]]; then
+      log "warn: using running name=${APP_UUID} fallback id=${id:0:12} (prefer Coolify labels)"
+      printf '%s\n' "$id"
+      return 0
+    fi
   fi
-  id=$(docker ps -aq --filter "label=coolify.resourceName=${RESOURCE_NAME}" --filter "status=exited" 2>/dev/null | head -1 || true)
-  if [[ -n "$id" ]]; then
-    printf '%s\n' "$id"
-    return 0
-  fi
+  for filter in \
+    "label=coolify.resourceName=${RESOURCE_NAME}" \
+    "label=coolify.name=${RESOURCE_NAME}"; do
+    id=$(docker ps -aq --filter "$filter" --filter "status=exited" 2>/dev/null | head -1 || true)
+    if [[ -n "$id" ]]; then
+      printf '%s\n' "$id"
+      return 0
+    fi
+  done
   return 1
 }
 
@@ -320,6 +339,11 @@ remediate() {
     notify "Restarted $APP_NAME but internal /api/health is still failing." "$NOTIFY_TITLE DOWN"
   fi
 }
+
+if [ "${1:-}" = "--find-container" ]; then
+  find_app_container
+  exit 0
+fi
 
 log "start app=$APP_NAME resource=$RESOURCE_NAME health=$INTERNAL_HEALTH_URL interval=${CHECK_INTERVAL_SEC}s"
 
