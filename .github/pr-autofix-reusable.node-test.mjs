@@ -52,4 +52,16 @@ test('job concurrency serializes autofix writers per pull request', () => {
 test('push prefers the GitHub App installation token when configured', () => {
   assert.match(workflow, /create-github-app-token@/);
   assert.match(push, /PUSH_TOKEN/);
+  assert.match(workflow, /vars\.SWU_AUTOFIX_GITHUB_APP_ID/);
+});
+
+test('step if expressions never reference secrets so startup validation passes', () => {
+  for (const step of steps) {
+    const ifLine = step
+      .split('\n')
+      .find((line) => line.trimStart().startsWith('if:'));
+    if (ifLine) {
+      assert(!ifLine.includes('secrets.'), `step if must not reference secrets: ${ifLine.trim()}`);
+    }
+  }
 });
