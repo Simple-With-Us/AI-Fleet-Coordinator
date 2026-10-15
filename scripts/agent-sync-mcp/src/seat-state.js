@@ -540,7 +540,7 @@ async function auditCallInner(store, row, now) {
     const cutoffMs = now - CALL_RETENTION_DAYS * DAY_MS;
     const errors = ((await store.get("errors")) ?? []).filter((entry) => entry && Number.isFinite(entry.ts) && entry.ts > cutoffMs);
     const errorRow = { ts: clean.ts };
-    for (const field of ["seat", "grant_ref", "client_id", "tool", "error_code", "error_message", "retryable", "retry_after_s", "reset_at", "upstream_status", "exception_class"]) {
+    for (const field of ["seat", "authenticated_seat", "acting_identity", "grant_ref", "client_id", "tool", "error_code", "error_message", "retryable", "retry_after_s", "reset_at", "upstream_status", "exception_class"]) {
       if (clean[field] !== undefined) errorRow[field] = clean[field];
     }
     errors.push(errorRow);
