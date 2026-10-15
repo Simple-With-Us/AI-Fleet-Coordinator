@@ -99,6 +99,8 @@ import {
   centralDay,
   linearLabelKeys,
   commentId as linearCommentId,
+  linearCommentCreateInput,
+  neutralizeLinearMentions,
   stableRelationId,
   SEV_PRIORITY,
   SEAT_PREFIX,
@@ -1151,7 +1153,7 @@ export class HostedTools {
 
   /** The seat tag line that opens every body it writes, as the Zulip tools do. */
   linearBody(text, session) {
-    return sentenceGap(`${tagPrefix(this.seat, sessionTag(session))}] ${text}`);
+    return neutralizeLinearMentions(sentenceGap(`${tagPrefix(this.seat, sessionTag(session))}] ${text}`));
   }
 
   /** The secret scan on everything the caller wrote, before any request. */
@@ -1161,6 +1163,17 @@ export class HostedTools {
       const kind = scanSecret(value, this.known);
       if (kind) throw new ToolError("refused_secret", `refusing to write to Linear:  the ${field} looks like it contains ${kind}`);
     }
+  }
+
+  /**
+   * Scan caller text and the tagged, mention-neutralized body Linear will post.
+   * Mention neutralization can decode percent-encoded profile slugs, so the
+   * second scan catches secrets that only appear after decode.
+   */
+  scanLinearText(text, session, { field = "body" } = {}) {
+    const raw = String(text ?? "").trim();
+    if (raw) this.scanLinear({ [field]: raw });
+    if (raw) this.scanLinear({ [field]: this.linearBody(raw, session) });
   }
 
   /**
@@ -1354,6 +1367,7 @@ export class HostedTools {
     }
     const priority = args.severity ? SEV_PRIORITY[args.severity] : undefined;
     const input = { teamId: teamRow.id, title: args.title.trim(), description: this.linearFileBody(args, slug, team), stateId: state.id };
+    this.scanLinear({ description: input.description });
     if (labelIds.length) input.labelIds = labelIds;
     if (priority !== undefined) input.priority = priority;
     if (args.severity) {
@@ -1395,7 +1409,7 @@ export class HostedTools {
 
   async tool_linear_claim(args, audit) {
     this.requireLinearWrites();
-    this.scanLinear({ comment: args.comment });
+    this.scanLinearText(args.comment?.trim() ? `CLAIMED\n\n${args.comment.trim()}` : "CLAIMED", args.session, { field: "comment" });
     const issue = await this.linearIssue(args.id);
     const seat = seatTagForSeat(this.seat);
     const keys = linearLabelKeys(issue);
@@ -1435,7 +1449,7 @@ export class HostedTools {
     const result = await this.linearWrite(idem, { issue: issue.id, label: claimName }, async () => {
       const updated = await this.linearCall(() => this.linear.call(M_UPDATE, { id: issue.id, input: { stateId: state.id, addedLabelIds: added, removedLabelIds: removed } }), { write: true });
       if (updated?.issueUpdate?.success !== true) throw new ToolError("linear_error", "Linear did not set the claim.");
-      const commented = await this.linearCall(() => this.linear.call(M_COMMENT, { input: { id: commentId, issueId: issue.id, body } }), { write: true });
+      const commented = await this.linearCall(() => this.linear.call(M_COMMENT, { input: linearCommentCreateInput(issue.id, commentId, body) }), { write: true });
       if (commented?.commentCreate?.success !== true) throw new ToolError("linear_error", "Linear did not record the CLAIMED comment.");
       return { id: issue.id, identifier: issue.identifier, label: claimName, held_by: null };
     });
@@ -1444,7 +1458,7 @@ export class HostedTools {
 
   async tool_linear_comment(args, audit) {
     this.requireLinearWrites();
-    this.scanLinear({ body: args.body });
+    this.scanLinearText(args.body, args.session);
     const issue = await this.linearIssue(args.id);
     const body = this.linearBody(args.body.trim(), args.session);
     audit.body_len = [...body].length;
@@ -1455,7 +1469,7 @@ export class HostedTools {
     const result = await this.linearWrite(idem, { issue: issue.id }, async () => {
       // A fixed comment id, so a retry that the model repeats updates that
       // comment instead of posting a second one (board comment_id).
-      const data = await this.linearCall(() => this.linear.call(M_COMMENT, { input: { id: commentId, issueId: issue.id, body } }), { write: true });
+      const data = await this.linearCall(() => this.linear.call(M_COMMENT, { input: linearCommentCreateInput(issue.id, commentId, body) }), { write: true });
       if (data?.commentCreate?.success !== true) throw new ToolError("linear_error", "Linear did not record the comment.");
       return { id: data.commentCreate.comment.id, ok: true };
     });

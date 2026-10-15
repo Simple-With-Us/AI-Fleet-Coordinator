@@ -19,6 +19,7 @@ export const GRAPHQL_URL = "https://api.linear.app/graphql";
 export const TOKEN_URL = "https://api.linear.app/oauth/token";
 export const SCOPE = "read,write,app:assignable,app:mentionable";
 export const WORKSPACE_URL_KEY = "simple-with-us";
+const LINEAR_PROFILE_URL_RE = /https:\/\/linear\.app\/[a-z0-9-]+\/profiles\//i;
 export const STATE_NAMES = Object.freeze(["Todo", "Backlog", "In Progress", "In Review", "Done", "Deployed", "Won't Fix", "Parked", "Canceled", "Duplicate"]);
 
 const slug = (value) => String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -196,7 +197,11 @@ export class FakeLinear {
     const op = opOf(entry.body?.query);
     if (!op) return this.json(200, { errors: [{ message: "fake linear: no operation in the document" }] });
     const variables = entry.body?.variables ?? {};
-    if (op.kind === "mutation") return this.json(200, { data: this.mutation(op.name, variables) });
+    if (op.kind === "mutation") {
+      const outcome = this.mutation(op.name, variables);
+      if (outcome?.graphqlError) return this.json(200, { data: null, errors: [outcome.graphqlError] });
+      return this.json(200, { data: outcome });
+    }
     return this.json(200, { data: this.query(op.name, variables) });
   }
 
@@ -231,8 +236,11 @@ export class FakeLinear {
         return { issueCreate: this.createIssue(variables.input) };
       case "BoardUpdate":
         return { issueUpdate: this.updateIssue(variables.id, variables.input) };
-      case "BoardComment":
-        return { commentCreate: this.createComment(variables.input) };
+      case "BoardComment": {
+        const created = this.createComment(variables.input);
+        if (created?.graphqlError) return { graphqlError: created.graphqlError };
+        return { commentCreate: created };
+      }
       case "BoardRelate":
         return { issueRelationCreate: this.createRelation(variables.input) };
       default:
@@ -286,6 +294,15 @@ export class FakeLinear {
 
   /** A comment with a caller-chosen id, as board's comment_id sends one. */
   createComment(input) {
+    if (LINEAR_PROFILE_URL_RE.test(input.body ?? "")) {
+      return {
+        graphqlError: {
+          message: "App user not valid",
+          path: ["commentCreate"],
+          extensions: { code: "INVALID_INPUT", userPresentableMessage: "App user not valid" },
+        },
+      };
+    }
     const row = this.findIssue(input.issueId);
     const comment = { id: input.id, body: input.body, createdAt: new Date(this.stamp).toISOString(), user: { id: this.viewer.id, name: this.viewer.name, app: this.viewer.app } };
     // The same id updates the comment it names, which is what makes a retry
