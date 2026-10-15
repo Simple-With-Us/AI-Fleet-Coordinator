@@ -1402,8 +1402,8 @@ export class HostedTools {
 
   async tool_linear_comment(args, audit) {
     this.requireLinearWrites();
-    const issue = await this.linearIssue(args.id);
     this.scanLinearText(args.body, args.session);
+    const issue = await this.linearIssue(args.id);
     const body = this.linearBody(args.body.trim(), args.session);
     audit.body_len = [...body].length;
     const idem = await this.idemKey(null, ["linear_comment", this.seat, issue.id, body]);
