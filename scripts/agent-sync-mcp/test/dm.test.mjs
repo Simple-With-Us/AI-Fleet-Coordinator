@@ -113,11 +113,11 @@ test("the DM tools:  closed inputs, output schemas, no identity arguments, read 
   assert.ok(HOSTED_READ_TOOLS.has("dm_list") && HOSTED_READ_TOOLS.has("dm_read") && !HOSTED_WRITE_TOOLS.has("dm_read"));
   assert.ok(HOSTED_WRITE_TOOLS.has("dm_send") && !HOSTED_READ_TOOLS.has("dm_send"));
   assert.match(hostedInstructions("JET"), /Direct messages \(zulip_dm_list, zulip_dm_read, zulip_dm_send/);
-  // The stdio contract is untouched, and the hosted inbox differs from it in its description only.
+  // The stdio contract is untouched; the hosted inbox changes naming and descriptive metadata.
   const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/tools.json"), "utf8"));
   assert.deepEqual(TOOLS, file);
   const hostedInbox = HOSTED_TOOLS_BY_NAME.inbox;
-  assert.deepEqual({ ...hostedInbox, description: null }, { ...TOOLS_BY_NAME.inbox, description: null });
+  assert.deepEqual({ ...hostedInbox, description: null }, { ...TOOLS_BY_NAME.inbox, name: "zulip_inbox", title: "Zulip Inbox", description: null });
   assert.notEqual(hostedInbox.description, TOOLS_BY_NAME.inbox.description);
   assert.match(hostedInbox.description, /direct messages sent to it/);
   assert.ok(!/left out/.test(hostedInbox.description));
