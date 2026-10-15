@@ -4,6 +4,9 @@
     python3 scripts/test_check_ci_runner_policy.py
 
 Pins policy_states_ban() against AGENT-SYNC.md's CI Runners ban line and scan_inventory().
+
+CI: .github/workflows/ci.yml runs this file in the step named
+``CI runner policy lint tracks AGENT-SYNC ban text``.
 """
 from __future__ import annotations
 
