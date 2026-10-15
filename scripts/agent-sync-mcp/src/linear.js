@@ -57,7 +57,7 @@ export function linearSecretNames(seat) {
 // the seat with no shell and the one that acts as Jay today through its own
 // connector.  A seat missing here answers not_configured even when its
 // credentials are installed, so enabling a seat is a deliberate deploy step.
-export const LINEAR_SEATS = Object.freeze(["GROK-WEB"]);
+export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR"]);
 
 // ---------------------------------------------------------------- ported board rules
 
@@ -145,6 +145,7 @@ export const SEAT_APP_NAMES = Object.freeze({
   "GROK-WEB": "Grok Web",
   ECHO: "Echo (Instinct)",
   INSTINCT: "Wise (Instinct)",
+  CURSOR: "Cursor",
 });
 export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),
