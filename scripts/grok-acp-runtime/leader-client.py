@@ -136,6 +136,7 @@ class LeaderStdio:
 
         Waiting for session/prompt's result waits until the TUI finishes that
         turn (can be minutes).  Closing this stdio client does not cancel it.
+        Generic session notifications and silence are not queue acknowledgements.
         """
         req_id = self._next()
         params = {
@@ -147,7 +148,6 @@ class LeaderStdio:
         self.p.stdin.flush()
         deadline = time.time() + (timeout if wait else min(timeout, 8.0))
         chunks = []
-        queued = False
         notes = []
         while time.time() < deadline:
             msg = self._read_msg(deadline)
@@ -156,13 +156,11 @@ class LeaderStdio:
             method = msg.get("method") or ""
             if method:
                 notes.append(method)
-                if method in {"_x.ai/queue/changed", "_x.ai/session_notification", "session/update", "_x.ai/sessions/changed"}:
-                    queued = True
+                if queue_receipt_correlates(msg, session_id) and not wait:
+                    return {"queued": True, "text": "".join(chunks), "notes": notes[:12]}
                 piece = extract_agent_text(msg)
                 if piece:
                     chunks.append(piece)
-                if queued and not wait:
-                    return {"queued": True, "text": "".join(chunks), "notes": notes[:12]}
                 continue
             if msg.get("id") != req_id:
                 continue
@@ -170,9 +168,22 @@ class LeaderStdio:
                 raise RuntimeError(json.dumps(msg["error"]))
             result = msg.get("result") or {}
             return {"queued": False, "text": "".join(chunks), "result": result, "notes": notes[:12]}
-        if queued or not wait:
-            return {"queued": True, "text": "".join(chunks), "notes": notes[:12]}
-        raise TimeoutError("no ACP result for session/prompt")
+        raise TimeoutError("no ACP result for session/prompt within %.0fs" % (timeout if wait else min(timeout, 8.0)))
+
+
+def queue_receipt_correlates(msg, session_id):
+    """True when a notification is a queue receipt for this session/prompt."""
+    if not isinstance(msg, dict):
+        return False
+    if msg.get("method") != "_x.ai/queue/changed":
+        return False
+    params = msg.get("params") or {}
+    if not isinstance(params, dict):
+        return False
+    sid = params.get("sessionId") or params.get("session_id")
+    if sid is None:
+        return True
+    return str(sid) == str(session_id)
 
 
 def extract_agent_text(msg):
@@ -468,5 +479,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(json.dumps({"ok": False, "at": _now_iso(), "error": str(e)}), file=sys.stderr)
+        payload = {"ok": False, "at": _now_iso(), "error": str(e)}
+        if isinstance(e, TimeoutError):
+            payload["unknown"] = True
+        print(json.dumps(payload), file=sys.stderr)
         sys.exit(1)
