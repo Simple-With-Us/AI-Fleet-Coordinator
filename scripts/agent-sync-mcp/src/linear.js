@@ -342,6 +342,35 @@ export const LINEAR_SUMMARY_LIMIT = 300;
 export const LINEAR_ID_LIMIT = 80;
 const MESSAGE_LIMIT_SAFE = 300;
 
+// Linear turns `https://linear.app/<workspace>/profiles/<slug>` (and the same
+// URL inside markdown links) into a user @-mention and tries to subscribe that
+// user to the issue.  App/bot profiles cannot be subscribed, which yields
+// GraphQL "App user not valid" on commentCreate while confirmViewer() still
+// passes.  CommentCreateInput.doNotSubscribeToIssue only skips subscribing the
+// commenter, not mention targets, so mentions must be plain text before send.
+const LINEAR_PROFILE_MARKDOWN_RE = /\[([^\]]*)\]\(https:\/\/linear\.app\/[a-z0-9-]+\/profiles\/[^)\s]+\)/gi;
+const LINEAR_PROFILE_URL_RE = /https:\/\/linear\.app\/[a-z0-9-]+\/profiles\/([^\s)<\]]+)/gi;
+
+/** Profile URLs and profile markdown links become plain `@Name` (no subscription). */
+export function neutralizeLinearMentions(body) {
+  if (typeof body !== "string" || !body) return body;
+  let out = body.replace(LINEAR_PROFILE_MARKDOWN_RE, (_, label) => {
+    const name = String(label ?? "").trim().replace(/^@+/, "");
+    return name ? `@${name}` : "@user";
+  });
+  out = out.replace(LINEAR_PROFILE_URL_RE, (_, slug) => {
+    let name = String(slug ?? "").trim();
+    try {
+      name = decodeURIComponent(name);
+    } catch {
+      //  leave the slug as-is when it is not valid percent-encoding
+    }
+    name = name.replace(/\+/g, " ").trim();
+    return name ? `@${name.replace(/^@+/, "")}` : "@user";
+  });
+  return out;
+}
+
 /** clean() (which removes the Zulip markers) plus the Linear markers.  Returns [text, truncated]. */
 export function linearClean(value, limit = null) {
   const [text] = clean(value);
@@ -586,15 +615,37 @@ export const LINEAR_WRITE_TOOLS = Object.freeze(new Set(["linear_file", "linear_
 // ---------------------------------------------------------------- client
 
 
+/** Scrubbed GraphQL error metadata from Linear's `errors[]` entry (never the mutation body). */
+export function linearGraphqlErrorMeta(errorEntry, known = []) {
+  if (!errorEntry || typeof errorEntry !== "object") return null;
+  const ext = errorEntry.extensions && typeof errorEntry.extensions === "object" ? errorEntry.extensions : {};
+  const code = typeof ext.code === "string" ? ext.code : null;
+  const userPresentableMessage = typeof ext.userPresentableMessage === "string" ? ext.userPresentableMessage : null;
+  const path = Array.isArray(errorEntry.path) ? errorEntry.path.map((p) => String(p)) : null;
+  const message = typeof errorEntry.message === "string" ? errorEntry.message : null;
+  const scrub = (value) => {
+    if (typeof value !== "string" || !value.trim()) return null;
+    if (scanSecret(value, known)) return null;
+    return linearClean(value.trim(), MESSAGE_LIMIT_SAFE)[0];
+  };
+  return {
+    code: scrub(code),
+    path,
+    userPresentableMessage: scrub(userPresentableMessage),
+    message: scrub(message),
+  };
+}
+
 /** A failed Linear call.  `kind` is mint, timeout, network, redirect, too_large, rate_limited, status, unauthorized or unexpected. */
 export class LinearError extends Error {
-  constructor(kind, { status = null, message = null, retryAfterS = null } = {}) {
+  constructor(kind, { status = null, message = null, retryAfterS = null, graphql = null } = {}) {
     super(`linear ${kind}`);
     this.name = "LinearError";
     this.kind = kind;
     this.status = status;
     this.upstreamMessage = message;
     this.retryAfterS = retryAfterS;
+    this.graphql = graphql;
   }
 }
 
@@ -619,13 +670,14 @@ export function linearClientFromEnv(env, seat, { gate, fetch: fetchImpl = global
 }
 
 export class LinearClient {
-  constructor({ seat, clientId, clientSecret, gate, fetch: fetchImpl, now = Date.now, timeoutMs = LINEAR_TIMEOUT_MS }) {
+  constructor({ seat, clientId, clientSecret, gate, fetch: fetchImpl, now = Date.now, timeoutMs = LINEAR_TIMEOUT_MS, log = null } = {}) {
     this.seat = seat;
     this.clientId = clientId;
     this.gate = gate;
     this.fetch = fetchImpl;
     this.now = now;
     this.timeoutMs = timeoutMs;
+    this.#log = typeof log === "function" ? log : (row) => console.log(JSON.stringify(row));
     // Private:  a stray JSON.stringify of this client must show no secret.
     this.#clientSecret = clientSecret;
     this.#secrets = [clientId, clientSecret];
@@ -633,6 +685,7 @@ export class LinearClient {
 
   #clientSecret;
   #secrets;
+  #log;
 
   /** The loaded secret values, for the caller's scrub list. */
   secrets() {
@@ -793,7 +846,25 @@ export class LinearClient {
       // Linear's own message is attacker-reachable (it can quote an issue
       // title), so it is only ever shown after a secret scan, in mapLinearError.
       const first = data.errors[0];
-      throw new LinearError("unexpected", { status: response.status, message: typeof first?.message === "string" ? first.message : null });
+      const graphql = linearGraphqlErrorMeta(first, this.#secrets);
+      try {
+        this.#log({
+          event: "linear_graphql_error",
+          seat: this.seat,
+          status: response.status,
+          code: graphql?.code ?? null,
+          path: graphql?.path ?? null,
+          message: graphql?.message ?? null,
+          user_presentable: graphql?.userPresentableMessage ?? null,
+        });
+      } catch {
+        //  logging must never fail the tool call
+      }
+      throw new LinearError("unexpected", {
+        status: response.status,
+        message: typeof first?.message === "string" ? first.message : null,
+        graphql,
+      });
     }
     // GraphQL answers `{"data": {...}}`;  every caller here reads the payload
     // itself (`data.issue`, `data.viewer`), so the envelope is unwrapped once,
@@ -847,8 +918,13 @@ export function mapLinearError(error, { write = false, known = [] } = {}) {
   }
   if (error.status === 401) return new ToolError("not_authorized", "Linear refused this seat's app credentials (HTTP 401)", { extra: { status: error.status } });
   if (error.kind === "unexpected") {
-    const said = upstreamMessage(error.upstreamMessage, known);
-    return new ToolError("invalid_argument", said ? `Linear refused the request:  ${said}` : "Linear refused the request", { extra: { status: error.status } });
+    const extra = {
+      status: error.status,
+      ...(error.graphql?.code ? { linear_code: error.graphql.code } : {}),
+      ...(error.graphql?.path?.length ? { linear_path: error.graphql.path } : {}),
+    };
+    const said = linearRefusalMessage(error, known);
+    return new ToolError("invalid_argument", said, { extra });
   }
   if (error.status >= 500) return new ToolError("unavailable", `Linear failed (HTTP ${error.status})`, { retryable: true, extra: { status: error.status } });
   return new ToolError("upstream_error", `Linear answered HTTP ${error.status}`, { retryable: !write, extra: { status: error.status } });
@@ -859,4 +935,21 @@ function upstreamMessage(message, known) {
   if (typeof message !== "string" || !message.trim()) return null;
   if (scanSecret(message, known)) return null;
   return linearClean(message.trim(), MESSAGE_LIMIT_SAFE)[0];
+}
+
+/** A tool-facing refusal string for GraphQL validation errors (never echoes the mutation body). */
+function linearRefusalMessage(error, known) {
+  const parts = [error.graphql?.userPresentableMessage, error.graphql?.message, error.upstreamMessage].filter((v) => typeof v === "string" && v.trim());
+  const combined = parts.join(" ");
+  const scrubbed = combined && !scanSecret(combined, known) ? linearClean(combined, MESSAGE_LIMIT_SAFE)[0] : null;
+  if (scrubbed && /app user not valid/i.test(scrubbed)) {
+    return "Linear refused the comment because the text mentions an app (bot) user via a profile link or @-mention, and Linear cannot subscribe bot users.  Quote the name as plain text (for example @Cursor) instead of pasting a linear.app/profiles/… URL or copying a mention from another comment.";
+  }
+  if (scrubbed) return `Linear refused the request:  ${scrubbed}`;
+  return "Linear refused the request";
+}
+
+/** Input for commentCreate from the board tools:  body mentions neutralized. */
+export function linearCommentCreateInput(issueId, id, body) {
+  return { id, issueId, body: neutralizeLinearMentions(body) };
 }
