@@ -14,8 +14,8 @@ test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", (
   // realm administrator (hosted seats accept member (400) only, spec 3.6);  Jay
   // demoted it on Fri, Oct 9, and JET was deployed with its key at about 8:10am
   // (DEPLOY.md, "Re-enable JET").
-  // ECHO and INSTINCT (the Instinct app) were added on Fri, Oct 9.
-  assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB", "ECHO", "INSTINCT", "CURSOR", "CLAUDE"]);
+  // ECHO and WISE (the Instinct app) were added on Fri, Oct 9.
+  assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE"]);
   assert.deepEqual([...loadConfig(testEnv()).hostedSeats], ["JET", "GROK-WEB"]);
   // Channels:  any public channel the bot is subscribed to (owner, Sat, Oct 10, 2026), so no allowlist;  the denylist ships empty.
   assert.deepEqual([...cfg.channelsDeny], []);
@@ -25,10 +25,10 @@ test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", (
   assert.equal(cfg.botEmails["GROK-WEB"], "grok-web-bot@simplewithus.zulipchat.com");
   assert.equal(cfg.redirectOwner.get(CHATGPT_REDIRECT), "JET");
   assert.equal(cfg.botEmails.ECHO, "instinct-bat-bot@simplewithus.zulipchat.com");
-  assert.equal(cfg.botEmails.INSTINCT, "instinct-owl-bot@simplewithus.zulipchat.com");
+  assert.equal(cfg.botEmails.WISE, "instinct-owl-bot@simplewithus.zulipchat.com");
   // The Instinct app's loopback callback is shared by its two seats, and only
   // a loopback redirect may be.
-  assert.deepEqual([...cfg.redirectSeats.get("http://127.0.0.1:8737/callback")], ["ECHO", "INSTINCT"]);
+  assert.deepEqual([...cfg.redirectSeats.get("http://127.0.0.1:8737/callback")], ["ECHO", "WISE"]);
   assert.equal(cfg.redirectOwner.has("http://127.0.0.1:8737/callback"), false, "a shared redirect has no single owner");
   // Before DEPLOY-PHASE0.md step 3 the file holds the placeholder;  after it, a real tag.
   if (vars.ACCESS_AUD === "REPLACE_WITH_ACCESS_AUD") {
@@ -130,7 +130,7 @@ test("config accepts the loopback callback, shared by two seats", () => {
   const loop = "http://127.0.0.1:8737/callback";
   const cfg = loadConfig(testEnv({ SEATS: { JET: { redirect_uris: [loop], cimd_client_ids: [] }, ECHO: { redirect_uris: [loop], cimd_client_ids: [] } } }));
   assert.deepEqual([...cfg.redirectSeats.get(loop)], ["JET", "ECHO"]);
-  const solo = loadConfig(testEnv({ SEATS: { ECHO: { redirect_uris: [loop], cimd_client_ids: [] }, INSTINCT: { redirect_uris: [], cimd_client_ids: [] } } }));
+  const solo = loadConfig(testEnv({ SEATS: { ECHO: { redirect_uris: [loop], cimd_client_ids: [] }, WISE: { redirect_uris: [], cimd_client_ids: [] } } }));
   assert.equal(solo.redirectOwner.get(loop), "ECHO");
 });
 

@@ -172,7 +172,7 @@ function startWorker(upstream, bindingOverrides = {}) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET, ...bindingOverrides }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET, ...bindingOverrides }),
         outboundService: outboundFetch,
       },
     ],
@@ -1026,16 +1026,16 @@ try {
     assert.equal(r.json.result._meta["agent-sync/error"].code, "paused");
   });
 
-  await step("ECHO and INSTINCT share one loopback callback:  the armed seat decides, and a client is bound to its seat", async () => {
+  await step("ECHO and WISE share one loopback callback:  the armed seat decides, and a client is bound to its seat", async () => {
     const LOOP = "http://127.0.0.1:8737/callback";
     const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
     const echoGate = ns.get(ns.idFromName("ECHO"));
-    const instinctGate = ns.get(ns.idFromName("INSTINCT"));
+    const instinctGate = ns.get(ns.idFromName("WISE"));
     assert.equal((await adminAction("create_manual_client", { seat: "ECHO" })).status, 303);
-    assert.equal((await adminAction("create_manual_client", { seat: "INSTINCT" })).status, 303);
+    assert.equal((await adminAction("create_manual_client", { seat: "WISE" })).status, 303);
     const admin = await (await browser("/admin")).text();
     const echoClient = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Echo \(manual form, ECHO\)<\/td><td>ECHO<\/td><td>http:\/\/127\.0\.0\.1:8737\/callback</)[1];
-    const instinctClient = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Instinct \(manual form, INSTINCT\)<\/td><td>INSTINCT</)[1];
+    const instinctClient = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Instinct \(manual form, WISE\)<\/td><td>WISE</)[1];
     const refusalLog = async () => (await (await browser("/admin")).text()).split("Refused Authorize Requests")[1].split("Refused Token Requests")[0];
     const open = (clientId, state) => browser(`/authorize?${authorizeQuery(pkce().challenge, state, { clientId, redirect: LOOP })}`);
 
@@ -1046,14 +1046,14 @@ try {
 
     // Both armed:  refused as ambiguous, and logged.
     assert.equal((await adminAction("arm", { seat: "ECHO" })).status, 303);
-    assert.equal((await adminAction("arm", { seat: "INSTINCT" })).status, 303);
+    assert.equal((await adminAction("arm", { seat: "WISE" })).status, 303);
     res = await open(echoClient, "e-both");
     assert.equal(res.status, 409);
     assert.match(await res.text(), /More Than One Seat Armed/);
     assert.match(await refusalLog(), /ambiguous_armed_seats/);
-    assert.equal((await adminAction("disarm", { seat: "INSTINCT" })).status, 303);
+    assert.equal((await adminAction("disarm", { seat: "WISE" })).status, 303);
 
-    // Only ECHO armed:  INSTINCT's client cannot mint an ECHO grant.
+    // Only ECHO armed:  WISE's client cannot mint an ECHO grant.
     res = await open(instinctClient, "e-cross");
     assert.equal(res.status, 400);
     assert.match(await res.text(), /not bound to ECHO/);
@@ -1066,8 +1066,8 @@ try {
     assert.match(page, /A program on the computer running this browser \(127\.0\.0\.1:8737\)/);
     let handle = page.match(/name="handle" value="([^"]+)"/)[1];
     // A tampered seat on the form is refused (the armed seat is ECHO).
-    const tampered = await browser("/authorize", { method: "POST", form: { handle, seat: "INSTINCT", decision: "approve", scope: "zulip:read" } });
-    assert.equal(tampered.status, 409, "the armed seat is ECHO, so an INSTINCT approval is refused");
+    const tampered = await browser("/authorize", { method: "POST", form: { handle, seat: "WISE", decision: "approve", scope: "zulip:read" } });
+    assert.equal(tampered.status, 409, "the armed seat is ECHO, so an WISE approval is refused");
     await tampered.arrayBuffer();
     assert.equal((await echoGate.getState()).armed, true, "a refused consent does not spend the window");
     page = await (await browser(`/authorize?${authorizeQuery(e.challenge, "e-ok2", { clientId: echoClient, redirect: LOOP })}`)).text();
@@ -1080,28 +1080,28 @@ try {
     assert.equal(t.status, 200, JSON.stringify(Object.keys(t.body)));
     assert.ok(t.body.refresh_token.startsWith("ECHO:"), "the grant belongs to ECHO");
 
-    // INSTINCT armed, consent opened, then ECHO armed too:  the approval is re-resolved and refused.
-    assert.equal((await adminAction("arm", { seat: "INSTINCT" })).status, 303);
+    // WISE armed, consent opened, then ECHO armed too:  the approval is re-resolved and refused.
+    assert.equal((await adminAction("arm", { seat: "WISE" })).status, 303);
     const i = pkce();
     page = await (await browser(`/authorize?${authorizeQuery(i.challenge, "i-1", { clientId: instinctClient, redirect: LOOP })}`)).text();
-    assert.match(page, /as INSTINCT\?/);
+    assert.match(page, /as WISE\?/);
     handle = page.match(/name="handle" value="([^"]+)"/)[1];
     await echoGate.arm({ by: "test" });
-    res = await browser("/authorize", { method: "POST", form: { handle, seat: "INSTINCT", decision: "approve", scope: "zulip:read" } });
+    res = await browser("/authorize", { method: "POST", form: { handle, seat: "WISE", decision: "approve", scope: "zulip:read" } });
     assert.equal(res.status, 409);
     await res.arrayBuffer();
     assert.equal((await instinctGate.getState()).armed, true, "nothing was spent");
     await echoGate.disarm({ by: "test", reason: "test" });
 
-    // Only INSTINCT armed:  INSTINCT's grant.
+    // Only WISE armed:  WISE's grant.
     page = await (await browser(`/authorize?${authorizeQuery(i.challenge, "i-2", { clientId: instinctClient, redirect: LOOP })}`)).text();
     handle = page.match(/name="handle" value="([^"]+)"/)[1];
-    res = await browser("/authorize", { method: "POST", form: { handle, seat: "INSTINCT", decision: "approve", scope: "zulip:read" } });
+    res = await browser("/authorize", { method: "POST", form: { handle, seat: "WISE", decision: "approve", scope: "zulip:read" } });
     assert.equal(res.status, 302, await res.clone().text());
     loc = new URL(res.headers.get("location"));
     t = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: i.verifier, redirect_uri: LOOP, client_id: instinctClient, resource: RESOURCE });
     assert.equal(t.status, 200, JSON.stringify(Object.keys(t.body)));
-    assert.ok(t.body.refresh_token.startsWith("INSTINCT:"), "the grant belongs to INSTINCT");
+    assert.ok(t.body.refresh_token.startsWith("WISE:"), "the grant belongs to WISE");
     // Another port on the loopback host is not the allowlisted callback.
     res = await browser(`/authorize?${authorizeQuery(pkce().challenge, "i-port", { clientId: instinctClient, redirect: "http://127.0.0.1:9999/callback" })}`);
     assert.equal(res.status, 400);

@@ -140,14 +140,14 @@ test("consent for a loopback callback says the tokens go to a program on this co
 test("admin page offers a manual client per hosted seat and shows each client's seat", async () => {
   const html = await adminPage({
     ...adminFacts,
-    manualSeats: [{ seat: "ECHO", label: "Echo", redirectsConfigured: true, shared: true }, { seat: "INSTINCT", label: "Instinct", redirectsConfigured: true, shared: true }],
+    manualSeats: [{ seat: "ECHO", label: "Echo", redirectsConfigured: true, shared: true }, { seat: "WISE", label: "Wise", redirectsConfigured: true, shared: true }],
     clients: [
       { clientId: "AbCdEf1234567890", clientName: "Echo (manual form, ECHO)", seat: "ECHO", redirectUris: ["http://127.0.0.1:8737/callback"] },
       { clientId: "QqQqQqQq12345678", clientName: "Old", seat: "", redirectUris: [] },
     ],
   }).text();
   assert.match(html, /Create Manual Client For ECHO/);
-  assert.match(html, /Create Manual Client For INSTINCT/);
+  assert.match(html, /Create Manual Client For WISE/);
   assert.match(html, /name="action" value="create_manual_client"><input type="hidden" name="seat" value="ECHO">/);
   assert.match(html, /shared with another seat of the same app/);
   assert.equal((html.match(/Sync Redirects/g) ?? []).length, 1, "an untagged client gets no sync button");

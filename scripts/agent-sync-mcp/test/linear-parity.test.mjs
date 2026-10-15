@@ -135,7 +135,7 @@ test("a seat's accepted app names are its own, and no two seats share one", () =
 });
 
 test("a seat tag spelling resolves to one seat, the way the CLI resolves it", () => {
-  assert.equal(seatTagForSeat("WISE"), "INSTINCT");
+  assert.equal(seatTagForSeat("WISE"), "WISE");
   assert.equal(seatTagForSeat("grok-web"), "GROK-WEB");
 });
 

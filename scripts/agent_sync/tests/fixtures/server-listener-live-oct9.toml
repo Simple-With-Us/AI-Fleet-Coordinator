@@ -42,7 +42,7 @@ wake = "http"
 routine = { url_env = "GB_COMPILER_ROUTINE_URL", key_env = "GB_COMPILER_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 
-# Cloud seats (MA, GROK-WEB, INSTINCT and ECHO):  enabled with wake = "inbox".  JET is the same, but its
+# Cloud seats (MA, GROK-WEB, WISE and ECHO):  enabled with wake = "inbox".  JET is the same, but its
 # wake is "http" (see its block).  Each holds a queue,
 # so its @-mentions and DMs are captured at zero tokens under /data/<SEAT>/, and its key is checked at
 # connect (a member or moderator bot, and the key's own bot must be the seat).  They have no wake
@@ -73,9 +73,9 @@ instance = "server"
 creds = "env"                     # ZULIP_GROK_WEB_EMAIL, ZULIP_GROK_WEB_API_KEY (grok-web-bot@)
 wake = "inbox"
 
-[seat.INSTINCT]
+[seat.WISE]
 instance = "server"
-creds = "env"                     # ZULIP_INSTINCT_EMAIL, ZULIP_INSTINCT_API_KEY (instinct-owl-bot@)
+creds = "env"                     # ZULIP_WISE_EMAIL, ZULIP_WISE_API_KEY (Wise bot)
 wake = "inbox"
 
 # Echo is Instinct's partner bot and may be retired when the two merge.  Kept minimal on purpose.

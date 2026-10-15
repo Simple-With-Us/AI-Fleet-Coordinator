@@ -267,7 +267,7 @@ class Seat:
     retired: bool = False
     notes_name: str = ""
     # Registry `aliasPattern`: a case-insensitive ASCII regex, matched against a trimmed AGENT_SEAT, for every
-    # spelling that means this seat (GROK takes any spelling of GROK followed by BUILD, owner 2026-10-10).
+    # spelling that means this seat (GROK-BUILD and named seat aliases).
     # An older registry has none, and then only the exact tag matches.
     alias_pattern: str = ""
 
@@ -493,7 +493,7 @@ def load_registry(path: str | os.PathLike[str] | None = None, *, include_extras:
 # still names the seats.  The registry adds to this set.
 CANONICAL_SEATS: tuple[str, ...] = (
     "claude", "monet", "codex", "antigravity", "cursor", "grok", "grok-build", "deepseek",
-    "harness", "renoir", "fx", "kimi", "minimax", "muse-assist", "muse-code",
+    "harness", "renoir", "fx", "kimi", "minimax", "muse-assist", "muse-code", "wise",
 )
 
 # Short forms in wide use on disk.  `gb` and `grok-bot` map to `cursor` because the registry gives
@@ -503,6 +503,12 @@ SEAT_ALIASES: dict[str, str] = {
     "mm": "minimax",
     "ma": "muse-assist",
     "muse": "muse-assist",
+    "muse-assist": "muse-assist",
+    "rob": "muse-assist",
+    "rob-muse": "muse-assist",
+    "instinct": "wise",
+    "wise-instinct": "wise",
+    "echo-instinct": "wise",
     "mc": "muse-code",
     "dsh": "deepseek",
     "gb": "cursor",

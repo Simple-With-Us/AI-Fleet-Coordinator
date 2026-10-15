@@ -114,7 +114,7 @@ SEAT_PREFIX = "seat:"
 # no credentials here; adding a name costs nothing and keeps them in the set.
 SEAT_ROSTER = {
     "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "GROK-WEB", "CLUTCH", "FX", "MM", "MA", "MC",
-    "GROK-BOT", "INSTINCT",
+    "GROK-BOT", "WISE",
     "GB-HOUSEKEEPER", "GB-MONITOR", "GB-COMPILER", "GB-PLUMBER",
     "GB-ENGINEER", "GB-FIXER", "GB-PUBLISHER",
     "GB-DIRECTOR", "GB-DESIGNER", "GB-DEPLOYER", "GB-ORACLE", "GB-TRADER",
@@ -127,11 +127,11 @@ SEAT_ROSTER = {
 BF_ROLES = {"DIRECTOR", "COMPILER", "FIXER", "DESIGNER", "PLUMBER", "PUBLISHER",
             "DEPLOYER", "MONITOR", "HOUSEKEEPER", "ORACLE", "BUILDER", "PRODUCER"}
 SEAT_ALIASES = {"MINIMAX": "MM", "MUSE": "MA", "GROK-BUILD": "GROK", "ANTIGRAVITY": "AG",
-                "MUSE-ASSIST": "MA", "MUSE-CODE": "MC"}
+                "MUSE-ASSIST": "MA", "ROB": "MA", "ROB-MUSE": "MA", "MUSE-CODE": "MC",
+                "INSTINCT": "WISE", "WISE-INSTINCT": "WISE", "ECHO-INSTINCT": "WISE"}
 CLUTCH_LINEAGE = {"DSH", "DEEPSEEK", "HARNESS"}
-# Spellings of a seat tag that AGENT_SEAT and --by resolve to the tag the fleet signs with (owner 2026-10-11:  the
-# Instinct seat is shown as Wise (Instinct)).  Retagging to WISE later is a one-line swap here.
-SEAT_TAG_ALIASES = {"WISE": "INSTINCT"}
+# Older internal seat tags accepted for compatibility; output uses the canonical key.
+SEAT_TAG_ALIASES = {"INSTINCT": "WISE"}
 # One Linear app per seat (owner 2026-10-10), named for the seat bot's display
 # name.  A seat's app is used when its credentials exist (<SEAT>.env beside
 # Fleet.env, or LINEAR_<SEAT>_CLIENT_ID and _SECRET in the environment, with
@@ -142,7 +142,7 @@ SEAT_APP_NAMES = {
     "CLAUDE": "Claude", "CODEX": "Codex", "CURSOR": "Cursor", "AG": "AG", "GROK": "Grok",
     "GROK-WEB": "Grok Web", "CLUTCH": "Clutch", "MM": "MM", "FX": "Fx", "MC": "Muse Code",
     "MA": "Muse Assist", "JET": "Jet", "OPENCODE": "OpenCode",
-    "ECHO": "Echo (Instinct)", "INSTINCT": "Wise (Instinct)",
+    "ECHO": "Echo", "WISE": "Wise",
     # BotFleet seats in SEAT_ROSTER.  AGENT-SYNC.md (owner 2026-10-09) names the ten role seats
     # plus BF-DIRECTOR.  BF-PRODUCER is on that same roster (BF_ROLES turns a bare PRODUCER into
     # it), so it has an app too:  a write from that seat must not sign as the shared Fleet app.
@@ -163,13 +163,13 @@ SEAT_APP_ALIASES = {
     "MM": ("MiniMax", "MiniMax (MM)"),
     "FX": ("FX.sh",),
     "MC": ("Muse Code (MC)",),
-    "MA": ("Muse Assist (MA)",),
+    "MA": ("Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"),
     "JET": ("Jet (OpenAI dot)",),
     "GROK": ("Grok (Build)", "Grok Build"),
     "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
     "OPENCODE": ("OC",),
-    "ECHO": ("Echo",),
-    "INSTINCT": ("Wise",),
+    "ECHO": (),
+    "WISE": ("Wise (Instinct)", "Wise-Instinct", "Echo-Instinct"),
 }
 
 
@@ -309,7 +309,10 @@ def norm_seat(s: str | None) -> str:
     """The seat tag a value stands for, upper-cased.  Every GROK-BUILD spelling is GROK, so AGENT_SEAT,
     --by and --mine all resolve to the one seat that signs GROK."""
     v = (s or "").strip().strip("@[]<>`'\" ")
-    return "GROK" if GROK_ALIAS_RE.match(v) else SEAT_TAG_ALIASES.get(v.upper(), v.upper())
+    upper = v.upper()
+    if GROK_ALIAS_RE.match(v):
+        return "GROK"
+    return SEAT_ALIASES.get(upper, SEAT_TAG_ALIASES.get(upper, upper))
 
 
 def hyphenate(h32: str) -> str:

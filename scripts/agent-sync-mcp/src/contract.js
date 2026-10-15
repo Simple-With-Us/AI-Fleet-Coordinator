@@ -381,7 +381,7 @@ const EMAIL_TAG_OVERRIDES = Object.freeze({
   "muse-assist": "MA",
   "openai-dot": "JET",
   "instinct-bat": "ECHO",
-  "instinct-owl": "INSTINCT",
+  "instinct-owl": "WISE",
   "grok-build": "GROK",
 });
 

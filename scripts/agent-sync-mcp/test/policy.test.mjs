@@ -346,10 +346,10 @@ test("refusal log values are truncated and de-controlled", () => {
   assert.equal(logSafe(undefined), "");
 });
 
-// ---------------------------------------------------------------- loopback callback (ECHO and INSTINCT)
+// ---------------------------------------------------------------- loopback callback (ECHO and WISE)
 
 const LOOP = "http://127.0.0.1:8737/callback";
-const instinctConfig = loadConfig(testEnv({ HOSTED_SEATS: "JET,GROK-WEB,ECHO,INSTINCT" }));
+const instinctConfig = loadConfig(testEnv({ HOSTED_SEATS: "JET,GROK-WEB,ECHO,WISE" }));
 
 test("loopback redirect:  only http://127.0.0.1 with an explicit port, a path, canonical", () => {
   assert.equal(redirectUriProblem(LOOP), "");
@@ -382,12 +382,12 @@ test("loopback redirect:  only http://127.0.0.1 with an explicit port, a path, c
   assert.equal(strictRedirectProblem(LOOP), "not https", "CIMD ids still use the https-only parse");
 });
 
-test("the shared loopback redirect lists ECHO and INSTINCT, and the pre-gate leaves the choice to arming", () => {
-  assert.deepEqual([...redirectSeats(instinctConfig, LOOP)], ["ECHO", "INSTINCT"]);
+test("the shared loopback redirect lists ECHO and WISE, and the pre-gate leaves the choice to arming", () => {
+  assert.deepEqual([...redirectSeats(instinctConfig, LOOP)], ["ECHO", "WISE"]);
   const got = preGateAuthorize(authorizeParams({ client_id: "AbCdEf1234567890", redirect_uri: LOOP }), instinctConfig);
   assert.equal(got.ok, true);
   assert.equal(got.seat, "", "no single seat until arming picks one");
-  assert.deepEqual(got.seats, ["ECHO", "INSTINCT"]);
+  assert.deepEqual(got.seats, ["ECHO", "WISE"]);
   assert.equal(got.cimdSeat, "");
   // The library lets any port through on a loopback host, so this exact-string
   // pre-gate is the only port pin.
@@ -402,10 +402,10 @@ test("the shared loopback redirect lists ECHO and INSTINCT, and the pre-gate lea
 });
 
 test("arming picks the seat for a shared redirect:  exactly one armed, else refused", () => {
-  const seats = ["ECHO", "INSTINCT"];
+  const seats = ["ECHO", "WISE"];
   assert.deepEqual(resolveArmedSeat(seats, new Set(["ECHO"])), { ok: true, seat: "ECHO" });
-  assert.deepEqual(resolveArmedSeat(seats, new Set(["INSTINCT"])), { ok: true, seat: "INSTINCT" });
-  assert.deepEqual(resolveArmedSeat(seats, new Set(["ECHO", "INSTINCT"])), { ok: false, reason: "ambiguous_armed_seats" });
+  assert.deepEqual(resolveArmedSeat(seats, new Set(["WISE"])), { ok: true, seat: "WISE" });
+  assert.deepEqual(resolveArmedSeat(seats, new Set(["ECHO", "WISE"])), { ok: false, reason: "ambiguous_armed_seats" });
   assert.deepEqual(resolveArmedSeat(seats, new Set()), { ok: false, reason: "not_armed" });
   assert.deepEqual(resolveArmedSeat(seats, new Set(["JET"])), { ok: false, reason: "not_armed" }, "an unrelated armed seat does not count");
   assert.deepEqual(resolveArmedSeat(["JET"], new Set(["JET", "ECHO"])), { ok: true, seat: "JET" });
@@ -419,29 +419,29 @@ test("a manual client's seat comes only from its /admin name tag on a hand-shape
   assert.equal(manualClientSeat({ clientId: "https://evil.example/c.json", clientName: "x (manual form, ECHO)" }), "", "a CIMD document names itself, so it never has a tag");
 });
 
-test("client binding:  a client bound to ECHO cannot mint an INSTINCT grant", () => {
+test("client binding:  a client bound to ECHO cannot mint an WISE grant", () => {
   const echoClient = { clientId: "AbCdEf1234567890", clientName: "Echo (manual form, ECHO)" };
-  const instinctClient = { clientId: "ZyXwVu9876543210", clientName: "Instinct (manual form, INSTINCT)" };
+  const instinctClient = { clientId: "ZyXwVu9876543210", clientName: "Instinct (manual form, WISE)" };
   const untagged = { clientId: "QqQqQqQq12345678", clientName: "Old client" };
   assert.equal(clientBoundToSeat(echoClient, "ECHO", LOOP, instinctConfig), true);
-  assert.equal(clientBoundToSeat(echoClient, "INSTINCT", LOOP, instinctConfig), false);
-  assert.equal(clientBoundToSeat(instinctClient, "INSTINCT", LOOP, instinctConfig), true);
+  assert.equal(clientBoundToSeat(echoClient, "WISE", LOOP, instinctConfig), false);
+  assert.equal(clientBoundToSeat(instinctClient, "WISE", LOOP, instinctConfig), true);
   assert.equal(clientBoundToSeat(instinctClient, "ECHO", LOOP, instinctConfig), false);
   assert.equal(clientBoundToSeat(untagged, "ECHO", LOOP, instinctConfig), false, "an untagged client on a shared redirect is refused");
   assert.equal(clientBoundToSeat(untagged, "JET", CHATGPT_REDIRECT, instinctConfig), true, "an untagged client on a one-seat redirect still works");
   assert.equal(clientBoundToSeat({ clientId: CHATGPT_CLIENT, clientName: "ChatGPT (manual form, ECHO)" }, "ECHO", LOOP, instinctConfig), false, "a CIMD id binds by the allowlist only");
   assert.equal(clientBoundToSeat({ clientId: CHATGPT_CLIENT }, "JET", CHATGPT_REDIRECT, instinctConfig), true);
-  // A CIMD id listed under ECHO only is refused for INSTINCT.
+  // A CIMD id listed under ECHO only is refused for WISE.
   const seats = { ...testEnv().SEATS, ECHO: { redirect_uris: [LOOP], cimd_client_ids: ["https://instinct.com/oauth/echo.json"] } };
-  const cfg = loadConfig(testEnv({ HOSTED_SEATS: "ECHO,INSTINCT", SEATS: seats }));
+  const cfg = loadConfig(testEnv({ HOSTED_SEATS: "ECHO,WISE", SEATS: seats }));
   const echoCimd = { clientId: "https://instinct.com/oauth/echo.json" };
   assert.equal(clientBoundToSeat(echoCimd, "ECHO", LOOP, cfg), true);
-  assert.equal(clientBoundToSeat(echoCimd, "INSTINCT", LOOP, cfg), false);
+  assert.equal(clientBoundToSeat(echoCimd, "WISE", LOOP, cfg), false);
   const pre = preGateAuthorize(authorizeParams({ client_id: echoCimd.clientId, redirect_uri: LOOP }), cfg);
   assert.equal(pre.ok, true);
   assert.equal(pre.cimdSeat, "ECHO");
   const parsed = { clientId: echoCimd.clientId, redirectUri: LOOP, codeChallenge: CHALLENGE, codeChallengeMethod: "S256", resource: RESOURCE, scope: ["zulip:read"] };
   assert.equal(postGateAuthRequest(parsed, cfg, "ECHO"), true);
-  assert.equal(postGateAuthRequest(parsed, cfg, "INSTINCT"), false);
-  assert.deepEqual(hostedRedirectSeats(parsed, cfg), ["ECHO", "INSTINCT"]);
+  assert.equal(postGateAuthRequest(parsed, cfg, "WISE"), false);
+  assert.deepEqual(hostedRedirectSeats(parsed, cfg), ["ECHO", "WISE"]);
 });

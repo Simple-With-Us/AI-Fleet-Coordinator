@@ -413,23 +413,23 @@
       "notesName": "Echo",
       "worktreeSuffix": "echo",
       "branchPrefixes": [
-        "echo/",
-        "instinct/"
+        "echo/"
       ],
       "zulipBotEmail": "instinct-bat-bot@simplewithus.zulipchat.com",
       "zulipFileCode": "Echo",
-      "notes": "Echo, shown as Echo (Instinct):  one of the two bots of the Instinct app (instinct.com), which runs on its own computer and reaches the fleet through the hosted agent-sync-mcp bridge, not through a Mac lane.  Held by the server listener (docs/protocols/agent-sync-partition.toml).  Does PR troubleshooting and release work;  its merged Congress.Trade PRs so far were pushed on instinct/ branches under the owner's GitHub login, so GitHub cannot tell the two bots apart.  echo/ is its own prefix from now on.  Has its own Linear app, Echo (Instinct), key variables LINEAR_ECHO_CLIENT_ID and LINEAR_ECHO_CLIENT_SECRET.  Registered Sun, Oct 11, 2026 (owner: add the rows)."
+      "notes": "Echo is one of the two bots of the Instinct app (instinct.com), which runs on its own computer and reaches the fleet through the hosted agent-sync-mcp bridge, not through a Mac lane.  Held by the server listener (docs/protocols/agent-sync-partition.toml).  Does PR troubleshooting and release work;  its historical instinct/ branches are retained under the WISE seat, while new work uses echo/.  Has its own Linear app, Echo, key variables LINEAR_ECHO_CLIENT_ID and LINEAR_ECHO_CLIENT_SECRET.  Registered Sun, Oct 11, 2026 (owner: add the rows)."
     },
     {
-      "tag": "INSTINCT",
-      "notesName": "Instinct",
-      "worktreeSuffix": "instinct",
+      "tag": "WISE",
+      "notesName": "Wise",
+      "worktreeSuffix": "wise",
       "branchPrefixes": [
+        "wise/",
         "instinct/"
       ],
       "zulipBotEmail": "instinct-owl-bot@simplewithus.zulipchat.com",
-      "zulipFileCode": "Instinct",
-      "notes": "The other bot of the Instinct app, shown as Wise (Instinct) since Sun, Oct 11, 2026 (the owner's name for what used to be called the Instinct version).  The seat tag stays INSTINCT, and WISE is accepted as another spelling of it in the board CLI.  Held by the server listener (docs/protocols/agent-sync-partition.toml), reached through the hosted agent-sync-mcp bridge, and makes no Mac lanes.  Has its own Linear app, Wise (Instinct), key variables LINEAR_WISE_CLIENT_ID and LINEAR_WISE_CLIENT_SECRET.  A launcher's AGENT_LAUNCH_SEAT wins over any default."
+      "zulipFileCode": "Wise",
+      "notes": "Wise is the canonical seat key for this bot; Instinct is a legacy name and Wise-Instinct and Echo-Instinct are accepted aliases.  Held by the server listener (docs/protocols/agent-sync-partition.toml), reached through the hosted agent-sync-mcp bridge, and makes no Mac lanes.  Its Linear app uses LINEAR_WISE_CLIENT_ID and LINEAR_WISE_CLIENT_SECRET.  A launcher's AGENT_LAUNCH_SEAT wins over any default."
     }
   ],
   "seatApps": {
@@ -449,7 +449,7 @@
       "OPENCODE": "opencode",
       "GROK-BOT": "grok-bot",
       "ECHO": "instinct",
-      "INSTINCT": "instinct"
+      "WISE": "instinct"
     },
     "extraSeats": {
       "JET": "chatgpt"

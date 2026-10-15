@@ -52,6 +52,19 @@ The existing server listener loads `ZULIP_OUTGOING_<CODE>_TOKEN` from prod `/zul
 
 The on-demand `scripts/zulip_migrate_outgoing.py publish` helper readback-verifies the replacement email, API key, and service token in Infisical before atomically installing the local zuliprc.  Refresh every additional credential consumer before retiring the old identity.  See [the migration runbook](docs/protocols/zulip-outgoing-migration.md).
 
+## Hosted Echo and Wise Zulip identities
+
+The hosted bridge and server listener use the canonical seat names ECHO and WISE.  Their Zulip RC files are `Echo-zuliprc` and `Wise-zuliprc`; the latter replaces the former `Instinct-zuliprc` filename.  The bot email may retain its existing Zulip local part while the seat key is WISE.
+
+| Key | Kind | Worker binding / provisioning |
+|---|---|---|
+| `ZULIP_ECHO_EMAIL` | env config | Echo bot email; Worker var `ZULIP_EMAIL_ECHO` |
+| `ZULIP_ECHO_API_KEY` | secret | Echo bot key; Worker secret `ZULIP_KEY_ECHO` |
+| `ZULIP_WISE_EMAIL` | env config | Wise bot email; Worker var `ZULIP_EMAIL_WISE` |
+| `ZULIP_WISE_API_KEY` | secret | Wise bot key; Worker secret `ZULIP_KEY_WISE` |
+
+Store current values in prod `/zulip`, and verify each bot identity before provisioning.  Never copy a key into source or logs.
+
 ## Runtime contract
 
 1. **Load at startup.**  `main()` calls `infisical_settings.configure()` + `init_settings()` before binding: universal-auth login → access token → `GET /api/v3/secrets/raw`.  A missing required key fails fast with a `SettingsError` naming the key and pointing here.  Backend keys (`QDRANT_*`, `TEI_*`) are then mirrored into `os.environ` so the `fleet_rag` library (which reads env) keeps working unchanged.  Migration bridge: any managed key missing from Infisical is backfilled from the process environment, and the backfilled key names are logged, so the service keeps its old behavior while the admin fills Infisical in.

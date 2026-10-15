@@ -35,7 +35,7 @@
     "MC": "Muse Code",
     "OPENCODE": "OpenCode",
     "JET": "ChatGPT (OpenAI dot)",
-    "INSTINCT": "Instinct (hosted)",
+    "WISE": "Wise (hosted)",
     "ECHO": "Instinct (hosted)"
   },
   "hostedSeats": {
@@ -44,15 +44,15 @@
       "zulipBotEmail": "openai-dot-bot@simplewithus.zulipchat.com",
       "notes": "Its own identity, never a Codex default.  Wake-eligible (AFC #387) and bridged through the hosted MCP Worker (AFC #394, #403).  Its wake POSTs to https://agent-sync.jays.services/internal/wake/JET, which sends an OpenAI MCP Events zulip.mention to every subscribed ChatGPT chat (scripts/agent_sync/server/listener.toml)."
     },
-    "INSTINCT": {
-      "notesName": "Instinct",
+    "WISE": {
+      "notesName": "Wise",
       "zulipBotEmail": "instinct-owl-bot@simplewithus.zulipchat.com",
-      "notes": "Hosted seat (AFC #426, #427).  Echo is its partner bot; the two may merge."
+      "notes": "Hosted seat (AFC #426, #427).  Uses the canonical WISE seat key; Instinct is a legacy alias."
     },
     "ECHO": {
       "notesName": "Echo",
       "zulipBotEmail": "instinct-bat-bot@simplewithus.zulipchat.com",
-      "notes": "Hosted seat, Instinct's partner bot (AFC #426, #427).  It may be retired when the two merge."
+      "notes": "Hosted seat with its own ECHO identity and Zulip bot (AFC #426, #427)."
     }
   },
   "macWake": {

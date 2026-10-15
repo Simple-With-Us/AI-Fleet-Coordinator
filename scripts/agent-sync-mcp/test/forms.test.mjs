@@ -60,7 +60,7 @@ test("admin form:  every action the admin page posts is accepted, anything else 
   assert.equal(admin([["csrf", CSRF], ["action", "arm"], ["seat", "JET"]]).ok, true);
   assert.equal(admin([["csrf", CSRF], ["action", "sync_manual_client"], ["client_id", "AbCdEf1234567890"]]).ok, true);
   assert.equal(admin([["csrf", CSRF], ["action", "create_manual_client"], ["seat", "ECHO"]]).ok, true);
-  assert.equal(admin([["csrf", CSRF], ["action", "create_manual_client"], ["seat", "INSTINCT"]]).ok, true);
+  assert.equal(admin([["csrf", CSRF], ["action", "create_manual_client"], ["seat", "WISE"]]).ok, true);
   assert.equal(admin([["csrf", CSRF], ["action", "create_manual_client"], ["seat", "CLAUDE"]]).ok, true);
   const bad = {
     "bad csrf shape": [["csrf", "short"], ["action", "arm"]],

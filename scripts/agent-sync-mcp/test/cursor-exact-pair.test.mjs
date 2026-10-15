@@ -21,7 +21,7 @@ test('exact Cursor pair passes every client/consent gate only as CURSOR, and sti
   assert.equal(pre().cimdSeat, 'CURSOR');
   assert.equal(postGateAuthRequest(request, cfg, 'CURSOR'), true);
   assert.equal(clientBoundToSeat({ clientId: CLIENT }, 'CURSOR', REDIRECT, cfg), true);
-  for (const seat of ['JET', 'GROK-WEB', 'ECHO', 'INSTINCT', 'CLAUDE']) {
+  for (const seat of ['JET', 'GROK-WEB', 'ECHO', 'WISE', 'CLAUDE']) {
     assert.equal(postGateAuthRequest(request, cfg, seat), false);
     assert.equal(clientBoundToSeat({ clientId: CLIENT }, seat, REDIRECT, cfg), false);
   }

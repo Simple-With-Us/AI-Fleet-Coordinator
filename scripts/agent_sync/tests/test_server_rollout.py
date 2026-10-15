@@ -25,7 +25,7 @@ SERVER_DIR = REPO / "scripts" / "agent_sync" / "server"
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "server-listener-live-oct9.toml"
 TARGETS = ["JET"] + ["GB-" + r for r in ("DIRECTOR", "FIXER", "DESIGNER", "COMPILER", "HOUSEKEEPER", "PUBLISHER",
                                           "DEPLOYER", "MONITOR", "PLUMBER", "ORACLE", "TRADER", "ENGINEER")]
-UNTOUCHED = ["MA", "GROK-WEB", "INSTINCT", "ECHO"]
+UNTOUCHED = ["MA", "GROK-WEB", "WISE", "ECHO"]
 
 
 def _load(name: str):

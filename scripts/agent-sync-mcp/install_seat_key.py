@@ -22,7 +22,7 @@ an administrator or owner.  So an admin key (openai-dot-bot until Fri, Oct 9) is
 
 `--zuliprc PATH` reads the email and key from a seat's zuliprc file instead of
 Infisical (for a seat whose key is not in Infisical yet, like ECHO and
-INSTINCT).  The file must be mode 600 and its `site` must be this realm.  No
+    WISE).  The file must be mode 600 and its `site` must be this realm.  No
 field of it is ever printed.
 
 Standard library only.  Python 3.11+.  Run from scripts/agent-sync-mcp/.
@@ -60,11 +60,11 @@ SEATS = {
     "JET": ("ZULIP_JET", "ZULIP_KEY_JET", "ZULIP_EMAIL_JET"),
     "GROK-WEB": ("ZULIP_GROK_WEB", "ZULIP_KEY_GROK_WEB", "ZULIP_EMAIL_GROK_WEB"),
     "ECHO": ("ZULIP_ECHO", "ZULIP_KEY_ECHO", "ZULIP_EMAIL_ECHO"),
-    "INSTINCT": ("ZULIP_INSTINCT", "ZULIP_KEY_INSTINCT", "ZULIP_EMAIL_INSTINCT"),
+    "WISE": ("ZULIP_WISE", "ZULIP_KEY_WISE", "ZULIP_EMAIL_WISE"),
 }
 # Bot email local parts whose seat tag is not the upper-cased local part
 # (cli.py EMAIL_TAG_OVERRIDES, src/contract.js EMAIL_TAG_OVERRIDES).
-TAG_OVERRIDES = {"openai-dot": "JET", "instinct-bat": "ECHO", "instinct-owl": "INSTINCT"}
+TAG_OVERRIDES = {"openai-dot": "JET", "instinct-bat": "ECHO", "instinct-owl": "WISE"}
 
 
 def fail(message: str) -> "NoReturn":  # type: ignore[name-defined]

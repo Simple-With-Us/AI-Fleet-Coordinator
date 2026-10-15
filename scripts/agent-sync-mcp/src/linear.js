@@ -1,5 +1,5 @@
 // Linear tools for hosted seats, so a seat with no shell (GROK-WEB first, then
-// ECHO and INSTINCT) works the board as its own bot app and never as Jay.
+// ECHO and WISE) works the board as its own bot app and never as Jay.
 // Every rule here is ported from scripts/linear-board/board, which stays the
 // reference implementation:  the scope string, the team routing, the state
 // mapping, the claim label, the flat label whitelist and the one-mint-a-day
@@ -45,12 +45,13 @@ export const LINEAR_SECRETS = Object.freeze({
   JET: Object.freeze({ clientId: "LINEAR_JET_CLIENT_ID", clientSecret: "LINEAR_JET_CLIENT_SECRET" }),
   "GROK-WEB": Object.freeze({ clientId: "LINEAR_GROK_WEB_CLIENT_ID", clientSecret: "LINEAR_GROK_WEB_CLIENT_SECRET" }),
   ECHO: Object.freeze({ clientId: "LINEAR_ECHO_CLIENT_ID", clientSecret: "LINEAR_ECHO_CLIENT_SECRET" }),
-  INSTINCT: Object.freeze({ clientId: "LINEAR_INSTINCT_CLIENT_ID", clientSecret: "LINEAR_INSTINCT_CLIENT_SECRET" }),
+  WISE: Object.freeze({ clientId: "LINEAR_WISE_CLIENT_ID", clientSecret: "LINEAR_WISE_CLIENT_SECRET" }),
 });
 
 /** The Worker secret names for a seat, or null when the seat has no Linear app. */
 export function linearSecretNames(seat) {
-  return Object.hasOwn(LINEAR_SECRETS, seat) ? LINEAR_SECRETS[seat] : null;
+  const canonical = seatTagForSeat(seat);
+  return Object.hasOwn(LINEAR_SECRETS, canonical) ? LINEAR_SECRETS[canonical] : null;
 }
 
 // Seats whose Linear tools are live.  GROK-WEB first (owner 2026-10-11):  it is
@@ -144,17 +145,19 @@ export const SEAT_APP_NAMES = Object.freeze({
   JET: "Jet",
   "GROK-WEB": "Grok Web",
   ECHO: "Echo (Instinct)",
-  INSTINCT: "Wise (Instinct)",
+  WISE: "Wise",
+  MA: "Muse Assist",
 });
 export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),
   "GROK-WEB": Object.freeze(["Grok (Web/iOS)", "Grok Web/iOS"]),
   ECHO: Object.freeze(["Echo"]),
-  INSTINCT: Object.freeze(["Wise"]),
+  WISE: Object.freeze(["Wise (Instinct)", "Wise-Instinct", "Echo-Instinct"]),
+  MA: Object.freeze(["Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"]),
 });
-export const SEAT_TAG_ALIASES = Object.freeze({ WISE: "INSTINCT" });
+export const SEAT_TAG_ALIASES = Object.freeze({ INSTINCT: "WISE", "WISE-INSTINCT": "WISE", "ECHO-INSTINCT": "WISE", "MUSE-ASSIST": "MA", ROB: "MA", "ROB-MUSE": "MA" });
 
-/** The seat tag a spelling resolves to, so WISE and INSTINCT are one seat. */
+/** The seat tag a spelling resolves to, including accepted human aliases. */
 export function seatTagForSeat(seat) {
   const tag = String(seat ?? "").trim().toUpperCase();
   return SEAT_TAG_ALIASES[tag] ?? tag;
@@ -162,14 +165,16 @@ export function seatTagForSeat(seat) {
 
 /** The display names a seat's Linear app may carry; empty for a seat with no app. */
 export function seatAppNames(seat) {
-  const app = SEAT_APP_NAMES[seat];
-  return app ? Object.freeze([app, ...(SEAT_APP_ALIASES[seat] ?? [])]) : Object.freeze([]);
+  const canonical = seatTagForSeat(seat);
+  const app = SEAT_APP_NAMES[canonical];
+  return app ? Object.freeze([app, ...(SEAT_APP_ALIASES[canonical] ?? [])]) : Object.freeze([]);
 }
 
 /** Whether a viewer name is one of the accepted names or the seat tag, ignoring case. */
 export function appNameOk(name, seat) {
-  const accepted = new Set(seatAppNames(seat).map((n) => n.toLowerCase()));
-  accepted.add(seatTagForSeat(seat).toLowerCase());
+  const canonical = seatTagForSeat(seat);
+  const accepted = new Set(seatAppNames(canonical).map((n) => n.toLowerCase()));
+  accepted.add(canonical.toLowerCase());
   return typeof name === "string" && accepted.has(name.toLowerCase());
 }
 

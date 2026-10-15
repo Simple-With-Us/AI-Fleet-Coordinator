@@ -70,17 +70,18 @@ The key has three parts:
 - `bySeat`:  one app for every **live** `seats` row.  `check-fleet-registry.py` fails
   CI for a live seat without one, and for an entry that is not a live seat.
 - `extraSeats`:  real seats that have no `seats` row because they are hosted or
-  owner-run (`JET` is `chatgpt`, `ECHO` and `INSTINCT` are one app, `instinct`).
+  owner-run (`JET` is `chatgpt`).  ECHO and WISE have live rows and share the
+  `instinct` app.
 - `patterns`:  families made of a role.  `BF-*` is `botfleet` (bot `bf-<role>-bot@`)
   and `GB-*` is `grok-bot` (bot `<role>-grok-bot@`).  The patterns accept any
   well-formed role, so they cannot catch a misspelled one.
 
 Two seats on one model are two apps when they are two products (`GROK` the
 terminal and `GROK-WEB`), and two seats in one product are one app (`ECHO` and
-`INSTINCT`).  The script never guesses the app from the tag;  it asks, or takes
+`WISE`).  The script never guesses the app from the tag;  it asks, or takes
 `--app`.
 
-**Do not put `BF-*`, `GB-*`, `JET`, `ECHO` or `INSTINCT` in `seats`.**  A dozen tools
+**Do not put `BF-*`, `GB-*` or `JET` in `seats`.**  A dozen tools
 read `seats` (lanes, skill copies, the listener, the board scripts) and a row there
 would make each of them.  **Do not name a field `app` on a `seats` row**:  it clashes
 with the top-level `apps` (the acronyms) and `--app`.

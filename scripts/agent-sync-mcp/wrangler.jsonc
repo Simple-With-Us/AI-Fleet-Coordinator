@@ -5,7 +5,7 @@
   // auto-merge to main, so a merge must not be a deploy (spec 3.2).
   //
   // Secrets (never in this file):  ZULIP_KEY_GROK_WEB, ZULIP_KEY_JET,
-  // ZULIP_KEY_ECHO, ZULIP_KEY_INSTINCT, ZULIP_KEY_CURSOR and
+  // ZULIP_KEY_ECHO, ZULIP_KEY_WISE, ZULIP_KEY_CURSOR and
   // ZULIP_CLAUDE_API_KEY (Worker provisioning unconfirmed), from Infisical or the
   // seat's zuliprc, and the three recall secrets
   // RECALL_API_TOKEN, RECALL_ACCESS_CLIENT_ID and RECALL_ACCESS_CLIENT_SECRET
@@ -65,17 +65,16 @@
     // member (400) only (spec 3.6).  Jay demoted every bot to member on Fri,
     // Oct 9, so JET is served again, with its key installed (deployed at about
     // 8:10am;  DEPLOY.md, "Re-enable JET").
-    // ECHO and INSTINCT (Fri, Oct 9) are two identities of the Instinct app
-    // (instinct.com), each posting as its own member bot.
+    // ECHO and WISE are two identities of the same app, each posting as its own bot.
     // CLAUDE hosted configuration is prepared; its key and connection are pending.
-    "HOSTED_SEATS": "JET,GROK-WEB,ECHO,INSTINCT,CURSOR,CLAUDE",
+    "HOSTED_SEATS": "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE",
     // Bot emails (plain vars, spec 3.6).  The keys are Worker secrets.  A key
     // whose users/me is not this bot, not a bot, or not a member is refused.
     "ZULIP_EMAIL_GROK_WEB": "grok-web-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_CURSOR": "cursor-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_JET": "openai-dot-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_ECHO": "instinct-bat-bot@simplewithus.zulipchat.com",
-    "ZULIP_EMAIL_INSTINCT": "instinct-owl-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_WISE": "instinct-owl-bot@simplewithus.zulipchat.com",
     "ZULIP_CLAUDE_EMAIL": "claude-bot@simplewithus.zulipchat.com",
     // Channels:  any public channel the seat's bot is subscribed to (owner
     // ruling Sat, Oct 10, 2026;  src/channels.js).  Private streams are never
@@ -131,7 +130,7 @@
         "redirect_uris": ["https://grok.com/connectors-oauth-exchange-code/"],
         "cimd_client_ids": ["https://grok.com/oauth/mcp-client.json"]
       },
-      // ECHO and INSTINCT run inside one Instinct app on its own computer and
+      // ECHO and WISE run inside one app on its own computer and
       // share its loopback callback (RFC 8252), as Echo told Jay on Fri, Oct 9.
       // A loopback redirect is the only kind two seats may share:  /authorize
       // binds it to whichever of them is armed, and refuses when both are.
@@ -141,7 +140,7 @@
         "redirect_uris": ["http://127.0.0.1:8737/callback"],
         "cimd_client_ids": []
       },
-      "INSTINCT": {
+      "WISE": {
         "redirect_uris": ["http://127.0.0.1:8737/callback"],
         "cimd_client_ids": []
       }
