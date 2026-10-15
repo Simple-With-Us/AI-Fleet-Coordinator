@@ -14,13 +14,15 @@ from __future__ import annotations
 import re
 import urllib.parse
 
-__all__ = ["REALM", "CHANNEL", "STREAM_ID", "FULL_LIST_URL", "UrlBook", "hash_part", "topic_url", "message_url",
-           "pr_url", "linear_url"]
+__all__ = ["REALM", "CHANNEL", "STREAM_ID", "FULL_LIST_URL", "MAC_FACTS_API_URL", "MAC_FACTS_RAW_URL", "UrlBook",
+           "hash_part", "topic_url", "message_url", "pr_url", "linear_url"]
 
 REALM = "https://simplewithus.zulipchat.com"
 CHANNEL = "agent-sync"
 STREAM_ID = 642232
 FULL_LIST_URL = "https://github.com/Simple-With-Us/fleet-loops-data/blob/main/gb/full-list.md"
+MAC_FACTS_API_URL = "https://api.github.com/repos/Simple-With-Us/fleet-loops-data/contents/gb/mac-facts.json"
+MAC_FACTS_RAW_URL = "https://raw.githubusercontent.com/Simple-With-Us/fleet-loops-data/main/gb/mac-facts.json"
 
 _LINEAR = re.compile(r"^https://linear\.app/([A-Za-z0-9._-]+)/issue/([A-Za-z][A-Za-z0-9]*-\d{1,7})(?:/[A-Za-z0-9._/-]*)?$")
 _REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")

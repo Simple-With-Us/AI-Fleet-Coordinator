@@ -559,6 +559,16 @@ class RestTests(_ServiceCase):
         self.assertIn("seat is required", body["error"])
         self.assertEqual(FakeQdrant.upserts, [])
 
+    def test_contribute_ignores_local_only_force_kwarg(self):
+        status, _, body = self.request(
+            "POST",
+            "/recall/contribute",
+            {"text": GOOD_TEXT, "category": "lesson", "seat": "cursor", "force": False},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+
     def test_contribute_round_trip(self):
         status, _, body = self.request("POST", "/recall/contribute",
                                        {"text": GOOD_TEXT, "category": "lesson", "seat": "cursor",

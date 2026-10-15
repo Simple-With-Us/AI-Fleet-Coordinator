@@ -57,7 +57,7 @@ HIGH = "".join(["aB3dE5", "gH7jK9", "mN1pQ3", "sT5v7x", "Zq2"])
 PW = "".join(["pw-", "Zx9Qw3", "Er5Ty7", "Ui1Op"])
 OPAQUE = "".join(["Zq8Lm", "2Vx7R", "t4Yp9", "Kd3Hs", "1Wb6N", "c0Fj5", "Gu1Wb", "6Nc0F", "p2Qa7"])
 KEYID = "".join(["005", "abcdef0123", "456789012"])
-B2TOKEN = "".join(["4_", "005abcdef01", "23456789_01", "a1b2c3d4_acct"])
+B2TOKEN = "fake-key"  # mocked b2_authorize_account token;  not a real B2 authorization shape
 APPKEY = "".join(["K005", "AbCdEfGhIjKlMn", "OpQrStUvWx1"])
 
 

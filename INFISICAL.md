@@ -46,6 +46,20 @@ Provisioning and rotation use these same key names; no secret value belongs in
 this inventory.  The installer verifies the email, bot identity and member role
 before copying the key, and the hosted Worker repeats those checks at runtime.
 
+### Cursor Shared-Agent Tool Budgets
+
+`AGENT_SYNC_CURSOR_TOOL_BUDGETS` is a JSON policy in AFC `prod` `/zulip`,
+copied to the same encrypted Worker binding.  Config validation rejects unknown
+kinds, invalid limits and pacing changes outside Linear.  Missing policy retains
+the existing limits.  The policy applies only to CURSOR, across all its grants.
+
+Owner requested capacity for approximately 40 Cursor agents on 2026-10-15:
+Linear writes 2,000/hour and 20,000/day, Linear reads 12,000/hour with separate
+counters and pacing (100ms writes, 50ms reads).  Zulip posts/replies are
+100/hour and 600/day; reads 1,500/hour; reactions 300/hour; recall contributions
+50/hour and 200/day.  Zulip spacing stays 3 seconds for writes and 500ms for reads.
+Other seats retain their existing limits.  Upstream rate limits still apply.
+
 ## Zulip Outgoing Wake Tokens
 
 The existing server listener loads `ZULIP_OUTGOING_<CODE>_TOKEN` from prod `/zulip` at startup for each server seat.  `<CODE>` replaces hyphens in the seat tag with underscores.  These separate Zulip service tokens authenticate outgoing webhook requests; they are neither `ZULIP_<CODE>_API_KEY` nor the routine's bearer/HMAC key.  Missing tokens deny requests for that seat.
@@ -155,6 +169,23 @@ Set a new value in the Infisical UI/API, or `POST /admin/settings` (write-throug
 ## Local dev
 
 Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or point `INFISICAL_MACHINE_IDENTITY` at your handoff file and leave `INFISICAL_ENVIRONMENT` unset (it is `prod`).  Local runs read prod, so treat the secrets there as live.  Any other slug is refused:  `init()`, `set()` and every fetch raise `SettingsError` before the network, `refresh()` logs the refusal and keeps the last-known-good cache, and `configure()` leaves the previous settings in place.  Never commit real values.
+
+## Mac `global-api-keys` sync (`scripts/infisical-secrets-sync.sh`)
+
+The LaunchAgent `com.jay.infisical-secrets-sync` copies selected secrets from Infisical
+into `~/.secrets/global-api-keys` for Mac-local jobs that still read that handoff file.
+Infisical remains the source of truth;  the file is derived and write-once rules apply where
+noted in the sync map.
+
+| Key | Kind | Status |
+|---|---|---|
+| `RESTIC_FLEET_WORK_PASSWORD` | secret | **to be filled by admin** (write-once in the sync map after the first good copy;  `fleet_work_backup.py new-password` sets it in Infisical without printing) |
+| `B2_FLEET_WORK_BUCKET_NAME` | env config | **to be filled by admin** (dedicated bucket for fleet-work-backup;  not `B2_FLEET_BUCKET_NAME`) |
+| `B2_FLEET_WORK_KEY_ID` | secret | **to be filled by admin** (scoped B2 application key, prefix `fleet-work-backup/`) |
+| `B2_FLEET_WORK_APPLICATION_KEY` | secret | **to be filled by admin** |
+
+Consumer:  `scripts/fleet-work-backup/` (`fleet_work_backup.py`, `install.py`).  Runbook:
+`scripts/fleet-work-backup/README.md`.  Linear OPS-907.
 
 ## Hosted CLAUDE Zulip identity (AFC-296)
 

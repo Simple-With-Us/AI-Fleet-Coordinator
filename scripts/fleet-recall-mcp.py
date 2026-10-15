@@ -89,8 +89,9 @@ TOOLS = [
                 "seat": {"type": "string", "description": "Uppercase seat tag; defaults to $AGENT_SEAT."},
                 "title": {"type": "string"},
                 "url": {"type": "string", "description": "Source link (PR, board item, doc), optional."},
-                "force": {"type": "boolean", "default": False,
-                          "description": "Store even when a near-duplicate contribution already exists."},
+                "force": {"type": "boolean",
+                          "description": "Store even when a near-duplicate contribution already exists "
+                                         "(omit unless you mean to skip the duplicate guard)."},
             },
             "required": ["text", "category"],
         },
@@ -145,8 +146,9 @@ def call_tool(name: str, args: dict) -> dict:
         return res
     if name == "recall_stats":
         return public_fallback.call_with_fallback("recall_stats", {}, recall_api.recall_stats)
+    work = dict(args)
     return public_fallback.call_with_fallback(
-        "recall_contribute", args, lambda: contribute_with_guard(dict(args)))
+        "recall_contribute", work, lambda: contribute_with_guard(work))
 
 
 def contribute_with_guard(args: dict) -> dict:

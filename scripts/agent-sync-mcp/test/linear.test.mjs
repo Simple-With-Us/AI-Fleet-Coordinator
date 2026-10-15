@@ -486,3 +486,16 @@ test("commentId is fixed per issue, seat, verb, body and session, and different 
   assert.notEqual(await at("CLAIMED", { session: "", day: "2026-10-10" }), noSession);
   assert.match(today, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
+
+test("only Cursor gets separate Linear budgets and its configured override", async () => {
+  const cursor = harness({ seat: "CURSOR" });
+  cursor.tools.config = { ...config, cursorToolBudgets: { linear_write: { hour: 2000, day: 20000, spacingMs: 100 } } };
+  await cursor.tools.reserveLinear("write");
+  assert.equal((await cursor.gate.store.get("budget:linear_write")).length, 1);
+  assert.equal(await cursor.gate.store.get("budget:write"), undefined);
+  const other = harness();
+  other.tools.config = cursor.tools.config;
+  await other.tools.reserveLinear("write");
+  assert.equal((await other.gate.store.get("budget:write")).length, 1);
+  assert.equal(await other.gate.store.get("budget:linear_write"), undefined);
+});

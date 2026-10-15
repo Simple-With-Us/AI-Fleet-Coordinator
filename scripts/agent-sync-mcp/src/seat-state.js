@@ -152,6 +152,8 @@ export const WRITE_SPACING_MS = 3000; // posts, replies and reactions (spec 3.7)
 export const READ_SPACING_MS = 500;
 export const MAX_WAIT_MS = 6000; // a call waits at most this long for its slot
 export const PENDING_FRESH_MS = 30_000; // a pending row younger than this is a write in flight
+const LINEAR_API_DATA_MAX_BYTES = 8192;
+const LINEAR_API_CLEANUP_INTERVAL_MS = MINUTE_MS;
 export const ROLE_TTL_MS = 10 * MINUTE_MS; // spec 3.6:  users/me on first use and every 10 minutes
 export const CALL_RETENTION_DAYS = 90; // spec 3.9
 const CALLS_PER_DAY_CAP = 5000;
@@ -170,6 +172,8 @@ export const BUDGETS = Object.freeze({
     { windowMs: DAY_MS, limit: 40 },
   ]),
   read: Object.freeze([{ windowMs: HOUR_MS, limit: 300 }]),
+  linear_write: Object.freeze([{ windowMs: HOUR_MS, limit: 20 }, { windowMs: DAY_MS, limit: 120 }]),
+  linear_read: Object.freeze([{ windowMs: HOUR_MS, limit: 300 }]),
 });
 
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -181,32 +185,53 @@ const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
  * and the budget entry are written before this returns, and the method does no
  * outside I/O, so concurrent calls of one seat get distinct slots.
  */
-export async function reserve(store, { kind }, now = Date.now()) {
+export async function reserve(store, { kind, policy }, now = Date.now()) {
   if (!Object.hasOwn(BUDGETS, kind)) throw new Error("unknown call kind");
   if ((await store.get("paused")) === true) return { ok: false, code: "paused" };
   const cooldown = await store.get("cooldown_until");
   if (Number.isFinite(cooldown) && cooldown > now) {
     return { ok: false, code: "rate_limited", retryAfterS: Math.max(1, Math.ceil((cooldown - now) / 1000)) };
   }
-  const windows = BUDGETS[kind];
+  const windows = policy
+    ? [{ windowMs: HOUR_MS, limit: policy.hour }, ...(policy.day ? [{ windowMs: DAY_MS, limit: policy.day }] : [])]
+    : BUDGETS[kind];
   const longest = Math.max(...windows.map((w) => w.windowMs));
-  const history = ((await store.get(`budget:${kind}`)) ?? []).filter((t) => Number.isFinite(t) && t > now - longest && t <= now + MINUTE_MS);
+  const stamp = (entry) => Array.isArray(entry) ? entry[0] : entry;
+  const count = (entry) => Array.isArray(entry) ? entry[1] : 1;
+  let history = ((await store.get(`budget:${kind}`)) ?? []).filter((entry) =>
+    Number.isFinite(stamp(entry)) && Number.isInteger(count(entry)) && count(entry) > 0
+    && stamp(entry) > now - longest && stamp(entry) <= now + MINUTE_MS);
+  // Minute buckets bound storage for large shared-seat budgets.  Round up so
+  // expiry is conservative by at most a minute, never an early extra allowance.
+  if (policy) {
+    const buckets = new Map();
+    for (const entry of history) {
+      const minute = Math.ceil(stamp(entry) / MINUTE_MS) * MINUTE_MS;
+      buckets.set(minute, (buckets.get(minute) ?? 0) + count(entry));
+    }
+    history = [...buckets];
+  }
   for (const { windowMs, limit } of windows) {
-    const inWindow = history.filter((t) => t > now - windowMs);
-    if (inWindow.length >= limit) {
-      return { ok: false, code: "budget_exhausted", resetAt: iso(Math.min(...inWindow) + windowMs), window: windowMs === HOUR_MS ? "hour" : "day" };
+    const inWindow = history.filter((entry) => stamp(entry) > now - windowMs);
+    if (inWindow.reduce((total, entry) => total + count(entry), 0) >= limit) {
+      return { ok: false, code: "budget_exhausted", resetAt: iso(Math.min(...inWindow.map(stamp)) + windowMs), window: windowMs === HOUR_MS ? "hour" : "day" };
     }
   }
-  const lane = kind === "read" ? "read" : "write";
-  const spacing = lane === "read" ? READ_SPACING_MS : WRITE_SPACING_MS;
+  const lane = kind.startsWith("linear_") ? kind : kind === "read" ? "read" : "write";
+  const spacing = policy?.spacingMs ?? (kind.endsWith("read") ? READ_SPACING_MS : WRITE_SPACING_MS);
   let last = await store.get(`last:${lane}`);
-  if (!Number.isFinite(last) || last > now + 10 * spacing) last = null; // the clock moved back
+  if (!Number.isFinite(last) || last > now + Math.max(MAX_WAIT_MS, 10 * spacing)) last = null; // the clock moved back
   const slot = last === null ? now : Math.max(now, last + spacing);
   const waitMs = slot - now;
   if (waitMs > MAX_WAIT_MS) {
     return { ok: false, code: "rate_limited", retryAfterS: Math.max(1, Math.ceil((waitMs - MAX_WAIT_MS) / 1000)) };
   }
-  history.push(now);
+  if (policy) {
+    const minute = Math.ceil(now / MINUTE_MS) * MINUTE_MS;
+    const bucket = history.find((entry) => stamp(entry) === minute);
+    if (bucket) bucket[1]++;
+    else history.push([minute, 1]);
+  } else history.push(now);
   await store.put(`last:${lane}`, slot);
   await store.put(`budget:${kind}`, history);
   return { ok: true, waitMs };
@@ -272,6 +297,92 @@ export async function idemDrop(store, { key }, now = Date.now()) {
 export async function idemPeek(store, { key }, now = Date.now()) {
   const row = (await idemRows(store, now))[key];
   return row && row.state === "sent" ? { ...row } : null;
+}
+
+// ---- per-key Linear GraphQL mutation idempotency rows
+
+const linearApiDay = (now) => Math.floor(now / DAY_MS);
+const linearApiPrefix = "linear-api:";
+const linearApiStorageKey = (day, key) => `${linearApiPrefix}${String(day).padStart(10, "0")}:${key}`;
+
+function validLinearApiKey(key) {
+  return typeof key === "string" && /^[a-f0-9]{64}$/i.test(key);
+}
+
+async function cleanupLinearApiRows(store, day, now) {
+  if (typeof store.list !== "function" || typeof store.delete !== "function") return;
+  const last = await store.get("linear-api-cleanup-at");
+  if (Number.isFinite(last) && now - last < LINEAR_API_CLEANUP_INTERVAL_MS) return;
+  const end = linearApiStorageKey(day - 1, "");
+  const rows = await store.list({ prefix: linearApiPrefix, end, limit: 64 });
+  const keys = [...rows.keys()];
+  if (keys.length) await store.delete(keys);
+  await store.put("linear-api-cleanup-at", now);
+}
+
+/** Start or inspect one generic Linear mutation idempotency record. */
+export async function linearApiBegin(store, { key, request_sha, operation }, now = Date.now()) {
+  if (!validLinearApiKey(key)) throw new TypeError("Linear API idempotency key must be a 64-character SHA-256 hex digest.");
+  await cleanupLinearApiRows(store, linearApiDay(now), now);
+  const day = linearApiDay(now);
+  return store.transaction(async (txn) => {
+    const candidates = [linearApiStorageKey(day, key), linearApiStorageKey(day - 1, key)];
+    let storageKey;
+    let row;
+    for (const candidate of candidates) {
+      const existing = await txn.get(candidate);
+      if (existing && existing.expires > now) {
+        storageKey = candidate;
+        row = existing;
+        break;
+      }
+    }
+
+    if (row) {
+      if (row.request_sha !== request_sha) return { verdict: "conflict", storageKey, row: { ...row } };
+      if (row.state === "sent") return { verdict: "duplicate", storageKey, row: { ...row } };
+      if (row.state === "pending" && now - (row.claimed_at ?? 0) < PENDING_FRESH_MS) {
+        return { verdict: "busy", storageKey, row: { ...row } };
+      }
+      if (row.state === "pending" || row.state === "unknown") return { verdict: "reconcile", storageKey, row: { ...row } };
+    }
+
+    storageKey = linearApiStorageKey(day, key);
+    row = { request_sha, operation: String(operation ?? ""), state: "pending", claimed_at: now, expires: now + DAY_MS };
+    await txn.put(storageKey, row);
+    return { verdict: "send", storageKey, row: { ...row } };
+  });
+}
+
+/** Update a per-key Linear mutation record without enlarging it unboundedly. */
+export async function linearApiSet(store, { storageKey, changes }, now = Date.now()) {
+  if (typeof storageKey !== "string" || !storageKey.startsWith(linearApiPrefix)) throw new TypeError("Invalid Linear API storage key.");
+  if (!changes || typeof changes !== "object" || Array.isArray(changes)) throw new TypeError("Linear API changes must be an object.");
+  for (const name of Object.keys(changes)) {
+    if (name !== "state" && name !== "data") throw new TypeError("Linear API changes may update only state and data.");
+  }
+  if (Object.hasOwn(changes, "state") && !["pending", "unknown", "sent"].includes(changes.state)) {
+    throw new TypeError("Invalid Linear API mutation state.");
+  }
+  if (Object.hasOwn(changes, "data")) {
+    let encoded;
+    try { encoded = JSON.stringify(changes.data); } catch { throw new TypeError("Linear API cached data must be JSON data."); }
+    if (typeof encoded !== "string" || new TextEncoder().encode(encoded).byteLength > LINEAR_API_DATA_MAX_BYTES) {
+      throw new TypeError("Linear API cached data exceeds 8192 bytes.");
+    }
+  }
+  const row = await store.get(storageKey);
+  if (!row) return null;
+  Object.assign(row, changes);
+  await store.put(storageKey, row);
+  return { ...row };
+}
+
+/** Remove one exact per-key Linear mutation record. */
+export async function linearApiDrop(store, { storageKey }, now = Date.now()) {
+  if (typeof storageKey !== "string" || !storageKey.startsWith(linearApiPrefix)) throw new TypeError("Invalid Linear API storage key.");
+  await store.delete(storageKey);
+  return { dropped: true };
 }
 
 // ---- role cache (spec 3.6)
@@ -682,7 +793,8 @@ export async function eventSubsSummary(store, now = Date.now()) {
 /** A Map-backed store for tests. */
 export function memoryStore() {
   const map = new Map();
-  return {
+  let transactionTail = Promise.resolve();
+  const store = {
     map,
     async get(key) {
       const v = map.get(key);
@@ -691,5 +803,18 @@ export function memoryStore() {
     async put(key, value) {
       map.set(key, structuredClone(value));
     },
+    async delete(keys) {
+      for (const key of Array.isArray(keys) ? keys : [keys]) map.delete(key);
+    },
+    async list({ prefix = "", end, limit = 1000 } = {}) {
+      return new Map([...map.entries()].filter(([key]) => key.startsWith(prefix) && (!end || key < end))
+        .sort(([a], [b]) => a.localeCompare(b)).slice(0, limit).map(([key, value]) => [key, structuredClone(value)]));
+    },
+    transaction(callback) {
+      const result = transactionTail.then(() => callback(store));
+      transactionTail = result.catch(() => undefined);
+      return result;
+    },
   };
+  return store;
 }

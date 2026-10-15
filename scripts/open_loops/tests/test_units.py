@@ -67,6 +67,8 @@ class Urls(unittest.TestCase):
             self.assertIsNone(urls.linear_url(bad), bad)
 
     def test_the_book_keeps_what_it_is_given_and_ignores_nothing(self):
+        self.assertEqual(urls.MAC_FACTS_API_URL,
+                         "https://api.github.com/repos/Simple-With-Us/fleet-loops-data/contents/gb/mac-facts.json")
         book = urls.UrlBook()
         self.assertEqual(book.add("https://x.test/b"), "https://x.test/b")
         book.add("https://x.test/a")
