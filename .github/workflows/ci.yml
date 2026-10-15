@@ -104,7 +104,7 @@ jobs:
     - name: CI runner policy lint
       run: |
         cd scripts && python3 -m unittest test_check_ci_runner_policy -v
-        python3 scripts/check-ci-runner-policy.py
+        python3 check-ci-runner-policy.py
     # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
