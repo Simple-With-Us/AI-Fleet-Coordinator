@@ -14,7 +14,7 @@ REPO = SCRIPTS.parent
 PLIST = SCRIPTS / "launchd" / "com.jay.mac-facts-publish.plist"
 LABEL = "com.jay.mac-facts-publish"
 HOME = "/" + "Users" + "/jay"        # the plist is for the owner's Mac;  built here because test data may not hold a literal real path
-ISSUE = "AFC" + "-287"                # likewise a real Linear identifier
+ISSUE = "AFC" + "-285"                # likewise a real Linear identifier
 
 
 class LaunchAgentTests(unittest.TestCase):

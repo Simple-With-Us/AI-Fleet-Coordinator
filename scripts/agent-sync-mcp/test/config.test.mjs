@@ -180,3 +180,17 @@ test("Cursor binds its CIMD client to its exact Cloud callback", () => {
     assert.equal(cfg.redirectSeats.has(wrong), false);
   }
 });
+
+
+test("Cursor budget overrides reject malformed, unknown and unsafe settings", () => {
+  const setting = (value) => testEnv({ AGENT_SYNC_CURSOR_TOOL_BUDGETS: JSON.stringify(value) });
+  for (const value of [null, [], { write: { hour: 0 } }, { other: { hour: 50 } },
+    { write: { hour: 50, spacingMs: 50 } }, { linear_write: { hour: 50, day: 2 } },
+    { linear_read: { hour: 50, spacingMs: 0 } }, { read: { hour: 2, extra: 1 } }]) {
+    assert.throws(() => loadConfig(setting(value)), /config:/);
+  }
+  const policy = { linear_write: { hour: 2000, day: 20000, spacingMs: 100 } };
+  const cfg = loadConfig(setting(policy));
+  assert.deepEqual(cfg.cursorToolBudgets, policy);
+  assert.equal(Object.isFrozen(cfg.cursorToolBudgets.linear_write), true);
+});

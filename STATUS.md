@@ -1,5 +1,16 @@
 # Status
 
+## 2026-10-15 CURSOR — fleet-work-backup Mac watch wiring (OPS-907)
+
+Closes the remaining coordinator-repo work for fleet-work-backup:  `mac-process-watch.sh`
+expects `com.jay.fleet-work-backup`, and `INFISICAL.md` lists the four synced keys.  The
+repo mirror `docs/MAC-LOCAL-PROCESSES.md` was not refreshed in this PR (the live row is
+updated at install time per README step 9).  The backup code path merged earlier
+(#454–#482);  the live Mac install (B2 key, Infisical values, restic init, TCC,
+LaunchAgent) is still owner-run per `scripts/fleet-work-backup/README.md`.
+
+Rollout: `docs/rollouts/2026-10-15-fleet-work-backup-mac-watch.md`.
+
 ## 2026-10-11 CODEX — Coolify fleet CLI distribution (OPS-933)
 
 Adds a bounded, code-only release receiver and pusher for the existing Coolify SSH route.  The existing Mac runtime updater can opt in to push published board and Agent-Sync runtime files; releases activate atomically after isolated smoke checks and support pause and rollback.  Initial installation preserves Codex configuration and adds a CODEX-scoped local MCP wrapper.  Installation receipts and current host status are tracked in OPS-933, with the source rollout in `docs/rollouts/2026-10-11-coolify-fleet-cli-sync.md`; authentication and wake routing remain separate work.
