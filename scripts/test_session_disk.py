@@ -27,9 +27,11 @@ from session_disk import (  # noqa: E402
     poll_after_inject,
     poll_until_idle,
     prefix_prompt,
+    prompt_inject_receipt,
     select_idle_unload,
     turn_state,
     unload_skip_reason,
+    user_prompt_receipt,
 )
 
 LIVE_ID = "01a04521-e2e0-7403-9c44-cb8ee340330b"
@@ -419,6 +421,29 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("SEAT_MCP_TOKEN", src)
         self.assertIn("127.0.0.1:8793", src)
         self.assertNotIn("print(token", src)
+
+
+class PromptInjectReceiptTests(unittest.TestCase):
+    def test_user_prompt_receipt_matches_tail_history(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            sid = "sess-receipt"
+            d = root / "cwd" / sid
+            d.mkdir(parents=True)
+            hist = d / "chat_history.jsonl"
+            hist.write_text(
+                json.dumps({"type": "user", "content": [{"type": "text", "text": "nudge"}]}) + "\n",
+                encoding="utf-8",
+            )
+            with patch("session_disk.SESSIONS_ROOT", root):
+                self.assertTrue(user_prompt_receipt(sid, "nudge"))
+                self.assertFalse(user_prompt_receipt(sid, "other"))
+
+    def test_prompt_inject_receipt_accepts_new_turn(self) -> None:
+        with patch("session_disk.turn_state", return_value={"turnStartedAt": 20.0}), patch(
+            "session_disk.user_prompt_receipt", return_value=False
+        ):
+            self.assertTrue(prompt_inject_receipt("s", "x", before_started=10.0))
 
 
 if __name__ == "__main__":

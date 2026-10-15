@@ -52,8 +52,12 @@ def _timeout(default):
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from session_disk import peek_summary as disk_peek
+    from session_disk import prompt_inject_receipt as disk_prompt_receipt
+    from session_disk import turn_state as disk_turn_state
 except Exception:
     disk_peek = None
+    disk_prompt_receipt = None
+    disk_turn_state = None
 
 
 class LeaderStdio:
@@ -458,10 +462,27 @@ def main():
             }, indent=2))
             return
         if args.cmd == "prompt":
+            before_started = 0.0
+            if disk_turn_state is not None:
+                before_started = float(disk_turn_state(args.session_id).get("turnStartedAt") or 0.0)
             _resume(client, args.session_id, args.cwd)
             wait = bool(args.wait)
             timeout = float(args.timeout) if wait else min(float(args.timeout), 8.0)
-            out = client.prompt_live(args.session_id, args.prompt, timeout=timeout, wait=wait)
+            try:
+                out = client.prompt_live(args.session_id, args.prompt, timeout=timeout, wait=wait)
+            except TimeoutError:
+                if disk_prompt_receipt is not None and disk_prompt_receipt(
+                        args.session_id, args.prompt, before_started):
+                    print(json.dumps({
+                        "ok": True,
+                        "queued": True,
+                        "sessionId": args.session_id,
+                        "cwd": args.cwd,
+                        "text": "",
+                        "receipt": "disk",
+                    }, indent=2))
+                    return
+                raise
             print(json.dumps({
                 "ok": True,
                 "queued": bool(out.get("queued")),
