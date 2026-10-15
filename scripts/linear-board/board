@@ -131,10 +131,10 @@ SEAT_ALIASES = {"MINIMAX": "MM", "MUSE": "MA", "GROK-BUILD": "GROK", "ANTIGRAVIT
                 "INSTINCT": "WISE", "WISE-INSTINCT": "WISE", "ECHO-INSTINCT": "WISE"}
 CLUTCH_LINEAGE = {"DSH", "DEEPSEEK", "HARNESS"}
 # Older internal seat tags accepted for compatibility; output uses the canonical key.
-# (Seat spellings live here, not in SEAT_ALIASES:  norm_seat must keep resolving
-# retired tags like MINIMAX as typed.)
-SEAT_TAG_ALIASES = {"INSTINCT": "WISE", "WISE-INSTINCT": "WISE", "ECHO-INSTINCT": "WISE",
-                    "MUSE-ASSIST": "MA", "ROB": "MA", "ROB-MUSE": "MA", "MUSE-CODE": "MC"}
+SEAT_TAG_ALIASES = {"INSTINCT": "WISE"}
+# Retired seat tags keep their SEAT_ALIASES entries for roster_seat (old footer
+# attribution), but norm_seat resolves them as typed (SeatAliasTests).
+RETIRED_SEAT_TAGS = frozenset(("MINIMAX", "MUSE", "ANTIGRAVITY"))
 # One Linear app per seat (owner 2026-10-10), named for the seat bot's display
 # name.  A seat's app is used when its credentials exist (<SEAT>.env beside
 # Fleet.env, or LINEAR_<SEAT>_CLIENT_ID and _SECRET in the environment, with
@@ -312,7 +312,12 @@ def norm_seat(s: str | None) -> str:
     """The seat tag a value stands for, upper-cased.  Every GROK-BUILD spelling is GROK, so AGENT_SEAT,
     --by and --mine all resolve to the one seat that signs GROK."""
     v = (s or "").strip().strip("@[]<>`'\" ")
-    return "GROK" if GROK_ALIAS_RE.match(v) else SEAT_TAG_ALIASES.get(v.upper(), v.upper())
+    upper = v.upper()
+    if GROK_ALIAS_RE.match(v):
+        return "GROK"
+    if upper in RETIRED_SEAT_TAGS:
+        return upper
+    return SEAT_ALIASES.get(upper, SEAT_TAG_ALIASES.get(upper, upper))
 
 
 def hyphenate(h32: str) -> str:
