@@ -17,6 +17,7 @@ from unittest import mock
 
 from agent_sync import adapters as A
 from agent_sync import heldback as HELD
+from agent_sync import host_load as HL
 from agent_sync import live as L
 from agent_sync import wakes as W
 from agent_sync import zulip as Z
@@ -1748,3 +1749,40 @@ class AutoSubscribeTests(DaemonHarness):
         self.assertTrue(daemon.seats["CLAUDE"].connected)
         log = (self.state_dir / "logs" / "listener.log").read_text()
         self.assertIn("auto-subscribe-error", log)
+
+
+class HostWakeTests(DaemonHarness):
+    def _pending(self, *, owner: bool = False) -> W.Pending:
+        now = self.clock.time()
+        pending = W.Pending("w-host", "CLAUDE", {"channel": "agent-sync", "topic": "t"}, owner=owner, now=now, due=now)
+        pending.add({"id": 42, "ts": now}, owner)
+        return pending
+
+    def test_a_peer_wake_is_held_when_the_host_is_saturated(self) -> None:
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        hot = HL.HostLoad(load1=60.0, cores=10)
+        with mock.patch.object(HL, "read_host_load", return_value=hot):
+            reason = daemon._wake_block(runner, self._pending(), self.clock.time())
+        self.assertEqual(reason, "host_busy")
+
+    def test_an_owner_wake_is_not_delayed_for_host_load(self) -> None:
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        hot = HL.HostLoad(load1=900.0, cores=1)
+        with mock.patch.object(HL, "read_host_load", return_value=hot):
+            reason = daemon._wake_block(runner, self._pending(owner=True), self.clock.time())
+        self.assertNotEqual(reason, "host_busy")
+        self.assertNotEqual(reason, "host_wake_slots")
+
+    def test_host_busy_defers_only_until_the_max_age_then_runs(self) -> None:
+        self.write_config(extra_daemon="host_wake_defer_max_minutes = 5\n")
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        pending = self._pending()
+        hot = HL.HostLoad(load1=60.0, cores=10)
+        now = self.clock.time()
+        with mock.patch.object(HL, "read_host_load", return_value=hot):
+            self.assertEqual(daemon._wake_block(runner, pending, now), "host_busy")
+            self.clock.advance(5 * 60)
+            self.assertIsNone(daemon._wake_block(runner, pending, self.clock.time()))

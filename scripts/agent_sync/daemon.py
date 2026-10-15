@@ -45,6 +45,7 @@ from . import chat_transport as CT
 from . import heartbeat as HB
 from . import heldalert as HELDALERT
 from . import heldback as HELD
+from . import host_load as HL
 from . import live as L
 from . import outgoing_webhook as OW
 from . import router as R
@@ -464,6 +465,7 @@ class Daemon:
         self.start_cache: dict[int, tuple[float, int]] = {}
         self.children: set[subprocess.Popen[Any]] = set()  # every running wake child, one per waking seat
         self.child_lock = threading.Lock()
+        self.host_defer_since: dict[str, float] = {}  # wake_id -> first host_busy hold (seconds)
         self.router_queue: queue.Queue[tuple[str, str, Any]] = queue.Queue()
         webhook_parent = L.listener_dir(self.root)
         L.private_dir(webhook_parent)
@@ -1333,6 +1335,7 @@ class Daemon:
                            lost=lost)
 
     def _drop(self, runner: SeatRunner, pending: W.Pending, reason: str, now: float) -> None:
+        self._clear_host_defer(pending.wake_id)
         runner.ledger.append(pending.row("dropped", now, reason=reason))
         self.log.write("wake-dropped", seat=runner.seat, wake_id=pending.wake_id, reason=reason)
         if reason == "stale":
@@ -1521,6 +1524,49 @@ class Daemon:
                                          runner.paths.wake_dir, prompt, schema=schema)
         return None
 
+    def _reserved_worker_wakes(self, *, exclude_seat: str | None = None) -> int:
+        """Seats with a muse or claude wake running or already accepted into the queue."""
+        count = 0
+        for seat_runner in self.seats.values():
+            if seat_runner.seat == exclude_seat:
+                continue
+            if seat_runner.cfg.wake not in ("claude", "muse"):
+                continue
+            with seat_runner.jobs_cond:
+                if seat_runner.running is not None or seat_runner.jobs:
+                    count += 1
+        return count
+
+    def _host_wake_block(self, runner: SeatRunner, pending: W.Pending, now: float) -> str | None:
+        """Defer peer worker wakes while the Mac is saturated or the global slot cap is full."""
+        if not self.config.host_wake_defer or self.config.instance != "mac":
+            return None
+        if runner.cfg.wake not in ("claude", "muse"):
+            return None
+        if pending.owner:
+            return None
+        if self.config.host_wake_max_running > 0:
+            reserved = self._reserved_worker_wakes(exclude_seat=runner.seat)
+            if reserved >= self.config.host_wake_max_running:
+                return "host_wake_slots"
+        load = HL.read_host_load()
+        reason = HL.host_busy_reason(load, max_per_core=self.config.host_wake_load_per_core)
+        if reason is None:
+            self.host_defer_since.pop(pending.wake_id, None)
+            return None
+        since = self.host_defer_since.get(pending.wake_id)
+        if since is None:
+            since = now
+            self.host_defer_since[pending.wake_id] = since
+        max_age = self.config.host_wake_defer_max_minutes * 60.0
+        if max_age > 0 and now - since >= max_age:
+            self.host_defer_since.pop(pending.wake_id, None)
+            return None
+        return "host_busy"
+
+    def _clear_host_defer(self, wake_id: str) -> None:
+        self.host_defer_since.pop(wake_id, None)
+
     def _quota_reason(self, runner: SeatRunner) -> str | None:
         """Why this seat's provider has nothing left, or None.  Read from the CodeCaps snapshot
         (Jay 2026-10-11:  no reason to try to wake an agent that cannot run), checked before the
@@ -1571,6 +1617,9 @@ class Daemon:
             return "loop_guard"
         if not pending.owner and pending.trigger_ts is not None and now - pending.trigger_ts > self.config.stale_after:
             return "stale"  # a stale non-owner item never wakes, even after a restart
+        host_reason = self._host_wake_block(runner, pending, now)
+        if host_reason:
+            return host_reason
         return W.budget_block(runner.ledger.wakes(), runner.cfg.budget, owner=pending.owner, key=pending.key,
                               now=now, exclude=pending.wake_id)
 

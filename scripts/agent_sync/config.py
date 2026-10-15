@@ -236,6 +236,13 @@ class Config:
         self.outgoing_webhook_enabled = False
         self.outgoing_webhook_bind = "127.0.0.1"
         self.outgoing_webhook_port = OUTGOING_WEBHOOK_DEFAULT_PORT
+        # Mac-only wake backpressure during host saturation (OPS-950).  Peer wakes are held back
+        # when load per core is high; owner wakes are not delayed for load.  A cap limits how
+        # many muse/claude children run at once across every seat on this instance.
+        self.host_wake_defer = False
+        self.host_wake_load_per_core = 3.0
+        self.host_wake_defer_max_minutes = 20.0
+        self.host_wake_max_running = 0
 
     @property
     def ok(self) -> bool:
@@ -411,6 +418,36 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.auto_subscribe must be true or false")
     else:
         cfg.auto_subscribe = auto_sub
+    host_defer = daemon.get("host_wake_defer")
+    if host_defer is None:
+        cfg.host_wake_defer = cfg.instance == "mac"
+    elif not isinstance(host_defer, bool):
+        errors.append("daemon.host_wake_defer must be true or false")
+    else:
+        cfg.host_wake_defer = host_defer
+    if "host_wake_load_per_core" in daemon:
+        value = _number(daemon["host_wake_load_per_core"], "daemon.host_wake_load_per_core", errors, minimum=0)
+        if value is not None:
+            if value > 100:
+                errors.append("daemon.host_wake_load_per_core must be at most 100")
+            else:
+                cfg.host_wake_load_per_core = value
+    if "host_wake_defer_max_minutes" in daemon:
+        value = _number(daemon["host_wake_defer_max_minutes"], "daemon.host_wake_defer_max_minutes", errors,
+                        minimum=0)
+        if value is not None:
+            if value > 720:
+                errors.append("daemon.host_wake_defer_max_minutes must be at most 720")
+            else:
+                cfg.host_wake_defer_max_minutes = value
+    if "host_wake_max_running" in daemon:
+        value = daemon["host_wake_max_running"]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 32:
+            errors.append("daemon.host_wake_max_running must be a whole number from 0 to 32 (0 means no cap)")
+        else:
+            cfg.host_wake_max_running = value
+    elif cfg.host_wake_defer:
+        cfg.host_wake_max_running = 2
     webhook_seats = daemon.get("outgoing_webhook_seats", [])
     if not isinstance(webhook_seats, list) or not all(isinstance(value, str) for value in webhook_seats):
         errors.append("daemon.outgoing_webhook_seats must be a list of seat names")
