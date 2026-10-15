@@ -1066,6 +1066,8 @@ class RepoPlatformCopiesTests(unittest.TestCase):
             self.assertIn(wanted, text, wanted)
         for foreign in ("CLAUDE", "CURSOR", "Claude-zuliprc", "`[CLAUDE·session8]`"):
             self.assertNotIn(foreign, text, foreign)
+        self.assertIn("minimax/afc-123-zulip-cutover", text)
+        self.assertNotIn("claude/afc-123-zulip-cutover", text)
 
     def test_tracked_platform_copies_match_fresh_render(self) -> None:
         stale: list[str] = []
