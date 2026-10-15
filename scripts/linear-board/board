@@ -147,7 +147,7 @@ SEAT_APP_NAMES = {
     "CLAUDE": "Claude", "CODEX": "Codex", "CURSOR": "Cursor", "AG": "AG", "GROK": "Grok",
     "GROK-WEB": "Grok Web", "CLUTCH": "Clutch", "MM": "MM", "FX": "Fx", "MC": "Muse Code",
     "MA": "Muse Assist", "JET": "Jet", "OPENCODE": "OpenCode",
-    "ECHO": "Echo", "WISE": "Wise",
+    "ECHO": "Echo (Instinct)", "WISE": "Wise (Instinct)",
     # BotFleet seats in SEAT_ROSTER.  AGENT-SYNC.md (owner 2026-10-09) names the ten role seats
     # plus BF-DIRECTOR.  BF-PRODUCER is on that same roster (BF_ROLES turns a bare PRODUCER into
     # it), so it has an app too:  a write from that seat must not sign as the shared Fleet app.
@@ -173,8 +173,8 @@ SEAT_APP_ALIASES = {
     "GROK": ("Grok (Build)", "Grok Build"),
     "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
     "OPENCODE": ("OC",),
-    "ECHO": (),
-    "WISE": ("Wise (Instinct)", "Wise-Instinct", "Echo-Instinct", "Instinct"),
+    "ECHO": ("Echo",),
+    "WISE": ("Wise", "Wise-Instinct", "Echo-Instinct", "Instinct"),
 }
 
 

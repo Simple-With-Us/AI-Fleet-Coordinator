@@ -148,7 +148,7 @@ export const SEAT_APP_NAMES = Object.freeze({
   JET: "Jet",
   "GROK-WEB": "Grok Web",
   ECHO: "Echo (Instinct)",
-  WISE: "Wise",
+  WISE: "Wise (Instinct)",
   MA: "Muse Assist",
   CURSOR: "Cursor",
 });
@@ -156,7 +156,7 @@ export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),
   "GROK-WEB": Object.freeze(["Grok (Web/iOS)", "Grok Web/iOS"]),
   ECHO: Object.freeze(["Echo"]),
-  WISE: Object.freeze(["Wise (Instinct)", "Wise-Instinct", "Echo-Instinct", "Instinct"]),
+  WISE: Object.freeze(["Wise", "Wise-Instinct", "Echo-Instinct", "Instinct"]),
   MA: Object.freeze(["Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"]),
 });
 export const SEAT_TAG_ALIASES = Object.freeze({ INSTINCT: "WISE", "WISE-INSTINCT": "WISE", "ECHO-INSTINCT": "WISE", "MUSE-ASSIST": "MA", ROB: "MA", "ROB-MUSE": "MA" });
