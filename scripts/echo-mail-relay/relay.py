@@ -135,7 +135,11 @@ class Relay:
         listener = seats['ECHO']['listener']; native = seats['ECHO']['native']
         mail = bool(self.env.get('RELAY_SMTP_USERNAME')) and bool(self.env.get('RELAY_SMTP_PASSWORD'))
         enabled = self.env.get('RELAY_DELIVERY_ENABLED') == 'true'
-        return {'ok': (listener or native) and mail and enabled, 'seats':seats, 'listener_configured':listener, 'native_configured':native, 'mail_configured':mail, 'delivery_enabled':enabled, 'pending':pending,'oldest_pending_age_seconds':None if oldest is None else max(0,int(self.clock()-oldest)),'last_ingress':self.last_ingress,'last_provider_acceptance':self.last_delivery,'delivery_receipts_verified':False}
+        caps=[]
+        try:
+            with open('/data/capture.jsonl') as fh: caps=[json.loads(x) for x in fh.read().splitlines()[-5:] if x.strip()]
+        except Exception: pass
+        return {'recent_captures':caps,'ok': (listener or native) and mail and enabled, 'seats':seats, 'listener_configured':listener, 'native_configured':native, 'mail_configured':mail, 'delivery_enabled':enabled, 'pending':pending,'oldest_pending_age_seconds':None if oldest is None else max(0,int(self.clock()-oldest)),'last_ingress':self.last_ingress,'last_provider_acceptance':self.last_delivery,'delivery_receipts_verified':False}
 
 class BoundedServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -169,6 +173,20 @@ class Handler(BaseHTTPRequestHandler):
         if self.path!='/health':self.response(404,{'error':'not_found'});return
         self.response(200,self.server.relay.health())
     def do_POST(self):
+        if self.path=='/zulip/capture':
+            length=int(self.headers.get('Content-Length','0'))
+            raw=self.rfile.read(max(1,min(length,MAX_BODY)))
+            tok='';be='';tg=''
+            try:
+                b=json.loads(raw);tok=str(b.get('token',''));be=str(b.get('bot_email',''));tg=str(b.get('trigger',''))
+            except Exception:
+                f=urllib.parse.parse_qs(raw.decode('utf-8','replace'),max_num_fields=64)
+                tok=(f.get('token') or [''])[0];be=(f.get('bot_email') or [''])[0];tg=(f.get('trigger') or [''])[0]
+            rec={'ts':time.time(),'token_sha256_12':hashlib.sha256(tok.encode()).hexdigest()[:12],'token_len':len(tok),'bot_email':be,'trigger':tg}
+            try:
+                with open('/data/capture.jsonl','a') as fh:fh.write(json.dumps(rec)+'\n')
+            except Exception: pass
+            self.response(200,{'ok':True,'captured':True});return
         try:
             length=int(self.headers.get('Content-Length','0'))
             if length<1 or length>MAX_BODY:raise ValueError()
