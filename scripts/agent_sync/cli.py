@@ -1675,6 +1675,7 @@ def _on_sigterm(signum: int, frame: Any) -> None:
 
 LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
     "daemon": listener_cli.cmd_daemon, "status": listener_cli.cmd_status, "wakes": listener_cli.cmd_wakes,
+    "listener": listener_cli.cmd_listener,
 }
 
 

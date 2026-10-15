@@ -180,7 +180,7 @@ class McpHarness(Harness):
         self.home_rc = write_rc(self.home / ".secrets" / "Zulip" / "Claude-zuliprc", email=BOT_EMAIL, key=self.key,
                                 site=self.fake.url)
         self.clock = FakeClock()
-        self.spec = T.load_tools()
+        self.spec = T.load_served_tools()  # tools.json, then listener-tools.json (AFC-330)
         self.extra_secrets: list[str] = []
         self.sessions: list[McpSession] = []
 

@@ -97,6 +97,7 @@ ROUTINE_RESERVED_HEADERS = frozenset({"host", "content-length", "content-type", 
                                       "user-agent", "idempotency-key", "cookie"})
 ROUTINE_TIMEOUT_DEFAULT = 15.0
 OUTGOING_WEBHOOK_DEFAULT_PORT = 8787
+LISTENER_API_DEFAULT_PORT = 8788
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
 _BOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
@@ -236,6 +237,10 @@ class Config:
         self.outgoing_webhook_enabled = False
         self.outgoing_webhook_bind = "127.0.0.1"
         self.outgoing_webhook_port = OUTGOING_WEBHOOK_DEFAULT_PORT
+        # The signed read API for the hosted Worker's listener_* tools (AFC-330, listener_api.py).
+        self.listener_api_enabled = False
+        self.listener_api_bind = "127.0.0.1"
+        self.listener_api_port = LISTENER_API_DEFAULT_PORT
         # Mac-only wake backpressure during host saturation (OPS-950).  Peer wakes are held back
         # when load per core is high; owner wakes are not delayed for load.  A cap limits how
         # many muse/claude children run at once across every seat on this instance.
@@ -482,6 +487,29 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("outgoing_webhook.port must be an integer from 1 to 65535")
     else:
         cfg.outgoing_webhook_port = webhook_port
+    api = raw.get("listener_api") or {}
+    if not isinstance(api, dict):
+        errors.append("[listener_api] must be a table")
+        api = {}
+    unknown_api = set(api) - {"enabled", "bind", "port"}
+    if unknown_api:
+        errors.append("[listener_api] has unknown setting(s): %s" % ", ".join(sorted(unknown_api)))
+    if not isinstance(api.get("enabled", False), bool):
+        errors.append("listener_api.enabled must be true or false")
+    else:
+        cfg.listener_api_enabled = api.get("enabled", False)
+    api_bind = api.get("bind", "127.0.0.1")
+    if not isinstance(api_bind, str) or not api_bind or len(api_bind) > 253:
+        errors.append("listener_api.bind must be a host or IP address")
+    else:
+        cfg.listener_api_bind = api_bind
+    api_port = api.get("port", LISTENER_API_DEFAULT_PORT)
+    if isinstance(api_port, bool) or not isinstance(api_port, int) or not 1 <= api_port <= 65535:
+        errors.append("listener_api.port must be an integer from 1 to 65535")
+    elif cfg.outgoing_webhook_enabled and cfg.listener_api_enabled is True and api_port == cfg.outgoing_webhook_port:
+        errors.append("listener_api.port must differ from outgoing_webhook.port")
+    else:
+        cfg.listener_api_port = api_port
     cfg.presence = L.presence_topics(raw)
     platform = ((raw.get("platform") or {}).get("claude-code") or {}) if isinstance(raw.get("platform"), dict) else {}
     seat = platform.get("seat") if isinstance(platform, dict) else None
