@@ -208,9 +208,13 @@ async function serveMcp(request, env, ctx) {
   const seatGate = gate(env, seat);
   const result = await seatGate.check({ epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase });
   if (result.code !== "ok" && result.code !== "paused") {
-    await seatGate.audit({ event: "mcp_refused", reason: result.code, status: 401 });
     const refused = invalidToken("This grant is no longer valid.");
-    refused.headers.set("X-Agent-Sync-Diagnostic", "recorded");
+    try {
+      await seatGate.audit({ event: "mcp_refused", reason: result.code, status: 401 });
+      refused.headers.set("X-Agent-Sync-Diagnostic", "recorded");
+    } catch {
+      console.log(JSON.stringify({ event: "diagnostic_unavailable", kind: "mcp_refused", seat }));
+    }
     return refused;
   }
 
@@ -648,6 +652,7 @@ async function serveAdmin(request, env, config, oauth, email) {
       seats.push({
         ...facts, ...value(0, {}), role: value(2, null),
         diagnosticsUnavailable: reads.some((r) => r.status === "rejected"),
+        unavailableFields: ["state", "grants", "role", "audits", "calls", "errors"].filter((_, i) => reads[i].status === "rejected"),
         grants: grants.map((x) => ({ client: x.metadata?.client_name ?? x.clientId, scope: x.scope ?? [], createdAt: toMs(x.createdAt) })),
       });
       for (const row of value(3, [])) {

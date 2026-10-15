@@ -71,24 +71,27 @@ function seatSummary(seat, calls, diagnostics, generatedAt, diagnosticsUnavailab
   const success = ordered.find((c) => !failure(c));
   const seatDiagnostics = diagnostics.filter((c) => c.seat === seat.seat && Number.isFinite(c.ts));
   const error = [...ordered.filter(failure), ...seatDiagnostics].sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))[0];
+  const unavailableFields = new Set(seat.unavailableFields ?? []);
+  const fieldUnavailable = (name) => unavailableFields.has(name);
   const dependencies = [
-    ["Zulip key", seat.keyInstalled],
-    ["role", seat.role?.ok],
-    ["grant", (seat.grants ?? []).length > 0],
+    ["Zulip key", seat.keyInstalled, false],
+    ["role", seat.role?.ok, fieldUnavailable("role")],
+    ["grant", (seat.grants ?? []).length > 0, fieldUnavailable("grants")],
   ];
-  const missing = dependencies.filter(([, ok]) => !ok).map(([name]) => name);
-  const configured = !seat.paused && missing.length === 0;
+  const missing = dependencies.filter(([, ok, unavailable]) => !unavailable && !ok).map(([name]) => name);
+  const readsUnknown = diagnosticsUnavailable || fieldUnavailable("state") || fieldUnavailable("role") || fieldUnavailable("grants");
+  const configured = !seat.paused && missing.length === 0 && !readsUnknown;
   const hasRecent = last && Number.isFinite(generatedAt) && generatedAt - last.ts <= 24 * 60 * 60 * 1000;
   const diagnosticAfterSuccess = seatDiagnostics.some((row) => !success || row.ts >= success.ts);
   const currentError = hasRecent && (failure(last) || diagnosticAfterSuccess);
   const recentSuccess = hasRecent && !currentError && !diagnosticsUnavailable;
-  const readiness = seat.paused ? "Paused" : !configured ? `Needs setup: ${missing.join(", ")}` : diagnosticsUnavailable ? "Diagnostics unavailable" : currentError ? "Recent failure" : recentSuccess ? "Recent success" : "Configured; no recent traffic";
+  const readiness = readsUnknown ? "Diagnostics unavailable" : seat.paused ? "Paused" : !configured ? `Needs setup: ${missing.join(", ")}` : currentError ? "Recent failure" : recentSuccess ? "Recent success" : "Configured; no recent traffic";
   const tone = recentSuccess ? "state-ready" : "state-attention";
   return `<article class="status-card"><h3>${e.escape(seat.seat)}</h3><p class="status-state ${tone}">${e.escape(readiness)}</p>
-<dl><dt>Seat</dt><dd>${seat.paused ? "Paused" : "Unpaused"}</dd>
+<dl><dt>Seat</dt><dd>${fieldUnavailable("state") ? "Unknown" : seat.paused ? "Paused" : "Unpaused"}</dd>
 <dt>Zulip Key</dt><dd>${seat.keyInstalled ? "Installed" : "Missing"}</dd>
-<dt>Member Role</dt><dd>${seat.role?.ok ? `Verified (${e.escape(seat.role.role ?? "member")})` : `Not verified${seat.role?.reason ? `: ${e.escape(seat.role.reason)}` : ""}`}</dd>
-<dt>Grant</dt><dd>${(seat.grants ?? []).length ? `${(seat.grants ?? []).length} present` : "Missing"}</dd>
+<dt>Member Role</dt><dd>${fieldUnavailable("role") ? "Unknown" : seat.role?.ok ? `Verified (${e.escape(seat.role.role ?? "member")})` : `Not verified${seat.role?.reason ? `: ${e.escape(seat.role.reason)}` : ""}`}</dd>
+<dt>Grant</dt><dd>${fieldUnavailable("grants") ? "Unknown" : (seat.grants ?? []).length ? `${(seat.grants ?? []).length} present` : "Missing"}</dd>
 <dt>Last Call</dt><dd>${last ? `${e.escape(e.time(last.ts))} · ${e.escape(last.tool ?? "unknown tool")}` : "No recent traffic"}</dd>
 <dt>Last Success</dt><dd>${success ? e.escape(e.time(success.ts)) : "None in retained sample"}</dd>
 <dt>Last Error</dt><dd>${error ? `${e.escape(e.time(error.ts))} · ${e.escape(error.error_code ?? error.outcome ?? error.verdict ?? "error")}` : "None in retained sample"}</dd>
@@ -114,13 +117,17 @@ function collectErrorRows({ statusCalls, statusErrors, refusals, tokenRefusals, 
   return rows;
 }
 
-function recentErrors(rows, e) {
+function dedupeErrors(rows) {
   const byKey = new Map();
   for (const r of rows) {
     const key = [r.seat, r.ts, r.tool, r.grant_ref, r.error_code ?? r.reason].join("|");
     byKey.set(key, { ...byKey.get(key), ...r });
   }
-  const deduped = [...byKey.values()];
+  return [...byKey.values()];
+}
+
+function recentErrors(rows, e) {
+  const deduped = [...rows];
   deduped.sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
   return deduped.slice(0, 30).map((r) => {
     const detail = errorDetails(r);
@@ -137,12 +144,10 @@ function recentErrors(rows, e) {
 export function renderStatusOverview(data, e) {
   const { seats = [], statusCalls = [], statusErrors = [], refusals = [], tokenRefusals = [], audits = [], runtimeErrors = [], generatedAt } = data;
   const globalDiagnosticsUnavailable = Boolean(data.diagnosticsUnavailable);
-  const diagnosticsUnavailable = Boolean(globalDiagnosticsUnavailable || seats.some((s) => s.diagnosticsUnavailable));
-  const collectedErrors = collectErrorRows({ statusCalls, statusErrors, refusals, tokenRefusals, audits, runtimeErrors });
+  const diagnosticsUnavailable = Boolean(globalDiagnosticsUnavailable || seats.some((s) => s.diagnosticsUnavailable || (s.unavailableFields ?? []).length));
+  const collectedErrors = dedupeErrors(collectErrorRows({ statusCalls, statusErrors, refusals, tokenRefusals, audits, runtimeErrors }));
   const noTraffic = statusCalls.length === 0;
-  const failedCalls = [...statusCalls.filter(failure), ...statusErrors];
-  const uniqueFailures = new Set(failedCalls.map((r) => [r.seat, r.ts, r.tool, r.grant_ref, r.error_code].join("|"))).size;
-  const recentFailures = uniqueFailures + refusals.length + tokenRefusals.length + runtimeErrors.length + audits.filter((a) => ["event_delivery", "token_exchange", "mcp_refused"].includes(a.event) && (a.detail?.outcome ?? a.detail?.reason ?? a.outcome ?? a.reason) !== "delivered" && (a.event !== "token_exchange" || (a.detail?.outcome ?? a.outcome) !== "ok")).length;
+  const recentFailures = collectedErrors.length;
   const heading = diagnosticsUnavailable ? "Diagnostics Unavailable" : recentFailures ? "Recorded Failures" : noTraffic ? "No Recent Traffic" : "Recent Calls; No Recorded Failures";
   const status = diagnosticsUnavailable
     ? `The diagnostic sample could not be loaded.${e.gap} Configuration fields do not verify service health.`

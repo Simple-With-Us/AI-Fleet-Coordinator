@@ -249,3 +249,29 @@ test("wake release retries are visible with actionable callback guidance", async
   assert.match(html, /delivery attempt failed and the wake was released for retry/);
   assert.match(html, /Check the listener&#39;s callback and the Zulip channel delivery/);
 });
+
+test("wake failures drive the same overview status as the unified error list", async () => {
+  const html = await adminPage({
+    ...adminFacts,
+    seats: [{ seat: "JET", paused: false, keyInstalled: true, role: { ok: true }, grants: [{ client: "Client", scope: [], createdAt: 0 }] }],
+    statusCalls: [{ ts: Date.parse("2026-10-09T20:05:00Z"), seat: "JET", tool: "zulip_read", error_code: "ok" }],
+    statusAudits: [{ ts: Date.parse("2026-10-09T20:06:00Z"), seat: "JET", event: "event_wake_released", detail: {} }],
+    generatedAt: Date.parse("2026-10-09T20:07:00Z"),
+  }).text();
+  assert.match(html, /Recorded Failures/);
+  assert.match(html, /event_wake_released/);
+});
+
+test("failed state, role, and grant reads render unknown instead of missing or unpaused", async () => {
+  const html = await adminPage({
+    ...adminFacts,
+    seats: [{ seat: "JET", paused: false, keyInstalled: true, role: null, grants: [], diagnosticsUnavailable: true, unavailableFields: ["state", "role", "grants"] }],
+    statusCalls: [{ ts: Date.parse("2026-10-09T20:05:00Z"), seat: "JET", tool: "zulip_read", error_code: "ok" }],
+    generatedAt: Date.parse("2026-10-09T20:07:00Z"),
+  }).text();
+  assert.match(html, /<dt>Seat<\/dt><dd>Unknown<\/dd>/);
+  assert.match(html, /<dt>Member Role<\/dt><dd>Unknown<\/dd>/);
+  assert.match(html, /<dt>Grant<\/dt><dd>Unknown<\/dd>/);
+  assert.doesNotMatch(html, /Unpaused|Needs setup: role|Needs setup: grant/);
+  assert.match(html, /Diagnostics unavailable/);
+});
