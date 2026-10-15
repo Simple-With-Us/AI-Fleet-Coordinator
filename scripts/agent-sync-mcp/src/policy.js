@@ -40,14 +40,14 @@ export function strictRedirectProblem(value) {
 // exact string and the OAuth library accepts any port on a loopback host.
 export const LOOPBACK_HOST = "127.0.0.1";
 
-// A proposed, exact Cursor pair.  Generic localhost redirects remain invalid.
+// Cursor's published Cloud client is bound to its exact HTTPS callback.
 export const CURSOR_CIMD_CLIENT = "https://cursor.com/oauth/mcp-client.json";
-export const CURSOR_LOCALHOST_REDIRECT = "http://localhost:8787/callback";
+export const CURSOR_CLOUD_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";
 export function isCursorExactPair(clientId, redirectUri, seat) {
-  return seat === "CURSOR" && clientId === CURSOR_CIMD_CLIENT && redirectUri === CURSOR_LOCALHOST_REDIRECT;
+  return seat === "CURSOR" && clientId === CURSOR_CIMD_CLIENT && redirectUri === CURSOR_CLOUD_REDIRECT;
 }
 function cursorPairMismatch(clientId, redirectUri, seat) {
-  return (clientId === CURSOR_CIMD_CLIENT || redirectUri === CURSOR_LOCALHOST_REDIRECT)
+  return clientId === CURSOR_CIMD_CLIENT
     && !isCursorExactPair(clientId, redirectUri, seat);
 }
 
@@ -377,10 +377,10 @@ export function gateTokenForm(form, authorization, config) {
   }
   const ids = [basicId, ...formIds].filter(Boolean);
   const redirects = form.getAll("redirect_uri");
-  if (ids.includes(CURSOR_CIMD_CLIENT) || redirects.includes(CURSOR_LOCALHOST_REDIRECT)) {
+  if (ids.includes(CURSOR_CIMD_CLIENT)) {
     if (ids.length === 0 || ids.some((id) => id !== CURSOR_CIMD_CLIENT)
         || config.cimdOwner.get(CURSOR_CIMD_CLIENT) !== "CURSOR"
-        || !redirectSeats(config, CURSOR_LOCALHOST_REDIRECT).includes("CURSOR")
+        || !redirectSeats(config, CURSOR_CLOUD_REDIRECT).includes("CURSOR")
         || (form.get("grant_type") === "authorization_code" && redirects.length !== 1)
         || redirects.length > 1
         || redirects.some((uri) => !isCursorExactPair(CURSOR_CIMD_CLIENT, uri, "CURSOR"))) {
