@@ -53,3 +53,12 @@ test('push prefers the GitHub App installation token when configured', () => {
   assert.match(workflow, /create-github-app-token@/);
   assert.match(push, /PUSH_TOKEN/);
 });
+
+test('mint step never references secrets in its if guard', () => {
+  const mint = steps.find((step) => step.includes('id: push_token'));
+  assert(mint);
+  assert.match(mint, /vars\.SWU_AUTOFIX_GITHUB_APP_ID/);
+  const ifLine = mint.split('\n').find((line) => line.trimStart().startsWith('if:'));
+  assert(ifLine);
+  assert.doesNotMatch(ifLine, /secrets\./);
+});

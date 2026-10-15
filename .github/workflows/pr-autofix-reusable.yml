@@ -160,7 +160,9 @@ jobs:
 
       - name: Mint Autofix Push Token
         id: push_token
-        if: steps.pr.outputs.proceed == 'true' && secrets.AUTOFIX_GITHUB_APP_PRIVATE_KEY != ''
+        # GitHub rejects workflow startup when a step if: references secrets.* (OPS-945).
+        # Gate on the public app id variable; the private key is still required at runtime.
+        if: steps.pr.outputs.proceed == 'true' && vars.SWU_AUTOFIX_GITHUB_APP_ID != ''
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ vars.SWU_AUTOFIX_GITHUB_APP_ID }}
