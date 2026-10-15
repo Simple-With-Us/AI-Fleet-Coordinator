@@ -10,6 +10,11 @@ import { renderStatusOverview } from "./status.js";
 
 export const SENTENCE_GAP = "\u00a0 ";
 
+/** Admin display label only; stored seat identifiers and action values remain canonical. */
+export function adminSeatLabel(seat) {
+  return seat === "CURSOR" ? "Cursor & Grok Bots" : String(seat ?? "");
+}
+
 // One fixed stylesheet, allowed by hash so the CSP can keep `default-src 'none'`.
 // test/pages.test.mjs recomputes the hash, so editing the CSS without updating
 // STYLE_HASH fails the build instead of shipping an unstyled page.
@@ -165,7 +170,7 @@ export function adminPage({ email, seats, clients, refusals, tokenRefusals = [],
       const armed = stateUnknown ? "Unknown" : s.armed ? `<span class="ok">Armed until ${escapeHtml(ownerTime(s.armedUntil))}</span>` : "Not armed";
       const role = unavailable.has("role") ? "Unknown (diagnostic read failed)" : s.role ? (s.role.ok ? `role ${escapeHtml(s.role.role)}, checked ${escapeHtml(ownerTime(s.role.checked_at))}` : `<span class="warn">refused:  ${escapeHtml(s.role.reason)}</span>`) : "not checked yet";
       const key = s.keyInstalled ? `Installed<br><small>${role}</small>` : `<span class="warn">Missing</span>`;
-      return `<tr><td><strong>${escapeHtml(s.seat)}</strong></td><td>${armed}</td><td>${stateUnknown ? "Unknown" : s.paused ? "Paused" : "Live"}</td><td>${stateUnknown ? "Unknown" : escapeHtml(s.epoch)}</td><td>${key}</td><td>${grants}</td><td>${[
+      return `<tr><td><strong>${escapeHtml(adminSeatLabel(s.seat))}</strong></td><td>${armed}</td><td>${stateUnknown ? "Unknown" : s.paused ? "Paused" : "Live"}</td><td>${stateUnknown ? "Unknown" : escapeHtml(s.epoch)}</td><td>${key}</td><td>${grants}</td><td>${[
         actionButton(csrf, "arm", "Arm", { seat: s.seat }),
         s.armed ? actionButton(csrf, "disarm", "Disarm", { seat: s.seat }) : "",
         stateUnknown ? "" : s.paused ? actionButton(csrf, "unpause", "Unpause", { seat: s.seat }) : actionButton(csrf, "pause", "Pause", { seat: s.seat }),
@@ -177,20 +182,20 @@ export function adminPage({ email, seats, clients, refusals, tokenRefusals = [],
     ? clients
         .map(
           (c) =>
-            `<tr><td><code>${escapeHtml(c.clientId)}</code></td><td>${escapeHtml(c.clientName ?? "")}</td><td>${c.seat ? escapeHtml(c.seat) : `<span class="warn">none</span>`}</td><td>${escapeHtml((c.redirectUris ?? []).join(" "))}</td><td>${c.seat ? actionButton(csrf, "sync_manual_client", "Sync Redirects", { client_id: c.clientId }) : ""}</td></tr>`,
+            `<tr><td><code>${escapeHtml(c.clientId)}</code></td><td>${escapeHtml(c.clientName ?? "")}</td><td>${c.seat ? escapeHtml(adminSeatLabel(c.seat)) : `<span class="warn">none</span>`}</td><td>${escapeHtml((c.redirectUris ?? []).join(" "))}</td><td>${c.seat ? actionButton(csrf, "sync_manual_client", "Sync Redirects", { client_id: c.clientId }) : ""}</td></tr>`,
         )
         .join("")
     : `<tr><td colspan="5">No hand-registered clients.</td></tr>`;
   const manualRows = manualSeats
     .map(
       (m) =>
-        `<tr><td><strong>${escapeHtml(m.seat)}</strong></td><td>${escapeHtml(
+        `<tr><td><strong>${escapeHtml(adminSeatLabel(m.seat))}</strong></td><td>${escapeHtml(
           m.redirectsConfigured
             ? m.shared
               ? "Configured, shared with another seat of the same app"
               : "Configured"
             : "None yet (a new client gets a placeholder, so the first attempt is refused and logged below)",
-        )}</td><td>${actionButton(csrf, "create_manual_client", `Create Manual Client For ${m.seat}`, { seat: m.seat })}</td></tr>`,
+        )}</td><td>${actionButton(csrf, "create_manual_client", `Create Manual Client For ${adminSeatLabel(m.seat)}`, { seat: m.seat })}</td></tr>`,
     )
     .join("");
   const refusalRows = refusals.length
@@ -226,6 +231,7 @@ export function adminPage({ email, seats, clients, refusals, tokenRefusals = [],
     escape: escapeHtml,
     time: ownerTime,
     gap: SENTENCE_GAP,
+    seatLabel: adminSeatLabel,
   });
   const body = `<h1>Agent-Sync Admin</h1>
 <p>Signed in as ${escapeHtml(email)}.${SENTENCE_GAP}A seat serves tools only with its key installed and a live member role.</p>

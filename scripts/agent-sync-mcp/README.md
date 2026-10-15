@@ -1,6 +1,6 @@
 # agent-sync MCP Worker
 
-The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at `https://agent-sync.jays.services/mcp` that cloud-only seats add as a custom MCP connector.  It serves the same seven tools as the stdio server (`agent-sync mcp`), from the same `scripts/agent_sync/mcp/tools.json` (the hosted `inbox` also lists DMs, so its description differs), and each seat posts as its own Zulip bot.  It also serves three hosted-only Zulip direct-message tools (`dm_list`, `dm_read`, `dm_send`;  spec 1.2), three hosted-only fleet recall tools (`recall_search`, `recall_stats`, `recall_contribute`;  spec 1.1), seven hosted-only Linear convenience tools, and three hosted-only broad Linear API tools.
+The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at `https://agent-sync.jays.services/mcp` that cloud-only seats add as a custom MCP connector.  It serves the same seven Zulip tools as the stdio server (`agent-sync mcp`), with public hosted names prefixed `zulip_`; old unprefixed names remain hidden aliases for compatible calls.  `whoami` remains unprefixed and reports shared seat/configuration metadata together with the verified Zulip identity.  Hosted inventory also includes three DM tools, three fleet recall tools, seven Linear convenience tools, three broad Linear API tools, 175 named Linear commands and 11 fixed official Linear MCP tools:  209 hosted tools total, including 196 Linear tools.
 
 | Seat | Bot | State |
 | --- | --- | --- |
@@ -13,7 +13,7 @@ Deploy and operate:  [DEPLOY.md](DEPLOY.md).  Connect a client:  [ARMING-JAY.md]
 
 ## Tools
 
-`whoami`, `topics`, `read_topic`, `inbox`, `post`, `reply`, `react`, exactly as `tools.json` defines them (spec section 1), except that the hosted `inbox` description says it lists DMs (spec 1.2);  its schema is the same.  `tools/list` serves that file, so both transports list the same schemas, and a test pins it.
+The public hosted Zulip tools are `whoami`, `zulip_topics`, `zulip_read_topic`, `zulip_inbox`, `zulip_post`, `zulip_reply` and `zulip_react`.  The six legacy names without `zulip_` remain accepted as hidden aliases, but are omitted from `tools/list`.  The hosted `inbox` description says it lists DMs (spec 1.2);  its schema otherwise follows `tools.json`.
 
 - **Identity.**  The seat comes only from the grant's props, and only `SEAT_SECRETS` turns a seat into a key.  No schema takes a seat;  an extra argument is an `invalid_argument` tool error.
 - **Seat binding (3.6).**  Before the first Zulip call and every 10 minutes after, `users/me` for the seat's key must be a bot, this seat's email and tag, and a member (role 400), never an administrator or owner.  A refusal is cached, audited and answered `not_authorized`.
@@ -117,7 +117,11 @@ The spec names `workers-oauth-provider` v1.2.3.  1.1.0 covers everything Phase 0
 
 Move to 1.2.3 once it is eligible (Wed, Oct 21) or if Phase 0 shows a client the workarounds do not cover.  When you do:  drop `allowImplicitFlow` and `allowPlainPKCE` from `providerFor` (1.2.0 removed them;  passing `true` throws), update the config test that pins `allowPlainPKCE: false`, pass `env` to `tokenExchangeCallback` instead of the per-`env` provider cache, and re-check that `createClient` accepts our redirect URIs under the 1.2.0 redirect policy.  The 1.2.0 to 1.2.3 release notes contain no security fix on a path Phase 0 uses:  #340 (redirect validation in `createClient`) is covered by the strict `SEATS` validation, #368 (a token with no scope) only reduces privilege here, and #344 (a `userId` containing `:`) does not apply to JET or GROK-WEB.
 
-Queries support aliases, fragments, filters and pagination from the live Linear schema.  Subscriptions, binary file transfer, credential/access administration and batch/bulk mutation roots are excluded.  Each mutation has one root field; body and description inputs receive the seat tag.  Generic mutations cannot change protected fleet claim labels.
+Queries support aliases, fragments, filters and pagination from the live Linear schema.  Subscriptions, binary file transfer, credential/access administration and batch/bulk mutation roots are excluded from this GraphQL interface.  Each mutation has one root field; body and description inputs receive the seat tag.  Generic mutations cannot change protected fleet claim labels.  Eleven additional fixed tools forward the official Linear MCP surface:  nine diff/review tools (`get_diff`, `list_diffs`, `get_diff_threads`, `save_diff_comment`, `resolve_diff_thread`, `delete_diff_comment`, `submit_diff_review`, `update_diff`, `merge_diff`), `extract_images` (Markdown input with image-block output), and `search_documentation`.
+
+The official MCP bridge uses the same per-seat cached app token and does not require another manual OAuth flow.  Linear and GitHub permissions still govern what each call can do.  Writes require idempotency keys; partial or uncertain outcomes are never automatically replayed.  The transport accepts only the fixed tool allowlist, bounds requests and responses, and does not log upstream payloads.  The image tool takes Markdown, not an issue ID.
+
+FleetLink is tracked separately as AFC-320 and remains parked until the site supports multiuser access; this Worker does not implement it.
 
 Idempotency keys are seat-scoped for 24 hours.  A completed retry returns the saved response or completion receipt.  An uncertain upstream outcome is never automatically replayed; inspect Linear before choosing a new key.  Response size and GraphQL complexity are bounded, and Linear’s upstream permissions and rate limits still apply.
 

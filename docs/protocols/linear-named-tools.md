@@ -1,6 +1,6 @@
 # Named Linear MCP Commands
 
-AFC-318 adds 175 named commands to the hosted Agent Sync MCP, alongside the existing issue convenience commands and general GraphQL tools.  The catalog is checked against Linear’s official GraphQL schema; availability still depends on the seat app’s permissions and workspace plan.
+AFC-318 adds 175 named commands to the hosted Agent Sync MCP, alongside the existing issue convenience commands and general GraphQL tools.  AFC-319 adds 11 fixed tools forwarded through Linear’s official MCP service, bringing the hosted Linear inventory to 196 tools (209 hosted tools overall).  The named-command catalog is checked against Linear’s official GraphQL schema; availability still depends on the seat app’s permissions and workspace plan.
 
 ## Use
 
@@ -15,7 +15,13 @@ AFC-318 adds 175 named commands to the hosted Agent Sync MCP, alongside the exis
 
 linear_prepare_attachment_upload prepares private, short-lived signed upload metadata.  It does not upload file bytes or make assets public.  Use the returned method-specific headers and URL only with a trusted upload client, then create the attachment record using the resulting asset URL.  Keep signed URLs/headers out of logs and public posts; use a fresh preparation request after expiry.  The create_attachment_from_upload alias creates the record and assumes the bytes have already been uploaded.
 
-Releases and agent skills are present in the public schema but may depend on workspace plan or preview availability.  Internal diff/review APIs are excluded.  Documentation search and image extraction are not public GraphQL roots and are not advertised as working API commands.  Deprecated cycle creation is excluded because Linear says it is unsupported.  Workspace credential/access administration, batch roots and internal-only arguments and typed input fields remain outside this catalog.
+Releases and agent skills are present in the public schema but may depend on workspace plan or preview availability.  Internal diff/review APIs are not exposed through these GraphQL commands; they are available through the fixed official MCP tools below.  Documentation search and image extraction are not public GraphQL roots and are available only through that official MCP surface.  Deprecated cycle creation is excluded because Linear says it is unsupported.  Workspace credential/access administration, batch roots and internal-only arguments and typed input fields remain outside this catalog.
+
+## Official Linear MCP Tools
+
+The hosted bridge forwards exactly 11 official tools: `get_diff`, `list_diffs`, `get_diff_threads`, `save_diff_comment`, `resolve_diff_thread`, `delete_diff_comment`, `submit_diff_review`, `update_diff`, `merge_diff`, `extract_images` and `search_documentation`.  `extract_images` accepts Markdown containing Linear upload URLs and returns image blocks; it does not take an issue ID.  Linear’s native extractor does not fetch arbitrary external image URLs.  These are fixed upstream names, not arbitrary tool proxying.
+
+Calls use the same per-seat cached Linear app token as the other hosted Linear tools, with no additional manual OAuth flow.  Linear and GitHub permissions still apply.  Writes require idempotency keys, and partial or uncertain outcomes are never automatically replayed.  The official MCP bridge supplements the 175 named GraphQL commands; it does not change their schema or permission limits.
 
 ## Catalog
 

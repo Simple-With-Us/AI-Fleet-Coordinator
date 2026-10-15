@@ -1,3 +1,4 @@
+import { LINEAR_MCP_TOOLS, LINEAR_MCP_READ_TOOLS, LINEAR_MCP_WRITE_TOOLS } from "./linear-mcp-specs.js";
 import { LINEAR_NAMED_TOOLS, LINEAR_NAMED_COMMANDS } from "./linear-named-specs.js";
 // Linear tools for hosted seats, so a seat with no shell (GROK-WEB first, then
 // ECHO and INSTINCT) works the board as its own bot app and never as Jay.
@@ -578,10 +579,11 @@ export const LINEAR_TOOLS = Object.freeze([
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   },
   ...LINEAR_NAMED_TOOLS,
+  ...LINEAR_MCP_TOOLS,
 ]);
 
-export const LINEAR_READ_TOOLS = Object.freeze(new Set(["linear_whoami", "linear_list", "linear_show", "linear_schema", "linear_query", ...LINEAR_NAMED_COMMANDS.filter((c) => !c.write).map((c) => c.name)]));
-export const LINEAR_WRITE_TOOLS = Object.freeze(new Set(["linear_file", "linear_claim", "linear_comment", "linear_status", "linear_mutation", ...LINEAR_NAMED_COMMANDS.filter((c) => c.write).map((c) => c.name)]));
+export const LINEAR_READ_TOOLS = Object.freeze(new Set(["linear_whoami", "linear_list", "linear_show", "linear_schema", "linear_query", ...LINEAR_NAMED_COMMANDS.filter((c) => !c.write).map((c) => c.name), ...LINEAR_MCP_READ_TOOLS]));
+export const LINEAR_WRITE_TOOLS = Object.freeze(new Set(["linear_file", "linear_claim", "linear_comment", "linear_status", "linear_mutation", ...LINEAR_NAMED_COMMANDS.filter((c) => c.write).map((c) => c.name), ...LINEAR_MCP_WRITE_TOOLS]));
 
 // ---------------------------------------------------------------- client
 

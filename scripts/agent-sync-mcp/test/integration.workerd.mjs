@@ -1,5 +1,7 @@
 import { parse as parseGraphql } from "graphql";
 import { LINEAR_NAMED_TOOLS } from "../src/linear-named-specs.js";
+import { LINEAR_MCP_TOOLS } from "../src/linear-mcp-specs.js";
+import { ZULIP_PUBLIC_TOOLS } from "../src/zulip-tool-specs.js";
 // One workerd integration test (spec 6, Worker suite).
 // Runs the bundled Worker in Miniflare (from the pinned wrangler) with fake
 // Access certificates, ChatGPT's and Grok's real CIMD documents and a fake
@@ -24,7 +26,7 @@ import { FakeLinear, opOf } from "./fake-linear.mjs";
 
 const TOOLS = CONTRACT.tools;
 // The hosted server lists tools.json, followed by hosted-only recall, DM and Linear tools.
-const HOSTED_NAMES = [...TOOLS.map((t) => t.name), "recall_search", "recall_stats", "recall_contribute", "dm_list", "dm_read", "dm_send", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name)];
+const HOSTED_NAMES = ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name)];
 const JET_KEY = zulipShapedKey(11);
 const CURSOR_KEY = zulipShapedKey(12);
 const CURSOR_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";
@@ -498,17 +500,13 @@ try {
     assert.equal(list.status, 200);
     const tools = list.json.result.tools;
     assert.deepEqual(tools.map((t) => t.name), HOSTED_NAMES);
-    for (const t of TOOLS) {
-      // Era fields aside, every tool is exactly the stdio server's contract, except that the
-      // hosted inbox says it lists DMs (spec 1.2) where the stdio one says they are left out.
-      const served = Object.fromEntries(Object.keys(t).map((k) => [k, tools.find((x) => x.name === t.name)[k]]));
-      if (t.name === "inbox") {
-        assert.match(served.description, /direct messages sent to it/);
-        assert.deepEqual({ ...served, description: null }, { ...t, description: null });
-      } else assert.deepEqual(served, t, t.name);
+    for (const spec of ZULIP_PUBLIC_TOOLS) {
+      const served = tools.find((item) => item.name === spec.name);
+      assert.ok(served, spec.name);
+      assert.deepEqual(Object.fromEntries(Object.keys(spec).map((key) => [key, served[key]])), spec, spec.name);
     }
-    for (const name of ["dm_list", "dm_read", "dm_send"]) assert.ok(tools.find((x) => x.name === name).outputSchema, name);
-    assert.match(init.json.result.instructions, /Direct messages \(dm_list, dm_read, dm_send/);
+    for (const name of ["zulip_dm_list", "zulip_dm_read", "zulip_dm_send"]) assert.ok(tools.find((item) => item.name === name).outputSchema, name);
+    assert.match(init.json.result.instructions, /Direct messages \(zulip_dm_list, zulip_dm_read, zulip_dm_send/);
     const who = await call(tokens.access_token, "whoami");
     assert.equal(who.json.result.structuredContent.seat, "JET");
     assert.equal(who.json.result.structuredContent.transport, "hosted");
@@ -1258,7 +1256,7 @@ try {
     const jetBefore = await jetGate.getState();
     assert.equal((await adminAction("create_manual_client", { seat: "CURSOR" })).status, 303);
     const admin = await (await browser("/admin")).text();
-    const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Cursor Cloud \(manual form, CURSOR\)<\/td><td>CURSOR<\/td>/)[1];
+    const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Cursor Cloud \(manual form, CURSOR\)<\/td><td>Cursor &#38; Grok Bots<\/td>/)[1];
     assert.equal((await adminAction("arm", { seat: "CURSOR" })).status, 303);
     const c = pkce();
     const who = { clientId, redirect: CURSOR_REDIRECT };
