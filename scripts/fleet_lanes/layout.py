@@ -503,7 +503,6 @@ SEAT_ALIASES: dict[str, str] = {
     "mm": "minimax",
     "ma": "muse-assist",
     "muse": "muse-assist",
-    "muse-assist": "muse-assist",
     "rob": "muse-assist",
     "rob-muse": "muse-assist",
     "instinct": "wise",
