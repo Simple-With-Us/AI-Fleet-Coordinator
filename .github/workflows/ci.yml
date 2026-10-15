@@ -158,6 +158,13 @@ jobs:
     # needs-owner notifier checks the owner's Linear reply by.
     - name: Board CLI input files and flat labels
       run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests
+    # Agent-Sync parity (AFC-329):  `board commands|run|api|mcp` serve the hosted server's Linear catalogs from
+    # scripts/linear-board/catalog/ (pinned to the server's export by the agent-sync-mcp node test
+    # linear-catalog-parity).  This replays the server's documents and guard verdicts against board's Python
+    # ports, checks board lists exactly the exported names, and runs the verbs against a mock Linear and a fake
+    # official MCP server (about a minute).
+    - name: Board CLI Agent-Sync parity
+      run: python3 scripts/linear-board/test_board_parity.py
     # Infisical's only environment is prod (owner 2026-10-10).  The lint fails on a dev or
     # staging INFISICAL_ENV in an env file or cursor-cloud-start.sh fallback, and on a
     # non-prod .infisical.json default;  `--fleet` runs it over every ~/Code repo on origin/main.
