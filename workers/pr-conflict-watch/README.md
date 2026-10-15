@@ -1,6 +1,6 @@
 # pr-conflict-watch
 
-Cloudflare Worker that receives GitHub `pull_request` and `check_suite`/`check_run` webhooks across all of jaywedgeworth22's active repos, and posts to #agent-sync Slack the moment a PR's `mergeable_state` turns `dirty` (real conflict), `blocked`, or `unstable`. Posts again when a flagged PR recovers. Dedupes via a KV namespace so it only alerts on state *changes*, not every webhook delivery.
+Cloudflare Worker that receives GitHub `pull_request` and `check_suite`/`check_run` webhooks across all of jaywedgeworth22's active repos, and posts to #agent-sync Slack the moment a PR's `mergeable_state` turns `dirty` (real merge conflict). Posts again when a dirty PR clears. `blocked` and `unstable` are ignored so CI churn does not burn the free-tier KV write budget. Dedupes via a KV namespace so it only alerts on state *changes*, not every webhook delivery.
 
 ## Deployed
 
