@@ -497,9 +497,13 @@ class Daemon:
         self.listener_api_server: LAPI.ListenerReadApi | None = None
         self.notes_relay: NR.Consumer | None = None
         self.notes_relay_lock = threading.RLock()  # a reload (main thread) and a handover (seat thread) never overlap
-        # Relay requests that could not be spooled while the queue stayed connected:  (seat, id) -> (runner, message).
-        # The live event is gone and the channel is only backfilled on a reconnect, so each is offered again on the tick.
-        self.notes_relay_retry: dict[tuple[str, int], tuple[Any, dict[str, Any]]] = {}
+        # Relay requests that could not be spooled while the queue stayed connected:  (seat, id) -> the runner whose
+        # cursor they hold.  Only the id is kept (the message is fetched again to retry), and at most
+        # NOTES_RELAY_RETRY_LIMIT are tracked.  A request past that sets the seat's overflow marker instead (the
+        # lowest id not tracked), which keeps the hold on the cursor until an in-session backfill of the relay
+        # channel from that id has spooled everything after it.
+        self.notes_relay_retry: dict[tuple[str, int], Any] = {}
+        self.notes_relay_overflow: dict[str, tuple[Any, int]] = {}
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {"reap": -1e9, "status": -1e9, "grace": -1e9, "prune": -1e9, "held": -1e9, "relay_retry": -1e9}
@@ -694,36 +698,102 @@ class Daemon:
             self._configure_notes_relay_locked()
 
     NOTES_RELAY_RETRY_SECONDS = 5.0
+    NOTES_RELAY_RETRY_LIMIT = 64  # tracked ids;  more than this set the overflow marker
+    NOTES_RELAY_BACKFILL_PAGES = 50  # pages of PAGE messages per tick;  a longer channel resumes on the next tick
 
     def _keep_for_relay_retry(self, runner: "SeatRunner", message: Mapping[str, Any]) -> None:
-        """Remember a request the spool could not keep.  There is no cap:  an entry is one Zulip message, and only
-        what Zulip delivered to this session since the spool began failing can be here, so the map cannot grow past
-        that.  A cap would let a request beyond it fall out of the hold on the cursor."""
+        """Remember a request the spool could not keep.  Bounded:  past the limit the id is not tracked, the seat's
+        overflow marker takes the lowest such id, and the hold on the cursor stays until the backfill has run."""
+        message_id = int(message["id"])
         with self.notes_relay_lock:
-            self.notes_relay_retry[(runner.seat, int(message["id"]))] = (runner, dict(message))
+            if (runner.seat, message_id) in self.notes_relay_retry or len(self.notes_relay_retry) < self.NOTES_RELAY_RETRY_LIMIT:
+                self.notes_relay_retry[(runner.seat, message_id)] = runner
+                return
+            held = self.notes_relay_overflow.get(runner.seat)
+            self.notes_relay_overflow[runner.seat] = (runner, message_id if held is None else min(held[1], message_id))
+            self.log.write("notes-relay-retry-overflow", seat=runner.seat, id=message_id,
+                           warning="too many unspooled requests to track;  the cursor stays held until a backfill from the "
+                                   "lowest one has run")
+
+    def _release_relay_hold(self, holder: "SeatRunner") -> None:
+        """The hold on `holder`'s cursor is the lowest request it still has tracked or overflowed, else none."""
+        waiting = [mid for (seat, mid) in self.notes_relay_retry if seat == holder.seat]
+        overflow = self.notes_relay_overflow.get(holder.seat)
+        if overflow is not None:
+            waiting.append(overflow[1])
+        holder.hold_below = min(waiting) if waiting else None
 
     def retry_held_notes_relay(self) -> None:
         """Offer again each relay request that could not be spooled, through the CURRENT consumer's own reader (a
         reload may have moved the consumer to another seat;  the spool is seat-independent).  Once one is on disk,
         the hold it put on its original runner's cursor falls to the lowest request that runner still has waiting,
-        or ends, and that cursor advances."""
+        or ends, and that cursor advances.  Then any overflow is recovered by a backfill of the relay channel."""
         with self.notes_relay_lock:
             relay = self.notes_relay
             if relay is None or relay.stopped.is_set():
                 return
             reader = self.seats.get(relay.seat)
-            if reader is None or not reader.connected:
+            if reader is None or not reader.connected or reader.client is None:
                 return
-            for key, (holder, message) in sorted(self.notes_relay_retry.items(), key=lambda item: item[0][1]):
-                if not relay.offer(reader, message):
+            spooled: dict[str, tuple[Any, int]] = {}  # seat -> (holder, highest id spooled this pass)
+            for key in sorted(self.notes_relay_retry, key=lambda item: item[1]):
+                holder = self.notes_relay_retry[key]
+                try:
+                    message = reader.client.get("messages/%d" % key[1], {"apply_markdown": False}).get("message")
+                except Exception:  # noqa: BLE001 - the next tick tries again
+                    continue
+                if not isinstance(message, dict) or not relay.offer(reader, message):
                     continue
                 del self.notes_relay_retry[key]
-                waiting = [mid for (seat, mid) in self.notes_relay_retry if seat == holder.seat]
-                holder.hold_below = min(waiting) if waiting else None
-                holder.advance(key[1])
-                self.log.write("notes-relay-retry-spooled", seat=holder.seat, reader=reader.seat, id=key[1],
-                               still_held=len(waiting))
+                spooled[key[0]] = (holder, max(key[1], spooled.get(key[0], (holder, 0))[1]))
+                self.log.write("notes-relay-retry-spooled", seat=holder.seat, reader=reader.seat, id=key[1])
+            # One pass over the map recomputes every affected hold (a tick stays linear in the map's size), instead
+            # of one rescan per spooled request.
+            if spooled:
+                lowest: dict[str, int] = {}
+                for seat, mid in self.notes_relay_retry:
+                    lowest[seat] = min(mid, lowest.get(seat, mid))
+                for seat, (holder, highest) in spooled.items():
+                    overflow = self.notes_relay_overflow.get(seat)
+                    floor = [v for v in (lowest.get(seat), overflow[1] if overflow else None) if v is not None]
+                    holder.hold_below = min(floor) if floor else None
+                    holder.advance(highest)
+            self._backfill_relay_overflow(relay, reader)
             self.complete_notes_relay_handover()
+
+    def _backfill_relay_overflow(self, relay: Any, reader: "SeatRunner") -> None:
+        """For each seat with an overflow marker, offer every relay-channel request from the marker's id on (paged,
+        oldest first).  A refused offer stops the pass with the marker at that id.  The marker clears only when the
+        pass has reached the channel's newest message, and the hold then falls to what is still tracked."""
+        narrow = [{"operator": "channel", "operand": relay.channel}]
+        for seat, (holder, start) in sorted(self.notes_relay_overflow.items()):
+            anchor, last, reached_newest, refused_at = start - 1, start - 1, False, None  # after `start - 1`, so `start` is included
+            for _ in range(self.NOTES_RELAY_BACKFILL_PAGES):
+                try:
+                    page = reader.fetch(narrow, anchor=anchor, after=PAGE)
+                except Exception:  # noqa: BLE001 - the marker stays;  the next tick tries again
+                    break
+                rows = sorted((m for m in page if isinstance(m.get("id"), int) and m["id"] > last), key=lambda m: m["id"])
+                for message in rows:
+                    if relay.wants(reader, message) and not relay.offer(reader, message):
+                        refused_at = message["id"]
+                        break
+                    last = message["id"]
+                if refused_at is not None:
+                    break
+                if len(page) < PAGE:
+                    reached_newest = True
+                    break
+                anchor = last
+            if reached_newest:
+                del self.notes_relay_overflow[seat]
+                self._release_relay_hold(holder)
+                holder.advance(last)
+                self.log.write("notes-relay-overflow-recovered", seat=holder.seat, reader=reader.seat, from_id=start)
+            else:
+                # Progress is kept:  everything below the new marker is on disk, so the hold may move up to it.
+                self.notes_relay_overflow[seat] = (holder, refused_at if refused_at is not None else last + 1)
+                self._release_relay_hold(holder)
 
     def complete_notes_relay_handover(self) -> None:
         """A reload asked the old consumer to stop while its worker was inside a request, so the swap waited.  Once
@@ -2942,7 +3012,8 @@ class Daemon:
             self.reload_requested = False
             self.reload()
         self.complete_notes_relay_handover()
-        if self.notes_relay_retry and now - self.last_tick["relay_retry"] >= self.NOTES_RELAY_RETRY_SECONDS:
+        if ((self.notes_relay_retry or self.notes_relay_overflow)
+                and now - self.last_tick["relay_retry"] >= self.NOTES_RELAY_RETRY_SECONDS):
             self.last_tick["relay_retry"] = now
             self.retry_held_notes_relay()
         for pending in self.coalescer.take_due(now):

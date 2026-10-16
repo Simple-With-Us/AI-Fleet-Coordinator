@@ -419,24 +419,64 @@ class DaemonRelayTests(DaemonHarness):
         self.assertEqual(list(daemon.notes_relay_retry), [("CLAUDE", second)])
         consumer.stop()
 
-    def test_no_held_request_falls_out_of_the_retry_however_many_there_are(self):
+    def test_the_retry_map_is_bounded_and_overflowed_requests_are_recovered_by_an_in_session_backfill(self):
         daemon = self.started_with_relay()
         runner = daemon.seats["CLAUDE"]
         consumer = daemon.notes_relay
         real_offer = consumer.offer
         consumer.runner = self.fake_run
         consumer.offer = lambda r, m: False
-        count = 70  # past the old cap of 64
+        limit = daemon.NOTES_RELAY_RETRY_LIMIT
+        count = limit + 40  # past the bound
         ids = [self.envelope_message(rid="many-request-%03d" % i) for i in range(count)]
         daemon.handle_events(runner, [{"type": "message", "message": dict(m)} for m in self.fake.messages[-count:]])
-        self.assertEqual(len(daemon.notes_relay_retry), count)
+        self.assertEqual(len(daemon.notes_relay_retry), limit, "memory stays bounded")
+        self.assertEqual(sorted(mid for (_, mid) in daemon.notes_relay_retry), ids[:limit])
+        self.assertEqual(daemon.notes_relay_overflow["CLAUDE"][1], ids[limit], "the marker is the lowest untracked id")
         self.assertEqual(runner.hold_below, ids[0])
-        consumer.offer = real_offer
+        consumer.offer = real_offer  # the spool accepts writes again
         daemon.last_tick["relay_retry"] = -1e9
         daemon.tick()
         self.assertEqual(daemon.notes_relay_retry, {})
-        self.assertIsNone(runner.hold_below, "every request is on disk, so the hold ends")
-        self.assertTrue(self.wait(lambda: len(self.calls) == count, 30), "all %d ran" % len(self.calls))
+        self.assertEqual(daemon.notes_relay_overflow, {}, "the backfill reached the newest message")
+        self.assertIsNone(runner.hold_below)
+        self.assertTrue(self.wait(lambda: len(self.calls) == count, 30), "all %d ran, got %d" % (count, len(self.calls)))
+        consumer.stop()
+
+    def test_the_hold_stays_while_the_overflow_backfill_cannot_spool(self):
+        daemon = self.started_with_relay()
+        runner = daemon.seats["CLAUDE"]
+        consumer = daemon.notes_relay
+        real_offer = consumer.offer
+        consumer.runner = self.fake_run
+        consumer.offer = lambda r, m: False
+        limit = daemon.NOTES_RELAY_RETRY_LIMIT
+        count = limit + 5
+        ids = [self.envelope_message(rid="stuck-request-%03d" % i) for i in range(count)]
+        daemon.handle_events(runner, [{"type": "message", "message": dict(m)} for m in self.fake.messages[-count:]])
+        daemon.last_tick["relay_retry"] = -1e9
+        daemon.tick()  # the spool still refuses everything
+        self.assertEqual(runner.hold_below, ids[0])
+        self.assertIn("CLAUDE", daemon.notes_relay_overflow)
+        # It accepts the first overflowed request and then refuses:  progress is kept, the hold moves only that far.
+        accepted = []
+
+        def partly(r, m):
+            if m["id"] <= ids[limit] or m["id"] in daemon.notes_relay_retry_ids():
+                accepted.append(m["id"])
+                return real_offer(r, m)
+            return False
+        daemon.notes_relay_retry_ids = lambda: {mid for (_, mid) in daemon.notes_relay_retry}
+        consumer.offer = partly
+        daemon.last_tick["relay_retry"] = -1e9
+        daemon.tick()
+        self.assertEqual(daemon.notes_relay_overflow["CLAUDE"][1], ids[limit + 1], "resumes at the first refused request")
+        self.assertEqual(runner.hold_below, ids[limit + 1] if not daemon.notes_relay_retry else min(mid for (_, mid) in daemon.notes_relay_retry))
+        consumer.offer = real_offer
+        daemon.last_tick["relay_retry"] = -1e9
+        daemon.tick()
+        self.assertEqual((daemon.notes_relay_retry, daemon.notes_relay_overflow, runner.hold_below), ({}, {}, None))
+        self.assertTrue(self.wait(lambda: len(self.calls) == count, 30))
         consumer.stop()
 
     def test_held_requests_move_to_the_new_consumer_when_a_reload_changes_the_seat(self):
