@@ -73,7 +73,7 @@ export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR"]);
 // board TEAM_KEYS, with the CodeCaps and FleetLink teams the owner added
 // 2026-10-11, and SWU (AFC-292).  linear-parity.test.mjs pins this list to the
 // board's own, so adding a team key there without adding it here fails CI.
-export const TEAM_KEYS = Object.freeze(["ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK", "FL", "CC", "SWU"]);
+export const TEAM_KEYS = Object.freeze(["ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "C", "FL", "CC", "SWU"]);
 export const FALLBACK_TEAM = "AFC";
 export const BOARD_SLUG_TEAM = Object.freeze({
   "ai-fleet-coordinator": "AFC",
@@ -82,9 +82,9 @@ export const BOARD_SLUG_TEAM = Object.freeze({
   "autorotate-codes": "AR",
   botfleet: "BF",
   "botfleet-app": "BF",
-  clutch: "CK",
-  "dsh-runtime": "CK",
-  harness: "CK",
+  clutch: "C",
+  "dsh-runtime": "C",
+  harness: "C",
   codecaps: "CC",
   congress: "CT",
   "congress-trade": "CT",
@@ -212,8 +212,8 @@ export function linearLabelKeys(issue) {
  */
 export function routeApp(app) {
   const raw = String(app || DEFAULT_APP).trim();
-  // CLUTCH is canonical; CK is the live team key pending workspace rename.
-  if (["CLUTCH", "CK"].includes(raw.toUpperCase())) return { team: "CK", slug: null };
+  // CLUTCH is canonical; C is the live team key; CK remains a compatibility alias.
+  if (["CLUTCH", "CK", "C"].includes(raw.toUpperCase())) return { team: "C", slug: null };
   if (TEAM_KEYS.includes(raw.toUpperCase())) return { team: raw.toUpperCase(), slug: null };
   const hit = BOARD_SLUG_TEAM[raw.toLowerCase()] ?? BOARD_SLUG_TEAM[slugify(raw)];
   if (hit) return { team: hit, slug: null };

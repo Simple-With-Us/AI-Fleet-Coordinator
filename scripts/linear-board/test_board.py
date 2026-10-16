@@ -2127,9 +2127,9 @@ class CommentAuthorTests(BoardTest):
 class ClutchRoutingCompatibilityTests(unittest.TestCase):
     def test_canonical_and_legacy_names_route_to_the_live_team(self):
         cli = load_cli()
-        for app in ("CLUTCH", "clutch", "CK", "ck", "harness", "dsh-runtime"):
+        for app in ("C", "c", "CLUTCH", "clutch", "CK", "ck", "harness", "dsh-runtime"):
             with self.subTest(app=app):
-                self.assertEqual(cli.route_app(app), ("CK", None))
+                self.assertEqual(cli.route_app(app), ("C", None))
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ description: Use Linear through the `board` CLI as the first place to look and w
 > **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
 
 
-Linear is the system of record for fleet work (owner 2026-10-10), and `board` is how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK, FL, CC, SWU.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
+Linear is the system of record for fleet work (owner 2026-10-10), and `board` is how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, C, FL, CC, SWU.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
 
 Humans use Linear in the browser.  Agents use the `board` CLI, which is the same command with the same flags as before; it now reads and writes Linear and signs each write with your seat.  The old `mac.jays.services/board` is a read-only archive until about day 30 after the cutover.  The effort logs are archived.  Nothing mirrors to them any more.
 
@@ -77,4 +77,4 @@ The full verb table, id forms and exit codes are in `scripts/linear-board/README
 - `scripts/linear-board/README.md` and `docs/protocols/linear-migration.md` in AI-Fleet-Coordinator
 - `board --help` / `board file --help`
 
-CLUTCH is the canonical app name. Its live Linear team key is currently `CK`, pending an administrator rename. `CLUTCH`, `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same live team. Never file against a nonexistent `CLUTCH` team key before the rename.
+CLUTCH is the canonical app name. Its verified live Linear team key is `C`. `C`, `CLUTCH`, legacy `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same live team. Prior `CK-n` and `CLUTCH-n` identifiers remain resolvable after the rename.

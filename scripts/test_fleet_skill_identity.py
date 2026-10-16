@@ -1369,7 +1369,7 @@ class LinearTeamListTests(unittest.TestCase):
     # A run of uppercase team acronyms, however each file chooses to introduce it.
     # Three or more, so single all-caps words like API or CLI never match.
     # Acronyms may be longer than three letters (CLUTCH is six).
-    LIST = re.compile(r"\b[A-Z]{2,}(?:,\s*[A-Z]{2,}){2,}\b")
+    LIST = re.compile(r"\b[A-Z]{1,}(?:,\s*[A-Z]{1,}){2,}\b")
 
     def _team_keys(self) -> tuple[str, ...]:
         # Parse just the assignment:  importing the board would pull in its

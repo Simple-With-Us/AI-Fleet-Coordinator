@@ -162,7 +162,7 @@ Three forms are accepted everywhere an id is expected, by `board`, by `linear_sh
 
 ## Teams
 
-One team per app.  `--app` takes a team key (`AFC`, `FL`) or a board slug (`socratic-trade`); `fleet-infra` routes to OPS; an unknown slug goes to AFC with an `app:<slug>` label.  Teams live:  AFC, AR, BF, CC, CK, CL, CT, CTS, DD, FL, HH, OPS, PS, ST, SWU, UM.
+One team per app.  `--app` takes a team key (`AFC`, `FL`) or a board slug (`socratic-trade`); `fleet-infra` routes to OPS; an unknown slug goes to AFC with an `app:<slug>` label.  Teams live:  AFC, AR, BF, CC, C, CL, CT, CTS, DD, FL, HH, OPS, PS, ST, SWU, UM.
 
 `fleet-apps.json` is the source of truth for the acronym-to-repo mapping.  Do not infer a repo from an acronym.
 
@@ -197,4 +197,4 @@ AGENT_SEAT=MM board whoami
 | --- | --- | --- | --- |
 | v1 | 2026-10-15 | MiniMax (MM) | First standalone guide, written for Jay alongside the Zulip guide v4 update.  Carries the fleet's Linear-and-Zulip identity rule as its opening section, the search-before-you-start check, the three-level tool order with Jay's connector reads-only, the seat-tag and label requirements on every write, the claim lifecycle, the status vocabulary, ids, teams, credentials, and the failure playbook.  Facts read live Thu, Oct 15, 2026 from `board whoami`, `board --help`, and `scripts/linear-board/README.md`. |
 
-CLUTCH is the canonical app name. Its live Linear team key is currently `CK`, pending an administrator rename. `CLUTCH`, `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same live team. Never file against a nonexistent `CLUTCH` team key before the rename.
+CLUTCH is the canonical app name. Its verified live Linear team key is `C`. `C`, `CLUTCH`, legacy `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same live team. Prior `CK-n` and `CLUTCH-n` identifiers remain resolvable after the rename.

@@ -459,8 +459,8 @@ export function buildFleetAppsTab(fleetApps, teamKeys, nowIso) {
   const rows = [["Acronym", "App", "Repo", "Kind", "Code Dir", "Lanes", "Linear Team", "Status", "Notes"]];
   const teams = new Set(teamKeys || []);
   for (const a of fleetApps.apps || []) {
-    // The app/seat acronym remains CLUTCH; its live Linear team key is CK.
-    const teamKey = a.acronym === "CLUTCH" ? "CK" : a.acronym;
+    // The app/seat acronym remains CLUTCH; its verified live Linear team key is C.
+    const teamKey = a.acronym === "CLUTCH" ? "C" : a.acronym;
     rows.push([
       a.acronym,
       a.displayName || a.repo,

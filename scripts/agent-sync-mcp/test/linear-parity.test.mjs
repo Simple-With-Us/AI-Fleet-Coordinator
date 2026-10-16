@@ -150,14 +150,14 @@ test("every seat with Linear secrets has a hyphen-free secret name", () => {
     assert.ok(names.clientSecret.endsWith("_CLIENT_SECRET"), names.clientSecret);
   }
   assert.equal(LINEAR_SECRETS["GROK-WEB"].clientId, "LINEAR_GROK_WEB_CLIENT_ID");
- });
+});
 test("the early re-mint age is the CLI's (28 days of a 30-day token)", async () => {
   const { LINEAR_REMINT_AFTER_S } = await import("../src/linear.js");
   assert.equal(LINEAR_REMINT_AFTER_S, 28 * 86_400);
   assert.match(BOARD, /^REMINT_AFTER = 28 \* 86400$/m);
 });
-test("CLUTCH canonical name and CK compatibility alias route to the live CK team", () => {
-  for (const app of ["CLUTCH", "clutch", "CK", "ck", "dsh-runtime", "harness"]) {
-    assert.deepEqual(routeApp(app), { team: "CK", slug: null });
+test("CLUTCH canonical name and CK compatibility alias route to the live C team", () => {
+  for (const app of ["C", "c", "CLUTCH", "clutch", "CK", "ck", "dsh-runtime", "harness"]) {
+    assert.deepEqual(routeApp(app), { team: "C", slug: null });
   }
 });
