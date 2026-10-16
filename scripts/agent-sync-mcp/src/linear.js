@@ -43,6 +43,11 @@ export const LINEAR_WORKSPACE_URL_KEY = "simple-with-us";
 // hold one, and Infisical stores the Grok Web pair under these names.  This is
 // the only place a seat becomes a credential name, which is what keeps one
 // seat's grant from reading another's pair.
+// Linear's client-credentials tokens last 30 days.  A cached token is re-minted
+// early once it is this old, and still used while that early mint fails.  Same
+// value as REMINT_AFTER in scripts/linear-board/board (linear-parity test).
+export const LINEAR_REMINT_AFTER_S = 28 * 86_400;
+
 export const LINEAR_SECRETS = Object.freeze({
   JET: Object.freeze({ clientId: "LINEAR_JET_CLIENT_ID", clientSecret: "LINEAR_JET_CLIENT_SECRET" }),
   "GROK-WEB": Object.freeze({ clientId: "LINEAR_GROK_WEB_CLIENT_ID", clientSecret: "LINEAR_GROK_WEB_CLIENT_SECRET" }),
@@ -713,17 +718,44 @@ export class LinearClient {
   async token(failed = null) {
     const cached = (await this.gate.linearTokenGet()) ?? null;
     const now = this.now() / 1000;
-    if (cached?.access_token && cached.access_token !== failed && Number(cached.expires_at ?? 0) - now > 3600) return cached.access_token;
+    if (cached?.access_token && cached.access_token !== failed && Number(cached.expires_at ?? 0) - now > 3600) {
+      if (now - Number(cached.minted_at ?? now) < LINEAR_REMINT_AFTER_S) return cached.access_token;
+      // Day 28 of a 30-day token:  mint the next one while this one still works.
+      // A failed or contended early mint keeps the cached token.
+      try {
+        return (await this.#mintAndStore(cached, now, await this.#fingerprint(), { early: true })) ?? cached.access_token;
+      } catch (error) {
+        // The cached token is still good for up to two days, so the call goes on with it either
+        // way.  A failed mint (LinearError) is expected now and then;  anything else is a bug, and
+        // is logged by class name (never a message, which could carry a credential).
+        if (!(error instanceof LinearError)) {
+          try {
+            this.#log({ event: "linear_early_mint_bug", seat: this.seat, name: String(error?.name ?? "Error").slice(0, 40) });
+          } catch {
+            // A failing logger must not cost the caller its still-valid token.
+          }
+        }
+        return cached.access_token;
+      }
+    }
     const fingerprint = await this.#fingerprint();
     const same = cached?.cred_fp === fingerprint;
     if (same && cached?.minted_at && now - Number(cached.minted_at) < 86_400) {
       const why = cached.access_token && cached.access_token === failed ? `Linear refused the cached ${this.seatLabel()} token` : `the cached ${this.seatLabel()} token is unusable`;
       throw new LinearError("mint", { message: `${why}, and it was minted under 24 hours ago.  Linear allows one mint per app per day, so this server does not mint again.  Jay rotates the app's credentials in Infisical to force one.` });
     }
+    return this.#mintAndStore(cached, now, fingerprint);
+  }
+
+  /** Mint under the seat's lock and cache the result.  Early mints step aside for a mint in flight (null). */
+  async #mintAndStore(cached, now, fingerprint, { early = false } = {}) {
     // One mint at a time per seat:  the Durable Object's input gate makes this
     // atomic, so a second request finds the cache filled and skips the mint.
     const begun = await this.gate.idemBegin({ key: "linear-mint", ttlMs: 120_000, fields: { kind: "linear-mint" } });
-    if (begun?.verdict === "busy") throw new LinearError("mint", { message: "another request from this seat is minting the Linear token right now" });
+    if (begun?.verdict === "busy") {
+      if (early) return null;
+      throw new LinearError("mint", { message: "another request from this seat is minting the Linear token right now" });
+    }
     if (begun?.verdict === "duplicate") {
       const filled = (await this.gate.linearTokenGet()) ?? null;
       if (filled?.access_token) return filled.access_token;

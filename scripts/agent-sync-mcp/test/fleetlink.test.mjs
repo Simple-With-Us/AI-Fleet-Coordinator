@@ -12,6 +12,7 @@ import { ERROR_META_KEY } from "../src/contract.js";
 import {
   FleetLinkClient,
   fleetlinkClientFromEnv,
+  parseSeatTokens,
   FLEETLINK_TOOLS,
   FLEETLINK_READ_TOOLS,
   FLEETLINK_WRITE_TOOLS,
@@ -116,8 +117,9 @@ test("fifteen hosted FleetLink tools:  closed inputs, no seat argument, reads an
   assert.match(hostedInstructions("JET"), /fleetlink_share_to_team/);
 });
 
-test("the client needs an fls_ secret;  wrangler.jsonc holds none", () => {
+test("the client needs an fls_ secret or a seat token bundle;  wrangler.jsonc holds neither", () => {
   assert.equal(fleetlinkClientFromEnv({}), null);
+  assert.ok(!("FLEETLINK_SEAT_TOKENS" in wranglerConfig().vars));
   assert.equal(fleetlinkClientFromEnv({ FLEETLINK_AGENT_SECRET: "fla_" + "a".repeat(64) }), null);
   assert.equal(fleetlinkClientFromEnv({ FLEETLINK_AGENT_SECRET: "short" }), null);
   assert.ok(fleetlinkClientFromEnv({ FLEETLINK_AGENT_SECRET: ` ${SECRET}\n` }, { fetch: async () => null }) instanceof FleetLinkClient);
@@ -315,4 +317,28 @@ test("one malformed share field is dropped on its own, never the whole share sum
   assert.equal(result.structuredContent.share.file_count, 0);
   assert.equal(result.structuredContent.share.team, null);
   assert.equal(result.structuredContent.share.can_edit, true);
+});
+
+test("a seat with its own bot token signs in with it;  the rest use the server credential;  a malformed bundle is ignored whole", async () => {
+  const jetToken = `fla_${"1a".repeat(32)}`;
+  const calls = [];
+  const fetch = async (url, init) => {
+    calls.push(init.headers);
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] } }), { status: 200 });
+  };
+  const client = fleetlinkClientFromEnv({ FLEETLINK_AGENT_SECRET: SECRET, FLEETLINK_SEAT_TOKENS: JSON.stringify({ JET: jetToken }) }, { fetch });
+  await client.call("JET", "fleetlink_whoami", {});
+  await client.call("ECHO", "fleetlink_whoami", {});
+  assert.equal(calls[0].Authorization, `Bearer ${jetToken}`);
+  assert.ok(!("X-Fleet-Seat" in calls[0]), "a bot token names its own seat");
+  assert.deepEqual([calls[1].Authorization, calls[1]["X-Fleet-Seat"]], [`Bearer ${SECRET}`, "ECHO"]);
+  assert.deepEqual(client.secrets().sort(), [SECRET, jetToken].sort(), "every credential joins the scrub list");
+
+  const tokensOnly = fleetlinkClientFromEnv({ FLEETLINK_SEAT_TOKENS: JSON.stringify({ JET: jetToken }) }, { fetch });
+  await tokensOnly.call("JET", "fleetlink_whoami", {});
+  await assert.rejects(tokensOnly.call("ECHO", "fleetlink_whoami", {}), (e) => e.code === "not_configured");
+
+  assert.deepEqual(parseSeatTokens(JSON.stringify({ JET: jetToken, ECHO: "not-a-token" })), {});
+  assert.deepEqual(parseSeatTokens("{nope"), {});
+  assert.equal(fleetlinkClientFromEnv({ FLEETLINK_SEAT_TOKENS: "{nope" }, { fetch }), null);
 });
