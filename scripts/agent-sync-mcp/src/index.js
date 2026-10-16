@@ -62,6 +62,7 @@ import { HostedTools } from "./hosted-tools.js";
 import { IdentityRouter, loadDelegatedCredentials } from "./delegated-identities.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromEnv } from "./recall.js";
+import { fleetlinkClientFromEnv } from "./fleetlink.js";
 import { LinearClient, linearClientFromEnv, LINEAR_SEATS, linearSecretNames } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
 import { listenerClientFromEnv } from "./listener.js";
@@ -245,6 +246,9 @@ async function serveMcp(request, env, ctx) {
     // every other tool works as before (AFC-289).
     linear: linearClientFromEnv(env, seat, { gate: seatGate }),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
+    // Null without FLEETLINK_AGENT_SECRET:  the FleetLink tools then answer
+    // not_configured and every other tool works as before (AFC-328).
+    fleetlink: fleetlinkClientFromEnv(env),
     // Null unless LISTENER_API_URL and this seat's WAKE_HMAC_KEY_<SEAT> are set:  the listener_*
     // tools then answer not_configured and every other tool works as before (AFC-330).
     listener: listenerClientFromEnv(env, seat),
@@ -284,6 +288,7 @@ async function serveMcp(request, env, ctx) {
         gate: roleGate,
         cf: tools.cf,
         recall: tools.recall,
+        fleetlink: tools.fleetlink,
         linear,
         linearWrites: tools.linearWrites,
       });

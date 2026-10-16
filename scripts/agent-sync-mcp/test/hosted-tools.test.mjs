@@ -476,6 +476,7 @@ test("whoami:  the seat from the grant, the hosted transport and the bare tag", 
       zulip: { configured: true, state: "configured" },
       linear: { configured: false, state: "unavailable" },
       recall: { configured: false, state: "unconfigured" },
+      fleetlink: { configured: false, state: "unconfigured" },
     },
   });
 });

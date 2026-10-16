@@ -1049,6 +1049,8 @@ class Tools:
 
     def _resolve(self, args: Mapping[str, Any], resolve: bool) -> dict[str, Any]:
         channel, topic = self._channel(args["channel"]), self._topic(args["topic"])
+        # A resolve or unresolve renames every message's topic:  scan the name first.
+        self._scan(topic=topic)
         result = self._write(lambda: OPS.set_resolved(self.agent, channel, topic, resolve))
         return self._write_result({"id": int(result["id"]), "channel_id": _int(result.get("channel_id")) or 0})
 
@@ -1140,6 +1142,7 @@ class Tools:
 
     def _tool_topic_visibility(self, args: Mapping[str, Any]) -> dict[str, Any]:
         channel, topic = self._channel(args["channel"]), self._topic(args["topic"])
+        self._scan(topic=topic)
         return self._write_result(self._write(lambda: OPS.topic_visibility(self.agent, channel, topic, args["visibility"])))
 
     # ---- users ----------------------------------------------------------------------------
