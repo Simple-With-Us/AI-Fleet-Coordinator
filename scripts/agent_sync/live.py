@@ -113,8 +113,10 @@ def read_json(path: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def write_json(path: str, data: Any) -> None:
-    """Atomic write (a unique temp file in the same directory, then os.replace), mode 600."""
+def write_json(path: str, data: Any, *, durable: bool = False) -> None:
+    """Atomic write (a unique temp file in the same directory, then os.replace), mode 600.  `durable` also
+    fsyncs the file and then the directory, so the new contents survive a power loss;  callers whose record
+    stands between an action and running it again (idempotency rows) need it, the hot path does not."""
     private_dir(os.path.dirname(path))
     tmp = "%s.tmp-%d-%d" % (path, os.getpid(), threading.get_ident())
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -122,7 +124,16 @@ def write_json(path: str, data: Any) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, sort_keys=True, ensure_ascii=False)
             fh.write("\n")
+            if durable:
+                fh.flush()
+                os.fsync(fh.fileno())
         os.replace(tmp, path)
+        if durable:
+            dfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
     except BaseException:
         try:
             os.unlink(tmp)

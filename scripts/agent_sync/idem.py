@@ -32,7 +32,7 @@ class IdemStore:
                     if isinstance(r, dict) and isinstance(r.get("expires"), (int, float)) and r["expires"] > now}
             result = change(rows, now)
             data["rows"] = rows
-            LIVE.write_json(self.path, data)
+            LIVE.write_json(self.path, data, durable=True)
             return result
 
     def peek(self, key: str) -> dict[str, Any] | None:
