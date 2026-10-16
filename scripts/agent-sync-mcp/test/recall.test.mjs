@@ -1,4 +1,5 @@
 import { LINEAR_NAMED_TOOLS } from "../src/linear-named-specs.js";
+import { FLEETLINK_TOOLS } from "../src/fleetlink.js";
 import { LINEAR_MCP_TOOLS } from "../src/linear-mcp-specs.js";
 // Fleet recall on the hosted server (spec 1.1) against a fake recall service:
 // the tool list, scope mapping, seat forcing, argument checks, the
@@ -127,7 +128,7 @@ const noSecrets = (text) => {
 test("the hosted list is tools.json, then the three recall tools, then the three DM tools, then the Linear tools, closed inputs, no identity arguments", () => {
   assert.deepEqual(
     HOSTED_TOOL_LIST.map((t) => t.name),
-    ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name)],
+    ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name)],
   );
   // tools.json, the stdio contract, is untouched:  the Linear tools are hosted-only,
   // the way recall and dm are, because the Python stdio server cannot run them.
