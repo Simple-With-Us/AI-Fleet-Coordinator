@@ -137,6 +137,14 @@ class ChatNudgesTest(unittest.TestCase):
         self.assertFalse(self.queue.enqueue_target(self.binding, 2, 20 + TERMINAL_KEEP_SECONDS + 1, owner=True))
         self.assertEqual([item["message_id"] for item in self.queue.snapshot()["items"]], ["2"])
 
+    def test_enqueue_target_accepts_underscore_source_seat_like_config(self) -> None:
+        self.assertTrue(self.queue.enqueue_target(self.binding, 4242, time.time(), owner=False,
+                                                  source_seat="GB_FIXER"))
+        self.assertEqual(self._item()["source_seat"], "GB_FIXER")
+        with self.assertRaises(ValueError):
+            self.queue.enqueue_target(self.binding, 4243, time.time(), owner=False,
+                                      source_seat="gb-fixer")
+
     def test_recent_terminal_records_are_retained_for_deduplication(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 10)

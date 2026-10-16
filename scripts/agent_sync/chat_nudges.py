@@ -273,8 +273,8 @@ class ChatNudges:
         if binding["platform"] not in SUPPORTED_PLATFORMS:
             raise ValueError("selected chat requires a supported transport")
         message_id = str(message_id)
-        if source_seat is not None and (not isinstance(source_seat, str) or not source_seat or
-                                        not all(c.isupper() or c.isdigit() or c == "-" for c in source_seat)):
+        if source_seat is not None and (not isinstance(source_seat, str) or
+                                        not _SEAT_RE.fullmatch(source_seat)):
             raise ValueError("source_seat must be a canonical seat")
         with L.locked(self.path):
             data = self._read()

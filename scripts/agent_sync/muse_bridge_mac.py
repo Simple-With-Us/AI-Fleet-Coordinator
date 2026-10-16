@@ -294,8 +294,12 @@ class MacBridge:
                                L.paused(self.daemon.root, item["source_seat"], wakes=True)):
             raise ValueError("source message is no longer eligible for delivery")
         if kind == "chat":
-            self.catalog.discover(force=True, wait_grok=True)
+            # resolve() already refreshes from its bounded cache, so a known target needs no
+            # Grok-blocking rescan; only a cache miss forces one before resolving again.
             fresh = self.catalog.resolve(decision.get("target_id"))
+            if fresh is None:
+                self.catalog.discover(force=True, wait_grok=True)
+                fresh = self.catalog.resolve(decision.get("target_id"))
             if (not fresh or fresh.get("stale") or not (fresh.get("capabilities") or {}).get("wake") or
                     fresh.get("seat") != decision.get("destination_seat") or
                     fresh.get("seat") not in ("GROK", "CURSOR") or
@@ -329,9 +333,13 @@ class MacBridge:
             self.daemon.log.write("muse-bridge-gap", seat=seat, oldest=envelope.get("oldest"))
             return
         for item in envelope.get("items", []):
-            if item.get("source_seat") != seat or not isinstance(item.get("id"), int) or \
-                    not isinstance(item.get("seq"), int):
-                raise ValueError("invalid source-qualified bridge item")
+            # A malformed item is skipped and reported, never retried:  raising here would leave
+            # the cursor behind, and every later tick would re-export the same bad batch.
+            if (not isinstance(item, dict) or item.get("source_seat") != seat or
+                    not isinstance(item.get("id"), int) or not isinstance(item.get("seq"), int)):
+                self.daemon.log.write("muse-bridge-bad-item", seat=seat,
+                                      error="invalid source-qualified bridge item")
+                continue
             key = self._key(item)
             decision = decisions.get(key)
             if decision is None:

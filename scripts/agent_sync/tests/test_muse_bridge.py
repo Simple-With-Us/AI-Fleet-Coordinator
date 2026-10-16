@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import tempfile
 import time
+import types
 import unittest
 
 from .. import chat_nudges as CN
@@ -29,6 +30,19 @@ def _server_config(*seats: str, wake: str = "inbox", bridge: bool = True) -> C.C
         if wake == "http":
             section["routine"] = {}
         raw["seat"][seat] = section
+    cfg = C.from_dict(raw)
+    assert not cfg.errors, cfg.errors
+    return cfg
+
+
+def _mac_config(*seats: str, bridge: bool = True) -> C.Config:
+    raw: dict = {
+        "daemon": {"instance": "mac", "owner_user_id": 12, "eligible_user_ids": [12]},
+        "muse_bridge": {"enabled": True},
+        "seat": {},
+    }
+    for seat in seats:
+        raw["seat"][seat] = {"bot": seat.title(), "wake": "inbox", "muse_bridge": bridge}
     cfg = C.from_dict(raw)
     assert not cfg.errors, cfg.errors
     return cfg
@@ -69,6 +83,32 @@ class BridgeExchangeTest(unittest.TestCase):
         self.assertTrue(seat["gap"])
         self.assertEqual(seat["items"], [])
         self.assertEqual(seat["next"], 3)
+
+    def test_export_reports_internal_gap_between_rotated_and_current(self) -> None:
+        paths = L.SeatPaths(self.root, "ECHO")
+        L.append_jsonl(paths.seat_inbox + ".1", [_row(1, 101), _row(2, 102), _row(3, 103),
+                                                 _row(4, 104), _row(5, 105)])
+        self._write("ECHO", [_row(11, 111), _row(12, 112)])
+        out = MB.export(self.root, self.cfg, {"ECHO": 5})
+        seat = out["seats"]["ECHO"]
+        self.assertTrue(seat["gap"])
+        self.assertEqual(seat["items"], [])
+        self.assertEqual(seat["next"], 5)
+        local = MB.export_local(self.root, _mac_config("ECHO"), {"ECHO": 5})
+        mac = local["seats"]["ECHO"]
+        self.assertTrue(mac["gap"])
+        self.assertEqual(mac["items"], [])
+        self.assertEqual(mac["next"], 5)
+
+    def test_export_without_gap_still_advances_past_contiguous_rows(self) -> None:
+        paths = L.SeatPaths(self.root, "ECHO")
+        L.append_jsonl(paths.seat_inbox + ".1", [_row(1, 101), _row(2, 102)])
+        self._write("ECHO", [_row(3, 103), _row(4, 104)])
+        out = MB.export(self.root, self.cfg, {"ECHO": 2})
+        seat = out["seats"]["ECHO"]
+        self.assertFalse(seat["gap"])
+        self.assertEqual([row["id"] for row in seat["items"]], [103, 104])
+        self.assertEqual(seat["next"], 4)
 
     def test_export_disabled_bridge_raises(self) -> None:
         cfg = _server_config("ECHO")
@@ -149,6 +189,91 @@ class BridgeDedupeTest(unittest.TestCase):
         plain = CN.ChatNudges._dedupe_key("130", self.BINDING, None)
         self.assertNotEqual(echo, jet)
         self.assertNotEqual(echo, plain)
+
+
+class BridgeWorkerTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        self.logged: list[tuple[str, dict]] = []
+        logged = self.logged
+
+        class FakeLog:
+            def write(self, event: str, **fields: object) -> None:
+                logged.append((event, dict(fields)))
+
+        self.daemon = types.SimpleNamespace(root=self.root, log=FakeLog())
+        self.bridge = MBM.MacBridge.__new__(MBM.MacBridge)
+        self.bridge.daemon = self.daemon
+        self.bridge.path = os.path.join(L.listener_dir(self.root), MBM.STATE_NAME)
+
+    def test_bad_bridge_item_is_skipped_and_cursor_advances(self) -> None:
+        state: dict = {"cursors": {}, "decisions": {}}
+        envelope = {"gap": False, "next": 6,
+                    "items": [{"source_seat": "WRONG", "id": 99, "seq": 6}, "not-a-dict"],
+                    "budget": {}}
+        self.bridge._process_envelope(state, state["cursors"], state["decisions"], "ECHO",
+                                      envelope, remote=True, binary="muse", model="m")
+        self.assertEqual(state["cursors"]["ECHO"], 6)
+        bad = [row for row in self.logged if row[0] == "muse-bridge-bad-item"]
+        self.assertEqual(len(bad), 2)
+        self.assertEqual(state["decisions"], {})
+
+    def test_deliver_reuses_cached_catalog_without_forced_rescan(self) -> None:
+        fresh_row = {"id": "t1", "seat": "GROK", "platform": "cursor", "host": "mac",
+                     "session_id": "s1", "cwd": "/tmp", "title": "t",
+                     "status": "available", "stale": False,
+                     "capabilities": {"read": True, "wake": True}}
+
+        class FakeCatalog:
+            def __init__(self) -> None:
+                self.forced = 0
+
+            def resolve(self, record_id: object) -> dict | None:
+                return dict(fresh_row) if record_id == "t1" else None
+
+            def discover(self, force: bool = False, **kwargs: object) -> list:
+                if force:
+                    self.forced += 1
+                return []
+
+        catalog = FakeCatalog()
+        enqueued: list = []
+
+        class FakeQueue:
+            def enqueue_target(self, binding: dict, message_id: object, now: float,
+                               **kwargs: object) -> bool:
+                enqueued.append((binding, message_id, kwargs))
+                return True
+
+        class FakeExchange:
+            def request(self, command: str, body: object) -> dict:
+                return {"receipt": "r1"}
+
+        cfg = _mac_config("ECHO", "GROK")
+        self.daemon.config = cfg
+        self.daemon.clock = types.SimpleNamespace(time=time.time)
+        self.daemon.chat_queue = lambda seat: FakeQueue()
+        self.daemon.seats = {"GROK": types.SimpleNamespace(cfg=types.SimpleNamespace(enabled=True))}
+        self.bridge.catalog = catalog
+        self.bridge.exchange = FakeExchange()
+        item = {"source_seat": "ECHO", "id": 7, "seq": 7, "type": "stream",
+                "channel": "agent-sync", "topic": "t", "content": "hi",
+                "owner": False, "ts": time.time(), "stale": False}
+        decision = {"kind": "chat", "target_id": "t1",
+                    "target": {"platform": "cursor", "host": "mac",
+                               "session_id": "s1", "cwd": "/tmp"},
+                    "destination_seat": "GROK"}
+        self.bridge._deliver(item, decision, remote=True)
+        self.assertEqual(catalog.forced, 0)
+        self.assertEqual(len(enqueued), 1)
+        self.assertEqual(enqueued[0][2].get("source_seat"), "ECHO")
+        # A cache miss still forces exactly one rescan before refusing the delivery.
+        missing = dict(decision, target_id="gone")
+        with self.assertRaises(ValueError):
+            self.bridge._deliver(item, missing, remote=True)
+        self.assertEqual(catalog.forced, 1)
 
 
 class BridgeBinaryTest(unittest.TestCase):

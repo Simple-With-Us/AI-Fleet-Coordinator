@@ -58,6 +58,23 @@ def source_stale(cfg: C.Config, row: Mapping[str, Any]) -> bool:
                 time.time() - float(ts) > cfg.stale_after))
 
 
+def _export_gap(rows: list[dict[str, Any]], cursor: int) -> bool:
+    """True when the rows past the cursor are not contiguous from it (a lost rotation).
+
+    The combined rotated-plus-current inbox must read as one unbroken sequence past
+    what was already exported; anything else means rows vanished between rotations.
+    Duplicate seqs are tolerated, and history at or below the cursor is ignored.
+    """
+    if not cursor:
+        return False
+    fresh = [row["seq"] for row in rows if row["seq"] > cursor]
+    if not fresh:
+        return False
+    if fresh[0] > cursor + 1:
+        return True
+    return any(b > a + 1 for a, b in zip(fresh, fresh[1:]))
+
+
 def export(root: str, cfg: C.Config, cursors: Mapping[str, Any]) -> dict[str, Any]:
     """Return at most eight rows per enabled seat; a lost rotation is an explicit gap."""
     if cfg.instance != "server" or not cfg.muse_bridge_enabled:
@@ -71,7 +88,7 @@ def export(root: str, cfg: C.Config, cursors: Mapping[str, Any]) -> dict[str, An
             raise ValueError("invalid source cursor")
         rows = _inbox_rows(root, seat)
         oldest = rows[0]["seq"] if rows else None
-        if oldest is not None and cursor and oldest > cursor + 1:
+        if oldest is not None and _export_gap(rows, cursor):
             out["seats"][seat] = {"gap": True, "oldest": oldest, "next": cursor, "items": [],
                                   "budget": cfg.seats[seat].budget}
             continue
@@ -110,7 +127,7 @@ def export_local(root: str, cfg: C.Config, cursors: Mapping[str, Any]) -> dict[s
             raise ValueError("invalid source cursor")
         rows = _inbox_rows(root, seat)
         oldest = rows[0]["seq"] if rows else None
-        if oldest is not None and cursor and oldest > cursor + 1:
+        if oldest is not None and _export_gap(rows, cursor):
             out["seats"][seat] = {"gap": True, "oldest": oldest, "next": cursor, "items": [],
                                   "budget": cfg.seats[seat].budget}
             continue
