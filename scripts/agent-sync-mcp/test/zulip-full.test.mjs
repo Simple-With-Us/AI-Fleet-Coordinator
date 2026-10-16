@@ -333,8 +333,8 @@ test("resolve, unresolve and topic visibility refuse a topic that looks like it 
   const { fake, tools } = harness();
   fake.addMessage("Codex", "agent-sync", "deploy", "a");
   const before = fake.requests?.length ?? 0;
-  const secretTopic = "key ghp_" + "A1b2C3d4E5".repeat(4);
-  for (const [name, args] of [["zulip_resolve_topic", { topic: secretTopic }], ["zulip_unresolve_topic", { topic: secretTopic }], ["zulip_topic_visibility", { topic: secretTopic, visibility: "follow" }]]) {
+  const FIXTURE_SECRET_TOPIC = "key ghp_" + "A1b2C3d4E5".repeat(4);
+  for (const [name, args] of [["zulip_resolve_topic", { topic: FIXTURE_SECRET_TOPIC }], ["zulip_unresolve_topic", { topic: FIXTURE_SECRET_TOPIC }], ["zulip_topic_visibility", { topic: FIXTURE_SECRET_TOPIC, visibility: "follow" }]]) {
     toolError(await tools.call(name, args), "refused_secret");
   }
   if (fake.requests) assert.equal(fake.requests.length, before);
