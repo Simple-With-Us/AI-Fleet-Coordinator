@@ -223,7 +223,8 @@ class ActualRuntime(unittest.TestCase):
         if version.returncode or tuple(map(int, version.stdout.split())) < (3, 11):
             self.skipTest("deployment interpreter requires Python 3.11+; host /usr/bin/python3 is older")
         for name, args, expected in [("agent-sync", ["--version"], 0), ("board", ["--help"], 0),
-                                     ("board", ["whoami"], 4), ("fleet-cli-release", ["status"], 0),
+                                     ("board", ["whoami"], 4), ("board", ["commands", "--kind", "read"], 0),
+                                     ("board", ["mcp", "list"], 0), ("fleet-cli-release", ["status"], 0),
                                      ("agent-sync-codex-mcp", [], 3)]:
             with self.subTest(wrapper=name, args=args):
                 wrapper = self.home / ".local/bin" / name
