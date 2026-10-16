@@ -85,7 +85,7 @@ The owner ordered Linear to replace THE BOARD on Sat, Oct 10, 2026.  This design
 
 **Live workspace facts (read 2026-10-08 through Jay's connector, read-only).**  Workspace `Simple With Us`, URL slug `simple-with-us` (not `simplewithus`).  One team so far:  key `SWU`, so issue ids look like `SWU-123`, not `LIN-123`.  Members:  Jay (admin, the only human), plus integration users Cursor (an OAuth agent app), Slack (installed Thu, Oct 8, 5:27am Central on the way out of Slack) and Linear.  The Zulip linkifier `LIN-n` → `linear.app/simplewithus/issue/LIN-n` therefore points at the wrong slug and prefix; it needs an admin to change it to the `SWU-n` form under `simple-with-us`.  The plan tier is not visible through the connector.
 
-- **Teams: one public team per app**, key = the fleet-apps.json acronym: ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CLUTCH, FL, CC, SWU.
+- **Teams: one public team per app**, key = the fleet-apps.json acronym: ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK, FL, CC, SWU.
   - Issue ids carry the app (`AFC-123`), replacing `<APP>` and `board8` in Zulip topics and branch names.
   - 13 teams need Business; Basic caps at 5, Free at 2 teams and 250 issues. [DOC pricing]  Only humans are billable.
   - Teams must be public: client-credentials tokens see public teams only. [DOC]
