@@ -164,6 +164,11 @@
     // only after the owner's secrets are installed and linear_whoami answers
     // with the seat's own app (DEPLOY.md step 2c).
     "LINEAR_TOOLS_WRITES": "1",
+    // The server listener's signed read API (AFC-330):  the https origin the
+    // reverse proxy serves /listener/v1/ on.  Empty means the listener_* tools
+    // answer not_configured.  Each seat signs with its WAKE_HMAC_KEY_<SEAT>.
+    // Set it only after DEPLOY.md "Listener read API" step 3 passes.
+    "LISTENER_API_URL": "",
     // Kill switch step 4:  "1" makes /mcp answer 503.
     "MCP_DISABLED": "0"
   }

@@ -120,7 +120,9 @@ import {
   STATUS_WORDS,
 } from "./linear.js";
 import { sentenceGap } from "./textfmt.js";
-import { ZULIP_PUBLIC_TOOLS, ZULIP_TOOL_ALIASES } from "./zulip-tool-specs.js";
+import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_TOOL_ALIASES } from "./zulip-tool-specs.js";
+import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
+import { LISTENER_TOOLS, LISTENER_READ_TOOLS, LISTENER_METHODS } from "./listener.js";
 import { REALM } from "./zulip.js";
 import { CHANNEL_CACHE, lookupChannel, loadChannelSet } from "./channels.js";
 
@@ -143,10 +145,14 @@ export const RESOURCE_SCOPES = Object.freeze({ read: "zulip:read", write: "zulip
 // hosted inbox lists DMs addressed to the bot where the stdio one leaves them
 // out:  the hosted copy of the inbox spec differs from tools.json in its
 // description only.
-export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS]);
+//
+// AFC-328 appends the FleetLink tools after the Linear ones.  AFC-330 appends the rest of Zulip
+// (every tools.json tool after the first ten, as zulip_<name>) and the read-only listener tools
+// after those, so every earlier tool keeps its place.
+export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...LISTENER_TOOLS]);
 const FLEETLINK_BY_NAME = Object.freeze(Object.fromEntries(FLEETLINK_TOOLS.map((tool) => [tool.name, tool])));
 const PUBLIC_ZULIP_BY_LEGACY_NAME = Object.freeze(Object.fromEntries(
-  Object.entries(ZULIP_TOOL_ALIASES).map(([legacy, canonical]) => [legacy, ZULIP_PUBLIC_TOOLS.find((tool) => tool.name === canonical)]),
+  Object.entries(ZULIP_TOOL_ALIASES).map(([legacy, canonical]) => [legacy, [...ZULIP_PUBLIC_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS].find((tool) => tool.name === canonical)]),
 ));
 export const HOSTED_TOOLS_BY_NAME = Object.freeze({
   ...Object.fromEntries(HOSTED_TOOL_LIST.map((tool) => [tool.name, tool])),
@@ -156,8 +162,11 @@ const ZULIP_READ_NAMES = [...READ_TOOLS].flatMap((name) => [name, ZULIP_TOOL_ALI
 const ZULIP_WRITE_NAMES = [...WRITE_TOOLS].flatMap((name) => [name, ZULIP_TOOL_ALIASES[name] ?? name]);
 const DM_READ_NAMES = [...DM_READ_TOOLS].flatMap((name) => [name, ZULIP_TOOL_ALIASES[name] ?? name]);
 const DM_WRITE_NAMES = [...DM_WRITE_TOOLS].flatMap((name) => [name, ZULIP_TOOL_ALIASES[name] ?? name]);
-export const HOSTED_READ_TOOLS = Object.freeze(new Set([...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...DM_READ_NAMES, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS]));
-export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...DM_WRITE_NAMES, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS]));
+const FULL_NAMES = ZULIP_FULL_PUBLIC_TOOLS.map((tool) => tool.name.slice("zulip_".length));
+const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KIND, name)).flatMap((name) => [name, `zulip_${name}`]);
+const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, name)).flatMap((name) => [name, `zulip_${name}`]);
+export const HOSTED_READ_TOOLS = Object.freeze(new Set([...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...DM_READ_NAMES, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...LISTENER_READ_TOOLS]));
+export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...DM_WRITE_NAMES, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES]));
 export const RECALL_IDEM_TTL_MS = 10 * 60 * 1000;
 // Team and state ids are cached per isolate for an hour:  long enough to keep
 // a seat inside Linear's request budget, short enough that a team rename or a
@@ -228,8 +237,9 @@ export class HostedTools {
    * @param {object|null} [o.linear]       a LinearClient for this seat, or null when it has no Linear app
    * @param {boolean} [o.linearWrites]     the LINEAR_TOOLS_WRITES switch, off by default
    * @param {object|null} [o.fleetlink]    a FleetLinkClient, or null when FleetLink is not configured
+   * @param {object|null} [o.listener]     a ListenerClient for this seat (src/listener.js), or null
    */
-  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, callerSeat = seat, callerGate = gate, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
+  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, callerSeat = seat, callerGate = gate, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
     this.seat = seat;
     this.callerSeat = callerSeat;
     this.callerGate = callerGate;
@@ -253,6 +263,9 @@ export class HostedTools {
     if (this.fleetlink) this.known.push(...this.fleetlink.secrets().filter(Boolean));
     // The Linear client credentials join the scrub list for the same reason.
     if (this.linear) this.known.push(...this.linear.secrets().filter(Boolean));
+    // The listener read key (the seat's wake key) joins the scrub list too.
+    this.listener = listener ?? null;
+    if (this.listener) this.known.push(...this.listener.secrets().filter(Boolean));
     this.gate = gate;
     this.cf = cf ?? {};
     this.now = now;
@@ -1574,6 +1587,9 @@ export class HostedTools {
     return this.writeResult(result);
   }
 }
+
+// AFC-330:  the rest of Zulip (src/zulip-full.js) and the listener's records (src/listener.js).
+Object.assign(HostedTools.prototype, ZULIP_FULL_METHODS, LISTENER_METHODS);
 
 /** Why `me` cannot serve `seat`, or null (spec 3.6). */
 export function seatProblem(me, { seat, email }) {

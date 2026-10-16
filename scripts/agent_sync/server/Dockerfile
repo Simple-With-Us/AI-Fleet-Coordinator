@@ -20,8 +20,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     AGENT_SYNC_CONFIG=/data/listener.toml \
     AGENT_SYNC_LOG_STDOUT=1
 
-# Optional native Zulip outgoing-webhook receiver (disabled unless listener.toml opts in).
-EXPOSE 8787
+# Optional native Zulip outgoing-webhook receiver (8787) and the signed listener read API (8788, AFC-330);
+# each is disabled unless listener.toml opts in.
+EXPOSE 8787 8788
 
 RUN groupadd --system --gid 10001 agentsync \
  && useradd --system --uid 10001 --gid agentsync --home-dir /home/agentsync --create-home \

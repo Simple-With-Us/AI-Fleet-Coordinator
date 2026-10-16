@@ -355,6 +355,22 @@ def encode_params(params: Mapping[str, Any] | None) -> str:
     return urllib.parse.urlencode(pairs)
 
 
+_UPLOAD_NAME_RE = re.compile(r"^[A-Za-z0-9._ -]{1,100}$")
+
+
+def multipart_body(filename: str, data: bytes, content_type: str) -> tuple[bytes, str]:
+    """A multipart/form-data body with one file part, and its Content-Type.  The file name is
+    checked against a plain-character pattern so it can never break the part header."""
+    if not _UPLOAD_NAME_RE.fullmatch(filename) or filename.strip(" .") == "":
+        raise UsageError("the upload file name may use letters, digits, '.', '_', '-' and spaces only (1 to 100)")
+    if not re.fullmatch(r"[A-Za-z0-9.+-]{1,60}/[A-Za-z0-9.+-]{1,60}", content_type):
+        content_type = "application/octet-stream"
+    boundary = "agent-sync-" + base64.b16encode(os.urandom(12)).decode("ascii").lower()
+    head = ('--%s\r\nContent-Disposition: form-data; name="filename"; filename="%s"\r\nContent-Type: %s\r\n\r\n'
+            % (boundary, filename, content_type)).encode("ascii")
+    return head + data + ("\r\n--%s--\r\n" % boundary).encode("ascii"), "multipart/form-data; boundary=" + boundary
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Never follow a redirect: urllib would re-send the Authorization header to the new host."""
 
@@ -390,7 +406,8 @@ class ZulipClient:
 
     # ---- core ---------------------------------------------------------------------------
     def request(self, method: str, path: str, params: Mapping[str, Any] | None = None, *,
-                timeout: float | None = None, long_poll: bool = False) -> dict[str, Any]:
+                timeout: float | None = None, long_poll: bool = False,
+                upload: tuple[str, bytes, str] | None = None) -> dict[str, Any]:
         """One API call.  429 is retried (Retry-After, at most 3 times).  GET also retries
         network failures and a 502, 503 or 504 twice (1s, then 3s); a long poll does not retry a
         timeout, because a quiet queue is normal.  Non-GET requests are never retried on a
@@ -410,9 +427,12 @@ class ZulipClient:
                 data = query.encode("utf-8")
         else:
             data = query.encode("utf-8")
+        content_type = "application/x-www-form-urlencoded"
+        if upload is not None:  # POST user_uploads:  one multipart file part, nothing else
+            data, content_type = multipart_body(*upload)
         headers = {"Authorization": self._auth, "User-Agent": USER_AGENT, "Accept": "application/json"}
         if data is not None:
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            headers["Content-Type"] = content_type
         rate_retries = 0
         net_retries = 0
         while True:
@@ -466,6 +486,11 @@ class ZulipClient:
 
     def delete(self, path: str, params: Mapping[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
         return self.request("DELETE", path, params, **kw)
+
+    def upload(self, filename: str, data: bytes, content_type: str = "application/octet-stream") -> dict[str, Any]:
+        """POST user_uploads with one file.  Returns Zulip's answer ({uri, url, filename}).  Never
+        retried on a network failure, like every other non-GET request."""
+        return self.request("POST", "user_uploads", None, upload=(filename, data, content_type))
 
     # ---- helpers ------------------------------------------------------------------------
     def _retry_after(self, headers: Any, body: bytes) -> float:

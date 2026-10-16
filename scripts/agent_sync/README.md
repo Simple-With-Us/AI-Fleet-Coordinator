@@ -54,6 +54,9 @@ The default channel is `agent-sync`.  Every command takes `--as NAME`, `--defaul
 | `attach ...`, `detach ...` | Lease topics for a session; the Claude Code hooks, `--rewake`, `--drain [--replay N]` and `--wait`. |
 | `wakes [--seat S] [--since HOURS]` | The listener's wake ledger. |
 | `inbox --local [--peek]` | The listener's seat inbox file and owner queue, with no network. |
+| `show`, `edit`, `delete`, `history`, `move`, `unresolve`, `unreact`, `mark-read`, `mark-unread`, `star`, `unstar`, `search`, `channels --all`, `channel-info`, `members`, `unsubscribe`, `users`, `presence`, `set-status`, `groups`, `emoji`, `upload`, `scheduled`, `drafts`, `typing`, `dm-list` | The rest of Zulip (AFC-330), in `zulip_cli.py` over `zulip_ops.py`.  Edit and delete touch only this bot's own messages;  every string sent is secret-scanned.  `docs/protocols/zulip-fleet-guide.md`, "The agent-sync CLI", has the flags. |
+| `api METHOD PATH [--param K=V ...] [--json-param K=JSON ...]` | One allowlisted, non-admin Zulip endpoint (`zulip_ops.API_ALLOWLIST`), every sent string secret-scanned. |
+| `listener status\|inbox\|ack\|owner-queue\|surface\|wakes\|held-back\|clear-held\|leases\|live\|drain\|nudges` | This seat's own listener records (`listener_records.py`), with no network.  Reading never moves a cursor;  files open to other users are refused. |
 
 `--to NAME` resolves a user or bot by exact full name, email, or seat tag, ignoring case (`--to MA` finds `muse-assist-bot@`).  It adds the `@**Full Name**` mention that wakes the peer and puts the peer's seat tag in the label.  The tag comes from the bot's email, never its display name, because display names are cosmetic (`mm-bot@` is `MM`, `compiler-grok-bot@` is `GB-COMPILER`).  The CLI writes `→`; `->` is accepted when reading.  An unknown name is refused with the five closest names.
 
@@ -242,7 +245,7 @@ The listener is one always-on daemon per machine (`agent-sync daemon run` under 
 
 `agent-sync mcp` is a local stdio MCP server for the seat the CLI's precedence resolves (a launcher's `AGENT_LAUNCH_SEAT`, else `--as`, `AGENT_SEAT`, then `--default-seat`, which a platform's registration passes).  The design is `docs/protocols/agent-sync-mcp.md`, and the tool contract is `mcp/tools.json`.
 
-- **Tools.**  `whoami`, `topics`, `read_topic`, `inbox`, `post` (with a required topic), `reply` and `react`.  There are no admin, DM, upload, delete, `wait` or `listen` tools, and no tool takes a seat.
+- **Tools.**  `whoami`, `topics`, `read_topic`, `inbox`, `post` (with a required topic), `reply` and `react`, then (AFC-330) the DM tools, the rest of Zulip (messages, search, channels, users, uploads, scheduled messages, drafts, typing) and the `listener_*` tools from `mcp/listener-tools.json`.  Every tool names its CLI command in `CLI_VERBS`.  There are no admin, realm, other-user, `wait` or `listen` tools, edit and delete reach only the bot's own messages, and no tool takes a seat.
 - **Reads are stateless.**  Pass `since_id` and keep `next_since_id`.  A read never moves the CLI's cursors.
 - **Zulip text is fenced.**  It comes back between `BEGIN_UNTRUSTED_ZULIP nonce=…` and `END_UNTRUSTED_ZULIP nonce=…` lines, one JSON object per item.  `structuredContent` holds integers only.
 - **Writes** get the CLI's tag, lease and ledger.  On top of the CLI's checks:

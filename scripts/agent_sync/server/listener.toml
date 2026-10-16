@@ -61,6 +61,15 @@ enabled = false
 bind = "0.0.0.0"
 port = 8787
 
+# The signed read API (AFC-330, scripts/agent_sync/listener_api.py):  GET /listener/v1/<SEAT>/<record> for
+# the hosted Worker's listener_* tools.  Each seat's key is its hmac routine key (JET_ROUTINE_KEY) or
+# <CODE>_ROUTINE_KEY, the same value as the Worker's WAKE_HMAC_KEY_<SEAT>;  a seat without one gets 404.
+# Read-only.  Enable only after the reverse proxy routes /listener/v1/ here (docs/protocols/agent-sync-server.md).
+[listener_api]
+enabled = false
+bind = "0.0.0.0"
+port = 8788
+
 [seat.MA]
 instance = "server"
 creds = "env"                     # ZULIP_MA_EMAIL, ZULIP_MA_API_KEY (muse-assist-bot@)

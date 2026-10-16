@@ -100,7 +100,9 @@ const errorOf = (result) => result._meta[ERROR_META_KEY];
 test("fifteen hosted FleetLink tools:  closed inputs, no seat argument, reads and writes split, instructions name the fence", () => {
   const names = FLEETLINK_TOOLS.map((t) => t.name);
   assert.equal(names.length, 15);
-  assert.deepEqual(HOSTED_TOOL_LIST.slice(-15).map((t) => t.name), names);
+  // AFC-330 appends more tools after these, so they are contiguous rather than last.
+  const at = HOSTED_TOOL_LIST.findIndex((t) => t.name === names[0]);
+  assert.deepEqual(HOSTED_TOOL_LIST.slice(at, at + 15).map((t) => t.name), names);
   for (const tool of FLEETLINK_TOOLS) {
     assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
     for (const banned of ["seat", "as", "identity", "owner", "owner_id", "user_id"]) assert.ok(!(banned in tool.inputSchema.properties), `${tool.name} takes ${banned}`);

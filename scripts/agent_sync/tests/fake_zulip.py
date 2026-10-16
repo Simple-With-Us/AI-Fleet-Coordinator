@@ -113,6 +113,20 @@ class FakeZulip:
         self.echo_auth = False
         self.longpoll_timeout = 90
         self.topic_policies: dict[int, dict[tuple[int, str], int]] = {}  # user id -> {(stream id, topic folded): policy}
+        # AFC-330:  the rest of the API the full-coverage commands and tools use.
+        self.user_flags: dict[tuple[int, int], set[str]] = {}  # (user id, message id) -> flags set by messages/flags
+        self.removed_flags: dict[tuple[int, int], set[str]] = {}
+        self.reactions: set[tuple[int, int, str]] = set()  # (message id, user id, emoji name)
+        self.histories: dict[int, list[dict[str, Any]]] = {}
+        self.presence: dict[int, dict[str, Any]] = {}
+        self.statuses: dict[int, dict[str, Any]] = {}
+        self.emoji: dict[str, dict[str, Any]] = {"1": {"id": "1", "name": "fleet", "deactivated": False, "author_id": 12},
+                                                 "2": {"id": "2", "name": "old", "deactivated": True, "author_id": 12}}
+        self.uploads: list[dict[str, Any]] = []
+        self.scheduled: dict[int, dict[str, Any]] = {}
+        self.drafts: dict[int, dict[str, Any]] = {}
+        self.typing: list[dict[str, Any]] = []
+        self.next_aux_id = 1
         handler = self._make_handler()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.server.daemon_threads = True
@@ -343,10 +357,22 @@ class FakeZulip:
             flags.extend(["stream_wildcard_mentioned", "wildcard_mentioned"])
         if "@**topic**" in text:
             flags.append("topic_wildcard_mentioned")
+        key = (who["user_id"], message["id"])
+        for flag in sorted(self.user_flags.get(key, set())):
+            if flag not in flags:
+                flags.append(flag)
+        flags = [f for f in flags if f not in self.removed_flags.get(key, set())]
         return flags
 
     def _narrow_matches(self, narrow: list[list[Any]] | None, message: dict[str, Any], user_id: int | None = None) -> bool:
-        for operator, operand in narrow or []:
+        for term in narrow or []:
+            operator, operand = term[0], term[1]
+            negated = len(term) > 2 and term[2]
+            if operator in ("search", "has", "is", "id") and operand not in ("mentioned", "dm", "private"):
+                hit = self._extra_matches(operator, operand, message, user_id)
+                if hit == bool(negated):
+                    return False
+                continue
             if operator in ("channel", "stream") and (message["type"] != "stream" or
                                                       str(message["display_recipient"]).casefold() != str(operand).casefold()):
                 return False
@@ -368,8 +394,35 @@ class FakeZulip:
                     return False
         return True
 
+    def _extra_matches(self, operator: str, operand: Any, message: dict[str, Any], user_id: int | None) -> bool:
+        content = str(message.get("content") or "")
+        if operator == "search":
+            return all(word.casefold() in content.casefold() for word in str(operand).split())
+        if operator == "id":
+            return message["id"] == int(operand)
+        if operator == "has":
+            if operand == "link":
+                return "http://" in content or "https://" in content
+            if operand == "attachment":
+                return "/user_uploads/" in content
+            if operand == "image":
+                return any(ext in content for ext in (".png", ".jpg", ".gif"))
+            if operand == "reaction":
+                return any(r[0] == message["id"] for r in self.reactions)
+            return False
+        if operator == "is":
+            flags = self._flags(message, user_id)
+            if operand == "starred":
+                return "starred" in flags
+            if operand == "unread":
+                return "read" not in flags
+            if operand == "resolved":
+                return message["type"] == "stream" and str(message["subject"]).startswith("\u2714")
+            return operand in flags
+        return False
+
     def _dict_narrow_matches(self, narrow: list[dict[str, Any]], message: dict[str, Any], user_id: int | None) -> bool:
-        pairs = [[item["operator"], item["operand"]] for item in narrow]
+        pairs = [[item["operator"], item["operand"], bool(item.get("negated"))] for item in narrow]
         return self._narrow_matches(pairs, message, user_id)
 
     def _user_for(self, header: str | None) -> dict[str, Any] | None:
@@ -401,7 +454,11 @@ class FakeZulip:
                 path = parts.path[len("/api/v1/"):] if parts.path.startswith("/api/v1/") else parts.path
                 query = {k: v[0] for k, v in parse_qs(parts.query, keep_blank_values=True).items()}
                 length = int(self.headers.get("Content-Length") or 0)
-                form = {k: v[0] for k, v in parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True).items()} if length else {}
+                raw = self.rfile.read(length) if length else b""
+                if str(self.headers.get("Content-Type") or "").startswith("multipart/form-data"):
+                    form = {"_multipart": raw.decode("latin-1"), "_content_type": str(self.headers.get("Content-Type"))}
+                else:
+                    form = {k: v[0] for k, v in parse_qs(raw.decode("utf-8"), keep_blank_values=True).items()} if raw else {}
                 caller = fake._user_for(self.headers.get("Authorization"))
                 with fake.cond:
                     fake.requests.append(Recorded(method, path, query, form, {k: v for k, v in self.headers.items()},
@@ -511,16 +568,39 @@ class FakeZulip:
         match = re.fullmatch(r"messages/(\d+)", path)
         if match and method == "GET":
             found = self._find(int(match.group(1)))
+            if found["type"] == "private" and not self._receives(caller["user_id"], found):
+                raise _Reject(400, "Invalid message(s)", "BAD_REQUEST")
             return 200, {**ok, "message": self._public(found, caller["user_id"])}
         if match and method == "PATCH":
             found = self._find(int(match.group(1)))
-            if params.get("propagate_mode") == "change_all" and "topic" in params:
-                self.rename_topic(found["display_recipient"], found["subject"], params["topic"])
+            return self._patch_message(found, params, caller)
+        if match and method == "DELETE":
+            found = self._find(int(match.group(1)))
+            if found["sender_id"] != caller["user_id"]:
+                raise _Reject(400, "You don't have permission to delete this message", "BAD_REQUEST")
+            with self.cond:
+                self.messages.remove(found)
             return 200, ok
+        match = re.fullmatch(r"messages/(\d+)/history", path)
+        if match and method == "GET":
+            found = self._find(int(match.group(1)))
+            versions = self.histories.get(found["id"]) or [{"topic": found["subject"], "content": found["content"],
+                                                            "timestamp": found["timestamp"], "user_id": found["sender_id"]}]
+            return 200, {**ok, "message_history": copy.deepcopy(versions)}
         match = re.fullmatch(r"messages/(\d+)/reactions", path)
         if match and method == "POST":
             self._find(int(match.group(1)))
+            self.reactions.add((int(match.group(1)), caller["user_id"], params.get("emoji_name", "")))
             return 200, ok
+        if match and method == "DELETE":
+            entry = (int(match.group(1)), caller["user_id"], params.get("emoji_name", ""))
+            if entry not in self.reactions:
+                raise _Reject(400, "Reaction doesn't exist.", "REACTION_DOES_NOT_EXIST")
+            self.reactions.discard(entry)
+            return 200, ok
+        extra = self._route_more(method, path, params, caller)
+        if extra is not None:
+            return extra
         if key == ("GET", "user_groups"):
             return 200, {**ok, "user_groups": self.user_groups}
         if key == ("POST", "user_topics"):
@@ -541,6 +621,154 @@ class FakeZulip:
                 self.cond.notify_all()
             return 200, ok
         raise _Reject(404, "no such endpoint %s %s" % key, "BAD_REQUEST")
+
+    def _patch_message(self, found: dict[str, Any], params: dict[str, str], caller: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        ok: dict[str, Any] = {"result": "success", "msg": ""}
+        if "content" in params:
+            if found["sender_id"] != caller["user_id"]:
+                raise _Reject(400, "You don't have permission to edit this message", "BAD_REQUEST")
+            history = self.histories.setdefault(found["id"], [{"topic": found["subject"], "content": found["content"],
+                                                               "timestamp": found["timestamp"], "user_id": found["sender_id"]}])
+            history.append({"topic": found["subject"], "content": params["content"], "prev_content": found["content"],
+                            "timestamp": found["timestamp"] + len(history), "user_id": caller["user_id"]})
+            self.edit_content(found["id"], params["content"])
+        mode = params.get("propagate_mode", "change_one")
+        if "topic" in params or "stream_id" in params:
+            if found["type"] != "stream":
+                raise _Reject(400, "Direct messages have no topic", "BAD_REQUEST")
+            channel = found["display_recipient"]
+            if mode == "change_all" and "stream_id" not in params:
+                self.rename_topic(channel, found["subject"], params["topic"])
+                return 200, ok
+            same = [m for m in self.messages if m["type"] == "stream" and m["display_recipient"] == channel
+                    and m["subject"].casefold() == found["subject"].casefold()]
+            moved = same if mode == "change_all" else [m for m in same if m["id"] >= found["id"]] \
+                if mode == "change_later" else [found]
+            new_channel = channel
+            if "stream_id" in params:
+                new_channel = next(n for n, i in self.streams.items() if i == int(params["stream_id"]))
+            with self.cond:
+                for message in moved:
+                    message["subject"] = params.get("topic", message["subject"])
+                    message["display_recipient"] = new_channel
+                    message["stream_id"] = self.streams[new_channel]
+        return 200, ok
+
+    def _route_more(self, method: str, path: str, params: dict[str, str], caller: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
+        """The endpoints only the full-coverage commands and tools call (AFC-330)."""
+        ok: dict[str, Any] = {"result": "success", "msg": ""}
+        key = (method, path)
+        uid = caller["user_id"]
+        if key == ("POST", "messages/flags"):
+            ids = [int(i) for i in json.loads(params["messages"])]
+            for message_id in ids:
+                self._set_flag(uid, message_id, params["flag"], params["op"] == "add")
+            return 200, {**ok, "messages": ids}
+        if key == ("POST", "messages/flags/narrow"):
+            narrow = json.loads(params.get("narrow") or "[]")
+            hits = [m for m in self.messages if self._receives(uid, m) and self._dict_narrow_matches(narrow, m, uid)]
+            for message in hits:
+                self._set_flag(uid, message["id"], params["flag"], params["op"] == "add")
+            return 200, {**ok, "processed_count": len(hits), "updated_count": len(hits), "found_newest": True,
+                         "found_oldest": True, "first_processed_id": hits[0]["id"] if hits else None,
+                         "last_processed_id": hits[-1]["id"] if hits else None}
+        match = re.fullmatch(r"streams/(\d+)", path)
+        if method == "GET" and match:
+            stream_id = int(match.group(1))
+            name = next((n for n, i in self.streams.items() if i == stream_id), None)
+            if name is None:
+                raise _Reject(400, "Invalid channel ID", "BAD_REQUEST")
+            return 200, {**ok, "stream": {"stream_id": stream_id, "name": name, "description": "the %s channel" % name,
+                                          "invite_only": name.startswith("private"), "history_public_to_subscribers": True,
+                                          "date_created": EPOCH}}
+        match = re.fullmatch(r"streams/(\d+)/members", path)
+        if method == "GET" and match:
+            return 200, {**ok, "subscribers": [u["user_id"] for u in self.users if u.get("is_active", True)]}
+        if key == ("DELETE", "users/me/subscriptions"):
+            names = json.loads(params["subscriptions"])
+            removed = [n for n in names if n in self.subscribed]
+            for name in removed:
+                self.subscribed.discard(name)
+            return 200, {**ok, "removed": removed, "not_removed": [n for n in names if n not in removed]}
+        match = re.fullmatch(r"users/(\d+)/presence", path)
+        if method == "GET" and match:
+            return 200, {**ok, "presence": copy.deepcopy(self.presence.get(int(match.group(1)), {}))}
+        if key == ("POST", "users/me/status"):
+            self.statuses[uid] = dict(params)
+            return 200, ok
+        if key == ("GET", "realm/emoji"):
+            return 200, {**ok, "emoji": copy.deepcopy(self.emoji)}
+        if key == ("POST", "user_uploads"):
+            raw = params.get("_multipart", "")
+            match = re.search(r'filename="([^"]*)"', raw)
+            name = match.group(1) if match else "file"
+            body = raw.split("\r\n\r\n", 1)[1].rsplit("\r\n--", 1)[0] if "\r\n\r\n" in raw else ""
+            self.uploads.append({"filename": name, "data": body.encode("latin-1"), "content_type": params.get("_content_type")})
+            url = "/user_uploads/2/ab/%d/%s" % (len(self.uploads), name)
+            return 200, {**ok, "uri": url, "url": url, "filename": name}
+        if key == ("GET", "scheduled_messages"):
+            return 200, {**ok, "scheduled_messages": [dict(v, scheduled_message_id=k) for k, v in sorted(self.scheduled.items())]}
+        if key == ("POST", "scheduled_messages"):
+            new_id = self._aux_id()
+            to = json.loads(params["to"]) if params["type"] in ("direct", "private") else int(params["to"])
+            self.scheduled[new_id] = {"type": "private" if params["type"] in ("direct", "private") else "stream", "to": to,
+                                      "topic": params.get("topic", ""), "content": params["content"],
+                                      "scheduled_delivery_timestamp": int(params["scheduled_delivery_timestamp"]),
+                                      "failed": False}
+            return 200, {**ok, "scheduled_message_id": new_id}
+        match = re.fullmatch(r"scheduled_messages/(\d+)", path)
+        if match and method in ("PATCH", "DELETE"):
+            sid = int(match.group(1))
+            if sid not in self.scheduled:
+                raise _Reject(400, "Scheduled message does not exist", "BAD_REQUEST")
+            if method == "DELETE":
+                del self.scheduled[sid]
+            else:
+                row = self.scheduled[sid]
+                for name in ("content", "topic"):
+                    if name in params:
+                        row[name] = params[name]
+                if "scheduled_delivery_timestamp" in params:
+                    row["scheduled_delivery_timestamp"] = int(params["scheduled_delivery_timestamp"])
+            return 200, ok
+        if key == ("GET", "drafts"):
+            return 200, {**ok, "drafts": [dict(v, id=k) for k, v in sorted(self.drafts.items())]}
+        if key == ("POST", "drafts"):
+            ids = []
+            for draft in json.loads(params["drafts"]):
+                new_id = self._aux_id()
+                self.drafts[new_id] = draft
+                ids.append(new_id)
+            return 200, {**ok, "ids": ids}
+        match = re.fullmatch(r"drafts/(\d+)", path)
+        if match and method in ("PATCH", "DELETE"):
+            did = int(match.group(1))
+            if did not in self.drafts:
+                raise _Reject(404, "Draft does not exist", "BAD_REQUEST")
+            if method == "DELETE":
+                del self.drafts[did]
+            else:
+                self.drafts[did] = json.loads(params["draft"])
+            return 200, ok
+        if key == ("POST", "typing"):
+            self.typing.append(dict(params))
+            return 200, ok
+        return None
+
+    def _aux_id(self) -> int:
+        with self.cond:
+            value = self.next_aux_id
+            self.next_aux_id += 1
+            return value
+
+    def _set_flag(self, user_id: int, message_id: int, flag: str, add: bool) -> None:
+        key = (user_id, message_id)
+        if add:
+            self.user_flags.setdefault(key, set()).add(flag)
+            self.removed_flags.get(key, set()).discard(flag)
+        else:
+            self.user_flags.get(key, set()).discard(flag)
+            self.removed_flags.setdefault(key, set()).add(flag)
 
     def _find(self, message_id: int) -> dict[str, Any]:
         for message in self.messages:

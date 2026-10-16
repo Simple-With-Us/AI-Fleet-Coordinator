@@ -119,10 +119,11 @@ function fence(text) {
 
 // ---------------------------------------------------------------- contract
 
-test("tools.json is the stdio server's file, seven tools, closed inputs, no identity arguments", () => {
+test("tools.json is the stdio server's file:  the original seven first, then DMs and the rest of Zulip (AFC-330), closed inputs, no identity arguments", () => {
   const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/tools.json"), "utf8"));
   assert.deepEqual(TOOLS, file);
-  assert.deepEqual(TOOLS.tools.map((t) => t.name), ["whoami", "topics", "read_topic", "inbox", "post", "reply", "react"]);
+  assert.deepEqual(TOOLS.tools.slice(0, 10).map((t) => t.name), ["whoami", "topics", "read_topic", "inbox", "post", "reply", "react", "dm_list", "dm_read", "dm_send"]);
+  assert.equal(TOOLS.tools.length, 43);
   for (const tool of TOOLS.tools) {
     assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
     for (const banned of ["seat", "as", "rc", "no_tag", "fleet"]) assert.ok(!(banned in (tool.inputSchema.properties ?? {})), `${tool.name} takes ${banned}`);
