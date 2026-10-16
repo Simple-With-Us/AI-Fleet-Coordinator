@@ -33,7 +33,8 @@ test("Fleet Apps lists every fleet-apps.json app, FleetLink included", () => {
   assert.deepEqual(acronyms, fleetApps.apps.map(a => a.acronym));
   assert.ok(acronyms.includes("FL") && acronyms.includes("FLL"));
   const clutch = rows.find(r => r[0] === "CLUTCH");
-  assert.match(clutch[6], /^CK /);
+  assert.match(clutch[6], /^CLUTCH \(CK live key\)/);
+  assert.match(clutch[6], /team\/CK\)/);
   const fll = rows.find(r => r[0] === "FLL");
   assert.match(fll[6], /No team/);
 });

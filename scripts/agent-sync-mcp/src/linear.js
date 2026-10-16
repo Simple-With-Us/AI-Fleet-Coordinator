@@ -212,7 +212,8 @@ export function linearLabelKeys(issue) {
  */
 export function routeApp(app) {
   const raw = String(app || DEFAULT_APP).trim();
-  if (raw.toUpperCase() === "CLUTCH") return { team: "CK", slug: null };
+  // CLUTCH is canonical; CK is the live team key pending workspace rename.
+  if (["CLUTCH", "CK"].includes(raw.toUpperCase())) return { team: "CK", slug: null };
   if (TEAM_KEYS.includes(raw.toUpperCase())) return { team: raw.toUpperCase(), slug: null };
   const hit = BOARD_SLUG_TEAM[raw.toLowerCase()] ?? BOARD_SLUG_TEAM[slugify(raw)];
   if (hit) return { team: hit, slug: null };

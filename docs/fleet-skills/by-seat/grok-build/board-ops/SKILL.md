@@ -78,3 +78,5 @@ The full verb table, id forms and exit codes are in `scripts/linear-board/README
 - `/Users/jay/apps/AGENT-SYNC.md` § Linear and the Claim Lifecycle
 - `scripts/linear-board/README.md` and `docs/protocols/linear-migration.md` in AI-Fleet-Coordinator
 - `board --help` / `board file --help`
+
+CLUTCH is the canonical app name. Its live Linear team key is currently `CK`, pending an administrator rename. `CLUTCH`, `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same live team. Never file against a nonexistent `CLUTCH` team key before the rename.

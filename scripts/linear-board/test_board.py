@@ -2124,5 +2124,13 @@ class CommentAuthorTests(BoardTest):
         self.assertEqual((row["author_id"], row["author_app"]), (None, None))
 
 
+class ClutchRoutingCompatibilityTests(unittest.TestCase):
+    def test_canonical_and_legacy_names_route_to_the_live_team(self):
+        cli = load_cli()
+        for app in ("CLUTCH", "clutch", "CK", "ck", "harness", "dsh-runtime"):
+            with self.subTest(app=app):
+                self.assertEqual(cli.route_app(app), ("CK", None))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

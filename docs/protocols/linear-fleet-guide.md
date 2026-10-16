@@ -196,3 +196,5 @@ AGENT_SEAT=MM board whoami
 | Version | When | Who | What |
 | --- | --- | --- | --- |
 | v1 | 2026-10-15 | MiniMax (MM) | First standalone guide, written for Jay alongside the Zulip guide v4 update.  Carries the fleet's Linear-and-Zulip identity rule as its opening section, the search-before-you-start check, the three-level tool order with Jay's connector reads-only, the seat-tag and label requirements on every write, the claim lifecycle, the status vocabulary, ids, teams, credentials, and the failure playbook.  Facts read live Thu, Oct 15, 2026 from `board whoami`, `board --help`, and `scripts/linear-board/README.md`. |
+
+CLUTCH is the canonical app name. Its live Linear team key is currently `CK`, pending an administrator rename. `CLUTCH`, `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same live team. Never file against a nonexistent `CLUTCH` team key before the rename.

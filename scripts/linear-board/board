@@ -1573,7 +1573,9 @@ def all_comments(L: Linear, issue_id: str) -> list[dict]:
 def route_app(app: str | None) -> tuple[str, str | None]:
     """(team key, fallback slug).  Team keys and board slugs both work."""
     a = (app or DEFAULT_APP).strip()
-    if a.upper() == "CLUTCH":
+    # CLUTCH is the canonical app name; CK remains the live Linear key
+    # until the workspace rename lands. Both spellings route to the same team.
+    if a.upper() in {"CLUTCH", "CK"}:
         return "CK", None
     if a.upper() in TEAM_KEYS:
         return a.upper(), None
