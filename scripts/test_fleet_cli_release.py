@@ -129,6 +129,46 @@ class ReleaseTests(unittest.TestCase):
             out = subprocess.run([str(self.home / ".local/bin" / name), *args], capture_output=True)
             self.assertEqual((out.returncode, out.stdout.strip()), (0, expected), out.stderr)
 
+    def test_lane_shim_never_writes_bytecode_into_a_release(self):
+        # Linux CI on #589:  `lane` ran python without -B, wrote __pycache__ into the release, and
+        # the hash check then refused it as changed.
+        shim = (Path(__file__).resolve().parent / "fleet_lanes/bin/lane").read_text()
+        self.assertIn('-I -B -c', shim)
+
+    def old_bundle(self):
+        """A release as installed before AFC-331:  only the base files."""
+        bundle = make_bundle("old")
+        for path in release.TOOL_REQUIRED:
+            bundle["files"].pop(path, None)
+        bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+        return bundle
+
+    def test_rollback_to_a_release_that_predates_the_new_tools(self):
+        # Sentry on #589:  widening REQUIRED must not make verify_retained refuse the previous release.
+        old = self.old_bundle()
+        self.assertFalse(release.REQUIRED.issubset(old["files"]))
+        with mock.patch.object(release, "REQUIRED", release.BASE_REQUIRED):  # the receiver of that day
+            self.receive(old)
+        self.receive(make_bundle("new"), install=False)
+        self.assertEqual(release.release_at(self.base, "previous").name, old["bundle_sha256"])
+        result = release.control(self.home, "rollback")
+        self.assertEqual(result["bundle_sha256"], old["bundle_sha256"])
+        self.assertEqual(release.control(self.home, "status")["status"], "paused")
+        self.assertFalse((self.base / "releases" / old["bundle_sha256"] / "scripts/recall").exists())
+
+    def test_a_new_bundle_without_the_new_tools_is_still_refused(self):
+        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+            self.receive(self.old_bundle())
+
+    def test_a_retained_release_still_needs_its_base_files(self):
+        self.receive(make_bundle("new"))
+        current = release.release_at(self.base, "current")
+        meta = json.loads((current / "release.json").read_text())
+        del meta["files"]["scripts/agent-sync"]
+        (current / "release.json").write_text(json.dumps(meta))
+        with self.assertRaisesRegex(release.Refused, "invalid_release_metadata"):
+            release.control(self.home, "status")
+
     def test_smoke_runs_the_new_tools(self):
         # The smoke cases for recall, lane and fleet-mode fail a release whose tool exits wrongly.
         bundle = make_bundle()

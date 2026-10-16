@@ -193,6 +193,9 @@ class ActualRuntime(unittest.TestCase):
         result = RUN(["/bin/bash", str(self.release / "scripts/fleet-mode"), "--full"], env=self.env,
                      cwd=self.home, capture_output=True, timeout=15)
         self.assertEqual(result.stdout, (self.release / "docs/FLEET-MODE.md").read_bytes())
+        # Running the tools must leave the immutable release exactly as installed (no __pycache__).
+        self.assertEqual(list(self.release.rglob("__pycache__")), [])
+        self.assertEqual(self.receiver.control(self.home, "status")["status"], "ready")
 
     def test_recall_ships_no_lazy_mac_only_modules(self):
         self.assertFalse((self.release / "scripts/fleet_rag/ingest.py").exists())

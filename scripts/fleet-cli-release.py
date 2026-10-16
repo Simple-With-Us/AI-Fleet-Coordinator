@@ -44,16 +44,22 @@ EXACT = frozenset({
     "scripts/fleet_lanes/bin/lane", *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
     "scripts/fleet-mode", "docs/FLEET-MODE.md",
 })
-REQUIRED = frozenset({
+# What every release ever installed contains.  verify_retained, rollback and status judge a retained
+# release by this set, so a release that predates the AFC-331 tools stays valid and can be rolled back to.
+BASE_REQUIRED = frozenset({
     "scripts/agent-sync", "scripts/linear-board/board", "fleet-apps.json",
     *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
     "scripts/agent_sync/__init__.py", "scripts/agent_sync/cli.py",
     "scripts/agent_sync/mcp/stdio.py", "scripts/agent_sync/mcp/tools.json",
     "scripts/fleet-cli-release.py",
+})
+# The recall, lane and fleet-mode files (AFC-331).  A new bundle must carry them;  an older retained one need not.
+TOOL_REQUIRED = frozenset({
     "scripts/recall", *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
     "scripts/fleet_lanes/bin/lane", *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
     "scripts/fleet-mode", "docs/FLEET-MODE.md",
 })
+REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
 
 
 class Refused(Exception):
@@ -185,6 +191,9 @@ def smoke(release: Path, home: Path) -> None:
              ("lane_help", "scripts/fleet_lanes/bin/lane", ["--help"], 0),
              ("fleet_mode_block", "scripts/fleet-mode", [], 0)]
     for case, script, args, expected in cases:
+        # A retained release that predates the AFC-331 tools (a rollback target) has no such script.
+        if script in TOOL_REQUIRED and not (release / script).exists():
+            continue
         # lane and fleet-mode are bash;  the other cases are Python run in isolated mode.
         argv = ["/bin/bash", str(release / script), *args] if script in BASH_SCRIPTS else [
             sys.executable, "-I", "-B", str(release / script), *args]
@@ -288,7 +297,7 @@ def verify_retained(release: Path) -> dict:
     try:
         record = json.loads(metadata.read_bytes())
         files = record["files"]
-        if (not isinstance(files, dict) or not REQUIRED.issubset(files) or len(files) > MAX_FILES
+        if (not isinstance(files, dict) or not BASE_REQUIRED.issubset(files) or len(files) > MAX_FILES
                 or not re.fullmatch(r"[0-9a-f]{40}", record["source_commit"])
                 or record["bundle_sha256"] != release.name or manifest_digest(files) != release.name):
             raise Refused("invalid_release_metadata")
