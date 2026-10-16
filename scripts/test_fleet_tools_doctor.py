@@ -120,6 +120,63 @@ class SeatAndMcpTests(unittest.TestCase):
             doctor.check_runtime(report, True, runner)
             self.assertEqual(report.rows[0]["status"], "OK")
 
+    def test_shipped_files_equal_the_receiver_allowlist(self):
+        # The doctor's drift test must not disagree with what the receiver ships (AFC-331).
+        rel = importlib.util.spec_from_file_location("release", HERE / "fleet-cli-release.py")
+        receiver = importlib.util.module_from_spec(rel)
+        rel.loader.exec_module(receiver)
+        self.assertEqual(doctor.SHIPPED_EXACT, receiver.EXACT)
+        for path in receiver.EXACT:
+            self.assertTrue(doctor.is_shipped(path), path)
+            self.assertTrue(any(path == p or path.startswith(p) for p in doctor.SHIPPED), path)
+        for path in ("scripts/fleet_rag/eval.py", "scripts/fleet_lanes/tests/test_lane.py", "scripts/fleet_rag/tests/x.py"):
+            self.assertFalse(doctor.is_shipped(path), path)
+
+    def test_the_same_five_tools_on_both_hosts(self):
+        self.assertEqual(doctor.FLEET_TOOLS, ("agent-sync", "board", "recall", "lane", "fleet-mode"))
+        self.assertTrue(set(doctor.FLEET_TOOLS) <= set(doctor.COMMANDS))
+
+    def test_commands_accept_the_macs_apps_folder_but_not_a_missing_tool(self):
+        apps = self.home / "apps"
+        apps.mkdir()
+        (apps / "lane").write_text("#!/bin/sh\n")
+        (apps / "lane").chmod(0o755)
+        (apps / "fleet-mode").write_text("#!/bin/sh\n")  # not executable
+        with mock.patch.object(doctor, "COMMAND_FALLBACK_DIRS", (apps,)), \
+                mock.patch.object(doctor.shutil, "which", return_value=None):
+            report = doctor.Report()
+            doctor.check_commands(report)
+        rows = {r["check"]: r for r in report.rows}
+        self.assertEqual(rows["command:lane"]["status"], "OK")
+        self.assertIn("not on PATH", rows["command:lane"]["detail"])
+        self.assertEqual(rows["command:fleet-mode"]["status"], "FAIL")
+        self.assertEqual(rows["command:recall"]["status"], "FAIL")
+
+    def test_tool_files_must_ship_with_the_release(self):
+        for rel in doctor.TOOL_FILES[:-1]:
+            self.touch(f"rt/current/{rel}")
+        report = doctor.Report()
+        doctor.check_tool_files(report)
+        rows = {r["check"]: r["status"] for r in report.rows}
+        self.assertEqual(rows["tool-file:scripts/recall"], "OK")
+        self.assertEqual(rows["tool-file:docs/FLEET-MODE.md"], "FAIL")
+
+    def test_fleet_mode_doc_warns_when_the_mac_copy_differs(self):
+        doc = self.home / "apps/FLEET-MODE.md"
+        with mock.patch.object(doctor, "MAC_FLEET_MODE_DOC", doc), \
+                mock.patch.object(doctor, "MAC_RUNTIME", self.home / "published"):
+            report = doctor.Report()
+            doctor.check_fleet_mode_doc(report)
+            self.assertEqual(report.rows, [])  # no Mac copy (the server):  nothing to compare
+            self.touch("apps/FLEET-MODE.md", "mac\n")
+            self.touch("published/docs/FLEET-MODE.md", "repo\n")
+            doctor.check_fleet_mode_doc(report)
+            self.assertEqual(report.rows[-1]["status"], "WARN")
+            self.assertIn("differs", report.rows[-1]["detail"])
+            self.touch("apps/FLEET-MODE.md", "repo\n")
+            doctor.check_fleet_mode_doc(report)
+            self.assertEqual(report.rows[-1]["status"], "OK")
+
     def test_post_survives_a_missing_agent_sync(self):
         def runner(argv, **kw):
             raise FileNotFoundError("agent-sync")

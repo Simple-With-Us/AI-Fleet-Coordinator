@@ -28,20 +28,38 @@ MARKER = "# fleet-cli managed wrapper v1"
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
 # (exported from scripts/agent-sync-mcp by scripts/export-linear-catalog.mjs).
 LINEAR_CATALOG = ("named-commands.json", "official-mcp-tools.json", "public-inputs.json")
+# `recall` runs from these fleet_rag modules only (its static import closure).  `recall eval` and
+# `recall ingest` import eval/ingest lazily;  they are Mac and Hetzner-box jobs and are not shipped.
+RECALL_MODULES = ("__init__", "contribute_guard", "core", "doctor", "health", "public_fallback",
+                  "recall_api", "scrub", "search_log", "telemetry")
+# `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
+LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout")
 EXACT = frozenset({
     "scripts/agent-sync", "scripts/linear-board/board", "scripts/linear-board/board-ids.txt",
     "fleet-apps.json", "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
     "scripts/agent_sync/mcp/tools.json", "scripts/agent_sync/mcp/fixtures.jsonl",
     "scripts/agent_sync/wake/wake-schema.json",
     *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
+    "scripts/recall", *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
+    "scripts/fleet_lanes/bin/lane", *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
+    "scripts/fleet-mode", "docs/FLEET-MODE.md",
 })
-REQUIRED = frozenset({
+# What every release ever installed contains.  verify_retained, rollback and status judge a retained
+# release by this set, so a release that predates the AFC-331 tools stays valid and can be rolled back to.
+BASE_REQUIRED = frozenset({
     "scripts/agent-sync", "scripts/linear-board/board", "fleet-apps.json",
     *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
     "scripts/agent_sync/__init__.py", "scripts/agent_sync/cli.py",
     "scripts/agent_sync/mcp/stdio.py", "scripts/agent_sync/mcp/tools.json",
     "scripts/fleet-cli-release.py",
 })
+# The recall, lane and fleet-mode files (AFC-331).  A new bundle must carry them;  an older retained one need not.
+TOOL_REQUIRED = frozenset({
+    "scripts/recall", *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
+    "scripts/fleet_lanes/bin/lane", *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
+    "scripts/fleet-mode", "docs/FLEET-MODE.md",
+})
+REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
 
 
 class Refused(Exception):
@@ -158,7 +176,7 @@ def point(base: Path, name: str, release: Path) -> None:
 
 def smoke(release: Path, home: Path) -> None:
     for path in release.rglob("*"):
-        if path.is_file() and (path.suffix == ".py" or path.name in ("board", "agent-sync")):
+        if path.is_file() and (path.suffix == ".py" or path.name in ("board", "agent-sync", "recall")):
             try:
                 compile(path.read_bytes(), str(path), "exec")
             except (SyntaxError, ValueError):
@@ -168,10 +186,19 @@ def smoke(release: Path, home: Path) -> None:
     cases = [("agent_sync_version", "scripts/agent-sync", ["--version"], 0),
              ("agent_sync_mcp_help", "scripts/agent-sync", ["mcp", "--help"], 0),
              ("board_help", "scripts/linear-board/board", ["--help"], 0),
-             ("board_missing_credentials", "scripts/linear-board/board", ["whoami"], 4)]
+             ("board_missing_credentials", "scripts/linear-board/board", ["whoami"], 4),
+             ("recall_help", "scripts/recall", ["--help"], 0),
+             ("lane_help", "scripts/fleet_lanes/bin/lane", ["--help"], 0),
+             ("fleet_mode_block", "scripts/fleet-mode", [], 0)]
     for case, script, args, expected in cases:
+        # A retained release that predates the AFC-331 tools (a rollback target) has no such script.
+        if script in TOOL_REQUIRED and not (release / script).exists():
+            continue
+        # lane and fleet-mode are bash;  the other cases are Python run in isolated mode.
+        argv = ["/bin/bash", str(release / script), *args] if script in BASH_SCRIPTS else [
+            sys.executable, "-I", "-B", str(release / script), *args]
         try:
-            result = subprocess.run([sys.executable, "-I", "-B", str(release / script), *args],
+            result = subprocess.run(argv,
                                     env=env, cwd=home, capture_output=True, timeout=12)
         except subprocess.TimeoutExpired:
             raise Refused("smoke_timeout_" + case) from None
@@ -179,6 +206,9 @@ def smoke(release: Path, home: Path) -> None:
             raise Refused("smoke_start_failed_" + case + "_errno_" + str(exc.errno or 0)) from None
         if result.returncode != expected:
             raise Refused("smoke_exit_mismatch_" + case)
+
+
+BASH_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane", "scripts/fleet-mode"})
 
 
 def wrapper(home: Path, script: str, extra: list[str] | None = None, codex_only: bool = False) -> bytes:
@@ -193,10 +223,12 @@ for key in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT"):
         sys.stderr.write("fleet-cli: this MCP registration is CODEX-only\\n")
         sys.exit(3)
 '''
+    # Python tools run isolated;  the two bash tools run under bash with the caller's environment.
+    interpreter = ["/bin/bash"] if script in BASH_SCRIPTS else ["/usr/bin/python3", "-I", "-B"]
     return (f"#!/usr/bin/python3 -I\n{MARKER}\nimport os, sys\nfrom pathlib import Path\n"
             + guard
             + f"release = Path({str(home / '.local/share/fleet-cli/current')!r}).resolve(strict=True)\n"
-            + f"argv = ['/usr/bin/python3', '-I', '-B', str(release / {script!r})] + {extra or []!r}\n"
+            + f"argv = {repr(interpreter)[:-1]}, str(release / {script!r})] + {extra or []!r}\n"
             + ("" if codex_only else "argv += sys.argv[1:]\n")
             + "os.execv(argv[0], argv)\n").encode()
 
@@ -208,6 +240,9 @@ def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
         bin_dir / "agent-sync": (wrapper(home, "scripts/agent-sync"), 0o755),
         bin_dir / "agent-sync-codex-mcp": (wrapper(home, "scripts/agent-sync", ["mcp", "--default-seat", "CODEX", "--codex-thread-meta"], True), 0o755),
         bin_dir / "fleet-cli-release": (wrapper(home, "scripts/fleet-cli-release.py"), 0o755),
+        bin_dir / "recall": (wrapper(home, "scripts/recall"), 0o755),
+        bin_dir / "lane": (wrapper(home, "scripts/fleet_lanes/bin/lane"), 0o755),
+        bin_dir / "fleet-mode": (wrapper(home, "scripts/fleet-mode"), 0o755),
     }
     for path in files:
         if path.is_symlink() or (path.exists() and (not path.is_file() or MARKER.encode() not in path.read_bytes())):
@@ -262,7 +297,7 @@ def verify_retained(release: Path) -> dict:
     try:
         record = json.loads(metadata.read_bytes())
         files = record["files"]
-        if (not isinstance(files, dict) or not REQUIRED.issubset(files) or len(files) > MAX_FILES
+        if (not isinstance(files, dict) or not BASE_REQUIRED.issubset(files) or len(files) > MAX_FILES
                 or not re.fullmatch(r"[0-9a-f]{40}", record["source_commit"])
                 or record["bundle_sha256"] != release.name or manifest_digest(files) != release.name):
             raise Refused("invalid_release_metadata")
