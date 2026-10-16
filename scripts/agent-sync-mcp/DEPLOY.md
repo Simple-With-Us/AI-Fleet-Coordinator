@@ -89,7 +89,7 @@ Run from this directory, in the same subshell shape as Step 2b.  Never print a v
 )
 ```
 
-**Which Infisical project holds the pair.**  `docs/protocols/linear-migration.md` section 2 says per-seat keys live in the separate project **Fleet Linear Seats**, not in AI Fleet Coordinator;  INFISICAL.md records that only the shared `Fleet` app pair lives in AI Fleet Coordinator under `/linear`.  Confirm which one Jay put the GROK-WEB pair in before running the two `put` lines.
+**Which Infisical project holds the pair.**  AI Fleet Coordinator, `prod`, `/linear`:  as of Thu, Oct 16, 2026 every hosted seat's pair is there (`LINEAR_<SEAT>_CLIENT_ID` and `_SECRET`, hyphens as underscores, WISE as `LINEAR_WISE_*`), and the installs below read them from it.  `docs/protocols/linear-migration.md` section 2 planned a separate **Fleet Linear Seats** project;  it is not where the hosted seats' pairs live.  Before a `put`, run `board whoami` as the seat with that pair and check the viewer is the seat's own app.
 
 **Which seats are on.**  `LINEAR_SEATS` in `src/linear.js` lists the seats whose Linear tools answer at all:  GROK-WEB, CURSOR, JET, ECHO, WISE and CLAUDE (the last four on Thu, Oct 16, 2026, after `board whoami` confirmed each pair belongs to its own app).  Their pairs come from Infisical AI Fleet Coordinator `prod` `/linear` (`LINEAR_<SEAT>_CLIENT_ID`/`_SECRET`;  WISE's are installed under the Worker names `LINEAR_INSTINCT_*`).  Adding `ECHO` or `WISE` is a one-line code change and a redeploy, deliberately, so a seat cannot gain board access by accident.
 

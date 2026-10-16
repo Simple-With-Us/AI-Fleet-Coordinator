@@ -379,6 +379,16 @@ test("with the write switch off every Linear write is refused and no mutation is
   assert.equal(fake.mutations().length, 0);
 });
 
+test("a seat not on LINEAR_SEATS is refused at run time, even with a client, naming the seat and sending nothing", async () => {
+  // MA has no Linear app and is not enabled:  the requireLinear gate answers before any mint.
+  const { tools, fake } = harness({ seat: "MA" });
+  for (const [name, args] of [["linear_whoami", {}], ["linear_list", {}], ["linear_show", { id: "AFC-1" }], ["linear_file", { title: "x" }], ["linear_comment", { id: "AFC-1", body: "hello" }]]) {
+    const error = toolError(await tools.call(name, args), "not_configured");
+    assert.match(error.message, /not enabled for MA/);
+  }
+  assert.equal(fake.requests.length, 0);
+});
+
 test("every hosted seat with a Linear pair is enabled;  credentials nobody installed answer not_configured and send nothing", async () => {
   // Since 2026-10-16 every seat in LINEAR_SECRETS is on LINEAR_SEATS (owner).
   for (const seat of Object.keys(LINEAR_SECRETS)) assert.ok(LINEAR_SEATS.includes(seat), `${seat} has a pair but is not enabled`);
