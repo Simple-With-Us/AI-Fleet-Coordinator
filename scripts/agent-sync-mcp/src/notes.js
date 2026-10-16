@@ -27,6 +27,8 @@ export const INLINE_JSON_MAX = 8500;
 export const ENVELOPE_PARSE_MAX = 20_000;
 export const NOTES_REASON_PAGE = 100; // messages per page when looking for the consumer's refusal reply
 export const NOTES_REASON_PAGES = 20; // at most this many pages before the reason is given up on
+export const NOTES_FIND_PAGE = 100; // messages per page when looking for the original request
+export const NOTES_FIND_PAGES = 20; // at most this many pages before the request is called not found
 export const FLAG_NAMES = Object.freeze(["pin", "notify", "needs_owner", "summary", "pr", "html"]);
 export const REFUSAL_PREFIX = "notes-relay refused ";
 // Reactions the Mac listener sets (Zulip unicode codes and names):  a check mark and a cross mark.
@@ -97,6 +99,32 @@ export const RelayMessage = z.looseObject({
   topic: z.string().optional(),
   reactions: z.array(z.unknown()).optional(),
 });
+
+// Zulip's answers are boundary data:  every messages response is parsed before a field is read, and one that does not
+// parse is treated as holding nothing (a request not found, a reply not found).
+export const MessagesResponse = z.looseObject({ messages: z.array(z.unknown()), found_newest: z.boolean().optional() });
+export const MessageResponse = z.looseObject({ message: z.unknown() });
+
+/** The relay messages in a `messages` response, oldest first, and whether the page ends at the narrow's newest. */
+export function readMessagesPage(result) {
+  const parsed = MessagesResponse.safeParse(result);
+  if (!parsed.success) return { messages: [], foundNewest: true };
+  const rows = [];
+  for (const raw of parsed.data.messages) {
+    const one = RelayMessage.safeParse(raw);
+    if (one.success) rows.push(one.data);
+  }
+  rows.sort((a, b) => a.id - b.id);
+  return { messages: rows, foundNewest: parsed.data.found_newest !== false };
+}
+
+/** The message in a `messages/<id>` response, or null. */
+export function readOneMessage(result) {
+  const parsed = MessageResponse.safeParse(result);
+  if (!parsed.success) return null;
+  const one = RelayMessage.safeParse(parsed.data.message);
+  return one.success ? one.data : null;
+}
 
 const invalid = (message) => new ToolError("invalid_argument", message);
 const points = (text) => [...text];
@@ -262,7 +290,7 @@ export const NOTES_METHODS = {
    * message is reached, at most NOTES_REASON_PAGES pages.  Only the consumer's bot counts, so a peer's forged reply
    * is skipped wherever it sits.  "" when none is found.
    */
-  async notesRefusalReason(message, requestId, channelId, members, asMessage) {
+  async notesRefusalReason(message, requestId, channelId, members) {
     const consumer = members.find((m) => m.is_bot === true && seatTagFor(m) === this.config.notesRelayConsumer);
     const narrow = [
       { operator: "channel", operand: channelId },
@@ -272,8 +300,9 @@ export const NOTES_METHODS = {
     const prefix = REFUSAL_PREFIX + requestId;
     let anchor = message.id;
     for (let pageNumber = 0; pageNumber < NOTES_REASON_PAGES; pageNumber += 1) {
-      const result = await this.zulip.get("messages", { narrow, anchor, num_before: 0, num_after: NOTES_REASON_PAGE, include_anchor: false, apply_markdown: false });
-      const rows = (result.messages ?? []).map(asMessage).filter((m) => m !== null && Number.isInteger(m.id)).sort((a, b) => a.id - b.id);
+      const { messages: rows, foundNewest } = readMessagesPage(
+        await this.zulip.get("messages", { narrow, anchor, num_before: 0, num_after: NOTES_REASON_PAGE, include_anchor: false, apply_markdown: false }),
+      );
       for (const reply of rows) {
         const text = (reply.content ?? "").trimStart();
         if (reply.id > message.id && text.startsWith(prefix) && (await this.notesFleetBot(reply.sender_id, members))) {
@@ -281,10 +310,31 @@ export const NOTES_METHODS = {
         }
       }
       const later = rows.filter((m) => m.id > anchor);
-      if (result.found_newest !== false || later.length === 0) return "";
+      if (foundNewest || later.length === 0) return null;
       anchor = Math.max(...later.map((m) => m.id));
     }
-    return "";
+    return null;
+  },
+
+  /**
+   * The relay request of this identity that carries `requestId`:  this bot's own messages in the relay channel,
+   * searched first and then listed, newest first, in pages of NOTES_FIND_PAGE and at most NOTES_FIND_PAGES pages.
+   */
+  async notesFindRequest(channelId, requestId, mine) {
+    const own = [{ operator: "channel", operand: channelId }, { operator: "sender", operand: this.email }];
+    for (const extra of [[{ operator: "search", operand: requestId }], []]) {
+      let anchor = "newest";
+      for (let pageNumber = 0; pageNumber < NOTES_FIND_PAGES; pageNumber += 1) {
+        const { messages: rows } = readMessagesPage(
+          await this.zulip.get("messages", { narrow: [...own, ...extra], anchor, num_before: NOTES_FIND_PAGE, num_after: 0, include_anchor: anchor === "newest", apply_markdown: false }),
+        );
+        const hit = [...rows].reverse().find(mine);
+        if (hit) return hit;
+        if (rows.length < NOTES_FIND_PAGE) break;
+        anchor = rows[0].id;
+      }
+    }
+    return null;
   },
 
   async tool_notes_status(rawArgs, audit) {
@@ -297,22 +347,13 @@ export const NOTES_METHODS = {
     await this.ensureSeat();
     await this.reserve("read");
     const channelId = await this.channelId(RELAY_CHANNEL);
-    // Zulip's answers are boundary data too:  a message that does not parse is skipped, never read field by field.
-    const asMessage = (raw) => {
-      const parsed = RelayMessage.safeParse(raw);
-      return parsed.success ? parsed.data : null;
-    };
     const mine = (m) => m !== null && String(m.sender_email ?? "").toLowerCase() === this.email && parseMessage(m.content)?.request_id === requestId;
     let message = null;
     if (args.message_id !== undefined) {
-      const one = asMessage((await this.zulip.get(`messages/${args.message_id}`, { apply_markdown: false })).message);
+      const one = readOneMessage(await this.zulip.get(`messages/${args.message_id}`, { apply_markdown: false }));
       if (one?.stream_id === channelId && mine(one)) message = one;
     } else {
-      for (const extra of [[{ operator: "search", operand: requestId }], []]) {
-        const found = (await this.page([{ operator: "channel", operand: channelId }, ...extra], null, 100)).map(asMessage);
-        message = [...found].reverse().find(mine) ?? null;
-        if (message) break;
-      }
+      message = await this.notesFindRequest(channelId, requestId, mine);
     }
     if (!message) throw new ToolError("not_found", `no relay request with that request_id from this identity in #${RELAY_CHANNEL}`);
     const members = await this.users();
@@ -329,11 +370,13 @@ export const NOTES_METHODS = {
       if (CHECK_NAMES.refusedCodes.includes(code) || CHECK_NAMES.refused.includes(name)) refused = true;
       else if (CHECK_NAMES.doneCodes.includes(code) || CHECK_NAMES.done.includes(name)) done = true;
     }
+    // The consumer's refusal reply is authoritative on its own:  a cross mark Zulip refused to take must not leave a
+    // refused request reading as queued.  A done mark is not second-guessed.
+    let reason = null;
+    if (refused || !done) reason = await this.notesRefusalReason(message, requestId, channelId, members);
+    if (reason !== null) refused = true;
     const info = { request_id: requestId, message_id: message.id, status: refused ? "refused" : done ? "done" : "queued" };
-    if (refused) {
-      info.reason = await this.notesRefusalReason(message, requestId, channelId, members, asMessage);
-      if (info.reason === "") delete info.reason;
-    }
+    if (refused && reason) info.reason = reason;
     return okResult(JSON.stringify(info), info);
   },
 };

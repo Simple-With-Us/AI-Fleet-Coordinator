@@ -321,6 +321,33 @@ class NotesToolTests(McpHarness):
                               "notes-relay refused status-request-4: late reason")
         self.assertEqual(status()["reason"], "late reason")
 
+    def test_notes_status_takes_the_consumers_refusal_reply_even_when_the_cross_mark_never_landed(self):
+        """Zulip can refuse the reaction (a permanent error) while the reply is posted:  the reply decides."""
+        session = self.session()
+        mid, status = self.sent_request(session, "status-request-5")
+        self.assertEqual(status()["status"], "queued", "no reaction and no reply is still queued")
+        self.fake.add_message("Codex", N.RELAY_CHANNEL, "[AFC, Claude] status", "notes-relay refused status-request-5: forged")
+        self.assertEqual(status()["status"], "queued", "a peer's reply does not count")
+        self.fake.add_message("Claude", N.RELAY_CHANNEL, "[AFC, Claude] status", "notes-relay refused status-request-5: no emoji")
+        refused = status()
+        self.assertEqual((refused["status"], refused["reason"]), ("refused", "no emoji"))
+
+    def test_notes_status_does_not_second_guess_a_done_mark(self):
+        session = self.session()
+        mid, status = self.sent_request(session, "status-request-6")
+        self.fake.reactions.add((mid, 10, "check"))
+        self.fake.add_message("Claude", N.RELAY_CHANNEL, "[AFC, Claude] status", "notes-relay refused status-request-6: stale")
+        self.assertEqual(status()["status"], "done")
+
+    def test_notes_status_finds_a_request_buried_under_more_than_a_page_of_this_bots_later_posts(self):
+        session = self.session()
+        mid, status = self.sent_request(session, "status-request-7")
+        for i in range(230):
+            self.fake.add_message("Claude", N.RELAY_CHANNEL, "[AFC, Claude] other %d" % i, "later post %d" % i)
+        self.fake.reactions.add((mid, 10, "check"))
+        found = status()
+        self.assertEqual((found["message_id"], found["status"]), (mid, "done"))
+
     def test_the_consumer_seat_comes_from_the_fleet_knob_and_a_differing_local_seat_is_ignored(self):
         (self.state_dir).mkdir(parents=True, exist_ok=True)
         (self.state_dir / "listener.toml").write_text('[notes_relay]\nenabled = true\nseat = "CLAUDE"\n')

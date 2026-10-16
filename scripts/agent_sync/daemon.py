@@ -497,9 +497,12 @@ class Daemon:
         self.listener_api_server: LAPI.ListenerReadApi | None = None
         self.notes_relay: NR.Consumer | None = None
         self.notes_relay_lock = threading.RLock()  # a reload (main thread) and a handover (seat thread) never overlap
+        # Relay requests that could not be spooled while the queue stayed connected:  (seat, id) -> (runner, message).
+        # The live event is gone and the channel is only backfilled on a reconnect, so each is offered again on the tick.
+        self.notes_relay_retry: dict[tuple[str, int], tuple[Any, dict[str, Any]]] = {}
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
-        self.last_tick = {"reap": -1e9, "status": -1e9, "grace": -1e9, "prune": -1e9, "held": -1e9}
+        self.last_tick = {"reap": -1e9, "status": -1e9, "grace": -1e9, "prune": -1e9, "held": -1e9, "relay_retry": -1e9}
         self.config_notified = False
         self.reload_requested = False
         self.acronyms = A.fleet_acronyms()
@@ -689,6 +692,31 @@ class Daemon:
         this Mac cannot run it."""
         with self.notes_relay_lock:
             self._configure_notes_relay_locked()
+
+    NOTES_RELAY_RETRY_LIMIT = 64  # past this a held request waits for the reconnect backfill, as before
+    NOTES_RELAY_RETRY_SECONDS = 5.0
+
+    def _keep_for_relay_retry(self, runner: "SeatRunner", message: Mapping[str, Any]) -> None:
+        with self.notes_relay_lock:
+            if len(self.notes_relay_retry) < self.NOTES_RELAY_RETRY_LIMIT:
+                self.notes_relay_retry[(runner.seat, int(message["id"]))] = (runner, dict(message))
+
+    def retry_held_notes_relay(self) -> None:
+        """Offer again each relay request that could not be spooled.  Once one is on disk its hold on the seat's
+        cursor is released (the hold falls to the lowest request still waiting) and the cursor may move on."""
+        with self.notes_relay_lock:
+            relay = self.notes_relay
+            if relay is None:
+                return
+            for key, (runner, message) in sorted(self.notes_relay_retry.items(), key=lambda item: item[0][1]):
+                if relay.stopped.is_set() or runner.seat != relay.seat or not relay.offer(runner, message):
+                    continue
+                del self.notes_relay_retry[key]
+                waiting = [mid for (seat, mid) in self.notes_relay_retry if seat == runner.seat]
+                runner.hold_below = min(waiting) if waiting else None
+                runner.advance(key[1])
+                self.log.write("notes-relay-retry-spooled", seat=runner.seat, id=key[1], still_held=len(waiting))
+            self.complete_notes_relay_handover()
 
     def complete_notes_relay_handover(self) -> None:
         """A reload asked the old consumer to stop while its worker was inside a request, so the swap waited.  Once
@@ -1182,6 +1210,7 @@ class Daemon:
                     runner.hold_below = message_id if runner.hold_below is None else min(runner.hold_below, message_id)
                     self.log.write("notes-relay-held", seat=runner.seat, id=message_id, hold_below=runner.hold_below,
                                    warning="could not spool the request;  the cursor is held below this message")
+                    self._keep_for_relay_retry(runner, message)
                     return
                 if runner.hold_below == message_id:
                     runner.hold_below = None  # spooled on a redelivery:  the cursor may move on
@@ -2906,6 +2935,9 @@ class Daemon:
             self.reload_requested = False
             self.reload()
         self.complete_notes_relay_handover()
+        if self.notes_relay_retry and now - self.last_tick["relay_retry"] >= self.NOTES_RELAY_RETRY_SECONDS:
+            self.last_tick["relay_retry"] = now
+            self.retry_held_notes_relay()
         for pending in self.coalescer.take_due(now):
             self.finalize(pending)
         if now - self.last_tick["reap"] >= 10:

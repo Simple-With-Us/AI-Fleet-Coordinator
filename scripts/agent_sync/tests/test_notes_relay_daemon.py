@@ -372,6 +372,53 @@ class DaemonRelayTests(DaemonHarness):
         self.fake.streams["notes-relay"] = 140
         return self.started()
 
+    def test_a_request_that_could_not_be_spooled_while_connected_is_offered_again_on_the_tick(self):
+        """The live event is gone and the channel is only backfilled on a reconnect, so without a retry the request
+        would sit until then.  The tick offers it again, runs it, and releases the hold on the cursor."""
+        daemon = self.started_with_relay()
+        runner = daemon.seats["CLAUDE"]
+        consumer = daemon.notes_relay
+        real_offer = consumer.offer
+
+        def offer(r, m):
+            ok = next(outcomes, True)
+            return real_offer(r, m) if ok else False
+        outcomes = iter([False])
+        consumer.offer = offer
+        consumer.runner = self.fake_run
+        mid = self.envelope_message(rid="retry-request-1")
+        daemon.handle_events(runner, [{"type": "message", "message": dict(self.fake.messages[-1])}])
+        self.assertEqual(runner.hold_below, mid)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(len(daemon.notes_relay_retry), 1)
+        daemon.last_tick["relay_retry"] = -1e9  # the retry interval has passed
+        daemon.tick()
+        self.assertTrue(self.wait(lambda: (mid, 10, "check") in self.fake.reactions), "the request ran after the retry")
+        self.assertEqual(len(self.calls), 1)
+        self.assertIsNone(runner.hold_below, "spooled:  the hold on the cursor ends")
+        self.assertEqual(daemon.notes_relay_retry, {})
+        self.assertEqual(runner.cursor, mid)
+        consumer.stop()
+
+    def test_the_retry_list_is_bounded_and_keeps_the_hold_at_the_lowest_waiting_request(self):
+        daemon = self.started_with_relay()
+        runner = daemon.seats["CLAUDE"]
+        consumer = daemon.notes_relay
+        real_offer = consumer.offer
+        consumer.runner = self.fake_run
+        consumer.offer = lambda r, m: False
+        first = self.envelope_message(rid="retry-request-2")
+        second = self.envelope_message(rid="retry-request-3")
+        daemon.handle_events(runner, [{"type": "message", "message": dict(m)} for m in self.fake.messages[-2:]])
+        self.assertEqual(len(daemon.notes_relay_retry), 2)
+        self.assertEqual(runner.hold_below, first)
+        consumer.offer = lambda r, m: real_offer(r, m) if m["id"] == first else False  # only the first can be kept
+        daemon.last_tick["relay_retry"] = -1e9
+        daemon.tick()
+        self.assertEqual(runner.hold_below, second, "the hold falls to the request still waiting")
+        self.assertEqual(list(daemon.notes_relay_retry), [("CLAUDE", second)])
+        consumer.stop()
+
     def test_the_cursor_is_held_for_a_request_that_could_not_be_kept(self):
         daemon = self.started_with_relay()
         runner = daemon.seats["CLAUDE"]

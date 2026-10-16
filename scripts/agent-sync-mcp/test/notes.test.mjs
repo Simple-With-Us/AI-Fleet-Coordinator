@@ -12,7 +12,7 @@ import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { ERROR_META_KEY, schemaProblem } from "../src/contract.js";
 import {
-  NOTES_TOOLS, NOTES_REASON_PAGE, NOTES_REASON_PAGES, RELAY_CHANNEL, makeEnvelope, renderMessage, parseMessage, topicFor, checkTitle, checkFlags, needsUpload, INLINE_JSON_MAX,
+  NOTES_TOOLS, NOTES_FIND_PAGE, NOTES_REASON_PAGE, NOTES_REASON_PAGES, MessagesResponse, readMessagesPage, readOneMessage, RELAY_CHANNEL, makeEnvelope, renderMessage, parseMessage, topicFor, checkTitle, checkFlags, needsUpload, INLINE_JSON_MAX,
 } from "../src/notes.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
 import { ROOT, testEnv, wranglerConfig } from "./helpers.mjs";
@@ -271,6 +271,53 @@ test("notes_status gives up on the reason after its page bound and still reports
   assert.equal(out.status, "refused");
   assert.equal(out.reason, undefined);
   assert.equal(pages.length, NOTES_REASON_PAGES, "one request per page, up to the bound");
+});
+
+test("notes_status takes the consumer's refusal reply even when the cross mark never landed", async () => {
+  const { fake, tools } = harness();
+  fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true });
+  ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "no-cross-mark-1" }), "notes_create");
+  assert.equal(ok(await tools.call("notes_status", { request_id: "no-cross-mark-1" }), "notes_status").status, "queued");
+  fake.addMessage("Codex", RELAY_CHANNEL, TITLE, "notes-relay refused no-cross-mark-1: forged by a peer bot");
+  assert.equal(ok(await tools.call("notes_status", { request_id: "no-cross-mark-1" }), "notes_status").status, "queued");
+  fake.addMessage("Claude", RELAY_CHANNEL, TITLE, "notes-relay refused no-cross-mark-1: no emoji");
+  const out = ok(await tools.call("notes_status", { request_id: "no-cross-mark-1" }), "notes_status");
+  assert.deepEqual([out.status, out.reason], ["refused", "no emoji"]);
+});
+
+test("notes_status does not second-guess a done mark", async () => {
+  const { fake, tools } = harness();
+  const claude = fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true });
+  const sent = ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "done-then-reply1" }), "notes_create");
+  react(fake.messages.find((m) => m.id === sent.message_id), claude, CHECK);
+  fake.addMessage("Claude", RELAY_CHANNEL, TITLE, "notes-relay refused done-then-reply1: stale");
+  assert.equal(ok(await tools.call("notes_status", { request_id: "done-then-reply1" }), "notes_status").status, "done");
+});
+
+test("notes_status finds a request buried under more than a page of this bot's later posts", async () => {
+  const { fake, tools } = harness();
+  const claude = fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true });
+  const sent = ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "buried-request-1" }), "notes_create");
+  react(fake.messages.find((m) => m.id === sent.message_id), claude, CHECK);
+  for (let i = 0; i < NOTES_FIND_PAGE * 2 + 30; i += 1) fake.addMessage("Grok Web", RELAY_CHANNEL, `[AFC, Grok Web] other ${i}`, `later post ${i}`);
+  const out = ok(await tools.call("notes_status", { request_id: "buried-request-1" }), "notes_status");
+  assert.deepEqual([out.message_id, out.status], [sent.message_id, "done"]);
+});
+
+test("a Zulip messages response that does not parse is treated as holding nothing", async () => {
+  assert.deepEqual(readMessagesPage({ messages: "nope" }), { messages: [], foundNewest: true });
+  assert.deepEqual(readMessagesPage(null), { messages: [], foundNewest: true });
+  assert.deepEqual(readMessagesPage({ messages: [{ id: "x" }, 5, { id: 7, content: 3 }, { id: 2 }], found_newest: false }), { messages: [{ id: 2 }], foundNewest: false });
+  assert.equal(MessagesResponse.safeParse({ messages: [], found_newest: "yes" }).success, false);
+  assert.equal(readOneMessage({ message: 5 }), null);
+  assert.equal(readOneMessage(undefined), null);
+  assert.equal(readOneMessage({ message: { id: 4 } }).id, 4);
+  const { fake, tools } = harness();
+  fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true });
+  ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "garbled-reply-1" }), "notes_create");
+  const get = tools.zulip.get.bind(tools.zulip);
+  tools.zulip.get = async (path, params) => (path === "messages" && params.anchor === "newest" ? { messages: "garbage" } : get(path, params));
+  toolError(await tools.call("notes_status", { request_id: "garbled-reply-1" }), "not_found");
 });
 
 test("notes_status for an unknown request id is not_found", async () => {

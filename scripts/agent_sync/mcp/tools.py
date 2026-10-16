@@ -1482,12 +1482,15 @@ class Tools:
                 refused = True
             elif code in NOTES.DONE_CODES or name in NOTES.DONE_NAMES:
                 done = True
+        # The consumer's refusal reply is authoritative on its own:  a cross mark Zulip refused to take must not leave a
+        # refused request reading as queued.  A done mark is not second-guessed.
+        reason = self._notes_reason(message, request_id) if refused or not done else None
+        if reason is not None:
+            refused = True
         info: dict[str, Any] = {"request_id": request_id, "message_id": int(message["id"]),
                                 "status": "refused" if refused else "done" if done else "queued"}
-        if refused:
-            reason = self._notes_reason(message, request_id)
-            if reason:
-                info["reason"] = reason
+        if refused and reason:
+            info["reason"] = reason
         return self.ok(json.dumps(info, ensure_ascii=False), info)
 
     def _notes_find(self, request_id: str, message_id: Any) -> Mapping[str, Any] | None:
@@ -1506,13 +1509,26 @@ class Tools:
         if _int(message_id) is not None:
             message = OPS.get_message(self.agent, int(message_id))
             return message if mine(message) else None
-        channel = {"operator": "channel", "operand": NOTES.RELAY_CHANNEL}
-        for narrow in ([channel, {"operator": "search", "operand": request_id}], [channel]):
-            for message in reversed(self.agent.fetch(narrow, anchor="newest", num_before=100)):
-                if mine(message):
-                    return message
+        own = [{"operator": "channel", "operand": NOTES.RELAY_CHANNEL},
+               {"operator": "sender", "operand": self.agent.creds.email}]
+        for extra in ([{"operator": "search", "operand": request_id}], []):
+            anchor: Any = "newest"
+            for _ in range(self.NOTES_FIND_PAGES):
+                found = self.agent.client.get("messages", {
+                    "narrow": own + extra, "anchor": anchor, "num_before": self.NOTES_FIND_PAGE, "num_after": 0,
+                    "include_anchor": anchor == "newest", "apply_markdown": False})
+                page = sorted((m for m in found.get("messages") or [] if isinstance(m, dict) and _int(m.get("id")) is not None),
+                              key=lambda m: m["id"])
+                for message in reversed(page):
+                    if mine(message):
+                        return message
+                if len(page) < self.NOTES_FIND_PAGE:
+                    break
+                anchor = page[0]["id"]
         return None
 
+    NOTES_FIND_PAGE = 100  # messages per page when looking for the original request
+    NOTES_FIND_PAGES = 20  # at most this many pages before it is called not found
     NOTES_REASON_PAGE = 100  # messages per page when looking for the consumer's refusal reply
     NOTES_REASON_PAGES = 20  # at most this many pages before the reason is given up on
 
@@ -1522,10 +1538,11 @@ class Tools:
                 return int(user["user_id"])
         return None
 
-    def _notes_reason(self, message: Mapping[str, Any], request_id: str) -> str:
+    def _notes_reason(self, message: Mapping[str, Any], request_id: str) -> str | None:
         """The refusal the listener replied with, from the relay consumer's bot in the same topic after the request.
         Reads that bot's own messages forward in pages until the reply is found or the topic's newest message is
-        reached, so a reply posted after a long backlog is still found;  bounded by NOTES_REASON_PAGES."""
+        reached, so a reply posted after a long backlog is still found;  bounded by NOTES_REASON_PAGES.  None when
+        there is no such reply (an empty string is a reply that gave no reason)."""
         narrow = CLI.topic_narrow(Z.message_channel(message), Z.message_topic(message))
         consumer = self._relay_consumer_id()
         if consumer is not None:
@@ -1543,9 +1560,9 @@ class Tools:
                     return clean(text[len(prefix):].lstrip(": ").strip(), 300)[0]
             ids = [m["id"] for m in page if _int(m.get("id")) is not None and m["id"] > anchor]
             if found.get("found_newest") is not False or not ids:
-                return ""
+                return None
             anchor = max(ids)
-        return ""
+        return None
 
     # ---- fleet recall (AFC-331 section 4) -----------------------------------------------------
     def _recall(self, call: Callable[[], tuple[str, dict[str, Any]]]) -> dict[str, Any]:
