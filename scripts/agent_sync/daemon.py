@@ -197,6 +197,10 @@ class SeatRunner:
         self.cursor: int | None = cursor if isinstance(cursor, int) else None
         self.floor: int = self.cursor or 0
         self.cursor_flushed = self.cursor
+        # cursor_lock guards cursor, hold_below and held_high:  advance() runs on the seat's event thread and
+        # set_hold() on the tick thread.  Lock order is notes_relay_lock, then cursor_lock;  nothing under cursor_lock
+        # calls out, takes another lock or does I/O (flush_cursor copies the value, then writes outside it).
+        self.cursor_lock = threading.Lock()
         self.hold_below: int | None = None  # the lowest relay request that could not be spooled (see advance)
         self.held_high: int | None = None  # the highest id advance() saw while a hold capped it (see set_hold)
         self.cursor_flushed_at = 0.0
@@ -293,8 +297,9 @@ class SeatRunner:
         self.daemon.resume_notes_relay(self)  # the user list is loaded:  drain requests an earlier run left spooled
         if self.cursor is None:
             newest = state.get("max_message_id")
-            self.cursor = int(newest) if isinstance(newest, int) and newest >= 0 else 0
-            self.floor = self.cursor
+            with self.cursor_lock:
+                self.cursor = int(newest) if isinstance(newest, int) and newest >= 0 else 0
+                self.floor = self.cursor
             self.flush_cursor(force=True)
             return []
         self.floor = self.cursor
@@ -359,35 +364,50 @@ class SeatRunner:
             self.followed.add(key)
 
     def advance(self, message_id: int) -> None:
-        if self.hold_below is not None and message_id >= self.hold_below:
+        with self.cursor_lock:
+            self._advance_locked(message_id)
+
+    def _advance_locked(self, message_id: int) -> None:
+        hold = self.hold_below  # read once:  set_hold() may change it from the tick thread (it cannot under the lock)
+        if hold is not None and message_id >= hold:
             # A relay request below this id could not be spooled:  the cursor (and so the flushed file) must stay
             # under it for the rest of the session, or the next backfill would skip the request for good.  Other
             # messages still route;  only the persisted position is held.
             self.held_high = message_id if self.held_high is None else max(self.held_high, message_id)
-            message_id = self.hold_below - 1
+            message_id = hold - 1
         if self.cursor is None or message_id > self.cursor:
             self.cursor = message_id
+
+    def hold_at_or_below(self, message_id: int) -> int:
+        """A relay request could not be spooled:  hold the cursor below it (or below a lower hold already set).
+        Returns the hold."""
+        with self.cursor_lock:
+            self.hold_below = message_id if self.hold_below is None else min(self.hold_below, message_id)
+            return self.hold_below
 
     def set_hold(self, hold_below: int | None) -> None:
         """Move the hold.  The ids routed while it capped the cursor are remembered (held_high), so when the hold
         ends the cursor goes to the highest of them, not just to the last request retried:  a restart would
         otherwise route those messages again (duplicate inbox rows and wakes).  A hold that only rises lets the
         cursor catch up as far as the new hold allows."""
-        self.hold_below = hold_below
-        high = self.held_high
-        if high is not None:
-            if hold_below is None:
-                self.held_high = None
-            self.advance(high)
+        with self.cursor_lock:
+            self.hold_below = hold_below
+            high = self.held_high
+            if high is not None:
+                if hold_below is None:
+                    self.held_high = None
+                self._advance_locked(high)
 
     def flush_cursor(self, *, force: bool = False) -> None:
         now = self.daemon.clock.monotonic()
-        if self.cursor is None or self.cursor == self.cursor_flushed:
+        with self.cursor_lock:
+            cursor = self.cursor  # copied under the lock;  the file is written outside it
+        if cursor is None or cursor == self.cursor_flushed:
             return
         if not force and now - self.cursor_flushed_at < CURSOR_FLUSH_SECONDS:
             return
-        L.write_json(self.paths.cursor, {"last_id": self.cursor})
-        self.cursor_flushed = self.cursor
+        L.write_json(self.paths.cursor, {"last_id": cursor})
+        self.cursor_flushed = cursor
         self.cursor_flushed_at = now
 
     def is_bot_map(self) -> dict[int, bool]:
@@ -1323,8 +1343,8 @@ class Daemon:
                     # below the id for the rest of the batch and session, so a later message cannot carry the
                     # persisted cursor past it.
                     runner.ring.discard(message_id)
-                    runner.hold_below = message_id if runner.hold_below is None else min(runner.hold_below, message_id)
-                    self.log.write("notes-relay-held", seat=runner.seat, id=message_id, hold_below=runner.hold_below,
+                    hold = runner.hold_at_or_below(message_id)
+                    self.log.write("notes-relay-held", seat=runner.seat, id=message_id, hold_below=hold,
                                    warning="could not spool the request;  the cursor is held below this message")
                     self._keep_for_relay_retry(runner, message)
                     return

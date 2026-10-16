@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import secrets
 import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -541,6 +542,50 @@ class DaemonRelayTests(DaemonHarness):
                 self.notes_knob = "CLAUDE"
                 self.tearDown()
                 self.setUp()
+
+    def test_advance_and_set_hold_race_without_an_error_and_the_cursor_reaches_every_routed_id(self):
+        """advance() runs on the seat's event thread, set_hold() on the tick thread.  Hammer both:  no exception (the
+        old code could compute None - 1) and, once the last hold ends, a cursor at or above every id routed."""
+        daemon = self.started_with_relay()
+        runner = daemon.seats["CLAUDE"]
+        errors: list[BaseException] = []
+        base = (runner.cursor or 0) + 10
+        rounds = 20000
+        stop = threading.Event()
+
+        def routing():
+            try:
+                for i in range(1, rounds + 1):
+                    runner.advance(base + i)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                stop.set()
+
+        def ticking():
+            try:
+                n = 0
+                while not stop.is_set():
+                    n += 1
+                    runner.set_hold(base + 1 + (n % 50) if n % 3 else None)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=routing), threading.Thread(target=ticking)]
+        interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)  # switch threads as often as possible, to give a race a real chance
+        try:
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(60)
+        finally:
+            sys.setswitchinterval(interval)
+        self.assertEqual(errors, [])
+        runner.set_hold(None)
+        self.assertGreaterEqual(runner.cursor, base + rounds, "no routed id was lost to a racing update")
+        self.assertIsNone(runner.held_high)
+        daemon.notes_relay.stop()
 
     def test_the_hold_stays_while_the_overflow_backfill_cannot_spool(self):
         daemon = self.started_with_relay()
