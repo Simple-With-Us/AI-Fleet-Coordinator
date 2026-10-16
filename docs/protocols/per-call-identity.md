@@ -47,7 +47,7 @@ The hosted shared group lives in one table (`delegated-identities.js`), replacin
 
 ## 4. Tool Names
 
-Every tool name is `<family>_<verb>`, identical on stdio and hosted wherever both serve it.  Old names stay as hidden aliases for one release, then go.
+Every tool name is `<family>_<verb>`, identical on stdio and hosted wherever both serve it.  Old names are removed, not aliased (owner 2026-10-16).  Calling one returns `unknown_tool` naming its replacement, so a client learns the new name on its first miss.
 
 | Family | Tools | Where |
 |---|---|---|
@@ -73,3 +73,8 @@ Notes live in the Mac's iCloud `Coding` folder, written by `scripts/apple-notes-
 ## 6. Shell Parity on the Server
 
 The server mirror (`fleet-cli-release.py` allowlist, pushed by `fleet-cli-sync.py`) gains `recall`, `lane` and `fleet-mode` alongside `agent-sync` and `board`, plus the docs `fleet-mode` prints.  `apple-notes-coding.sh` is not mirrored;  the server reaches Notes through the relay.  The tool-parity doctor (`scripts/fleet-tools-doctor.py`) checks the same list on both hosts.
+
+## 7. The Guide
+
+One guide, `docs/protocols/agent-sync-tools-guide.md`, written once the code lands:  every tool by family with a one-line purpose, how to pass `identity`, which connection each client uses and how to arm it, the old-to-new name table, the Notes relay, and the CLI equivalents.  The MCP section of `zulip-fleet-guide.md`, the fleet skills that name tools, and an owner Apple Note point at it.
+
