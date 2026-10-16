@@ -1810,6 +1810,10 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
         with contextlib.suppress(ValueError, OSError):
             previous = signal.signal(signal.SIGTERM, _on_sigterm)
     agent: Agent | None = None
+    # The write audit (identity_log) happens exactly once, in the `finally` below, whatever the exit:  each path only
+    # records what to write in `audit` (the exit code and an optional outcome).  `_audit_write` itself decides whether
+    # the command is a write.  Only a verified key counts for the failure paths:  before that nothing was sent.
+    audit: tuple[int, str | None] | None = None
     try:
         if args.command in LOCAL_COMMANDS:
             return LOCAL_COMMANDS[args.command](rt, args)
@@ -1824,28 +1828,34 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
         agent = Agent(rt, args)  # every request after users/me waits for agent.verify(); whoami reports it
         _check_agent_identity(rt, agent, args.command)
         code = COMMANDS[args.command](agent, args)
-        _audit_write(rt, args, agent, code)
+        audit = (code, None)
         return code
     except Z.AgentSyncError as exc:
         rt.err("agent-sync: %s" % exc)
         if agent is not None and agent._verified:
-            _audit_write(rt, args, agent, exc.exit_code)
+            audit = (exc.exit_code, None)
         return exc.exit_code
     except KeyboardInterrupt:
         if agent is not None and agent._verified:
-            _audit_write(rt, args, agent, 130, "interrupted")  # a write that was in flight may have landed
+            audit = (130, "interrupted")  # a write that was in flight may have landed
         return 130
     except BrokenPipeError:
-        # The reader went away while the result was being printed.  A write has landed by then, so it is audited here
-        # (the command itself cannot audit before it prints).
+        # The reader went away while the result was being printed.  A write has landed by then.
         if agent is not None and agent._verified:
-            _audit_write(rt, args, agent, 0)
+            audit = (0, None)
         return 0
     except Exception as exc:  # noqa: BLE001 - last resort: say what failed, never print a traceback
         text = "%s: %s" % (type(exc).__name__, exc)
         rt.err("agent-sync: internal error: %s" % (agent.client.scrub(text) if agent else text))
+        if agent is not None and agent._verified:
+            # Anything unexpected after the key was verified (a failed print, a full disk) may have followed a write that
+            # landed:  the outcome is unknown, and only the exception's type name is recorded.
+            audit = (1, "outcome_unknown:%s" % type(exc).__name__)
         return 1
     finally:
+        if audit is not None and agent is not None:
+            with contextlib.suppress(Exception):  # an audit failure never changes the command's result
+                _audit_write(rt, args, agent, audit[0], audit[1])
         if previous is not None:
             with contextlib.suppress(ValueError, OSError):
                 signal.signal(signal.SIGTERM, previous)

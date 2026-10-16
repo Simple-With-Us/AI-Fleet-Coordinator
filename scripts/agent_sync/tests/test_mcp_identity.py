@@ -235,6 +235,66 @@ class CliTests(IdentityHarness):
         plain = self.run_cli("identities", "--json", env=self.cli_env(AGENT_SEAT="CODEX"))
         self.assertNotIn("CODEX", [row["identity"] for row in json.loads(plain.out)["identities"]], "no rc, no entry")
 
+    def audit_after(self, raiser, *argv):
+        """Run `post` with a command that verifies the key and then does `raiser`;  the audit rows it left."""
+        from agent_sync import cli as CLI
+
+        def command(agent, args):
+            agent.verify()
+            return raiser(agent, args)
+        path = self.state_dir / "logs" / "identity.jsonl"
+        before = path.read_text().splitlines() if path.exists() else []
+        with mock.patch.dict(CLI.COMMANDS, {"post": command}):
+            result = self.run_cli("post", "--topic", "cli", "x", *argv, env=self.cli_env())
+        rows = [json.loads(line) for line in path.read_text().splitlines()[len(before):]] if path.exists() else []
+        return result, rows
+
+    def test_a_write_that_fails_unexpectedly_after_it_landed_is_audited_once_with_only_the_exception_type(self):
+        for exc in (UnicodeEncodeError("ascii", "caf\u00e9 secret-looking text", 3, 4, "ordinal not in range"),
+                    OSError(28, "No space left on device /private/path")):
+            with self.subTest(type(exc).__name__):
+                def boom(agent, args, exc=exc):
+                    raise exc
+                result, rows = self.audit_after(boom)
+                self.assertEqual(result.code, 1)
+                self.assertEqual([(r["tool"], r["outcome"]) for r in rows],
+                                 [("post", "outcome_unknown:%s" % type(exc).__name__)])
+                self.assertNotIn("secret-looking", json.dumps(rows))
+                self.assertNotIn("/private/path", json.dumps(rows))
+
+    def test_every_exit_of_a_verified_write_yields_exactly_one_audit_row(self):
+        from agent_sync import zulip as Z
+
+        def ok(agent, args):
+            return 0
+
+        def agent_error(agent, args):
+            raise Z.UsageError("bad argument")
+
+        def interrupted(agent, args):
+            raise KeyboardInterrupt()
+
+        def broken_pipe(agent, args):
+            raise BrokenPipeError()
+
+        cases = {"ok": (ok, 0, "ok"), "agent_sync_error": (agent_error, 2, "exit_2"),
+                 "interrupt": (interrupted, 130, "interrupted"), "broken_pipe": (broken_pipe, 0, "ok")}
+        for name, (raiser, code, outcome) in cases.items():
+            with self.subTest(name):
+                result, rows = self.audit_after(raiser)
+                self.assertEqual(result.code, code, result.err)
+                self.assertEqual([(r["tool"], r["outcome"]) for r in rows], [("post", outcome)], "exactly one row")
+
+    def test_a_failure_before_the_key_is_verified_leaves_no_audit_row(self):
+        def never_verified(agent, args):
+            raise OSError("before anything was sent")
+        from agent_sync import cli as CLI
+        path = self.state_dir / "logs" / "identity.jsonl"
+        before = path.read_text().splitlines() if path.exists() else []
+        with mock.patch.dict(CLI.COMMANDS, {"post": never_verified}):
+            self.assertEqual(self.run_cli("post", "--topic", "cli", "x", env=self.cli_env()).code, 1)
+        self.assertEqual(path.read_text().splitlines() if path.exists() else [], before)
+
     def test_a_write_that_lands_and_then_loses_its_pipe_is_still_audited(self):
         from agent_sync import cli as CLI
 
