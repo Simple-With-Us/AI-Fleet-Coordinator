@@ -51,6 +51,10 @@ CHILD_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "USER"
 PASS_PREFIXES = ("LINEAR_",)
 
 
+class LinearInvalid(Exception):
+    """A call board would refuse as a usage error, caught before board runs."""
+
+
 class LinearUnavailable(Exception):
     """The catalogs or board are not on this host."""
 
@@ -130,6 +134,11 @@ class Plan(NamedTuple):
     stdin: bytes
     env: dict[str, str]  # extra environment
     ok_empty: bool = False
+    vars_json: str | None = None  # GraphQL variables, handed to board as `--vars @FILE` (never on argv)
+
+
+VARS_PLACEHOLDER = "@{vars}"
+VARS_MAX_BYTES = 64 * 1024  # board's own cap on an @FILE input (INPUT_MAX_BYTES)
 
 
 def _flag(argv: list[str], flag: str, value: Any) -> None:
@@ -211,13 +220,19 @@ def plan_for(spec: Spec, args: Mapping[str, Any], identity: str) -> Plan:
         document = str(args["mutation" if write else "query"])
         argv = ["api", "mutation" if write else "query", "-", "--json"]
         variables = args.get("variables")
+        vars_json = None
         if variables:
-            argv += ["--vars", _json(variables)]
+            # Variables go through a private file, not argv:  argv is visible to every local process and a
+            # single argument is capped by the OS (E2BIG), and board reads `--vars @FILE` the same way.
+            vars_json = _json(variables)
+            if len(vars_json.encode("utf-8")) > VARS_MAX_BYTES:
+                raise LinearInvalid("variables are more than %d KB as JSON" % (VARS_MAX_BYTES // 1024))
+            argv += ["--vars", VARS_PLACEHOLDER]
         _flag(argv, "--max-chars", args.get("max_chars"))
         if write:
             _flag(argv, "--idempotency-key", args.get("idempotency_key"))
             _flag(argv, "--session", session)
-        return Plan(argv, document.encode("utf-8"), extra)
+        return Plan(argv, document.encode("utf-8"), extra, vars_json=vars_json)
     raise LinearUnavailable("no board mapping for %s" % name)
 
 
@@ -265,8 +280,15 @@ def run_board(spec: Spec, args: Mapping[str, Any], identity: str, *, env: Mappin
         raise LinearUnavailable("the board CLI is not on this host (scripts/linear-board/board, or %s)" % ENV_BOARD)
     plan = plan_for(spec, args, identity)
     import sys
+    import tempfile
     argv = [python or sys.executable, str(board), *plan.argv]
+    vars_path = None
     try:
+        if plan.vars_json is not None:
+            fd, vars_path = tempfile.mkstemp(prefix="agent-sync-linear-vars-", suffix=".json")  # mode 0600
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(plan.vars_json)
+            argv = ["@" + vars_path if part == VARS_PLACEHOLDER else part for part in argv]
         with _LOCK:
             proc = runner(argv, input=plan.stdin, capture_output=True, timeout=timeout,
                           env=child_env(env, identity, plan.env), check=False)
@@ -274,6 +296,12 @@ def run_board(spec: Spec, args: Mapping[str, Any], identity: str, *, env: Mappin
         raise LinearUnavailable("board did not finish within %d seconds" % int(timeout)) from None
     except OSError as exc:
         raise LinearUnavailable("could not start board (%s)" % (exc.strerror or type(exc).__name__)) from None
+    finally:
+        if vars_path is not None:
+            try:
+                os.unlink(vars_path)
+            except OSError:
+                pass
     return BoardResult(proc.returncode, (proc.stdout or b"")[:OUTPUT_LIMIT].decode("utf-8", "replace"),
                        (proc.stderr or b"")[:4096].decode("utf-8", "replace"))
 

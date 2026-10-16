@@ -29,7 +29,9 @@ FAKE_PROGRAM = textwrap.dedent('''\
     import json, os, sys
     out = os.environ["{out_var}"]
     data = {{"argv": sys.argv[1:], "seat": os.environ.get("AGENT_SEAT"), "writes": os.environ.get("LINEAR_BOARD_WRITES"),
-            "stdin": sys.stdin.read(), "env": sorted(os.environ)}}
+            "stdin": sys.stdin.read(), "env": sorted(os.environ),
+            "files": {{a: {{"text": open(a[1:]).read(), "mode": oct(os.stat(a[1:]).st_mode & 0o777)}}
+                      for a in sys.argv[1:] if a.startswith("@") and os.path.isfile(a[1:])}}}}
     with open(out, "a") as fh:
         fh.write(json.dumps(data) + "\\n")
     code = int(os.environ.get("{exit_var}", "0"))
@@ -384,6 +386,24 @@ class LinearToolTests(FakePrograms):
         self.assertEqual(query["argv"][:3], ["api", "query", "-"])
         self.assertEqual(mutation["argv"][:3], ["api", "mutation", "-"])
         self.assertIn("mut-key-1", mutation["argv"])
+
+    def test_graphql_variables_go_through_a_private_file_that_is_removed_after(self):
+        session = self.session(self.env())
+        session.call("linear_query", {"query": "query { viewer { id } }", "variables": {"payload": "x" * 50000}})
+        call, = self.calls(self.board_out)
+        ref = call["argv"][call["argv"].index("--vars") + 1]
+        self.assertTrue(ref.startswith("@"))
+        self.assertNotIn("payload", " ".join(call["argv"]))
+        self.assertEqual(json.loads(call["files"][ref]["text"]), {"payload": "x" * 50000})
+        self.assertEqual(call["files"][ref]["mode"], "0o600")
+        self.assertFalse(Path(ref[1:]).exists())
+
+    def test_variables_larger_than_boards_file_cap_are_refused_before_board_runs(self):
+        session = self.session(self.env())
+        too_big = {"v": "x" * (64 * 1024)}
+        self.assert_tool_error(session.call("linear_query", {"query": "query { a }", "variables": too_big}),
+                               "invalid_argument")
+        self.assertEqual(self.calls(self.board_out), [])
 
     def test_board_failures_become_tool_errors_with_boards_own_words(self):
         session = self.session(self.env(LINEAR_TEST_EXIT="3", LINEAR_TEST_ERR="error: AFC-1 is claimed by CODEX\n"))
