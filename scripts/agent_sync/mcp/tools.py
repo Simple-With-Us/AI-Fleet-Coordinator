@@ -1513,14 +1513,38 @@ class Tools:
                     return message
         return None
 
+    NOTES_REASON_PAGE = 100  # messages per page when looking for the consumer's refusal reply
+    NOTES_REASON_PAGES = 20  # at most this many pages before the reason is given up on
+
+    def _relay_consumer_id(self) -> int | None:
+        for user in self.agent.users():
+            if user.get("is_bot") and IDENT.seat_tag_for(user) == self.notes_consumer and _int(user.get("user_id")) is not None:
+                return int(user["user_id"])
+        return None
+
     def _notes_reason(self, message: Mapping[str, Any], request_id: str) -> str:
-        """The refusal the listener replied with, from a fleet bot in the same topic after the request."""
+        """The refusal the listener replied with, from the relay consumer's bot in the same topic after the request.
+        Reads that bot's own messages forward in pages until the reply is found or the topic's newest message is
+        reached, so a reply posted after a long backlog is still found;  bounded by NOTES_REASON_PAGES."""
         narrow = CLI.topic_narrow(Z.message_channel(message), Z.message_topic(message))
+        consumer = self._relay_consumer_id()
+        if consumer is not None:
+            narrow = narrow + [{"operator": "sender", "operand": consumer}]
         prefix = NOTES.REFUSAL_PREFIX + request_id
-        for reply in self.agent.fetch(narrow, anchor=int(message["id"]), num_after=30, include_anchor=False):
-            text = str(reply.get("content") or "").lstrip()
-            if text.startswith(prefix) and self._relay_consumer(reply.get("sender_id")):
-                return clean(text[len(prefix):].lstrip(": ").strip(), 300)[0]
+        anchor = int(message["id"])
+        for _ in range(self.NOTES_REASON_PAGES):
+            found = self.agent.client.get("messages", {
+                "narrow": narrow, "anchor": anchor, "num_before": 0, "num_after": self.NOTES_REASON_PAGE,
+                "include_anchor": False, "apply_markdown": False})
+            page = sorted((m for m in found.get("messages") or [] if isinstance(m, dict)), key=lambda m: m.get("id", 0))
+            for reply in page:
+                text = str(reply.get("content") or "").lstrip()
+                if text.startswith(prefix) and self._relay_consumer(reply.get("sender_id")):
+                    return clean(text[len(prefix):].lstrip(": ").strip(), 300)[0]
+            ids = [m["id"] for m in page if _int(m.get("id")) is not None and m["id"] > anchor]
+            if found.get("found_newest") is not False or not ids:
+                return ""
+            anchor = max(ids)
         return ""
 
     # ---- fleet recall (AFC-331 section 4) -----------------------------------------------------
@@ -1541,8 +1565,9 @@ class Tools:
         """The hosted rules:  validate and scan first, then claim the idempotency key.  An explicit
         `idempotency_key` names the contribution for 24 hours (a retry, even with altered text, returns the first
         result with duplicate true and never contributes again);  without one the same seat, fields and text are
-        one contribution for 10 minutes.  A failed contribution drops its row, so it can be retried (the recall
-        service upserts by content hash, so a repeat is safe)."""
+        one contribution for 10 minutes.  A definite failure drops its row, so it can be retried.  A timeout keeps the
+        row as `unknown` (the contribution may have landed) and answers outcome_unknown, and a retry with the same
+        key is refused rather than sent again, as for the Linear and Notes writes."""
         def scan(field: str, value: str) -> None:
             self._scan(**{field: value})
 
@@ -1562,9 +1587,17 @@ class Tools:
         verdict, row = self._idem_begin(key, ttl, {"tool": "recall_contribute"})
         if verdict == "duplicate" and row is not None:
             return self._contribute_result(row.get("result") or {}, duplicate=True)
-        # "send" or "reconcile":  either way it is safe to send, because recall upserts by the text's hash.
+        if verdict == "reconcile":
+            self._idem_set(key, state="unknown")
+            raise ToolError("outcome_unknown", "an earlier recall_contribute with this key may or may not have been stored.  "
+                            "Search recall for it (recall_search) before contributing again, or use a new idempotency_key.")
         try:
             _, structured = RECALL.contribute(args, self.seat, env=self.agent.rt.env, scan=scan)
+        except RECALL.RecallTimeout:
+            self._idem_set(key, state="unknown")
+            raise ToolError("outcome_unknown", "fleet recall did not answer in time, so the contribution may or may not have "
+                            "been stored.  Search recall for it (recall_search) before contributing again; a retry with "
+                            "the same key is refused.") from None
         except RECALL.RecallUnavailable as exc:
             self._idem_drop(key)
             raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None

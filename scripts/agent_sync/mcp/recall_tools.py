@@ -54,6 +54,11 @@ class RecallUnavailable(Exception):
         self.retryable = retryable
 
 
+class RecallTimeout(RecallUnavailable):
+    """The recall CLI did not finish in time.  For a read that is plain unavailability;  for a contribution it is an
+    unknown outcome, because the stored contribution may have landed before the process was killed."""
+
+
 Runner = Callable[..., "subprocess.CompletedProcess[bytes]"]
 _LOCK = threading.Lock()
 
@@ -72,7 +77,7 @@ def child_env(env: Mapping[str, str]) -> dict[str, str]:
     return out
 
 
-def run(args: list[str], *, stdin: bytes, env: Mapping[str, str], runner: Runner = subprocess.run,
+def run(args: list[str], *, stdin: bytes, env: Mapping[str, str], runner: Runner | None = None,
         timeout: float = RECALL_TIMEOUT_S) -> tuple[int, dict[str, Any] | None, str]:
     """(exit code, parsed JSON object or None, one line of stderr).  Raises RecallUnavailable."""
     script = find_recall(env)
@@ -80,11 +85,11 @@ def run(args: list[str], *, stdin: bytes, env: Mapping[str, str], runner: Runner
         raise RecallUnavailable("not_configured", "the recall CLI is not on this host (scripts/recall, or %s)" % ENV_RECALL)
     try:
         with _LOCK:
-            proc = runner([sys.executable, str(script), *args], input=stdin, capture_output=True, timeout=timeout,
+            proc = (runner or subprocess.run)([sys.executable, str(script), *args], input=stdin, capture_output=True, timeout=timeout,
                           env=child_env(env), check=False)
     except subprocess.TimeoutExpired:
-        raise RecallUnavailable("unavailable", "fleet recall did not answer within %d seconds" % int(timeout),
-                                retryable=True) from None
+        raise RecallTimeout("unavailable", "fleet recall did not answer within %d seconds" % int(timeout),
+                            retryable=True) from None
     except OSError as exc:
         raise RecallUnavailable("unavailable", "could not start the recall CLI (%s)" % (exc.strerror or type(exc).__name__)) from None
     data: dict[str, Any] | None = None
@@ -153,7 +158,7 @@ def envelope(header: str, summary: str, items: list[Mapping[str, Any]]) -> str:
 
 # ---- the three tools ----------------------------------------------------------------------------
 
-def search(args: Mapping[str, Any], *, env: Mapping[str, str], runner: Runner = subprocess.run) -> tuple[str, dict[str, Any]]:
+def search(args: Mapping[str, Any], *, env: Mapping[str, str], runner: Runner | None = None) -> tuple[str, dict[str, Any]]:
     query = str(args["query"]).strip()
     if not query:
         raise RecallUnavailable("invalid_argument", "argument 'query' must not be blank")
@@ -176,7 +181,7 @@ def search(args: Mapping[str, Any], *, env: Mapping[str, str], runner: Runner = 
     return envelope(header, summary, hits), {"count": len(hits), "mode": mode, "doc_ids": [h["doc_id"] for h in hits]}
 
 
-def stats(*, env: Mapping[str, str], runner: Runner = subprocess.run) -> tuple[str, dict[str, Any]]:
+def stats(*, env: Mapping[str, str], runner: Runner | None = None) -> tuple[str, dict[str, Any]]:
     code, data, err = run(["stats", "--json"], stdin=b"", env=env, runner=runner)
     if data is None or code != 0:
         raise failure(code, err)
@@ -213,7 +218,7 @@ def contribute_fields(args: Mapping[str, Any], scan: Callable[[str, str], None] 
 
 
 def contribute(args: Mapping[str, Any], identity: str, *, env: Mapping[str, str],
-               runner: Runner = subprocess.run, scan: Callable[[str, str], None] | None = None) -> tuple[str, dict[str, Any]]:
+               runner: Runner | None = None, scan: Callable[[str, str], None] | None = None) -> tuple[str, dict[str, Any]]:
     text, title, url = contribute_fields(args, scan)
     argv = ["contribute", "-", "--category", str(args["category"]), "--app", str(args.get("app") or "fleet"),
             "--seat", identity, "--json"]

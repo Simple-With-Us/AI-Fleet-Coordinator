@@ -19,6 +19,7 @@ from unittest import mock
 from agent_sync import notes as N
 from agent_sync.mcp import guide as G
 from agent_sync.mcp import linear_tools as LT
+from agent_sync.mcp import recall_tools as RT
 from agent_sync.mcp import tools as T
 from agent_sync.tests.mcp_harness import McpHarness
 from agent_sync.tests.test_mcp_identity import IdentityHarness
@@ -297,6 +298,29 @@ class NotesToolTests(McpHarness):
         self.assertNotIn("forged", refused["reason"])
         self.assert_tool_error(session.call("notes_status", {"request_id": "unknown-request-1"}), "not_found")
 
+    def test_notes_status_finds_a_refusal_reply_beyond_the_first_page_of_the_topic(self):
+        """The consumer's reply sits after more than one page of other bots' posts in the same topic."""
+        session = self.session()
+        mid, status = self.sent_request(session, "status-request-3")
+        self.fake.reactions.add((mid, 10, "cross_mark"))
+        for i in range(230):
+            self.fake.add_message("Codex", N.RELAY_CHANNEL, "[AFC, Claude] status", "chatter %d" % i)
+        self.fake.add_message("Claude", N.RELAY_CHANNEL, "[AFC, Claude] status",
+                              "notes-relay refused status-request-3: the title names agent \"Z\"")
+        refused = status()
+        self.assertEqual(refused["status"], "refused")
+        self.assertIn("names agent", refused["reason"])
+
+    def test_notes_status_pages_forward_when_the_topic_is_all_the_consumers_own_posts(self):
+        session = self.session()
+        mid, status = self.sent_request(session, "status-request-4")
+        self.fake.reactions.add((mid, 10, "cross_mark"))
+        for i in range(230):
+            self.fake.add_message("Claude", N.RELAY_CHANNEL, "[AFC, Claude] status", "another reply %d" % i)
+        self.fake.add_message("Claude", N.RELAY_CHANNEL, "[AFC, Claude] status",
+                              "notes-relay refused status-request-4: late reason")
+        self.assertEqual(status()["reason"], "late reason")
+
     def test_the_consumer_seat_comes_from_the_fleet_knob_and_a_differing_local_seat_is_ignored(self):
         (self.state_dir).mkdir(parents=True, exist_ok=True)
         (self.state_dir / "listener.toml").write_text('[notes_relay]\nenabled = true\nseat = "CLAUDE"\n')
@@ -382,6 +406,32 @@ class RecallToolTests(FakePrograms):
         good = self.session(self.env(RECALL_TEST_REPLY=reply))
         data = self.assert_structured("recall_contribute", good.call("recall_contribute", args))
         self.assertFalse(data["duplicate"], "the failed attempt left no row to answer from")
+
+    def test_a_contribution_that_times_out_is_an_unknown_outcome_that_a_retry_is_refused_for(self):
+        """The stored contribution may have landed before the process was killed, so the row stays `unknown`."""
+        args = {"text": self.LESSON, "category": "lesson", "idempotency_key": "aaaaaaaa-5"}
+
+        def hang(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 1)
+        session = self.session(self.env(RECALL_TEST_REPLY=json.dumps({"id": "a", "doc_id": "lesson:1", "status": "stored"})))
+        with mock.patch.object(RT.subprocess, "run", hang):
+            first = self.assert_tool_error(session.call("recall_contribute", args), "outcome_unknown")
+        self.assertIn("may or may not", first["message"])
+        self.assertEqual(self.calls(self.recall_out), [])
+        retry = self.assert_tool_error(session.call("recall_contribute", args), "outcome_unknown")
+        self.assertIn("may or may not", retry["message"])
+        self.assertEqual(self.calls(self.recall_out), [], "the retry did not send the contribution again")
+        fresh = self.assert_structured("recall_contribute", session.call("recall_contribute", dict(args, idempotency_key="aaaaaaaa-6")))
+        self.assertFalse(fresh["duplicate"])
+        self.assertEqual(len(self.calls(self.recall_out)), 1)
+
+    def test_a_search_that_times_out_is_plain_unavailability_not_an_unknown_outcome(self):
+        def hang(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 1)
+        session = self.session(self.env())
+        with mock.patch.object(RT.subprocess, "run", hang):
+            error = self.assert_tool_error(session.call("recall_search", {"query": "pm2 env"}), "unavailable")
+        self.assertIs(error.get("retryable"), True)
 
     def test_a_bad_retry_is_refused_before_the_key_is_looked_at(self):
         reply = json.dumps({"id": "abc", "doc_id": "lesson:1", "status": "stored", "scrubbed": []})

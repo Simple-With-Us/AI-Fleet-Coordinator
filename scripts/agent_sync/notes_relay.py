@@ -90,7 +90,13 @@ def _fsync_dir(path: str) -> None:
         os.close(fd)
 
 class Refusal(Exception):
-    """A request that must not run.  The text is the reason a sender reads in the reply."""
+    """A request that must not run.  The text is the reason a sender reads in the reply.  `request_id` is the
+    envelope's, when the message held one that parsed:  the reply is labelled with it, which is what
+    notes_status searches for."""
+
+    def __init__(self, text: str, request_id: str | None = None) -> None:
+        super().__init__(text)
+        self.request_id = request_id
 
 
 def sender_identity(person: Mapping[str, Any] | None, owner_user_id: int = 0) -> str:
@@ -111,18 +117,26 @@ def sender_identity(person: Mapping[str, Any] | None, owner_user_id: int = 0) ->
 
 def validate(message: Mapping[str, Any], person: Mapping[str, Any] | None, *, owner_user_id: int = 0,
              registry_path: str | None = None) -> tuple[str, dict[str, Any]]:
-    """(sender identity, envelope) for a request that may run, else Refusal."""
-    identity = sender_identity(person, owner_user_id)
+    """(sender identity, envelope) for a request that may run, else Refusal.  A refusal of a message whose envelope
+    parses carries that envelope's request_id, whichever check refused it."""
     try:
-        envelope = N.parse_message(message.get("content"))
+        parsed: dict[str, Any] | None = N.parse_message(message.get("content"))
+        parse_error: N.EnvelopeError | None = None
     except N.EnvelopeError as exc:
-        raise Refusal("not a notes request:  %s" % exc) from None
-    if envelope["identity"] != identity:
-        raise Refusal("envelope identity %s is not the sender, %s" % (envelope["identity"][:40], identity))
-    problem = N.title_problem(envelope["title"], identity, registry_path=registry_path)
+        parsed, parse_error = None, exc
+    request_id = parsed["request_id"] if parsed is not None else None
+    try:
+        identity = sender_identity(person, owner_user_id)
+    except Refusal as exc:
+        raise Refusal(str(exc), request_id) from None
+    if parsed is None:
+        raise Refusal("not a notes request:  %s" % parse_error) from None
+    if parsed["identity"] != identity:
+        raise Refusal("envelope identity %s is not the sender, %s" % (parsed["identity"][:40], identity), request_id)
+    problem = N.title_problem(parsed["title"], identity, registry_path=registry_path)
     if problem:
-        raise Refusal(problem)
-    return identity, envelope
+        raise Refusal(problem, request_id)
+    return identity, parsed
 
 
 class Processed:
@@ -443,7 +457,7 @@ class Consumer:
                                           registry_path=self.registry_path)
         except Refusal as exc:
             self.log("notes-relay-refused", id=message_id, reason=str(exc)[:120])
-            self._answer(runner, message_id, None, refused=str(exc))
+            self._answer(runner, message_id, exc.request_id, refused=str(exc))
             return "refused"
         request_id = envelope["request_id"]
         earlier = self.processed.begin(identity, request_id, message_id)

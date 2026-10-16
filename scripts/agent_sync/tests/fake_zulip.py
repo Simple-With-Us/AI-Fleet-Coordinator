@@ -809,6 +809,8 @@ class FakeZulip:
             lower = [m for m in matching if m["id"] < anchor_id or (include and m["id"] == anchor_id)]
             upper = [m for m in matching if m["id"] > anchor_id]
             chosen = (lower[-before:] if before else []) + upper[:after]
+            return {"messages": [self._public(m, user_id) for m in chosen], "found_newest": len(upper) <= after,
+                    "found_anchor": True}
         return {"messages": [self._public(m, user_id) for m in chosen], "found_newest": True, "found_anchor": True}
 
     def _register(self, params: dict[str, str], caller: dict[str, Any]) -> dict[str, Any]:

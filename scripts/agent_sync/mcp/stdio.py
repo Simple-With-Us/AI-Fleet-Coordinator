@@ -519,10 +519,13 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
     if not Z.session_tag(session_id):
         session_id, source = None, "none"
     try:
-        registry: I.SeatRegistry | None = I.load_seat_registry(env=env)
+        registry: I.SeatRegistry = I.load_seat_registry(env=env)
     except I.SeatRegistryError as exc:
-        registry = None
-        log("%s;  only the default identity is allowed" % exc)
+        # Fail closed:  without fleet-apps.json nothing proves a name is a live agent identity (not a retired seat,
+        # an integration bot or an unknown name), the default included, so no identity is served.
+        log("cannot read the seat registry, so no identity can be checked as a live agent identity and none is served "
+            "(%s);  fix FLEET_APPS_JSON or fleet-apps.json and start again" % exc)
+        return 3
     # Where each identity's key is (identities.py):  its zuliprc file, else on the server its own per-seat
     # variables (the listener's `creds = "env"` names, else ZULIP_<CODE>_EMAIL, ZULIP_<CODE>_API_KEY and
     # ZULIP_SITE).  Those are read from the process environment, which keeps ZULIP_SITE;  the generic
@@ -539,18 +542,17 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
     rc_arg = getattr(args, "rc", None) or env.get("ZULIP_RC") or None
     allowed: dict[str, X.CredentialSource] = {}
     if seat:
-        if registry is not None:
-            problem = X.agent_identity_problem(seat, registry=registry)
-            if problem:
-                log(problem)
-                return 3
+        problem = X.agent_identity_problem(seat, registry=registry)
+        if problem:
+            log(problem)
+            return 3
         if rc_arg:
             allowed[seat] = X.CredentialSource(path=Path(rc_arg).expanduser())
         else:
             # A missing source keeps the file path, so the refusal reads "credential file not found: PATH".
             allowed[seat] = X.source_for(seat, env, home, cred_env=cred_env, env_seats=env_seats) \
                 or X.CredentialSource(path=Z.default_rc_path(seat, env, home))
-    if not launcher_pinned and registry is not None:
+    if not launcher_pinned:
         for name, found in X.allowed_identities(env, home, registry=registry, cred_env=cred_env,
                                                 env_seats=env_seats).items():
             allowed.setdefault(name, found)

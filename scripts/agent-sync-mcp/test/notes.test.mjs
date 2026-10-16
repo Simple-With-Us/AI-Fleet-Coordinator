@@ -12,7 +12,7 @@ import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { ERROR_META_KEY, schemaProblem } from "../src/contract.js";
 import {
-  NOTES_TOOLS, RELAY_CHANNEL, makeEnvelope, renderMessage, parseMessage, topicFor, checkTitle, checkFlags, needsUpload, INLINE_JSON_MAX,
+  NOTES_TOOLS, NOTES_REASON_PAGE, NOTES_REASON_PAGES, RELAY_CHANNEL, makeEnvelope, renderMessage, parseMessage, topicFor, checkTitle, checkFlags, needsUpload, INLINE_JSON_MAX,
 } from "../src/notes.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
 import { ROOT, testEnv, wranglerConfig } from "./helpers.mjs";
@@ -244,6 +244,33 @@ test("NOTES_RELAY_CONSUMER names the trusted seat;  it is validated and defaults
   assert.equal(ok(await tools.call("notes_status", { request_id: "consumer-request1" }), "notes_status").status, "queued");
   react(message, user(fake, "Codex"), CHECK);
   assert.equal(ok(await tools.call("notes_status", { request_id: "consumer-request1" }), "notes_status").status, "done");
+});
+
+test("notes_status finds the consumer's refusal reply after more than a page of the topic's other posts", async () => {
+  const { fake, tools } = harness();
+  const claude = fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true });
+  const sent = ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "long-backlog-1" }), "notes_create");
+  react(fake.messages.find((m) => m.id === sent.message_id), claude, CROSS);
+  for (let i = 0; i < 230; i += 1) fake.addMessage("Claude", RELAY_CHANNEL, TITLE, `another reply ${i}`);
+  fake.addMessage("Claude", RELAY_CHANNEL, TITLE, "notes-relay refused long-backlog-1: the late reason");
+  const out = ok(await tools.call("notes_status", { request_id: "long-backlog-1" }), "notes_status");
+  assert.deepEqual([out.status, out.reason], ["refused", "the late reason"]);
+});
+
+test("notes_status gives up on the reason after its page bound and still reports refused", async () => {
+  const { fake, tools } = harness();
+  const claude = fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true });
+  const sent = ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "long-backlog-2" }), "notes_create");
+  react(fake.messages.find((m) => m.id === sent.message_id), claude, CROSS);
+  const pages = [];
+  const get = tools.zulip.get.bind(tools.zulip);
+  tools.zulip.get = async (path, params) => { if (path === "messages" && params.anchor !== "newest") pages.push(params.anchor); return get(path, params); };
+  for (let i = 0; i < NOTES_REASON_PAGE * NOTES_REASON_PAGES + 5; i += 1) fake.addMessage("Claude", RELAY_CHANNEL, TITLE, `another reply ${i}`);
+  fake.addMessage("Claude", RELAY_CHANNEL, TITLE, "notes-relay refused long-backlog-2: beyond the bound");
+  const out = ok(await tools.call("notes_status", { request_id: "long-backlog-2" }), "notes_status");
+  assert.equal(out.status, "refused");
+  assert.equal(out.reason, undefined);
+  assert.equal(pages.length, NOTES_REASON_PAGES, "one request per page, up to the bound");
 });
 
 test("notes_status for an unknown request id is not_found", async () => {

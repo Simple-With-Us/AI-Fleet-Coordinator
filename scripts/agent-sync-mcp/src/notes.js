@@ -25,6 +25,8 @@ export const MARKDOWN_MAX = 500_000;
 export const UPLOAD_MAX = 1024 * 1024;
 export const INLINE_JSON_MAX = 8500;
 export const ENVELOPE_PARSE_MAX = 20_000;
+export const NOTES_REASON_PAGE = 100; // messages per page when looking for the consumer's refusal reply
+export const NOTES_REASON_PAGES = 20; // at most this many pages before the reason is given up on
 export const FLAG_NAMES = Object.freeze(["pin", "notify", "needs_owner", "summary", "pr", "html"]);
 export const REFUSAL_PREFIX = "notes-relay refused ";
 // Reactions the Mac listener sets (Zulip unicode codes and names):  a check mark and a cross mark.
@@ -254,6 +256,37 @@ export const NOTES_METHODS = {
     return seatTagFor(user) === this.config.notesRelayConsumer;
   },
 
+  /**
+   * The refusal reply the relay consumer posted for a request:  the consumer's own messages in the request's topic,
+   * read forward from the request in pages of NOTES_REASON_PAGE until the reply is found or the topic's newest
+   * message is reached, at most NOTES_REASON_PAGES pages.  Only the consumer's bot counts, so a peer's forged reply
+   * is skipped wherever it sits.  "" when none is found.
+   */
+  async notesRefusalReason(message, requestId, channelId, members, asMessage) {
+    const consumer = members.find((m) => m.is_bot === true && seatTagFor(m) === this.config.notesRelayConsumer);
+    const narrow = [
+      { operator: "channel", operand: channelId },
+      { operator: "topic", operand: message.subject ?? message.topic ?? "" },
+      ...(consumer?.email ? [{ operator: "sender", operand: consumer.email }] : []),
+    ];
+    const prefix = REFUSAL_PREFIX + requestId;
+    let anchor = message.id;
+    for (let pageNumber = 0; pageNumber < NOTES_REASON_PAGES; pageNumber += 1) {
+      const result = await this.zulip.get("messages", { narrow, anchor, num_before: 0, num_after: NOTES_REASON_PAGE, include_anchor: false, apply_markdown: false });
+      const rows = (result.messages ?? []).map(asMessage).filter((m) => m !== null && Number.isInteger(m.id)).sort((a, b) => a.id - b.id);
+      for (const reply of rows) {
+        const text = (reply.content ?? "").trimStart();
+        if (reply.id > message.id && text.startsWith(prefix) && (await this.notesFleetBot(reply.sender_id, members))) {
+          return clean(text.slice(prefix.length).replace(/^[:\s]+/, "").trim(), 300)[0];
+        }
+      }
+      const later = rows.filter((m) => m.id > anchor);
+      if (result.found_newest !== false || later.length === 0) return "";
+      anchor = Math.max(...later.map((m) => m.id));
+    }
+    return "";
+  },
+
   async tool_notes_status(rawArgs, audit) {
     const args = parseArgs(NotesStatusArgs, rawArgs);
     const requestId = checkRequestId(args.request_id);
@@ -298,16 +331,8 @@ export const NOTES_METHODS = {
     }
     const info = { request_id: requestId, message_id: message.id, status: refused ? "refused" : done ? "done" : "queued" };
     if (refused) {
-      const prefix = REFUSAL_PREFIX + requestId;
-      const replies = (await this.page([{ operator: "channel", operand: channelId }, { operator: "topic", operand: message.subject ?? message.topic ?? "" }], message.id, 30)).map(asMessage);
-      for (const reply of replies) {
-        if (reply === null) continue;
-        const text = (reply.content ?? "").trimStart();
-        if (reply.id > message.id && text.startsWith(prefix) && (await this.notesFleetBot(reply.sender_id, members))) {
-          info.reason = clean(text.slice(prefix.length).replace(/^[:\s]+/, "").trim(), 300)[0];
-          break;
-        }
-      }
+      info.reason = await this.notesRefusalReason(message, requestId, channelId, members, asMessage);
+      if (info.reason === "") delete info.reason;
     }
     return okResult(JSON.stringify(info), info);
   },

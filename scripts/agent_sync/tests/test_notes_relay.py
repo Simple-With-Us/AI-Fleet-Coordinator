@@ -157,19 +157,20 @@ class SenderTests(RelayHarness):
         self.assert_refused(self.message(OWNER_ID, N.render_message(env)), "owner")
 
     def test_an_integration_bot_a_retired_seat_and_an_unknown_user_are_refused(self):
-        env = N.render_message(N.make_envelope("create", TITLE, "x", {}, "other-request-1", "CLAUDE"))
-        self.assert_refused(self.message(15, env), "not a fleet agent identity")
-        self.assert_refused(self.message(16, env), "not a fleet agent identity")
+        def env(rid):  # a refusal is labelled with its request id, and a reply with that label is posted once
+            return N.render_message(N.make_envelope("create", TITLE, "x", {}, rid, "CLAUDE"))
+        self.assert_refused(self.message(15, env("other-request-1")), "not a fleet agent identity")
+        self.assert_refused(self.message(16, env("other-request-2")), "not a fleet agent identity")
         self.runner.users.pop(16)
-        self.assert_refused(self.message(16, env), "not a user this listener knows")
+        self.assert_refused(self.message(16, env("other-request-3")), "not a user this listener knows")
 
     def test_the_identity_in_the_envelope_must_be_the_sender(self):
         self.assert_refused(self.request("CURSOR", "[AFC, Cursor] t", claimed="CLAUDE"), "is not the sender")
 
     def test_the_agent_in_the_title_must_be_the_senders_name(self):
-        self.assert_refused(self.request("CURSOR", "[AFC, Claude] t"), "which is not CURSOR")
-        self.assert_refused(self.request("GB-FIXER", "[AFC, GB-Deployer] t", rid="rid-wrong-agent"), "which is not GB-FIXER")
-        self.assert_refused(self.request("CURSOR", "[AFC] no agent"), "must read")
+        self.assert_refused(self.request("CURSOR", "[AFC, Claude] t", rid="rid-wrong-agent-1"), "which is not CURSOR")
+        self.assert_refused(self.request("GB-FIXER", "[AFC, GB-Deployer] t", rid="rid-wrong-agent-2"), "which is not GB-FIXER")
+        self.assert_refused(self.request("CURSOR", "[AFC] no agent", rid="rid-wrong-agent-3"), "must read")
 
     def test_a_reply_cannot_mention_anyone_through_the_sender_chosen_text(self):
         env = N.render_message(N.make_envelope("create", TITLE, "x", {}, "mention-request1", "@**all**"))
@@ -727,6 +728,28 @@ class RefusalReplayTests(RelayHarness):
         self.assertEqual(len(self.client.replies), 1)
         self.assertEqual(len(self.client.message_gets), 3)
         self.assertIn("notes-relay-reply-scan-capped", [e for e, _ in self.logs])
+
+    def test_a_refusal_of_a_parsed_envelope_is_labelled_with_its_request_id_for_notes_status(self):
+        cases = {
+            "wrong-agent-title": self.request("CURSOR", "[AFC, Claude] t", rid="label-request-01"),
+            "wrong-identity": self.request("CURSOR", "[AFC, Cursor] t", rid="label-request-02", claimed="CLAUDE"),
+        }
+        env = N.render_message(N.make_envelope("create", TITLE, "x", {}, "label-request-03", "CLAUDE"))
+        cases["owner"] = self.message(OWNER_ID, env)
+        cases["integration-bot"] = self.message(15, N.render_message(N.make_envelope("create", TITLE, "x", {}, "label-request-04", "CLAUDE")))
+        wanted = {"wrong-agent-title": "label-request-01", "wrong-identity": "label-request-02", "owner": "label-request-03",
+                  "integration-bot": "label-request-04"}
+        for name, message in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.process(message), "refused")
+                reply = self.client.replies[-1]
+                self.assertTrue(reply.startswith(N.REFUSAL_PREFIX + wanted[name] + ":"), reply)
+                self.assertNotIn("(message", reply)
+
+    def test_a_message_with_no_parsing_envelope_still_falls_back_to_its_message_id(self):
+        message = self.message(SENDERS["CURSOR"], "no fence here at all")
+        self.assertEqual(self.process(message), "refused")
+        self.assertTrue(self.client.replies[-1].startswith(N.REFUSAL_PREFIX + "(message %d)" % message["id"]))
 
     def test_a_refusal_without_a_request_id_is_keyed_by_its_message(self):
         first = self.message(SENDERS["CURSOR"], "hello there")

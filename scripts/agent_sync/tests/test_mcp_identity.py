@@ -296,6 +296,16 @@ class EnvBackedTests(McpHarness):
         self.assertIn("SENTRY is not an agent bot identity", stderr)
         self.assertEqual(self.fake.messages, [])
 
+    def test_an_unreadable_seat_registry_serves_no_identity_not_even_the_default(self):
+        ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+        for argv in ((), ("--as", "MONET")):  # the ambient default, and a retired seat that has a credential file
+            code, lines, stderr = self.spawn(self.server_env(FLEET_APPS_JSON="/nonexistent/fleet-apps.json"), [ping],
+                                             argv=argv)
+            self.assertEqual((code, lines), (3, []), stderr)
+            self.assertIn("seat registry", stderr)
+            self.assertIn("none is served", stderr)
+        self.assertEqual(self.fake.messages, [])
+
     def test_a_key_in_another_seats_variable_is_refused_on_first_use(self):
         self.vars["ZULIP_GROK_WEB_EMAIL"] = "bf-plumber-bot@zulip.test"
         self.vars["ZULIP_GROK_WEB_API_KEY"] = self.vars["ZULIP_BF_PLUMBER_API_KEY"]
