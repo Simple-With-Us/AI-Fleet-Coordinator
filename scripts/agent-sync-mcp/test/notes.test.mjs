@@ -320,6 +320,19 @@ test("a Zulip messages response that does not parse is treated as holding nothin
   toolError(await tools.call("notes_status", { request_id: "garbled-reply-1" }), "not_found");
 });
 
+test("notes_status does not take the reply for a longer request id", async () => {
+  const { fake, tools } = harness();
+  const claude = fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true });
+  const sent = ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "exact-status-1" }), "notes_create");
+  fake.addMessage("Claude", RELAY_CHANNEL, TITLE, "notes-relay refused exact-status-12: not mine");
+  assert.equal(ok(await tools.call("notes_status", { request_id: "exact-status-1" }), "notes_status").status, "queued");
+  react(fake.messages.find((m) => m.id === sent.message_id), claude, CROSS);
+  const refused = ok(await tools.call("notes_status", { request_id: "exact-status-1" }), "notes_status");
+  assert.deepEqual([refused.status, refused.reason], ["refused", undefined]);
+  fake.addMessage("Claude", RELAY_CHANNEL, TITLE, "notes-relay refused exact-status-1: its own");
+  assert.equal(ok(await tools.call("notes_status", { request_id: "exact-status-1" }), "notes_status").reason, "its own");
+});
+
 test("notes_status for an unknown request id is not_found", async () => {
   const { tools } = harness();
   toolError(await tools.call("notes_status", { request_id: "nobody-asked-01" }), "not_found");

@@ -215,6 +215,19 @@ class CliTests(IdentityHarness):
                          [("cli", "CURSOR", "post", "ok")])
         self.assertNotIn("hello", json.dumps(rows))
 
+    def test_a_mutating_api_call_is_audited_with_its_method_and_path_and_never_its_body(self):
+        mid = self.fake.add_message("Codex", "agent-sync", "t", "hi")
+        env = self.cli_env()
+        self.assertEqual(self.run_cli("api", "GET", "messages/%d/history" % mid, env=env).code, 0)
+        posted = self.run_cli("api", "POST", "messages/%d/reactions" % mid, "--param", "emoji_name=eyes", env=env)
+        self.assertEqual(posted.code, 0, posted.err)
+        failed = self.run_cli("api", "DELETE", "messages/999999", env=env)
+        self.assertNotEqual(failed.code, 0)
+        rows = [json.loads(line) for line in (self.state_dir / "logs" / "identity.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["tool"], r["outcome"]) for r in rows],
+                         [("api POST messages/%d/reactions" % mid, "ok"), ("api DELETE messages/999999", "exit_%d" % failed.code)])
+        self.assertNotIn("eyes", json.dumps(rows), "the body is never logged")
+
     def test_an_unreadable_registry_refuses_every_identity_on_the_cli_naming_the_file(self):
         missing = self.cli_env(AGENT_SEAT=None, FLEET_APPS_JSON="/nonexistent/fleet-apps.json")
         for argv in (("post", "--as", "SENTRY", "--topic", "cli", "x"), ("post", "--as", "CURSOR", "--topic", "cli", "x"),

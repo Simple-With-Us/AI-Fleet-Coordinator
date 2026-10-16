@@ -297,7 +297,7 @@ export const NOTES_METHODS = {
       { operator: "topic", operand: message.subject ?? message.topic ?? "" },
       ...(consumer?.email ? [{ operator: "sender", operand: consumer.email }] : []),
     ];
-    const prefix = REFUSAL_PREFIX + requestId;
+    const prefix = `${REFUSAL_PREFIX}${requestId}:`; // the exact label, colon included:  `abcdefgh` is not `abcdefgh2`
     let anchor = message.id;
     for (let pageNumber = 0; pageNumber < NOTES_REASON_PAGES; pageNumber += 1) {
       const { messages: rows, foundNewest } = readMessagesPage(
@@ -306,7 +306,7 @@ export const NOTES_METHODS = {
       for (const reply of rows) {
         const text = (reply.content ?? "").trimStart();
         if (reply.id > message.id && text.startsWith(prefix) && (await this.notesFleetBot(reply.sender_id, members))) {
-          return clean(text.slice(prefix.length).replace(/^[:\s]+/, "").trim(), 300)[0];
+          return clean(text.slice(prefix.length).trim(), 300)[0];
         }
       }
       const later = rows.filter((m) => m.id > anchor);

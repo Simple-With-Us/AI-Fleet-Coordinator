@@ -1751,6 +1751,15 @@ def _check_agent_identity(rt: Runtime, agent: Agent, command: str = "") -> None:
 def _audit_write(rt: Runtime, args: argparse.Namespace, agent: Agent, code: int) -> None:
     from . import identity_log as AUDIT
 
+    if args.command == "api":
+        # Classified by method:  a non-GET call is a write, audited with the method and path, never the body.
+        if args.method == "GET":
+            return
+        path = args.path.strip().strip("/")
+        path = path[len("api/v1/"):] if path.startswith("api/v1/") else path
+        AUDIT.append(rt.env, rt.home, transport="cli", default_identity=agent.seat, identity=agent.seat,
+                     tool="api %s %s" % (args.method, path), outcome="ok" if code == 0 else "exit_%d" % code)
+        return
     if args.command not in WRITE_COMMANDS:
         return
     action = next((getattr(args, name) for name in ("scheduled_action", "drafts_action")

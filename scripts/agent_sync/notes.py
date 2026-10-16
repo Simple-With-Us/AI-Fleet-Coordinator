@@ -84,6 +84,12 @@ REFUSED_NAMES = frozenset({"cross_mark", "x", "negative_squared_cross_mark"})
 REFUSAL_PREFIX = "notes-relay refused "
 
 
+def refusal_label(request_id: str) -> str:
+    """The exact start of a refusal reply:  the prefix, the label and the colon that ends it.  Matching this and not
+    the bare prefix keeps request `abcdefgh` from matching the reply for `abcdefgh2`."""
+    return "%s%s:" % (REFUSAL_PREFIX, request_id)
+
+
 class NotesError(Exception):
     """A refusal with a stable code (invalid_argument, not_found, unavailable, outcome_unknown, internal) and a
     message that never holds the note's body.  `outcome_unknown` means the script may have written the note."""

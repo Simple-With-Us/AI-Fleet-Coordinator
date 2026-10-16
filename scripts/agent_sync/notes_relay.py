@@ -548,13 +548,13 @@ class Consumer:
         self._react(runner, message_id, N.REFUSED_EMOJI)
         reason = W.neutralize_mentions(" ".join(refused.split())[:REASON_LIMIT])
         label = request_id or "(message %d)" % message_id
-        prefix = "%s%s" % (N.REFUSAL_PREFIX, label)
+        prefix = N.refusal_label(label)
         try:
             original = runner.client.get("messages/%d" % message_id, {"apply_markdown": False}).get("message") or {}
             if self._already_replied(runner, original, message_id, prefix):
                 return
             runner.client.post("messages", {"type": "stream", "to": original.get("stream_id"),
-                                            "topic": Z.message_topic(original), "content": "%s: %s" % (prefix, reason)})
+                                            "topic": Z.message_topic(original), "content": "%s %s" % (prefix, reason)})
         except Z.ApiError as exc:
             if retryable(exc):
                 raise  # the reply is part of the result:  keep the request spooled and post it on the retry

@@ -1547,7 +1547,7 @@ class Tools:
         consumer = self._relay_consumer_id()
         if consumer is not None:
             narrow = narrow + [{"operator": "sender", "operand": consumer}]
-        prefix = NOTES.REFUSAL_PREFIX + request_id
+        prefix = NOTES.refusal_label(request_id)
         anchor = int(message["id"])
         for _ in range(self.NOTES_REASON_PAGES):
             found = self.agent.client.get("messages", {
@@ -1557,7 +1557,7 @@ class Tools:
             for reply in page:
                 text = str(reply.get("content") or "").lstrip()
                 if text.startswith(prefix) and self._relay_consumer(reply.get("sender_id")):
-                    return clean(text[len(prefix):].lstrip(": ").strip(), 300)[0]
+                    return clean(text[len(prefix):].strip(), 300)[0]
             ids = [m["id"] for m in page if _int(m.get("id")) is not None and m["id"] > anchor]
             if found.get("found_newest") is not False or not ids:
                 return None

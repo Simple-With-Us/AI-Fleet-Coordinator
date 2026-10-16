@@ -348,6 +348,18 @@ class NotesToolTests(McpHarness):
         found = status()
         self.assertEqual((found["message_id"], found["status"]), (mid, "done"))
 
+    def test_notes_status_does_not_take_the_reply_for_a_longer_request_id(self):
+        session = self.session()
+        mid, status = self.sent_request(session, "exact-status-1")
+        self.fake.add_message("Claude", N.RELAY_CHANNEL, "[AFC, Claude] status", "notes-relay refused exact-status-12: not mine")
+        self.assertEqual(status()["status"], "queued")
+        self.fake.reactions.add((mid, 10, "cross_mark"))
+        refused = status()
+        self.assertEqual(refused["status"], "refused")
+        self.assertNotIn("reason", refused, "the longer id's reply is not this request's reason")
+        self.fake.add_message("Claude", N.RELAY_CHANNEL, "[AFC, Claude] status", "notes-relay refused exact-status-1: its own")
+        self.assertEqual(status()["reason"], "its own")
+
     def test_the_consumer_seat_comes_from_the_fleet_knob_and_a_differing_local_seat_is_ignored(self):
         (self.state_dir).mkdir(parents=True, exist_ok=True)
         (self.state_dir / "listener.toml").write_text('[notes_relay]\nenabled = true\nseat = "CLAUDE"\n')

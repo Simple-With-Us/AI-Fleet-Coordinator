@@ -751,6 +751,16 @@ class RefusalReplayTests(RelayHarness):
         self.assertEqual(self.process(message), "refused")
         self.assertTrue(self.client.replies[-1].startswith(N.REFUSAL_PREFIX + "(message %d)" % message["id"]))
 
+    def test_a_refusal_reply_for_a_longer_request_id_is_not_taken_for_this_ones(self):
+        longer = self.request("CURSOR", "[AFC, Claude] t", rid="exact-request-12")
+        shorter = self.request("CURSOR", "[AFC, Claude] t", rid="exact-request-1")
+        self.assertEqual(self.process(longer), "refused")
+        self.assertEqual(self.process(shorter), "refused")
+        self.assertEqual(len(self.client.replies), 2, "each request gets its own reply")
+        self.assertTrue(self.client.replies[0].startswith("notes-relay refused exact-request-12:"))
+        self.assertTrue(self.client.replies[1].startswith("notes-relay refused exact-request-1:"))
+        self.assertEqual(N.refusal_label("exact-request-1"), "notes-relay refused exact-request-1:")
+
     def test_a_refusal_without_a_request_id_is_keyed_by_its_message(self):
         first = self.message(SENDERS["CURSOR"], "hello there")
         second = self.message(SENDERS["CURSOR"], "hello again")

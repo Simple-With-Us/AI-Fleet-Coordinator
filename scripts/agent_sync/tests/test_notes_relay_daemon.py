@@ -443,6 +443,72 @@ class DaemonRelayTests(DaemonHarness):
         self.assertTrue(self.wait(lambda: len(self.calls) == count, 30), "all %d ran, got %d" % (count, len(self.calls)))
         consumer.stop()
 
+    def test_the_cursor_catches_up_to_every_id_routed_while_a_hold_capped_it_on_the_retry_path(self):
+        """Messages routed while a hold capped the cursor are remembered:  when the hold ends the cursor goes to the
+        highest of them, so a restart does not route them again (duplicate inbox rows and wakes)."""
+        daemon = self.started_with_relay()
+        runner = daemon.seats["CLAUDE"]
+        consumer = daemon.notes_relay
+        real_offer = consumer.offer
+        consumer.runner = self.fake_run
+        consumer.offer = lambda r, m: False
+        mid = self.envelope_message(rid="catchup-request-1")
+        later = self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        daemon.handle_events(runner, [{"type": "message", "message": dict(m, flags=["mentioned"])} for m in self.fake.messages[-2:]])
+        self.assertEqual(runner.cursor, mid - 1, "capped below the unspooled request")
+        consumer.offer = real_offer
+        daemon.last_tick["relay_retry"] = -1e9
+        daemon.tick()
+        self.assertIsNone(runner.hold_below)
+        self.assertEqual(runner.cursor, later, "the cursor reaches the later message that was already routed")
+        runner.flush_cursor(force=True)
+        self.assertEqual(self.persisted_cursor(runner), later)
+        consumer.stop()
+
+    def test_the_cursor_catches_up_to_every_id_routed_while_a_hold_capped_it_on_the_overflow_path(self):
+        daemon = self.started_with_relay()
+        runner = daemon.seats["CLAUDE"]
+        consumer = daemon.notes_relay
+        real_offer = consumer.offer
+        consumer.runner = self.fake_run
+        consumer.offer = lambda r, m: False
+        count = daemon.NOTES_RELAY_RETRY_LIMIT + 3
+        for i in range(count):
+            self.envelope_message(rid="catchup-many-%03d" % i)
+        later = self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        batch = [dict(m, flags=["mentioned"]) for m in self.fake.messages[-(count + 1):]]
+        daemon.handle_events(runner, [{"type": "message", "message": m} for m in batch])
+        self.assertTrue(daemon.notes_relay_overflow)
+        consumer.offer = real_offer
+        daemon.last_tick["relay_retry"] = -1e9
+        daemon.tick()
+        self.assertEqual((daemon.notes_relay_retry, daemon.notes_relay_overflow, runner.hold_below), ({}, {}, None))
+        self.assertEqual(runner.cursor, later)
+        consumer.stop()
+
+    def test_an_overflow_backfill_stops_on_a_page_with_no_new_ids(self):
+        """A deleted anchor (or a page of ids already seen) must end the pass, not repeat it to the page cap."""
+        daemon = self.started_with_relay()
+        runner = daemon.seats["CLAUDE"]
+        consumer = daemon.notes_relay
+        consumer.runner = self.fake_run
+        mid = self.envelope_message(rid="deleted-anchor-1")
+        daemon.notes_relay_overflow["CLAUDE"] = (runner, mid)
+        runner.hold_below = mid
+        fetches = []
+
+        def stale_page(narrow, *, anchor, before=0, after=0, include=False):
+            fetches.append(anchor)  # always a full page of ids at or below the marker:  nothing new, ever
+            return [dict(m) for m in self.fake.messages if m["id"] <= mid] * 100
+        runner.fetch = stale_page
+        daemon.last_tick["relay_retry"] = -1e9
+        daemon.tick()
+        self.assertEqual([a for a in fetches if a == mid - 1], [mid - 1], "a page with no new ids ends the pass at once")
+        self.assertLessEqual(len(fetches), 3, fetches)
+        self.assertEqual(daemon.notes_relay_overflow, {})
+        self.assertIsNone(runner.hold_below)
+        consumer.stop()
+
     def test_the_hold_stays_while_the_overflow_backfill_cannot_spool(self):
         daemon = self.started_with_relay()
         runner = daemon.seats["CLAUDE"]

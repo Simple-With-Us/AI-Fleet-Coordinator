@@ -198,6 +198,7 @@ class SeatRunner:
         self.floor: int = self.cursor or 0
         self.cursor_flushed = self.cursor
         self.hold_below: int | None = None  # the lowest relay request that could not be spooled (see advance)
+        self.held_high: int | None = None  # the highest id advance() saw while a hold capped it (see set_hold)
         self.cursor_flushed_at = 0.0
         self.ring = Ring()
         self.users: dict[int, dict[str, Any]] = {}
@@ -362,9 +363,22 @@ class SeatRunner:
             # A relay request below this id could not be spooled:  the cursor (and so the flushed file) must stay
             # under it for the rest of the session, or the next backfill would skip the request for good.  Other
             # messages still route;  only the persisted position is held.
+            self.held_high = message_id if self.held_high is None else max(self.held_high, message_id)
             message_id = self.hold_below - 1
         if self.cursor is None or message_id > self.cursor:
             self.cursor = message_id
+
+    def set_hold(self, hold_below: int | None) -> None:
+        """Move the hold.  The ids routed while it capped the cursor are remembered (held_high), so when the hold
+        ends the cursor goes to the highest of them, not just to the last request retried:  a restart would
+        otherwise route those messages again (duplicate inbox rows and wakes).  A hold that only rises lets the
+        cursor catch up as far as the new hold allows."""
+        self.hold_below = hold_below
+        high = self.held_high
+        if high is not None:
+            if hold_below is None:
+                self.held_high = None
+            self.advance(high)
 
     def flush_cursor(self, *, force: bool = False) -> None:
         now = self.daemon.clock.monotonic()
@@ -721,7 +735,7 @@ class Daemon:
         overflow = self.notes_relay_overflow.get(holder.seat)
         if overflow is not None:
             waiting.append(overflow[1])
-        holder.hold_below = min(waiting) if waiting else None
+        holder.set_hold(min(waiting) if waiting else None)
 
     def retry_held_notes_relay(self) -> None:
         """Offer again each relay request that could not be spooled, through the CURRENT consumer's own reader (a
@@ -756,7 +770,7 @@ class Daemon:
                 for seat, (holder, highest) in spooled.items():
                     overflow = self.notes_relay_overflow.get(seat)
                     floor = [v for v in (lowest.get(seat), overflow[1] if overflow else None) if v is not None]
-                    holder.hold_below = min(floor) if floor else None
+                    holder.set_hold(min(floor) if floor else None)
                     holder.advance(highest)
             self._backfill_relay_overflow(relay, reader)
             self.complete_notes_relay_handover()
@@ -781,8 +795,8 @@ class Daemon:
                     last = message["id"]
                 if refused_at is not None:
                     break
-                if len(page) < PAGE:
-                    reached_newest = True
+                if not rows or len(page) < PAGE:
+                    reached_newest = True  # nothing new in this page (or a short one):  there is no more to read
                     break
                 anchor = last
             if reached_newest:
@@ -1289,8 +1303,10 @@ class Daemon:
                                    warning="could not spool the request;  the cursor is held below this message")
                     self._keep_for_relay_retry(runner, message)
                     return
-                if runner.hold_below == message_id:
-                    runner.hold_below = None  # spooled on a redelivery:  the cursor may move on
+                with self.notes_relay_lock:
+                    self.notes_relay_retry.pop((runner.seat, message_id), None)
+                    if runner.hold_below is not None:
+                        self._release_relay_hold(runner)  # spooled (maybe on a redelivery):  the hold falls to what waits
             if advance_cursor:
                 runner.advance(message_id)
             return
