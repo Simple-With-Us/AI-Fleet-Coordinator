@@ -16,7 +16,7 @@ from unittest import mock
 
 from agent_sync import notes as N
 
-FIXTURES = json.loads((Path(N.__file__).resolve().parent / "mcp" / "notes-fixtures.json").read_text())["cases"]
+FIXTURES = json.loads((Path(__file__).resolve().parent / "notes-fixtures.json").read_text())["cases"]
 TITLE = "[AFC, Claude] relay check"
 
 

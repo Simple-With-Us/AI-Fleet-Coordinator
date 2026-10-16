@@ -1,5 +1,5 @@
 // AFC-331 section 5:  the notes_* tools on the hosted server, against the fake Zulip.  The envelope format is
-// shared with the Python side through scripts/agent_sync/mcp/notes-fixtures.json.  No dependencies:  plain
+// shared with the Python side through scripts/agent_sync/tests/notes-fixtures.json.  No dependencies:  plain
 // `node --test`.
 
 import test from "node:test";
@@ -18,7 +18,7 @@ import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
 import { ROOT, testEnv } from "./helpers.mjs";
 
 const config = loadConfig(testEnv());
-const FIXTURES = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/notes-fixtures.json"), "utf8")).cases;
+const FIXTURES = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/tests/notes-fixtures.json"), "utf8")).cases;
 const SPECS = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/notes-tools.json"), "utf8")).tools;
 const RELAY_ID = 700100;
 
