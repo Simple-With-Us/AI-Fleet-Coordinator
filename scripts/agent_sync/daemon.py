@@ -197,6 +197,7 @@ class SeatRunner:
         self.cursor: int | None = cursor if isinstance(cursor, int) else None
         self.floor: int = self.cursor or 0
         self.cursor_flushed = self.cursor
+        self.hold_below: int | None = None  # the lowest relay request that could not be spooled (see advance)
         self.cursor_flushed_at = 0.0
         self.ring = Ring()
         self.users: dict[int, dict[str, Any]] = {}
@@ -357,6 +358,11 @@ class SeatRunner:
             self.followed.add(key)
 
     def advance(self, message_id: int) -> None:
+        if self.hold_below is not None and message_id >= self.hold_below:
+            # A relay request below this id could not be spooled:  the cursor (and so the flushed file) must stay
+            # under it for the rest of the session, or the next backfill would skip the request for good.  Other
+            # messages still route;  only the persisted position is held.
+            message_id = self.hold_below - 1
         if self.cursor is None or message_id > self.cursor:
             self.cursor = message_id
 
@@ -1136,13 +1142,19 @@ class Daemon:
             # inbox row, no wake from an @-mention inside an envelope) and only the configured seat acts on it.
             # The acting seat advances its cursor only once the request is on disk (Consumer.offer), so a
             # request that could not be kept is retried from the backfill and never silently lost.
-            if relay.wants(runner, message) and not relay.offer(runner, message):
-                # Not on disk:  take the id back out of the ring too, or a backfill of the same message would
-                # take the duplicate path, advance past it and lose the request.
-                runner.ring.discard(message_id)
-                self.log.write("notes-relay-held", seat=runner.seat, id=message_id,
-                               warning="could not spool the request;  the cursor is held for this message")
-                return
+            if relay.wants(runner, message):
+                if not relay.offer(runner, message):
+                    # Not on disk:  take the id back out of the ring too, or a backfill of the same message would
+                    # take the duplicate path, advance past it and lose the request.  And hold this runner's cursor
+                    # below the id for the rest of the batch and session, so a later message cannot carry the
+                    # persisted cursor past it.
+                    runner.ring.discard(message_id)
+                    runner.hold_below = message_id if runner.hold_below is None else min(runner.hold_below, message_id)
+                    self.log.write("notes-relay-held", seat=runner.seat, id=message_id, hold_below=runner.hold_below,
+                                   warning="could not spool the request;  the cursor is held below this message")
+                    return
+                if runner.hold_below == message_id:
+                    runner.hold_below = None  # spooled on a redelivery:  the cursor may move on
             if advance_cursor:
                 runner.advance(message_id)
             return

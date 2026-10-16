@@ -177,6 +177,10 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
                 store = IdemStore(str(state_root(rt.env, home) / identity / "mcp-idem.json"))
                 result = N.direct_once(store, envelope, send)
             except N.NotesError as exc:
+                # A failed write is audited too, by its code only (never the body):  an outcome_unknown timeout
+                # is exactly the row an owner looks for.
+                AUDIT.append(rt.env, rt.home, transport="cli", default_identity=identity, identity=identity,
+                             tool="notes " + action, outcome=exc.code)
                 raise _fail(exc) from None
             AUDIT.append(rt.env, rt.home, transport="cli", default_identity=identity, identity=identity,
                          tool="notes " + action, outcome="ok")

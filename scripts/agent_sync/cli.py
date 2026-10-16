@@ -177,7 +177,11 @@ class Agent:
             raise CredentialError("no seat: set AGENT_SEAT (e.g. CLAUDE), pass --as NAME or --default-seat NAME, or pass --rc")
         session_id = getattr(args, "session", None) or env.get("CLAUDE_CODE_SESSION_ID") or env.get("AGENT_SESSION")
         self.tag = Z.session_tag(session_id)
-        self.creds = Z.resolve_credentials(env, rc_arg=rc_arg, seat=seat, home=rt.home)
+        # `credentials` is set only by `agent-sync mcp`, for an identity whose key comes from its own per-seat
+        # environment variables (the server instance, AFC-331);  the CLI's parser never sets it.
+        given = getattr(args, "credentials", None)
+        self.creds = given if isinstance(given, Z.Credentials) else \
+            Z.resolve_credentials(env, rc_arg=rc_arg, seat=seat, home=rt.home)
         if seat is None:
             rc_path = rc_arg or env.get("ZULIP_RC") or ""
             seat = Z.seat_from_rc_path(rc_path)

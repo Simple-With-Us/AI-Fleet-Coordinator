@@ -256,6 +256,53 @@ class DaemonRelayTests(DaemonHarness):
         self.assertNotIn(mid, [m["id"] for m in other.backfill()])
         daemon.notes_relay.stop()
 
+    def persisted_cursor(self, runner):
+        runner.flush_cursor(force=True)
+        with open(runner.paths.cursor) as fh:
+            return json.load(fh)["last_id"]
+
+    def test_a_failed_offer_holds_the_persisted_cursor_below_it_for_the_rest_of_a_backfill_batch(self):
+        daemon = self.started_with_relay()
+        runner = daemon.seats["CLAUDE"]
+        offers = iter([False, True])
+        daemon.notes_relay.offer = lambda r, m: next(offers)
+        mid = self.envelope_message()  # the request that cannot be spooled
+        later = self.fake.add_message("Codex", "agent-sync", "t", MENTION)  # a message after it, in the same batch
+        found = runner.backfill()
+        self.assertEqual([m["id"] for m in found if m["id"] in (mid, later)], [mid, later])
+        daemon.route_backfill(runner, found)
+        self.assertEqual(runner.cursor, mid - 1, "the later message must not carry the cursor past the request")
+        self.assertLess(self.persisted_cursor(runner), mid)
+        self.assertEqual([r["id"] for r in self.inbox()], [later], "other messages still route")
+        # The next backfill (from the persisted cursor) finds the request again, and now it is kept.
+        runner.floor = self.persisted_cursor(runner)
+        again = runner.backfill()
+        self.assertIn(mid, [m["id"] for m in again])
+        daemon.route_backfill(runner, again)
+        self.assertIsNone(runner.hold_below, "the hold ends once the request is spooled")
+        self.assertEqual(runner.cursor, later)
+        self.assertEqual(self.persisted_cursor(runner), later)
+        self.assertEqual([r["id"] for r in self.inbox()], [later], "the redelivered mention was not routed twice")
+
+    def test_a_failed_offer_holds_the_cursor_for_the_rest_of_an_event_batch_too(self):
+        daemon = self.started_with_relay()
+        runner = daemon.seats["CLAUDE"]
+        daemon.notes_relay.offer = lambda r, m: False
+        mid = self.envelope_message()
+        first = dict(self.fake.messages[-1])
+        later = self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        second = dict(self.fake.messages[-1], flags=["mentioned"])
+        daemon.handle_events(runner, [{"type": "message", "message": first}, {"type": "message", "message": second}])
+        self.assertEqual(runner.hold_below, mid)
+        self.assertEqual(runner.cursor, mid - 1)
+        self.assertLess(self.persisted_cursor(runner), mid)
+        self.assertEqual([r["id"] for r in self.inbox()], [later])
+        # Two failures keep the lowest id.
+        mid2 = self.envelope_message(rid="daemon-request-2")
+        daemon.route_message(runner, dict(self.fake.messages[-1]))
+        self.assertEqual(runner.hold_below, mid)
+        self.assertGreater(mid2, mid)
+
     def started_with_relay(self):
         self.enable()
         self.fake.streams["notes-relay"] = 140

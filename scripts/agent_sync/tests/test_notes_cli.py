@@ -95,6 +95,32 @@ class NotesCliTests(Harness):
         rows = json.loads((self.state_dir / "CLAUDE" / "mcp-idem.json").read_text())["rows"]
         self.assertEqual(rows["k:notes-direct:cli-timeout-001"]["state"], "unknown")  # kept, in the file the tools read
 
+    def audit_rows(self):
+        path = self.home / ".agent-sync" / "logs" / "identity.jsonl"
+        if not path.exists():
+            path = self.state_dir / "logs" / "identity.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_a_failed_direct_write_is_audited_by_its_code_without_the_body(self):
+        def hang(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 1)
+        body = "PRIVATE-NOTE-BODY"
+        a, b = self.direct(hang)
+        with a, b:
+            self.assertEqual(self.run_cli("notes", "create", TITLE, "--request-id", "audit-timeout-01", stdin=body).code, 5)
+        a, b = self.direct(FakeRun(code=3))
+        with a, b:
+            self.assertEqual(self.run_cli("notes", "pin", TITLE).code, 5)
+        a, b = self.direct(FakeRun())
+        with a, b:
+            self.assertEqual(self.run_cli("notes", "create", TITLE, stdin=body).code, 0)
+        rows = self.audit_rows()
+        self.assertEqual([(r["tool"], r["outcome"]) for r in rows],
+                         [("notes create", "outcome_unknown"), ("notes pin", "not_found"), ("notes create", "ok")])
+        self.assertTrue(all(r["identity"] == "CLAUDE" and r["transport"] == "cli" for r in rows))
+        self.assertNotIn(body, json.dumps(rows))
+        self.assertNotIn(TITLE, json.dumps(rows))
+
     def test_pin_and_unpin_take_only_a_title(self):
         run = FakeRun()
         a, b = self.direct(run)

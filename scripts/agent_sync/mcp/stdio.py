@@ -435,14 +435,22 @@ class _Refused(Exception):
         self.code = "not_authorized" if exit_code == 3 else "unavailable"
 
 
-def _open_identity(identity: str, rc_arg: str | None, rc_path: Path, *, env: Mapping[str, str], home: Path,
-                   rt: CLI.Runtime, session_id: str | None) -> tuple[CLI.Agent, dict[str, Any]]:
-    """Open `identity`'s own Agent on its own credential and check users/me:  a bot, the identity's own
-    (seat_tag_for and the email), a moderator or member.  Raises _Refused, never a key."""
+def _open_identity(identity: str, source: X.CredentialSource, *, env: Mapping[str, str], cred_env: Mapping[str, str],
+                   home: Path, rt: CLI.Runtime, session_id: str | None) -> tuple[CLI.Agent, dict[str, Any]]:
+    """Open `identity`'s own Agent on its own credential (its zuliprc file, or on the server its own
+    ZULIP_<CODE>_* variables, read from `cred_env` in memory:  never argv, never a log) and check users/me:
+    a bot, the identity's own (seat_tag_for and the email), a moderator or member.  Raises _Refused,
+    never a key."""
+    rc_path = source.describe()
     agent_rt = CLI.Runtime(env=env, stdin=io.StringIO(""), stdout=io.StringIO(), stderr=io.StringIO(), home=home,
                            sleep=rt.sleep, timeout=rt.timeout, events_timeout=rt.events_timeout)
     try:
-        agent = CLI.Agent(agent_rt, argparse.Namespace(as_seat=identity, rc=rc_arg, session=session_id, json=True))
+        if source.is_env:
+            namespace = argparse.Namespace(as_seat=identity, rc=None, session=session_id, json=True,
+                                           credentials=source.credentials(cred_env, identity))
+        else:
+            namespace = argparse.Namespace(as_seat=identity, rc=str(source.path), session=session_id, json=True)
+        agent = CLI.Agent(agent_rt, namespace)
         me = agent.me()
     except Z.CredentialError as exc:
         raise _Refused(str(exc), 3) from None
@@ -498,7 +506,8 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
         env.pop("CLAUDE_CODE_SESSION_ID", None)
     home = _home(env, rt.home)
     if ignored:
-        log("ignoring %s:  mcp reads keys only from zuliprc files (--rc, ZULIP_RC, then %s)"
+        log("ignoring %s:  mcp reads keys only from zuliprc files (--rc, ZULIP_RC, then %s) or from an identity's own "
+            "ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY (with ZULIP_SITE) on the server"
             % (", ".join(ignored), Z.default_rc_path(seat or "SEAT", env, home)))
     session_id, source = getattr(args, "session", None), "flag"
     if not session_id:
@@ -513,21 +522,35 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
     except I.SeatRegistryError as exc:
         registry = None
         log("%s;  only the default identity is allowed" % exc)
-    # The resolver (Agent -> Z.resolve_credentials) takes --rc, then env ZULIP_RC, then the identity's default
-    # file.  Only the default identity reads --rc or ZULIP_RC;  every other identity reads its own file.
+    # Where each identity's key is (identities.py):  its zuliprc file, else on the server its own per-seat
+    # variables (the listener's `creds = "env"` names, else ZULIP_<CODE>_EMAIL, ZULIP_<CODE>_API_KEY and
+    # ZULIP_SITE).  Those are read from the process environment, which keeps ZULIP_SITE;  the generic
+    # ZULIP_EMAIL and ZULIP_API_KEY never name a seat, so they never match.  Only the default identity reads
+    # --rc or ZULIP_RC.
+    cred_env = rt.env
+    cfg = C.load(str(state_root(env, home)))
+    env_seats = {seat_cfg.seat: X.CredentialSource(email_env=seat_cfg.email_env, key_env=seat_cfg.key_env,
+                                                  site_env=seat_cfg.site_env)
+                 for seat_cfg in list(cfg.seats.values()) + list(cfg.disabled.values())
+                 if seat_cfg.creds == "env" and seat_cfg.email_env and seat_cfg.key_env}
     rc_arg = getattr(args, "rc", None) or env.get("ZULIP_RC") or None
-    allowed: dict[str, Path] = {}
+    allowed: dict[str, X.CredentialSource] = {}
     if seat:
         if registry is not None:
             problem = X.agent_identity_problem(seat, registry=registry)
             if problem:
                 log(problem)
                 return 3
-        allowed[seat] = Path(rc_arg).expanduser() if rc_arg else Z.default_rc_path(seat, env, home)
+        if rc_arg:
+            allowed[seat] = X.CredentialSource(path=Path(rc_arg).expanduser())
+        else:
+            # A missing source keeps the file path, so the refusal reads "credential file not found: PATH".
+            allowed[seat] = X.source_for(seat, env, home, cred_env=cred_env, env_seats=env_seats) \
+                or X.CredentialSource(path=Z.default_rc_path(seat, env, home))
     if not launcher_pinned and registry is not None:
-        for name, path in X.allowed_identities(env, home, registry=registry).items():
-            allowed.setdefault(name, path)
-    cfg = C.load(str(state_root(env, home)))
+        for name, found in X.allowed_identities(env, home, registry=registry, cred_env=cred_env,
+                                                env_seats=env_seats).items():
+            allowed.setdefault(name, found)
 
     def make_tools(identity: str, agent: CLI.Agent, me: Mapping[str, Any]) -> T.Tools:
         return T.Tools(agent, me=me, process_tag=agent.tag, session_source=source,
@@ -536,9 +559,9 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
                        log=lambda text: log(agent.client.scrub(text)))
 
     def open_tools(identity: str) -> T.Tools:
-        path = allowed[identity]
         try:
-            agent, me = _open_identity(identity, str(path), path, env=env, home=home, rt=rt, session_id=session_id)
+            agent, me = _open_identity(identity, allowed[identity], env=env, cred_env=cred_env, home=home, rt=rt,
+                                       session_id=session_id)
         except _Refused as exc:
             log("identity %s refused:  %s" % (identity, exc.message))
             raise R.OpenFailed(exc.code, "the %s bot cannot be used here:  %s" % (identity, exc.message),
@@ -549,7 +572,8 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
                       codex_thread_meta=codex_thread_meta, launcher_pinned=launcher_pinned, log=log)
     if seat:
         try:
-            agent, me = _open_identity(seat, str(allowed[seat]), allowed[seat], env=env, home=home, rt=rt, session_id=session_id)
+            agent, me = _open_identity(seat, allowed[seat], env=env, cred_env=cred_env, home=home, rt=rt,
+                                       session_id=session_id)
         except _Refused as exc:
             log(exc.message)
             return exc.exit_code
