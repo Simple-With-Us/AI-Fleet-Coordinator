@@ -38,6 +38,11 @@ Never in any set:  the owner's own account (`Jay-zuliprc`) and the integration b
 
 GB-ENGINEER stays out until its credentials are inventoried in Infisical and verified (`DEPLOY.md`, `agent-sync-partition.toml` and `agent-sync-server.md` keep it disabled).  A persona joins a set only by being enabled in the table with a verified credential, never by being named in a call.
 
+### Which Connection a Client Gets
+
+- **A Mac app that can run a local command** uses the stdio server (`agent-sync mcp`, no `--as`).  It needs no OAuth and no arming, and its allowed set is every agent bot credential on the Mac.
+- **A client that only speaks remote MCP** (a web app, a phone, or a Mac app with no local command support) uses the hosted server.  The owner arms the seat in `/admin` before the client starts OAuth, as `scripts/agent-sync-mcp/ARMING-JAY.md` describes.  The armed seat becomes the grant's default identity and picks its allowed set from the table above, and each call still names the bot it acts as.
+
 The hosted shared group lives in one table (`delegated-identities.js`), replacing `CURSOR_IDENTITIES`.  Its credentials stay in the encrypted `GB_IDENTITY_CREDENTIALS` bundle;  GROK-WEB and CURSOR keep their own per-seat secrets.
 
 ## 4. Tool Names
