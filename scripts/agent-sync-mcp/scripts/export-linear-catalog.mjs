@@ -30,6 +30,7 @@ import { LINEAR_MCP_TOOLS, LINEAR_MCP_BY_NAME } from "../src/linear-mcp-specs.js
 import { LINEAR_MCP_URL, LINEAR_MCP_PROTOCOL_VERSION } from "../src/linear-mcp-client.js";
 import { PUBLIC_INPUT_FIELDS, INTERNAL_INPUT_FIELDS, assertPublicInputs } from "../src/linear-public-inputs.js";
 import { prepareGraphql } from "../src/linear-graphql.js";
+import { LINEAR_TOOLS, LINEAR_WRITE_TOOLS } from "../src/linear.js";
 import { withDefaults, schemaProblem } from "../src/contract.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -86,6 +87,36 @@ function namedCatalog() {
     sources: ["src/linear-read-catalog.js", "src/linear-write-catalog.js", "src/linear-named-specs.js"],
     count: commands.length,
     commands,
+  };
+}
+
+// The ten Linear tools that are neither named commands nor proxied official tools:  the seven the
+// server served first (linear_whoami, list, show, file, claim, comment, status) and the three general
+// GraphQL tools (linear_schema, query, mutation).  The stdio server (scripts/agent_sync/mcp/linear_tools.py)
+// serves them under the same names and schemas, through `board`.
+const CORE_NAMES = ["linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment",
+  "linear_status", "linear_schema", "linear_query", "linear_mutation"];
+
+function coreCatalog() {
+  const by = Object.fromEntries(LINEAR_TOOLS.map((tool) => [tool.name, tool]));
+  const tools = CORE_NAMES.map((name) => {
+    const tool = by[name];
+    return {
+      name: tool.name,
+      title: tool.title,
+      description: tool.description,
+      kind: LINEAR_WRITE_TOOLS.has(name) ? "write" : "read",
+      input_schema: tool.inputSchema,
+      ...(tool.outputSchema ? { output_schema: tool.outputSchema } : {}),
+      annotations: tool.annotations,
+    };
+  });
+  return {
+    generated_by: GENERATOR,
+    regenerate: REGENERATE,
+    sources: ["src/linear.js", "src/linear-api.js"],
+    count: tools.length,
+    tools,
   };
 }
 
@@ -300,6 +331,7 @@ export function buildCatalogFiles() {
   return {
     "catalog/named-commands.json": stableStringify(namedCatalog()),
     "catalog/official-mcp-tools.json": stableStringify(officialCatalog()),
+    "catalog/core-tools.json": stableStringify(coreCatalog()),
     "catalog/public-inputs.json": stableStringify(publicInputs()),
     "testdata/agent-sync-fixtures.json": stableStringify(fixtures()),
   };

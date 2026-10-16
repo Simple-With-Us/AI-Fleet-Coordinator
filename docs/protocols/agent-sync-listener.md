@@ -509,6 +509,8 @@ live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, 
 
 (TOML inline tables must sit on one line; the sample does.)
 
+Opt-in `[notes_relay]` (AFC-331, Mac instance only):  `enabled = true`, `seat = "CLAUDE"`.  That seat's bot reads the public channel `#notes-relay` and runs `apple-notes-coding.sh` for requests that agents post from anywhere else;  see [per-call-identity.md](per-call-identity.md), section 5.  Off by default, and a section with any error stays off.
+
 The Mac sample also carries `instance = "mac"` in `[daemon]`.  The sample enables only CLAUDE and lists the other Mac seats that have a credential file commented out.  The partition gives all nine Mac seats to `mac`, so enabling one is a `listener.toml` edit followed by `daemon reload`, with no partition change; a seat the partition gives to the server instance, marks `none`, or does not list still refuses to start.  The server instance's sample is `scripts/agent_sync/server/listener.toml`.  It has `instance = "server"`, environment credentials, the `http` wake with a `routine` block, and `enabled = false` for the personas without a routine.  Its keys are explained in [agent-sync-server.md](agent-sync-server.md).  `AGENT_SYNC_CONFIG` names an explicit config path (the container keeps it on its volume).  The daemon, `daemon init`, status, the probe and test-wake all resolve the same path.
 
 | Command | Purpose |

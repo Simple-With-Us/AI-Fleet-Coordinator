@@ -282,3 +282,35 @@ class FastPathImportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DurableWriteTests(unittest.TestCase):
+    """AFC-331:  an idempotency row must reach the disk before the write it records is reported done."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.synced: list[int] = []
+        real = os.fsync
+
+        def spy(fd):
+            self.synced.append(fd)
+            return real(fd)
+        os.fsync = spy
+        self.addCleanup(setattr, os, "fsync", real)
+
+    def test_a_durable_write_syncs_the_file_and_its_directory(self):
+        path = os.path.join(self.tmp.name, "state", "idem.json")
+        L.write_json(path, {"rows": {"a": 1}}, durable=True)
+        self.assertEqual(len(self.synced), 2)
+        self.assertEqual(json.loads(Path(path).read_text()), {"rows": {"a": 1}})
+
+    def test_an_ordinary_write_stays_off_the_disk_flush_path(self):
+        L.write_json(os.path.join(self.tmp.name, "cursor.json"), {"last_id": 1})
+        self.assertEqual(self.synced, [])
+
+    def test_idempotency_rows_are_written_durably(self):
+        from agent_sync import idem as I
+        store = I.IdemStore(os.path.join(self.tmp.name, "idem.json"))
+        store.begin("k:test:aaaaaaaa-1", 60.0, {"tool": "t"})
+        self.assertGreaterEqual(len(self.synced), 2)

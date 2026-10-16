@@ -1,0 +1,8 @@
+{
+  "//": "The Grok Bot personas a connection may act as (docs/protocols/per-call-identity.md section 3).  The one list:  the hosted Worker imports it as GB_IDENTITIES (src/delegated-identities.js) and the stdio server reads it for its allowed set, so the two can never drift.  A persona joins only once its credentials are inventoried in Infisical and verified;  GB-ENGINEER stays out until then (DEPLOY.md, agent-sync-partition.toml, agent-sync-server.md).",
+  "enabled": [
+    "GB-DIRECTOR", "GB-FIXER", "GB-DESIGNER", "GB-COMPILER",
+    "GB-HOUSEKEEPER", "GB-PUBLISHER", "GB-DEPLOYER", "GB-MONITOR",
+    "GB-PLUMBER", "GB-ORACLE", "GB-TRADER"
+  ]
+}

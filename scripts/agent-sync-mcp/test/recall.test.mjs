@@ -17,6 +17,7 @@ import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { TOOLS, ERROR_META_KEY, schemaProblem } from "../src/contract.js";
 import { RecallClient, recallClientFromEnv, recallBaseUrl, RECALL_TOOLS, HIT_TEXT_LIMIT, RECALL_USER_AGENT } from "../src/recall.js";
+import { NOTES_TOOLS } from "../src/notes.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
 import { ROOT, testEnv, wranglerConfig } from "./helpers.mjs";
 
@@ -126,10 +127,10 @@ const noSecrets = (text) => {
 // ---------------------------------------------------------------- the tool list
 
 test("the hosted list is the ten original Zulip tools, then recall, then the Linear tools, then the rest of Zulip and the listener tools (AFC-330), closed inputs, no identity arguments", () => {
-  const full = TOOLS.tools.slice(10).map((t) => `zulip_${t.name}`);
+  const full = TOOLS.tools.slice(12).map((t) => t.name);  // after whoami, identities, guide and the original nine (AFC-331)
   assert.deepEqual(
     HOSTED_TOOL_LIST.map((t) => t.name),
-    ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name), ...full, "listener_status", "listener_inbox", "listener_owner_queue", "listener_wakes", "listener_held_back"],
+    ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name), ...full, "listener_status", "listener_inbox", "listener_owner_queue", "listener_wakes", "listener_held_back", ...NOTES_TOOLS.map((t) => t.name)],
   );
   // tools.json, the stdio contract, is untouched:  the Linear tools are hosted-only,
   // the way recall and dm are, because the Python stdio server cannot run them.
@@ -421,4 +422,9 @@ test("audit:  one row per call, no query text, contribute keeps only its length 
   assert.ok(!everything.includes("very private question"));
   assert.ok(!everything.includes("Grok on the web caches"));
   noSecrets(everything);
+});
+
+test("scripts/agent_sync/mcp/recall-tools.json (the stdio server's recall_* specs) equals RECALL_TOOLS", async () => {
+  const { recallToolsText, RECALL_TOOLS_JSON } = await import("../scripts/export-recall-tools.mjs");
+  assert.equal(readFileSync(RECALL_TOOLS_JSON, "utf8"), recallToolsText(), "recall-tools.json is stale.  Run:  cd scripts/agent-sync-mcp && node scripts/export-recall-tools.mjs");
 });

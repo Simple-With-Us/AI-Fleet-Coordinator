@@ -36,6 +36,10 @@ BOT_CLIENT = "ZulipPython"
 WILDCARDS_CHANNEL = ("all", "everyone", "channel", "stream")
 
 
+# The unicode codes Zulip gives the emoji the tests use (a reaction carries emoji_code).
+EMOJI_CODES = {"check": "2705", "cross_mark": "274c", "eyes": "1f440"}
+
+
 @dataclass
 class Recorded:
     method: str
@@ -779,6 +783,10 @@ class FakeZulip:
     def _public(self, message: dict[str, Any], user_id: int | None = None) -> dict[str, Any]:
         shown = copy.deepcopy(message)
         shown["flags"] = self._flags(message, user_id)
+        reactions = [{"user_id": uid, "emoji_name": name, "emoji_code": EMOJI_CODES.get(name, ""),
+                      "reaction_type": "unicode_emoji"} for mid, uid, name in sorted(self.reactions) if mid == message["id"]]
+        if reactions:
+            shown["reactions"] = reactions
         return shown
 
     def _get_messages(self, params: dict[str, str], user_id: int) -> dict[str, Any]:
@@ -801,6 +809,8 @@ class FakeZulip:
             lower = [m for m in matching if m["id"] < anchor_id or (include and m["id"] == anchor_id)]
             upper = [m for m in matching if m["id"] > anchor_id]
             chosen = (lower[-before:] if before else []) + upper[:after]
+            return {"messages": [self._public(m, user_id) for m in chosen], "found_newest": len(upper) <= after,
+                    "found_anchor": True}
         return {"messages": [self._public(m, user_id) for m in chosen], "found_newest": True, "found_anchor": True}
 
     def _register(self, params: dict[str, str], caller: dict[str, Any]) -> dict[str, Any]:

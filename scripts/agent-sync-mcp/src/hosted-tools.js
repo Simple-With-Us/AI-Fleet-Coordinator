@@ -120,9 +120,10 @@ import {
   STATUS_WORDS,
 } from "./linear.js";
 import { sentenceGap } from "./textfmt.js";
-import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_TOOL_ALIASES } from "./zulip-tool-specs.js";
+import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_FULL_NAMES, ZULIP_LEGACY_NAMES } from "./zulip-tool-specs.js";
 import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { LISTENER_TOOLS, LISTENER_READ_TOOLS, LISTENER_METHODS } from "./listener.js";
+import { NOTES_TOOLS, NOTES_READ_TOOLS, NOTES_WRITE_TOOLS, NOTES_METHODS } from "./notes.js";
 import { REALM } from "./zulip.js";
 import { CHANNEL_CACHE, lookupChannel, loadChannelSet } from "./channels.js";
 
@@ -149,24 +150,21 @@ export const RESOURCE_SCOPES = Object.freeze({ read: "zulip:read", write: "zulip
 // AFC-328 appends the FleetLink tools after the Linear ones.  AFC-330 appends the rest of Zulip
 // (every tools.json tool after the first ten, as zulip_<name>) and the read-only listener tools
 // after those, so every earlier tool keeps its place.
-export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...LISTENER_TOOLS]);
+export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...LISTENER_TOOLS, ...NOTES_TOOLS]);
 const FLEETLINK_BY_NAME = Object.freeze(Object.fromEntries(FLEETLINK_TOOLS.map((tool) => [tool.name, tool])));
-const PUBLIC_ZULIP_BY_LEGACY_NAME = Object.freeze(Object.fromEntries(
-  Object.entries(ZULIP_TOOL_ALIASES).map(([legacy, canonical]) => [legacy, [...ZULIP_PUBLIC_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS].find((tool) => tool.name === canonical)]),
-));
-export const HOSTED_TOOLS_BY_NAME = Object.freeze({
-  ...Object.fromEntries(HOSTED_TOOL_LIST.map((tool) => [tool.name, tool])),
-  ...PUBLIC_ZULIP_BY_LEGACY_NAME,
-});
-const ZULIP_READ_NAMES = [...READ_TOOLS].flatMap((name) => [name, ZULIP_TOOL_ALIASES[name] ?? name]);
-const ZULIP_WRITE_NAMES = [...WRITE_TOOLS].flatMap((name) => [name, ZULIP_TOOL_ALIASES[name] ?? name]);
-const DM_READ_NAMES = [...DM_READ_TOOLS].flatMap((name) => [name, ZULIP_TOOL_ALIASES[name] ?? name]);
-const DM_WRITE_NAMES = [...DM_WRITE_TOOLS].flatMap((name) => [name, ZULIP_TOOL_ALIASES[name] ?? name]);
-const FULL_NAMES = ZULIP_FULL_PUBLIC_TOOLS.map((tool) => tool.name.slice("zulip_".length));
-const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KIND, name)).flatMap((name) => [name, `zulip_${name}`]);
-const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, name)).flatMap((name) => [name, `zulip_${name}`]);
-export const HOSTED_READ_TOOLS = Object.freeze(new Set([...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...DM_READ_NAMES, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...LISTENER_READ_TOOLS]));
-export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...DM_WRITE_NAMES, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES]));
+export const HOSTED_TOOLS_BY_NAME = Object.freeze(Object.fromEntries(HOSTED_TOOL_LIST.map((tool) => [tool.name, tool])));
+// Every hosted tool is classified here, explicitly, as a read or a write (AFC-331:  a write must name its
+// identity, a read may use the grant's default;  the scope check uses the same split).  Zulip verbs come
+// from the contract's own sets and become their public zulip_<verb> names;  a test checks that the two
+// sets are disjoint and cover every tool served.
+const publicZulip = (verb) => (verb === "whoami" ? verb : `zulip_${verb}`);
+const ZULIP_READ_NAMES = [...READ_TOOLS, ...DM_READ_TOOLS].map(publicZulip);
+const ZULIP_WRITE_NAMES = [...WRITE_TOOLS, ...DM_WRITE_TOOLS].map(publicZulip);
+const FULL_NAMES = Object.keys(ZULIP_FULL_NAMES);
+const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
+const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
+export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...LISTENER_READ_TOOLS, ...NOTES_READ_TOOLS]));
+export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS]));
 export const RECALL_IDEM_TTL_MS = 10 * 60 * 1000;
 // Team and state ids are cached per isolate for an hour:  long enough to keep
 // a seat inside Linear's request budget, short enough that a team rename or a
@@ -296,8 +294,9 @@ export class HostedTools {
       }));
       throw new UnknownTool(name);
     }
-    const publicName = ZULIP_TOOL_ALIASES[name] ?? name;
-    const legacyZulipName = Object.entries(ZULIP_TOOL_ALIASES).find(([, canonical]) => canonical === publicName)?.[0] ?? publicName;
+    const publicName = name;
+    // A Zulip tool runs as tool_<verb>;  only its zulip_<verb> name is callable (AFC-331).
+    const legacyZulipName = ZULIP_LEGACY_NAMES[name] ?? name;
     const started = this.now();
     // Per call, so two calls in one request never share audit fields.
     const audit = { tool: publicName };
@@ -584,7 +583,7 @@ export class HostedTools {
     const fleetlinkState = this.fleetlink ? "configured" : "unconfigured";
     const info = {
       seat: this.seat,
-      ...(this.callerSeat === "CURSOR" ? { authenticated_seat: this.callerSeat } : {}),
+      authenticated_seat: this.callerSeat,
       email: this.email,
       user_id: this.me?.user_id ?? 0,
       role: this.me?.role ?? 0,
@@ -1313,7 +1312,7 @@ export class HostedTools {
     const viewer = await this.linearCall(() => client.viewer());
     const info = {
       seat: this.seat,
-      ...(this.callerSeat === "CURSOR" ? { authenticated_seat: this.callerSeat } : {}),
+      authenticated_seat: this.callerSeat,
       app: viewer.name,
       viewer_id: viewer.id,
       workspace: viewer.workspace || LINEAR_WORKSPACE_URL_KEY,
@@ -1589,7 +1588,7 @@ export class HostedTools {
 }
 
 // AFC-330:  the rest of Zulip (src/zulip-full.js) and the listener's records (src/listener.js).
-Object.assign(HostedTools.prototype, ZULIP_FULL_METHODS, LISTENER_METHODS);
+Object.assign(HostedTools.prototype, ZULIP_FULL_METHODS, LISTENER_METHODS, NOTES_METHODS);
 
 /** Why `me` cannot serve `seat`, or null (spec 3.6). */
 export function seatProblem(me, { seat, email }) {

@@ -11,6 +11,7 @@ rewritten into a Claude-voiced copy.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -215,17 +216,19 @@ COORDINATOR_SELF_ID = "AFC"
 OPS_SELF_ID = "OPS"
 FLEET_WAKE = "FLEET"
 
-GB_ROLE_TAGS = (
-    "GB-CONDUCTOR",
-    "GB-MONITOR",
-    "GB-FIXER",
-    "GB-DEPLOYER",
-    "GB-COMPILER",
-    "GB-NURSE",
-    "GB-HOUSEKEEPER",
-    "GB-ACCOUNTANT",
-    "GB-ORACLE",
-)
+def _load_gb_role_tags() -> tuple[str, ...]:
+    """The enabled Grok Bot personas, from the one list the MCP servers use (scripts/agent_sync/mcp/gb-identities.json,
+    which the hosted Worker imports as GB_IDENTITIES).  Never a list of its own here, so a skill cannot name a
+    persona the connectors refuse or miss one they accept."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_sync", "mcp", "gb-identities.json")
+    with open(path, encoding="utf-8") as fh:
+        enabled = json.load(fh).get("enabled")
+    if not isinstance(enabled, list) or not enabled or not all(isinstance(t, str) and t.startswith("GB-") for t in enabled):
+        raise ValueError("%s: `enabled` must be a non-empty list of GB-* names" % path)
+    return tuple(enabled)
+
+
+GB_ROLE_TAGS = _load_gb_role_tags()
 
 
 def _gb_role_list() -> str:
@@ -263,7 +266,7 @@ GB_ROLE_LIST = _gb_role_list()
 
 GROK_BOT_BANNER = (
     "> **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — "
-    f"{GB_ROLE_LIST}.  Notes name is the role in Title Case (`Conductor`, "
+    f"{GB_ROLE_LIST}.  Notes name is the role in Title Case (`Director`, "
     "`Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, "
     "`[CURSOR]`, `[GROK]`, or `[MONET]`.\n\n"
 )
@@ -1321,7 +1324,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         "**FX**, or a Grok Bot `[GB-<NAME>]` role).  "
         "Terminal Grok and Grok Build are one seat, **GROK** (GROK-BUILD in any spelling is an alias, not a tag).  "
         "Use your own Zulip session "
-        "tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-CONDUCTOR]`, "
+        "tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-FIXER]`, "
         "`[DSH·session8]`, `[MM·session8]`), your seat's own bot and "
         "`~/.secrets/Zulip/<file code>-zuliprc`, branch "
         "prefix (`<seat>/<slug>`), lane (`~/apps/lanes/<Repo>/<seat>-<slug>`), and Apple "

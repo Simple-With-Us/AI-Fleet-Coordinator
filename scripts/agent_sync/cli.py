@@ -46,6 +46,7 @@ from . import live as LIVE
 from . import router as ROUTER
 from . import secretscan
 from . import zulip as Z
+from . import notes_cli
 from . import zulip_cli
 from . import zulip_ops
 from .state import State, state_root
@@ -155,6 +156,8 @@ class RecentIds:
 class Agent:
     """Everything one command needs: identity, credentials, client, state, caches."""
 
+    registry_problem: str | None = None  # set by _check_agent_identity for `whoami` alone, which reports it
+
     def __init__(self, rt: Runtime, args: argparse.Namespace) -> None:
         self.rt = rt
         self.args = args
@@ -176,7 +179,11 @@ class Agent:
             raise CredentialError("no seat: set AGENT_SEAT (e.g. CLAUDE), pass --as NAME or --default-seat NAME, or pass --rc")
         session_id = getattr(args, "session", None) or env.get("CLAUDE_CODE_SESSION_ID") or env.get("AGENT_SESSION")
         self.tag = Z.session_tag(session_id)
-        self.creds = Z.resolve_credentials(env, rc_arg=rc_arg, seat=seat, home=rt.home)
+        # `credentials` is set only by `agent-sync mcp`, for an identity whose key comes from its own per-seat
+        # environment variables (the server instance, AFC-331);  the CLI's parser never sets it.
+        given = getattr(args, "credentials", None)
+        self.creds = given if isinstance(given, Z.Credentials) else \
+            Z.resolve_credentials(env, rc_arg=rc_arg, seat=seat, home=rt.home)
         if seat is None:
             rc_path = rc_arg or env.get("ZULIP_RC") or ""
             seat = Z.seat_from_rc_path(rc_path)
@@ -638,6 +645,8 @@ def build_parser() -> argparse.ArgumentParser:
                             "or 0400, UTF-8, at most %d KB.  For a caller that cannot pipe stdin" % (bodyfile.MAX_BYTES // 1024))
 
     add("whoami", "show the bot, seat, session tag, credential source and realm (never the key)")
+    add("identities", "list the bots this host may act as (every agent bot whose credential file is here, or the "
+                      "launcher's seat alone) and the default;  no network, never a key")
     p = add("channels", "list subscribed channels (--all:  every channel this bot can see)")
     p.add_argument("--all", action="store_true", help="every channel this bot can see, public ones it is not in included")
 
@@ -771,6 +780,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     zulip_cli.add_parsers(sub, common)
     listener_cli.add_parsers(sub, common)
+    notes_cli.add_parsers(sub, common)
     return parser
 
 
@@ -827,20 +837,24 @@ def cmd_whoami(agent: Agent, args: argparse.Namespace) -> int:
             "bot_seat": seat_tag_for(me), "seat_source": agent.seat_source, "launcher": agent.launcher,
             "verified": problem is None, "problem": problem,
             "session": agent.tag, "credential": agent.creds.source, "realm": agent.realm,
-            "owner_user_id": pinned_owner_id(agent)}
+            "owner_user_id": pinned_owner_id(agent), "registry_problem": agent.registry_problem}
+    if agent.registry_problem:
+        info["verified"] = False
     if agent.json:
         agent.emit_json(info)
     else:
         rows = [("bot", info["full_name"]), ("email", info["email"]), ("user id", info["user_id"]),
                 ("bot seat", info["bot_seat"]), ("seat", "%s (%s)" % (agent.seat, agent.seat_source)),
                 ("launcher", agent.launcher or "none (an ordinary session)"),
-                ("verified", "yes:  the key is this seat's own bot" if problem is None else "NO"),
+                ("verified", "yes:  the key is this seat's own bot" if problem is None and not agent.registry_problem else "NO"),
                 ("session", agent.tag or "none (state is shared under nosession)"),
                 ("credential", agent.creds.source), ("realm", agent.realm),
                 ("owner id", info["owner_user_id"] or "not pinned in listener.toml")]
+        if agent.registry_problem:
+            rows.append(("registry", agent.registry_problem))
         agent.out("".join("%-11s %s\n" % (label + ":", value) for label, value in rows))
-    if problem:
-        agent.err(problem)
+    if problem or agent.registry_problem:
+        agent.err(problem or agent.registry_problem)
         return 3
     return 0
 
@@ -1673,9 +1687,102 @@ def _on_sigterm(signum: int, frame: Any) -> None:
     raise KeyboardInterrupt
 
 
+def cmd_identities(rt: Runtime, args: argparse.Namespace) -> int:
+    """`agent-sync identities`:  the allowed set and the default (AFC-331), from the files on this host.
+    A launcher's seat narrows the set to itself."""
+    from . import identities as X
+
+    resolved = I.resolve_seat(rt.env, flag=getattr(args, "as_seat", None), default=getattr(args, "default_seat", None))
+    if resolved.problem:
+        raise Z.CredentialError(resolved.problem)
+    default = Z.normalise_seat(resolved.seat) if resolved.seat else None
+    home = rt.home if rt.home is not None else Path(rt.env.get("HOME") or os.path.expanduser("~"))
+    registry_problem = None
+    try:
+        registry = I.load_seat_registry(env=rt.env)
+    except I.SeatRegistryError as exc:
+        registry, registry_problem = None, ("cannot read the seat registry, so no identity can be checked and none is "
+                                            "allowed (%s);  fix FLEET_APPS_JSON or fleet-apps.json" % exc)
+    found = X.allowed_identities(rt.env, home, registry=registry) if registry is not None else {}
+    names = set(found)
+    # The default identity's explicit credential (--rc or ZULIP_RC, which may sit outside the secrets directory) is
+    # part of the set, as at stdio startup, with the same exclusion:  only an agent identity qualifies.
+    rc_arg = getattr(args, "rc", None) or rt.env.get("ZULIP_RC")
+    if default and rc_arg and registry is not None and X.agent_identity_problem(default, registry=registry) is None:
+        names.add(default)
+    allowed = sorted(names)
+    if resolved.source == "launcher":
+        allowed = [default] if default in allowed else []
+    if getattr(args, "json", False):
+        rt.out(json.dumps({"default_identity": default, "transport": "cli", "registry_problem": registry_problem,
+                           "identities": [{"identity": name, "zulip": "configured"} for name in allowed]}) + "\n")
+    else:
+        rt.out("default identity:  %s\n" % (default or "none"))
+        for name in allowed:
+            rt.out("%s\n" % name)
+    if registry_problem:
+        rt.err("agent-sync: %s" % registry_problem)
+        return 3
+    return 0
+
+
+# The CLI commands that write (the CLI side of tools.py WRITE_TOOLS, AFC-331).  Each run of one appends a row
+# to the identity audit log (identity_log.py).  `listener` writes only local records and is not here.
+WRITE_COMMANDS = frozenset({"post", "reply", "react", "dm", "edit", "delete", "move", "resolve", "unresolve", "unreact",
+                            "mark-read", "mark-unread", "star", "unstar", "unsubscribe", "follow", "mute", "unmute",
+                            "set-status", "upload", "scheduled", "drafts", "typing", "subscribe"})
+READ_ONLY_ACTIONS = frozenset({"list"})  # `scheduled list` and `drafts list` read
+
+
+def _check_agent_identity(rt: Runtime, agent: Agent, command: str = "") -> None:
+    """AFC-331:  the CLI acts only as an agent bot (a live or extra seat, a BF-* bot or an enabled GB-*
+    persona), never as the owner's account or an integration bot, whatever credential files exist.  Without a
+    readable registry nothing proves that, so every identity is refused (fail closed), as on the stdio and Notes
+    paths.  `whoami` is the one diagnostic that goes on and reports the registry problem."""
+    from . import identities as X
+
+    try:
+        registry = I.load_seat_registry(env=rt.env)
+    except I.SeatRegistryError as exc:
+        problem = ("cannot read the seat registry, so %s cannot be checked as an agent identity (%s);  "
+                   "fix FLEET_APPS_JSON or fleet-apps.json" % (agent.seat, exc))
+        if command == "whoami":
+            agent.registry_problem = problem
+            return
+        raise Z.CredentialError(problem) from None
+    problem = X.agent_identity_problem(agent.seat, registry=registry)
+    if problem:
+        raise Z.CredentialError(problem)
+
+
+def _audit_write(rt: Runtime, args: argparse.Namespace, agent: Agent, code: int, outcome: str | None = None) -> None:
+    from . import identity_log as AUDIT
+
+    if args.command == "api":
+        # Classified by method:  a non-GET call is a write, audited with the method and path, never the body.
+        if args.method == "GET":
+            return
+        path = args.path.strip().strip("/")
+        path = path[len("api/v1/"):] if path.startswith("api/v1/") else path
+        AUDIT.append(rt.env, rt.home, transport="cli", default_identity=agent.seat, identity=agent.seat,
+                     tool="api %s %s" % (args.method, path),
+                     outcome=outcome or ("ok" if code == 0 else "exit_%d" % code))
+        return
+    if args.command not in WRITE_COMMANDS:
+        return
+    action = next((getattr(args, name) for name in ("scheduled_action", "drafts_action")
+                   if isinstance(getattr(args, name, None), str)), None)
+    if action in READ_ONLY_ACTIONS:
+        return
+    AUDIT.append(rt.env, rt.home, transport="cli", default_identity=agent.seat, identity=agent.seat,
+                 tool=args.command + (" " + action if action else ""),
+                 outcome=outcome or ("ok" if code == 0 else "exit_%d" % code))
+
+
 LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
     "daemon": listener_cli.cmd_daemon, "status": listener_cli.cmd_status, "wakes": listener_cli.cmd_wakes,
-    "listener": listener_cli.cmd_listener,
+    "listener": listener_cli.cmd_listener, "identities": cmd_identities,
+    "notes": notes_cli.cmd_notes, "guide": notes_cli.cmd_guide,
 }
 
 
@@ -1703,6 +1810,10 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
         with contextlib.suppress(ValueError, OSError):
             previous = signal.signal(signal.SIGTERM, _on_sigterm)
     agent: Agent | None = None
+    # The write audit (identity_log) happens exactly once, in the `finally` below, whatever the exit:  each path only
+    # records what to write in `audit` (the exit code and an optional outcome).  `_audit_write` itself decides whether
+    # the command is a write.  Only a verified key counts for the failure paths:  before that nothing was sent.
+    audit: tuple[int, str | None] | None = None
     try:
         if args.command in LOCAL_COMMANDS:
             return LOCAL_COMMANDS[args.command](rt, args)
@@ -1715,19 +1826,36 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
         if args.command in ("post", "reply", "dm", "edit"):
             _check_text_args(args)  # a usage error needs no credential
         agent = Agent(rt, args)  # every request after users/me waits for agent.verify(); whoami reports it
-        return COMMANDS[args.command](agent, args)
+        _check_agent_identity(rt, agent, args.command)
+        code = COMMANDS[args.command](agent, args)
+        audit = (code, None)
+        return code
     except Z.AgentSyncError as exc:
         rt.err("agent-sync: %s" % exc)
+        if agent is not None and agent._verified:
+            audit = (exc.exit_code, None)
         return exc.exit_code
     except KeyboardInterrupt:
+        if agent is not None and agent._verified:
+            audit = (130, "interrupted")  # a write that was in flight may have landed
         return 130
     except BrokenPipeError:
+        # The reader went away while the result was being printed.  A write has landed by then.
+        if agent is not None and agent._verified:
+            audit = (0, None)
         return 0
     except Exception as exc:  # noqa: BLE001 - last resort: say what failed, never print a traceback
         text = "%s: %s" % (type(exc).__name__, exc)
         rt.err("agent-sync: internal error: %s" % (agent.client.scrub(text) if agent else text))
+        if agent is not None and agent._verified:
+            # Anything unexpected after the key was verified (a failed print, a full disk) may have followed a write that
+            # landed:  the outcome is unknown, and only the exception's type name is recorded.
+            audit = (1, "outcome_unknown:%s" % type(exc).__name__)
         return 1
     finally:
+        if audit is not None and agent is not None:
+            with contextlib.suppress(Exception):  # an audit failure never changes the command's result
+                _audit_write(rt, args, agent, audit[0], audit[1])
         if previous is not None:
             with contextlib.suppress(ValueError, OSError):
                 signal.signal(signal.SIGTERM, previous)

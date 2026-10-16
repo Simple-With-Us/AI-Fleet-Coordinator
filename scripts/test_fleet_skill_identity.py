@@ -7,6 +7,7 @@ import ast
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import re
 import shutil
@@ -170,9 +171,9 @@ class SpecializeTests(unittest.TestCase):
         grok_bot = specialize_from_monet(
             src, SEATS["grok-bot"], skill_name="session-start"
         )
-        self.assertIn("GB-CONDUCTOR", grok_bot)
-        self.assertIn("GB-COMPILER", grok_bot)
-        self.assertIn("GB-ORACLE", grok_bot)
+        for tag in GB_ROLE_TAGS:  # the list is the MCP servers' own (gb-identities.json), whatever it holds
+            self.assertIn(tag, grok_bot)
+        self.assertNotIn("GB-CONDUCTOR", grok_bot)
         self.assertNotRegex(grok_bot, r"GB-COMPILE(?!R)")
         self.assertIn("[GB-<NAME>]", grok_bot)
         self.assertNotIn("AGENT_SEAT=MONET", grok_bot)
@@ -516,6 +517,10 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertIn("GB-COMPILER", GB_ROLE_TAGS)
         self.assertIn("GB-ORACLE", GB_ROLE_TAGS)
         self.assertNotIn("GB-COMPILE", GB_ROLE_TAGS)
+        gb = json.loads((Path(__file__).resolve().parent / "agent_sync" / "mcp" / "gb-identities.json").read_text())
+        self.assertEqual(list(GB_ROLE_TAGS), gb["enabled"], "one list:  the MCP servers' GB table")
+        for stale in ("GB-CONDUCTOR", "GB-NURSE", "GB-ACCOUNTANT"):
+            self.assertNotIn(stale, GB_ROLE_TAGS)
         self.assertTrue(is_grok_bot_tag("GB-ORACLE"))
         self.assertTrue(is_grok_bot_tag("GB-COMPILER"))
         self.assertFalse(is_grok_bot_tag("AFC"))

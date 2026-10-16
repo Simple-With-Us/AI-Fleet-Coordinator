@@ -30,9 +30,9 @@ import {
   ACCESS_TOKEN_TTL_S,
   REFRESH_TOKEN_TTL_S,
   GATE_LOG_NAME,
-  KNOWN_SEATS,
   PROPS_PHASE,
   SEAT_SECRETS,
+  SHARED_IDENTITY_SEATS,
   SEAT_LABELS,
   WAKE_SECRETS,
 } from "./config.js";
@@ -60,6 +60,7 @@ import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sent
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
 import { IdentityRouter, loadDelegatedCredentials } from "./delegated-identities.js";
+import { gate } from "./gate.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromEnv } from "./recall.js";
 import { fleetlinkClientFromEnv } from "./fleetlink.js";
@@ -98,11 +99,6 @@ function invalidToken(description) {
   return oauthJsonError("invalid_token", description, 401, {
     "WWW-Authenticate": `Bearer error="invalid_token", error_description="${description}", resource_metadata="${RESOURCE_METADATA_URL}"`,
   });
-}
-
-function gate(env, name) {
-  if (name !== GATE_LOG_NAME && !KNOWN_SEATS.includes(name)) throw new Error("not a seat");
-  return env.SEAT_GATE.get(env.SEAT_GATE.idFromName(name));
 }
 
 /**
@@ -253,47 +249,75 @@ async function serveMcp(request, env, ctx) {
     // tools then answer not_configured and every other tool works as before (AFC-330).
     listener: listenerClientFromEnv(env, seat),
   });
-  const delegatedCredentials = seat === "CURSOR" ? loadDelegatedCredentials(env) : null;
-  const routedTools = seat === "CURSOR" ? new IdentityRouter({
+  // AFC-331:  every grant is routed by identity.  A CURSOR or GROK-WEB grant may act as either seat and as
+  // every enabled Grok Bot persona;  any other grant only as its own seat (src/delegated-identities.js).
+  const sharedGroup = SHARED_IDENTITY_SEATS.includes(seat);
+  const delegatedCredentials = sharedGroup ? loadDelegatedCredentials(env) : null;
+  const seatKeyOf = (identity) => (typeof env[SEAT_SECRETS[identity]?.key] === "string" ? env[SEAT_SECRETS[identity].key].trim() : "");
+  const routedTools = new IdentityRouter({
     callerTools: tools,
     credentials: delegatedCredentials,
-    createRole: async (identity) => {
-      const roleCredentials = delegatedCredentials.roles.get(identity);
-      if (!roleCredentials) throw new ToolError("not_configured", `Credentials are missing for ${identity}.`);
-      const roleGate = env.SEAT_GATE.get(env.SEAT_GATE.idFromName(identity));
-      const roleState = await roleGate.getState();
-      if (roleState.paused) throw new ToolError("paused", `The ${identity} identity is paused.`);
-      const roleKey = roleCredentials.zulipKey;
-      const roleEmail = roleCredentials.email;
-      const roleConfig = { ...config, botEmails: { ...config.botEmails, [identity]: roleEmail } };
-      const linear = new LinearClient({
-        seat: identity,
-        clientId: roleCredentials.linearClientId,
-        clientSecret: roleCredentials.linearClientSecret,
-        gate: roleGate,
-        fetch: globalThis.fetch.bind(globalThis),
-      });
-      return new HostedTools({
-        seat: identity,
-        callerSeat: "CURSOR",
+    identityStatus: (identity) => ({
+      zulip: seatKeyOf(identity) && config.botEmails[identity] ? "configured" : "missing",
+      linear: [linearSecretNames(identity)?.clientId, linearSecretNames(identity)?.clientSecret]
+        .every((name) => name && typeof env[name] === "string" && env[name].trim()) ? "configured" : "missing",
+    }),
+    createIdentity: !sharedGroup ? null : async (identity) => {
+      // Each identity has its own SeatGate:  its spacing, idempotency rows, role cache and budget.  The
+      // grant's gate is charged too (HostedTools.reserve), so another identity never multiplies it.
+      const identityGate = gate(env, identity);
+      const identityState = await identityGate.getState();
+      if (identityState.paused) throw new ToolError("paused", `The ${identity} identity is paused.`);
+      const common = {
+        callerSeat: seat,
         callerGate: seatGate,
-        delegatedLinear: true,
         scopes,
         clientId: typeof auth.clientId === "string" ? auth.clientId : "",
         grantRef: tools.grantRef,
         paused: tools.paused,
-        config: roleConfig,
-        zulip: new ZulipClient({ email: roleEmail, key: roleKey }),
-        key: roleKey,
-        gate: roleGate,
+        gate: identityGate,
         cf: tools.cf,
         recall: tools.recall,
         fleetlink: tools.fleetlink,
-        linear,
         linearWrites: tools.linearWrites,
+      };
+      const roleCredentials = delegatedCredentials.roles.get(identity);
+      if (roleCredentials) {
+        // A Grok Bot persona:  its row of the encrypted GB_IDENTITY_CREDENTIALS bundle.
+        const roleKey = roleCredentials.zulipKey;
+        const roleEmail = roleCredentials.email;
+        return new HostedTools({
+          ...common,
+          seat: identity,
+          delegatedLinear: true,
+          config: { ...config, botEmails: { ...config.botEmails, [identity]: roleEmail } },
+          zulip: new ZulipClient({ email: roleEmail, key: roleKey }),
+          key: roleKey,
+          linear: new LinearClient({
+            seat: identity,
+            clientId: roleCredentials.linearClientId,
+            clientSecret: roleCredentials.linearClientSecret,
+            gate: identityGate,
+            fetch: globalThis.fetch.bind(globalThis),
+          }),
+        });
+      }
+      if (!SHARED_IDENTITY_SEATS.includes(identity)) throw new ToolError("not_configured", `Credentials are missing for ${identity}.`);
+      // A peer seat of the shared group:  its own SEAT_SECRETS key and its own Linear app, never the grant's.
+      const peerKey = seatKeyOf(identity);
+      const peerEmail = config.botEmails[identity];
+      if (!peerKey || !peerEmail) throw new ToolError("not_configured", `Credentials are missing for ${identity}.`);
+      return new HostedTools({
+        ...common,
+        seat: identity,
+        config,
+        zulip: new ZulipClient({ email: peerEmail, key: peerKey }),
+        key: peerKey,
+        linear: linearClientFromEnv(env, identity, { gate: identityGate }),
+        listener: listenerClientFromEnv(env, identity),
       });
     },
-  }) : tools;
+  });
   const authInfo = {
     token: auth.token,
     clientId: auth.clientId,

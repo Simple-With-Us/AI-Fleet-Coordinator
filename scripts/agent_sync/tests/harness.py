@@ -21,7 +21,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from unittest import mock
+
 from agent_sync import cli
+from agent_sync import notes as NOTES
 from agent_sync.tests.fake_zulip import BOT_EMAIL, FakeZulip
 
 SESSION = "11112222-3333-4444-5555-666677778888"
@@ -53,6 +56,13 @@ class Harness(unittest.TestCase):
 
     def setUp(self) -> None:
         self.key = secrets.token_hex(16)
+        # The Notes relay consumer comes from the NOTES_RELAY_CONSUMER fleet knob (Infisical):  never reached from a test.
+        # A test sets self.notes_knob to change what the knob answers.
+        self.notes_knob = "CLAUDE"
+        resolver = mock.patch.object(NOTES, "KNOB_RESOLVER", lambda local, refresh: (
+            self.notes_knob, "test knob", local is not None and local != self.notes_knob))
+        resolver.start()
+        self.addCleanup(resolver.stop)
         self.fake = FakeZulip(self.key, heartbeat=self.heartbeat)
         self.fake.start()
         self.addCleanup(self.fake.stop)

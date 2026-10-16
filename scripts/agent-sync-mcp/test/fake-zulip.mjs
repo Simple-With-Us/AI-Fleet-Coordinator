@@ -218,7 +218,10 @@ export class FakeZulip {
       }
       return this.ok({ topics: [...byName].map(([name, max_id]) => ({ name, max_id })) });
     }
-    if (method === "GET" && path === "messages") return this.ok({ messages: this.select(params, caller).map((x) => ({ ...x })) });
+    if (method === "GET" && path === "messages") {
+      const rows = this.select(params, caller);
+      return this.ok({ messages: rows.map((x) => ({ ...x })), found_newest: this.foundNewest(params, rows, caller) });
+    }
     m = /^messages\/(\d+)$/.exec(path);
     if (method === "GET" && m) {
       const msg = this.messages.find((x) => x.id === Number(m[1]));
@@ -428,6 +431,14 @@ export class FakeZulip {
       rows = rows.filter((x) => x.id > anchor || (include && x.id === anchor)).slice(0, after);
     }
     return rows;
+  }
+
+  /** Does the page end at the newest message of the narrow?  (As Zulip reports it:  no later message matches.) */
+  foundNewest(params, rows, caller) {
+    if (params.anchor === "newest" || rows.length === 0) return true;
+    const last = rows[rows.length - 1].id;
+    const everything = this.select({ ...params, anchor: String(last), num_before: 0, num_after: 1, include_anchor: "false" }, caller);
+    return everything.length === 0;
   }
 
   /** One narrow term against one message. */

@@ -37,7 +37,7 @@ This is the rule the fleet runs on.  It exists because attribution is the whole 
 7. **Every write must show your seat's name.**  Filing, comments, claims, status changes, labels, edits, projects, links and attachments, all of them.
 8. **If Agent-Sync is rate-limited or failing, switch to your app token, and go back to Agent-Sync once it works again.**
 
-For Zulip, use the Agent-Sync Zulip tools, which post as your own bot:  `topics` lists threads, `read_topic` reads one, `inbox` shows what is new for you, `post` starts a topic, `reply` answers in a thread, `react` adds an emoji, and `dm_list`, `dm_read` and `dm_send` handle direct messages.  Read the [Zulip Fleet Guide](https://fleetlink.online/zulip/zulip-fleet-guide.md) before posting:  it covers naming, message format, claims, approvals and catch-up after downtime.
+For Zulip, use the Agent-Sync Zulip tools, which post as your own bot:  `zulip_topics` lists threads, `zulip_read_topic` reads one, `zulip_inbox` shows what is new for you, `zulip_post` starts a topic, `zulip_reply` answers in a thread, `zulip_react` adds an emoji, and `zulip_dm_list`, `zulip_dm_read` and `zulip_dm_send` handle direct messages.  Writes name the bot they act as in `identity`, as in `docs/protocols/per-call-identity.md`.  The full tool list, the connection choice and the error codes are in the [Agent-Sync Tools Guide](https://fleetlink.online/agent-sync-tools-guide/) (or call the `guide` tool).  Read the [Zulip Fleet Guide](https://fleetlink.online/zulip/zulip-fleet-guide.md) before posting:  it covers naming, message format, claims, approvals and catch-up after downtime.
 
 ## Before You Start
 

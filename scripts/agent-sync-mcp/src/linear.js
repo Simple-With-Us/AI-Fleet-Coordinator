@@ -1,3 +1,4 @@
+import { SEAT_NAME_ALIASES } from "./identity-aliases.js";
 import { LINEAR_MCP_TOOLS, LINEAR_MCP_READ_TOOLS, LINEAR_MCP_WRITE_TOOLS } from "./linear-mcp-specs.js";
 import { LINEAR_NAMED_TOOLS, LINEAR_NAMED_COMMANDS } from "./linear-named-specs.js";
 // Linear tools for hosted seats, so a seat with no shell (GROK-WEB first, then
@@ -164,7 +165,7 @@ export const SEAT_APP_ALIASES = Object.freeze({
   WISE: Object.freeze(["Wise", "Wise-Instinct", "Echo-Instinct", "Instinct"]),
   MA: Object.freeze(["Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"]),
 });
-export const SEAT_TAG_ALIASES = Object.freeze({ INSTINCT: "WISE", "WISE-INSTINCT": "WISE", "ECHO-INSTINCT": "WISE", "MUSE-ASSIST": "MA", ROB: "MA", "ROB-MUSE": "MA" });
+export const SEAT_TAG_ALIASES = SEAT_NAME_ALIASES;
 
 /** The seat tag a spelling resolves to, including accepted human aliases.  WISE is the tag; INSTINCT is retired. */
 export function seatTagForSeat(seat) {
@@ -454,6 +455,7 @@ export const LINEAR_TOOLS = Object.freeze([
       required: ["seat", "app", "viewer_id", "workspace", "transport"],
       properties: {
         seat: { type: "string" },
+        authenticated_seat: { type: "string" },
         app: { type: "string" },
         viewer_id: { type: "string" },
         workspace: { type: "string" },
