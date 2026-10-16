@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -97,6 +98,46 @@ class ReleaseTests(unittest.TestCase):
                     queue += [part.strip().split(" ")[0] for part in m.group(1).split(",") if part.strip()
                               and part.strip().split(" ")[0] != "__version__"]
         self.assertEqual(seen - {"__init__"}, set(release.RECALL_MODULES) - {"__init__"})
+
+    def test_ships_the_knob_reader_and_not_its_tests_cli_or_readme(self):
+        # AFC-331:  agent-sync reads the NOTES_RELAY_CONSUMER knob through fleet_knobs.  If the server release lacked it,
+        # the import would fail and the host would silently trust the default consumer after the knob rotated.
+        for name in release.KNOB_MODULES:
+            path = "scripts/fleet_knobs/%s.py" % name
+            self.assertTrue(release.allowed_path(path), path)
+            self.assertIn(path, release.TOOL_REQUIRED, "a new bundle must carry it")
+            self.assertNotIn(path, release.BASE_REQUIRED, "an older retained release stays a valid rollback target")
+        for path in ["scripts/fleet_knobs/tests/test_knobs.py", "scripts/fleet_knobs/__main__.py",
+                     "scripts/fleet_knobs/inventory.py", "scripts/fleet_knobs/README.md", "scripts/fleet_knobs/_fake.py"]:
+            self.assertFalse(release.allowed_path(path), path)
+
+    def test_the_shipped_knob_modules_are_exactly_what_a_lookup_imports_and_run_on_stdlib_alone(self):
+        import re
+        import shutil
+        root = Path(__file__).resolve().parent / "fleet_knobs"
+        seen, queue = set(), ["knobs"]
+        while queue:
+            name = queue.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            for line in (root / (name + ".py")).read_text().splitlines():  # module-level imports only
+                m = re.match(r"from \. import (.+)", line) or re.match(r"from \.(\w+) import", line)
+                if m:
+                    queue += [part.strip().split(" ")[0] for part in m.group(1).split(",") if part.strip()]
+        self.assertEqual(seen | {"__init__"}, set(release.KNOB_MODULES))
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp) / "fleet_knobs"
+            package.mkdir()
+            for name in release.KNOB_MODULES:
+                shutil.copy(root / (name + ".py"), package / (name + ".py"))
+            # Only the shipped files, a clean environment and no infisical CLI:  the lookup must answer with a labelled default.
+            code = ("import sys; sys.path.insert(0, %r); from fleet_knobs import knobs; "
+                    "k = knobs.resolve('NOTES_RELAY_CONSUMER', 'CLAUDE', 'str'); print(k.value, k.source)" % tmp)
+            result = subprocess.run([sys.executable, "-I", "-c", code], cwd=tmp, capture_output=True, text=True, timeout=60,
+                                    env={"PATH": "/nonexistent", "HOME": tmp})
+            self.assertEqual(result.returncode, 0, result.stderr[-400:])
+            self.assertEqual(result.stdout.split()[0], "CLAUDE")
 
     def test_install_writes_wrappers_for_all_five_tools(self):
         self.receive()

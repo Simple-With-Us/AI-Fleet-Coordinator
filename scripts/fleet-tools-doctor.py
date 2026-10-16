@@ -53,7 +53,7 @@ AFC_REMOTE_URL = "https://github.com/Simple-With-Us/AI-Fleet-Coordinator"
 # Coarse git pathspecs that bound the diff;  is_shipped() then applies the exact rules.
 SHIPPED = ("scripts/agent-sync", "scripts/agent_sync/", "scripts/linear-board/", "fleet-apps.json",
            "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
-           "scripts/recall", "scripts/fleet_rag/", "scripts/fleet_lanes/", "scripts/fleet-mode",
+           "scripts/recall", "scripts/fleet_rag/", "scripts/fleet_lanes/", "scripts/fleet_knobs/", "scripts/fleet-mode",
            "docs/FLEET-MODE.md", "docs/protocols/agent-sync-tools-guide.md")
 # What a fleet-cli release ships:  mirrors EXACT and allowed_path in scripts/fleet-cli-release.py, so a
 # commit that changes only tests or docs under those folders needs no push and is not drift.
@@ -77,6 +77,8 @@ SHIPPED_EXACT = frozenset({
     "scripts/fleet_rag/search_log.py", "scripts/fleet_rag/telemetry.py",
     "scripts/fleet_lanes/bin/lane", "scripts/fleet_lanes/__init__.py", "scripts/fleet_lanes/doctor.py",
     "scripts/fleet_lanes/guard.py", "scripts/fleet_lanes/lane.py", "scripts/fleet_lanes/layout.py",
+    "scripts/fleet_knobs/__init__.py", "scripts/fleet_knobs/knobs.py", "scripts/fleet_knobs/lkg.py",
+    "scripts/fleet_knobs/registry.py", "scripts/fleet_knobs/source.py", "scripts/fleet_knobs/values.py",
     "scripts/fleet-mode", "docs/FLEET-MODE.md",
 })
 STATE = HOME / ".local/state/fleet-tools-doctor.json"

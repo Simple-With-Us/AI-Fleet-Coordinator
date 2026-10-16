@@ -32,6 +32,9 @@ LINEAR_CATALOG = ("named-commands.json", "official-mcp-tools.json", "public-inpu
 # `recall ingest` import eval/ingest lazily;  they are Mac and Hetzner-box jobs and are not shipped.
 RECALL_MODULES = ("__init__", "contribute_guard", "core", "doctor", "health", "public_fallback",
                   "recall_api", "scrub", "search_log", "telemetry")
+# `agent-sync` reads the NOTES_RELAY_CONSUMER knob through these fleet_knobs modules (stdlib only;  the package's
+# tests, its inventory CLI and its README stay out).  Without them a host silently falls back to the default consumer.
+KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
 LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout")
 AFC331_FILES = ("scripts/agent_sync/mcp/notes-tools.json", "scripts/agent_sync/mcp/recall-tools.json",
@@ -51,6 +54,7 @@ EXACT = frozenset({
     *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
     "scripts/recall", *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
     "scripts/fleet_lanes/bin/lane", *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
+    *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
     "scripts/fleet-mode", "docs/FLEET-MODE.md",
 })
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
@@ -69,6 +73,8 @@ TOOL_REQUIRED = frozenset({
     "scripts/fleet-mode", "docs/FLEET-MODE.md", *AFC331_FILES,
     # The listener_* MCP tools (AFC-330):  `agent-sync mcp` reads it at startup.
     "scripts/agent_sync/mcp/listener-tools.json",
+    # The knob reader (AFC-331):  a new bundle must carry it;  a retained older release need not (rollback stays valid).
+    *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
 })
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
 

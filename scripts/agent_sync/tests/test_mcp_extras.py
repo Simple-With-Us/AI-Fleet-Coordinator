@@ -374,6 +374,26 @@ class NotesToolTests(McpHarness):
         self.fake.add_message("Claude", N.RELAY_CHANNEL, "[AFC, Claude] status", "notes-relay refused exact-status-1: its own")
         self.assertEqual(status()["reason"], "its own")
 
+    def test_notes_status_says_so_when_the_consumer_is_the_default_because_the_knob_could_not_be_read(self):
+        def unreadable(local, refresh):
+            raise ImportError("no fleet_knobs on this host")
+        with mock.patch.object(N, "KNOB_RESOLVER", unreadable):
+            session = self.session()
+            mid, status = self.sent_request(session, "status-request-8")
+            info = status()
+        self.assertEqual(info["status"], "queued")
+        self.assertEqual(info["consumer"], "CLAUDE (default; knob unreadable)")
+        # A knob read from Infisical (here the test knob) adds no note.
+        session = self.session()
+        mid, status = self.sent_request(session, "status-request-9")
+        self.assertNotIn("consumer", status())
+        for label, expected in (("default CLAUDE (unreachable: boom)", "CLAUDE (default; knob unreadable)"),
+                                ("last-known-good copy (stale)", "CLAUDE (last-known-good copy; knob unreadable)")):
+            with mock.patch.object(N, "KNOB_RESOLVER", lambda local, refresh, label=label: ("CLAUDE", label, False)):
+                session = self.session()
+                mid, status = self.sent_request(session, "status-request-%d" % (10 + len(label) % 7))
+                self.assertEqual(status()["consumer"], expected, label)
+
     def test_the_consumer_seat_comes_from_the_fleet_knob_and_a_differing_local_seat_is_ignored(self):
         (self.state_dir).mkdir(parents=True, exist_ok=True)
         (self.state_dir / "listener.toml").write_text('[notes_relay]\nenabled = true\nseat = "CLAUDE"\n')

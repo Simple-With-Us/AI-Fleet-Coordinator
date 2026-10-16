@@ -451,6 +451,7 @@ class Tools:
     def __init__(self, agent: CLI.Agent, *, me: Mapping[str, Any], process_tag: str | None, session_source: str,
                  codex_thread_meta: bool = False,
                  owner_user_id: int = 0, owner_clients: Iterable[str] = (), notes_consumer: str = "CLAUDE",
+                 notes_consumer_label: str = "",
                  clock: Callable[[], float] = time.time,
                  sleep: Callable[[float], None] = time.sleep, log: Callable[[str], None] = lambda text: None) -> None:
         self.agent = agent
@@ -469,6 +470,7 @@ class Tools:
         self.owner_user_id = owner_user_id
         self.owner_clients = set(owner_clients)
         self.notes_consumer = notes_consumer  # [notes_relay] seat:  the only bot whose reactions and replies count
+        self.notes_consumer_label = notes_consumer_label  # where the knob's answer came from (notes.relay_consumer)
         self.clock = clock
         self.sleep = sleep
         self.log = log
@@ -1503,7 +1505,18 @@ class Tools:
                                 "status": "refused" if refused else "done" if done else "queued"}
         if refused and reason:
             info["reason"] = reason
+        note = self._consumer_note()
+        if note:
+            info["consumer"] = note  # the knob was not read from Infisical:  say whose marks are being trusted, and why
         return self.ok(json.dumps(info, ensure_ascii=False), info)
+
+    def _consumer_note(self) -> str:
+        label = self.notes_consumer_label
+        if label.startswith("default"):
+            return "%s (default; knob unreadable)" % self.notes_consumer
+        if label.startswith("last-known-good"):
+            return "%s (last-known-good copy; knob unreadable)" % self.notes_consumer
+        return ""
 
     def _notes_find(self, request_id: str, message_id: Any) -> Mapping[str, Any] | None:
         """The relay message of this identity that carries `request_id`:  by id when given, else the channel's

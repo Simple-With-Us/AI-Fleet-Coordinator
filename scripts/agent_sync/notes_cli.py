@@ -225,8 +225,9 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
     # Relay (and status):  the MCP tool's own code over this identity's verified bot.
     agent = CLI.Agent(rt, args)
     CLI._check_agent_identity(rt, agent)
+    consumer, consumer_label, _ = N.relay_consumer(C.load(str(state_root(rt.env, home))).notes_relay_seat)
     tools = T.Tools(agent, me=agent.me(), process_tag=agent.tag, session_source="flag",
-                    notes_consumer=N.relay_consumer(C.load(str(state_root(rt.env, home))).notes_relay_seat)[0],
+                    notes_consumer=consumer, notes_consumer_label=consumer_label,
                     sleep=rt.sleep, log=lambda text: None)
     saved = (rt.stdout, rt.stderr, rt.stdin)  # the tool layer swaps the runtime's streams for its own buffers
     audit["started"] = True  # from here a write may be in flight

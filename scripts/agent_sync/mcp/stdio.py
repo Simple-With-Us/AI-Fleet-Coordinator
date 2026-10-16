@@ -560,7 +560,7 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
     def make_tools(identity: str, agent: CLI.Agent, me: Mapping[str, Any]) -> T.Tools:
         return T.Tools(agent, me=me, process_tag=agent.tag, session_source=source,
                        codex_thread_meta=codex_thread_meta and identity == "CODEX", owner_user_id=cfg.owner_user_id,
-                       owner_clients=cfg.owner_clients, notes_consumer=notes_consumer, clock=clock, sleep=rt.sleep,
+                       owner_clients=cfg.owner_clients, notes_consumer=notes_consumer, notes_consumer_label=consumer_label, clock=clock, sleep=rt.sleep,
                        log=lambda text: log(agent.client.scrub(text)))
 
     def open_tools(identity: str) -> T.Tools:
