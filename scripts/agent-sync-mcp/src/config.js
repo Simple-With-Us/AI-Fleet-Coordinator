@@ -194,9 +194,14 @@ export function loadConfig(env) {
 
   // The seat whose bot is the Notes relay consumer (the Mac listener's [notes_relay] seat).  notes_status counts a
   // check mark, a cross mark or a refusal reply only from this bot:  #notes-relay is public and any fleet bot can
-  // react.  A non-secret var, default CLAUDE.
-  const notesRelayConsumer = String(env.NOTES_RELAY_CONSUMER ?? "").trim().toUpperCase() || "CLAUDE";
-  if (!/^[A-Z0-9][A-Z0-9-]{0,31}$/.test(notesRelayConsumer)) throw new Error("config: NOTES_RELAY_CONSUMER must be a seat name such as CLAUDE");
+  // react.  Not committed to wrangler.jsonc:  it is the fleet knob NOTES_RELAY_CONSUMER (Infisical, INFISICAL.md), copied
+  // to a Worker binding at deploy by sync_notes_consumer.py.  Unset means null:  notes_status then answers
+  // not_configured instead of guessing a consumer.
+  const consumerRaw = String(env.NOTES_RELAY_CONSUMER ?? "").trim().toUpperCase();
+  const notesRelayConsumer = consumerRaw || null;
+  if (notesRelayConsumer !== null && !/^[A-Z0-9][A-Z0-9-]{0,31}$/.test(notesRelayConsumer)) {
+    throw new Error("config: NOTES_RELAY_CONSUMER must be a seat name such as CLAUDE");
+  }
 
   // MCP Events callback hosts (src/events.js).  Unset means the compiled
   // default;  a malformed entry fails closed like every other var.

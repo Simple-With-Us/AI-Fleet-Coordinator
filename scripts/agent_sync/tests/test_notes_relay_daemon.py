@@ -249,6 +249,26 @@ class DaemonRelayTests(DaemonHarness):
         self.assertIsNone(daemon.notes_relay, "once the worker is out the relay is off")
         self.assertFalse(consumer.thread.is_alive())
 
+    def test_a_local_seat_that_differs_from_the_fleet_knob_does_not_consume(self):
+        self.notes_knob = "CODEX"  # Infisical names another consumer than this listener's [notes_relay] seat (CLAUDE)
+        self.enable()
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        self.assertIsNone(daemon.notes_relay)
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("notes-relay-seat-mismatch", log)
+        self.assertIn("test knob", log)
+
+    def test_a_reload_after_the_knob_moves_stops_consuming(self):
+        daemon = self.started_with_relay()
+        consumer = daemon.notes_relay
+        self.assertIsNotNone(consumer)
+        self.notes_knob = "CODEX"
+        daemon.reload()
+        self.assertIsNone(daemon.notes_relay)
+        self.assertFalse(consumer.thread is not None and consumer.thread.is_alive())
+        self.assertIn("notes-relay-seat-mismatch", (self.state_dir / "logs" / "listener.log").read_text())
+
     def test_another_seat_or_a_disabled_relay_does_not_backfill_the_channel(self):
         daemon = self.two_seats()
         other = daemon.seats["CODEX"]

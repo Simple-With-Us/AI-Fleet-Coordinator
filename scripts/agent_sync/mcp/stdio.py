@@ -61,6 +61,7 @@ from .. import identity as I
 from .. import zulip as Z
 from ..state import state_root
 from .. import identities as X
+from .. import notes as NOTES
 from . import identity_router as R
 from . import tools as T
 
@@ -529,6 +530,8 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
     # --rc or ZULIP_RC.
     cred_env = rt.env
     cfg = C.load(str(state_root(env, home)))
+    notes_consumer, consumer_label, _ = NOTES.relay_consumer(cfg.notes_relay_seat)
+    log("notes relay consumer %s (source: %s)" % (notes_consumer, consumer_label))
     env_seats = {seat_cfg.seat: X.CredentialSource(email_env=seat_cfg.email_env, key_env=seat_cfg.key_env,
                                                   site_env=seat_cfg.site_env)
                  for seat_cfg in list(cfg.seats.values()) + list(cfg.disabled.values())
@@ -555,7 +558,7 @@ def run(rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float]
     def make_tools(identity: str, agent: CLI.Agent, me: Mapping[str, Any]) -> T.Tools:
         return T.Tools(agent, me=me, process_tag=agent.tag, session_source=source,
                        codex_thread_meta=codex_thread_meta and identity == "CODEX", owner_user_id=cfg.owner_user_id,
-                       owner_clients=cfg.owner_clients, notes_consumer=cfg.notes_relay_seat, clock=clock, sleep=rt.sleep,
+                       owner_clients=cfg.owner_clients, notes_consumer=notes_consumer, clock=clock, sleep=rt.sleep,
                        log=lambda text: log(agent.client.scrub(text)))
 
     def open_tools(identity: str) -> T.Tools:

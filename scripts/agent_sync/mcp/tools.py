@@ -1534,9 +1534,47 @@ class Tools:
         return self._recall(lambda: RECALL.stats(env=self.agent.rt.env))
 
     def _tool_recall_contribute(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """The hosted rules:  validate and scan first, then claim the idempotency key.  An explicit
+        `idempotency_key` names the contribution for 24 hours (a retry, even with altered text, returns the first
+        result with duplicate true and never contributes again);  without one the same seat, fields and text are
+        one contribution for 10 minutes.  A failed contribution drops its row, so it can be retried (the recall
+        service upserts by content hash, so a repeat is safe)."""
         def scan(field: str, value: str) -> None:
             self._scan(**{field: value})
-        return self._recall(lambda: RECALL.contribute(args, self.seat, env=self.agent.rt.env, scan=scan))
+
+        try:
+            text, title, url = RECALL.contribute_fields(args, scan)
+        except RECALL.RecallUnavailable as exc:
+            raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
+        explicit = args.get("idempotency_key")
+        if explicit:
+            key, ttl = "k:recall:%s" % explicit, IDEM_EXPLICIT_TTL
+        else:
+            key, ttl = "i:recall:" + _sha(json.dumps([self.seat, args["category"], args.get("app") or "fleet", title, url, text],
+                                                     ensure_ascii=False)), IDEM_IMPLICIT_TTL
+        prior = self._idem_peek(key)
+        if prior is not None:
+            return self._contribute_result(prior.get("result") or {}, duplicate=True)
+        verdict, row = self._idem_begin(key, ttl, {"tool": "recall_contribute"})
+        if verdict == "duplicate" and row is not None:
+            return self._contribute_result(row.get("result") or {}, duplicate=True)
+        # "send" or "reconcile":  either way it is safe to send, because recall upserts by the text's hash.
+        try:
+            _, structured = RECALL.contribute(args, self.seat, env=self.agent.rt.env, scan=scan)
+        except RECALL.RecallUnavailable as exc:
+            self._idem_drop(key)
+            raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
+        except BaseException:
+            self._idem_drop(key)
+            raise
+        self._idem_set(key, state="sent", id=0, result=structured)
+        return self._contribute_result(structured, duplicate=bool(structured.get("duplicate")))
+
+    def _contribute_result(self, result: Mapping[str, Any], *, duplicate: bool) -> dict[str, Any]:
+        shown = {"id": str(result.get("id") or ""), "doc_id": str(result.get("doc_id") or ""), "seat": self.seat,
+                 "status": str(result.get("status") or ""), "scrubbed": list(result.get("scrubbed") or []),
+                 "duplicate": duplicate}
+        return self.ok(json.dumps(shown), shown)
 
     # ---- Linear (AFC-331 section 4):  through board, as this identity ------------------------
     def _tool_linear(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:

@@ -196,8 +196,9 @@ def stats(*, env: Mapping[str, str], runner: Runner = subprocess.run) -> tuple[s
     return json.dumps(info, ensure_ascii=False), info
 
 
-def contribute(args: Mapping[str, Any], identity: str, *, env: Mapping[str, str],
-               runner: Runner = subprocess.run, scan: Callable[[str, str], None] | None = None) -> tuple[str, dict[str, Any]]:
+def contribute_fields(args: Mapping[str, Any], scan: Callable[[str, str], None] | None = None) -> tuple[str, str, str]:
+    """(text, title, url) of a contribution, validated:  long enough, and passing the secret scan.  Runs before any
+    idempotency row is claimed, as on the hosted server."""
     text = str(args["text"]).strip()
     if len(text) < CONTRIBUTE_MIN:
         raise RecallUnavailable("invalid_argument", "argument 'text' is %d characters once trimmed; recall needs at least %d"
@@ -208,6 +209,12 @@ def contribute(args: Mapping[str, Any], identity: str, *, env: Mapping[str, str]
         for field, value in (("text", text), ("title", title), ("url", url)):
             if value:
                 scan(field, value)
+    return text, title, url
+
+
+def contribute(args: Mapping[str, Any], identity: str, *, env: Mapping[str, str],
+               runner: Runner = subprocess.run, scan: Callable[[str, str], None] | None = None) -> tuple[str, dict[str, Any]]:
+    text, title, url = contribute_fields(args, scan)
     argv = ["contribute", "-", "--category", str(args["category"]), "--app", str(args.get("app") or "fleet"),
             "--seat", identity, "--json"]
     if title:

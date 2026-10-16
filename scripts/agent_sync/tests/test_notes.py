@@ -101,6 +101,46 @@ class AgentNameTests(unittest.TestCase):
         self.assertIsNone(N.title_problem("[AFC, CLAUDE] t", "CLAUDE", registry_path="/nonexistent/fleet-apps.json"))
 
 
+class ConsumerKnobTests(unittest.TestCase):
+    """NOTES_RELAY_CONSUMER (Infisical, through fleet_knobs) names the consumer;  the default is CLAUDE."""
+
+    def setUp(self):
+        patcher = mock.patch.object(N, "KNOB_RESOLVER", None)  # the real resolver, over a fake knob answer
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def answer(self, source, value="CODEX", reason=None, ignored=False):
+        from fleet_knobs import knobs
+        knob = knobs.Knob("NOTES_RELAY_CONSUMER", value, source, stale=source != "infisical", reason=reason, local_ignored=ignored)
+        return mock.patch("fleet_knobs.knobs.resolve", return_value=knob)
+
+    def test_each_source_is_labelled(self):
+        with self.answer("infisical"):
+            self.assertEqual(N.relay_consumer("CODEX"), ("CODEX", "infisical", False))
+        with self.answer("lkg", reason="unreachable:timeout"):
+            self.assertEqual(N.relay_consumer(None), ("CODEX", "last-known-good copy (stale)", False))
+        with self.answer("default", "CLAUDE", reason="unreachable:cli-missing,lkg-absent"):
+            seat, label, _ = N.relay_consumer(None)
+            self.assertEqual(seat, "CLAUDE")
+            self.assertEqual(label, "default CLAUDE (unreachable:cli-missing,lkg-absent)")
+        with self.answer("infisical", ignored=True):
+            self.assertTrue(N.relay_consumer("CLAUDE")[2], "a differing local seat is reported as ignored")
+
+    def test_an_unavailable_knob_layer_is_the_labelled_default_and_never_an_error(self):
+        with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("boom")):
+            self.assertEqual(N.relay_consumer("CODEX"), ("CLAUDE", "default CLAUDE (fleet_knobs unavailable)", False))
+        with mock.patch.dict("sys.modules", {"fleet_knobs": None, "fleet_knobs.knobs": None}):
+            self.assertEqual(N.relay_consumer(None)[0], "CLAUDE")
+
+    def test_the_real_knob_ignores_a_local_seat_that_differs(self):
+        from fleet_knobs import knobs, registry
+        spec = registry.BY_NAME["NOTES_RELAY_CONSUMER"]
+        self.assertEqual((spec.kind, spec.default, spec.secret), ("str", "CLAUDE", False))
+        from fleet_knobs import values
+        value, narrowed, ignored = values.narrow(spec, "CODEX", "CLAUDE")
+        self.assertEqual((value, narrowed, ignored), ("CODEX", False, True))
+
+
 class EnvelopeTests(unittest.TestCase):
     def test_golden_envelopes_render_and_parse_exactly(self):
         for case in FIXTURES:

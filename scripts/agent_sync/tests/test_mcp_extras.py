@@ -297,12 +297,13 @@ class NotesToolTests(McpHarness):
         self.assertNotIn("forged", refused["reason"])
         self.assert_tool_error(session.call("notes_status", {"request_id": "unknown-request-1"}), "not_found")
 
-    def test_the_consumer_seat_comes_from_the_listener_config(self):
+    def test_the_consumer_seat_comes_from_the_fleet_knob_and_a_differing_local_seat_is_ignored(self):
         (self.state_dir).mkdir(parents=True, exist_ok=True)
-        (self.state_dir / "listener.toml").write_text('[notes_relay]\nenabled = true\nseat = "CODEX"\n')
+        (self.state_dir / "listener.toml").write_text('[notes_relay]\nenabled = true\nseat = "CLAUDE"\n')
+        self.notes_knob = "CODEX"  # Infisical says CODEX;  the local file says CLAUDE and cannot override it
         session = self.session()
         mid, status = self.sent_request(session, "status-request-2")
-        self.fake.reactions.add((mid, 10, "check"))  # CLAUDE is no longer the consumer
+        self.fake.reactions.add((mid, 10, "check"))  # CLAUDE is not the consumer, whatever listener.toml says
         self.assertEqual(status()["status"], "queued")
         self.fake.reactions.add((mid, 11, "check"))  # CODEX is
         self.assertEqual(status()["status"], "done")
@@ -345,6 +346,51 @@ class RecallToolTests(FakePrograms):
         self.assertNotIn(text, " ".join(call["argv"]))
         self.assertEqual(call["argv"][call["argv"].index("--seat") + 1], "CURSOR")
         self.assertEqual(call["argv"][:2], ["contribute", "-"])
+
+    LESSON = "Always restart pm2 with --update-env after changing the ecosystem file, or the old env stays cached."
+
+    def test_an_idempotency_key_contributes_once_even_when_the_retry_alters_the_text(self):
+        reply = json.dumps({"id": "abc", "doc_id": "lesson:1", "status": "stored", "scrubbed": ["token"]})
+        session = self.session(self.env(RECALL_TEST_REPLY=reply))
+        args = {"text": self.LESSON, "category": "lesson", "idempotency_key": "contribute-key-0001"}
+        first = self.assert_structured("recall_contribute", session.call("recall_contribute", args))
+        retry = self.assert_structured("recall_contribute", session.call(
+            "recall_contribute", dict(args, text=self.LESSON + "  A retry that edited the text a little.")))
+        self.assertEqual((first["duplicate"], retry["duplicate"]), (False, True))
+        self.assertEqual((retry["doc_id"], retry["id"], retry["status"], retry["scrubbed"]),
+                         (first["doc_id"], first["id"], first["status"], first["scrubbed"]))
+        self.assertEqual(len(self.calls(self.recall_out)), 1, "recall was called once")
+        other = self.assert_structured("recall_contribute", session.call("recall_contribute", dict(args, idempotency_key="contribute-key-0002")))
+        self.assertFalse(other["duplicate"])
+        self.assertEqual(len(self.calls(self.recall_out)), 2)
+
+    def test_without_a_key_the_same_contribution_is_one_for_ten_minutes_and_a_changed_one_is_new(self):
+        reply = json.dumps({"id": "abc", "doc_id": "lesson:1", "status": "stored", "scrubbed": []})
+        session = self.session(self.env(RECALL_TEST_REPLY=reply))
+        args = {"text": self.LESSON, "category": "lesson"}
+        self.assertFalse(self.assert_structured("recall_contribute", session.call("recall_contribute", args))["duplicate"])
+        self.assertTrue(self.assert_structured("recall_contribute", session.call("recall_contribute", args))["duplicate"])
+        changed = dict(args, text=self.LESSON + "  A second sentence makes it a different lesson.")
+        self.assertFalse(self.assert_structured("recall_contribute", session.call("recall_contribute", changed))["duplicate"])
+        self.assertEqual(len(self.calls(self.recall_out)), 2)
+
+    def test_a_failed_contribution_drops_its_key_so_the_retry_goes_through(self):
+        args = {"text": self.LESSON, "category": "lesson", "idempotency_key": "contribute-key-0003"}
+        failing = self.session(self.env(RECALL_TEST_EXIT="2", RECALL_TEST_ERR="credential error\n", RECALL_TEST_REPLY=""))
+        self.assertTrue(failing.call("recall_contribute", args).get("isError"))
+        reply = json.dumps({"id": "abc", "doc_id": "lesson:1", "status": "stored", "scrubbed": []})
+        good = self.session(self.env(RECALL_TEST_REPLY=reply))
+        data = self.assert_structured("recall_contribute", good.call("recall_contribute", args))
+        self.assertFalse(data["duplicate"], "the failed attempt left no row to answer from")
+
+    def test_a_bad_retry_is_refused_before_the_key_is_looked_at(self):
+        reply = json.dumps({"id": "abc", "doc_id": "lesson:1", "status": "stored", "scrubbed": []})
+        session = self.session(self.env(RECALL_TEST_REPLY=reply))
+        args = {"text": self.LESSON, "category": "lesson", "idempotency_key": "contribute-key-0004"}
+        session.call("recall_contribute", args)
+        self.assert_tool_error(session.call("recall_contribute", dict(args, text="too short")), "invalid_argument")
+        leak = "token " + "ghp_" + "EXAMPLE0" * 5 + " in a log excerpt that is long enough to pass the minimum size"
+        self.assert_tool_error(session.call("recall_contribute", dict(args, text=leak)), "refused_secret")
 
     def test_contribute_refuses_a_secret_short_text_and_reports_a_near_duplicate(self):
         session = self.session(self.env())

@@ -690,8 +690,13 @@ class Daemon:
         cfg = self.config
         home = Path(os.path.abspath(self.home))
         available = NOTES.direct_available(self.env, home) is not None
+        consumer, label, differs = (NOTES.relay_consumer(cfg.notes_relay_seat, refresh=True)
+                                    if cfg.notes_relay_enabled and available else (cfg.notes_relay_seat, "", False))
+        # The fleet knob (Infisical) names the one consumer seat;  a local config can only agree with it.  A listener
+        # whose seat differs does not consume, so two Macs cannot both act as the consumer.
+        agrees = not differs and consumer == cfg.notes_relay_seat
         if old is not None:
-            if cfg.notes_relay_enabled and cfg.notes_relay_seat == old.seat and available:
+            if cfg.notes_relay_enabled and cfg.notes_relay_seat == old.seat and available and agrees:
                 return  # nothing the consumer uses changed:  keep it (and its worker) as the one owner of the spool
             # The spool has one owner.  Wait (bounded) for the old worker to leave any request it is inside before
             # a replacement may start;  if it does not leave in time it stays the owner and nothing new starts.
@@ -705,10 +710,14 @@ class Daemon:
         if not available:
             self.log.write("notes-relay-unavailable", reason="no osascript or no apple-notes-coding.sh on this host")
             return
+        if not agrees:
+            self.log.write("notes-relay-seat-mismatch", local_seat=cfg.notes_relay_seat, knob_seat=consumer, source=label,
+                           warning="[notes_relay] seat is not NOTES_RELAY_CONSUMER;  this listener does not consume")
+            return
         self.notes_relay = NR.Consumer(
             seat=cfg.notes_relay_seat, state_dir=self.root, script=lambda: NOTES.direct_available(self.env, home),
             env=self.env, owner_user_id=lambda: self.config.owner_user_id, log=self.log.write, clock=self.clock.time)
-        self.log.write("notes-relay-started", seat=cfg.notes_relay_seat, channel=NOTES.RELAY_CHANNEL)
+        self.log.write("notes-relay-started", seat=cfg.notes_relay_seat, channel=NOTES.RELAY_CHANNEL, consumer_source=label)
         reader = self.seats.get(cfg.notes_relay_seat)
         if reader is not None and reader.connected:
             self.notes_relay.resume(reader)

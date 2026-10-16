@@ -43,7 +43,7 @@ function harness({ consumer } = {}) {
     clientId: "client",
     grantRef: "abcdef012345",
     paused: false,
-    config: consumer ? loadConfig(testEnv({ NOTES_RELAY_CONSUMER: consumer })) : config,
+    config: consumer !== undefined ? loadConfig(testEnv({ NOTES_RELAY_CONSUMER: consumer })) : config,
     zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
     key: fake.key,
     gate: memoryGate(clock),
@@ -231,10 +231,11 @@ test("notes_status reports refused with the consumer's reason, ignoring a peer's
 });
 
 test("NOTES_RELAY_CONSUMER names the trusted seat;  it is validated and defaults to CLAUDE", async () => {
-  assert.equal(loadConfig(testEnv()).notesRelayConsumer, "CLAUDE");
+  assert.equal(loadConfig(testEnv()).notesRelayConsumer, "CLAUDE"); // the tests' own binding (helpers.mjs)
   assert.equal(loadConfig(testEnv({ NOTES_RELAY_CONSUMER: "codex" })).notesRelayConsumer, "CODEX");
   assert.throws(() => loadConfig(testEnv({ NOTES_RELAY_CONSUMER: "not a seat!" })), /NOTES_RELAY_CONSUMER/);
-  assert.equal(wranglerConfig().vars.NOTES_RELAY_CONSUMER, "CLAUDE", "wrangler.jsonc carries the var (non-secret)");
+  assert.equal(wranglerConfig().vars.NOTES_RELAY_CONSUMER, undefined, "the value is a fleet knob, never committed in wrangler.jsonc");
+  assert.equal(loadConfig(testEnv({ NOTES_RELAY_CONSUMER: "" })).notesRelayConsumer, null, "unset is null, not a guessed seat");
   const { fake, tools } = harness({ consumer: "CODEX" });
   const claude = fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true });
   const sent = ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "consumer-request1" }), "notes_create");
@@ -277,4 +278,13 @@ test("notes_status skips malformed reactions and messages instead of reading the
   assert.equal(ok(await tools.call("notes_status", { request_id: "junk-request-001" }), "notes_status").status, "queued");
   message.reactions = [...message.reactions, { user_id: codex.user_id, emoji_name: "check", emoji_code: "2705", reaction_type: "unicode_emoji" }];
   assert.equal(ok(await tools.call("notes_status", { request_id: "junk-request-001" }), "notes_status").status, "done");
+});
+
+test("notes_status answers not_configured, and trusts nobody, when the consumer binding is not set", async () => {
+  const { fake, tools } = harness({ consumer: "" });
+  const claude = fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true });
+  const sent = ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "unset-request-01" }), "notes_create");
+  react(fake.messages.find((m) => m.id === sent.message_id), claude, CHECK);
+  const error = toolError(await tools.call("notes_status", { request_id: "unset-request-01" }), "not_configured");
+  assert.match(error.message, /NOTES_RELAY_CONSUMER/);
 });

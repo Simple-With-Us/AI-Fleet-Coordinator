@@ -210,6 +210,43 @@ def topic_for(title: str) -> str:
 
 
 # --------------------------------------------------------------------------------------------
+# The relay consumer's seat (a fleet knob)
+# --------------------------------------------------------------------------------------------
+
+CONSUMER_KNOB = "NOTES_RELAY_CONSUMER"
+DEFAULT_CONSUMER = "CLAUDE"
+# Tests replace this with a callable (local_seat, refresh) -> (seat, label, local_ignored);  None means the real knob.
+KNOB_RESOLVER: Callable[[str | None, bool], tuple[str, str, bool]] | None = None
+
+
+def _knob_resolver(local: str | None, refresh: bool) -> tuple[str, str, bool]:
+    from fleet_knobs import knobs  # scripts/fleet_knobs:  absent on a host that does not ship it
+
+    if refresh:
+        knobs.refresh()
+    knob = knobs.resolve(CONSUMER_KNOB, DEFAULT_CONSUMER, "str", local=local)
+    if knob.source == "infisical":
+        label = "infisical"
+    elif knob.source == "lkg":
+        label = "last-known-good copy (stale)"
+    else:
+        label = "default %s (%s)" % (DEFAULT_CONSUMER, knob.reason or "unset")
+    return str(knob.value), label, bool(knob.local_ignored)
+
+
+def relay_consumer(local_seat: str | None = None, *, refresh: bool = False) -> tuple[str, str, bool]:
+    """(seat, label, local_ignored):  the seat whose bot is the Notes relay consumer, from the NOTES_RELAY_CONSUMER
+    fleet knob (Infisical, through scripts/fleet_knobs).  `local_seat` is the listener.toml `[notes_relay] seat`:
+    a str knob cannot be narrowed, so a local seat that differs is ignored (`local_ignored`) and Infisical's wins.
+    When Infisical is unreachable with no last-known-good copy, or fleet_knobs is not on this host, the answer is
+    the default, CLAUDE, and the label says so (`default CLAUDE (unreachable:...)`)."""
+    try:
+        return (KNOB_RESOLVER or _knob_resolver)(local_seat, refresh)
+    except Exception:  # noqa: BLE001 - a read of a non-secret knob must never stop a tool
+        return DEFAULT_CONSUMER, "default %s (fleet_knobs unavailable)" % DEFAULT_CONSUMER, False
+
+
+# --------------------------------------------------------------------------------------------
 # The Agent in a title
 # --------------------------------------------------------------------------------------------
 

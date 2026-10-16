@@ -190,7 +190,7 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
     agent = CLI.Agent(rt, args)
     CLI._check_agent_identity(rt, agent)
     tools = T.Tools(agent, me=agent.me(), process_tag=agent.tag, session_source="flag",
-                    notes_consumer=C.load(str(state_root(rt.env, home))).notes_relay_seat,
+                    notes_consumer=N.relay_consumer(C.load(str(state_root(rt.env, home))).notes_relay_seat)[0],
                     sleep=rt.sleep, log=lambda text: None)
     saved = (rt.stdout, rt.stderr, rt.stdin)  # the tool layer swaps the runtime's streams for its own buffers
     try:

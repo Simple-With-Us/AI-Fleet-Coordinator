@@ -251,12 +251,15 @@ export const NOTES_METHODS = {
   async notesFleetBot(userId, members) {
     const user = members.find((m) => m.user_id === userId);
     if (!user || user.is_bot !== true) return false;
-    return seatTagFor(user) === (this.config.notesRelayConsumer ?? "CLAUDE");
+    return seatTagFor(user) === this.config.notesRelayConsumer;
   },
 
   async tool_notes_status(rawArgs, audit) {
     const args = parseArgs(NotesStatusArgs, rawArgs);
     const requestId = checkRequestId(args.request_id);
+    if (!this.config.notesRelayConsumer) {
+      throw new ToolError("not_configured", "NOTES_RELAY_CONSUMER is not set on this server, so no bot's reaction can be trusted.  The owner runs scripts/agent-sync-mcp/sync_notes_consumer.py (DEPLOY.md, \"Notes, recall and the guide\").");
+    }
     audit.request_id = requestId;
     await this.ensureSeat();
     await this.reserve("read");
