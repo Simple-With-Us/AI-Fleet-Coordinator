@@ -179,6 +179,9 @@ class Ring:
         while len(self.items) > self.limit:
             self.items.popitem(last=False)
 
+    def discard(self, item: int) -> None:
+        self.items.pop(item, None)
+
 
 class SeatRunner:
     def __init__(self, daemon: "Daemon", cfg: C.SeatConfig) -> None:
@@ -1121,6 +1124,9 @@ class Daemon:
             # The acting seat advances its cursor only once the request is on disk (Consumer.offer), so a
             # request that could not be kept is retried from the backfill and never silently lost.
             if relay.wants(runner, message) and not relay.offer(runner, message):
+                # Not on disk:  take the id back out of the ring too, or a backfill of the same message would
+                # take the duplicate path, advance past it and lose the request.
+                runner.ring.discard(message_id)
                 self.log.write("notes-relay-held", seat=runner.seat, id=message_id,
                                warning="could not spool the request;  the cursor is held for this message")
                 return

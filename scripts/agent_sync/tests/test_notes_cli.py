@@ -74,6 +74,12 @@ class NotesCliTests(Harness):
         with a, b:
             self.assertEqual(self.run_cli("notes", "create", "no bracket", stdin="x").code, 2)
             self.assertEqual(self.run_cli("notes", "create", '[AFC, Claude] "q"', stdin="x").code, 2)
+            wrong = self.run_cli("notes", "create", "[AFC, Codex] not mine", stdin="x")
+            self.assertEqual(wrong.code, 2)
+            self.assertIn("Agent in the title", wrong.err)
+            leak = self.run_cli("notes", "create", TITLE, stdin="token " + "ghp_" + "EXAMPLE0" * 5)
+            self.assertEqual(leak.code, 2)
+            self.assertIn("looks like it contains", leak.err)
         a, b = self.direct(FakeRun(code=3))
         with a, b:
             result = self.run_cli("notes", "pin", TITLE)

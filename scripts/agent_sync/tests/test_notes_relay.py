@@ -256,6 +256,115 @@ class AttachmentTests(RelayHarness):
             NR.Consumer._download(self.consumer, self.runner, "/user_uploads/2/ab/9/note.md")
 
 
+class PublishFailureTests(RelayHarness):
+    """The note is written once;  a failure to publish the result is retried without running it again."""
+
+    def failing_reactions(self):
+        original = self.client.post
+        state = {"down": True}
+
+        def post(path, params=None):
+            if state["down"] and path.endswith("/reactions"):
+                raise Z.NetworkError("zulip is unreachable")
+            return original(path, params)
+        self.client.post = post
+        return state
+
+    def test_a_failed_check_mark_keeps_the_spool_and_the_retry_only_posts_the_check_mark(self):
+        self.consumer.start = lambda: None
+        message = self.request(rid="publish-request-1")
+        self.consumer.offer(self.runner, message)
+        state = self.failing_reactions()
+        self.assertEqual(self.consumer.drain(), 0)
+        self.assertEqual(len(self.calls), 1, "the note was written")
+        self.assertEqual(self.consumer.spool.ids(), [message["id"]], "the request stays pending")
+        self.assertEqual(self.client.reactions, [])
+        row = json.loads(Path(self.consumer.processed.path).read_text())["rows"]["CURSOR:publish-request-1"]
+        self.assertEqual(row["outcome"], "done_pending")
+        state["down"] = False
+        self.assertEqual(self.consumer.drain(), 1)
+        self.assertEqual(len(self.calls), 1, "the retry did not write the note again")
+        self.assertIn((message["id"], "check"), self.client.reactions)
+        self.assertEqual(self.consumer.spool.ids(), [])
+        row = json.loads(Path(self.consumer.processed.path).read_text())["rows"]["CURSOR:publish-request-1"]
+        self.assertEqual(row["outcome"], "done")
+
+    def test_a_failed_refusal_is_retried_with_its_recorded_reason(self):
+        self.consumer.start = lambda: None
+        self.consumer.runner = fake_run_factory(self.calls, code=3)
+        message = self.request(rid="publish-request-2", action="pin", markdown="")
+        self.consumer.offer(self.runner, message)
+        state = self.failing_reactions()
+        self.assertEqual(self.consumer.drain(), 0)
+        self.assertEqual(self.consumer.spool.ids(), [message["id"]])
+        state["down"] = False
+        self.assertEqual(self.consumer.drain(), 1)
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn("no note with that title", self.client.replies[-1])
+        self.assertIn((message["id"], "cross_mark"), self.client.reactions)
+
+    def test_a_download_that_fails_on_the_network_retries_from_a_clean_start(self):
+        data = b"attached body"
+        ref = N.with_upload(N.make_envelope("create", "[AFC, Cursor] big", "", {}, "download-retry-1", "CURSOR"),
+                            url="/user_uploads/2/ab/9/note.md", data=data)
+        message = self.message(SENDERS["CURSOR"], N.render_message(ref))
+        outcomes = [Z.NetworkError("down"), data]
+
+        def download(runner, path):
+            result = outcomes.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        self.consumer._download = download
+        with self.assertRaises(Z.NetworkError):
+            self.process(message)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.process(message), "done", "the second attempt ran, not 'interrupted'")
+        self.assertEqual(len(self.calls), 1)
+
+    def test_the_worker_retries_a_pending_request_on_its_own_timer(self):
+        self.consumer.retry_seconds = 0.05
+        message = self.request(rid="timer-request-001")
+        state = self.failing_reactions()
+        self.assertTrue(self.consumer.offer(self.runner, message))
+        for _ in range(100):  # the first attempt fails
+            if self.consumer.spool.ids() == [message["id"]] and self.calls:
+                break
+            threading.Event().wait(0.02)
+        state["down"] = False
+        for _ in range(200):
+            if (message["id"], "check") in self.client.reactions:
+                break
+            threading.Event().wait(0.02)
+        self.consumer.stop()
+        self.assertIn((message["id"], "check"), self.client.reactions)
+        self.assertEqual(len(self.calls), 1)
+
+
+class SelfSentTests(RelayHarness):
+    """A session of the reading seat that runs elsewhere (the server) relays as that same bot."""
+
+    def own_request(self, rid="self-request-0001", title=TITLE):
+        env = N.make_envelope("create", title, "from the server", {}, rid, "CLAUDE")
+        return self.message(READER_ID, "[CLAUDE\u00b7ab12cd34] " + N.render_message(env))
+
+    def test_the_reader_takes_its_own_envelopes_and_runs_them(self):
+        message = self.own_request()
+        self.assertTrue(self.consumer.wants(self.runner, message))
+        self.assertEqual(self.process(message), "done")
+        self.assertEqual(self.calls[0]["input"], b"from the server")
+        self.assertIn((message["id"], "check"), self.client.reactions)
+
+    def test_its_own_refusals_acks_and_chatter_are_never_taken(self):
+        for text in ("notes-relay refused abc-request-01: because", "  notes-relay refused (message 5): x", "hello",
+                     "```json\n{not json}\n```"):
+            self.assertFalse(self.consumer.wants(self.runner, self.message(READER_ID, text)), text)
+
+    def test_its_own_envelope_still_obeys_the_title_rule(self):
+        self.assertEqual(self.process(self.own_request("self-request-0002", "[AFC, Codex] wrong agent")), "refused")
+        self.assertEqual(self.calls, [])
+
+
 class WorkerTests(RelayHarness):
     def test_wants_only_the_relay_channel_of_the_reading_seat_but_every_runner_sees_it_in_the_channel(self):
         message = self.request(rid="thread-request-01")
@@ -372,7 +481,8 @@ class RefusalReplayTests(RelayHarness):
                 raise Z.NetworkError("died before the reply")
             return original_post(path, params)
         self.client.post = crashing
-        self.process(message)
+        with self.assertRaises(Z.NetworkError):  # not swallowed:  in the listener the request stays spooled
+            self.process(message)
         self.assertEqual(self.client.replies, [])
         self.client.post = original_post
         self.process(message)
@@ -384,6 +494,8 @@ class RefusalReplayTests(RelayHarness):
         self.process(first)
         self.process(second)
         self.assertEqual(len(self.client.replies), 2, "two different bad messages in one topic each get their reply")
+        self.assertIn("(message %d)" % first["id"], self.client.replies[0])
+        self.assertIn("(message %d)" % second["id"], self.client.replies[1])
         self.process(first)
         self.assertEqual(len(self.client.replies), 2)
 

@@ -54,6 +54,7 @@ from . import zulip as Z
 PROCESSED_LIMIT = 2000
 SPOOL_LIMIT = 1000  # pending requests kept on disk;  past it `offer` says no and the daemon holds the cursor
 SPOOL_DIR = "notes-relay-spool"
+RETRY_SECONDS = 60.0
 REASON_LIMIT = 300
 STATE_FILE = "notes-relay.json"
 DEFAULT_SEAT = "CLAUDE"
@@ -126,7 +127,7 @@ class Processed:
 
     def begin(self, identity: str, request_id: str, message_id: int) -> str | None:
         """None when this request is new (now marked `started`), else the earlier outcome
-        (started, done or refused)."""
+        (started, done_pending, done, refused_pending or refused)."""
         with self.lock:
             rows = dict(self._read().get("rows") or {})
             key = self.key(identity, request_id)
@@ -139,12 +140,31 @@ class Processed:
             self._write(rows)
             return None
 
-    def finish(self, identity: str, request_id: str, outcome: str) -> None:
+    def finish(self, identity: str, request_id: str, outcome: str, reason: str | None = None) -> None:
+        """Record where a request stands.  The outcomes are started, done_pending (the note was written, the
+        check mark is not posted yet), done, refused_pending (the reason is recorded, the cross mark and reply are
+        not posted yet) and refused.  A `_pending` row is how a retry knows to publish and never to run again."""
         with self.lock:
             rows = dict(self._read().get("rows") or {})
             key = self.key(identity, request_id)
             if key in rows:
                 rows[key]["outcome"] = outcome
+                if reason is not None:
+                    rows[key]["reason"] = reason[:REASON_LIMIT]
+                self._write(rows)
+
+    def reason(self, identity: str, request_id: str) -> str | None:
+        with self.lock:
+            row = (self._read().get("rows") or {}).get(self.key(identity, request_id))
+        return row.get("reason") if isinstance(row, dict) and isinstance(row.get("reason"), str) else None
+
+    def forget(self, identity: str, request_id: str) -> None:
+        """Drop a `started` row, for a failure before anything ran (so a retry starts clean)."""
+        with self.lock:
+            rows = dict(self._read().get("rows") or {})
+            key = self.key(identity, request_id)
+            if rows.get(key, {}).get("outcome") == "started":
+                rows.pop(key)
                 self._write(rows)
 
 
@@ -228,6 +248,7 @@ class Consumer:
         self.thread: threading.Thread | None = None
         self.stopped = threading.Event()
         self.dropped = 0
+        self.retry_seconds = RETRY_SECONDS  # a request whose answer failed is tried again this often
 
     # ---- the seat thread's side ---------------------------------------------------------------
     def in_channel(self, message: Mapping[str, Any]) -> bool:
@@ -236,9 +257,21 @@ class Consumer:
         return message.get("type") == "stream" and Z.message_channel(message).casefold() == self.channel
 
     def wants(self, runner: Any, message: Mapping[str, Any]) -> bool:
-        """Should this seat's reader take the message?  Only the configured seat, and never its own posts."""
-        return (runner.seat == self.seat and self.in_channel(message)
-                and message.get("sender_id") != getattr(runner.me, "user_id", None))
+        """Should this seat's reader take the message?  Only the configured seat.  The reader's own posts are
+        taken when they hold a valid envelope (a session of the reading seat that runs elsewhere, such as the
+        server, relays as that same bot) and skipped otherwise, so its own refusal replies are never re-read."""
+        if runner.seat != self.seat or not self.in_channel(message):
+            return False
+        if message.get("sender_id") != getattr(runner.me, "user_id", None):
+            return True
+        content = message.get("content")
+        if not isinstance(content, str) or content.lstrip().startswith(N.REFUSAL_PREFIX):
+            return False
+        try:
+            N.parse_message(content)
+        except N.EnvelopeError:
+            return False
+        return True
 
     def offer(self, runner: Any, message: Mapping[str, Any]) -> bool:
         """Accept a message durably, then wake the worker.  True means the request is on disk and will be
@@ -285,8 +318,12 @@ class Consumer:
     # ---- the worker ---------------------------------------------------------------------------
     def _work(self) -> None:
         while not self.stopped.is_set():
-            if self.jobs.get() is None:
-                return
+            try:
+                if self.jobs.get(timeout=self.retry_seconds) is None:
+                    return
+            except queue.Empty:
+                if not self.spool.ids():
+                    continue  # nothing pending:  keep waiting
             try:
                 self.drain()
             except Exception as exc:  # noqa: BLE001 - one bad request must not end the worker
@@ -329,38 +366,58 @@ class Consumer:
         earlier = self.processed.begin(identity, request_id, message_id)
         if earlier is not None:
             self.log("notes-relay-duplicate", id=message_id, earlier=earlier)
-            if earlier == "done":
+            if earlier in ("done", "done_pending"):
+                # The note was written (maybe by an earlier attempt of this very message):  publish the check mark,
+                # never write it again.
                 self._react(runner, message_id, N.DONE_EMOJI)
-            elif earlier == "started":
-                self._answer(runner, message_id, request_id, refused="this request id was already started and may have "
-                             "been interrupted;  check the note, then send it again with a new request_id")
+                self.processed.finish(identity, request_id, "done")
+                return "done" if earlier == "done_pending" else "duplicate"
+            if earlier == "started":
+                reason = ("this request id was already started and may have been interrupted;  check the note, "
+                          "then send it again with a new request_id")
             else:
-                self._answer(runner, message_id, request_id, refused="this request id was already refused")
+                reason = self.processed.reason(identity, request_id) or "this request id was already refused"
+            self.processed.finish(identity, request_id, "refused_pending", reason)
+            self._answer(runner, message_id, request_id, refused=reason)
+            self.processed.finish(identity, request_id, "refused")
             return "duplicate"
         try:
             script = self.script()
             if script is None:
                 raise N.NotesError("unavailable", "this Mac cannot run the notes script right now")
-            full = N.resolve_upload(envelope, lambda path: self._download(runner, path))
+            try:
+                full = N.resolve_upload(envelope, lambda path: self._download(runner, path))
+            except Z.NetworkError:
+                self.processed.forget(identity, request_id)  # nothing ran:  the retry starts clean
+                raise
             kwargs = {"runner": self.runner} if self.runner is not None else {}
             N.run_direct(full, script, env=self.env, **kwargs)
         except N.NotesError as exc:
-            self.processed.finish(identity, request_id, "refused")
-            self.log("notes-relay-failed", id=message_id, code=exc.code)
-            self._answer(runner, message_id, request_id, refused=exc.message)
-            return "refused"
+            return self._refuse(runner, message_id, identity, request_id, exc.message, "notes-relay-failed", exc.code)
         except Z.AgentSyncError as exc:
-            self.processed.finish(identity, request_id, "refused")
-            self.log("notes-relay-failed", id=message_id, code="zulip")
-            self._answer(runner, message_id, request_id, refused="could not fetch the attached body:  %s" % str(exc)[:100])
-            return "refused"
-        self.processed.finish(identity, request_id, "done")
+            if isinstance(exc, Z.NetworkError):
+                raise
+            return self._refuse(runner, message_id, identity, request_id,
+                                "could not fetch the attached body:  %s" % str(exc)[:100], "notes-relay-failed", "zulip")
+        # The action is done.  Record that BEFORE publishing, so a failed publish retries only the acknowledgement.
+        self.processed.finish(identity, request_id, "done_pending")
         self.log("notes-relay-done", id=message_id, action=envelope["action"], identity=identity)
         self._react(runner, message_id, N.DONE_EMOJI)
+        self.processed.finish(identity, request_id, "done")
         return "done"
+
+    def _refuse(self, runner: Any, message_id: int, identity: str, request_id: str, reason: str, event: str,
+                code: str) -> str:
+        self.processed.finish(identity, request_id, "refused_pending", reason)
+        self.log(event, id=message_id, code=code)
+        self._answer(runner, message_id, request_id, refused=reason)
+        self.processed.finish(identity, request_id, "refused")
+        return "refused"
 
     # ---- Zulip --------------------------------------------------------------------------------
     def _react(self, runner: Any, message_id: int, names: tuple[str, ...]) -> None:
+        """Set the first emoji Zulip accepts.  A network failure propagates (the request stays spooled and is
+        published on the retry);  an emoji Zulip does not know falls through to the next name."""
         for name in names:
             try:
                 runner.client.post("messages/%d/reactions" % message_id, {"emoji_name": name})
@@ -369,8 +426,6 @@ class Consumer:
                 if exc.code == "REACTION_ALREADY_EXISTS":
                     return
                 continue
-            except Z.NetworkError:
-                return
 
     def _answer(self, runner: Any, message_id: int, request_id: str | None, *, refused: str) -> None:
         """Cross mark, then one reply with the reason.  Safe to replay after a crash at any point:  the reaction
@@ -385,7 +440,8 @@ class Consumer:
                 return
             runner.client.post("messages", {"type": "stream", "to": original.get("stream_id"),
                                             "topic": Z.message_topic(original), "content": "%s: %s" % (prefix, reason)})
-        except (Z.ApiError, Z.NetworkError):
+        except Z.ApiError:
+            # A refusal Zulip will not take is not retried;  a network failure propagates and the request stays spooled.
             self.log("notes-relay-reply-failed", id=message_id)
 
     def _already_replied(self, runner: Any, original: Mapping[str, Any], message_id: int, prefix: str) -> bool:

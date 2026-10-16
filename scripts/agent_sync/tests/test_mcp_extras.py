@@ -130,6 +130,54 @@ class NotesToolTests(McpHarness):
         self.assertNotIn("the body text", " ".join(run.calls[0]["argv"]))
         self.assertEqual(self.relay_messages(), [], "a direct write posts nothing")
 
+    def direct(self, run=None):
+        run = run or FakeRun()
+        return run, mock.patch.object(N, "direct_available", return_value=Path("/fake/apple-notes-coding.sh")), \
+            mock.patch.object(N.subprocess, "run", run)
+
+    def test_the_direct_path_applies_the_agent_title_rule_the_listener_applies(self):
+        run, a, b = self.direct()
+        session = self.session()
+        with a, b:
+            wrong = session.call("notes_create", {"title": "[AFC, Codex] not mine", "markdown": "x"})
+            self.assertIn("Agent in the title", self.assert_tool_error(wrong, "invalid_argument")["message"])
+            self.assert_tool_error(session.call("notes_pin", {"title": "[AFC] no agent"}), "invalid_argument")
+            for title in ("[AFC, Claude] t", "[AFC, CLAUDE] t", "[AFC, CT, claude] t"):
+                self.assertNotIn("isError", session.call("notes_create", {"title": title, "markdown": "x"}), title)
+        self.assertEqual(len(run.calls), 3)
+
+    def test_the_direct_path_scans_for_secrets_before_writing(self):
+        run, a, b = self.direct()
+        with a, b:
+            leak = "token " + "ghp_" + "EXAMPLE0" * 5
+            self.assert_tool_error(self.session().call("notes_create", {"title": "[AFC, Claude] t", "markdown": leak}),
+                                   "refused_secret")
+            self.assert_tool_error(self.session().call("notes_create", {"title": "[AFC, Claude] t " + leak}), "refused_secret")
+        self.assertEqual(run.calls, [])
+
+    def test_the_direct_path_writes_a_repeated_request_id_once(self):
+        run, a, b = self.direct()
+        session = self.session()
+        args = {"title": "[AFC, Claude] once", "markdown": "x", "request_id": "direct-request-01"}
+        with a, b:
+            first = self.assert_structured("notes_create", session.call("notes_create", args))
+            again = self.assert_structured("notes_create", session.call("notes_create", args))
+            fresh = self.assert_structured("notes_create", session.call("notes_create", dict(args, request_id="direct-request-02")))
+        self.assertEqual((first["duplicate"], again["duplicate"], fresh["duplicate"]), (False, True, False))
+        self.assertEqual(again["status"], "done")
+        self.assertEqual(len(run.calls), 2)
+
+    def test_a_failed_direct_write_can_be_retried_with_the_same_request_id(self):
+        session = self.session()
+        args = {"title": "[AFC, Claude] retry", "markdown": "x", "request_id": "direct-retry-0001"}
+        run, a, b = self.direct(FakeRun(code=3))
+        with a, b:
+            self.assert_tool_error(session.call("notes_pin", {"title": "[AFC, Claude] retry", "request_id": "direct-retry-0001"}), "not_found")
+        run, a, b = self.direct()
+        with a, b:
+            self.assertNotIn("isError", session.call("notes_pin", {"title": "[AFC, Claude] retry", "request_id": "direct-retry-0001"}))
+        self.assertEqual(len(run.calls), 1)
+
     def test_transport_relay_posts_the_envelope_as_the_identity_to_the_relay_channel(self):
         with mock.patch.object(N, "direct_available", return_value=Path("/fake/apple-notes-coding.sh")):
             result = self.session().call("notes_create", {"title": "[AFC, Claude] relayed", "markdown": "# Body\n\nText.",

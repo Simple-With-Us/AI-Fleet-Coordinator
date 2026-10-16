@@ -164,6 +164,43 @@ class DaemonRelayTests(DaemonHarness):
         self.assertEqual(self.ledger(), [])
         self.assertEqual(spooled, [("CLAUDE", mid)], "only the configured seat hands it to the consumer")
 
+    def test_the_consumer_seat_offline_loses_nothing_and_the_non_consumer_seeing_it_first_changes_nothing(self):
+        """Each runner has its own event queue and its own cursor.  A non-consumer runner advancing never moves the
+        consumer seat's cursor, and the consumer seat reads (or backfills from its own cursor) every message."""
+        daemon = self.two_seats()
+        spooled = []
+        daemon.notes_relay.offer = lambda runner, message: spooled.append((runner.seat, message["id"])) or True
+        reader, other = daemon.seats["CLAUDE"], daemon.seats["CODEX"]
+        mid = self.fake.add_message("Cursor", "notes-relay", "[AFC, Cursor] t", "an envelope")
+        message = dict(self.fake.messages[-1])
+        before = reader.cursor
+        daemon.route_message(other, message)  # the non-consumer reads it FIRST
+        self.assertEqual(other.cursor, mid)
+        self.assertEqual(reader.cursor, before, "the consumer seat's cursor is independent of every other runner's")
+        self.assertEqual(spooled, [], "a non-consumer hands nothing over")
+        daemon.route_message(reader, message)  # the consumer seat reads it second
+        self.assertEqual(reader.cursor, mid)
+        self.assertEqual(spooled, [("CLAUDE", mid)])
+        # Consumer offline for a while:  the message is still in Zulip, so its backfill from its own cursor finds it.
+        self.assertEqual(self.inbox(), [])
+        self.assertEqual(self.inbox("CODEX"), [])
+
+    def test_a_request_that_was_not_kept_is_retried_by_the_next_backfill_not_skipped_as_a_duplicate(self):
+        daemon = self.started_with_relay()
+        runner = daemon.seats["CLAUDE"]
+        results = iter([False, True])
+        offered = []
+        daemon.notes_relay.offer = lambda r, m: offered.append(m["id"]) or next(results)
+        before = runner.cursor
+        mid = self.envelope_message()
+        message = dict(self.fake.messages[-1])
+        daemon.route_message(runner, message)  # the spool could not take it
+        self.assertEqual(runner.cursor, before)
+        self.assertNotIn(mid, runner.ring, "a failed offer must leave the id out of the dedupe ring")
+        daemon.route_message(runner, message)  # the backfill delivers it again
+        self.assertEqual(offered, [mid, mid], "the second delivery reached the consumer, not the duplicate path")
+        self.assertEqual(runner.cursor, mid)
+
     def started_with_relay(self):
         self.enable()
         self.fake.streams["notes-relay"] = 140

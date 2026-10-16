@@ -22,6 +22,7 @@ from . import bodyfile
 from . import identities as X
 from . import identity as I
 from . import notes as N
+from .secretscan import scan as scan_text
 from . import zulip as Z
 
 
@@ -155,6 +156,12 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
                 envelope = N.make_envelope(action, args.title, call_args.get("markdown", ""),
                                            T.notes_flags(call_args, action), call_args.get("request_id") or N.new_request_id(),
                                            identity)
+                problem = N.title_problem(envelope["title"], identity, env=rt.env)
+                if problem:
+                    raise N.NotesError("invalid_argument", "%s;  the Agent in the title must be %s" % (problem, identity))
+                found = scan_text(envelope["title"] + "\n" + str(envelope.get("markdown") or ""))
+                if found:
+                    raise N.NotesError("invalid_argument", "refusing to write:  the note looks like it contains %s" % found)
                 done = N.run_direct(envelope, script, env=rt.env)
             except N.NotesError as exc:
                 raise _fail(exc) from None

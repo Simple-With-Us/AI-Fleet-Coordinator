@@ -1409,13 +1409,36 @@ class Tools:
         envelope = self._notes_envelope(action, args)
         script = self._notes_direct() if args.get("transport", "auto") == "auto" else None
         if script is not None:
-            try:
-                done = NOTES.run_direct(envelope, script, env=self.agent.rt.env)
-            except NOTES.NotesError as exc:
-                raise self._notes_error(exc) from None
-            return self._write_result({"request_id": envelope["request_id"], "action": action, "status": "done",
-                                       "transport": "direct", **({"note_id": done["note_id"]} if done.get("note_id") else {})})
+            return self._notes_direct_write(envelope, script)
         return self._notes_relay(envelope)
+
+    def _notes_direct_write(self, envelope: dict[str, Any], script: Path) -> dict[str, Any]:
+        """The Mac's direct path.  It enforces what the relay path does before the listener runs a request:  the
+        title's Agent is this identity's own name (the listener's rule), the text passes the secret scan, and a
+        repeated request_id writes the note once."""
+        request_id, action = envelope["request_id"], envelope["action"]
+        problem = NOTES.title_problem(envelope["title"], self.seat, env=self.agent.rt.env)
+        if problem:
+            raise ToolError("invalid_argument", "%s;  the Agent in the title must be the identity the call acts as (%s)"
+                            % (problem, self.seat))
+        self._scan(title=envelope["title"], markdown=str(envelope.get("markdown") or ""))
+        row_key, ttl = self._key("notes-direct:%s" % request_id, [])
+        verdict, row = self._idem_begin(row_key, ttl, {"tool": "notes_direct"})
+        if verdict == "duplicate" and row is not None:
+            return self._write_result(dict(row.get("result") or {}, duplicate=True))
+        if verdict == "reconcile":
+            self._idem_set(row_key, state="unknown")
+            raise ToolError("outcome_unknown", "an earlier direct %s with this request_id may or may not have written "
+                            "the note.  Check the Coding folder, then send it again with a new request_id." % action)
+        try:
+            done = NOTES.run_direct(envelope, script, env=self.agent.rt.env)
+        except NOTES.NotesError as exc:
+            self._idem_drop(row_key)  # nothing was written:  the same request_id may be tried again
+            raise self._notes_error(exc) from None
+        result = {"request_id": request_id, "action": action, "status": "done", "transport": "direct",
+                  **({"note_id": done["note_id"]} if done.get("note_id") else {})}
+        self._idem_set(row_key, state="sent", id=0, result=result)
+        return self._write_result(dict(result, duplicate=False))
 
     def _notes_relay(self, envelope: dict[str, Any]) -> dict[str, Any]:
         """Post the envelope to #notes-relay as this identity.  A body too large for a message goes up

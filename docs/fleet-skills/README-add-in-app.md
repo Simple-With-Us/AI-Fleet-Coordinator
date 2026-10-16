@@ -5,7 +5,7 @@ Updated **2026-10-08**: the installer **specializes identity per seat** (Zulip b
 | Seat | Chat tag | Home / upload dir | Branches | Notes |
 | :--- | :--- | :--- | :--- | :--- |
 | Cursor IDE / Auto | `[CURSOR]` | `~/.cursor/skills` | `cursor/` | Cloud Grok Bot fork → `[GB-<NAME>]` (not `[GROK-BOT]`) |
-| Grok Bot (Cursor cloud) | `[GB-<NAME>]` | `docs/fleet-skills/by-seat/grok-bot/` | `cursor/` | GB-CONDUCTOR / MONITOR / FIXER / DEPLOYER / COMPILE / NURSE / HOUSEKEEPER / ACCOUNTANT.  Not `[GROK-BOT]`, not `[CURSOR]`, not Mac Grok TUI |
+| Grok Bot (Cursor cloud) | `[GB-<NAME>]` | `docs/fleet-skills/by-seat/grok-bot/` | `cursor/` | GB-DIRECTOR / FIXER / DESIGNER / COMPILER / HOUSEKEEPER / PUBLISHER / DEPLOYER / MONITOR / PLUMBER / ORACLE / TRADER (from `scripts/agent_sync/mcp/gb-identities.json`).  Not `[GROK-BOT]`, not `[CURSOR]`, not Mac Grok TUI |
 | Antigravity / Gemini | `[AG]` | `~/.gemini/skills` | `ag/` | Lane folders `antigravity-<slug>` |
 | Codex | `[CODEX]` | `~/.codex/skills` | `codex/` | |
 | fx TUI | `[FX]` | `~/.fx/skills` | `fx/` | Quote-safe YAML `>-` descriptions; set `context_limits.skill_catalog_bytes` to `off` in `~/.fx/settings.json` so the full catalog is not truncated |
