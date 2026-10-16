@@ -729,7 +729,11 @@ export class LinearClient {
         // way.  A failed mint (LinearError) is expected now and then;  anything else is a bug, and
         // is logged by class name (never a message, which could carry a credential).
         if (!(error instanceof LinearError)) {
-          this.#log({ event: "linear_early_mint_bug", seat: this.seat, name: String(error?.name ?? "Error").slice(0, 40) });
+          try {
+            this.#log({ event: "linear_early_mint_bug", seat: this.seat, name: String(error?.name ?? "Error").slice(0, 40) });
+          } catch {
+            // A failing logger must not cost the caller its still-valid token.
+          }
         }
         return cached.access_token;
       }

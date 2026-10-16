@@ -628,3 +628,14 @@ test("an unexpected error in the early mint is logged by class name and the cach
   }
   assert.deepEqual(logged.map((l) => JSON.parse(l)), [{ event: "linear_early_mint_bug", seat: "GROK-WEB", name: "TypeError" }]);
 });
+
+test("a logger that throws during the early mint still leaves the cached token in use", async () => {
+  const fake = new FakeLinear();
+  const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
+  const gate = memoryGate(clock);
+  const client = new LinearClient({ seat: "GROK-WEB", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now, log: () => { throw new Error("log sink down"); } });
+  const first = await client.token();
+  await ageCachedToken(gate, clock, 29 * 24);
+  gate.idemBegin = async () => { throw new TypeError("boom"); };
+  assert.equal(await client.token(), first);
+});
