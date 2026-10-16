@@ -2,7 +2,12 @@
 // docs/protocols/agent-sync-tools-guide.md, bundled as src/guide-text.js (scripts/export-guide.mjs writes it;
 // test/guide.test.mjs fails when it is stale).  Sections and lookup follow scripts/agent_sync/mcp/guide.py.
 
+import { z } from "zod";
 import { ToolError, okResult } from "./contract.js";
+import { parseArgs } from "./args.js";
+
+/** The guide tool's arguments:  an optional section name, nothing else. */
+export const GuideArgs = z.strictObject({ section: z.string().max(100).optional() });
 
 export const GUIDE_URL = "https://fleetlink.online/agent-sync-tools-guide/";
 
@@ -25,7 +30,7 @@ const key = (value) => [...value.toLowerCase()].filter((ch) => /[\p{L}\p{N}]/u.t
 /** The whole guide, or one section matched without regard to case, spaces and punctuation. */
 export function guideResult(text, args) {
   const names = sectionNames(text);
-  const section = typeof args?.section === "string" ? args.section : "";
+  const section = parseArgs(GuideArgs, args).section ?? "";
   if (!section.trim()) {
     return okResult(text, { section: null, sections: names, bytes: new TextEncoder().encode(text).length });
   }

@@ -285,6 +285,7 @@ class SeatRunner:
         self.connected = True
         self.error = None
         self.fatal = False
+        self.daemon.resume_notes_relay(self)  # the user list is loaded:  drain requests an earlier run left spooled
         if self.cursor is None:
             newest = state.get("max_message_id")
             self.cursor = int(newest) if isinstance(newest, int) and newest >= 0 else 0
@@ -686,6 +687,15 @@ class Daemon:
             seat=cfg.notes_relay_seat, state_dir=self.root, script=lambda: NOTES.direct_available(self.env, home),
             env=self.env, owner_user_id=lambda: self.config.owner_user_id, log=self.log.write, clock=self.clock.time)
         self.log.write("notes-relay-started", seat=cfg.notes_relay_seat, channel=NOTES.RELAY_CHANNEL)
+        reader = self.seats.get(cfg.notes_relay_seat)
+        if reader is not None and reader.connected:
+            self.notes_relay.resume(reader)
+
+    def resume_notes_relay(self, runner: "SeatRunner") -> None:
+        """The relay seat connected:  hand its runner to the consumer and drain any spooled requests."""
+        consumer = self.notes_relay
+        if consumer is not None and runner.seat == consumer.seat:
+            consumer.resume(runner)
 
     def ensure_notes_channel(self, runner: "SeatRunner", why: str) -> None:
         """The relay seat's bot must be in #notes-relay to see it.  Joins it only when the channel exists and is
@@ -1105,10 +1115,15 @@ class Daemon:
             return
         runner.ring.add(message_id)
         relay = self.notes_relay
-        if relay is not None and relay.wants(runner, message):
-            # A notes request:  the consumer's worker thread handles it, off this seat thread.  It is not a
-            # message for any session, so it is neither routed nor woken for.
-            relay.offer(runner, message)
+        if relay is not None and relay.in_channel(message):
+            # A notes request is not a message for any session:  every seat's runner treats it as consumed (no
+            # inbox row, no wake from an @-mention inside an envelope) and only the configured seat acts on it.
+            # The acting seat advances its cursor only once the request is on disk (Consumer.offer), so a
+            # request that could not be kept is retried from the backfill and never silently lost.
+            if relay.wants(runner, message) and not relay.offer(runner, message):
+                self.log.write("notes-relay-held", seat=runner.seat, id=message_id,
+                               warning="could not spool the request;  the cursor is held for this message")
+                return
             if advance_cursor:
                 runner.advance(message_id)
             return

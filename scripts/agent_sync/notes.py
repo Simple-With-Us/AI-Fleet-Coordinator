@@ -283,6 +283,8 @@ def parse_message(content: Any) -> dict[str, Any]:
             raise NotesError("invalid_argument", "the envelope's markdown must be text of at most %d characters" % MARKDOWN_MAX)
         envelope = make_envelope(str(raw.get("action")), raw.get("title"), markdown, raw.get("flags") or {},
                                  raw.get("request_id"), identity)
+        if "markdown_url" not in raw and ("markdown_bytes" in raw or "markdown_sha256" in raw):
+            raise NotesError("invalid_argument", "markdown_bytes and markdown_sha256 need a markdown_url")
         if "markdown_url" in raw:
             url, size, digest = raw.get("markdown_url"), raw.get("markdown_bytes"), raw.get("markdown_sha256")
             if not isinstance(url, str) or not UPLOAD_PATH_RE.match(url) or ".." in url:

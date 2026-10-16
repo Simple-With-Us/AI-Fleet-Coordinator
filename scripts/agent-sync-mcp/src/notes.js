@@ -11,7 +11,9 @@
 // from the HostedTools methods at the bottom:  no `cloudflare:` imports.
 
 import NOTES_JSON from "../../agent_sync/mcp/notes-tools.json" with { type: "json" };
+import { z } from "zod";
 import { ToolError, okResult, clean, seatTagFor } from "./contract.js";
+import { parseArgs } from "./args.js";
 
 export const RELAY_CHANNEL = "notes-relay";
 export const ENVELOPE_VERSION = 1;
@@ -45,6 +47,57 @@ const FENCE_CLOSE = "\n```";
 export const NOTES_TOOLS = Object.freeze(NOTES_JSON.tools.map((tool) => Object.freeze(tool)));
 export const NOTES_WRITE_TOOLS = Object.freeze(new Set(["notes_create", "notes_update", "notes_pin", "notes_unpin"]));
 export const NOTES_READ_TOOLS = Object.freeze(new Set(["notes_status"]));
+
+// ---------------------------------------------------------------- zod schemas at the boundary
+// Tool arguments (also checked against notes-tools.json by HostedTools.call), the envelope inside a relay
+// message, and the Zulip message and reaction objects notes_status reads.  Strict where the shape is ours.
+
+const optionalFlag = z.boolean().optional();
+const WRITE_SHAPE = {
+  title: z.string(),
+  request_id: z.string().optional(),
+  transport: z.enum(["auto", "relay"]).optional(),
+};
+export const NotesWriteArgs = z.strictObject({
+  ...WRITE_SHAPE,
+  markdown: z.string().max(MARKDOWN_MAX).optional(),
+  html: optionalFlag,
+  pin: optionalFlag,
+  notify: optionalFlag,
+  needs_owner: optionalFlag,
+  summary: z.string().max(SUMMARY_MAX).optional(),
+  pr: z.string().max(40).optional(),
+});
+export const NotesPinArgs = z.strictObject(WRITE_SHAPE);
+export const NotesStatusArgs = z.strictObject({ request_id: z.string(), message_id: z.number().int().positive().optional() });
+export const RelayEnvelope = z.strictObject({
+  v: z.literal(ENVELOPE_VERSION),
+  action: z.enum(ACTIONS),
+  title: z.string(),
+  markdown: z.string().max(MARKDOWN_MAX).optional(),
+  flags: z.record(z.string(), z.unknown()).optional(),
+  request_id: z.string(),
+  identity: z.string().min(1),
+  markdown_url: z.string().optional(),
+  markdown_bytes: z.number().int().optional(),
+  markdown_sha256: z.string().optional(),
+});
+export const ReactionObject = z.looseObject({
+  user_id: z.number().int().optional(),
+  user: z.looseObject({ id: z.number().int().optional() }).optional(),
+  emoji_code: z.string().optional(),
+  emoji_name: z.string().optional(),
+});
+export const RelayMessage = z.looseObject({
+  id: z.number().int(),
+  sender_id: z.number().int().optional(),
+  sender_email: z.string().optional(),
+  content: z.string().optional(),
+  stream_id: z.number().int().optional(),
+  subject: z.string().optional(),
+  topic: z.string().optional(),
+  reactions: z.array(z.unknown()).optional(),
+});
 
 const invalid = (message) => new ToolError("invalid_argument", message);
 const points = (text) => [...text];
@@ -131,19 +184,16 @@ export function parseMessage(content) {
   const end = content.lastIndexOf(FENCE_CLOSE);
   if (start < 0 || end <= start) return null;
   try {
-    const raw = JSON.parse(content.slice(start + FENCE_OPEN.length, end));
-    if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.v !== ENVELOPE_VERSION) return null;
-    if (typeof raw.identity !== "string" || !raw.identity) return null;
-    if (typeof raw.markdown !== "string" && raw.markdown !== undefined) return null;
-    const allowed = new Set(["v", "action", "title", "markdown", "flags", "request_id", "identity", "markdown_url", "markdown_bytes", "markdown_sha256"]);
-    if (Object.keys(raw).some((key) => !allowed.has(key))) return null;
-    if ((raw.markdown ?? "").length > MARKDOWN_MAX) return null;
-    const envelope = makeEnvelope(String(raw.action), raw.title, raw.markdown ?? "", raw.flags ?? {}, raw.request_id, raw.identity);
-    if (Object.hasOwn(raw, "markdown_url")) {
+    const parsed = RelayEnvelope.safeParse(JSON.parse(content.slice(start + FENCE_OPEN.length, end)));
+    if (!parsed.success) return null;
+    const raw = parsed.data;
+    const envelope = makeEnvelope(raw.action, raw.title, raw.markdown ?? "", raw.flags ?? {}, raw.request_id, raw.identity);
+    if (raw.markdown_url === undefined && (raw.markdown_bytes !== undefined || raw.markdown_sha256 !== undefined)) return null;
+    if (raw.markdown_url !== undefined) {
       const { markdown_url: url, markdown_bytes: size, markdown_sha256: digest } = raw;
-      if (typeof url !== "string" || !UPLOAD_PATH_RE.test(url) || url.includes("..")) return null;
-      if (!Number.isSafeInteger(size) || size <= 0 || size > UPLOAD_MAX) return null;
-      if (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest) || envelope.markdown) return null;
+      if (!UPLOAD_PATH_RE.test(url) || url.includes("..")) return null;
+      if (size === undefined || size <= 0 || size > UPLOAD_MAX) return null;
+      if (digest === undefined || !/^[0-9a-f]{64}$/.test(digest) || envelope.markdown) return null;
       return { ...envelope, markdown_url: url, markdown_bytes: size, markdown_sha256: digest };
     }
     return envelope;
@@ -156,17 +206,18 @@ export function parseMessage(content) {
 
 export const NOTES_METHODS = {
   /** Hosted notes always relay (transport auto and relay mean the same here). */
-  async notesWrite(action, args, audit) {
-    const requestId = args.request_id ? checkRequestId(args.request_id) : newRequestId();
+  async notesWrite(action, rawArgs, audit) {
     const isBody = action === "create" || action === "update";
+    const args = parseArgs(isBody ? NotesWriteArgs : NotesPinArgs, rawArgs);
+    const requestId = args.request_id ? checkRequestId(args.request_id) : newRequestId();
     const flags = {};
     if (isBody) {
       for (const name of ["pin", "notify", "needs_owner", "summary", "pr", "html"]) {
-        if (args[name] !== undefined && args[name] !== null && args[name] !== false && args[name] !== "") flags[name] = args[name];
+        if (args[name] !== undefined && args[name] !== false && args[name] !== "") flags[name] = args[name];
         else if (name === "pin" && args.pin === false) flags.pin = false;
       }
     }
-    let envelope = makeEnvelope(action, args.title, isBody ? String(args.markdown ?? "") : "", flags, requestId, this.seat);
+    let envelope = makeEnvelope(action, args.title, isBody ? (args.markdown ?? "") : "", flags, requestId, this.seat);
     audit.request_id = requestId;
     this.scan({ title: envelope.title, markdown: envelope.markdown });
     if (needsUpload(envelope)) {
@@ -202,20 +253,26 @@ export const NOTES_METHODS = {
     return /^[A-Z0-9][A-Z0-9-]*$/.test(tag) && !INTEGRATION_TAGS.has(tag);
   },
 
-  async tool_notes_status(args, audit) {
+  async tool_notes_status(rawArgs, audit) {
+    const args = parseArgs(NotesStatusArgs, rawArgs);
     const requestId = checkRequestId(args.request_id);
     audit.request_id = requestId;
     await this.ensureSeat();
     await this.reserve("read");
     const channelId = await this.channelId(RELAY_CHANNEL);
-    const mine = (m) => String(m.sender_email ?? "").toLowerCase() === this.email && parseMessage(m.content)?.request_id === requestId;
+    // Zulip's answers are boundary data too:  a message that does not parse is skipped, never read field by field.
+    const asMessage = (raw) => {
+      const parsed = RelayMessage.safeParse(raw);
+      return parsed.success ? parsed.data : null;
+    };
+    const mine = (m) => m !== null && String(m.sender_email ?? "").toLowerCase() === this.email && parseMessage(m.content)?.request_id === requestId;
     let message = null;
-    if (Number.isSafeInteger(args.message_id)) {
-      const one = (await this.zulip.get(`messages/${args.message_id}`, { apply_markdown: false })).message ?? {};
-      if (one.stream_id === channelId && mine(one)) message = one;
+    if (args.message_id !== undefined) {
+      const one = asMessage((await this.zulip.get(`messages/${args.message_id}`, { apply_markdown: false })).message);
+      if (one?.stream_id === channelId && mine(one)) message = one;
     } else {
       for (const extra of [[{ operator: "search", operand: requestId }], []]) {
-        const found = await this.page([{ operator: "channel", operand: channelId }, ...extra], null, 100);
+        const found = (await this.page([{ operator: "channel", operand: channelId }, ...extra], null, 100)).map(asMessage);
         message = [...found].reverse().find(mine) ?? null;
         if (message) break;
       }
@@ -224,20 +281,24 @@ export const NOTES_METHODS = {
     const members = await this.users();
     let done = false;
     let refused = false;
-    for (const reaction of message.reactions ?? []) {
-      const userId = Number.isSafeInteger(reaction?.user_id) ? reaction.user_id : reaction?.user?.id;
+    for (const raw of message.reactions ?? []) {
+      const parsed = ReactionObject.safeParse(raw);
+      if (!parsed.success) continue;
+      const reaction = parsed.data;
+      const userId = reaction.user_id ?? reaction.user?.id;
       if (!(await this.notesFleetBot(userId, members))) continue;
-      const code = String(reaction.emoji_code ?? "");
-      const name = String(reaction.emoji_name ?? "");
+      const code = reaction.emoji_code ?? "";
+      const name = reaction.emoji_name ?? "";
       if (CHECK_NAMES.refusedCodes.includes(code) || CHECK_NAMES.refused.includes(name)) refused = true;
       else if (CHECK_NAMES.doneCodes.includes(code) || CHECK_NAMES.done.includes(name)) done = true;
     }
     const info = { request_id: requestId, message_id: message.id, status: refused ? "refused" : done ? "done" : "queued" };
     if (refused) {
       const prefix = REFUSAL_PREFIX + requestId;
-      const replies = await this.page([{ operator: "channel", operand: channelId }, { operator: "topic", operand: String(message.subject ?? message.topic ?? "") }], message.id, 30);
+      const replies = (await this.page([{ operator: "channel", operand: channelId }, { operator: "topic", operand: message.subject ?? message.topic ?? "" }], message.id, 30)).map(asMessage);
       for (const reply of replies) {
-        const text = String(reply.content ?? "").trimStart();
+        if (reply === null) continue;
+        const text = (reply.content ?? "").trimStart();
         if (reply.id > message.id && text.startsWith(prefix) && (await this.notesFleetBot(reply.sender_id, members))) {
           info.reason = clean(text.slice(prefix.length).replace(/^[:\s]+/, "").trim(), 300)[0];
           break;

@@ -7,6 +7,8 @@ thread, and a missing channel is a logged warning, never a created channel.
 """
 from __future__ import annotations
 
+import json
+import secrets
 import subprocess
 import threading
 import time
@@ -16,6 +18,7 @@ from unittest import mock
 
 from agent_sync import config as C
 from agent_sync import notes as N
+from agent_sync.tests.harness import write_rc
 from agent_sync.tests.test_daemon import DaemonHarness
 
 CODEX_ID = 11
@@ -130,6 +133,67 @@ class DaemonRelayTests(DaemonHarness):
         self.assertIsNone(daemon.notes_relay)
         mid = self.fake.add_message("Codex", "notes-relay", "t", "@**Claude** can you check this?")
         self.pump_until(daemon, lambda: any(r["id"] == mid for r in self.inbox()))
+
+    def two_seats(self):
+        codex_key = secrets.token_hex(16)
+        self.extra_keys.append(("codex-bot@zulip.test", codex_key))
+        self.fake.add_bot("codex-bot@zulip.test", "Codex", codex_key)
+        write_rc(self.secrets_dir / "Codex-zuliprc", email="codex-bot@zulip.test", key=codex_key, site=self.fake.url)
+        self.write_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n\n[seat.CODEX]\nbot = "Codex"\nwake = "inbox"\n')
+        path = self.state_dir / "listener.toml"
+        path.write_text(path.read_text() + "\n" + RELAY_SECTION)
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started(env=self.env(AGENT_SYNC_PARTITION=self.two_seat_partition()))
+        self.assertTrue(daemon.connect_seat("CODEX"))
+        return daemon
+
+    def test_every_seats_runner_treats_a_relay_message_as_consumed_and_only_the_reader_acts(self):
+        daemon = self.two_seats()
+        spooled = []
+        daemon.notes_relay.offer = lambda runner, message: spooled.append((runner.seat, message["id"])) or True
+        mid = self.fake.add_message("Cursor", "notes-relay", "[AFC, Cursor] t", "@**Claude** and @**Codex** look at this envelope")
+        message = dict(self.fake.messages[-1], flags=["mentioned"])
+        for seat in ("CLAUDE", "CODEX"):
+            runner = daemon.seats[seat]
+            self.assertNotEqual(runner.cursor, mid)
+            daemon.route_message(runner, message)
+            self.assertEqual(runner.cursor, mid, "%s advances past the consumed message" % seat)
+        self.assertEqual(self.inbox(), [])
+        self.assertEqual(self.inbox("CODEX"), [], "a mention inside a relay envelope must not fill another seat's inbox")
+        self.assertEqual(self.ledger("CODEX"), [], "or wake it")
+        self.assertEqual(self.ledger(), [])
+        self.assertEqual(spooled, [("CLAUDE", mid)], "only the configured seat hands it to the consumer")
+
+    def started_with_relay(self):
+        self.enable()
+        self.fake.streams["notes-relay"] = 140
+        return self.started()
+
+    def test_the_cursor_is_held_for_a_request_that_could_not_be_kept(self):
+        daemon = self.started_with_relay()
+        runner = daemon.seats["CLAUDE"]
+        daemon.notes_relay.offer = lambda r, m: False
+        before = runner.cursor
+        mid = self.envelope_message()
+        daemon.route_message(runner, self.fake.messages[-1])
+        self.assertEqual(runner.cursor, before, "a request that was not accepted must not move the cursor")
+        self.assertNotEqual(before, mid)
+        self.assertIn("notes-relay-held", (self.state_dir / "logs" / "listener.log").read_text())
+
+    def test_a_request_spooled_by_an_earlier_run_is_answered_when_the_reader_connects(self):
+        self.enable()
+        self.fake.streams["notes-relay"] = 140
+        mid = self.envelope_message()  # in Zulip, before this daemon ever connects
+        message = dict(self.fake.messages[-1])
+        spool = self.state_dir / "CLAUDE" / "notes-relay-spool"
+        spool.mkdir(parents=True)
+        (spool / ("%d.json" % mid)).write_text(json.dumps(message))
+        with mock.patch.object(N.subprocess, "run", self.fake_run):
+            daemon = self.started()
+            self.assertTrue(self.ran.wait(10), "the spooled request should run on connect")
+            self.assertTrue(self.wait(lambda: (mid, 10, "check") in self.fake.reactions))
+            self.assertTrue(self.wait(lambda: daemon.notes_relay.spool.ids() == []))
+        daemon.notes_relay.stop()
 
     def test_a_mac_without_the_script_logs_and_stays_off(self):
         self.enable()

@@ -22,8 +22,12 @@ import { HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, HOSTED_WRITE_TOOLS } from "./ho
 import { ToolError, errorResult, okResult, schemaProblem } from "./contract.js";
 import { SHARED_IDENTITY_SEATS } from "./config.js";
 import { IDENTITIES_SPEC, GUIDE_SPEC } from "./zulip-tool-specs.js";
-import { guideResult, GUIDE_URL } from "./guide.js";
+import { guideResult, GuideArgs, GUIDE_URL } from "./guide.js";
+import { parseArgs } from "./args.js";
+import { z } from "zod";
 import { GUIDE_TEXT } from "./guide-text.js";
+
+const GuideCall = GuideArgs.extend({ identity: z.unknown().optional() });
 
 export const GB_IDENTITIES = Object.freeze([...GB_TABLE.enabled]);
 const GB_SET = new Set(GB_IDENTITIES);
@@ -250,11 +254,8 @@ export class IdentityRouter {
   async guide(rawArgs) {
     const name = "guide";
     try {
-      const args = rawArgs === undefined || rawArgs === null ? {} : rawArgs;
-      if (!args || typeof args !== "object" || Array.isArray(args)) throw new ToolError("invalid_argument", "arguments must be an object");
-      const { identity: _ignored, ...inner } = args;
-      const problem = schemaProblem(GUIDE_SPEC.inputSchema, inner);
-      if (problem) throw new ToolError("invalid_argument", problem);
+      // `identity` is accepted (every tool takes it) and ignored;  anything else must be the guide's own argument.
+      const { identity: _ignored, ...inner } = parseArgs(GuideCall, rawArgs);
       this.callerTools.requireScope(name);
       if (this.callerTools.paused) throw new ToolError("paused", `The ${this.seat} seat is paused.`);
       return guideResult(this.guideText, inner);

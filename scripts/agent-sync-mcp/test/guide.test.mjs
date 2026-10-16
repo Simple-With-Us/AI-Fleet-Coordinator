@@ -68,3 +68,14 @@ test("the router answers guide with no identity and ignores one that is supplied
   const guideSpec = router.toolList.find((t) => t.name === "guide");
   assert.ok(!(guideSpec.inputSchema.required ?? []).includes("identity"));
 });
+
+test("guide arguments are a strict zod object:  an unknown key or a non-string section is invalid_argument", async () => {
+  assert.throws(() => guideResult(GUIDE_TEXT, { section: 5 }), (error) => error.code === "invalid_argument" && /argument 'section' must be of type string/.test(error.message));
+  assert.throws(() => guideResult(GUIDE_TEXT, { section: "x", extra: 1 }), (error) => error.code === "invalid_argument" && /unknown argument 'extra'/.test(error.message));
+  assert.throws(() => guideResult(GUIDE_TEXT, { section: "x".repeat(101) }), (error) => error.code === "invalid_argument");
+  const router = new IdentityRouter({ callerTools: new Stub() });
+  for (const args of [{ extra: 1 }, { identity: "CURSOR", extra: 1 }, [], "text"]) {
+    const result = await router.call("guide", args);
+    assert.equal(JSON.parse(result.content[0].text).code, "invalid_argument", JSON.stringify(args));
+  }
+});

@@ -128,6 +128,7 @@ class EnvelopeTests(unittest.TestCase):
             "bad title": good.replace("[AFC, Claude] relay check", "no bracket"),
             "bad flag": good.replace('"flags":{}', '"flags":{"activate":true}'),
             "bad request id": good.replace("requestid-0001", "x"),
+            "orphan upload fields": good.replace('"flags":{}', '"flags":{},"markdown_bytes":3'),
             "too long": "```json\n" + "x" * 30000 + "\n```",
             "upload path": good.replace('"markdown":"body"', '"markdown":"","markdown_url":"/etc/passwd","markdown_bytes":3,'
                                                            '"markdown_sha256":"' + "a" * 64 + '"'),

@@ -14,6 +14,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from agent_sync import notes as N
 from agent_sync import notes_relay as NR
@@ -34,6 +35,9 @@ class FakeClient:
         self.react_fails: set[str] = set()
 
     def get(self, path, params=None):
+        if path == "messages":  # the topic after a message:  the replies this bot has posted so far
+            return {"messages": [{"id": 9000 + i, "sender_id": READER_ID, "content": a["content"]}
+                                 for i, (p, a) in enumerate(self.posts) if p == "messages"]}
         if path.startswith("messages/"):
             return {"message": self.messages[int(path.split("/")[1])]}
         if path.startswith("user_uploads/"):
@@ -253,16 +257,21 @@ class AttachmentTests(RelayHarness):
 
 
 class WorkerTests(RelayHarness):
-    def test_offer_hands_off_to_a_worker_thread_and_wants_only_the_relay_channel_of_the_reading_seat(self):
+    def test_wants_only_the_relay_channel_of_the_reading_seat_but_every_runner_sees_it_in_the_channel(self):
         message = self.request(rid="thread-request-01")
         self.assertTrue(self.consumer.wants(self.runner, message))
         other_channel = self.message(SENDERS["CURSOR"], "x", channel="agent-sync")
-        self.assertFalse(self.consumer.wants(self.runner, other_channel))
+        self.assertFalse(self.consumer.in_channel(other_channel))
         own = self.message(READER_ID, "notes-relay refused x: y")
         self.assertFalse(self.consumer.wants(self.runner, own))
         dm = self.message(SENDERS["CURSOR"], "x", type_="private")
-        self.assertFalse(self.consumer.wants(self.runner, dm))
-        self.assertFalse(self.consumer.wants(SimpleNamespace(seat="CODEX", users={}, client=None, me=None), message))
+        self.assertFalse(self.consumer.in_channel(dm))
+        other_seat = SimpleNamespace(seat="CODEX", users={}, client=None, me=SimpleNamespace(user_id=11))
+        self.assertTrue(self.consumer.in_channel(message), "any seat's runner treats a relay message as consumed")
+        self.assertFalse(self.consumer.wants(other_seat, message), "only the configured seat acts on it")
+
+    def test_offer_spools_the_request_durably_then_a_worker_thread_answers_and_clears_it(self):
+        message = self.request(rid="thread-request-02")
         done = threading.Event()
         original = self.consumer.process
 
@@ -272,19 +281,111 @@ class WorkerTests(RelayHarness):
             finally:
                 done.set()
         self.consumer.process = process
-        self.consumer.offer(self.runner, message)
+        self.assertTrue(self.consumer.offer(self.runner, message))
+        spooled = Path(self.state) / "CLAUDE" / NR.SPOOL_DIR / ("%d.json" % message["id"])
         self.assertTrue(done.wait(5))
         self.consumer.stop()
         self.assertEqual(len(self.calls), 1)
+        for _ in range(100):  # the worker removes the file just after process returns
+            if not spooled.exists():
+                break
+            threading.Event().wait(0.02)
+        self.assertFalse(spooled.exists())
 
-    def test_a_full_queue_drops_with_a_log_line_instead_of_blocking(self):
-        consumer = NR.Consumer(seat="CLAUDE", state_dir=self.state, script=lambda: None, env={},
-                               log=lambda event, **f: self.logs.append((event, f)))
-        consumer.start = lambda: None  # no worker:  the queue fills
-        for i in range(NR.QUEUE_LIMIT + 3):
-            consumer.offer(self.runner, {"id": i})
-        self.assertEqual(consumer.dropped, 3)
-        self.assertIn("notes-relay-dropped", [event for event, _ in self.logs])
+    def test_a_spooled_request_is_mode_600_and_survives_without_a_worker(self):
+        self.consumer.start = lambda: None  # no worker thread:  nothing drains
+        messages = [self.request(rid="queued-request-%02d" % i) for i in range(5)]
+        for message in messages:
+            self.assertTrue(self.consumer.offer(self.runner, message))
+        spool = Path(self.state) / "CLAUDE" / NR.SPOOL_DIR
+        self.assertEqual(stat.S_IMODE(os.stat(spool).st_mode), 0o700)
+        for message in messages:
+            self.assertEqual(stat.S_IMODE(os.stat(spool / ("%d.json" % message["id"])).st_mode), 0o600)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.consumer.drain(), 5)
+        self.assertEqual(len(self.calls), 5)
+        self.assertEqual(self.consumer.spool.ids(), [])
+
+    def test_a_full_signal_queue_never_drops_a_request(self):
+        """The old in-memory queue dropped past 200;  now the queue is only a wake-up and the spool holds the work."""
+        self.consumer.start = lambda: None
+        count = 250
+        for i in range(count):
+            self.assertTrue(self.consumer.offer(self.runner, {"id": 5000 + i, "type": "stream", "x": i}))
+        self.assertEqual(self.consumer.dropped, 0)
+        self.assertEqual(len(self.consumer.spool.ids()), count)
+        self.assertEqual(self.logs, [])
+
+    def test_a_request_that_cannot_be_kept_is_reported_so_the_caller_holds_its_cursor(self):
+        self.consumer.start = lambda: None
+        self.consumer.spool.limit = 2
+        results = [self.consumer.offer(self.runner, {"id": 7000 + i, "type": "stream"}) for i in range(4)]
+        self.assertEqual(results, [True, True, False, False])
+        self.assertEqual(self.consumer.dropped, 2)
+        self.assertEqual([event for event, _ in self.logs], ["notes-relay-not-accepted"] * 2)
+        self.assertFalse(self.consumer.offer(self.runner, {"type": "stream"}), "a message without an id cannot be kept")
+
+    def test_a_restart_drains_what_the_last_run_left(self):
+        self.consumer.start = lambda: None
+        message = self.request(rid="restart-request-1")
+        self.assertTrue(self.consumer.offer(self.runner, message))
+        fresh = NR.Consumer(seat="CLAUDE", state_dir=self.state, script=lambda: Path("/fake/script.sh"), env={},
+                            owner_user_id=lambda: OWNER_ID, runner=fake_run_factory(self.calls), log=lambda e, **f: None)
+        fresh.start = lambda: None
+        fresh.resume(self.runner)
+        self.assertEqual(fresh.drain(), 1)
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn((message["id"], "check"), self.client.reactions)
+
+    def test_a_failure_to_answer_keeps_the_request_for_the_next_wake_up(self):
+        self.consumer.start = lambda: None
+        message = self.request(rid="retry-request-001")
+        self.consumer.offer(self.runner, message)
+        original = self.consumer.process
+        self.consumer.process = mock.Mock(side_effect=Z.NetworkError("zulip is down"))
+        self.assertEqual(self.consumer.drain(), 0)
+        self.assertEqual(self.consumer.spool.ids(), [message["id"]])
+        self.assertIn("notes-relay-retry", [event for event, _ in self.logs])
+        self.consumer.process = original
+        self.assertEqual(self.consumer.drain(), 1)
+        self.assertEqual(self.consumer.spool.ids(), [])
+
+
+class RefusalReplayTests(RelayHarness):
+    """Zulip's send-message API takes no idempotency key, so a replayed refusal is made safe by looking first."""
+
+    def test_replaying_a_refused_message_posts_one_reply(self):
+        message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="replay-request-01")
+        self.assertEqual(self.process(message), "refused")
+        self.assertEqual(len(self.client.replies), 1)
+        # A crash after the reply but before the cursor moved:  the same message is processed again.
+        self.assertEqual(self.process(message), "refused")
+        self.assertEqual(len(self.client.replies), 1, "the replay found the earlier reply and posted nothing")
+        self.assertEqual(self.client.reactions.count((message["id"], "cross_mark")), 2, "the reaction is idempotent in Zulip")
+
+    def test_a_crash_between_the_reaction_and_the_reply_still_gets_its_reply(self):
+        message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="replay-request-02")
+        original_post = self.client.post
+
+        def crashing(path, params=None):
+            if path == "messages":
+                raise Z.NetworkError("died before the reply")
+            return original_post(path, params)
+        self.client.post = crashing
+        self.process(message)
+        self.assertEqual(self.client.replies, [])
+        self.client.post = original_post
+        self.process(message)
+        self.assertEqual(len(self.client.replies), 1)
+
+    def test_a_refusal_without_a_request_id_is_keyed_by_its_message(self):
+        first = self.message(SENDERS["CURSOR"], "hello there")
+        second = self.message(SENDERS["CURSOR"], "hello again")
+        self.process(first)
+        self.process(second)
+        self.assertEqual(len(self.client.replies), 2, "two different bad messages in one topic each get their reply")
+        self.process(first)
+        self.assertEqual(len(self.client.replies), 2)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -220,3 +220,32 @@ test("notes_status for an unknown request id is not_found", async () => {
   const { tools } = harness();
   toolError(await tools.call("notes_status", { request_id: "nobody-asked-01" }), "not_found");
 });
+
+// ---------------------------------------------------------------- zod at the boundary
+
+test("tool arguments, relay envelopes and reaction objects are parsed by strict zod schemas", async () => {
+  const { tools } = harness();
+  // The arguments reach the method un-schema'd here (HostedTools.call checks the JSON schema first):  the zod gate still holds.
+  const audit = {};
+  await assert.rejects(tools.notesWrite("create", { title: TITLE, markdown: 5 }, audit), (e) => e.code === "invalid_argument" && /argument 'markdown' must be of type string/.test(e.message));
+  await assert.rejects(tools.notesWrite("create", { title: TITLE, extra: true }, audit), (e) => /unknown argument 'extra'/.test(e.message));
+  await assert.rejects(tools.notesWrite("pin", { title: TITLE, markdown: "a pin takes no body" }, audit), (e) => /unknown argument 'markdown'/.test(e.message));
+  await assert.rejects(tools.tool_notes_status({ request_id: "abcdefgh12", message_id: "7" }, audit), (e) => e.code === "invalid_argument");
+  await assert.rejects(tools.tool_notes_status({ request_id: 5 }, audit), (e) => e.code === "invalid_argument");
+  const good = '{"v":1,"action":"create","title":"[AFC, Claude] t","markdown":"","flags":{},"request_id":"abcdefgh12","identity":"CLAUDE"';
+  assert.ok(parseMessage(`${"```json\n"}${good}}\n${"```"}`));
+  for (const tampered of [`${good},"markdown_url":"/user_uploads/2/a/b.md","markdown_bytes":"3","markdown_sha256":"${"a".repeat(64)}"}`, `${good},"markdown_bytes":3}`, `${good.replace('"markdown":""', '"markdown":7')}}`, `${good.replace('"v":1', '"v":"1"')}}`]) {
+    assert.equal(parseMessage(`${"```json\n"}${tampered}\n${"```"}`), null, tampered);
+  }
+});
+
+test("notes_status skips malformed reactions and messages instead of reading them", async () => {
+  const { fake, tools } = harness();
+  const sent = ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "junk-request-001" }), "notes_create");
+  const message = fake.messages.find((m) => m.id === sent.message_id);
+  const codex = fake.users.find((u) => u.full_name === "Codex");
+  message.reactions = [null, 5, "x", { user_id: "nope", emoji_name: "check" }, { user: { id: "x" } }, { user_id: codex.user_id, emoji_name: 7 }];
+  assert.equal(ok(await tools.call("notes_status", { request_id: "junk-request-001" }), "notes_status").status, "queued");
+  message.reactions = [...message.reactions, { user_id: codex.user_id, emoji_name: "check", emoji_code: "2705", reaction_type: "unicode_emoji" }];
+  assert.equal(ok(await tools.call("notes_status", { request_id: "junk-request-001" }), "notes_status").status, "done");
+});

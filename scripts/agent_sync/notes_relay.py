@@ -19,9 +19,18 @@ A request runs only when ALL of these hold, checked here and nowhere else:
      and never runs twice).
 
 Message content never reaches a shell:  the runner takes an argv list and the body goes on standard input.
-Requests are queued to a worker thread, so a slow osascript (or a Notes.app dialog) cannot stall wake
-delivery in the listener's seat threads.  The processed ids are kept in <state>/<SEAT>/notes-relay.json
-(mode 600, the newest 2000).
+Requests are handled by a worker thread, so a slow osascript (or a Notes.app dialog) cannot stall wake
+delivery in the listener's seat threads.  Acceptance is durable:  `offer` first writes the message to a spool
+file (<state>/<SEAT>/notes-relay-spool/<id>.json, mode 600) and only then returns True, which is what lets the
+daemon advance its event cursor past the message.  The worker removes a spool file when its request has been
+answered, and `resume` (every connect of the reading seat) drains whatever a crash or a Zulip outage left, so
+a full queue, a restart or a failed reaction never loses a request.  The processed ids are kept in
+<state>/<SEAT>/notes-relay.json (mode 600, the newest 2000).
+
+A refusal reply is posted at most once:  Zulip's send-message API has no idempotency key (only `local_id` and
+`queue_id`, which echo a message back to the sender's own queue), so before posting `_answer` looks for this
+bot's earlier reply with the same label in the topic, and a crash between the reaction and the reply replays
+to exactly one reply.
 
 Python 3.11+, standard library only.
 """
@@ -43,7 +52,8 @@ from . import wakes as W
 from . import zulip as Z
 
 PROCESSED_LIMIT = 2000
-QUEUE_LIMIT = 200
+SPOOL_LIMIT = 1000  # pending requests kept on disk;  past it `offer` says no and the daemon holds the cursor
+SPOOL_DIR = "notes-relay-spool"
 REASON_LIMIT = 300
 STATE_FILE = "notes-relay.json"
 DEFAULT_SEAT = "CLAUDE"
@@ -138,6 +148,63 @@ class Processed:
                 self._write(rows)
 
 
+class Spool:
+    """Pending relay messages, one mode-600 JSON file per Zulip message id.  Thread-safe."""
+
+    def __init__(self, path: str, limit: int = SPOOL_LIMIT) -> None:
+        self.path = path
+        self.limit = limit
+        self.lock = threading.Lock()
+
+    def _file(self, message_id: int) -> str:
+        return os.path.join(self.path, "%d.json" % message_id)
+
+    def put(self, message: Mapping[str, Any]) -> bool:
+        """Write the message durably (fsync, then rename).  False when it cannot be kept."""
+        message_id = message.get("id")
+        if not isinstance(message_id, int) or isinstance(message_id, bool):
+            return False
+        with self.lock:
+            try:
+                os.makedirs(self.path, mode=0o700, exist_ok=True)
+                target = self._file(message_id)
+                if not os.path.exists(target) and len(self.ids()) >= self.limit:
+                    return False
+                tmp = target + ".tmp"
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    os.fchmod(fh.fileno(), 0o600)
+                    json.dump(dict(message), fh, separators=(",", ":"))
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, target)
+            except (OSError, TypeError, ValueError):
+                return False
+        return True
+
+    def ids(self) -> list[int]:
+        try:
+            names = os.listdir(self.path)
+        except OSError:
+            return []
+        return sorted(int(n[:-5]) for n in names if n.endswith(".json") and n[:-5].isdigit())
+
+    def load(self, message_id: int) -> dict[str, Any] | None:
+        try:
+            with open(self._file(message_id), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def remove(self, message_id: int) -> None:
+        with self.lock:
+            try:
+                os.unlink(self._file(message_id))
+            except OSError:
+                pass
+
+
 class Consumer:
     """One per listener.  `offer(runner, message)` is called from the seat thread that routes the message and
     returns at once;  a worker thread does the rest."""
@@ -155,25 +222,49 @@ class Consumer:
         self.log = log
         self.registry_path = registry_path
         self.processed = Processed(os.path.join(state_dir, seat, STATE_FILE), clock)
-        self.jobs: "queue.Queue[tuple[Any, dict[str, Any]] | None]" = queue.Queue(QUEUE_LIMIT)
+        self.spool = Spool(os.path.join(state_dir, seat, SPOOL_DIR))
+        self.jobs: "queue.Queue[bool | None]" = queue.Queue(1)  # a wake-up signal;  the work is in the spool
+        self.reader: Any = None  # the reading seat's runner, for the worker
         self.thread: threading.Thread | None = None
         self.stopped = threading.Event()
         self.dropped = 0
 
     # ---- the seat thread's side ---------------------------------------------------------------
+    def in_channel(self, message: Mapping[str, Any]) -> bool:
+        """Is this a message in the relay channel?  Every seat's runner treats one as consumed (it is not work
+        for any session), whichever seat reads it."""
+        return message.get("type") == "stream" and Z.message_channel(message).casefold() == self.channel
+
     def wants(self, runner: Any, message: Mapping[str, Any]) -> bool:
-        """Is this a message in the relay channel that this seat's reader should consume?"""
-        return (runner.seat == self.seat and message.get("type") == "stream"
-                and Z.message_channel(message).casefold() == self.channel
+        """Should this seat's reader take the message?  Only the configured seat, and never its own posts."""
+        return (runner.seat == self.seat and self.in_channel(message)
                 and message.get("sender_id") != getattr(runner.me, "user_id", None))
 
-    def offer(self, runner: Any, message: Mapping[str, Any]) -> None:
-        self.start()
-        try:
-            self.jobs.put_nowait((runner, dict(message)))
-        except queue.Full:
+    def offer(self, runner: Any, message: Mapping[str, Any]) -> bool:
+        """Accept a message durably, then wake the worker.  True means the request is on disk and will be
+        answered, so the caller may advance its cursor;  False means it could not be kept (the caller holds
+        the cursor and the message is logged)."""
+        self.reader = runner
+        if not self.spool.put(message):
             self.dropped += 1
-            self.log("notes-relay-dropped", id=message.get("id"), dropped=self.dropped)
+            self.log("notes-relay-not-accepted", id=message.get("id"), dropped=self.dropped, pending=len(self.spool.ids()))
+            return False
+        self.start()
+        self._signal()
+        return True
+
+    def resume(self, runner: Any) -> None:
+        """The reading seat (re)connected:  drain whatever an earlier run left in the spool."""
+        self.reader = runner
+        if self.spool.ids():
+            self.start()
+            self._signal()
+
+    def _signal(self) -> None:
+        try:
+            self.jobs.put_nowait(True)
+        except queue.Full:
+            pass  # a wake-up is already pending
 
     def start(self) -> None:
         if self.thread is None or not self.thread.is_alive():
@@ -185,29 +276,43 @@ class Consumer:
         try:
             self.jobs.put_nowait(None)
         except queue.Full:
-            pass
+            try:
+                self.jobs.get_nowait()
+                self.jobs.put_nowait(None)
+            except (queue.Empty, queue.Full):
+                pass
 
     # ---- the worker ---------------------------------------------------------------------------
     def _work(self) -> None:
         while not self.stopped.is_set():
-            job = self.jobs.get()
-            if job is None:
+            if self.jobs.get() is None:
                 return
-            runner, message = job
+            try:
+                self.drain()
+            except Exception as exc:  # noqa: BLE001 - one bad request must not end the worker
+                self.log("notes-relay-error", error=type(exc).__name__)
+
+    def drain(self) -> int:
+        """Answer every spooled request, oldest first, on the calling thread.  A request whose answer could not
+        be sent (Zulip unreachable) stays in the spool for the next wake-up or reconnect.  Returns how many
+        were finished."""
+        finished = 0
+        for message_id in self.spool.ids():
+            runner = self.reader
+            message = self.spool.load(message_id)
+            if message is None:
+                self.spool.remove(message_id)
+                continue
+            if runner is None:
+                break
             try:
                 self.process(runner, message)
-            except Exception as exc:  # noqa: BLE001 - one bad request must not end the worker
-                self.log("notes-relay-error", id=message.get("id"), error=type(exc).__name__)
-
-    def drain(self) -> None:
-        """Process every queued job on the calling thread (tests)."""
-        while True:
-            try:
-                job = self.jobs.get_nowait()
-            except queue.Empty:
-                return
-            if job is not None:
-                self.process(*job)
+            except Exception as exc:  # noqa: BLE001 - keep the file;  the next wake-up retries
+                self.log("notes-relay-retry", id=message_id, error=type(exc).__name__)
+                break
+            self.spool.remove(message_id)
+            finished += 1
+        return finished
 
     def process(self, runner: Any, message: Mapping[str, Any]) -> str:
         """Handle one relay message.  Returns done, refused, duplicate or ignored."""
@@ -268,16 +373,29 @@ class Consumer:
                 return
 
     def _answer(self, runner: Any, message_id: int, request_id: str | None, *, refused: str) -> None:
+        """Cross mark, then one reply with the reason.  Safe to replay after a crash at any point:  the reaction
+        is idempotent and the reply is skipped when this bot already posted one with the same label."""
         self._react(runner, message_id, N.REFUSED_EMOJI)
         reason = W.neutralize_mentions(" ".join(refused.split())[:REASON_LIMIT])
-        label = request_id or "(no request id)"
+        label = request_id or "(message %d)" % message_id
+        prefix = "%s%s" % (N.REFUSAL_PREFIX, label)
         try:
             original = runner.client.get("messages/%d" % message_id, {"apply_markdown": False}).get("message") or {}
+            if self._already_replied(runner, original, message_id, prefix):
+                return
             runner.client.post("messages", {"type": "stream", "to": original.get("stream_id"),
-                                            "topic": Z.message_topic(original), "content":
-                                            "%s%s: %s" % (N.REFUSAL_PREFIX, label, reason)})
+                                            "topic": Z.message_topic(original), "content": "%s: %s" % (prefix, reason)})
         except (Z.ApiError, Z.NetworkError):
             self.log("notes-relay-reply-failed", id=message_id)
+
+    def _already_replied(self, runner: Any, original: Mapping[str, Any], message_id: int, prefix: str) -> bool:
+        me = getattr(runner.me, "user_id", None)
+        found = runner.client.get("messages", {
+            "narrow": json.dumps([{"operator": "channel", "operand": original.get("stream_id")},
+                                  {"operator": "topic", "operand": Z.message_topic(original)}]),
+            "anchor": message_id, "num_before": 0, "num_after": 30, "include_anchor": "false", "apply_markdown": "false"})
+        return any(m.get("sender_id") == me and str(m.get("content") or "").startswith(prefix)
+                   for m in found.get("messages") or [] if isinstance(m, dict))
 
     def _download(self, runner: Any, path: str) -> bytes:
         """The uploaded .md at /user_uploads/..., through the reading bot's own credential:  Zulip hands back a
