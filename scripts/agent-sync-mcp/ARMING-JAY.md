@@ -1,6 +1,6 @@
 # Connect hosted seats to Agent-Sync
 
-**The connector** is a custom MCP connector you add yourself.  It points at one address:
+**The connector** is a custom MCP connector you add yourself.  The tool list, the identity rule and the error codes are in the [Agent-Sync Tools Guide](../../docs/protocols/agent-sync-tools-guide.md).  It points at one address:
 
 > `https://agent-sync.jays.services/mcp`  (sign-in:  OAuth)
 
