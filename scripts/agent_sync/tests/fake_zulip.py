@@ -36,6 +36,10 @@ BOT_CLIENT = "ZulipPython"
 WILDCARDS_CHANNEL = ("all", "everyone", "channel", "stream")
 
 
+# The unicode codes Zulip gives the emoji the tests use (a reaction carries emoji_code).
+EMOJI_CODES = {"check": "2705", "cross_mark": "274c", "eyes": "1f440"}
+
+
 @dataclass
 class Recorded:
     method: str
@@ -779,6 +783,10 @@ class FakeZulip:
     def _public(self, message: dict[str, Any], user_id: int | None = None) -> dict[str, Any]:
         shown = copy.deepcopy(message)
         shown["flags"] = self._flags(message, user_id)
+        reactions = [{"user_id": uid, "emoji_name": name, "emoji_code": EMOJI_CODES.get(name, ""),
+                      "reaction_type": "unicode_emoji"} for mid, uid, name in sorted(self.reactions) if mid == message["id"]]
+        if reactions:
+            shown["reactions"] = reactions
         return shown
 
     def _get_messages(self, params: dict[str, str], user_id: int) -> dict[str, Any]:

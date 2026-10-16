@@ -160,8 +160,8 @@ test("the grant's scope and pause govern a call made as another identity", async
 test("row 6:  each grant's tools/list offers exactly its own set, required on writes, and identities after whoami", () => {
   for (const seat of KNOWN_SEATS) {
     const { list } = toolListFor(seat);
-    assert.deepEqual(list.slice(0, 2).map((t) => t.name), ["whoami", "identities"]);
-    assert.equal(list.length, HOSTED_TOOL_LIST.length + 1);
+    assert.deepEqual(list.slice(0, 3).map((t) => t.name), ["whoami", "identities", "guide"]);
+    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2);
     for (const tool of list) {
       const properties = tool.inputSchema.properties ?? {};
       if (tool.name === "identities") {
@@ -236,5 +236,7 @@ test("the instructions state the rule, the set and the families", () => {
   const text = r.instructions();
   assert.match(text, /writes must name it;  reads without it act as GROK-WEB/);
   for (const identity of allowedIdentities("GROK-WEB")) assert.ok(text.includes(identity), identity);
-  assert.match(text, /zulip_\*, linear_\*, recall_\*, fleetlink_\* and listener_\*/);
+  assert.match(text, /zulip_\*, linear_\*, recall_\*, notes_\*, fleetlink_\* and listener_\*/);
+  assert.match(text, /Call guide for the full tools guide/);
+  assert.match(text, /fleetlink\.online\/agent-sync-tools-guide\//);
 });

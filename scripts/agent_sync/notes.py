@@ -61,7 +61,7 @@ SCRIPT_TIMEOUT_S = 120.0
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 UPLOAD_PATH_RE = re.compile(r"^/user_uploads/[A-Za-z0-9_./-]{1,200}$")
 FLAG_NAMES = ("pin", "notify", "needs_owner", "summary", "pr", "html")
-_TITLE_BAD_RE = re.compile(r'["\\\x00-\x1f\x7f\x85  ]')
+_TITLE_BAD_RE = re.compile(r'["\\\x00-\x1f\x7f\x85\u2028\u2029]')
 _PR_RE = re.compile(r"^[0-9#, ]{1,40}$")
 _BRACKET_RE = re.compile(r"^\[([^\]]+)\] \S")
 _APPS_RE = re.compile(r"^[A-Z0-9]+(?:, [A-Z0-9]+)*$")
@@ -395,7 +395,7 @@ def _note_id(stdout: str) -> str | None:
 
 
 def run_direct(envelope: Mapping[str, Any], script: Path, *, env: Mapping[str, str],
-               runner: Runner = subprocess.run, timeout: float = SCRIPT_TIMEOUT_S) -> dict[str, Any]:
+               runner: Runner | None = None, timeout: float = SCRIPT_TIMEOUT_S) -> dict[str, Any]:
     """Run the script for `envelope` (markdown already inline).  Returns {"status": "done", "note_id": ...}
     or raises NotesError.  The body goes on stdin (markdown) or in a mode-600 temporary file (HTML);  never
     on the command line."""
@@ -417,7 +417,7 @@ def run_direct(envelope: Mapping[str, Any], script: Path, *, env: Mapping[str, s
         argv, extra = build_argv(script, envelope, html_file)
         try:
             with _RUN_LOCK:
-                proc = runner(argv, input=stdin_data if stdin_data is not None else b"", capture_output=True,
+                proc = (runner or subprocess.run)(argv, input=stdin_data if stdin_data is not None else b"", capture_output=True,
                               timeout=timeout, env=child_env(env, extra), check=False)
         except subprocess.TimeoutExpired:
             raise NotesError("unavailable", "the notes script did not finish within %d seconds" % int(timeout)) from None

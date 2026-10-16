@@ -84,3 +84,5 @@ export const ZULIP_FULL_PUBLIC_TOOLS = Object.freeze(TOOLS.tools.filter((tool) =
 export const ZULIP_PUBLIC_BY_NAME = Object.freeze(Object.fromEntries([...ZULIP_PUBLIC_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS].map((tool) => [tool.name, tool])));
 // The shared `identities` spec (tools.json);  the per-connection router serves it, not HostedTools.
 export const IDENTITIES_SPEC = Object.freeze(TOOLS.tools.find((tool) => tool.name === "identities"));
+// The shared `guide` spec (tools.json);  the per-connection router answers it from the bundled guide text.
+export const GUIDE_SPEC = Object.freeze(TOOLS.tools.find((tool) => tool.name === "guide"));

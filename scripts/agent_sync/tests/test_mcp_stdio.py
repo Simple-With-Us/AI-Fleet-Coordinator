@@ -12,6 +12,7 @@ import errno
 import fcntl
 import io
 import json
+from pathlib import Path
 import os
 import subprocess
 import sys
@@ -35,7 +36,7 @@ IDENTITY_ARGS = {"seat", "as", "as_seat", "rc", "no_tag", "fleet", "identity"}
 # AFC-331 renamed every Zulip tool to zulip_<name> (the old names are refused with unknown_tool) and
 # added identities.  The order is whoami, identities, the Zulip tools, then listener-tools.json.  These
 # are literals on purpose:  tools.py's own READ_TOOLS and WRITE_TOOLS must equal them.
-READ_TOOLS = {"whoami", "identities", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_dm_list",
+READ_TOOLS = {"whoami", "identities", "guide", "notes_status", "recall_search", "recall_stats", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_dm_list",
               "zulip_dm_read", "zulip_get_message", "zulip_message_history", "zulip_search", "zulip_channels",
               "zulip_channel_info", "zulip_channel_members", "zulip_users", "zulip_presence", "zulip_user_groups",
               "zulip_custom_emoji", "zulip_scheduled_list", "zulip_drafts_list", "listener_status", "listener_inbox",
@@ -45,7 +46,22 @@ WRITE_TOOLS = {"zulip_post", "zulip_reply", "zulip_react", "zulip_dm_send", "zul
                "zulip_unreact", "zulip_mark_read", "zulip_mark_unread", "zulip_star", "zulip_unstar",
                "zulip_unsubscribe", "zulip_topic_visibility", "zulip_set_status", "zulip_upload",
                "zulip_scheduled_create", "zulip_scheduled_edit", "zulip_scheduled_delete", "zulip_draft_create",
-               "zulip_draft_edit", "zulip_draft_delete", "zulip_typing", "listener_ack"}
+               "zulip_draft_edit", "zulip_draft_delete", "zulip_typing", "listener_ack", "notes_create", "notes_update",
+               "notes_pin", "notes_unpin", "recall_contribute"}
+
+
+def _linear_kinds() -> tuple[set, set]:
+    """The linear_* tools by kind, from the board catalogs (the files the hosted JavaScript exports)."""
+    catalog = Path(__file__).resolve().parents[2] / "linear-board" / "catalog"
+    rows = []
+    for name, key in (("core-tools.json", "tools"), ("named-commands.json", "commands"), ("official-mcp-tools.json", "tools")):
+        rows += json.loads((catalog / name).read_text())[key]
+    return ({r["name"] for r in rows if r["kind"] == "read"}, {r["name"] for r in rows if r["kind"] == "write"})
+
+
+LINEAR_READ, LINEAR_WRITE = _linear_kinds()
+READ_TOOLS |= LINEAR_READ
+WRITE_TOOLS |= LINEAR_WRITE
 
 
 class _StubTools:
@@ -571,7 +587,8 @@ class ProtocolTests(McpHarness):
             self.assertEqual(schema["type"], "object")
             self.assertIs(schema["additionalProperties"], False, name)
             self.assertFalse(IDENTITY_ARGS & set(schema["properties"]), name)
-            self.assertIn("outputSchema", tool)
+            if not name.startswith("linear_"):  # board prints its own JSON:  no structured result to promise
+                self.assertIn("outputSchema", tool)
             self.assertIs(tool["annotations"]["readOnlyHint"], name in READ_TOOLS, name)
         for name in ("zulip_post", "zulip_reply"):
             self.assertIs(tools[name]["annotations"]["destructiveHint"], False)
@@ -588,9 +605,10 @@ class ProtocolTests(McpHarness):
         """AFC-331:  every tool is <family>_<verb> but whoami and identities, and every name in
         renamed-tools.json is gone and names a tool that is served."""
         names = [t["name"] for t in T.load_served_tools()["tools"]]
-        self.assertEqual(names[:3], ["whoami", "identities", "zulip_topics"])
+        self.assertEqual(names[:4], ["whoami", "identities", "guide", "zulip_topics"])
         for name in names:
-            self.assertTrue(name in ("whoami", "identities") or name.startswith(("zulip_", "listener_")), name)
+            self.assertTrue(name in ("whoami", "identities", "guide")
+                            or name.startswith(("zulip_", "listener_", "notes_", "recall_", "linear_")), name)
         renamed = R.renamed_tools()
         for old, new in renamed.items():
             self.assertNotIn(old, names)
@@ -601,8 +619,11 @@ class ProtocolTests(McpHarness):
     def test_every_tool_maps_to_a_cli_command_that_parses(self):
         """tools.json is the contract:  every MCP tool (and every listener tool) names the CLI command
         that does the same job, and that command exists in the CLI's parser."""
-        served = [t["name"] for t in T.load_served_tools()["tools"]]
+        served = [t["name"] for t in T.load_served_tools()["tools"]
+                  if not t["name"].startswith(("linear_", "recall_"))]  # run through board and the recall CLI
         self.assertEqual(set(served), set(T.CLI_VERBS), "tools and CLI_VERBS differ")
+        self.assertEqual({t["name"] for t in T.load_served_tools()["tools"] if t["name"].startswith("recall_")},
+                         set(T.EXTERNAL_CLI))
         parser = cli.build_parser()
         actions = {a.dest: a for a in parser._actions if isinstance(a, argparse._SubParsersAction)}
         top = actions["command"].choices

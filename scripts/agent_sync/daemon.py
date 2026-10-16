@@ -491,6 +491,7 @@ class Daemon:
         self.heartbeat = HB.SentryHeartbeat(env=self.env, home=self.home, clock=self.clock.time, log=self.log.write,
                                             scrub=self.scrub, hide=self.hide_values)
         self._apply_config()
+        self._configure_notes_relay()
         # A listener that already holds the state directory owns its ledgers and cursors:  a
         # second daemon (a container waiting to take over on a redeploy, or a stray manual run)
         # must not mark that listener's running wake failed or reload its queued wakes.  run()

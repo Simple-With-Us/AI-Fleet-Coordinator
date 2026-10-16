@@ -1,0 +1,143 @@
+"""[notes_relay] in listener.toml and the consumer inside the listener daemon (AFC-331).
+
+The daemon runs against the fake Zulip with a fake script runner:  no osascript, no Notes.app.  The
+interesting properties are the wiring:  an opt-in section, only the configured seat's bot reads the
+channel, a relay request never reaches the seat inbox or wakes anyone, the slow script runs on a worker
+thread, and a missing channel is a logged warning, never a created channel.
+"""
+from __future__ import annotations
+
+import subprocess
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from agent_sync import config as C
+from agent_sync import notes as N
+from agent_sync.tests.test_daemon import DaemonHarness
+
+CODEX_ID = 11
+RELAY_SECTION = "[notes_relay]\nenabled = true\nseat = \"CLAUDE\"\n"
+
+
+class ConfigTests(unittest.TestCase):
+    def load(self, text: str) -> C.Config:
+        import tomllib
+        return C.from_dict(tomllib.loads(text))
+
+    SEAT = '[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\nmodel = "sonnet"\n'
+
+    def test_off_by_default_and_seat_defaults_to_claude(self):
+        cfg = self.load(self.SEAT)
+        self.assertEqual((cfg.notes_relay_enabled, cfg.notes_relay_seat), (False, "CLAUDE"))
+        self.assertEqual([e for e in cfg.errors if "notes_relay" in e], [])
+
+    def test_enabled_with_a_held_seat(self):
+        cfg = self.load(self.SEAT + RELAY_SECTION)
+        self.assertEqual((cfg.notes_relay_enabled, cfg.notes_relay_seat), (True, "CLAUDE"))
+        self.assertEqual([e for e in cfg.errors if "notes_relay" in e], [])
+
+    def test_a_bad_section_is_an_error_and_never_enables(self):
+        for text, fragment in (
+            (self.SEAT + "[notes_relay]\nenabled = \"yes\"\n", "enabled must be true or false"),
+            (self.SEAT + "[notes_relay]\nenabled = true\nseat = 5\n", "seat must be a seat name"),
+            (self.SEAT + "[notes_relay]\nenabled = true\nchannel = \"x\"\n", "unknown setting"),
+            (self.SEAT + "[notes_relay]\nenabled = true\nseat = \"CODEX\"\n", "is not an enabled [seat.X] section"),
+            ("[daemon]\ninstance = \"server\"\n" + self.SEAT.replace("[seat.CLAUDE]", "[seat.CLAUDE]\ncreds = \"file\"")
+             + RELAY_SECTION, "mac instance only"),
+        ):
+            with self.subTest(fragment):
+                cfg = self.load(text)
+                self.assertTrue(any(fragment in e for e in cfg.errors), cfg.errors)
+                self.assertFalse(cfg.notes_relay_enabled)
+
+
+class DaemonRelayTests(DaemonHarness):
+    def setUp(self):
+        super().setUp()
+        self.calls: list[dict] = []
+        self.ran = threading.Event()
+        patcher = mock.patch("agent_sync.notes.direct_available", return_value=Path("/fake/apple-notes-coding.sh"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def enable(self, **kw):
+        self.write_config(extra_daemon=kw.pop("extra_daemon", ""))
+        path = self.state_dir / "listener.toml"
+        path.write_text(path.read_text() + "\n" + RELAY_SECTION)
+
+    def fake_run(self, argv, **kwargs):
+        self.calls.append({"argv": list(argv), "input": kwargs.get("input")})
+        self.ran.set()
+        return subprocess.CompletedProcess(argv, 0, b"created note id=n1\n", b"")
+
+    def envelope_message(self, body="relay body", title="[AFC, Codex] relay", rid="daemon-request-1", mention=False):
+        env = N.make_envelope("create", title, body + (" @**Claude** please look" if mention else ""), {}, rid, "CODEX")
+        return self.fake.add_message("Codex", "notes-relay", title, N.render_message(env))
+
+    def wait(self, predicate, seconds=10.0):
+        end = time.time() + seconds
+        while time.time() < end:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return predicate()
+
+    def test_a_relay_request_runs_off_the_seat_thread_is_answered_and_never_reaches_the_inbox(self):
+        self.enable()
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        self.assertIsNotNone(daemon.notes_relay)
+        self.assertIn("notes-relay", self.fake.subscribed, "the reading bot should have joined the existing channel")
+        daemon.notes_relay.runner = self.fake_run
+        mid = self.envelope_message(mention=True)
+        self.pump_until(daemon, self.ran.is_set)
+        self.assertTrue(self.wait(lambda: (mid, 10, "check") in self.fake.reactions))
+        self.assertEqual(self.calls[0]["input"], b"relay body @**Claude** please look")
+        self.assertEqual(self.calls[0]["argv"][-2:], ["--title", "[AFC, Codex] relay"])
+        daemon.pump("CLAUDE", timeout=0.3)
+        self.assertEqual(self.inbox(), [], "a relay request must not become seat inbox work")
+        self.assertEqual(self.ledger(), [], "a relay request must not wake anyone")
+        self.assertEqual(daemon.seats["CLAUDE"].cursor, mid, "the cursor still advances past the consumed message")
+        daemon.notes_relay.stop()
+
+    def test_a_refused_request_gets_a_cross_mark_and_a_reply_and_runs_nothing(self):
+        self.enable()
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        daemon.notes_relay.runner = self.fake_run
+        mid = self.envelope_message(title="[AFC, Cursor] wrong agent")
+        self.pump_until(daemon, lambda: (mid, 10, "cross_mark") in self.fake.reactions or (mid, 10, "x") in self.fake.reactions)
+        self.assertTrue(self.wait(lambda: any(m["sender_id"] == 10 and "notes-relay refused" in m["content"]
+                                              for m in self.fake.messages)))
+        self.assertEqual(self.calls, [])
+        daemon.notes_relay.stop()
+
+    def test_the_channel_missing_is_a_warning_and_nothing_is_created(self):
+        self.enable()
+        daemon = self.started()
+        self.assertNotIn("notes-relay", self.fake.streams)
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("notes-relay-no-channel", log)
+        self.assertIn("create it", log)
+        daemon.notes_relay.stop()
+
+    def test_off_by_default_the_channel_routes_like_any_other(self):
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        self.assertIsNone(daemon.notes_relay)
+        mid = self.fake.add_message("Codex", "notes-relay", "t", "@**Claude** can you check this?")
+        self.pump_until(daemon, lambda: any(r["id"] == mid for r in self.inbox()))
+
+    def test_a_mac_without_the_script_logs_and_stays_off(self):
+        self.enable()
+        with mock.patch("agent_sync.notes.direct_available", return_value=None):
+            daemon = self.started()
+        self.assertIsNone(daemon.notes_relay)
+        self.assertIn("notes-relay-unavailable", (self.state_dir / "logs" / "listener.log").read_text())
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()

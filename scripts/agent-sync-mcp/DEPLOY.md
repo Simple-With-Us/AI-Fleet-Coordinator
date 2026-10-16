@@ -182,6 +182,10 @@ The `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes
    ```
 4. Deploy (step 1).  From a connected JET chat, `listener_status` answers counts;  a 401 there means the two keys differ or the clocks are more than five minutes apart, a 404 that the listener has no key for the seat.  **Not deployed yet.**
 
+## Notes, recall and the guide (AFC-331)
+
+`notes_create`, `notes_update`, `notes_pin`, `notes_unpin` and `notes_status` (`src/notes.js`) relay Apple Notes requests to `#notes-relay`;  the Mac listener does the work (`docs/protocols/per-call-identity.md`, section 5).  Before the first call: the owner creates the public channel `#notes-relay`, every bot that relays is subscribed to it (the channel rule needs that), and the Mac's `listener.toml` has `[notes_relay] enabled = true`.  No secret or var changes.  The `guide` tool serves `src/guide-text.js`, generated from `docs/protocols/agent-sync-tools-guide.md`:  after editing that page run `node scripts/export-guide.mjs` (a test fails when it is stale).  `recall_*` specs are shared with the stdio server through `scripts/agent_sync/mcp/recall-tools.json`:  after changing `src/recall.js` run `node scripts/export-recall-tools.mjs`.  Clients that cache `tools/list` refresh the connector to see the new tools.  **Not deployed yet.**
+
 ## Rotate a key
 
 Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULIP_<SEAT>_API_KEY` in Infisical `prod` `/zulip`, and anyone with deploy rights reruns `install_seat_key.py <SEAT> --apply`.  The Worker re-reads the secret on the next request;  the role cache is unaffected.

@@ -41,7 +41,7 @@ CHILD_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "USER"
 # The variables `recall` itself reads to find its own corpus (docs/RAG-FLEET-INFRA.md, "Run your own").
 PASS_PREFIXES = ("QDRANT_", "TEI_", "RECALL_", "INFISICAL_")
 _MARKER_RE = re.compile(r"(?i)(BEGIN|END)[\W_]*UNTRUSTED[\W_]*(RECALL|ZULIP)")
-_LINE_BREAKS_RE = re.compile("[  \x85]")
+_LINE_BREAKS_RE = re.compile("[\u2028\u2029\x85]")
 
 
 class RecallUnavailable(Exception):

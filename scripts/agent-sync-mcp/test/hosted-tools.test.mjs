@@ -122,10 +122,10 @@ function fence(text) {
 test("tools.json is the stdio server's file:  whoami, identities, then every Zulip tool as zulip_<verb> (AFC-331), closed inputs, no identity arguments in the shared contract", () => {
   const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/tools.json"), "utf8"));
   assert.deepEqual(TOOLS, file);
-  assert.deepEqual(TOOLS.tools.slice(0, 11).map((t) => t.name), ["whoami", "identities", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send"]);
-  assert.equal(TOOLS.tools.length, 44);
+  assert.deepEqual(TOOLS.tools.slice(0, 12).map((t) => t.name), ["whoami", "identities", "guide", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send"]);
+  assert.equal(TOOLS.tools.length, 45);
   for (const tool of TOOLS.tools) {
-    assert.ok(["whoami", "identities"].includes(tool.name) || tool.name.startsWith("zulip_"), tool.name);
+    assert.ok(["whoami", "identities", "guide"].includes(tool.name) || tool.name.startsWith("zulip_"), tool.name);
     assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
     // `identity` is added per connection (src/delegated-identities.js), never in the shared file.
     for (const banned of ["seat", "as", "rc", "no_tag", "fleet", "identity"]) assert.ok(!(banned in (tool.inputSchema.properties ?? {})), `${tool.name} takes ${banned}`);

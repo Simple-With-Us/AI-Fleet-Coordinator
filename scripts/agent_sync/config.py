@@ -514,6 +514,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("listener_api.port must differ from outgoing_webhook.port")
     else:
         cfg.listener_api_port = api_port
+    relay_errors_before = len(errors)
     relay = raw.get("notes_relay") or {}
     if not isinstance(relay, dict):
         errors.append("[notes_relay] must be a table")
@@ -530,6 +531,8 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("notes_relay.seat must be a seat name such as CLAUDE")
     else:
         cfg.notes_relay_seat = relay_seat.upper()
+    if len(errors) > relay_errors_before:
+        cfg.notes_relay_enabled = False  # a section with a problem never turns the consumer on
     if cfg.notes_relay_enabled and cfg.instance != "mac":
         errors.append("notes_relay.enabled applies to the mac instance only:  the notes script needs Notes.app")
         cfg.notes_relay_enabled = False

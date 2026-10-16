@@ -169,7 +169,11 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
     CLI._check_agent_identity(rt, agent)
     tools = T.Tools(agent, me=agent.me(), process_tag=agent.tag, session_source="flag",
                     sleep=rt.sleep, log=lambda text: None)
-    result = tools.call(tool_name, call_args)
+    saved = (rt.stdout, rt.stderr, rt.stdin)  # the tool layer swaps the runtime's streams for its own buffers
+    try:
+        result = tools.call(tool_name, call_args)
+    finally:
+        rt.stdout, rt.stderr, rt.stdin = saved
     if result.get("isError"):
         error = json.loads(result["content"][0]["text"])
         message = str(error.get("message") or "the request failed")

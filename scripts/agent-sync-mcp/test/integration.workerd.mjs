@@ -28,9 +28,9 @@ import { FakeLinear, opOf } from "./fake-linear.mjs";
 const TOOLS = CONTRACT.tools;
 // The hosted server lists the first ten tools.json tools, hosted-only recall and Linear tools, then
 // the FleetLink tools (AFC-328), the rest of tools.json and the listener tools (AFC-330).
-const HOSTED_NAMES = ["whoami", "identities", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name),
+const HOSTED_NAMES = ["whoami", "identities", "guide", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name),
   // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only listener tools.
-  ...TOOLS.slice(11).map((t) => t.name), "listener_status", "listener_inbox", "listener_owner_queue", "listener_wakes", "listener_held_back"];
+  ...TOOLS.slice(12).map((t) => t.name), "listener_status", "listener_inbox", "listener_owner_queue", "listener_wakes", "listener_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_status"];
 const JET_KEY = zulipShapedKey(11);
 const CURSOR_KEY = zulipShapedKey(12);
 const CURSOR_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";

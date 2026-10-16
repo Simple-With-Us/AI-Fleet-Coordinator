@@ -21,7 +21,9 @@ import RENAMED from "../../agent_sync/mcp/renamed-tools.json" with { type: "json
 import { HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, HOSTED_WRITE_TOOLS } from "./hosted-tools.js";
 import { ToolError, errorResult, okResult, schemaProblem } from "./contract.js";
 import { SHARED_IDENTITY_SEATS } from "./config.js";
-import { IDENTITIES_SPEC } from "./zulip-tool-specs.js";
+import { IDENTITIES_SPEC, GUIDE_SPEC } from "./zulip-tool-specs.js";
+import { guideResult, GUIDE_URL } from "./guide.js";
+import { GUIDE_TEXT } from "./guide-text.js";
 
 export const GB_IDENTITIES = Object.freeze([...GB_TABLE.enabled]);
 const GB_SET = new Set(GB_IDENTITIES);
@@ -133,7 +135,7 @@ export function toolListFor(seat) {
   const allowed = allowedIdentities(seat);
   const decorated = HOSTED_TOOL_LIST.map((spec) => decorate(spec, allowed, seat));
   const at = decorated.findIndex((spec) => spec.name === "whoami") + 1;
-  const list = Object.freeze([...decorated.slice(0, at), IDENTITIES_SPEC, ...decorated.slice(at)]);
+  const list = Object.freeze([...decorated.slice(0, at), IDENTITIES_SPEC, decorate(GUIDE_SPEC, allowed, seat), ...decorated.slice(at)]);
   const byName = Object.freeze(Object.fromEntries(list.map((spec) => [spec.name, spec])));
   const entry = Object.freeze({ list, byName });
   LIST_CACHE.set(seat, entry);
@@ -149,7 +151,8 @@ export function toolListFor(seat) {
  * says whether a peer seat's Zulip and Linear credentials are installed (names only).
  */
 export class IdentityRouter {
-  constructor({ callerTools, credentials = null, createIdentity = null, identityStatus = null }) {
+  constructor({ callerTools, credentials = null, createIdentity = null, identityStatus = null, guideText = GUIDE_TEXT }) {
+    this.guideText = guideText;
     this.callerTools = callerTools;
     this.seat = callerTools.seat;
     this.credentials = credentials;
@@ -166,7 +169,8 @@ export class IdentityRouter {
   instructions() {
     return `  Each call names the bot it acts as in its identity argument:  writes must name it;  reads without it act as ${this.seat}.  ` +
       `This connection may act as ${this.allowed.join(", ")};  identities lists them with their status.  Tools are named by family:  ` +
-      "zulip_*, linear_*, recall_*, fleetlink_* and listener_*;  whoami and identities stand alone.";
+      "zulip_*, linear_*, recall_*, notes_*, fleetlink_* and listener_*;  whoami, identities and guide stand alone.  " +
+      `Call guide for the full tools guide (or one section), also at ${GUIDE_URL}.`;
   }
 
   async audit(row) {
@@ -187,6 +191,7 @@ export class IdentityRouter {
       return this.refuse(name, "none", new ToolError("unknown_tool", `${name} was renamed ${replacement} (AFC-331):  call ${replacement} instead`, { extra: { replacement } }));
     }
     if (name === "identities") return this.identities(rawArgs);
+    if (name === "guide") return this.guide(rawArgs);
     // Unknown names stay protocol errors, audited by the grant's own tools.
     if (!Object.hasOwn(HOSTED_TOOLS_BY_NAME, name)) return this.callerTools.call(name, rawArgs);
     // The grant's scope comes first:  a read-only grant learns it cannot write before it learns how to
@@ -239,6 +244,25 @@ export class IdentityRouter {
       }
     }
     return tools.call(name, innerArgs);
+  }
+
+  /** The guide tool:  no identity, no credential, nothing written.  A supplied `identity` is ignored. */
+  async guide(rawArgs) {
+    const name = "guide";
+    try {
+      const args = rawArgs === undefined || rawArgs === null ? {} : rawArgs;
+      if (!args || typeof args !== "object" || Array.isArray(args)) throw new ToolError("invalid_argument", "arguments must be an object");
+      const { identity: _ignored, ...inner } = args;
+      const problem = schemaProblem(GUIDE_SPEC.inputSchema, inner);
+      if (problem) throw new ToolError("invalid_argument", problem);
+      this.callerTools.requireScope(name);
+      if (this.callerTools.paused) throw new ToolError("paused", `The ${this.seat} seat is paused.`);
+      return guideResult(this.guideText, inner);
+    } catch (error) {
+      const mapped = error instanceof ToolError ? error : new ToolError("unavailable", "The guide is unavailable.");
+      await this.audit({ acting_identity: this.seat, tool: name, error_code: mapped.code, error_message: mapped.message.slice(0, 120) });
+      return errorResult(mapped);
+    }
   }
 
   status(identity) {
