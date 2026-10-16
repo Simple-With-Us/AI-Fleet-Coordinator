@@ -1706,6 +1706,21 @@ WRITE_COMMANDS = frozenset({"post", "reply", "react", "dm", "edit", "delete", "m
 READ_ONLY_ACTIONS = frozenset({"list"})  # `scheduled list` and `drafts list` read
 
 
+def _check_agent_identity(rt: Runtime, agent: Agent) -> None:
+    """AFC-331:  the CLI acts only as an agent bot (a live or extra seat, a BF-* bot or an enabled GB-*
+    persona), never as the owner's account or an integration bot, whatever credential files exist.  An
+    unreadable registry leaves the bot check (check_bot) as the guard, as before."""
+    from . import identities as X
+
+    try:
+        registry = I.load_seat_registry(env=rt.env)
+    except I.SeatRegistryError:
+        return
+    problem = X.agent_identity_problem(agent.seat, registry=registry)
+    if problem:
+        raise Z.CredentialError(problem)
+
+
 def _audit_write(rt: Runtime, args: argparse.Namespace, agent: Agent, code: int) -> None:
     from . import identity_log as AUDIT
 
@@ -1761,6 +1776,7 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
         if args.command in ("post", "reply", "dm", "edit"):
             _check_text_args(args)  # a usage error needs no credential
         agent = Agent(rt, args)  # every request after users/me waits for agent.verify(); whoami reports it
+        _check_agent_identity(rt, agent)
         code = COMMANDS[args.command](agent, args)
         _audit_write(rt, args, agent, code)
         return code

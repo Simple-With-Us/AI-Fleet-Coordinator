@@ -189,5 +189,38 @@ class CallRuleTests(IdentityHarness):
         self.assertEqual(self.fake.messages, [])
 
 
+
+class CliTests(IdentityHarness):
+    """The CLI side:  `agent-sync identities` lists the same set, and every write is audited."""
+
+    def cli_env(self, **overrides: str | None) -> dict[str, str]:
+        return self.env(AGENT_SYNC_SECRETS_DIR=None, **overrides)  # the files under HOME, like the server
+
+    def test_identities_lists_the_same_set(self):
+        result = self.run_cli("identities", "--json", env=self.cli_env())
+        self.assertEqual(result.code, 0, result.err)
+        info = json.loads(result.out)
+        self.assertEqual([row["identity"] for row in info["identities"]], self.expected)
+        self.assertEqual(info["default_identity"], "CLAUDE")
+        pinned = self.run_cli("identities", "--json", env=self.cli_env(AGENT_SEAT=None, AGENT_LAUNCHER="botfleet",
+                                                                        AGENT_LAUNCH_SEAT="CLAUDE"))
+        self.assertEqual([row["identity"] for row in json.loads(pinned.out)["identities"]], ["CLAUDE"])
+
+    def test_cli_writes_are_audited_and_reads_are_not(self):
+        posted = self.run_cli("post", "--as", "CURSOR", "--topic", "cli", "hello", env=self.cli_env(AGENT_SEAT=None))
+        self.assertEqual(posted.code, 0, posted.err)
+        self.assertEqual(self.run_cli("topics", env=self.cli_env()).code, 0)
+        rows = [json.loads(line) for line in (self.state_dir / "logs" / "identity.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["transport"], r["identity"], r["tool"], r["outcome"]) for r in rows],
+                         [("cli", "CURSOR", "post", "ok")])
+        self.assertNotIn("hello", json.dumps(rows))
+
+    def test_the_cli_never_acts_as_an_integration_bot_or_a_disabled_persona(self):
+        for name in ("SENTRY", "GB-ENGINEER"):
+            with self.subTest(name):
+                refused = self.run_cli("post", "--as", name, "--topic", "cli", "x", env=self.cli_env(AGENT_SEAT=None))
+                self.assertEqual(refused.code, 3, refused.err)
+        self.assertEqual(self.fake.messages, [])
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
