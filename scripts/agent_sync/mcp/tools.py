@@ -375,6 +375,12 @@ def _retry_after(exc: Z.ApiError) -> float | None:
     return max(0.0, min(seconds, 3600.0))
 
 
+def is_interrupt(exc: BaseException) -> bool:
+    """Ctrl-C or SIGTERM (which the CLI turns into KeyboardInterrupt) or an exit:  a write that was in flight may have
+    landed, so its idempotency row is kept as unknown, never dropped, and the interrupt goes on."""
+    return isinstance(exc, (KeyboardInterrupt, SystemExit))
+
+
 def map_exception(exc: BaseException, *, write: bool = False, sent: bool = False) -> ToolError:
     """The error object for an exception.  `write` is a write tool (only reads are retryable);
     `sent` is the send phase of a write, where a timeout or a gateway status may have posted."""
@@ -780,6 +786,9 @@ class Tools:
         try:
             message_id = send()
         except BaseException as exc:
+            if is_interrupt(exc):
+                self._idem_set(row_key, state="unknown", ts=attempt)
+                raise
             error = map_exception(exc, write=True, sent=True)
             if error.code == "outcome_unknown":
                 self._idem_set(row_key, state="unknown", ts=attempt)
@@ -953,6 +962,9 @@ class Tools:
         try:
             result = send()
         except BaseException as exc:
+            if is_interrupt(exc):
+                self._idem_set(row_key, state="unknown", ts=attempt)
+                raise
             error = map_exception(exc, write=True, sent=True)
             if error.code == "outcome_unknown":
                 self._idem_set(row_key, state="unknown", ts=attempt)
@@ -1618,8 +1630,11 @@ class Tools:
         except RECALL.RecallUnavailable as exc:
             self._idem_drop(key)
             raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
-        except BaseException:
-            self._idem_drop(key)
+        except BaseException as exc:
+            if is_interrupt(exc):
+                self._idem_set(key, state="unknown")  # the contribution may have been stored
+            else:
+                self._idem_drop(key)
             raise
         self._idem_set(key, state="sent", id=0, result=structured)
         return self._contribute_result(structured, duplicate=bool(structured.get("duplicate")))
@@ -1692,8 +1707,11 @@ class Tools:
         except _OutcomeUnknown as exc:
             self._idem_set(key, state="unknown")
             raise ToolError("outcome_unknown", str(exc)) from None
-        except BaseException:
-            self._idem_drop(key)
+        except BaseException as exc:
+            if is_interrupt(exc):
+                self._idem_set(key, state="unknown")  # board may have written before it was interrupted
+            else:
+                self._idem_drop(key)
             raise
         self._idem_set(key, state="sent", id=0, result={"stdout": result.stdout[:self.LINEAR_SAVED_STDOUT]})
         return self._linear_text(name, result.stdout)

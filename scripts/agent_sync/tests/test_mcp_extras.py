@@ -215,6 +215,20 @@ class NotesToolTests(McpHarness):
             self.assertNotIn("isError", fresh)
         self.assertEqual(len(run.calls), 1)
 
+    def test_an_interrupt_on_the_direct_path_is_an_unknown_outcome_that_a_retry_is_refused_for(self):
+        def interrupted(argv, **kwargs):
+            raise KeyboardInterrupt()
+        session = self.session()
+        args = {"title": "[AFC, Claude] interrupted", "markdown": "x", "request_id": "interrupt-request-9"}
+        with self.direct(interrupted)[1], mock.patch.object(N.subprocess, "run", interrupted):
+            with self.assertRaises(AssertionError, msg="the interrupt ends the server"):
+                session.call("notes_create", args)
+        session = self.session()
+        run, a, b = self.direct()
+        with a, b:
+            self.assert_tool_error(session.call("notes_create", args), "outcome_unknown")
+            self.assertEqual(run.calls, [], "the interrupted write may have landed:  its id is refused")
+
     def test_transport_relay_posts_the_envelope_as_the_identity_to_the_relay_channel(self):
         with mock.patch.object(N, "direct_available", return_value=Path("/fake/apple-notes-coding.sh")):
             result = self.session().call("notes_create", {"title": "[AFC, Claude] relayed", "markdown": "# Body\n\nText.",
@@ -464,6 +478,20 @@ class RecallToolTests(FakePrograms):
         self.assertFalse(fresh["duplicate"])
         self.assertEqual(len(self.calls(self.recall_out)), 1)
 
+    def test_an_interrupted_contribution_keeps_its_row_unknown_and_the_retry_is_refused(self):
+        args = {"text": self.LESSON, "category": "lesson", "idempotency_key": "aaaaaaaa-7"}
+
+        def interrupted(argv, **kwargs):
+            raise KeyboardInterrupt()
+        env = self.env(RECALL_TEST_REPLY=json.dumps({"id": "a", "doc_id": "lesson:1", "status": "stored"}))
+        session = self.session(env)
+        with mock.patch.object(RT.subprocess, "run", interrupted):
+            with self.assertRaises(AssertionError, msg="the interrupt ends the server"):
+                session.call("recall_contribute", args)
+        session = self.session(env)
+        self.assert_tool_error(session.call("recall_contribute", args), "outcome_unknown")
+        self.assertEqual(self.calls(self.recall_out), [], "the retry did not send it again")
+
     def test_a_search_that_times_out_is_plain_unavailability_not_an_unknown_outcome(self):
         def hang(argv, **kwargs):
             raise subprocess.TimeoutExpired(argv, 1)
@@ -602,6 +630,20 @@ class LinearToolTests(FakePrograms):
         def hang(argv, **kwargs):
             raise subprocess.TimeoutExpired(argv, 1)
         return mock.patch.object(LT.subprocess, "run", hang)
+
+    def test_an_interrupted_core_linear_write_keeps_its_row_unknown_and_the_retry_is_refused(self):
+        """Ctrl-C or SIGTERM while board runs:  the write may have landed, so the interrupt goes on and the row stays."""
+        def interrupted(argv, **kwargs):
+            raise KeyboardInterrupt()
+        session = self.session(self.env())
+        args = {"id": "AFC-1", "body": "an interrupted comment"}
+        with mock.patch.object(LT.subprocess, "run", interrupted):
+            with self.assertRaises(AssertionError, msg="the interrupt ends the server"):
+                session.call("linear_comment", args)
+        session = self.session(self.env())  # a new server on the same state
+        refused = self.assert_tool_error(session.call("linear_comment", args), "outcome_unknown")
+        self.assertIn("may or may not", refused["message"])
+        self.assertEqual(self.calls(self.board_out), [], "the retry did not run board")
 
     def test_a_repeated_core_write_runs_board_once_and_returns_the_first_answer(self):
         session = self.session(self.env(LINEAR_TEST_REPLY="first-answer\n"))

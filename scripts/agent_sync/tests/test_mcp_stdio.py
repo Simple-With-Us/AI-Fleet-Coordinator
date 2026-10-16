@@ -899,6 +899,20 @@ class WriteToolTests(McpHarness):
         self.assertEqual(len(self.posted()), 1)  # the reconcile read found it:  no second POST
         self.assertIn(T.RECONCILE_DELAY, [round(s, 6) for s in self.clock.sleeps[sleeps:]])
 
+    def test_an_interrupt_during_a_post_keeps_its_row_unknown_and_goes_on(self):
+        session = self.session()
+        args = {"topic": "interrupted", "text": "may have landed", "idempotency_key": "intr-0001"}
+
+        def interrupted(*_a, **_k):
+            raise KeyboardInterrupt()
+        with mock.patch.object(T.CLI, "cmd_post", interrupted):
+            with self.assertRaises(AssertionError, msg="the interrupt ends the server"):
+                session.call("zulip_post", args)
+        rows = [json.loads(path.read_text()) for path in self.state_dir.rglob("mcp-idem.json")]
+        states = [row.get("state") for table in rows for row in (table.get("rows", table)).values() if isinstance(row, dict)]
+        self.assertIn("unknown", states, "the row is kept as unknown, not dropped")
+        self.assertNotIn("pending", states)
+
     def test_reconcile_finds_a_post_whose_sentence_gap_the_client_converted(self):
         # Finding:  the client sends two-space gaps as U+00A0 plus a space (AFC #392), so a hash of the
         # unconverted body never matched the stored message and the retry posted a duplicate.

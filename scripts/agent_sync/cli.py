@@ -1748,7 +1748,7 @@ def _check_agent_identity(rt: Runtime, agent: Agent, command: str = "") -> None:
         raise Z.CredentialError(problem)
 
 
-def _audit_write(rt: Runtime, args: argparse.Namespace, agent: Agent, code: int) -> None:
+def _audit_write(rt: Runtime, args: argparse.Namespace, agent: Agent, code: int, outcome: str | None = None) -> None:
     from . import identity_log as AUDIT
 
     if args.command == "api":
@@ -1758,7 +1758,8 @@ def _audit_write(rt: Runtime, args: argparse.Namespace, agent: Agent, code: int)
         path = args.path.strip().strip("/")
         path = path[len("api/v1/"):] if path.startswith("api/v1/") else path
         AUDIT.append(rt.env, rt.home, transport="cli", default_identity=agent.seat, identity=agent.seat,
-                     tool="api %s %s" % (args.method, path), outcome="ok" if code == 0 else "exit_%d" % code)
+                     tool="api %s %s" % (args.method, path),
+                     outcome=outcome or ("ok" if code == 0 else "exit_%d" % code))
         return
     if args.command not in WRITE_COMMANDS:
         return
@@ -1767,7 +1768,8 @@ def _audit_write(rt: Runtime, args: argparse.Namespace, agent: Agent, code: int)
     if action in READ_ONLY_ACTIONS:
         return
     AUDIT.append(rt.env, rt.home, transport="cli", default_identity=agent.seat, identity=agent.seat,
-                 tool=args.command + (" " + action if action else ""), outcome="ok" if code == 0 else "exit_%d" % code)
+                 tool=args.command + (" " + action if action else ""),
+                 outcome=outcome or ("ok" if code == 0 else "exit_%d" % code))
 
 
 LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
@@ -1823,6 +1825,8 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             _audit_write(rt, args, agent, exc.exit_code)
         return exc.exit_code
     except KeyboardInterrupt:
+        if agent is not None and agent._verified:
+            _audit_write(rt, args, agent, 130, "interrupted")  # a write that was in flight may have landed
         return 130
     except BrokenPipeError:
         return 0

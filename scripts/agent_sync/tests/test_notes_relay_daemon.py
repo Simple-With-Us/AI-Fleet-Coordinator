@@ -587,6 +587,48 @@ class DaemonRelayTests(DaemonHarness):
         self.assertIsNone(runner.held_high)
         daemon.notes_relay.stop()
 
+    def test_a_relay_message_the_new_seat_sees_during_a_deferred_handover_is_recovered_by_a_backfill(self):
+        daemon = self.two_seats()
+        old = daemon.notes_relay
+        new_runner = daemon.seats["CODEX"]
+        self.assertEqual(old.seat, "CLAUDE")
+        gate, inside = threading.Event(), threading.Event()
+
+        def slow(argv, **kwargs):
+            inside.set()
+            gate.wait(10)
+            return subprocess.CompletedProcess(argv, 0, b"created note id=n1\n", b"")
+        old.runner = slow
+        busy = self.envelope_message(rid="handover-busy-1")
+        self.pump_until(daemon, inside.is_set)
+        path = self.state_dir / "listener.toml"
+        head, _, tail = path.read_text().partition("[notes_relay]")
+        path.write_text(head + "[notes_relay]" + tail.replace('seat = "CLAUDE"', 'seat = "CODEX"'))
+        self.notes_knob = "CODEX"
+        with mock.patch.object(NR, "STOP_TIMEOUT", 0.2):
+            daemon.reload()
+        self.assertIs(daemon.notes_relay, old, "the old worker is still inside a request:  the swap is pending")
+        # CODEX's runner sees a relay request now:  the old consumer does not take it, but the cursor moves on.
+        env = N.make_envelope("create", "[AFC, Cursor] gap", "gap body", {}, "handover-gap-001", "CURSOR")
+        gap = self.fake.add_message("Cursor", "notes-relay", "[AFC, Cursor] gap", N.render_message(env))
+        daemon.handle_events(new_runner, [{"type": "message", "message": dict(self.fake.messages[-1])}])
+        self.assertEqual(daemon.notes_relay_gap_low, gap)
+        self.assertEqual(new_runner.cursor, gap)
+        gate.set()
+        self.assertTrue(self.wait(lambda: (busy, 10, "check") in self.fake.reactions))
+        self.assertTrue(self.wait(old.has_exited))
+        self.ran.clear()
+        with mock.patch("agent_sync.notes.subprocess.run", side_effect=self.fake_run):
+            daemon.tick()  # completes the swap and notes the gap
+            self.assertEqual(daemon.notes_relay.seat, "CODEX")
+            self.assertIsNone(daemon.notes_relay_gap_low)
+            daemon.last_tick["relay_retry"] = -1e9
+            daemon.tick()  # the in-session backfill reads the relay channel from the gap
+            self.assertTrue(self.wait(self.ran.is_set), "the request the new seat saw during the handover ran")
+        self.assertEqual(daemon.notes_relay_overflow, {})
+        self.assertIsNone(new_runner.hold_below)
+        daemon.notes_relay.stop()
+
     def test_the_hold_stays_while_the_overflow_backfill_cannot_spool(self):
         daemon = self.started_with_relay()
         runner = daemon.seats["CLAUDE"]

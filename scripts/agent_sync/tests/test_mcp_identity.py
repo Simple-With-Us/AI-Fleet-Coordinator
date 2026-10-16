@@ -9,6 +9,7 @@ from a literal list of personas.
 from __future__ import annotations
 
 import json
+from unittest import mock
 import unittest
 
 from agent_sync import identities as X
@@ -227,6 +228,22 @@ class CliTests(IdentityHarness):
         self.assertEqual([(r["tool"], r["outcome"]) for r in rows],
                          [("api POST messages/%d/reactions" % mid, "ok"), ("api DELETE messages/999999", "exit_%d" % failed.code)])
         self.assertNotIn("eyes", json.dumps(rows), "the body is never logged")
+
+    def test_an_interrupted_generic_write_is_audited_as_interrupted_and_exits_130(self):
+        from agent_sync import cli as CLI
+
+        def interrupted(agent, args):
+            agent.verify()  # the key is checked before any request, so a write may be in flight
+            raise KeyboardInterrupt()
+        env = self.cli_env()
+        with mock.patch.dict(CLI.COMMANDS, {"post": interrupted, "api": interrupted, "topics": interrupted}):
+            post = self.run_cli("post", "--topic", "cli", "x", env=env)
+            api_write = self.run_cli("api", "POST", "messages/1/reactions", "--param", "emoji_name=eyes", env=env)
+            read = self.run_cli("topics", env=env)  # a read leaves no row
+        self.assertEqual((post.code, api_write.code, read.code), (130, 130, 130))
+        rows = [json.loads(line) for line in (self.state_dir / "logs" / "identity.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["tool"], r["outcome"]) for r in rows],
+                         [("post", "interrupted"), ("api POST messages/1/reactions", "interrupted")])
 
     def test_an_unreadable_registry_refuses_every_identity_on_the_cli_naming_the_file(self):
         missing = self.cli_env(AGENT_SEAT=None, FLEET_APPS_JSON="/nonexistent/fleet-apps.json")
