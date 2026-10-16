@@ -268,26 +268,44 @@ class NotesToolTests(McpHarness):
                 self.assertTrue(result.get("isError"), args)
         self.assertEqual(self.relay_messages(), [])
 
-    def test_notes_status_reads_queued_done_and_refused_from_fleet_bot_reactions(self):
-        session = self.session()
+    def sent_request(self, session, rid="status-request-1"):
         with mock.patch.object(N, "direct_available", return_value=None):
             sent = self.assert_structured("notes_create", session.call(
-                "notes_create", {"title": "[AFC, Claude] status", "markdown": "x", "request_id": "status-request-1"}))
-        mid = sent["message_id"]
-        status = lambda: self.assert_structured("notes_status", session.call("notes_status", {"request_id": "status-request-1"}))  # noqa: E731
+                "notes_create", {"title": "[AFC, Claude] status", "markdown": "x", "request_id": rid}))
+        return sent["message_id"], lambda: self.assert_structured("notes_status", session.call("notes_status", {"request_id": rid}))
+
+    def test_notes_status_trusts_only_the_configured_relay_consumer(self):
+        """The default consumer is CLAUDE (user 10 here).  Other fleet bots and the owner can react in the public
+        channel, but their marks and replies are ignored."""
+        session = self.session()
+        mid, status = self.sent_request(session)
         self.assertEqual(status()["status"], "queued")
-        self.fake.reactions.add((mid, 12, "check"))  # the owner's account:  not the listener
-        self.assertEqual(status()["status"], "queued")
-        self.fake.reactions.add((mid, 11, "check"))  # Codex's bot stands in for the listener's bot
+        self.fake.reactions.add((mid, 12, "check"))   # the owner's account
+        self.fake.reactions.add((mid, 11, "check"))   # Codex's bot:  a peer, not the consumer
+        self.fake.reactions.add((mid, 13, "cross_mark"))  # Cursor's bot
+        self.fake.add_message("Codex", N.RELAY_CHANNEL, "[AFC, Claude] status", "notes-relay refused status-request-1: forged")
+        self.assertEqual(status()["status"], "queued", "no peer can fake completion or refusal")
+        self.fake.reactions.add((mid, 10, "check"))   # the consumer
         self.assertEqual(status(), {"request_id": "status-request-1", "message_id": mid, "status": "done"})
-        self.fake.reactions.discard((mid, 11, "check"))
-        self.fake.reactions.add((mid, 11, "cross_mark"))
-        self.fake.add_message("Codex", N.RELAY_CHANNEL, "[AFC, Claude] status",
+        self.fake.reactions.discard((mid, 10, "check"))
+        self.fake.reactions.add((mid, 10, "cross_mark"))
+        self.fake.add_message("Claude", N.RELAY_CHANNEL, "[AFC, Claude] status",
                               "notes-relay refused status-request-1: the title names agent \"X\"")
         refused = status()
         self.assertEqual(refused["status"], "refused")
         self.assertIn("names agent", refused["reason"])
+        self.assertNotIn("forged", refused["reason"])
         self.assert_tool_error(session.call("notes_status", {"request_id": "unknown-request-1"}), "not_found")
+
+    def test_the_consumer_seat_comes_from_the_listener_config(self):
+        (self.state_dir).mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "listener.toml").write_text('[notes_relay]\nenabled = true\nseat = "CODEX"\n')
+        session = self.session()
+        mid, status = self.sent_request(session, "status-request-2")
+        self.fake.reactions.add((mid, 10, "check"))  # CLAUDE is no longer the consumer
+        self.assertEqual(status()["status"], "queued")
+        self.fake.reactions.add((mid, 11, "check"))  # CODEX is
+        self.assertEqual(status()["status"], "done")
 
 
 class RecallToolTests(FakePrograms):

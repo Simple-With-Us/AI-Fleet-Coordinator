@@ -192,6 +192,12 @@ export function loadConfig(env) {
     botEmails[seat] = email;
   }
 
+  // The seat whose bot is the Notes relay consumer (the Mac listener's [notes_relay] seat).  notes_status counts a
+  // check mark, a cross mark or a refusal reply only from this bot:  #notes-relay is public and any fleet bot can
+  // react.  A non-secret var, default CLAUDE.
+  const notesRelayConsumer = String(env.NOTES_RELAY_CONSUMER ?? "").trim().toUpperCase() || "CLAUDE";
+  if (!/^[A-Z0-9][A-Z0-9-]{0,31}$/.test(notesRelayConsumer)) throw new Error("config: NOTES_RELAY_CONSUMER must be a seat name such as CLAUDE");
+
   // MCP Events callback hosts (src/events.js).  Unset means the compiled
   // default;  a malformed entry fails closed like every other var.
   const eventCallbackHosts = env.EVENT_CALLBACK_HOSTS === undefined || env.EVENT_CALLBACK_HOSTS === "" ? [...DEFAULT_CALLBACK_HOSTS] : parseList(env, "EVENT_CALLBACK_HOSTS").map((h) => h.toLowerCase());
@@ -229,6 +235,7 @@ export function loadConfig(env) {
     ownerUserId,
     ownerClients: Object.freeze(ownerClients),
     botEmails: Object.freeze(botEmails),
+    notesRelayConsumer,
     eventCallbackHosts: Object.freeze(eventCallbackHosts),
   });
 }

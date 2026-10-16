@@ -34,9 +34,6 @@ const CHECK_NAMES = Object.freeze({
   refused: ["cross_mark", "x", "negative_squared_cross_mark"],
   refusedCodes: ["274c"],
 });
-// Bots that are never the listener:  the integration bots.  Anything else that is a bot with a seat-shaped tag
-// may react (the stdio side checks the seat registry itself).
-const INTEGRATION_TAGS = new Set(["BETTERSTACK", "DATADOG", "LINEAR", "PAGERDUTY", "SENTRY"]);
 const REQUEST_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 const UPLOAD_PATH_RE = /^\/user_uploads\/[A-Za-z0-9_./-]{1,200}$/;
 const TITLE_BAD_RE = /["\\\u0000-\u001f\u007f\u0085\u2028\u2029]/;
@@ -246,12 +243,15 @@ export const NOTES_METHODS = {
   tool_notes_pin(args, audit) { return this.notesWrite("pin", args, audit); },
   tool_notes_unpin(args, audit) { return this.notesWrite("unpin", args, audit); },
 
-  /** Is this Zulip user one of the fleet's agent bots (a bot with a seat tag, not an integration bot)? */
+  /**
+   * Is this Zulip user the relay consumer's bot?  #notes-relay is public and every fleet bot can react or reply in
+   * it, so a check mark, a cross mark or a refusal reply counts only from the bot of the configured consumer seat
+   * (NOTES_RELAY_CONSUMER, default CLAUDE), resolved to its user id from the realm's users.
+   */
   async notesFleetBot(userId, members) {
     const user = members.find((m) => m.user_id === userId);
     if (!user || user.is_bot !== true) return false;
-    const tag = seatTagFor(user);
-    return /^[A-Z0-9][A-Z0-9-]*$/.test(tag) && !INTEGRATION_TAGS.has(tag);
+    return seatTagFor(user) === (this.config.notesRelayConsumer ?? "CLAUDE");
   },
 
   async tool_notes_status(rawArgs, audit) {

@@ -440,7 +440,8 @@ class Tools:
 
     def __init__(self, agent: CLI.Agent, *, me: Mapping[str, Any], process_tag: str | None, session_source: str,
                  codex_thread_meta: bool = False,
-                 owner_user_id: int = 0, owner_clients: Iterable[str] = (), clock: Callable[[], float] = time.time,
+                 owner_user_id: int = 0, owner_clients: Iterable[str] = (), notes_consumer: str = "CLAUDE",
+                 clock: Callable[[], float] = time.time,
                  sleep: Callable[[float], None] = time.sleep, log: Callable[[str], None] = lambda text: None) -> None:
         self.agent = agent
         self.seat = agent.seat
@@ -457,6 +458,7 @@ class Tools:
         self._call_state_key: str | None = None
         self.owner_user_id = owner_user_id
         self.owner_clients = set(owner_clients)
+        self.notes_consumer = notes_consumer  # [notes_relay] seat:  the only bot whose reactions and replies count
         self.clock = clock
         self.sleep = sleep
         self.log = log
@@ -1446,11 +1448,13 @@ class Tools:
     def _tool_notes_unpin(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._notes_write("unpin", args)
 
-    def _fleet_bot(self, user_id: Any) -> bool:
-        """Is this Zulip user one of the fleet's agent bots (never the owner, never an integration bot)?"""
+    def _relay_consumer(self, user_id: Any) -> bool:
+        """Is this Zulip user the configured relay consumer's bot?  #notes-relay is public and every fleet bot can
+        react or reply in it, so a check mark, cross mark or refusal reply counts only from the one bot the
+        listener's [notes_relay] seat names (default CLAUDE), resolved to its user id from the realm's users."""
         for user in self.agent.users():
             if user.get("user_id") == user_id:
-                return bool(user.get("is_bot")) and IDS.agent_identity_problem(IDENT.seat_tag_for(user)) is None
+                return bool(user.get("is_bot")) and IDENT.seat_tag_for(user) == self.notes_consumer
         return False
 
     def _tool_notes_status(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -1467,7 +1471,7 @@ class Tools:
             if not isinstance(reaction, dict):
                 continue
             user_id = reaction.get("user_id") if _int(reaction.get("user_id")) is not None else (reaction.get("user") or {}).get("id")
-            if not self._fleet_bot(user_id):
+            if not self._relay_consumer(user_id):
                 continue
             code, name = str(reaction.get("emoji_code") or ""), str(reaction.get("emoji_name") or "")
             if code in NOTES.REFUSED_CODES or name in NOTES.REFUSED_NAMES:
@@ -1511,7 +1515,7 @@ class Tools:
         prefix = NOTES.REFUSAL_PREFIX + request_id
         for reply in self.agent.fetch(narrow, anchor=int(message["id"]), num_after=30, include_anchor=False):
             text = str(reply.get("content") or "").lstrip()
-            if text.startswith(prefix) and self._fleet_bot(reply.get("sender_id")):
+            if text.startswith(prefix) and self._relay_consumer(reply.get("sender_id")):
                 return clean(text[len(prefix):].lstrip(": ").strip(), 300)[0]
         return ""
 

@@ -681,14 +681,22 @@ class Daemon:
         seat's bot reads the channel and reacts.  Needs the notes script, so it is logged and skipped when
         this Mac cannot run it."""
         old = self.notes_relay
-        self.notes_relay = None
-        if old is not None:
-            old.stop()
         cfg = self.config
+        home = Path(os.path.abspath(self.home))
+        available = NOTES.direct_available(self.env, home) is not None
+        if old is not None:
+            if cfg.notes_relay_enabled and cfg.notes_relay_seat == old.seat and available:
+                return  # nothing the consumer uses changed:  keep it (and its worker) as the one owner of the spool
+            # The spool has one owner.  Wait (bounded) for the old worker to leave any request it is inside before
+            # a replacement may start;  if it does not leave in time it stays the owner and nothing new starts.
+            if not old.stop(NR.STOP_TIMEOUT):
+                self.log.write("notes-relay-reload-deferred", seat=old.seat,
+                               warning="the relay worker is still inside a request;  it stays the owner until the next reload")
+                return
+            self.notes_relay = None
         if not cfg.notes_relay_enabled:
             return
-        home = Path(os.path.abspath(self.home))
-        if NOTES.direct_available(self.env, home) is None:
+        if not available:
             self.log.write("notes-relay-unavailable", reason="no osascript or no apple-notes-coding.sh on this host")
             return
         self.notes_relay = NR.Consumer(
@@ -3402,7 +3410,7 @@ class Daemon:
         for child in children:
             _kill_group(child)
         if self.notes_relay is not None:
-            self.notes_relay.stop()
+            self.notes_relay.stop(2.0)
         for runner in self.seats.values():
             runner.disconnect()
             runner.flush_cursor(force=True)

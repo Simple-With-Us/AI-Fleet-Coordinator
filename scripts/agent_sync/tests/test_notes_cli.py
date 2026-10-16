@@ -132,7 +132,9 @@ class NotesCliTests(Harness):
         self.assertEqual(N.parse_message(posted["content"])["markdown"], "relayed body")
         queued = self.run_cli("notes", "status", "cli-request-0001", "--json")
         self.assertEqual(json.loads(queued.out)["status"], "queued")
-        self.fake.reactions.add((posted["id"], 11, "check"))
+        self.fake.reactions.add((posted["id"], 11, "check"))  # a peer:  not the consumer
+        self.assertEqual(json.loads(self.run_cli("notes", "status", "cli-request-0001", "--json").out)["status"], "queued")
+        self.fake.reactions.add((posted["id"], 10, "check"))  # CLAUDE, the default consumer
         done = self.run_cli("notes", "status", "cli-request-0001")
         self.assertEqual(done.code, 0)
         self.assertIn("done", done.out)

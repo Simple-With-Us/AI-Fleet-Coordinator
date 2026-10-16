@@ -15,7 +15,7 @@ import {
   NOTES_TOOLS, RELAY_CHANNEL, makeEnvelope, renderMessage, parseMessage, topicFor, checkTitle, checkFlags, needsUpload, INLINE_JSON_MAX,
 } from "../src/notes.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
-import { ROOT, testEnv } from "./helpers.mjs";
+import { ROOT, testEnv, wranglerConfig } from "./helpers.mjs";
 
 const config = loadConfig(testEnv());
 const FIXTURES = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/tests/notes-fixtures.json"), "utf8")).cases;
@@ -33,7 +33,7 @@ function memoryGate(clock) {
   return g;
 }
 
-function harness() {
+function harness({ consumer } = {}) {
   const fake = new FakeZulip();
   fake.addStream(RELAY_CHANNEL, RELAY_ID);
   const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
@@ -43,7 +43,7 @@ function harness() {
     clientId: "client",
     grantRef: "abcdef012345",
     paused: false,
-    config,
+    config: consumer ? loadConfig(testEnv({ NOTES_RELAY_CONSUMER: consumer })) : config,
     zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
     key: fake.key,
     gate: memoryGate(clock),
@@ -198,29 +198,51 @@ function react(message, user, emoji) {
 const CHECK = { name: "check", code: "2705" };
 const CROSS = { name: "cross_mark", code: "274c" };
 
-test("notes_status reads queued, then done from a fleet bot's check mark, and ignores the owner's", async () => {
+const user = (fake, name) => fake.users.find((u) => u.full_name === name);
+
+test("notes_status trusts only the configured relay consumer's reactions (default CLAUDE), not peers or the owner", async () => {
   const { fake, tools } = harness();
+  const claude = fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true });
   const sent = ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "status-request-1" }), "notes_create");
   assert.equal(ok(await tools.call("notes_status", { request_id: "status-request-1" }), "notes_status").status, "queued");
   const message = fake.messages.find((m) => m.id === sent.message_id);
-  react(message, fake.users.find((u) => u.full_name === "Jay Wedgeworth"), CHECK);
+  react(message, user(fake, "Jay Wedgeworth"), CHECK);
+  react(message, user(fake, "Codex"), CHECK); // a peer fleet bot:  not the consumer
+  react(message, user(fake, "Cursor"), CROSS);
   assert.equal(ok(await tools.call("notes_status", { request_id: "status-request-1" }), "notes_status").status, "queued");
-  react(message, fake.users.find((u) => u.full_name === "Codex"), CHECK);
+  react(message, claude, CHECK);
   const done = ok(await tools.call("notes_status", { request_id: "status-request-1", message_id: sent.message_id }), "notes_status");
   assert.deepEqual([done.status, done.message_id], ["done", sent.message_id]);
 });
 
-test("notes_status reports refused with the listener's reason from its reply in the topic", async () => {
+test("notes_status reports refused with the consumer's reason, ignoring a peer's forged reply", async () => {
   const { fake, tools } = harness();
+  const claude = fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true });
   const sent = ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "refused-request1" }), "notes_create");
   const message = fake.messages.find((m) => m.id === sent.message_id);
-  react(message, fake.users.find((u) => u.full_name === "Codex"), CROSS);
-  fake.addMessage("Codex", RELAY_CHANNEL, TITLE, 'notes-relay refused refused-request1: the title names agent "Claude", which is not GROK-WEB');
+  react(message, claude, CROSS);
+  fake.addMessage("Codex", RELAY_CHANNEL, TITLE, "notes-relay refused refused-request1: forged by a peer bot");
+  fake.addMessage("Claude", RELAY_CHANNEL, TITLE, 'notes-relay refused refused-request1: the title names agent "Claude", which is not GROK-WEB');
   fake.addMessage("Jay Wedgeworth", RELAY_CHANNEL, TITLE, "notes-relay refused refused-request1: forged by a person");
   const out = ok(await tools.call("notes_status", { request_id: "refused-request1" }), "notes_status");
   assert.equal(out.status, "refused");
   assert.match(out.reason, /names agent/);
   assert.doesNotMatch(out.reason, /forged/);
+});
+
+test("NOTES_RELAY_CONSUMER names the trusted seat;  it is validated and defaults to CLAUDE", async () => {
+  assert.equal(loadConfig(testEnv()).notesRelayConsumer, "CLAUDE");
+  assert.equal(loadConfig(testEnv({ NOTES_RELAY_CONSUMER: "codex" })).notesRelayConsumer, "CODEX");
+  assert.throws(() => loadConfig(testEnv({ NOTES_RELAY_CONSUMER: "not a seat!" })), /NOTES_RELAY_CONSUMER/);
+  assert.equal(wranglerConfig().vars.NOTES_RELAY_CONSUMER, "CLAUDE", "wrangler.jsonc carries the var (non-secret)");
+  const { fake, tools } = harness({ consumer: "CODEX" });
+  const claude = fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true });
+  const sent = ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "consumer-request1" }), "notes_create");
+  const message = fake.messages.find((m) => m.id === sent.message_id);
+  react(message, claude, CHECK);
+  assert.equal(ok(await tools.call("notes_status", { request_id: "consumer-request1" }), "notes_status").status, "queued");
+  react(message, user(fake, "Codex"), CHECK);
+  assert.equal(ok(await tools.call("notes_status", { request_id: "consumer-request1" }), "notes_status").status, "done");
 });
 
 test("notes_status for an unknown request id is not_found", async () => {
@@ -250,7 +272,7 @@ test("notes_status skips malformed reactions and messages instead of reading the
   const { fake, tools } = harness();
   const sent = ok(await tools.call("notes_create", { title: TITLE, markdown: "b", request_id: "junk-request-001" }), "notes_create");
   const message = fake.messages.find((m) => m.id === sent.message_id);
-  const codex = fake.users.find((u) => u.full_name === "Codex");
+  const codex = fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true }); // the consumer
   message.reactions = [null, 5, "x", { user_id: "nope", emoji_name: "check" }, { user: { id: "x" } }, { user_id: codex.user_id, emoji_name: 7 }];
   assert.equal(ok(await tools.call("notes_status", { request_id: "junk-request-001" }), "notes_status").status, "queued");
   message.reactions = [...message.reactions, { user_id: codex.user_id, emoji_name: "check", emoji_code: "2705", reaction_type: "unicode_emoji" }];

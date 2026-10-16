@@ -36,6 +36,8 @@ Python 3.11+, standard library only.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import queue
@@ -55,9 +57,24 @@ PROCESSED_LIMIT = 2000
 SPOOL_LIMIT = 1000  # pending requests kept on disk;  past it `offer` says no and the daemon holds the cursor
 SPOOL_DIR = "notes-relay-spool"
 RETRY_SECONDS = 60.0
+STOP_TIMEOUT = 10.0  # how long a reload waits for the old worker before leaving it the owner
+LOCK_FILE = "notes-relay.lock"
 REASON_LIMIT = 300
 STATE_FILE = "notes-relay.json"
 DEFAULT_SEAT = "CLAUDE"
+
+
+def unknown_emoji(exc: Z.ApiError) -> bool:
+    """Zulip's answer to an emoji name it does not know:  HTTP 400 naming the emoji.  Nothing else may fall
+    through to the alias."""
+    text = ("%s %s" % (exc.msg, exc.data.get("msg") if isinstance(exc.data, dict) else "")).lower()
+    return exc.status == 400 and "emoji" in text and ("not exist" in text or "invalid" in text or "unknown" in text)
+
+
+def retryable(exc: Z.ApiError) -> bool:
+    """An API failure a later attempt can fix:  rate limit, server error, timeout, or a credential or permission
+    error (the owner can repair those).  Anything else 4xx is a permanent refusal."""
+    return exc.status is None or exc.status in (401, 403, 408, 429) or exc.status >= 500
 
 
 class Refusal(Exception):
@@ -304,7 +321,10 @@ class Consumer:
             self.thread = threading.Thread(target=self._work, name="notes-relay", daemon=True)
             self.thread.start()
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = STOP_TIMEOUT) -> bool:
+        """Ask the worker to finish and wait for it, at most `timeout` seconds.  True when it has exited (or never
+        ran).  False means it is still inside a request (a slow script):  the caller must leave this consumer
+        the owner of the spool and not start a second one."""
         self.stopped.set()
         try:
             self.jobs.put_nowait(None)
@@ -314,6 +334,11 @@ class Consumer:
                 self.jobs.put_nowait(None)
             except (queue.Empty, queue.Full):
                 pass
+        thread = self.thread
+        if thread is None or thread is threading.current_thread():
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
 
     # ---- the worker ---------------------------------------------------------------------------
     def _work(self) -> None:
@@ -333,8 +358,38 @@ class Consumer:
         """Answer every spooled request, oldest first, on the calling thread.  A request whose answer could not
         be sent (Zulip unreachable) stays in the spool for the next wake-up or reconnect.  Returns how many
         were finished."""
+        with self._owner_lock() as owned:
+            if not owned:
+                self.log("notes-relay-busy", reason="another consumer holds the spool")
+                return 0
+            return self._drain_owned()
+
+    @contextlib.contextmanager
+    def _owner_lock(self):
+        """An exclusive, non-blocking flock on <state>/<SEAT>/notes-relay.lock for the length of a drain.  It is
+        the spool's single owner across processes (two daemons on one state directory) and across consumers (a
+        reload's replacement), so no request is claimed twice and no `started` row is mistaken for a crash."""
+        path = os.path.join(os.path.dirname(self.spool.path), LOCK_FILE)
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+    def _drain_owned(self) -> int:
         finished = 0
         for message_id in self.spool.ids():
+            if self.stopped.is_set():
+                break  # a reload asked this worker to finish:  leave the rest for its successor
             runner = self.reader
             message = self.spool.load(message_id)
             if message is None:
@@ -437,7 +492,13 @@ class Consumer:
             except Z.ApiError as exc:
                 if exc.code == "REACTION_ALREADY_EXISTS":
                     return
-                continue
+                if unknown_emoji(exc):
+                    continue  # this name is not an emoji in this realm:  try the alias
+                if retryable(exc):
+                    raise  # 429, 5xx, a permission error:  the request stays spooled and is published on the retry
+                self.log("notes-relay-reaction-refused", id=message_id, status=exc.status)
+                return  # a permanent refusal (the message is gone):  nothing a retry could change
+        self.log("notes-relay-no-emoji", id=message_id, names=list(names))
 
     def _answer(self, runner: Any, message_id: int, request_id: str | None, *, refused: str) -> None:
         """Cross mark, then one reply with the reason.  Safe to replay after a crash at any point:  the reaction
@@ -452,9 +513,10 @@ class Consumer:
                 return
             runner.client.post("messages", {"type": "stream", "to": original.get("stream_id"),
                                             "topic": Z.message_topic(original), "content": "%s: %s" % (prefix, reason)})
-        except Z.ApiError:
-            # A refusal Zulip will not take is not retried;  a network failure propagates and the request stays spooled.
-            self.log("notes-relay-reply-failed", id=message_id)
+        except Z.ApiError as exc:
+            if retryable(exc):
+                raise  # the reply is part of the result:  keep the request spooled and post it on the retry
+            self.log("notes-relay-reply-failed", id=message_id, status=exc.status)  # permanent:  not retried
 
     def _already_replied(self, runner: Any, original: Mapping[str, Any], message_id: int, prefix: str) -> bool:
         me = getattr(runner.me, "user_id", None)

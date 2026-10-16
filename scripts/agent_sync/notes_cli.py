@@ -21,6 +21,7 @@ from typing import Any
 from . import bodyfile
 from . import identities as X
 from . import identity as I
+from . import config as C
 from . import notes as N
 from .idem import IdemStore
 from .secretscan import scan as scan_text
@@ -185,6 +186,7 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
     agent = CLI.Agent(rt, args)
     CLI._check_agent_identity(rt, agent)
     tools = T.Tools(agent, me=agent.me(), process_tag=agent.tag, session_source="flag",
+                    notes_consumer=C.load(str(state_root(rt.env, home))).notes_relay_seat,
                     sleep=rt.sleep, log=lambda text: None)
     saved = (rt.stdout, rt.stderr, rt.stdin)  # the tool layer swaps the runtime's streams for its own buffers
     try:

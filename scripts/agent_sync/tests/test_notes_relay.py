@@ -33,6 +33,7 @@ class FakeClient:
         self.messages: dict[int, dict] = {}
         self.files: dict[str, dict] = {}
         self.react_fails: set[str] = set()
+        self.react_error: Exception | None = None  # any other failure of the reaction endpoint
 
     def get(self, path, params=None):
         if path == "messages":  # the topic after a message:  the replies this bot has posted so far
@@ -46,7 +47,9 @@ class FakeClient:
 
     def post(self, path, params=None):
         if path.endswith("/reactions") and params["emoji_name"] in self.react_fails:
-            raise Z.ApiError("no such emoji", code="BAD_REQUEST", status=400)
+            raise Z.ApiError("Emoji '%s' does not exist" % params["emoji_name"], code="BAD_REQUEST", status=400)
+        if path.endswith("/reactions") and self.react_error is not None:
+            raise self.react_error
         self.posts.append((path, dict(params or {})))
         return {}
 
@@ -355,6 +358,122 @@ class PublishFailureTests(RelayHarness):
         self.consumer.stop()
         self.assertIn((message["id"], "check"), self.client.reactions)
         self.assertEqual(len(self.calls), 1)
+
+
+class ApiFailureTests(RelayHarness):
+    """Only an unknown emoji falls through to the alias;  a retryable or permission API failure keeps the request."""
+
+    def test_retryable_api_failures_keep_the_request_spooled_for_both_marks_and_replies(self):
+        for status in (429, 500, 502, 403, 401):
+            with self.subTest(status=status):
+                self.client.posts.clear()
+                self.calls.clear()
+                self.consumer.processed._write({})
+                self.consumer.start = lambda: None
+                message = self.request(rid="api-failure-%d" % status)
+                self.consumer.offer(self.runner, message)
+                self.client.react_error = Z.ApiError("down", code="X", status=status)
+                self.assertEqual(self.consumer.drain(), 0, "the request must stay pending")
+                self.assertEqual(self.consumer.spool.ids(), [message["id"]])
+                self.assertEqual(self.client.reactions, [])
+                self.client.react_error = None
+                self.assertEqual(self.consumer.drain(), 1)
+                self.assertEqual(len(self.calls), 1, "written once, published on the retry")
+                self.assertIn((message["id"], "check"), self.client.reactions)
+
+    def test_a_failing_refusal_reply_is_retried_not_swallowed(self):
+        self.consumer.start = lambda: None
+        message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="api-reply-0001")
+        self.consumer.offer(self.runner, message)
+        original = self.client.post
+
+        def reply_down(path, params=None):
+            if path == "messages":
+                raise Z.ApiError("busy", code="RATE_LIMIT_HIT", status=429)
+            return original(path, params)
+        self.client.post = reply_down
+        self.assertEqual(self.consumer.drain(), 0)
+        self.assertEqual(self.consumer.spool.ids(), [message["id"]])
+        self.client.post = original
+        self.assertEqual(self.consumer.drain(), 1)
+        self.assertEqual(len(self.client.replies), 1)
+
+    def test_only_an_unknown_emoji_falls_through_to_the_alias(self):
+        self.client.react_fails = {"check"}  # Zulip: "Emoji 'check' does not exist"
+        message = self.request(rid="alias-request-001")
+        self.assertEqual(self.process(message), "done")
+        self.assertIn((message["id"], "white_check_mark"), self.client.reactions)
+
+    def test_a_permanent_refusal_is_logged_and_not_retried_forever(self):
+        self.client.react_error = Z.ApiError("Invalid message(s)", code="BAD_REQUEST", status=400)
+        message = self.request(rid="permanent-request-1")
+        self.assertEqual(self.process(message), "done")
+        self.assertIn("notes-relay-reaction-refused", [event for event, _ in self.logs])
+
+    def test_classification(self):
+        self.assertTrue(NR.unknown_emoji(Z.ApiError("Emoji 'x' does not exist", code="BAD_REQUEST", status=400)))
+        self.assertFalse(NR.unknown_emoji(Z.ApiError("rate limited", code="RATE_LIMIT_HIT", status=429)))
+        self.assertFalse(NR.unknown_emoji(Z.ApiError("Invalid message(s)", code="BAD_REQUEST", status=400)))
+        for status in (401, 403, 408, 429, 500, 503, None):
+            self.assertTrue(NR.retryable(Z.ApiError("x", status=status)), status)
+        for status in (400, 404):
+            self.assertFalse(NR.retryable(Z.ApiError("x", status=status)), status)
+
+
+class OwnershipTests(RelayHarness):
+    """One owner of the spool:  across consumers (a reload's replacement) and across processes (two daemons)."""
+
+    def second(self):
+        other = NR.Consumer(seat="CLAUDE", state_dir=self.state, script=lambda: Path("/fake/script.sh"), env={},
+                            owner_user_id=lambda: OWNER_ID, runner=fake_run_factory(self.calls),
+                            log=lambda event, **f: self.logs.append((event, f)))
+        other.start = lambda: None
+        other.reader = self.runner
+        return other
+
+    def test_a_second_consumer_cannot_drain_while_the_first_holds_the_spool(self):
+        self.consumer.start = lambda: None
+        message = self.request(rid="owner-request-001")
+        self.consumer.offer(self.runner, message)
+        other = self.second()
+        with self.consumer._owner_lock() as owned:
+            self.assertTrue(owned)
+            self.assertEqual(other.drain(), 0, "the lock is held:  the other consumer claims nothing")
+            self.assertEqual(self.calls, [])
+            self.assertIn("notes-relay-busy", [event for event, _ in self.logs])
+        self.assertEqual(other.drain(), 1, "released:  the spool is drained once")
+        self.assertEqual(len(self.calls), 1)
+
+    def test_two_drains_in_a_row_never_run_a_request_twice(self):
+        self.consumer.start = lambda: None
+        self.consumer.offer(self.runner, self.request(rid="owner-request-002"))
+        other = self.second()
+        self.assertEqual(self.consumer.drain(), 1)
+        self.assertEqual(other.drain(), 0)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_stop_waits_for_the_worker_and_reports_when_it_will_not_leave(self):
+        gate, inside = threading.Event(), threading.Event()
+
+        def slow(argv, **kwargs):
+            inside.set()
+            gate.wait(10)
+            return subprocess.CompletedProcess(argv, 0, b"created note id=n1\n", b"")
+        self.consumer.runner = slow
+        self.assertTrue(self.consumer.offer(self.runner, self.request(rid="owner-request-003")))
+        self.assertTrue(inside.wait(5), "the worker is inside the script")
+        self.assertFalse(self.consumer.stop(0.2), "still inside a request:  not stopped")
+        gate.set()
+        self.assertTrue(self.consumer.stop(5), "left once the request finished")
+        self.assertFalse(self.consumer.thread.is_alive())
+
+    def test_a_stopped_worker_leaves_the_rest_of_the_spool_for_its_successor(self):
+        self.consumer.start = lambda: None
+        for i in range(3):
+            self.consumer.offer(self.runner, self.request(rid="owner-request-1%02d" % i))
+        self.consumer.stopped.set()
+        self.assertEqual(self.consumer.drain(), 0)
+        self.assertEqual(len(self.consumer.spool.ids()), 3)
 
 
 class TimeoutTests(RelayHarness):

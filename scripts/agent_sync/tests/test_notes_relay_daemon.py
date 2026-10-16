@@ -18,6 +18,7 @@ from unittest import mock
 
 from agent_sync import config as C
 from agent_sync import notes as N
+from agent_sync import notes_relay as NR
 from agent_sync.tests.harness import write_rc
 from agent_sync.tests.test_daemon import DaemonHarness
 
@@ -216,6 +217,37 @@ class DaemonRelayTests(DaemonHarness):
         self.assertEqual(runner.cursor, later)
         self.assertEqual([r["id"] for r in self.inbox()], [later], "only the mention is inbox work")
         daemon.notes_relay.stop()
+
+    def test_a_reload_with_the_same_relay_config_keeps_the_consumer_and_its_worker(self):
+        daemon = self.started_with_relay()
+        consumer = daemon.notes_relay
+        daemon.reload()
+        self.assertIs(daemon.notes_relay, consumer, "no replacement, so no second worker on the spool")
+        consumer.stop()
+
+    def test_a_reload_that_turns_the_relay_off_waits_for_the_worker_before_it_lets_go(self):
+        daemon = self.started_with_relay()
+        consumer = daemon.notes_relay
+        gate, inside = threading.Event(), threading.Event()
+
+        def slow(argv, **kwargs):
+            inside.set()
+            gate.wait(10)
+            return subprocess.CompletedProcess(argv, 0, b"created note id=n1\n", b"")
+        consumer.runner = slow
+        mid = self.envelope_message()
+        self.pump_until(daemon, inside.is_set)
+        self.write_config()  # no [notes_relay] any more
+        with mock.patch.object(NR, "STOP_TIMEOUT", 0.2):
+            daemon.reload()
+        self.assertIs(daemon.notes_relay, consumer, "the worker is still inside a request:  it stays the owner")
+        self.assertIn("notes-relay-reload-deferred", (self.state_dir / "logs" / "listener.log").read_text())
+        gate.set()
+        self.assertTrue(self.wait(lambda: (mid, 10, "check") in self.fake.reactions))
+        with mock.patch.object(NR, "STOP_TIMEOUT", 5.0):
+            daemon.reload()
+        self.assertIsNone(daemon.notes_relay, "once the worker is out the relay is off")
+        self.assertFalse(consumer.thread.is_alive())
 
     def test_another_seat_or_a_disabled_relay_does_not_backfill_the_channel(self):
         daemon = self.two_seats()

@@ -82,6 +82,10 @@
     // allowed.  CHANNELS_DENY lists stream ids no seat may use even when they
     // are public;  every check is by id, so a rename cannot dodge it.
     "CHANNELS_DENY": [],
+    // The seat whose bot is the Apple Notes relay consumer (the Mac listener's [notes_relay] seat, AFC-331).
+    // notes_status counts a check mark, a cross mark or a refusal reply only from this bot;  #notes-relay is public.
+    // Not a secret.  Must match the seat in the Mac's listener.toml.
+    "NOTES_RELAY_CONSUMER": "CLAUDE",
     // MCP Events callback hosts (src/events.js).  ChatGPT's real callback host
     // is not documented;  a refused one shows on /admin under refusals as
     // callback_host_not_allowed with its host, and is added here.
