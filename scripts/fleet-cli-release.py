@@ -67,6 +67,8 @@ TOOL_REQUIRED = frozenset({
     "scripts/recall", *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
     "scripts/fleet_lanes/bin/lane", *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
     "scripts/fleet-mode", "docs/FLEET-MODE.md", *AFC331_FILES,
+    # The listener_* MCP tools (AFC-330):  `agent-sync mcp` reads it at startup.
+    "scripts/agent_sync/mcp/listener-tools.json",
 })
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
 

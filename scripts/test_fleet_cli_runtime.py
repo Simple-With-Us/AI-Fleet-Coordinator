@@ -47,10 +47,10 @@ PROTOCOL = AUDIT + r'''
 import io
 sys.path.insert(0, sys.argv[1])
 from agent_sync.mcp.stdio import Server
-from agent_sync.mcp.tools import load_tools
+from agent_sync.mcp.tools import load_served_tools
 class CatalogueOnly:
     seat = "CODEX"
-    spec = load_tools()
+    spec = load_served_tools()
     def call(self, *args, **kwargs):
         raise AssertionError("offline_tool_execution_forbidden")
 raise SystemExit(Server(CatalogueOnly()).serve(sys.stdin.buffer, sys.stdout.buffer))
@@ -227,9 +227,21 @@ class ActualRuntime(unittest.TestCase):
         self.assertEqual([item["id"] for item in replies], [1, 2])
         self.assertEqual(replies[0]["result"]["protocolVersion"], "2025-11-25")
         self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "agent-sync")
-        catalogue = json.loads((self.release / "scripts/agent_sync/mcp/tools.json").read_bytes())
-        self.assertTrue(catalogue["tools"])
-        self.assertEqual(replies[1]["result"], catalogue)
+        # What the real server serves:  tools.json, listener-tools.json (AFC-330), notes-tools.json and
+        # recall-tools.json (AFC-331), then the linear_* tools built from the board catalogs.  Every file must
+        # ship, or `agent-sync mcp` fails at startup on the server (it did, 2026-10-16).
+        mcp = self.release / "scripts/agent_sync/mcp"
+        served = []
+        for name in ("tools.json", "listener-tools.json", "notes-tools.json", "recall-tools.json"):
+            served += json.loads((mcp / name).read_bytes())["tools"]
+        self.assertTrue(served)
+        listed = replies[1]["result"]["tools"]
+        self.assertEqual(listed[:len(served)], served)
+        catalog = self.release / "scripts/linear-board/catalog"
+        linear = ([t["name"] for t in json.loads((catalog / "core-tools.json").read_bytes())["tools"]]
+                  + [c["name"] for c in json.loads((catalog / "named-commands.json").read_bytes())["commands"]]
+                  + [t["name"] for t in json.loads((catalog / "official-mcp-tools.json").read_bytes())["tools"]])
+        self.assertEqual([t["name"] for t in listed[len(served):]], linear)
 
     def test_generated_wrapper_isolation_flags(self):
         for name in ("agent-sync", "board", "fleet-cli-release", "agent-sync-codex-mcp", "recall"):

@@ -353,6 +353,29 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(release.main(["status", "--home", str(self.home)]), 2)
         self.assertIn("fleet-cli: internal_error", err.getvalue())
 
+class ShippedDataFilesTests(unittest.TestCase):
+    """Every data file the agent_sync package reads at run time ships in a release.  The .py
+    modules are allowed by pattern;  JSON and similar files must be named in EXACT one by one, and
+    a new one that is not breaks the server's `agent-sync mcp` at startup (listener-tools.json,
+    2026-10-16)."""
+
+    def test_every_tracked_agent_sync_data_file_is_allowed(self):
+        root = Path(__file__).resolve().parent.parent
+        tracked = subprocess.run(["git", "-C", str(root), "ls-files", "scripts/agent_sync"], capture_output=True,
+                                 text=True, check=True).stdout.split()
+        data = [p for p in tracked
+                if not p.endswith(".py") and "/tests/" not in p and not p.endswith((".md", ".sh"))
+                and "/server/" not in p]
+        self.assertTrue(data)
+        missing = [p for p in data if not release.allowed_path(p)]
+        self.assertEqual(missing, [], "add these to EXACT in scripts/fleet-cli-release.py")
+
+    def test_listener_tools_is_required_of_new_bundles_only(self):
+        # A new bundle must carry it (agent-sync mcp reads it at startup), but retained releases
+        # are judged by BASE_REQUIRED, so the ones built before it stay valid rollback targets.
+        self.assertIn("scripts/agent_sync/mcp/listener-tools.json", release.TOOL_REQUIRED)
+        self.assertNotIn("scripts/agent_sync/mcp/listener-tools.json", release.BASE_REQUIRED)
+
 
 if __name__ == "__main__":
     unittest.main()
