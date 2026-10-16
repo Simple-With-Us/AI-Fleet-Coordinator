@@ -187,7 +187,9 @@ def plan_for(spec: Spec, args: Mapping[str, Any], identity: str) -> Plan:
         _flag(argv, "--label", args.get("label"))
         return Plan(argv, b"", extra)
     if name == "linear_show":
-        return Plan(["show", str(args["id"]), "--json"], b"", extra)
+        argv = ["show", str(args["id"]), "--json"]
+        _flag(argv, "--comment-limit", args.get("comment_limit"))
+        return Plan(argv, b"", extra)
     if name == "linear_file":
         argv = ["file", "--title", str(args["title"]), "--by", identity]
         for key, flag in (("app", "--app"), ("severity", "--severity"), ("kind", "--kind"), ("env", "--env")):

@@ -77,6 +77,15 @@ def retryable(exc: Z.ApiError) -> bool:
     return exc.status is None or exc.status in (401, 403, 408, 429) or exc.status >= 500
 
 
+
+def _fsync_dir(path: str) -> None:
+    """Make a rename in `path` durable:  without it a power loss can keep the old directory entry."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
 class Refusal(Exception):
     """A request that must not run.  The text is the reason a sender reads in the reply."""
 
@@ -136,7 +145,12 @@ class Processed:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             os.fchmod(fh.fileno(), 0o600)
             json.dump({"rows": rows}, fh, separators=(",", ":"))
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, self.path)
+        # The outcome must be on disk before the action it records is acknowledged, or a power loss could keep
+        # the spool but roll this record back and run the Notes action again:  sync the directory entry too.
+        _fsync_dir(os.path.dirname(self.path))
 
     @staticmethod
     def key(identity: str, request_id: str) -> str:
@@ -215,6 +229,7 @@ class Spool:
                     fh.flush()
                     os.fsync(fh.fileno())
                 os.replace(tmp, target)
+                _fsync_dir(self.path)
             except (OSError, TypeError, ValueError):
                 return False
         return True

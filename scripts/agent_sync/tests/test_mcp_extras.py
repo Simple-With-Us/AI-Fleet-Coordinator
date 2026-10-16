@@ -485,6 +485,12 @@ class LinearToolTests(FakePrograms):
         self.assertEqual(mutation["argv"][:3], ["api", "mutation", "-"])
         self.assertIn("mut-key-1", mutation["argv"])
 
+    def test_linear_show_passes_its_comment_limit_to_board(self):
+        session = self.session(self.env())
+        session.call("linear_show", {"id": "AFC-1", "comment_limit": 3})
+        call, = self.calls(self.board_out)
+        self.assertEqual(call["argv"], ["show", "AFC-1", "--json", "--comment-limit", "3"])
+
     def test_a_claim_comment_that_looks_like_a_flag_stays_one_token(self):
         session = self.session(self.env())
         session.call("linear_claim", {"id": "AFC-1", "comment": "--help"})

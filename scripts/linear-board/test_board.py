@@ -878,6 +878,10 @@ class ReadTests(BoardTest):
         self.assertEqual(d["recommended_fix"], "Ship it.")
         self.assertEqual(d["severity"], "P1")
         self.assertEqual(d["id"], hy(B_A))
+        capped = json.loads(self.board("show", "OPS-10", "--json", "--comment-limit", "1").stdout)
+        self.assertEqual(len(capped["comments"]), 1)               # oldest first, like the hosted tool
+        self.assertEqual(capped["comments_total"], 3)
+        self.assertEqual(capped["resolution"], d["resolution"])     # still derived from every comment
 
     def test_listed_new_issue_prefix_resolves(self):
         new = self.mock.add_issue(str(uuid.uuid4()), "AFC", "Todo", "Made in the Linear UI", 3)
