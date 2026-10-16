@@ -3797,7 +3797,8 @@ def cmd_mcp(L: "Linear", auth: "Auth", a, seat: str) -> int:
         except SendFailed as e:
             die(str(e), e.code)
     texts, images = mcp_texts(result)
-    if len(json.dumps(texts)) > a.max_chars:
+    # The hosted check is JSON.stringify(texts).length:  compact, non-ASCII kept as is.
+    if len(json.dumps(texts, ensure_ascii=False, separators=(",", ":"))) > a.max_chars:
         die(f"the Linear MCP response exceeds --max-chars {a.max_chars}.  Narrow the request"
             + (";  the call has already completed, so keep its idempotency key." if write else "."))
     if a.json:

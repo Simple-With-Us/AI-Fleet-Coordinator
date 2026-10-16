@@ -540,6 +540,17 @@ class McpCliTests(ParityCliTest):
         p = self.board("mcp", "call", "linear_get_diff", "--args-json", '{"urlOrId": "AFC-1"}', "--json")
         self.assertEqual(json.loads(p.stdout)["content"][1]["data"], "aGVsbG8=")
 
+    def test_max_chars_counts_like_the_hosted_server(self):
+        # JSON.stringify(texts).length:  compact, and non-ASCII is one character, not \\uXXXX.
+        self.mock.mcp_mode = "json"
+        text = "é" * 1200  # --max-chars is at least 1000
+        self.mock.mcp_result = {"content": [{"type": "text", "text": text}]}
+        hosted_length = len(json.dumps([text], ensure_ascii=False, separators=(",", ":")))
+        p = self.board("mcp", "call", "linear_get_diff", "--args-json", '{"urlOrId": "AFC-1"}', "--max-chars", str(hosted_length))
+        self.assertEqual(p.stdout.strip(), text)
+        p = self.board("mcp", "call", "linear_get_diff", "--args-json", '{"urlOrId": "AFC-1"}', "--max-chars", str(hosted_length - 1), code=1)
+        self.assertIn("exceeds --max-chars", p.stderr)
+
     def test_tool_errors(self):
         self.mock.mcp_result = {"isError": True, "content": [{"type": "text", "text": "Diff not found"}]}
         p = self.board("mcp", "call", "get_diff", "--args-json", '{"urlOrId": "AFC-1"}', code=1)
