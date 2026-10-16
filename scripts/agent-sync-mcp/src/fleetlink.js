@@ -19,6 +19,13 @@ import { clean, ToolError } from "./contract.js";
 
 export const FLEETLINK_HOST = "fleetlink.online";
 export const FLEETLINK_SECRET = "FLEETLINK_AGENT_SECRET";
+// Each seat's own FleetLink bot token (fla_), one JSON object in one Worker
+// secret:  {"JET": "fla_…", "GROK-WEB": "fla_…", …}.  A seat with a token here
+// signs in with it (and so has whatever limits that token has, such as its
+// manager's), the rest use FLEETLINK_AGENT_SECRET and X-Fleet-Seat.  One
+// binding, not one per seat, because the Worker is near its binding limit.
+export const FLEETLINK_SEAT_TOKENS = "FLEETLINK_SEAT_TOKENS";
+const SeatTokens = z.record(z.string().regex(/^[A-Z][A-Z0-9-]{0,22}[A-Z0-9]$/), z.string().regex(/^fla_[0-9a-f]{64}$/));
 export const FLEETLINK_TIMEOUT_MS = 30_000;
 export const FLEETLINK_RESPONSE_LIMIT = 4_000_000; // bytes;  read_file returns up to 1 MB of text
 export const FLEETLINK_PROTOCOL = "2025-06-18";
@@ -258,22 +265,44 @@ function parseBody(text) {
 
 /** A FleetLinkClient from the Worker's env, or null when FLEETLINK_AGENT_SECRET is missing or malformed. */
 export function fleetlinkClientFromEnv(env, { fetch: fetchImpl = globalThis.fetch?.bind(globalThis) } = {}) {
-  const secret = typeof env?.[FLEETLINK_SECRET] === "string" ? env[FLEETLINK_SECRET].trim() : "";
-  if (!/^fls_[0-9a-f]{64}$/.test(secret) || typeof fetchImpl !== "function") return null;
-  return new FleetLinkClient({ secret, fetch: fetchImpl });
+  const raw = typeof env?.[FLEETLINK_SECRET] === "string" ? env[FLEETLINK_SECRET].trim() : "";
+  const secret = /^fls_[0-9a-f]{64}$/.test(raw) ? raw : "";
+  const seatTokens = parseSeatTokens(env?.[FLEETLINK_SEAT_TOKENS]);
+  if ((!secret && !Object.keys(seatTokens).length) || typeof fetchImpl !== "function") return null;
+  return new FleetLinkClient({ secret, seatTokens, fetch: fetchImpl });
+}
+
+/** The seat token bundle, or {} when it is missing or malformed (a malformed bundle is never half used). */
+export function parseSeatTokens(raw) {
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  try {
+    const parsed = SeatTokens.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : {};
+  } catch {
+    return {};
+  }
 }
 
 export class FleetLinkClient {
-  constructor({ secret, fetch: fetchImpl, timeoutMs = FLEETLINK_TIMEOUT_MS }) {
+  constructor({ secret = "", seatTokens = {}, fetch: fetchImpl, timeoutMs = FLEETLINK_TIMEOUT_MS }) {
     this.fetch = fetchImpl;
     this.timeoutMs = timeoutMs;
     this.#secret = secret;
+    this.#seatTokens = { ...seatTokens };
   }
 
   #secret;
+  #seatTokens;
 
   secrets() {
-    return [this.#secret];
+    return [this.#secret, ...Object.values(this.#seatTokens)].filter(Boolean);
+  }
+
+  /** How `seat` signs in:  its own bot token, else the server credential, else null. */
+  credentialFor(seat) {
+    if (Object.hasOwn(this.#seatTokens, seat)) return { kind: "token", headers: { Authorization: `Bearer ${this.#seatTokens[seat]}` } };
+    if (this.#secret) return { kind: "agent", headers: { Authorization: `Bearer ${this.#secret}`, "X-Fleet-Seat": seat } };
+    return null;
   }
 
   /**
@@ -283,13 +312,14 @@ export class FleetLinkClient {
    * {ok: false, message} for FleetLink's own tool error, or throws FleetLinkError.
    */
   async call(seat, name, args) {
+    const credential = this.credentialFor(seat);
+    if (!credential) throw new ToolError("not_configured", `FleetLink has no credential for ${seat} on this server:  no ${FLEETLINK_SEAT_TOKENS} entry and no ${FLEETLINK_SECRET}.`);
     const init = {
       method: "POST",
       redirect: "manual",
       signal: AbortSignal.timeout(this.timeoutMs),
       headers: {
-        Authorization: `Bearer ${this.#secret}`,
-        "X-Fleet-Seat": seat,
+        ...credential.headers,
         "Content-Type": "application/json",
         Accept: "application/json, text/event-stream",
         "MCP-Protocol-Version": FLEETLINK_PROTOCOL,
@@ -371,7 +401,7 @@ export function mapFleetLinkError(error, { write = false } = {}) {
       break;
   }
   if (status === 401) {
-    return new ToolError("not_authorized", `FleetLink refused this server's agent credential (HTTP 401).  The owner checks ${FLEETLINK_SECRET} here and AGENT_SYNC_SECRET on FleetLink (DEPLOY.md, "FleetLink").`, { extra: { status } });
+    return new ToolError("not_authorized", `FleetLink refused this seat's credential (HTTP 401).  The owner checks the seat's entry in ${FLEETLINK_SEAT_TOKENS} (a revoked bot token) or ${FLEETLINK_SECRET} here and AGENT_SYNC_SECRET on FleetLink (DEPLOY.md, "FleetLink").`, { extra: { status } });
   }
   if (status === 403) {
     const said = error.upstreamMessage ? fleetlinkMessage(error.upstreamMessage) : "";
