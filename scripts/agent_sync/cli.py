@@ -46,6 +46,8 @@ from . import live as LIVE
 from . import router as ROUTER
 from . import secretscan
 from . import zulip as Z
+from . import zulip_cli
+from . import zulip_ops
 from .state import State, state_root
 from .identity import EMAIL_TAG_OVERRIDES, seat_tag_for  # noqa: F401 - re-exported (daemon, listener_cli, tests)
 from .zulip import (ApiError, CredentialError, EventQueue, NetworkError, QueueExpired, UsageError,
@@ -636,7 +638,8 @@ def build_parser() -> argparse.ArgumentParser:
                             "or 0400, UTF-8, at most %d KB.  For a caller that cannot pipe stdin" % (bodyfile.MAX_BYTES // 1024))
 
     add("whoami", "show the bot, seat, session tag, credential source and realm (never the key)")
-    add("channels", "list subscribed channels")
+    p = add("channels", "list subscribed channels (--all:  every channel this bot can see)")
+    p.add_argument("--all", action="store_true", help="every channel this bot can see, public ones it is not in included")
 
     p = add("topics", "list recent topics of a channel, newest first")
     channel_opt(p)
@@ -766,6 +769,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--codex-thread-meta", action="store_true",
                    help="CODEX-only: attribute calls from native MCP _meta.threadId; no automatic nosession fallback")
 
+    zulip_cli.add_parsers(sub, common)
     listener_cli.add_parsers(sub, common)
     return parser
 
@@ -842,6 +846,17 @@ def cmd_whoami(agent: Agent, args: argparse.Namespace) -> int:
 
 
 def cmd_channels(agent: Agent, args: argparse.Namespace) -> int:
+    if getattr(args, "all", False):
+        rows = zulip_ops.channels(agent, include_all=True)
+        if agent.json:
+            agent.emit_json(rows)
+            return 0
+        for row in rows:
+            description = str(row.get("description") or "").strip()
+            agent.out("#%s%s%s\n" % (_visible(str(row.get("name")), inline=True),
+                                     "" if row["public"] else " (private)", "" if row["subscribed"] else " (not subscribed)")
+                      + ("" if not description else "  \u2014 " + _visible(description, inline=True) + "\n"))
+        return 0
     subs = sorted(agent.client.get("users/me/subscriptions").get("subscriptions") or [],
                   key=lambda s: str(s.get("name", "")).casefold())
     if agent.json:
@@ -1646,6 +1661,7 @@ COMMANDS: dict[str, Callable[[Agent, argparse.Namespace], int]] = {
     "post": cmd_post, "dm": cmd_dm, "dm-read": cmd_dm_read, "verify-owner-msg": cmd_verify_owner_msg, "reply": cmd_reply, "read": cmd_read, "wait": cmd_wait, "listen": cmd_listen,
     "inbox": cmd_inbox, "follow": cmd_topic_policy(3, "following"), "mute": cmd_topic_policy(1, "muted"),
     "unmute": cmd_topic_policy(0, "unmuted"), "resolve": cmd_resolve, "react": cmd_react,
+    **zulip_cli.COMMANDS,
 }
 
 
@@ -1659,6 +1675,7 @@ def _on_sigterm(signum: int, frame: Any) -> None:
 
 LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
     "daemon": listener_cli.cmd_daemon, "status": listener_cli.cmd_status, "wakes": listener_cli.cmd_wakes,
+    "listener": listener_cli.cmd_listener,
 }
 
 
@@ -1695,7 +1712,7 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             from .mcp import stdio as mcp_stdio
 
             return mcp_stdio.run(rt, args)
-        if args.command in ("post", "reply", "dm"):
+        if args.command in ("post", "reply", "dm", "edit"):
             _check_text_args(args)  # a usage error needs no credential
         agent = Agent(rt, args)  # every request after users/me waits for agent.verify(); whoami reports it
         return COMMANDS[args.command](agent, args)

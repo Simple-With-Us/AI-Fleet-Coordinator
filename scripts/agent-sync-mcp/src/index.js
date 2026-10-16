@@ -65,6 +65,7 @@ import { recallClientFromEnv } from "./recall.js";
 import { fleetlinkClientFromEnv } from "./fleetlink.js";
 import { LinearClient, linearClientFromEnv, LINEAR_SEATS, linearSecretNames } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
+import { listenerClientFromEnv } from "./listener.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS } from "./events.js";
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
@@ -248,6 +249,9 @@ async function serveMcp(request, env, ctx) {
     // Null without FLEETLINK_AGENT_SECRET:  the FleetLink tools then answer
     // not_configured and every other tool works as before (AFC-328).
     fleetlink: fleetlinkClientFromEnv(env),
+    // Null unless LISTENER_API_URL and this seat's WAKE_HMAC_KEY_<SEAT> are set:  the listener_*
+    // tools then answer not_configured and every other tool works as before (AFC-330).
+    listener: listenerClientFromEnv(env, seat),
   });
   const delegatedCredentials = seat === "CURSOR" ? loadDelegatedCredentials(env) : null;
   const routedTools = seat === "CURSOR" ? new IdentityRouter({

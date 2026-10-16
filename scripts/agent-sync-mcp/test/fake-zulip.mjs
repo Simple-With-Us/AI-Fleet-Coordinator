@@ -56,6 +56,18 @@ export class FakeZulip {
     this.unsubscribed = new Set();
     this.messages = [];
     this.reactions = new Set();
+    // AFC-330:  the rest of the API the full-coverage tools use.
+    this.histories = new Map();
+    this.presence = new Map();
+    this.statuses = [];
+    this.userGroups = [];
+    this.emoji = { 1: { id: "1", name: "fleet", deactivated: false, author_id: OWNER_ID }, 2: { id: "2", name: "old", deactivated: true, author_id: OWNER_ID } };
+    this.uploads = [];
+    this.scheduled = new Map();
+    this.drafts = new Map();
+    this.typing = [];
+    this.userTopics = [];
+    this.nextAux = 1;
     this.requests = [];
     this.queue = []; // [{match: (method, path) => bool, respond: () => Response | throws}]
     this.fetch = this.fetch.bind(this);
@@ -171,7 +183,13 @@ export class FakeZulip {
     if (url.origin !== REALM || !url.pathname.startsWith("/api/v1/")) return new Response("blocked in test", { status: 599 });
     const path = url.pathname.slice("/api/v1/".length);
     const method = request.method;
-    const params = Object.fromEntries(method === "GET" ? url.searchParams : new URLSearchParams(await request.text()));
+    let params;
+    if (method === "GET") params = Object.fromEntries(url.searchParams);
+    else if (String(request.headers.get("content-type") ?? "").startsWith("multipart/form-data")) {
+      const form = await request.formData();
+      const file = form.get("filename");
+      params = { _file: file ? { name: file.name, type: file.type, bytes: new Uint8Array(await file.arrayBuffer()) } : null };
+    } else params = Object.fromEntries(new URLSearchParams(await request.text()));
     const entry = { method, path, params, redirect: request.redirect, authorization: request.headers.get("authorization") };
     this.requests.push(entry);
     const queued = this.queue.findIndex((q) => q.method === method && (q.path === path || (q.path instanceof RegExp && q.path.test(path))));
@@ -232,6 +250,160 @@ export class FakeZulip {
       this.reactions.add(k);
       return this.ok();
     }
+    if (method === "DELETE" && m) {
+      const k = `${m[1]}:${params.emoji_name}`;
+      if (!this.reactions.has(k)) return this.error(400, "REACTION_DOES_NOT_EXIST");
+      this.reactions.delete(k);
+      return this.ok();
+    }
+    return this.routeMore(method, path, params, caller);
+  }
+
+  /** The endpoints only the AFC-330 tools call. */
+  routeMore(method, path, params, caller) {
+    let m = /^messages\/(\d+)$/.exec(path);
+    const find = (id) => this.messages.find((x) => x.id === Number(id));
+    if (m && method === "PATCH") {
+      const msg = find(m[1]);
+      if (!msg) return this.error(400, "BAD_REQUEST");
+      if (params.content !== undefined) {
+        if (msg.sender_id !== caller.user_id) return this.error(400, "BAD_REQUEST");
+        const history = this.histories.get(msg.id) ?? [{ topic: msg.subject, content: msg.content, timestamp: msg.timestamp, user_id: msg.sender_id }];
+        history.push({ topic: msg.subject, content: params.content, prev_content: msg.content, timestamp: msg.timestamp + history.length, user_id: caller.user_id });
+        this.histories.set(msg.id, history);
+        msg.content = params.content;
+      }
+      if (params.topic !== undefined || params.stream_id !== undefined) {
+        const mode = params.propagate_mode ?? "change_one";
+        const same = this.messages.filter((x) => x.type === "stream" && x.stream_id === msg.stream_id && String(x.subject).toLowerCase() === String(msg.subject).toLowerCase());
+        const moved = mode === "change_all" ? same : mode === "change_later" ? same.filter((x) => x.id >= msg.id) : [msg];
+        const target = params.stream_id !== undefined ? this.streams.find((s) => s.stream_id === Number(params.stream_id)) : null;
+        for (const x of moved) {
+          if (params.topic !== undefined) x.subject = params.topic;
+          if (target) {
+            x.stream_id = target.stream_id;
+            x.display_recipient = target.name;
+          }
+        }
+      }
+      return this.ok();
+    }
+    if (m && method === "DELETE") {
+      const msg = find(m[1]);
+      if (!msg || msg.sender_id !== caller.user_id) return this.error(400, "BAD_REQUEST");
+      this.messages = this.messages.filter((x) => x !== msg);
+      return this.ok();
+    }
+    m = /^messages\/(\d+)\/history$/.exec(path);
+    if (m && method === "GET") {
+      const msg = find(m[1]);
+      if (!msg) return this.error(400, "BAD_REQUEST");
+      return this.ok({ message_history: this.histories.get(msg.id) ?? [{ topic: msg.subject, content: msg.content, timestamp: msg.timestamp, user_id: msg.sender_id }] });
+    }
+    const setFlag = (msg, flag, add) => {
+      const flags = new Set(msg.flags ?? []);
+      if (add) flags.add(flag);
+      else flags.delete(flag);
+      msg.flags = [...flags];
+    };
+    if (method === "POST" && path === "messages/flags") {
+      const ids = JSON.parse(params.messages);
+      for (const id of ids) {
+        const msg = find(id);
+        if (msg) setFlag(msg, params.flag, params.op === "add");
+      }
+      return this.ok({ messages: ids });
+    }
+    if (method === "POST" && path === "messages/flags/narrow") {
+      const narrow = JSON.parse(params.narrow);
+      const hits = this.messages.filter((msg) => narrow.every(({ operator, operand }) => this.matches(msg, operator, operand, caller)));
+      for (const msg of hits) setFlag(msg, params.flag, params.op === "add");
+      return this.ok({ processed_count: hits.length, updated_count: hits.length, found_newest: true });
+    }
+    if (method === "GET" && path === "streams") {
+      return this.ok({ streams: this.streams.map((s) => ({ ...s, description: `the ${s.name} channel`, is_archived: false })) });
+    }
+    m = /^streams\/(\d+)$/.exec(path);
+    if (m && method === "GET") {
+      const stream = this.streams.find((s) => s.stream_id === Number(m[1]));
+      return stream ? this.ok({ stream: { ...stream, description: `the ${stream.name} channel`, history_public_to_subscribers: true, date_created: 1 } }) : this.error(400, "BAD_REQUEST");
+    }
+    m = /^streams\/(\d+)\/members$/.exec(path);
+    if (m && method === "GET") return this.ok({ subscribers: this.users.filter((u) => u.is_active).map((u) => u.user_id) });
+    if (method === "DELETE" && path === "users/me/subscriptions") {
+      const names = JSON.parse(params.subscriptions);
+      const removed = [];
+      for (const name of names) {
+        const stream = this.streams.find((s) => s.name === name);
+        if (stream && !this.unsubscribed.has(stream.stream_id)) {
+          this.unsubscribed.add(stream.stream_id);
+          removed.push(name);
+        }
+      }
+      return this.ok({ removed, not_removed: names.filter((n) => !removed.includes(n)) });
+    }
+    if (method === "POST" && path === "user_topics") {
+      this.userTopics.push({ ...params });
+      return this.ok();
+    }
+    m = /^users\/(\d+)\/presence$/.exec(path);
+    if (m && method === "GET") return this.ok({ presence: this.presence.get(Number(m[1])) ?? {} });
+    if (method === "POST" && path === "users/me/status") {
+      this.statuses.push({ ...params });
+      return this.ok();
+    }
+    if (method === "GET" && path === "user_groups") return this.ok({ user_groups: this.userGroups });
+    if (method === "GET" && path === "realm/emoji") return this.ok({ emoji: this.emoji });
+    if (method === "POST" && path === "user_uploads") {
+      const file = params._file;
+      if (!file) return this.error(400, "BAD_REQUEST");
+      this.uploads.push(file);
+      const url = `/user_uploads/2/ab/${this.uploads.length}/${file.name}`;
+      return this.ok({ uri: url, url, filename: file.name });
+    }
+    if (method === "GET" && path === "scheduled_messages") {
+      return this.ok({ scheduled_messages: [...this.scheduled].map(([id, row]) => ({ ...row, scheduled_message_id: id })) });
+    }
+    if (method === "POST" && path === "scheduled_messages") {
+      const id = this.nextAux++;
+      const direct = params.type === "direct";
+      this.scheduled.set(id, { type: direct ? "private" : "stream", to: direct ? JSON.parse(params.to) : Number(params.to), topic: params.topic ?? "", content: params.content, scheduled_delivery_timestamp: Number(params.scheduled_delivery_timestamp), failed: false });
+      return this.ok({ scheduled_message_id: id });
+    }
+    m = /^scheduled_messages\/(\d+)$/.exec(path);
+    if (m && (method === "PATCH" || method === "DELETE")) {
+      const id = Number(m[1]);
+      const row = this.scheduled.get(id);
+      if (!row) return this.error(400, "BAD_REQUEST");
+      if (method === "DELETE") this.scheduled.delete(id);
+      else {
+        if (params.content !== undefined) row.content = params.content;
+        if (params.topic !== undefined) row.topic = params.topic;
+        if (params.scheduled_delivery_timestamp !== undefined) row.scheduled_delivery_timestamp = Number(params.scheduled_delivery_timestamp);
+      }
+      return this.ok();
+    }
+    if (method === "GET" && path === "drafts") return this.ok({ drafts: [...this.drafts].map(([id, d]) => ({ ...d, id })) });
+    if (method === "POST" && path === "drafts") {
+      const ids = JSON.parse(params.drafts).map((d) => {
+        const id = this.nextAux++;
+        this.drafts.set(id, d);
+        return id;
+      });
+      return this.ok({ ids });
+    }
+    m = /^drafts\/(\d+)$/.exec(path);
+    if (m && (method === "PATCH" || method === "DELETE")) {
+      const id = Number(m[1]);
+      if (!this.drafts.has(id)) return this.error(404, "BAD_REQUEST");
+      if (method === "DELETE") this.drafts.delete(id);
+      else this.drafts.set(id, JSON.parse(params.draft));
+      return this.ok();
+    }
+    if (method === "POST" && path === "typing") {
+      this.typing.push({ ...params });
+      return this.ok();
+    }
     return this.error(404, "NOT_FOUND");
   }
 
@@ -270,6 +442,12 @@ export class FakeZulip {
     if (operator === "channel") return msg.type === "stream" && (msg.stream_id === operand || msg.display_recipient === operand);
     if (operator === "topic") return msg.type === "stream" && String(msg.subject).toLowerCase() === String(operand).toLowerCase();
     if (operator === "is" && operand === "mentioned") return msg.flags.includes("mentioned");
+    if (operator === "is" && operand === "starred") return msg.flags.includes("starred");
+    if (operator === "is" && operand === "unread") return !msg.flags.includes("read");
+    if (operator === "is" && operand === "resolved") return msg.type === "stream" && String(msg.subject).startsWith("✔");
+    if (operator === "search") return String(operand).split(/\s+/).every((w) => String(msg.content).toLowerCase().includes(w.toLowerCase()));
+    if (operator === "has" && operand === "link") return /https?:\/\//.test(msg.content);
+    if (operator === "has") return false;
     throw new Error(`fake zulip:  unsupported narrow ${operator}`);
   }
 }

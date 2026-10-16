@@ -6,6 +6,7 @@ tool, the untrusted fence, the shared golden fixtures, idempotency and reconcile
 """
 from __future__ import annotations
 
+import argparse
 import base64
 import errno
 import fcntl
@@ -30,8 +31,18 @@ from agent_sync.tests.harness import SESSION, TAG, write_rc
 from agent_sync.tests.mcp_harness import SCRIPT, CLIENT_META, MODERN, FakeClock, McpHarness, zulip_shaped
 
 IDENTITY_ARGS = {"seat", "as", "as_seat", "rc", "no_tag", "fleet"}
-READ_TOOLS = {"whoami", "topics", "read_topic", "inbox"}
-WRITE_TOOLS = {"post", "reply", "react"}
+# AFC-330 widened the contract on purpose:  the first seven are the original tools (byte-identical,
+# test_original_seven_unchanged), then the DM tools moved from the hosted dm.js, then the rest of
+# Zulip, then listener-tools.json.
+READ_TOOLS = {"whoami", "topics", "read_topic", "inbox", "dm_list", "dm_read", "get_message", "message_history",
+              "search", "channels", "channel_info", "channel_members", "users", "presence", "user_groups",
+              "custom_emoji", "scheduled_list", "drafts_list", "listener_status", "listener_inbox",
+              "listener_owner_queue", "listener_wakes", "listener_held_back"}
+WRITE_TOOLS = {"post", "reply", "react", "dm_send", "edit_message", "delete_message", "move_topic", "resolve_topic",
+               "unresolve_topic", "unreact", "mark_read", "mark_unread", "star", "unstar", "unsubscribe",
+               "topic_visibility", "set_status", "upload", "scheduled_create", "scheduled_edit", "scheduled_delete",
+               "draft_create", "draft_edit", "draft_delete", "typing", "listener_ack"}
+ORIGINAL_SEVEN_SHA256 = "e92a0f9913169e0d645e5fd9732e8fd23bda7a24142b70500948fc73ddcb5a00"
 
 
 class _StubTools:
@@ -565,6 +576,32 @@ class ProtocolTests(McpHarness):
         self.assertIs(tools["react"]["annotations"]["idempotentHint"], True)
         self.assertEqual(tools["post"]["inputSchema"]["required"], ["topic", "text"])
         self.assertEqual(tools["read_topic"]["inputSchema"]["required"], ["topic"])
+
+    def test_original_seven_unchanged(self):
+        import hashlib
+
+        first = T.load_tools()["tools"][:7]
+        self.assertEqual([t["name"] for t in first], ["whoami", "topics", "read_topic", "inbox", "post", "reply", "react"])
+        digest = hashlib.sha256(json.dumps(first, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        self.assertEqual(digest, ORIGINAL_SEVEN_SHA256)
+        self.assertEqual(T.WRITE_TOOLS, frozenset(WRITE_TOOLS))
+
+    def test_every_tool_maps_to_a_cli_command_that_parses(self):
+        """tools.json is the contract:  every MCP tool (and every listener tool) names the CLI command
+        that does the same job, and that command exists in the CLI's parser."""
+        served = [t["name"] for t in T.load_served_tools()["tools"]]
+        self.assertEqual(set(served), set(T.CLI_VERBS), "tools and CLI_VERBS differ")
+        parser = cli.build_parser()
+        actions = {a.dest: a for a in parser._actions if isinstance(a, argparse._SubParsersAction)}
+        top = actions["command"].choices
+        for name, verbs in T.CLI_VERBS.items():
+            for verb in verbs:
+                with self.subTest(tool=name, verb=verb):
+                    words = verb.split()
+                    self.assertIn(words[0], sorted(top))
+                    if len(words) > 1:
+                        sub = next(a for a in top[words[0]]._actions if isinstance(a, argparse._SubParsersAction))
+                        self.assertIn(words[1], sorted(sub.choices))
 
     def test_fleet_roles_match_the_listener(self):
         self.assertEqual(T.FLEET_ROLES, daemon.FLEET_ROLES)

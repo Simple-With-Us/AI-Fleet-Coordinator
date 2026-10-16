@@ -47,6 +47,7 @@ from . import heldalert as HELDALERT
 from . import heldback as HELD
 from . import host_load as HL
 from . import live as L
+from . import listener_api as LAPI
 from . import outgoing_webhook as OW
 from . import router as R
 from . import secretscan
@@ -474,6 +475,7 @@ class Daemon:
         self.webhook_retry_at: dict[tuple[str, int], float] = {}
         self.webhook_drain_retry_at = 0.0
         self.outgoing_webhook_server: OW.OutgoingWebhookServer | None = None
+        self.listener_api_server: LAPI.ListenerReadApi | None = None
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {"reap": -1e9, "status": -1e9, "grace": -1e9, "prune": -1e9, "held": -1e9}
@@ -621,6 +623,44 @@ class Daemon:
         host, port = server.address
         self.log.write("outgoing-webhook-started", bind=host, port=port, seats=sorted(tokens))
 
+    def listener_api_keys(self) -> dict[str, str]:
+        """Each held seat's read-API key:  the seat's routine key when its wake is an hmac-sha256 http
+        routine (the key the Worker holds as WAKE_HMAC_KEY_<SEAT>), else <CODE>_ROUTINE_KEY.  A seat
+        with neither, or with a key under 32 characters, gets no read API."""
+        keys: dict[str, str] = {}
+        for seat in sorted(self.seats):
+            seat_cfg = self.config.seats.get(seat)
+            routine = getattr(seat_cfg, "routine", None)
+            name = routine.key_env if routine is not None and routine.auth == "hmac-sha256" else \
+                "%s_ROUTINE_KEY" % C.env_code(seat)
+            value = Z._strip_quotes(self.env.get(name) or "")
+            if len(value) >= LAPI.MIN_KEY_LEN:
+                keys[seat] = value
+                self.hide_values([value])
+        return keys
+
+    def _configure_listener_api(self) -> None:
+        """Start the optional signed read API (AFC-330) for the seats this instance holds."""
+        old = self.listener_api_server
+        self.listener_api_server = None
+        if old is not None:
+            old.close()
+        if not self.config.listener_api_enabled:
+            return
+        keys = self.listener_api_keys()
+        if not keys:
+            self.log.write("listener-api-deny-all", reason="no seat key")
+        try:
+            server = LAPI.ListenerReadApi(self.config.listener_api_bind, self.config.listener_api_port, self.root, keys,
+                                          clock=self.clock.time, log=self.log.write)
+            server.start()
+        except OSError as exc:
+            self.log.write("listener-api-error", error=type(exc).__name__)
+            return
+        self.listener_api_server = server
+        host, port = server.address
+        self.log.write("listener-api-started", bind=host, port=port, seats=sorted(keys))
+
     def _accept_outgoing_webhook(self, seat: str, bot_email: str, message_id: int) -> str:
         """Persist an authenticated webhook ID.  Message content comes only from a later REST read."""
         runner = self.seats.get(seat)
@@ -718,6 +758,7 @@ class Daemon:
         self.config_notified = False
         self._apply_config()
         self._configure_outgoing_webhook()
+        self._configure_listener_api()
         self.log.write("reloaded", seats=sorted(self.seats), errors=len(self.config.errors))
 
     def _recover_ledgers(self) -> None:
@@ -3221,6 +3262,7 @@ class Daemon:
                 os.close(lock_fd)
                 return self.refuse_start()
         self._configure_outgoing_webhook()
+        self._configure_listener_api()
         for seat in ("GROK", "CURSOR"):
             self.chat_queue(seat).recover_interrupted()
         os.ftruncate(lock_fd, 0)
@@ -3267,6 +3309,9 @@ class Daemon:
         if self.outgoing_webhook_server is not None:
             self.outgoing_webhook_server.close()
             self.outgoing_webhook_server = None
+        if self.listener_api_server is not None:
+            self.listener_api_server.close()
+            self.listener_api_server = None
         with self.child_lock:
             children = list(self.children)
         for child in children:
