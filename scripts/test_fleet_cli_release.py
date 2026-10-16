@@ -64,6 +64,81 @@ class ReleaseTests(unittest.TestCase):
                      "scripts/linear-board/catalog/../board"):
             self.assertFalse(release.allowed_path(path), path)
 
+    def test_ships_recall_lane_and_fleet_mode_and_nothing_else_of_their_packages(self):
+        # AFC-331:  the server mirror carries the five fleet tools.  Only the modules each one imports
+        # ship;  recall eval/ingest (Mac and box jobs), lane's install and guard-hook modules, and the
+        # whole of fleet_rag/tests stay out.
+        for path in ["scripts/recall", "scripts/fleet_rag/core.py", "scripts/fleet_rag/recall_api.py",
+                     "scripts/fleet_lanes/bin/lane", "scripts/fleet_lanes/lane.py", "scripts/fleet_lanes/layout.py",
+                     "scripts/fleet-mode", "docs/FLEET-MODE.md"]:
+            self.assertTrue(release.allowed_path(path), path)
+            self.assertIn(path, release.REQUIRED)
+        for path in ["scripts/fleet_rag/eval.py", "scripts/fleet_rag/ingest.py", "scripts/fleet_rag/golden.jsonl",
+                     "scripts/fleet_rag/tests/test_core.py", "scripts/fleet_lanes/install_tools.py",
+                     "scripts/fleet_lanes/fleet_guard_hook.py", "scripts/apple-notes-coding.sh",
+                     "docs/RAG-FLEET-INFRA.md"]:
+            self.assertFalse(release.allowed_path(path), path)
+
+    def test_recall_modules_cover_its_static_imports(self):
+        # The names the receiver ships must be exactly the fleet_rag modules recall can reach without a
+        # lazy import, so a new top-level import in recall or fleet_rag fails here, not on the server.
+        import re
+        root = Path(__file__).resolve().parent
+        seen, queue = set(), ["recall_api", "core", "doctor", "public_fallback", "contribute_guard"]
+        while queue:
+            name = queue.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            text = (root / "fleet_rag" / (name + ".py")).read_text()
+            for line in text.splitlines():  # module-level imports only:  no indentation
+                m = re.match(r"from \. import (.+)", line) or re.match(r"from \.(\w+) import", line)
+                if m:
+                    queue += [part.strip().split(" ")[0] for part in m.group(1).split(",") if part.strip()
+                              and part.strip().split(" ")[0] != "__version__"]
+        self.assertEqual(seen - {"__init__"}, set(release.RECALL_MODULES) - {"__init__"})
+
+    def test_install_writes_wrappers_for_all_five_tools(self):
+        self.receive()
+        bin_dir = self.home / ".local/bin"
+        for name, script, interpreter in [("recall", "scripts/recall", "/usr/bin/python3"),
+                                          ("lane", "scripts/fleet_lanes/bin/lane", "/bin/bash"),
+                                          ("fleet-mode", "scripts/fleet-mode", "/bin/bash")]:
+            text = (bin_dir / name).read_text()
+            self.assertIn(release.MARKER, text)
+            self.assertIn(script, text)
+            self.assertIn(interpreter, text)
+            self.assertEqual((bin_dir / name).stat().st_mode & 0o777, 0o755)
+        # Python tools stay isolated (-I -B);  the bash tools get the caller's environment untouched.
+        self.assertIn("'-I', '-B'", (bin_dir / "recall").read_text())
+        self.assertNotIn("-I", (bin_dir / "lane").read_text().split("argv =")[1])
+        for name in ("board", "agent-sync"):
+            self.assertIn("'/usr/bin/python3', '-I', '-B', str(release", (bin_dir / name).read_text())
+
+    def test_installed_bash_wrappers_run_their_script(self):
+        # A release holding real (tiny) tools:  the wrapper must reach the script in the current release.
+        bundle = make_bundle()
+        for path, body in {"scripts/fleet-mode": b"#!/bin/bash\necho fleet-mode-ran \"$@\"\n",
+                           "scripts/fleet_lanes/bin/lane": b"#!/bin/bash\necho lane-ran \"$@\"\n"}.items():
+            bundle["files"][path] = {"mode": 0o755, "sha256": hashlib.sha256(body).hexdigest(),
+                                     "data": base64.b64encode(body).decode()}
+        bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+        self.receive(bundle)
+        for name, expected in [("fleet-mode", b"fleet-mode-ran --full"), ("lane", b"lane-ran path a b")]:
+            args = ["--full"] if name == "fleet-mode" else ["path", "a", "b"]
+            out = subprocess.run([str(self.home / ".local/bin" / name), *args], capture_output=True)
+            self.assertEqual((out.returncode, out.stdout.strip()), (0, expected), out.stderr)
+
+    def test_smoke_runs_the_new_tools(self):
+        # The smoke cases for recall, lane and fleet-mode fail a release whose tool exits wrongly.
+        bundle = make_bundle()
+        body = b"#!/bin/bash\nexit 7\n"
+        bundle["files"]["scripts/fleet-mode"] = {"mode": 0o755, "sha256": hashlib.sha256(body).hexdigest(),
+                                                 "data": base64.b64encode(body).decode()}
+        bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+        with self.assertRaisesRegex(release.Refused, "smoke_exit_mismatch_fleet_mode_block"):
+            self.receive(bundle)
+
     def test_rejects_digest_and_path_before_writing(self):
         self.bundle["files"]["../../escape"] = next(iter(self.bundle["files"].values()))
         with self.assertRaisesRegex(release.Refused, "refused_path"):

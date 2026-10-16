@@ -8,13 +8,17 @@ commits and booleans only:  never a credential value.
   python3 scripts/fleet-tools-doctor.py [--seats CLAUDE,CODEX] [--json] [--no-network]
 
 Checks:
-  runtime     the installed fleet-cli release (agent-sync, board) was built
-              from AI-Fleet-Coordinator origin/main
+  runtime     the installed fleet-cli release (agent-sync, board, recall, lane,
+              fleet-mode) was built from AI-Fleet-Coordinator origin/main
   checkout    each /root/Code (or ~/Code) checkout that ships a CLI is on
               origin/main:  AI-Fleet-Coordinator, FleetLink
-  commands    agent-sync, board and fleet-share are on PATH
+  commands    the five fleet tools (agent-sync, board, recall, lane, fleet-mode)
+              and fleet-share are on PATH (the Mac also keeps lane and fleet-mode
+              in ~/apps, which counts)
   catalogs    the shared contracts ship with the runtime:  tools.json and,
               once AFC-329 lands, the board Linear catalog
+  tool-file   the files the recall, lane and fleet-mode tools run from ship with the runtime
+  fleet-mode-doc  the Mac's ~/apps/FLEET-MODE.md equals the repo's docs/FLEET-MODE.md (WARN if not)
   seat:<S>    per seat:  Zulip rc, Linear app, FleetLink token file
   mcp:codex   Codex registers agent-sync (and FleetLink when a token exists)
   mcp:claude  Claude Code registers agent-sync (and FleetLink likewise)
@@ -37,11 +41,20 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 RUNTIME = HOME / ".local/share/fleet-cli"
 CODE_ROOTS = [Path("/root/Code"), HOME / "Code"]
 REPOS = ("AI-Fleet-Coordinator", "FleetLink")
-COMMANDS = ("agent-sync", "board", "fleet-share")
+# The five tools both hosts carry (docs/protocols/fleet-tool-parity.md), then FleetLink's CLI.
+FLEET_TOOLS = ("agent-sync", "board", "recall", "lane", "fleet-mode")
+COMMANDS = (*FLEET_TOOLS, "fleet-share")
+# The Mac keeps lane and fleet-mode in ~/apps rather than on PATH.
+COMMAND_FALLBACK_DIRS = (HOME / "apps",)
+# Where a Mac finds the published runtime (the server reads RUNTIME/current).
+MAC_RUNTIME = HOME / "apps/lanes/_managed/fleet/agent-sync-runtime"
+MAC_FLEET_MODE_DOC = HOME / "apps/FLEET-MODE.md"
 AFC_REMOTE_URL = "https://github.com/Simple-With-Us/AI-Fleet-Coordinator"
 # Coarse git pathspecs that bound the diff;  is_shipped() then applies the exact rules.
 SHIPPED = ("scripts/agent-sync", "scripts/agent_sync/", "scripts/linear-board/", "fleet-apps.json",
-           "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py")
+           "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
+           "scripts/recall", "scripts/fleet_rag/", "scripts/fleet_lanes/", "scripts/fleet-mode",
+           "docs/FLEET-MODE.md")
 # What a fleet-cli release ships:  mirrors EXACT and allowed_path in scripts/fleet-cli-release.py, so a
 # commit that changes only tests or docs under those folders needs no push and is not drift.
 SHIPPED_EXACT = frozenset({
@@ -49,6 +62,15 @@ SHIPPED_EXACT = frozenset({
     "fleet-apps.json", "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
     "scripts/agent_sync/mcp/tools.json", "scripts/agent_sync/mcp/fixtures.jsonl",
     "scripts/agent_sync/wake/wake-schema.json",
+    "scripts/linear-board/catalog/named-commands.json", "scripts/linear-board/catalog/official-mcp-tools.json",
+    "scripts/linear-board/catalog/public-inputs.json",
+    "scripts/recall", "scripts/fleet_rag/__init__.py", "scripts/fleet_rag/contribute_guard.py",
+    "scripts/fleet_rag/core.py", "scripts/fleet_rag/doctor.py", "scripts/fleet_rag/health.py",
+    "scripts/fleet_rag/public_fallback.py", "scripts/fleet_rag/recall_api.py", "scripts/fleet_rag/scrub.py",
+    "scripts/fleet_rag/search_log.py", "scripts/fleet_rag/telemetry.py",
+    "scripts/fleet_lanes/bin/lane", "scripts/fleet_lanes/__init__.py", "scripts/fleet_lanes/doctor.py",
+    "scripts/fleet_lanes/guard.py", "scripts/fleet_lanes/lane.py", "scripts/fleet_lanes/layout.py",
+    "scripts/fleet-mode", "docs/FLEET-MODE.md",
 })
 
 
@@ -61,6 +83,12 @@ CATALOGS = (
     ("scripts/agent_sync/mcp/tools.json", True),
     ("scripts/linear-board/catalog/named-commands.json", False),
     ("scripts/linear-board/catalog/official-mcp-tools.json", False),
+)
+# The entry file of each tool the release added with AFC-331, and the modules it cannot run without.
+TOOL_FILES = (
+    "scripts/recall", "scripts/fleet_rag/core.py", "scripts/fleet_rag/recall_api.py",
+    "scripts/fleet_lanes/bin/lane", "scripts/fleet_lanes/lane.py", "scripts/fleet_lanes/layout.py",
+    "scripts/fleet-mode", "docs/FLEET-MODE.md",
 )
 
 
@@ -164,9 +192,20 @@ def check_checkouts(report: Report, network: bool, runner: Callable = subprocess
             report.add(f"checkout:{name}", "OK", f"main {head[:7]}")
 
 
+def command_path(name: str) -> str | None:
+    found = shutil.which(name)
+    if found:
+        return found
+    for directory in COMMAND_FALLBACK_DIRS:
+        candidate = directory / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return f"{candidate} (not on PATH)"
+    return None
+
+
 def check_commands(report: Report) -> None:
     for name in COMMANDS:
-        path = shutil.which(name)
+        path = command_path(name)
         report.add(f"command:{name}", "OK" if path else "FAIL", path or "not on PATH")
 
 
@@ -179,6 +218,36 @@ def check_catalogs(report: Report) -> None:
         present = (base / rel).exists()
         status = "OK" if present else ("FAIL" if required else "WARN")
         report.add(f"catalog:{Path(rel).name}", status, f"{'present' if present else 'missing'} in {base}")
+
+
+def runtime_base() -> Path | None:
+    """The tree whose files this host runs:  the fleet-cli release, else the Mac's published runtime,
+    else a checkout."""
+    for base in (RUNTIME / "current", MAC_RUNTIME):
+        if base.exists():
+            return base
+    return find_repo("AI-Fleet-Coordinator")
+
+
+def check_tool_files(report: Report) -> None:
+    base = runtime_base()
+    for rel in TOOL_FILES:
+        present = bool(base and (base / rel).is_file())
+        report.add(f"tool-file:{rel}", "OK" if present else "FAIL", f"{'present' if present else 'missing'} in {base}")
+
+
+def check_fleet_mode_doc(report: Report) -> None:
+    """The Mac keeps a copy of the doc at ~/apps/FLEET-MODE.md;  the repo copy is canonical."""
+    if not MAC_FLEET_MODE_DOC.is_file():
+        return  # the server has no ~/apps copy:  fleet-mode reads the release's docs/FLEET-MODE.md
+    base = runtime_base()
+    repo_doc = base / "docs/FLEET-MODE.md" if base else None
+    if not repo_doc or not repo_doc.is_file():
+        report.add("fleet-mode-doc", "WARN", f"no docs/FLEET-MODE.md in {base} to compare with {MAC_FLEET_MODE_DOC}")
+    elif repo_doc.read_bytes() == MAC_FLEET_MODE_DOC.read_bytes():
+        report.add("fleet-mode-doc", "OK", f"{MAC_FLEET_MODE_DOC} equals the repo copy")
+    else:
+        report.add("fleet-mode-doc", "WARN", f"{MAC_FLEET_MODE_DOC} differs from {repo_doc}:  edit docs/FLEET-MODE.md in the repo and copy it to ~/apps")
 
 
 def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
@@ -259,6 +328,8 @@ def run(argv: list[str] | None = None, env: dict[str, str] | None = None) -> tup
     check_checkouts(report, network)
     check_commands(report)
     check_catalogs(report)
+    check_tool_files(report)
+    check_fleet_mode_doc(report)
     for seat in [s.strip().upper() for s in args.seats.split(",") if s.strip()]:
         check_seat(report, seat, env)
     check_mcp(report)
