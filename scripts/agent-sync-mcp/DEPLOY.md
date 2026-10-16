@@ -302,3 +302,20 @@ The source remains the 22 `ZULIP_GB_<ROLE>_EMAIL` and `ZULIP_GB_<ROLE>_API_KEY` 
 Install **one** encrypted Worker secret named `GB_IDENTITY_CREDENTIALS`.  Its JSON object has `v: 1` and an `r` object keyed by exactly the eleven roles above;  each role value is the four-string array `[email, zulipKey, linearClientId, linearClientSecret]`.  The UTF-8 payload is capped at 5 KiB.  Build it only in memory from the 44 verified Infisical source values and pass it to `wrangler secret put GB_IDENTITY_CREDENTIALS` on stdin;  never print or save the payload.  The Worker parses the bundle once per authenticated CURSOR request.  A present malformed or incomplete bundle fails closed;  legacy per-role bindings are considered only when the bundle binding is absent, and then only complete four-field rows are used.  Do not mix credentials between sources or roles.  This single binding stays below the Free plan's 64 binding limit where 44 separate bindings could not fit.
 
 `agent_sync_identities` exposes configured or missing status, never values.  The shared `LINEAR_TOOLS_WRITES` switch still controls writes.  All selected tool calls charge the original CURSOR budget and the role's own gate.  The deployment and production acceptance check are separate from this code change.
+
+## FleetLink (AFC-328)
+
+The `fleetlink_*` tools need one Worker secret, `FLEETLINK_AGENT_SECRET`:  `fls_` plus 64 hex.  FleetLink holds the same value as its own Worker secret `AGENT_SYNC_SECRET` (FleetLink `docs/multi-user.md`, "Agent Accounts").  Without it the FleetLink tools answer `not_configured` and everything else works.  The value lives in Infisical, project "AI Fleet Coordinator", `prod`, `/fleetlink`, as `FLEETLINK_AGENT_SECRET` (INFISICAL.md).  It was made and installed on both Workers on Thu, Oct 15, 2026.  To reinstall it here, read it with the INFISICAL_AUTOMATION identity and pipe it straight in, with the Step 1 credentials exported in the same subshell.  Never print it:
+
+```bash
+(
+  set +x
+  # fetch prints only the value, to the pipe:  universal-auth login, then
+  # GET /v3/secrets/raw/FLEETLINK_AGENT_SECRET?workspaceId=<project>&environment=prod&secretPath=/fleetlink
+  fetch_fleetlink_secret | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put FLEETLINK_AGENT_SECRET >/dev/null && echo "set FLEETLINK_AGENT_SECRET"
+)
+```
+
+On FleetLink's side, the same value goes to `AGENT_SYNC_SECRET` on the `fleetlink` Worker.  Its deploy (`FLEETLINK_SECRETS=keep`) keeps the secret, and `wrangler secret put AGENT_SYNC_SECRET` or the Workers secrets API replaces it.  Rotate by installing a new value on both sides, FleetLink first:  until this Worker has the new value too, the tools answer `not_authorized` with HTTP 401.
+
+Check with `fleetlink_whoami` from any seat:  `user.id` is `usr_agent_<seat>` and `auth.kind` is `agent`.  In the Worker log, `"tool":"fleetlink_whoami"` with `outcome` `ok` means the credential works.  Jay is the fleet owner (FleetLink's `FLEET_OWNER_EMAIL` secret, or "Make Me The Fleet Owner" in its admin console):  every seat's bot account sits under his account and he owns the Fleet team.

@@ -30,7 +30,7 @@ const TITLE_WORDS = {
 
 const WHOAMI_DESCRIPTION =
   "Show the identity and configured service connections for this endpoint:  the seat, its existing verified Zulip bot " +
-  "identity and posting tag, plus whether Linear and fleet recall are configured.  This is connection-wide identity " +
+  "identity and posting tag, plus whether Linear, fleet recall and FleetLink are configured.  This is connection-wide identity " +
   "metadata; it never returns credentials.";
 
 const INTEGRATION_STATE = {
@@ -46,11 +46,12 @@ const INTEGRATION_STATE = {
 const WHOAMI_INTEGRATIONS = {
   type: "object",
   additionalProperties: false,
-  required: ["zulip", "linear", "recall"],
+  required: ["zulip", "linear", "recall", "fleetlink"],
   properties: {
     zulip: { ...INTEGRATION_STATE, description: "The seat's verified Zulip identity and connection state." },
     linear: { ...INTEGRATION_STATE, description: "Whether the hosted Linear service is configured." },
     recall: { ...INTEGRATION_STATE, description: "Whether the fleet recall service is configured." },
+    fleetlink: { ...INTEGRATION_STATE, description: "Whether FleetLink (fleetlink_* tools) is configured." },
   },
 };
 

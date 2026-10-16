@@ -228,3 +228,16 @@ The Worker uses these same canonical names: var `ZULIP_CLAUDE_EMAIL` and secret
 verifies the stored identity and provisions the Worker secret.  Its live
 identity check requires the CLAUDE bot and member role 400 before writing.
 See [the CLAUDE rollout](scripts/agent-sync-mcp/DEPLOY.md#add-hosted-claude-afc-296).
+
+## FleetLink agent server credential (AFC-328)
+
+Canonical location: AI Fleet Coordinator, `prod`, `/fleetlink`.
+
+| Key | Kind | Status |
+| --- | --- | --- |
+| `FLEETLINK_AGENT_SECRET` | secret | Created and read back 2026-10-15.  Installed as Worker secret `FLEETLINK_AGENT_SECRET` on `agent-sync-mcp` and as `AGENT_SYNC_SECRET` on FleetLink's `fleetlink-api`.  Never copy it to source, chat or a client. |
+
+The Agent-Sync MCP Worker sends it, with the acting seat in `X-Fleet-Seat`, to
+FleetLink's `/mcp`, which maps each seat to its own FleetLink agent account.
+Rotate both Workers from this one value, FleetLink first.  See
+[the FleetLink runbook](scripts/agent-sync-mcp/DEPLOY.md#fleetlink-afc-328).
