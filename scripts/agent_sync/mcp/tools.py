@@ -1591,7 +1591,11 @@ class Tools:
         self._scan(arguments=json.dumps(dict(args), ensure_ascii=False))
         if name in self.LINEAR_CORE_WRITES:
             return self._linear_write_once(name, spec, args)
-        return self._linear_text(name, self._linear_run(spec, args).stdout)
+        try:
+            return self._linear_text(name, self._linear_run(spec, args).stdout)
+        except _OutcomeUnknown as exc:
+            # A timed-out mutation or named write may have landed:  say so, never a generic internal error.
+            raise ToolError("outcome_unknown", str(exc)) from None
 
     def _linear_text(self, name: str, stdout: str) -> dict[str, Any]:
         return {"content": [{"type": "text", "text": LINEAR.fence(name, self.seat, stdout, self.agent.client.scrub)}]}

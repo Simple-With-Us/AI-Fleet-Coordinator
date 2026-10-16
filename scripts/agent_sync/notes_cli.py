@@ -97,8 +97,10 @@ def _identity(rt: Any, args: argparse.Namespace) -> str:
     seat = Z.normalise_seat(resolved.seat)
     try:
         problem = X.agent_identity_problem(seat, registry=I.load_seat_registry(env=rt.env))
-    except I.SeatRegistryError:
-        problem = None
+    except I.SeatRegistryError as exc:
+        # Fail closed:  without the registry nothing proves this is a live agent identity, and the direct Mac
+        # path checks no Zulip credential that could catch it.
+        problem = "cannot read the seat registry, so %s cannot be checked as an agent identity (%s)" % (seat, exc)
     if problem:
         raise Z.CredentialError(problem)
     return seat

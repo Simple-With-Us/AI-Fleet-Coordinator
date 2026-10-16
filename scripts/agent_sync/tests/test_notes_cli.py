@@ -77,6 +77,16 @@ class NotesCliTests(Harness):
         self.assertEqual(len(run.calls), 2)
         self.assertEqual(json.loads(again.out)["status"], "done")
 
+    def test_an_unreadable_seat_registry_refuses_the_write_instead_of_trusting_the_identity(self):
+        run = FakeRun()
+        a, b = self.direct(run)
+        with a, b:
+            result = self.run_cli("notes", "create", TITLE, stdin="x",
+                                  env=dict(self.env(), FLEET_APPS_JSON="/nonexistent/fleet-apps.json"))
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("seat registry", result.err)
+        self.assertEqual(run.calls, [])
+
     def test_the_cli_and_the_mcp_tools_share_the_request_id_rows_and_a_timeout_blocks_a_retry(self):
         def hang(argv, **kwargs):
             raise subprocess.TimeoutExpired(argv, 1)

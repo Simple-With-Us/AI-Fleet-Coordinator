@@ -576,6 +576,14 @@ class LinearToolTests(FakePrograms):
         # A different write is unaffected.
         self.assertNotIn("isError", session.call("linear_comment", {"id": "AFC-9", "body": "something else"}))
 
+    def test_a_timed_out_mutation_or_named_write_is_an_unknown_outcome_not_internal(self):
+        session = self.session(self.env())
+        for name, args in (("linear_mutation", {"mutation": "mutation { x }", "idempotency_key": "aaaaaaaa-9"}),
+                           ("linear_create_issue", {"input": {"title": "T", "teamId": "team"},
+                                                    "idempotency_key": "aaaaaaaa-8"})):
+            with self.lost_response():
+                self.assert_tool_error(session.call(name, args), "outcome_unknown")
+
     def test_a_definite_failure_drops_the_row_so_the_retry_runs(self):
         failing = self.session(self.env(LINEAR_TEST_EXIT="3", LINEAR_TEST_ERR="error: AFC-1 is claimed by CODEX\n"))
         self.assert_tool_error(failing.call("linear_claim", {"id": "AFC-1"}), "claim_held")
