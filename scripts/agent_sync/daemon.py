@@ -496,6 +496,7 @@ class Daemon:
         self.outgoing_webhook_server: OW.OutgoingWebhookServer | None = None
         self.listener_api_server: LAPI.ListenerReadApi | None = None
         self.notes_relay: NR.Consumer | None = None
+        self.notes_relay_lock = threading.RLock()  # a reload (main thread) and a handover (seat thread) never overlap
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {"reap": -1e9, "status": -1e9, "grace": -1e9, "prune": -1e9, "held": -1e9}
@@ -686,6 +687,20 @@ class Daemon:
         """Start (or stop) the #notes-relay consumer (AFC-331).  Off unless [notes_relay] enabled is true;  its
         seat's bot reads the channel and reacts.  Needs the notes script, so it is logged and skipped when
         this Mac cannot run it."""
+        with self.notes_relay_lock:
+            self._configure_notes_relay_locked()
+
+    def complete_notes_relay_handover(self) -> None:
+        """A reload asked the old consumer to stop while its worker was inside a request, so the swap waited.  Once
+        that worker has left, finish the swap:  the replacement (or none, when the relay is now off) takes the
+        spool, including requests offered in the meantime.  Called after each offer and on every tick."""
+        with self.notes_relay_lock:
+            old = self.notes_relay
+            if old is not None and old.stopped.is_set() and old.has_exited():
+                self.log.write("notes-relay-handover", seat=old.seat)
+                self._configure_notes_relay_locked()
+
+    def _configure_notes_relay_locked(self) -> None:
         old = self.notes_relay
         cfg = self.config
         home = Path(os.path.abspath(self.home))
@@ -696,13 +711,16 @@ class Daemon:
         # whose seat differs does not consume, so two Macs cannot both act as the consumer.
         agrees = not differs and consumer == cfg.notes_relay_seat
         if old is not None:
-            if cfg.notes_relay_enabled and cfg.notes_relay_seat == old.seat and available and agrees:
+            if (cfg.notes_relay_enabled and cfg.notes_relay_seat == old.seat and available and agrees
+                    and not old.stopped.is_set()):
                 return  # nothing the consumer uses changed:  keep it (and its worker) as the one owner of the spool
             # The spool has one owner.  Wait (bounded) for the old worker to leave any request it is inside before
-            # a replacement may start;  if it does not leave in time it stays the owner and nothing new starts.
+            # a replacement may start.  If it does not leave in time it has been told to finish that request and
+            # exit, and the swap completes by itself once it has (complete_notes_relay_handover), on the next offer
+            # or tick;  requests offered meanwhile are spooled and drained by the replacement.
             if not old.stop(NR.STOP_TIMEOUT):
                 self.log.write("notes-relay-reload-deferred", seat=old.seat,
-                               warning="the relay worker is still inside a request;  it stays the owner until the next reload")
+                               warning="the relay worker is still inside a request;  the swap completes when it leaves")
                 return
             self.notes_relay = None
         if not cfg.notes_relay_enabled:
@@ -1152,7 +1170,10 @@ class Daemon:
             # The acting seat advances its cursor only once the request is on disk (Consumer.offer), so a
             # request that could not be kept is retried from the backfill and never silently lost.
             if relay.wants(runner, message):
-                if not relay.offer(runner, message):
+                offered = relay.offer(runner, message)
+                if offered:
+                    self.complete_notes_relay_handover()  # a retiring consumer's worker may be gone:  hand the spool on
+                if not offered:
                     # Not on disk:  take the id back out of the ring too, or a backfill of the same message would
                     # take the duplicate path, advance past it and lose the request.  And hold this runner's cursor
                     # below the id for the rest of the batch and session, so a later message cannot carry the
@@ -2884,6 +2905,7 @@ class Daemon:
         if self.reload_requested:
             self.reload_requested = False
             self.reload()
+        self.complete_notes_relay_handover()
         for pending in self.coalescer.take_due(now):
             self.finalize(pending)
         if now - self.last_tick["reap"] >= 10:

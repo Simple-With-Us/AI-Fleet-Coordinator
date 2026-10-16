@@ -59,6 +59,8 @@ RELAY_DIR = "notes-relay"  # <state>/notes-relay/:  seat-independent, so a chang
 SPOOL_DIR = "spool"
 RETRY_SECONDS = 60.0
 STOP_TIMEOUT = 10.0  # how long a reload waits for the old worker before leaving it the owner
+REPLY_SCAN_PAGE = 100  # messages per page when looking for a refusal this bot already posted
+REPLY_SCAN_PAGES = 20  # at most this many pages (2000 of the bot's own messages in one topic) before it answers anyway
 LOCK_FILE = "lock"
 REASON_LIMIT = 300
 STATE_FILE = "processed.json"
@@ -336,6 +338,8 @@ class Consumer:
             pass  # a wake-up is already pending
 
     def start(self) -> None:
+        if self.stopped.is_set():
+            return  # retiring:  the replacement drains what is spooled
         if self.thread is None or not self.thread.is_alive():
             self.thread = threading.Thread(target=self._work, name="notes-relay", daemon=True)
             self.thread.start()
@@ -358,6 +362,11 @@ class Consumer:
             return True
         thread.join(timeout)
         return not thread.is_alive()
+
+    def has_exited(self) -> bool:
+        """Has a stopped consumer's worker left?  True once it is safe to hand the spool to a replacement."""
+        thread = self.thread
+        return thread is None or not thread.is_alive()
 
     # ---- the worker ---------------------------------------------------------------------------
     def _work(self) -> None:
@@ -538,13 +547,27 @@ class Consumer:
             self.log("notes-relay-reply-failed", id=message_id, status=exc.status)  # permanent:  not retried
 
     def _already_replied(self, runner: Any, original: Mapping[str, Any], message_id: int, prefix: str) -> bool:
+        """Did this bot already post the refusal?  Reads this bot's own messages in the topic after the request,
+        forward in pages until the reply is found or the topic's newest message is reached, so a refusal posted
+        after a long backlog is still seen.  The scan is bounded;  past the bound it logs and answers anyway."""
         me = getattr(runner.me, "user_id", None)
-        found = runner.client.get("messages", {
-            "narrow": json.dumps([{"operator": "channel", "operand": original.get("stream_id")},
-                                  {"operator": "topic", "operand": Z.message_topic(original)}]),
-            "anchor": message_id, "num_before": 0, "num_after": 30, "include_anchor": "false", "apply_markdown": "false"})
-        return any(m.get("sender_id") == me and str(m.get("content") or "").startswith(prefix)
-                   for m in found.get("messages") or [] if isinstance(m, dict))
+        narrow = json.dumps([{"operator": "channel", "operand": original.get("stream_id")},
+                             {"operator": "topic", "operand": Z.message_topic(original)}]
+                            + ([{"operator": "sender", "operand": me}] if isinstance(me, int) else []))
+        anchor = message_id
+        for _ in range(REPLY_SCAN_PAGES):
+            found = runner.client.get("messages", {
+                "narrow": narrow, "anchor": anchor, "num_before": 0, "num_after": REPLY_SCAN_PAGE,
+                "include_anchor": "false", "apply_markdown": "false"})
+            page = [m for m in found.get("messages") or [] if isinstance(m, dict)]
+            if any(m.get("sender_id") == me and str(m.get("content") or "").startswith(prefix) for m in page):
+                return True
+            ids = [m["id"] for m in page if isinstance(m.get("id"), int) and m["id"] > anchor]
+            if found.get("found_newest") is not False or not ids:
+                return False  # the topic's newest message has been read (or there is nothing newer):  no reply yet
+            anchor = max(ids)
+        self.log("notes-relay-reply-scan-capped", id=message_id, pages=REPLY_SCAN_PAGES)
+        return False
 
     def _download(self, runner: Any, path: str) -> bytes:
         """The uploaded .md at /user_uploads/..., through the reading bot's own credential:  Zulip hands back a

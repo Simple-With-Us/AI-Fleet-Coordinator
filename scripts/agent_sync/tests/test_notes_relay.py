@@ -34,11 +34,17 @@ class FakeClient:
         self.files: dict[str, dict] = {}
         self.react_fails: set[str] = set()
         self.react_error: Exception | None = None  # any other failure of the reaction endpoint
+        self.backlog: list[dict] = []  # other people's messages in the topic, newer than the request
+        self.message_gets: list[dict] = []
 
     def get(self, path, params=None):
-        if path == "messages":  # the topic after a message:  the replies this bot has posted so far
-            return {"messages": [{"id": 9000 + i, "sender_id": READER_ID, "content": a["content"]}
-                                 for i, (p, a) in enumerate(self.posts) if p == "messages"]}
+        if path == "messages":  # the topic after the anchor:  the backlog, then the replies this bot has posted
+            self.message_gets.append(dict(params or {}))
+            topic = list(self.backlog) + [{"id": 9000 + i, "sender_id": READER_ID, "content": a["content"]}
+                                          for i, (p, a) in enumerate(self.posts) if p == "messages"]
+            newer = sorted((m for m in topic if m["id"] > int(params["anchor"])), key=lambda m: m["id"])
+            page = newer[:int(params["num_after"])]
+            return {"messages": page, "found_newest": len(newer) <= int(params["num_after"])}
         if path.startswith("messages/"):
             return {"message": self.messages[int(path.split("/")[1])]}
         if path.startswith("user_uploads/"):
@@ -691,6 +697,36 @@ class RefusalReplayTests(RelayHarness):
         self.client.post = original_post
         self.process(message)
         self.assertEqual(len(self.client.replies), 1)
+
+    def test_a_reply_posted_after_a_long_backlog_is_found_and_not_posted_twice(self):
+        message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="replay-request-03")
+        self.assertEqual(self.process(message), "refused")
+        self.assertEqual(len(self.client.replies), 1)
+        # Far more than one page of other messages arrive in the topic after the request, newer than the refusal's
+        # position in this fake's ordering, so the refusal is not in the first page of 30 (or of 100).
+        self.client.backlog = [{"id": 2000 + i, "sender_id": OWNER_ID, "content": "chatter %d" % i} for i in range(250)]
+        self.assertEqual(self.process(message), "refused")
+        self.assertEqual(len(self.client.replies), 1, "the replay found the refusal beyond the first 30 messages")
+        self.assertGreater(len(self.client.message_gets), 1)
+
+    def test_the_scan_pages_forward_until_the_topics_newest_message(self):
+        message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="replay-request-04")
+        self.client.backlog = [{"id": 2000 + i, "sender_id": READER_ID, "content": "other bot post %d" % i}
+                               for i in range(250)]
+        self.assertEqual(self.process(message), "refused")
+        self.assertEqual(len(self.client.replies), 1, "no refusal existed yet, so exactly one was posted")
+        anchors = [g["anchor"] for g in self.client.message_gets]
+        self.assertEqual(anchors[0], message["id"])
+        self.assertEqual(anchors[1:3], [2099, 2199], "each page continues after the last id of the one before")
+
+    def test_a_scan_that_hits_its_bound_logs_and_answers(self):
+        message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="replay-request-05")
+        self.client.backlog = [{"id": 2000 + i, "sender_id": READER_ID, "content": "x"} for i in range(60)]
+        with mock.patch.object(NR, "REPLY_SCAN_PAGE", 10), mock.patch.object(NR, "REPLY_SCAN_PAGES", 3):
+            self.assertEqual(self.process(message), "refused")
+        self.assertEqual(len(self.client.replies), 1)
+        self.assertEqual(len(self.client.message_gets), 3)
+        self.assertIn("notes-relay-reply-scan-capped", [e for e, _ in self.logs])
 
     def test_a_refusal_without_a_request_id_is_keyed_by_its_message(self):
         first = self.message(SENDERS["CURSOR"], "hello there")

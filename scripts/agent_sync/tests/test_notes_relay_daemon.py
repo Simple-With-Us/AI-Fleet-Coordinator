@@ -249,6 +249,50 @@ class DaemonRelayTests(DaemonHarness):
         self.assertIsNone(daemon.notes_relay, "once the worker is out the relay is off")
         self.assertFalse(consumer.thread.is_alive())
 
+    def test_a_deferred_reload_completes_when_the_worker_leaves_and_a_request_offered_meanwhile_still_runs(self):
+        """The old worker was told to stop but stays inside a request.  It exits once that request ends, and a request
+        offered after that must not sit in the spool until some later reload:  the offer itself finishes the swap."""
+        daemon = self.started_with_relay()
+        consumer = daemon.notes_relay
+        gate, inside = threading.Event(), threading.Event()
+
+        def slow(argv, **kwargs):
+            inside.set()
+            gate.wait(10)
+            return subprocess.CompletedProcess(argv, 0, b"created note id=n1\n", b"")
+        consumer.runner = slow
+        first = self.envelope_message(rid="deferred-request-1")
+        self.pump_until(daemon, inside.is_set)
+        self.notes_knob = "CODEX"  # the fleet knob moves:  this listener must stop consuming
+        with mock.patch.object(NR, "STOP_TIMEOUT", 0.2):
+            daemon.reload()
+        self.assertIs(daemon.notes_relay, consumer, "still inside a request:  the swap is pending")
+        gate.set()
+        self.assertTrue(self.wait(lambda: (first, 10, "check") in self.fake.reactions))
+        self.assertTrue(self.wait(consumer.has_exited), "the worker leaves after its request")
+        self.notes_knob = "CLAUDE"  # and the knob is back before anyone reloads again
+        self.calls.clear()
+        self.ran.clear()
+        second = self.envelope_message(rid="deferred-request-2")
+        with mock.patch("agent_sync.notes.subprocess.run", side_effect=self.fake_run):
+            self.pump_until(daemon, self.ran.is_set)
+            self.assertTrue(self.wait(lambda: (second, 10, "check") in self.fake.reactions),
+                            "the request offered during the pending swap was drained")
+        self.assertIsNot(daemon.notes_relay, consumer, "the swap completed without another reload")
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn("notes-relay-handover", (self.state_dir / "logs" / "listener.log").read_text())
+        daemon.notes_relay.stop()
+
+    def test_a_tick_completes_a_pending_swap_with_nothing_offered(self):
+        daemon = self.started_with_relay()
+        consumer = daemon.notes_relay
+        consumer.stopped.set()  # retiring, worker never ran
+        self.assertIs(daemon.notes_relay, consumer)
+        daemon.tick()
+        self.assertIsNot(daemon.notes_relay, consumer)
+        self.assertIsNotNone(daemon.notes_relay)
+        daemon.notes_relay.stop()
+
     def test_a_local_seat_that_differs_from_the_fleet_knob_does_not_consume(self):
         self.notes_knob = "CODEX"  # Infisical names another consumer than this listener's [notes_relay] seat (CLAUDE)
         self.enable()
