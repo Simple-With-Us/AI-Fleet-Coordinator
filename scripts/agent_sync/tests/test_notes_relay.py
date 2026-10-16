@@ -198,7 +198,7 @@ class IdempotencyAndFailureTests(RelayHarness):
 
     def test_the_processed_file_is_mode_600_and_capped(self):
         self.process(self.request(rid="mode-request-001"))
-        path = Path(self.state) / "CLAUDE" / NR.STATE_FILE
+        path = Path(self.state) / NR.RELAY_DIR / NR.STATE_FILE
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
         rows = {f"CURSOR:cap-{i}": {"outcome": "done", "ts": i} for i in range(NR.PROCESSED_LIMIT + 50)}
         self.consumer.processed._write(rows)
@@ -467,6 +467,33 @@ class OwnershipTests(RelayHarness):
         self.assertTrue(self.consumer.stop(5), "left once the request finished")
         self.assertFalse(self.consumer.thread.is_alive())
 
+    def test_changing_the_consumer_seat_strands_nothing(self):
+        """The spool and the processed ids are seat-independent:  a pending request of the old consumer seat (its
+        cursor has long moved on) is drained by the new one."""
+        self.consumer.start = lambda: None
+        message = self.request(rid="seat-change-0001")
+        self.assertTrue(self.consumer.offer(self.runner, message))
+        pending = Path(self.state) / NR.RELAY_DIR / NR.SPOOL_DIR / ("%d.json" % message["id"])
+        self.assertTrue(pending.exists())
+        self.assertFalse((Path(self.state) / "CLAUDE").exists(), "nothing is kept under the old seat's directory")
+        # The knob (and the local config) now name CODEX:  a new consumer for another seat on the same state root.
+        new_runner = SimpleNamespace(seat="CODEX", users=dict(USERS), client=self.client,
+                                     me=SimpleNamespace(user_id=11))
+        successor = NR.Consumer(seat="CODEX", state_dir=self.state, script=lambda: Path("/fake/script.sh"), env={},
+                                owner_user_id=lambda: OWNER_ID, runner=fake_run_factory(self.calls),
+                                log=lambda event, **f: self.logs.append((event, f)))
+        successor.start = lambda: None
+        self.assertEqual(successor.spool.path, self.consumer.spool.path)
+        self.assertEqual(successor.processed.path, self.consumer.processed.path)
+        successor.resume(new_runner)
+        self.assertEqual(successor.drain(), 1)
+        self.assertEqual(len(self.calls), 1, "the pending request ran once, under the new consumer")
+        self.assertIn((message["id"], "check"), self.client.reactions)
+        self.assertFalse(pending.exists())
+        # And the old consumer's record of it stays valid:  the same request id is a duplicate, not a second write.
+        self.assertEqual(self.process(self.request(rid="seat-change-0001")), "duplicate")
+        self.assertEqual(len(self.calls), 1)
+
     def test_a_stopped_worker_leaves_the_rest_of_the_spool_for_its_successor(self):
         self.consumer.start = lambda: None
         for i in range(3):
@@ -568,7 +595,7 @@ class WorkerTests(RelayHarness):
                 done.set()
         self.consumer.process = process
         self.assertTrue(self.consumer.offer(self.runner, message))
-        spooled = Path(self.state) / "CLAUDE" / NR.SPOOL_DIR / ("%d.json" % message["id"])
+        spooled = Path(self.state) / NR.RELAY_DIR / NR.SPOOL_DIR / ("%d.json" % message["id"])
         self.assertTrue(done.wait(5))
         self.consumer.stop()
         self.assertEqual(len(self.calls), 1)
@@ -583,7 +610,7 @@ class WorkerTests(RelayHarness):
         messages = [self.request(rid="queued-request-%02d" % i) for i in range(5)]
         for message in messages:
             self.assertTrue(self.consumer.offer(self.runner, message))
-        spool = Path(self.state) / "CLAUDE" / NR.SPOOL_DIR
+        spool = Path(self.state) / NR.RELAY_DIR / NR.SPOOL_DIR
         self.assertEqual(stat.S_IMODE(os.stat(spool).st_mode), 0o700)
         for message in messages:
             self.assertEqual(stat.S_IMODE(os.stat(spool / ("%d.json" % message["id"])).st_mode), 0o600)

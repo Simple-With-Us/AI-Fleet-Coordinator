@@ -344,7 +344,7 @@ class DaemonRelayTests(DaemonHarness):
         self.fake.streams["notes-relay"] = 140
         mid = self.envelope_message()  # in Zulip, before this daemon ever connects
         message = dict(self.fake.messages[-1])
-        spool = self.state_dir / "CLAUDE" / "notes-relay-spool"
+        spool = self.state_dir / "notes-relay" / "spool"
         spool.mkdir(parents=True)
         (spool / ("%d.json" % mid)).write_text(json.dumps(message))
         with mock.patch.object(N.subprocess, "run", self.fake_run):

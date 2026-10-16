@@ -55,12 +55,13 @@ from . import zulip as Z
 
 PROCESSED_LIMIT = 2000
 SPOOL_LIMIT = 1000  # pending requests kept on disk;  past it `offer` says no and the daemon holds the cursor
-SPOOL_DIR = "notes-relay-spool"
+RELAY_DIR = "notes-relay"  # <state>/notes-relay/:  seat-independent, so a change of consumer seat strands nothing
+SPOOL_DIR = "spool"
 RETRY_SECONDS = 60.0
 STOP_TIMEOUT = 10.0  # how long a reload waits for the old worker before leaving it the owner
-LOCK_FILE = "notes-relay.lock"
+LOCK_FILE = "lock"
 REASON_LIMIT = 300
-STATE_FILE = "notes-relay.json"
+STATE_FILE = "processed.json"
 DEFAULT_SEAT = "CLAUDE"
 
 
@@ -273,8 +274,11 @@ class Consumer:
         self.runner = runner
         self.log = log
         self.registry_path = registry_path
-        self.processed = Processed(os.path.join(state_dir, seat, STATE_FILE), clock)
-        self.spool = Spool(os.path.join(state_dir, seat, SPOOL_DIR))
+        # One relay state directory under the state root, whichever seat consumes:  when the consumer seat changes (the
+        # fleet knob or the local config), the new consumer drains the old one's pending requests, whose cursor has
+        # already moved on.  The lock file in it is the single owner, across seats and processes.
+        self.processed = Processed(os.path.join(state_dir, RELAY_DIR, STATE_FILE), clock)
+        self.spool = Spool(os.path.join(state_dir, RELAY_DIR, SPOOL_DIR))
         self.jobs: "queue.Queue[bool | None]" = queue.Queue(1)  # a wake-up signal;  the work is in the spool
         self.reader: Any = None  # the reading seat's runner, for the worker
         self.thread: threading.Thread | None = None

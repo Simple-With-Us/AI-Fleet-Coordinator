@@ -508,6 +508,87 @@ class LinearToolTests(FakePrograms):
         with self.assertRaises(LT.LinearUnavailable):
             LT.run_board(specs["linear_list"], {}, "CLAUDE", env=self.env(), runner=hang)
 
+    def lost_response(self):
+        """The next board run is killed by a timeout, as when the client lost the answer of a write that landed."""
+        def hang(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 1)
+        return mock.patch.object(LT.subprocess, "run", hang)
+
+    def test_a_repeated_core_write_runs_board_once_and_returns_the_first_answer(self):
+        session = self.session(self.env(LINEAR_TEST_REPLY="first-answer\n"))
+        for name, args in (("linear_file", {"title": "Same issue", "app": "afc"}),
+                           ("linear_claim", {"id": "AFC-1"}),
+                           ("linear_comment", {"id": "AFC-1", "body": "a comment"}),
+                           ("linear_status", {"id": "AFC-1", "status": "completed"})):
+            before = len(self.calls(self.board_out))
+            first = session.call(name, args)
+            again = session.call(name, args)
+            self.assertNotIn("isError", first, name)
+            self.assertEqual(len(self.calls(self.board_out)), before + 1, "%s ran board once" % name)
+            self.assertIn("first-answer", again["content"][0]["text"])
+            self.assertIn("repeat of an earlier identical call", again["content"][0]["text"])
+        # Different arguments are a different write.
+        before = len(self.calls(self.board_out))
+        session.call("linear_comment", {"id": "AFC-1", "body": "another comment"})
+        session.call("linear_comment", {"id": "AFC-2", "body": "a comment"})
+        self.assertEqual(len(self.calls(self.board_out)), before + 2)
+
+    def test_linear_file_passes_a_stable_uid_so_board_itself_is_replay_safe(self):
+        session = self.session(self.env())
+        session.call("linear_file", {"title": "One issue", "app": "afc"})
+        session.call("linear_file", {"title": "One issue", "app": "afc"})  # a repeat:  board is not run
+        session.call("linear_file", {"title": "Another issue", "app": "afc"})
+        first, second = self.calls(self.board_out)
+        uids = [c["argv"][c["argv"].index("--uid") + 1] for c in (first, second)]
+        self.assertRegex(uids[0], r"^agent-sync-claude-[0-9a-f]{24}$")
+        self.assertNotEqual(uids[0], uids[1])
+
+    def test_a_linear_file_retry_after_a_lost_response_reuses_the_uid_and_makes_no_second_issue(self):
+        """First run times out (the issue may exist).  The retry runs board again with the SAME --uid, and board
+        finds the issue it made before (det_uuid from the uid) instead of creating another."""
+        session = self.session(self.env())
+        args = {"title": "Lost response", "app": "afc", "description": "body"}
+        with self.lost_response():
+            lost = self.assert_tool_error(session.call("linear_file", args), "outcome_unknown")
+        self.assertIn("may already have applied", lost["message"])
+        self.assertEqual(self.calls(self.board_out), [], "the killed run recorded nothing")
+        ok = session.call("linear_file", args)
+        self.assertNotIn("isError", ok)
+        retry, = self.calls(self.board_out)
+        uid = retry["argv"][retry["argv"].index("--uid") + 1]
+        # The uid is a pure function of the identity and the arguments, so a later retry (or another process) gets the same.
+        key = "i:linear:" + T._sha(json.dumps(["linear_file", "CLAUDE", json.loads(json.dumps(args, sort_keys=True))],
+                                              sort_keys=True, ensure_ascii=False))
+        self.assertEqual(uid, "agent-sync-claude-" + key[len("i:linear:"):][:24])
+        again = session.call("linear_file", args)
+        self.assertIn("repeat of an earlier identical call", again["content"][0]["text"])
+        self.assertEqual(len(self.calls(self.board_out)), 1)
+
+    def test_a_timeout_keeps_the_row_unknown_so_claim_comment_and_status_are_not_resent(self):
+        session = self.session(self.env())
+        for name, args in (("linear_claim", {"id": "AFC-9"}), ("linear_comment", {"id": "AFC-9", "body": "hello"}),
+                           ("linear_status", {"id": "AFC-9", "status": "completed"})):
+            with self.lost_response():
+                self.assert_tool_error(session.call(name, args), "outcome_unknown")
+            retry = self.assert_tool_error(session.call(name, args), "outcome_unknown")
+            self.assertIn("may or may not have reached Linear", retry["message"])
+        self.assertEqual(self.calls(self.board_out), [], "board never ran again for an unknown outcome")
+        # A different write is unaffected.
+        self.assertNotIn("isError", session.call("linear_comment", {"id": "AFC-9", "body": "something else"}))
+
+    def test_a_definite_failure_drops_the_row_so_the_retry_runs(self):
+        failing = self.session(self.env(LINEAR_TEST_EXIT="3", LINEAR_TEST_ERR="error: AFC-1 is claimed by CODEX\n"))
+        self.assert_tool_error(failing.call("linear_claim", {"id": "AFC-1"}), "claim_held")
+        good = self.session(self.env())
+        self.assertNotIn("isError", good.call("linear_claim", {"id": "AFC-1"}))
+        self.assertEqual(len(self.calls(self.board_out)), 2)
+
+    def test_named_commands_and_mutations_are_not_deduped_here_because_board_enforces_their_key(self):
+        session = self.session(self.env())
+        for key in ("key-0001", "key-0001"):
+            session.call("linear_create_issue", {"input": {"title": "T"}, "idempotency_key": key})
+        self.assertEqual(len(self.calls(self.board_out)), 2, "board's own store answers a repeated key")
+
     def test_graphql_variables_go_through_a_private_file_that_is_removed_after(self):
         session = self.session(self.env())
         session.call("linear_query", {"query": "query { viewer { id } }", "variables": {"payload": "x" * 50000}})

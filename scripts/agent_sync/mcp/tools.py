@@ -358,6 +358,10 @@ class ToolError(Exception):
         return obj
 
 
+class _OutcomeUnknown(Exception):
+    """A write whose outcome could not be told (a timeout);  the caller turns it into outcome_unknown."""
+
+
 class UnknownTool(Exception):
     """tools/call named a tool this server does not have:  a protocol error, not a tool error."""
 
@@ -1577,22 +1581,68 @@ class Tools:
         return self.ok(json.dumps(shown), shown)
 
     # ---- Linear (AFC-331 section 4):  through board, as this identity ------------------------
+    # The core writes that have no idempotency_key of their own (named commands and linear_mutation have one, which
+    # board enforces).  The hosted server dedupes them over (seat, tool, arguments) for 10 minutes;  so does stdio.
+    LINEAR_CORE_WRITES = frozenset({"linear_file", "linear_claim", "linear_comment", "linear_status"})
+    LINEAR_SAVED_STDOUT = 8000  # bytes of board's answer kept in the row, to return on a repeat
+
     def _tool_linear(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
         spec = self.linear[name]
         self._scan(arguments=json.dumps(dict(args), ensure_ascii=False))
+        if name in self.LINEAR_CORE_WRITES:
+            return self._linear_write_once(name, spec, args)
+        return self._linear_text(name, self._linear_run(spec, args).stdout)
+
+    def _linear_text(self, name: str, stdout: str) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": LINEAR.fence(name, self.seat, stdout, self.agent.client.scrub)}]}
+
+    def _linear_run(self, spec: Any, args: Mapping[str, Any], uid: str | None = None) -> Any:
+        """Run board and map its failures to tool errors.  LinearOutcomeUnknown (a timeout on a write) is its own
+        exception here so a caller can keep an idempotency row for it."""
         try:
-            result = LINEAR.run_board(spec, args, self.seat, env=self.agent.rt.env)
+            result = LINEAR.run_board(spec, args, self.seat, env=self.agent.rt.env, uid=uid)
         except LINEAR.LinearInvalid as exc:
             raise ToolError("invalid_argument", str(exc)) from None
         except LINEAR.LinearOutcomeUnknown as exc:
-            raise ToolError("outcome_unknown", str(exc)) from None
+            raise _OutcomeUnknown(str(exc)) from None
         except LINEAR.LinearUnavailable as exc:
             raise ToolError("unavailable", str(exc), retryable=spec.kind == "read") from None
         if result.code != 0:
             code, message, retryable = LINEAR.error_for(result)
             raise ToolError(code, message, retryable=retryable and spec.kind == "read")
-        text = LINEAR.fence(name, self.seat, result.stdout, self.agent.client.scrub)
-        return {"content": [{"type": "text", "text": text}]}
+        return result
+
+    def _linear_write_once(self, name: str, spec: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+        """A core Linear write under the shared idempotency rows (idem.py), like the hosted `linearWrite`.  A repeat of
+        a finished write returns the first answer and does not run board.  A timeout keeps the row as `unknown`: a
+        retry of claim, comment or status is refused as outcome_unknown (the write may have landed), while a retry of
+        linear_file runs again because board file takes a stable --uid, derived here from the key, and then finds the
+        issue it already made instead of making a second.  Any definite failure drops the row."""
+        parts = [name, self.seat, json.loads(json.dumps(dict(args), sort_keys=True))]
+        key = "i:linear:" + _sha(json.dumps(parts, sort_keys=True, ensure_ascii=False))
+        prior = self._idem_peek(key)
+        if prior is not None:
+            return self._linear_text(name + " (a repeat of an earlier identical call;  board was not run again)",
+                                     str((prior.get("result") or {}).get("stdout") or ""))
+        verdict, row = self._idem_begin(key, IDEM_IMPLICIT_TTL, {"tool": name})
+        if verdict == "duplicate" and row is not None:
+            return self._linear_text(name + " (a repeat of an earlier identical call;  board was not run again)",
+                                     str((row.get("result") or {}).get("stdout") or ""))
+        uid = ("agent-sync-%s-%s" % (self.seat.lower(), key[len("i:linear:"):][:24])) if name == "linear_file" else None
+        if verdict == "reconcile" and uid is None:
+            self._idem_set(key, state="unknown")
+            raise ToolError("outcome_unknown", "an earlier identical %s may or may not have reached Linear.  Check Linear "
+                            "before sending it again." % name)
+        try:
+            result = self._linear_run(spec, args, uid=uid)
+        except _OutcomeUnknown as exc:
+            self._idem_set(key, state="unknown")
+            raise ToolError("outcome_unknown", str(exc)) from None
+        except BaseException:
+            self._idem_drop(key)
+            raise
+        self._idem_set(key, state="sent", id=0, result={"stdout": result.stdout[:self.LINEAR_SAVED_STDOUT]})
+        return self._linear_text(name, result.stdout)
 
     # ---- listener records (AFC-330 part B):  this seat's own, from the local state root -----
     def _listener(self, record: str, args: Mapping[str, Any]) -> dict[str, Any]:

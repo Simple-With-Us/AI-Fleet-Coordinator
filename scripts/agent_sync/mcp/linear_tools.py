@@ -154,7 +154,7 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def plan_for(spec: Spec, args: Mapping[str, Any], identity: str) -> Plan:
+def plan_for(spec: Spec, args: Mapping[str, Any], identity: str, uid: str | None = None) -> Plan:
     """The board command for one validated call (defaults already filled).  `identity` is the seat the
     call acts as:  board's --by flags carry it, and AGENT_SEAT (set by the caller) is what actually decides."""
     name = spec.tool["name"]
@@ -196,6 +196,8 @@ def plan_for(spec: Spec, args: Mapping[str, Any], identity: str) -> Plan:
             _flag(argv, flag, args.get(key))
         for label in args.get("label") or []:
             argv += ["--label", str(label)]
+        if uid:
+            argv += ["--uid", uid]  # board derives the issue id from it and finds the existing issue:  a replay is safe
         stdin = b""
         if args.get("description"):
             argv += ["--desc-file", "-"]
@@ -281,12 +283,12 @@ _LOCK = threading.Lock()  # one board child at a time per process:  the router s
 
 
 def run_board(spec: Spec, args: Mapping[str, Any], identity: str, *, env: Mapping[str, str],
-              runner: Runner = subprocess.run, timeout: float = BOARD_TIMEOUT_S,
-              python: str | None = None) -> BoardResult:
+              runner: Runner | None = None, timeout: float = BOARD_TIMEOUT_S,
+              python: str | None = None, uid: str | None = None) -> BoardResult:
     board = find_board(env)
     if board is None:
         raise LinearUnavailable("the board CLI is not on this host (scripts/linear-board/board, or %s)" % ENV_BOARD)
-    plan = plan_for(spec, args, identity)
+    plan = plan_for(spec, args, identity, uid)
     import sys
     import tempfile
     argv = [python or sys.executable, str(board), *plan.argv]
@@ -298,7 +300,7 @@ def run_board(spec: Spec, args: Mapping[str, Any], identity: str, *, env: Mappin
                 fh.write(plan.vars_json)
             argv = ["@" + vars_path if part == VARS_PLACEHOLDER else part for part in argv]
         with _LOCK:
-            proc = runner(argv, input=plan.stdin, capture_output=True, timeout=timeout,
+            proc = (runner or subprocess.run)(argv, input=plan.stdin, capture_output=True, timeout=timeout,
                           env=child_env(env, identity, plan.env), check=False)
     except subprocess.TimeoutExpired:
         if spec.kind != "read":
