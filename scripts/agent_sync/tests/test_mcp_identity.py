@@ -222,5 +222,88 @@ class CliTests(IdentityHarness):
                 self.assertEqual(refused.code, 3, refused.err)
         self.assertEqual(self.fake.messages, [])
 
+
+class EnvBackedTests(McpHarness):
+    """The server instance (Codex P1 on PR #588):  cloud seats and GB personas have no zuliprc there;  their
+    keys come from their own ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY with ZULIP_SITE, which Infisical
+    syncs into the container.  The allowed set and the opener read that source too, with the same exclusions,
+    and no value reaches argv, a log or the output."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.vars: dict[str, str] = {"ZULIP_SITE": self.fake.url}
+        bots = {"GROK-WEB": ("grok-web-bot@zulip.test", "Grok Web"),
+                PERSONA: (PERSONA_EMAIL, PERSONA.title()),
+                "BF-PLUMBER": ("bf-plumber-bot@zulip.test", "BF Plumber"),
+                "SENTRY": ("sentry-bot@zulip.test", "Sentry"),
+                "GB-ENGINEER": ("engineer-grok-bot@zulip.test", "Engineer")}
+        for name, (email, full_name) in bots.items():
+            key = zulip_shaped()
+            self.extra_secrets.append(key)
+            self.fake.add_bot(email, full_name, key)
+            code = X.env_code(name)
+            self.vars["ZULIP_%s_EMAIL" % code] = email
+            self.vars["ZULIP_%s_API_KEY" % code] = '"%s"' % key  # quote-wrapped, as the synced values are
+        self.env_only = sorted({"GROK-WEB", PERSONA, "BF-PLUMBER"})
+
+    def server_env(self, **overrides: str | None) -> dict[str, str]:
+        return {**self.mcp_env(**overrides), **self.vars}
+
+    def error(self, result: dict) -> dict:
+        self.assertIs(result.get("isError"), True, result)
+        return json.loads(result["content"][0]["text"])
+
+    def test_a_host_with_only_env_backed_seats(self):
+        self.home_rc.unlink()  # no credential file at all
+        session = self.session(self.server_env(AGENT_SEAT=None))
+        info = self.assert_structured("identities", session.call("identities"))
+        self.assertEqual([row["identity"] for row in info["identities"]], self.env_only)
+        self.assertIsNone(info["default_identity"])
+        posted = self.assert_structured("zulip_post", session.call("zulip_post", {"topic": "env", "text": "hi"},
+                                                                   identity=PERSONA))
+        message = next(m for m in self.fake.messages if m["id"] == posted["id"])
+        self.assertEqual(message["sender_email"], PERSONA_EMAIL)
+        who = self.assert_structured("whoami", session.call("whoami", {"identity": "GROK-WEB"}))
+        self.assertEqual((who["seat"], who["email"]), ("GROK-WEB", "grok-web-bot@zulip.test"))
+
+    def test_a_mixed_host_lists_files_and_env_seats(self):
+        session = self.session(self.server_env())
+        info = self.assert_structured("identities", session.call("identities"))
+        self.assertEqual([row["identity"] for row in info["identities"]], sorted(["CLAUDE", *self.env_only]))
+        self.assertEqual(self.assert_structured("whoami", session.call("whoami"))["seat"], "CLAUDE")
+        self.assertEqual(self.assert_structured("whoami", session.call("whoami", {"identity": "BF-PLUMBER"}))["seat"],
+                         "BF-PLUMBER")
+
+    def test_as_names_an_env_backed_seat(self):
+        self.home_rc.unlink()
+        call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "whoami", "arguments": {}}}
+        code, lines, stderr = self.spawn(self.server_env(AGENT_SEAT=None), [call], argv=("--as", "GROK-WEB"))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(lines[0]["result"]["structuredContent"]["seat"], "GROK-WEB")
+        self.assertIn("serving seat GROK-WEB", stderr)
+        for value in self.extra_secrets:
+            self.assertNotIn(value, stderr)
+
+    def test_an_integration_bot_or_disabled_persona_in_env_is_never_an_identity(self):
+        session = self.session(self.server_env())
+        names = [row["identity"] for row in self.assert_structured("identities", session.call("identities"))["identities"]]
+        for never in ("SENTRY", "GB-ENGINEER"):
+            self.assertNotIn(never, names)
+            self.assertEqual(self.error(session.call("zulip_topics", {"identity": never}))["code"], "identity_not_allowed")
+        ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+        code, lines, stderr = self.spawn(self.server_env(AGENT_SEAT=None), [ping], argv=("--as", "SENTRY"))
+        self.assertEqual((code, lines), (3, []))
+        self.assertIn("SENTRY is not an agent bot identity", stderr)
+        self.assertEqual(self.fake.messages, [])
+
+    def test_a_key_in_another_seats_variable_is_refused_on_first_use(self):
+        self.vars["ZULIP_GROK_WEB_EMAIL"] = "bf-plumber-bot@zulip.test"
+        self.vars["ZULIP_GROK_WEB_API_KEY"] = self.vars["ZULIP_BF_PLUMBER_API_KEY"]
+        session = self.session(self.server_env())
+        error = self.error(session.call("zulip_post", {"topic": "t", "text": "x"}, identity="GROK-WEB"))
+        self.assertEqual(error["code"], "not_authorized")
+        self.assertIn("env ZULIP_GROK_WEB_API_KEY", error["message"])
+        self.assertEqual(self.fake.messages, [])
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
