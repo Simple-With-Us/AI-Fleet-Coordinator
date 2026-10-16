@@ -42,7 +42,7 @@ _APPS = [
     ("BotFleet", "BF", "botfleet", "BotFleet"),
     ("HogHunter", "HH", "hoghunter", "HogHunter"),
     ("fleet-ops", "OPS", "fleet-ops", "Fleet-OPS"),
-    ("Clutch", "CK", "clutch", "Clutch"),
+    ("Clutch", "CLUTCH", "clutch", "Clutch"),
 ]
 _SEATS = [
     ("CLAUDE", "claude", ["claude/", "agent/claude"], False),

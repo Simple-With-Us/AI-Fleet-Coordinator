@@ -81,9 +81,9 @@ Work topic format, at most 58 characters (Zulip's hard limit is 60, and resolvin
 <ID> <subject>
 ```
 
-- `#n`:  the GitHub issue or PR number when the work has no Linear issue.  Any of these work now:  the acronym (`CT#2316`, `AFC#535`, `CAPS#12`, `CK#5`, `OPS#953`) or the full repo name (`Congress.Trade#2316`, `Autorotate#4`), which the fallback rule catches ([Current Linkifiers](#current-linkifiers)).  Use `CAPS#` for CodeCaps and `CK#` for Clutch;  `CC#` points at Clutch despite what the registry says.
+<- `#n`:  the GitHub issue or PR number when the work has no Linear issue.  Any of these work now:  the acronym (`CT#2316`, `AFC#535`, `CAPS#12`, `CLUTCH#5`, `OPS#953`) or the full repo name (`Congress.Trade#2316`, `Autorotate#4`), which the fallback rule catches ([Current Linkifiers](#current-linkifiers)).  Use `CAPS#` for CodeCaps and `CLUTCH#` for Clutch (`CK#` and `CC#` keep rendering as legacy aliases);  `CC#` points at Clutch despite what the registry says.
 - `ID`:  the Linear issue id, which already names the app (`BF-123`, `AFC-123`).  It links to the issue ([Current Linkifiers](#current-linkifiers), rule 5119), so name it as the topic's first word.
-- `APP`:  when the work has no Linear issue, the app acronym from `fleet-apps.json` (ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, CK, HH, OPS) followed by the subject, as for any non-work topic.
+- `APP`:  when the work has no Linear issue, the app acronym from `fleet-apps.json` (ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, CLUTCH, HH, OPS) followed by the subject, as for any non-work topic.
 - Examples:  `AFC-123 Zulip cutover`, `Congress.Trade#2316 sentry` (a GitHub PR with no Linear issue), `ST restart-loop`, `board down 2026-10-07`.
 - Resolving adds `✔ ` to the front, and a resolved name over 60 characters is refused, which is why work topics stop at 58.
 
@@ -1015,7 +1015,7 @@ The generic `repo#id` rule is now **last** (id 5139), not first.  That was the w
 | 5131 | `GH@(?P<user>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)` | `https://github.com/{user}/{repo}` | `GH@jaywedgeworth22/AI-Fleet-Coordinator` |
 | 5132 | `CAPS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/CodeCaps/issues/{id}` | `CAPS#12` (CodeCaps) |
 | 5133 | `FL#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/FleetLink/issues/{id}` | `FL#12` (FleetLink) |
-| 5135 | `CK#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Clutch/issues/{id}` | `CK#5` (Clutch, the registry's key) |
+| 5135 | `CK#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Clutch/issues/{id}` | `CK#5` (Clutch legacy alias;  canonical is `CLUTCH#`) |
 | 5136 | `CTS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/congress-trading-shared/issues/{id}` | `CTS#12` |
 | 5138 | `CLUTCH#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Clutch/issues/{id}` | `CLUTCH#5` |
 | 5139 | `(?P<repo>[A-Za-z0-9_.-]+)#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/{repo}/issues/{id}` | `Congress.Trade#2316`, `CodeCaps#12`, `Autorotate#4` |
@@ -1025,7 +1025,7 @@ Rendered results, read back from the server rather than reasoned from the table:
 | You write | You get | Verdict |
 | --- | --- | --- |
 | `AFC-535`, `BF-123`, `OPS-953` | the Linear issue | Correct |
-| `CT#2316`, `AFC#535`, `ST#88`, `CK#5`, `CTS#12` | that repo's GitHub issue | Correct |
+| `CT#2316`, `AFC#535`, `ST#88`, `CLUTCH#5`, `CTS#12` | that repo's GitHub issue | Correct |
 | `CAPS#12` | the CodeCaps issue | Correct |
 | `Congress.Trade#2316`, `CodeCaps#12`, `Autorotate#4` | that repo's issue, via the fallback | Correct |
 | `GH@jaywedgeworth22/AI-Fleet-Coordinator` | that repo | Correct |
@@ -1036,7 +1036,7 @@ Rendered results, read back from the server rather than reasoned from the table:
 
 Two things the fix did not change, both still open:
 
-**The registry and the realm disagree on `CC`.**  `fleet-apps.json` says `CC` is CodeCaps and `CK` is Clutch, but rule 5130 points `CC#` at Clutch, and CodeCaps is `CAPS#` (5132).  So a seat that follows the registry writes `CC#` for CodeCaps and lands on Clutch.  **Until Jay moves the registry, write `CAPS#` for CodeCaps and `CK#` for Clutch**;  `CC#` only works if you already know it means Clutch.  Changing the acronym moves a fleet-wide identifier (lane prefixes, note titles, topics), so it is Jay's call.
+**The registry and the realm disagree on `CC`.**  `fleet-apps.json` said `CC` was CodeCaps and `CK` was Clutch until 2026-10-15, when the owner ruled the Clutch acronym is `CLUTCH` everywhere ([Decisions](#decisions-pending-jay), row 17 resolved), but rule 5130 still points `CC#` at Clutch, and CodeCaps is `CAPS#` (5132).  So a seat that follows the registry writes `CC#` for CodeCaps and lands on Clutch.  **Write `CAPS#` for CodeCaps and `CLUTCH#` for Clutch**;  `CK#` and `CC#` keep rendering as legacy Clutch aliases.  Changing the acronym moves a fleet-wide identifier (lane prefixes, note titles, topics), so it is Jay's call.
 
 **Rule 5119 covers most teams but not all of them.**  Its alternation is `BF CT CTS ST UM DD CL AFC PS HH OPS CC CK FL CAPS`, which omits **`AR`** (Autorotate) and **`SWU`**, both of which are real Linear teams in the workspace.  So `AR-123` and `SWU-123` render as plain text while every other team's id links.  Autorotate is archived, so this is cosmetic unless `SWU-` traffic matters;  adding `AR` and `SWU` to the alternation is a one-line change only Jay can make.
 
@@ -1104,7 +1104,7 @@ Each row is in force as described under "Until then" until you approve or change
 | 14 | Proposed linkifiers (Sentry org slug and PagerDuty subdomain TBD). | PROPOSED (v2.2) | None added. |
 | 15 | Clean pass on Muse patterns that capture the whole `CT#123` as `{id}`. | Superseded (v4) | Moot:  those rows never match, because rule 5116 claims the text first ([Current Linkifiers](#current-linkifiers)). |
 | 16 | Extra acks carried from AGENT-SYNC:  🔄 `counterclockwise` (re-running), 🚀 `rocket` (shipped), ⚠️ `warning` (problem).  Names verified live 2026-10-07. | DEFAULT | Optional; `check`, `eyes`, `check_mark` remain the core three. |
-| 17 | Clutch's acronym:  `fleet-apps.json` says CK, but the live linkifier is `CC#`. | Pending (new in v3) | Topics use `CK`.  The `CC#` linkifier is in any case dead (row 26), so write `Clutch#n` for a GitHub link. |
+| 17 | Clutch's acronym:  `fleet-apps.json` said `CK` until 2026-10-15, when the owner ruled the acronym is `CLUTCH` everywhere. | Resolved 2026-10-15 | `CLUTCH#n` is the canonical GitHub linkifier; `CK#` and `CC#` stay live as legacy aliases so old messages keep rendering.  Topics use `CLUTCH`. |
 | 18 | AFC ops automation (it signed `[AFC]` in Slack) has no Zulip bot.  The coordinator is CLAUDE and posts as its own bot. | Pending (new in v3) | AFC automation does not post to Zulip. |
 | 19 | Echo and Instinct show admin.  Intended? | Resolved 2026-10-09 | Owner ruling:  every bot is a member, so neither is an admin now. |
 | 20 | Whether MA, Echo, and Instinct take your instructions from Zulip (Zulip-native) or only from their own chat (CLI seat). | Pending (new in v3) | Treated as CLI seats. |

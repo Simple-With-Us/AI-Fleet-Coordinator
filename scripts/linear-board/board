@@ -226,14 +226,14 @@ FOOTER_ADDRESSED_RE = re.compile(
 # SWU is a team key with no BOARD_SLUG_TEAM entry:  the Simple With Us website
 # is filed by its key, not by slug.  FLL stays out on purpose:  fleetlink-legacy
 # has no Linear team of its own and files under FL.
-TEAM_KEYS = ("ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK", "FL", "CC", "SWU")
+TEAM_KEYS = ("ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "C", "FL", "CC", "SWU")
 FALLBACK_TEAM = "AFC"
 DEFAULT_APP = "fleet-infra"  # routes to OPS (design section 3)
 BOARD_SLUG_TEAM = {
     "ai-fleet-coordinator": "AFC", "fleet": "AFC",
     "autorotate": "AR", "autorotate-codes": "AR",
     "botfleet": "BF", "botfleet-app": "BF",
-    "clutch": "CK", "dsh-runtime": "CK", "harness": "CK",
+    "clutch": "C", "dsh-runtime": "C", "harness": "C",
     "codecaps": "CC",  # CodeCaps team CC (owner 2026-10-11)
     "congress": "CT", "congress-trade": "CT",
     "congress-trading-shared": "CTS", "cts": "CTS",
@@ -1573,6 +1573,10 @@ def all_comments(L: Linear, issue_id: str) -> list[dict]:
 def route_app(app: str | None) -> tuple[str, str | None]:
     """(team key, fallback slug).  Team keys and board slugs both work."""
     a = (app or DEFAULT_APP).strip()
+    # CLUTCH is the canonical app name; C is the verified live Linear key. CK is a legacy alias.
+    # All spellings route to the same team.
+    if a.upper() in {"CLUTCH", "CK", "C"}:
+        return "C", None
     if a.upper() in TEAM_KEYS:
         return a.upper(), None
     t = BOARD_SLUG_TEAM.get(a.lower()) or BOARD_SLUG_TEAM.get(slugify(a))
