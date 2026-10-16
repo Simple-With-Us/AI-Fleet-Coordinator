@@ -41,9 +41,10 @@ REQUIRED = frozenset({
     *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
     "scripts/agent_sync/__init__.py", "scripts/agent_sync/cli.py",
     "scripts/agent_sync/mcp/stdio.py", "scripts/agent_sync/mcp/tools.json",
-    "scripts/agent_sync/mcp/listener-tools.json",
     "scripts/fleet-cli-release.py",
 })
+# listener-tools.json is in EXACT but deliberately not REQUIRED:  REQUIRED is checked against
+# retained releases too, and the releases built before it existed must stay valid rollback targets.
 
 
 class Refused(Exception):

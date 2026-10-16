@@ -149,6 +149,16 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertEqual(sorted(names), ["agent-sync", "fleetlink"])
 
 
+class ShippedListTests(unittest.TestCase):
+    def test_the_fallback_list_is_the_release_exact_list(self):
+        rspec = importlib.util.spec_from_file_location("release_for_doctor", HERE / "fleet-cli-release.py")
+        release = importlib.util.module_from_spec(rspec)
+        rspec.loader.exec_module(release)
+        self.assertEqual(doctor.SHIPPED_EXACT, release.EXACT)
+        for path in release.EXACT:
+            self.assertTrue(doctor.is_shipped(path), path)
+
+
 class McpStartupTests(unittest.TestCase):
     def test_a_release_that_cannot_list_its_tools_fails(self):
         def broken(argv, **kw):

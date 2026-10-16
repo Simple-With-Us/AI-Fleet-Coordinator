@@ -238,11 +238,6 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(release.main(["status", "--home", str(self.home)]), 2)
         self.assertIn("fleet-cli: internal_error", err.getvalue())
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ShippedDataFilesTests(unittest.TestCase):
     """Every data file the agent_sync package reads at run time ships in a release.  The .py
     modules are allowed by pattern;  JSON and similar files must be named in EXACT one by one, and
@@ -259,3 +254,12 @@ class ShippedDataFilesTests(unittest.TestCase):
         self.assertTrue(data)
         missing = [p for p in data if not release.allowed_path(p)]
         self.assertEqual(missing, [], "add these to EXACT in scripts/fleet-cli-release.py")
+
+    def test_required_stays_satisfiable_by_older_releases(self):
+        # REQUIRED is checked against retained releases (rollback targets) too, so a file added
+        # after a release was built must not be REQUIRED.
+        self.assertNotIn("scripts/agent_sync/mcp/listener-tools.json", release.REQUIRED)
+
+
+if __name__ == "__main__":
+    unittest.main()

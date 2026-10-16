@@ -44,24 +44,51 @@ SHIPPED = ("scripts/agent-sync", "scripts/agent_sync/", "scripts/linear-board/",
            "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py")
 # What a fleet-cli release ships:  mirrors EXACT and allowed_path in scripts/fleet-cli-release.py, so a
 # commit that changes only tests or docs under those folders needs no push and is not drift.
+# The fallback copy of what a release ships, for a host with no checkout.  With a checkout,
+# is_shipped asks scripts/fleet-cli-release.py itself, so the two cannot drift;  a test pins this
+# copy to the release's EXACT.
 SHIPPED_EXACT = frozenset({
     "scripts/agent-sync", "scripts/linear-board/board", "scripts/linear-board/board-ids.txt",
     "fleet-apps.json", "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
     "scripts/agent_sync/mcp/tools.json", "scripts/agent_sync/mcp/fixtures.jsonl",
-    "scripts/agent_sync/wake/wake-schema.json",
+    "scripts/agent_sync/mcp/listener-tools.json", "scripts/agent_sync/wake/wake-schema.json",
+    "scripts/linear-board/catalog/named-commands.json", "scripts/linear-board/catalog/official-mcp-tools.json",
+    "scripts/linear-board/catalog/public-inputs.json",
 })
-
-
-def is_shipped(path: str) -> bool:
-    return path in SHIPPED_EXACT or bool(
-        re.fullmatch(r"scripts/agent_sync/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
-        or path in ("scripts/agent_sync/__init__.py", "scripts/agent_sync/mcp/__init__.py"))
 STATE = HOME / ".local/state/fleet-tools-doctor.json"
 CATALOGS = (
     ("scripts/agent_sync/mcp/tools.json", True),
     ("scripts/linear-board/catalog/named-commands.json", False),
     ("scripts/linear-board/catalog/official-mcp-tools.json", False),
 )
+_RELEASE_POLICY: list = []
+
+
+def release_policy():
+    """scripts/fleet-cli-release.py from the AI-Fleet-Coordinator checkout, or None."""
+    if not _RELEASE_POLICY:
+        module = None
+        repo = find_repo("AI-Fleet-Coordinator")
+        path = repo / "scripts/fleet-cli-release.py" if repo else None
+        if path and path.exists():
+            try:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("fleet_cli_release_policy", path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+            except Exception:
+                module = None
+        _RELEASE_POLICY.append(module)
+    return _RELEASE_POLICY[0]
+
+
+def is_shipped(path: str) -> bool:
+    policy = release_policy()
+    if policy is not None and callable(getattr(policy, "allowed_path", None)):
+        return bool(policy.allowed_path(path))
+    return path in SHIPPED_EXACT or bool(
+        re.fullmatch(r"scripts/agent_sync/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
+        or path in ("scripts/agent_sync/__init__.py", "scripts/agent_sync/mcp/__init__.py"))
 
 
 def seat_file(seat: str) -> str:
