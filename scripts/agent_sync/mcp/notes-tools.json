@@ -1,0 +1,463 @@
+{
+  "//": "AFC-331 (docs/protocols/per-call-identity.md section 5):  the notes_* tools, one contract for the stdio server and the hosted Worker.  The hosted src/notes.js and stdio tools.py both serve these specs unchanged;  a test checks the two sides.",
+  "tools": [
+    {
+      "name": "notes_create",
+      "title": "Notes Create",
+      "description": "Create an Apple Note in the owner's Coding folder, pinned by default.  On a Mac it is written directly (status done);  anywhere else a request is posted to #notes-relay and the Mac listener writes it (status queued, then notes_status).  The title must read \"[APP, Agent] topic\" and Agent must be the identity you act as, or the relay refuses it.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^\\[[^\"\\\\\\x00-\\x1f\\x7f]+$",
+            "description": "The note title, \"[APP, Agent] short topic\" such as \"[AFC, Claude] relay rollout\".  Agent is the name of the identity the call acts as.  It must start with [ and hold no double quote or backslash."
+          },
+          "markdown": {
+            "type": "string",
+            "maxLength": 500000,
+            "default": "",
+            "description": "The note body as Markdown (or HTML when html is true).  Two spaces between sentences."
+          },
+          "html": {
+            "type": "boolean",
+            "default": false,
+            "description": "The body is HTML, not Markdown."
+          },
+          "pin": {
+            "type": "boolean",
+            "default": true,
+            "description": "Pin the note to the top of the Coding folder (the default)."
+          },
+          "notify": {
+            "type": "boolean",
+            "default": false,
+            "description": "Also push a notification to the owner."
+          },
+          "needs_owner": {
+            "type": "boolean",
+            "default": false,
+            "description": "Mark the note as needing the owner's review or action (also notifies)."
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 280,
+            "description": "A one-line summary for the notification and the note's quick view.  No double quote or backslash."
+          },
+          "pr": {
+            "type": "string",
+            "pattern": "^[0-9#, ]{1,40}$",
+            "description": "Pull request numbers for the note's date line, such as \"46\" or \"46, 47\"."
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$",
+            "description": "A unique id for this request, 8 to 64 letters, digits, - or _.  A retry with the same id never writes the note twice.  Omit it and the server makes one."
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "relay"
+            ],
+            "default": "auto",
+            "description": "auto writes the note directly on a Mac and posts a relay request everywhere else;  relay always posts the request to #notes-relay."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "status",
+          "transport"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "queued"
+            ]
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "relay"
+            ]
+          },
+          "message_id": {
+            "type": "integer"
+          },
+          "channel_id": {
+            "type": "integer"
+          },
+          "note_id": {
+            "type": "string"
+          },
+          "duplicate": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "notes_update",
+      "title": "Notes Update",
+      "description": "Replace the body of the Apple Note with this exact title in the Coding folder, creating it when it is missing.  Direct on a Mac, a #notes-relay request elsewhere (status queued, then notes_status).",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^\\[[^\"\\\\\\x00-\\x1f\\x7f]+$",
+            "description": "The note title, \"[APP, Agent] short topic\" such as \"[AFC, Claude] relay rollout\".  Agent is the name of the identity the call acts as.  It must start with [ and hold no double quote or backslash."
+          },
+          "markdown": {
+            "type": "string",
+            "maxLength": 500000,
+            "default": "",
+            "description": "The note body as Markdown (or HTML when html is true).  Two spaces between sentences."
+          },
+          "html": {
+            "type": "boolean",
+            "default": false,
+            "description": "The body is HTML, not Markdown."
+          },
+          "pin": {
+            "type": "boolean",
+            "default": true,
+            "description": "Pin the note to the top of the Coding folder (the default)."
+          },
+          "notify": {
+            "type": "boolean",
+            "default": false,
+            "description": "Also push a notification to the owner."
+          },
+          "needs_owner": {
+            "type": "boolean",
+            "default": false,
+            "description": "Mark the note as needing the owner's review or action (also notifies)."
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 280,
+            "description": "A one-line summary for the notification and the note's quick view.  No double quote or backslash."
+          },
+          "pr": {
+            "type": "string",
+            "pattern": "^[0-9#, ]{1,40}$",
+            "description": "Pull request numbers for the note's date line, such as \"46\" or \"46, 47\"."
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$",
+            "description": "A unique id for this request, 8 to 64 letters, digits, - or _.  A retry with the same id never writes the note twice.  Omit it and the server makes one."
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "relay"
+            ],
+            "default": "auto",
+            "description": "auto writes the note directly on a Mac and posts a relay request everywhere else;  relay always posts the request to #notes-relay."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "status",
+          "transport"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "queued"
+            ]
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "relay"
+            ]
+          },
+          "message_id": {
+            "type": "integer"
+          },
+          "channel_id": {
+            "type": "integer"
+          },
+          "note_id": {
+            "type": "string"
+          },
+          "duplicate": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "notes_pin",
+      "title": "Notes Pin",
+      "description": "Pin the Apple Note with this exact title in the Coding folder.  Direct on a Mac, a #notes-relay request elsewhere.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^\\[[^\"\\\\\\x00-\\x1f\\x7f]+$",
+            "description": "The note title, \"[APP, Agent] short topic\" such as \"[AFC, Claude] relay rollout\".  Agent is the name of the identity the call acts as.  It must start with [ and hold no double quote or backslash."
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$",
+            "description": "A unique id for this request, 8 to 64 letters, digits, - or _.  A retry with the same id never writes the note twice.  Omit it and the server makes one."
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "relay"
+            ],
+            "default": "auto",
+            "description": "auto writes the note directly on a Mac and posts a relay request everywhere else;  relay always posts the request to #notes-relay."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "status",
+          "transport"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "queued"
+            ]
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "relay"
+            ]
+          },
+          "message_id": {
+            "type": "integer"
+          },
+          "channel_id": {
+            "type": "integer"
+          },
+          "note_id": {
+            "type": "string"
+          },
+          "duplicate": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "notes_unpin",
+      "title": "Notes Unpin",
+      "description": "Unpin the Apple Note with this exact title in the Coding folder.  Direct on a Mac, a #notes-relay request elsewhere.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^\\[[^\"\\\\\\x00-\\x1f\\x7f]+$",
+            "description": "The note title, \"[APP, Agent] short topic\" such as \"[AFC, Claude] relay rollout\".  Agent is the name of the identity the call acts as.  It must start with [ and hold no double quote or backslash."
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$",
+            "description": "A unique id for this request, 8 to 64 letters, digits, - or _.  A retry with the same id never writes the note twice.  Omit it and the server makes one."
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "relay"
+            ],
+            "default": "auto",
+            "description": "auto writes the note directly on a Mac and posts a relay request everywhere else;  relay always posts the request to #notes-relay."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "status",
+          "transport"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "queued"
+            ]
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "relay"
+            ]
+          },
+          "message_id": {
+            "type": "integer"
+          },
+          "channel_id": {
+            "type": "integer"
+          },
+          "note_id": {
+            "type": "string"
+          },
+          "duplicate": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "notes_status",
+      "title": "Notes Status",
+      "description": "Where a relayed notes request stands, from the Mac listener's reaction on the request in #notes-relay:  queued (no answer yet), done (checkmark) or refused (cross mark, with the listener's reason).  Give the request_id a notes tool returned.  Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "request_id"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$",
+            "description": "The request_id a notes tool returned."
+          },
+          "message_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The message_id it returned, when you have it (skips the search)."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "status"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "done",
+              "refused"
+            ]
+          },
+          "message_id": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

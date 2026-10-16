@@ -37,6 +37,9 @@ from . import tools as T
 
 RENAMED_PATH = os.path.join(T.HERE, "renamed-tools.json")
 IDENTITY_FREE = frozenset({"identities"})  # connection-level:  takes no identity argument
+# Answered by the router with no bot at all:  the guide needs no credential, so a connection with no default
+# identity can read it, and a client that adds `identity` to every call is not refused.
+IDENTITY_OPTIONAL = frozenset({"guide"})
 
 
 def renamed_tools() -> dict[str, str]:
@@ -130,6 +133,17 @@ class Router:
     def _shown(self, raw: Any) -> str:
         return raw if isinstance(raw, str) and T._SAFE_NAME_RE.match(raw.replace("-", "_")) else "(not shown)"
 
+    def _guide(self, args: Any) -> dict[str, Any]:
+        """The guide tool:  no identity, no credential, nothing written.  `identity` was taken out already."""
+        args = {} if args is None else args
+        problem = T.schema_problem(self.by_name["guide"]["inputSchema"], args) if isinstance(args, dict) else "arguments must be an object"
+        if problem:
+            return self._error(T.ToolError("invalid_argument", problem.replace("this tool takes", "guide takes")))
+        try:
+            return T.guide_result(args, self.env)
+        except T.ToolError as error:
+            return self._error(error)
+
     # ---- entry ------------------------------------------------------------------------------
     def call(self, name: str, arguments: Any, *, meta: Any = None) -> dict[str, Any]:
         if name in self.renamed:
@@ -145,6 +159,8 @@ class Router:
         if named:
             claimed = args["identity"]
             args = {key: value for key, value in args.items() if key != "identity"}
+        if name in IDENTITY_OPTIONAL:
+            return self._guide(args)
         if name in IDENTITY_FREE:
             if named:
                 return self._error(T.ToolError("invalid_argument", "identities takes no arguments;  it lists this "
