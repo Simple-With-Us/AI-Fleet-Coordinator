@@ -303,6 +303,22 @@ class PublishFailureTests(RelayHarness):
         self.assertIn("no note with that title", self.client.replies[-1])
         self.assertIn((message["id"], "cross_mark"), self.client.reactions)
 
+    def test_a_duplicate_of_a_published_refusal_never_downgrades_its_row(self):
+        self.consumer.runner = fake_run_factory(self.calls, code=3)
+        first = self.request(rid="refused-request-9", action="pin", markdown="")
+        self.assertEqual(self.process(first), "refused")
+        replies = len(self.client.replies)
+        state = self.failing_reactions()
+        again = self.request(rid="refused-request-9", action="pin", markdown="")
+        with self.assertRaises(Z.NetworkError):
+            self.process(again)
+        self.assertEqual(self.consumer.processed.begin("CURSOR", "refused-request-9", again["id"]), "refused")
+        state["down"] = False
+        self.assertEqual(self.process(again), "duplicate")
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(len(self.client.replies), replies)  # one refusal reply per request id, already posted
+        self.assertIn((again["id"], "cross_mark"), self.client.reactions)
+
     def test_a_download_that_fails_on_the_network_retries_from_a_clean_start(self):
         data = b"attached body"
         ref = N.with_upload(N.make_envelope("create", "[AFC, Cursor] big", "", {}, "download-retry-1", "CURSOR"),

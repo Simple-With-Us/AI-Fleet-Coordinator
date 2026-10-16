@@ -377,6 +377,11 @@ class Consumer:
                           "then send it again with a new request_id")
             else:
                 reason = self.processed.reason(identity, request_id) or "this request id was already refused"
+            if earlier == "refused":
+                # Already published:  never downgrade the row.  _answer is a no-op once the reply exists and the
+                # reaction is idempotent, so a network failure here leaves the row as it was.
+                self._answer(runner, message_id, request_id, refused=reason)
+                return "duplicate"
             self.processed.finish(identity, request_id, "refused_pending", reason)
             self._answer(runner, message_id, request_id, refused=reason)
             self.processed.finish(identity, request_id, "refused")
