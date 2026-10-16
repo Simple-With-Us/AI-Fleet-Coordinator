@@ -55,6 +55,7 @@ export const LINEAR_SECRETS = Object.freeze({
   ECHO: Object.freeze({ clientId: "LINEAR_ECHO_CLIENT_ID", clientSecret: "LINEAR_ECHO_CLIENT_SECRET" }),
   WISE: Object.freeze({ clientId: "LINEAR_INSTINCT_CLIENT_ID", clientSecret: "LINEAR_INSTINCT_CLIENT_SECRET" }),
   CURSOR: Object.freeze({ clientId: "LINEAR_CURSOR_CLIENT_ID", clientSecret: "LINEAR_CURSOR_CLIENT_SECRET" }),
+  CLAUDE: Object.freeze({ clientId: "LINEAR_CLAUDE_CLIENT_ID", clientSecret: "LINEAR_CLAUDE_CLIENT_SECRET" }),
 });
 
 /** The Worker secret names for a seat, or null when the seat has no Linear app. */
@@ -67,7 +68,9 @@ export function linearSecretNames(seat) {
 // the seat with no shell and the one that acts as Jay today through its own
 // connector.  A seat missing here answers not_configured even when its
 // credentials are installed, so enabling a seat is a deliberate deploy step.
-export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR"]);
+// JET, ECHO, WISE and CLAUDE joined on 2026-10-16 (owner), each pair checked
+// first with `board whoami` against its own app.
+export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "ECHO", "WISE", "CLAUDE"]);
 
 // ---------------------------------------------------------------- ported board rules
 
@@ -157,6 +160,7 @@ export const SEAT_APP_NAMES = Object.freeze({
   WISE: "Wise (Instinct)",
   MA: "Muse Assist",
   CURSOR: "Cursor",
+  CLAUDE: "Claude",
 });
 export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),

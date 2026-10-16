@@ -27,7 +27,7 @@ test("hosted CLAUDE has an independent bot mapping and exact hosted callback; CO
   assert.equal(prod.redirectOwner.get("https://www.cursor.com/agents/mcp/oauth/callback"), "CURSOR");
   assert.ok(!KNOWN_SEATS.includes("CODEX"));
   assert.ok(!("CLAUDE" in WAKE_SECRETS));
-  assert.ok(!LINEAR_SEATS.includes("CLAUDE"));
+  assert.ok(LINEAR_SEATS.includes("CLAUDE"));
   const installer = readFileSync(path.join(ROOT, "install_seat_key.py"), "utf8");
   assert.match(installer, /"CLAUDE": \("ZULIP_CLAUDE", "ZULIP_CLAUDE_API_KEY", "ZULIP_CLAUDE_EMAIL"\)/);
 });
