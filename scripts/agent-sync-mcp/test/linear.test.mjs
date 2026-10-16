@@ -610,3 +610,21 @@ test("a 30-day token is re-minted early on day 28, and a failed early mint keeps
   assert.equal(fake.mints().length, 3);
   assert.equal(await client.token(), next);
 });
+
+test("an unexpected error in the early mint is logged by class name and the cached token is still used", async () => {
+  const { gate, clock, client } = clientHarness();
+  const first = await client.token();
+  await ageCachedToken(gate, clock, 29 * 24);
+  const logged = [];
+  const original = console.log;
+  console.log = (line) => logged.push(line);
+  const realBegin = gate.idemBegin;
+  gate.idemBegin = async () => { throw new TypeError("boom fla_" + "0".repeat(64)); };
+  try {
+    assert.equal(await client.token(), first);
+  } finally {
+    console.log = original;
+    gate.idemBegin = realBegin;
+  }
+  assert.deepEqual(logged.map((l) => JSON.parse(l)), [{ event: "linear_early_mint_bug", seat: "GROK-WEB", name: "TypeError" }]);
+});

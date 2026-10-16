@@ -724,7 +724,13 @@ export class LinearClient {
       // A failed or contended early mint keeps the cached token.
       try {
         return (await this.#mintAndStore(cached, now, await this.#fingerprint(), { early: true })) ?? cached.access_token;
-      } catch {
+      } catch (error) {
+        // The cached token is still good for up to two days, so the call goes on with it either
+        // way.  A failed mint (LinearError) is expected now and then;  anything else is a bug, and
+        // is logged by class name (never a message, which could carry a credential).
+        if (!(error instanceof LinearError)) {
+          this.#log({ event: "linear_early_mint_bug", seat: this.seat, name: String(error?.name ?? "Error").slice(0, 40) });
+        }
         return cached.access_token;
       }
     }
