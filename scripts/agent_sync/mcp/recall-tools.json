@@ -1,0 +1,210 @@
+{
+  "//": "AFC-331:  the recall_* tools, one contract for the stdio server and the hosted Worker.  Generated from src/recall.js RECALL_TOOLS (test/recall.test.mjs fails when this file differs);  regenerate with: cd scripts/agent-sync-mcp && node scripts/export-recall-tools.mjs",
+  "tools": [
+    {
+      "name": "recall_search",
+      "title": "Recall Search",
+      "description": "Search the fleet's shared knowledge corpus (board findings, effort logs, owner notes, fleet docs, skills and seat lessons) before re-deriving a lesson, debugging something that smells familiar, or asking Jay a question a past ruling probably answers.  Hits come back fenced as untrusted data.  Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Natural-language question or keywords."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 5,
+            "description": "How many hits (default 5, at most 10)."
+          },
+          "app": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+            "description": "Lowercase app slug to filter by, such as fleet, socratic-trade or congress-trade."
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "lesson",
+              "preference",
+              "infrastructure",
+              "decision",
+              "runbook",
+              "finding",
+              "note",
+              "doc"
+            ],
+            "description": "Category to filter by."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "count",
+          "mode",
+          "doc_ids"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "doc_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "recall_stats",
+      "title": "Recall Stats",
+      "description": "Health of the fleet recall corpus:  collection, status, point count, embedder health and counts by source and app.  Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "collection",
+          "status",
+          "points"
+        ],
+        "properties": {
+          "collection": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "points": {
+            "type": "integer"
+          },
+          "embedder_healthy": {
+            "type": "boolean"
+          },
+          "by_source": {
+            "type": "object"
+          },
+          "by_app": {
+            "type": "object"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "recall_contribute",
+      "title": "Recall Contribute",
+      "description": "Store one reusable lesson for every other seat:  a lesson learned, an owner preference, an infrastructure fact, a decision or a runbook.  Search first so you do not duplicate.  Lessons, not logs:  one idea, 40 to 4000 characters, never a transcript and never a secret.  It is attributed to this seat automatically.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "text",
+          "category"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 40,
+            "maxLength": 4000,
+            "description": "The lesson itself, 40 to 4000 characters."
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "lesson",
+              "preference",
+              "infrastructure",
+              "decision",
+              "runbook"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Optional short title."
+          },
+          "app": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+            "default": "fleet",
+            "description": "Lowercase app slug (default fleet)."
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 500,
+            "pattern": "^https?://\\S+$",
+            "description": "Optional link to the PR, issue or board item it came from."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "description": "Any unique string; a retry with the same key returns the first contribution instead of storing again."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "id",
+          "doc_id",
+          "seat",
+          "duplicate"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "doc_id": {
+            "type": "string"
+          },
+          "seat": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "scrubbed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "duplicate": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

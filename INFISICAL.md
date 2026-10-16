@@ -60,6 +60,15 @@ counters and pacing (100ms writes, 50ms reads).  Zulip posts/replies are
 50/hour and 200/day.  Zulip spacing stays 3 seconds for writes and 500ms for reads.
 Other seats retain their existing limits.  Upstream rate limits still apply.
 
+## Notes relay consumer (AFC-331)
+
+`NOTES_RELAY_CONSUMER` is one fleet knob (registered in `scripts/fleet_knobs/registry.py`, listed under "Fleet knobs" below):  the seat whose bot is the Apple Notes relay consumer.  **Owner action:  create the key `NOTES_RELAY_CONSUMER` with the value `CLAUDE` in this project, `prod`, root path `/`.**  Nothing in the repo writes it.
+
+| Reader | How it gets the value |
+|---|---|
+| Mac listener, stdio MCP, CLI | `fleet_knobs` (one fetch per process, last-known-good copy).  A `[notes_relay] seat` in `listener.toml` that differs is ignored and the listener then does not consume.  With Infisical unreachable and no usable copy the answer is the default `CLAUDE`, labelled `default CLAUDE (unreachable:...)` in the log line `notes relay consumer ...`. |
+| Hosted Worker | An encrypted Worker binding of the same name, copied at deploy by `scripts/agent-sync-mcp/sync_notes_consumer.py` (DEPLOY.md, "Notes, recall and the guide").  Never in `wrangler.jsonc`.  Unset means `notes_status` answers `not_configured`. |
+
 ## Zulip Outgoing Wake Tokens
 
 The existing server listener loads `ZULIP_OUTGOING_<CODE>_TOKEN` from prod `/zulip` at startup for each server seat.  `<CODE>` replaces hyphens in the seat tag with underscores.  These separate Zulip service tokens authenticate outgoing webhook requests; they are neither `ZULIP_<CODE>_API_KEY` nor the routine's bearer/HMAC key.  Missing tokens deny requests for that seat.
@@ -155,6 +164,7 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `LANE_SWEEP_MODE` | C5 | enum: report < act < retire | `report` | no | only move toward `report` | act arms merges and retires merged-PR lanes;  retire adds the Phase 3 deletions |
 | `LANE_SWEEP_CAPS` | C5 | caps | `lane_retires_per_run=10,report_posts_per_run=12` | no | only lower a number | sweep action caps |
 | `LANE_SWEEP_OPTIN_REPOS` | C5 | list | empty | no | only remove entries | money-path repos the sweep may act on;  empty means none |
+| `NOTES_RELAY_CONSUMER` | N1 | str | `CLAUDE` | no | nothing | seat whose bot is the Apple Notes relay consumer (the Mac listener's [notes_relay] seat);  notes_status trusts a mark or a refusal reply only from it;  a local [notes_relay] seat that differs is ignored and the listener does not consume;  the Worker gets the same value as a binding at deploy |
 | `CONSULT_ENABLED` | C7 | bool | `false` | no | only set it to `false` | false refuses every consult verb |
 
 <!-- fleet-knobs:end -->

@@ -221,7 +221,7 @@ test("FleetLink's own refusals pass through as fleetlink_refused;  HTTP failures
 
 test("text that looks like a secret is refused before it reaches FleetLink", async () => {
   const { tools, upstream } = harness();
-  const token = "ghp_" + "A1b2C3d4E5".repeat(4);
+  const token = "ghp_" + "EXAMPLE0".repeat(5);
   for (const args of [{ markdown: `notes ${token}` }, { text: "ok", title: `t ${token}` }]) {
     const r = await tools.call("fleetlink_create_share", args);
     assert.equal(errorOf(r).code, "refused_secret");

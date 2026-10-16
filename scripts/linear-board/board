@@ -1725,6 +1725,12 @@ def cmd_show(L: Linear, ids: IdIndex, a) -> int:
                           "direction": "incoming"} for x in (n.get("inverseRelations") or {}).get("nodes") or []]),
         "comments": comments,
     })
+    limit = getattr(a, "comment_limit", None)
+    if limit is not None and len(comments) > limit:
+        # Resolution and location above still read every comment;  only the list shown is capped (oldest first,
+        # like the hosted linear_show's comments(first: N)).
+        r["comments"] = comments[:limit]
+        r["comments_total"] = len(comments)
     if a.json:
         print(json.dumps(r, indent=2))
         return 0
@@ -1757,9 +1763,12 @@ def cmd_show(L: Linear, ids: IdIndex, a) -> int:
         for line in r["provenance"].splitlines():
             if line.strip():
                 print(f"    {line.rstrip()}")
-    if comments:
+    shown = r["comments"]  # the capped list when --comment-limit applied, so the text agrees with the JSON
+    if shown:
         print("\n--- comments ---")
-        for c in comments:
+        if len(shown) < len(comments):
+            print(f"  (showing {len(shown)} of {len(comments)} comments)")
+        for c in shown:
             where = f" ({c['where']})" if c["where"] else ""
             stamp = central(c["created_at"], with_day=False) if c["created_at"] else ""
             print(f"  [{stamp}] {c['author']}{where}: {c['text']}")
@@ -3853,6 +3862,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("show", help="one item + comments")
     sp.add_argument("id")
     sp.add_argument("--json", action="store_true")
+    sp.add_argument("--comment-limit", dest="comment_limit", type=int, metavar="N",
+                    help="show only the first N comments (oldest first);  resolution still reads them all")
 
     fp = sub.add_parser("file", help="file a new finding/issue")
     fp.add_argument("--title", required=True)

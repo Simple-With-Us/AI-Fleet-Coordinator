@@ -82,6 +82,8 @@
     // allowed.  CHANNELS_DENY lists stream ids no seat may use even when they
     // are public;  every check is by id, so a rename cannot dodge it.
     "CHANNELS_DENY": [],
+    // NOTES_RELAY_CONSUMER (the seat whose bot is the Apple Notes relay consumer, AFC-331) is NOT set here:  it is a
+    // fleet knob in Infisical (INFISICAL.md) copied to a Worker binding by sync_notes_consumer.py at deploy.
     // MCP Events callback hosts (src/events.js).  ChatGPT's real callback host
     // is not documented;  a refused one shows on /admin under refusals as
     // callback_host_not_allowed with its host, and is added here.

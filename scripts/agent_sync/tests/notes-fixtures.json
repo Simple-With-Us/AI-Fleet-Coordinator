@@ -1,0 +1,96 @@
+{
+ "//": "AFC-331:  golden notes envelopes.  scripts/agent_sync/tests/test_notes.py and scripts/agent-sync-mcp/test/notes.test.mjs both render every envelope to exactly its message and parse every message back to exactly its envelope, so the stdio, listener and hosted sides cannot drift.",
+ "cases": [
+  {
+   "name": "create CLAUDE",
+   "envelope": {
+    "v": 1,
+    "action": "create",
+    "title": "[AFC, Claude] relay rollout",
+    "markdown": "# Plan\n\nOne.  Two \"quoted\" and a back\\slash.\n- item",
+    "flags": {
+     "pin": true
+    },
+    "request_id": "nr0123456789abcdef0123",
+    "identity": "CLAUDE"
+   },
+   "message": "```json\n{\"v\":1,\"action\":\"create\",\"title\":\"[AFC, Claude] relay rollout\",\"markdown\":\"# Plan\\n\\nOne.  Two \\\"quoted\\\" and a back\\\\slash.\\n- item\",\"flags\":{\"pin\":true},\"request_id\":\"nr0123456789abcdef0123\",\"identity\":\"CLAUDE\"}\n```"
+  },
+  {
+   "name": "update GROK-WEB",
+   "envelope": {
+    "v": 1,
+    "action": "update",
+    "title": "[AFC, CT, Grok Web] caf\u00e9 \u2014 notes \ud83d\ude80",
+    "markdown": "unicode body \u00e9\u4e2d",
+    "flags": {
+     "pin": false,
+     "notify": true,
+     "summary": "short",
+     "pr": "46, 47"
+    },
+    "request_id": "req-update-0001",
+    "identity": "GROK-WEB"
+   },
+   "message": "```json\n{\"v\":1,\"action\":\"update\",\"title\":\"[AFC, CT, Grok Web] caf\\u00e9 \\u2014 notes \\ud83d\\ude80\",\"markdown\":\"unicode body \\u00e9\\u4e2d\",\"flags\":{\"pin\":false,\"notify\":true,\"summary\":\"short\",\"pr\":\"46, 47\"},\"request_id\":\"req-update-0001\",\"identity\":\"GROK-WEB\"}\n```"
+  },
+  {
+   "name": "pin CURSOR",
+   "envelope": {
+    "v": 1,
+    "action": "pin",
+    "title": "[AFC, Cursor] pin me",
+    "markdown": "",
+    "flags": {},
+    "request_id": "pinrequest01",
+    "identity": "CURSOR"
+   },
+   "message": "```json\n{\"v\":1,\"action\":\"pin\",\"title\":\"[AFC, Cursor] pin me\",\"markdown\":\"\",\"flags\":{},\"request_id\":\"pinrequest01\",\"identity\":\"CURSOR\"}\n```"
+  },
+  {
+   "name": "unpin GB-FIXER",
+   "envelope": {
+    "v": 1,
+    "action": "unpin",
+    "title": "[AFC, GB-Fixer] unpin me",
+    "markdown": "",
+    "flags": {},
+    "request_id": "unpin_request_2",
+    "identity": "GB-FIXER"
+   },
+   "message": "```json\n{\"v\":1,\"action\":\"unpin\",\"title\":\"[AFC, GB-Fixer] unpin me\",\"markdown\":\"\",\"flags\":{},\"request_id\":\"unpin_request_2\",\"identity\":\"GB-FIXER\"}\n```"
+  },
+  {
+   "name": "create BF-DEPLOYER",
+   "envelope": {
+    "v": 1,
+    "action": "create",
+    "title": "[BF, BF-Deployer] html note",
+    "markdown": "<div><p>hi</p></div>",
+    "flags": {
+     "needs_owner": true,
+     "html": true
+    },
+    "request_id": "htmlrequest-3",
+    "identity": "BF-DEPLOYER"
+   },
+   "message": "```json\n{\"v\":1,\"action\":\"create\",\"title\":\"[BF, BF-Deployer] html note\",\"markdown\":\"<div><p>hi</p></div>\",\"flags\":{\"needs_owner\":true,\"html\":true},\"request_id\":\"htmlrequest-3\",\"identity\":\"BF-DEPLOYER\"}\n```"
+  },
+  {
+   "name": "upload reference",
+   "envelope": {
+    "v": 1,
+    "action": "create",
+    "title": "[AFC, Claude] big",
+    "markdown": "",
+    "flags": {},
+    "request_id": "bigrequest-0001",
+    "identity": "CLAUDE",
+    "markdown_url": "/user_uploads/2/ab/1/note-bigrequest-0001.md",
+    "markdown_bytes": 3,
+    "markdown_sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+   },
+   "message": "```json\n{\"v\":1,\"action\":\"create\",\"title\":\"[AFC, Claude] big\",\"markdown\":\"\",\"flags\":{},\"request_id\":\"bigrequest-0001\",\"identity\":\"CLAUDE\",\"markdown_url\":\"/user_uploads/2/ab/1/note-bigrequest-0001.md\",\"markdown_bytes\":3,\"markdown_sha256\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"}\n```"
+  }
+ ]
+}

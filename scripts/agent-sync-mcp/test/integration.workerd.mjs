@@ -23,16 +23,22 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import CONTRACT from "../../agent_sync/mcp/tools.json" with { type: "json" };
 import { ROOT, wranglerConfig, testEnv, browserPostOrigin, CHATGPT_CLIENT, CHATGPT_REDIRECT, RESOURCE } from "./helpers.mjs";
 import { FakeZulip, REALM, STREAMS, OWNER_ID, zulipShapedKey } from "./fake-zulip.mjs";
+import { GB_IDENTITIES, delegatedNames } from "../src/delegated-identities.js";
 import { FakeLinear, opOf } from "./fake-linear.mjs";
 
 const TOOLS = CONTRACT.tools;
 // The hosted server lists the first ten tools.json tools, hosted-only recall and Linear tools, then
 // the FleetLink tools (AFC-328), the rest of tools.json and the listener tools (AFC-330).
-const HOSTED_NAMES = ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name),
+const HOSTED_NAMES = ["whoami", "identities", "guide", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name),
   // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only listener tools.
-  ...TOOLS.slice(10).map((t) => `zulip_${t.name}`), "listener_status", "listener_inbox", "listener_owner_queue", "listener_wakes", "listener_held_back"];
+  ...TOOLS.slice(12).map((t) => t.name), "listener_status", "listener_inbox", "listener_owner_queue", "listener_wakes", "listener_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_status"];
 const JET_KEY = zulipShapedKey(11);
 const CURSOR_KEY = zulipShapedKey(12);
+// One enabled Grok Bot persona, wired through the legacy per-role variables loadDelegatedCredentials reads.
+const PERSONA = GB_IDENTITIES.find((name) => name === "GB-FIXER") ?? GB_IDENTITIES[0];
+const PERSONA_NAMES = delegatedNames(PERSONA);
+const PERSONA_EMAIL = `${PERSONA.slice(3).toLowerCase()}-grok-bot@simplewithus.zulipchat.com`;
+const PERSONA_KEY = zulipShapedKey(41);
 const CURSOR_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";
 const CURSOR_CIMD_CLIENT = "https://cursor.com/oauth/mcp-client.json";
 // Public metadata shape copied from Cursor's published document; never fetched live in this test.
@@ -49,6 +55,7 @@ const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
 const zulip = new FakeZulip({ bots: [
   { email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet", key: JET_KEY },
   { email: "cursor-bot@simplewithus.zulipchat.com", full_name: "Cursor", key: CURSOR_KEY },
+  { email: PERSONA_EMAIL, full_name: PERSONA.slice(3), key: PERSONA_KEY },
   { email: "claude-bot@simplewithus.zulipchat.com", full_name: "Claude", key: CLAUDE_KEY },
 ] });
 const linear = new FakeLinear();
@@ -198,7 +205,7 @@ function startWorker(upstream, bindingOverrides = {}) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, [PERSONA_NAMES.zulipEmail]: PERSONA_EMAIL, [PERSONA_NAMES.zulipKey]: PERSONA_KEY, [PERSONA_NAMES.linearClientId]: "workerd-persona-linear-id", [PERSONA_NAMES.linearClientSecret]: "workerd-persona-linear-secret", WAKE_HMAC_KEY_JET: WAKE_KEY_JET, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
         outboundService: outboundFetch,
       },
     ],
@@ -497,7 +504,8 @@ try {
   await step("tools/list is tools.json plus recall plus DMs, and whoami shows JET with a read-only grant", async () => {
     const init = await mcp(tokens.access_token, "initialize", INIT);
     assert.equal(init.status, 200, JSON.stringify(init.json));
-    assert.match(init.json.result.instructions, /one bot, JET\./);
+    assert.match(init.json.result.instructions, /a read acts as JET\./);
+    assert.match(init.json.result.instructions, /writes must name it/);
     assert.match(init.json.result.instructions, /BEGIN_UNTRUSTED_ZULIP and END_UNTRUSTED_ZULIP/);
     assert.deepEqual(init.json.result.capabilities, { tools: {}, events: {} });
     const list = await mcp(tokens.access_token, "tools/list");
@@ -507,7 +515,13 @@ try {
     for (const spec of [...ZULIP_PUBLIC_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS]) {
       const served = tools.find((item) => item.name === spec.name);
       assert.ok(served, spec.name);
-      assert.deepEqual(Object.fromEntries(Object.keys(spec).map((key) => [key, served[key]])), spec, spec.name);
+      // Served as the shared spec plus this grant's identity property (AFC-331).
+      const { identity, ...rest } = served.inputSchema.properties;
+      assert.deepEqual(identity.enum, ["JET"], spec.name);
+      const required = (served.inputSchema.required ?? []).filter((name) => name !== "identity");
+      const inputSchema = { ...served.inputSchema, properties: rest, ...(spec.inputSchema.required ? { required } : {}) };
+      if (!spec.inputSchema.required) delete inputSchema.required;
+      assert.deepEqual(Object.fromEntries(Object.keys(spec).map((key) => [key, key === "inputSchema" ? inputSchema : served[key]])), spec, spec.name);
     }
     for (const name of ["zulip_dm_list", "zulip_dm_read", "zulip_dm_send"]) assert.ok(tools.find((item) => item.name === name).outputSchema, name);
     assert.match(init.json.result.instructions, /Direct messages \(zulip_dm_list, zulip_dm_read, zulip_dm_send/);
@@ -749,7 +763,7 @@ try {
     const unknown = await call(tokens.access_token, "hello");
     assert.ok(unknown.json.error, JSON.stringify(unknown.json));
     const before = zulip.requestsTo("POST", "messages").length;
-    const w2 = await call(tokens.access_token, "post", { channel: "sandbox", topic: "t", text: "x" });
+    const w2 = await call(tokens.access_token, "zulip_post", { channel: "sandbox", topic: "t", text: "x" });
     assert.equal(w2.json.result.isError, true);
     assert.equal(w2.json.result.structuredContent, undefined);
     assert.ok(w2.json.result._meta["mcp/www_authenticate"][0].includes('error="insufficient_scope"'));
@@ -771,19 +785,19 @@ try {
   });
 
   await step("DMs with a read-only grant:  dm_list and dm_read answer fenced, dm_send names the zulip:write challenge and sends nothing", async () => {
-    const list = await call(tokens.access_token, "dm_list");
+    const list = await call(tokens.access_token, "zulip_dm_list");
     assert.equal(list.json.result.isError, undefined, JSON.stringify(list.json));
     assert.deepEqual(list.json.result.structuredContent, { count: 0, ids: [], unread_total: 0 });
     assert.match(list.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
-    const read = await call(tokens.access_token, "dm_read", { user_ids: [OWNER_ID] });
+    const read = await call(tokens.access_token, "zulip_dm_read", { user_ids: [OWNER_ID] });
     assert.deepEqual(read.json.result.structuredContent, { count: 0, ids: [], next_since_id: null });
     const before = zulip.requestsTo("POST", "messages").length;
-    const send = await call(tokens.access_token, "dm_send", { user_ids: [OWNER_ID], text: "x" });
+    const send = await call(tokens.access_token, "zulip_dm_send", { user_ids: [OWNER_ID], text: "x" });
     assert.equal(send.json.result.isError, true);
     assert.equal(send.json.result.structuredContent, undefined);
     assert.ok(send.json.result._meta["mcp/www_authenticate"][0].includes('scope="zulip:write"'));
     assert.equal(zulip.requestsTo("POST", "messages").length, before);
-    const bad = await call(tokens.access_token, "dm_read", {});
+    const bad = await call(tokens.access_token, "zulip_dm_read", {});
     assert.equal(bad.json.result._meta["agent-sync/error"].code, "invalid_argument");
   });
 
@@ -938,18 +952,64 @@ try {
     // No WAKE_HMAC_KEY_GROK_WEB, so no events:  Grok never lists an event that cannot fire.
     const grokDiscover = await mcpModern(t.body.access_token, "server/discover");
     assert.deepEqual(grokDiscover.json.result.capabilities, { tools: {} });
-    const write = await call(t.body.access_token, "post", { channel: "sandbox", topic: "hosted smoke", text: "Hello from Grok.  Two sentences." });
+    const write = await call(t.body.access_token, "zulip_post", { channel: "sandbox", topic: "hosted smoke", text: "Hello from Grok.  Two sentences.", identity: "GROK-WEB" });
     assert.equal(write.status, 200, JSON.stringify(write.json));
     const posted = zulip.messages.at(-1);
     assert.deepEqual(write.json.result.structuredContent, { id: posted.id, channel_id: STREAMS.sandbox, duplicate: false });
     assert.equal(posted.sender_email, "grok-web-bot@simplewithus.zulipchat.com", "posted with GROK-WEB's own key");
     assert.equal(posted.subject, "hosted smoke");
     assert.equal(posted.content, "[GROK-WEB] Hello from Grok.\u00a0 Two sentences.");
-    const read = await call(t.body.access_token, "read_topic", { channel: "sandbox", topic: "hosted smoke", include_self: true });
+    const read = await call(t.body.access_token, "zulip_read_topic", { channel: "sandbox", topic: "hosted smoke", include_self: true });
     assert.deepEqual(read.json.result.structuredContent.ids, [posted.id]);
     assert.match(read.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
-    const off = await call(t.body.access_token, "post", { channel: "general", topic: "t", text: "x" });
+    const off = await call(t.body.access_token, "zulip_post", { channel: "general", topic: "t", text: "x", identity: "GROK-WEB" });
     assert.equal(off.json.result._meta["agent-sync/error"].code, "channel_not_allowed");
+
+    await step("per-call identity on the GROK-WEB grant (AFC-331):  CURSOR posts with CURSOR's own key, a write without identity and a name outside the set are refused", async () => {
+      const listed = (await mcp(t.body.access_token, "tools/list")).json.result.tools;
+      const enumOf = listed.find((tool) => tool.name === "zulip_post").inputSchema.properties.identity.enum;
+      assert.deepEqual(enumOf.slice(0, 2), ["GROK-WEB", "CURSOR"]);
+      assert.ok(enumOf.every((name) => ["GROK-WEB", "CURSOR"].includes(name) || name.startsWith("GB-")));
+      assert.ok(!enumOf.includes("GB-ENGINEER"));
+      const ids = (await call(t.body.access_token, "identities")).json.result.structuredContent;
+      assert.equal(ids.default_identity, "GROK-WEB");
+      assert.deepEqual(ids.identities.map((row) => row.identity), enumOf);
+      assert.equal(ids.identities[1].zulip, "configured");
+      const asCursor = await call(t.body.access_token, "zulip_post", { channel: "sandbox", topic: "hosted smoke", text: "From the shared group.", identity: "CURSOR" });
+      assert.equal(asCursor.json.result.isError, undefined, JSON.stringify(asCursor.json));
+      const sent = zulip.messages.at(-1);
+      assert.equal(sent.sender_email, "cursor-bot@simplewithus.zulipchat.com", "posted with CURSOR's own key");
+      assert.equal(sent.content, "[CURSOR] From the shared group.");
+      const who = (await call(t.body.access_token, "whoami", { identity: "CURSOR" })).json.result.structuredContent;
+      assert.equal(who.seat, "CURSOR");
+      assert.equal(who.authenticated_seat, "GROK-WEB");
+      const before = zulip.requestsTo("POST", "messages").length;
+      const bare = await call(t.body.access_token, "zulip_post", { channel: "sandbox", topic: "hosted smoke", text: "x" });
+      assert.equal(bare.json.result._meta["agent-sync/error"].code, "identity_required");
+      const sentry = await call(t.body.access_token, "zulip_post", { channel: "sandbox", topic: "hosted smoke", text: "x", identity: "SENTRY" });
+      assert.equal(sentry.json.result._meta["agent-sync/error"].code, "identity_not_allowed");
+      const old = await call(t.body.access_token, "post", { channel: "sandbox", topic: "hosted smoke", text: "x" });
+      assert.equal(old.json.result._meta["agent-sync/error"].code, "unknown_tool");
+      assert.equal(old.json.result._meta["agent-sync/error"].replacement, "zulip_post");
+      assert.equal(zulip.requestsTo("POST", "messages").length, before, "nothing was posted");
+    });
+
+    await step(`a GROK-WEB grant acts as the ${PERSONA} persona with that persona's own bot, through its per-identity gate (AFC-331)`, async () => {
+      const who = (await call(t.body.access_token, "whoami", { identity: PERSONA })).json.result;
+      assert.equal(who.isError, undefined, JSON.stringify(who));
+      assert.equal(who.structuredContent.seat, PERSONA);
+      assert.equal(who.structuredContent.authenticated_seat, "GROK-WEB");
+      assert.equal(who.structuredContent.email, PERSONA_EMAIL);
+      const posted = await call(t.body.access_token, "zulip_post", { channel: "sandbox", topic: "hosted persona", text: "From a persona.", identity: PERSONA });
+      assert.equal(posted.json.result.isError, undefined, JSON.stringify(posted.json));
+      const sent = zulip.messages.at(-1);
+      assert.equal(sent.sender_email, PERSONA_EMAIL, "posted with the persona's own key, not the grant's");
+      assert.equal(sent.content, `[${PERSONA}] From a persona.`);
+      // A persona with no credentials in the bindings is configured nowhere:  not_configured, never a crash.
+      const other = GB_IDENTITIES.find((name) => name !== PERSONA);
+      const missing = await call(t.body.access_token, "whoami", { identity: other });
+      assert.equal(missing.json.result._meta["agent-sync/error"].code, "not_configured");
+    });
 
     await step("hosted Linear query and mutation use GROK-WEB credentials, with a durable idempotent replay", async () => {
       linear.requests.length = 0;
@@ -968,6 +1028,7 @@ try {
         mutation: "mutation AgentSyncIntegrationMutation($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { success project { id name description } } }",
         variables: { id: "project-1", input: { description: "Updated through hosted Agent Sync." } },
         idempotency_key: "workerd-linear-project-update-1",
+        identity: "GROK-WEB",
       };
       const first = await call(t.body.access_token, "linear_mutation", mutationArgs);
       assert.equal(first.status, 200, JSON.stringify(first.json));
@@ -990,7 +1051,7 @@ try {
       assert.equal(listed.json.result.isError, undefined, JSON.stringify(listed.json));
       assert.match(listed.json.result.content[0].text, /Named API fixture/);
       const before = linear.mutations().length;
-      const args = { input: { name: "Named API fixture", description: "Created using a named command." }, idempotency_key: "workerd-named-project-create" };
+      const args = { input: { name: "Named API fixture", description: "Created using a named command." }, idempotency_key: "workerd-named-project-create", identity: "GROK-WEB" };
       const created = await call(t.body.access_token, "linear_save_project", args);
       assert.equal(created.json.result.isError, undefined, JSON.stringify(created.json));
       assert.equal(linear.mutations().length, before + 1);
@@ -1001,7 +1062,7 @@ try {
     });
 
     // Direct messages through the Worker:  send as Grok's own bot, read the conversation back, see Jay's answer in inbox.
-    const dmSent = await call(t.body.access_token, "dm_send", { user_ids: [OWNER_ID], text: "Direct note from Grok.  Please read." });
+    const dmSent = await call(t.body.access_token, "zulip_dm_send", { user_ids: [OWNER_ID], text: "Direct note from Grok.  Please read.", identity: "GROK-WEB" });
     assert.equal(dmSent.status, 200, JSON.stringify(dmSent.json));
     const dm = zulip.messages.at(-1);
     assert.deepEqual(dmSent.json.result.structuredContent, { id: dm.id, user_ids: [OWNER_ID], duplicate: false });
@@ -1009,12 +1070,12 @@ try {
     assert.equal(dm.sender_email, "grok-web-bot@simplewithus.zulipchat.com");
     assert.equal(dm.content, "[GROK-WEB→JAY] Direct note from Grok.\u00a0 Please read.");
     const answer = zulip.addDm("Jay Wedgeworth", [], "Got it, thanks");
-    const dmRead = await call(t.body.access_token, "dm_read", { emails: ["jay@zulip.test"] });
+    const dmRead = await call(t.body.access_token, "zulip_dm_read", { emails: ["jay@zulip.test"] });
     assert.deepEqual(dmRead.json.result.structuredContent.ids, [dm.id, answer.id]);
     assert.match(dmRead.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
-    const dmList = await call(t.body.access_token, "dm_list", {});
+    const dmList = await call(t.body.access_token, "zulip_dm_list", {});
     assert.deepEqual(dmList.json.result.structuredContent, { count: 1, ids: [answer.id], unread_total: 1 });
-    const inboxDm = await call(t.body.access_token, "inbox", {});
+    const inboxDm = await call(t.body.access_token, "zulip_inbox", {});
     assert.deepEqual(inboxDm.json.result.structuredContent.ids, [answer.id]);
     assert.match(inboxDm.json.result.content[0].text, /"dm":true/);
     // The admin page shows the call rows and the role check, never a body.
@@ -1074,7 +1135,7 @@ try {
     try {
       const listed = await client.listTools();
       assert.deepEqual(listed.tools.map((t) => t.name), HOSTED_NAMES);
-      const refused = await client.callTool({ name: "read_topic", arguments: { channel: "general", topic: "t" } });
+      const refused = await client.callTool({ name: "zulip_read_topic", arguments: { channel: "general", topic: "t" } });
       assert.equal(refused.isError, true);
       assert.equal(JSON.parse(refused.content[0].text).code, "channel_not_allowed");
       const who = await client.callTool({ name: "whoami", arguments: {} });
@@ -1234,7 +1295,7 @@ try {
     assert.equal(identity.email, "claude-bot@simplewithus.zulipchat.com");
     assert.equal(identity.role, 400);
     assert.equal(identity.transport, "hosted");
-    const post = await call(issued.body.access_token, "post", { channel: "sandbox", topic: "claude hosted", text: "Independent Claude connection", idempotency_key: "claude-hosted-01" });
+    const post = await call(issued.body.access_token, "zulip_post", { channel: "sandbox", topic: "claude hosted", text: "Independent Claude connection", idempotency_key: "claude-hosted-01", identity: "CLAUDE" });
     assert.equal(post.json.result.isError, undefined);
     const sent = zulip.messages.find((message) => message.id === post.json.result.structuredContent.id);
     assert.equal(sent.sender_email, "claude-bot@simplewithus.zulipchat.com");
@@ -1390,7 +1451,7 @@ try {
     const granted = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: c.verifier, redirect_uri: CLAUDE_REDIRECT, client_id: clientId, resource: RESOURCE });
     assert.equal(granted.status, 200);
     const before = zulip.requests.length;
-    for (const [name, args] of [["whoami", {}], ["post", { topic: "canonical-binding", text: "probe" }]]) {
+    for (const [name, args] of [["whoami", {}], ["zulip_post", { topic: "canonical-binding", text: "probe", identity: "CLAUDE" }]]) {
       const result = (await call(granted.body.access_token, name, args)).json.result;
       assert.equal(result.isError, true);
       assert.equal(result._meta["agent-sync/error"].code, "not_authorized");
