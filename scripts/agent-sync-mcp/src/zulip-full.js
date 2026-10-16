@@ -286,6 +286,9 @@ export const ZULIP_FULL_METHODS = {
   async resolveTopic(args, audit, resolve) {
     const channel = normalizeChannel(args.channel);
     const topic = normalizeTopic(args.topic);
+    // A resolve or unresolve renames every message's topic, so a name that
+    // looks like it holds a secret is refused before any request.
+    this.scan({ topic });
     if (resolve) resolvedName(topic, true);
     audit.topic = await this.auditTopic(topic);
     await this.ensureSeat();
@@ -474,6 +477,7 @@ export const ZULIP_FULL_METHODS = {
   async tool_topic_visibility(args, audit) {
     const channel = normalizeChannel(args.channel);
     const topic = normalizeTopic(args.topic);
+    this.scan({ topic });
     audit.topic = await this.auditTopic(topic);
     await this.ensureSeat();
     const streamId = await this.channelId(channel);

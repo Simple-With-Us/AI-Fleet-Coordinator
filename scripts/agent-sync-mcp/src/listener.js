@@ -15,10 +15,32 @@
 // Pure module:  WebCrypto and fetch only, so `node --test` loads it.
 
 import LISTENER_CONTRACT from "../../agent_sync/mcp/listener-tools.json" with { type: "json" };
+import { z } from "zod";
 import { ToolError, clean, envelope, okResult, BODY_LIMIT, NAME_LIMIT } from "./contract.js";
 import { WAKE_SECRETS } from "./config.js";
 
 export const LISTENER_CONTRACT_NAME = "agent-sync-read/1";
+
+// The read API's answer, parsed before anything reads it.  Every view field
+// is optional and lenient (catch):  a missing or odd field becomes 0, false,
+// null or empty on its own, and never hides the rest of the view.
+const count0 = z.number().int().nonnegative().catch(0);
+const flag = z.boolean().catch(false);
+export const ListenerView = z.looseObject({
+  items: z.array(z.unknown()).max(1000).catch([]),
+  pending: count0, cursor: count0, total: count0, count: count0, lost: count0,
+  next_seq: z.number().int().nonnegative().nullable().catch(null),
+  inbox_pending: count0, owner_queue_pending: count0, held_back: count0, wakes_24h: count0, leases: count0,
+  inbox_cursor: count0, held_back_lost: count0, nudges_pending: count0,
+  paused: flag, paused_wakes: flag,
+  wakes_by_state: z.record(z.string(), z.unknown()).catch({}),
+});
+const ListenerEnvelope = z.looseObject({
+  contract: z.literal(LISTENER_CONTRACT_NAME),
+  seat: z.string(),
+  record: z.string(),
+  view: z.looseObject({}),
+});
 export const LISTENER_TIMEOUT_MS = 10_000;
 export const LISTENER_MIN_KEY_LEN = 32;
 export const LISTENER_USER_AGENT = "agent-sync-mcp (hosted listener reader)";
@@ -107,10 +129,11 @@ export class ListenerClient {
     } catch {
       body = null;
     }
-    if (!response.ok || !body || body.contract !== LISTENER_CONTRACT_NAME || body.seat !== this.seat || body.record !== record || !body.view || typeof body.view !== "object") {
+    const parsed = response.ok ? ListenerEnvelope.safeParse(body) : null;
+    if (!parsed?.success || parsed.data.seat !== this.seat || parsed.data.record !== record) {
       throw new ToolError("upstream_error", "the listener's answer was not a read-API view");
     }
-    return body.view;
+    return ListenerView.parse(parsed.data.view);
   }
 }
 

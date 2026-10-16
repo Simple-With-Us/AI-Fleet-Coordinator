@@ -153,3 +153,14 @@ test("errors map to short tool errors and never echo the listener's body or the 
   const down = harness({ listener: () => new ListenerClient({ baseUrl: BASE, seat: "GROK-WEB", key: KEY, fetch: async () => { throw new TypeError("network"); } }) });
   assert.equal(toolError(await down.tools.call("listener_inbox", {}), "unavailable").retryable, true);
 });
+
+test("the read API's answer is parsed before use:  odd fields fall back on their own, a bad envelope is upstream_error", async () => {
+  const answer = (body) => async () => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  const client = (fetchImpl) => (clock) => new ListenerClient({ baseUrl: BASE, seat: "GROK-WEB", key: KEY, fetch: fetchImpl, now: () => clock.now });
+  const odd = harness({ listener: client(answer({ contract: "agent-sync-read/1", seat: "GROK-WEB", record: "status", view: { inbox_pending: "lots", held_back: -3, wakes_24h: 4, paused: "yes" } })) });
+  assert.deepEqual(ok(await odd.tools.call("listener_status", {}), "listener_status"), { inbox_pending: 0, owner_queue_pending: 0, held_back: 0, wakes_24h: 4, leases: 0, paused: false });
+  const noView = harness({ listener: client(answer({ contract: "agent-sync-read/1", seat: "GROK-WEB", record: "status", view: [1, 2] })) });
+  toolError(await noView.tools.call("listener_status", {}), "upstream_error");
+  const wrongContract = harness({ listener: client(answer({ contract: "other/9", seat: "GROK-WEB", record: "status", view: {} })) });
+  toolError(await wrongContract.tools.call("listener_status", {}), "upstream_error");
+});

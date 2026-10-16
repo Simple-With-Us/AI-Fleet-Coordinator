@@ -328,3 +328,14 @@ test("scopes and budgets:  a read-only grant reads but cannot write;  light writ
   const audit = await writer.gate.callTail(5);
   assert.ok(audit.some((row) => row.tool === "zulip_resolve_topic" && row.channel_id === STREAMS["agent-sync"]));
 });
+
+test("resolve, unresolve and topic visibility refuse a topic that looks like it holds a secret, before any request", async () => {
+  const { fake, tools } = harness();
+  fake.addMessage("Codex", "agent-sync", "deploy", "a");
+  const before = fake.requests?.length ?? 0;
+  const secretTopic = "key ghp_" + "A1b2C3d4E5".repeat(4);
+  for (const [name, args] of [["zulip_resolve_topic", { topic: secretTopic }], ["zulip_unresolve_topic", { topic: secretTopic }], ["zulip_topic_visibility", { topic: secretTopic, visibility: "follow" }]]) {
+    toolError(await tools.call(name, args), "refused_secret");
+  }
+  if (fake.requests) assert.equal(fake.requests.length, before);
+});
