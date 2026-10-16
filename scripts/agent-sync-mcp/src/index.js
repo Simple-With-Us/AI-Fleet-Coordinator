@@ -30,7 +30,6 @@ import {
   ACCESS_TOKEN_TTL_S,
   REFRESH_TOKEN_TTL_S,
   GATE_LOG_NAME,
-  KNOWN_SEATS,
   PROPS_PHASE,
   SEAT_SECRETS,
   SHARED_IDENTITY_SEATS,
@@ -61,6 +60,7 @@ import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sent
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
 import { IdentityRouter, loadDelegatedCredentials } from "./delegated-identities.js";
+import { gate } from "./gate.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromEnv } from "./recall.js";
 import { fleetlinkClientFromEnv } from "./fleetlink.js";
@@ -99,11 +99,6 @@ function invalidToken(description) {
   return oauthJsonError("invalid_token", description, 401, {
     "WWW-Authenticate": `Bearer error="invalid_token", error_description="${description}", resource_metadata="${RESOURCE_METADATA_URL}"`,
   });
-}
-
-function gate(env, name) {
-  if (name !== GATE_LOG_NAME && !KNOWN_SEATS.includes(name)) throw new Error("not a seat");
-  return env.SEAT_GATE.get(env.SEAT_GATE.idFromName(name));
 }
 
 /**

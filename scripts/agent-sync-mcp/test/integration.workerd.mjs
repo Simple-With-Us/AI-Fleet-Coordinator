@@ -23,6 +23,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import CONTRACT from "../../agent_sync/mcp/tools.json" with { type: "json" };
 import { ROOT, wranglerConfig, testEnv, browserPostOrigin, CHATGPT_CLIENT, CHATGPT_REDIRECT, RESOURCE } from "./helpers.mjs";
 import { FakeZulip, REALM, STREAMS, OWNER_ID, zulipShapedKey } from "./fake-zulip.mjs";
+import { GB_IDENTITIES, delegatedNames } from "../src/delegated-identities.js";
 import { FakeLinear, opOf } from "./fake-linear.mjs";
 
 const TOOLS = CONTRACT.tools;
@@ -33,6 +34,11 @@ const HOSTED_NAMES = ["whoami", "identities", "guide", "zulip_topics", "zulip_re
   ...TOOLS.slice(12).map((t) => t.name), "listener_status", "listener_inbox", "listener_owner_queue", "listener_wakes", "listener_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_status"];
 const JET_KEY = zulipShapedKey(11);
 const CURSOR_KEY = zulipShapedKey(12);
+// One enabled Grok Bot persona, wired through the legacy per-role variables loadDelegatedCredentials reads.
+const PERSONA = GB_IDENTITIES.find((name) => name === "GB-FIXER") ?? GB_IDENTITIES[0];
+const PERSONA_NAMES = delegatedNames(PERSONA);
+const PERSONA_EMAIL = `${PERSONA.slice(3).toLowerCase()}-grok-bot@simplewithus.zulipchat.com`;
+const PERSONA_KEY = zulipShapedKey(41);
 const CURSOR_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";
 const CURSOR_CIMD_CLIENT = "https://cursor.com/oauth/mcp-client.json";
 // Public metadata shape copied from Cursor's published document; never fetched live in this test.
@@ -49,6 +55,7 @@ const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
 const zulip = new FakeZulip({ bots: [
   { email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet", key: JET_KEY },
   { email: "cursor-bot@simplewithus.zulipchat.com", full_name: "Cursor", key: CURSOR_KEY },
+  { email: PERSONA_EMAIL, full_name: PERSONA.slice(3), key: PERSONA_KEY },
   { email: "claude-bot@simplewithus.zulipchat.com", full_name: "Claude", key: CLAUDE_KEY },
 ] });
 const linear = new FakeLinear();
@@ -198,7 +205,7 @@ function startWorker(upstream, bindingOverrides = {}) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, WAKE_HMAC_KEY_JET: WAKE_KEY_JET, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, [PERSONA_NAMES.zulipEmail]: PERSONA_EMAIL, [PERSONA_NAMES.zulipKey]: PERSONA_KEY, [PERSONA_NAMES.linearClientId]: "workerd-persona-linear-id", [PERSONA_NAMES.linearClientSecret]: "workerd-persona-linear-secret", WAKE_HMAC_KEY_JET: WAKE_KEY_JET, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
         outboundService: outboundFetch,
       },
     ],
@@ -985,6 +992,23 @@ try {
       assert.equal(old.json.result._meta["agent-sync/error"].code, "unknown_tool");
       assert.equal(old.json.result._meta["agent-sync/error"].replacement, "zulip_post");
       assert.equal(zulip.requestsTo("POST", "messages").length, before, "nothing was posted");
+    });
+
+    await step(`a GROK-WEB grant acts as the ${PERSONA} persona with that persona's own bot, through its per-identity gate (AFC-331)`, async () => {
+      const who = (await call(t.body.access_token, "whoami", { identity: PERSONA })).json.result;
+      assert.equal(who.isError, undefined, JSON.stringify(who));
+      assert.equal(who.structuredContent.seat, PERSONA);
+      assert.equal(who.structuredContent.authenticated_seat, "GROK-WEB");
+      assert.equal(who.structuredContent.email, PERSONA_EMAIL);
+      const posted = await call(t.body.access_token, "zulip_post", { channel: "sandbox", topic: "hosted persona", text: "From a persona.", identity: PERSONA });
+      assert.equal(posted.json.result.isError, undefined, JSON.stringify(posted.json));
+      const sent = zulip.messages.at(-1);
+      assert.equal(sent.sender_email, PERSONA_EMAIL, "posted with the persona's own key, not the grant's");
+      assert.equal(sent.content, `[${PERSONA}] From a persona.`);
+      // A persona with no credentials in the bindings is configured nowhere:  not_configured, never a crash.
+      const other = GB_IDENTITIES.find((name) => name !== PERSONA);
+      const missing = await call(t.body.access_token, "whoami", { identity: other });
+      assert.equal(missing.json.result._meta["agent-sync/error"].code, "not_configured");
     });
 
     await step("hosted Linear query and mutation use GROK-WEB credentials, with a durable idempotent replay", async () => {

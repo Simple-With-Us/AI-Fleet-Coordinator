@@ -12,7 +12,8 @@ import {
   IdentityRouter, allowedIdentities, toolListFor, GB_IDENTITIES, RENAMED_TOOLS, SHARED_IDENTITY_SEATS, canonicalIdentity,
 } from "../src/delegated-identities.js";
 import { HOSTED_TOOL_LIST, HOSTED_READ_TOOLS, HOSTED_WRITE_TOOLS } from "../src/hosted-tools.js";
-import { KNOWN_SEATS } from "../src/config.js";
+import { KNOWN_SEATS, GATE_LOG_NAME } from "../src/config.js";
+import { gate } from "../src/gate.js";
 import { okResult, ERROR_META_KEY } from "../src/contract.js";
 import { ROOT } from "./helpers.mjs";
 
@@ -239,4 +240,18 @@ test("the instructions state the rule, the set and the families", () => {
   assert.match(text, /zulip_\*, linear_\*, recall_\*, notes_\*, fleetlink_\* and listener_\*/);
   assert.match(text, /Call guide for the full tools guide/);
   assert.match(text, /fleetlink\.online\/agent-sync-tools-guide\//);
+});
+
+// ---------------------------------------------------------------- the per-identity gate
+
+test("gate() opens a gate for every seat, every enabled persona and the refusal log, and nothing else", () => {
+  const opened = [];
+  const env = { SEAT_GATE: { idFromName: (name) => name, get: (id) => { opened.push(id); return { id }; } } };
+  for (const name of [...KNOWN_SEATS, ...GB_IDENTITIES, GATE_LOG_NAME]) assert.deepEqual(gate(env, name), { id: name }, name);
+  assert.deepEqual(opened, [...KNOWN_SEATS, ...GB_IDENTITIES, GATE_LOG_NAME]);
+  for (const name of ["SENTRY", "JAY", "GB-ENGINEER", "gb-fixer", "GB-", "", "__proto__", undefined, null, 5]) {
+    assert.throws(() => gate(env, name), /not a seat/, String(name));
+  }
+  assert.ok(!GB_IDENTITIES.includes("GB-ENGINEER"), "a persona that is not enabled never gets a gate");
+  assert.equal(opened.length, KNOWN_SEATS.length + GB_IDENTITIES.length + 1, "the refused names opened nothing");
 });
