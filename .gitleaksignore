@@ -28,3 +28,10 @@ f5bc75267bdef2fd7a6d0adddfd4864b6a29c872:scripts/fleet-work-backup/test_fleet_wo
 1a73d8069eb95f16f494044b4a412f2007f08f09:scripts/fleet_facts/tests/test_publish_contract.py:generic-api-key:23
 1a73d8069eb95f16f494044b4a412f2007f08f09:scripts/fleet_facts/tests/test_signing.py:generic-api-key:14
 1a73d8069eb95f16f494044b4a412f2007f08f09:scripts/fleet_facts/tests/test_publish.py:generic-api-key:29
+
+# Idempotency-key test values in the stdio recall_contribute tests, one commit of PR #588 (AFC-331).
+# The values were made-up retry ids matched by generic-api-key;  the next commit replaces them.
+a0df50e5843d698782688de322e01948d0710292:scripts/agent_sync/tests/test_mcp_extras.py:generic-api-key:355
+a0df50e5843d698782688de322e01948d0710292:scripts/agent_sync/tests/test_mcp_extras.py:generic-api-key:363
+a0df50e5843d698782688de322e01948d0710292:scripts/agent_sync/tests/test_mcp_extras.py:generic-api-key:378
+a0df50e5843d698782688de322e01948d0710292:scripts/agent_sync/tests/test_mcp_extras.py:generic-api-key:389

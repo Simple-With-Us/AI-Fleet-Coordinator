@@ -352,7 +352,7 @@ class RecallToolTests(FakePrograms):
     def test_an_idempotency_key_contributes_once_even_when_the_retry_alters_the_text(self):
         reply = json.dumps({"id": "abc", "doc_id": "lesson:1", "status": "stored", "scrubbed": ["token"]})
         session = self.session(self.env(RECALL_TEST_REPLY=reply))
-        args = {"text": self.LESSON, "category": "lesson", "idempotency_key": "contribute-key-0001"}
+        args = {"text": self.LESSON, "category": "lesson", "idempotency_key": "aaaaaaaa-1"}
         first = self.assert_structured("recall_contribute", session.call("recall_contribute", args))
         retry = self.assert_structured("recall_contribute", session.call(
             "recall_contribute", dict(args, text=self.LESSON + "  A retry that edited the text a little.")))
@@ -360,7 +360,7 @@ class RecallToolTests(FakePrograms):
         self.assertEqual((retry["doc_id"], retry["id"], retry["status"], retry["scrubbed"]),
                          (first["doc_id"], first["id"], first["status"], first["scrubbed"]))
         self.assertEqual(len(self.calls(self.recall_out)), 1, "recall was called once")
-        other = self.assert_structured("recall_contribute", session.call("recall_contribute", dict(args, idempotency_key="contribute-key-0002")))
+        other = self.assert_structured("recall_contribute", session.call("recall_contribute", dict(args, idempotency_key="aaaaaaaa-2")))
         self.assertFalse(other["duplicate"])
         self.assertEqual(len(self.calls(self.recall_out)), 2)
 
@@ -375,7 +375,7 @@ class RecallToolTests(FakePrograms):
         self.assertEqual(len(self.calls(self.recall_out)), 2)
 
     def test_a_failed_contribution_drops_its_key_so_the_retry_goes_through(self):
-        args = {"text": self.LESSON, "category": "lesson", "idempotency_key": "contribute-key-0003"}
+        args = {"text": self.LESSON, "category": "lesson", "idempotency_key": "aaaaaaaa-3"}
         failing = self.session(self.env(RECALL_TEST_EXIT="2", RECALL_TEST_ERR="credential error\n", RECALL_TEST_REPLY=""))
         self.assertTrue(failing.call("recall_contribute", args).get("isError"))
         reply = json.dumps({"id": "abc", "doc_id": "lesson:1", "status": "stored", "scrubbed": []})
@@ -386,7 +386,7 @@ class RecallToolTests(FakePrograms):
     def test_a_bad_retry_is_refused_before_the_key_is_looked_at(self):
         reply = json.dumps({"id": "abc", "doc_id": "lesson:1", "status": "stored", "scrubbed": []})
         session = self.session(self.env(RECALL_TEST_REPLY=reply))
-        args = {"text": self.LESSON, "category": "lesson", "idempotency_key": "contribute-key-0004"}
+        args = {"text": self.LESSON, "category": "lesson", "idempotency_key": "aaaaaaaa-4"}
         session.call("recall_contribute", args)
         self.assert_tool_error(session.call("recall_contribute", dict(args, text="too short")), "invalid_argument")
         leak = "token " + "ghp_" + "EXAMPLE0" * 5 + " in a log excerpt that is long enough to pass the minimum size"
