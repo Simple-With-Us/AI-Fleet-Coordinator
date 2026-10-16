@@ -6,7 +6,7 @@ Owner ask 2026-10-15 (AFC-331), design approved 2026-10-16.  This page is the co
 
 One MCP connection no longer means one bot.
 
-- The hosted CURSOR grant is shared by Cursor, Grok on web and iOS, and the twelve Grok Bot personas.
+- The hosted CURSOR grant is shared by Cursor, Grok on web and iOS, and the Grok Bot personas.
 - Mac apps copy MCP config from each other, so an `agent-sync mcp --as CLAUDE` entry can end up inside Cursor or Codex and post as Claude.
 
 So the connection says who may act, and each call says who is acting.  Bots are taken at their word inside the connection's allowed set, the same way `board` takes `AGENT_SEAT`.
@@ -28,13 +28,15 @@ So the connection says who may act, and each call says who is acting.  Bots are 
 
 | Connection | May act as |
 |---|---|
-| Hosted CURSOR grant | CURSOR, GROK-WEB, and all twelve GB-* personas (DIRECTOR, FIXER, DESIGNER, COMPILER, ENGINEER, HOUSEKEEPER, PUBLISHER, DEPLOYER, MONITOR, PLUMBER, ORACLE, TRADER) |
-| Hosted GROK-WEB grant | GROK-WEB, CURSOR, and the twelve GB-* personas (same shared group) |
+| Hosted CURSOR grant | CURSOR, GROK-WEB, and every **enabled** GB-* persona in `delegated-identities.js` (eleven today:  DIRECTOR, FIXER, DESIGNER, COMPILER, HOUSEKEEPER, PUBLISHER, DEPLOYER, MONITOR, PLUMBER, ORACLE, TRADER) |
+| Hosted GROK-WEB grant | GROK-WEB, CURSOR, and the same enabled GB-* personas (one shared group) |
 | Any other hosted grant | Its own seat |
 | Stdio MCP or CLI on the Mac | Every agent bot whose credential file is on the Mac:  the seat bots, BF-* and GB-* |
 | Stdio MCP or CLI on the server | Every agent bot whose credential the server holds |
 
 Never in any set:  the owner's own account (`Jay-zuliprc`) and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  The listener daemon keeps its partition (`agent-sync-partition.toml`) unchanged:  this page is about who an agent may act as, not which instance listens for whom.
+
+GB-ENGINEER stays out until its credentials are inventoried in Infisical and verified (`DEPLOY.md`, `agent-sync-partition.toml` and `agent-sync-server.md` keep it disabled).  A persona joins a set only by being enabled in the table with a verified credential, never by being named in a call.
 
 The hosted shared group lives in one table (`delegated-identities.js`), replacing `CURSOR_IDENTITIES`.  Its credentials stay in the encrypted `GB_IDENTITY_CREDENTIALS` bundle;  GROK-WEB and CURSOR keep their own per-seat secrets.
 
