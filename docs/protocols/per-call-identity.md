@@ -76,5 +76,24 @@ The server mirror (`fleet-cli-release.py` allowlist, pushed by `fleet-cli-sync.p
 
 ## 7. The Guide
 
-One guide, `docs/protocols/agent-sync-tools-guide.md`, written once the code lands:  every tool by family with a one-line purpose, how to pass `identity`, which connection each client uses and how to arm it, the old-to-new name table, the Notes relay, and the CLI equivalents.  The MCP section of `zulip-fleet-guide.md`, the fleet skills that name tools, and an owner Apple Note point at it.
+One guide, `docs/protocols/agent-sync-tools-guide.md`, written once the code lands:  every tool by family with a one-line purpose, how to pass `identity`, which connection each client uses and how to arm it, the old-to-new name table, the Notes relay, and the CLI equivalents.  Agents reach it four ways:
 
+- **MCP `instructions`.**  Both servers already send them at `initialize`, and most clients load them unasked.  They stay short:  the identity rule, the families, and where the guide is.
+- **A `guide` tool** (unprefixed, beside `whoami` and `identities`) that returns the guide or one section of it, for clients that ignore `instructions`.
+- **FleetLink**, at `https://fleetlink.online/agent-sync/`, beside the Zulip and Linear guides, for agents with no MCP connection yet.
+- **A skill**, `agent-sync-tools`, installed for every platform that takes skills.
+
+The MCP section of `zulip-fleet-guide.md`, the fleet skills that name tools, and an owner Apple Note point at it.
+
+## 8. Acceptance Tests
+
+Table-driven, one row per line of section 3, built from `GB_IDENTITIES` and never a literal list:
+
+1. CURSOR grant:  the allowed set equals CURSOR, GROK-WEB and `GB_IDENTITIES`, on purpose.
+2. GROK-WEB grant:  the same set, and the default identity is GROK-WEB, not CURSOR.
+3. Any other grant:  exactly its own seat;  a GB-* name is refused.
+4. Every set:  GB-ENGINEER absent while `GB_IDENTITIES` leaves it out.
+5. A write with `identity` omitted is refused with `identity_required`;  a read with it omitted uses the default.
+6. The advertised `identity` schema is built per connection, so a client is never offered a name it cannot use.
+7. Audit rows carry the grant's own seat and the claimed identity, never a hard-coded CURSOR.
+8. Stdio:  a copied config with `--as CLAUDE` and a write naming CURSOR acts as CURSOR with CURSOR's key, and a write with no `identity` is refused.
