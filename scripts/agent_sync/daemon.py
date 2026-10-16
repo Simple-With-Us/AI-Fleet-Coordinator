@@ -538,11 +538,6 @@ class Daemon:
         # channel from that id has spooled everything after it.
         self.notes_relay_retry: dict[tuple[str, int], Any] = {}
         self.notes_relay_overflow: dict[str, tuple[Any, int]] = {}
-        # While a deferred handover is pending (the old consumer is stopped but its worker is still busy), a relay
-        # message the new seat's runner sees is refused by the old consumer's wants() yet advances that cursor.  The
-        # lowest such id is kept, and when the replacement starts it is made an overflow marker, so the in-session
-        # backfill picks those requests up.
-        self.notes_relay_gap_low: int | None = None
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {"reap": -1e9, "status": -1e9, "grace": -1e9, "prune": -1e9, "held": -1e9, "relay_retry": -1e9}
@@ -759,7 +754,6 @@ class Daemon:
         cursors for.  Drop the retry map and the overflow markers and release every hold (set_hold), so the cursors
         catch up to the ids already routed.  The messages stay in Zulip:  a later relay start recovers them only if a
         backfill reaches them.  Logs ids only."""
-        self.notes_relay_gap_low = None
         if not (self.notes_relay_retry or self.notes_relay_overflow):
             return
         holders: dict[str, Any] = {}
@@ -909,14 +903,6 @@ class Daemon:
         reader = self.seats.get(cfg.notes_relay_seat)
         if reader is not None and reader.connected:
             self.notes_relay.resume(reader)
-        gap = self.notes_relay_gap_low
-        self.notes_relay_gap_low = None
-        if gap is not None and reader is not None:
-            # Requests the new seat's runner saw while the old consumer was still finishing were not taken by anyone:
-            # make the first of them an overflow marker, so the in-session backfill offers them from there.
-            self.notes_relay_overflow[reader.seat] = (reader, min(gap, self.notes_relay_overflow.get(reader.seat, (None, gap))[1]))
-            reader.hold_at_or_below(gap)
-            self.log.write("notes-relay-handover-gap", seat=reader.seat, from_id=gap)
 
     def resume_notes_relay(self, runner: "SeatRunner") -> None:
         """The relay seat connected:  hand its runner to the consumer and drain any spooled requests."""
@@ -1347,10 +1333,16 @@ class Daemon:
             # inbox row, no wake from an @-mention inside an envelope) and only the configured seat acts on it.
             # The acting seat advances its cursor only once the request is on disk (Consumer.offer), so a
             # request that could not be kept is retried from the backfill and never silently lost.
-            if relay.stopped.is_set() and not relay.wants(runner, message):
-                with self.notes_relay_lock:  # a handover is pending:  nobody takes this one, so note where the gap begins
-                    low = self.notes_relay_gap_low
-                    self.notes_relay_gap_low = message_id if low is None else min(low, message_id)
+            if (relay.stopped.is_set() and runner.seat == self.config.notes_relay_seat
+                    and not relay.wants(runner, message)):
+                # A handover to this seat is pending and nobody takes this request.  Hold this runner's cursor below
+                # it now (so even a crash before the handover cannot persist a cursor past it) and mark it as an
+                # overflow start, which the in-session backfill reads once the replacement runs, and which an
+                # abandoned relay releases.
+                with self.notes_relay_lock:
+                    marked = self.notes_relay_overflow.get(runner.seat)
+                    self.notes_relay_overflow[runner.seat] = (runner, message_id if marked is None else min(marked[1], message_id))
+                    runner.hold_at_or_below(message_id)
             if relay.wants(runner, message):
                 offered = relay.offer(runner, message)
                 if offered:

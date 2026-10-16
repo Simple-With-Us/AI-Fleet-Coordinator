@@ -761,6 +761,31 @@ class RefusalReplayTests(RelayHarness):
         self.assertTrue(self.client.replies[1].startswith("notes-relay refused exact-request-1:"))
         self.assertEqual(N.refusal_label("exact-request-1"), "notes-relay refused exact-request-1:")
 
+    def test_a_token_shaped_identity_reaches_neither_the_log_nor_the_reply_nor_the_stored_reason(self):
+        token = "ghp_" + "EXAMPLE0" * 5
+        env = N.render_message(N.make_envelope("create", TITLE, "x", {}, "token-request-01", token))
+        message = self.message(SENDERS["CURSOR"], env)
+        self.assertEqual(self.process(message), "refused")
+        seen = json.dumps(self.logs, default=str) + "\n".join(self.client.replies)
+        self.assertNotIn(token, seen)
+        self.assertNotIn(token[:12], seen)
+        self.assertIn(("notes-relay-refused", {"id": message["id"], "code": "identity_mismatch"}), self.logs)
+        self.assertIn("withheld", self.client.replies[-1])
+        stored = (Path(self.state) / "notes-relay" / "processed.json")
+        if stored.exists():
+            self.assertNotIn(token, stored.read_text())
+
+    def test_every_validation_refusal_logs_a_fixed_code_and_nothing_the_sender_typed(self):
+        env = N.render_message(N.make_envelope("create", TITLE, "x", {}, "code-request-001", "CLAUDE"))
+        cases = {"sender_owner": self.message(OWNER_ID, env), "sender_identity": self.message(15, env),
+                 "identity_mismatch": self.request("CURSOR", "[AFC, Cursor] t", rid="code-request-002", claimed="CLAUDE"),
+                 "title": self.request("CURSOR", "[AFC, Claude] t", rid="code-request-003"),
+                 "envelope": self.message(SENDERS["CURSOR"], "no fence here")}
+        for code, message in cases.items():
+            with self.subTest(code):
+                self.assertEqual(self.process(message), "refused")
+                self.assertIn(("notes-relay-refused", {"id": message["id"], "code": code}), self.logs)
+
     def test_a_refusal_without_a_request_id_is_keyed_by_its_message(self):
         first = self.message(SENDERS["CURSOR"], "hello there")
         second = self.message(SENDERS["CURSOR"], "hello again")

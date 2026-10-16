@@ -50,6 +50,7 @@ from typing import Any, Callable, Mapping
 from . import identities as X
 from . import identity as I
 from . import notes as N
+from . import secretscan
 from . import wakes as W
 from . import zulip as Z
 
@@ -90,28 +91,36 @@ def _fsync_dir(path: str) -> None:
         os.close(fd)
 
 class Refusal(Exception):
-    """A request that must not run.  The text is the reason a sender reads in the reply.  `request_id` is the
-    envelope's, when the message held one that parsed:  the reply is labelled with it, which is what
-    notes_status searches for."""
+    """A request that must not run.  The text is the reason a sender reads in the reply.  `code` is a fixed category
+    (the only part that is logged:  the text can quote what the sender typed).  `request_id` is the envelope's, when
+    the message held one that parsed:  the reply is labelled with it, which is what notes_status searches for."""
 
-    def __init__(self, text: str, request_id: str | None = None) -> None:
+    def __init__(self, text: str, request_id: str | None = None, code: str = "invalid") -> None:
         super().__init__(text)
         self.request_id = request_id
+        self.code = code
+
+
+def safe_reason(reason: str) -> str:
+    """The reason as it may be stored and replied:  text that looks like it holds a secret is withheld, since the
+    reasons can quote what the sender typed (an identity, a title)."""
+    found = secretscan.scan(reason)
+    return "(withheld:  the reason quoted text that looks like %s)" % found if found else reason
 
 
 def sender_identity(person: Mapping[str, Any] | None, owner_user_id: int = 0) -> str:
     """The fleet agent identity of a Zulip user, or Refusal.  `person` is the realm user record (is_bot,
     email, user_id)."""
     if not person:
-        raise Refusal("the sender is not a user this listener knows")
+        raise Refusal("the sender is not a user this listener knows", code="sender_unknown")
     if owner_user_id and person.get("user_id") == owner_user_id:
-        raise Refusal("the owner's own account does not send notes requests;  write the note directly")
+        raise Refusal("the owner's own account does not send notes requests;  write the note directly", code="sender_owner")
     if not person.get("is_bot"):
-        raise Refusal("only a fleet agent bot may send a notes request")
+        raise Refusal("only a fleet agent bot may send a notes request", code="sender_not_bot")
     tag = I.seat_tag_for(person)
     problem = X.agent_identity_problem(tag)
     if problem:
-        raise Refusal("the sender is not a fleet agent identity:  %s" % problem[:120])
+        raise Refusal("the sender is not a fleet agent identity:  %s" % problem[:120], code="sender_identity")
     return tag
 
 
@@ -128,14 +137,15 @@ def validate(message: Mapping[str, Any], person: Mapping[str, Any] | None, *, ow
     try:
         identity = sender_identity(person, owner_user_id)
     except Refusal as exc:
-        raise Refusal(str(exc), request_id) from None
+        raise Refusal(str(exc), request_id, exc.code) from None
     if parsed is None:
-        raise Refusal("not a notes request:  %s" % parse_error) from None
+        raise Refusal("not a notes request:  %s" % parse_error, code="envelope") from None
     if parsed["identity"] != identity:
-        raise Refusal("envelope identity %s is not the sender, %s" % (parsed["identity"][:40], identity), request_id)
+        raise Refusal("envelope identity %s is not the sender, %s" % (parsed["identity"][:40], identity), request_id,
+                      "identity_mismatch")
     problem = N.title_problem(parsed["title"], identity, registry_path=registry_path)
     if problem:
-        raise Refusal(problem, request_id)
+        raise Refusal(problem, request_id, "title")
     return identity, parsed
 
 
@@ -456,7 +466,7 @@ class Consumer:
             identity, envelope = validate(message, person, owner_user_id=int(self.owner_user_id() or 0),
                                           registry_path=self.registry_path)
         except Refusal as exc:
-            self.log("notes-relay-refused", id=message_id, reason=str(exc)[:120])
+            self.log("notes-relay-refused", id=message_id, code=exc.code)  # a category only:  the text quotes the sender
             self._answer(runner, message_id, exc.request_id, refused=str(exc))
             return "refused"
         request_id = envelope["request_id"]
@@ -517,6 +527,7 @@ class Consumer:
 
     def _refuse(self, runner: Any, message_id: int, identity: str, request_id: str, reason: str, event: str,
                 code: str, kind: str = "refused") -> str:
+        reason = safe_reason(reason)
         self.processed.finish(identity, request_id, kind + "_pending", reason)
         self.log(event, id=message_id, code=code)
         self._answer(runner, message_id, request_id, refused=reason)
@@ -546,7 +557,7 @@ class Consumer:
         """Cross mark, then one reply with the reason.  Safe to replay after a crash at any point:  the reaction
         is idempotent and the reply is skipped when this bot already posted one with the same label."""
         self._react(runner, message_id, N.REFUSED_EMOJI)
-        reason = W.neutralize_mentions(" ".join(refused.split())[:REASON_LIMIT])
+        reason = W.neutralize_mentions(safe_reason(" ".join(refused.split())[:REASON_LIMIT]))
         label = request_id or "(message %d)" % message_id
         prefix = N.refusal_label(label)
         try:
