@@ -248,6 +248,36 @@ class AttachmentTests(RelayHarness):
         self.assertEqual(fetched, ["/user_uploads/2/ab/9/note.md"])
         self.assertEqual(self.calls[0]["input"], data)
 
+    def test_the_consumer_scans_an_inline_and_an_uploaded_body_and_refuses_a_secret_without_quoting_it(self):
+        token = "ghp_" + "EXAMPLE0" * 5
+        body = "notes about a deploy.  the token is %s and it must not be written." % token
+        inline = self.request("CURSOR", "[AFC, Cursor] inline", rid="secret-inline-01", markdown=body)
+        data = body.encode()
+        ref = N.with_upload(N.make_envelope("create", "[AFC, Cursor] big", "", {}, "secret-upload-01", "CURSOR"),
+                            url="/user_uploads/2/ab/9/note.md", data=data)
+        uploaded = self.message(SENDERS["CURSOR"], N.render_message(ref))
+        self.consumer._download = lambda runner, path: data
+        for name, message, code in (("inline", inline, "secret"), ("uploaded", uploaded, "secret")):
+            with self.subTest(name):
+                self.assertEqual(self.process(message), "refused")
+                self.assertIn((message["id"], "cross_mark"), self.client.reactions)
+                reply = self.client.replies[-1]
+                self.assertIn("looked like it contains a secret", reply)
+                self.assertIn("markdown", reply)
+                self.assertNotIn(token, reply)
+                self.assertNotIn(token[:8], reply)
+                self.assertIn(("notes-relay-failed", {"id": message["id"], "code": code}), self.logs)
+        self.assertEqual(self.calls, [], "nothing was written")
+        self.assertNotIn(token, json.dumps(self.logs, default=str))
+
+    def test_a_secret_in_the_summary_is_refused_too(self):
+        token = "ghp_" + "EXAMPLE0" * 5
+        message = self.request("CURSOR", "[AFC, Cursor] summary", rid="secret-summary-01", flags={"summary": "see " + token})
+        self.assertEqual(self.process(message), "refused")
+        self.assertIn("summary", self.client.replies[-1])
+        self.assertNotIn(token, self.client.replies[-1])
+        self.assertEqual(self.calls, [])
+
     def test_a_tampered_attachment_is_refused(self):
         data = b"original body"
         ref = N.with_upload(N.make_envelope("create", "[AFC, Cursor] big", "", {}, "tamper-request-1", "CURSOR"),

@@ -505,6 +505,12 @@ class Consumer:
             except Z.NetworkError:
                 self.processed.forget(identity, request_id)  # nothing ran:  the retry starts clean
                 raise
+            # A bot can post a well-formed envelope straight to Zulip, or attach a body, without the tool-side scan:  the
+            # consumer scans what it is about to write, after the upload is resolved.  A hit is a refusal that names
+            # the field and never quotes any of it.
+            for field, text in N.text_fields(full).items():
+                if secretscan.scan(text):
+                    raise N.NotesError("secret", "the %s looked like it contains a secret;  nothing was written" % field)
             kwargs = {"runner": self.runner} if self.runner is not None else {}
             N.run_direct(full, script, env=self.env, **kwargs)
         except N.NotesError as exc:

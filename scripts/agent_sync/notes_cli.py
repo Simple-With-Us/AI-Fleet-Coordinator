@@ -13,6 +13,7 @@ Python 3.11+, standard library only.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -136,12 +137,38 @@ def _read_body(rt: Any, args: argparse.Namespace) -> tuple[str, bool]:
 
 
 def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
-    from . import cli as CLI
+    """`notes create|update|pin|unpin|status`.  A write is audited exactly once, on every exit, in the `finally`
+    below (identity_log, outcome only, never the body):  the branches only record in `audit` what happened.  A status
+    check is a read and leaves no row."""
     from . import identity_log as AUDIT
+
+    audit: dict[str, Any] = {}
+    write = args.notes_action != "status"
+    try:
+        return _cmd_notes(rt, args, audit)
+    except (KeyboardInterrupt, SystemExit):
+        if audit.get("started") and "outcome" not in audit:
+            audit["outcome"] = "interrupted"  # the write may have landed
+        raise
+    except Exception as exc:
+        if audit.get("started") and "outcome" not in audit:
+            audit["outcome"] = "outcome_unknown:%s" % type(exc).__name__  # the type name only
+        raise
+    finally:
+        if write and audit.get("outcome") and audit.get("identity"):
+            with contextlib.suppress(Exception):  # an audit failure never changes the command's result
+                AUDIT.append(rt.env, rt.home, transport="cli", default_identity=audit["identity"], identity=audit["identity"],
+                             tool="notes " + args.notes_action, outcome=audit["outcome"],
+                             message_id=audit.get("message_id") if isinstance(audit.get("message_id"), int) else None)
+
+
+def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
+    from . import cli as CLI
     from .mcp import tools as T
 
     action = args.notes_action
     identity = _identity(rt, args)
+    audit["identity"] = identity
     home = Path(rt.home) if rt.home is not None else Path(rt.env.get("HOME") or os.path.expanduser("~"))
     use_json = bool(getattr(args, "json", False))
     if action == "status":
@@ -165,6 +192,7 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
     if action != "status" and not args.relay:
         script = N.direct_available(rt.env, home)
         if script is not None:
+            audit["started"] = True
             try:
                 envelope = N.make_envelope(action, args.title, call_args.get("markdown", ""),
                                            T.notes_flags(call_args, action), call_args.get("request_id") or N.new_request_id(),
@@ -189,18 +217,9 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
             except N.NotesError as exc:
                 # A failed write is audited too, by its code only (never the body):  an outcome_unknown timeout
                 # is exactly the row an owner looks for.
-                AUDIT.append(rt.env, rt.home, transport="cli", default_identity=identity, identity=identity,
-                             tool="notes " + action, outcome=exc.code)
+                audit["outcome"] = exc.code
                 raise _fail(exc) from None
-            except BaseException as exc:
-                # Ctrl-C or SIGTERM (or a crash) during the write:  the idempotency row is already unknown, so the
-                # audit says so too, by outcome only.  Then the interrupt goes on.
-                AUDIT.append(rt.env, rt.home, transport="cli", default_identity=identity, identity=identity,
-                             tool="notes " + action,
-                             outcome="interrupted" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else "outcome_unknown")
-                raise
-            AUDIT.append(rt.env, rt.home, transport="cli", default_identity=identity, identity=identity,
-                         tool="notes " + action, outcome="ok")
+            audit["outcome"] = "ok"
             _print(rt, result, use_json)
             return 0
     # Relay (and status):  the MCP tool's own code over this identity's verified bot.
@@ -210,6 +229,7 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
                     notes_consumer=N.relay_consumer(C.load(str(state_root(rt.env, home))).notes_relay_seat)[0],
                     sleep=rt.sleep, log=lambda text: None)
     saved = (rt.stdout, rt.stderr, rt.stdin)  # the tool layer swaps the runtime's streams for its own buffers
+    audit["started"] = True  # from here a write may be in flight
     try:
         result = tools.call(tool_name, call_args)
     finally:
@@ -217,17 +237,13 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
     if result.get("isError"):
         error = json.loads(result["content"][0]["text"])
         message = str(error.get("message") or "the request failed")
-        if action != "status":  # a status check is a read:  it leaves no audit row, whether it succeeds or fails
-            AUDIT.append(rt.env, rt.home, transport="cli", default_identity=identity, identity=identity,
-                         tool="notes " + action, outcome=str(error.get("code")))
+        audit["outcome"] = str(error.get("code"))
         if error.get("code") == "invalid_argument":
             raise Z.UsageError(message)
         raise Z.ApiError(message)
     info = result.get("structuredContent") or {}
-    if action != "status":
-        AUDIT.append(rt.env, rt.home, transport="cli", default_identity=identity, identity=identity,
-                     tool="notes " + action, outcome="ok",
-                     message_id=info.get("message_id") if isinstance(info.get("message_id"), int) else None)
+    audit["outcome"] = "ok"
+    audit["message_id"] = info.get("message_id")
     _print(rt, info, use_json)
     return 0
 

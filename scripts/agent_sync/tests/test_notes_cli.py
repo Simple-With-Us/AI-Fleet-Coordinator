@@ -99,6 +99,35 @@ class NotesCliTests(Harness):
         self.assertNotEqual(retry.code, 0)
         self.assertEqual(run.calls, [], "the interrupted write may have landed:  its id is refused")
 
+    def test_an_interrupted_relay_write_is_audited_once_and_a_failed_unexpectedly_one_names_only_its_type(self):
+        from agent_sync.mcp import tools as T
+
+        def interrupted(self, name, arguments, **kwargs):
+            raise KeyboardInterrupt()
+
+        def broken(self, name, arguments, **kwargs):
+            raise UnicodeEncodeError("ascii", "caf\u00e9 secret-looking", 3, 4, "ordinal not in range")
+        for label, replacement, code, outcome in (("interrupted", interrupted, 130, "interrupted"),
+                                                  ("unexpected", broken, 1, "outcome_unknown:UnicodeEncodeError")):
+            with self.subTest(label):
+                before = len(self.audit_rows())
+                with mock.patch.object(T.Tools, "call", replacement):
+                    result = self.run_cli("notes", "create", TITLE, "--relay", "--request-id", "relay-%s-001" % label, stdin="body")
+                self.assertEqual(result.code, code, result.err)
+                rows = self.audit_rows()[before:]
+                self.assertEqual([(r["tool"], r["outcome"]) for r in rows], [("notes create", outcome)], "exactly one row")
+                self.assertNotIn("secret-looking", json.dumps(rows))
+
+    def test_a_status_check_that_is_interrupted_leaves_no_audit_row(self):
+        from agent_sync.mcp import tools as T
+
+        def interrupted(self, name, arguments, **kwargs):
+            raise KeyboardInterrupt()
+        before = len(self.audit_rows())
+        with mock.patch.object(T.Tools, "call", interrupted):
+            self.assertEqual(self.run_cli("notes", "status", "nobody-asked-02").code, 130)
+        self.assertEqual(len(self.audit_rows()), before)
+
     def test_an_oversized_body_is_a_usage_error_not_cut_short(self):
         run = FakeRun()
         a, b = self.direct(run)
