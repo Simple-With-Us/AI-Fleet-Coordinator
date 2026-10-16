@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,10 +38,24 @@ RUNTIME = HOME / ".local/share/fleet-cli"
 CODE_ROOTS = [Path("/root/Code"), HOME / "Code"]
 REPOS = ("AI-Fleet-Coordinator", "FleetLink")
 COMMANDS = ("agent-sync", "board", "fleet-share")
-# What a fleet-cli release ships (scripts/fleet-cli-release.py EXACT and the
-# agent_sync package).  A main commit that touches none of these needs no push.
+AFC_REMOTE_URL = "https://github.com/Simple-With-Us/AI-Fleet-Coordinator"
+# Coarse git pathspecs that bound the diff;  is_shipped() then applies the exact rules.
 SHIPPED = ("scripts/agent-sync", "scripts/agent_sync/", "scripts/linear-board/", "fleet-apps.json",
            "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py")
+# What a fleet-cli release ships:  mirrors EXACT and allowed_path in scripts/fleet-cli-release.py, so a
+# commit that changes only tests or docs under those folders needs no push and is not drift.
+SHIPPED_EXACT = frozenset({
+    "scripts/agent-sync", "scripts/linear-board/board", "scripts/linear-board/board-ids.txt",
+    "fleet-apps.json", "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
+    "scripts/agent_sync/mcp/tools.json", "scripts/agent_sync/mcp/fixtures.jsonl",
+    "scripts/agent_sync/wake/wake-schema.json",
+})
+
+
+def is_shipped(path: str) -> bool:
+    return path in SHIPPED_EXACT or bool(
+        re.fullmatch(r"scripts/agent_sync/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
+        or path in ("scripts/agent_sync/__init__.py", "scripts/agent_sync/mcp/__init__.py"))
 STATE = HOME / ".local/state/fleet-tools-doctor.json"
 CATALOGS = (
     ("scripts/agent_sync/mcp/tools.json", True),
@@ -69,9 +84,25 @@ class Report:
         return any(r["status"] == "FAIL" for r in self.rows)
 
 
+def git_try(repo: Path, *args: str, runner: Callable = subprocess.run) -> str | None:
+    """Stdout of a git command, or None when it fails (so a failure is never read as an empty answer)."""
+    try:
+        out = runner(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
 def git(repo: Path, *args: str, runner: Callable = subprocess.run) -> str:
-    out = runner(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60, check=False)
-    return out.stdout.strip() if out.returncode == 0 else ""
+    return git_try(repo, *args, runner=runner) or ""
+
+
+def remote_ls_remote(url: str, runner: Callable = subprocess.run) -> str:
+    try:
+        out = runner(["git", "ls-remote", url, "refs/heads/main"], capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.split()[0] if out.returncode == 0 and out.stdout.split() else ""
 
 
 def remote_main(repo: Path, network: bool, runner: Callable = subprocess.run) -> str:
@@ -97,18 +128,23 @@ def check_runtime(report: Report, network: bool, runner: Callable = subprocess.r
         return
     status = json.loads(status_file.read_text())
     commit = str(status.get("source_commit", ""))
-    main = remote_main(afc, network, runner) if afc else ""
+    # A host with no checkout (the Hetzner server may have none) asks GitHub directly.
+    main = remote_main(afc, network, runner) if afc else (remote_ls_remote(AFC_REMOTE_URL, runner) if network else "")
     if not main:
         report.add("runtime", "WARN", f"release {commit[:7]} ({status.get('status')}); origin/main unknown")
     elif commit == main:
         report.add("runtime", "OK", f"release built from origin/main {main[:7]}")
     else:
-        changed = git(afc, "diff", "--name-only", commit, main, "--", *SHIPPED, runner=runner) if afc else "?"
+        raw = git_try(afc, "diff", "--name-only", commit, main, "--", *SHIPPED, runner=runner) if afc else None
+        if raw is None:
+            # No checkout, or a commit not fetched here:  the doctor cannot tell, so it says so.
+            report.add("runtime", "WARN", f"release built from {commit[:7]}, origin/main {main[:7]}:  cannot compare (no checkout, or a commit not fetched here)")
+            return
+        changed = [line for line in raw.splitlines() if is_shipped(line)]
         if not changed:
             report.add("runtime", "OK", f"release built from {commit[:7]};  no shipped file changed up to origin/main {main[:7]}")
         else:
-            count = len(changed.splitlines()) if changed != "?" else "?"
-            report.add("runtime", "FAIL", f"release built from {commit[:7]};  {count} shipped files changed up to origin/main {main[:7]}:  the Mac's fleet-cli-sync has not pushed them")
+            report.add("runtime", "FAIL", f"release built from {commit[:7]};  {len(changed)} shipped files changed up to origin/main {main[:7]}:  the Mac's fleet-cli-sync has not pushed them")
 
 
 def check_checkouts(report: Report, network: bool, runner: Callable = subprocess.run) -> None:
@@ -154,11 +190,27 @@ def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
     report.add(f"seat:{seat}", "OK" if not missing else "FAIL", "all credentials present" if not missing else "missing " + ", ".join(missing))
 
 
+def codex_mcp_names(text: str) -> list[str]:
+    """Server names in a Codex config.toml:  quoted keys, sub-tables and inline tables all count."""
+    try:
+        import tomllib
+    except ImportError:  # Python < 3.11:  fall back to the table headers
+        names: list[str] = []
+        for line in text.splitlines():
+            m = re.match(r'\s*\[mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_-]+))', line)
+            if m and (m.group(1) or m.group(2)) not in names:
+                names.append(m.group(1) or m.group(2))
+        return names
+    try:
+        return list((tomllib.loads(text).get("mcp_servers") or {}).keys())
+    except tomllib.TOMLDecodeError:
+        return []
+
+
 def check_mcp(report: Report) -> None:
     codex = HOME / ".codex/config.toml"
     if codex.exists():
-        text = codex.read_text()
-        names = [line.strip()[len("[mcp_servers."):-1] for line in text.splitlines() if line.strip().startswith("[mcp_servers.")]
+        names = codex_mcp_names(codex.read_text())
         lacking = [n for n in ("agent-sync", "fleetlink") if n not in names]
         report.add("mcp:codex", "OK" if not lacking else "WARN", "registered: " + ", ".join(names) + (f";  missing {', '.join(lacking)}" if lacking else ""))
     claude = HOME / ".claude.json"
@@ -182,7 +234,10 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
         body = f"fleet-tools-doctor on {host}:  {len(failing)} failing check{'s' if len(failing) != 1 else ''}.\n" + "\n".join(f"- {line}" for line in failing)
     else:
         body = f"fleet-tools-doctor on {host}:  every check passes again."
-    result = runner(["agent-sync", "post", "--channel", "agent-sync", "--topic", "fleet tools doctor", body], capture_output=True, text=True, timeout=60, check=False)
+    try:
+        result = runner(["agent-sync", "post", "--channel", "agent-sync", "--topic", "fleet tools doctor", body], capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):  # agent-sync missing from PATH (check_commands reports it) or hung
+        return False
     if result.returncode == 0:
         STATE.parent.mkdir(parents=True, exist_ok=True)
         STATE.write_text(json.dumps({"failing": failing}))
@@ -195,7 +250,7 @@ def run(argv: list[str] | None = None, env: dict[str, str] | None = None) -> tup
     parser.add_argument("--seats", default="", help="comma-separated seats whose credentials this host must hold")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--no-network", action="store_true", help="compare with the local origin/main refs only")
-    parser.add_argument("--post", action="store_true", help="when the set of failing checks changes, post it with agent-sync (AGENT_SEAT or --as in the environment) to #agent-sync, topic 'fleet tools doctor'")
+    parser.add_argument("--post", action="store_true", help="when the set of failing checks changes, post it with agent-sync to #agent-sync, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as agent-sync resolves it)")
     args = parser.parse_args(argv)
     env = dict(os.environ if env is None else env)
     report = Report()

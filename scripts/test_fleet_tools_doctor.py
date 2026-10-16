@@ -89,5 +89,48 @@ class SeatAndMcpTests(unittest.TestCase):
             self.assertIn("2 shipped files changed", report.rows[0]["detail"])
 
 
+    def test_runtime_ignores_tests_and_docs_under_shipped_folders(self):
+        self.touch("rt/status.json", json.dumps({"source_commit": "a" * 40, "status": "activated"}))
+        def runner(argv, **kw):
+            if "diff" in argv:
+                return subprocess.CompletedProcess(argv, 0, "scripts/agent_sync/tests/test_x.py\nscripts/linear-board/README.md", "")
+            return subprocess.CompletedProcess(argv, 0, "b" * 40 + "\trefs/heads/main", "")
+        with mock.patch.object(doctor, "find_repo", return_value=self.home):
+            report = doctor.Report()
+            doctor.check_runtime(report, True, runner)
+            self.assertEqual(report.rows[0]["status"], "OK")
+
+    def test_runtime_warns_when_the_diff_itself_fails(self):
+        self.touch("rt/status.json", json.dumps({"source_commit": "a" * 40, "status": "activated"}))
+        def runner(argv, **kw):
+            if "diff" in argv:
+                return subprocess.CompletedProcess(argv, 128, "", "bad object")
+            return subprocess.CompletedProcess(argv, 0, "b" * 40 + "\trefs/heads/main", "")
+        with mock.patch.object(doctor, "find_repo", return_value=self.home):
+            report = doctor.Report()
+            doctor.check_runtime(report, True, runner)
+            self.assertEqual(report.rows[0]["status"], "WARN")
+
+    def test_runtime_asks_github_when_there_is_no_checkout(self):
+        self.touch("rt/status.json", json.dumps({"source_commit": "a" * 40, "status": "activated"}))
+        def runner(argv, **kw):
+            return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\trefs/heads/main", "")
+        with mock.patch.object(doctor, "find_repo", return_value=None):
+            report = doctor.Report()
+            doctor.check_runtime(report, True, runner)
+            self.assertEqual(report.rows[0]["status"], "OK")
+
+    def test_post_survives_a_missing_agent_sync(self):
+        def runner(argv, **kw):
+            raise FileNotFoundError("agent-sync")
+        report = doctor.Report()
+        report.add("seat:CLAUDE", "FAIL", "x")
+        self.assertFalse(doctor.post_changes(report, runner))
+
+    def test_codex_toml_quoted_and_subtables(self):
+        names = doctor.codex_mcp_names('[mcp_servers."agent-sync"]\ncommand = "x"\n[mcp_servers.fleetlink.env]\nA = "b"\n')
+        self.assertEqual(sorted(names), ["agent-sync", "fleetlink"])
+
+
 if __name__ == "__main__":
     unittest.main()
