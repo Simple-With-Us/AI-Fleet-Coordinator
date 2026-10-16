@@ -10,9 +10,19 @@ The deployment target is Linux with `/usr/bin/python3` version 3.11 or newer.  T
 
 The source is the published revision selected by the Mac managed checkout at `~/apps/lanes/_managed/fleet/agent-sync-runtime`.  The pusher requires the expected AI-Fleet-Coordinator origin, a clean tracked checkout, and a commit reachable from `origin/main`.  It reads Git blobs by object ID rather than archiving a working directory.  Git attributes cannot substitute different release content.
 
-The allowlist contains the board executable and its non-secret registry files, the Agent-Sync Python runtime and MCP schemas, the partition policy, and the release receiver.  Credentials, caches, user configuration, handbook mirrors, chat data, and untracked files are excluded.  Bundles have file-count and byte limits and a digest over every file's path, mode, and content hash.
+The allowlist contains the board executable and its non-secret registry files, the Agent-Sync Python runtime and MCP schemas, the partition policy, the release receiver, and the sources of the other three fleet tools (`recall`, `lane` and `fleet-mode`, below).  Credentials, caches, user configuration, handbook mirrors, chat data, and untracked files are excluded.  Bundles have file-count and byte limits and a digest over every file's path, mode, and content hash.
 
 The pusher uses the existing SSH authorization with batch mode and strict host-key checks.  It does not create keys, accept unknown host keys, or copy SSH configuration.  SSH failures are reported without relaying arbitrary remote output.  A failed server update does not block the Mac's existing runtime update.
+
+## The five fleet tools (AFC-331)
+
+The server carries the same five tools as the Mac, so a Claude or Codex thread there works the same way:  `agent-sync`, `board`, `recall`, `lane` and `fleet-mode`.  `apple-notes-coding.sh` is deliberately not mirrored;  a separate Notes relay handles the server.  What each shipped tool runs from, and what the server must provide:
+
+- **`recall`.**  `scripts/recall` plus ten `scripts/fleet_rag/` modules (its static import closure:  `__init__`, `contribute_guard`, `core`, `doctor`, `health`, `public_fallback`, `recall_api`, `scrub`, `search_log`, `telemetry`).  `recall eval` and `recall ingest` import `eval` and `ingest` lazily and are Mac and box jobs, so they are not shipped and fail with an ImportError on the server.  No credentials ship.  The server provides them, either `QDRANT_URL`, `QDRANT_API_KEY`, `TEI_URL`, `TEI_API_KEY` and `QDRANT_FLEET_COLLECTION` (and optionally `TEI_RERANK_URL` and `TEI_RERANK_API_KEY`) in the environment, or a chmod-600 handoff file named by `FLEET_RAG_HANDOFF_FILE` (default `~/.secrets/global-api-keys`) holding the Infisical machine identity.  `contribute` also wants `gitleaks` on PATH, or it marks the lesson `gitleaks-unavailable`.  Everything else is relative to `$HOME`.
+- **`lane`.**  The checkout's own bash shim, `scripts/fleet_lanes/bin/lane`, which finds `scripts/` from its location, plus `fleet_lanes/{__init__,lane,doctor,guard,layout}.py` and the already-shipped `fleet-apps.json`.  The canonical source is the repo shim, not the Mac's `~/apps/lane`:  that file is a generated copy (`fleet_lanes.install_tools`) that points at the stable tree `~/apps/lane-tools` and is meant for the Mac only.  `lane` takes every path from `$HOME`, so repositories under `/root/Code/<Repo>` and lanes under `/root/apps/lanes/<Repo>` work.  It needs `git`, and `gh` for `--review --pr`.
+- **`fleet-mode`.**  `scripts/fleet-mode` plus `docs/FLEET-MODE.md`, the canonical copy of the briefing.  The script reads the doc beside itself first and `~/apps/FLEET-MODE.md` second.  The Mac keeps a copy at `~/apps/FLEET-MODE.md`;  `fleet-tools-doctor.py` warns when it differs from the repo.
+
+The wrappers for these three are written only by `--install`.  An ordinary update leaves wrappers alone, so a server that was installed before AFC-331 gets the new code on the next push but not the commands:  run `python3 scripts/fleet-cli-sync.py --install` once from the published managed runtime.  It is idempotent (it rewrites nothing that already matches) and still refuses an unmanaged file at any of the wrapper paths.  `fleet-tools-doctor.py` reports a missing command or missing shipped file until then.
 
 ## Server layout
 
@@ -27,12 +37,15 @@ The pusher uses the existing SSH authorization with batch mode and strict host-k
 | `.local/bin/agent-sync` | Agent-Sync CLI wrapper |
 | `.local/bin/agent-sync-codex-mcp` | CODEX-scoped local MCP entry point |
 | `.local/bin/fleet-cli-release` | Status, pause, resume, and rollback control |
+| `.local/bin/recall` | Fleet-agents corpus search and contribute (`scripts/recall`) |
+| `.local/bin/lane` | Lane and PR-review checkout creator (`scripts/fleet_lanes/bin/lane`) |
+| `.local/bin/fleet-mode` | Prints the Fleet mode briefing (`scripts/fleet-mode`) |
 | `.codex/config.toml` | Existing configuration with one Agent-Sync MCP entry |
 | `.codex/backups/fleet-cli-*/config.toml` | Initial configuration backup |
 
 Initial installation refuses conflicting unmanaged wrappers or a different existing Agent-Sync MCP entry.  Existing configuration settings and file modes are preserved.  Subsequent code updates leave configuration and wrappers unchanged.
 
-Each release is checked for allowlisted paths, hashes, regular-file modes, and Python syntax, then exercised with an empty temporary home and no inherited credentials.  Board identity lookup must fail with the expected missing-credentials result.  A release becomes current only after those checks pass.  Wrappers resolve the selected release once, so an already running process continues using its original code.
+Each release is checked for allowlisted paths, hashes, regular-file modes, and Python syntax, then exercised with an empty temporary home and no inherited credentials.  Board identity lookup must fail with the expected missing-credentials result, and `recall --help`, `lane --help` and the `fleet-mode` block must each succeed.  A release becomes current only after those checks pass.  Wrappers resolve the selected release once, so an already running process continues using its original code.
 
 ## Operation and rollback
 
@@ -53,7 +66,7 @@ On Coolify, use:
 
 Rollback validates and activates the previous release and pauses future activation.  It does not restart active sessions.  Resume only after the source revision is suitable; otherwise a later push can reselect the newer published code.  Releases are retained to protect running processes.  The receiver stops at its retention limit rather than deleting potentially active code.
 
-For the first installation, no previous release exists.  Disable the Mac opt-in marker, restore the recorded initial configuration backup, and remove only the four managed wrapper files to return to the prior integration state.  Retain release directories until no process is using them.  Do not remove unrelated configuration, credentials, or caches.
+For the first installation, no previous release exists.  Disable the Mac opt-in marker, restore the recorded initial configuration backup, and remove only the seven managed wrapper files to return to the prior integration state.  Retain release directories until no process is using them.  Do not remove unrelated configuration, credentials, or caches.
 
 ## Authentication and seat boundaries
 
