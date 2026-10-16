@@ -116,6 +116,11 @@ EXIT_RATE_LIMIT = 5     # Linear rate limit outlasted LINEAR_BOARD_MAX_WAIT
 EXIT_AUTH = 6           # token refused, mint refused, or whoami check failed
 EXIT_WRITES_OFF = 7     # a write verb without LINEAR_BOARD_WRITES=1
 
+# Linear's client-credentials tokens last 30 days.  A cached token is re-minted
+# early once it is this old (and still used while that early mint fails), so a
+# seat never depends on minting during its token's last day.  Same value as
+# LINEAR_REMINT_AFTER_S in scripts/agent-sync-mcp/src/linear.js.
+REMINT_AFTER = 28 * 86400
 WRITE_VERBS = ("file", "claim", "status", "comment", "label")
 SESSION_ENV_VAR = "CLAUDE_CODE_SESSION_ID"
 
@@ -771,10 +776,21 @@ class Auth:
             now = time.time()
             tok = cache.get("access_token")
             same = cache.get("cred_fp") == fp
-            if tok and same and tok != failed and float(cache.get("expires_at") or 0) - now > 3600:
-                self.token, self.info = tok, cache
-                return tok
             minted = float(cache.get("minted_at") or 0)
+            if tok and same and tok != failed and float(cache.get("expires_at") or 0) - now > 3600:
+                if now - minted < REMINT_AFTER:
+                    self.token, self.info = tok, cache
+                    return tok
+                # Day 28 of a 30-day token:  mint the next one now, while this one still works,
+                # so a Linear outage on the last day cannot leave the seat without a token.
+                # A failed early mint keeps the cached token.
+                try:
+                    return self._store(fd, cache, ident, fp, now)
+                except (SystemExit, Exception) as e:
+                    warn(f"re-minting the {ident.label} token early failed ({type(e).__name__});  using the cached one, "
+                         f"which expires {central(float(cache.get('expires_at') or 0))}")
+                    self.token, self.info = tok, cache
+                    return tok
             if same and now - minted < 86400 and env("LINEAR_BOARD_REMINT") != "1":
                 why = f"Linear refused the cached {ident.label} token" if tok and tok == failed else \
                       f"the cached {ident.label} token is unusable"
@@ -782,21 +798,25 @@ class Auth:
                     "again (design section 2: at most one mint a day per host).  If the app was rotated, "
                     "update its credentials file; to force one mint, rerun with LINEAR_BOARD_REMINT=1.",
                     EXIT_AUTH)
-            new = self._mint(ident)
-            cache = {
-                "access_token": new["access_token"],
-                "token_type": new.get("token_type") or "Bearer",
-                "scope": new.get("scope") or SCOPE,
-                "minted_at": now,
-                "expires_at": now + float(new.get("expires_in") or 30 * 86400),
-                "mint_count": int(cache.get("mint_count") or 0) + 1,
-                "cred_fp": fp,
-            }
-            _write_cache(fd, cache)
-            self.token, self.info = cache["access_token"], cache
-            return self.token
+            return self._store(fd, cache, ident, fp, now)
         finally:
             self._close(fd)
+
+    def _store(self, fd: int, cache: dict, ident: Identity, fp: str, now: float) -> str:
+        """Mint, write the cache under the held lock, and use the new token."""
+        new = self._mint(ident)
+        cache = {
+            "access_token": new["access_token"],
+            "token_type": new.get("token_type") or "Bearer",
+            "scope": new.get("scope") or SCOPE,
+            "minted_at": now,
+            "expires_at": now + float(new.get("expires_in") or 30 * 86400),
+            "mint_count": int(cache.get("mint_count") or 0) + 1,
+            "cred_fp": fp,
+        }
+        _write_cache(fd, cache)
+        self.token, self.info = cache["access_token"], cache
+        return self.token
 
     def remember_viewer(self, viewer: dict, org: dict) -> None:
         """Keep who Linear says the current token belongs to in that token's

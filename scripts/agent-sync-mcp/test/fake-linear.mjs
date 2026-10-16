@@ -177,6 +177,7 @@ export class FakeLinear {
   }
 
   mintResponse(entry) {
+    if (this.mintDown) return this.json(503, { error: "temporarily_unavailable" });
     const params = new URLSearchParams(entry.raw);
     // Linear answers a mint with no usable credential in the body, and the
     // client turns that into a mint error naming nothing.

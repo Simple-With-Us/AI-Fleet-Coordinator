@@ -593,3 +593,20 @@ test("only Cursor gets separate Linear budgets and its configured override", asy
   assert.equal((await other.gate.store.get("budget:write")).length, 1);
   assert.equal(await other.gate.store.get("budget:linear_write"), undefined);
 });
+
+test("a 30-day token is re-minted early on day 28, and a failed early mint keeps the cached token", async () => {
+  const { fake, gate, clock, client } = clientHarness();
+  const first = await client.token();
+  await ageCachedToken(gate, clock, 27 * 24);
+  assert.equal(await client.token(), first);
+  assert.equal(fake.mints().length, 1);
+  fake.mintDown = true;
+  await ageCachedToken(gate, clock, 29 * 24);
+  assert.equal(await client.token(), first, "an early mint that fails keeps the still-valid token");
+  assert.equal(fake.mints().length, 2);
+  fake.mintDown = false;
+  const next = await client.token();
+  assert.notEqual(next, first);
+  assert.equal(fake.mints().length, 3);
+  assert.equal(await client.token(), next);
+});
