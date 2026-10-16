@@ -509,6 +509,39 @@ class DaemonRelayTests(DaemonHarness):
         self.assertIsNone(runner.hold_below)
         consumer.stop()
 
+    def test_stopping_consumption_on_purpose_releases_the_holds_and_the_cursor_catches_up(self):
+        for why, change in (("the relay is disabled", "disable"), ("this listener is not the consumer", "knob")):
+            with self.subTest(why):
+                daemon = self.started_with_relay()
+                runner = daemon.seats["CLAUDE"]
+                consumer = daemon.notes_relay
+                consumer.offer = lambda r, m: False
+                mid = self.envelope_message(rid="abandon-%s" % change)
+                later = self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+                daemon.handle_events(runner, [{"type": "message", "message": dict(m, flags=["mentioned"])}
+                                              for m in self.fake.messages[-2:]])
+                daemon.notes_relay_overflow["CLAUDE"] = (runner, mid + 1000)  # an overflow marker too
+                self.assertEqual(runner.hold_below, mid)
+                self.assertEqual(runner.cursor, mid - 1)
+                if change == "disable":
+                    self.write_config()  # no [notes_relay] any more
+                else:
+                    self.notes_knob = "CODEX"
+                daemon.reload()
+                self.assertIsNone(daemon.notes_relay)
+                self.assertEqual((daemon.notes_relay_retry, daemon.notes_relay_overflow), ({}, {}))
+                self.assertIsNone(runner.hold_below)
+                self.assertEqual(runner.cursor, later, "the cursor catches up to what was already routed")
+                log = (self.state_dir / "logs" / "listener.log").read_text()
+                line = next(l for l in log.splitlines() if "notes-relay-holds-abandoned" in l)
+                self.assertIn(why, line)
+                self.assertIn(str(mid), line)
+                self.assertIn("stay in Zulip", line)
+                self.assertNotIn("relay body", line, "ids only")
+                self.notes_knob = "CLAUDE"
+                self.tearDown()
+                self.setUp()
+
     def test_the_hold_stays_while_the_overflow_backfill_cannot_spool(self):
         daemon = self.started_with_relay()
         runner = daemon.seats["CLAUDE"]

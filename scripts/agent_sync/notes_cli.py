@@ -192,6 +192,13 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
                 AUDIT.append(rt.env, rt.home, transport="cli", default_identity=identity, identity=identity,
                              tool="notes " + action, outcome=exc.code)
                 raise _fail(exc) from None
+            except BaseException as exc:
+                # Ctrl-C or SIGTERM (or a crash) during the write:  the idempotency row is already unknown, so the
+                # audit says so too, by outcome only.  Then the interrupt goes on.
+                AUDIT.append(rt.env, rt.home, transport="cli", default_identity=identity, identity=identity,
+                             tool="notes " + action,
+                             outcome="interrupted" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else "outcome_unknown")
+                raise
             AUDIT.append(rt.env, rt.home, transport="cli", default_identity=identity, identity=identity,
                          tool="notes " + action, outcome="ok")
             _print(rt, result, use_json)
@@ -210,8 +217,9 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
     if result.get("isError"):
         error = json.loads(result["content"][0]["text"])
         message = str(error.get("message") or "the request failed")
-        AUDIT.append(rt.env, rt.home, transport="cli", default_identity=identity, identity=identity,
-                     tool="notes " + action, outcome=str(error.get("code")))
+        if action != "status":  # a status check is a read:  it leaves no audit row, whether it succeeds or fails
+            AUDIT.append(rt.env, rt.home, transport="cli", default_identity=identity, identity=identity,
+                         tool="notes " + action, outcome=str(error.get("code")))
         if error.get("code") == "invalid_argument":
             raise Z.UsageError(message)
         raise Z.ApiError(message)

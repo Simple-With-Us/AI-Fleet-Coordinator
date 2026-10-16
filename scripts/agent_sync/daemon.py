@@ -729,6 +729,28 @@ class Daemon:
                            warning="too many unspooled requests to track;  the cursor stays held until a backfill from the "
                                    "lowest one has run")
 
+    def _abandon_relay_holds(self, why: str) -> None:
+        """This listener has stopped consuming on purpose, so nothing will spool the requests it was holding the
+        cursors for.  Drop the retry map and the overflow markers and release every hold (set_hold), so the cursors
+        catch up to the ids already routed.  The messages stay in Zulip:  a later relay start recovers them only if a
+        backfill reaches them.  Logs ids only."""
+        if not (self.notes_relay_retry or self.notes_relay_overflow):
+            return
+        holders: dict[str, Any] = {}
+        for (seat, _), holder in self.notes_relay_retry.items():
+            holders[seat] = holder
+        for seat, (holder, _) in self.notes_relay_overflow.items():
+            holders[seat] = holder
+        ids = sorted(mid for (_, mid) in self.notes_relay_retry)
+        overflow_from = {seat: mid for seat, (_, mid) in self.notes_relay_overflow.items()}
+        self.notes_relay_retry.clear()
+        self.notes_relay_overflow.clear()
+        for holder in holders.values():
+            holder.set_hold(None)
+        self.log.write("notes-relay-holds-abandoned", why=why, ids=ids[:200], count=len(ids), overflow_from=overflow_from,
+                       warning="stopped consuming with relay requests unspooled;  the cursors were released.  The messages "
+                               "stay in Zulip and a later relay start recovers them only if a backfill reaches them")
+
     def _release_relay_hold(self, holder: "SeatRunner") -> None:
         """The hold on `holder`'s cursor is the lowest request it still has tracked or overflowed, else none."""
         waiting = [mid for (seat, mid) in self.notes_relay_retry if seat == holder.seat]
@@ -843,13 +865,16 @@ class Daemon:
                 return
             self.notes_relay = None
         if not cfg.notes_relay_enabled:
+            self._abandon_relay_holds("the relay is disabled")
             return
         if not available:
             self.log.write("notes-relay-unavailable", reason="no osascript or no apple-notes-coding.sh on this host")
+            self._abandon_relay_holds("the notes script is unavailable")
             return
         if not agrees:
             self.log.write("notes-relay-seat-mismatch", local_seat=cfg.notes_relay_seat, knob_seat=consumer, source=label,
                            warning="[notes_relay] seat is not NOTES_RELAY_CONSUMER;  this listener does not consume")
+            self._abandon_relay_holds("this listener is not the consumer")
             return
         self.notes_relay = NR.Consumer(
             seat=cfg.notes_relay_seat, state_dir=self.root, script=lambda: NOTES.direct_available(self.env, home),

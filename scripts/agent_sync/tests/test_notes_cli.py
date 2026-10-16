@@ -77,6 +77,28 @@ class NotesCliTests(Harness):
         self.assertEqual(len(run.calls), 2)
         self.assertEqual(json.loads(again.out)["status"], "done")
 
+    def test_a_failed_status_check_is_a_read_and_leaves_no_audit_row(self):
+        failed = self.run_cli("notes", "status", "nobody-asked-01")
+        self.assertNotEqual(failed.code, 0)
+        self.assertEqual(self.audit_rows(), [], "status is a read, whether it succeeds or fails")
+
+    def test_an_interrupt_during_a_direct_write_is_audited_and_the_retry_is_refused(self):
+        def interrupted(argv, **kwargs):
+            raise KeyboardInterrupt()
+        a, b = self.direct(interrupted)
+        with a, b:
+            first = self.run_cli("notes", "create", TITLE, "--request-id", "interrupt-request-1", stdin="secret-looking body")
+        self.assertEqual(first.code, 130)
+        rows = self.audit_rows()
+        self.assertEqual([(r["tool"], r["outcome"]) for r in rows], [("notes create", "interrupted")])
+        self.assertNotIn("secret-looking", json.dumps(rows))
+        run = FakeRun()
+        a, b = self.direct(run)
+        with a, b:
+            retry = self.run_cli("notes", "create", TITLE, "--request-id", "interrupt-request-1", stdin="again")
+        self.assertNotEqual(retry.code, 0)
+        self.assertEqual(run.calls, [], "the interrupted write may have landed:  its id is refused")
+
     def test_an_oversized_body_is_a_usage_error_not_cut_short(self):
         run = FakeRun()
         a, b = self.direct(run)
