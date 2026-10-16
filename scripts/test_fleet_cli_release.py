@@ -241,3 +241,21 @@ class ReleaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShippedDataFilesTests(unittest.TestCase):
+    """Every data file the agent_sync package reads at run time ships in a release.  The .py
+    modules are allowed by pattern;  JSON and similar files must be named in EXACT one by one, and
+    a new one that is not breaks the server's `agent-sync mcp` at startup (listener-tools.json,
+    2026-10-16)."""
+
+    def test_every_tracked_agent_sync_data_file_is_allowed(self):
+        root = Path(__file__).resolve().parent.parent
+        tracked = subprocess.run(["git", "-C", str(root), "ls-files", "scripts/agent_sync"], capture_output=True,
+                                 text=True, check=True).stdout.split()
+        data = [p for p in tracked
+                if not p.endswith(".py") and "/tests/" not in p and not p.endswith((".md", ".sh"))
+                and "/server/" not in p]
+        self.assertTrue(data)
+        missing = [p for p in data if not release.allowed_path(p)]
+        self.assertEqual(missing, [], "add these to EXACT in scripts/fleet-cli-release.py")

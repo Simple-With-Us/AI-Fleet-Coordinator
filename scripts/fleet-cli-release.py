@@ -32,6 +32,7 @@ EXACT = frozenset({
     "scripts/agent-sync", "scripts/linear-board/board", "scripts/linear-board/board-ids.txt",
     "fleet-apps.json", "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
     "scripts/agent_sync/mcp/tools.json", "scripts/agent_sync/mcp/fixtures.jsonl",
+    "scripts/agent_sync/mcp/listener-tools.json",
     "scripts/agent_sync/wake/wake-schema.json",
     *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
 })
@@ -40,6 +41,7 @@ REQUIRED = frozenset({
     *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
     "scripts/agent_sync/__init__.py", "scripts/agent_sync/cli.py",
     "scripts/agent_sync/mcp/stdio.py", "scripts/agent_sync/mcp/tools.json",
+    "scripts/agent_sync/mcp/listener-tools.json",
     "scripts/fleet-cli-release.py",
 })
 

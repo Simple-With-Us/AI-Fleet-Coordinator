@@ -67,6 +67,23 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertTrue(doctor.post_changes(doctor.Report(), runner))
         self.assertIn("every check passes again", calls[1][6])
 
+    def test_runtime_reads_the_live_release_not_the_stale_receipt(self):
+        self.touch("rt/status.json", json.dumps({"source_commit": "b" * 40, "status": "activated"}))
+        self.touch("rt/current/release.json", json.dumps({"source_commit": "a" * 40}))
+        self.touch("rt/paused", "paused by operator")
+        def runner(argv, **kw):
+            if "ls-remote" in argv or "rev-parse" in argv:
+                return subprocess.CompletedProcess(argv, 0, "b" * 40 + "\trefs/heads/main", "")
+            if "diff" in argv:
+                return subprocess.CompletedProcess(argv, 0, "scripts/agent_sync/mcp/listener-tools.json", "")
+            return subprocess.CompletedProcess(argv, 1, "", "")
+        with mock.patch.object(doctor, "find_repo", return_value=self.home):
+            report = doctor.Report()
+            doctor.check_runtime(report, True, runner)
+        rows = {r["check"]: r for r in report.rows}
+        self.assertEqual(rows["runtime:updates"]["status"], "WARN")
+        self.assertIn("aaaaaaa", rows["runtime"]["detail"])
+
     def test_runtime_ok_when_no_shipped_file_changed(self):
         self.touch("rt/status.json", json.dumps({"source_commit": "a" * 40, "status": "activated"}))
         def runner(argv, **kw):
@@ -130,6 +147,23 @@ class SeatAndMcpTests(unittest.TestCase):
     def test_codex_toml_quoted_and_subtables(self):
         names = doctor.codex_mcp_names('[mcp_servers."agent-sync"]\ncommand = "x"\n[mcp_servers.fleetlink.env]\nA = "b"\n')
         self.assertEqual(sorted(names), ["agent-sync", "fleetlink"])
+
+
+class McpStartupTests(unittest.TestCase):
+    def test_a_release_that_cannot_list_its_tools_fails(self):
+        def broken(argv, **kw):
+            return subprocess.CompletedProcess(argv, 1, b"", b"agent-sync: internal error: FileNotFoundError: listener-tools.json\n")
+        def working(argv, **kw):
+            reply = {"jsonrpc": "2.0", "id": 2, "result": {"tools": [{"name": "whoami"}, {"name": "post"}]}}
+            return subprocess.CompletedProcess(argv, 0, json.dumps(reply).encode() + b"\n", b"")
+        with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/agent-sync"):
+            report = doctor.Report()
+            doctor.check_mcp_startup(report, "CLAUDE", broken)
+            self.assertEqual(report.rows[0]["status"], "FAIL")
+            self.assertIn("FileNotFoundError", report.rows[0]["detail"])
+            report = doctor.Report()
+            doctor.check_mcp_startup(report, "CLAUDE", working)
+            self.assertEqual((report.rows[0]["status"], report.rows[0]["detail"]), ("OK", "agent-sync mcp serves 2 tools"))
 
 
 if __name__ == "__main__":

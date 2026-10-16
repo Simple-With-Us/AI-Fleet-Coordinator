@@ -121,13 +121,19 @@ def find_repo(name: str) -> Path | None:
 
 
 def check_runtime(report: Report, network: bool, runner: Callable = subprocess.run) -> None:
-    status_file = RUNTIME / "status.json"
+    # The live release is what `current` points at;  status.json is only the last receive's
+    # receipt and goes stale after a rollback.
+    live = RUNTIME / "current" / "release.json"
+    status_file = live if live.exists() else RUNTIME / "status.json"
     afc = find_repo("AI-Fleet-Coordinator")
     if not status_file.exists():
         report.add("runtime", "WARN", f"no {status_file} (a Mac reads the published runtime instead)")
         return
     status = json.loads(status_file.read_text())
+    status.setdefault("status", "paused" if (RUNTIME / "paused").exists() else "ready")
     commit = str(status.get("source_commit", ""))
+    if (RUNTIME / "paused").exists():
+        report.add("runtime:updates", "WARN", "paused (fleet-cli-release resume turns the Mac's pushes back on)")
     # A host with no checkout (the Hetzner server may have none) asks GitHub directly.
     main = remote_main(afc, network, runner) if afc else (remote_ls_remote(AFC_REMOTE_URL, runner) if network else "")
     if not main:
@@ -188,6 +194,41 @@ def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
     fleetlink = HOME / ".secrets/FleetLink" / f"{seat_file(seat)}.env"
     missing = [label for label, ok in (("zulip rc", zulip.exists()), ("linear app", linear_file.exists() or linear_env), ("fleetlink token", fleetlink.exists())) if not ok]
     report.add(f"seat:{seat}", "OK" if not missing else "FAIL", "all credentials present" if not missing else "missing " + ", ".join(missing))
+
+
+MCP_PROBE = b"".join(json.dumps(m).encode() + b"\n" for m in (
+    {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                                                                   "clientInfo": {"name": "fleet-tools-doctor", "version": "1"}}},
+    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+    {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+))
+
+
+def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.run) -> None:
+    """Start the seat's stdio MCP the way a client does and ask for its tools.  A release that is
+    missing a file the server reads fails here, before any agent notices (2026-10-16)."""
+    if not shutil.which("agent-sync"):
+        report.add(f"mcp-start:{seat}", "FAIL", "agent-sync is not on PATH")
+        return
+    try:
+        result = runner(["agent-sync", "mcp", "--default-seat", seat], input=MCP_PROBE, capture_output=True, timeout=60, check=False)
+    except subprocess.TimeoutExpired:
+        report.add(f"mcp-start:{seat}", "FAIL", "agent-sync mcp did not answer within 60 seconds")
+        return
+    count = None
+    for line in (result.stdout or b"").splitlines():
+        try:
+            reply = json.loads(line)
+        except ValueError:
+            continue
+        if reply.get("id") == 2:
+            count = len(((reply.get("result") or {}).get("tools")) or [])
+    if count:
+        report.add(f"mcp-start:{seat}", "OK", f"agent-sync mcp serves {count} tools")
+    else:
+        first = (result.stderr or b"").decode("utf-8", "replace").strip().splitlines()[:1]
+        why = first[0][:160] if first else f"exit {result.returncode}"
+        report.add(f"mcp-start:{seat}", "FAIL", f"agent-sync mcp did not list its tools:  {why}")
 
 
 def codex_mcp_names(text: str) -> list[str]:
@@ -261,6 +302,7 @@ def run(argv: list[str] | None = None, env: dict[str, str] | None = None) -> tup
     check_catalogs(report)
     for seat in [s.strip().upper() for s in args.seats.split(",") if s.strip()]:
         check_seat(report, seat, env)
+        check_mcp_startup(report, seat)
     check_mcp(report)
     if args.post:
         post_changes(report)

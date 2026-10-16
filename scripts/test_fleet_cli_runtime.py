@@ -47,10 +47,10 @@ PROTOCOL = AUDIT + r'''
 import io
 sys.path.insert(0, sys.argv[1])
 from agent_sync.mcp.stdio import Server
-from agent_sync.mcp.tools import load_tools
+from agent_sync.mcp.tools import load_served_tools
 class CatalogueOnly:
     seat = "CODEX"
-    spec = load_tools()
+    spec = load_served_tools()
     def call(self, *args, **kwargs):
         raise AssertionError("offline_tool_execution_forbidden")
 raise SystemExit(Server(CatalogueOnly()).serve(sys.stdin.buffer, sys.stdout.buffer))
@@ -198,7 +198,11 @@ class ActualRuntime(unittest.TestCase):
         self.assertEqual([item["id"] for item in replies], [1, 2])
         self.assertEqual(replies[0]["result"]["protocolVersion"], "2025-11-25")
         self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "agent-sync")
-        catalogue = json.loads((self.release / "scripts/agent_sync/mcp/tools.json").read_bytes())
+        # What the real server serves:  tools.json, then listener-tools.json (AFC-330).  Both must
+        # ship, or `agent-sync mcp` fails at startup on the server (it did, 2026-10-16).
+        mcp = self.release / "scripts/agent_sync/mcp"
+        catalogue = {"tools": json.loads((mcp / "tools.json").read_bytes())["tools"]
+                     + json.loads((mcp / "listener-tools.json").read_bytes())["tools"]}
         self.assertTrue(catalogue["tools"])
         self.assertEqual(replies[1]["result"], catalogue)
 
