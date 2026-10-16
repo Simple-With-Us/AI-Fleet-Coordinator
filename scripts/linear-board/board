@@ -1763,9 +1763,12 @@ def cmd_show(L: Linear, ids: IdIndex, a) -> int:
         for line in r["provenance"].splitlines():
             if line.strip():
                 print(f"    {line.rstrip()}")
-    if comments:
+    shown = r["comments"]  # the capped list when --comment-limit applied, so the text agrees with the JSON
+    if shown:
         print("\n--- comments ---")
-        for c in comments:
+        if len(shown) < len(comments):
+            print(f"  (showing {len(shown)} of {len(comments)} comments)")
+        for c in shown:
             where = f" ({c['where']})" if c["where"] else ""
             stamp = central(c["created_at"], with_day=False) if c["created_at"] else ""
             print(f"  [{stamp}] {c['author']}{where}: {c['text']}")

@@ -220,6 +220,34 @@ class CliTests(IdentityHarness):
                                                                         AGENT_LAUNCH_SEAT="CLAUDE"))
         self.assertEqual([row["identity"] for row in json.loads(pinned.out)["identities"]], ["CLAUDE"])
 
+    def test_identities_includes_the_defaults_explicit_credential_outside_the_secrets_directory(self):
+        elsewhere = self.tmp / "elsewhere.rc"
+        write_rc(elsewhere, email="codex-bot@zulip.test", key=zulip_shaped(), site=self.fake.url)
+        listed = self.run_cli("identities", "--json", env=self.cli_env(AGENT_SEAT="CODEX", ZULIP_RC=str(elsewhere)))
+        self.assertEqual(listed.code, 0, listed.err)
+        info = json.loads(listed.out)
+        self.assertEqual(info["default_identity"], "CODEX")
+        self.assertEqual([row["identity"] for row in info["identities"]], sorted([*self.expected, "CODEX"]))
+        # The same exclusions as at stdio startup:  an integration bot or the owner's account never enters.
+        for never in ("SENTRY", "JAY"):
+            refused = self.run_cli("identities", "--json", env=self.cli_env(AGENT_SEAT=never, ZULIP_RC=str(elsewhere)))
+            self.assertNotIn(never, [row["identity"] for row in json.loads(refused.out)["identities"]], never)
+        plain = self.run_cli("identities", "--json", env=self.cli_env(AGENT_SEAT="CODEX"))
+        self.assertNotIn("CODEX", [row["identity"] for row in json.loads(plain.out)["identities"]], "no rc, no entry")
+
+    def test_a_write_that_lands_and_then_loses_its_pipe_is_still_audited(self):
+        from agent_sync import cli as CLI
+
+        def lands_then_pipe_breaks(agent, args):
+            agent.verify()
+            raise BrokenPipeError()
+        with mock.patch.dict(CLI.COMMANDS, {"post": lands_then_pipe_breaks, "topics": lands_then_pipe_breaks}):
+            post = self.run_cli("post", "--topic", "cli", "x", env=self.cli_env())
+            read = self.run_cli("topics", env=self.cli_env())
+        self.assertEqual((post.code, read.code), (0, 0))
+        rows = [json.loads(line) for line in (self.state_dir / "logs" / "identity.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["tool"], r["outcome"]) for r in rows], [("post", "ok")], "the read leaves no row")
+
     def test_cli_writes_are_audited_and_reads_are_not(self):
         posted = self.run_cli("post", "--as", "CURSOR", "--topic", "cli", "hello", env=self.cli_env(AGENT_SEAT=None))
         self.assertEqual(posted.code, 0, posted.err)

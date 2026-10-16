@@ -1703,7 +1703,14 @@ def cmd_identities(rt: Runtime, args: argparse.Namespace) -> int:
     except I.SeatRegistryError as exc:
         registry, registry_problem = None, ("cannot read the seat registry, so no identity can be checked and none is "
                                             "allowed (%s);  fix FLEET_APPS_JSON or fleet-apps.json" % exc)
-    allowed = sorted(X.allowed_identities(rt.env, home, registry=registry)) if registry is not None else []
+    found = X.allowed_identities(rt.env, home, registry=registry) if registry is not None else {}
+    names = set(found)
+    # The default identity's explicit credential (--rc or ZULIP_RC, which may sit outside the secrets directory) is
+    # part of the set, as at stdio startup, with the same exclusion:  only an agent identity qualifies.
+    rc_arg = getattr(args, "rc", None) or rt.env.get("ZULIP_RC")
+    if default and rc_arg and registry is not None and X.agent_identity_problem(default, registry=registry) is None:
+        names.add(default)
+    allowed = sorted(names)
     if resolved.source == "launcher":
         allowed = [default] if default in allowed else []
     if getattr(args, "json", False):
@@ -1829,6 +1836,10 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             _audit_write(rt, args, agent, 130, "interrupted")  # a write that was in flight may have landed
         return 130
     except BrokenPipeError:
+        # The reader went away while the result was being printed.  A write has landed by then, so it is audited here
+        # (the command itself cannot audit before it prints).
+        if agent is not None and agent._verified:
+            _audit_write(rt, args, agent, 0)
         return 0
     except Exception as exc:  # noqa: BLE001 - last resort: say what failed, never print a traceback
         text = "%s: %s" % (type(exc).__name__, exc)

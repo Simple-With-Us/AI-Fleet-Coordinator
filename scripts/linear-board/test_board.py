@@ -882,6 +882,12 @@ class ReadTests(BoardTest):
         self.assertEqual(len(capped["comments"]), 1)               # oldest first, like the hosted tool
         self.assertEqual(capped["comments_total"], 3)
         self.assertEqual(capped["resolution"], d["resolution"])     # still derived from every comment
+        text = self.board("show", "OPS-10", "--comment-limit", "1").stdout
+        self.assertIn("claude (mac, ~/apps/x): First look.", text)
+        self.assertNotIn("codex: Second look.", text)               # the text path honours the cap too
+        self.assertIn("(showing 1 of 3 comments)", text)
+        self.assertNotIn("showing", out)                            # no note when nothing was capped
+        self.assertIn("--- Resolution ---\nOld resolution.", text)  # still derived from every comment
 
     def test_listed_new_issue_prefix_resolves(self):
         new = self.mock.add_issue(str(uuid.uuid4()), "AFC", "Todo", "Made in the Linear UI", 3)
