@@ -146,10 +146,11 @@ class RealRegistryTests(unittest.TestCase):
     def test_extras_are_appended_and_unregistered(self) -> None:
         reg = L.load_registry(env={})
         extras = {a.name: a for a in reg.apps if not a.registered}
-        for name in ("Simple-With-Us", "Kodus-Config", "upptime-status",
-                     "mmx-acp", "homebrew-tap"):
+        # Simple-With-Us left this list in AFC-297:  lane new refused it until the
+        # registry carried a row, so it is registered now and not an extra.
+        for name in ("Kodus-Config", "upptime-status", "mmx-acp", "homebrew-tap"):
             self.assertIn(name, extras)
-        for name in ("FleetLink", "fleetlink-legacy", "CodeCaps"):
+        for name in ("FleetLink", "fleetlink-legacy", "CodeCaps", "Simple-With-Us"):
             self.assertNotIn(name, extras, f"{name} has a registry row, so it is not an unregistered extra")
 
     def test_codecaps_has_a_registry_row_so_it_is_not_an_extra(self) -> None:

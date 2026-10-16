@@ -23,7 +23,7 @@ test("the three readers find their data in the real files", () => {
   assert.equal(serverSeats["GB-FIXER"].routineKeyEnv, "ZULIP_ALERT_GB_FIXER_KEY");
   assert.ok(teamKeys.includes("AFC") && teamKeys.includes("CK"));
   // A value with parentheses must not end the dict early.
-  assert.equal(seatAppNames.INSTINCT, "Wise (Instinct)");
+  assert.equal(seatAppNames.WISE, "Wise (Instinct)");
   assert.equal(seatAppNames.OPENCODE, "OpenCode");
 });
 

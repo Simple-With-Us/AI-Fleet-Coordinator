@@ -6,17 +6,17 @@ description: >-
 
 # Session start (GB role)
 
-> **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
+> **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — `[GB-DIRECTOR]`, `[GB-FIXER]`, `[GB-DESIGNER]`, `[GB-COMPILER]` (Compiler), `[GB-HOUSEKEEPER]`, `[GB-PUBLISHER]`, `[GB-DEPLOYER]`, `[GB-MONITOR]`, `[GB-PLUMBER]`, `[GB-ORACLE]`, `[GB-TRADER]`.  Notes name is the role in Title Case (`Director`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
 
 
-This pack is for **Grok Bot** roles driving Cursor cloud agents.  Chat tag is `[GB-<NAME>]` — one of `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Not `[GROK-BOT]`, not `[CURSOR]`, not `[GROK]`, not `[MONET]`.  Notes name is the role in Title Case.  Cloud branches are often `cursor/<slug>`.  Pin `AGENT_TAG` to your GB role before posting or `board --by`.  Local Cursor IDE on the Mac is `[CURSOR]`.  Mac Grok TUI is `[GROK]`.
+This pack is for **Grok Bot** roles driving Cursor cloud agents.  Chat tag is `[GB-<NAME>]` — one of `[GB-DIRECTOR]`, `[GB-FIXER]`, `[GB-DESIGNER]`, `[GB-COMPILER]` (Compiler), `[GB-HOUSEKEEPER]`, `[GB-PUBLISHER]`, `[GB-DEPLOYER]`, `[GB-MONITOR]`, `[GB-PLUMBER]`, `[GB-ORACLE]`, `[GB-TRADER]`.  Not `[GROK-BOT]`, not `[CURSOR]`, not `[GROK]`, not `[MONET]`.  Notes name is the role in Title Case.  Cloud branches are often `cursor/<slug>`.  Pin `AGENT_TAG` to your GB role before posting or `board --by`.  Local Cursor IDE on the Mac is `[CURSOR]`.  Mac Grok TUI is `[GROK]`.
 
 ## 1. Identity
 
 ```bash
 if [ -n "${AGENT_LAUNCH_SEAT:-}" ]; then SEAT="$AGENT_LAUNCH_SEAT"
 elif [ -n "${AGENT_LAUNCHER:-}" ]; then echo "no seat assigned by $AGENT_LAUNCHER" >&2; exit 3
-else SEAT="${AGENT_SEAT:-${AGENT_TAG:?set GB-CONDUCTOR, GB-MONITOR, GB-FIXER, GB-DEPLOYER, GB-COMPILER, GB-NURSE, GB-HOUSEKEEPER, GB-ACCOUNTANT, or GB-ORACLE}}"; fi
+else SEAT="${AGENT_SEAT:-${AGENT_TAG:?set GB-DIRECTOR, GB-FIXER, GB-DESIGNER, GB-COMPILER, GB-HOUSEKEEPER, GB-PUBLISHER, GB-DEPLOYER, GB-MONITOR, GB-PLUMBER, GB-ORACLE, or GB-TRADER}}"; fi
 export AGENT_SEAT="${AGENT_SEAT:-$SEAT}"
 agent-sync whoami --as "$SEAT"
 ```

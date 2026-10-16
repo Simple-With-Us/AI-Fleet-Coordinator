@@ -821,7 +821,7 @@ class HeldBackJetTests(HeldMixin, CloudSeatHarness):
 
     def test_an_inbox_seat_never_holds_anything_back(self) -> None:
         daemon = self.server_daemon(env=self.cloud_env())
-        inbox_seats = ("MA", "GROK-WEB", "INSTINCT", "ECHO")
+        inbox_seats = ("MA", "GROK-WEB", "WISE", "ECHO")
         for seat in inbox_seats:
             self.assertTrue(daemon.connect_seat(seat), daemon.seats[seat].error)
             self.assertFalse(daemon.seats[seat].cfg.held_back["catch_up"])

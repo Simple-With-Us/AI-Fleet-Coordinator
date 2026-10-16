@@ -65,10 +65,10 @@
     // member (400) only (spec 3.6).  Jay demoted every bot to member on Fri,
     // Oct 9, so JET is served again, with its key installed (deployed at about
     // 8:10am;  DEPLOY.md, "Re-enable JET").
-    // ECHO and INSTINCT (Fri, Oct 9) are two identities of the Instinct app
+    // ECHO and WISE (Fri, Oct 9) are two identities of the Instinct app
     // (instinct.com), each posting as its own member bot.
     // CLAUDE hosted configuration is prepared; its key and connection are pending.
-    "HOSTED_SEATS": "JET,GROK-WEB,ECHO,INSTINCT,CURSOR,CLAUDE",
+    "HOSTED_SEATS": "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE",
     // Bot emails (plain vars, spec 3.6).  The keys are Worker secrets.  A key
     // whose users/me is not this bot, not a bot, or not a member is refused.
     "ZULIP_EMAIL_GROK_WEB": "grok-web-bot@simplewithus.zulipchat.com",
@@ -82,6 +82,8 @@
     // allowed.  CHANNELS_DENY lists stream ids no seat may use even when they
     // are public;  every check is by id, so a rename cannot dodge it.
     "CHANNELS_DENY": [],
+    // NOTES_RELAY_CONSUMER (the seat whose bot is the Apple Notes relay consumer, AFC-331) is NOT set here:  it is a
+    // fleet knob in Infisical (INFISICAL.md) copied to a Worker binding by sync_notes_consumer.py at deploy.
     // MCP Events callback hosts (src/events.js).  ChatGPT's real callback host
     // is not documented;  a refused one shows on /admin under refusals as
     // callback_host_not_allowed with its host, and is added here.
@@ -130,7 +132,7 @@
         "redirect_uris": ["https://grok.com/connectors-oauth-exchange-code/"],
         "cimd_client_ids": ["https://grok.com/oauth/mcp-client.json"]
       },
-      // ECHO and INSTINCT run inside one Instinct app on its own computer and
+      // ECHO and WISE run inside one Instinct app on its own computer and
       // share its loopback callback (RFC 8252), as Echo told Jay on Fri, Oct 9.
       // A loopback redirect is the only kind two seats may share:  /authorize
       // binds it to whichever of them is armed, and refuses when both are.
@@ -140,7 +142,7 @@
         "redirect_uris": ["http://127.0.0.1:8737/callback"],
         "cimd_client_ids": []
       },
-      "INSTINCT": {
+      "WISE": {
         "redirect_uris": ["http://127.0.0.1:8737/callback"],
         "cimd_client_ids": []
       }
@@ -164,6 +166,11 @@
     // only after the owner's secrets are installed and linear_whoami answers
     // with the seat's own app (DEPLOY.md step 2c).
     "LINEAR_TOOLS_WRITES": "1",
+    // The server listener's signed read API (AFC-330):  the https origin the
+    // reverse proxy serves /listener/v1/ on.  Empty means the listener_* tools
+    // answer not_configured.  Each seat signs with its WAKE_HMAC_KEY_<SEAT>.
+    // Set it only after DEPLOY.md "Listener read API" step 3 passes.
+    "LISTENER_API_URL": "",
     // Kill switch step 4:  "1" makes /mcp answer 503.
     "MCP_DISABLED": "0"
   }

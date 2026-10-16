@@ -26,6 +26,7 @@ from . import chat_transport as CT
 from . import heldback as HELD
 from . import identity as I
 from . import launchd
+from . import listener_records as LR
 from . import live as L
 from . import wakes as W
 from . import zulip as Z
@@ -718,6 +719,114 @@ def cmd_inbox_local(rt: Any, args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------------------------
+# listener:  this seat's own records (AFC-330 part B)
+# --------------------------------------------------------------------------------------------
+
+def _fenced(rt: Any, title: str, items: list[dict[str, Any]], per_message: int = 600) -> None:
+    """Items with Zulip-authored text, inside the listener's own untrusted fence."""
+    rows = [dict(i, content=i.get("body") or "", id=i.get("id") if i.get("id") is not None else i.get("seq")) for i in items]
+    rt.out("%s\n%s\n%s\n" % (title, L.SCREEN_LINE, L.wrap_block(rows, L.new_nonce(), per_message)))
+
+
+def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
+    """Read and act on the listener's records for the caller's own seat only (the seat this session
+    resolves:  AGENT_LAUNCH_SEAT, --as, AGENT_SEAT, then the Claude seat).  No Zulip login."""
+    root = _root(rt)
+    seat = _seat(rt, argparse.Namespace(as_seat=getattr(args, "as_seat", None),
+                                        default_seat=getattr(args, "default_seat", None)))
+    if not seat:
+        raise Z.UsageError("no seat; set AGENT_SEAT or pass --as NAME")
+    action = args.listener_action
+    as_json = bool(getattr(args, "json", False))
+
+    def emit(view: Any, text: str | None = None) -> int:
+        if as_json or text is None:
+            rt.out(json.dumps(view, ensure_ascii=False, default=str) + "\n")
+        else:
+            rt.out(text)
+        return 0
+
+    if action == "status":
+        view = LR.status_view(root, seat)
+        lines = ["seat %s%s" % (seat, " (paused)" if view["paused"] else ""),
+                 "seat inbox:   %d pending after cursor %d" % (view["inbox_pending"], view["inbox_cursor"]),
+                 "owner queue:  %d not surfaced" % view["owner_queue_pending"],
+                 "wakes (24h):  %d %s" % (view["wakes_24h"], ", ".join("%s %d" % kv for kv in view["wakes_by_state"].items())),
+                 "held back:    %d (%d lost past the caps)" % (view["held_back"], view["held_back_lost"]),
+                 "leases:       %d" % view["leases"], "chat nudges:  %d pending" % view["nudges_pending"]]
+        return emit(view, "\n".join(lines) + "\n")
+    if action == "inbox":
+        view = LR.inbox_view(root, seat, since_seq=args.since_seq, limit=args.limit, include_delivered=args.delivered)
+        if as_json:
+            return emit(view)
+        if not view["items"]:
+            rt.err("agent-sync: nothing in the %s seat inbox after seq %s" % (seat, args.since_seq or view["cursor"]))
+            return 0
+        _fenced(rt, "[agent-sync listener inbox] %d item%s for %s (cursor %d, next_seq %s;  ack with "
+                    "agent-sync listener ack --seq %s)" % (len(view["items"]), "" if len(view["items"]) == 1 else "s",
+                                                          seat, view["cursor"], view["next_seq"], view["next_seq"]),
+                view["items"], L.DRAIN_PER_MESSAGE)
+        return 0
+    if action == "ack":
+        return emit({"seat": seat, "cursor": LR.ack_inbox(root, seat, args.seq)},
+                    "seat inbox cursor for %s is now %d\n" % (seat, LR.inbox_cursor(LR.seat_paths(root, seat))))
+    if action == "owner-queue":
+        view = LR.owner_queue_view(root, seat, all_notes=args.all, limit=args.limit)
+        if as_json or not view["items"]:
+            if not view["items"] and not as_json:
+                rt.err("agent-sync: nothing in the %s owner queue" % seat)
+                return 0
+            return emit(view)
+        _fenced(rt, "[agent-sync owner queue] %d note%s for %s (%d not surfaced)" % (
+            len(view["items"]), "" if len(view["items"]) == 1 else "s", seat, view["pending"]), view["items"])
+        return 0
+    if action == "surface":
+        value = LR.mark_surfaced(root, seat, args.seq)
+        return emit({"seat": seat, "surfaced": value}, "owner queue for %s surfaced up to %d\n" % (seat, value))
+    if action == "wakes":
+        view = LR.wakes_view(root, seat, since_hours=args.since, state=args.state, limit=args.limit)
+        lines = ["%s  %-9s %s  triggers %s%s%s\n" % (
+            _when(w.get("ts")), w.get("state"), "DM" if w.get("dm") else "#%s > %s" % (
+                L.escape_line(str(w.get("channel") or "")), L.escape_line(str(w.get("topic") or ""))),
+            ",".join(str(i) for i in w.get("trigger_ids") or []), " (owner)" if w.get("owner") else "",
+            "  (%s)" % L.escape_line(str(w["reason"])) if w.get("reason") else "") for w in view["items"]]
+        return emit(view, "".join(lines) or "no wakes for %s\n" % seat)
+    if action == "held-back":
+        view = LR.held_back_view(root, seat, limit=args.limit)
+        lines = ["%s  %s  %s  %s\n" % (i["message_id"], i["reason"], "DM" if i["dm"] else "#%s > %s" % (
+            L.escape_line(str(i.get("channel") or "")), L.escape_line(str(i.get("topic") or ""))),
+            L.escape_line(str(i.get("sender_full_name") or ""))) for i in view["items"]]
+        return emit(view, "".join(lines) + "%d held back, %d lost past the caps\n" % (view["count"], view["lost"]))
+    if action == "clear-held":
+        cleared = LR.clear_held(root, seat, args.id)
+        return emit({"seat": seat, "cleared": cleared}, "cleared %d held-back entr%s\n" % (cleared, "y" if cleared == 1 else "ies"))
+    if action == "leases":
+        view = LR.leases_view(root, seat)
+        lines = ["%s  pending %d  topics %d%s\n" % (l["lease_id"], l["pending"], len(l["topics"]),
+                                                    "" if l["watcher_alive"] else "  (no watcher)") for l in view["items"]]
+        return emit(view, "".join(lines) or "no leases for %s\n" % seat)
+    if action in ("live", "drain"):
+        view = LR.live_view(root, seat, args.lease, limit=args.limit) if action == "live" else LR.drain(root, seat, args.lease)
+        if as_json:
+            return emit(view)
+        if not view["items"]:
+            rt.err("agent-sync: nothing pending in lease %s" % view["lease_id"])
+            return 0
+        _fenced(rt, "[agent-sync listener %s] %d item%s from lease %s" % (
+            action, len(view["items"]), "" if len(view["items"]) == 1 else "s", view["lease_id"]), view["items"],
+            L.DRAIN_PER_MESSAGE)
+        return 0
+    if action == "nudges":
+        view = LR.nudges_view(root, seat)
+        lines = ["%s  %s  #%s > %s%s\n" % (i.get("id"), i.get("status"), L.escape_line(str(i.get("channel") or "")),
+                                           L.escape_line(str(i.get("topic") or "")),
+                                           "  (%s)" % L.escape_line(str(i["hold_reason"])) if i.get("hold_reason") else "")
+                 for i in view["items"]]
+        return emit(view, "".join(lines) + "%d binding%s\n" % (len(view["bindings"]), "" if len(view["bindings"]) == 1 else "s"))
+    raise Z.UsageError("unknown listener action")
+
+
+# --------------------------------------------------------------------------------------------
 # Parser wiring (called from cli.build_parser)
 # --------------------------------------------------------------------------------------------
 
@@ -791,6 +900,37 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
 
     p = add("status", "listener status (same as daemon status)")
     _status_args(p)
+
+    p = add("listener", "this seat's own listener records:  status, inbox, ack, owner-queue, surface, wakes, "
+                        "held-back, clear-held, leases, live, drain, nudges (no Zulip login)")
+    lsub = p.add_subparsers(dest="listener_action", metavar="ACTION", required=True)
+    add("status", "counts:  seat inbox, owner queue, wakes, held back, leases, nudges, pause", lsub)
+    q = add("inbox", "the seat inbox after the acknowledged cursor (bodies are untrusted data); never moves it", lsub)
+    q.add_argument("--since-seq", dest="since_seq", type=int, metavar="N", help="items after this seq instead")
+    q.add_argument("--limit", type=int, default=20, metavar="N")
+    q.add_argument("--delivered", action="store_true", help="also show items already delivered to a session")
+    q = add("ack", "move the seat-inbox cursor forward to --seq (never back)", lsub)
+    q.add_argument("--seq", type=int, required=True, metavar="N")
+    q = add("owner-queue", "notes the listener queued for the owner, after the surfaced mark", lsub)
+    q.add_argument("--all", action="store_true", help="every note, surfaced ones included")
+    q.add_argument("--limit", type=int, default=20, metavar="N")
+    q = add("surface", "mark the owner queue surfaced up to --seq", lsub)
+    q.add_argument("--seq", type=int, required=True, metavar="N")
+    q = add("wakes", "the wake ledger, with filters", lsub)
+    q.add_argument("--since", type=float, default=24.0, metavar="HOURS", help="the last HOURS hours (default 24)")
+    q.add_argument("--state", metavar="S", help="only wakes in this state (surfaced, dropped, held_back, ...)")
+    q.add_argument("--limit", type=int, default=30, metavar="N")
+    q = add("held-back", "wakes held back for the budget, oldest first", lsub)
+    q.add_argument("--limit", type=int, default=50, metavar="N")
+    q = add("clear-held", "clear one held-back entry by its message id", lsub)
+    q.add_argument("--id", type=int, required=True, metavar="MSGID")
+    add("leases", "this seat's leases and their live-inbox backlog", lsub)
+    q = add("live", "the undelivered items of one lease's live inbox (never marks them)", lsub)
+    q.add_argument("--lease", required=True, metavar="ID", help="a lease id or its prefix")
+    q.add_argument("--limit", type=int, default=50, metavar="N")
+    q = add("drain", "take every undelivered item of one lease's live inbox (marks them delivered)", lsub)
+    q.add_argument("--lease", required=True, metavar="ID", help="a lease id or its prefix")
+    add("nudges", "this seat's chat bindings and nudge queue", lsub)
 
     p = add("wakes", "list the wake ledger")
     p.add_argument("--seat", metavar="S", help="seat (default: env AGENT_SEAT, then the Claude seat)")

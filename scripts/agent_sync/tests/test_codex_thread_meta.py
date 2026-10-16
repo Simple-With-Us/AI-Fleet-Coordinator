@@ -32,7 +32,10 @@ class CodexThreadMetaTests(McpHarness):
                        codex_thread_meta=True, clock=self.clock.time, sleep=self.clock.sleep)
 
     def native(self, session, name="whoami", arguments=None, thread=A, **extra):
-        reply = session.request("tools/call", {"name": name, "arguments": arguments or {},
+        arguments = dict(arguments or {})
+        if name in T.WRITE_TOOLS:
+            arguments.setdefault("identity", "CODEX")  # AFC-331:  a write names its identity
+        reply = session.request("tools/call", {"name": name, "arguments": arguments,
                                                "_meta": {"threadId": thread, **extra}})
         return reply["result"]
 
@@ -115,7 +118,7 @@ class CodexThreadMetaTests(McpHarness):
         def colliding(text):
             return "deadbeef" + "0" * 56 if text in (A, B) else real_sha(text)
         with mock.patch.object(T, "_sha", side_effect=colliding):
-            replies = [tools.call("post", {"topic": "AFC-296", "text": "same"}, meta={"threadId": x}) for x in (A, B)]
+            replies = [tools.call("zulip_post", {"topic": "AFC-296", "text": "same"}, meta={"threadId": x}) for x in (A, B)]
         ids = [r["structuredContent"]["id"] for r in replies]
         self.assertNotEqual(*ids)
         for thread, own, other in ((A, ids[0], ids[1]), (B, ids[1], ids[0])):
@@ -134,9 +137,9 @@ class CodexThreadMetaTests(McpHarness):
             states.append(tools.agent.state.path)
             tools.agent.state.advance_cursor("agent-sync", "AFC-296", 9)
             raise RuntimeError("synthetic failure")
-        with mock.patch.object(tools, "_tool_topics", side_effect=broken):
+        with mock.patch.object(tools, "_tool_zulip_topics", side_effect=broken):
             for thread in (A, B):
-                self.assertTrue(tools.call("topics", {}, meta={"threadId": thread})["isError"])
+                self.assertTrue(tools.call("zulip_topics", {}, meta={"threadId": thread})["isError"])
                 self.assertIs(tools.agent.state, base)
                 self.assertEqual(tools.agent.tag, "ownerses")
                 self.assertIsNone(tools.thread_id)
@@ -150,8 +153,8 @@ class CodexThreadMetaTests(McpHarness):
         session = self.session(self.env, argv=("--codex-thread-meta",))
         before = len(self.fake.messages)
         args = {"topic": "AFC-296", "text": "must not send", "session": A}
-        self.assertTrue(session.call("post", args)["isError"])
-        self.assertTrue(self.native(session, "post", args, thread=None)["isError"])
+        self.assertTrue(session.call("zulip_post", args)["isError"])
+        self.assertTrue(self.native(session, "zulip_post", args, thread=None)["isError"])
         self.assertEqual(len(self.fake.messages), before)
         self.assertFalse((self.state_dir / "CODEX/nosession/state.json").exists())
 
@@ -159,8 +162,8 @@ class CodexThreadMetaTests(McpHarness):
         session = self.session(self.env, argv=("--codex-thread-meta",))
         args = {"topic": "AFC-296", "text": "one intentional write", "idempotency_key": "same-intent"}
         before = len(self.fake.messages)
-        first = self.native(session, "post", args)["structuredContent"]
-        second = self.native(session, "post", args, thread=B)["structuredContent"]
+        first = self.native(session, "zulip_post", args)["structuredContent"]
+        second = self.native(session, "zulip_post", args, thread=B)["structuredContent"]
         self.assertEqual(first["id"], second["id"])
         self.assertTrue(second["duplicate"])
         self.assertEqual(len(self.fake.messages), before + 1)
@@ -174,18 +177,18 @@ class CodexThreadMetaTests(McpHarness):
                 tools = self.direct(owner, "flag" if owner else "none")
                 topic = "owner" if owner else "derived"
                 args = {"topic": topic, "text": "A authored this"}
-                own = tools.call("post", args, meta={"threadId": A})["structuredContent"]["id"]
+                own = tools.call("zulip_post", args, meta={"threadId": A})["structuredContent"]["id"]
                 read = {"topic": topic}
-                self.assertEqual(tools.call("read_topic", read, meta={"threadId": B})["structuredContent"]["ids"], [own])
-                self.assertEqual(tools.call("read_topic", read, meta={"threadId": A})["structuredContent"]["ids"], [])
+                self.assertEqual(tools.call("zulip_read_topic", read, meta={"threadId": B})["structuredContent"]["ids"], [own])
+                self.assertEqual(tools.call("zulip_read_topic", read, meta={"threadId": A})["structuredContent"]["ids"], [])
                 resumed = self.direct(owner, "flag" if owner else "none")
-                self.assertEqual(resumed.call("read_topic", read, meta={"threadId": A})["structuredContent"]["ids"], [])
-                self.assertEqual(resumed.call("read_topic", read, meta={"threadId": B})["structuredContent"]["ids"], [own])
+                self.assertEqual(resumed.call("zulip_read_topic", read, meta={"threadId": A})["structuredContent"]["ids"], [])
+                self.assertEqual(resumed.call("zulip_read_topic", read, meta={"threadId": B})["structuredContent"]["ids"], [own])
                 self.assertEqual(tools.posted_ids, set())
                 self.fake.messages[-1]["content"] += " @**Codex**"
                 # Inbox retains its shared mention view, including own and sibling messages.
                 for thread in (A, B):
-                    self.assertIn(own, tools.call("inbox", {}, meta={"threadId": thread})["structuredContent"]["ids"])
+                    self.assertIn(own, tools.call("zulip_inbox", {}, meta={"threadId": thread})["structuredContent"]["ids"])
 
     def test_unknown_native_write_does_not_adopt_sibling_body_or_resend(self):
         real_sha = T._sha
@@ -196,19 +199,19 @@ class CodexThreadMetaTests(McpHarness):
                 tools = self.direct(owner, "flag" if owner else "none")
                 args = {"topic": "unknown-owner" if owner else "unknown-derived", "text": "identical body"}
                 with mock.patch.object(tools, "_run_cli", side_effect=Z.NetworkError("mock timeout", maybe_sent=True)):
-                    first = tools.call("post", args, meta={"threadId": A})
+                    first = tools.call("zulip_post", args, meta={"threadId": A})
                 self.assertEqual(first["_meta"][T.ERROR_META_KEY]["code"], "outcome_unknown")
-                sibling = tools.call("post", args, meta={"threadId": B})["structuredContent"]["id"]
+                sibling = tools.call("zulip_post", args, meta={"threadId": B})["structuredContent"]["id"]
                 before = len(self.fake.requests_to("POST", "messages"))
                 with mock.patch.object(tools, "_reconcile", side_effect=AssertionError("ambiguous body search forbidden")):
                     for thread in (A, A):
-                        retry = tools.call("post", args, meta={"threadId": thread})
+                        retry = tools.call("zulip_post", args, meta={"threadId": thread})
                         self.assertEqual(retry["_meta"][T.ERROR_META_KEY]["code"], "outcome_unknown")
                         self.assertFalse(retry["_meta"][T.ERROR_META_KEY]["retryable"])
                 self.assertEqual(len(self.fake.requests_to("POST", "messages")), before)
                 self.assertEqual(State(self.state_dir, "CODEX", "codex-thread-" + A).posted(), set())
                 self.assertIn(sibling, State(self.state_dir, "CODEX", "codex-thread-" + B).posted())
-                self.assertEqual(tools.call("read_topic", {"topic": args["topic"]}, meta={"threadId": A})["structuredContent"]["ids"], [sibling])
+                self.assertEqual(tools.call("zulip_read_topic", {"topic": args["topic"]}, meta={"threadId": A})["structuredContent"]["ids"], [sibling])
 
     def test_codex_thread_ledger_outlasts_the_posted_limit(self):
         for seat, retain in (("CODEX", True), ("CODEX", False), ("CLAUDE", False)):
@@ -230,7 +233,7 @@ class CodexThreadMetaTests(McpHarness):
                 tools = self.direct(owner, "flag" if owner else "none")
                 topic = "retained-owner" if owner else "retained-derived"
                 args = {"topic": topic, "text": "earliest owned post"}
-                first = tools.call("post", args, meta={"threadId": A})["structuredContent"]["id"]
+                first = tools.call("zulip_post", args, meta={"threadId": A})["structuredContent"]["id"]
                 state = State(self.state_dir, "CODEX", "codex-thread-" + A)
                 # Seed confirmed receipts to avoid 500 real fsyncs; the next
                 # fake-Zulip post exercises the production retention policy.
@@ -238,25 +241,25 @@ class CodexThreadMetaTests(McpHarness):
                 data["posted"] = list(range(first, first + 500))
                 state.path.write_text(json.dumps(data))
                 self.fake.next_id = first + 500
-                last = tools.call("post", {"topic": topic, "text": "post 501"},
+                last = tools.call("zulip_post", {"topic": topic, "text": "post 501"},
                                   meta={"threadId": A})["structuredContent"]["id"]
-                sibling = tools.call("post", {"topic": topic, "text": "sibling post"},
+                sibling = tools.call("zulip_post", {"topic": topic, "text": "sibling post"},
                                      meta={"threadId": B})["structuredContent"]["id"]
                 self.assertIn(first, state.posted())
                 self.assertIn(last, state.posted())
                 resumed = self.direct(owner, "flag" if owner else "none")
                 read = {"topic": topic}
-                self.assertEqual(resumed.call("read_topic", read, meta={"threadId": A})
+                self.assertEqual(resumed.call("zulip_read_topic", read, meta={"threadId": A})
                                  ["structuredContent"]["ids"], [sibling])
-                self.assertEqual(resumed.call("read_topic", read, meta={"threadId": B})
+                self.assertEqual(resumed.call("zulip_read_topic", read, meta={"threadId": B})
                                  ["structuredContent"]["ids"], [first, last])
 
     def test_native_topic_read_snapshots_current_thread_once_per_page(self):
         tools = self.direct()
         topic = "snapshot-page"
-        own = tools.call("post", {"topic": topic, "text": "A authored"},
+        own = tools.call("zulip_post", {"topic": topic, "text": "A authored"},
                          meta={"threadId": A})["structuredContent"]["id"]
-        sibling = tools.call("post", {"topic": topic, "text": "B authored"},
+        sibling = tools.call("zulip_post", {"topic": topic, "text": "B authored"},
                              meta={"threadId": B})["structuredContent"]["id"]
         page = self.fake.messages[-2:] * 25
         original = State.posted
@@ -268,12 +271,12 @@ class CodexThreadMetaTests(McpHarness):
                 mock.patch.object(State, "posted", autospec=True, side_effect=recorded):
             for thread, visible in ((A, sibling), (B, own), (A, sibling)):
                 reads.clear()
-                result = tools.call("read_topic", {"topic": topic, "limit": 50},
+                result = tools.call("zulip_read_topic", {"topic": topic, "limit": 50},
                                     meta={"threadId": thread})["structuredContent"]
                 self.assertEqual(result["ids"], [visible] * 25)
                 self.assertEqual(reads, [self.state_dir / "CODEX" / ("codex-thread-" + thread) / "state.json"])
             reads.clear()
-            result = tools.call("read_topic", {"topic": topic, "limit": 50, "include_self": True},
+            result = tools.call("zulip_read_topic", {"topic": topic, "limit": 50, "include_self": True},
                                 meta={"threadId": A})["structuredContent"]
             self.assertEqual(result["ids"], [own, sibling] * 25)
             self.assertEqual(reads, [])

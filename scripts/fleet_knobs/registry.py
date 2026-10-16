@@ -31,6 +31,8 @@ KINDS = ("str", "int", "bool", "enum", "list", "caps")
 # Linear user ids are UUIDs.  The launch timestamp is ISO 8601 with an offset or Z.
 UUID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 ISO_PATTERN = (r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$")
+# A seat tag:  CLAUDE, GROK-WEB, BF-DEPLOYER.
+SEAT_PATTERN = r"^[A-Z0-9][A-Z0-9-]{0,31}$"
 # 32 random bytes as hex, base64 or urlsafe base64.
 SIGNING_KEY_PATTERN = r"^[A-Za-z0-9+/=_-]{32,256}$"
 
@@ -131,6 +133,11 @@ REGISTRY: Tuple[Spec, ...] = (
        note="sweep action caps"),
     _S("LANE_SWEEP_OPTIN_REPOS", "list", "C5", default=(),
        note="money-path repos the sweep may act on;  empty means none"),
+    # N1 notes relay (AFC-331)
+    _S("NOTES_RELAY_CONSUMER", "str", "N1", default="CLAUDE", pattern=SEAT_PATTERN,
+       note="seat whose bot is the Apple Notes relay consumer (the Mac listener's [notes_relay] seat);  notes_status "
+            "trusts a mark or a refusal reply only from it;  a local [notes_relay] seat that differs is ignored and "
+            "the listener does not consume;  the Worker gets the same value as a binding at deploy"),
     # C7 consult
     _S("CONSULT_ENABLED", "bool", "C7", default=False, safe=False,
        note="false refuses every consult verb"),

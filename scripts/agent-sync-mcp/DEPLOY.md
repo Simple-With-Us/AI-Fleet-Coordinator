@@ -39,10 +39,10 @@ python3 -I install_seat_key.py GROK-WEB --apply    # wrangler secret put ZULIP_K
 python3 -I install_seat_key.py JET                 # checks only
 python3 -I install_seat_key.py JET --apply         # wrangler secret put ZULIP_KEY_JET, value on stdin
 python3 -I install_seat_key.py ECHO --zuliprc ~/.secrets/Zulip/Echo-zuliprc --apply
-python3 -I install_seat_key.py INSTINCT --zuliprc ~/.secrets/Zulip/Instinct-zuliprc --apply
+python3 -I install_seat_key.py WISE --zuliprc ~/.secrets/Zulip/Wise-zuliprc --apply
 ```
 
-ECHO's and INSTINCT's keys are not in Infisical, so `--zuliprc` reads the email and key from the seat's mode-600 zuliprc instead (its `site` must be this realm).  The same checks run, and no field of the file is printed.
+ECHO's and WISE's keys are not in Infisical, so `--zuliprc` reads the email and key from the seat's mode-600 zuliprc instead (its `site` must be this realm).  The same checks run, and no field of the file is printed.
 
 For each seat the script reads `ZULIP_<SEAT>_EMAIL` and `ZULIP_<SEAT>_API_KEY` (`ZULIP_GROK_WEB_*`, `ZULIP_JET_*`, `ZULIP_CLAUDE_*`) from Infisical (project "AI Fleet Coordinator", `prod`, `/zulip`) through the INFISICAL_AUTOMATION identity, and refuses unless the seat is in `HOSTED_SEATS`, the email equals the seat's configured Worker email binding (`ZULIP_EMAIL_<SEAT>` for every seat except CLAUDE, which uses the canonical `ZULIP_CLAUDE_EMAIL`), and Zulip's `users/me` for the key is that bot, a bot, and a member (role 400).  The value goes to wrangler on stdin and is never printed, logged or written to a file.  `wrangler secret put` deploys a new version at once.
 
@@ -91,7 +91,7 @@ Run from this directory, in the same subshell shape as Step 2b.  Never print a v
 
 **Which Infisical project holds the pair.**  `docs/protocols/linear-migration.md` section 2 says per-seat keys live in the separate project **Fleet Linear Seats**, not in AI Fleet Coordinator;  INFISICAL.md records that only the shared `Fleet` app pair lives in AI Fleet Coordinator under `/linear`.  Confirm which one Jay put the GROK-WEB pair in before running the two `put` lines.
 
-**Which seats are on.**  `LINEAR_SEATS` in `src/linear.js` lists the seats whose Linear tools answer at all;  `GROK-WEB` is the only entry today.  Adding `ECHO` or `INSTINCT` is a one-line code change and a redeploy, deliberately, so a seat cannot gain board access by accident.
+**Which seats are on.**  `LINEAR_SEATS` in `src/linear.js` lists the seats whose Linear tools answer at all;  `GROK-WEB` is the only entry today.  Adding `ECHO` or `WISE` is a one-line code change and a redeploy, deliberately, so a seat cannot gain board access by accident.
 
 **Writes are off.**  `LINEAR_TOOLS_WRITES` is a plain var, not a secret, and reads happen without it.  Turn writes on in `wrangler.jsonc` (`"LINEAR_TOOLS_WRITES": "1"`), redeploy, and probe with a throwaway issue before letting a seat work for real.
 
@@ -142,13 +142,13 @@ JET was left out of Phase 2 because `openai-dot-bot` was a realm administrator (
 3. Deploy (step 1), then `python3 -I install_seat_key.py JET --apply`.  The script refuses while the live role is not 400.  Done on Fri, Oct 9, at about 8:10am:  version `068c2953` is live, `ZULIP_KEY_JET` is installed, and `infra_phase0.py check` reports 0 failures.
 4. Jay arms JET and connects ChatGPT (ARMING-JAY.md).  Still open.
 
-## Add ECHO and INSTINCT
+## Add ECHO and WISE
 
-Two identities of the Instinct app (instinct.com), added on Fri, Oct 9:  ECHO posts as `instinct-bat-bot@`, INSTINCT as `instinct-owl-bot@`, both members (role 400).  They share the app's loopback callback `http://127.0.0.1:8737/callback`, the one kind of redirect two seats may share (spec 3.4).
+Two identities of the Instinct app (instinct.com), added on Fri, Oct 9:  ECHO posts as `instinct-bat-bot@`, WISE as `instinct-owl-bot@`, both members (role 400).  They share the app's loopback callback `http://127.0.0.1:8737/callback`, the one kind of redirect two seats may share (spec 3.4).
 
-1. Both seats are in `HOSTED_SEATS`, `ZULIP_EMAIL_ECHO` and `ZULIP_EMAIL_INSTINCT` are set, and `SEATS` lists the callback under both.
-2. Deploy (step 1), then install both keys with `--zuliprc` (step 2).  Done on Fri, Oct 9, at about 10:24pm:  code version `37f28601` deployed, `ZULIP_KEY_ECHO` and `ZULIP_KEY_INSTINCT` installed (live version `493d4192`), and `infra_phase0.py check` reports 0 failures.
-3. Jay connects one seat at a time (ARMING-JAY.md, "Connect Echo" and "Connect Instinct").  The client id is unknown until the first attempt:  a manual client from `/admin`, or a CIMD id from the refusal log, added to `SEATS.<seat>.cimd_client_ids`.  One CIMD id cannot be listed under both seats yet (`cimdOwner` maps an id to one seat), so if Instinct uses one client document for both identities, that needs a code change first.
+1. Both seats are in `HOSTED_SEATS`, `ZULIP_EMAIL_ECHO` and `ZULIP_EMAIL_WISE` are set, and `SEATS` lists the callback under both.
+2. Deploy (step 1), then install both keys with `--zuliprc` (step 2).  Done on Fri, Oct 9, at about 10:24pm:  code version `37f28601` deployed, `ZULIP_KEY_ECHO` and `ZULIP_KEY_WISE` installed (live version `493d4192`), and `infra_phase0.py check` reports 0 failures.
+3. Jay connects one seat at a time (ARMING-JAY.md, "Connect Echo" and "Connect Wise").  The client id is unknown until the first attempt:  a manual client from `/admin`, or a CIMD id from the refusal log, added to `SEATS.<seat>.cimd_client_ids`.  One CIMD id cannot be listed under both seats yet (`cimdOwner` maps an id to one seat), so if Instinct uses one client document for both identities, that needs a code change first.
 
 ## Add the DM tools
 
@@ -162,9 +162,29 @@ Owner decisions, Sat, Oct 10:  a DM event carries its fenced excerpt ("yes"), an
 
 ## Any public channel
 
-Owner ruling, Sat, Oct 10, 2026:  "I want bots to wake to any channel or DM" … "not just agent-sync or one other", and for the ECHO and INSTINCT pollers, "All of them".  The `CHANNELS` var (#agent-sync and #sandbox) is removed;  a seat now uses any public channel its own bot is subscribed to, read from Zulip per seat and cached 60 seconds, minus `CHANNELS_DENY` (a JSON array of stream ids in `wrangler.jsonc` vars, `[]` by default).  Private channels are never allowed.  MCP Events wakes use the same rule, read at delivery time with the seat's key (a Zulip failure there answers 503, so the listener retries).  The `events/list` channel filter is now a free string checked at subscribe time;  ChatGPT may need a plugin rescan to see the new schema, and an existing subscription keeps working.  No secret, scope or binding changes, and no migration:  step 1 is the whole deploy.  To keep a public channel off every seat, add its stream id to `CHANNELS_DENY` and redeploy.
+Owner ruling, Sat, Oct 10, 2026:  "I want bots to wake to any channel or DM" … "not just agent-sync or one other", and for the ECHO and WISE pollers, "All of them".  The `CHANNELS` var (#agent-sync and #sandbox) is removed;  a seat now uses any public channel its own bot is subscribed to, read from Zulip per seat and cached 60 seconds, minus `CHANNELS_DENY` (a JSON array of stream ids in `wrangler.jsonc` vars, `[]` by default).  Private channels are never allowed.  MCP Events wakes use the same rule, read at delivery time with the seat's key (a Zulip failure there answers 503, so the listener retries).  The `events/list` channel filter is now a free string checked at subscribe time;  ChatGPT may need a plugin rescan to see the new schema, and an existing subscription keeps working.  No secret, scope or binding changes, and no migration:  step 1 is the whole deploy.  To keep a public channel off every seat, add its stream id to `CHANNELS_DENY` and redeploy.
 
 **Deployed** Sun, Oct 11, about 12:39am (CLAUDE sub-agent), from `10b2042b` (PR 464):  version `ebe48ba3-c792-44af-8d0b-c4cb151a04c6`, `CHANNELS_DENY ([])`, no `CHANNELS`.  `/health` answered `{"ok":true}`;  `/mcp` with no token and an unsigned `/internal/wake/JET` both answered 401.
+
+## The rest of Zulip (AFC-330)
+
+Owner, Thu, Oct 15:  "I'd like Agent-Sync and whatever local agents use to be able to do all tasks supported by Zulip."  33 more `zulip_*` tools (spec section 1.6) come from `tools.json` by construction, implemented in `src/zulip-full.js`.  No secret, scope or var changes:  step 1 is the whole deploy.  Clients that cache `tools/list` (Grok on the web, ChatGPT) refresh the connector's tools to see them.  Smoke test from a connected seat after the deploy:  `zulip_channels`, then `zulip_search` with `{"query": "deploy", "channel": "sandbox"}`, then `zulip_draft_create` and `zulip_draft_delete` in #sandbox (a draft is never sent).  **Not deployed yet.**
+
+## Listener read API (AFC-330)
+
+The `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes` and `listener_held_back` tools (spec section 1.7) read the server listener's signed read API with the seat's `WAKE_HMAC_KEY_<SEAT>`.  Until both halves are set up they answer `not_configured` and nothing else changes.
+
+1. The listener half first:  `docs/protocols/agent-sync-server.md`, "The Read API", steps 1 to 5 (redeploy, keys, `[listener_api]`, the proxy route, the checks).
+2. Set the var in `wrangler.jsonc`:  `"LISTENER_API_URL": "https://listener.jays.services"` (an https origin with no path;  anything else reads as unset).  Open a PR and merge it.
+3. Make sure each seat that should read its records has `WAKE_HMAC_KEY_<SEAT>` (JET already does;  the others only if Jay chose to add them in the server doc's step 2):
+   ```bash
+   grep -m1 '^JET_ROUTINE_KEY=' ~/.secrets/jet-wake-hmac.env | cut -d= -f2- | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
+   ```
+4. Deploy (step 1).  From a connected JET chat, `listener_status` answers counts;  a 401 there means the two keys differ or the clocks are more than five minutes apart, a 404 that the listener has no key for the seat.  **Not deployed yet.**
+
+## Notes, recall and the guide (AFC-331)
+
+`notes_create`, `notes_update`, `notes_pin`, `notes_unpin` and `notes_status` (`src/notes.js`) relay Apple Notes requests to `#notes-relay`;  the Mac listener does the work (`docs/protocols/per-call-identity.md`, section 5).  Before the first call: the owner creates the public channel `#notes-relay`, every bot that relays is subscribed to it (the channel rule needs that), and the Mac's `listener.toml` has `[notes_relay] enabled = true`.  No secret or var changes.  The `guide` tool serves `src/guide-text.js`, generated from `docs/protocols/agent-sync-tools-guide.md`:  after editing that page run `node scripts/export-guide.mjs` (a test fails when it is stale).  `recall_*` specs are shared with the stdio server through `scripts/agent_sync/mcp/recall-tools.json`:  after changing `src/recall.js` run `node scripts/export-recall-tools.mjs`.  Clients that cache `tools/list` refresh the connector to see the new tools.  `notes_status` counts a check mark, a cross mark or a refusal reply only from the relay consumer's bot, named by the fleet knob `NOTES_RELAY_CONSUMER`.  It is a tunable, so it lives in Infisical (not in `wrangler.jsonc`):  **the owner creates the key `NOTES_RELAY_CONSUMER` with the value `CLAUDE` in the AI Fleet Coordinator project, `prod`, root path `/`** (INFISICAL.md, "Fleet knobs").  The Mac reads it through `fleet_knobs` (default `CLAUDE` when Infisical is unreachable with no last-known-good copy, logged as `default CLAUDE (unreachable:...)`);  the Worker gets it as a binding of the same name.  Copy it at deploy, after the key exists:  `python3 -I sync_notes_consumer.py` checks (prints the seat name, writes nothing to Infisical), `python3 -I sync_notes_consumer.py --apply` runs `wrangler secret put NOTES_RELAY_CONSUMER` with the value on stdin.  Rerun it whenever the key changes.  **Rotating the consumer:**  only the current consumer's marks and replies are trusted, on purpose, so a former consumer cannot forge a result.  Rotate it only with an empty spool (no request queued or half-run), and expect the status of any request sent before the rotation to read `queued` afterwards.  Until it has run, `notes_status` answers `not_configured` and trusts no reaction.  One more binding counts against the Worker's limit (see the FleetLink note below).  **Not deployed yet.**
 
 ## Rotate a key
 
@@ -187,7 +207,7 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 - **A4:**  Infisical's Cloudflare Workers sync for the hosted keys, with "Disable Secret Deletion" (replaces step 2).
 - **A5:**  a per-Worker deploy token, kept out of agents' reach (replaces the Global key in step 1).
 - **A1 and D8:**  a key location no agent identity can read.  Until then the INFISICAL_AUTOMATION identity and the Global key can both reach GROK-WEB's key, which D8 accepts.
-- **ECHO and INSTINCT:**  connect one at a time from the Instinct app's own computer ([ARMING-JAY.md](ARMING-JAY.md), "Connect Echo" and "Connect Instinct").  The Worker serves both and both keys are installed (Fri, Oct 9, about 10:24pm);  the client id comes from the first attempt.
+- **ECHO and WISE:**  connect one at a time from the Instinct app's own computer ([ARMING-JAY.md](ARMING-JAY.md), "Connect Echo" and "Connect Wise").  The Worker serves both and both keys are installed (Fri, Oct 9, about 10:24pm);  the client id comes from the first attempt.
 - **JET:**  arm it and connect ChatGPT ([ARMING-JAY.md](ARMING-JAY.md)).  The bot is a member, the Worker serves JET and its key is installed (Fri, Oct 9, about 8:10am), so nothing else blocks it.
 
 
@@ -293,12 +313,33 @@ no runtime Infisical request is made per tool call.  Cursor Linear operations
 use distinct counters and pacing; existing exhausted Zulip counters are retained.
 Verify production CURSOR audit outcomes for both reads and writes after deployment.
 
-## Cursor Grok Bot Identity Routing (AFC-322)
+## Per-Call Identity (AFC-322, AFC-331)
 
-One CURSOR OAuth installation offers per-call `identity` selection.  `agent_sync_identities` reports `CURSOR` and the eleven active Grok Bot personas with Zulip and Linear configured or missing states.  The identities are `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE` and `GB-TRADER`.  `GB-ENGINEER` is disabled and `BF-*` identities belong to BotFleet, so neither appears.  No OAuth client, callback, token, grant, scope or `HOSTED_SEATS` entry is added for a GB identity.
+Every grant offers per-call `identity` selection (`docs/protocols/per-call-identity.md`).  A CURSOR or GROK-WEB grant may act as CURSOR, GROK-WEB and the eleven enabled Grok Bot personas;  every other grant only as its own seat.  `identities` (formerly `agent_sync_identities`) reports the set with Zulip and Linear configured or missing states.  The personas are the `enabled` list in `scripts/agent_sync/mcp/gb-identities.json`:  `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE` and `GB-TRADER`.  `GB-ENGINEER` is disabled and `BF-*` identities belong to BotFleet, so neither appears.  Writes must name their identity;  a client that omits it gets `identity_required`, so the Cursor and Grok connector instructions must say to pass it.  No OAuth client, callback, token, grant, scope or `HOSTED_SEATS` entry is added for a GB identity.
 
 The source remains the 22 `ZULIP_GB_<ROLE>_EMAIL` and `ZULIP_GB_<ROLE>_API_KEY` values in the **AI Fleet Coordinator** Infisical project, `prod` `/zulip`, plus the 22 `LINEAR_GB_<ROLE>_CLIENT_ID` and `LINEAR_GB_<ROLE>_CLIENT_SECRET` values in that project's `prod` `/linear`.  The earlier separate **Fleet Linear Seats** project guidance does not apply to these GB pairs.  Each role's email must equal `<role>-grok-bot@simplewithus.zulipchat.com`;  its Zulip key must authenticate that member bot (role 400), and its Linear viewer must name the selected `GB-ROLE` app.
 
-Install **one** encrypted Worker secret named `GB_IDENTITY_CREDENTIALS`.  Its JSON object has `v: 1` and an `r` object keyed by exactly the eleven roles above;  each role value is the four-string array `[email, zulipKey, linearClientId, linearClientSecret]`.  The UTF-8 payload is capped at 5 KiB.  Build it only in memory from the 44 verified Infisical source values and pass it to `wrangler secret put GB_IDENTITY_CREDENTIALS` on stdin;  never print or save the payload.  The Worker parses the bundle once per authenticated CURSOR request.  A present malformed or incomplete bundle fails closed;  legacy per-role bindings are considered only when the bundle binding is absent, and then only complete four-field rows are used.  Do not mix credentials between sources or roles.  This single binding stays below the Free plan's 64 binding limit where 44 separate bindings could not fit.
+Install **one** encrypted Worker secret named `GB_IDENTITY_CREDENTIALS`.  Its JSON object has `v: 1` and an `r` object keyed by exactly the eleven roles above;  each role value is the four-string array `[email, zulipKey, linearClientId, linearClientSecret]`.  The UTF-8 payload is capped at 5 KiB.  Build it only in memory from the 44 verified Infisical source values and pass it to `wrangler secret put GB_IDENTITY_CREDENTIALS` on stdin;  never print or save the payload.  The Worker parses the bundle once per authenticated CURSOR or GROK-WEB request, so the one existing `GB_IDENTITY_CREDENTIALS` secret serves both grants;  nothing new is installed for GROK-WEB.  A present malformed or incomplete bundle fails closed;  legacy per-role bindings are considered only when the bundle binding is absent, and then only complete four-field rows are used.  Do not mix credentials between sources or roles.  This single binding stays below the Free plan's 64 binding limit where 44 separate bindings could not fit.
 
-`agent_sync_identities` exposes configured or missing status, never values.  The shared `LINEAR_TOOLS_WRITES` switch still controls writes.  All selected tool calls charge the original CURSOR budget and the role's own gate.  The deployment and production acceptance check are separate from this code change.
+`identities` exposes configured or missing status, never values.  The shared `LINEAR_TOOLS_WRITES` switch still controls writes.  All selected tool calls charge the grant's own budget and the identity's own gate.  A GROK-WEB grant acting as CURSOR uses `ZULIP_KEY_CURSOR` and CURSOR's Linear pair, and CURSOR acting as GROK-WEB uses `ZULIP_KEY_GROK_WEB` and GROK-WEB's Linear pair, so both seats must stay in `HOSTED_SEATS` with their keys installed for the peer path to work (it answers `not_configured` otherwise).  The deployment and production acceptance check are separate from this code change.
+
+At deploy (AFC-331):  the tool names change (`post` is now `zulip_post`, and so on) and the old names answer `unknown_tool`, so after the deploy Jay refreshes the connector's tools in each client that caches the list (Grok on the web, Cursor, ChatGPT), and agents re-read their instructions.  No new secret, binding or variable is needed.
+
+## FleetLink (AFC-328)
+
+The `fleetlink_*` tools need one Worker secret, `FLEETLINK_AGENT_SECRET`:  `fls_` plus 64 hex.  FleetLink holds the same value as its own Worker secret `AGENT_SYNC_SECRET` (FleetLink `docs/multi-user.md`, "Agent Accounts").  Without it the FleetLink tools answer `not_configured` and everything else works.  The value lives in Infisical, project "AI Fleet Coordinator", `prod`, `/fleetlink`, as `FLEETLINK_AGENT_SECRET` (INFISICAL.md).  It was made and installed on both Workers on Thu, Oct 15, 2026.  To reinstall it here, read it with the INFISICAL_AUTOMATION identity and pipe it straight in, with the Step 1 credentials exported in the same subshell.  Never print it:
+
+```bash
+(
+  set +x
+  # fetch prints only the value, to the pipe:  universal-auth login, then
+  # GET /v3/secrets/raw/FLEETLINK_AGENT_SECRET?workspaceId=<project>&environment=prod&secretPath=/fleetlink
+  fetch_fleetlink_secret | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put FLEETLINK_AGENT_SECRET >/dev/null && echo "set FLEETLINK_AGENT_SECRET"
+)
+```
+
+On FleetLink's side, the same value goes to `AGENT_SYNC_SECRET` on the `fleetlink` Worker.  Its deploy (`FLEETLINK_SECRETS=keep`) keeps the secret, and `wrangler secret put AGENT_SYNC_SECRET` or the Workers secrets API replaces it.  Rotate by installing a new value on both sides, FleetLink first:  until this Worker has the new value too, the tools answer `not_authorized` with HTTP 401.
+
+**Seat tokens.**  A seat that has its own FleetLink bot token signs in with it instead of the server credential, so it works under that token's limits:  the fleet's tokens are minted to follow Jay's limits as they change (FleetLink `limits_from: "manager"`).  The tokens live in Infisical `/fleetlink` as `FLEETLINK_TOKEN_<SEAT>` (hyphens as underscores), and the Worker reads them from one secret, `FLEETLINK_SEAT_TOKENS`, a JSON object of seat to token (`{"JET": "fla_…", "GB-FIXER": "fla_…"}`), because the Worker is near its binding limit.  Build it in memory from Infisical for every hosted seat and GB identity, and pipe it to `wrangler secret put FLEETLINK_SEAT_TOKENS`;  never print it.  A malformed bundle is ignored whole and every seat falls back to `FLEETLINK_AGENT_SECRET`.  Re-run it after minting a token for a new seat.
+
+Check with `fleetlink_whoami` from any seat:  `user.id` is `usr_agent_<seat>` and `auth.kind` is `agent`.  In the Worker log, `"tool":"fleetlink_whoami"` with `outcome` `ok` means the credential works.  Jay is the fleet owner (FleetLink's `FLEET_OWNER_EMAIL` secret, or "Make Me The Fleet Owner" in its admin console):  every seat's bot account sits under his account and he owns the Fleet team.

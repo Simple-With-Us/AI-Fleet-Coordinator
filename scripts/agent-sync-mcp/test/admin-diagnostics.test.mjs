@@ -28,7 +28,7 @@ test("call failures retain bounded safe diagnostics and retry metadata", async (
       retryable: true, retryAfterS: 17, resetAt: "2026-10-15T12:01:00Z", extra: { status: 429 },
     });
   };
-  const result = await tools.call("topics", {});
+  const result = await tools.call("zulip_topics", {});
   assert.equal(result.isError, true);
   const [row] = await gate.errorTail(50);
   assert.equal(row.error_code, "rate_limited");
@@ -43,13 +43,13 @@ test("scanner-flagged diagnostics use generic text and request values are omitte
   const { tools, gate } = harness();
   const token = `ghp_${"a".repeat(36)}`;
   tools.tool_topics = async () => { throw new ToolError("upstream_error", `upstream rejected ${token}`); };
-  await tools.call("topics", {});
+  await tools.call("zulip_topics", {});
   let rows = await gate.errorTail(50);
   assert.equal(rows[0].error_message, "Error message omitted after secret scan.");
   assert.ok(!JSON.stringify(rows).includes(token));
 
   tools.tool_reply = async (args) => { throw new ToolError("invalid_argument", `bad message ${args.message_id}: ${args.text}`); };
-  await tools.call("reply", { message_id: 987654, text: "private reply body" });
+  await tools.call("zulip_reply", { message_id: 987654, text: "private reply body" });
   rows = await gate.errorTail(50);
   assert.ok(!JSON.stringify(rows).includes("987654"));
   assert.ok(!JSON.stringify(rows).includes("private reply body"));

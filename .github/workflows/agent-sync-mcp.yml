@@ -16,6 +16,9 @@ on:
       - "scripts/agent_sync/mcp/fixtures.jsonl"
       - "scripts/agent_sync/textfmt.py"
       - "scripts/agent_sync/tests/test_textfmt.py"
+      # The board CLI's copy of the Linear catalogs, pinned to the server's export.
+      - "scripts/linear-board/catalog/**"
+      - "scripts/linear-board/testdata/**"
       - ".github/workflows/agent-sync-mcp.yml"
   pull_request:
     branches: [ "main" ]
@@ -26,6 +29,9 @@ on:
       - "scripts/agent_sync/mcp/fixtures.jsonl"
       - "scripts/agent_sync/textfmt.py"
       - "scripts/agent_sync/tests/test_textfmt.py"
+      # The board CLI's copy of the Linear catalogs, pinned to the server's export.
+      - "scripts/linear-board/catalog/**"
+      - "scripts/linear-board/testdata/**"
       - ".github/workflows/agent-sync-mcp.yml"
 
 permissions:

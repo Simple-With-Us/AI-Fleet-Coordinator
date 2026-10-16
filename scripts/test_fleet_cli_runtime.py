@@ -47,10 +47,10 @@ PROTOCOL = AUDIT + r'''
 import io
 sys.path.insert(0, sys.argv[1])
 from agent_sync.mcp.stdio import Server
-from agent_sync.mcp.tools import load_tools
+from agent_sync.mcp.tools import load_served_tools
 class CatalogueOnly:
     seat = "CODEX"
-    spec = load_tools()
+    spec = load_served_tools()
     def call(self, *args, **kwargs):
         raise AssertionError("offline_tool_execution_forbidden")
 raise SystemExit(Server(CatalogueOnly()).serve(sys.stdin.buffer, sys.stdout.buffer))
@@ -64,15 +64,20 @@ def env_for(home):
 def safe_smoke_run(argv, **kwargs):
     # Keep the actual receiver smoke cases and process settings.  Inject only
     # an audit guard before executing the same real script with runpy.
-    if argv[:3] != [sys.executable, "-I", "-B"]:
+    # lane and fleet-mode are bash scripts (AFC-331);  they run as the receiver runs them, without the
+    # Python audit hook, and only ever touch the empty temporary HOME.
+    bash = argv[:1] == ["/bin/bash"]
+    if not bash and argv[:3] != [sys.executable, "-I", "-B"]:
         raise AssertionError("receiver smoke lost isolated interpreter flags")
     started = time.monotonic()
-    case = {"script": Path(argv[3]).name, "args": argv[4:],
+    skip = 2 if bash else 4
+    command = argv if bash else [*argv[:3], "-c", BOOT, *argv[3:]]
+    case = {"script": Path(argv[skip - 1]).name, "args": argv[skip:],
             "executable_exists": Path(argv[0]).is_file(),
             "cwd_exists": Path(kwargs["cwd"]).is_dir(),
             "env_names": sorted(kwargs["env"]), "timeout_s": kwargs["timeout"]}
     try:
-        result = RUN([*argv[:3], "-c", BOOT, *argv[3:]], **kwargs)
+        result = RUN(command, **kwargs)
     except subprocess.TimeoutExpired:
         print(json.dumps({"smoke": case, "error": "TimeoutExpired",
                           "elapsed_s": round(time.monotonic() - started, 3)}), file=sys.stderr, flush=True)
@@ -173,6 +178,30 @@ class ActualRuntime(unittest.TestCase):
                 else:
                     self.assertTrue(result.stderr)
 
+    def test_actual_recall_lane_and_fleet_mode(self):
+        # AFC-331:  the three tools the server mirror gained run from the real release.
+        result = self.command("scripts/recall", ["--help"])
+        self.assert_exit(result, 0)
+        self.assertTrue(b"recall" in result.stdout, "recall help absent")
+        for script, args, code, text in [("scripts/fleet_lanes/bin/lane", ["--help"], 0, b"lane"),
+                                         ("scripts/fleet-mode", [], 0, b"Fleet mode")]:
+            with self.subTest(script=script):
+                result = RUN(["/bin/bash", str(self.release / script), *args], env=self.env, cwd=self.home,
+                             capture_output=True, timeout=15)
+                self.assert_exit(result, code)
+                self.assertTrue(text in result.stdout, "expected output absent")
+        result = RUN(["/bin/bash", str(self.release / "scripts/fleet-mode"), "--full"], env=self.env,
+                     cwd=self.home, capture_output=True, timeout=15)
+        self.assertEqual(result.stdout, (self.release / "docs/FLEET-MODE.md").read_bytes())
+        # Running the tools must leave the immutable release exactly as installed (no __pycache__).
+        self.assertEqual(list(self.release.rglob("__pycache__")), [])
+        self.assertEqual(self.receiver.control(self.home, "status")["status"], "ready")
+
+    def test_recall_ships_no_lazy_mac_only_modules(self):
+        self.assertFalse((self.release / "scripts/fleet_rag/ingest.py").exists())
+        self.assertFalse((self.release / "scripts/fleet_rag/eval.py").exists())
+        self.assertFalse((self.release / "scripts/fleet_lanes/install_tools.py").exists())
+
     def test_actual_mcp_startup_refuses_missing_credentials(self):
         result = self.command("scripts/agent-sync", ["mcp", "--default-seat", "CODEX"], data=self.requests())
         self.assert_exit(result, 3)
@@ -198,16 +227,33 @@ class ActualRuntime(unittest.TestCase):
         self.assertEqual([item["id"] for item in replies], [1, 2])
         self.assertEqual(replies[0]["result"]["protocolVersion"], "2025-11-25")
         self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "agent-sync")
-        catalogue = json.loads((self.release / "scripts/agent_sync/mcp/tools.json").read_bytes())
-        self.assertTrue(catalogue["tools"])
-        self.assertEqual(replies[1]["result"], catalogue)
+        # What the real server serves:  tools.json, listener-tools.json (AFC-330), notes-tools.json and
+        # recall-tools.json (AFC-331), then the linear_* tools built from the board catalogs.  Every file must
+        # ship, or `agent-sync mcp` fails at startup on the server (it did, 2026-10-16).
+        mcp = self.release / "scripts/agent_sync/mcp"
+        served = []
+        for name in ("tools.json", "listener-tools.json", "notes-tools.json", "recall-tools.json"):
+            served += json.loads((mcp / name).read_bytes())["tools"]
+        self.assertTrue(served)
+        listed = replies[1]["result"]["tools"]
+        self.assertEqual(listed[:len(served)], served)
+        catalog = self.release / "scripts/linear-board/catalog"
+        linear = ([t["name"] for t in json.loads((catalog / "core-tools.json").read_bytes())["tools"]]
+                  + [c["name"] for c in json.loads((catalog / "named-commands.json").read_bytes())["commands"]]
+                  + [t["name"] for t in json.loads((catalog / "official-mcp-tools.json").read_bytes())["tools"]])
+        self.assertEqual([t["name"] for t in listed[len(served):]], linear)
 
     def test_generated_wrapper_isolation_flags(self):
-        for name in ("agent-sync", "board", "fleet-cli-release", "agent-sync-codex-mcp"):
+        for name in ("agent-sync", "board", "fleet-cli-release", "agent-sync-codex-mcp", "recall"):
             with self.subTest(wrapper=name):
                 content = (self.home / ".local/bin" / name).read_text()
                 self.assertTrue(content.startswith("#!/usr/bin/python3 -I\n"))
                 self.assertIn("['/usr/bin/python3', '-I', '-B',", content)
+        for name in ("lane", "fleet-mode"):
+            with self.subTest(wrapper=name):
+                content = (self.home / ".local/bin" / name).read_text()
+                self.assertTrue(content.startswith("#!/usr/bin/python3 -I\n"))
+                self.assertIn("argv = ['/bin/bash', str(release /", content)
 
     def test_generated_wrappers_with_pinned_interpreter(self):
         # The immutable wrapper pins Coolify's Linux interpreter.  A Mac system
@@ -223,8 +269,10 @@ class ActualRuntime(unittest.TestCase):
         if version.returncode or tuple(map(int, version.stdout.split())) < (3, 11):
             self.skipTest("deployment interpreter requires Python 3.11+; host /usr/bin/python3 is older")
         for name, args, expected in [("agent-sync", ["--version"], 0), ("board", ["--help"], 0),
-                                     ("board", ["whoami"], 4), ("fleet-cli-release", ["status"], 0),
-                                     ("agent-sync-codex-mcp", [], 3)]:
+                                     ("board", ["whoami"], 4), ("board", ["commands", "--kind", "read"], 0),
+                                     ("board", ["mcp", "list"], 0), ("fleet-cli-release", ["status"], 0),
+                                     ("agent-sync-codex-mcp", [], 3), ("recall", ["--help"], 0),
+                                     ("lane", ["--help"], 0), ("fleet-mode", [], 0)]:
             with self.subTest(wrapper=name, args=args):
                 wrapper = self.home / ".local/bin" / name
                 result = RUN([str(wrapper), *args], env=self.env, cwd=self.home,

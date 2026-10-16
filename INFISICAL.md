@@ -60,11 +60,45 @@ counters and pacing (100ms writes, 50ms reads).  Zulip posts/replies are
 50/hour and 200/day.  Zulip spacing stays 3 seconds for writes and 500ms for reads.
 Other seats retain their existing limits.  Upstream rate limits still apply.
 
+## Notes relay consumer (AFC-331)
+
+`NOTES_RELAY_CONSUMER` is one fleet knob (registered in `scripts/fleet_knobs/registry.py`, listed under "Fleet knobs" below):  the seat whose bot is the Apple Notes relay consumer.  **Owner action:  create the key `NOTES_RELAY_CONSUMER` with the value `CLAUDE` in this project, `prod`, root path `/`.**  Nothing in the repo writes it.
+
+| Reader | How it gets the value |
+|---|---|
+| Mac listener, stdio MCP, CLI | `fleet_knobs` (one fetch per process, last-known-good copy).  A `[notes_relay] seat` in `listener.toml` that differs is ignored and the listener then does not consume.  With Infisical unreachable and no usable copy the answer is the default `CLAUDE`, labelled `default CLAUDE (unreachable:...)` in the log line `notes relay consumer ...`. |
+| Hosted Worker | An encrypted Worker binding of the same name, copied at deploy by `scripts/agent-sync-mcp/sync_notes_consumer.py` (DEPLOY.md, "Notes, recall and the guide").  Never in `wrangler.jsonc`.  Unset means `notes_status` answers `not_configured`. |
+
 ## Zulip Outgoing Wake Tokens
 
 The existing server listener loads `ZULIP_OUTGOING_<CODE>_TOKEN` from prod `/zulip` at startup for each server seat.  `<CODE>` replaces hyphens in the seat tag with underscores.  These separate Zulip service tokens authenticate outgoing webhook requests; they are neither `ZULIP_<CODE>_API_KEY` nor the routine's bearer/HMAC key.  Missing tokens deny requests for that seat.
 
 The on-demand `scripts/zulip_migrate_outgoing.py publish` helper readback-verifies the replacement email, API key, and service token in Infisical before atomically installing the local zuliprc.  Refresh every additional credential consumer before retiring the old identity.  See [the migration runbook](docs/protocols/zulip-outgoing-migration.md).
+
+## Hosted Echo and Wise Zulip identities
+
+The hosted bridge and server listener use the canonical seat names ECHO and WISE.  Their Zulip RC files are `Echo-zuliprc` and `Wise-zuliprc`; the latter replaces the former `Instinct-zuliprc` filename.  The bot email may retain its existing Zulip local part while the seat key is WISE.
+
+| Key | Kind | Worker binding / provisioning |
+|---|---|---|
+| `ZULIP_ECHO_EMAIL` | env config | Echo bot email; Worker var `ZULIP_EMAIL_ECHO` |
+| `ZULIP_ECHO_API_KEY` | secret | Echo bot key; Worker secret `ZULIP_KEY_ECHO` |
+| `ZULIP_WISE_EMAIL` | env config | Wise bot email; Worker var `ZULIP_EMAIL_WISE` |
+| `ZULIP_WISE_API_KEY` | secret | Wise bot key; Worker secret `ZULIP_KEY_WISE` |
+
+Store current values in prod `/zulip`, and verify each bot identity before provisioning.  Never copy a key into source or logs.
+
+## Zulip incoming-webhook bots
+
+Jay owns these incoming-webhook bots.  Each key builds a vendor's webhook URL (`/api/v1/external/<integration>?api_key=…&stream=…`), so a leaked URL is a leaked key.  The local copies are `~/.secrets/Zulip/<Name>-zuliprc` (0600).  Routing is in [the signal routing plan](docs/plans/2026-10-15-fleet-signal-routing.md).
+
+| Key | Kind | Used by |
+|---|---|---|
+| `ZULIP_SENTRY_EMAIL` / `ZULIP_SENTRY_API_KEY` | env config / secret | Sentry internal integrations for #alerts, #trading, #agent-sync |
+| `ZULIP_PAGERDUTY_EMAIL` / `ZULIP_PAGERDUTY_API_KEY` | env config / secret | PagerDuty v3 webhook to #incident-response |
+| `ZULIP_LINEAR_EMAIL` / `ZULIP_LINEAR_API_KEY` | env config / secret | Linear webhook to #issues |
+| `ZULIP_BETTERSTACK_EMAIL` / `ZULIP_BETTERSTACK_API_KEY` | env config / secret | BetterStack outgoing webhook to #alerts (`slack_incoming`) |
+| `ZULIP_DATADOG_EMAIL` / `ZULIP_DATADOG_API_KEY` | env config / secret | Datadog `zulip-alerts` webhook to #alerts (`slack_incoming`) |
 
 ## Runtime contract
 
@@ -130,6 +164,7 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `LANE_SWEEP_MODE` | C5 | enum: report < act < retire | `report` | no | only move toward `report` | act arms merges and retires merged-PR lanes;  retire adds the Phase 3 deletions |
 | `LANE_SWEEP_CAPS` | C5 | caps | `lane_retires_per_run=10,report_posts_per_run=12` | no | only lower a number | sweep action caps |
 | `LANE_SWEEP_OPTIN_REPOS` | C5 | list | empty | no | only remove entries | money-path repos the sweep may act on;  empty means none |
+| `NOTES_RELAY_CONSUMER` | N1 | str | `CLAUDE` | no | nothing | seat whose bot is the Apple Notes relay consumer (the Mac listener's [notes_relay] seat);  notes_status trusts a mark or a refusal reply only from it;  a local [notes_relay] seat that differs is ignored and the listener does not consume;  the Worker gets the same value as a binding at deploy |
 | `CONSULT_ENABLED` | C7 | bool | `false` | no | only set it to `false` | false refuses every consult verb |
 
 <!-- fleet-knobs:end -->
@@ -203,3 +238,18 @@ The Worker uses these same canonical names: var `ZULIP_CLAUDE_EMAIL` and secret
 verifies the stored identity and provisions the Worker secret.  Its live
 identity check requires the CLAUDE bot and member role 400 before writing.
 See [the CLAUDE rollout](scripts/agent-sync-mcp/DEPLOY.md#add-hosted-claude-afc-296).
+
+## FleetLink agent server credential (AFC-328)
+
+Canonical location: AI Fleet Coordinator, `prod`, `/fleetlink`.
+
+| Key | Kind | Status |
+| --- | --- | --- |
+| `FLEETLINK_AGENT_SECRET` | secret | Created and read back 2026-10-15.  Installed as Worker secret `FLEETLINK_AGENT_SECRET` on `agent-sync-mcp` and as `AGENT_SYNC_SECRET` on FleetLink's `fleetlink-api`.  Never copy it to source, chat or a client. |
+
+| `FLEETLINK_TOKEN_<SEAT>` | secret | One per fleet bot (hyphens as underscores, such as `FLEETLINK_TOKEN_GROK_WEB`):  that bot's FleetLink API token, minted to follow Jay's limits as they change.  Read by the Agent-Sync Worker (bundled as `FLEETLINK_SEAT_TOKENS`) and written to `~/.secrets/FleetLink/<SEAT>.env` on hosts where the seat runs `fleet-share`.  No expiry. |
+
+The Agent-Sync MCP Worker sends it, with the acting seat in `X-Fleet-Seat`, to
+FleetLink's `/mcp`, which maps each seat to its own FleetLink agent account.
+Rotate both Workers from this one value, FleetLink first.  See
+[the FleetLink runbook](scripts/agent-sync-mcp/DEPLOY.md#fleetlink-afc-328).

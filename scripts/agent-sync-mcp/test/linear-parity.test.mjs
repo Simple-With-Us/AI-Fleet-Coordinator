@@ -135,7 +135,8 @@ test("a seat's accepted app names are its own, and no two seats share one", () =
 });
 
 test("a seat tag spelling resolves to one seat, the way the CLI resolves it", () => {
-  assert.equal(seatTagForSeat("WISE"), "INSTINCT");
+  assert.equal(seatTagForSeat("INSTINCT"), "WISE");   // WISE is the tag;  INSTINCT is retired
+  assert.equal(seatTagForSeat("WISE"), "WISE");
   assert.equal(seatTagForSeat("grok-web"), "GROK-WEB");
 });
 
@@ -149,4 +150,9 @@ test("every seat with Linear secrets has a hyphen-free secret name", () => {
     assert.ok(names.clientSecret.endsWith("_CLIENT_SECRET"), names.clientSecret);
   }
   assert.equal(LINEAR_SECRETS["GROK-WEB"].clientId, "LINEAR_GROK_WEB_CLIENT_ID");
+});
+test("the early re-mint age is the CLI's (28 days of a 30-day token)", async () => {
+  const { LINEAR_REMINT_AFTER_S } = await import("../src/linear.js");
+  assert.equal(LINEAR_REMINT_AFTER_S, 28 * 86_400);
+  assert.match(BOARD, /^REMINT_AFTER = 28 \* 86400$/m);
 });

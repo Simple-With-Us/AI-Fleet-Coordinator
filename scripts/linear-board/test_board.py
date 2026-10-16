@@ -91,6 +91,7 @@ class MockLinear:
         self.ops: list[str] = []
         self.violations: list[str] = []
         self.mints = 0
+        self.mint_down = False
         self.scopes: list[str] = []
         self.tokens: set[str] = set()
         self.ratelimit400 = 0
@@ -452,6 +453,8 @@ def make_handler(mock: MockLinear):
                     form = dict(urllib.parse.parse_qsl(body.decode()))
                     mock.scopes.append(form.get("scope"))
                     cid = form.get("client_id")
+                    if mock.mint_down:
+                        return self._send(503, {"error": "temporarily_unavailable"})
                     want = CLIENT_SECRET if cid == CLIENT_ID else (mock.clients.get(cid) or {}).get("secret")
                     if want is None or form.get("client_secret") != want:
                         return self._send(401, {"error": "invalid_client", "error_description": "bad client"})
@@ -589,6 +592,13 @@ class SeatAliasTests(unittest.TestCase):
         for raw in ("Grok-Build", "grok_build", "Grok (Build)"):
             got = cli.list_filter(cli.build_parser().parse_args(["list", "--mine", raw]))
             self.assertEqual(got, want, raw)
+
+    def test_mine_wise_includes_legacy_instinct_claim_label(self):
+        cli = load_cli()
+        want = cli.list_filter(cli.build_parser().parse_args(["list", "--mine", "WISE"]))
+        self.assertIn({"labels": {"some": {"name": {"in": ["claimed:WISE", "claimed:INSTINCT"]}}}}, want[0])
+        got = cli.list_filter(cli.build_parser().parse_args(["list", "--mine", "Instinct"]))
+        self.assertEqual(got, want)
 
     def test_pattern_is_the_one_in_fleet_apps_json(self):
         """The board script imports no package, so it carries its own copy of the GROK row's aliasPattern."""
@@ -735,6 +745,31 @@ class AuthTests(BoardTest):
         self.assertIn("mints on this host: 2", p.stdout)
         self.assertEqual(self.mock.mints, 2)
 
+    def test_token_is_reminted_early_on_day_28(self):
+        self.board("whoami")
+        cache = json.loads(self.token_cache.read_text())
+        cache["minted_at"] -= 27 * 86400          # day 27:  still used as is
+        self.token_cache.write_text(json.dumps(cache))
+        self.board("whoami")
+        self.assertEqual(self.mock.mints, 1)
+        cache["minted_at"] -= 2 * 86400           # day 29:  the next token is minted while this one works
+        self.token_cache.write_text(json.dumps(cache))
+        p = self.board("whoami")
+        self.assertIn("mints on this host: 2", p.stdout)
+        self.assertEqual(self.mock.mints, 2)
+
+    def test_a_failed_early_remint_keeps_the_cached_token(self):
+        self.board("whoami")
+        cache = json.loads(self.token_cache.read_text())
+        cache["minted_at"] -= 29 * 86400
+        self.token_cache.write_text(json.dumps(cache))
+        self.mock.mint_down = True
+        p = self.board("whoami")
+        self.assertIn("re-minting the", p.stderr)
+        self.assertIn("using the cached one", p.stderr)
+        self.assertIn("viewer:", p.stdout)
+        self.assertEqual(self.mock.mints, 1)
+
     def test_rotated_credentials_mint_again(self):
         self.board("whoami")
         global CLIENT_SECRET
@@ -843,6 +878,16 @@ class ReadTests(BoardTest):
         self.assertEqual(d["recommended_fix"], "Ship it.")
         self.assertEqual(d["severity"], "P1")
         self.assertEqual(d["id"], hy(B_A))
+        capped = json.loads(self.board("show", "OPS-10", "--json", "--comment-limit", "1").stdout)
+        self.assertEqual(len(capped["comments"]), 1)               # oldest first, like the hosted tool
+        self.assertEqual(capped["comments_total"], 3)
+        self.assertEqual(capped["resolution"], d["resolution"])     # still derived from every comment
+        text = self.board("show", "OPS-10", "--comment-limit", "1").stdout
+        self.assertIn("claude (mac, ~/apps/x): First look.", text)
+        self.assertNotIn("codex: Second look.", text)               # the text path honours the cap too
+        self.assertIn("(showing 1 of 3 comments)", text)
+        self.assertNotIn("showing", out)                            # no note when nothing was capped
+        self.assertIn("--- Resolution ---\nOld resolution.", text)  # still derived from every comment
 
     def test_listed_new_issue_prefix_resolves(self):
         new = self.mock.add_issue(str(uuid.uuid4()), "AFC", "Todo", "Made in the Linear UI", 3)
@@ -977,6 +1022,20 @@ class WriteTests(BoardTest):
         self.assertEqual(d["location"], "Mac, ~/apps/lanes/X @ claude/x")
         rows = json.loads(self.board("list", "--json", "--mine", "CLAUDE").stdout)
         self.assertEqual([r["identifier"] for r in rows], ["OPS-10"])
+
+    def test_claim_legacy_instinct_label_is_wise_own_claim(self):
+        # An In Progress issue carrying the legacy claimed:INSTINCT label:  WISE
+        # claims it as its own without --steal, and the legacy label is replaced.
+        iss = self.mock.issues[hy(B_B)]
+        iss["labels"] = [lid for lid in iss["labels"]
+                         if self.mock.labels[lid]["name"] != "claimed:CODEX"]
+        iss["labels"].append(self.mock._label("claimed:INSTINCT", None))
+        p = self.board("claim", "OPS-11", "--by", "WISE", "--env", "cloud",
+                         extra={"AGENT_SEAT": "WISE"})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        names = self.label_names(self.mock.issues[hy(B_B)])
+        self.assertIn("claimed:WISE", names)
+        self.assertNotIn("claimed:INSTINCT", names)
 
     def test_claim_refused_when_held_then_steal(self):
         p = self.board("claim", "OPS-11", "--by", "CLAUDE", code=3)
@@ -1527,7 +1586,7 @@ class SeatAppTests(BoardTest):
         # the seat tags stay as they are and none of those renames may lock a seat out of writing
         names = {"AG": "Antigravity (AG)", "MM": "MiniMax", "FX": "FX.sh", "JET": "Jet (OpenAI dot)",
                  "MC": "Muse Code (MC)", "MA": "Muse Assist (MA)", "GROK": "Grok (Build)",
-                 "GROK-WEB": "Grok (Web/iOS)", "OPENCODE": "OC", "ECHO": "Echo (Instinct)", "INSTINCT": "Wise (Instinct)"}
+                 "GROK-WEB": "Grok (Web/iOS)", "OPENCODE": "OC", "ECHO": "Echo (Instinct)", "WISE": "Wise (Instinct)"}
         for seat, name in names.items():
             self.seat_app(seat, name)
         for seat in names:
@@ -1535,9 +1594,15 @@ class SeatAppTests(BoardTest):
             self.assertIn("(app user)", self.as_seat(seat, "whoami").stdout)
         # whoami names the app Linear reports, not the primary name from the table
         self.assertIn(f"identity:    {names['AG']} (the AG seat's own Linear app)", self.as_seat("AG", "whoami").stdout)
-        # WISE is another spelling of the INSTINCT seat, and signs as INSTINCT with INSTINCT's app
+        # Legacy and display aliases resolve to WISE, and sign as WISE with Wise's app.
         self.as_seat("WISE", "comment", B_A[:8], "--by", "WISE", "--text", "WISE is INSTINCT")
-        self.assertIn("seat:        INSTINCT (AGENT_SEAT)", self.as_seat("WISE", "whoami").stdout)
+        self.assertIn("seat:        WISE (AGENT_SEAT)", self.as_seat("WISE", "whoami").stdout)
+        for alias in ("Wise-Instinct", "Echo-Instinct", "Instinct"):
+            self.as_seat(alias, "comment", B_A[:8], "--by", alias, "--text", "alias resolves to WISE")
+            self.assertIn("seat:        WISE (AGENT_SEAT)", self.as_seat(alias, "whoami").stdout)
+        for alias in ("Muse-Assist", "Rob", "Rob-Muse"):
+            self.as_seat(alias, "comment", B_A[:8], "--by", alias, "--text", "alias resolves to MA")
+            self.assertIn("seat:        MA (AGENT_SEAT)", self.as_seat(alias, "whoami").stdout)
         # OpenCode and OC are interchangeable, and case never matters
         self.seat_app("OPENCODE", "OpenCode")
         self.as_seat("OPENCODE", "comment", B_A[:8], "--by", "OPENCODE", "--text", "primary name is accepted")

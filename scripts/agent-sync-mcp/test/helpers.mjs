@@ -50,6 +50,8 @@ export function testEnv(overrides = {}) {
   const vars = { ...wranglerConfig().vars };
   vars.ACCESS_AUD = "a".repeat(64);
   vars.HOSTED_SEATS = "JET,GROK-WEB";
+  // In production this is a binding synced from Infisical (sync_notes_consumer.py);  tests carry the default here.
+  vars.NOTES_RELAY_CONSUMER = "CLAUDE";
   return { ...vars, ...overrides };
 }
 

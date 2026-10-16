@@ -7,14 +7,14 @@ scripts/linear-board/README.md has the install steps, the frozen contract
 table and every environment variable.
 
 Usage:
-  board list [--app A] [--status S,S] [--severity P0,P1] [--kind K] [--mine SEAT]
+  board list [--app A] [--team KEY] [--env mac|cloud] [--status S,S] [--severity P0,P1] [--kind K] [--mine SEAT]
              [--label NAME ...] [--search TEXT] [--limit N] [--json]
   board show <id> [--json]
   board file --title T [--app A] [--severity P0..P4] [--desc D | --desc-file PATH|-]
              [--fix F | --fix-file PATH|-] [--label NAME ...]
              [--by SEAT] [--where LOC] [--env Mac|cloud] [--kind K] [--uid U] [--url URL]
   board claim <id> --by SEAT [--where LOC] [--env Mac|cloud] [--session ID ...]
-             [--steal --reason TEXT]
+             [--steal --reason TEXT] [--comment TEXT]
   board status <id> <open|in_progress|addressed|completed|deployed|wontfix|duplicate|parked>
              [--by SEAT] [--resolution TEXT] [--of <id>] [--session ID ...]
   board comment <id> --by SEAT (--text TEXT | --text-file PATH|-) [--where LOC]
@@ -22,6 +22,25 @@ Usage:
   board label add|remove <id> NAME [--by SEAT]
   board stats
   board whoami
+
+Agent-Sync parity (the hosted server's Linear tools, from catalog/*.json):
+  board commands [--search WORD] [--kind read|write] [--json]
+  board commands show NAME [--json]
+  board run NAME [--arg KEY=VALUE ...] [--args-json JSON|@FILE|-] [--selection FIELDS]
+             [--max-chars N] [--idempotency-key KEY] [--session ID ...] [--json]
+  board api schema [TYPE] [--field TEXT] [--offset N] [--limit N] [--json]
+  board api query DOCUMENT|@FILE|- [--vars JSON|@FILE] [--max-chars N] [--json]
+  board api mutation DOCUMENT|@FILE|- [--vars JSON|@FILE] --idempotency-key KEY [--session ID ...]
+  board mcp list|show TOOL [--json]
+  board mcp call TOOL [--args-json JSON|@FILE|-] [--idempotency-key KEY] [--max-chars N] [--json]
+
+`run` builds the same `AgentSyncNamed` document the hosted server builds and applies its guards:  one
+operation, depth 16, 500 fields, no protected or batch mutation roots, only public input fields, and
+no edits of claimed:, seat: or stale-claim labels (`board claim` owns those).  A write (a write
+command, `api mutation`, or a write `mcp call`) needs AGENT_SEAT, LINEAR_BOARD_WRITES=1 and
+--idempotency-key:  a retry with the same key returns the first result and never sends it twice, and
+an unknown outcome is never replayed automatically.  `mcp` proxies Linear's official MCP server
+(https://mcp.linear.app/mcp) with the same app token.
 
 --desc-file, --fix-file and --text-file keep free text out of argv (and so out of
 `ps` and shell history).  PATH must be a regular file you own, mode 0600 or 0400,
@@ -97,6 +116,11 @@ EXIT_RATE_LIMIT = 5     # Linear rate limit outlasted LINEAR_BOARD_MAX_WAIT
 EXIT_AUTH = 6           # token refused, mint refused, or whoami check failed
 EXIT_WRITES_OFF = 7     # a write verb without LINEAR_BOARD_WRITES=1
 
+# Linear's client-credentials tokens last 30 days.  A cached token is re-minted
+# early once it is this old (and still used while that early mint fails), so a
+# seat never depends on minting during its token's last day.  Same value as
+# LINEAR_REMINT_AFTER_S in scripts/agent-sync-mcp/src/linear.js.
+REMINT_AFTER = 28 * 86400
 WRITE_VERBS = ("file", "claim", "status", "comment", "label")
 SESSION_ENV_VAR = "CLAUDE_CODE_SESSION_ID"
 
@@ -114,7 +138,7 @@ SEAT_PREFIX = "seat:"
 # no credentials here; adding a name costs nothing and keeps them in the set.
 SEAT_ROSTER = {
     "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "GROK-WEB", "CLUTCH", "FX", "MM", "MA", "MC",
-    "GROK-BOT", "INSTINCT",
+    "GROK-BOT", "WISE",
     "GB-HOUSEKEEPER", "GB-MONITOR", "GB-COMPILER", "GB-PLUMBER",
     "GB-ENGINEER", "GB-FIXER", "GB-PUBLISHER",
     "GB-DIRECTOR", "GB-DESIGNER", "GB-DEPLOYER", "GB-ORACLE", "GB-TRADER",
@@ -127,11 +151,16 @@ SEAT_ROSTER = {
 BF_ROLES = {"DIRECTOR", "COMPILER", "FIXER", "DESIGNER", "PLUMBER", "PUBLISHER",
             "DEPLOYER", "MONITOR", "HOUSEKEEPER", "ORACLE", "BUILDER", "PRODUCER"}
 SEAT_ALIASES = {"MINIMAX": "MM", "MUSE": "MA", "GROK-BUILD": "GROK", "ANTIGRAVITY": "AG",
-                "MUSE-ASSIST": "MA", "MUSE-CODE": "MC"}
+                "MUSE-ASSIST": "MA", "ROB": "MA", "ROB-MUSE": "MA", "MUSE-CODE": "MC",
+                "INSTINCT": "WISE", "WISE-INSTINCT": "WISE", "ECHO-INSTINCT": "WISE"}
 CLUTCH_LINEAGE = {"DSH", "DEEPSEEK", "HARNESS"}
-# Spellings of a seat tag that AGENT_SEAT and --by resolve to the tag the fleet signs with (owner 2026-10-11:  the
-# Instinct seat is shown as Wise (Instinct)).  Retagging to WISE later is a one-line swap here.
-SEAT_TAG_ALIASES = {"WISE": "INSTINCT"}
+# Spellings of a seat tag that AGENT_SEAT and --by resolve to the tag the fleet signs with.  The tag is
+# WISE (owner 2026-10-15) and INSTINCT is the retired spelling, kept so existing references keep resolving.
+# Output uses the canonical key.
+SEAT_TAG_ALIASES = {"INSTINCT": "WISE"}
+# Retired seat tags keep their SEAT_ALIASES entries for roster_seat (old footer
+# attribution), but norm_seat resolves them as typed (SeatAliasTests).
+RETIRED_SEAT_TAGS = frozenset(("MINIMAX", "MUSE", "ANTIGRAVITY"))
 # One Linear app per seat (owner 2026-10-10), named for the seat bot's display
 # name.  A seat's app is used when its credentials exist (<SEAT>.env beside
 # Fleet.env, or LINEAR_<SEAT>_CLIENT_ID and _SECRET in the environment, with
@@ -142,7 +171,7 @@ SEAT_APP_NAMES = {
     "CLAUDE": "Claude", "CODEX": "Codex", "CURSOR": "Cursor", "AG": "AG", "GROK": "Grok",
     "GROK-WEB": "Grok Web", "CLUTCH": "Clutch", "MM": "MM", "FX": "Fx", "MC": "Muse Code",
     "MA": "Muse Assist", "JET": "Jet", "OPENCODE": "OpenCode",
-    "ECHO": "Echo (Instinct)", "INSTINCT": "Wise (Instinct)",
+    "ECHO": "Echo (Instinct)", "WISE": "Wise (Instinct)",
     # BotFleet seats in SEAT_ROSTER.  AGENT-SYNC.md (owner 2026-10-09) names the ten role seats
     # plus BF-DIRECTOR.  BF-PRODUCER is on that same roster (BF_ROLES turns a bare PRODUCER into
     # it), so it has an app too:  a write from that seat must not sign as the shared Fleet app.
@@ -163,13 +192,13 @@ SEAT_APP_ALIASES = {
     "MM": ("MiniMax", "MiniMax (MM)"),
     "FX": ("FX.sh",),
     "MC": ("Muse Code (MC)",),
-    "MA": ("Muse Assist (MA)",),
+    "MA": ("Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"),
     "JET": ("Jet (OpenAI dot)",),
     "GROK": ("Grok (Build)", "Grok Build"),
     "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
     "OPENCODE": ("OC",),
     "ECHO": ("Echo",),
-    "INSTINCT": ("Wise",),
+    "WISE": ("Wise", "Wise-Instinct", "Echo-Instinct", "Instinct"),
 }
 
 
@@ -253,7 +282,8 @@ CLOSING_REMOVES = ("needs-owner", "ask-capture")
 # --desc-file, --fix-file and --text-file read at most this many bytes of UTF-8.
 INPUT_MAX_BYTES = 64 * 1024
 # Flags and the verb only the Linear backend has;  BOARD_BACKEND=mac-collab refuses them.
-LINEAR_ONLY_FLAGS = ("--desc-file", "--fix-file", "--text-file", "--label")
+LINEAR_ONLY_FLAGS = ("--desc-file", "--fix-file", "--text-file", "--label", "--team", "--comment")
+LINEAR_ONLY_VERBS = ("label", "commands", "run", "api", "mcp")
 
 OPEN_STATES = ("Todo", "Backlog", "In Progress")
 DONE_STATES = ("Done", "Deployed", "In Review")
@@ -309,7 +339,12 @@ def norm_seat(s: str | None) -> str:
     """The seat tag a value stands for, upper-cased.  Every GROK-BUILD spelling is GROK, so AGENT_SEAT,
     --by and --mine all resolve to the one seat that signs GROK."""
     v = (s or "").strip().strip("@[]<>`'\" ")
-    return "GROK" if GROK_ALIAS_RE.match(v) else SEAT_TAG_ALIASES.get(v.upper(), v.upper())
+    upper = v.upper()
+    if GROK_ALIAS_RE.match(v):
+        return "GROK"
+    if upper in RETIRED_SEAT_TAGS:
+        return upper
+    return SEAT_ALIASES.get(upper, SEAT_TAG_ALIASES.get(upper, upper))
 
 
 def hyphenate(h32: str) -> str:
@@ -741,10 +776,21 @@ class Auth:
             now = time.time()
             tok = cache.get("access_token")
             same = cache.get("cred_fp") == fp
-            if tok and same and tok != failed and float(cache.get("expires_at") or 0) - now > 3600:
-                self.token, self.info = tok, cache
-                return tok
             minted = float(cache.get("minted_at") or 0)
+            if tok and same and tok != failed and float(cache.get("expires_at") or 0) - now > 3600:
+                if now - minted < REMINT_AFTER:
+                    self.token, self.info = tok, cache
+                    return tok
+                # Day 28 of a 30-day token:  mint the next one now, while this one still works,
+                # so a Linear outage on the last day cannot leave the seat without a token.
+                # A failed early mint keeps the cached token.
+                try:
+                    return self._store(fd, cache, ident, fp, now)
+                except (SystemExit, Exception) as e:
+                    warn(f"re-minting the {ident.label} token early failed ({type(e).__name__});  using the cached one, "
+                         f"which expires {central(float(cache.get('expires_at') or 0))}")
+                    self.token, self.info = tok, cache
+                    return tok
             if same and now - minted < 86400 and env("LINEAR_BOARD_REMINT") != "1":
                 why = f"Linear refused the cached {ident.label} token" if tok and tok == failed else \
                       f"the cached {ident.label} token is unusable"
@@ -752,21 +798,25 @@ class Auth:
                     "again (design section 2: at most one mint a day per host).  If the app was rotated, "
                     "update its credentials file; to force one mint, rerun with LINEAR_BOARD_REMINT=1.",
                     EXIT_AUTH)
-            new = self._mint(ident)
-            cache = {
-                "access_token": new["access_token"],
-                "token_type": new.get("token_type") or "Bearer",
-                "scope": new.get("scope") or SCOPE,
-                "minted_at": now,
-                "expires_at": now + float(new.get("expires_in") or 30 * 86400),
-                "mint_count": int(cache.get("mint_count") or 0) + 1,
-                "cred_fp": fp,
-            }
-            _write_cache(fd, cache)
-            self.token, self.info = cache["access_token"], cache
-            return self.token
+            return self._store(fd, cache, ident, fp, now)
         finally:
             self._close(fd)
+
+    def _store(self, fd: int, cache: dict, ident: Identity, fp: str, now: float) -> str:
+        """Mint, write the cache under the held lock, and use the new token."""
+        new = self._mint(ident)
+        cache = {
+            "access_token": new["access_token"],
+            "token_type": new.get("token_type") or "Bearer",
+            "scope": new.get("scope") or SCOPE,
+            "minted_at": now,
+            "expires_at": now + float(new.get("expires_in") or 30 * 86400),
+            "mint_count": int(cache.get("mint_count") or 0) + 1,
+            "cred_fp": fp,
+        }
+        _write_cache(fd, cache)
+        self.token, self.info = cache["access_token"], cache
+        return self.token
 
     def remember_viewer(self, viewer: dict, org: dict) -> None:
         """Keep who Linear says the current token belongs to in that token's
@@ -1556,6 +1606,13 @@ def list_filter(a) -> tuple[list[dict], list[str] | None]:
         parts.append({"team": {"key": {"eq": team}}})
         if fslug:
             parts.append(label_cond(f"app:{fslug}"))
+    if getattr(a, "team", None):
+        key = a.team.strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9]{0,19}", key):
+            die(f"--team {a.team!r} is not a team key", EXIT_USAGE)
+        parts.append({"team": {"key": {"eq": key}}})
+    if getattr(a, "env", None):
+        parts.append(label_cond(ENVS[a.env.lower()], "Env"))
     if a.status:
         states: list[str] = []
         for s in split_csv(a.status.lower()):
@@ -1575,7 +1632,12 @@ def list_filter(a) -> tuple[list[dict], list[str] | None]:
     if a.search:
         parts.append({"title": {"containsIgnoreCase": a.search}})
     if a.mine:
-        parts.append(label_cond(f"{CLAIM_PREFIX}{norm_seat(a.mine)}"))
+        canonical = norm_seat(a.mine)
+        labels = [f"{CLAIM_PREFIX}{canonical}"]
+        # Legacy spellings (claimed:INSTINCT) resolve to the canonical tag.
+        labels += sorted(f"{CLAIM_PREFIX}{a}" for a, t in SEAT_TAG_ALIASES.items()
+                         if t == canonical and a != canonical)
+        parts.append(label_cond(labels[0]) if len(labels) == 1 else label_cond("", names=labels))
     for name in a.labels or []:
         parts.append(label_cond(name))    # every --label must be on the issue
     return parts, sevs
@@ -1663,6 +1725,12 @@ def cmd_show(L: Linear, ids: IdIndex, a) -> int:
                           "direction": "incoming"} for x in (n.get("inverseRelations") or {}).get("nodes") or []]),
         "comments": comments,
     })
+    limit = getattr(a, "comment_limit", None)
+    if limit is not None and len(comments) > limit:
+        # Resolution and location above still read every comment;  only the list shown is capped (oldest first,
+        # like the hosted linear_show's comments(first: N)).
+        r["comments"] = comments[:limit]
+        r["comments_total"] = len(comments)
     if a.json:
         print(json.dumps(r, indent=2))
         return 0
@@ -1695,9 +1763,12 @@ def cmd_show(L: Linear, ids: IdIndex, a) -> int:
         for line in r["provenance"].splitlines():
             if line.strip():
                 print(f"    {line.rstrip()}")
-    if comments:
+    shown = r["comments"]  # the capped list when --comment-limit applied, so the text agrees with the JSON
+    if shown:
         print("\n--- comments ---")
-        for c in comments:
+        if len(shown) < len(comments):
+            print(f"  (showing {len(shown)} of {len(comments)} comments)")
+        for c in shown:
             where = f" ({c['where']})" if c["where"] else ""
             stamp = central(c["created_at"], with_day=False) if c["created_at"] else ""
             print(f"  [{stamp}] {c['author']}{where}: {c['text']}")
@@ -1879,7 +1950,7 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
     team = n["team"]["key"]
     # Who holds it: claimed:<SEAT> labels, else (In Progress) the import footer.
     # seat:<SEAT> labels are attribution (reporters carry them too), never a claim.
-    holders = [s for s in holders_of(n) if s != by]
+    holders = [s for s in holders_of(n) if norm_seat(s) != by]  # claimed:INSTINCT is WISE's own claim
     in_progress = (n.get("state") or {}).get("name") == "In Progress"
     stolen = []
     if in_progress and holders:
@@ -1911,6 +1982,8 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
     text = "CLAIMED"
     if stolen:
         text += f" from {', '.join(stolen)}: {a.reason.strip()}"
+    if (getattr(a, "comment", None) or "").strip():
+        text += f"\n\n{a.comment.strip()}"
     post_comment(L, n, comment_body(by, sessions, text, a.location, env_label), by, "claim", sessions)
     remember([n])
     print(f"claimed {short_id(n['id'])} by {by} -> in_progress{session_tail(sessions)}  {n['identifier']}")
@@ -2171,6 +2244,1601 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
     return EXIT_AUTH if problems else 0
 
 
+# ----------------------------------------------------------------- Agent-Sync parity:  catalogs
+# The hosted Agent-Sync MCP server (scripts/agent-sync-mcp) serves Linear as 175 named commands,
+# general linear_schema/linear_query/linear_mutation tools and 11 proxied official Linear MCP tools.
+# `board commands`, `board run`, `board api` and `board mcp` give a seat the same tools from a shell.
+# The catalogs are JSON exported from the server's own JavaScript, never retyped here:
+# scripts/agent-sync-mcp/scripts/export-linear-catalog.mjs writes catalog/*.json, and
+# test/linear-catalog-parity.test.mjs fails CI when the committed JSON is stale.
+
+CATALOG_DIR = Path(__file__).resolve().parent / "catalog"
+REGENERATE_CATALOG = "cd scripts/agent-sync-mcp && node scripts/export-linear-catalog.mjs"
+_CATALOGS: dict = {}
+
+
+def load_catalog(name: str) -> dict:
+    """One of catalog/*.json, read once per run."""
+    if name not in _CATALOGS:
+        path = CATALOG_DIR / name
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            die(f"the Agent-Sync catalog {path} is missing.  It ships next to board;  in a checkout, "
+                f"regenerate it with:  {REGENERATE_CATALOG}")
+        except (OSError, ValueError) as e:
+            die(f"cannot read the Agent-Sync catalog {path} ({type(e).__name__})")
+        if not isinstance(data, dict):
+            die(f"the Agent-Sync catalog {path} is not a JSON object")
+        _CATALOGS[name] = data
+    return _CATALOGS[name]
+
+
+def named_commands() -> list:
+    return load_catalog("named-commands.json")["commands"]
+
+
+def named_command(raw: str) -> dict:
+    """A named command by its served name (linear_get_issue) or without the prefix (get_issue)."""
+    by = {c["name"]: c for c in named_commands()}
+    name = raw if raw in by else f"linear_{raw}"
+    if name not in by:
+        die(f"no named Linear command {raw!r};  `board commands --search WORD` lists them", EXIT_USAGE)
+    return by[name]
+
+
+def official_catalog() -> dict:
+    return load_catalog("official-mcp-tools.json")
+
+
+def official_tool(raw: str) -> dict:
+    by = {t["name"]: t for t in official_catalog()["tools"]}
+    by.update({t["upstream_name"]: t for t in official_catalog()["tools"]})
+    if raw not in by:
+        die(f"no official Linear MCP tool {raw!r};  `board mcp list` lists them", EXIT_USAGE)
+    return by[raw]
+
+
+class ParityError(Exception):
+    """A refusal with the hosted server's own wording (its ToolError invalid_argument)."""
+
+
+# ----------------------------------------------------------------- JSON Schema subset (contract.js schemaProblem)
+
+SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,40}$")
+
+
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and v not in (float("inf"), float("-inf"))
+
+
+def _type_ok(t: str, v) -> bool:
+    if t == "object":
+        return isinstance(v, dict)
+    if t == "array":
+        return isinstance(v, list)
+    if t == "string":
+        return isinstance(v, str)
+    if t == "integer":
+        return _is_number(v) and float(v).is_integer()
+    if t == "number":
+        return _is_number(v)
+    if t == "boolean":
+        return isinstance(v, bool)
+    if t == "null":
+        return v is None
+    return False
+
+
+def _js_num(n) -> str:
+    return str(int(n)) if isinstance(n, float) and n.is_integer() else str(n)
+
+
+def _label(where: str, name: str) -> str:
+    return f"argument '{name}'" if where == "arguments" else f"{where}.{name}"
+
+
+def schema_problem(schema: dict, value, where: str = "arguments"):
+    """The hosted server's argument check, message for message;  None when the value passes."""
+    types = schema.get("type")
+    if types is not None:
+        allowed = types if isinstance(types, list) else [types]
+        if not any(_type_ok(t, value) for t in allowed):
+            return f"{where} must be of type {' or '.join(allowed)}"
+    if "enum" in schema and not any(value == e and type(value) is type(e) for e in schema["enum"]):
+        return f"{where} must be one of {', '.join(json.dumps(e) for e in schema['enum'])}"
+    if isinstance(value, str):
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            return f"{where} must be at least {schema['minLength']} characters"
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            return f"{where} must be at most {schema['maxLength']} characters"
+        if "pattern" in schema and not re.search(schema["pattern"], value):
+            return f"{where} must match {schema['pattern']}"
+    if _is_number(value):
+        if "minimum" in schema and value < schema["minimum"]:
+            return f"{where} must be at least {_js_num(schema['minimum'])}"
+        if "maximum" in schema and value > schema["maximum"]:
+            return f"{where} must be at most {_js_num(schema['maximum'])}"
+    if isinstance(value, list):
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            return f"{where} must have at least {schema['minItems']} items"
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            return f"{where} must have at most {schema['maxItems']} items"
+        if isinstance(schema.get("items"), dict):
+            for i, item in enumerate(value):
+                problem = schema_problem(schema["items"], item, f"{where}[{i}]")
+                if problem:
+                    return problem
+    if isinstance(value, dict):
+        props = schema.get("properties") or {}
+        for name in schema.get("required") or []:
+            if name not in value:
+                return f"{_label(where, name)} is required"
+        if schema.get("additionalProperties") is False:
+            for name in value:
+                if name not in props:
+                    shown = f"'{name}'" if SAFE_NAME_RE.match(name) else "(name not shown)"
+                    takes = ", ".join(sorted(props)) or "no arguments"
+                    return f"unknown argument {shown}; this tool takes {takes}"
+        for name, sub in props.items():
+            if name in value:
+                problem = schema_problem(sub, value[name], _label(where, name))
+                if problem:
+                    return problem
+    return None
+
+
+def with_defaults(schema: dict, args: dict) -> dict:
+    """`args` plus each missing property's schema default (contract.js withDefaults)."""
+    out = dict(args)
+    for name, sub in (schema.get("properties") or {}).items():
+        if name not in out and "default" in sub:
+            out[name] = json.loads(json.dumps(sub["default"]))
+    return out
+
+
+# ----------------------------------------------------------------- GraphQL guards (linear-graphql.js)
+# A small lexer and parser for executable GraphQL documents, enough to apply the hosted server's
+# guards:  one operation, depth 16, 500 expanded fields, protected mutation roots, and each root's
+# resolved arguments.  Parse errors all read "GraphQL document is invalid.", as the server's do.
+
+GQL_DOCUMENT_LIMIT = 24000
+GQL_VARIABLES_LIMIT = 24000
+GQL_MAX_DEPTH = 16
+GQL_MAX_FIELDS = 500
+GQL_MAX_TOKENS = 8000
+# Protected categories anywhere in a mutation root's name (linear-graphql.js BLOCKED_MUTATION_ROOT).
+BLOCKED_MUTATION_ROOT = re.compile(r"(?:apiKey|oauth|application|integration|sso|scim|organization|user|teamMembership"
+                                   r"|authentication|webhook|workspace|role|permission|session|accessToken)", re.I)
+BATCH_MUTATION_ROOT = re.compile(r"(?:Batch|Bulk)", re.I)
+_GQL_NAME = re.compile(r"[_A-Za-z][_0-9A-Za-z]*")
+_GQL_NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?")
+_GQL_SDL = frozenset(("schema", "scalar", "type", "interface", "union", "enum", "input", "directive", "extend"))
+_MISSING = object()
+
+
+class GqlSyntax(Exception):
+    pass
+
+
+def _gql_invalid(message: str) -> "NoReturn":  # noqa: F821
+    raise ParityError(message)
+
+
+def _block_string_value(raw: str) -> str:
+    lines = re.split(r"\r\n|\n|\r", raw)
+
+    def indent(line):
+        return len(line) - len(line.lstrip(" \t"))
+    common, first, last = None, None, -1
+    for i, line in enumerate(lines):
+        n = indent(line)
+        if n == len(line):
+            continue
+        first = i if first is None else first
+        last = i
+        if i != 0 and (common is None or n < common):
+            common = n
+    common = common or 0
+    lines = [line if i == 0 else line[common:] for i, line in enumerate(lines)]
+    return "\n".join(lines[(first or 0):last + 1])
+
+
+def gql_tokens(src: str, max_tokens: int) -> list:
+    """(kind, value, start, end) tokens.  kind is P (punctuator), N (name), I (int), F (float), S (string)."""
+    out = []
+    i, n = 0, len(src)
+    while i < n:
+        c = src[i]
+        if c in " \t\n\r,﻿":
+            i += 1
+            continue
+        if c == "#":
+            while i < n and src[i] not in "\n\r":
+                i += 1
+            continue
+        start = i
+        if src.startswith("...", i):
+            out.append(("P", "...", start, i + 3))
+            i += 3
+        elif c in "!$&()[]{}:=@|":
+            out.append(("P", c, start, i + 1))
+            i += 1
+        elif c == "_" or c.isascii() and c.isalpha():
+            m = _GQL_NAME.match(src, i)
+            out.append(("N", m.group(0), start, m.end()))
+            i = m.end()
+        elif c == "-" or c in "0123456789":
+            m = _GQL_NUMBER.match(src, i)
+            if not m:
+                raise GqlSyntax("number")
+            j = m.end()
+            if j < n and (src[j] in "._" or src[j].isascii() and src[j].isalnum()):
+                raise GqlSyntax("number")
+            out.append(("F" if m.group(1) or m.group(2) else "I", m.group(0), start, j))
+            i = j
+        elif src.startswith('"""', i):
+            j = i + 3
+            raw = []
+            while True:
+                if j >= n:
+                    raise GqlSyntax("block string")
+                if src.startswith('"""', j):
+                    break
+                if src.startswith('\\"""', j):
+                    raw.append('"""')
+                    j += 4
+                    continue
+                ch = src[j]
+                if ch < " " and ch not in "\t\n\r":
+                    raise GqlSyntax("control character")
+                raw.append(ch)
+                j += 1
+            out.append(("S", _block_string_value("".join(raw)), start, j + 3))
+            i = j + 3
+        elif c == '"':
+            j = i + 1
+            val = []
+            while True:
+                if j >= n or src[j] in "\n\r":
+                    raise GqlSyntax("string")
+                ch = src[j]
+                if ch == '"':
+                    break
+                if ch < " " and ch != "\t":
+                    raise GqlSyntax("control character")
+                if ch == "\\":
+                    esc = src[j + 1:j + 2]
+                    simple = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+                    if esc in simple:
+                        val.append(simple[esc])
+                        j += 2
+                        continue
+                    if esc != "u":
+                        raise GqlSyntax("escape")
+                    if src[j + 2:j + 3] == "{":
+                        end = src.find("}", j + 3)
+                        hexs = src[j + 3:end] if end != -1 else ""
+                        if not re.fullmatch(r"[0-9A-Fa-f]{1,6}", hexs) or int(hexs, 16) > 0x10FFFF or \
+                                0xD800 <= int(hexs, 16) <= 0xDFFF:
+                            raise GqlSyntax("escape")
+                        val.append(chr(int(hexs, 16)))
+                        j = end + 1
+                        continue
+                    hexs = src[j + 2:j + 6]
+                    if not re.fullmatch(r"[0-9A-Fa-f]{4}", hexs):
+                        raise GqlSyntax("escape")
+                    cp = int(hexs, 16)
+                    j += 6
+                    if 0xD800 <= cp <= 0xDBFF:
+                        low = src[j:j + 6]
+                        if re.fullmatch(r"\\u[dD][c-fC-F][0-9A-Fa-f]{2}", low):
+                            cp = 0x10000 + ((cp - 0xD800) << 10) + (int(low[2:], 16) - 0xDC00)
+                            j += 6
+                        else:
+                            raise GqlSyntax("escape")
+                    elif 0xDC00 <= cp <= 0xDFFF:
+                        raise GqlSyntax("escape")
+                    val.append(chr(cp))
+                    continue
+                val.append(ch)
+                j += 1
+            out.append(("S", "".join(val), start, j + 1))
+            i = j + 1
+        else:
+            raise GqlSyntax("character")
+        if len(out) > max_tokens:
+            raise GqlSyntax("tokens")
+    return out
+
+
+class _GqlParser:
+    """Recursive descent over gql_tokens() for executable documents.  Nodes are dicts."""
+
+    def __init__(self, tokens: list):
+        self.t = tokens
+        self.i = 0
+
+    def peek(self, kind=None, value=None, ahead=0):
+        if self.i + ahead >= len(self.t):
+            return False
+        k, v = self.t[self.i + ahead][:2]
+        return (kind is None or k == kind) and (value is None or v == value)
+
+    def take(self, kind, value=None):
+        if not self.peek(kind, value):
+            raise GqlSyntax(f"expected {value or kind}")
+        tok = self.t[self.i]
+        self.i += 1
+        return tok
+
+    def name(self) -> str:
+        return self.take("N")[1]
+
+    def document(self) -> list:
+        if not self.t:
+            raise GqlSyntax("empty document")
+        defs = []
+        while self.i < len(self.t):
+            defs.append(self.definition())
+        return defs
+
+    def definition(self) -> dict:
+        if self.peek("P", "{"):
+            return {"kind": "Operation", "op": "query", "name": None, "vars": [], "sel": self.selection_set()}
+        if self.peek("N", "fragment"):
+            self.i += 1
+            name = self.name()
+            if name == "on":
+                raise GqlSyntax("fragment name")
+            self.take("N", "on")
+            self.name()
+            self.directives(const=False)
+            return {"kind": "Fragment", "name": name, "sel": self.selection_set()}
+        if self.peek("N") and self.t[self.i][1] in ("query", "mutation", "subscription"):
+            op = self.name()
+            name = self.name() if self.peek("N") else None
+            var_defs = []
+            if self.peek("P", "("):
+                self.i += 1
+                while True:
+                    self.take("P", "$")
+                    vname = self.name()
+                    self.take("P", ":")
+                    vtype = self.type_ref()
+                    default = None
+                    if self.peek("P", "="):
+                        self.i += 1
+                        default = self.value(const=True)
+                    self.directives(const=True)
+                    var_defs.append({"name": vname, "type": vtype, "default": default})
+                    if self.peek("P", ")"):
+                        self.i += 1
+                        break
+            self.directives(const=False)
+            return {"kind": "Operation", "op": op, "name": name, "vars": var_defs, "sel": self.selection_set()}
+        if (self.peek("N") and self.t[self.i][1] in _GQL_SDL) or \
+                (self.peek("S") and self.peek("N", ahead=1) and self.t[self.i + 1][1] in _GQL_SDL):
+            raise ParityError("GraphQL documents may contain only an operation and fragment definitions.")
+        raise GqlSyntax("definition")
+
+    def type_ref(self) -> str:
+        if self.peek("P", "["):
+            self.i += 1
+            inner = self.type_ref()
+            self.take("P", "]")
+            text = f"[{inner}]"
+        else:
+            text = self.name()
+        if self.peek("P", "!"):
+            self.i += 1
+            text += "!"
+        return text
+
+    def directives(self, const: bool) -> None:
+        while self.peek("P", "@"):
+            self.i += 1
+            self.name()
+            if self.peek("P", "("):
+                self.arguments(const)
+
+    def arguments(self, const: bool) -> list:
+        self.take("P", "(")
+        args = []
+        while True:
+            name = self.name()
+            self.take("P", ":")
+            args.append((name, self.value(const)))
+            if self.peek("P", ")"):
+                self.i += 1
+                return args
+
+    def selection_set(self) -> list:
+        self.take("P", "{")
+        sel = []
+        while True:
+            sel.append(self.selection())
+            if self.peek("P", "}"):
+                self.i += 1
+                return sel
+
+    def selection(self) -> dict:
+        if self.peek("P", "..."):
+            self.i += 1
+            if self.peek("N") and not self.peek("N", "on"):
+                name = self.name()
+                self.directives(const=False)
+                return {"kind": "FragmentSpread", "name": name}
+            if self.peek("N", "on"):
+                self.i += 1
+                self.name()
+            self.directives(const=False)
+            return {"kind": "InlineFragment", "sel": self.selection_set()}
+        alias = None
+        name = self.name()
+        if self.peek("P", ":"):
+            self.i += 1
+            alias, name = name, self.name()
+        args = self.arguments(const=False) if self.peek("P", "(") else []
+        self.directives(const=False)
+        sel = self.selection_set() if self.peek("P", "{") else None
+        return {"kind": "Field", "name": name, "alias": alias, "args": args, "sel": sel}
+
+    def value(self, const: bool) -> dict:
+        if self.i >= len(self.t):
+            raise GqlSyntax("value")
+        kind, val, start, end = self.t[self.i]
+        if kind == "P" and val == "$" and not const:
+            self.i += 1
+            return {"kind": "Variable", "name": self.name()}
+        if kind == "P" and val == "[":
+            self.i += 1
+            values = []
+            while not self.peek("P", "]"):
+                values.append(self.value(const))
+            self.i += 1
+            return {"kind": "List", "values": values}
+        if kind == "P" and val == "{":
+            self.i += 1
+            fields = []
+            while not self.peek("P", "}"):
+                fname = self.name()
+                self.take("P", ":")
+                fields.append((fname, self.value(const)))
+            self.i += 1
+            return {"kind": "Object", "fields": fields}
+        self.i += 1
+        if kind == "I":
+            return {"kind": "Int", "value": val}
+        if kind == "F":
+            return {"kind": "Float", "value": val}
+        if kind == "S":
+            return {"kind": "String", "value": val, "start": start, "end": end}
+        if kind == "N":
+            if val in ("true", "false"):
+                return {"kind": "Boolean", "value": val == "true"}
+            if val == "null":
+                return {"kind": "Null"}
+            return {"kind": "Enum", "value": val}
+        raise GqlSyntax("value")
+
+
+def gql_parse(src: str, max_tokens: int = GQL_MAX_TOKENS) -> list:
+    try:
+        return _GqlParser(gql_tokens(src, max_tokens)).document()
+    except GqlSyntax:
+        raise ParityError("GraphQL document is invalid.") from None
+
+
+def gql_value(node: dict, variables: dict):
+    """graphql-js valueFromASTUntyped:  a value node with variables substituted (_MISSING when unset)."""
+    k = node["kind"]
+    if k == "Null":
+        return None
+    if k == "Int":
+        return int(node["value"])
+    if k == "Float":
+        return float(node["value"])
+    if k in ("String", "Enum", "Boolean"):
+        return node["value"]
+    if k == "List":
+        return [None if v is _MISSING else v for v in (gql_value(x, variables) for x in node["values"])]
+    if k == "Object":
+        out = {}
+        for name, child in node["fields"]:
+            v = gql_value(child, variables)
+            if v is not _MISSING:
+                out[name] = v
+        return out
+    if k == "Variable":
+        return variables.get(node["name"], _MISSING)
+    return _MISSING
+
+
+def _copy_variables(variables) -> dict:
+    try:
+        encoded = json.dumps(variables, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError):
+        _gql_invalid("variables must be JSON data.")
+    if len(encoded) > GQL_VARIABLES_LIMIT:
+        _gql_invalid("variables exceed the 24000-character limit.")
+    copied = json.loads(encoded)
+    if not isinstance(copied, dict):
+        _gql_invalid("variables must be a JSON object.")
+
+    def check(value, depth):
+        if depth > GQL_MAX_DEPTH:
+            _gql_invalid("variables exceed the maximum nesting depth of 16.")
+        for child in (value.values() if isinstance(value, dict) else value if isinstance(value, list) else ()):
+            check(child, depth + 1)
+    check(copied, 0)
+    return copied
+
+
+def prepare_graphql(document, variables=None, expected: str = "query") -> dict:
+    """Port of linear-graphql.js prepareGraphql:  parse and bound one operation before it reaches Linear.
+    Returns the parsed operation, its root fields, the copied variables (defaults applied) and, for a
+    mutation, the root field's resolved arguments.  Raises ParityError with the server's message."""
+    if not isinstance(document, str):
+        _gql_invalid("GraphQL document must be a string.")
+    if len(document) > GQL_DOCUMENT_LIMIT:
+        _gql_invalid("GraphQL document exceeds the 24000-character limit.")
+    if expected not in ("query", "mutation"):
+        _gql_invalid("operation must be query or mutation.")
+    copied = _copy_variables({} if variables is None else variables)
+    defs = gql_parse(document)
+    operations = []
+    fragments: dict = {}
+    for d in defs:
+        if d["kind"] == "Operation":
+            operations.append(d)
+        else:
+            if d["name"] in fragments:
+                _gql_invalid("GraphQL fragment names must be unique.")
+            fragments[d["name"]] = d
+    if len(operations) != 1:
+        _gql_invalid("GraphQL document must contain exactly one operation.")
+    op = operations[0]
+    if op["op"] != expected:
+        _gql_invalid(f"GraphQL document must be a {expected}.")
+    for vd in op["vars"]:
+        if vd["name"] not in copied and vd["default"] is not None:
+            v = gql_value(vd["default"], copied)
+            if v is not _MISSING:
+                copied[vd["name"]] = v
+    # Fragment graph:  no cycles, no unknown spreads (validateFragmentGraph).
+    state: dict = {}
+
+    def scan(sel, visit):
+        for s in sel:
+            if s["kind"] == "FragmentSpread":
+                visit(s["name"])
+            elif s.get("sel"):
+                scan(s["sel"], visit)
+
+    def visit(name):
+        mark = state.get(name)
+        if mark == "visiting":
+            _gql_invalid("GraphQL fragment cycles are not allowed.")
+        if mark == "done":
+            return
+        if name not in fragments:
+            _gql_invalid("GraphQL document contains an unknown fragment spread.")
+        state[name] = "visiting"
+        scan(fragments[name]["sel"], visit)
+        state[name] = "done"
+    for name in list(fragments):
+        visit(name)
+
+    def check_ref(name):
+        if name not in fragments:
+            _gql_invalid("GraphQL document contains an unknown fragment spread.")
+    scan(op["sel"], check_ref)
+    # Depth and expanded field count (expandAndCount).
+    count = [0]
+    roots: list = []
+
+    def walk(sel, depth, at_root=False):
+        if depth > GQL_MAX_DEPTH:
+            _gql_invalid("GraphQL selection depth exceeds 16.")
+        for s in sel:
+            if s["kind"] == "Field":
+                count[0] += 1
+                if count[0] > GQL_MAX_FIELDS:
+                    _gql_invalid("GraphQL document exceeds 500 expanded fields.")
+                if at_root:
+                    roots.append(s)
+                if s["sel"]:
+                    walk(s["sel"], depth + 1)
+            elif s["kind"] == "InlineFragment":
+                walk(s["sel"], depth, at_root)
+            else:
+                walk(fragments[s["name"]]["sel"], depth, at_root)
+    walk(op["sel"], 1, True)
+    out = {"operation": op, "name": op["name"], "roots": roots, "variables": copied, "document": document}
+    if expected == "mutation":
+        if len(roots) != 1:
+            _gql_invalid("GraphQL mutations must contain exactly one root field.")
+        root = roots[0]["name"]
+        if BLOCKED_MUTATION_ROOT.search(root):
+            _gql_invalid("This Linear mutation root is protected.")
+        if BATCH_MUTATION_ROOT.search(root):
+            _gql_invalid("Batch and bulk mutation roots are not allowed.")
+        args = {}
+        for name, node in roots[0]["args"]:
+            v = gql_value(node, copied)
+            if v is not _MISSING:
+                args[name] = v
+        out["args"] = args
+    return out
+
+
+# ----------------------------------------------------------------- public inputs (linear-public-inputs.js)
+
+def assert_public_inputs(command: dict, values: dict) -> dict:
+    """Reject restricted or unknown fields in catalog-typed inputs before they reach Linear."""
+    catalog = load_catalog("public-inputs.json")
+    public, internal = catalog["public"], catalog["internal"]
+    specs = {a["name"]: a for a in command.get("args") or []}
+    pending = [(spec["type"], values[name], 0) for name, spec in specs.items()
+               if isinstance(spec.get("type"), str) and name in values]
+    visited = 0
+    while pending:
+        typ, value, depth = pending.pop()
+        visited += 1
+        if visited > 1000 or depth > 16:
+            raise ParityError("Linear input exceeds the validation limit.")
+        if value is None:
+            continue
+        typ = typ[:-1] if typ.endswith("!") else typ
+        if typ.startswith("[") and typ.endswith("]"):
+            if not isinstance(value, list):
+                pending.append((typ[1:-1], value, depth + 1))   # GraphQL coerces one value to a list
+                continue
+            if visited + len(pending) + len(value) > 1000:
+                raise ParityError("Linear input exceeds the validation limit.")
+            pending.extend((typ[1:-1], item, depth + 1) for item in value)
+            continue
+        name = re.sub(r"[!\[\]]", "", typ)
+        fields = public.get(name)
+        if fields is None:
+            continue            # scalars, enums and JSON leaves are opaque values
+        if not isinstance(value, dict):
+            raise ParityError("Linear input has an invalid object value.")
+        hidden = internal.get(name) or []
+        for field, child in value.items():
+            if field in hidden:
+                raise ParityError(f"Linear input contains a restricted field ({name}.{field}).")
+            if field not in fields:
+                raise ParityError("Linear input contains an unknown field.")
+            pending.append((fields[field], child, depth + 1))
+        if visited + len(pending) > 1000:
+            raise ParityError("Linear input exceeds the validation limit.")
+    return values
+
+
+# ----------------------------------------------------------------- named commands (linear-named.js)
+
+def selected_fields(value: str) -> str:
+    """A selection override may hold only response fields:  it cannot close its braces and append roots."""
+    try:
+        defs = _GqlParser(gql_tokens(f"fragment NamedSelection on NamedResource {{ {value} }}", 4000)).document()
+    except (GqlSyntax, ParityError):
+        raise ParityError("selection must contain only GraphQL response fields.") from None
+    if len(defs) != 1 or defs[0]["kind"] != "Fragment" or defs[0]["name"] != "NamedSelection":
+        raise ParityError("selection must contain only GraphQL response fields.")
+    return value
+
+
+def build_named_operation(entry: dict, args: dict) -> tuple[str, dict]:
+    """The document and variables the hosted server builds for a named command:  only the supplied
+    arguments, in catalog order, under `query|mutation AgentSyncNamed`."""
+    variants = entry.get("variants")
+    command = (variants["update"] if "id" in args else variants["create"]) if variants else entry
+    if variants:
+        own = {a["name"] for a in command["args"]}
+        for a in entry["args"]:
+            if a["name"] in args and a["name"] not in own:
+                raise ParityError(f"{a['name']} is not supported for this save operation.  Use the matching "
+                                  "create or update command.")
+    variables: dict = {}
+    definitions, parameters = [], []
+    for a in command["args"]:
+        key = a["name"]
+        if key not in args:
+            continue
+        variables[key] = args[key]
+        typ = f"{a['type']}!" if a.get("required") and not a["type"].endswith("!") else a["type"]
+        definitions.append(f"${key}: {typ}")
+        parameters.append(f"{key}: ${key}")
+    assert_public_inputs(command, variables)
+    fields = args.get("selection") or command.get("selection")
+    op = "mutation" if entry["kind"] == "write" else "query"
+    doc = (f"{op} AgentSyncNamed{'(' + ', '.join(definitions) + ')' if definitions else ''} {{ {command['root']}"
+           f"{'(' + ', '.join(parameters) + ')' if parameters else ''}"
+           f"{' { ' + selected_fields(fields) + ' }' if fields else ''} }}")
+    return doc, variables
+
+
+def coerce_arg(entry: dict, key: str, raw: str):
+    """--arg k=v:  the value read by the argument's declared JSON type, so an id stays a string."""
+    props = entry["input_schema"].get("properties") or {}
+    typ = (props.get(key) or {}).get("type")
+    if typ == "string":
+        return raw
+    if typ == "integer":
+        try:
+            return int(raw)
+        except ValueError:
+            die(f"--arg {key}: {raw!r} is not an integer", EXIT_USAGE)
+    if typ == "boolean":
+        if raw.lower() in ("true", "false"):
+            return raw.lower() == "true"
+        die(f"--arg {key}: use true or false", EXIT_USAGE)
+    try:
+        return json.loads(raw)
+    except ValueError:
+        if typ in ("object", "array"):
+            die(f"--arg {key}: the value must be JSON", EXIT_USAGE)
+        return raw
+
+
+# ----------------------------------------------------------------- inputs from flags
+
+def read_flag_text(raw: str, flag: str) -> str:
+    """A flag value, or `@PATH` (a regular file of at most 64 KB of UTF-8), or `-` for standard input."""
+    if raw == "-":
+        return read_text_input("-", flag)
+    if not raw.startswith("@"):
+        return raw
+    path = raw[1:]
+    try:
+        st = os.stat(path)
+    except OSError as e:
+        die(f"{flag} {path}: cannot open it ({e.strerror or type(e).__name__})", EXIT_USAGE)
+    if not stat.S_ISREG(st.st_mode):
+        die(f"{flag} {path}: not a regular file", EXIT_USAGE)
+    if st.st_size > INPUT_MAX_BYTES:
+        die(f"{flag} {path}: more than {INPUT_MAX_BYTES // 1024} KB", EXIT_USAGE)
+    try:
+        return Path(path).read_bytes()[:INPUT_MAX_BYTES + 1].decode("utf-8")
+    except UnicodeDecodeError:
+        die(f"{flag} {path}: not valid UTF-8", EXIT_USAGE)
+    except OSError as e:
+        die(f"{flag} {path}: cannot read it ({type(e).__name__})", EXIT_USAGE)
+
+
+def read_flag_json(raw: str | None, flag: str, default=None):
+    if raw is None:
+        return default
+    text = read_flag_text(raw, flag)
+    try:
+        return json.loads(text)
+    except ValueError:
+        die(f"{flag}: not valid JSON", EXIT_USAGE)
+
+
+# ----------------------------------------------------------------- write protections (linear-api.js)
+
+PROTECTED_LABEL_RE = re.compile(r"^(?:claimed:|seat:|stale-claim$)", re.I)
+SECRET_FIELD_RE = re.compile(r"secret|token|password|credential|authorization|cookie|api_?key", re.I)
+AUTHOR_FIELD_RE = re.compile(r"^(?:creatorId|authorId|actorId|createdById|createAsUser)$", re.I)
+LABEL_ADMIN_OK = ("issueLabelCreate", "issueLabelUpdate", "issueLabelDelete", "issueLabelArchive",
+                  "issueLabelUnarchive", "issueLabelRetire", "issueLabelRestore")
+Q_LABEL_ONE = "query AgentSyncLabel($id: String!) { issueLabel(id: $id) { id name } }"
+
+
+def protect_labels(L: "Linear", prepared: dict) -> None:
+    """Fleet claim, seat and stale-claim labels change only through `board claim`;  a mutation never
+    names an author (the app credential fixes it)."""
+    name = prepared["roots"][0]["name"]
+    args = prepared["args"]
+    issue_mutation = bool(re.match(r"issue", name, re.I))
+    label_mutation = bool(re.match(r"issueLabel", name, re.I))
+    if label_mutation and name not in LABEL_ADMIN_OK:
+        raise ParityError("This label administration operation requires a dedicated fleet-aware tool.")
+    if label_mutation and args.get("replaceTeamLabels") is True:
+        raise ParityError("Replacing team labels can alter protected fleet ownership labels.  Update ordinary "
+                          "labels individually.")
+    ids: list = []
+    replaces = [False]
+
+    def walk(value):
+        if not isinstance(value, dict):
+            if isinstance(value, list):
+                for child in value:
+                    walk(child)
+            return
+        for key, child in value.items():
+            if AUTHOR_FIELD_RE.match(key):
+                raise ParityError("Linear author identity is fixed by this seat's app credential.")
+            if issue_mutation and re.fullmatch(r"(?:added|removed)?labelIds?", key, re.I):
+                if key == "labelIds":
+                    replaces[0] = True
+                for lid in (child if isinstance(child, list) else [child]):
+                    if not isinstance(lid, str):
+                        raise ParityError("Label identifiers must be strings.")
+                    if lid not in ids:
+                        ids.append(lid)
+            elif isinstance(child, (dict, list)):
+                walk(child)
+    walk(args)
+    if label_mutation:
+        new_name = (args.get("input") or {}).get("name") if isinstance(args.get("input"), dict) else None
+        if isinstance(new_name, str) and PROTECTED_LABEL_RE.match(new_name.strip()):
+            raise ParityError("Fleet claim and seat labels are managed by `board claim`.")
+        if isinstance(args.get("id"), str) and args["id"] not in ids:
+            ids.append(args["id"])
+    if len(ids) > 50:
+        raise ParityError("At most 50 label identifiers may be checked per mutation.")
+    for lid in ids:
+        try:
+            hit = L.call(Q_LABEL_ONE, {"id": lid}).get("issueLabel")
+        except GqlError as e:
+            if e.not_found():
+                raise ParityError("A supplied label does not exist.") from None
+            raise
+        if not hit:
+            raise ParityError("A supplied label does not exist.")
+        if PROTECTED_LABEL_RE.match(hit.get("name") or ""):
+            raise ParityError("Fleet claim and seat-label edits must use `board claim`.")
+    if name == "issueUpdate" and replaces[0]:
+        if not isinstance(args.get("id"), str):
+            raise ParityError("issueUpdate requires an issue id.")
+        issue = L.call(Q_ISSUE, {"id": args["id"]}).get("issue") or {}
+        if any(PROTECTED_LABEL_RE.match(x.get("name") or "") for x in (issue.get("labels") or {}).get("nodes") or []):
+            raise ParityError("Replacing labels would alter a fleet claim.  Use addedLabelIds/removedLabelIds for "
+                              "ordinary labels, or `board claim` for ownership.")
+
+
+def tag_inputs(prepared: dict, tag) -> str:
+    """The seat tag line on every body and description a mutation's `input` writes, as the hosted
+    tagInputs does:  in the variables it references, and in string literals spliced in place.
+    Returns the document to send."""
+    variables = prepared["variables"]
+    tagged: set = set()
+    splices: list = []
+
+    def tag_object(value):
+        if isinstance(value, list):
+            return [tag_object(x) for x in value]
+        if not isinstance(value, dict):
+            return value
+        return {k: (tag(v) if k in ("body", "description") and isinstance(v, str) else tag_object(v))
+                for k, v in value.items()}
+
+    def transform(node):
+        k = node["kind"]
+        if k == "Variable":
+            name = node["name"]
+            if name in variables and name not in tagged:
+                variables[name] = tag_object(variables[name])
+                tagged.add(name)
+        elif k == "Object":
+            for fname, child in node["fields"]:
+                if fname in ("body", "description"):
+                    if child["kind"] == "String":
+                        splices.append((child["start"], child["end"], json.dumps(tag(child["value"]))))
+                    elif child["kind"] == "Variable":
+                        vname = child["name"]
+                        if isinstance(variables.get(vname), str) and vname not in tagged:
+                            variables[vname] = tag(variables[vname])
+                            tagged.add(vname)
+                else:
+                    transform(child)
+        elif k == "List":
+            for child in node["values"]:
+                transform(child)
+    for name, node in prepared["roots"][0]["args"]:
+        if name == "input":
+            transform(node)
+    doc = prepared["document"]
+    for start, end, text in sorted(splices, reverse=True):
+        doc = doc[:start] + text + doc[end:]
+    return doc
+
+
+def clean_data(data, depth: int = 0):
+    """Secret-looking fields redacted, as the hosted cleanData does."""
+    if depth > 32:
+        raise ParityError("Linear response nesting exceeds the response limit.  Select fewer nested fields.")
+    if isinstance(data, list):
+        return [clean_data(x, depth + 1) for x in data]
+    if isinstance(data, dict):
+        return {k: ("[redacted secret]" if SECRET_FIELD_RE.search(k) else clean_data(v, depth + 1))
+                for k, v in data.items()}
+    return data
+
+
+# ----------------------------------------------------------------- idempotency records
+# A mutation through `board run`, `board api mutation` or a write `board mcp call` needs
+# --idempotency-key.  Its record lives beside the identity's token cache (0600, flock), keyed by the
+# seat and the key:  a retry with the same key and the same request returns the first result without
+# sending it again;  the same key for a different request is refused;  an outcome that is not known
+# (a timeout, a 5xx, a dropped connection) is never replayed automatically for 24 hours.
+
+IDEM_TTL_S = 86400
+IDEM_PENDING_FRESH_S = 30
+IDEM_DATA_MAX_BYTES = 8192
+IDEM_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
+
+
+def stable_json(obj) -> str:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+class IdemStore:
+    def __init__(self, auth: "Auth", seat: str, key: str):
+        cache = auth.identity().cache
+        self.path = cache.with_name(f"{cache.stem}.linear-api.json")
+        self.ref = hashlib.sha256(f"linear-api:{seat}:{key}".encode()).hexdigest()
+
+    def _edit(self, fn):
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            os.fchmod(fd, 0o600)
+            rows = _read_cache(fd)
+            now = time.time()
+            rows = {k: v for k, v in rows.items() if isinstance(v, dict) and float(v.get("expires") or 0) > now}
+            result = fn(rows, now)
+            _write_cache(fd, rows)
+            return result
+        finally:
+            Auth._close(fd)
+
+    def begin(self, request_sha: str, operation: str) -> tuple[str, dict | None]:
+        def fn(rows, now):
+            row = rows.get(self.ref)
+            if row:
+                if row.get("request_sha") != request_sha:
+                    return "conflict", row
+                if row.get("state") == "sent":
+                    return "duplicate", row
+                if row.get("state") == "pending" and now - float(row.get("claimed_at") or 0) < IDEM_PENDING_FRESH_S:
+                    return "busy", row
+                if row.get("state") == "pending":
+                    row["state"] = "unknown"
+                return "unknown", row
+            rows[self.ref] = {"request_sha": request_sha, "operation": operation, "state": "pending",
+                              "claimed_at": now, "expires": now + IDEM_TTL_S}
+            return "send", None
+        return self._edit(fn)
+
+    def finish(self, data) -> None:
+        receipt = data if len(json.dumps(data).encode()) <= IDEM_DATA_MAX_BYTES else \
+            {"mutation_completed": True, "response_omitted": "Too large to keep;  inspect the resource with a query."}
+
+        def fn(rows, now):
+            if self.ref in rows:
+                rows[self.ref].update(state="sent", data=receipt)
+        self._edit(fn)
+
+    def unknown(self) -> None:
+        def fn(rows, now):
+            if self.ref in rows:
+                rows[self.ref]["state"] = "unknown"
+        self._edit(fn)
+
+    def drop(self) -> None:
+        self._edit(lambda rows, now: rows.pop(self.ref, None))
+
+
+def idem_begin(store: IdemStore, request_sha: str, operation: str):
+    """'send', or the first result of an earlier identical request;  dies on a conflict or an unknown outcome."""
+    verdict, row = store.begin(request_sha, operation)
+    if verdict == "conflict":
+        die("this idempotency key belongs to a different request.  Choose a new key for a new intended change.",
+            EXIT_USAGE)
+    if verdict == "busy":
+        die("this request is already in flight under the same idempotency key.  Retry with the same key in a "
+            "minute.", EXIT_RATE_LIMIT)
+    if verdict == "unknown":
+        die("the earlier request under this idempotency key has an unknown outcome:  it may have reached "
+            "Linear.  Check Linear before making another change;  this key will not be replayed automatically "
+            "for 24 hours.")
+    return verdict, (row or {}).get("data")
+
+
+class SendFailed(Exception):
+    """A single-shot write failed.  `definitive` when Linear certainly did not apply it."""
+
+    def __init__(self, message: str, definitive: bool, code: int = EXIT_ERROR):
+        super().__init__(message)
+        self.definitive, self.code = definitive, code
+
+
+# Linear rejects these before executing anything, so the write certainly did not happen.
+PRE_EXECUTION_CODES = ("GRAPHQL_PARSE_FAILED", "GRAPHQL_VALIDATION_FAILED")
+
+
+def linear_send_once(L: "Linear", query: str, variables: dict) -> dict:
+    """One POST of a mutation, never retried:  a retry of a write whose outcome is unknown could apply it
+    twice.  Raises SendFailed."""
+    token = L.auth.get()
+    body = json.dumps({"query": query, "variables": variables}).encode()
+    try:
+        status, js, _hdrs = L._post(body, token)
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+        raise SendFailed(f"no usable response from Linear ({type(e).__name__})", False) from None
+    errs = [e for e in (js.get("errors") or []) if isinstance(e, dict)]
+    if status == 429 or any(_is_ratelimit(e) for e in errs):
+        raise SendFailed(f"Linear rate limit:  the {L.auth.label}'s budget is spent.  Not applied;  retry with the "
+                         "same key after the reset.", True, EXIT_RATE_LIMIT)
+    if status == 401 or any(_is_auth_error(e) for e in errs):
+        raise SendFailed(f"Linear refused the {L.auth.label} token.  Not applied.", True, EXIT_AUTH)
+    if status == 403:
+        raise SendFailed(f"Linear answered 403:  the {L.auth.label} may not do this.  Not applied.", True, EXIT_AUTH)
+    if status >= 500:
+        raise SendFailed(f"Linear answered HTTP {status}", False)
+    data = js.get("data")
+    if errs or data is None:
+        e = GqlError(errs or [{"message": f"HTTP {status} with no data"}], data)
+        definitive = bool(errs) and all(_err_code(x) in PRE_EXECUTION_CODES for x in errs)
+        raise SendFailed(f"Linear error: {e}", definitive)
+    return data
+
+
+def guarded_write(store: IdemStore, request_sha: str, operation: str, send, describe):
+    """Run `send` under an idempotency record.  Returns (data, duplicate)."""
+    verdict, cached = idem_begin(store, request_sha, operation)
+    if verdict == "duplicate":
+        return cached, True
+    try:
+        data = send()
+    except SendFailed as e:
+        if e.definitive:
+            store.drop()
+            die(str(e), e.code)
+        store.unknown()
+        die(f"{e}.  The {describe} may have reached Linear:  check its result before using another idempotency "
+            "key.  This key will not be replayed automatically for 24 hours.")
+    except BaseException:
+        store.unknown()
+        raise
+    store.finish(data)
+    return data, False
+
+
+# ----------------------------------------------------------------- official Linear MCP client (linear-mcp-client.js)
+
+LINEAR_MCP_URL = "https://mcp.linear.app/mcp"
+MCP_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MCP_MAX_INPUT_BYTES = 64 * 1024
+MCP_ACCEPT = "application/json, text/event-stream"
+MCP_LOOPBACK_RE = re.compile(r"http://127\.0\.0\.1:\d{1,5}(/[A-Za-z0-9._/-]*)?")
+
+
+class McpError(Exception):
+    def __init__(self, kind: str, phase: str, status: int | None = None, uncertain: bool = False):
+        super().__init__(f"Linear MCP {kind} during {phase}" + (f" (HTTP {status})" if status else ""))
+        self.kind, self.phase, self.status, self.uncertain = kind, phase, status, uncertain
+
+
+def mcp_url() -> str:
+    """The official server, or a loopback test mock.  Nothing else, so the app token only goes to Linear."""
+    v = env("LINEAR_BOARD_MCP_URL")
+    if not v:
+        return LINEAR_MCP_URL
+    if MCP_LOOPBACK_RE.fullmatch(v):
+        return v
+    die(f"LINEAR_BOARD_MCP_URL may only point at http://127.0.0.1:<port>/... (a test mock); refusing {v!r}",
+        EXIT_USAGE)
+
+
+def _mcp_status_kind(status: int) -> str:
+    return {401: "unauthorized", 403: "forbidden", 429: "rate_limited"}.get(status) or \
+        ("redirect" if 300 <= status < 400 else "status")
+
+
+def _mcp_messages(resp, content_type: str, want_id, phase: str, uncertain: bool) -> dict:
+    """The JSON-RPC response with id `want_id`, from a JSON body or an SSE stream (read until it arrives)."""
+    if "text/event-stream" in (content_type or "").lower():
+        size = 0
+        data_lines: list = []
+
+        def dispatch():
+            payload = "\n".join(data_lines)
+            data_lines.clear()
+            if not payload or payload == "[DONE]":
+                return None
+            try:
+                msg = json.loads(payload)
+            except ValueError:
+                return None     # a non-JSON event is ignored, as the hosted client does
+            ok = isinstance(msg, dict) and msg.get("jsonrpc") == "2.0" and msg.get("id") == want_id
+            return msg if ok else None
+        while True:
+            line = resp.readline(MCP_MAX_RESPONSE_BYTES + 1)
+            size += len(line)
+            if size > MCP_MAX_RESPONSE_BYTES:
+                raise McpError("too_large", phase, uncertain=uncertain)
+            if not line:
+                msg = dispatch()
+                if msg:
+                    return msg
+                raise McpError("protocol", phase, uncertain=uncertain)
+            text = line.decode("utf-8", "replace").rstrip("\r\n")
+            if not text:
+                msg = dispatch()        # a blank line ends an event;  stop at the one that answers us
+                if msg:
+                    return msg
+            elif text.startswith("data:"):
+                data_lines.append(text[6:] if text.startswith("data: ") else text[5:])
+    raw = resp.read(MCP_MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MCP_MAX_RESPONSE_BYTES:
+        raise McpError("too_large", phase, uncertain=uncertain)
+    try:
+        msg = json.loads(raw)
+    except ValueError:
+        raise McpError("protocol", phase, uncertain=uncertain) from None
+    if isinstance(msg, dict) and msg.get("jsonrpc") == "2.0" and msg.get("id") == want_id:
+        return msg
+    raise McpError("protocol", phase, uncertain=uncertain)
+
+
+def mcp_post(url: str, token: str, body: dict, *, phase: str, write: bool, rpc_id=None,
+             protocol_version: str | None = None, session_id: str | None = None):
+    """POST one JSON-RPC message.  Returns (result or None for a notification, response headers)."""
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": MCP_ACCEPT,
+               "User-Agent": USER_AGENT}
+    if protocol_version:
+        headers["MCP-Protocol-Version"] = protocol_version
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers=headers)
+    in_call = phase == "tools/call" and write
+    timeout = env_float("LINEAR_BOARD_TIMEOUT", 60)
+    try:
+        resp = opener().open(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        raise McpError(_mcp_status_kind(e.code), phase, e.code, in_call and e.code not in (401, 403, 429)) from None
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+        kind = "timeout" if "timed out" in str(e).lower() else "network"
+        raise McpError(kind, phase, uncertain=in_call) from None
+    with resp:
+        hdrs = {k.lower(): v for k, v in resp.headers.items()}
+        if rpc_id is None:
+            if resp.status not in (200, 202, 204):
+                raise McpError(_mcp_status_kind(resp.status), phase, resp.status)
+            return None, hdrs
+        declared = hdrs.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MCP_MAX_RESPONSE_BYTES:
+            raise McpError("too_large", phase, uncertain=in_call)
+        try:
+            msg = _mcp_messages(resp, hdrs.get("content-type", ""), rpc_id, phase, in_call)
+        except (http.client.HTTPException, OSError):
+            raise McpError("network", phase, uncertain=in_call) from None
+    if isinstance(msg.get("error"), dict):
+        data = msg["error"].get("data") if isinstance(msg["error"].get("data"), dict) else {}
+        status = data.get("status") if isinstance(data.get("status"), int) else None
+        raise McpError(_mcp_status_kind(status) if status else "upstream_error", phase, status, phase == "tools/call")
+    if not isinstance(msg.get("result"), dict):
+        raise McpError("protocol", phase, uncertain=phase == "tools/call")
+    return msg["result"], hdrs
+
+
+def call_official_linear(token: str, upstream: str, args: dict, write: bool) -> dict:
+    """initialize, notifications/initialized, then tools/call, over Streamable HTTP."""
+    url = mcp_url()
+    init, hdrs = mcp_post(url, token, {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": official_catalog().get("protocol_version") or "2025-03-26", "capabilities": {},
+                   "clientInfo": {"name": "swu-board-cli", "version": "1"}}}, phase="initialize", write=write, rpc_id=1)
+    version = init.get("protocolVersion")
+    if not isinstance(version, str) or not version or len(version) > 100:
+        raise McpError("protocol", "initialize")
+    session = hdrs.get("mcp-session-id") or ""
+    if len(session) > 200 or re.search(r"[\x00-\x1f\x7f]", session):
+        raise McpError("protocol", "initialize")
+    mcp_post(url, token, {"jsonrpc": "2.0", "method": "notifications/initialized"}, phase="initialized", write=write,
+             protocol_version=version, session_id=session or None)
+    result, _ = mcp_post(url, token, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                      "params": {"name": upstream, "arguments": args}},
+                         phase="tools/call", write=write, rpc_id=2, protocol_version=version,
+                         session_id=session or None)
+    content = result.get("content")
+    if not isinstance(content, list) or any(not isinstance(x, dict) or not isinstance(x.get("type"), str)
+                                            for x in content) \
+            or ("isError" in result and not isinstance(result["isError"], bool)) \
+            or ("structuredContent" in result and not isinstance(result["structuredContent"], dict)):
+        raise McpError("protocol", "tools/call", uncertain=True)
+    return result
+
+
+def validate_mcp_input(tool: dict, args: dict) -> None:
+    """linear-mcp.js validateInput plus its per-tool rules."""
+    pending = [(args, 0)]
+    count = 0
+    while pending:
+        value, depth = pending.pop()
+        count += 1
+        if count > 1000 or depth > 16:
+            raise ParityError("Linear MCP input exceeds the validation limit.")
+        if isinstance(value, dict):
+            pending.extend((v, depth + 1) for v in value.values())
+        elif isinstance(value, list):
+            pending.extend((v, depth + 1) for v in value)
+    schema = tool["input_schema"]
+    problem = schema_problem(schema, args)
+    if problem:
+        raise ParityError(problem)
+
+    def check(rule, item):
+        if rule.get("anyOf"):
+            match = next((c for c in rule["anyOf"] if not schema_problem(c, item)), None)
+            if match is None:
+                raise ParityError("A Linear MCP input does not match any supported variant.")
+            check(match, item)
+        if isinstance(item, list) and isinstance(rule.get("items"), dict):
+            for child in item:
+                check(rule["items"], child)
+        elif isinstance(item, dict):
+            for key, child in item.items():
+                if isinstance((rule.get("properties") or {}).get(key), dict):
+                    check(rule["properties"][key], child)
+    check(schema, args)
+    if len(json.dumps(args, separators=(",", ":"), ensure_ascii=False).encode()) > MCP_MAX_INPUT_BYTES:
+        raise ParityError("Linear MCP input exceeds 64 KiB.")
+    native = {k: v for k, v in args.items() if k not in official_catalog().get("local_fields", ())}
+    up = tool["upstream_name"]
+    if up == "delete_diff_comment" and bool(native.get("commentId")) == bool(native.get("draftId")):
+        raise ParityError("Supply exactly one commentId or draftId.")
+    if up == "submit_diff_review" and native.get("decision") != "approved" and not str(native.get("body") or "").strip():
+        raise ParityError("A review requesting changes or commenting requires a body.")
+    if up == "update_diff" and not any(k != "urlOrId" for k in native):
+        raise ParityError("Supply at least one diff update.")
+
+
+# ----------------------------------------------------------------- the parity verbs
+
+def parity_fail(e: ParityError) -> "NoReturn":  # noqa: F821
+    die(str(e), EXIT_USAGE)
+
+
+def output_limited(obj, max_chars: int, write: bool = False) -> None:
+    if len(json.dumps(obj, separators=(",", ":"), ensure_ascii=False)) > max_chars:
+        tail = "  The mutation has already completed;  keep its idempotency key." if write else ""
+        die(f"the Linear response exceeds --max-chars {max_chars}.  Use pagination or select fewer fields." + tail)
+
+
+def cmd_commands(a) -> int:
+    """`board commands`:  the named Linear commands the hosted server serves."""
+    rows = named_commands()
+    if a.action == "show":
+        if not a.name:
+            die("`board commands show NAME` needs a command name", EXIT_USAGE)
+        c = named_command(a.name)
+        if a.json:
+            print(json.dumps(c, indent=2, ensure_ascii=False))
+            return 0
+        print(f"{c['name']}  ({c['kind']}{', destructive' if c.get('destructive') else ''})  {c['title']}")
+        print(c["description"])
+        print(f"\nroot:  {c['root']}")
+        print("args:")
+        for arg in c["args"]:
+            bits = [arg["type"], "required" if arg.get("required") else "optional"]
+            if "default" in arg:
+                bits.append(f"default {json.dumps(arg['default'])}")
+            desc = f"  {arg['description']}" if arg.get("description") else ""
+            print(f"  {arg['name']}:  {', '.join(bits)}{desc}")
+        if not c["args"]:
+            print("  (none)")
+        if c.get("variants"):
+            print(f"\nwithout id:  {c['variants']['create']['name']};  with id:  {c['variants']['update']['name']}")
+        print(f"\ndefault selection:  {c.get('selection') or '(none)'}")
+        if c["kind"] == "write":
+            print("\nwrites need LINEAR_BOARD_WRITES=1, AGENT_SEAT and --idempotency-key")
+        return 0
+    if a.action is not None or a.name:
+        die("usage:  board commands [--search WORD] [--kind read|write] [--json]  |  board commands show NAME",
+            EXIT_USAGE)
+    word = (a.search or "").lower()
+    rows = [c for c in rows if (not a.kind or c["kind"] == a.kind)
+            and (not word or word in f"{c['name']} {c['title']} {c['description']} {c['root']}".lower())]
+    if a.json:
+        print(json.dumps([{k: c[k] for k in ("name", "kind", "title", "root", "destructive")} for c in rows],
+                         indent=2))
+        return 0
+    for c in rows:
+        print(f"{c['name']:<44} {c['kind']:<5} {c['root']:<32} {c['title']}")
+    print(f"\n{len(rows)} command(s).  `board commands show NAME` for arguments;  `board run NAME` to call one.")
+    return 0
+
+
+def prepare_run(a) -> None:
+    """Validate `board run` completely before any credential is read:  the catalog entry, the arguments
+    against the served input schema, the public-input allowlist and the built document."""
+    entry = named_command(a.name)
+    args = read_flag_json(a.args_json, "--args-json", {})
+    if not isinstance(args, dict):
+        die("--args-json must be a JSON object", EXIT_USAGE)
+    for pair in a.arg or []:
+        if "=" not in pair:
+            die(f"--arg {pair!r}: use KEY=VALUE", EXIT_USAGE)
+        key, raw = pair.split("=", 1)
+        args[key.strip()] = coerce_arg(entry, key.strip(), raw)
+    if a.selection is not None:
+        args["selection"] = a.selection
+    if a.max_chars is not None:
+        args["max_chars"] = a.max_chars
+    if entry["kind"] == "write":
+        if not a.idempotency_key:
+            die(f"{entry['name']} is a write:  pass --idempotency-key KEY (letters, digits, _.:-), unique to "
+                "this intended change", EXIT_USAGE)
+        args["idempotency_key"] = a.idempotency_key
+    elif a.idempotency_key:
+        die(f"{entry['name']} is a read;  --idempotency-key is only for writes", EXIT_USAGE)
+    problem = schema_problem(entry["input_schema"], args)
+    if problem:
+        die(problem, EXIT_USAGE)
+    args = with_defaults(entry["input_schema"], args)
+    try:
+        doc, variables = build_named_operation(entry, args)
+        prepared = prepare_graphql(doc, variables, "mutation" if entry["kind"] == "write" else "query")
+    except ParityError as e:
+        parity_fail(e)
+    a.entry, a.prepared, a.max_chars = entry, prepared, args.get("max_chars", 24000)
+
+
+def prepare_api(a) -> None:
+    if a.api_cmd == "schema":
+        if not re.fullmatch(r"[_A-Za-z][_0-9A-Za-z]{0,99}", a.type_name):
+            die("TYPE must be a GraphQL type name", EXIT_USAGE)
+        if not 1 <= a.limit <= 100 or not 0 <= a.offset <= 100000:
+            die("--limit takes 1 to 100 and --offset 0 to 100000", EXIT_USAGE)
+        return
+    doc = read_flag_text(a.document, "DOCUMENT")
+    variables = read_flag_json(a.vars, "--vars", {})
+    if not 1000 <= a.max_chars <= 64000:
+        die("--max-chars takes 1000 to 64000", EXIT_USAGE)
+    if a.api_cmd == "mutation" and not (a.idempotency_key and IDEM_KEY_RE.match(a.idempotency_key)):
+        die("`board api mutation` needs --idempotency-key KEY (1 to 100 of letters, digits, _.:-), unique to this "
+            "intended change", EXIT_USAGE)
+    try:
+        a.prepared = prepare_graphql(doc, variables, a.api_cmd)
+    except ParityError as e:
+        parity_fail(e)
+
+
+def prepare_mcp(a) -> None:
+    if a.mcp_cmd != "call":
+        return
+    tool = official_tool(a.tool)
+    args = read_flag_json(a.args_json, "--args-json", {})
+    if not isinstance(args, dict):
+        die("--args-json must be a JSON object", EXIT_USAGE)
+    if a.max_chars is not None:
+        args["max_chars"] = a.max_chars
+    if tool["kind"] == "write":
+        if not a.idempotency_key:
+            die(f"{tool['name']} is a write:  pass --idempotency-key KEY, unique to this intended change", EXIT_USAGE)
+        args["idempotency_key"] = a.idempotency_key
+    elif a.idempotency_key:
+        die(f"{tool['name']} is a read;  --idempotency-key is only for writes", EXIT_USAGE)
+    try:
+        validate_mcp_input(tool, args)
+    except ParityError as e:
+        parity_fail(e)
+    args = with_defaults(tool["input_schema"], args)
+    a.tool_spec, a.max_chars = tool, args.get("max_chars", 24000)
+    a.native = {k: v for k, v in args.items() if k not in official_catalog().get("local_fields", ())}
+
+
+def parity_is_write(a) -> bool:
+    if a.cmd == "run":
+        return named_command(a.name)["kind"] == "write"
+    if a.cmd == "api":
+        return a.api_cmd == "mutation"
+    if a.cmd == "mcp":
+        return a.mcp_cmd == "call" and official_tool(a.tool)["kind"] == "write"
+    return False
+
+
+def parity_tagger(seat: str, a):
+    sessions = auto_sessions(getattr(a, "session_ids", None))
+    return lambda text: f"{seat_tag(seat, sessions)} {text}"
+
+
+def run_mutation(L: "Linear", auth: "Auth", seat: str, a, prepared: dict, label: str):
+    """The hosted apiMutation:  label protection, seat tags, then one idempotent send."""
+    try:
+        protect_labels(L, prepared)
+    except ParityError as e:
+        parity_fail(e)
+    doc = tag_inputs(prepared, parity_tagger(seat, a))
+    variables = prepared["variables"]
+    digest = hashlib.sha256(stable_json({"query": doc, "variables": variables}).encode()).hexdigest()
+    store = IdemStore(auth, seat, a.idempotency_key)
+    data, duplicate = guarded_write(store, digest, prepared["roots"][0]["name"],
+                                    lambda: clean_data(linear_send_once(L, doc, variables)), label)
+    return data, duplicate
+
+
+def print_api_result(a, data, duplicate: bool, operation: str, name: str) -> int:
+    if duplicate:
+        warn("this idempotency key already completed this exact request;  showing the first result, not "
+             "sending it again")
+    if a.json:
+        print(json.dumps({"command": name, "operation": operation, "duplicate": duplicate, "data": data}, indent=2,
+                         ensure_ascii=False))
+    else:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_run(L: "Linear", auth: "Auth", a, seat: str) -> int:
+    entry, prepared = a.entry, a.prepared
+    if entry["kind"] == "write":
+        data, duplicate = run_mutation(L, auth, seat, a, prepared, f"`board run {entry['name']}`")
+        output_limited(data, a.max_chars, write=True)
+        return print_api_result(a, data, duplicate, "mutation", entry["name"])
+    data = clean_data(L.call(prepared["document"], prepared["variables"]))
+    output_limited(data, a.max_chars)
+    return print_api_result(a, data, False, "query", entry["name"])
+
+
+def _type_text(t: dict | None) -> str:
+    if not t:
+        return "?"
+    if t.get("kind") == "NON_NULL":
+        return _type_text(t.get("ofType")) + "!"
+    if t.get("kind") == "LIST":
+        return f"[{_type_text(t.get('ofType'))}]"
+    return t.get("name") or "?"
+
+
+def _type_ref(depth: int) -> str:
+    return "kind name" + (f" ofType {{ {_type_ref(depth - 1)} }}" if depth else "")
+
+
+Q_SCHEMA_TYPE = f"""query AgentSyncSchema($name: String!) {{
+  __type(name: $name) {{
+    name kind description
+    fields(includeDeprecated: true) {{
+      name description isDeprecated deprecationReason
+      args {{ name description defaultValue type {{ {_type_ref(7)} }} }}
+      type {{ {_type_ref(7)} }}
+    }}
+    inputFields {{ name description defaultValue type {{ {_type_ref(7)} }} }}
+    enumValues(includeDeprecated: true) {{ name description isDeprecated deprecationReason }}
+    possibleTypes {{ name kind }}
+    interfaces {{ name kind }}
+  }}
+}}"""
+
+
+def cmd_api(L: "Linear", auth: "Auth", a, seat: str) -> int:
+    if a.api_cmd == "schema":
+        t = L.call(Q_SCHEMA_TYPE, {"name": a.type_name}).get("__type")
+        if not t:
+            die(f"Linear has no type named {a.type_name!r}", EXIT_USAGE)
+        kind = "fields" if t.get("fields") else "inputFields" if t.get("inputFields") else "enumValues"
+        word = (a.field or "").lower()
+        rows = [f for f in (t.get(kind) or []) if not word or word in (f.get("name") or "").lower()]
+        page = rows[a.offset:a.offset + a.limit]
+        nxt = a.offset + a.limit if a.offset + a.limit < len(rows) else None
+        if a.json:
+            print(json.dumps(clean_data({"name": t["name"], "kind": t["kind"], "description": t.get("description"),
+                                         "total": len(rows), "offset": a.offset, "next_offset": nxt, kind: page,
+                                         "interfaces": t.get("interfaces"), "possibleTypes": t.get("possibleTypes")}),
+                             indent=2, ensure_ascii=False))
+            return 0
+        print(f"{t['name']}  ({t['kind']})  {len(rows)} {kind}" + (f" matching {a.field!r}" if word else ""))
+        if t.get("description"):
+            print(t["description"])
+        print()
+        for f in page:
+            dep = "  (deprecated)" if f.get("isDeprecated") else ""
+            if kind == "enumValues":
+                print(f"  {f['name']}{dep}")
+                continue
+            args = ", ".join(f"{x['name']}: {_type_text(x.get('type'))}" for x in f.get("args") or [])
+            print(f"  {f['name']}{'(' + args + ')' if args else ''}: {_type_text(f.get('type'))}{dep}")
+        if nxt is not None:
+            print(f"\nmore:  --offset {nxt}")
+        return 0
+    if a.api_cmd == "query":
+        data = clean_data(L.call(a.prepared["document"], a.prepared["variables"]))
+        output_limited(data, a.max_chars)
+        return print_api_result(a, data, False, "query", "linear_query")
+    data, duplicate = run_mutation(L, auth, seat, a, a.prepared, "`board api mutation`")
+    output_limited(data, a.max_chars, write=True)
+    return print_api_result(a, data, duplicate, "mutation", "linear_mutation")
+
+
+def mcp_texts(result: dict) -> tuple[list, list]:
+    texts, images = [], []
+    for block in result.get("content") or []:
+        if block.get("type") == "text" and isinstance(block.get("text"), str):
+            texts.append(block["text"])
+        elif block.get("type") == "image":
+            images.append({"mimeType": block.get("mimeType"), "bytes": len(str(block.get("data") or "")) * 3 // 4})
+        else:
+            texts.append("[Unsupported remote content omitted.]")
+    return texts, images
+
+
+def cmd_mcp(L: "Linear", auth: "Auth", a, seat: str) -> int:
+    cat = official_catalog()
+    if a.mcp_cmd == "list":
+        if a.json:
+            print(json.dumps(cat["tools"], indent=2, ensure_ascii=False))
+            return 0
+        for t in cat["tools"]:
+            print(f"{t['name']:<34} {t['kind']:<5} {t['title']}")
+        print(f"\n{len(cat['tools'])} tool(s), proxied to {cat['url']} with this seat's Linear app token.  "
+              "`board mcp show TOOL` for arguments.")
+        return 0
+    if a.mcp_cmd == "show":
+        t = official_tool(a.tool)
+        if a.json:
+            print(json.dumps(t, indent=2, ensure_ascii=False))
+            return 0
+        print(f"{t['name']}  ({t['kind']})  {t['title']}")
+        print(t["description"])
+        req = set(t["input_schema"].get("required") or [])
+        print("\nargs:")
+        for name, prop in sorted((t["input_schema"].get("properties") or {}).items()):
+            typ = prop.get("type") or "/".join(str(x.get("type")) for x in prop.get("anyOf") or []) or "any"
+            print(f"  {name}:  {typ}, {'required' if name in req else 'optional'}"
+                  + (f"  {prop['description']}" if prop.get("description") else ""))
+        return 0
+    tool, native = a.tool_spec, a.native
+    write = tool["kind"] == "write"
+    if write:
+        tag = parity_tagger(seat, a)
+        for field in ("body", "description"):
+            if isinstance(native.get(field), str) and native[field]:
+                native[field] = tag(native[field])
+
+    def send():
+        try:
+            result = call_official_linear(auth.get(), tool["upstream_name"], native, write)
+        except McpError as e:
+            code = EXIT_RATE_LIMIT if e.kind == "rate_limited" else EXIT_AUTH if e.kind in ("unauthorized", "forbidden") \
+                else EXIT_ERROR
+            raise SendFailed(str(e), not e.uncertain, code) from None
+        if result.get("isError"):
+            texts, _ = mcp_texts(result)
+            reason = (texts[0] if texts else "Linear's official MCP refused the operation.")[:300]
+            raise SendFailed(f"Linear MCP refused:  {reason}", not write)
+        return result
+
+    if write:
+        digest = hashlib.sha256(stable_json({"upstream": tool["upstream_name"], "arguments": native}).encode()).hexdigest()
+        store = IdemStore(auth, seat, a.idempotency_key)
+
+        def send_receipt():
+            result = send()
+            texts, _ = mcp_texts(result)
+            return {"texts": texts}
+        result, duplicate = guarded_write(store, digest, f"mcp:{tool['upstream_name']}", send_receipt,
+                                          f"`board mcp call {tool['name']}`")
+        if duplicate:
+            warn("this idempotency key already completed this exact call;  showing the first result, not sending "
+                 "it again")
+        result = {"content": [{"type": "text", "text": t} for t in (result or {}).get("texts") or []]}
+    else:
+        try:
+            result = send()
+        except SendFailed as e:
+            die(str(e), e.code)
+    texts, images = mcp_texts(result)
+    # The hosted check is JSON.stringify(texts).length:  compact, non-ASCII kept as is.
+    if len(json.dumps(texts, ensure_ascii=False, separators=(",", ":"))) > a.max_chars:
+        die(f"the Linear MCP response exceeds --max-chars {a.max_chars}.  Narrow the request"
+            + (";  the call has already completed, so keep its idempotency key." if write else "."))
+    if a.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    print("\n\n".join(texts))
+    for im in images:
+        print(f"[image {im['mimeType']}, about {im['bytes']} bytes;  --json returns its data]")
+    return 0
+
+
 # ----------------------------------------------------------------- main
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2179,6 +3847,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     lp = sub.add_parser("list", help="list/filter items")
     lp.add_argument("--app")
+    lp.add_argument("--team", help="only this team's items, by key (AFC, FL, CC ...)")
+    lp.add_argument("--env", choices=("mac", "cloud", "Mac", "Cloud"), help="only items with this Env label")
     lp.add_argument("--status")
     lp.add_argument("--severity")
     lp.add_argument("--kind", dest="source_kind")
@@ -2192,6 +3862,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("show", help="one item + comments")
     sp.add_argument("id")
     sp.add_argument("--json", action="store_true")
+    sp.add_argument("--comment-limit", dest="comment_limit", type=int, metavar="N",
+                    help="show only the first N comments (oldest first);  resolution still reads them all")
 
     fp = sub.add_parser("file", help="file a new finding/issue")
     fp.add_argument("--title", required=True)
@@ -2224,6 +3896,7 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--session", dest="session_ids", action="append", help=session_help)
     cp.add_argument("--steal", action="store_true", help="take a claim another seat holds (needs --reason)")
     cp.add_argument("--reason")
+    cp.add_argument("--comment", help="a note appended to the CLAIMED comment")
 
     stp = sub.add_parser("status", help="set status")
     stp.add_argument("id")
@@ -2253,13 +3926,66 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("stats", help="aggregate counts")
     sub.add_parser("whoami", help="the Linear identity this CLI acts as")
+
+    # Agent-Sync parity:  the hosted server's Linear tools, from catalog/*.json.
+    session_flag = dict(dest="session_ids", action="append", help=session_help + ", for the seat tag line")
+    cmd_p = sub.add_parser("commands", help="the named Linear commands Agent-Sync serves (175)")
+    cmd_p.add_argument("action", nargs="?", choices=("show",), help="show NAME:  one command's arguments")
+    cmd_p.add_argument("name", nargs="?")
+    cmd_p.add_argument("--search", help="only commands whose name, title, description or root has WORD")
+    cmd_p.add_argument("--kind", choices=("read", "write"))
+    cmd_p.add_argument("--json", action="store_true")
+
+    run_p = sub.add_parser("run", help="run one named Linear command (see `board commands`)")
+    run_p.add_argument("name", help="a command name, with or without the linear_ prefix")
+    run_p.add_argument("--arg", action="append", metavar="KEY=VALUE",
+                       help="one argument;  objects and lists are JSON (repeatable)")
+    run_p.add_argument("--args-json", dest="args_json", metavar="JSON|@FILE|-", help="every argument as one JSON object")
+    run_p.add_argument("--selection", help="GraphQL response fields instead of the command's default selection")
+    run_p.add_argument("--max-chars", dest="max_chars", type=int, metavar="N", help="response size limit (default 24000)")
+    run_p.add_argument("--idempotency-key", dest="idempotency_key", metavar="KEY", help="required for a write")
+    run_p.add_argument("--session", **session_flag)
+    run_p.add_argument("--json", action="store_true", help="the result in an envelope naming the command")
+
+    api_p = sub.add_parser("api", help="Linear GraphQL with the Agent-Sync guards:  schema, query, mutation")
+    api_sub = api_p.add_subparsers(dest="api_cmd", required=True)
+    sch = api_sub.add_parser("schema", help="discover a type's fields, arguments or enum values")
+    sch.add_argument("type_name", nargs="?", default="Query", metavar="TYPE")
+    sch.add_argument("--field", help="only fields whose name has this text")
+    sch.add_argument("--offset", type=int, default=0)
+    sch.add_argument("--limit", type=int, default=30)
+    sch.add_argument("--json", action="store_true")
+    for verb in ("query", "mutation"):
+        ap = api_sub.add_parser(verb, help=f"run one GraphQL {verb}")
+        ap.add_argument("document", metavar="DOCUMENT", help="the GraphQL text, @FILE, or - for standard input")
+        ap.add_argument("--vars", metavar="JSON|@FILE", help="variables as a JSON object")
+        ap.add_argument("--max-chars", dest="max_chars", type=int, default=24000, metavar="N")
+        ap.add_argument("--json", action="store_true")
+        if verb == "mutation":
+            ap.add_argument("--idempotency-key", dest="idempotency_key", metavar="KEY", required=True)
+            ap.add_argument("--session", **session_flag)
+
+    mcp_p = sub.add_parser("mcp", help="Linear's official MCP tools (diffs, reviews, docs search, images)")
+    mcp_sub = mcp_p.add_subparsers(dest="mcp_cmd", required=True)
+    ml = mcp_sub.add_parser("list", help="the proxied official tools")
+    ml.add_argument("--json", action="store_true")
+    ms = mcp_sub.add_parser("show", help="one tool's arguments")
+    ms.add_argument("tool", metavar="TOOL")
+    ms.add_argument("--json", action="store_true")
+    mc = mcp_sub.add_parser("call", help="call one official tool with this seat's Linear app")
+    mc.add_argument("tool", metavar="TOOL")
+    mc.add_argument("--args-json", dest="args_json", metavar="JSON|@FILE|-", help="the tool's arguments")
+    mc.add_argument("--max-chars", dest="max_chars", type=int, metavar="N")
+    mc.add_argument("--idempotency-key", dest="idempotency_key", metavar="KEY", help="required for a write tool")
+    mc.add_argument("--session", **session_flag)
+    mc.add_argument("--json", action="store_true", help="the raw MCP result, images included")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if (env("BOARD_BACKEND") or "linear").lower() == "mac-collab":
-        linear_only = "label" if argv[:1] == ["label"] else \
+        linear_only = argv[0] if argv[:1] and argv[0] in LINEAR_ONLY_VERBS else \
             next((f for f in (t.split("=", 1)[0] for t in argv) if f in LINEAR_ONLY_FLAGS), None)
         if linear_only:
             die(f"`{linear_only}` is Linear only:  BOARD_BACKEND=mac-collab runs the old board CLI, which has "
@@ -2270,21 +3996,35 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.flush()
         os.execv(sys.executable, [sys.executable, str(old), *argv])
     a = build_parser().parse_args(argv)
-    seat = current_seat(required=a.cmd in WRITE_VERBS)
-    if a.cmd in WRITE_VERBS and env("LINEAR_BOARD_WRITES") != "1":
-        die(f"`board {a.cmd}` is a write, and writes to Linear are off until cutover.  Use the mac-collab "
+    # Catalog-only verbs read no credential and send nothing.
+    if a.cmd == "commands":
+        return cmd_commands(a)
+    if a.cmd == "mcp" and a.mcp_cmd in ("list", "show"):
+        return cmd_mcp(None, None, a, "")
+    writes = a.cmd in WRITE_VERBS or parity_is_write(a)
+    seat = current_seat(required=writes)
+    if writes and env("LINEAR_BOARD_WRITES") != "1":
+        verb = {"run": f"run {getattr(a, 'name', '')}", "api": "api mutation",
+                "mcp": f"mcp call {getattr(a, 'tool', '')}"}.get(a.cmd, a.cmd)
+        die(f"`board {verb}` is a write, and writes to Linear are off until cutover.  Use the mac-collab "
             "board for writes until then; at cutover the CLI runs with LINEAR_BOARD_WRITES=1.", EXIT_WRITES_OFF)
     for flag, val in (("--by", getattr(a, "reported_by", None)), ("--by", getattr(a, "addressed_by", None)),
                       ("--by", getattr(a, "author", None))):
         if val is not None:
             check_by(val, seat, flag)
     prepare_inputs(a)
+    if a.cmd == "run":
+        prepare_run(a)
+    elif a.cmd == "api":
+        prepare_api(a)
+    elif a.cmd == "mcp":
+        prepare_mcp(a)
     token_url = endpoint("LINEAR_BOARD_TOKEN_URL", TOKEN_URL)
     api_url = endpoint("LINEAR_BOARD_API_URL", GRAPHQL_URL)
     auth = Auth(token_url, resolve_identity(seat))
     L = Linear(auth, api_url)
     try:
-        if a.cmd in WRITE_VERBS:
+        if writes:
             check_write_identity(L, auth)
         if a.cmd == "whoami":
             return cmd_whoami(L, auth, seat)
@@ -2292,6 +4032,12 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_list(L, a)
         if a.cmd == "stats":
             return cmd_stats(L)
+        if a.cmd == "run":
+            return cmd_run(L, auth, a, seat)
+        if a.cmd == "api":
+            return cmd_api(L, auth, a, seat)
+        if a.cmd == "mcp":
+            return cmd_mcp(L, auth, a, seat)
         ids = IdIndex()
         if a.cmd == "show":
             return cmd_show(L, ids, a)

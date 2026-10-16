@@ -72,7 +72,7 @@ test("unprovisioned CLAUDE key fails closed for identity and writes", async () =
     grantRef: "abc123", paused: false, config: cfg, zulip: null, key: "",
     gate: { auditCall: async () => {} }, log: () => {},
   });
-  for (const [name, args] of [["whoami", {}], ["post", { topic: "sandbox", text: "probe" }]]) {
+  for (const [name, args] of [["whoami", {}], ["zulip_post", { topic: "sandbox", text: "probe" }]]) {
     const result = await tools.call(name, args);
     assert.equal(result.isError, true);
     assert.equal(result._meta["agent-sync/error"].code, "not_authorized");
@@ -88,6 +88,6 @@ test("CLAUDE canonical email is required; other seats keep their existing bindin
     JET: { key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" },
     "GROK-WEB": { key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" },
     ECHO: { key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" },
-    INSTINCT: { key: "ZULIP_KEY_INSTINCT", email: "ZULIP_EMAIL_INSTINCT" },
+    WISE: { key: "ZULIP_KEY_INSTINCT", email: "ZULIP_EMAIL_INSTINCT" },
   });
 });
