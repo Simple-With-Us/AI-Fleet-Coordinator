@@ -638,6 +638,8 @@ def build_parser() -> argparse.ArgumentParser:
                             "or 0400, UTF-8, at most %d KB.  For a caller that cannot pipe stdin" % (bodyfile.MAX_BYTES // 1024))
 
     add("whoami", "show the bot, seat, session tag, credential source and realm (never the key)")
+    add("identities", "list the bots this host may act as (every agent bot whose credential file is here, or the "
+                      "launcher's seat alone) and the default;  no network, never a key")
     p = add("channels", "list subscribed channels (--all:  every channel this bot can see)")
     p.add_argument("--all", action="store_true", help="every channel this bot can see, public ones it is not in included")
 
@@ -1673,9 +1675,53 @@ def _on_sigterm(signum: int, frame: Any) -> None:
     raise KeyboardInterrupt
 
 
+def cmd_identities(rt: Runtime, args: argparse.Namespace) -> int:
+    """`agent-sync identities`:  the allowed set and the default (AFC-331), from the files on this host.
+    A launcher's seat narrows the set to itself."""
+    from . import identities as X
+
+    resolved = I.resolve_seat(rt.env, flag=getattr(args, "as_seat", None), default=getattr(args, "default_seat", None))
+    if resolved.problem:
+        raise Z.CredentialError(resolved.problem)
+    default = Z.normalise_seat(resolved.seat) if resolved.seat else None
+    home = rt.home if rt.home is not None else Path(rt.env.get("HOME") or os.path.expanduser("~"))
+    allowed = sorted(X.allowed_identities(rt.env, home))
+    if resolved.source == "launcher":
+        allowed = [default] if default in allowed else []
+    if getattr(args, "json", False):
+        rt.out(json.dumps({"default_identity": default, "transport": "cli",
+                           "identities": [{"identity": name, "zulip": "configured"} for name in allowed]}) + "\n")
+    else:
+        rt.out("default identity:  %s\n" % (default or "none"))
+        for name in allowed:
+            rt.out("%s\n" % name)
+    return 0
+
+
+# The CLI commands that write (the CLI side of tools.py WRITE_TOOLS, AFC-331).  Each run of one appends a row
+# to the identity audit log (identity_log.py).  `listener` writes only local records and is not here.
+WRITE_COMMANDS = frozenset({"post", "reply", "react", "dm", "edit", "delete", "move", "resolve", "unresolve", "unreact",
+                            "mark-read", "mark-unread", "star", "unstar", "unsubscribe", "follow", "mute", "unmute",
+                            "set-status", "upload", "scheduled", "drafts", "typing", "subscribe"})
+READ_ONLY_ACTIONS = frozenset({"list"})  # `scheduled list` and `drafts list` read
+
+
+def _audit_write(rt: Runtime, args: argparse.Namespace, agent: Agent, code: int) -> None:
+    from . import identity_log as AUDIT
+
+    if args.command not in WRITE_COMMANDS:
+        return
+    action = next((getattr(args, name) for name in ("scheduled_action", "drafts_action")
+                   if isinstance(getattr(args, name, None), str)), None)
+    if action in READ_ONLY_ACTIONS:
+        return
+    AUDIT.append(rt.env, rt.home, transport="cli", default_identity=agent.seat, identity=agent.seat,
+                 tool=args.command + (" " + action if action else ""), outcome="ok" if code == 0 else "exit_%d" % code)
+
+
 LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
     "daemon": listener_cli.cmd_daemon, "status": listener_cli.cmd_status, "wakes": listener_cli.cmd_wakes,
-    "listener": listener_cli.cmd_listener,
+    "listener": listener_cli.cmd_listener, "identities": cmd_identities,
 }
 
 
@@ -1715,9 +1761,13 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
         if args.command in ("post", "reply", "dm", "edit"):
             _check_text_args(args)  # a usage error needs no credential
         agent = Agent(rt, args)  # every request after users/me waits for agent.verify(); whoami reports it
-        return COMMANDS[args.command](agent, args)
+        code = COMMANDS[args.command](agent, args)
+        _audit_write(rt, args, agent, code)
+        return code
     except Z.AgentSyncError as exc:
         rt.err("agent-sync: %s" % exc)
+        if agent is not None and agent._verified:
+            _audit_write(rt, args, agent, exc.exit_code)
         return exc.exit_code
     except KeyboardInterrupt:
         return 130

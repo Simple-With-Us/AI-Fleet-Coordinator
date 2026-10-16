@@ -22,6 +22,11 @@ export const SCOPES = Object.freeze(["zulip:read", "zulip:write"]);
 // with its own Zulip bot (instinct-bat-bot and instinct-owl-bot).
 export const KNOWN_SEATS = Object.freeze(["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE"]);
 
+// AFC-331 (docs/protocols/per-call-identity.md section 3):  a grant for one of these seats may act as
+// either of them and as every enabled Grok Bot persona (GB_IDENTITIES);  every other grant acts only
+// as its own seat.  One shared group, so a GROK-WEB grant and a CURSOR grant see the same set.
+export const SHARED_IDENTITY_SEATS = Object.freeze(["CURSOR", "GROK-WEB"]);
+
 // Phase 0 durations.
 export const ARM_WINDOW_MS = 10 * 60 * 1000;
 export const GRANT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;

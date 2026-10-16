@@ -103,63 +103,64 @@ const dmPosts = (fake) => fake.requestsTo("POST", "messages");
 // ---------------------------------------------------------------- the tool list and scopes
 
 test("the DM tools:  closed inputs, output schemas, no identity arguments, read and write split", () => {
-  assert.deepEqual(DM_TOOLS.map((t) => t.name), ["dm_list", "dm_read", "dm_send"]);
+  assert.deepEqual(DM_TOOLS.map((t) => t.name), ["zulip_dm_list", "zulip_dm_read", "zulip_dm_send"]);
   assert.deepEqual(HOSTED_TOOL_LIST.filter((t) => t.name.startsWith("zulip_dm_")).map((t) => t.name), ["zulip_dm_list", "zulip_dm_read", "zulip_dm_send"]);
   for (const tool of DM_TOOLS) {
     assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
     assert.ok(tool.outputSchema, tool.name);
     for (const banned of ["seat", "as", "rc", "no_tag", "fleet", "to"]) assert.ok(!(banned in tool.inputSchema.properties), `${tool.name} takes ${banned}`);
   }
-  assert.ok(HOSTED_READ_TOOLS.has("dm_list") && HOSTED_READ_TOOLS.has("dm_read") && !HOSTED_WRITE_TOOLS.has("dm_read"));
-  assert.ok(HOSTED_WRITE_TOOLS.has("dm_send") && !HOSTED_READ_TOOLS.has("dm_send"));
+  assert.ok(HOSTED_READ_TOOLS.has("zulip_dm_list") && HOSTED_READ_TOOLS.has("zulip_dm_read") && !HOSTED_WRITE_TOOLS.has("zulip_dm_read"));
+  assert.ok(HOSTED_WRITE_TOOLS.has("zulip_dm_send") && !HOSTED_READ_TOOLS.has("zulip_dm_send"));
   assert.match(hostedInstructions("JET"), /Direct messages \(zulip_dm_list, zulip_dm_read, zulip_dm_send/);
   // The stdio contract is untouched; the hosted inbox changes naming and descriptive metadata.
   const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/tools.json"), "utf8"));
   assert.deepEqual(TOOLS, file);
-  const hostedInbox = HOSTED_TOOLS_BY_NAME.inbox;
-  assert.deepEqual({ ...hostedInbox, description: null }, { ...TOOLS_BY_NAME.inbox, name: "zulip_inbox", title: "Zulip Inbox", description: null });
-  assert.notEqual(hostedInbox.description, TOOLS_BY_NAME.inbox.description);
+  const hostedInbox = HOSTED_TOOLS_BY_NAME.zulip_inbox;
+  assert.equal(HOSTED_TOOLS_BY_NAME.inbox, undefined, "the old name is gone (AFC-331)");
+  assert.deepEqual({ ...hostedInbox, description: null }, { ...TOOLS_BY_NAME.zulip_inbox, title: "Zulip Inbox", description: null });
+  assert.notEqual(hostedInbox.description, TOOLS_BY_NAME.zulip_inbox.description);
   assert.match(hostedInbox.description, /direct messages sent to it/);
   assert.ok(!/left out/.test(hostedInbox.description));
 });
 
 test("scopes:  zulip:read opens dm_list and dm_read, zulip:write opens dm_send, and a missing scope sends nothing", async () => {
   const { fake, tools, jay } = harness({ scopes: ["zulip:read"] });
-  ok(await tools.call("dm_list", {}), "dm_list");
-  ok(await tools.call("dm_read", { user_ids: [jay.user_id] }), "dm_read");
+  ok(await tools.call("zulip_dm_list", {}), "zulip_dm_list");
+  ok(await tools.call("zulip_dm_read", { user_ids: [jay.user_id] }), "zulip_dm_read");
   const before = fake.requests.length;
-  const denied = toolError(await tools.call("dm_send", { user_ids: [jay.user_id], text: "hi" }), "not_authorized");
+  const denied = toolError(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "hi" }), "not_authorized");
   assert.match(denied.message, /zulip:write/);
   assert.equal(fake.requests.length, before);
 
   const writer = harness({ scopes: ["zulip:write"] });
-  toolError(await writer.tools.call("dm_list", {}), "not_authorized");
-  toolError(await writer.tools.call("dm_read", { user_ids: [writer.jay.user_id] }), "not_authorized");
-  ok(await writer.tools.call("dm_send", { user_ids: [writer.jay.user_id], text: "hi" }), "dm_send");
+  toolError(await writer.tools.call("zulip_dm_list", {}), "not_authorized");
+  toolError(await writer.tools.call("zulip_dm_read", { user_ids: [writer.jay.user_id] }), "not_authorized");
+  ok(await writer.tools.call("zulip_dm_send", { user_ids: [writer.jay.user_id], text: "hi" }), "zulip_dm_send");
   const paused = harness({ paused: true });
-  for (const [tool, args] of [["dm_list", {}], ["dm_read", { user_ids: [1] }], ["dm_send", { user_ids: [1], text: "x" }]]) toolError(await paused.tools.call(tool, args), "paused");
+  for (const [tool, args] of [["zulip_dm_list", {}], ["zulip_dm_read", { user_ids: [1] }], ["zulip_dm_send", { user_ids: [1], text: "x" }]]) toolError(await paused.tools.call(tool, args), "paused");
 });
 
 test("argument checks:  closed, typed, bounded, and no request leaves for a bad call", async () => {
   const { fake, tools, jay } = harness();
   const before = fake.requests.length;
   const bad = [
-    ["dm_send", { text: "x" }, /name the other people/],
-    ["dm_send", { user_ids: [jay.user_id] }, /'text' is required/],
-    ["dm_send", { user_ids: [jay.user_id], text: "x", seat: "CODEX" }, /unknown argument 'seat'/],
-    ["dm_send", { user_ids: [jay.user_id], text: "x", to: ["CODEX"] }, /unknown argument 'to'/],
-    ["dm_send", { user_ids: [1.5], text: "x" }, /integer/],
-    ["dm_send", { user_ids: [0], text: "x" }, /at least 1/],
-    ["dm_send", { user_ids: ["12"], text: "x" }, /integer/],
-    ["dm_send", { user_ids: Array.from({ length: DM_MAX_RECIPIENTS + 1 }, (_, i) => i + 1), text: "x" }, /at most 8 items/],
-    ["dm_send", { emails: ["a"], text: "x" }, /at least 3/],
-    ["dm_send", { user_ids: [jay.user_id], text: "" }, /at least 1/],
-    ["dm_send", { user_ids: [jay.user_id], text: "x", idempotency_key: "short" }, /must match/],
-    ["dm_read", {}, /name the other people/],
-    ["dm_read", { user_ids: [jay.user_id], limit: 51 }, /at most 50/],
-    ["dm_read", { user_ids: [jay.user_id], include_self: "yes" }, /boolean/],
-    ["dm_list", { limit: 0 }, /at least 1/],
-    ["dm_list", { user_ids: [1] }, /unknown argument 'user_ids'/],
+    ["zulip_dm_send", { text: "x" }, /name the other people/],
+    ["zulip_dm_send", { user_ids: [jay.user_id] }, /'text' is required/],
+    ["zulip_dm_send", { user_ids: [jay.user_id], text: "x", seat: "CODEX" }, /unknown argument 'seat'/],
+    ["zulip_dm_send", { user_ids: [jay.user_id], text: "x", to: ["CODEX"] }, /unknown argument 'to'/],
+    ["zulip_dm_send", { user_ids: [1.5], text: "x" }, /integer/],
+    ["zulip_dm_send", { user_ids: [0], text: "x" }, /at least 1/],
+    ["zulip_dm_send", { user_ids: ["12"], text: "x" }, /integer/],
+    ["zulip_dm_send", { user_ids: Array.from({ length: DM_MAX_RECIPIENTS + 1 }, (_, i) => i + 1), text: "x" }, /at most 8 items/],
+    ["zulip_dm_send", { emails: ["a"], text: "x" }, /at least 3/],
+    ["zulip_dm_send", { user_ids: [jay.user_id], text: "" }, /at least 1/],
+    ["zulip_dm_send", { user_ids: [jay.user_id], text: "x", idempotency_key: "short" }, /must match/],
+    ["zulip_dm_read", {}, /name the other people/],
+    ["zulip_dm_read", { user_ids: [jay.user_id], limit: 51 }, /at most 50/],
+    ["zulip_dm_read", { user_ids: [jay.user_id], include_self: "yes" }, /boolean/],
+    ["zulip_dm_list", { limit: 0 }, /at least 1/],
+    ["zulip_dm_list", { user_ids: [1] }, /unknown argument 'user_ids'/],
   ];
   for (const [tool, args, message] of bad) {
     const error = toolError(await tools.call(tool, args), "invalid_argument");
@@ -184,8 +185,8 @@ test("dm_list:  conversations newest first, 1:1 and group, unread counts, names 
   // A DM the bot is not in is invisible to it.
   fake.addDm(codex, [jay], "Codex to Jay, private");
 
-  const result = await tools.call("dm_list", {});
-  const data = ok(result, "dm_list");
+  const result = await tools.call("zulip_dm_list", {});
+  const data = ok(result, "zulip_dm_list");
   const items = fence(result.content[0].text);
   assert.equal(data.count, 4);
   assert.equal(items.length, 4);
@@ -222,13 +223,13 @@ test("dm_list:  conversations newest first, 1:1 and group, unread counts, names 
 
 test("dm_list:  the limit caps conversations, and an empty inbox is an empty fence", async () => {
   const { fake, tools, jay, codex, cursor } = harness();
-  const empty = await tools.call("dm_list", {});
-  assert.equal(ok(empty, "dm_list").count, 0);
+  const empty = await tools.call("zulip_dm_list", {});
+  assert.equal(ok(empty, "zulip_dm_list").count, 0);
   assert.deepEqual(fence(empty.content[0].text), []);
   fake.addDm(jay, [], "a");
   fake.addDm(codex, [], "b");
   fake.addDm(cursor, [], "c");
-  const data = ok(await tools.call("dm_list", { limit: 2 }), "dm_list");
+  const data = ok(await tools.call("zulip_dm_list", { limit: 2 }), "zulip_dm_list");
   assert.equal(data.count, 2);
 });
 
@@ -242,8 +243,8 @@ test("dm_read:  one conversation by user ids or emails, fenced, own messages sho
   fake.addDm(codex, [fake.me, jay], "a group message that is not this conversation");
   fake.addDm(codex, [], "a different 1:1");
 
-  const byId = await tools.call("dm_read", { user_ids: [jay.user_id] });
-  const data = ok(byId, "dm_read");
+  const byId = await tools.call("zulip_dm_read", { user_ids: [jay.user_id] });
+  const data = ok(byId, "zulip_dm_read");
   assert.deepEqual(data.ids, [one.id, two.id, three.id]);
   assert.equal(data.next_since_id, three.id);
   const items = fence(byId.content[0].text);
@@ -252,20 +253,20 @@ test("dm_read:  one conversation by user ids or emails, fenced, own messages sho
   assert.match(items[2].body, /\[marker removed\]/);
   assert.equal(items[0].sender, "Jay Wedgeworth");
 
-  const byEmail = ok(await tools.call("dm_read", { emails: [jay.email.toUpperCase()] }), "dm_read");
+  const byEmail = ok(await tools.call("zulip_dm_read", { emails: [jay.email.toUpperCase()] }), "zulip_dm_read");
   assert.deepEqual(byEmail.ids, data.ids);
   // user_ids and emails together name one set, the bot itself is ignored.
-  const mixed = ok(await tools.call("dm_read", { user_ids: [jay.user_id, fake.me.user_id], emails: [jay.email] }), "dm_read");
+  const mixed = ok(await tools.call("zulip_dm_read", { user_ids: [jay.user_id, fake.me.user_id], emails: [jay.email] }), "zulip_dm_read");
   assert.deepEqual(mixed.ids, data.ids);
 
-  const hidden = ok(await tools.call("dm_read", { user_ids: [jay.user_id], include_self: false }), "dm_read");
+  const hidden = ok(await tools.call("zulip_dm_read", { user_ids: [jay.user_id], include_self: false }), "zulip_dm_read");
   assert.deepEqual(hidden.ids, [one.id, three.id]);
-  const newer = ok(await tools.call("dm_read", { user_ids: [jay.user_id], since_id: two.id }), "dm_read");
+  const newer = ok(await tools.call("zulip_dm_read", { user_ids: [jay.user_id], since_id: two.id }), "zulip_dm_read");
   assert.deepEqual(newer.ids, [three.id]);
-  assert.equal(ok(await tools.call("dm_read", { user_ids: [jay.user_id], since_id: three.id }), "dm_read").next_since_id, three.id);
+  assert.equal(ok(await tools.call("zulip_dm_read", { user_ids: [jay.user_id], since_id: three.id }), "zulip_dm_read").next_since_id, three.id);
 
   // The group is its own conversation.
-  const group = ok(await tools.call("dm_read", { user_ids: [jay.user_id, codex.user_id] }), "dm_read");
+  const group = ok(await tools.call("zulip_dm_read", { user_ids: [jay.user_id, codex.user_id] }), "zulip_dm_read");
   assert.equal(group.count, 1);
   // Every query was a `dm` narrow of the other people's ids, nothing else.
   for (const r of fake.requestsTo("GET", "messages")) assert.equal(JSON.parse(r.params.narrow)[0].operator, "dm");
@@ -275,21 +276,21 @@ test("dm_read:  a conversation the bot is not in is empty, and an unknown email 
   const { fake, tools, jay, codex, cursor } = harness();
   fake.addDm(codex, [jay], "Codex to Jay, not for this bot");
   // The bot and Codex have no conversation, whatever Jay and Codex do.
-  assert.equal(ok(await tools.call("dm_read", { user_ids: [codex.user_id] }), "dm_read").count, 0);
-  assert.equal(ok(await tools.call("dm_read", { user_ids: [cursor.user_id, 999999] }), "dm_read").count, 0);
-  const error = toolError(await tools.call("dm_read", { emails: ["nobody@example.test"] }), "invalid_argument");
+  assert.equal(ok(await tools.call("zulip_dm_read", { user_ids: [codex.user_id] }), "zulip_dm_read").count, 0);
+  assert.equal(ok(await tools.call("zulip_dm_read", { user_ids: [cursor.user_id, 999999] }), "zulip_dm_read").count, 0);
+  const error = toolError(await tools.call("zulip_dm_read", { emails: ["nobody@example.test"] }), "invalid_argument");
   assert.match(error.message, /emails\[0\] is not a user in this realm/);
   assert.ok(!error.message.includes("nobody@example.test"), "the value is not echoed");
   // A DM to oneself reads as the bot's own conversation.
   const note = fake.addDm(fake.me, [fake.me], "note to self");
-  assert.deepEqual(ok(await tools.call("dm_read", { user_ids: [fake.me.user_id] }), "dm_read").ids, [note.id]);
+  assert.deepEqual(ok(await tools.call("zulip_dm_read", { user_ids: [fake.me.user_id] }), "zulip_dm_read").ids, [note.id]);
 });
 
 // ---------------------------------------------------------------- dm_send
 
 test("dm_send:  the tag with the recipient, the sentence gap, ids only in the answer, one Zulip direct message", async () => {
   const { fake, tools, jay } = harness();
-  const data = ok(await tools.call("dm_send", { user_ids: [jay.user_id], text: "First.  Second @**Jay Wedgeworth** and @**all**.", session: "s1" }), "dm_send");
+  const data = ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "First.  Second @**Jay Wedgeworth** and @**all**.", session: "s1" }), "zulip_dm_send");
   assert.deepEqual(Object.keys(data).sort(), ["duplicate", "id", "user_ids"]);
   assert.deepEqual(data.user_ids, [jay.user_id]);
   assert.equal(data.duplicate, false);
@@ -309,48 +310,48 @@ test("dm_send:  the tag with the recipient, the sentence gap, ids only in the an
 
 test("dm_send:  by email, and a group of several people with a label for each", async () => {
   const { fake, tools, jay, codex, ana } = harness();
-  const data = ok(await tools.call("dm_send", { emails: [codex.email, ana.email.toUpperCase()], user_ids: [jay.user_id, jay.user_id, fake.me.user_id], text: "Group note" }), "dm_send");
+  const data = ok(await tools.call("zulip_dm_send", { emails: [codex.email, ana.email.toUpperCase()], user_ids: [jay.user_id, jay.user_id, fake.me.user_id], text: "Group note" }), "zulip_dm_send");
   assert.deepEqual(data.user_ids, [jay.user_id, codex.user_id, ana.user_id].sort((a, b) => a - b));
   const [post] = dmPosts(fake);
   assert.deepEqual(JSON.parse(post.params.to), data.user_ids);
   assert.match(post.params.content, /^\[GROK-WEB→[A-Z,]+\] Group note$/);
   assert.ok(post.params.content.includes("JAY") && post.params.content.includes("CODEX") && post.params.content.includes("ANA"));
   // The group is now one conversation that dm_read finds.
-  assert.equal(ok(await tools.call("dm_read", { user_ids: data.user_ids }), "dm_read").count, 1);
+  assert.equal(ok(await tools.call("zulip_dm_read", { user_ids: data.user_ids }), "zulip_dm_read").count, 1);
 });
 
 test("dm_send:  recipients must be active realm users, not just the bot, and at most 8 other people", async () => {
   const { fake, tools, jay, gone, clock } = harness();
   const before = dmPosts(fake).length;
-  const unknown = toolError(await tools.call("dm_send", { user_ids: [jay.user_id, 987654], text: "x" }), "invalid_argument");
+  const unknown = toolError(await tools.call("zulip_dm_send", { user_ids: [jay.user_id, 987654], text: "x" }), "invalid_argument");
   assert.match(unknown.message, /user_ids\[1\] is not a user in this realm/);
   assert.ok(!unknown.message.includes("987654"));
-  assert.match(toolError(await tools.call("dm_send", { user_ids: [gone.user_id], text: "x" }), "invalid_argument").message, /user_ids\[0\] is a deactivated user/);
-  assert.match(toolError(await tools.call("dm_send", { emails: [gone.email], text: "x" }), "invalid_argument").message, /emails\[0\] is a deactivated user/);
-  assert.match(toolError(await tools.call("dm_send", { emails: ["nobody@example.test"], text: "x" }), "invalid_argument").message, /emails\[0\] is not a user/);
-  assert.match(toolError(await tools.call("dm_send", { user_ids: [fake.me.user_id], text: "x" }), "invalid_argument").message, /only this bot/);
-  assert.match(toolError(await tools.call("dm_send", { emails: [fake.me.email], text: "x" }), "invalid_argument").message, /only this bot/);
+  assert.match(toolError(await tools.call("zulip_dm_send", { user_ids: [gone.user_id], text: "x" }), "invalid_argument").message, /user_ids\[0\] is a deactivated user/);
+  assert.match(toolError(await tools.call("zulip_dm_send", { emails: [gone.email], text: "x" }), "invalid_argument").message, /emails\[0\] is a deactivated user/);
+  assert.match(toolError(await tools.call("zulip_dm_send", { emails: ["nobody@example.test"], text: "x" }), "invalid_argument").message, /emails\[0\] is not a user/);
+  assert.match(toolError(await tools.call("zulip_dm_send", { user_ids: [fake.me.user_id], text: "x" }), "invalid_argument").message, /only this bot/);
+  assert.match(toolError(await tools.call("zulip_dm_send", { emails: [fake.me.email], text: "x" }), "invalid_argument").message, /only this bot/);
   // Nine other people:  six ids in user_ids plus three emails, each list within its own cap.
   // The member list is re-read on a miss only once a minute, so let the first read age.
   clock.now += 2 * 60 * 1000;
   const others = Array.from({ length: 9 }, (_, i) => fake.addUser(`crowd${i}@zulip.test`, `Crowd ${i}`));
-  const tooMany = toolError(await tools.call("dm_send", { user_ids: others.slice(0, 6).map((u) => u.user_id), emails: others.slice(6).map((u) => u.email), text: "x" }), "invalid_argument");
+  const tooMany = toolError(await tools.call("zulip_dm_send", { user_ids: others.slice(0, 6).map((u) => u.user_id), emails: others.slice(6).map((u) => u.email), text: "x" }), "invalid_argument");
   assert.match(tooMany.message, /at most 8 other people/);
   assert.equal(dmPosts(fake).length, before, "nothing was sent");
   // Exactly eight is fine.
-  const eight = ok(await tools.call("dm_send", { user_ids: others.slice(0, 8).map((u) => u.user_id), text: "eight" }), "dm_send");
+  const eight = ok(await tools.call("zulip_dm_send", { user_ids: others.slice(0, 8).map((u) => u.user_id), text: "eight" }), "zulip_dm_send");
   assert.equal(eight.user_ids.length, 8);
 });
 
 test("dm_send:  text that looks like a secret is refused before any request, and the audit row has ids, never the body", async () => {
   const { fake, tools, jay, gate, logs } = harness();
   const before = fake.requests.length;
-  const refused = toolError(await tools.call("dm_send", { user_ids: [jay.user_id], text: `here: ${fake.key}` }), "refused_secret");
+  const refused = toolError(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: `here: ${fake.key}` }), "refused_secret");
   assert.match(refused.message, /text looks like/);
-  toolError(await tools.call("dm_send", { user_ids: [jay.user_id], text: `token=${zulipShapedKey(5)}` }), "refused_secret");
+  toolError(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: `token=${zulipShapedKey(5)}` }), "refused_secret");
   assert.equal(fake.requests.length, before, "no request, not even users/me");
-  ok(await tools.call("dm_send", { user_ids: [jay.user_id], text: "the body that must not be stored" }), "dm_send");
-  ok(await tools.call("dm_read", { user_ids: [jay.user_id] }), "dm_read");
+  ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "the body that must not be stored" }), "zulip_dm_send");
+  ok(await tools.call("zulip_dm_read", { user_ids: [jay.user_id] }), "zulip_dm_read");
   const [read, sent, , refusedRow] = await S.callTail(gate.store, 10);
   assert.equal(sent.tool, "zulip_dm_send");
   assert.deepEqual(sent.recipient_ids, [jay.user_id]);
@@ -380,19 +381,19 @@ test("audit rows keep recipient ids as at most 8 integers, nothing else", async 
 
 test("dm_send:  an explicit key and the implicit 10-minute key never send twice, and a post never shares a key row", async () => {
   const { fake, tools, jay, codex, clock } = harness();
-  const one = ok(await tools.call("dm_send", { user_ids: [jay.user_id], text: "one", idempotency_key: "key-0001" }), "dm_send");
-  const again = ok(await tools.call("dm_send", { emails: [jay.email], text: "one", idempotency_key: "key-0001" }), "dm_send");
+  const one = ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "one", idempotency_key: "key-0001" }), "zulip_dm_send");
+  const again = ok(await tools.call("zulip_dm_send", { emails: [jay.email], text: "one", idempotency_key: "key-0001" }), "zulip_dm_send");
   assert.deepEqual(again, { ...one, duplicate: true });
-  const two = ok(await tools.call("dm_send", { user_ids: [jay.user_id], text: "two" }), "dm_send");
-  assert.deepEqual(ok(await tools.call("dm_send", { user_ids: [jay.user_id], text: "two" }), "dm_send"), { ...two, duplicate: true });
+  const two = ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "two" }), "zulip_dm_send");
+  assert.deepEqual(ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "two" }), "zulip_dm_send"), { ...two, duplicate: true });
   // The same text to someone else is a different message.
-  assert.equal(ok(await tools.call("dm_send", { user_ids: [codex.user_id], text: "two" }), "dm_send").duplicate, false);
+  assert.equal(ok(await tools.call("zulip_dm_send", { user_ids: [codex.user_id], text: "two" }), "zulip_dm_send").duplicate, false);
   assert.equal(dmPosts(fake).length, 3);
   // The same explicit key on a channel post is its own write.
-  const post = ok(await tools.call("post", { channel: "sandbox", topic: "idem", text: "one", idempotency_key: "key-0001" }), "post");
+  const post = ok(await tools.call("zulip_post", { channel: "sandbox", topic: "idem", text: "one", idempotency_key: "key-0001" }), "zulip_post");
   assert.equal(post.duplicate, false);
   clock.now += 11 * 60 * 1000;
-  assert.equal(ok(await tools.call("dm_send", { user_ids: [jay.user_id], text: "two" }), "dm_send").duplicate, false);
+  assert.equal(ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "two" }), "zulip_dm_send").duplicate, false);
 });
 
 test("dm_send:  outcome_unknown names dm_read, and a retry with the same key reconciles from the conversation without sending twice", async () => {
@@ -401,19 +402,19 @@ test("dm_send:  outcome_unknown names dm_read, and a retry with the same key rec
     fake.addDm(fake.me, JSON.parse(entry.params.to).map((id) => fake.users.find((u) => u.user_id === id)), entry.params.content);
     throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
   });
-  const error = toolError(await tools.call("dm_send", { user_ids: [jay.user_id], text: "once only", idempotency_key: "flaky-0001" }), "outcome_unknown");
+  const error = toolError(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "once only", idempotency_key: "flaky-0001" }), "outcome_unknown");
   assert.deepEqual(error.check, { user_ids: [jay.user_id], include_self: true });
   assert.match(error.message, /zulip_dm_read/);
   const landed = fake.messages.at(-1).id;
-  const again = ok(await tools.call("dm_send", { user_ids: [jay.user_id], text: "once only", idempotency_key: "flaky-0001" }), "dm_send");
+  const again = ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "once only", idempotency_key: "flaky-0001" }), "zulip_dm_send");
   assert.deepEqual(again, { id: landed, user_ids: [jay.user_id], duplicate: true });
   assert.equal(dmPosts(fake).length, 1, "nothing was re-sent");
   // When the first attempt did not land, the retry sends exactly once.
   fake.failNext("POST", "messages", () => {
     throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
   });
-  toolError(await tools.call("dm_send", { user_ids: [jay.user_id], text: "second", idempotency_key: "flaky-0002" }), "outcome_unknown");
-  const sent = ok(await tools.call("dm_send", { user_ids: [jay.user_id], text: "second", idempotency_key: "flaky-0002" }), "dm_send");
+  toolError(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "second", idempotency_key: "flaky-0002" }), "outcome_unknown");
+  const sent = ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "second", idempotency_key: "flaky-0002" }), "zulip_dm_send");
   assert.equal(sent.duplicate, false);
   assert.equal(dmPosts(fake).length, 3);
   // The reconcile read was the conversation's `dm` narrow, never a channel.
@@ -424,24 +425,24 @@ test("dm_send:  outcome_unknown names dm_read, and a retry with the same key rec
 test("dm_send:  a Zulip refusal is zulip_error without Zulip's text, and a gateway status is outcome_unknown", async () => {
   const { fake, tools, jay } = harness();
   fake.failNext("POST", "messages", () => fake.error(400, "BAD_REQUEST"));
-  const error = toolError(await tools.call("dm_send", { user_ids: [jay.user_id], text: "x" }), "zulip_error");
+  const error = toolError(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "x" }), "zulip_error");
   assert.equal(error.zulip_code, "BAD_REQUEST");
   assert.ok(!JSON.stringify(error).includes("secret-channel"), "Zulip's msg is never passed on");
   fake.failNext("POST", "messages", () => fake.error(504, "GATEWAY"));
-  toolError(await tools.call("dm_send", { user_ids: [jay.user_id], text: "y" }), "outcome_unknown");
+  toolError(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "y" }), "outcome_unknown");
 });
 
 test("dm_send counts against the seat's write budget with post:  20 an hour across both, and a duplicate spends none", async () => {
   const { tools, gate, jay } = harness();
-  for (let i = 0; i < 10; i++) ok(await tools.call("dm_send", { user_ids: [jay.user_id], text: `dm ${i}` }), "dm_send");
-  for (let i = 0; i < 10; i++) ok(await tools.call("post", { channel: "sandbox", topic: "b", text: `post ${i}` }), "post");
+  for (let i = 0; i < 10; i++) ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: `dm ${i}` }), "zulip_dm_send");
+  for (let i = 0; i < 10; i++) ok(await tools.call("zulip_post", { channel: "sandbox", topic: "b", text: `post ${i}` }), "zulip_post");
   assert.equal((await gate.store.get("budget:write")).length, 20);
-  const error = toolError(await tools.call("dm_send", { user_ids: [jay.user_id], text: "one too many" }), "budget_exhausted");
+  const error = toolError(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "one too many" }), "budget_exhausted");
   assert.match(error.reset_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   // A repeat of a sent DM is a duplicate, before the budget is touched.
-  assert.equal(ok(await tools.call("dm_send", { user_ids: [jay.user_id], text: "dm 3" }), "dm_send").duplicate, true);
+  assert.equal(ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "dm 3" }), "zulip_dm_send").duplicate, true);
   // Reads (dm_list, dm_read) draw on the read budget, not the write one.
-  ok(await tools.call("dm_list", {}), "dm_list");
+  ok(await tools.call("zulip_dm_list", {}), "zulip_dm_list");
   assert.equal((await gate.store.get("budget:write")).length, 20);
   assert.equal((await gate.store.get("budget:read")).length, 1);
 });
@@ -458,8 +459,8 @@ test("inbox lists DMs sent to the bot as dm true, beside channel mentions, and n
   const group = fake.addDm(codex, [fake.me, jay], "group DM");
   fake.addDm(codex, [jay], "Codex to Jay, not for this bot");
   const privateStream = fake.addMessage("Codex", "other", "elsewhere", "@**Claude** off the list");
-  const result = await tools.call("inbox", {});
-  const data = ok(result, "inbox");
+  const result = await tools.call("zulip_inbox", {});
+  const data = ok(result, "zulip_inbox");
   assert.deepEqual(data.ids, [mention.id, dm.id, group.id]);
   assert.ok(!data.ids.includes(privateStream.id));
   const items = fence(result.content[0].text);
@@ -468,8 +469,8 @@ test("inbox lists DMs sent to the bot as dm true, beside channel mentions, and n
   assert.deepEqual(items[2].dm_user_ids.sort(), [codex.user_id, jay.user_id].sort());
   assert.equal(items[0].channel, "agent-sync");
   // since_id and limit apply to the merged list.
-  assert.deepEqual(ok(await tools.call("inbox", { since_id: dm.id }), "inbox").ids, [group.id]);
-  assert.deepEqual(ok(await tools.call("inbox", { limit: 2 }), "inbox").ids, [dm.id, group.id]);
+  assert.deepEqual(ok(await tools.call("zulip_inbox", { since_id: dm.id }), "zulip_inbox").ids, [group.id]);
+  assert.deepEqual(ok(await tools.call("zulip_inbox", { limit: 2 }), "zulip_inbox").ids, [dm.id, group.id]);
   // One mention query per call across every channel;  the private stream's mention is dropped by its stream id.
   for (const r of fake.requestsTo("GET", "messages")) {
     const narrow = JSON.parse(r.params.narrow);
@@ -485,7 +486,7 @@ test("the owner's id and the realm users are the fake's, so a DM from Jay is a h
   const { fake, tools, jay } = harness();
   assert.equal(jay.user_id, OWNER_ID);
   fake.addDm(jay, [], "hello bot", { client: "ZulipMobile" });
-  const result = await tools.call("dm_read", { user_ids: [OWNER_ID] });
+  const result = await tools.call("zulip_dm_read", { user_ids: [OWNER_ID] });
   const [item] = fence(result.content[0].text);
   assert.equal(item.owner, true);
   assert.equal(item.is_bot, false);

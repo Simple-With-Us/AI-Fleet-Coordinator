@@ -71,27 +71,41 @@ IDEM_EXPLICIT_TTL = 24 * 3600.0
 IDEM_IMPLICIT_TTL = 600.0
 FLEET_ROLES = (300, 400)  # moderator and member; daemon.FLEET_ROLES (a test keeps the two equal)
 ERROR_META_KEY = "agent-sync/error"
-WRITE_TOOLS = frozenset({"post", "reply", "react", "dm_send", "edit_message", "delete_message", "move_topic",
-                         "resolve_topic", "unresolve_topic", "unreact", "mark_read", "mark_unread", "star", "unstar",
-                         "unsubscribe", "topic_visibility", "set_status", "upload", "scheduled_create",
-                         "scheduled_edit", "scheduled_delete", "draft_create", "draft_edit", "draft_delete", "typing",
-                         "listener_ack"})
+# Every served tool is classified here, explicitly, as a read or a write (AFC-331, per-call identity:
+# a write must name its identity, a read may use the connection's default).  Never inferred from a
+# name or an annotation;  a test checks that the two sets are disjoint and cover every tool served.
+WRITE_TOOLS = frozenset({
+    "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_send", "zulip_edit_message", "zulip_delete_message",
+    "zulip_move_topic", "zulip_resolve_topic", "zulip_unresolve_topic", "zulip_unreact", "zulip_mark_read",
+    "zulip_mark_unread", "zulip_star", "zulip_unstar", "zulip_unsubscribe", "zulip_topic_visibility",
+    "zulip_set_status", "zulip_upload", "zulip_scheduled_create", "zulip_scheduled_edit", "zulip_scheduled_delete",
+    "zulip_draft_create", "zulip_draft_edit", "zulip_draft_delete", "zulip_typing",
+    "listener_ack",
+})
+READ_TOOLS = frozenset({
+    "whoami", "identities",
+    "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_dm_list", "zulip_dm_read", "zulip_get_message",
+    "zulip_message_history", "zulip_search", "zulip_channels", "zulip_channel_info", "zulip_channel_members",
+    "zulip_users", "zulip_presence", "zulip_user_groups", "zulip_custom_emoji", "zulip_scheduled_list",
+    "zulip_drafts_list",
+    "listener_status", "listener_inbox", "listener_owner_queue", "listener_wakes", "listener_held_back",
+})
 # Every MCP tool and the CLI command that does the same job (AFC-330:  "keeping the CLI, stdio and
 # hosted in step").  tools.json is the contract;  a test checks that every tool in it and in
 # listener-tools.json is here and that each command parses.  One tool may map to several commands.
 CLI_VERBS: dict[str, tuple[str, ...]] = {
-    "whoami": ("whoami",), "topics": ("topics",), "read_topic": ("read",), "inbox": ("inbox",), "post": ("post",),
-    "reply": ("reply",), "react": ("react",), "dm_list": ("dm-list",), "dm_read": ("dm-read",), "dm_send": ("dm",),
-    "get_message": ("show",), "edit_message": ("edit",), "delete_message": ("delete",), "message_history": ("history",),
-    "move_topic": ("move",), "resolve_topic": ("resolve",), "unresolve_topic": ("unresolve",), "unreact": ("unreact",),
-    "mark_read": ("mark-read",), "mark_unread": ("mark-unread",), "star": ("star",), "unstar": ("unstar",),
-    "search": ("search",), "channels": ("channels",), "channel_info": ("channel-info",), "channel_members": ("members",),
-    "unsubscribe": ("unsubscribe",), "topic_visibility": ("follow", "mute", "unmute"), "users": ("users",),
-    "presence": ("presence",), "set_status": ("set-status",), "user_groups": ("groups",), "custom_emoji": ("emoji",),
-    "upload": ("upload",), "scheduled_list": ("scheduled list",), "scheduled_create": ("scheduled create",),
-    "scheduled_edit": ("scheduled edit",), "scheduled_delete": ("scheduled delete",), "drafts_list": ("drafts list",),
-    "draft_create": ("drafts create",), "draft_edit": ("drafts edit",), "draft_delete": ("drafts delete",),
-    "typing": ("typing",),
+    "whoami": ("whoami",), "identities": ("identities",), "zulip_topics": ("topics",), "zulip_read_topic": ("read",), "zulip_inbox": ("inbox",), "zulip_post": ("post",),
+    "zulip_reply": ("reply",), "zulip_react": ("react",), "zulip_dm_list": ("dm-list",), "zulip_dm_read": ("dm-read",), "zulip_dm_send": ("dm",),
+    "zulip_get_message": ("show",), "zulip_edit_message": ("edit",), "zulip_delete_message": ("delete",), "zulip_message_history": ("history",),
+    "zulip_move_topic": ("move",), "zulip_resolve_topic": ("resolve",), "zulip_unresolve_topic": ("unresolve",), "zulip_unreact": ("unreact",),
+    "zulip_mark_read": ("mark-read",), "zulip_mark_unread": ("mark-unread",), "zulip_star": ("star",), "zulip_unstar": ("unstar",),
+    "zulip_search": ("search",), "zulip_channels": ("channels",), "zulip_channel_info": ("channel-info",), "zulip_channel_members": ("members",),
+    "zulip_unsubscribe": ("unsubscribe",), "zulip_topic_visibility": ("follow", "mute", "unmute"), "zulip_users": ("users",),
+    "zulip_presence": ("presence",), "zulip_set_status": ("set-status",), "zulip_user_groups": ("groups",), "zulip_custom_emoji": ("emoji",),
+    "zulip_upload": ("upload",), "zulip_scheduled_list": ("scheduled list",), "zulip_scheduled_create": ("scheduled create",),
+    "zulip_scheduled_edit": ("scheduled edit",), "zulip_scheduled_delete": ("scheduled delete",), "zulip_drafts_list": ("drafts list",),
+    "zulip_draft_create": ("drafts create",), "zulip_draft_edit": ("drafts edit",), "zulip_draft_delete": ("drafts delete",),
+    "zulip_typing": ("typing",),
     "listener_status": ("listener status",), "listener_inbox": ("listener inbox",),
     "listener_owner_queue": ("listener owner-queue",), "listener_wakes": ("listener wakes",),
     "listener_held_back": ("listener held-back",), "listener_ack": ("listener ack", "listener surface", "listener clear-held"),
@@ -766,7 +780,7 @@ class Tools:
                         tag_kind="explicit" if self.process_tag else "sha256_derived")
         return self.ok(json.dumps(info, ensure_ascii=False), info)
 
-    def _tool_topics(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_topics(self, args: Mapping[str, Any]) -> dict[str, Any]:
         channel = self._channel(args["channel"])
         stream_id = self.agent.stream_id(channel)
         topics = [t for t in self.agent.client.get("users/me/%d/topics" % stream_id).get("topics") or []
@@ -779,7 +793,7 @@ class Tools:
         return self.ok(envelope("topics", [("channel", channel)], summary, items),
                        {"count": len(items), "max_ids": max_ids})
 
-    def _tool_read_topic(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_read_topic(self, args: Mapping[str, Any]) -> dict[str, Any]:
         channel, topic = self._channel(args["channel"]), self._topic(args["topic"])
         since_id = args.get("since_id")
         messages = self._page(CLI.topic_narrow(channel, topic), since_id, args["limit"])
@@ -795,14 +809,14 @@ class Tools:
             shown = [m for m in messages if not self._generic_is_self(m)]
         return self._messages_result("read_topic", [("channel", channel), ("topic", topic)], shown, next_since_id)
 
-    def _tool_inbox(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_inbox(self, args: Mapping[str, Any]) -> dict[str, Any]:
         since_id = args.get("since_id")
         messages = self._page([{"operator": "is", "operand": "mentioned"}], since_id, args["limit"])
         next_since_id = self._next_since(messages, since_id)
         shown = [m for m in messages if m.get("type") == "stream"]  # channel mentions only, never DMs
         return self._messages_result("inbox", [], shown, next_since_id)
 
-    def _tool_post(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_post(self, args: Mapping[str, Any]) -> dict[str, Any]:
         channel, topic = self._channel(args["channel"]), self._topic(args["topic"])
         self._scan(text=args["text"], topic=topic, channel=channel)
         text = self._text(args["text"])
@@ -823,7 +837,7 @@ class Tools:
                                send=lambda: self._posted_id(self._run_cli(CLI.cmd_post, ns)))
         return self._write_result(result)
 
-    def _tool_reply(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_reply(self, args: Mapping[str, Any]) -> dict[str, Any]:
         message_id = int(args["message_id"])
         self._scan(text=args["text"])
         text = self._text(args["text"])
@@ -848,7 +862,7 @@ class Tools:
                                send=lambda: self._posted_id(self._run_cli(CLI.cmd_reply, ns)))
         return self._write_result(result)
 
-    def _tool_react(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_react(self, args: Mapping[str, Any]) -> dict[str, Any]:
         message_id, emoji = int(args["message_id"]), str(args["emoji"])
         self._reserve_write()
         try:
@@ -951,7 +965,7 @@ class Tools:
         return [found[k] for k in sorted(found)]
 
     # ---- direct messages (the hosted tools, now on stdio too) -----------------------------
-    def _tool_dm_list(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_dm_list(self, args: Mapping[str, Any]) -> dict[str, Any]:
         rows = ZCLI.dm_conversations(self.agent, args["limit"])
         bots = {u.get("user_id"): bool(u.get("is_bot")) for u in self.agent.users()} if rows else {}
         items = [{"user_ids": c["user_ids"],
@@ -970,7 +984,7 @@ class Tools:
         if not args.get("user_ids") and not args.get("emails"):
             raise ToolError("invalid_argument", "name the other people in the conversation:  user_ids, emails or both")
 
-    def _tool_dm_read(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_dm_read(self, args: Mapping[str, Any]) -> dict[str, Any]:
         self._need_people(args)
         ids = [int(p["user_id"]) for p in self._people(args.get("user_ids") or [], args.get("emails") or [], active=False)]
         me = _int(self.me.get("user_id"))
@@ -983,7 +997,7 @@ class Tools:
         shown = messages if args["include_self"] else [m for m in messages if not self.agent.sent_by_this_bot(m)]
         return self._messages_result("dm_read", [("with", ",".join(str(i) for i in ids))], shown, next_since_id)
 
-    def _tool_dm_send(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_dm_send(self, args: Mapping[str, Any]) -> dict[str, Any]:
         self._scan(text=args["text"])
         text = self._text(args["text"])
         self._need_people(args)
@@ -1010,7 +1024,7 @@ class Tools:
         return self._write_result({"id": result["id"], "user_ids": ids, "duplicate": result["duplicate"]})
 
     # ---- messages -------------------------------------------------------------------------
-    def _tool_get_message(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_get_message(self, args: Mapping[str, Any]) -> dict[str, Any]:
         message = OPS.get_message(self.agent, int(args["message_id"]))
         item = self._message_item(message)
         flags = [f for f in message.get("flags") or [] if isinstance(f, str)]
@@ -1018,15 +1032,15 @@ class Tools:
         return self._list_result("get_message", [("message_id", str(args["message_id"]))], "1 message", [item],
                                  {"count": 1, "ids": [item["id"]] if item["id"] is not None else []})
 
-    def _tool_edit_message(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_edit_message(self, args: Mapping[str, Any]) -> dict[str, Any]:
         self._scan(text=args["text"])
         body = self._tagged(self._text(args["text"]), args.get("session"))
         return self._write_result(self._write(lambda: OPS.edit_message(self.agent, int(args["message_id"]), body)))
 
-    def _tool_delete_message(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_delete_message(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._write_result(self._write(lambda: OPS.delete_message(self.agent, int(args["message_id"]))))
 
-    def _tool_message_history(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_message_history(self, args: Mapping[str, Any]) -> dict[str, Any]:
         message_id = int(args["message_id"])
         rows = OPS.message_history(self.agent, message_id)
         items = [{"user_id": r["user_id"], "time": CLI.format_time(float(r.get("timestamp") or 0)),
@@ -1035,7 +1049,7 @@ class Tools:
         return self._list_result("message_history", [("message_id", str(message_id))], self._plural(len(items), "version"),
                                  items, {"count": len(items), "message_id": message_id})
 
-    def _tool_move_topic(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_move_topic(self, args: Mapping[str, Any]) -> dict[str, Any]:
         channel, topic = self._channel(args["channel"]), self._topic(args["topic"])
         new_topic = self._topic(args["new_topic"]) if args.get("new_topic") is not None else None
         new_channel = self._channel(args["new_channel"]) if args.get("new_channel") is not None else None
@@ -1054,13 +1068,13 @@ class Tools:
         result = self._write(lambda: OPS.set_resolved(self.agent, channel, topic, resolve))
         return self._write_result({"id": int(result["id"]), "channel_id": _int(result.get("channel_id")) or 0})
 
-    def _tool_resolve_topic(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_resolve_topic(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._resolve(args, True)
 
-    def _tool_unresolve_topic(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_unresolve_topic(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._resolve(args, False)
 
-    def _tool_unreact(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_unreact(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._write_result(self._write(lambda: OPS.unreact(self.agent, int(args["message_id"]), args["emoji"])))
 
     def _flag(self, args: Mapping[str, Any], flag: str, add: bool) -> dict[str, Any]:
@@ -1080,20 +1094,20 @@ class Tools:
         result = self._write(lambda: OPS.flag_messages(self.agent, flag, add, message_ids=ids or None, narrow=narrow))
         return self._write_result({"updated": int(result["updated"])})
 
-    def _tool_mark_read(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_mark_read(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._flag(args, "read", True)
 
-    def _tool_mark_unread(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_mark_unread(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._flag(args, "read", False)
 
-    def _tool_star(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_star(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._flag(args, "starred", True)
 
-    def _tool_unstar(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_unstar(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._flag(args, "starred", False)
 
     # ---- search ---------------------------------------------------------------------------
-    def _tool_search(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_search(self, args: Mapping[str, Any]) -> dict[str, Any]:
         channel = self._channel(args["channel"]) if args.get("channel") is not None else None
         topic = self._topic(args["topic"]) if args.get("topic") is not None else None
         dm_with = list(args.get("dm_with") or [])
@@ -1111,7 +1125,7 @@ class Tools:
         return self._messages_result("search", shown_args, shown, next_since_id)
 
     # ---- channels -------------------------------------------------------------------------
-    def _tool_channels(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_channels(self, args: Mapping[str, Any]) -> dict[str, Any]:
         rows = OPS.channels(self.agent, include_all=bool(args["all"]))
         items = [{"stream_id": r["stream_id"], "name": self._c(r.get("name") or ""),
                   "description": self._c(r.get("description") or "", 300), "public": r["public"],
@@ -1119,7 +1133,7 @@ class Tools:
         return self._list_result("channels", [], self._plural(len(items), "channel"), items,
                                  {"count": len(items), "ids": [i["stream_id"] for i in items]})
 
-    def _tool_channel_info(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_channel_info(self, args: Mapping[str, Any]) -> dict[str, Any]:
         channel = self._channel(args["channel"])
         info = OPS.channel_info(self.agent, channel)
         item = {k: self._c(v, 300) for k, v in info.items()}
@@ -1129,24 +1143,24 @@ class Tools:
     def _user_item(self, row: Mapping[str, Any]) -> dict[str, Any]:
         return {k: self._c(v) for k, v in row.items()}
 
-    def _tool_channel_members(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_channel_members(self, args: Mapping[str, Any]) -> dict[str, Any]:
         channel = self._channel(args["channel"])
         rows = OPS.channel_members(self.agent, channel)[: args["limit"]]
         items = [self._user_item(r) for r in rows]
         return self._list_result("channel_members", [("channel", channel)], self._plural(len(items), "member"), items,
                                  {"count": len(items), "ids": [i["user_id"] for i in items if _int(i.get("user_id")) is not None]})
 
-    def _tool_unsubscribe(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_unsubscribe(self, args: Mapping[str, Any]) -> dict[str, Any]:
         channel = self._channel(args["channel"])
         return self._write_result(self._write(lambda: OPS.unsubscribe(self.agent, channel)))
 
-    def _tool_topic_visibility(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_topic_visibility(self, args: Mapping[str, Any]) -> dict[str, Any]:
         channel, topic = self._channel(args["channel"]), self._topic(args["topic"])
         self._scan(topic=topic)
         return self._write_result(self._write(lambda: OPS.topic_visibility(self.agent, channel, topic, args["visibility"])))
 
     # ---- users ----------------------------------------------------------------------------
-    def _tool_users(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_users(self, args: Mapping[str, Any]) -> dict[str, Any]:
         rows = OPS.find_users(self.agent, query=args.get("query"), user_id=args.get("user_id"), email=args.get("email"),
                               include_inactive=bool(args["include_inactive"]), limit=args["limit"])
         items = [self._user_item(r) for r in rows]
@@ -1162,7 +1176,7 @@ class Tools:
         people = self._people([], [args["email"]], active=False)
         return int(people[0]["user_id"]) if people else int(self.me.get("user_id") or 0)
 
-    def _tool_presence(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_presence(self, args: Mapping[str, Any]) -> dict[str, Any]:
         user_id = self._one_user_id(args)
         result = OPS.presence(self.agent, user_id, now=self.clock())
         item = {"user_id": user_id, "status": result["status"],
@@ -1170,7 +1184,7 @@ class Tools:
         return self._list_result("presence", [("user_id", str(user_id))], "1 user", [item],
                                  {"user_id": user_id, "status": result["status"]})
 
-    def _tool_set_status(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_set_status(self, args: Mapping[str, Any]) -> dict[str, Any]:
         if args.get("status_text") is not None:
             self._scan(status_text=args["status_text"])
         if all(args.get(k) is None for k in ("status_text", "emoji_name", "away")):
@@ -1178,7 +1192,7 @@ class Tools:
         return self._write_result(self._write(lambda: OPS.set_status(
             self.agent, status_text=args.get("status_text"), emoji_name=args.get("emoji_name"), away=args.get("away"))))
 
-    def _tool_user_groups(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_user_groups(self, args: Mapping[str, Any]) -> dict[str, Any]:
         groups = OPS.user_groups(self.agent)
         if args.get("group_id") is not None:
             group = next((g for g in groups if g["id"] == args["group_id"]), None)
@@ -1194,7 +1208,7 @@ class Tools:
         return self._list_result("user_groups", [], self._plural(len(items), "group"), items,
                                  {"count": len(items), "ids": [i["id"] for i in items]})
 
-    def _tool_custom_emoji(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_custom_emoji(self, args: Mapping[str, Any]) -> dict[str, Any]:
         rows = OPS.custom_emoji(self.agent, include_deactivated=bool(args["include_deactivated"]))
         items = [{"id": r["id"], "name": self._c(r.get("name") or ""), "deactivated": r["deactivated"],
                   "author_id": r["author_id"]} for r in rows]
@@ -1202,7 +1216,7 @@ class Tools:
                                  {"count": len(items), "ids": [i["id"] for i in items]})
 
     # ---- uploads --------------------------------------------------------------------------
-    def _tool_upload(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_upload(self, args: Mapping[str, Any]) -> dict[str, Any]:
         has_text, has_b64 = args.get("text") is not None, args.get("content_base64") is not None
         if has_text == has_b64:
             raise ToolError("invalid_argument", "give text or content_base64 (one of them)")
@@ -1253,7 +1267,7 @@ class Tools:
                 "topic": self._c(row.get("topic") or ""), "body": clean(row.get("content") or "", BODY_LIMIT)[0],
                 **({"deliver_at": _int(row.get("deliver_at")), "failed": bool(row.get("failed"))} if "deliver_at" in row else {})}
 
-    def _tool_scheduled_list(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_scheduled_list(self, args: Mapping[str, Any]) -> dict[str, Any]:
         items = [self._schedule_item(r) for r in OPS.scheduled_list(self.agent)]
         return self._list_result("scheduled_list", [], self._plural(len(items), "scheduled message"), items,
                                  {"count": len(items), "ids": [i["id"] for i in items if _int(i["id"]) is not None]})
@@ -1263,7 +1277,7 @@ class Tools:
             raise ToolError("invalid_argument", "deliver_at must be in the future (unix seconds)")
         return int(deliver_at)
 
-    def _tool_scheduled_create(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_scheduled_create(self, args: Mapping[str, Any]) -> dict[str, Any]:
         self._scan(text=args["text"])
         text = self._text(args["text"])
         when = self._check_when(args["deliver_at"])
@@ -1274,7 +1288,7 @@ class Tools:
                             lambda: OPS.scheduled_create(self.agent, self._zulip_target(target), body, when))
         return self._write_result({"id": int(result["id"]), "deliver_at": when, "duplicate": bool(result["duplicate"])})
 
-    def _tool_scheduled_edit(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_scheduled_edit(self, args: Mapping[str, Any]) -> dict[str, Any]:
         body = None
         if args.get("text") is not None:
             self._scan(text=args["text"])
@@ -1288,16 +1302,16 @@ class Tools:
         return self._write_result(self._write(lambda: OPS.scheduled_edit(
             self.agent, int(args["scheduled_message_id"]), body=body, topic=topic, deliver_at=when)))
 
-    def _tool_scheduled_delete(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_scheduled_delete(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._write_result(self._write(lambda: OPS.scheduled_delete(self.agent, int(args["scheduled_message_id"]))))
 
-    def _tool_drafts_list(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_drafts_list(self, args: Mapping[str, Any]) -> dict[str, Any]:
         items = [self._schedule_item(dict(r, type="stream" if r.get("type") == "stream" else "direct"))
                  for r in OPS.drafts_list(self.agent)]
         return self._list_result("drafts_list", [], self._plural(len(items), "draft"), items,
                                  {"count": len(items), "ids": [i["id"] for i in items if _int(i["id"]) is not None]})
 
-    def _tool_draft_create(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_draft_create(self, args: Mapping[str, Any]) -> dict[str, Any]:
         self._scan(text=args["text"])
         text = self._text(args["text"])
         target = self._zulip_target(self._target(args))
@@ -1305,16 +1319,16 @@ class Tools:
                             lambda: OPS.draft_create(self.agent, target, text))
         return self._write_result({"id": int(result["id"])})
 
-    def _tool_draft_edit(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_draft_edit(self, args: Mapping[str, Any]) -> dict[str, Any]:
         self._scan(text=args["text"])
         text = self._text(args["text"])
         target = self._zulip_target(self._target(args))
         return self._write_result(self._write(lambda: OPS.draft_edit(self.agent, int(args["draft_id"]), target, text)))
 
-    def _tool_draft_delete(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_draft_delete(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._write_result(self._write(lambda: OPS.draft_delete(self.agent, int(args["draft_id"]))))
 
-    def _tool_typing(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_zulip_typing(self, args: Mapping[str, Any]) -> dict[str, Any]:
         target = self._zulip_target(self._target(args))
         return self._write_result(self._write(lambda: OPS.typing(self.agent, args["op"], target)))
 

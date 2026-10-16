@@ -1,6 +1,7 @@
 // The MCP endpoint:  `createMcpHandler` (agents) over a low-level SDK v2
 // `Server`.  `tools/list` serves the stdio server's own tools.json plus the
-// hosted-only fleet recall tools (src/recall.js), and
+// hosted-only fleet recall tools (src/recall.js), each with this grant's
+// `identity` enum (src/delegated-identities.js, AFC-331), and
 // `tools/call` runs the hosted tools, which validate arguments themselves:
 // `McpServer` would answer a schema failure with JSON-RPC -32602, and the
 // contract makes it a tool error (`invalid_argument`) the model can fix
@@ -14,8 +15,8 @@
 
 import { createMcpHandler } from "agents/mcp/server";
 import { Server, ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/server";
-import { UnknownTool, HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, hostedInstructions } from "./hosted-tools.js";
-import { CURSOR_TOOL_LIST, CURSOR_TOOLS_BY_NAME } from "./delegated-identities.js";
+import { UnknownTool, hostedInstructions } from "./hosted-tools.js";
+import { IdentityRouter } from "./delegated-identities.js";
 import { PUBLIC_HOST } from "./config.js";
 import { EventError } from "./events.js";
 import { z } from "zod";
@@ -53,14 +54,14 @@ async function asProtocolError(fn) {
 
 /** One Server per request, bound to that request's seat, tools and (optionally) events. */
 export function buildServer(tools, events = null) {
-  const cursorRouted = tools.seat === "CURSOR" && tools.createRole instanceof Function;
-  const toolList = cursorRouted ? CURSOR_TOOL_LIST : HOSTED_TOOL_LIST;
-  const toolMap = cursorRouted ? CURSOR_TOOLS_BY_NAME : HOSTED_TOOLS_BY_NAME;
+  // Every grant is served through its IdentityRouter (AFC-331), whose tools/list carries this
+  // connection's identity enum.  A bare HostedTools (tests) is wrapped the same way.
+  const router = tools instanceof IdentityRouter ? tools : new IdentityRouter({ callerTools: tools });
+  const toolList = router.toolList;
+  const toolMap = router.toolsByName;
   const server = new Server(
     { name: "agent-sync", version: SERVER_VERSION },
-    { capabilities: events ? { tools: {}, events: {} } : { tools: {} }, instructions: hostedInstructions(tools.seat) + (cursorRouted
-      ? "  On this CURSOR connection, call agent_sync_identities to see available Grok Bot personas.  Pass identity on a tool call to act as one persona; omitting it acts as CURSOR.  The CURSOR grant and pooled limits still govern every call."
-      : "") },
+    { capabilities: events ? { tools: {}, events: {} } : { tools: {} }, instructions: hostedInstructions(router.seat) + router.instructions() },
   );
   if (events) {
     server.setRequestHandler("events/list", { params: EventParams.list }, async () => events.list());
@@ -72,7 +73,7 @@ export function buildServer(tools, events = null) {
     const name = request.params?.name;
     let result;
     try {
-      result = await tools.call(name, request.params?.arguments);
+      result = await router.call(name, request.params?.arguments);
     } catch (error) {
       if (error instanceof UnknownTool) throw new ProtocolError(ProtocolErrorCode.InvalidParams, "Unknown tool");
       throw error;

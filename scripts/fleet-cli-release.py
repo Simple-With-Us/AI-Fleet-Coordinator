@@ -32,6 +32,10 @@ EXACT = frozenset({
     "scripts/agent-sync", "scripts/linear-board/board", "scripts/linear-board/board-ids.txt",
     "fleet-apps.json", "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
     "scripts/agent_sync/mcp/tools.json", "scripts/agent_sync/mcp/fixtures.jsonl",
+    # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
+    # and the enabled Grok Bot personas).
+    "scripts/agent_sync/mcp/listener-tools.json", "scripts/agent_sync/mcp/renamed-tools.json",
+    "scripts/agent_sync/mcp/gb-identities.json",
     "scripts/agent_sync/wake/wake-schema.json",
     *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
 })

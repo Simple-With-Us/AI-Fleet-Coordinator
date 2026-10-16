@@ -1,17 +1,49 @@
-// A CURSOR OAuth connection may act as one of these owner-authorized Grok Bot
-// personas for a single tool call.  They are not OAuth seats or wake targets.
-import { HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME } from "./hosted-tools.js";
+// Per-call identity for every hosted grant (AFC-331, docs/protocols/per-call-identity.md sections 2-4).
+//
+// The grant says who may act (its allowed set) and each call says who is acting, in its `identity`
+// argument.  One table decides the sets:
+//
+//   a CURSOR or GROK-WEB grant   CURSOR, GROK-WEB and every enabled Grok Bot persona (GB_IDENTITIES)
+//   every other grant            its own seat
+//
+// A write with no identity is refused with identity_required;  a read with none acts as the grant's
+// own seat.  An identity outside the set is refused with identity_not_allowed.  A removed tool name
+// (renamed-tools.json, shared with the stdio server) is refused with unknown_tool naming its
+// replacement.  The identity's own credentials do the work:  a peer seat's own SEAT_SECRETS key and
+// Linear app, a persona's row of the encrypted GB_IDENTITY_CREDENTIALS bundle;  each is checked
+// against Zulip users/me (and, for Linear writes, the viewer) before its first call.  The grant's
+// scope, pause and budget still govern every call.
+//
+// GB_IDENTITIES is read from scripts/agent_sync/mcp/gb-identities.json, the one list the stdio
+// server reads too.  No other list of personas exists, here or anywhere.
+import GB_TABLE from "../../agent_sync/mcp/gb-identities.json" with { type: "json" };
+import RENAMED from "../../agent_sync/mcp/renamed-tools.json" with { type: "json" };
+import { HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, HOSTED_WRITE_TOOLS } from "./hosted-tools.js";
 import { ToolError, errorResult, okResult, schemaProblem } from "./contract.js";
+import { SHARED_IDENTITY_SEATS } from "./config.js";
+import { IDENTITIES_SPEC } from "./zulip-tool-specs.js";
 
-export const GB_IDENTITIES = Object.freeze([
-  "GB-DIRECTOR", "GB-FIXER", "GB-DESIGNER", "GB-COMPILER",
-  "GB-HOUSEKEEPER", "GB-PUBLISHER", "GB-DEPLOYER", "GB-MONITOR",
-  "GB-PLUMBER", "GB-ORACLE", "GB-TRADER",
-]);
-export const CURSOR_IDENTITIES = Object.freeze(["CURSOR", ...GB_IDENTITIES]);
+export const GB_IDENTITIES = Object.freeze([...GB_TABLE.enabled]);
 const GB_SET = new Set(GB_IDENTITIES);
 export const GB_CREDENTIAL_BUNDLE = "GB_IDENTITY_CREDENTIALS";
 export const GB_CREDENTIAL_BUNDLE_MAX_BYTES = 5 * 1024;
+export const RENAMED_TOOLS = Object.freeze({ ...RENAMED.renamed });
+export { SHARED_IDENTITY_SEATS };
+
+/** The identities a grant for `seat` may act as:  its own seat first. */
+export function allowedIdentities(seat) {
+  if (SHARED_IDENTITY_SEATS.includes(seat)) {
+    return Object.freeze([seat, ...SHARED_IDENTITY_SEATS.filter((other) => other !== seat), ...GB_IDENTITIES]);
+  }
+  return Object.freeze([seat]);
+}
+
+/** A caller's identity argument as a canonical name (trimmed, upper case, _ as -), or null. */
+export function canonicalIdentity(raw) {
+  if (typeof raw !== "string") return null;
+  const name = raw.trim().toUpperCase().replaceAll("_", "-");
+  return /^[A-Z0-9][A-Z0-9-]{0,31}$/.test(name) ? name : null;
+}
 
 export function delegatedNames(identity) {
   if (!GB_SET.has(identity)) return null;
@@ -68,134 +100,180 @@ export function loadDelegatedCredentials(env) {
 
 export function delegatedStatus(credentials, identity) {
   if (!GB_SET.has(identity)) return null;
-  const configured = credentials.valid && credentials.roles.has(identity);
+  const configured = Boolean(credentials?.valid && credentials.roles.has(identity));
   return { identity, zulip: configured ? "configured" : "missing", linear: configured ? "configured" : "missing" };
 }
 
-const DISCOVERY = Object.freeze({
-  name: "agent_sync_identities",
-  title: "Agent Sync Identities",
-  description: "List identities this CURSOR connection may select and whether each service is configured.  No credentials are returned.",
-  inputSchema: { type: "object", additionalProperties: false, properties: {} },
-  outputSchema: {
-    type: "object", required: ["authenticated_seat", "identities"],
-    properties: {
-      authenticated_seat: { type: "string" },
-      identities: { type: "array", items: {
-        type: "object", required: ["identity", "zulip", "linear", "recall"],
-        properties: { identity: { type: "string" }, zulip: { type: "string" }, linear: { type: "string" }, recall: { type: "string" } },
-      } },
-    },
-  },
-  annotations: { readOnlyHint: true, openWorldHint: false },
-});
+// ---------------------------------------------------------------- tools/list per connection
 
-const routedTool = (spec) => ({
-  ...spec,
-  inputSchema: {
+function identityProperty(allowed, seat) {
+  return {
+    type: "string",
+    enum: [...allowed],
+    description: `The bot this call acts as.  Writes must name it;  reads without it act as ${seat}.  identities lists the set.`,
+  };
+}
+
+function decorate(spec, allowed, seat) {
+  const write = HOSTED_WRITE_TOOLS.has(spec.name);
+  const inputSchema = {
     ...spec.inputSchema,
-    properties: {
-      ...(spec.inputSchema?.properties ?? {}),
-      identity: { type: "string", enum: [...CURSOR_IDENTITIES], default: "CURSOR", description: "Act as this identity for this call.  The CURSOR OAuth grant remains the caller." },
-    },
-  },
-  ...(["whoami", "linear_whoami"].includes(spec.name) && spec.outputSchema ? {
-    outputSchema: {
-      ...spec.outputSchema,
-      properties: { ...spec.outputSchema.properties, authenticated_seat: { type: "string" } },
-    },
-  } : {}),
-});
+    properties: { ...(spec.inputSchema?.properties ?? {}), identity: identityProperty(allowed, seat) },
+    ...(write ? { required: [...(spec.inputSchema?.required ?? []), "identity"] } : {}),
+  };
+  return { ...spec, inputSchema };
+}
 
-export const CURSOR_TOOL_LIST = Object.freeze([...HOSTED_TOOL_LIST.map(routedTool), DISCOVERY]);
-export const CURSOR_TOOLS_BY_NAME = Object.freeze(Object.fromEntries(CURSOR_TOOL_LIST.map((tool) => [tool.name, tool])));
+const LIST_CACHE = new Map();
 
-/** All routing state belongs to this request.  `createRole` is server owned. */
+/** The tools/list a grant for `seat` gets:  every hosted tool with its identity enum, then identities after whoami. */
+export function toolListFor(seat) {
+  const cached = LIST_CACHE.get(seat);
+  if (cached) return cached;
+  const allowed = allowedIdentities(seat);
+  const decorated = HOSTED_TOOL_LIST.map((spec) => decorate(spec, allowed, seat));
+  const at = decorated.findIndex((spec) => spec.name === "whoami") + 1;
+  const list = Object.freeze([...decorated.slice(0, at), IDENTITIES_SPEC, ...decorated.slice(at)]);
+  const byName = Object.freeze(Object.fromEntries(list.map((spec) => [spec.name, spec])));
+  const entry = Object.freeze({ list, byName });
+  LIST_CACHE.set(seat, entry);
+  return entry;
+}
+
+// ---------------------------------------------------------------- the router
+
+/**
+ * One router per authenticated request, for every grant.  `callerTools` is the grant's own
+ * HostedTools;  `createIdentity(identity)` builds the HostedTools of another allowed identity from
+ * that identity's own credentials (server owned, never from arguments);  `identityStatus(identity)`
+ * says whether a peer seat's Zulip and Linear credentials are installed (names only).
+ */
 export class IdentityRouter {
-  constructor({ callerTools, credentials, createRole }) {
+  constructor({ callerTools, credentials = null, createIdentity = null, identityStatus = null }) {
     this.callerTools = callerTools;
     this.seat = callerTools.seat;
     this.credentials = credentials;
-    this.createRole = createRole;
+    this.createIdentity = createIdentity;
+    this.identityStatus = identityStatus;
+    this.allowed = allowedIdentities(this.seat);
+    const { list, byName } = toolListFor(this.seat);
+    this.toolList = list;
+    this.toolsByName = byName;
+    this.built = new Map();
+  }
+
+  /** The identity rule for the MCP `instructions`. */
+  instructions() {
+    return `  Each call names the bot it acts as in its identity argument:  writes must name it;  reads without it act as ${this.seat}.  ` +
+      `This connection may act as ${this.allowed.join(", ")};  identities lists them with their status.  Tools are named by family:  ` +
+      "zulip_*, linear_*, recall_*, fleetlink_* and listener_*;  whoami and identities stand alone.";
+  }
+
+  async audit(row) {
+    await this.callerTools.safely(() => this.callerTools.gate.auditCall({
+      seat: this.seat, authenticated_seat: this.seat, grant_ref: this.callerTools.grantRef, client_id: this.callerTools.clientId,
+      outcome: "error", retryable: false, ...row,
+    }));
+  }
+
+  async refuse(name, actingIdentity, error) {
+    await this.audit({ acting_identity: actingIdentity, tool: name, error_code: error.code, error_message: error.message.slice(0, 120) });
+    return errorResult(error);
   }
 
   async call(name, rawArgs) {
-    if (name === DISCOVERY.name) {
-      try {
-        const problem = schemaProblem(DISCOVERY.inputSchema, rawArgs ?? {});
-        if (problem) throw new ToolError("invalid_argument", problem);
-        this.callerTools.requireScope("whoami");
-        if (this.callerTools.paused) throw new ToolError("paused", "The CURSOR seat is paused.");
-        await this.callerTools.reserve("read");
-      } catch (error) {
-        const mapped = error instanceof ToolError ? error : new ToolError("unavailable", "Identity discovery is unavailable.");
-        await this.callerTools.safely(() => this.callerTools.gate.auditCall({
-          seat: "CURSOR", authenticated_seat: "CURSOR", acting_identity: "CURSOR",
-          grant_ref: this.callerTools.grantRef, client_id: this.callerTools.clientId,
-          tool: name, outcome: "error", error_code: mapped.code, error_message: "Identity discovery unavailable.", retryable: false,
-        }));
-        return errorResult(mapped);
-      }
-      const identities = [
-        { identity: "CURSOR", zulip: this.callerTools.zulip ? "configured" : "missing", linear: this.callerTools.linear ? "configured" : "missing", recall: this.callerTools.recall ? "configured" : "missing" },
-        ...GB_IDENTITIES.map((identity) => ({ ...delegatedStatus(this.credentials, identity), recall: this.callerTools.recall ? "configured" : "missing" })),
-      ];
-      const info = { authenticated_seat: "CURSOR", identities };
-      await this.callerTools.safely(() => this.callerTools.gate.auditCall({
-        seat: "CURSOR", authenticated_seat: "CURSOR", acting_identity: "CURSOR",
-        grant_ref: this.callerTools.grantRef, client_id: this.callerTools.clientId,
-        tool: name, outcome: "ok",
-      }));
-      return okResult(JSON.stringify(info), info);
+    if (typeof name === "string" && Object.hasOwn(RENAMED_TOOLS, name)) {
+      const replacement = RENAMED_TOOLS[name];
+      return this.refuse(name, "none", new ToolError("unknown_tool", `${name} was renamed ${replacement} (AFC-331):  call ${replacement} instead`, { extra: { replacement } }));
     }
-    // Keep unknown names as protocol errors, exactly as the ordinary server.
+    if (name === "identities") return this.identities(rawArgs);
+    // Unknown names stay protocol errors, audited by the grant's own tools.
     if (!Object.hasOwn(HOSTED_TOOLS_BY_NAME, name)) return this.callerTools.call(name, rawArgs);
-    const args = rawArgs ?? {};
-    // Selection is read from this call only.  A preceding call cannot change
-    // the default for another call, including parallel Cursor agents.
-    const identity = args && typeof args === "object" && !Array.isArray(args) && Object.hasOwn(args, "identity") ? args.identity : "CURSOR";
-    if (!CURSOR_IDENTITIES.includes(identity)) {
-      await this.callerTools.safely(() => this.callerTools.gate.auditCall({
-        seat: "CURSOR", authenticated_seat: "CURSOR", acting_identity: "rejected",
-        grant_ref: this.callerTools.grantRef, client_id: this.callerTools.clientId,
-        tool: name, outcome: "error", error_code: "invalid_argument", error_message: "Invalid identity.", retryable: false,
-      }));
-      return errorResult(new ToolError("invalid_argument", "identity must be one of the advertised identities"));
-    }
-    // Only the wrapper property is removed; inner schemas and dispatch never
-    // see it.  Non-object arguments reach the original validator unchanged.
-    const innerArgs = args && typeof args === "object" && !Array.isArray(args)
-      ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== "identity")) : args;
-    if (identity === "CURSOR") return this.callerTools.call(name, innerArgs);
-    // Scope and pause on the CURSOR grant apply before a GB role is built.
-    // The role's own pause and CURSOR's live reserve gate are checked later.
-    let callerError;
+    // The grant's scope comes first:  a read-only grant learns it cannot write before it learns how to
+    // name an identity, and the challenge is the same whichever identity a call names.
     try {
       this.callerTools.requireScope(name);
-      if (this.callerTools.paused) throw new ToolError("paused", "The CURSOR seat is paused.");
     } catch (error) {
-      callerError = error instanceof ToolError ? error : new ToolError("unavailable", "The CURSOR authorization check failed.");
+      const mapped = error instanceof ToolError ? error : new ToolError("unavailable", `The ${this.seat} authorization check failed.`);
+      await this.audit({ acting_identity: "none", tool: name, error_code: mapped.code, error_message: `${this.seat} authorization refused.` });
+      return errorResult(mapped);
     }
-    if (callerError) {
-      await this.callerTools.safely(() => this.callerTools.gate.auditCall({
-        seat: identity, authenticated_seat: "CURSOR", acting_identity: identity,
-        grant_ref: this.callerTools.grantRef, client_id: this.callerTools.clientId,
-        tool: name, outcome: "error", error_code: callerError.code, error_message: "CURSOR authorization refused.", retryable: false,
-      }));
-      return errorResult(callerError);
+    const args = rawArgs ?? {};
+    const isObject = args && typeof args === "object" && !Array.isArray(args);
+    const named = isObject && Object.hasOwn(args, "identity");
+    const write = HOSTED_WRITE_TOOLS.has(name);
+    let identity;
+    if (!named) {
+      if (write) {
+        return this.refuse(name, "none", new ToolError("identity_required", `${name} is a write:  name the bot it acts as in identity (one of ${this.allowed.join(", ")};  identities lists them)`, { extra: { allowed: [...this.allowed] } }));
+      }
+      identity = this.seat;
+    } else {
+      identity = canonicalIdentity(args.identity);
+      if (!identity || !this.allowed.includes(identity)) {
+        return this.refuse(name, "rejected", new ToolError("identity_not_allowed", `That identity is not in this connection's allowed set:  ${this.allowed.join(", ")}`, { extra: { allowed: [...this.allowed] } }));
+      }
     }
-    let roleTools;
+    // Only the identity property is removed;  inner schemas never see it.  Non-object arguments reach the
+    // inner validator unchanged.
+    const innerArgs = named ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== "identity")) : rawArgs;
+    if (identity === this.seat) return this.callerTools.call(name, innerArgs);
+    // The grant's pause applies before another identity is built (its scope was checked above).
     try {
-      roleTools = await this.createRole(identity);
+      if (this.callerTools.paused) throw new ToolError("paused", `The ${this.seat} seat is paused.`);
     } catch (error) {
-      const mapped = error instanceof ToolError ? error : new ToolError("unavailable", "Could not load the selected identity.");
-      await this.callerTools.safely(() => this.callerTools.gate.auditCall({
-        seat: identity, authenticated_seat: "CURSOR", acting_identity: identity,
-        grant_ref: this.callerTools.grantRef, client_id: this.callerTools.clientId,
-        tool: name, outcome: "error", error_code: mapped.code, error_message: "Selected identity unavailable.", retryable: false,
-      }));
-      return errorResult(mapped, (message) => this.callerTools.scrub(message));
+      const mapped = error instanceof ToolError ? error : new ToolError("unavailable", `The ${this.seat} authorization check failed.`);
+      await this.audit({ seat: identity, acting_identity: identity, tool: name, error_code: mapped.code, error_message: `${this.seat} authorization refused.` });
+      return errorResult(mapped);
     }
-    return roleTools.call(name, innerArgs);
+    let tools = this.built.get(identity);
+    if (!tools) {
+      try {
+        if (!this.createIdentity) throw new ToolError("not_configured", `This server cannot act as ${identity}.`);
+        tools = await this.createIdentity(identity);
+        this.built.set(identity, tools);
+      } catch (error) {
+        const mapped = error instanceof ToolError ? error : new ToolError("unavailable", "Could not load the selected identity.");
+        await this.audit({ seat: identity, acting_identity: identity, tool: name, error_code: mapped.code, error_message: "Selected identity unavailable." });
+        return errorResult(mapped, (message) => this.callerTools.scrub(message));
+      }
+    }
+    return tools.call(name, innerArgs);
+  }
+
+  status(identity) {
+    const recall = this.callerTools.recall ? "configured" : "missing";
+    if (identity === this.seat) {
+      return { identity, zulip: this.callerTools.zulip ? "configured" : "missing", linear: this.callerTools.linear ? "configured" : "missing", recall };
+    }
+    if (GB_SET.has(identity)) return { ...delegatedStatus(this.credentials, identity), recall };
+    const peer = this.identityStatus ? this.identityStatus(identity) : null;
+    return { identity, zulip: peer?.zulip ?? "missing", linear: peer?.linear ?? "missing", recall };
+  }
+
+  async identities(rawArgs) {
+    const name = "identities";
+    try {
+      const problem = schemaProblem(IDENTITIES_SPEC.inputSchema, rawArgs ?? {});
+      if (problem) throw new ToolError("invalid_argument", problem);
+      this.callerTools.requireScope(name);
+      if (this.callerTools.paused) throw new ToolError("paused", `The ${this.seat} seat is paused.`);
+      await this.callerTools.reserve("read");
+    } catch (error) {
+      const mapped = error instanceof ToolError ? error : new ToolError("unavailable", "Identity discovery is unavailable.");
+      await this.audit({ acting_identity: this.seat, tool: name, error_code: mapped.code, error_message: "Identity discovery unavailable." });
+      return errorResult(mapped);
+    }
+    const info = {
+      default_identity: this.seat,
+      authenticated_seat: this.seat,
+      transport: "hosted",
+      identities: this.allowed.map((identity) => this.status(identity)),
+    };
+    await this.callerTools.safely(() => this.callerTools.gate.auditCall({
+      seat: this.seat, authenticated_seat: this.seat, acting_identity: this.seat,
+      grant_ref: this.callerTools.grantRef, client_id: this.callerTools.clientId, tool: name, outcome: "ok",
+    }));
+    return okResult(JSON.stringify(info), info);
   }
 }

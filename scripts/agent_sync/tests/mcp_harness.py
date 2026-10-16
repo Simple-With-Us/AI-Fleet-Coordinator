@@ -21,13 +21,16 @@ from pathlib import Path
 from typing import Any
 
 from agent_sync import cli
+from agent_sync import identity as I
 from agent_sync.mcp import stdio as S
+from agent_sync.mcp import identity_router as R
 from agent_sync.mcp import tools as T
 from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH
 from agent_sync.tests.harness import SESSION, Harness, write_rc
 
 SCRIPT = Path(__file__).resolve().parents[2] / "agent-sync"
 MODERN = "2026-07-28"
+AUTO = object()  # McpSession.call:  a write names the session's default identity
 CLIENT_META = {S.META_VERSION: MODERN, "io.modelcontextprotocol/clientCapabilities": {},
                "io.modelcontextprotocol/clientInfo": {"name": "test-client", "version": "1"}}
 
@@ -88,6 +91,11 @@ class McpSession:
         self.code: int | None = None
         self.lines: "queue.Queue[bytes | None]" = queue.Queue()
         self.next_id = 0
+        # The identity a write names when the test does not name one (AFC-331:  a write must name its
+        # identity):  the session's default, from the same precedence the server applies.
+        flags = dict(zip(argv, argv[1:]))
+        self.identity = I.resolve_seat(env, flag=flags.get("--as"), default=flags.get("--default-seat"),
+                                       use_tag=False).seat
         rt = cli.Runtime(env=env, stdin=server_in, stdout=server_out, stderr=self.err, home=harness.home,
                          sleep=clock.sleep, timeout=timeout, events_timeout=3.0)
         args = cli.build_parser().parse_args(["mcp", *argv])
@@ -143,8 +151,15 @@ class McpSession:
             message["params"] = params
         self.send(message)
 
-    def call(self, name: str, arguments: dict[str, Any] | None = None, *, modern: bool = False) -> dict[str, Any]:
+    def call(self, name: str, arguments: dict[str, Any] | None = None, *, modern: bool = False,
+             identity: Any = AUTO) -> dict[str, Any]:
+        """tools/call.  A write that names no identity gets the session's default one (`identity=AUTO`);
+        pass identity=None to send none, or a name to send that one."""
         params: dict[str, Any] = {"name": name}
+        if identity is AUTO:
+            identity = self.identity if name in T.WRITE_TOOLS and not (arguments and "identity" in arguments) else None
+        if identity is not None:
+            arguments = {**(arguments or {}), "identity": identity}
         if arguments is not None:
             params["arguments"] = arguments
         response = self.request("tools/call", params, modern=modern)
@@ -181,6 +196,9 @@ class McpHarness(Harness):
                                 site=self.fake.url)
         self.clock = FakeClock()
         self.spec = T.load_served_tools()  # tools.json, then listener-tools.json (AFC-330)
+        # What tools/list serves a CLAUDE session whose HOME holds only Claude-zuliprc:  every tool with an
+        # identity property whose enum is that one bot (AFC-331).
+        self.served = R.decorate(self.spec, ["CLAUDE"], "CLAUDE")
         self.extra_secrets: list[str] = []
         self.sessions: list[McpSession] = []
 

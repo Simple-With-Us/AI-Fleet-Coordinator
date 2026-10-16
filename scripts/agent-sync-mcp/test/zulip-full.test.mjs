@@ -94,20 +94,22 @@ function fence(text) {
 // ---------------------------------------------------------------- contract
 
 test("every tools.json tool after the first ten is a hosted zulip_ tool, the first ten are untouched, scopes and budgets split read from write", () => {
-  const full = TOOLS.tools.slice(10);
+  // tools.json:  whoami, identities, the original nine, then the rest of Zulip, already zulip_<verb> (AFC-331).
+  const full = TOOLS.tools.slice(11);
   assert.equal(full.length, 33);
   assert.deepEqual(Object.keys(ZULIP_FULL_NAMES), full.map((t) => t.name));
   assert.equal(ZULIP_PUBLIC_TOOLS.length, 10);
   for (const spec of full) {
-    const hosted = HOSTED_TOOLS_BY_NAME[`zulip_${spec.name}`];
+    const verb = spec.name.slice("zulip_".length);
+    const hosted = HOSTED_TOOLS_BY_NAME[spec.name];
     assert.ok(hosted, spec.name);
     assert.deepEqual(hosted.inputSchema, spec.inputSchema, spec.name);
     assert.deepEqual(hosted.outputSchema, spec.outputSchema, spec.name);
-    assert.equal(HOSTED_TOOLS_BY_NAME[spec.name], hosted, `${spec.name} alias`);
+    assert.equal(HOSTED_TOOLS_BY_NAME[verb], undefined, `${verb} is not an alias any more`);
     const write = spec.annotations.readOnlyHint === false;
-    assert.equal(HOSTED_WRITE_TOOLS.has(`zulip_${spec.name}`), write, spec.name);
-    assert.equal(HOSTED_READ_TOOLS.has(`zulip_${spec.name}`), !write, spec.name);
-    assert.equal(Object.hasOwn(FULL_WRITE_KIND, spec.name), write, spec.name);
+    assert.equal(HOSTED_WRITE_TOOLS.has(spec.name), write, spec.name);
+    assert.equal(HOSTED_READ_TOOLS.has(spec.name), !write, spec.name);
+    assert.equal(Object.hasOwn(FULL_WRITE_KIND, verb), write, spec.name);
     for (const banned of ["seat", "as", "rc", "no_tag", "fleet"]) assert.ok(!(banned in spec.inputSchema.properties), `${spec.name} takes ${banned}`);
   }
   assert.equal(new Set(HOSTED_TOOL_LIST.map((t) => t.name)).size, HOSTED_TOOL_LIST.length, "no duplicate names");

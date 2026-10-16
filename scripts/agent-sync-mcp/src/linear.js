@@ -447,6 +447,7 @@ export const LINEAR_TOOLS = Object.freeze([
       required: ["seat", "app", "viewer_id", "workspace", "transport"],
       properties: {
         seat: { type: "string" },
+        authenticated_seat: { type: "string" },
         app: { type: "string" },
         viewer_id: { type: "string" },
         workspace: { type: "string" },
