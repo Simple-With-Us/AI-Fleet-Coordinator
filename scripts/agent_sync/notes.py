@@ -84,8 +84,8 @@ REFUSAL_PREFIX = "notes-relay refused "
 
 
 class NotesError(Exception):
-    """A refusal with a stable code (invalid_argument, not_found, unavailable, internal) and a message
-    that never holds the note's body."""
+    """A refusal with a stable code (invalid_argument, not_found, unavailable, outcome_unknown, internal) and a
+    message that never holds the note's body.  `outcome_unknown` means the script may have written the note."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -144,6 +144,53 @@ def check_flags(raw: Mapping[str, Any] | None) -> dict[str, Any]:
         if pr.strip():
             out["pr"] = pr.strip()
     return out
+
+
+def text_fields(envelope: Mapping[str, Any]) -> dict[str, str]:
+    """Every caller-written text of an envelope, for the secret scan:  title, body and the text flags.  The
+    summary reaches the script on its command line (--summary has no other channel in the script) and the
+    owner's notification, so the scan is its guard."""
+    flags = envelope.get("flags") or {}
+    fields = {"title": str(envelope.get("title") or ""), "markdown": str(envelope.get("markdown") or "")}
+    for name in ("summary", "pr"):
+        if flags.get(name):
+            fields[name] = str(flags[name])
+    return {name: value for name, value in fields.items() if value}
+
+
+DIRECT_TTL = 24 * 3600.0
+
+
+def direct_once(store: Any, envelope: Mapping[str, Any], send: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Run `send` (the direct runner) once per request_id, under the persistent idempotency rows every stdio
+    writer of this seat shares (idem.IdemStore).  A repeat of a finished request returns its first result with
+    duplicate true.  A request that may have written (a timeout, a crash) is never repeated:  it is refused as
+    outcome_unknown until the owner checks the note and sends it again under a new request_id.  A failure that
+    provably wrote nothing drops its row, so the same id may be tried again."""
+    key = "k:notes-direct:%s" % envelope["request_id"]
+    verdict, row = store.begin(key, DIRECT_TTL, {"tool": "notes_direct"})
+    if verdict == "busy":
+        raise NotesError("unavailable", "the same request is already in flight in another session of this seat")
+    if verdict == "duplicate" and row is not None:
+        return dict(row.get("result") or {}, duplicate=True)
+    if verdict == "reconcile":
+        store.set(key, state="unknown")
+        raise NotesError("outcome_unknown", "an earlier direct %s with this request_id may have been interrupted, so the "
+                         "note may or may not have been written.  Check the Coding folder, then send it again with a new "
+                         "request_id." % envelope["action"])
+    try:
+        result = send()
+    except NotesError as exc:
+        if exc.code == "outcome_unknown":
+            store.set(key, state="unknown")  # keep the row:  a retry with this id is refused
+        else:
+            store.drop(key)
+        raise
+    except BaseException:
+        store.set(key, state="unknown")
+        raise
+    store.set(key, state="sent", id=0, result=result)
+    return dict(result, duplicate=False)
 
 
 def new_request_id() -> str:
@@ -422,7 +469,10 @@ def run_direct(envelope: Mapping[str, Any], script: Path, *, env: Mapping[str, s
                 proc = (runner or subprocess.run)(argv, input=stdin_data if stdin_data is not None else b"", capture_output=True,
                               timeout=timeout, env=child_env(env, extra), check=False)
         except subprocess.TimeoutExpired:
-            raise NotesError("unavailable", "the notes script did not finish within %d seconds" % int(timeout)) from None
+            # A timeout does not prove nothing was written (the script may have created the note and then hung),
+            # so it is an unknown outcome, never a safe failure that a retry may repeat.
+            raise NotesError("outcome_unknown", "the notes script did not finish within %d seconds, so the note may or may not "
+                             "have been written.  Check the Coding folder before sending it again." % int(timeout)) from None
         except OSError as exc:
             raise NotesError("unavailable", "could not start the notes script (%s)" % (exc.strerror or type(exc).__name__)) from None
     finally:

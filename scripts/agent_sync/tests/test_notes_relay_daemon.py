@@ -22,6 +22,7 @@ from agent_sync.tests.harness import write_rc
 from agent_sync.tests.test_daemon import DaemonHarness
 
 CODEX_ID = 11
+MENTION = "@**Claude** can you check the AFC cutover?"
 RELAY_SECTION = "[notes_relay]\nenabled = true\nseat = \"CLAUDE\"\n"
 
 
@@ -200,6 +201,28 @@ class DaemonRelayTests(DaemonHarness):
         daemon.route_message(runner, message)  # the backfill delivers it again
         self.assertEqual(offered, [mid, mid], "the second delivery reached the consumer, not the duplicate path")
         self.assertEqual(runner.cursor, mid)
+
+    def test_a_request_posted_while_the_reader_was_disconnected_survives_a_later_mention_moving_the_cursor(self):
+        daemon = self.started_with_relay()
+        runner = daemon.seats["CLAUDE"]
+        mid = self.envelope_message()  # arrives while this seat is not listening
+        later = self.fake.add_message("Codex", "agent-sync", "t", MENTION)  # a mention that would carry the cursor past it
+        daemon.notes_relay.runner = self.fake_run
+        found = runner.backfill()  # the reconnect:  everything after the cursor
+        self.assertEqual([m["id"] for m in found if m["id"] in (mid, later)], [mid, later])
+        daemon.route_backfill(runner, found)
+        self.assertTrue(self.ran.wait(10), "the request still ran")
+        self.assertTrue(self.wait(lambda: (mid, 10, "check") in self.fake.reactions))
+        self.assertEqual(runner.cursor, later)
+        self.assertEqual([r["id"] for r in self.inbox()], [later], "only the mention is inbox work")
+        daemon.notes_relay.stop()
+
+    def test_another_seat_or_a_disabled_relay_does_not_backfill_the_channel(self):
+        daemon = self.two_seats()
+        other = daemon.seats["CODEX"]
+        mid = self.envelope_message()
+        self.assertNotIn(mid, [m["id"] for m in other.backfill()])
+        daemon.notes_relay.stop()
 
     def started_with_relay(self):
         self.enable()

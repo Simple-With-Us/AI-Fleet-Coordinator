@@ -211,12 +211,18 @@ class DirectRunnerTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, expected)
                 self.assertLess(len(caught.exception.message), 400)
 
-    def test_a_timeout_is_unavailable_and_the_temp_file_still_goes(self):
+    def test_a_timeout_is_an_unknown_outcome_and_the_temp_file_still_goes(self):
         def slow(argv, **kwargs):
             raise subprocess.TimeoutExpired(argv, 1)
         with self.assertRaises(N.NotesError) as caught:
             self.run_direct(envelope(markdown="<p>x</p>", flags={"html": True}), slow)
-        self.assertEqual(caught.exception.code, "unavailable")
+        self.assertEqual(caught.exception.code, "outcome_unknown")
+        self.assertIn("may or may not", caught.exception.message)
+
+    def test_text_fields_cover_the_title_the_body_and_the_text_flags(self):
+        env = envelope(markdown="body", flags={"summary": "sum", "pr": "46", "notify": True})
+        self.assertEqual(N.text_fields(env), {"title": TITLE, "markdown": "body", "summary": "sum", "pr": "46"})
+        self.assertEqual(N.text_fields(envelope("pin", markdown="")), {"title": TITLE})
 
     def test_availability_needs_macos_osascript_and_the_script(self):
         with tempfile.TemporaryDirectory() as tmp:

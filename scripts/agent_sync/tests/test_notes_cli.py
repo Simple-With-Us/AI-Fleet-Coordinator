@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import os
 from pathlib import Path
 from unittest import mock
@@ -60,6 +61,39 @@ class NotesCliTests(Harness):
         self.assertIn("--html", run.calls[1]["argv"])
         self.assertEqual(third.code, 2)
         self.assertEqual(len(run.calls), 2)
+
+    def test_the_summary_is_scanned_and_a_repeated_request_id_writes_once(self):
+        run = FakeRun()
+        a, b = self.direct(run)
+        with a, b:
+            leak = self.run_cli("notes", "create", TITLE, "--summary", "token " + "ghp_" + "EXAMPLE0" * 5, stdin="x")
+            self.assertEqual(leak.code, 2)
+            self.assertIn("summary looks like it contains", leak.err)
+            self.assertEqual(run.calls, [])
+            first = self.run_cli("notes", "create", TITLE, "--request-id", "cli-once-0001", "--json", stdin="x")
+            again = self.run_cli("notes", "create", TITLE, "--request-id", "cli-once-0001", "--json", stdin="x")
+            fresh = self.run_cli("notes", "create", TITLE, "--request-id", "cli-once-0002", "--json", stdin="x")
+        self.assertEqual([json.loads(r.out)["duplicate"] for r in (first, again, fresh)], [False, True, False])
+        self.assertEqual(len(run.calls), 2)
+        self.assertEqual(json.loads(again.out)["status"], "done")
+
+    def test_the_cli_and_the_mcp_tools_share_the_request_id_rows_and_a_timeout_blocks_a_retry(self):
+        def hang(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 1)
+        a, b = self.direct(hang)
+        with a, b:
+            first = self.run_cli("notes", "create", TITLE, "--request-id", "cli-timeout-001", stdin="x")
+        self.assertEqual(first.code, 5)
+        self.assertIn("may or may not", first.err)
+        run = FakeRun()
+        a, b = self.direct(run)
+        with a, b:
+            retry = self.run_cli("notes", "create", TITLE, "--request-id", "cli-timeout-001", stdin="x")
+        self.assertEqual(retry.code, 5)
+        self.assertIn("may have been interrupted", retry.err)
+        self.assertEqual(run.calls, [])
+        rows = json.loads((self.state_dir / "CLAUDE" / "mcp-idem.json").read_text())["rows"]
+        self.assertEqual(rows["k:notes-direct:cli-timeout-001"]["state"], "unknown")  # kept, in the file the tools read
 
     def test_pin_and_unpin_take_only_a_title(self):
         run = FakeRun()

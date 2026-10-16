@@ -57,6 +57,7 @@ from .. import zulip as Z
 from ..state import State
 from ..textfmt import sentence_gap
 from . import guide as GUIDE
+from ..idem import PENDING_FRESH, IdemStore
 from . import linear_tools as LINEAR
 from . import recall_tools as RECALL
 
@@ -75,7 +76,6 @@ WRITE_SPACING = 3.0  # seconds between writes of one seat, across processes
 MAX_WRITE_WAIT = 6.0  # a write waits at most this long for its slot, else rate_limited
 RECONCILE_DELAY = 15.0  # an unknown write is looked for no sooner than this after the attempt
 RECONCILE_WINDOW = 300.0  # clock skew allowed between this machine and Zulip when matching a found post
-PENDING_FRESH = 30.0  # a pending row younger than this is another process's write in flight
 IDEM_EXPLICIT_TTL = 24 * 3600.0
 IDEM_IMPLICIT_TTL = 600.0
 FLEET_ROLES = (300, 400)  # moderator and member; daemon.FLEET_ROLES (a test keeps the two equal)
@@ -466,6 +466,7 @@ class Tools:
         self.root = Path(agent.state.root)
         seat_dir = os.path.join(str(self.root), self.seat)
         self.idem_path = os.path.join(seat_dir, "mcp-idem.json")
+        self._idem_store = IdemStore(self.idem_path, clock=lambda: self.clock())
         self.spacing_path = os.path.join(seat_dir, "mcp-write.json")
         self.known = secretscan.basic_forms(agent.creds.email, agent.creds.key)
         self.posted_ids: set[int] = set()
@@ -672,53 +673,25 @@ class Tools:
 
     # ---- idempotency and spacing ----------------------------------------------------------
     def _idem(self, mutate: Callable[[dict[str, Any], float], Any]) -> Any:
-        with LIVE.locked(self.idem_path):
-            data = LIVE.read_json(self.idem_path)
-            now = self.clock()
-            rows = data.get("rows") if isinstance(data.get("rows"), dict) else {}
-            rows = {k: r for k, r in rows.items()
-                    if isinstance(r, dict) and isinstance(r.get("expires"), (int, float)) and r["expires"] > now}
-            result = mutate(rows, now)
-            data["rows"] = rows
-            LIVE.write_json(self.idem_path, data)
-            return result
+        return self._idem_store.mutate(mutate)
 
     def _idem_peek(self, key: str) -> dict[str, Any] | None:
-        row = (LIVE.read_json(self.idem_path).get("rows") or {}).get(key)
-        if isinstance(row, dict) and row.get("state") == "sent" and float(row.get("expires") or 0) > self.clock():
-            return dict(row)
-        return None
+        return self._idem_store.peek(key)
 
     def _idem_begin(self, key: str, ttl: float, fields: Mapping[str, Any]) -> tuple[str, dict[str, Any] | None]:
         """('send', None), ('duplicate', row) for a sent key, ('reconcile', row) for an unknown or
         abandoned one.  A write in flight in another process is rate_limited."""
-        def mutate(rows: dict[str, Any], now: float) -> tuple[str, dict[str, Any] | None]:
-            row = rows.get(key)
-            if row and row.get("state") == "sent":
-                return "duplicate", dict(row)
-            if row and row.get("state") == "pending" and now - float(row.get("claimed_at") or 0) < PENDING_FRESH:
-                return "busy", dict(row)
-            if row and row.get("state") in ("unknown", "pending"):
-                row["state"] = "pending"
-                row["claimed_at"] = now
-                return "reconcile", dict(row)
-            rows[key] = dict(fields, state="pending", claimed_at=now, ts=now, expires=now + ttl)
-            return "send", None
-
-        verdict, row = self._idem(mutate)
+        verdict, row = self._idem_store.begin(key, ttl, fields)
         if verdict == "busy":
             raise ToolError("rate_limited", "the same write is already in flight in another session of this seat",
                             retryable=True, retry_after_s=PENDING_FRESH)
         return verdict, row
 
     def _idem_set(self, key: str, **changes: Any) -> None:
-        def mutate(rows: dict[str, Any], now: float) -> None:
-            if key in rows:
-                rows[key].update(changes)
-        self._idem(mutate)
+        self._idem_store.set(key, **changes)
 
     def _idem_drop(self, key: str) -> None:
-        self._idem(lambda rows, now: rows.pop(key, None))
+        self._idem_store.drop(key)
 
     def _reserve_write(self) -> None:
         """Take this seat's next write slot (3 seconds after the last one, across processes) and
@@ -1421,31 +1394,25 @@ class Tools:
         if problem:
             raise ToolError("invalid_argument", "%s;  the Agent in the title must be the identity the call acts as (%s)"
                             % (problem, self.seat))
-        self._scan(title=envelope["title"], markdown=str(envelope.get("markdown") or ""))
-        row_key, ttl = self._key("notes-direct:%s" % request_id, [])
-        verdict, row = self._idem_begin(row_key, ttl, {"tool": "notes_direct"})
-        if verdict == "duplicate" and row is not None:
-            return self._write_result(dict(row.get("result") or {}, duplicate=True))
-        if verdict == "reconcile":
-            self._idem_set(row_key, state="unknown")
-            raise ToolError("outcome_unknown", "an earlier direct %s with this request_id may or may not have written "
-                            "the note.  Check the Coding folder, then send it again with a new request_id." % action)
-        try:
+        self._scan(**NOTES.text_fields(envelope))  # the title, the body and the text flags (the summary rides argv)
+
+        def send() -> dict[str, Any]:
             done = NOTES.run_direct(envelope, script, env=self.agent.rt.env)
+            return {"request_id": request_id, "action": action, "status": "done", "transport": "direct",
+                    **({"note_id": done["note_id"]} if done.get("note_id") else {})}
+
+        try:
+            result = NOTES.direct_once(self._idem_store, envelope, send)
         except NOTES.NotesError as exc:
-            self._idem_drop(row_key)  # nothing was written:  the same request_id may be tried again
             raise self._notes_error(exc) from None
-        result = {"request_id": request_id, "action": action, "status": "done", "transport": "direct",
-                  **({"note_id": done["note_id"]} if done.get("note_id") else {})}
-        self._idem_set(row_key, state="sent", id=0, result=result)
-        return self._write_result(dict(result, duplicate=False))
+        return self._write_result(result)
 
     def _notes_relay(self, envelope: dict[str, Any]) -> dict[str, Any]:
         """Post the envelope to #notes-relay as this identity.  A body too large for a message goes up
         first as an attached .md file the envelope names."""
         request_id = envelope["request_id"]
         # The relay topic and body are Zulip text:  the same scan every post gets.
-        self._scan(title=envelope["title"], markdown=str(envelope.get("markdown") or ""))
+        self._scan(**NOTES.text_fields(envelope))
         try:
             if NOTES.needs_upload(envelope):
                 data = str(envelope["markdown"]).encode("utf-8")

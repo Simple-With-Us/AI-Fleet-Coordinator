@@ -319,6 +319,11 @@ class SeatRunner:
         owner = self.daemon.config.owner_user_id
         if owner:
             narrows.append([{"operator": "sender", "operand": owner}])
+        relay = self.daemon.notes_relay
+        if relay is not None and relay.seat == self.seat:
+            # A relay request has no mention and its topic is never followed or leased, so without this a later
+            # message that moves the cursor would carry it past a request that arrived while this seat was down.
+            narrows.append([{"operator": "channel", "operand": relay.channel}])
         for narrow in narrows:
             anchor = floor
             for _ in range(MAX_PAGES):

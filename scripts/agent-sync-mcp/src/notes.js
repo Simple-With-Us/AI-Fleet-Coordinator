@@ -219,7 +219,8 @@ export const NOTES_METHODS = {
     }
     let envelope = makeEnvelope(action, args.title, isBody ? (args.markdown ?? "") : "", flags, requestId, this.seat);
     audit.request_id = requestId;
-    this.scan({ title: envelope.title, markdown: envelope.markdown });
+    // Every caller-written text, flags included:  the summary reaches the owner's notification and the script's command line.
+    this.scan({ title: envelope.title, markdown: envelope.markdown, ...(envelope.flags.summary ? { summary: envelope.flags.summary } : {}), ...(envelope.flags.pr ? { pr: envelope.flags.pr } : {}) });
     if (needsUpload(envelope)) {
       const bytes = new TextEncoder().encode(envelope.markdown);
       if (!bytes.length || bytes.length > UPLOAD_MAX) throw invalid(`the note body is ${bytes.length} bytes;  a relayed body is at most ${UPLOAD_MAX}`);

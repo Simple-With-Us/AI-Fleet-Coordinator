@@ -180,6 +180,40 @@ class NotesToolTests(McpHarness):
             self.assertNotIn("isError", session.call("notes_pin", {"title": "[AFC, Claude] retry", "request_id": "direct-retry-0001"}))
         self.assertEqual(len(run.calls), 1)
 
+    def test_the_summary_and_pr_flags_are_scanned_on_the_direct_path_and_the_relay_builder(self):
+        leak = "token " + "ghp_" + "EXAMPLE0" * 5
+        run, a, b = self.direct()
+        session = self.session()
+        with a, b:
+            for flag in ("summary", "pr"):
+                args = {"title": "[AFC, Claude] flags", "markdown": "x", flag: leak}
+                result = session.call("notes_create", args)
+                self.assertTrue(result.get("isError"), flag)  # the schema or the scan refuses it
+            refused = session.call("notes_create", {"title": "[AFC, Claude] flags", "markdown": "x", "summary": leak})
+            self.assertEqual(self.assert_tool_error(refused, "refused_secret")["code"], "refused_secret")
+            via_relay = session.call("notes_create", {"title": "[AFC, Claude] flags", "markdown": "x", "summary": leak,
+                                                       "transport": "relay"})
+            self.assert_tool_error(via_relay, "refused_secret")
+        self.assertEqual(run.calls, [])
+        self.assertEqual(self.relay_messages(), [])
+
+    def test_a_timeout_on_the_direct_path_is_an_unknown_outcome_that_a_retry_is_refused_for(self):
+        def hang(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 1)
+        session = self.session()
+        args = {"title": "[AFC, Claude] hangs", "markdown": "x", "request_id": "timeout-request-01"}
+        with self.direct(hang)[1], mock.patch.object(N.subprocess, "run", hang):
+            first = self.assert_tool_error(session.call("notes_create", args), "outcome_unknown")
+        self.assertIn("may or may not", first["message"])
+        run, a, b = self.direct()
+        with a, b:
+            retry = self.assert_tool_error(session.call("notes_create", args), "outcome_unknown")
+            self.assertIn("may have been interrupted", retry["message"])
+            self.assertEqual(run.calls, [], "the retry did not run the script again")
+            fresh = session.call("notes_create", dict(args, request_id="timeout-request-02"))
+            self.assertNotIn("isError", fresh)
+        self.assertEqual(len(run.calls), 1)
+
     def test_transport_relay_posts_the_envelope_as_the_identity_to_the_relay_channel(self):
         with mock.patch.object(N, "direct_available", return_value=Path("/fake/apple-notes-coding.sh")):
             result = self.session().call("notes_create", {"title": "[AFC, Claude] relayed", "markdown": "# Body\n\nText.",

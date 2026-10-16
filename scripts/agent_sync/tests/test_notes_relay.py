@@ -357,6 +357,48 @@ class PublishFailureTests(RelayHarness):
         self.assertEqual(len(self.calls), 1)
 
 
+class TimeoutTests(RelayHarness):
+    """A script that hangs may already have written the note:  that is an unknown outcome, never a safe failure."""
+
+    def hang(self, argv, **kwargs):
+        self.calls.append({"argv": list(argv), "input": kwargs.get("input")})
+        raise subprocess.TimeoutExpired(argv, 1)
+
+    def test_a_timeout_is_recorded_as_unknown_and_a_retry_never_runs_the_action_again(self):
+        self.consumer.runner = self.hang
+        message = self.request(rid="timeout-request-01")
+        self.assertEqual(self.process(message), "refused")
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn("may or may not", self.client.replies[-1])
+        row = json.loads(Path(self.consumer.processed.path).read_text())["rows"]["CURSOR:timeout-request-01"]
+        self.assertEqual(row["outcome"], "unknown", "not a definite refusal")
+        # The sender (or a backfill) delivers the same request again, with a script that would now work:
+        self.consumer.runner = fake_run_factory(self.calls)
+        again = self.request(rid="timeout-request-01")
+        self.assertEqual(self.process(again), "duplicate")
+        self.assertEqual(len(self.calls), 1, "the retry did not run the script")
+        self.assertIn((again["id"], "cross_mark"), self.client.reactions)
+        self.assertEqual(len(self.client.replies), 1, "the earlier reply already says it")
+
+    def test_a_failed_publish_of_an_unknown_outcome_keeps_the_request_spooled(self):
+        self.consumer.start = lambda: None
+        self.consumer.runner = self.hang
+        message = self.request(rid="timeout-request-02")
+        self.consumer.offer(self.runner, message)
+        original = self.client.post
+
+        def down(path, params=None):
+            raise Z.NetworkError("zulip is unreachable")
+        self.client.post = down
+        self.assertEqual(self.consumer.drain(), 0)
+        self.assertEqual(self.consumer.spool.ids(), [message["id"]])
+        self.client.post = original
+        self.consumer.runner = fake_run_factory(self.calls)
+        self.assertEqual(self.consumer.drain(), 1)
+        self.assertEqual(len(self.calls), 1, "still only the one (timed out) run")
+        self.assertIn("may or may not", self.client.replies[-1])
+
+
 class SelfSentTests(RelayHarness):
     """A session of the reading seat that runs elsewhere (the server) relays as that same bot."""
 

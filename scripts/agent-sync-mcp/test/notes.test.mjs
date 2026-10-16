@@ -183,6 +183,13 @@ test("a body that looks like a private key is refused before anything is posted"
   assert.equal(fake.messages.filter((m) => m.display_recipient === RELAY_CHANNEL).length, 0);
 });
 
+test("the summary flag is scanned for secrets like the title and the body", async () => {
+  const { fake, tools } = harness();
+  const leak = `token ${"ghp_"}${"EXAMPLE0".repeat(5)}`;
+  toolError(await tools.call("notes_create", { title: TITLE, markdown: "b", summary: leak }), "refused_secret");
+  assert.equal(fake.messages.filter((m) => m.display_recipient === RELAY_CHANNEL).length, 0);
+});
+
 // ---------------------------------------------------------------- notes_status
 
 function react(message, user, emoji) {

@@ -22,7 +22,9 @@ from . import bodyfile
 from . import identities as X
 from . import identity as I
 from . import notes as N
+from .idem import IdemStore
 from .secretscan import scan as scan_text
+from .state import state_root
 from . import zulip as Z
 
 
@@ -159,16 +161,24 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
                 problem = N.title_problem(envelope["title"], identity, env=rt.env)
                 if problem:
                     raise N.NotesError("invalid_argument", "%s;  the Agent in the title must be %s" % (problem, identity))
-                found = scan_text(envelope["title"] + "\n" + str(envelope.get("markdown") or ""))
-                if found:
-                    raise N.NotesError("invalid_argument", "refusing to write:  the note looks like it contains %s" % found)
-                done = N.run_direct(envelope, script, env=rt.env)
+                for field, text in N.text_fields(envelope).items():
+                    found = scan_text(text)
+                    if found:
+                        raise N.NotesError("invalid_argument", "refusing to write:  the %s looks like it contains %s" % (field, found))
+
+                def send() -> dict[str, Any]:
+                    done = N.run_direct(envelope, script, env=rt.env)
+                    return {"request_id": envelope["request_id"], "action": action, "status": "done", "transport": "direct",
+                            **({"note_id": done["note_id"]} if done.get("note_id") else {})}
+
+                # The same persistent rows the MCP tools use (<state>/<SEAT>/mcp-idem.json):  a repeated --request-id
+                # writes the note once, and a timed-out write is refused until the owner has checked the note.
+                store = IdemStore(str(state_root(rt.env, home) / identity / "mcp-idem.json"))
+                result = N.direct_once(store, envelope, send)
             except N.NotesError as exc:
                 raise _fail(exc) from None
             AUDIT.append(rt.env, rt.home, transport="cli", default_identity=identity, identity=identity,
                          tool="notes " + action, outcome="ok")
-            result = {"request_id": envelope["request_id"], "action": action, "status": "done", "transport": "direct",
-                      **({"note_id": done["note_id"]} if done.get("note_id") else {})}
             _print(rt, result, use_json)
             return 0
     # Relay (and status):  the MCP tool's own code over this identity's verified bot.

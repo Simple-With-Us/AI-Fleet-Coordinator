@@ -127,7 +127,7 @@ class Processed:
 
     def begin(self, identity: str, request_id: str, message_id: int) -> str | None:
         """None when this request is new (now marked `started`), else the earlier outcome
-        (started, done_pending, done, refused_pending or refused)."""
+        (started, done_pending, done, refused_pending, refused, unknown_pending or unknown)."""
         with self.lock:
             rows = dict(self._read().get("rows") or {})
             key = self.key(identity, request_id)
@@ -372,19 +372,22 @@ class Consumer:
                 self._react(runner, message_id, N.DONE_EMOJI)
                 self.processed.finish(identity, request_id, "done")
                 return "done" if earlier == "done_pending" else "duplicate"
-            if earlier == "started":
-                reason = ("this request id was already started and may have been interrupted;  check the note, "
+            unknown = earlier in ("started", "unknown", "unknown_pending")
+            if unknown:
+                reason = (self.processed.reason(identity, request_id)
+                          or "this request id was already started and may have been interrupted;  check the note, "
                           "then send it again with a new request_id")
             else:
                 reason = self.processed.reason(identity, request_id) or "this request id was already refused"
-            if earlier == "refused":
+            if earlier in ("refused", "unknown"):
                 # Already published:  never downgrade the row.  _answer is a no-op once the reply exists and the
                 # reaction is idempotent, so a network failure here leaves the row as it was.
                 self._answer(runner, message_id, request_id, refused=reason)
                 return "duplicate"
-            self.processed.finish(identity, request_id, "refused_pending", reason)
+            kind = "unknown" if earlier.startswith("unknown") else "refused"
+            self.processed.finish(identity, request_id, kind + "_pending", reason)
             self._answer(runner, message_id, request_id, refused=reason)
-            self.processed.finish(identity, request_id, "refused")
+            self.processed.finish(identity, request_id, kind)
             return "duplicate"
         try:
             script = self.script()
@@ -398,7 +401,11 @@ class Consumer:
             kwargs = {"runner": self.runner} if self.runner is not None else {}
             N.run_direct(full, script, env=self.env, **kwargs)
         except N.NotesError as exc:
-            return self._refuse(runner, message_id, identity, request_id, exc.message, "notes-relay-failed", exc.code)
+            # A timeout (outcome_unknown) is not a definite failure:  the script may have written the note.  It is
+            # recorded as `unknown`, so a retry of the same request id is refused as "may have been interrupted"
+            # and never runs the action a second time.
+            return self._refuse(runner, message_id, identity, request_id, exc.message, "notes-relay-failed", exc.code,
+                                kind="unknown" if exc.code == "outcome_unknown" else "refused")
         except Z.AgentSyncError as exc:
             if isinstance(exc, Z.NetworkError):
                 raise
@@ -412,11 +419,11 @@ class Consumer:
         return "done"
 
     def _refuse(self, runner: Any, message_id: int, identity: str, request_id: str, reason: str, event: str,
-                code: str) -> str:
-        self.processed.finish(identity, request_id, "refused_pending", reason)
+                code: str, kind: str = "refused") -> str:
+        self.processed.finish(identity, request_id, kind + "_pending", reason)
         self.log(event, id=message_id, code=code)
         self._answer(runner, message_id, request_id, refused=reason)
-        self.processed.finish(identity, request_id, "refused")
+        self.processed.finish(identity, request_id, kind)
         return "refused"
 
     # ---- Zulip --------------------------------------------------------------------------------
