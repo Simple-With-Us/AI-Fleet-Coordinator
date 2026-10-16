@@ -1546,6 +1546,8 @@ class Tools:
             result = LINEAR.run_board(spec, args, self.seat, env=self.agent.rt.env)
         except LINEAR.LinearInvalid as exc:
             raise ToolError("invalid_argument", str(exc)) from None
+        except LINEAR.LinearOutcomeUnknown as exc:
+            raise ToolError("outcome_unknown", str(exc)) from None
         except LINEAR.LinearUnavailable as exc:
             raise ToolError("unavailable", str(exc), retryable=spec.kind == "read") from None
         if result.code != 0:

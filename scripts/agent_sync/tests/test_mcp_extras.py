@@ -400,7 +400,7 @@ class LinearToolTests(FakePrograms):
         call = self.calls(self.board_out)[0]
         self.assertEqual(call["seat"], "CURSOR", "AGENT_SEAT is the claimed identity, not the connection's default")
         self.assertEqual(call["writes"], "1")
-        self.assertEqual(call["argv"][:5], ["claim", "AFC-331", "--by", "CURSOR", "--comment"])
+        self.assertEqual(call["argv"][:5], ["claim", "AFC-331", "--by", "CURSOR", "--comment=on it"])
         text = result["content"][0]["text"]
         self.assertIn("BEGIN_UNTRUSTED_LINEAR nonce=", text)
         self.assertIn("as CURSOR", text.splitlines()[0])
@@ -438,6 +438,23 @@ class LinearToolTests(FakePrograms):
         self.assertEqual(query["argv"][:3], ["api", "query", "-"])
         self.assertEqual(mutation["argv"][:3], ["api", "mutation", "-"])
         self.assertIn("mut-key-1", mutation["argv"])
+
+    def test_a_claim_comment_that_looks_like_a_flag_stays_one_token(self):
+        session = self.session(self.env())
+        session.call("linear_claim", {"id": "AFC-1", "comment": "--help"})
+        call, = self.calls(self.board_out)
+        self.assertIn("--comment=--help", call["argv"])
+        self.assertNotIn("--help", call["argv"])
+
+    def test_a_write_that_times_out_is_an_unknown_outcome_not_a_retryable_failure(self):
+        specs = LT.load_specs(self.env())
+
+        def hang(*_a, **_k):
+            raise subprocess.TimeoutExpired("board", 1)
+        with self.assertRaises(LT.LinearOutcomeUnknown):
+            LT.run_board(specs["linear_file"], {"title": "T", "app": "afc"}, "CLAUDE", env=self.env(), runner=hang)
+        with self.assertRaises(LT.LinearUnavailable):
+            LT.run_board(specs["linear_list"], {}, "CLAUDE", env=self.env(), runner=hang)
 
     def test_graphql_variables_go_through_a_private_file_that_is_removed_after(self):
         session = self.session(self.env())

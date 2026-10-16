@@ -55,6 +55,10 @@ class LinearInvalid(Exception):
     """A call board would refuse as a usage error, caught before board runs."""
 
 
+class LinearOutcomeUnknown(Exception):
+    """A write that board did not finish:  Linear may already have applied it, so it is never safe to retry blindly."""
+
+
 class LinearUnavailable(Exception):
     """The catalogs or board are not on this host."""
 
@@ -197,7 +201,9 @@ def plan_for(spec: Spec, args: Mapping[str, Any], identity: str) -> Plan:
         return Plan(argv, stdin, extra)
     if name == "linear_claim":
         argv = ["claim", str(args["id"]), "--by", identity]
-        _flag(argv, "--comment", args.get("comment"))
+        comment = args.get("comment")
+        if comment:
+            argv.append("--comment=" + str(comment))  # one token, so text such as "--help" is never re-parsed as a flag
         _flag(argv, "--session", session)
         return Plan(argv, b"", extra)
     if name == "linear_comment":
@@ -293,6 +299,9 @@ def run_board(spec: Spec, args: Mapping[str, Any], identity: str, *, env: Mappin
             proc = runner(argv, input=plan.stdin, capture_output=True, timeout=timeout,
                           env=child_env(env, identity, plan.env), check=False)
     except subprocess.TimeoutExpired:
+        if spec.kind != "read":
+            raise LinearOutcomeUnknown("board did not finish within %d seconds, so Linear may already have applied "
+                                       "this write;  check Linear before sending it again" % int(timeout)) from None
         raise LinearUnavailable("board did not finish within %d seconds" % int(timeout)) from None
     except OSError as exc:
         raise LinearUnavailable("could not start board (%s)" % (exc.strerror or type(exc).__name__)) from None
