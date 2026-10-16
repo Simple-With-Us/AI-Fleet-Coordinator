@@ -38,6 +38,7 @@ EXACT = frozenset({
     "scripts/agent-sync", "scripts/linear-board/board", "scripts/linear-board/board-ids.txt",
     "fleet-apps.json", "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
     "scripts/agent_sync/mcp/tools.json", "scripts/agent_sync/mcp/fixtures.jsonl",
+    "scripts/agent_sync/mcp/listener-tools.json",
     "scripts/agent_sync/wake/wake-schema.json",
     *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
     "scripts/recall", *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
@@ -58,6 +59,8 @@ TOOL_REQUIRED = frozenset({
     "scripts/recall", *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
     "scripts/fleet_lanes/bin/lane", *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
     "scripts/fleet-mode", "docs/FLEET-MODE.md",
+    # The listener_* MCP tools (AFC-330):  `agent-sync mcp` reads it at startup.
+    "scripts/agent_sync/mcp/listener-tools.json",
 })
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
 

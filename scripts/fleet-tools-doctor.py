@@ -57,10 +57,14 @@ SHIPPED = ("scripts/agent-sync", "scripts/agent_sync/", "scripts/linear-board/",
            "docs/FLEET-MODE.md")
 # What a fleet-cli release ships:  mirrors EXACT and allowed_path in scripts/fleet-cli-release.py, so a
 # commit that changes only tests or docs under those folders needs no push and is not drift.
+# The fallback copy of what a release ships, for a host with no checkout.  With a checkout,
+# is_shipped asks scripts/fleet-cli-release.py itself, so the two cannot drift;  a test pins this
+# copy to the release's EXACT.
 SHIPPED_EXACT = frozenset({
     "scripts/agent-sync", "scripts/linear-board/board", "scripts/linear-board/board-ids.txt",
     "fleet-apps.json", "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
     "scripts/agent_sync/mcp/tools.json", "scripts/agent_sync/mcp/fixtures.jsonl",
+    "scripts/agent_sync/mcp/listener-tools.json",
     "scripts/agent_sync/wake/wake-schema.json",
     "scripts/linear-board/catalog/named-commands.json", "scripts/linear-board/catalog/official-mcp-tools.json",
     "scripts/linear-board/catalog/public-inputs.json",
@@ -72,18 +76,42 @@ SHIPPED_EXACT = frozenset({
     "scripts/fleet_lanes/guard.py", "scripts/fleet_lanes/lane.py", "scripts/fleet_lanes/layout.py",
     "scripts/fleet-mode", "docs/FLEET-MODE.md",
 })
-
-
-def is_shipped(path: str) -> bool:
-    return path in SHIPPED_EXACT or bool(
-        re.fullmatch(r"scripts/agent_sync/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
-        or path in ("scripts/agent_sync/__init__.py", "scripts/agent_sync/mcp/__init__.py"))
 STATE = HOME / ".local/state/fleet-tools-doctor.json"
 CATALOGS = (
     ("scripts/agent_sync/mcp/tools.json", True),
     ("scripts/linear-board/catalog/named-commands.json", False),
     ("scripts/linear-board/catalog/official-mcp-tools.json", False),
 )
+_RELEASE_POLICY: list = []
+
+
+def release_policy():
+    """scripts/fleet-cli-release.py from the AI-Fleet-Coordinator checkout, or None."""
+    if not _RELEASE_POLICY:
+        module = None
+        repo = find_repo("AI-Fleet-Coordinator")
+        path = repo / "scripts/fleet-cli-release.py" if repo else None
+        if path and path.exists():
+            try:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("fleet_cli_release_policy", path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+            except Exception:
+                module = None
+        _RELEASE_POLICY.append(module)
+    return _RELEASE_POLICY[0]
+
+
+def is_shipped(path: str) -> bool:
+    policy = release_policy()
+    if policy is not None and callable(getattr(policy, "allowed_path", None)):
+        return bool(policy.allowed_path(path))
+    return path in SHIPPED_EXACT or bool(
+        re.fullmatch(r"scripts/agent_sync/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
+        or path in ("scripts/agent_sync/__init__.py", "scripts/agent_sync/mcp/__init__.py"))
+
+
 # The entry file of each tool the release added with AFC-331, and the modules it cannot run without.
 TOOL_FILES = (
     "scripts/recall", "scripts/fleet_rag/core.py", "scripts/fleet_rag/recall_api.py",
@@ -149,13 +177,19 @@ def find_repo(name: str) -> Path | None:
 
 
 def check_runtime(report: Report, network: bool, runner: Callable = subprocess.run) -> None:
-    status_file = RUNTIME / "status.json"
+    # The live release is what `current` points at;  status.json is only the last receive's
+    # receipt and goes stale after a rollback.
+    live = RUNTIME / "current" / "release.json"
+    status_file = live if live.exists() else RUNTIME / "status.json"
     afc = find_repo("AI-Fleet-Coordinator")
     if not status_file.exists():
         report.add("runtime", "WARN", f"no {status_file} (a Mac reads the published runtime instead)")
         return
     status = json.loads(status_file.read_text())
+    status.setdefault("status", "paused" if (RUNTIME / "paused").exists() else "ready")
     commit = str(status.get("source_commit", ""))
+    if (RUNTIME / "paused").exists():
+        report.add("runtime:updates", "WARN", "paused (fleet-cli-release resume turns the Mac's pushes back on)")
     # A host with no checkout (the Hetzner server may have none) asks GitHub directly.
     main = remote_main(afc, network, runner) if afc else (remote_ls_remote(AFC_REMOTE_URL, runner) if network else "")
     if not main:
@@ -259,6 +293,41 @@ def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
     report.add(f"seat:{seat}", "OK" if not missing else "FAIL", "all credentials present" if not missing else "missing " + ", ".join(missing))
 
 
+MCP_PROBE = b"".join(json.dumps(m).encode() + b"\n" for m in (
+    {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                                                                   "clientInfo": {"name": "fleet-tools-doctor", "version": "1"}}},
+    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+    {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+))
+
+
+def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.run) -> None:
+    """Start the seat's stdio MCP the way a client does and ask for its tools.  A release that is
+    missing a file the server reads fails here, before any agent notices (2026-10-16)."""
+    if not shutil.which("agent-sync"):
+        report.add(f"mcp-start:{seat}", "FAIL", "agent-sync is not on PATH")
+        return
+    try:
+        result = runner(["agent-sync", "mcp", "--default-seat", seat], input=MCP_PROBE, capture_output=True, timeout=60, check=False)
+    except subprocess.TimeoutExpired:
+        report.add(f"mcp-start:{seat}", "FAIL", "agent-sync mcp did not answer within 60 seconds")
+        return
+    count = None
+    for line in (result.stdout or b"").splitlines():
+        try:
+            reply = json.loads(line)
+        except ValueError:
+            continue
+        if reply.get("id") == 2:
+            count = len(((reply.get("result") or {}).get("tools")) or [])
+    if count:
+        report.add(f"mcp-start:{seat}", "OK", f"agent-sync mcp serves {count} tools")
+    else:
+        first = (result.stderr or b"").decode("utf-8", "replace").strip().splitlines()[:1]
+        why = first[0][:160] if first else f"exit {result.returncode}"
+        report.add(f"mcp-start:{seat}", "FAIL", f"agent-sync mcp did not list its tools:  {why}")
+
+
 def codex_mcp_names(text: str) -> list[str]:
     """Server names in a Codex config.toml:  quoted keys, sub-tables and inline tables all count."""
     try:
@@ -332,6 +401,7 @@ def run(argv: list[str] | None = None, env: dict[str, str] | None = None) -> tup
     check_fleet_mode_doc(report)
     for seat in [s.strip().upper() for s in args.seats.split(",") if s.strip()]:
         check_seat(report, seat, env)
+        check_mcp_startup(report, seat)
     check_mcp(report)
     if args.post:
         post_changes(report)
