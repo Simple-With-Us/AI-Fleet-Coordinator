@@ -149,6 +149,17 @@ test("an identity that is not a name, or is outside the set, is refused without 
   assert.equal(canonicalIdentity(" gb_fixer "), "GB-FIXER");
 });
 
+test("a published alias names its seat:  INSTINCT on a WISE grant and MUSE-ASSIST on an MA grant", async () => {
+  for (const [seat, alias] of [["WISE", "INSTINCT"], ["MA", "MUSE-ASSIST"], ["MA", "rob"]]) {
+    const { r, caller, created } = router(seat);
+    await r.call("zulip_post", { topic: "t", text: "x", identity: alias });
+    assert.deepEqual(caller.calls, [{ name: "zulip_post", args: { topic: "t", text: "x" } }], `${alias} on ${seat}`);
+    assert.deepEqual(created, [], "it is the grant's own seat:  nothing else was built");
+  }
+  const { r } = router("WISE");
+  assert.equal(errorOf(await r.call("zulip_post", { topic: "t", text: "x", identity: "MUSE-ASSIST" })).code, "identity_not_allowed");
+});
+
 test("the grant's scope and pause govern a call made as another identity", async () => {
   const { r, caller, created } = router("GROK-WEB");
   caller.paused = true;

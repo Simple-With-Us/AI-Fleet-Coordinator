@@ -165,6 +165,19 @@ class CallRuleTests(IdentityHarness):
         self.assertEqual(rows[0]["client"], {"name": "test-client", "version": "1"})
         self.assertNotIn("body", json.dumps(rows))
 
+    def test_an_interrupted_write_is_audited_as_interrupted_and_a_read_is_not(self):
+        session = self.session()
+
+        def interrupted(*_a, **_k):
+            raise KeyboardInterrupt()
+        with mock.patch.object(T.CLI, "cmd_post", interrupted):
+            with self.assertRaises(AssertionError, msg="the interrupt ends the server"):
+                session.call("zulip_post", {"topic": "a", "text": "body"}, identity=PERSONA)
+        rows = [json.loads(line) for line in (self.state_dir / "logs" / "identity.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["default_identity"], r["identity"], r["tool"], r["outcome"]) for r in rows],
+                         [("CLAUDE", PERSONA, "zulip_post", "interrupted")])
+        self.assertNotIn("body", json.dumps(rows))
+
     def test_a_removed_name_names_its_replacement(self):
         session = self.session()
         for old, new in R.renamed_tools().items():

@@ -192,8 +192,14 @@ class Router:
         except OpenFailed as exc:
             result = self._error(T.ToolError(exc.code, exc.message, retryable=exc.retryable))
             return self._audited(name, identity, result) if write else result
-        result = tools.call(name, args, meta=meta) if self.codex_thread_meta and identity == "CODEX" \
-            else tools.call(name, args)
+        try:
+            result = tools.call(name, args, meta=meta) if self.codex_thread_meta and identity == "CODEX" \
+                else tools.call(name, args)
+        except (KeyboardInterrupt, SystemExit):
+            if write:  # a write that was in flight may have landed:  say so in the audit log, then let the interrupt go on
+                AUDIT.append(self.env, self.home, transport=T.TRANSPORT, default_identity=self.default, identity=identity,
+                             tool=name, outcome="interrupted", client=self.client_info)
+            raise
         return self._audited(name, identity, result) if write else result
 
     def _audited(self, name: str, identity: str | None, result: Mapping[str, Any]) -> dict[str, Any]:

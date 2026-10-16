@@ -23,6 +23,7 @@ import { ToolError, errorResult, okResult, schemaProblem } from "./contract.js";
 import { SHARED_IDENTITY_SEATS } from "./config.js";
 import { IDENTITIES_SPEC, GUIDE_SPEC } from "./zulip-tool-specs.js";
 import { guideResult, GuideArgs, GUIDE_URL } from "./guide.js";
+import { canonicalSeatName } from "./identity-aliases.js";
 import { parseArgs } from "./args.js";
 import { z } from "zod";
 import { GUIDE_TEXT } from "./guide-text.js";
@@ -44,10 +45,14 @@ export function allowedIdentities(seat) {
   return Object.freeze([seat]);
 }
 
-/** A caller's identity argument as a canonical name (trimmed, upper case, _ as -), or null. */
+/**
+ * A caller's identity argument as a canonical name (trimmed, upper case, _ as -, published aliases resolved as the
+ * stdio server does:  INSTINCT is WISE, MUSE-ASSIST is MA, GROK-BUILD is GROK), or null.  The grant's allowed set is
+ * checked against the resolved name.
+ */
 export function canonicalIdentity(raw) {
   if (typeof raw !== "string") return null;
-  const name = raw.trim().toUpperCase().replaceAll("_", "-");
+  const name = canonicalSeatName(raw.trim().replaceAll("_", "-"));
   return /^[A-Z0-9][A-Z0-9-]{0,31}$/.test(name) ? name : null;
 }
 
