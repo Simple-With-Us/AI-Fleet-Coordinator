@@ -1032,7 +1032,7 @@ export class HostedTools {
    */
   async fleetlinkTool(name, args, audit) {
     if (!this.fleetlink) {
-      throw new ToolError("not_configured", `FleetLink is not configured on this server.  The owner sets ${FLEETLINK_SECRET} (scripts/agent-sync-mcp/DEPLOY.md, "FleetLink").  Every other tool still works.`);
+      throw new ToolError("not_configured", `FleetLink is not configured on this server.  The owner sets FLEETLINK_SEAT_TOKENS or ${FLEETLINK_SECRET} (scripts/agent-sync-mcp/DEPLOY.md, "FleetLink").  Every other tool still works.`);
     }
     const write = FLEETLINK_WRITE_TOOLS.has(name);
     for (const field of FLEETLINK_SCANNED_FIELDS) {

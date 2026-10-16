@@ -81,8 +81,8 @@ Work topic format, at most 58 characters (Zulip's hard limit is 60, and resolvin
 <ID> <subject>
 ```
 
-- `#n`:  the GitHub issue or PR number when the work has no Linear issue.  Write the full repo name (`congress-trading-shared#12`, `CodeCaps#12`) and let the generic pattern link it — the acronym rows are shadowed and dead ([Current Linkifiers](#current-linkifiers)).  `CT#2316` becomes a link, but to a repo named `CT`, which is wrong; write `Congress.Trade#2316`.
-- `ID`:  the Linear issue id, which already names the app (`BF-123`, `AFC-123`).  **It does not linkify today**:  there is no Linear linkifier, so the id is plain text.  Name the issue anyway, because it is how a human finds the record; a wrong slug is worse than a missing one ([Current Linkifiers](#current-linkifiers), [How Linkifiers Work](#how-linkifiers-work)).
+- `#n`:  the GitHub issue or PR number when the work has no Linear issue.  Any of these work now:  the acronym (`CT#2316`, `AFC#535`, `CAPS#12`, `CK#5`, `OPS#953`) or the full repo name (`Congress.Trade#2316`, `Autorotate#4`), which the fallback rule catches ([Current Linkifiers](#current-linkifiers)).  Use `CAPS#` for CodeCaps and `CK#` for Clutch;  `CC#` points at Clutch despite what the registry says.
+- `ID`:  the Linear issue id, which already names the app (`BF-123`, `AFC-123`).  It links to the issue ([Current Linkifiers](#current-linkifiers), rule 5119), so name it as the topic's first word.
 - `APP`:  when the work has no Linear issue, the app acronym from `fleet-apps.json` (ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, CK, HH, OPS) followed by the subject, as for any non-work topic.
 - Examples:  `AFC-123 Zulip cutover`, `Congress.Trade#2316 sentry` (a GitHub PR with no Linear issue), `ST restart-loop`, `board down 2026-10-07`.
 - Resolving adds `✔ ` to the front, and a resolved name over 60 characters is refused, which is why work topics stop at 58.
@@ -992,57 +992,65 @@ Get the seat's own `email` and key path from `agent-sync whoami`.  Never print a
 
 ## Current Linkifiers
 
-Verified live Thu, Oct 15, 2026 with `GET /realm/linkifiers` (16 rules) and `POST /messages/render`.  **Only rows 5116, 5117, 5118 and 5131 work**, because the generic `repo#id` rule is first in realm order and claims their text before they are ever consulted ([How Linkifiers Work](#how-linkifiers-work)).  Do not change any of these without Jay's OK.
+Verified live Fri, Oct 16, 2026 with `GET /realm/linkifiers` and `POST /messages/render`, after the owner's fix.  **21 rules, all working.**  Do not change any of these without Jay's OK.
 
-| # | Pattern | URL template | Status |
+The generic `repo#id` rule is now **last** (id 5139), not first.  That was the whole bug:  a broad rule placed early claimed text before the specific rules behind it could see it.  With it last, each specific rule wins and the generic one catches anything else, so write a full repo name as a fallback and never an acronym that has no rule.
+
+| # | Pattern | URL template | Example |
 | --- | --- | --- | --- |
-| 5116 | `(?P<repo>[A-Za-z0-9_.-]+)#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/{repo}/issues/{id}` | **Works**, and shadows every `*#n` row behind it.  Write the full repo name. |
-| 5117 | `SWU/(?P<slug>[A-Za-z0-9_-]+)` | `https://simplewithus.com/{slug}` | **Works.** |
-| 5118 | `fleetlink/(?P<slug>[A-Za-z0-9_-]+)` | `https://fleetlink.online/{slug}` | **Works, one segment only.**  `fleetlink/zulip` links; a nested path stops at the first `/`. |
-| 5119 | `(?P<id>LIN-[0-9]+)` | `https://linear.app/simplewithus/issue/{id}` | **Wrong twice.**  `LIN-42` renders to `linear.app/simplewithus/...` — wrong slug (the workspace is `simple-with-us`) on a team that does not exist (ids are per-app, `AFC-123`).  It is the only working issue-id rule, which is exactly why it is the most dangerous one:  it looks authoritative and resolves to nothing. |
-| 5120 | `(?P<id>BF#[0-9]+)` | `https://github.com/Simple-With-Us/BotFleet/issues/{id}` | **Dead.**  5116 claims the text first, so `BF#16` renders to a repo named `BF`. |
-| 5121 | `(?P<id>CT#[0-9]+)` | `https://github.com/Simple-With-Us/Congress.Trade/issues/{id}` | **Dead.**  `CT#2316` renders to `Simple-With-Us/CT/issues/2316`. |
-| 5122 | `(?P<id>ST#[0-9]+)` | `https://github.com/Simple-With-Us/Socratic.Trade/issues/{id}` | **Dead.** |
-| 5123 | `(?P<id>UM#[0-9]+)` | `https://github.com/Simple-With-Us/Usage-Monitor/issues/{id}` | **Dead.** |
-| 5124 | `(?P<id>DD#[0-9]+)` | `https://github.com/Simple-With-Us/DealDex/issues/{id}` | **Dead.** |
-| 5125 | `(?P<id>CL#[0-9]+)` | `https://github.com/Simple-With-Us/ContactLogo/issues/{id}` | **Dead.** |
-| 5126 | `(?P<id>AFC#[0-9]+)` | `https://github.com/Simple-With-Us/ai-fleet-coordinator/issues/{id}` | **Dead.**  `AFC#1` renders to a repo named `AFC`. |
-| 5127 | `(?P<id>PS#[0-9]+)` | `https://github.com/Simple-With-Us/Personal-Site/issues/{id}` | **Dead.** |
-| 5128 | `(?P<id>HH#[0-9]+)` | `https://github.com/Simple-With-Us/HogHunter/issues/{id}` | **Dead.** |
-| 5129 | `(?P<id>OPS#[0-9]+)` | `https://github.com/Simple-With-Us/Fleet-OPS/issues/{id}` | **Dead.** |
-| 5130 | `(?P<id>CC#[0-9]+)` | `https://github.com/Simple-With-Us/Clutch/issues/{id}` | **Dead**, and the target is contested:  `fleet-apps.json` maps `CC` to CodeCaps and `CK` to Clutch ([Decisions Pending Jay](#decisions-pending-jay) row 17). |
-| 5131 | `GH@(?P<user>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)` | `https://github.com/{user}/{repo}` | **Works.**  Not previously documented.  Use it for a repo outside `Simple-With-Us`:  `GH@jaywedgeworth22/AI-Fleet-Coordinator`. |
+| 5117 | `SWU/(?P<slug>[A-Za-z0-9_-]+)` | `https://simplewithus.com/{slug}` | `SWU/about` |
+| 5118 | `fleetlink/(?P<slug>[A-Za-z0-9_-]+)` | `https://fleetlink.online/{slug}` | `fleetlink/zulip` |
+| 5119 | `(?P<id>(?:BF\|CT\|CTS\|ST\|UM\|DD\|CL\|AFC\|PS\|HH\|OPS\|CC\|CK\|FL\|CAPS)-[0-9]+)` | `https://linear.app/simple-with-us/issue/{id}` | `AFC-535` |
+| 5120 | `BF#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/BotFleet/issues/{id}` | `BF#16` |
+| 5121 | `CT#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Congress.Trade/issues/{id}` | `CT#2316` |
+| 5122 | `ST#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Socratic.Trade/issues/{id}` | `ST#88` |
+| 5123 | `UM#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Usage-Monitor/issues/{id}` | `UM#12` |
+| 5124 | `DD#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/DealDex/issues/{id}` | `DD#3` |
+| 5125 | `CL#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/ContactLogo/issues/{id}` | `CL#7` |
+| 5126 | `AFC#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/ai-fleet-coordinator/issues/{id}` | `AFC#535` |
+| 5127 | `PS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Personal-Site/issues/{id}` | `PS#4` |
+| 5128 | `HH#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/HogHunter/issues/{id}` | `HH#2` |
+| 5129 | `OPS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Fleet-OPS/issues/{id}` | `OPS#953` |
+| 5130 | `CC#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Clutch/issues/{id}` | `CC#5` (a **legacy alias for Clutch**;  see the registry warning below) |
+| 5131 | `GH@(?P<user>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)` | `https://github.com/{user}/{repo}` | `GH@jaywedgeworth22/AI-Fleet-Coordinator` |
+| 5132 | `CAPS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/CodeCaps/issues/{id}` | `CAPS#12` (CodeCaps) |
+| 5133 | `FL#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/FleetLink/issues/{id}` | `FL#12` (FleetLink) |
+| 5135 | `CK#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Clutch/issues/{id}` | `CK#5` (Clutch, the registry's key) |
+| 5136 | `CTS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/congress-trading-shared/issues/{id}` | `CTS#12` |
+| 5138 | `CLUTCH#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Clutch/issues/{id}` | `CLUTCH#5` |
+| 5139 | `(?P<repo>[A-Za-z0-9_.-]+)#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/{repo}/issues/{id}` | `Congress.Trade#2316`, `CodeCaps#12`, `Autorotate#4` |
 
-Rendered results, read back from the realm rather than reasoned from the table:
+Rendered results, read back from the server rather than reasoned from the table:
 
 | You write | You get | Verdict |
 | --- | --- | --- |
-| `Congress.Trade#2316` | the Congress.Trade issue | Correct |
-| `congress-trading-shared#12` | the shared-repo issue | Correct |
-| `CodeCaps#12` | the CodeCaps issue | Correct |
-| `CT#2316` | `Simple-With-Us/CT/issues/2316` | **Wrong repo** |
-| `AFC#535` | `Simple-With-Us/AFC/issues/535` | **Wrong repo** |
-| `ST#88` | `Simple-With-Us/ST/issues/88` | **Wrong repo** |
-| `CK#5` | `Simple-With-Us/CK/issues/5` | **Wrong repo** |
+| `AFC-535`, `BF-123`, `OPS-953` | the Linear issue | Correct |
+| `CT#2316`, `AFC#535`, `ST#88`, `CK#5`, `CTS#12` | that repo's GitHub issue | Correct |
+| `CAPS#12` | the CodeCaps issue | Correct |
+| `Congress.Trade#2316`, `CodeCaps#12`, `Autorotate#4` | that repo's issue, via the fallback | Correct |
 | `GH@jaywedgeworth22/AI-Fleet-Coordinator` | that repo | Correct |
+| `LIN-42` | plain text | Correct:  the retired rule is gone |
 | `fleetlink/zulip` | the FleetLink folder | Correct |
-| `fleetlink/zulip/zulip-fleet-guide.md` | a link to `fleetlink/zulip` only | **Truncated** |
-| `LIN-42` | `linear.app/simplewithus/issue/LIN-42` | **Wrong slug, retired prefix** |
-| `AFC-535`, `BF-123` | plain text | **No Linear rule exists** |
+| `fleetlink/zulip/zulip-fleet-guide.md` | a link to `fleetlink/zulip` only | **Truncated** (see below) |
+| `CC#5` | the **Clutch** issue | **Registry disagrees** (see below) |
 
-**The fix Jay owes, in order.**  Reordering is available to an admin, so the clean fix is to move 5116 last and let the specific rules win again:
+Two things the fix did not change, both still open:
 
-1. `PATCH /realm/linkifiers` with `ordered_linkifier_ids` so the ten acronym rows precede 5116.  That alone makes `CT#2316` and the rest resolve to their real repos.
-2. Fix 5119's slug to `simple-with-us` and its pattern to `(?P<id>(?:ST|CT|UM|CTS|DD|AFC|PS|AR|CL|BF|HH|OPS|CK|CC|FL|SWU)-[0-9]+)`, so real Linear ids link.
-3. Leave 5116 as the fallback.  With the specific rows ahead of it, full repo names still link correctly, and `CK#5` and `CTS#12` start working where they used to point at repos that do not exist.
+**The registry and the realm disagree on `CC`.**  `fleet-apps.json` says `CC` is CodeCaps and `CK` is Clutch, but rule 5130 points `CC#` at Clutch, and CodeCaps is `CAPS#` (5132).  So a seat that follows the registry writes `CC#` for CodeCaps and lands on Clutch.  **Until Jay moves the registry, write `CAPS#` for CodeCaps and `CK#` for Clutch**;  `CC#` only works if you already know it means Clutch.  Changing the acronym moves a fleet-wide identifier (lane prefixes, note titles, topics), so it is Jay's call.
 
-Reordering is the lever, not a limitation:  an admin can `PATCH /realm/linkifiers` with `ordered_linkifier_ids` (verified:  a member bot is refused with `Must be an organization administrator`), so moving 5116 last restores all ten acronym rows without deleting anything.
+**Rule 5119 covers most teams but not all of them.**  Its alternation is `BF CT CTS ST UM DD CL AFC PS HH OPS CC CK FL CAPS`, which omits **`AR`** (Autorotate) and **`SWU`**, both of which are real Linear teams in the workspace.  So `AR-123` and `SWU-123` render as plain text while every other team's id links.  Autorotate is archived, so this is cosmetic unless `SWU-` traffic matters;  adding `AR` and `SWU` to the alternation is a one-line change only Jay can make.
 
-Tracked in [Decisions Pending Jay](#decisions-pending-jay) rows 5, 17 and 26.
+**Nested FleetLink paths still truncate.**  Rule 5118's class has no `/`, so only the first segment links.  Write `fl:zulip/zulip-fleet-guide.md` once that rule is added ([Proposed Linkifiers](#proposed-linkifiers)).
+
+### What the fix was
+
+Worth keeping, because the same bug shape recurs.  The generic `repo#id` rule (id 5116 then, re-added as 5139 after the fix) had been first in realm order since the links were created, so the ten acronym rows behind it never matched:  `CT#2316` rendered to a repo named `CT`.  Jay fixed it by moving the generic rule to the end (5139) rather than by deleting the acronym rows, corrected 5119's slug from `simplewithus` to `simple-with-us` and gave it the real team keys, and added the rules that were missing entirely (`CAPS#`, `FL#`, `CK#`, `CTS#`, `CLUTCH#`).  The acronym patterns now capture only the number, so the URL is clean instead of double-encoding the prefix.
+
+The lesson is in [How Linkifiers Work](#how-linkifiers-work):  order decides, the first match is final, and a broad rule placed early silently disables everything after it.
 
 ## Proposed Linkifiers
 
-**PROPOSED, not yet added.**  Jay approves before anything is created, and only he can add them.  Every row lands *after* 5116 and must not match text 5116 already claims, or it is dead on arrival ([How Linkifiers Work](#how-linkifiers-work)).
+**PROPOSED, not yet added.**  Jay approves before anything is created, and only he can add them.  Every row lands *after* the generic rule (5139) and must not match text it already claims, or it is dead on arrival ([How Linkifiers Work](#how-linkifiers-work)).
 
 | Pattern | URL template | Example | Notes |
 | --- | --- | --- | --- |
@@ -1080,8 +1088,11 @@ Each row is in force as described under "Until then" until you approve or change
 | 2 | Grok seats:  terminal Grok, GROK and GROK-BUILD are one seat signing GROK (bot grok-build-bot@, display name `Grok`;  GROK-BUILD in any spelling is an alias for GROK, owner 2026-10-10); Grok on web and iOS is the separate cloud seat GROK-WEB (bot grok-web-bot@). | Resolved 2026-10-08 | Owner ruling. |
 | 3 | BF-Director has an active member-role Zulip bot (verified 2026-10-13).  Duties for BF-Builder, BF-Designer, BF-Oracle, and BF-Publisher are not stated. | PARTIAL | Director can speak as its own bot; route nothing to those four by duty until their assignments are stated. |
 | 4 | Copy every bot key into Infisical. | Resolved 2026-10-09 | Done:  project "AI Fleet Coordinator", environment `prod`, folder `/zulip`, as `ZULIP_<CODE>_EMAIL` and `ZULIP_<CODE>_API_KEY`. |
-| 5 | Linear linkifier:  replace rule 5119 so `<TEAM>-<n>` links to `https://linear.app/simple-with-us/issue/{id}`. | OPEN, escalated (was "Jay adds it", v4) | **No Linear id linkifies today.**  Verified Thu, Oct 15, 2026:  `AFC-535` and `BF-123` both render as plain text, and rule 5119's own slug is `simplewithus` (wrong) on a `LIN-` prefix that no longer exists.  Name the id in the topic anyway; it is how a human finds the record. |
-| 26 | Retire linkifier rows 5120–5130 (`BF#`, `CT#`, `ST#`, `UM#`, `DD#`, `CL#`, `AFC#`, `PS#`, `HH#`, `OPS#`, `CC#`). | OPEN (new in v4) | They are shadowed by rule 5116 and resolve to repos that do not exist, so `CT#2316` links to `Simple-With-Us/CT`.  Harmless but misleading on the settings page.  See [Current Linkifiers](#current-linkifiers). |
+| 5 | Linear linkifier for `<TEAM>-<n>`. | RESOLVED (v4.3) | Rule 5119 now carries every real team key and the correct slug, so `AFC-535` and `BF-123` link to the issue. |
+| 26 | The dead `*#n` rows caused by the generic rule sitting first. | RESOLVED (v4.3) | Jay moved the generic rule to last (now 5139) and repaired the acronym rows rather than deleting them.  All 21 rules resolve correctly. |
+| 27 | Move CodeCaps's acronym in `fleet-apps.json` from `CC` to `CAPS`, or repoint rule 5130. | OPEN (new in v4.3) | The realm has `CC#` -> Clutch and `CAPS#` -> CodeCaps, but the registry says `CC` is CodeCaps, so a seat following the registry lands on the wrong repo.  It moves a fleet-wide identifier (lane prefixes, note titles, topics), so it is Jay's call. |
+| 28 | Add the `fl:` path rule so nested FleetLink paths link. | OPEN (new in v4.3) | Rule 5118's class has no `/`, so `fleetlink/zulip/zulip-fleet-guide.md` links only its first segment.  The proposed `fl:` row is ready to add. |
+| 29 | Add `AR` and `SWU` to rule 5119's team alternation. | OPEN (new in v4.3) | Both are real Linear teams but neither is in the pattern, so `AR-123` and `SWU-123` render as plain text while every other team's id links. Cosmetic while Autorotate is archived;  a one-line admin change. |
 | 6 | Claims flow:  the Linear claim first, then the CLAIMED post;  the PR links the issue.  The old triple claim ended at the cutover. | DEFAULT | In force. |
 | 7 | Completed = merged; Deployed = verified in production. | DEFAULT | In force. |
 | 8 | Resolve a topic when its Linear issue reaches Deployed or Parked. | DEFAULT | In force. |
@@ -1129,4 +1140,5 @@ Each row is in force as described under "Until then" until you approve or change
 | v3.15 | 2026-10-15 | Cursor | GROK roster follow-up (OPS-921, OPS-922, AFC #457):  the Who's Here mention is `@**Grok (Build)**` until the realm rename to plain `Grok`;  `docs/ZULIP-SWITCH-PROMPT.md` and `scripts/zulip_provision_bots.py` match.  GROK-BUILD remains an alias for GROK everywhere tools accept a seat name. |
 | v4 | 2026-10-15 | MiniMax (MM) | Live-verify every realm fact against the API instead of the previous table, after Jay asked for the guide to be brought up to date and to explain linkifiers.  New [How Linkifiers Work](#how-linkifiers-work):  what a rule is, that order decides and the first match is final, that ids only increase so a new rule cannot shadow-fix an old one, the character-class limit, and the two read-only calls (`GET /realm/linkifiers`, `POST /messages/render`) that prove any of it without posting.  Current Linkifiers rewritten with per-row ids and a status column:  the ten acronym rows (5120–5130) are **dead**, shadowed by the generic `repo#id` rule 5116 (`CT#2316` renders to a repo named `CT`);  5119 is wrong twice (slug `simplewithus`, retired `LIN-` prefix) and is the only working issue-id rule, which makes it the most misleading one;  no Linear rule exists, so every `<TEAM>-<n>` work topic is plain text;  5131 `GH@user/repo` is live and was undocumented.  Adds a rendered-output table read back from the server, and the ordered fix only Jay can apply.  Channels:  nine, not seven — #issues (Linear webhook) and #incident-response exist and were undocumented.  Roster:  `Wise  (Instinct)` is canonical as WISE with INSTINCT as its alias (owner 2026-10-14), FX is `FX.sh`, Muse Assist is `Rob  (Muse-Assist)`, and the ~25 `retired-wake-*` plus two `*-old-*` accounts are listed as inert debris.  Decisions:  row 5 escalated to a defect, new row 26 (retire 5120–5130), row 17 corrected, row 15 marked superseded.  Points at the new [Linear Fleet Guide](linear-fleet-guide.md).  v4.1 after Sentry review:  corrected the claim that linkifiers cannot be reordered (an admin can, with `PATCH /realm/linkifiers` and `ordered_linkifier_ids`, which is the clean fix and is now step 1 of the remediation), dropped a duplicated lead-in line in Channels, and replaced the guide's own `CT#2316` example with `Congress.Trade#2316` so the example stops contradicting the warning beside it.
 | v4.2 | 2026-10-15 | Claude | AFC-330:  the CLI covers the rest of Zulip (`show`, `edit`, `delete`, `history`, `move`, `unresolve`, `unreact`, read and star flags, `search`, `channels --all`, `channel-info`, `members`, `unsubscribe`, `users`, `presence`, `set-status`, `groups`, `emoji`, `upload`, `scheduled`, `drafts`, `typing`, `dm-list`), the allowlisted `api` escape hatch, and `listener ...` for this seat's own listener records.  MCP Tools lists the same set on both servers, and a new rule keeps the CLI, stdio and hosted in step. |
-| v4.3 | 2026-10-16 | Claude | AFC-331:  every MCP tool is `<family>_<verb>` on both servers (`zulip_post`, `zulip_read_topic`;  `whoami` and the new `identities` stand alone), the old names answer `unknown_tool` naming the replacement, and every call names the bot it acts as in `identity` (writes must;  reads fall back to the default).  MCP Tools and Keeping the CLI, stdio and hosted in step rewritten;  spec in `per-call-identity.md`. |
+| v4.3 | 2026-10-16 | MiniMax (MM) | The linkifier fix has landed, so this guide stops describing defects that no longer exist.  Current Linkifiers rebuilt from live state:  21 rules, all working, and the generic `repo#id` rule is now **last** (5139) instead of first, so every specific rule wins and the generic one is a fallback.  Rule 5119 carries the real team keys and the correct `simple-with-us` slug, so `AFC-535` and `BF-123` link to the issue;  the acronym rules capture only the number, so URLs are clean;  and `CAPS#`, `FL#`, `CK#`, `CTS#` and `CLUTCH#` exist for the acronyms that previously had no rule at all.  Adds a short history of what the fix was, because the same bug shape (a broad rule early, silently disabling everything after it) recurs.  Decisions rows 5 and 26 are RESOLVED;  new rows 27 and 28 record what the fix did not change:  `fleet-apps.json` still calls CodeCaps `CC` while the realm points `CC#` at Clutch and `CAPS#` at CodeCaps, and nested FleetLink paths still truncate.  The Topics bullets are corrected, since a Linear id and any acronym now link. v4.3 after review:  fixed a typo of mine (`AF#535`, an acronym with no rule, corrected to `AFC#535`), retagged the four rows this change added from v4.2 to v4.3 to match the changelog, and replaced two references to rule 5116 (deleted by the fix) with the generic rule's current id 5139.  Review also found that 5119's team alternation omits `AR` and `SWU`, now recorded as row 29.
+| v4.4 | 2026-10-16 | Claude | AFC-331:  every MCP tool is `<family>_<verb>` on both servers (`zulip_post`, `zulip_read_topic`;  `whoami` and the new `identities` stand alone), the old names answer `unknown_tool` naming the replacement, and every call names the bot it acts as in `identity` (writes must;  reads fall back to the default).  MCP Tools and Keeping the CLI, stdio and hosted in step rewritten;  spec in `per-call-identity.md`. |

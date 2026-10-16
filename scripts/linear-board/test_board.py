@@ -91,6 +91,7 @@ class MockLinear:
         self.ops: list[str] = []
         self.violations: list[str] = []
         self.mints = 0
+        self.mint_down = False
         self.scopes: list[str] = []
         self.tokens: set[str] = set()
         self.ratelimit400 = 0
@@ -452,6 +453,8 @@ def make_handler(mock: MockLinear):
                     form = dict(urllib.parse.parse_qsl(body.decode()))
                     mock.scopes.append(form.get("scope"))
                     cid = form.get("client_id")
+                    if mock.mint_down:
+                        return self._send(503, {"error": "temporarily_unavailable"})
                     want = CLIENT_SECRET if cid == CLIENT_ID else (mock.clients.get(cid) or {}).get("secret")
                     if want is None or form.get("client_secret") != want:
                         return self._send(401, {"error": "invalid_client", "error_description": "bad client"})
@@ -741,6 +744,31 @@ class AuthTests(BoardTest):
         p = self.board("whoami")
         self.assertIn("mints on this host: 2", p.stdout)
         self.assertEqual(self.mock.mints, 2)
+
+    def test_token_is_reminted_early_on_day_28(self):
+        self.board("whoami")
+        cache = json.loads(self.token_cache.read_text())
+        cache["minted_at"] -= 27 * 86400          # day 27:  still used as is
+        self.token_cache.write_text(json.dumps(cache))
+        self.board("whoami")
+        self.assertEqual(self.mock.mints, 1)
+        cache["minted_at"] -= 2 * 86400           # day 29:  the next token is minted while this one works
+        self.token_cache.write_text(json.dumps(cache))
+        p = self.board("whoami")
+        self.assertIn("mints on this host: 2", p.stdout)
+        self.assertEqual(self.mock.mints, 2)
+
+    def test_a_failed_early_remint_keeps_the_cached_token(self):
+        self.board("whoami")
+        cache = json.loads(self.token_cache.read_text())
+        cache["minted_at"] -= 29 * 86400
+        self.token_cache.write_text(json.dumps(cache))
+        self.mock.mint_down = True
+        p = self.board("whoami")
+        self.assertIn("re-minting the", p.stderr)
+        self.assertIn("using the cached one", p.stderr)
+        self.assertIn("viewer:", p.stdout)
+        self.assertEqual(self.mock.mints, 1)
 
     def test_rotated_credentials_mint_again(self):
         self.board("whoami")

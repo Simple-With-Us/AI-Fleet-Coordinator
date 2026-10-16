@@ -593,3 +593,49 @@ test("only Cursor gets separate Linear budgets and its configured override", asy
   assert.equal((await other.gate.store.get("budget:write")).length, 1);
   assert.equal(await other.gate.store.get("budget:linear_write"), undefined);
 });
+
+test("a 30-day token is re-minted early on day 28, and a failed early mint keeps the cached token", async () => {
+  const { fake, gate, clock, client } = clientHarness();
+  const first = await client.token();
+  await ageCachedToken(gate, clock, 27 * 24);
+  assert.equal(await client.token(), first);
+  assert.equal(fake.mints().length, 1);
+  fake.mintDown = true;
+  await ageCachedToken(gate, clock, 29 * 24);
+  assert.equal(await client.token(), first, "an early mint that fails keeps the still-valid token");
+  assert.equal(fake.mints().length, 2);
+  fake.mintDown = false;
+  const next = await client.token();
+  assert.notEqual(next, first);
+  assert.equal(fake.mints().length, 3);
+  assert.equal(await client.token(), next);
+});
+
+test("an unexpected error in the early mint is logged by class name and the cached token is still used", async () => {
+  const { gate, clock, client } = clientHarness();
+  const first = await client.token();
+  await ageCachedToken(gate, clock, 29 * 24);
+  const logged = [];
+  const original = console.log;
+  console.log = (line) => logged.push(line);
+  const realBegin = gate.idemBegin;
+  gate.idemBegin = async () => { throw new TypeError("boom fla_" + "0".repeat(64)); };
+  try {
+    assert.equal(await client.token(), first);
+  } finally {
+    console.log = original;
+    gate.idemBegin = realBegin;
+  }
+  assert.deepEqual(logged.map((l) => JSON.parse(l)), [{ event: "linear_early_mint_bug", seat: "GROK-WEB", name: "TypeError" }]);
+});
+
+test("a logger that throws during the early mint still leaves the cached token in use", async () => {
+  const fake = new FakeLinear();
+  const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
+  const gate = memoryGate(clock);
+  const client = new LinearClient({ seat: "GROK-WEB", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now, log: () => { throw new Error("log sink down"); } });
+  const first = await client.token();
+  await ageCachedToken(gate, clock, 29 * 24);
+  gate.idemBegin = async () => { throw new TypeError("boom"); };
+  assert.equal(await client.token(), first);
+});
