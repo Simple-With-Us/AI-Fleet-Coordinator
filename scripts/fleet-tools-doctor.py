@@ -54,13 +54,17 @@ AFC_REMOTE_URL = "https://github.com/Simple-With-Us/AI-Fleet-Coordinator"
 SHIPPED = ("scripts/agent-sync", "scripts/agent_sync/", "scripts/linear-board/", "fleet-apps.json",
            "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
            "scripts/recall", "scripts/fleet_rag/", "scripts/fleet_lanes/", "scripts/fleet-mode",
-           "docs/FLEET-MODE.md")
+           "docs/FLEET-MODE.md", "docs/protocols/agent-sync-tools-guide.md")
 # What a fleet-cli release ships:  mirrors EXACT and allowed_path in scripts/fleet-cli-release.py, so a
 # commit that changes only tests or docs under those folders needs no push and is not drift.
 SHIPPED_EXACT = frozenset({
     "scripts/agent-sync", "scripts/linear-board/board", "scripts/linear-board/board-ids.txt",
     "fleet-apps.json", "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
     "scripts/agent_sync/mcp/tools.json", "scripts/agent_sync/mcp/fixtures.jsonl",
+    "scripts/agent_sync/mcp/listener-tools.json", "scripts/agent_sync/mcp/renamed-tools.json",
+    "scripts/agent_sync/mcp/gb-identities.json", "scripts/agent_sync/mcp/notes-tools.json",
+    "scripts/agent_sync/mcp/recall-tools.json", "scripts/linear-board/catalog/core-tools.json",
+    "docs/protocols/agent-sync-tools-guide.md",
     "scripts/agent_sync/wake/wake-schema.json",
     "scripts/linear-board/catalog/named-commands.json", "scripts/linear-board/catalog/official-mcp-tools.json",
     "scripts/linear-board/catalog/public-inputs.json",

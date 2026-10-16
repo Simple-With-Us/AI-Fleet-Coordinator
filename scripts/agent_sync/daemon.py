@@ -35,6 +35,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import __version__
@@ -48,6 +49,8 @@ from . import heldback as HELD
 from . import host_load as HL
 from . import live as L
 from . import listener_api as LAPI
+from . import notes as NOTES
+from . import notes_relay as NR
 from . import outgoing_webhook as OW
 from . import router as R
 from . import secretscan
@@ -259,6 +262,7 @@ class SeatRunner:
                               "only its own bot, so it is refused" % (self.seat, tag))
         self.me = R.SeatIdentity(self.seat, int(me["user_id"]), str(me.get("full_name") or ""), self.creds.email)
         self.daemon.join_public(self, "connect")
+        self.daemon.ensure_notes_channel(self, "connect")
         self.streams.clear()
         for sub in self.client.get("users/me/subscriptions").get("subscriptions") or []:
             if isinstance(sub.get("stream_id"), int):
@@ -476,6 +480,7 @@ class Daemon:
         self.webhook_drain_retry_at = 0.0
         self.outgoing_webhook_server: OW.OutgoingWebhookServer | None = None
         self.listener_api_server: LAPI.ListenerReadApi | None = None
+        self.notes_relay: NR.Consumer | None = None
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {"reap": -1e9, "status": -1e9, "grace": -1e9, "prune": -1e9, "held": -1e9}
@@ -661,6 +666,48 @@ class Daemon:
         host, port = server.address
         self.log.write("listener-api-started", bind=host, port=port, seats=sorted(keys))
 
+    def _configure_notes_relay(self) -> None:
+        """Start (or stop) the #notes-relay consumer (AFC-331).  Off unless [notes_relay] enabled is true;  its
+        seat's bot reads the channel and reacts.  Needs the notes script, so it is logged and skipped when
+        this Mac cannot run it."""
+        old = self.notes_relay
+        self.notes_relay = None
+        if old is not None:
+            old.stop()
+        cfg = self.config
+        if not cfg.notes_relay_enabled:
+            return
+        home = Path(os.path.abspath(self.home))
+        if NOTES.direct_available(self.env, home) is None:
+            self.log.write("notes-relay-unavailable", reason="no osascript or no apple-notes-coding.sh on this host")
+            return
+        self.notes_relay = NR.Consumer(
+            seat=cfg.notes_relay_seat, state_dir=self.root, script=lambda: NOTES.direct_available(self.env, home),
+            env=self.env, owner_user_id=lambda: self.config.owner_user_id, log=self.log.write, clock=self.clock.time)
+        self.log.write("notes-relay-started", seat=cfg.notes_relay_seat, channel=NOTES.RELAY_CHANNEL)
+
+    def ensure_notes_channel(self, runner: "SeatRunner", why: str) -> None:
+        """The relay seat's bot must be in #notes-relay to see it.  Joins it only when the channel exists and is
+        public (the subscribe API would otherwise create one);  a missing channel is a logged warning."""
+        consumer = self.notes_relay
+        if consumer is None or runner.seat != consumer.seat or runner.client is None:
+            return
+        try:
+            public = SUB.public_channels(runner.client)
+            found = next(((sid, name) for sid, name in public.items() if name.casefold() == consumer.channel), None)
+            if found is None:
+                self.log.write("notes-relay-no-channel", seat=runner.seat, why=why,
+                               warning="#%s does not exist or is private;  create it, then the next connect joins it"
+                               % consumer.channel)
+                return
+            if found[0] in SUB.subscribed_ids(runner.client):
+                return
+            runner.client.post("users/me/subscriptions", {"subscriptions": [{"name": found[1]}]})
+            SUB.quiet(runner.client, [found[0]])
+            self.log.write("notes-relay-joined", seat=runner.seat, why=why)
+        except Exception as exc:  # never fatal:  the seat keeps what it has
+            self.log.write("notes-relay-join-error", seat=runner.seat, why=why, error=self.scrub(type(exc).__name__))
+
     def _accept_outgoing_webhook(self, seat: str, bot_email: str, message_id: int) -> str:
         """Persist an authenticated webhook ID.  Message content comes only from a later REST read."""
         runner = self.seats.get(seat)
@@ -759,6 +806,7 @@ class Daemon:
         self._apply_config()
         self._configure_outgoing_webhook()
         self._configure_listener_api()
+        self._configure_notes_relay()
         self.log.write("reloaded", seats=sorted(self.seats), errors=len(self.config.errors))
 
     def _recover_ledgers(self) -> None:
@@ -1010,6 +1058,7 @@ class Daemon:
         if op == "create":
             if any(isinstance(s, dict) and not s.get("invite_only") for s in event.get("streams") or []):
                 self.join_public(runner, "stream-create")
+                self.ensure_notes_channel(runner, "stream-create")
         elif op == "update" and event.get("property") == "name":
             sid = event.get("stream_id")
             if sid in runner.streams:
@@ -1054,6 +1103,14 @@ class Daemon:
                 runner.advance(message_id)
             return
         runner.ring.add(message_id)
+        relay = self.notes_relay
+        if relay is not None and relay.wants(runner, message):
+            # A notes request:  the consumer's worker thread handles it, off this seat thread.  It is not a
+            # message for any session, so it is neither routed nor woken for.
+            relay.offer(runner, message)
+            if advance_cursor:
+                runner.advance(message_id)
+            return
         self._note_probe(runner, message)
         done: set[Any] = set()  # side effects that completed, so a retry never repeats them
         for attempt in range(3):
@@ -3263,6 +3320,7 @@ class Daemon:
                 return self.refuse_start()
         self._configure_outgoing_webhook()
         self._configure_listener_api()
+        self._configure_notes_relay()
         for seat in ("GROK", "CURSOR"):
             self.chat_queue(seat).recover_interrupted()
         os.ftruncate(lock_fd, 0)
@@ -3316,6 +3374,8 @@ class Daemon:
             children = list(self.children)
         for child in children:
             _kill_group(child)
+        if self.notes_relay is not None:
+            self.notes_relay.stop()
         for runner in self.seats.values():
             runner.disconnect()
             runner.flush_cursor(force=True)

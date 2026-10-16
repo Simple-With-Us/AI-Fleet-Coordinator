@@ -239,6 +239,10 @@ class Config:
         self.outgoing_webhook_port = OUTGOING_WEBHOOK_DEFAULT_PORT
         # The signed read API for the hosted Worker's listener_* tools (AFC-330, listener_api.py).
         self.listener_api_enabled = False
+        # The #notes-relay consumer (AFC-331, notes_relay.py):  the Mac listener runs apple-notes-coding.sh for
+        # requests agents post from anywhere else.  Off by default;  `seat` is the seat whose bot reads and reacts.
+        self.notes_relay_enabled = False
+        self.notes_relay_seat = "CLAUDE"
         self.listener_api_bind = "127.0.0.1"
         self.listener_api_port = LISTENER_API_DEFAULT_PORT
         # Mac-only wake backpressure during host saturation (OPS-950).  Peer wakes are held back
@@ -510,6 +514,25 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("listener_api.port must differ from outgoing_webhook.port")
     else:
         cfg.listener_api_port = api_port
+    relay = raw.get("notes_relay") or {}
+    if not isinstance(relay, dict):
+        errors.append("[notes_relay] must be a table")
+        relay = {}
+    unknown_relay = set(relay) - {"enabled", "seat"}
+    if unknown_relay:
+        errors.append("[notes_relay] has unknown setting(s): %s" % ", ".join(sorted(unknown_relay)))
+    if not isinstance(relay.get("enabled", False), bool):
+        errors.append("notes_relay.enabled must be true or false")
+    else:
+        cfg.notes_relay_enabled = relay.get("enabled", False)
+    relay_seat = relay.get("seat", "CLAUDE")
+    if not isinstance(relay_seat, str) or not _SEAT_RE.match(relay_seat.upper()):
+        errors.append("notes_relay.seat must be a seat name such as CLAUDE")
+    else:
+        cfg.notes_relay_seat = relay_seat.upper()
+    if cfg.notes_relay_enabled and cfg.instance != "mac":
+        errors.append("notes_relay.enabled applies to the mac instance only:  the notes script needs Notes.app")
+        cfg.notes_relay_enabled = False
     cfg.presence = L.presence_topics(raw)
     platform = ((raw.get("platform") or {}).get("claude-code") or {}) if isinstance(raw.get("platform"), dict) else {}
     seat = platform.get("seat") if isinstance(platform, dict) else None
@@ -658,6 +681,10 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                               mcode=mcode, fallback=fallback, fallback_uncontained_ok=uncontained)
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg
     _refuse_shared_env(cfg)
+    if cfg.notes_relay_enabled and cfg.notes_relay_seat not in cfg.seats:
+        errors.append("notes_relay.seat %s is not an enabled [seat.X] section, so nothing reads #notes-relay"
+                      % cfg.notes_relay_seat)
+        cfg.notes_relay_enabled = False
     return cfg
 
 

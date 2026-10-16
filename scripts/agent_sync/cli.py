@@ -46,6 +46,7 @@ from . import live as LIVE
 from . import router as ROUTER
 from . import secretscan
 from . import zulip as Z
+from . import notes_cli
 from . import zulip_cli
 from . import zulip_ops
 from .state import State, state_root
@@ -773,6 +774,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     zulip_cli.add_parsers(sub, common)
     listener_cli.add_parsers(sub, common)
+    notes_cli.add_parsers(sub, common)
     return parser
 
 
@@ -1737,6 +1739,7 @@ def _audit_write(rt: Runtime, args: argparse.Namespace, agent: Agent, code: int)
 LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
     "daemon": listener_cli.cmd_daemon, "status": listener_cli.cmd_status, "wakes": listener_cli.cmd_wakes,
     "listener": listener_cli.cmd_listener, "identities": cmd_identities,
+    "notes": notes_cli.cmd_notes, "guide": notes_cli.cmd_guide,
 }
 
 

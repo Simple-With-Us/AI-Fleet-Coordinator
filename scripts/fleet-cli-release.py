@@ -34,6 +34,8 @@ RECALL_MODULES = ("__init__", "contribute_guard", "core", "doctor", "health", "p
                   "recall_api", "scrub", "search_log", "telemetry")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
 LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout")
+AFC331_FILES = ("scripts/agent_sync/mcp/notes-tools.json", "scripts/agent_sync/mcp/recall-tools.json",
+                "scripts/linear-board/catalog/core-tools.json", "docs/protocols/agent-sync-tools-guide.md")
 EXACT = frozenset({
     "scripts/agent-sync", "scripts/linear-board/board", "scripts/linear-board/board-ids.txt",
     "fleet-apps.json", "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
@@ -42,6 +44,9 @@ EXACT = frozenset({
     # and the enabled Grok Bot personas).
     "scripts/agent_sync/mcp/listener-tools.json", "scripts/agent_sync/mcp/renamed-tools.json",
     "scripts/agent_sync/mcp/gb-identities.json",
+    # AFC-331:  the notes_* and recall_* tool contracts, the core Linear tools the stdio server serves
+    # through board, and the guide tool's text.
+    *AFC331_FILES,
     "scripts/agent_sync/wake/wake-schema.json",
     *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
     "scripts/recall", *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
@@ -61,7 +66,7 @@ BASE_REQUIRED = frozenset({
 TOOL_REQUIRED = frozenset({
     "scripts/recall", *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
     "scripts/fleet_lanes/bin/lane", *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
-    "scripts/fleet-mode", "docs/FLEET-MODE.md",
+    "scripts/fleet-mode", "docs/FLEET-MODE.md", *AFC331_FILES,
 })
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
 

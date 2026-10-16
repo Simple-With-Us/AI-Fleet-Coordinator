@@ -415,6 +415,15 @@ def _int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def notes_flags(args: Mapping[str, Any], action: str) -> dict[str, Any]:
+    """The flags a notes tool call carries into its envelope:  only those set (pin only when false, since
+    pinning is the default), and none for pin and unpin."""
+    if action in ("pin", "unpin"):
+        return {}
+    return {name: args[name] for name in ("pin", "notify", "needs_owner", "summary", "pr", "html")
+            if args.get(name) not in (None, False, "") or (name == "pin" and args.get("pin") is False)}
+
+
 def guide_result(args: Mapping[str, Any], env: Mapping[str, str] | None = None) -> dict[str, Any]:
     """The `guide` tool's result:  the whole guide or one `##` section.  Needs no identity or credential."""
     try:
@@ -1384,10 +1393,7 @@ class Tools:
         return ToolError(exc.code, exc.message)
 
     def _notes_envelope(self, action: str, args: Mapping[str, Any]) -> dict[str, Any]:
-        flags = {name: args[name] for name in ("pin", "notify", "needs_owner", "summary", "pr", "html")
-                 if args.get(name) not in (None, False, "") or (name == "pin" and args.get("pin") is False)}
-        if action in ("pin", "unpin"):
-            flags = {}
+        flags = notes_flags(args, action)
         try:
             request_id = NOTES.check_request_id(args["request_id"]) if args.get("request_id") else NOTES.new_request_id()
             return NOTES.make_envelope(action, args["title"], str(args.get("markdown") or "")
