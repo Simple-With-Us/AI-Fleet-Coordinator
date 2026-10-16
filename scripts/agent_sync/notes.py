@@ -53,6 +53,7 @@ TITLE_MAX = 200
 SUMMARY_MAX = 280
 PR_MAX = 40
 MARKDOWN_MAX = 500_000  # characters a tool accepts;  an upload carries at most UPLOAD_MAX bytes
+BODY_TOO_LONG = "the note body is longer than %d characters;  nothing was written"
 UPLOAD_MAX = 1024 * 1024
 INLINE_JSON_MAX = 8500  # an envelope longer than this (as JSON) travels as an uploaded .md file
 ENVELOPE_PARSE_MAX = 20_000  # the longest message body the parser looks at
@@ -301,6 +302,8 @@ def make_envelope(action: str, title: str, markdown: str, flags: Mapping[str, An
                   identity: str) -> dict[str, Any]:
     if action not in ACTIONS:
         raise NotesError("invalid_argument", "action must be one of %s" % ", ".join(ACTIONS))
+    if isinstance(markdown, str) and len(markdown) > MARKDOWN_MAX:
+        raise NotesError("invalid_argument", BODY_TOO_LONG % MARKDOWN_MAX)
     return {"v": ENVELOPE_VERSION, "action": action, "title": check_title(title), "markdown": markdown,
             "flags": check_flags(flags), "request_id": check_request_id(request_id), "identity": identity}
 
@@ -488,6 +491,8 @@ def run_direct(envelope: Mapping[str, Any], script: Path, *, env: Mapping[str, s
     action = envelope["action"]
     flags = envelope.get("flags") or {}
     markdown = str(envelope.get("markdown") or "")
+    if len(markdown) > MARKDOWN_MAX:
+        raise NotesError("invalid_argument", BODY_TOO_LONG % MARKDOWN_MAX)
     html_file: str | None = None
     stdin_data: bytes | None = None
     try:

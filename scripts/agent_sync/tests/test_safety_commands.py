@@ -557,13 +557,13 @@ class SeatFieldsTests(Harness):
         (row,) = self.lines("read", "--topic", "t", "--json")
         self.assertEqual((row["seat"], row["seat_app"]), ("MONET", None))
 
-    def test_an_unreadable_registry_gives_a_null_app_and_the_read_still_works(self) -> None:
+    def test_an_unreadable_registry_refuses_the_read_rather_than_trusting_the_identity(self) -> None:
         self.fake.add_message("Codex", "agent-sync", "t", "hi")
         env = self.env(FLEET_APPS_JSON=str(self.tmp / "missing.json"))
         result = self.run_cli("read", "--topic", "t", "--json", env=env)
-        self.assertEqual(result.code, 0, result.err)
-        row = json.loads(result.out)
-        self.assertEqual((row["seat"], row["seat_app"]), ("CODEX", None))
+        self.assertEqual(result.code, 3, result.err)
+        self.assertIn("seat registry", result.err)
+        self.assertEqual(result.out, "")
 
     def test_the_other_json_fields_are_unchanged(self) -> None:
         mid = self.fake.add_message("Codex", "agent-sync", "t", "hi @**Claude**")

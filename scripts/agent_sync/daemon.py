@@ -693,29 +693,36 @@ class Daemon:
         with self.notes_relay_lock:
             self._configure_notes_relay_locked()
 
-    NOTES_RELAY_RETRY_LIMIT = 64  # past this a held request waits for the reconnect backfill, as before
     NOTES_RELAY_RETRY_SECONDS = 5.0
 
     def _keep_for_relay_retry(self, runner: "SeatRunner", message: Mapping[str, Any]) -> None:
+        """Remember a request the spool could not keep.  There is no cap:  an entry is one Zulip message, and only
+        what Zulip delivered to this session since the spool began failing can be here, so the map cannot grow past
+        that.  A cap would let a request beyond it fall out of the hold on the cursor."""
         with self.notes_relay_lock:
-            if len(self.notes_relay_retry) < self.NOTES_RELAY_RETRY_LIMIT:
-                self.notes_relay_retry[(runner.seat, int(message["id"]))] = (runner, dict(message))
+            self.notes_relay_retry[(runner.seat, int(message["id"]))] = (runner, dict(message))
 
     def retry_held_notes_relay(self) -> None:
-        """Offer again each relay request that could not be spooled.  Once one is on disk its hold on the seat's
-        cursor is released (the hold falls to the lowest request still waiting) and the cursor may move on."""
+        """Offer again each relay request that could not be spooled, through the CURRENT consumer's own reader (a
+        reload may have moved the consumer to another seat;  the spool is seat-independent).  Once one is on disk,
+        the hold it put on its original runner's cursor falls to the lowest request that runner still has waiting,
+        or ends, and that cursor advances."""
         with self.notes_relay_lock:
             relay = self.notes_relay
-            if relay is None:
+            if relay is None or relay.stopped.is_set():
                 return
-            for key, (runner, message) in sorted(self.notes_relay_retry.items(), key=lambda item: item[0][1]):
-                if relay.stopped.is_set() or runner.seat != relay.seat or not relay.offer(runner, message):
+            reader = self.seats.get(relay.seat)
+            if reader is None or not reader.connected:
+                return
+            for key, (holder, message) in sorted(self.notes_relay_retry.items(), key=lambda item: item[0][1]):
+                if not relay.offer(reader, message):
                     continue
                 del self.notes_relay_retry[key]
-                waiting = [mid for (seat, mid) in self.notes_relay_retry if seat == runner.seat]
-                runner.hold_below = min(waiting) if waiting else None
-                runner.advance(key[1])
-                self.log.write("notes-relay-retry-spooled", seat=runner.seat, id=key[1], still_held=len(waiting))
+                waiting = [mid for (seat, mid) in self.notes_relay_retry if seat == holder.seat]
+                holder.hold_below = min(waiting) if waiting else None
+                holder.advance(key[1])
+                self.log.write("notes-relay-retry-spooled", seat=holder.seat, reader=reader.seat, id=key[1],
+                               still_held=len(waiting))
             self.complete_notes_relay_handover()
 
     def complete_notes_relay_handover(self) -> None:

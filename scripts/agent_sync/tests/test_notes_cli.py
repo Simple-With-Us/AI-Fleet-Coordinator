@@ -77,6 +77,21 @@ class NotesCliTests(Harness):
         self.assertEqual(len(run.calls), 2)
         self.assertEqual(json.loads(again.out)["status"], "done")
 
+    def test_an_oversized_body_is_a_usage_error_not_cut_short(self):
+        run = FakeRun()
+        a, b = self.direct(run)
+        with a, b:
+            over = self.run_cli("notes", "create", TITLE, stdin="x" * (N.MARKDOWN_MAX + 1))
+            body = self.tmp / "long.html"
+            body.write_text("y" * (N.MARKDOWN_MAX + 1))
+            over_html = self.run_cli("notes", "create", TITLE, "--html", str(body))
+            exact = self.run_cli("notes", "create", TITLE, stdin="x" * N.MARKDOWN_MAX)
+        self.assertEqual((over.code, over_html.code), (2, 2), over.err + over_html.err)
+        self.assertIn("longer than", over.err)
+        self.assertEqual(exact.code, 0, exact.err)
+        self.assertEqual(len(run.calls), 1, "only the body at the limit was written")
+        self.assertEqual(len(run.calls[0]["input"]), N.MARKDOWN_MAX)
+
     def test_an_unreadable_seat_registry_refuses_the_write_instead_of_trusting_the_identity(self):
         run = FakeRun()
         a, b = self.direct(run)

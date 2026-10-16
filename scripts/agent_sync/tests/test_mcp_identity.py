@@ -215,6 +215,34 @@ class CliTests(IdentityHarness):
                          [("cli", "CURSOR", "post", "ok")])
         self.assertNotIn("hello", json.dumps(rows))
 
+    def test_an_unreadable_registry_refuses_every_identity_on_the_cli_naming_the_file(self):
+        missing = self.cli_env(AGENT_SEAT=None, FLEET_APPS_JSON="/nonexistent/fleet-apps.json")
+        for argv in (("post", "--as", "SENTRY", "--topic", "cli", "x"), ("post", "--as", "CURSOR", "--topic", "cli", "x"),
+                     ("topics", "--as", "CLAUDE")):
+            with self.subTest(argv):
+                refused = self.run_cli(*argv, env=missing)
+                self.assertEqual(refused.code, 3, refused.err)
+                self.assertIn("seat registry", refused.err)
+                self.assertIn("FLEET_APPS_JSON or fleet-apps.json", refused.err)
+        self.assertEqual(self.fake.messages, [])
+
+    def test_whoami_and_identities_report_an_unreadable_registry_instead_of_crashing(self):
+        missing = self.cli_env(FLEET_APPS_JSON="/nonexistent/fleet-apps.json")
+        who = self.run_cli("whoami", "--json", env=missing)
+        self.assertEqual(who.code, 3, who.err)
+        info = json.loads(who.out)
+        self.assertIn("cannot read the seat registry", info["registry_problem"])
+        self.assertIs(info["verified"], False)
+        self.assertNotIn("Traceback", who.err)
+        listed = self.run_cli("identities", "--json", env=missing)
+        self.assertEqual(listed.code, 3, listed.err)
+        shown = json.loads(listed.out)
+        self.assertEqual(shown["identities"], [])
+        self.assertIn("FLEET_APPS_JSON or fleet-apps.json", shown["registry_problem"])
+        ok = self.run_cli("whoami", "--json", env=self.cli_env())
+        self.assertEqual(ok.code, 0, ok.err)
+        self.assertIsNone(json.loads(ok.out)["registry_problem"])
+
     def test_the_cli_never_acts_as_an_integration_bot_or_a_disabled_persona(self):
         for name in ("SENTRY", "GB-ENGINEER"):
             with self.subTest(name):

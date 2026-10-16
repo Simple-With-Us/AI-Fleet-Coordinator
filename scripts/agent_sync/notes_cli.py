@@ -107,7 +107,15 @@ def _identity(rt: Any, args: argparse.Namespace) -> str:
 
 
 def _body(rt: Any, args: argparse.Namespace) -> tuple[str, bool]:
-    """(body, is_html).  Exactly one source:  --html FILE, --body-file, BODY words or stdin."""
+    """(body, is_html).  Exactly one source:  --html FILE, --body-file, BODY words or stdin.  A body longer than
+    MARKDOWN_MAX characters is a usage error, never cut short."""
+    body, is_html = _read_body(rt, args)
+    if len(body) > N.MARKDOWN_MAX:
+        raise Z.UsageError(N.BODY_TOO_LONG % N.MARKDOWN_MAX)
+    return body, is_html
+
+
+def _read_body(rt: Any, args: argparse.Namespace) -> tuple[str, bool]:
     sources = [args.html_file is not None, args.body_file is not None, bool(args.body)]
     if sum(sources) > 1:
         raise Z.UsageError("give the body one way:  --html PATH, --body-file PATH, BODY, or standard input")

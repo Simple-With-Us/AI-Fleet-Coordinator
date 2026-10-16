@@ -400,7 +400,7 @@ class DaemonRelayTests(DaemonHarness):
         self.assertEqual(runner.cursor, mid)
         consumer.stop()
 
-    def test_the_retry_list_is_bounded_and_keeps_the_hold_at_the_lowest_waiting_request(self):
+    def test_the_retry_keeps_the_hold_at_the_lowest_waiting_request(self):
         daemon = self.started_with_relay()
         runner = daemon.seats["CLAUDE"]
         consumer = daemon.notes_relay
@@ -418,6 +418,55 @@ class DaemonRelayTests(DaemonHarness):
         self.assertEqual(runner.hold_below, second, "the hold falls to the request still waiting")
         self.assertEqual(list(daemon.notes_relay_retry), [("CLAUDE", second)])
         consumer.stop()
+
+    def test_no_held_request_falls_out_of_the_retry_however_many_there_are(self):
+        daemon = self.started_with_relay()
+        runner = daemon.seats["CLAUDE"]
+        consumer = daemon.notes_relay
+        real_offer = consumer.offer
+        consumer.runner = self.fake_run
+        consumer.offer = lambda r, m: False
+        count = 70  # past the old cap of 64
+        ids = [self.envelope_message(rid="many-request-%03d" % i) for i in range(count)]
+        daemon.handle_events(runner, [{"type": "message", "message": dict(m)} for m in self.fake.messages[-count:]])
+        self.assertEqual(len(daemon.notes_relay_retry), count)
+        self.assertEqual(runner.hold_below, ids[0])
+        consumer.offer = real_offer
+        daemon.last_tick["relay_retry"] = -1e9
+        daemon.tick()
+        self.assertEqual(daemon.notes_relay_retry, {})
+        self.assertIsNone(runner.hold_below, "every request is on disk, so the hold ends")
+        self.assertTrue(self.wait(lambda: len(self.calls) == count, 30), "all %d ran" % len(self.calls))
+        consumer.stop()
+
+    def test_held_requests_move_to_the_new_consumer_when_a_reload_changes_the_seat(self):
+        daemon = self.two_seats()
+        old_runner = daemon.seats["CLAUDE"]
+        old = daemon.notes_relay
+        self.assertEqual(old.seat, "CLAUDE")
+        old.offer = lambda r, m: False
+        mid = self.envelope_message(rid="moved-request-1")
+        daemon.handle_events(old_runner, [{"type": "message", "message": dict(self.fake.messages[-1])}])
+        self.assertEqual(old_runner.hold_below, mid)
+        self.assertEqual(list(daemon.notes_relay_retry), [("CLAUDE", mid)])
+        path = self.state_dir / "listener.toml"
+        text = path.read_text()
+        head, _, tail = text.partition("[notes_relay]")
+        path.write_text(head + "[notes_relay]" + tail.replace('seat = "CLAUDE"', 'seat = "CODEX"'))
+        self.notes_knob = "CODEX"
+        daemon.reload()
+        new = daemon.notes_relay
+        self.assertIsNotNone(new)
+        self.assertEqual(new.seat, "CODEX")
+        self.assertIsNot(new, old)
+        new.runner = self.fake_run
+        daemon.last_tick["relay_retry"] = -1e9
+        daemon.tick()
+        self.assertTrue(self.wait(lambda: len(self.calls) == 1), "the new consumer ran the stranded request")
+        self.assertEqual(daemon.notes_relay_retry, {})
+        self.assertIsNone(old_runner.hold_below, "the old runner's hold is released once it is spooled")
+        self.assertEqual(old_runner.cursor, mid)
+        new.stop()
 
     def test_the_cursor_is_held_for_a_request_that_could_not_be_kept(self):
         daemon = self.started_with_relay()

@@ -156,6 +156,8 @@ class RecentIds:
 class Agent:
     """Everything one command needs: identity, credentials, client, state, caches."""
 
+    registry_problem: str | None = None  # set by _check_agent_identity for `whoami` alone, which reports it
+
     def __init__(self, rt: Runtime, args: argparse.Namespace) -> None:
         self.rt = rt
         self.args = args
@@ -835,20 +837,24 @@ def cmd_whoami(agent: Agent, args: argparse.Namespace) -> int:
             "bot_seat": seat_tag_for(me), "seat_source": agent.seat_source, "launcher": agent.launcher,
             "verified": problem is None, "problem": problem,
             "session": agent.tag, "credential": agent.creds.source, "realm": agent.realm,
-            "owner_user_id": pinned_owner_id(agent)}
+            "owner_user_id": pinned_owner_id(agent), "registry_problem": agent.registry_problem}
+    if agent.registry_problem:
+        info["verified"] = False
     if agent.json:
         agent.emit_json(info)
     else:
         rows = [("bot", info["full_name"]), ("email", info["email"]), ("user id", info["user_id"]),
                 ("bot seat", info["bot_seat"]), ("seat", "%s (%s)" % (agent.seat, agent.seat_source)),
                 ("launcher", agent.launcher or "none (an ordinary session)"),
-                ("verified", "yes:  the key is this seat's own bot" if problem is None else "NO"),
+                ("verified", "yes:  the key is this seat's own bot" if problem is None and not agent.registry_problem else "NO"),
                 ("session", agent.tag or "none (state is shared under nosession)"),
                 ("credential", agent.creds.source), ("realm", agent.realm),
                 ("owner id", info["owner_user_id"] or "not pinned in listener.toml")]
+        if agent.registry_problem:
+            rows.append(("registry", agent.registry_problem))
         agent.out("".join("%-11s %s\n" % (label + ":", value) for label, value in rows))
-    if problem:
-        agent.err(problem)
+    if problem or agent.registry_problem:
+        agent.err(problem or agent.registry_problem)
         return 3
     return 0
 
@@ -1691,16 +1697,25 @@ def cmd_identities(rt: Runtime, args: argparse.Namespace) -> int:
         raise Z.CredentialError(resolved.problem)
     default = Z.normalise_seat(resolved.seat) if resolved.seat else None
     home = rt.home if rt.home is not None else Path(rt.env.get("HOME") or os.path.expanduser("~"))
-    allowed = sorted(X.allowed_identities(rt.env, home))
+    registry_problem = None
+    try:
+        registry = I.load_seat_registry(env=rt.env)
+    except I.SeatRegistryError as exc:
+        registry, registry_problem = None, ("cannot read the seat registry, so no identity can be checked and none is "
+                                            "allowed (%s);  fix FLEET_APPS_JSON or fleet-apps.json" % exc)
+    allowed = sorted(X.allowed_identities(rt.env, home, registry=registry)) if registry is not None else []
     if resolved.source == "launcher":
         allowed = [default] if default in allowed else []
     if getattr(args, "json", False):
-        rt.out(json.dumps({"default_identity": default, "transport": "cli",
+        rt.out(json.dumps({"default_identity": default, "transport": "cli", "registry_problem": registry_problem,
                            "identities": [{"identity": name, "zulip": "configured"} for name in allowed]}) + "\n")
     else:
         rt.out("default identity:  %s\n" % (default or "none"))
         for name in allowed:
             rt.out("%s\n" % name)
+    if registry_problem:
+        rt.err("agent-sync: %s" % registry_problem)
+        return 3
     return 0
 
 
@@ -1712,16 +1727,22 @@ WRITE_COMMANDS = frozenset({"post", "reply", "react", "dm", "edit", "delete", "m
 READ_ONLY_ACTIONS = frozenset({"list"})  # `scheduled list` and `drafts list` read
 
 
-def _check_agent_identity(rt: Runtime, agent: Agent) -> None:
+def _check_agent_identity(rt: Runtime, agent: Agent, command: str = "") -> None:
     """AFC-331:  the CLI acts only as an agent bot (a live or extra seat, a BF-* bot or an enabled GB-*
-    persona), never as the owner's account or an integration bot, whatever credential files exist.  An
-    unreadable registry leaves the bot check (check_bot) as the guard, as before."""
+    persona), never as the owner's account or an integration bot, whatever credential files exist.  Without a
+    readable registry nothing proves that, so every identity is refused (fail closed), as on the stdio and Notes
+    paths.  `whoami` is the one diagnostic that goes on and reports the registry problem."""
     from . import identities as X
 
     try:
         registry = I.load_seat_registry(env=rt.env)
-    except I.SeatRegistryError:
-        return
+    except I.SeatRegistryError as exc:
+        problem = ("cannot read the seat registry, so %s cannot be checked as an agent identity (%s);  "
+                   "fix FLEET_APPS_JSON or fleet-apps.json" % (agent.seat, exc))
+        if command == "whoami":
+            agent.registry_problem = problem
+            return
+        raise Z.CredentialError(problem) from None
     problem = X.agent_identity_problem(agent.seat, registry=registry)
     if problem:
         raise Z.CredentialError(problem)
@@ -1783,7 +1804,7 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
         if args.command in ("post", "reply", "dm", "edit"):
             _check_text_args(args)  # a usage error needs no credential
         agent = Agent(rt, args)  # every request after users/me waits for agent.verify(); whoami reports it
-        _check_agent_identity(rt, agent)
+        _check_agent_identity(rt, agent, args.command)
         code = COMMANDS[args.command](agent, args)
         _audit_write(rt, args, agent, code)
         return code

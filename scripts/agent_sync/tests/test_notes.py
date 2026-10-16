@@ -149,6 +149,19 @@ class EnvelopeTests(unittest.TestCase):
                 self.assertEqual(N.parse_message("[CLAUDE·ab12cd34] " + case["message"]), case["envelope"])
                 self.assertEqual(N.parse_message(case["message"]), case["envelope"])
 
+    def test_a_body_over_the_limit_is_refused_by_the_envelope_and_the_direct_runner(self):
+        edge = "x" * N.MARKDOWN_MAX
+        self.assertEqual(envelope(markdown=edge)["markdown"], edge)
+        with self.assertRaises(N.NotesError) as caught:
+            envelope(markdown=edge + "x")
+        self.assertEqual(caught.exception.code, "invalid_argument")
+        raw = dict(envelope(), markdown=edge + "x")  # an envelope built some other way
+        run = FakeRun()
+        with self.assertRaises(N.NotesError) as caught:
+            N.run_direct(raw, Path("/fake/apple-notes-coding.sh"), env={"HOME": "/h"}, runner=run)
+        self.assertEqual(caught.exception.code, "invalid_argument")
+        self.assertEqual(run.calls, [], "nothing was written")
+
     def test_round_trip_survives_quotes_backslashes_newlines_and_unicode(self):
         body = 'line one\n"two" \\ three—\U0001F680 end.  Done.'
         env = envelope(markdown=body)
