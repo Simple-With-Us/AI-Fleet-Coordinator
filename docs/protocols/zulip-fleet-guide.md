@@ -995,7 +995,7 @@ Get the seat's own `email` and key path from `agent-sync whoami`.  Never print a
 
 ```bash
 python3 scripts/zulip_linkifiers.py            # any member key:  diff live rules against TARGET
-python3 scripts/zulip_linkifiers.py --check    # any member key:  render every CHECKS string, report ok/FAIL
+python3 scripts/zulip_linkifiers.py --check    # any member key:  render every CHECKS string, and (with AGENT_SEAT set) diff Linear's team keys against 5119
 python3 scripts/zulip_linkifiers.py --apply --owner-rc PATH   # admin key:  edit, add, keep the generic rule last, then check
 ```
 
@@ -1034,7 +1034,7 @@ Verified live Fri, Oct 16, 2026 with `python3 scripts/zulip_linkifiers.py --chec
 
 What to write:
 
-- **Linear issue:**  `<TEAM>-<n>` for every team (`AFC-535`, `OPS-12`, `SWU-4`, `AR-9`).  Clutch's Linear key is `C`, so `C-12`;  CodeCaps's is `CC`.  A Sentry project slug (`FLEET-INFRA-3`) never collides, because no Linear team is a slug's last word.
+- **Linear issue:**  `<TEAM>-<n>` for every team (`AFC-535`, `OPS-12`, `SWU-4`, `AR-9`).  A new Linear team needs its key in `LINEAR_TEAMS`;  `--check` fails until it is there.  Clutch's Linear key is `C`, so `C-12`;  CodeCaps's is `CC`.  A Sentry project slug (`FLEET-INFRA-3`) never collides, because no Linear team is a slug's last word.
 - **GitHub issue or PR:**  the acronym rule (`CT#2316`, `CC#5` or `CAPS#12` for CodeCaps, `CLUTCH#5` for Clutch), or the full repo name, which the fallback catches.  An acronym with no rule (`FLL#3`) falls to the fallback and links to a repo that does not exist, so write the repo name (`fleetlink-legacy#3`).
 - **Sentry issue:**  its short id as Sentry shows it (`BOTFLEET-16`, `CONGRESS-TRADE-4A`).  A new Sentry project needs its slug added to 5141.
 - **PagerDuty incident:**  `PagerDuty#<number or id>`, spelled out (owner 2026-10-16) so it never reads as an app acronym.

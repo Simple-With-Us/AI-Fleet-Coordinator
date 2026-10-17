@@ -60,6 +60,15 @@ class OrderTest(unittest.TestCase):
         self.assertIsNone(L.order([{"id": 5117}, {"id": L.GENERIC_ID}]))
 
 
+class TeamDriftTest(unittest.TestCase):
+    def test_no_drift(self):
+        self.assertEqual(L.team_drift(list(L.LINEAR_TEAMS)), ([], []))
+
+    def test_new_and_removed_teams(self):
+        keys = [k for k in L.LINEAR_TEAMS if k != "AR"] + ["NEW"]
+        self.assertEqual(L.team_drift(keys), (["NEW"], ["AR"]))
+
+
 class PlanTest(unittest.TestCase):
     def live(self, **overrides):
         rules = [

@@ -6,7 +6,7 @@ Only a realm administrator can add, edit or delete a linkifier, and Jay is the o
 only a member key, so any seat can run them:
 
     python3 scripts/zulip_linkifiers.py                 # plan:  diff live rules against TARGET
-    python3 scripts/zulip_linkifiers.py --check         # render CHECKS and report each verdict
+    python3 scripts/zulip_linkifiers.py --check         # render CHECKS, and diff Linear's teams with rule 5119
     python3 scripts/zulip_linkifiers.py --apply --owner-rc PATH   # owner:  apply the plan, then check
 
 Credentials, first hit wins:  --owner-rc PATH (or --rc PATH for a read-only run), then env
@@ -26,6 +26,8 @@ import base64
 import configparser
 import json
 import os
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -34,7 +36,8 @@ import urllib.request
 REALM = "https://simplewithus.zulipchat.com"
 GH = "https://github.com/Simple-With-Us"
 
-# Linear team keys, read from Linear on 2026-10-16 (Clutch's key is C, CodeCaps's is CC).
+# Linear team keys, read from Linear on 2026-10-16 (Clutch's key is C, CodeCaps's is CC).  `--check` compares
+# this list with Linear's own (through the board CLI) so a new team cannot go unlinked silently.
 LINEAR_TEAMS = (
     "AFC",
     "CTS",
@@ -218,6 +221,50 @@ def order(live: list[dict]) -> list[int] | None:
     return [i for i in ids if i != GENERIC_ID] + [GENERIC_ID]
 
 
+def team_drift(linear_keys: list[str]) -> tuple[list[str], list[str]]:
+    """(keys Linear has that rule 5119 lacks, keys 5119 lists that Linear no longer has)."""
+    return sorted(set(linear_keys) - set(LINEAR_TEAMS)), sorted(
+        set(LINEAR_TEAMS) - set(linear_keys)
+    )
+
+
+def linear_team_keys() -> list[str] | None:
+    """Every Linear team key, read with the board CLI (its own seat credentials), or None when unavailable."""
+    if not shutil.which("board"):
+        return None
+    proc = subprocess.run(
+        ["board", "api", "query", "{ teams(first: 250) { nodes { key } } }"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    try:
+        return [team["key"] for team in json.loads(proc.stdout)["teams"]["nodes"]]
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def check_linear() -> int:
+    keys = linear_team_keys()
+    if keys is None:
+        print(
+            "skip  Linear team drift:  the board CLI is missing or could not read Linear (set AGENT_SEAT)"
+        )
+        return 0
+    missing, extra = team_drift(keys)
+    for key in missing:
+        print(
+            f"FAIL  Linear team {key} is not in LINEAR_TEAMS, so {key}-n issue ids render as plain text"
+        )
+    for key in extra:
+        print(f"FAIL  LINEAR_TEAMS lists {key}, which is no longer a Linear team")
+    print(
+        f"Linear team drift:  {'none' if not (missing or extra) else f'{len(missing)} missing, {len(extra)} extra'}"
+        f" ({len(keys)} teams)"
+    )
+    return len(missing) + len(extra)
+
+
 def check(zulip: Zulip) -> int:
     failures = 0
     for text, href in CHECKS:
@@ -247,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
 
     zulip = Zulip(*credentials(args.owner_rc or args.rc))
     if args.check and not args.apply:
-        return 1 if check(zulip) else 0
+        return 1 if check(zulip) + check_linear() else 0
 
     steps, unlisted = plan(zulip.linkifiers())
     for kind, rule_id, pattern, url in steps:
