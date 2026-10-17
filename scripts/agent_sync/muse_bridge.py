@@ -5,6 +5,7 @@ transport.  A Mac decision can only authorize the server's configured native rou
 seat and message.  The server resolves the row again and owns every credential and delivery gate.
 No model output can supply a URL, command, bot key, or destination host to this module.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -13,7 +14,8 @@ import json
 import os
 import sys
 import time
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from . import config as C
 from . import live as L
@@ -66,29 +68,46 @@ def enabled(cfg: C.Config, seat: str) -> bool:
 def _inbox_rows(root: str, seat: str) -> list[dict[str, Any]]:
     paths = L.SeatPaths(root, seat)
     rows = L.read_jsonl(paths.seat_inbox + ".1") + L.read_jsonl(paths.seat_inbox)
-    return sorted((row for row in rows if isinstance(row.get("seq"), int) and
-                   isinstance(row.get("id"), int)), key=lambda row: row["seq"])
+    return sorted(
+        (row for row in rows if isinstance(row.get("seq"), int) and isinstance(row.get("id"), int)),
+        key=lambda row: row["seq"],
+    )
 
 
 def find_source(root: str, cfg: C.Config, seat: str, message_id: int) -> dict[str, Any] | None:
     if not enabled(cfg, seat) or isinstance(message_id, bool) or not isinstance(message_id, int):
         return None
-    return next((row for row in reversed(_inbox_rows(root, seat))
-                 if row.get("id") == message_id and row.get("muse_bridge") is True and
-                 row.get("wake_worthy") is True and
-                 row.get("delivered_to") is None), None)
+    return next(
+        (
+            row
+            for row in reversed(_inbox_rows(root, seat))
+            if row.get("id") == message_id
+            and row.get("muse_bridge") is True
+            and row.get("wake_worthy") is True
+            and row.get("delivered_to") is None
+        ),
+        None,
+    )
 
 
 def source_blocked(root: str, row: Mapping[str, Any]) -> bool:
     key = L.topic_key(str(row.get("channel") or ""), str(row.get("topic") or ""))
-    return W.LoopGuard(os.path.join(L.listener_dir(root), "loopguard.json")).blocked(key, time.time())
+    return W.LoopGuard(os.path.join(L.listener_dir(root), "loopguard.json")).blocked(
+        key, time.time()
+    )
 
 
 def source_stale(cfg: C.Config, row: Mapping[str, Any]) -> bool:
     ts = row.get("ts")
-    return bool(not row.get("owner") and (row.get("stale") is True or
-                not isinstance(ts, (int, float)) or isinstance(ts, bool) or
-                time.time() - float(ts) > cfg.stale_after))
+    return bool(
+        not row.get("owner")
+        and (
+            row.get("stale") is True
+            or not isinstance(ts, (int, float))
+            or isinstance(ts, bool)
+            or time.time() - float(ts) > cfg.stale_after
+        )
+    )
 
 
 def _export_gap(rows: list[dict[str, Any]], cursor: int) -> bool:
@@ -122,28 +141,57 @@ def export(root: str, cfg: C.Config, cursors: Mapping[str, Any]) -> dict[str, An
         rows = _inbox_rows(root, seat)
         oldest = rows[0]["seq"] if rows else None
         if oldest is not None and _export_gap(rows, cursor):
-            out["seats"][seat] = {"gap": True, "oldest": oldest, "next": cursor, "items": [],
-                                  "budget": cfg.seats[seat].budget}
+            out["seats"][seat] = {
+                "gap": True,
+                "oldest": oldest,
+                "next": cursor,
+                "items": [],
+                "budget": cfg.seats[seat].budget,
+            }
             continue
-        batch = [row for row in rows if row["seq"] > cursor and row.get("muse_bridge") is True and
-                 row.get("wake_worthy") is True and row.get("delivered_to") is None][:MAX_BATCH_PER_SEAT]
+        batch = [
+            row
+            for row in rows
+            if row["seq"] > cursor
+            and row.get("muse_bridge") is True
+            and row.get("wake_worthy") is True
+            and row.get("delivered_to") is None
+        ][:MAX_BATCH_PER_SEAT]
         items = []
         for row in batch:
-            if row.get("muse_bridge") is not True or row.get("wake_worthy") is not True or \
-                    row.get("delivered_to") is not None:
+            if (
+                row.get("muse_bridge") is not True
+                or row.get("wake_worthy") is not True
+                or row.get("delivered_to") is not None
+            ):
                 continue
-            items.append({"source_seat": seat, "seq": row["seq"], "id": row["id"],
-                          "type": row.get("type"), "channel": row.get("channel"),
-                          "topic": row.get("topic"), "content": str(row.get("content") or "")[:MAX_EXPORTED_CONTENT],
-                          "sender_id": row.get("sender_id"), "sender": row.get("sender"),
-                          "is_bot": row.get("is_bot") is True, "owner": row.get("owner") is True,
-                          "ts": row.get("ts"), "stale": row.get("stale") is True,
-                          "native": cfg.seats[seat].wake == "http", "blocked": source_blocked(root, row),
-                          "paused": L.paused(root, seat, wakes=True)})
-        out["seats"][seat] = {"gap": False, "oldest": oldest,
-                              "next": batch[-1]["seq"] if batch else max(cursor, rows[-1]["seq"] if rows else cursor),
-                              "items": items,
-                              "budget": cfg.seats[seat].budget}
+            items.append(
+                {
+                    "source_seat": seat,
+                    "seq": row["seq"],
+                    "id": row["id"],
+                    "type": row.get("type"),
+                    "channel": row.get("channel"),
+                    "topic": row.get("topic"),
+                    "content": str(row.get("content") or "")[:MAX_EXPORTED_CONTENT],
+                    "sender_id": row.get("sender_id"),
+                    "sender": row.get("sender"),
+                    "is_bot": row.get("is_bot") is True,
+                    "owner": row.get("owner") is True,
+                    "ts": row.get("ts"),
+                    "stale": row.get("stale") is True,
+                    "native": cfg.seats[seat].wake == "http",
+                    "blocked": source_blocked(root, row),
+                    "paused": L.paused(root, seat, wakes=True),
+                }
+            )
+        out["seats"][seat] = {
+            "gap": False,
+            "oldest": oldest,
+            "next": batch[-1]["seq"] if batch else max(cursor, rows[-1]["seq"] if rows else cursor),
+            "items": items,
+            "budget": cfg.seats[seat].budget,
+        }
     return out
 
 
@@ -161,28 +209,57 @@ def export_local(root: str, cfg: C.Config, cursors: Mapping[str, Any]) -> dict[s
         rows = _inbox_rows(root, seat)
         oldest = rows[0]["seq"] if rows else None
         if oldest is not None and _export_gap(rows, cursor):
-            out["seats"][seat] = {"gap": True, "oldest": oldest, "next": cursor, "items": [],
-                                  "budget": cfg.seats[seat].budget}
+            out["seats"][seat] = {
+                "gap": True,
+                "oldest": oldest,
+                "next": cursor,
+                "items": [],
+                "budget": cfg.seats[seat].budget,
+            }
             continue
-        batch = [row for row in rows if row["seq"] > cursor and row.get("muse_bridge") is True and
-                 row.get("wake_worthy") is True and row.get("delivered_to") is None][:MAX_BATCH_PER_SEAT]
+        batch = [
+            row
+            for row in rows
+            if row["seq"] > cursor
+            and row.get("muse_bridge") is True
+            and row.get("wake_worthy") is True
+            and row.get("delivered_to") is None
+        ][:MAX_BATCH_PER_SEAT]
         items = []
         for row in batch:
-            if row.get("muse_bridge") is not True or row.get("wake_worthy") is not True or \
-                    row.get("delivered_to") is not None:
+            if (
+                row.get("muse_bridge") is not True
+                or row.get("wake_worthy") is not True
+                or row.get("delivered_to") is not None
+            ):
                 continue
-            items.append({"source_seat": seat, "seq": row["seq"], "id": row["id"],
-                          "type": row.get("type"), "channel": row.get("channel"),
-                          "topic": row.get("topic"), "content": str(row.get("content") or "")[:MAX_EXPORTED_CONTENT],
-                          "sender_id": row.get("sender_id"), "sender": row.get("sender"),
-                          "is_bot": row.get("is_bot") is True, "owner": row.get("owner") is True,
-                          "ts": row.get("ts"), "stale": row.get("stale") is True,
-                          "native": False, "blocked": source_blocked(root, row),
-                          "paused": L.paused(root, seat, wakes=True)})
-        out["seats"][seat] = {"gap": False, "oldest": oldest,
-                              "next": batch[-1]["seq"] if batch else max(cursor, rows[-1]["seq"] if rows else cursor),
-                              "items": items,
-                              "budget": cfg.seats[seat].budget}
+            items.append(
+                {
+                    "source_seat": seat,
+                    "seq": row["seq"],
+                    "id": row["id"],
+                    "type": row.get("type"),
+                    "channel": row.get("channel"),
+                    "topic": row.get("topic"),
+                    "content": str(row.get("content") or "")[:MAX_EXPORTED_CONTENT],
+                    "sender_id": row.get("sender_id"),
+                    "sender": row.get("sender"),
+                    "is_bot": row.get("is_bot") is True,
+                    "owner": row.get("owner") is True,
+                    "ts": row.get("ts"),
+                    "stale": row.get("stale") is True,
+                    "native": False,
+                    "blocked": source_blocked(root, row),
+                    "paused": L.paused(root, seat, wakes=True),
+                }
+            )
+        out["seats"][seat] = {
+            "gap": False,
+            "oldest": oldest,
+            "next": batch[-1]["seq"] if batch else max(cursor, rows[-1]["seq"] if rows else cursor),
+            "items": items,
+            "budget": cfg.seats[seat].budget,
+        }
     return out
 
 
@@ -233,12 +310,25 @@ def submit(root: str, cfg: C.Config, request: Mapping[str, Any]) -> dict[str, An
         data = _read_decisions(path)
         prior = data.get(key)
         if prior is not None:
-            if prior.get("source_seat") != seat or prior.get("id") != message_id or prior.get("kind") != kind:
+            if (
+                prior.get("source_seat") != seat
+                or prior.get("id") != message_id
+                or prior.get("kind") != kind
+            ):
                 raise Refused("conflicting decision for source message")
             return {"receipt": key, "state": prior.get("state")}
-        data[key] = {"source_seat": seat, "id": message_id, "seq": row["seq"], "kind": kind,
-                     "state": "queued" if kind == "native" else "chat_selected" if kind == "chat" else "held",
-                     "at": time.time()}
+        data[key] = {
+            "source_seat": seat,
+            "id": message_id,
+            "seq": row["seq"],
+            "kind": kind,
+            "state": "queued"
+            if kind == "native"
+            else "chat_selected"
+            if kind == "chat"
+            else "held",
+            "at": time.time(),
+        }
         L.write_json(path, data)
     return {"receipt": key, "state": data[key]["state"]}
 
