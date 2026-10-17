@@ -12,6 +12,8 @@ any of these holds, cheapest check first:
      `ios-debug --console` may be using it.  A `simctl spawn <udid> log stream` does not count:
      the Claude desktop app keeps one open for every booted device;
   2. Simulator.app is running:  someone may be watching;
+  2b. Bitrig.app (`Bitrig`) is running:  up to 1 booted simulator (the most recently seen) is
+      exempted so Bitrig can keep its single shared simulator alive across projects;
   3. a Claude session marked it watched (the iOS Simulator panel) in the last 12 hours;
   4. it has been seen booted for less than --min-age-minutes (default 60).  simctl exposes no boot
      time, so the first time this job sees a device booted is kept in state.json;
@@ -256,13 +258,24 @@ def tidy_hook_state(booted: set[str], now: float, dry: bool, verbose: bool) -> N
         lock.close()
 
 
+def bitrig_exempt_udid(booted: list[dict], seen: dict[str, float], bitrig_app: int) -> str | None:
+    """When Bitrig is running, exempt up to 1 booted simulator (most recently seen)."""
+    if not bitrig_app or not booted:
+        return None
+    chosen = max(booted, key=lambda d: (seen.get(d["udid"], 0.0), d["udid"]))
+    return chosen["udid"]
+
+
 def decide(dev: dict, first_seen: float, now: float, busy: list[str], sim_app: int,
-           watched: set[str], min_age_sec: float, check_apps=None) -> tuple[str, str]:
+           watched: set[str], min_age_sec: float, check_apps=None,
+           bitrig_exempt: set[str] | None = None) -> tuple[str, str]:
     """('skip' | 'shutdown', reason) for one booted device, cheapest check first."""
     if busy:
         return "skip", "busy: " + ",".join(busy)
     if sim_app:
         return "skip", "Simulator.app is open"
+    if bitrig_exempt and dev["udid"] in bitrig_exempt:
+        return "skip", "Bitrig is running (1 simulator exempt)"
     if dev["udid"] in watched:
         return "skip", "watched in the iOS Simulator panel"
     age = now - first_seen
@@ -315,10 +328,13 @@ def main(argv: list | None = None) -> int:
     if targets:
         busy = busy_processes()
         sim_app = pgrep_exact("Simulator")
+        bitrig_app = pgrep_exact("Bitrig")
+        exempt_udid = bitrig_exempt_udid(targets, seen, bitrig_app)
+        bitrig_exempt = {exempt_udid} if exempt_udid else set()
         watched = watched_udids(now)
         for d in targets:
             action, reason = decide(d, seen[d["udid"]], now, busy, sim_app, watched,
-                                    args.min_age_minutes * 60)
+                                    args.min_age_minutes * 60, bitrig_exempt=bitrig_exempt)
             label = f"{d['udid']} \"{d['name']}\""
             if action == "skip":
                 out(f"reaper SKIP {label}: {reason}")

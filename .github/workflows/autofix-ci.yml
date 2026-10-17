@@ -1,0 +1,49 @@
+name: autofix.ci
+
+on:
+  pull_request:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autofix-ci-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Format changed Python files with Ruff
+        run: |
+          pip install --upgrade ruff
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD~1"
+          fi
+          CHANGED_FILES=$(git diff --name-only "$BASE"...HEAD | grep -E '\.(py|pyi)$' || true)
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Formatting changed files:"
+            echo "$CHANGED_FILES"
+            echo "$CHANGED_FILES" | xargs ruff format || true
+            echo "$CHANGED_FILES" | xargs ruff check --fix-only || true
+          else
+            echo "No changed Python files to format."
+          fi
+
+      - uses: autofix-ci/action@v1
+        with:
+          fail-fast: false
+
