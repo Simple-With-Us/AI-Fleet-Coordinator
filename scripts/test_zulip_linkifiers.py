@@ -18,8 +18,9 @@ def expand(template: str, groups: dict) -> str:
 
 
 def linkify(text: str) -> str | None:
-    """The href of the first TARGET rule that matches `text`, in realm order, or None."""
-    for _, pattern, url in L.TARGET:
+    """The href of the first TARGET rule that matches `text`, in realm order after `order`, or None."""
+    rules = [r for r in L.TARGET if r[0] != L.GENERIC_ID] + [r for r in L.TARGET if r[0] == L.GENERIC_ID]
+    for _, pattern, url in rules:
         match = re.search(r"(?:^|(?<=[\s'\"(,:<]))(?:" + pattern + r")(?!\w)", text)
         if match:
             return expand(url, match.groupdict())
@@ -45,6 +46,15 @@ class TargetTest(unittest.TestCase):
     def test_existing_ids_are_unique(self):
         ids = [rule_id for rule_id, _, _ in L.TARGET if rule_id is not None]
         self.assertEqual(len(ids), len(set(ids)))
+
+
+class OrderTest(unittest.TestCase):
+    def test_generic_rule_moves_last(self):
+        live = [{"id": i} for i in (5117, L.GENERIC_ID, 6001)]
+        self.assertEqual(L.order(live), [5117, 6001, L.GENERIC_ID])
+
+    def test_already_last_needs_nothing(self):
+        self.assertIsNone(L.order([{"id": 5117}, {"id": L.GENERIC_ID}]))
 
 
 class PlanTest(unittest.TestCase):

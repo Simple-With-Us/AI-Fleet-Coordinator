@@ -13,9 +13,10 @@ Credentials, first hit wins:  --owner-rc PATH (or --rc PATH for a read-only run)
 ZULIP_EMAIL + ZULIP_API_KEY, then ~/.secrets/Zulip/Claude-zuliprc.  Keys are never printed.
 
 Rules are matched to live ones by id.  An id in TARGET that is missing live, or a TARGET row
-with no id, is created;  creation always lands last in realm order, which is safe here because
-every new row is disjoint from the generic `repo#id` fallback (it needs a `#`).  A live rule
-that TARGET does not list is reported and left alone unless --delete-unlisted is passed.
+with no id, is created.  Zulip puts a new rule last, so after any change the script reorders
+the realm (PATCH /realm/linkifiers) to keep the generic `repo#id` fallback last;  otherwise it
+would claim `PagerDuty#384` before the PagerDuty rule saw it.  A live rule that TARGET does not
+list is reported and left alone unless --delete-unlisted is passed.
 """
 from __future__ import annotations
 
@@ -71,7 +72,11 @@ TARGET: list[tuple[int | None, str, str]] = [
     (None, "(?P<id>(?:" + "|".join(SENTRY_PROJECTS) + ")-[0-9A-Z]+)",
      "https://simple-with-us.sentry.io/issues/?query={id}"),
     (None, "bc-(?P<id>[0-9a-f]{8}[A-Za-z0-9_-]*)", "https://cursor.com/agents/bc-{id}"),
+    # Spelled out (owner 2026-10-16) so it never reads as an app acronym.  Numeric ids also match the
+    # generic rule, which is why `order` keeps the generic rule last.
+    (None, "PagerDuty#(?P<id>[A-Z0-9]+)", "https://jays-services.pagerduty.com/incidents/{id}"),
 ]
+GENERIC_ID = 5139  # the `repo#id` fallback;  it must stay last or it claims every `X#n` before its own rule
 
 # What a reader types, and the href the server must render (None:  must stay plain text).
 CHECKS: list[tuple[str, str | None]] = [
@@ -95,6 +100,8 @@ CHECKS: list[tuple[str, str | None]] = [
     ("BOTFLEET-16", "https://simple-with-us.sentry.io/issues/?query=BOTFLEET-16"),
     ("CONGRESS-TRADE-4A", "https://simple-with-us.sentry.io/issues/?query=CONGRESS-TRADE-4A"),
     ("bc-a1b2c3d4-e5f6", "https://cursor.com/agents/bc-a1b2c3d4-e5f6"),
+    ("PagerDuty#384", "https://jays-services.pagerduty.com/incidents/384"),
+    ("PagerDuty#Q1ABC23", "https://jays-services.pagerduty.com/incidents/Q1ABC23"),
 ]
 
 
@@ -147,6 +154,14 @@ def plan(live: list[dict]) -> tuple[list[tuple], list[dict]]:
     return steps, unlisted
 
 
+def order(live: list[dict]) -> list[int] | None:
+    """The realm order with the generic rule moved last, or None when it already is."""
+    ids = [rule["id"] for rule in live]
+    if GENERIC_ID not in ids or ids[-1] == GENERIC_ID:
+        return None
+    return [i for i in ids if i != GENERIC_ID] + [GENERIC_ID]
+
+
 def check(zulip: Zulip) -> int:
     failures = 0
     for text, href in CHECKS:
@@ -177,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{kind:4} {rule_id or 'new':>5}  {pattern}  ->  {url}")
     for rule in unlisted:
         print(f"{'del' if args.delete_unlisted else 'keep'} {rule['id']:>5}  {rule['pattern']}  (not in TARGET)")
-    if not steps and not (unlisted and args.delete_unlisted):
+    if not steps and not (unlisted and args.delete_unlisted) and order(zulip.linkifiers()) is None:
         print("live rules already match TARGET")
     if not args.apply:
         return 0
@@ -191,6 +206,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.delete_unlisted:
         for rule in unlisted:
             zulip.call("DELETE", f"realm/filters/{rule['id']}")
+    reordered = order(zulip.linkifiers())
+    if reordered:
+        zulip.call("PATCH", "realm/linkifiers", {"ordered_linkifier_ids": json.dumps(reordered)})
+        print(f"moved the generic rule {GENERIC_ID} back to last")
     print(f"applied {len(steps)} change(s);  checking")
     return 1 if check(zulip) else 0
 
