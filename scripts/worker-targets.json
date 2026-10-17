@@ -1,0 +1,33 @@
+{
+  "agent-sync-mcp": {
+    "command": [
+      "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
+      "deploy",
+      "--config",
+      "scripts/agent-sync-mcp/wrangler.jsonc"
+    ],
+    "health": "https://agent-sync.jays.services/health",
+    "ok": true,
+    "access": true
+  },
+  "admin-jays-services": {
+    "command": [
+      "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
+      "deploy",
+      "--config",
+      "scripts/admin-panel/wrangler.jsonc"
+    ],
+    "health": "https://admin.jays.services/api/sections",
+    "sections": true,
+    "access": true
+  },
+  "pr-conflict-watch": {
+    "command": [
+      "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
+      "deploy",
+      "--config",
+      "workers/pr-conflict-watch/wrangler.toml"
+    ],
+    "health": null
+  }
+}
