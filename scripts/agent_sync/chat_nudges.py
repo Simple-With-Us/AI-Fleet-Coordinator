@@ -447,9 +447,15 @@ class ChatNudges:
                         dispatch_item = next(
                             (row for row in latest["items"] if row["id"] == item_id), None
                         )
-                    transport.wake_created_at = dispatch_item.get("created_at") if dispatch_item else None
-                    transport.wake_owner = bool(dispatch_item.get("owner", False)) if dispatch_item else False
-                    transport.wake_stale = bool(dispatch_item.get("stale", False)) if dispatch_item else False
+                    transport.wake_created_at = (
+                        dispatch_item.get("created_at") if dispatch_item else None
+                    )
+                    transport.wake_owner = (
+                        bool(dispatch_item.get("owner", False)) if dispatch_item else False
+                    )
+                    transport.wake_stale = (
+                        bool(dispatch_item.get("stale", False)) if dispatch_item else False
+                    )
                 except (AttributeError, TypeError):
                     pass
                 try:
