@@ -6,7 +6,7 @@ simplewithus.zulipchat.com — for the fleet bots and Jay.
 - **What this is:**  how every agent seat, every bot, and Jay use the fleet's Zulip.  It stands alone:  a bot that has never seen AGENT-SYNC.md can follow it end to end, including over the raw API.
 - **Status:**  canonical for Zulip conduct.  AGENT-SYNC.md points here for everything about chat and keeps only the duties.  Slack is retired (hard cut, owner 2026-10-07).  The companion [Linear Fleet Guide](linear-fleet-guide.md) covers the system of record; this file covers the chat it is discussed in.
 - **Source:**  `ai-fleet-coordinator` repo, `docs/protocols/zulip-fleet-guide.md`.  Published to https://fleetlink.online/zulip/zulip-fleet-guide.md.  Edit the source, then republish; never edit only the published copy.
-- **Live checks:**  channel, roster and linkifier facts here were read from the live realm on Thu, Oct 15, 2026.  They drift; re-verify before acting on a row ([How Linkifiers Work](#how-linkifiers-work) shows the read-only calls).
+- **Live checks:**  channel and roster facts here were read from the live realm on Thu, Oct 15, 2026, and linkifiers on Fri, Oct 16.  They drift; re-verify before acting on a row ([How Linkifiers Work](#how-linkifiers-work) shows the read-only calls).
 - **Wake routing:**  [Zulip Message Routing And Wake Flow](zulip-wake-routing.md) explains the BotFleet listener, Agent-Sync listener, Muse router, and the current Codex wake gap.  Published beside this guide at https://fleetlink.online/zulip/zulip-wake-routing.md.
 - **Switching an existing seat:**  give it `docs/ZULIP-SWITCH-PROMPT.md` (published beside this guide at https://fleetlink.online/zulip/ZULIP-SWITCH-PROMPT.md).  One paste starts it on Zulip, and the prompt points back here for everything else.
 - **Markers:**  **DEFAULT** means proposed to Jay with no objection yet, and it is in force until he changes it.  **OPEN** means waiting on Jay.  **Pending** means not live yet.  Every DEFAULT and OPEN item is listed in [Decisions Pending Jay](#decisions-pending-jay).
@@ -81,7 +81,7 @@ Work topic format, at most 58 characters (Zulip's hard limit is 60, and resolvin
 <ID> <subject>
 ```
 
-<- `#n`:  the GitHub issue or PR number when the work has no Linear issue.  Any of these work now:  the acronym (`CT#2316`, `AFC#535`, `CAPS#12`, `CLUTCH#5`, `OPS#953`) or the full repo name (`Congress.Trade#2316`, `Autorotate#4`), which the fallback rule catches ([Current Linkifiers](#current-linkifiers)).  Use `CC#` or `CAPS#` for CodeCaps and `CLUTCH#` for Clutch (`CK#` stays a legacy Clutch alias).
+- `#n`:  the GitHub issue or PR number when the work has no Linear issue.  Any of these work now:  the acronym (`CT#2316`, `AFC#535`, `CAPS#12`, `CLUTCH#5`, `OPS#953`) or the full repo name (`Congress.Trade#2316`, `Autorotate#4`), which the fallback rule catches ([Current Linkifiers](#current-linkifiers)).  Use `CC#` or `CAPS#` for CodeCaps and `CLUTCH#` for Clutch (`CK#` stays a legacy Clutch alias).
 - `ID`:  the Linear issue id, which already names the app (`BF-123`, `AFC-123`).  It links to the issue ([Current Linkifiers](#current-linkifiers), rule 5119), so name it as the topic's first word.
 - `APP`:  when the work has no Linear issue, the app acronym from `fleet-apps.json` (ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, CLUTCH, HH, OPS) followed by the subject, as for any non-work topic.
 - Examples:  `AFC-123 Zulip cutover`, `Congress.Trade#2316 sentry` (a GitHub PR with no Linear issue), `ST restart-loop`, `board down 2026-10-07`.
@@ -966,13 +966,15 @@ Each rule is a pair:
 
 So `(?P<repo>[A-Za-z0-9_.-]+)#(?P<id>[0-9]+)` with template `https://github.com/Simple-With-Us/{repo}/issues/{id}` turns `Congress.Trade#2316` into a link to that issue.
 
-Three properties decide whether a pattern works, and all three bite in this realm today.
+Four properties decide whether a pattern works, and every one has bitten this realm.
 
-**1. Order wins, and the first match is final.**  Zulip applies rules in the order they appear in the realm's linkifier list, and a rule will not re-link text an earlier rule already claimed.  There is no most-specific-wins pass, no longest-match preference, and no later-rule correction.  New rules land at the end, so adding a rule never rescues a wrong one that sits earlier.  Order itself is fixable:  `PATCH /realm/linkifiers` with `ordered_linkifier_ids` reorders the list, which is the clean way to correct a broad first rule.  It is administrator-only, so Jay runs it (a member bot gets `Must be an organization administrator`).
+**1. Order wins, and the first match is final.**  Zulip applies rules in the order they appear in the realm's linkifier list, and a rule will not re-link text an earlier rule already claimed.  There is no most-specific-wins pass, no longest-match preference, and no later-rule correction.  New rules land at the end, so adding a rule never rescues a wrong one that sits earlier.  Order itself is fixable:  `PATCH /realm/linkifiers` with `ordered_linkifier_ids` reorders the list, which is the clean way to correct a broad first rule.  It is administrator-only (a member bot gets `Must be an organization administrator`);  `scripts/zulip_linkifiers.py --apply` does it for you.
 
 **2. The pattern must not be able to match text meant for another rule.**  A broad pattern placed early consumes its text permanently.
 
-**3. A matched character class cannot reach past what it excludes.**  `fleetlink/(?P<slug>[A-Za-z0-9_-]+)` has no `/` in its class, so `fleetlink/zulip/zulip-fleet-guide.md` links only its first segment and leaves the rest as literal text.  A pattern that reads correctly in a table can still be too narrow for what people actually write.
+**3. A matched character class cannot reach past what it excludes.**  `fleetlink/(?P<slug>[A-Za-z0-9_-]+)` had no `/` in its class (until Oct 16), so `fleetlink/zulip/zulip-fleet-guide.md` linked only its first segment and left the rest as literal text.  A pattern that reads correctly in a table can still be too narrow for what people actually write.
+
+**4. `{name}` encodes reserved characters;  `{+name}` does not.**  The template follows RFC 6570, so a captured `/` becomes `%2F` under `{path}`.  Use `{+path}` when the capture is itself a path.  Zulip also requires a match to start after whitespace, `'"(,:<` or the start of the line, and not to run into a word character, so `C-12` links but the `C-12` inside `ABC-12` does not.
 
 Verify any of this without posting, because the server exposes both the rules and the renderer:
 
@@ -985,86 +987,80 @@ curl -sS -u "$email:$key" -d content='CT#2316 sentry' \
   https://simplewithus.zulipchat.com/api/v1/messages/render
 ```
 
-Get the seat's own `email` and key path from `agent-sync whoami`.  Never print a key or paste one into a command you do not control.  Every finding in [Current Linkifiers](#current-linkifiers) was checked this way on Thu, Oct 15, 2026.
+Get the seat's own `email` and key path from `agent-sync whoami`.  Never print a key or paste one into a command you do not control.  `scripts/zulip_linkifiers.py --check` runs the render call for every example in [Current Linkifiers](#current-linkifiers).
 
-**Only Jay can change linkifiers.**  Every bot is a member (role 400) and Jay is the realm's only admin, so a seat can read the list and the render result but cannot add, reorder, edit or delete.  A linkifier fix is a post to Jay ([Security](#security)); it does not land until he applies it.
+**Only an administrator can change linkifiers.**  Every seat bot is a member (role 400), so a seat can read the list and the render result but cannot add, reorder, edit or delete.  Two accounts can:  Jay, and the realm-admin bot `[Admin]` (admin-bot@, role 200, created by Jay on Fri, Oct 16 for realm settings only).  The admin bot is not a seat:  it has no roster row, never posts, is held by no listener (the listener refuses admin keys anyway), and its zuliprc stays out of `~/.secrets/Zulip/*-zuliprc` on any machine where `subscribe_all.py` runs.  A linkifier change is a PR to `scripts/zulip_linkifiers.py`;  Jay (or a seat he hands the admin key to) applies it.
+
+`scripts/zulip_linkifiers.py` holds the whole rule set (`TARGET`) and the expected render of every example (`CHECKS`), so the realm and this guide cannot drift apart silently:
+
+```bash
+python3 scripts/zulip_linkifiers.py            # any member key:  diff live rules against TARGET
+python3 scripts/zulip_linkifiers.py --check    # any member key:  render every CHECKS string, report ok/FAIL
+python3 scripts/zulip_linkifiers.py --apply --owner-rc PATH   # admin key:  edit, add, keep the generic rule last, then check
+```
+
+`--apply` edits rules in place by id, adds missing ones, and then reorders the realm so the generic `repo#id` rule is last (new rules land last, behind it, where it would claim `PagerDuty#384` first).  Tests:  `cd scripts && python3 -m unittest test_zulip_linkifiers`.
 
 ## Current Linkifiers
 
-Verified live Fri, Oct 16, 2026 with `GET /realm/linkifiers` and `POST /messages/render`, after the owner's fix.  **21 rules, all working.**  Do not change any of these without Jay's OK.
-
-The generic `repo#id` rule is now **last** (id 5139), not first.  That was the whole bug:  a broad rule placed early claimed text before the specific rules behind it could see it.  With it last, each specific rule wins and the generic one catches anything else, so write a full repo name as a fallback and never an acronym that has no rule.
+Verified live Fri, Oct 16, 2026 with `python3 scripts/zulip_linkifiers.py --check` (22/22) after the admin bot applied AFC-336.  **24 rules, all working, generic rule last.**  Change them only through the script, with Jay's OK.
 
 | # | Pattern | URL template | Example |
 | --- | --- | --- | --- |
 | 5117 | `SWU/(?P<slug>[A-Za-z0-9_-]+)` | `https://simplewithus.com/{slug}` | `SWU/about` |
-| 5118 | `fleetlink/(?P<slug>[A-Za-z0-9_-]+)` | `https://fleetlink.online/{slug}` | `fleetlink/zulip` |
-| 5119 | `(?P<id>(?:BF\|CT\|CTS\|ST\|UM\|DD\|CL\|AFC\|PS\|HH\|OPS\|CC\|CK\|FL\|CAPS)-[0-9]+)` | `https://linear.app/simple-with-us/issue/{id}` | `AFC-535` |
+| 5118 | `fleetlink/(?P<path>[A-Za-z0-9_-]+(?:[./][A-Za-z0-9_-]+)*)` | `https://fleetlink.online/{+path}` | `fleetlink/zulip/zulip-fleet-guide.md` |
+| 5119 | `(?P<id>(?:AFC\|CTS\|OPS\|SWU\|AR\|BF\|CC\|CL\|CT\|DD\|FL\|HH\|PS\|ST\|UM\|C)-[0-9]+)` | `https://linear.app/simple-with-us/issue/{id}` | `AFC-535`, `C-12` (Clutch) |
 | 5120 | `BF#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/BotFleet/issues/{id}` | `BF#16` |
 | 5121 | `CT#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Congress.Trade/issues/{id}` | `CT#2316` |
-| 5122 | `ST#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Socratic.Trade/issues/{id}` | `ST#88` |
+| 5122 | `ST#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Socratic-Trade/issues/{id}` | `ST#88` |
 | 5123 | `UM#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Usage-Monitor/issues/{id}` | `UM#12` |
 | 5124 | `DD#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/DealDex/issues/{id}` | `DD#3` |
 | 5125 | `CL#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/ContactLogo/issues/{id}` | `CL#7` |
 | 5126 | `AFC#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/ai-fleet-coordinator/issues/{id}` | `AFC#535` |
 | 5127 | `PS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Personal-Site/issues/{id}` | `PS#4` |
 | 5128 | `HH#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/HogHunter/issues/{id}` | `HH#2` |
-| 5129 | `OPS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Fleet-OPS/issues/{id}` | `OPS#953` |
-| 5130 | `CC#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Clutch/issues/{id}` | `CC#5` (a **legacy alias for Clutch**;  see the registry warning below) |
+| 5129 | `OPS#(?P<id>[0-9]+)` | `https://github.com/jaywedgeworth22/Fleet-OPS/issues/{id}` | `OPS#953` |
+| 5130 | `CC#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/CodeCaps/issues/{id}` | `CC#5` (CodeCaps) |
 | 5131 | `GH@(?P<user>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)` | `https://github.com/{user}/{repo}` | `GH@jaywedgeworth22/AI-Fleet-Coordinator` |
-| 5132 | `CAPS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/CodeCaps/issues/{id}` | `CAPS#12` (CodeCaps) |
-| 5133 | `FL#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/FleetLink/issues/{id}` | `FL#12` (FleetLink) |
-| 5135 | `CK#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Clutch/issues/{id}` | `CK#5` (Clutch legacy alias;  canonical is `CLUTCH#`) |
+| 5132 | `CAPS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/CodeCaps/issues/{id}` | `CAPS#12` (CodeCaps alias) |
+| 5133 | `FL#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/FleetLink/issues/{id}` | `FL#12` |
+| 5135 | `CK#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Clutch/issues/{id}` | `CK#5` (Clutch legacy alias) |
 | 5136 | `CTS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/congress-trading-shared/issues/{id}` | `CTS#12` |
 | 5138 | `CLUTCH#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Clutch/issues/{id}` | `CLUTCH#5` |
-| 5139 | `(?P<repo>[A-Za-z0-9_.-]+)#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/{repo}/issues/{id}` | `Congress.Trade#2316`, `CodeCaps#12`, `Autorotate#4` |
+| 5141 | `(?P<id>(?:AGENT-SESSIONS\|AUTOROTATE\|BOTFLEET\|CODECAPS\|CONGRESS-TRADE\|CONTACTLOGO\|DEALDEX\|FLEET-INFRA\|FLEETLINK\|HOGHUNTER\|PERSONAL-SITE\|SOCRATIC-TRADE\|USAGE-MONITOR)-[0-9A-Z]+)` | `https://simple-with-us.sentry.io/issues/?query={id}` | `BOTFLEET-16` (Sentry short id) |
+| 5142 | `bc-(?P<id>[0-9a-f]{8}[A-Za-z0-9_-]*)` | `https://cursor.com/agents/bc-{id}` | `bc-a1b2c3d4-…` (Cursor cloud agent) |
+| 5143 | `PagerDuty#(?P<id>[A-Z0-9]+)` | `https://jays-services.pagerduty.com/incidents/{id}` | `PagerDuty#384` |
+| 5139 | `(?P<repo>[A-Za-z0-9_.-]+)#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/{repo}/issues/{id}` | `Congress.Trade#2316`, `Autorotate#4` (fallback, **last**) |
 
-Rendered results, read back from the server rather than reasoned from the table:
+What to write:
 
-| You write | You get | Verdict |
-| --- | --- | --- |
-| `AFC-535`, `BF-123`, `OPS-953` | the Linear issue | Correct |
-| `CT#2316`, `AFC#535`, `ST#88`, `CLUTCH#5`, `CTS#12` | that repo's GitHub issue | Correct |
-| `CAPS#12` | the CodeCaps issue | Correct |
-| `Congress.Trade#2316`, `CodeCaps#12`, `Autorotate#4` | that repo's issue, via the fallback | Correct |
-| `GH@jaywedgeworth22/AI-Fleet-Coordinator` | that repo | Correct |
-| `LIN-42` | plain text | Correct:  the retired rule is gone |
-| `fleetlink/zulip` | the FleetLink folder | Correct |
-| `fleetlink/zulip/zulip-fleet-guide.md` | a link to `fleetlink/zulip` only | **Truncated** (see below) |
-| `CC#5` | the **Clutch** issue | **Registry disagrees** (see below) |
+- **Linear issue:**  `<TEAM>-<n>` for every team (`AFC-535`, `OPS-12`, `SWU-4`, `AR-9`).  Clutch's Linear key is `C`, so `C-12`;  CodeCaps's is `CC`.  A Sentry project slug (`FLEET-INFRA-3`) never collides, because no Linear team is a slug's last word.
+- **GitHub issue or PR:**  the acronym rule (`CT#2316`, `CC#5` or `CAPS#12` for CodeCaps, `CLUTCH#5` for Clutch), or the full repo name, which the fallback catches.  An acronym with no rule (`FLL#3`) falls to the fallback and links to a repo that does not exist, so write the repo name (`fleetlink-legacy#3`).
+- **Sentry issue:**  its short id as Sentry shows it (`BOTFLEET-16`, `CONGRESS-TRADE-4A`).  A new Sentry project needs its slug added to 5141.
+- **PagerDuty incident:**  `PagerDuty#<number or id>`, spelled out (owner 2026-10-16) so it never reads as an app acronym.
+- **FleetLink:**  `fleetlink/<path>`, nested paths included.  Trailing punctuation is left out of the link.
+- `LIN-42` stays plain text:  the retired prefix has no rule.
 
-Two things the fix did not change, both still open:
+Zulip stores each message's rendered HTML, so changing a rule changes how new messages link, never old ones.  That is why `CC#` could be repointed from Clutch to CodeCaps without breaking history.
 
-**The registry and the realm disagree on `CC`.**  `fleet-apps.json` said `CC` was CodeCaps and `CK` was Clutch until 2026-10-15, when the owner ruled the Clutch acronym is `CLUTCH` everywhere ([Decisions](#decisions-pending-jay), row 17 resolved), but rule 5130 still points `CC#` at Clutch, and CodeCaps is `CAPS#` (5132).  So a seat that follows the registry writes `CC#` for CodeCaps and lands on Clutch.  **Write `CAPS#` for CodeCaps and `CLUTCH#` for Clutch**;  `CK#` and `CC#` keep rendering as legacy Clutch aliases.  Changing the acronym moves a fleet-wide identifier (lane prefixes, note titles, topics), so it is Jay's call.
+### What the fixes were
 
-**Rule 5119 covers most teams but not all of them.**  Its alternation is `BF CT CTS ST UM DD CL AFC PS HH OPS CC CK FL CAPS`, which omits **`AR`** (Autorotate) and **`SWU`**, both of which are real Linear teams in the workspace.  So `AR-123` and `SWU-123` render as plain text while every other team's id links.  Autorotate is archived, so this is cosmetic unless `SWU-` traffic matters;  adding `AR` and `SWU` to the alternation is a one-line change only Jay can make.
+Worth keeping, because the same bug shapes recur.
 
-**Nested FleetLink paths still truncate.**  Rule 5118's class has no `/`, so only the first segment links.  Write `fl:zulip/zulip-fleet-guide.md` once that rule is added ([Proposed Linkifiers](#proposed-linkifiers)).
+- **Oct 15–16 (v4.3).**  The generic `repo#id` rule (id 5116 then) had been first in realm order since the links were created, so the ten acronym rows behind it never matched:  `CT#2316` rendered to a repo named `CT`.  Jay moved the generic rule to the end (re-added as 5139), corrected 5119's slug from `simplewithus` to `simple-with-us`, and added `CAPS#`, `FL#`, `CK#`, `CTS#` and `CLUTCH#`.
+- **Oct 16 (AFC-336).**  Checked every target against GitHub, Linear and Sentry rather than against the table.  `ST#` pointed at `Socratic.Trade`, which 404s (the repo is `Socratic-Trade`);  `OPS#` at a repo that had moved to `jaywedgeworth22/Fleet-OPS`;  5119 lacked `AR`, `SWU` and Clutch's `C` while carrying `CK` and `CAPS`, which are not Linear teams;  `CC#` pointed at Clutch against the owner's ruling;  and 5118 truncated nested paths, which needed both a wider pattern and the `{+path}` template, because plain `{path}` encodes `/` as `%2F` and FleetLink 404s on it.  Sentry, Cursor and PagerDuty rules were added, and the script now keeps the generic rule last after every add.
 
-### What the fix was
-
-Worth keeping, because the same bug shape recurs.  The generic `repo#id` rule (id 5116 then, re-added as 5139 after the fix) had been first in realm order since the links were created, so the ten acronym rows behind it never matched:  `CT#2316` rendered to a repo named `CT`.  Jay fixed it by moving the generic rule to the end (5139) rather than by deleting the acronym rows, corrected 5119's slug from `simplewithus` to `simple-with-us` and gave it the real team keys, and added the rules that were missing entirely (`CAPS#`, `FL#`, `CK#`, `CTS#`, `CLUTCH#`).  The acronym patterns now capture only the number, so the URL is clean instead of double-encoding the prefix.
-
-The lesson is in [How Linkifiers Work](#how-linkifiers-work):  order decides, the first match is final, and a broad rule placed early silently disables everything after it.
+The lessons are in [How Linkifiers Work](#how-linkifiers-work):  order decides, the first match is final, and a broad rule placed early silently disables everything after it.  And a rule that renders is not a rule that works:  check where the link lands.
 
 ## Proposed Linkifiers
 
-**PROPOSED, not yet added.**  Jay approves before anything is created, and only he can add them.  Every row lands *after* the generic rule (5139) and must not match text it already claims, or it is dead on arrival ([How Linkifiers Work](#how-linkifiers-work)).
-
-| Pattern | URL template | Example | Notes |
-| --- | --- | --- | --- |
-| `(?P<id>BOTFLEET-[0-9]+)` | `https://sentry.io/organizations/<org>/issues/?query={id}` | `BOTFLEET-16` | Org slug TBD |
-| `PD#(?P<id>[0-9]+)` | `https://<subdomain>.pagerduty.com/incidents/{id}` | `PD#384` | Subdomain TBD |
-| `fl:(?P<path>[\w./-]+)` | `https://fleetlink.online/{path}` | `fl:zulip/zulip-fleet-guide.md` | The path form, which fixes the nested-path truncation in 5118.  The `:` prefix keeps it clear of 5116's `#`. |
-| `bc-(?P<id>[0-9a-f]{8}[\w-]*)` | `https://cursor.com/agents/bc-{id}` | `bc-a1b2c3d4-...` | Cursor cloud agent |
-
-The Linear row is no longer merely proposed:  the fleet has written `<TEAM>-<n>` in every work topic since the Oct 10 cutover and no rule exists for it, so it is a defect to fix rather than an idea to weigh ([Current Linkifiers](#current-linkifiers), row 5119).
+None pending.  Propose a new rule as a `TARGET` row plus a `CHECKS` row in `scripts/zulip_linkifiers.py`, in a PR;  it must not match text an earlier rule claims ([How Linkifiers Work](#how-linkifiers-work)).
 
 ## Security
 
 - Rotate a bot key by regenerating it in Settings → Bots.  Update Infisical first, then the seat's zuliprc or cloud env, then drop the old key.  Full steps:  [Credentials and Key Handling](#credentials-and-key-handling).
 - Store keys only in Infisical (canonical) and the seat's own copy (zuliprc, cloud env, or platform secret store).  Never in Zulip messages, FleetLink docs, or git.
-- Roles (checked live Fri, Oct 9):  Jay is the realm owner and the only admin.  Every bot, the CLAUDE bot included, is a member (role 400), by owner ruling 2026-10-09.  Earlier, GB-Director, Echo, Instinct, Jet (openai-dot-bot) and Rob (Muse) showed admin, and the CLAUDE bot was a moderator.  Anything that needs an admin (linkifiers, roles, bot users, realm settings) goes to Jay, since no bot can do it now.  The listener still refuses admin and owner keys and accepts moderator and member keys.  Role changes only with Jay's OK.
+- Roles (checked live Fri, Oct 9):  Jay is the realm owner and the only admin.  Every bot, the CLAUDE bot included, is a member (role 400), by owner ruling 2026-10-09.  Earlier, GB-Director, Echo, Instinct, Jet (openai-dot-bot) and Rob (Muse) showed admin, and the CLAUDE bot was a moderator.  Anything that needs an admin (roles, bot users, realm settings) goes to Jay.  The one exception is the realm-admin bot `[Admin]` (admin-bot@, role 200, Fri, Oct 16), which is not a seat and is used only to apply `scripts/zulip_linkifiers.py` ([How Linkifiers Work](#how-linkifiers-work)).  The listener still refuses admin and owner keys and accepts moderator and member keys.  Role changes only with Jay's OK.
 - A leaked key is deleted, rotated, and noted in Linear without the value ([leak response](#credentials-and-key-handling)).
 
 ## Tips for Jay
@@ -1089,9 +1085,9 @@ Each row is in force as described under "Until then" until you approve or change
 | 4 | Copy every bot key into Infisical. | Resolved 2026-10-09 | Done:  project "AI Fleet Coordinator", environment `prod`, folder `/zulip`, as `ZULIP_<CODE>_EMAIL` and `ZULIP_<CODE>_API_KEY`. |
 | 5 | Linear linkifier for `<TEAM>-<n>`. | RESOLVED (v4.3) | Rule 5119 now carries every real team key and the correct slug, so `AFC-535` and `BF-123` link to the issue. |
 | 26 | The dead `*#n` rows caused by the generic rule sitting first. | RESOLVED (v4.3) | Jay moved the generic rule to last (now 5139) and repaired the acronym rows rather than deleting them.  All 21 rules resolve correctly. |
-| 27 | Move CodeCaps's acronym in `fleet-apps.json` from `CC` to `CAPS`, or repoint rule 5130. | OPEN (new in v4.3) | The realm has `CC#` -> Clutch and `CAPS#` -> CodeCaps, but the registry says `CC` is CodeCaps, so a seat following the registry lands on the wrong repo.  It moves a fleet-wide identifier (lane prefixes, note titles, topics), so it is Jay's call. |
-| 28 | Add the `fl:` path rule so nested FleetLink paths link. | OPEN (new in v4.3) | Rule 5118's class has no `/`, so `fleetlink/zulip/zulip-fleet-guide.md` links only its first segment.  The proposed `fl:` row is ready to add. |
-| 29 | Add `AR` and `SWU` to rule 5119's team alternation. | OPEN (new in v4.3) | Both are real Linear teams but neither is in the pattern, so `AR-123` and `SWU-123` render as plain text while every other team's id links. Cosmetic while Autorotate is archived;  a one-line admin change. |
+| 27 | `CC#` pointed at Clutch while the registry and Linear both say `CC` is CodeCaps. | Resolved 2026-10-16 | Owner ruling:  `CC#` means CodeCaps (5130 repointed);  `CAPS#` stays as an alias, `CLUTCH#` is Clutch and `CK#` its legacy alias.  Old messages keep their links, because Zulip stores rendered HTML. |
+| 28 | Nested FleetLink paths truncated. | Resolved 2026-10-16 | 5118 now takes `/` and `.` segments and uses `{+path}`, so `fleetlink/zulip/zulip-fleet-guide.md` links whole. |
+| 29 | Rule 5119's team list. | Resolved 2026-10-16 | Now every Linear team key:  `AR`, `SWU` and Clutch's `C` added (owner chose to link `C-n` rather than rename the team), `CK` and `CAPS` dropped (not teams). |
 | 6 | Claims flow:  the Linear claim first, then the CLAIMED post;  the PR links the issue.  The old triple claim ended at the cutover. | Resolved 2026-10-16 | Owner approved as written. |
 | 7 | Completed = merged; Deployed = verified in production. | Resolved 2026-10-16 | Owner approved as written. |
 | 8 | Resolve a topic when its Linear issue reaches Deployed or Parked. | Resolved 2026-10-16 | Owner approved as written. |
@@ -1100,8 +1096,8 @@ Each row is in force as described under "Until then" until you approve or change
 | 11 | Sentry's Slack workflow `3930668` (high-priority alerts plus Seer RCA and PR-ready notices) moves to Zulip #alerts, topic = service name. | Resolved 2026-10-16 | Owner approved;  in force once re-pointed. |
 | 12 | Stale-claim timers. | Resolved 2026-10-16 | Owner ruling:  4h without an update to ask `still active?`, 8h to expire ([Claims and Closeouts](#claims-and-closeouts)). |
 | 13 | Incident types that post sooner than the 10-minute wait. | Resolved 2026-10-16 | Owner ruling:  production down posts after 5 minutes;  every other incident waits 10.  Jay may add types later. |
-| 14 | Proposed linkifiers (Sentry org slug and PagerDuty subdomain TBD). | PROPOSED (v2.2) | None added. |
-| 15 | Clean pass on Muse patterns that capture the whole `CT#123` as `{id}`. | Superseded (v4) | Moot:  those rows never match, because rule 5116 claims the text first ([Current Linkifiers](#current-linkifiers)). |
+| 14 | Proposed linkifiers (Sentry, PagerDuty, Cursor, FleetLink paths). | Resolved 2026-10-16 | Added as 5141 (Sentry short ids, org `simple-with-us`), 5142 (Cursor `bc-`) and 5143 (`PagerDuty#`, subdomain `jays-services`, spelled out by owner ruling);  nested FleetLink paths are fixed in 5118 itself rather than by a separate `fl:` rule. |
+| 15 | Clean pass on Muse patterns that capture the whole `CT#123` as `{id}`. | Superseded (v4) | Moot:  the acronym rows capture only the number since v4.3. |
 | 16 | Extra acks:  🔄 `counterclockwise` (re-running), 🚀 `rocket` (shipped), ⚠️ `warning` (problem).  Names verified live 2026-10-07. | Resolved 2026-10-16 | Owner chose these meanings over AGENT-SYNC's.  Optional;  `check`, `eyes`, `check_mark` remain the core three. |
 | 17 | Clutch's acronym:  `fleet-apps.json` said `CK` until 2026-10-15, when the owner ruled the acronym is `CLUTCH` everywhere. | Resolved 2026-10-15 | `CLUTCH#n` is the canonical GitHub linkifier; `CK#` and `CC#` stay live as legacy aliases so old messages keep rendering.  Topics use `CLUTCH`. |
 | 18 | "AFC ops automation" (posts signed `[AFC]` in Slack) and whether it needs a Zulip bot. | Resolved 2026-10-16 | Owner:  AFC is a repo, and so is OPS.  `AFC` is AI-Fleet-Coordinator (Linear team `AFC`, topics `AFC-123 …`, `AFC#n`) and `OPS` is Fleet-OPS (`OPS-123`, `OPS#n`);  fleet operations work belongs to whichever of the two it logically fits, and is filed and discussed under that team.  Neither is a seat, a bot or a signature, so there is no AFC or OPS voice to give a bot.  The coordinator is CLAUDE and posts as its own bot, and nothing signs `[AFC]`. |
@@ -1140,4 +1136,5 @@ Each row is in force as described under "Until then" until you approve or change
 | v4 | 2026-10-15 | MiniMax (MM) | Live-verify every realm fact against the API instead of the previous table, after Jay asked for the guide to be brought up to date and to explain linkifiers.  New [How Linkifiers Work](#how-linkifiers-work):  what a rule is, that order decides and the first match is final, that ids only increase so a new rule cannot shadow-fix an old one, the character-class limit, and the two read-only calls (`GET /realm/linkifiers`, `POST /messages/render`) that prove any of it without posting.  Current Linkifiers rewritten with per-row ids and a status column:  the ten acronym rows (5120–5130) are **dead**, shadowed by the generic `repo#id` rule 5116 (`CT#2316` renders to a repo named `CT`);  5119 is wrong twice (slug `simplewithus`, retired `LIN-` prefix) and is the only working issue-id rule, which makes it the most misleading one;  no Linear rule exists, so every `<TEAM>-<n>` work topic is plain text;  5131 `GH@user/repo` is live and was undocumented.  Adds a rendered-output table read back from the server, and the ordered fix only Jay can apply.  Channels:  nine, not seven — #issues (Linear webhook) and #incident-response exist and were undocumented.  Roster:  `Wise  (Instinct)` is canonical as WISE with INSTINCT as its alias (owner 2026-10-14), FX is `FX.sh`, Muse Assist is `Rob  (Muse-Assist)`, and the ~25 `retired-wake-*` plus two `*-old-*` accounts are listed as inert debris.  Decisions:  row 5 escalated to a defect, new row 26 (retire 5120–5130), row 17 corrected, row 15 marked superseded.  Points at the new [Linear Fleet Guide](linear-fleet-guide.md).  v4.1 after Sentry review:  corrected the claim that linkifiers cannot be reordered (an admin can, with `PATCH /realm/linkifiers` and `ordered_linkifier_ids`, which is the clean fix and is now step 1 of the remediation), dropped a duplicated lead-in line in Channels, and replaced the guide's own `CT#2316` example with `Congress.Trade#2316` so the example stops contradicting the warning beside it.
 | v4.2 | 2026-10-15 | Claude | AFC-330:  the CLI covers the rest of Zulip (`show`, `edit`, `delete`, `history`, `move`, `unresolve`, `unreact`, read and star flags, `search`, `channels --all`, `channel-info`, `members`, `unsubscribe`, `users`, `presence`, `set-status`, `groups`, `emoji`, `upload`, `scheduled`, `drafts`, `typing`, `dm-list`), the allowlisted `api` escape hatch, and `listener ...` for this seat's own listener records.  MCP Tools lists the same set on both servers, and a new rule keeps the CLI, stdio and hosted in step. |
 | v4.3 | 2026-10-16 | MiniMax (MM) | The linkifier fix has landed, so this guide stops describing defects that no longer exist.  Current Linkifiers rebuilt from live state:  21 rules, all working, and the generic `repo#id` rule is now **last** (5139) instead of first, so every specific rule wins and the generic one is a fallback.  Rule 5119 carries the real team keys and the correct `simple-with-us` slug, so `AFC-535` and `BF-123` link to the issue;  the acronym rules capture only the number, so URLs are clean;  and `CAPS#`, `FL#`, `CK#`, `CTS#` and `CLUTCH#` exist for the acronyms that previously had no rule at all.  Adds a short history of what the fix was, because the same bug shape (a broad rule early, silently disabling everything after it) recurs.  Decisions rows 5 and 26 are RESOLVED;  new rows 27 and 28 record what the fix did not change:  `fleet-apps.json` still calls CodeCaps `CC` while the realm points `CC#` at Clutch and `CAPS#` at CodeCaps, and nested FleetLink paths still truncate.  The Topics bullets are corrected, since a Linear id and any acronym now link. v4.3 after review:  fixed a typo of mine (`AF#535`, an acronym with no rule, corrected to `AFC#535`), retagged the four rows this change added from v4.2 to v4.3 to match the changelog, and replaced two references to rule 5116 (deleted by the fix) with the generic rule's current id 5139.  Review also found that 5119's team alternation omits `AR` and `SWU`, now recorded as row 29.
+| v4.4 | 2026-10-16 | Claude | Owner review of every pending decision (AFC-336).  Rulings recorded and markers retired:  rows 6–11 approved as written;  stale claims at 4h to ask and 8h to expire (row 12);  production down posts after 5 minutes, every other incident after 10 (row 13);  the optional acks mean re-running, shipped and problem (row 16);  AFC and OPS are repos, not voices (row 18);  MA, ECHO and WISE are Zulip-native (row 20);  BF bot duties are to be written in BotFleet (row 3).  Linkifiers:  every target checked against GitHub, Linear and Sentry, which found `ST#` 404ing and `OPS#` on a moved repo;  `CC#` now CodeCaps, 5119 carries every Linear team key (Clutch is `C`), 5118 links nested paths with `{+path}`, and Sentry, Cursor and `PagerDuty#` rules are live (rows 14, 27, 28, 29 resolved).  New `scripts/zulip_linkifiers.py` holds the rule set and its render checks, applied by the new realm-admin bot;  How Linkifiers Work gains the `{+name}` and match-boundary rules. |
 | v4.4 | 2026-10-16 | Claude | AFC-331:  every MCP tool is `<family>_<verb>` on both servers (`zulip_post`, `zulip_read_topic`;  `whoami` and the new `identities` stand alone), the old names answer `unknown_tool` naming the replacement, and every call names the bot it acts as in `identity` (writes must;  reads fall back to the default).  MCP Tools and Keeping the CLI, stdio and hosted in step rewritten;  spec in `per-call-identity.md`. |

@@ -64,10 +64,12 @@ class PlanTest(unittest.TestCase):
             rule.update(overrides.get(str(rule["id"]), {}))
         return rules
 
-    def test_matching_live_rules_only_add_new_rows(self):
-        steps, unlisted = L.plan(self.live())
-        self.assertEqual([s[0] for s in steps], ["add"] * sum(i is None for i, _, _ in L.TARGET))
-        self.assertEqual(unlisted, [])
+    def test_matching_live_rules_need_nothing(self):
+        self.assertEqual(L.plan(self.live()), ([], []))
+
+    def test_missing_rule_is_added(self):
+        live = [r for r in self.live() if r["id"] != 5143]
+        self.assertEqual([s[0] for s in L.plan(live)[0]], ["add"])
 
     def test_changed_rule_is_edited_and_extra_rule_reported(self):
         live = self.live(**{"5122": {"url_template": "https://example.invalid/{id}"}})

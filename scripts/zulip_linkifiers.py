@@ -69,12 +69,12 @@ TARGET: list[tuple[int | None, str, str]] = [
     (5136, *_gh("CTS", "congress-trading-shared")),
     (5138, *_gh("CLUTCH", "Clutch")),
     (5139, "(?P<repo>[A-Za-z0-9_.-]+)#(?P<id>[0-9]+)", f"{GH}/{{repo}}/issues/{{id}}"),
-    (None, "(?P<id>(?:" + "|".join(SENTRY_PROJECTS) + ")-[0-9A-Z]+)",
+    (5141, "(?P<id>(?:" + "|".join(SENTRY_PROJECTS) + ")-[0-9A-Z]+)",
      "https://simple-with-us.sentry.io/issues/?query={id}"),
-    (None, "bc-(?P<id>[0-9a-f]{8}[A-Za-z0-9_-]*)", "https://cursor.com/agents/bc-{id}"),
+    (5142, "bc-(?P<id>[0-9a-f]{8}[A-Za-z0-9_-]*)", "https://cursor.com/agents/bc-{id}"),
     # Spelled out (owner 2026-10-16) so it never reads as an app acronym.  Numeric ids also match the
     # generic rule, which is why `order` keeps the generic rule last.
-    (None, "PagerDuty#(?P<id>[A-Z0-9]+)", "https://jays-services.pagerduty.com/incidents/{id}"),
+    (5143, "PagerDuty#(?P<id>[A-Z0-9]+)", "https://jays-services.pagerduty.com/incidents/{id}"),
 ]
 GENERIC_ID = 5139  # the `repo#id` fallback;  it must stay last or it claims every `X#n` before its own rule
 
