@@ -18,6 +18,7 @@ the realm (PATCH /realm/linkifiers) to keep the generic `repo#id` fallback last;
 would claim `PagerDuty#384` before the PagerDuty rule saw it.  A live rule that TARGET does not
 list is reported and left alone unless --delete-unlisted is passed.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -34,11 +35,40 @@ REALM = "https://simplewithus.zulipchat.com"
 GH = "https://github.com/Simple-With-Us"
 
 # Linear team keys, read from Linear on 2026-10-16 (Clutch's key is C, CodeCaps's is CC).
-LINEAR_TEAMS = ("AFC", "CTS", "OPS", "SWU", "AR", "BF", "CC", "CL", "CT", "DD", "FL", "HH", "PS", "ST", "UM", "C")
+LINEAR_TEAMS = (
+    "AFC",
+    "CTS",
+    "OPS",
+    "SWU",
+    "AR",
+    "BF",
+    "CC",
+    "CL",
+    "CT",
+    "DD",
+    "FL",
+    "HH",
+    "PS",
+    "ST",
+    "UM",
+    "C",
+)
 # Sentry projects in org simple-with-us;  a short id is the upper-cased slug, a dash and a base-32 counter.
-SENTRY_PROJECTS = ("AGENT-SESSIONS", "AUTOROTATE", "BOTFLEET", "CODECAPS", "CONGRESS-TRADE", "CONTACTLOGO",
-                   "DEALDEX", "FLEET-INFRA", "FLEETLINK", "HOGHUNTER", "PERSONAL-SITE", "SOCRATIC-TRADE",
-                   "USAGE-MONITOR")
+SENTRY_PROJECTS = (
+    "AGENT-SESSIONS",
+    "AUTOROTATE",
+    "BOTFLEET",
+    "CODECAPS",
+    "CONGRESS-TRADE",
+    "CONTACTLOGO",
+    "DEALDEX",
+    "FLEET-INFRA",
+    "FLEETLINK",
+    "HOGHUNTER",
+    "PERSONAL-SITE",
+    "SOCRATIC-TRADE",
+    "USAGE-MONITOR",
+)
 
 
 def _gh(acronym: str, repo: str) -> tuple[str, str]:
@@ -49,8 +79,16 @@ def _gh(acronym: str, repo: str) -> tuple[str, str]:
 TARGET: list[tuple[int | None, str, str]] = [
     (5117, "SWU/(?P<slug>[A-Za-z0-9_-]+)", "https://simplewithus.com/{slug}"),
     # Nested paths:  segments joined by `/` or `.`, never ending on punctuation, and `{+path}` so `/` is not %2F.
-    (5118, "fleetlink/(?P<path>[A-Za-z0-9_-]+(?:[./][A-Za-z0-9_-]+)*)", "https://fleetlink.online/{+path}"),
-    (5119, "(?P<id>(?:" + "|".join(LINEAR_TEAMS) + ")-[0-9]+)", "https://linear.app/simple-with-us/issue/{id}"),
+    (
+        5118,
+        "fleetlink/(?P<path>[A-Za-z0-9_-]+(?:[./][A-Za-z0-9_-]+)*)",
+        "https://fleetlink.online/{+path}",
+    ),
+    (
+        5119,
+        "(?P<id>(?:" + "|".join(LINEAR_TEAMS) + ")-[0-9]+)",
+        "https://linear.app/simple-with-us/issue/{id}",
+    ),
     (5120, *_gh("BF", "BotFleet")),
     (5121, *_gh("CT", "Congress.Trade")),
     (5122, *_gh("ST", "Socratic-Trade")),
@@ -62,21 +100,30 @@ TARGET: list[tuple[int | None, str, str]] = [
     (5128, *_gh("HH", "HogHunter")),
     (5129, "OPS#(?P<id>[0-9]+)", "https://github.com/jaywedgeworth22/Fleet-OPS/issues/{id}"),
     (5130, *_gh("CC", "CodeCaps")),
-    (5131, "GH@(?P<user>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)", "https://github.com/{user}/{repo}"),
+    (
+        5131,
+        "GH@(?P<user>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)",
+        "https://github.com/{user}/{repo}",
+    ),
     (5132, *_gh("CAPS", "CodeCaps")),
     (5133, *_gh("FL", "FleetLink")),
     (5135, *_gh("CK", "Clutch")),
     (5136, *_gh("CTS", "congress-trading-shared")),
     (5138, *_gh("CLUTCH", "Clutch")),
     (5139, "(?P<repo>[A-Za-z0-9_.-]+)#(?P<id>[0-9]+)", f"{GH}/{{repo}}/issues/{{id}}"),
-    (5141, "(?P<id>(?:" + "|".join(SENTRY_PROJECTS) + ")-[0-9A-Z]+)",
-     "https://simple-with-us.sentry.io/issues/?query={id}"),
+    (
+        5141,
+        "(?P<id>(?:" + "|".join(SENTRY_PROJECTS) + ")-[0-9A-Z]+)",
+        "https://simple-with-us.sentry.io/issues/?query={id}",
+    ),
     (5142, "bc-(?P<id>[0-9a-f]{8}[A-Za-z0-9_-]*)", "https://cursor.com/agents/bc-{id}"),
     # Spelled out (owner 2026-10-16) so it never reads as an app acronym.  Numeric ids also match the
     # generic rule, which is why `order` keeps the generic rule last.
     (5143, "PagerDuty#(?P<id>[A-Z0-9]+)", "https://jays-services.pagerduty.com/incidents/{id}"),
 ]
-GENERIC_ID = 5139  # the `repo#id` fallback;  it must stay last or it claims every `X#n` before its own rule
+GENERIC_ID = (
+    5139  # the `repo#id` fallback;  it must stay last or it claims every `X#n` before its own rule
+)
 
 # What a reader types, and the href the server must render (None:  must stay plain text).
 CHECKS: list[tuple[str, str | None]] = [
@@ -96,7 +143,10 @@ CHECKS: list[tuple[str, str | None]] = [
     ("CT#2316", f"{GH}/Congress.Trade/issues/2316"),
     ("Autorotate#4", f"{GH}/Autorotate/issues/4"),
     ("fleetlink/zulip", "https://fleetlink.online/zulip"),
-    ("fleetlink/zulip/zulip-fleet-guide.md.", "https://fleetlink.online/zulip/zulip-fleet-guide.md"),
+    (
+        "fleetlink/zulip/zulip-fleet-guide.md.",
+        "https://fleetlink.online/zulip/zulip-fleet-guide.md",
+    ),
     ("BOTFLEET-16", "https://simple-with-us.sentry.io/issues/?query=BOTFLEET-16"),
     ("CONGRESS-TRADE-4A", "https://simple-with-us.sentry.io/issues/?query=CONGRESS-TRADE-4A"),
     ("bc-a1b2c3d4-e5f6", "https://cursor.com/agents/bc-a1b2c3d4-e5f6"),
@@ -108,7 +158,11 @@ CHECKS: list[tuple[str, str | None]] = [
 def credentials(rc_path: str | None) -> tuple[str, str, str]:
     path = rc_path
     if not path and os.environ.get("ZULIP_EMAIL") and os.environ.get("ZULIP_API_KEY"):
-        return os.environ["ZULIP_EMAIL"], os.environ["ZULIP_API_KEY"], os.environ.get("ZULIP_SITE", REALM)
+        return (
+            os.environ["ZULIP_EMAIL"],
+            os.environ["ZULIP_API_KEY"],
+            os.environ.get("ZULIP_SITE", REALM),
+        )
     path = path or os.path.expanduser("~/.secrets/Zulip/Claude-zuliprc")
     cfg = configparser.ConfigParser()
     if not cfg.read(path) or "api" not in cfg:
@@ -124,7 +178,9 @@ class Zulip:
 
     def call(self, method: str, path: str, data: dict | None = None) -> dict:
         body = urllib.parse.urlencode(data).encode() if data is not None else None
-        req = urllib.request.Request(self.base + path, data=body, method=method, headers={"Authorization": self.auth})
+        req = urllib.request.Request(
+            self.base + path, data=body, method=method, headers={"Authorization": self.auth}
+        )
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.load(resp)
@@ -178,9 +234,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--rc", help="zuliprc for a read-only plan or check")
     parser.add_argument("--owner-rc", help="the owner's zuliprc (needed for --apply)")
-    parser.add_argument("--apply", action="store_true", help="apply the plan (realm administrator only)")
+    parser.add_argument(
+        "--apply", action="store_true", help="apply the plan (realm administrator only)"
+    )
     parser.add_argument("--check", action="store_true", help="render CHECKS and report")
-    parser.add_argument("--delete-unlisted", action="store_true", help="with --apply, delete live rules TARGET omits")
+    parser.add_argument(
+        "--delete-unlisted",
+        action="store_true",
+        help="with --apply, delete live rules TARGET omits",
+    )
     args = parser.parse_args(argv)
 
     zulip = Zulip(*credentials(args.owner_rc or args.rc))
@@ -191,7 +253,9 @@ def main(argv: list[str] | None = None) -> int:
     for kind, rule_id, pattern, url in steps:
         print(f"{kind:4} {rule_id or 'new':>5}  {pattern}  ->  {url}")
     for rule in unlisted:
-        print(f"{'del' if args.delete_unlisted else 'keep'} {rule['id']:>5}  {rule['pattern']}  (not in TARGET)")
+        print(
+            f"{'del' if args.delete_unlisted else 'keep'} {rule['id']:>5}  {rule['pattern']}  (not in TARGET)"
+        )
     if not steps and not (unlisted and args.delete_unlisted) and order(zulip.linkifiers()) is None:
         print("live rules already match TARGET")
     if not args.apply:

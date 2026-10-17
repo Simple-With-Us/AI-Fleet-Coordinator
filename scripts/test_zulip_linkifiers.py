@@ -4,13 +4,14 @@ Zulip runs re2 and wraps each pattern so a match starts after whitespace or `'"(
 start) and is not followed by a word character;  `linkify` mimics that wrapper and realm order with
 Python's `re`, which agrees with re2 on these patterns (no backreferences or lookarounds inside).
 """
+
 import re
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import zulip_linkifiers as L  # noqa: E402
+import zulip_linkifiers as L
 
 
 def expand(template: str, groups: dict) -> str:
@@ -19,7 +20,9 @@ def expand(template: str, groups: dict) -> str:
 
 def linkify(text: str) -> str | None:
     """The href of the first TARGET rule that matches `text`, in realm order after `order`, or None."""
-    rules = [r for r in L.TARGET if r[0] != L.GENERIC_ID] + [r for r in L.TARGET if r[0] == L.GENERIC_ID]
+    rules = [r for r in L.TARGET if r[0] != L.GENERIC_ID] + [
+        r for r in L.TARGET if r[0] == L.GENERIC_ID
+    ]
     for _, pattern, url in rules:
         match = re.search(r"(?:^|(?<=[\s'\"(,:<]))(?:" + pattern + r")(?!\w)", text)
         if match:
@@ -59,7 +62,9 @@ class OrderTest(unittest.TestCase):
 
 class PlanTest(unittest.TestCase):
     def live(self, **overrides):
-        rules = [{"id": i, "pattern": p, "url_template": u} for i, p, u in L.TARGET if i is not None]
+        rules = [
+            {"id": i, "pattern": p, "url_template": u} for i, p, u in L.TARGET if i is not None
+        ]
         for rule in rules:
             rule.update(overrides.get(str(rule["id"]), {}))
         return rules
