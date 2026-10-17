@@ -379,6 +379,7 @@ class MacBridge:
                                       topic_key=L.topic_key(str(item.get("channel") or ""),
                                                             str(item.get("topic") or "")))
                 self._save(state)  # persist before any remote or chat delivery
+                decision = decisions[key]  # the stored row keeps the budget fields
             if decision.get("delivery") in ("done", "refused"):
                 continue  # settled on an earlier pass:  never delivered twice, never delivered late
             try:
@@ -387,12 +388,12 @@ class MacBridge:
                 # Terminal for this message.  Record it and move on so one item cannot hold the
                 # cursor forever.  A transport failure still propagates and retries the batch;
                 # server submit and the chat queue are both idempotent for a settled item.
-                decisions[key] = dict(decision, delivery="refused", refused_reason=str(exc)[:200])
+                decisions[key] = dict(decisions[key], delivery="refused", refused_reason=str(exc)[:200])
                 self._save(state)
                 self.daemon.log.write("muse-bridge-delivery-refused", seat=seat, id=item["id"],
                                       kind=decision["kind"])
                 continue
-            decisions[key] = dict(decision, delivery="done")
+            decisions[key] = dict(decisions[key], delivery="done")
             self._save(state)
             self.daemon.log.write("muse-bridge-decision", seat=seat, id=item["id"], kind=decision["kind"])
         cursors[seat] = envelope["next"]

@@ -385,6 +385,27 @@ class BridgeWorkerTest(unittest.TestCase):
         self.assertEqual(state["cursors"]["ECHO"], 6)
         self.assertEqual([state["decisions"][k]["delivery"] for k in keys], ["refused", "refused"])
 
+    def test_fresh_decision_keeps_its_budget_fields_after_delivery(self) -> None:
+        class FakeExchange:
+            def request(self, command: str, body: dict) -> dict:
+                return {"receipt": "r"}
+
+        self.daemon.config = _mac_config("ECHO")
+        self.bridge.exchange = FakeExchange()
+        self.bridge._budget_reason = lambda *args: None
+        self.bridge._decide = lambda *args: {"kind": "hold", "reason": "no_target", "model_attempted": True}
+        item = {"source_seat": "ECHO", "id": 61, "seq": 8, "owner": False, "ts": time.time(),
+                "channel": "agent-sync", "topic": "t"}
+        state: dict = {"cursors": {}, "decisions": {}}
+        envelope = {"gap": False, "next": 8, "items": [item], "budget": {}}
+        self.bridge._process_envelope(state, state["cursors"], state["decisions"], "ECHO",
+                                      envelope, remote=True, binary="muse", model="m")
+        stored = state["decisions"][MBM.MacBridge._key(item)]
+        self.assertEqual((stored["source_seat"], stored["id"], stored["delivery"]), ("ECHO", 61, "done"))
+        self.assertIsInstance(stored["at"], float)
+        self.assertEqual(stored["topic_key"], L.topic_key("agent-sync", "t"))
+        self.assertTrue(stored["model_attempted"])
+
     def test_transport_failure_leaves_the_cursor_for_a_retry(self) -> None:
         class DeadExchange:
             def request(self, command: str, body: dict) -> dict:
