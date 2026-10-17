@@ -459,6 +459,8 @@ export function buildFleetAppsTab(fleetApps, teamKeys, nowIso) {
   const rows = [["Acronym", "App", "Repo", "Kind", "Code Dir", "Lanes", "Linear Team", "Status", "Notes"]];
   const teams = new Set(teamKeys || []);
   for (const a of fleetApps.apps || []) {
+    // The app/seat acronym remains CLUTCH; its verified live Linear team key is C.
+    const teamKey = a.acronym === "CLUTCH" ? "C" : a.acronym;
     rows.push([
       a.acronym,
       a.displayName || a.repo,
@@ -466,7 +468,7 @@ export function buildFleetAppsTab(fleetApps, teamKeys, nowIso) {
       a.kind || "",
       `~/Code/${a.codeDir}`,
       `~/apps/lanes/${a.codeDir}/<seat>-<slug>`,
-      teams.has(a.acronym) ? `${a.acronym}  (linear.app/simple-with-us/team/${a.acronym})` : "No team yet:  file under AFC",
+      teams.has(teamKey) ? `${a.acronym}${teamKey !== a.acronym ? ` (${teamKey} live key)` : ""}  (linear.app/simple-with-us/team/${teamKey})` : "No team yet:  file under AFC",
       a.retired ? `Retired${a.retiredDate ? ` ${a.retiredDate}` : ""}` : "active",
       a.notes || "",
     ]);

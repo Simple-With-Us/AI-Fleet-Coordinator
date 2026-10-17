@@ -69,7 +69,7 @@ None.
 | `L37-acronym-AR` | 37 | App acronyms | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
 | `L38-acronym-CL` | 38 | App acronyms | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
 | `L39-acronym-BF` | 39 | App acronyms | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
-| `L40-acronym-CK` | 40 | App acronyms | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
+| `L40-acronym-CLUTCH` | 40 | App acronyms | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
 | `L41-acronym-HH` | 41 | App acronyms | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
 | `L42-acronym-OPS` | 42 | App acronyms | [Appendix A: Reference Tables](../../AGENT-SYNC.md#appendix-a-reference-tables) |
 | `L44-registry-source` | 44-45 | App acronyms | [Onboarding New Apps and Seats](../../AGENT-SYNC.md#onboarding-new-apps-and-seats) |

@@ -302,7 +302,8 @@ class Reaper(Base):
         self.assertEqual(self.decide(90, watched=[A])[0], "skip")
         self.assertEqual(self.decide(90, app=(True, "user app running: x"))[0], "skip")
 
-    def run_reaper(self, args: list, booted: list, state: dict | None = None) -> tuple[str, list]:
+    def run_reaper(self, args: list, booted: list, state: dict | None = None,
+                   bitrig_app: int = 0) -> tuple[str, list]:
         state_path = os.path.join(ROOT, "state", "state.json")
         if state is not None:
             hook.write_json(state_path, state)
@@ -317,7 +318,7 @@ class Reaper(Base):
         buf = io.StringIO()
         with patch.object(reaper, "list_booted", lambda: booted), \
                 patch.object(reaper, "busy_processes", lambda: []), \
-                patch.object(reaper, "pgrep_exact", lambda n: 0), \
+                patch.object(reaper, "pgrep_exact", lambda n: bitrig_app if n == "Bitrig" else 0), \
                 patch.object(reaper, "user_app_running", lambda u: (False, "0 user app(s) installed, none running")), \
                 patch.object(reaper, "run", fake_run), redirect_stdout(buf):
             reaper.main(args + ["--state", state_path])
@@ -337,6 +338,18 @@ class Reaper(Base):
         log, shut = self.run_reaper([], [self.DEV], old)
         self.assertIn("SHUTDOWN", log)
         self.assertEqual(shut, [A])
+
+    def test_bitrig_exempts_one_simulator_and_reaps_extras(self):
+        other = {"udid": B, "name": "iPad", "runtime": "iOS-27-0"}
+        now = time.time()
+        old = {A: now - 7200, B: now - 5400}
+        log_single, shut_single = self.run_reaper([], [self.DEV], {A: now - 7200}, bitrig_app=1)
+        self.assertIn("Bitrig is running (1 simulator exempt)", log_single)
+        self.assertEqual(shut_single, [])
+
+        log_multi, shut_multi = self.run_reaper([], [self.DEV, other], old, bitrig_app=1)
+        self.assertEqual(shut_multi, [A])
+        self.assertIn("Bitrig is running (1 simulator exempt)", log_multi)
 
     def test_udid_filter_never_touches_other_devices(self):
         other = {"udid": B, "name": "iPad", "runtime": "iOS-27-0"}

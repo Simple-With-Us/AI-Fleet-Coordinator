@@ -55,6 +55,7 @@ export const LINEAR_SECRETS = Object.freeze({
   ECHO: Object.freeze({ clientId: "LINEAR_ECHO_CLIENT_ID", clientSecret: "LINEAR_ECHO_CLIENT_SECRET" }),
   WISE: Object.freeze({ clientId: "LINEAR_INSTINCT_CLIENT_ID", clientSecret: "LINEAR_INSTINCT_CLIENT_SECRET" }),
   CURSOR: Object.freeze({ clientId: "LINEAR_CURSOR_CLIENT_ID", clientSecret: "LINEAR_CURSOR_CLIENT_SECRET" }),
+  CLAUDE: Object.freeze({ clientId: "LINEAR_CLAUDE_CLIENT_ID", clientSecret: "LINEAR_CLAUDE_CLIENT_SECRET" }),
 });
 
 /** The Worker secret names for a seat, or null when the seat has no Linear app. */
@@ -67,14 +68,16 @@ export function linearSecretNames(seat) {
 // the seat with no shell and the one that acts as Jay today through its own
 // connector.  A seat missing here answers not_configured even when its
 // credentials are installed, so enabling a seat is a deliberate deploy step.
-export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR"]);
+// JET, ECHO, WISE and CLAUDE joined on 2026-10-16 (owner), each pair checked
+// first with `board whoami` against its own app.
+export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "ECHO", "WISE", "CLAUDE"]);
 
 // ---------------------------------------------------------------- ported board rules
 
 // board TEAM_KEYS, with the CodeCaps and FleetLink teams the owner added
 // 2026-10-11, and SWU (AFC-292).  linear-parity.test.mjs pins this list to the
 // board's own, so adding a team key there without adding it here fails CI.
-export const TEAM_KEYS = Object.freeze(["ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "CK", "FL", "CC", "SWU"]);
+export const TEAM_KEYS = Object.freeze(["ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "C", "FL", "CC", "SWU"]);
 export const FALLBACK_TEAM = "AFC";
 export const BOARD_SLUG_TEAM = Object.freeze({
   "ai-fleet-coordinator": "AFC",
@@ -83,9 +86,9 @@ export const BOARD_SLUG_TEAM = Object.freeze({
   "autorotate-codes": "AR",
   botfleet: "BF",
   "botfleet-app": "BF",
-  clutch: "CK",
-  "dsh-runtime": "CK",
-  harness: "CK",
+  clutch: "C",
+  "dsh-runtime": "C",
+  harness: "C",
   codecaps: "CC",
   congress: "CT",
   "congress-trade": "CT",
@@ -157,6 +160,7 @@ export const SEAT_APP_NAMES = Object.freeze({
   WISE: "Wise (Instinct)",
   MA: "Muse Assist",
   CURSOR: "Cursor",
+  CLAUDE: "Claude",
 });
 export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),
@@ -213,6 +217,8 @@ export function linearLabelKeys(issue) {
  */
 export function routeApp(app) {
   const raw = String(app || DEFAULT_APP).trim();
+  // CLUTCH is canonical; C is the live team key; CK remains a compatibility alias.
+  if (["CLUTCH", "CK", "C"].includes(raw.toUpperCase())) return { team: "C", slug: null };
   if (TEAM_KEYS.includes(raw.toUpperCase())) return { team: raw.toUpperCase(), slug: null };
   const hit = BOARD_SLUG_TEAM[raw.toLowerCase()] ?? BOARD_SLUG_TEAM[slugify(raw)];
   if (hit) return { team: hit, slug: null };

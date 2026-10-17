@@ -21,7 +21,7 @@ test("the three readers find their data in the real files", () => {
   assert.equal(serverSeats.JET.wake, "http");
   assert.equal(serverSeats.JET.routineUrlEnv, "JET_ROUTINE_URL");
   assert.equal(serverSeats["GB-FIXER"].routineKeyEnv, "ZULIP_ALERT_GB_FIXER_KEY");
-  assert.ok(teamKeys.includes("AFC") && teamKeys.includes("CK"));
+  assert.ok(teamKeys.includes("AFC") && teamKeys.includes("C"));
   // A value with parentheses must not end the dict early.
   assert.equal(seatAppNames.WISE, "Wise (Instinct)");
   assert.equal(seatAppNames.OPENCODE, "OpenCode");
@@ -32,8 +32,9 @@ test("Fleet Apps lists every fleet-apps.json app, FleetLink included", () => {
   const acronyms = rows.slice(1).filter(r => r.length > 1).map(r => r[0]);
   assert.deepEqual(acronyms, fleetApps.apps.map(a => a.acronym));
   assert.ok(acronyms.includes("FL") && acronyms.includes("FLL"));
-  const ck = rows.find(r => r[0] === "CK");
-  assert.match(ck[6], /^CK /);
+  const clutch = rows.find(r => r[0] === "CLUTCH");
+  assert.match(clutch[6], /^CLUTCH \(C live key\)/);
+  assert.match(clutch[6], /team\/C\)/);
   const fll = rows.find(r => r[0] === "FLL");
   assert.match(fll[6], /No team/);
 });

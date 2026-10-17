@@ -156,3 +156,8 @@ test("the early re-mint age is the CLI's (28 days of a 30-day token)", async () 
   assert.equal(LINEAR_REMINT_AFTER_S, 28 * 86_400);
   assert.match(BOARD, /^REMINT_AFTER = 28 \* 86400$/m);
 });
+test("CLUTCH canonical name and CK compatibility alias route to the live C team", () => {
+  for (const app of ["C", "c", "CLUTCH", "clutch", "CK", "ck", "dsh-runtime", "harness"]) {
+    assert.deepEqual(routeApp(app), { team: "C", slug: null });
+  }
+});
