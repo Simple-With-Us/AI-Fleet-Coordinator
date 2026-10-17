@@ -51,8 +51,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_FLEET_API_TOKEN }}
           WORKER_HEALTH_ACCESS_CLIENT_ID: ${{ secrets.WORKER_HEALTH_ACCESS_CLIENT_ID }}
           WORKER_HEALTH_ACCESS_CLIENT_SECRET: ${{ secrets.WORKER_HEALTH_ACCESS_CLIENT_SECRET }}
-          RECEIPT_INBOX_READ_TOKEN: ${{ secrets.RECEIPT_INBOX_READ_TOKEN }}
-          RECEIPT_LIFECYCLE_AUDIT_TOKEN: ${{ secrets.RECEIPT_LIFECYCLE_AUDIT_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: 3a9368057468d0909cafaa85df12d1b7
           TARGET: ${{ matrix.worker }}
         run: python3 scripts/deploy-mapped-worker.py "$TARGET"
