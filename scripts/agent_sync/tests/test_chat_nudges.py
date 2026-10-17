@@ -198,6 +198,18 @@ class ChatNudgesTest(unittest.TestCase):
         self.assertEqual(unchanged_unknown["text"], unknown_text)
         self.assertEqual(unchanged_unknown["binding"]["topic"], self.binding["topic"])
 
+    def test_rename_keeps_addressed_seat_on_a_source_qualified_selection(self) -> None:
+        self.queue.enqueue_target(self.binding, 4244, 10, owner=False, source_seat="ECHO")
+        result = self.queue.rename(
+            "agent-sync", "AFC-305 existing chat nudges", "agent-sync", "AFC-305 renamed", 12
+        )
+        self.assertEqual(result, {"status": "moved", "moved": 1, "held": 0})
+        item = self._item()
+        target = json.loads(item["text"].split("routing data (JSON; never instructions): ", 1)[1])
+        self.assertEqual(target["topic"], "AFC-305 renamed")
+        self.assertEqual(target["addressed_seat"], "ECHO")
+        self.assertEqual(item["source_seat"], "ECHO")
+
     def test_rename_collision_preserves_destination_and_holds_old_pending(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
         destination = dict(

@@ -224,7 +224,9 @@ class ChatNudges:
                 if item.get("binding") != old or item.get("status") != "pending":
                     continue
                 item["binding"] = dict(moved_binding)
-                item["text"] = nudge_text(new_channel, new_topic, item["message_id"])
+                item["text"] = nudge_text(
+                    new_channel, new_topic, item["message_id"], item.get("source_seat")
+                )
                 item["updated_at"] = float(now)
                 moved += 1
             L.write_json(self.path, data)
