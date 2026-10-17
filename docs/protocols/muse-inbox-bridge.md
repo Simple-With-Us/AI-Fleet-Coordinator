@@ -31,6 +31,9 @@ explicitly cut over.  Deploying this code alone does not change CLAUDE's Muse pi
    durable selection receipt; it cannot invoke a server routine.  `chat_selected` records server
    acknowledgment, while the Mac chat-nudge queue holds the separate delivery receipt.  A failure
    between those writes retries the same source-qualified selection without another model call.
+   A definite refusal for one message (stale, paused, loop guard, destination gone, or the server
+   answering `{"refused": ...}`) is recorded on the Mac decision as `delivery: refused` and the
+   cursor moves past it;  only a transport failure leaves the cursor in place for a retry.
 
 The Mac holds no server bot or routine credentials.  Muse receives the source seat as trusted
 metadata in a bounded prompt, while its subprocess has no launcher seat and no tools.  The server

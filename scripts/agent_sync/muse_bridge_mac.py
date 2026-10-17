@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -38,6 +39,16 @@ _REMOTE_COMMAND = (
 )
 
 
+class DeliveryRefused(ValueError):
+    """A recorded decision can no longer be delivered for this message (stale, paused, loop guard,
+    destination gone, or a server refusal).  Terminal for the item, unlike a transport failure."""
+
+
+def _version_key(name: str) -> tuple[tuple[int, ...], str]:
+    """Numeric order for ``muse-bin-1.4.10-R6427.1`` style names, so 1.4.10 sorts after 1.4.9."""
+    return tuple(int(part) for part in re.findall(r"\d+", name)), name
+
+
 def resolve_bridge_muse(wake_path: str) -> str | None:
     """The real versioned Muse binary for the bridge pin, never the launcher shim.
 
@@ -45,7 +56,7 @@ def resolve_bridge_muse(wake_path: str) -> str | None:
     until a fresh canary is pinned.  Falls back to the ordinary resolver when
     no versioned build is on the wake PATH.
     """
-    candidates: list[str] = []
+    candidates: list[tuple[tuple[tuple[int, ...], str], str]] = []
     for directory in wake_path.split(os.pathsep):
         if not directory or not os.path.isdir(directory):
             continue
@@ -58,9 +69,10 @@ def resolve_bridge_muse(wake_path: str) -> str | None:
                 continue
             path = os.path.join(directory, name)
             if os.path.isfile(path) and os.access(path, os.X_OK):
-                candidates.append(os.path.realpath(path))
+                # The listed name carries the version; a symlink target may not.
+                candidates.append((_version_key(name), os.path.realpath(path)))
     if candidates:
-        return sorted(candidates)[-1]
+        return max(candidates)[1]
     return A.resolve_muse(None, wake_path)
 
 
@@ -289,10 +301,13 @@ class MacBridge:
     def _deliver(self, item: Mapping[str, Any], decision: Mapping[str, Any], *, remote: bool) -> None:
         kind = decision["kind"]
         if not remote and not MB.enabled(self.daemon.config, item["source_seat"]):
-            raise ValueError("local source seat is no longer bridge enabled")
-        if kind != "hold" and (MB.source_stale(self.daemon.config, item) or
+            raise DeliveryRefused("local source seat is no longer bridge enabled")
+        # The item's blocked and paused flags are fresh from this export, so a decision recorded on
+        # an earlier pass is refused here instead of being sent into a server refusal.
+        if kind != "hold" and (item.get("blocked") is True or item.get("paused") is True or
+                               MB.source_stale(self.daemon.config, item) or
                                L.paused(self.daemon.root, item["source_seat"], wakes=True)):
-            raise ValueError("source message is no longer eligible for delivery")
+            raise DeliveryRefused("source message is no longer eligible for delivery")
         if kind == "chat":
             # resolve() already refreshes from its bounded cache, so a known target needs no
             # Grok-blocking rescan; only a cache miss forces one before resolving again.
@@ -310,14 +325,16 @@ class MacBridge:
                         for k in ("platform", "host", "session_id", "cwd")) or
                     (item.get("type") == "private" and fresh.get("seat") != item["source_seat"]) or
                     L.paused(self.daemon.root, item["source_seat"], wakes=True)):
-                raise ValueError("selected chat is no longer an authorized destination")
+                raise DeliveryRefused("selected chat is no longer an authorized destination")
         if remote:
             receipt = self.exchange.request("submit", {"source_seat": item["source_seat"],
                                                        "id": item["id"], "seq": item["seq"], "kind": kind})
+            if receipt.get("refused") is not None:
+                raise DeliveryRefused("server refused the decision: %s" % str(receipt["refused"])[:160])
             if not isinstance(receipt.get("receipt"), str):
                 raise ValueError("server did not return a durable receipt")
         elif kind == "native":
-            raise ValueError("local native routine needs its own source runner")
+            raise DeliveryRefused("local native routine needs its own source runner")
         if kind == "chat":
             binding = dict(decision["target"])
             binding.update(channel=str(item.get("channel") or "direct message"),
@@ -362,7 +379,21 @@ class MacBridge:
                                       topic_key=L.topic_key(str(item.get("channel") or ""),
                                                             str(item.get("topic") or "")))
                 self._save(state)  # persist before any remote or chat delivery
-            self._deliver(item, decision, remote=remote)
+            if decision.get("delivery") in ("done", "refused"):
+                continue  # settled on an earlier pass:  never delivered twice, never delivered late
+            try:
+                self._deliver(item, decision, remote=remote)
+            except DeliveryRefused as exc:
+                # Terminal for this message.  Record it and move on so one item cannot hold the
+                # cursor forever.  A transport failure still propagates and retries the batch;
+                # server submit and the chat queue are both idempotent for a settled item.
+                decisions[key] = dict(decision, delivery="refused", refused_reason=str(exc)[:200])
+                self._save(state)
+                self.daemon.log.write("muse-bridge-delivery-refused", seat=seat, id=item["id"],
+                                      kind=decision["kind"])
+                continue
+            decisions[key] = dict(decision, delivery="done")
+            self._save(state)
             self.daemon.log.write("muse-bridge-decision", seat=seat, id=item["id"], kind=decision["kind"])
         cursors[seat] = envelope["next"]
         self._save(state)

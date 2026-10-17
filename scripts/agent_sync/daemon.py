@@ -3110,13 +3110,8 @@ class Daemon:
             self.log.write("muse-bridge-dispatch-uncertain", seat=seat, id=message_id,
                            error=self.scrub(type(exc).__name__))
             return
-        view = runner.ledger.wakes().get(pending.wake_id) or {}
-        if view.get("state") == "done":
-            state = "done" if view.get("routine_delivered") is True else \
-                "held" if view.get("routine_delivered") is False else "uncertain"
-        else:
-            state = "held" if view.get("state") in ("held_back", "dropped", "skipped") else \
-                "failed" if view.get("state") == "failed" else "uncertain"
+        # routine_delivered is the Worker's integer count, so the ledger's surfaced flag decides.
+        state = MB.native_outcome(runner.ledger.wakes().get(pending.wake_id) or {})
         MB.finish_native(self.root, receipt, state)
         self.log.write("muse-bridge-dispatch", seat=seat, id=message_id, state=state)
 
@@ -3356,7 +3351,7 @@ class Daemon:
                 "instance": self.config.instance, "disabled": sorted(self.config.disabled),
                 "muse_bridge": {"enabled": self.config.muse_bridge_enabled,
                                 "remote_seats": list(self.config.muse_bridge_remote_seats),
-                                "pin": (MBM.pin_state(self.root, A.resolve_muse(None, self.wake_path),
+                                "pin": (MBM.pin_state(self.root, MBM.resolve_bridge_muse(self.wake_path),
                                                       C.MUSE_DEFAULT_MODEL)[1]
                                         if self.config.instance == "mac" and self.config.muse_bridge_enabled
                                         else "inactive")},

@@ -25,6 +25,39 @@ MAX_INPUT_BYTES = 4096
 DECISIONS_FILE = "muse-bridge-decisions.json"
 
 
+class Refused(ValueError):
+    """A definite refusal for one source message, not an outage.
+
+    ``submit`` raises it when the message itself can no longer be decided (stale, paused, loop
+    guard, row changed, conflicting kind).  The exchange answers it as ``{"refused": reason}`` so
+    the Mac records it and moves on, while a broken ledger or transport still fails the command.
+    """
+
+
+def native_outcome(view: Mapping[str, Any]) -> str:
+    """The receipt outcome for one bridge dispatch, from the wake ledger's merged view.
+
+    ``routine_delivered`` is the hosted Worker's integer count, or absent for any other routine,
+    and never a bool.  The ledger's ``surfaced`` flag already applies ``routine_surfaced`` (a
+    Worker delivery of at least one, or a 2xx from a routine that is not the Worker), so it alone
+    decides a delivery.  A Worker answer of zero reached nobody and is held; anything else that
+    finished without surfacing (paused, duplicate) stays uncertain for operator review.
+    """
+    state = view.get("state")
+    if state == "done":
+        delivered = view.get("routine_delivered")
+        if view.get("surfaced") is True:
+            return "done"
+        if isinstance(delivered, int) and not isinstance(delivered, bool) and delivered == 0:
+            return "held"
+        return "uncertain"
+    if state in ("held_back", "dropped", "skipped"):
+        return "held"
+    if state == "failed":
+        return "failed"
+    return "uncertain"
+
+
 def enabled(cfg: C.Config, seat: str) -> bool:
     row = cfg.seats.get(seat)
     return bool(cfg.muse_bridge_enabled and row and row.enabled and row.muse_bridge)
@@ -181,27 +214,27 @@ def submit(root: str, cfg: C.Config, request: Mapping[str, Any]) -> dict[str, An
         raise ValueError("server Muse bridge is disabled")
     seat, message_id, kind = request.get("source_seat"), request.get("id"), request.get("kind")
     if not isinstance(seat, str) or not enabled(cfg, seat):
-        raise ValueError("source seat is not bridge enabled")
+        raise Refused("source seat is not bridge enabled")
     row = find_source(root, cfg, seat, message_id)
     if row is None or row.get("seq") != request.get("seq"):
-        raise ValueError("source inbox row is missing or changed")
+        raise Refused("source inbox row is missing or changed")
     if kind not in ("native", "chat", "hold"):
-        raise ValueError("invalid bridge decision")
+        raise Refused("invalid bridge decision")
     if kind == "native" and cfg.seats[seat].wake != "http":
-        raise ValueError("source seat has no configured native routine")
+        raise Refused("source seat has no configured native routine")
     if kind != "hold" and source_blocked(root, row):
-        raise ValueError("source loop guard blocks delivery")
+        raise Refused("source loop guard blocks delivery")
     if kind != "hold" and source_stale(cfg, row):
-        raise ValueError("source message became stale")
+        raise Refused("source message became stale")
     if kind != "hold" and L.paused(root, seat, wakes=True):
-        raise ValueError("source seat wakes are paused")
+        raise Refused("source seat wakes are paused")
     key, path = _decision_key(seat, message_id), _store_path(root)
     with L.locked(path):
         data = _read_decisions(path)
         prior = data.get(key)
         if prior is not None:
             if prior.get("source_seat") != seat or prior.get("id") != message_id or prior.get("kind") != kind:
-                raise ValueError("conflicting decision for source message")
+                raise Refused("conflicting decision for source message")
             return {"receipt": key, "state": prior.get("state")}
         data[key] = {"source_seat": seat, "id": message_id, "seq": row["seq"], "kind": kind,
                      "state": "queued" if kind == "native" else "chat_selected" if kind == "chat" else "held",
@@ -253,7 +286,15 @@ def main(argv: list[str] | None = None) -> int:
         request = json.loads(raw)
         if not isinstance(request, dict):
             raise ValueError("input must be an object")
-        result = export(root, cfg, request.get("cursors", {})) if args.command == "export" else submit(root, cfg, request)
+        if args.command == "export":
+            result = export(root, cfg, request.get("cursors", {}))
+        else:
+            try:
+                result = submit(root, cfg, request)
+            except Refused as exc:
+                # A definite answer for this one message:  exit 0 so the Mac can tell it from an
+                # outage, record it, and move past it instead of retrying the same item forever.
+                result = {"refused": str(exc)}
     except (ValueError, TypeError) as exc:
         raise SystemExit(str(exc)) from None
     sys.stdout.write(json.dumps(result, separators=(",", ":")) + "\n")

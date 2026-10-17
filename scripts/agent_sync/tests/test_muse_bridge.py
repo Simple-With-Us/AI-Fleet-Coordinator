@@ -6,11 +6,14 @@ stay uncertain instead of being delivered twice on restart.
 """
 from __future__ import annotations
 
+import io
+import json
 import os
 import tempfile
 import time
 import types
 import unittest
+from unittest import mock
 
 from .. import chat_nudges as CN
 from .. import config as C
@@ -174,6 +177,57 @@ class BridgeExchangeTest(unittest.TestCase):
         self.assertEqual(MB.native_target_id("ECHO"), MB.native_target_id("ECHO"))
         self.assertNotEqual(MB.native_target_id("ECHO"), MB.native_target_id("JET"))
 
+    def _main(self, command: str, request: dict) -> tuple[int, dict]:
+        out = io.StringIO()
+        stdin = types.SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode()))
+        with mock.patch.object(MB.L, "state_root", return_value=self.root), \
+                mock.patch.object(MB.C, "load", return_value=self.cfg), \
+                mock.patch.object(MB.sys, "stdin", stdin), mock.patch.object(MB.sys, "stdout", out):
+            code = MB.main([command])
+        return code, json.loads(out.getvalue())
+
+    def test_submit_refusal_is_a_definite_answer_not_an_outage(self) -> None:
+        self._write("ECHO", [_row(5, 115)])
+        with self.assertRaises(MB.Refused):
+            MB.submit(self.root, self.cfg, {"source_seat": "ECHO", "id": 115, "seq": 6, "kind": "hold"})
+        # The exchange exits 0 with {"refused": ...} so the Mac can tell it from a dead transport.
+        code, answer = self._main("submit", {"source_seat": "ECHO", "id": 115, "seq": 6, "kind": "hold"})
+        self.assertEqual(code, 0)
+        self.assertEqual(answer, {"refused": "source inbox row is missing or changed"})
+        code, answer = self._main("submit", {"source_seat": "ECHO", "id": 115, "seq": 5, "kind": "hold"})
+        self.assertEqual((code, answer["state"]), (0, "held"))
+
+    def test_unreadable_decision_ledger_still_fails_the_exchange(self) -> None:
+        self._write("ECHO", [_row(5, 115)])
+        path = os.path.join(L.listener_dir(self.root), MB.DECISIONS_FILE)
+        L.private_dir(os.path.dirname(path))
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        with self.assertRaises(SystemExit):
+            self._main("submit", {"source_seat": "ECHO", "id": 115, "seq": 5, "kind": "hold"})
+
+
+class NativeOutcomeTest(unittest.TestCase):
+    def test_worker_integer_counts_map_to_done_and_held(self) -> None:
+        self.assertEqual(MB.native_outcome({"state": "done", "surfaced": True, "routine_delivered": 1}), "done")
+        self.assertEqual(MB.native_outcome({"state": "done", "surfaced": False, "routine_delivered": 0}), "held")
+
+    def test_non_worker_routine_that_surfaced_is_done(self) -> None:
+        self.assertEqual(MB.native_outcome({"state": "done", "surfaced": True}), "done")
+
+    def test_unsurfaced_answer_without_a_count_stays_uncertain(self) -> None:
+        self.assertEqual(MB.native_outcome({"state": "done", "surfaced": False, "routine_delivered": None}),
+                         "uncertain")
+        self.assertEqual(MB.native_outcome({"state": "done", "surfaced": False, "routine_delivered": False}),
+                         "uncertain")
+
+    def test_non_done_states(self) -> None:
+        self.assertEqual(MB.native_outcome({"state": "failed"}), "failed")
+        for state in ("held_back", "dropped", "skipped"):
+            self.assertEqual(MB.native_outcome({"state": state}), "held")
+        self.assertEqual(MB.native_outcome({"state": "started"}), "uncertain")
+        self.assertEqual(MB.native_outcome({}), "uncertain")
+
 
 class BridgeDedupeTest(unittest.TestCase):
     BINDING = {"platform": "cursor", "host": "mac", "session_id": "s1", "cwd": "/tmp"}
@@ -275,6 +329,79 @@ class BridgeWorkerTest(unittest.TestCase):
             self.bridge._deliver(item, missing, remote=True)
         self.assertEqual(catalog.forced, 1)
 
+    def _recorded(self, state: dict, item: dict, kind: str = "hold") -> str:
+        key = MBM.MacBridge._key(item)
+        state["decisions"][key] = {"kind": kind, "reason": "test", "model_attempted": True,
+                                   "at": time.time(), "source_seat": item["source_seat"], "id": item["id"]}
+        return key
+
+    def test_refused_delivery_is_recorded_and_the_cursor_moves_past_it(self) -> None:
+        submitted: list = []
+        answers = [{"refused": "source message became stale"}, {"receipt": "r2"}]
+
+        class FakeExchange:
+            def request(self, command: str, body: dict) -> dict:
+                submitted.append(body["id"])
+                return answers.pop(0)
+
+        self.daemon.config = _mac_config("ECHO")
+        self.bridge.exchange = FakeExchange()
+        first = {"source_seat": "ECHO", "id": 31, "seq": 3, "owner": False, "ts": time.time()}
+        second = {"source_seat": "ECHO", "id": 32, "seq": 4, "owner": False, "ts": time.time()}
+        state: dict = {"cursors": {"ECHO": 2}, "decisions": {}}
+        k1, k2 = self._recorded(state, first), self._recorded(state, second)
+        envelope = {"gap": False, "next": 4, "items": [first, second], "budget": {}}
+        self.bridge._process_envelope(state, state["cursors"], state["decisions"], "ECHO",
+                                      envelope, remote=True, binary="muse", model="m")
+        self.assertEqual(state["cursors"]["ECHO"], 4)
+        self.assertEqual(submitted, [31, 32])
+        self.assertEqual(state["decisions"][k1]["delivery"], "refused")
+        self.assertIn("became stale", state["decisions"][k1]["refused_reason"])
+        self.assertEqual(state["decisions"][k2]["delivery"], "done")
+        self.assertEqual([row[1]["id"] for row in self.logged if row[0] == "muse-bridge-delivery-refused"], [31])
+        # A re-exported batch never sends a settled decision again, refused or done.
+        self.bridge._process_envelope(state, state["cursors"], state["decisions"], "ECHO",
+                                      envelope, remote=True, binary="muse", model="m")
+        self.assertEqual(submitted, [31, 32])
+
+    def test_ineligible_recorded_decision_is_refused_before_any_submit(self) -> None:
+        submitted: list = []
+
+        class FakeExchange:
+            def request(self, command: str, body: dict) -> dict:
+                submitted.append(body["id"])
+                return {"receipt": "r"}
+
+        self.daemon.config = _mac_config("ECHO")
+        self.bridge.exchange = FakeExchange()
+        stale = {"source_seat": "ECHO", "id": 41, "seq": 5, "owner": False, "ts": time.time(), "stale": True}
+        blocked = {"source_seat": "ECHO", "id": 42, "seq": 6, "owner": False, "ts": time.time(), "blocked": True}
+        state: dict = {"cursors": {}, "decisions": {}}
+        keys = [self._recorded(state, stale, "native"), self._recorded(state, blocked, "native")]
+        envelope = {"gap": False, "next": 6, "items": [stale, blocked], "budget": {}}
+        self.bridge._process_envelope(state, state["cursors"], state["decisions"], "ECHO",
+                                      envelope, remote=True, binary="muse", model="m")
+        self.assertEqual(submitted, [])
+        self.assertEqual(state["cursors"]["ECHO"], 6)
+        self.assertEqual([state["decisions"][k]["delivery"] for k in keys], ["refused", "refused"])
+
+    def test_transport_failure_leaves_the_cursor_for_a_retry(self) -> None:
+        class DeadExchange:
+            def request(self, command: str, body: dict) -> dict:
+                raise RuntimeError("server bridge exchange unavailable")
+
+        self.daemon.config = _mac_config("ECHO")
+        self.bridge.exchange = DeadExchange()
+        item = {"source_seat": "ECHO", "id": 51, "seq": 7, "owner": False, "ts": time.time()}
+        state: dict = {"cursors": {"ECHO": 6}, "decisions": {}}
+        key = self._recorded(state, item)
+        envelope = {"gap": False, "next": 7, "items": [item], "budget": {}}
+        with self.assertRaises(RuntimeError):
+            self.bridge._process_envelope(state, state["cursors"], state["decisions"], "ECHO",
+                                          envelope, remote=True, binary="muse", model="m")
+        self.assertEqual(state["cursors"]["ECHO"], 6)
+        self.assertNotIn("delivery", state["decisions"][key])
+
 
 class BridgeBinaryTest(unittest.TestCase):
     def _bindir(self, *names: str) -> str:
@@ -291,6 +418,11 @@ class BridgeBinaryTest(unittest.TestCase):
         bindir = self._bindir("muse", "muse-bin-1.4.7-R6101.1", "muse-bin-1.4.9-R6297.1")
         self.assertEqual(MBM.resolve_bridge_muse(bindir),
                          os.path.realpath(os.path.join(bindir, "muse-bin-1.4.9-R6297.1")))
+
+    def test_orders_versions_numerically_not_lexically(self) -> None:
+        bindir = self._bindir("muse-bin-1.4.9-R6297.1", "muse-bin-1.4.10-R6427.1")
+        self.assertEqual(MBM.resolve_bridge_muse(bindir),
+                         os.path.realpath(os.path.join(bindir, "muse-bin-1.4.10-R6427.1")))
 
     def test_falls_back_without_versioned_binary(self) -> None:
         self.assertIsNone(MBM.resolve_bridge_muse(self._bindir()))
