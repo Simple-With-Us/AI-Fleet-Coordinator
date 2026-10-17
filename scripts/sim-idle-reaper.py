@@ -329,7 +329,7 @@ def main(argv: list | None = None) -> int:
         busy = busy_processes()
         sim_app = pgrep_exact("Simulator")
         bitrig_app = pgrep_exact("Bitrig")
-        exempt_udid = bitrig_exempt_udid(booted, seen, bitrig_app)
+        exempt_udid = bitrig_exempt_udid(targets, seen, bitrig_app)
         bitrig_exempt = {exempt_udid} if exempt_udid else set()
         watched = watched_udids(now)
         for d in targets:
