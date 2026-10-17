@@ -12,11 +12,14 @@ only a member key, so any seat can run them:
 Credentials, first hit wins:  --owner-rc PATH (or --rc PATH for a read-only run), then env
 ZULIP_EMAIL + ZULIP_API_KEY, then ~/.secrets/Zulip/Claude-zuliprc.  Keys are never printed.
 
-Rules are matched to live ones by id.  An id in TARGET that is missing live, or a TARGET row
-with no id, is created.  Zulip puts a new rule last, so after any change the script reorders
-the realm (PATCH /realm/linkifiers) to keep the generic `repo#id` fallback last;  otherwise it
-would claim `PagerDuty#384` before the PagerDuty rule saw it.  A live rule that TARGET does not
-list is reported and left alone unless --delete-unlisted is passed.
+Rules are matched to live ones by id, then by identical pattern, because Zulip numbers a rule it
+creates itself (a deleted and re-added rule, a restored backup, a fresh realm) and the pin in
+TARGET then points at nothing.  A TARGET row that matches no live rule is created.  Zulip puts a
+new rule last, so after any change the script reorders the realm (PATCH /realm/linkifiers) to
+keep the generic `repo#id` fallback last;  otherwise it would claim `PagerDuty#384` before the
+PagerDuty rule saw it.  The reorder also runs when a call fails part-way, and a rerun of --apply
+finishes whatever is left without adding anything twice.  A live rule that TARGET does not list
+is reported and left alone unless --delete-unlisted is passed.
 """
 
 from __future__ import annotations
@@ -198,27 +201,54 @@ class Zulip:
         return self.call("POST", "messages/render", {"content": content})["rendered"]
 
 
+def match(live: list[dict]) -> list[dict | None]:
+    """The live rule each TARGET row stands for, in TARGET order (None:  no live rule matches it).
+
+    A row matches its pinned id first.  A row whose id is missing live, or that has none, falls back to
+    a live rule with exactly its pattern, so a rule Zulip renumbered is edited or kept, never added a
+    second time.  One live rule stands for one row.
+    """
+    by_id = {rule["id"]: rule for rule in live}
+    matched = [by_id.get(rule_id) if rule_id is not None else None for rule_id, _, _ in TARGET]
+    taken = {rule["id"] for rule in matched if rule is not None}
+    for index, (_, pattern, _) in enumerate(TARGET):
+        if matched[index] is not None:
+            continue
+        for rule in live:
+            if rule.get("pattern") == pattern and rule["id"] not in taken:
+                matched[index] = rule
+                taken.add(rule["id"])
+                break
+    return matched
+
+
 def plan(live: list[dict]) -> tuple[list[tuple], list[dict]]:
     """Return (steps, unlisted).  A step is ("edit", id, pattern, url) or ("add", None, pattern, url)."""
-    by_id = {rule["id"]: rule for rule in live}
     steps = []
-    for rule_id, pattern, url in TARGET:
-        current = by_id.get(rule_id) if rule_id is not None else None
+    matched = match(live)
+    for (_, pattern, url), current in zip(TARGET, matched):
         if current is None:
             steps.append(("add", None, pattern, url))
         elif (current["pattern"], current["url_template"]) != (pattern, url):
-            steps.append(("edit", rule_id, pattern, url))
-    listed = {rule_id for rule_id, _, _ in TARGET}
+            steps.append(("edit", current["id"], pattern, url))
+    listed = {rule["id"] for rule in matched if rule is not None}
     unlisted = [rule for rule in live if rule["id"] not in listed]
     return steps, unlisted
 
 
 def order(live: list[dict]) -> list[int] | None:
-    """The realm order with the generic rule moved last, or None when it already is."""
+    """The realm order with the generic rule moved last, or None when it already is.
+
+    The generic rule is found the way `match` finds any row:  by GENERIC_ID, else by its pattern.
+    """
+    generic = next(
+        (rule for (rule_id, _, _), rule in zip(TARGET, match(live)) if rule_id == GENERIC_ID),
+        None,
+    )
     ids = [rule["id"] for rule in live]
-    if GENERIC_ID not in ids or ids[-1] == GENERIC_ID:
+    if generic is None or ids[-1] == generic["id"]:
         return None
-    return [i for i in ids if i != GENERIC_ID] + [GENERIC_ID]
+    return [i for i in ids if i != generic["id"]] + [generic["id"]]
 
 
 def team_drift(linear_keys: list[str]) -> tuple[list[str], list[str]]:
@@ -277,6 +307,39 @@ def check(zulip: Zulip) -> int:
     return failures
 
 
+def restore_order(zulip: Zulip) -> None:
+    """Move the generic rule last if a change left it earlier (Zulip appends every new rule)."""
+    reordered = order(zulip.linkifiers())
+    if reordered:
+        zulip.call("PATCH", "realm/linkifiers", {"ordered_linkifier_ids": json.dumps(reordered)})
+        print(f"moved the generic rule {reordered[-1]} back to last")
+
+
+def apply_plan(zulip: Zulip, steps: list[tuple], doomed: list[dict]) -> None:
+    """Make the changes and delete `doomed`, then keep the generic rule last.
+
+    The calls are not transactional.  When one fails, the order is still restored before the error
+    goes on, so a half-applied run never leaves the generic rule ahead of a rule it would shadow;
+    rerunning --apply then does the rest, because `plan` matches live rules by pattern as well as id.
+    """
+    try:
+        for kind, rule_id, pattern, url in steps:
+            data = {"pattern": pattern, "url_template": url}
+            if kind == "edit":
+                zulip.call("PATCH", f"realm/filters/{rule_id}", data)
+            else:
+                zulip.call("POST", "realm/filters", data)
+        for rule in doomed:
+            zulip.call("DELETE", f"realm/filters/{rule['id']}")
+    except BaseException:
+        try:
+            restore_order(zulip)
+        except SystemExit as exc:
+            print(f"could not restore the rule order:  {exc}", file=sys.stderr)
+        raise
+    restore_order(zulip)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--rc", help="zuliprc for a read-only plan or check")
@@ -308,19 +371,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.apply:
         return 0
 
-    for kind, rule_id, pattern, url in steps:
-        data = {"pattern": pattern, "url_template": url}
-        if kind == "edit":
-            zulip.call("PATCH", f"realm/filters/{rule_id}", data)
-        else:
-            zulip.call("POST", "realm/filters", data)
-    if args.delete_unlisted:
-        for rule in unlisted:
-            zulip.call("DELETE", f"realm/filters/{rule['id']}")
-    reordered = order(zulip.linkifiers())
-    if reordered:
-        zulip.call("PATCH", "realm/linkifiers", {"ordered_linkifier_ids": json.dumps(reordered)})
-        print(f"moved the generic rule {GENERIC_ID} back to last")
+    apply_plan(zulip, steps, unlisted if args.delete_unlisted else [])
     print(f"applied {len(steps)} change(s);  checking")
     return 1 if check(zulip) else 0
 

@@ -5,10 +5,14 @@ start) and is not followed by a word character;  `linkify` mimics that wrapper a
 Python's `re`, which agrees with re2 on these patterns (no backreferences or lookarounds inside).
 """
 
+import contextlib
+import io
+import json
 import re
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import zulip_linkifiers as L
@@ -59,6 +63,15 @@ class OrderTest(unittest.TestCase):
     def test_already_last_needs_nothing(self):
         self.assertIsNone(L.order([{"id": 5117}, {"id": L.GENERIC_ID}]))
 
+    def test_generic_rule_is_found_by_pattern_under_a_new_id(self):
+        pattern = next(p for i, p, _ in L.TARGET if i == L.GENERIC_ID)
+        live = [
+            {"id": 5117, "pattern": "SWU/x"},
+            {"id": 7001, "pattern": pattern},
+            {"id": 6001, "pattern": "Y#(?P<id>[0-9]+)"},
+        ]
+        self.assertEqual(L.order(live), [5117, 6001, 7001])
+
 
 class TeamDriftTest(unittest.TestCase):
     def test_no_drift(self):
@@ -91,6 +104,86 @@ class PlanTest(unittest.TestCase):
         steps, unlisted = L.plan(live)
         self.assertIn(("edit", 5122, *[(p, u) for i, p, u in L.TARGET if i == 5122][0]), steps)
         self.assertEqual([r["id"] for r in unlisted], [9999])
+
+    def renumbered(self, old_id, new_id, **changes):
+        live = self.live()
+        rule = next(r for r in live if r["id"] == old_id)
+        rule.update(id=new_id, **changes)
+        return live
+
+    def test_rule_renumbered_by_zulip_is_matched_by_pattern(self):
+        self.assertEqual(L.plan(self.renumbered(5143, 7001)), ([], []))
+
+    def test_renumbered_rule_with_a_stale_url_is_edited_under_its_new_id(self):
+        live = self.renumbered(5122, 7002, url_template="https://example.invalid/{id}")
+        steps, unlisted = L.plan(live)
+        self.assertEqual([(s[0], s[1]) for s in steps], [("edit", 7002)])
+        self.assertEqual(unlisted, [])
+
+    def test_row_without_an_id_is_matched_by_pattern_not_added_again(self):
+        row = (None, "NEW#(?P<id>[0-9]+)", "https://example.invalid/{id}")
+        live = self.live() + [{"id": 8000, "pattern": row[1], "url_template": row[2]}]
+        with mock.patch.object(L, "TARGET", [*L.TARGET, row]):
+            self.assertEqual(L.plan(live), ([], []))
+            self.assertEqual([s[0] for s in L.plan(self.live())[0]], ["add"])
+
+
+class FakeZulip:
+    """Just enough of the realm API:  POST appends a rule, PATCH linkifiers reorders, and one POST can fail."""
+
+    def __init__(self, live, fail_post=None):
+        self.live = list(live)
+        self.fail_post = fail_post
+        self.posts = 0
+        self.calls = []
+
+    def linkifiers(self):
+        return list(self.live)
+
+    def call(self, method, path, data=None):
+        self.calls.append((method, path))
+        if method == "POST":
+            self.posts += 1
+            if self.posts == self.fail_post:
+                raise SystemExit("POST realm/filters:  HTTP 400 refused")
+            rule = {"id": 9000 + self.posts, **data}
+            self.live.append(rule)
+        elif method == "PATCH" and path == "realm/linkifiers":
+            by_id = {rule["id"]: rule for rule in self.live}
+            self.live = [by_id[i] for i in json.loads(data["ordered_linkifier_ids"])]
+        return {}
+
+
+class ApplyTest(unittest.TestCase):
+    def two_missing(self):
+        live = [
+            {"id": i, "pattern": p, "url_template": u}
+            for i, p, u in L.TARGET
+            if i not in (5142, 5143)
+        ]
+        return FakeZulip(live, fail_post=2), live
+
+    def test_failure_part_way_still_moves_the_generic_rule_last(self):
+        zulip, live = self.two_missing()
+        steps, _ = L.plan(live)
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            L.apply_plan(zulip, steps, [])
+        self.assertEqual(zulip.live[-1]["id"], L.GENERIC_ID)
+        self.assertEqual(len(zulip.live), len(live) + 1)
+
+    def test_rerun_after_a_failure_adds_only_what_is_left(self):
+        zulip, live = self.two_missing()
+        steps, _ = L.plan(live)
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            L.apply_plan(zulip, steps, [])
+        rerun, unlisted = L.plan(zulip.linkifiers())
+        self.assertEqual([s[0] for s in rerun], ["add"])
+        self.assertEqual(unlisted, [])
+        zulip.fail_post = None
+        with contextlib.redirect_stdout(io.StringIO()):
+            L.apply_plan(zulip, rerun, [])
+        self.assertEqual(L.plan(zulip.linkifiers()), ([], []))
+        self.assertIsNone(L.order(zulip.linkifiers()))
 
 
 if __name__ == "__main__":
