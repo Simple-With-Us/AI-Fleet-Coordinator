@@ -97,7 +97,7 @@ Each point stays as this document states it until Jay rules.
 
 - **Branch tokens.**  The rewrite brief says folder and branch tokens use whole names.  `docs/protocols/lane-map.md` says folders, branches, and anything on disk use whole names, but also that branch prefixes are unchanged, and `lane new` creates folder `antigravity-fix-login` on branch `ag/fix-login`.  This document follows the registry prefixes.
 - **Reaction names.**  See [Reactions](#reactions):  the guide verifies the names but glosses three of them differently.
-- **AFC is a repo.**  `AFC` is the AI-Fleet-Coordinator acronym, not a seat, a bot or a voice, and nothing signs `[AFC]` (owner 2026-10-16, guide decisions row 18).  The coordinator is CLAUDE and posts as the CLAUDE bot.
+- **AFC voice.**  AFC ops automation has no Zulip bot and does not post (guide decisions row 18).  The coordinator is CLAUDE and posts as the CLAUDE bot.
 - **Strict repos without auto-update.**  Socratic-Trade and AI-Fleet-Coordinator are the strict repos (both through classic branch protection), and neither has `auto-update-prs.yml`.  Congress.Trade, Usage-Monitor, and congress-trading-shared have the workflow but are not strict ([Appendix A](#branch-protection)).
 - **Workflow runner.**  The [Auto Update PRs Workflow](#auto-update-prs-workflow) runs on `ubuntu-latest`, which conflicts with the Coolify-runners rule.
 - **PagerDuty scope.**  "fleet" in workflow `3930764`'s scope is read as the Sentry project `fleet-infra` ([Alert Workflows](#alert-workflows)).
@@ -384,7 +384,7 @@ Post with `agent-sync post` for a new topic and `agent-sync reply` in an existin
 - **Never wake the fleet** for a routine one-lane claim or for work in progress that only same-repo seats need.  Post in the work topic with no group mention, so only seats following that topic read it, and @-mention a specific peer if one must act.
 - **Only `@**all**`, and only there.**  Never `@**everyone**`, `@**channel**` or `@**topic**`, and never `@**all**` in any other topic or channel.  There is no `fleet` user group and none will be made (Zulip Cloud Free does not allow one).  The realm's `can_mention_many_users_group` is `role:members` (checked live Fri, Oct 9), so every seat's bot can send it.  If Zulip ever refuses it, @-mention each bot that must act (`--to`), and use `agent-sync dm --owner` for an emergency ([Fleet-Wide Wakes](docs/protocols/zulip-fleet-guide.md#fleet-wide-wakes)).
 - **`fleet` is a recipient only.**  It is never a sender, a signature, a tag such as `[FLEET]` or `[GB-FLEET]`, or an app acronym, and nothing posts as a bare fleet identity.
-- **Coordinator and AFC.**  `AFC` is the AI-Fleet-Coordinator app acronym and topic prefix, never a signing tag.  The coordinator is CLAUDE and posts as the CLAUDE bot.  There is no separate AFC actor to give a bot (owner 2026-10-16).
+- **Coordinator and AFC.**  `AFC` is the AI-Fleet-Coordinator app acronym and topic prefix, never a signing tag.  The coordinator is CLAUDE and posts as the CLAUDE bot.  AFC ops automation has no Zulip bot and does not post (pending Jay).  If Jay gives it one, it posts as its own bot, with `repo:  AI-Fleet-Coordinator` when it talks about itself.
 
 ### Roll Call Intro
 
