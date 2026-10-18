@@ -15,6 +15,7 @@ a server that echoes the header cannot leak it into stdout, stderr or an excepti
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import base64
@@ -29,19 +30,44 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from .identity import canonical_seat
 from .textfmt import sentence_gap
 
 __all__ = [
-    "REALM", "DEFAULT_CHANNEL", "MAX_TOPIC_LENGTH", "USER_AGENT",
-    "AgentSyncError", "UsageError", "CredentialError", "ApiError", "NetworkError", "QueueExpired",
-    "Credentials", "normalise_seat", "credential_file_name", "seat_from_rc_path", "session_tag",
-    "realm_url", "default_rc_path", "infisical_key_names", "infisical_project_id", "infisical_credentials", "resolve_credentials", "read_zuliprc", "env_credentials", "verify_realm",
-    "ZulipClient", "EventQueue", "message_channel", "message_topic", "outbound_params",
+    "DEFAULT_CHANNEL",
+    "MAX_TOPIC_LENGTH",
+    "REALM",
+    "USER_AGENT",
+    "AgentSyncError",
+    "ApiError",
+    "CredentialError",
+    "Credentials",
+    "EventQueue",
+    "NetworkError",
+    "QueueExpired",
+    "UsageError",
+    "ZulipClient",
+    "credential_file_name",
+    "default_rc_path",
+    "env_credentials",
+    "infisical_credentials",
+    "infisical_key_names",
+    "infisical_project_id",
+    "message_channel",
+    "message_topic",
+    "normalise_seat",
+    "outbound_params",
+    "read_zuliprc",
+    "realm_url",
+    "resolve_credentials",
+    "seat_from_rc_path",
+    "session_tag",
+    "verify_realm",
 ]
 
 REALM = "https://simplewithus.zulipchat.com"
@@ -74,7 +100,9 @@ SHORT_PART_MAX = 2
 MAX_RATE_LIMIT_RETRIES = 3
 RETRY_AFTER_CAP = 30.0
 GET_RETRY_BACKOFF = (1.0, 3.0)
-GATEWAY_STATUSES = frozenset({502, 503, 504})  # the proxy in front of Zulip restarting or timing out
+GATEWAY_STATUSES = frozenset(
+    {502, 503, 504}
+)  # the proxy in front of Zulip restarting or timing out
 
 _SEAT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
 _LOOPBACK_NAMES = {"localhost"}
@@ -102,8 +130,14 @@ class ApiError(AgentSyncError):
 
     exit_code = 5
 
-    def __init__(self, msg: str, *, code: str | None = None, status: int | None = None,
-                 data: Mapping[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        msg: str,
+        *,
+        code: str | None = None,
+        status: int | None = None,
+        data: Mapping[str, Any] | None = None,
+    ) -> None:
         super().__init__("%s [%s]" % (msg, code) if code else msg)
         self.msg = msg
         self.code = code
@@ -131,6 +165,7 @@ class QueueExpired(Exception):
 # Seat and session identity
 # --------------------------------------------------------------------------------------------
 
+
 def normalise_seat(name: str) -> str:
     """Upper-case a seat name, refusing anything that is not a plain token (it names a directory).
     Every spelling of the retired GROK-BUILD tag (GROK-BUILD, Grok-Build, grok_build, "Grok (Build)",
@@ -138,12 +173,18 @@ def normalise_seat(name: str) -> str:
     before the token check because several of those spellings are not tokens."""
     cleaned = (name or "").strip()
     if not cleaned:
-        raise UsageError("seat name %r is not valid; use letters, digits, hyphen or underscore (e.g. CLAUDE)" % cleaned)
+        raise UsageError(
+            "seat name %r is not valid; use letters, digits, hyphen or underscore (e.g. CLAUDE)"
+            % cleaned
+        )
     canonical = canonical_seat(cleaned)
     if canonical != cleaned.upper():
         return canonical  # an alias:  the canonical tag is a token by construction
     if not _SEAT_RE.match(cleaned):
-        raise UsageError("seat name %r is not valid; use letters, digits, hyphen or underscore (e.g. CLAUDE)" % cleaned)
+        raise UsageError(
+            "seat name %r is not valid; use letters, digits, hyphen or underscore (e.g. CLAUDE)"
+            % cleaned
+        )
     return canonical
 
 
@@ -154,8 +195,10 @@ def credential_file_name(seat: str) -> str:
     stem = SEAT_FILE_OVERRIDES.get(seat)
     if stem is None:
         parts = seat.split("-")
-        stem = "-".join(part if len(part) <= SHORT_PART_MAX else part[:1].upper() + part[1:].lower()
-                        for part in parts)
+        stem = "-".join(
+            part if len(part) <= SHORT_PART_MAX else part[:1].upper() + part[1:].lower()
+            for part in parts
+        )
     return stem + "-zuliprc"
 
 
@@ -188,6 +231,7 @@ def session_tag(session_id: str | None) -> str | None:
 # --------------------------------------------------------------------------------------------
 # Credentials
 # --------------------------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class Credentials:
@@ -224,43 +268,65 @@ def read_zuliprc(path: Path) -> Credentials:
     except FileNotFoundError:
         raise CredentialError("credential file not found: %s" % path) from None
     except OSError as exc:
-        raise CredentialError("cannot stat credential file %s (%s)" % (path, exc.strerror or "error")) from None
+        raise CredentialError(
+            "cannot stat credential file %s (%s)" % (path, exc.strerror or "error")
+        ) from None
     if not stat.S_ISREG(st.st_mode):
         raise CredentialError("credential path is not a regular file: %s" % path)
     if st.st_mode & 0o077:
         raise CredentialError(
             "credential file %s is accessible to group or other (mode %04o); run: chmod 600 %s"
-            % (path, stat.S_IMODE(st.st_mode), path))
+            % (path, stat.S_IMODE(st.st_mode), path)
+        )
     parser = configparser.ConfigParser(interpolation=None)
     try:
         with open(path, encoding="utf-8") as fh:
             parser.read_file(fh)
     except (configparser.Error, UnicodeDecodeError, OSError):
         raise CredentialError(
-            "cannot parse %s: expected an INI file with an [api] section holding email, key and site" % path) from None
+            "cannot parse %s: expected an INI file with an [api] section holding email, key and site"
+            % path
+        ) from None
     if not parser.has_section("api"):
         raise CredentialError("%s has no [api] section" % path)
-    values = {name: _strip_quotes(parser.get("api", name, fallback="")) for name in ("email", "key", "site")}
+    values = {
+        name: _strip_quotes(parser.get("api", name, fallback=""))
+        for name in ("email", "key", "site")
+    }
     missing = [name for name, value in values.items() if not value]
     if missing:
         raise CredentialError("%s [api] section is missing: %s" % (path, ", ".join(missing)))
-    return Credentials(email=values["email"], key=values["key"], site=_normalise_site(values["site"]), source=str(path))
+    return Credentials(
+        email=values["email"],
+        key=values["key"],
+        site=_normalise_site(values["site"]),
+        source=str(path),
+    )
 
 
-def env_credentials(env: Mapping[str, str], *, email_env: str, key_env: str, site_env: str,
-                    label: str) -> Credentials:
+def env_credentials(
+    env: Mapping[str, str], *, email_env: str, key_env: str, site_env: str, label: str
+) -> Credentials:
     """One seat's credentials from the environment, under the variable names its config gives
     (the listener's server instance, where Infisical syncs each bot's email and key into the
     container).  A missing variable is named in the error; a value never is."""
     values = {name: _strip_quotes(env.get(name) or "") for name in (email_env, key_env, site_env)}
     missing = [name for name in (email_env, key_env, site_env) if not values[name]]
     if missing:
-        raise CredentialError("seat %s: environment variable%s not set: %s" % (
-            label, "" if len(missing) == 1 else "s", ", ".join(missing)))
+        raise CredentialError(
+            "seat %s: environment variable%s not set: %s"
+            % (label, "" if len(missing) == 1 else "s", ", ".join(missing))
+        )
     if any(ch in values[key_env] for ch in "\r\n\x00"):
-        raise CredentialError("seat %s: %s holds a control character; refusing it" % (label, key_env))
-    return Credentials(email=values[email_env], key=values[key_env], site=_normalise_site(values[site_env]),
-                       source="env %s" % key_env)
+        raise CredentialError(
+            "seat %s: %s holds a control character; refusing it" % (label, key_env)
+        )
+    return Credentials(
+        email=values[email_env],
+        key=values[key_env],
+        site=_normalise_site(values[site_env]),
+        source="env %s" % key_env,
+    )
 
 
 def default_rc_path(seat: str, env: Mapping[str, str], home: Path) -> Path:
@@ -283,7 +349,9 @@ def infisical_key_names(seat: str) -> tuple[str, str, str]:
     return tuple("%s_ZULIP_%s" % (prefix, part) for part in ("EMAIL", "KEY", "SITE"))  # type: ignore[return-value]
 
 
-_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 def infisical_project_id(env: Mapping[str, str], home: Path) -> str:
@@ -292,19 +360,32 @@ def infisical_project_id(env: Mapping[str, str], home: Path) -> str:
     value = (env.get(ENV_INFISICAL_PROJECT) or "").strip()
     if not value:
         try:
-            value = (home / INFISICAL_PROJECT_FILE).read_text(encoding="utf-8").strip().splitlines()[0].strip()
+            value = (
+                (home / INFISICAL_PROJECT_FILE)
+                .read_text(encoding="utf-8")
+                .strip()
+                .splitlines()[0]
+                .strip()
+            )
         except (OSError, UnicodeDecodeError, IndexError):
             value = ""
     if not value:
-        raise CredentialError("the Fleet-OPS Infisical project id is not set:  set %s or put it in ~/%s "
-                              "(it lives in the private fleet-ops inventory)" % (ENV_INFISICAL_PROJECT, INFISICAL_PROJECT_FILE))
+        raise CredentialError(
+            "the Fleet-OPS Infisical project id is not set:  set %s or put it in ~/%s "
+            "(it lives in the private fleet-ops inventory)"
+            % (ENV_INFISICAL_PROJECT, INFISICAL_PROJECT_FILE)
+        )
     if not _UUID_RE.match(value):
-        raise CredentialError("the Fleet-OPS Infisical project id (%s or ~/%s) is not a UUID"
-                              % (ENV_INFISICAL_PROJECT, INFISICAL_PROJECT_FILE))
+        raise CredentialError(
+            "the Fleet-OPS Infisical project id (%s or ~/%s) is not a UUID"
+            % (ENV_INFISICAL_PROJECT, INFISICAL_PROJECT_FILE)
+        )
     return value
 
 
-def _fetch_from_infisical_cli(names: tuple[str, ...], env: Mapping[str, str], home: Path) -> Mapping[str, str]:
+def _fetch_from_infisical_cli(
+    names: tuple[str, ...], env: Mapping[str, str], home: Path
+) -> Mapping[str, str]:
     """Ask the infisical CLI (scripts/fleet_knobs, prod only) for just these names.  Raises
     CredentialError with a reason token, never output."""
     project_id = infisical_project_id(env, home)
@@ -325,35 +406,59 @@ def _fetch_from_infisical_cli(names: tuple[str, ...], env: Mapping[str, str], ho
 _default_infisical_fetch = _fetch_from_infisical_cli
 
 
-def infisical_credentials(seat: str, *, env: Mapping[str, str] | None = None, home: Path | None = None,
-                          fetch: Callable[[tuple[str, ...]], Mapping[str, str]] | None = None) -> Credentials:
+def infisical_credentials(
+    seat: str,
+    *,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+    fetch: Callable[[tuple[str, ...]], Mapping[str, str]] | None = None,
+) -> Credentials:
     """One seat's credentials from Infisical Fleet-OPS /zulip, held in memory only.  Only this seat's
     three names are requested.  Every failure names the folder and the key names, never a value."""
     names = infisical_key_names(seat)
     where = "Infisical Fleet-OPS %s (prod) keys %s" % (INFISICAL_PATH, ", ".join(names))
     try:
-        got = fetch(names) if fetch is not None else _default_infisical_fetch(
-            names, env if env is not None else os.environ, home if home is not None else Path.home())
+        got = (
+            fetch(names)
+            if fetch is not None
+            else _default_infisical_fetch(
+                names,
+                env if env is not None else os.environ,
+                home if home is not None else Path.home(),
+            )
+        )
     except CredentialError as exc:
         raise CredentialError("cannot read %s: %s" % (where, exc)) from None
     except Exception as exc:  # a fetch must not leak anything through its own message
         raise CredentialError("cannot read %s: %s" % (where, type(exc).__name__)) from None
     email_name, key_name, site_name = names
-    absent = [name for name in names if (got.get(name) or "").strip().lower() in ("", "*not found*")]
+    absent = [
+        name for name in names if (got.get(name) or "").strip().lower() in ("", "*not found*")
+    ]
     if absent:
         raise CredentialError("%s: not set: %s" % (where, ", ".join(absent)))
     # Same validation as the listener's env credentials (control characters, site shape).
     try:
-        creds = env_credentials({name: got[name] for name in names}, email_env=email_name, key_env=key_name,
-                                site_env=site_name, label=seat)
+        creds = env_credentials(
+            {name: got[name] for name in names},
+            email_env=email_name,
+            key_env=key_name,
+            site_env=site_name,
+            label=seat,
+        )
     except CredentialError as exc:
         raise CredentialError("%s: %s" % (where, exc)) from None
     return replace(creds, source="infisical Fleet-OPS %s %s" % (INFISICAL_PATH, key_name))
 
 
-def resolve_credentials(env: Mapping[str, str], *, rc_arg: str | None, seat: str | None,
-                        home: Path | None = None,
-                        infisical_fetch: Callable[[tuple[str, ...]], Mapping[str, str]] | None = None) -> Credentials:
+def resolve_credentials(
+    env: Mapping[str, str],
+    *,
+    rc_arg: str | None,
+    seat: str | None,
+    home: Path | None = None,
+    infisical_fetch: Callable[[tuple[str, ...]], Mapping[str, str]] | None = None,
+) -> Credentials:
     """Apply the credential order.  An explicit --rc or ZULIP_RC that cannot be read is an error;
     it never falls through to the next source.  Infisical is the last resort, only for a seat with no
     file and no env triple, and its failure is an error naming the folder and key names (OPS-818)."""
@@ -368,10 +473,17 @@ def resolve_credentials(env: Mapping[str, str], *, rc_arg: str | None, seat: str
         tried.append(str(candidate))
         if candidate.exists():
             return read_zuliprc(candidate)
-    triple = {name: (env.get(name) or "").strip() for name in ("ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE")}
+    triple = {
+        name: (env.get(name) or "").strip()
+        for name in ("ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE")
+    }
     if all(triple.values()):
-        return Credentials(email=triple["ZULIP_EMAIL"], key=triple["ZULIP_API_KEY"],
-                           site=_normalise_site(triple["ZULIP_SITE"]), source="env")
+        return Credentials(
+            email=triple["ZULIP_EMAIL"],
+            key=triple["ZULIP_API_KEY"],
+            site=_normalise_site(triple["ZULIP_SITE"]),
+            source="env",
+        )
     missing = [name for name, value in triple.items() if not value]
     where = ("; looked for %s" % ", ".join(tried)) if tried else ""
     fallback = ""
@@ -380,15 +492,19 @@ def resolve_credentials(env: Mapping[str, str], *, rc_arg: str | None, seat: str
             return infisical_credentials(seat, env=env, home=home, fetch=infisical_fetch)
         except CredentialError as exc:
             fallback = "; %s" % exc
-    raise CredentialError("no Zulip credentials found%s%s; or set ZULIP_EMAIL, ZULIP_API_KEY and ZULIP_SITE "
-                          "(missing: %s), or pass --rc PATH" % (where, fallback, ", ".join(missing)))
+    raise CredentialError(
+        "no Zulip credentials found%s%s; or set ZULIP_EMAIL, ZULIP_API_KEY and ZULIP_SITE "
+        "(missing: %s), or pass --rc PATH" % (where, fallback, ", ".join(missing))
+    )
 
 
 def _host_key(url: str) -> tuple[str, int | None, str]:
     try:
         parts = urllib.parse.urlsplit(url)
         host = (parts.hostname or "").lower()
-        port = parts.port or (443 if parts.scheme == "https" else 80 if parts.scheme == "http" else None)
+        port = parts.port or (
+            443 if parts.scheme == "https" else 80 if parts.scheme == "http" else None
+        )
     except ValueError:
         return ("", None, "")
     return (host, port, parts.scheme)
@@ -408,27 +524,40 @@ def verify_realm(creds: Credentials, realm: str) -> None:
     c_host, c_port, _ = _host_key(creds.site)
     r_host, r_port, r_scheme = _host_key(realm)
     if not r_host or not c_host:
-        raise CredentialError("could not read a host from the realm or from the credential site (%s)" % creds.source)
+        raise CredentialError(
+            "could not read a host from the realm or from the credential site (%s)" % creds.source
+        )
     if (c_host, c_port) != (r_host, r_port):
         raise CredentialError(
             "credential site host %s (bot %s, from %s) does not match the realm host %s; refusing to send it there"
-            % (c_host, creds.email, creds.source, r_host))
+            % (c_host, creds.email, creds.source, r_host)
+        )
     if r_scheme != "https" and not _is_loopback(r_host):
-        raise CredentialError("refusing to send credentials over %s to %s; the realm must be https" % (r_scheme, r_host))
+        raise CredentialError(
+            "refusing to send credentials over %s to %s; the realm must be https"
+            % (r_scheme, r_host)
+        )
 
 
 # --------------------------------------------------------------------------------------------
 # HTTP client
 # --------------------------------------------------------------------------------------------
 
-def outbound_params(method: str, path: str, params: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+
+def outbound_params(
+    method: str, path: str, params: Mapping[str, Any] | None
+) -> Mapping[str, Any] | None:
     """`params` with the sentence gap in any message `content` this call sends.  The one place every
     outbound path passes through (CLI post, reply and dm, the daemon's wake replies and owner
     DMs, the listener probe).  It is a safety net:  authors still write the gap, and Zulip's renderer
     collapses plain doubled spaces.  Only `content` changes, never the topic, the recipients or
     anything this client reads."""
-    if (method in ("POST", "PATCH") and params and isinstance(params.get("content"), str)
-            and _OUTBOUND_TEXT_PATH.fullmatch(path.strip("/"))):
+    if (
+        method in ("POST", "PATCH")
+        and params
+        and isinstance(params.get("content"), str)
+        and _OUTBOUND_TEXT_PATH.fullmatch(path.strip("/"))
+    ):
         return {**params, "content": sentence_gap(params["content"])}
     return params
 
@@ -459,13 +588,19 @@ def multipart_body(filename: str, data: bytes, content_type: str) -> tuple[bytes
     """A multipart/form-data body with one file part, and its Content-Type.  The file name is
     checked against a plain-character pattern so it can never break the part header."""
     if not _UPLOAD_NAME_RE.fullmatch(filename) or filename.strip(" .") == "":
-        raise UsageError("the upload file name may use letters, digits, '.', '_', '-' and spaces only (1 to 100)")
+        raise UsageError(
+            "the upload file name may use letters, digits, '.', '_', '-' and spaces only (1 to 100)"
+        )
     if not re.fullmatch(r"[A-Za-z0-9.+-]{1,60}/[A-Za-z0-9.+-]{1,60}", content_type):
         content_type = "application/octet-stream"
     boundary = "agent-sync-" + base64.b16encode(os.urandom(12)).decode("ascii").lower()
-    head = ('--%s\r\nContent-Disposition: form-data; name="filename"; filename="%s"\r\nContent-Type: %s\r\n\r\n'
-            % (boundary, filename, content_type)).encode("ascii")
-    return head + data + ("\r\n--%s--\r\n" % boundary).encode("ascii"), "multipart/form-data; boundary=" + boundary
+    head = (
+        '--%s\r\nContent-Disposition: form-data; name="filename"; filename="%s"\r\nContent-Type: %s\r\n\r\n'
+        % (boundary, filename, content_type)
+    ).encode("ascii")
+    return head + data + ("\r\n--%s--\r\n" % boundary).encode(
+        "ascii"
+    ), "multipart/form-data; boundary=" + boundary
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -478,21 +613,32 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class ZulipClient:
     """Minimal Zulip REST client.  Thread-safe: each request builds its own urllib objects."""
 
-    def __init__(self, creds: Credentials, realm: str, *, timeout: float = 30.0, events_timeout: float = 100.0,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+    def __init__(
+        self,
+        creds: Credentials,
+        realm: str,
+        *,
+        timeout: float = 30.0,
+        events_timeout: float = 100.0,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.creds = creds
         self.realm = realm.rstrip("/")
         self.base = self.realm + "/api/v1/"
         self.timeout = timeout
         self.events_timeout = events_timeout
         self.sleep = sleep
-        token = base64.b64encode(("%s:%s" % (creds.email, creds.key)).encode("utf-8")).decode("ascii")
+        token = base64.b64encode(("%s:%s" % (creds.email, creds.key)).encode("utf-8")).decode(
+            "ascii"
+        )
         self._auth = "Basic " + token
         self._hidden = [value for value in (creds.key, token) if value]
         host = _host_key(self.realm)[0]
         handlers: list[Any] = [_NoRedirect()]
         if _is_loopback(host):
-            handlers.insert(0, urllib.request.ProxyHandler({}))  # a proxy must not see local traffic
+            handlers.insert(
+                0, urllib.request.ProxyHandler({})
+            )  # a proxy must not see local traffic
         self._opener = urllib.request.build_opener(*handlers)
 
     # ---- secrecy ------------------------------------------------------------------------
@@ -502,9 +648,16 @@ class ZulipClient:
         return text
 
     # ---- core ---------------------------------------------------------------------------
-    def request(self, method: str, path: str, params: Mapping[str, Any] | None = None, *,
-                timeout: float | None = None, long_poll: bool = False,
-                upload: tuple[str, bytes, str] | None = None) -> dict[str, Any]:
+    def request(
+        self,
+        method: str,
+        path: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+        long_poll: bool = False,
+        upload: tuple[str, bytes, str] | None = None,
+    ) -> dict[str, Any]:
         """One API call.  429 is retried (Retry-After, at most 3 times).  GET also retries
         network failures and a 502, 503 or 504 twice (1s, then 3s); a long poll does not retry a
         timeout, because a quiet queue is normal.  Non-GET requests are never retried on a
@@ -527,7 +680,11 @@ class ZulipClient:
         content_type = "application/x-www-form-urlencoded"
         if upload is not None:  # POST user_uploads:  one multipart file part, nothing else
             data, content_type = multipart_body(*upload)
-        headers = {"Authorization": self._auth, "User-Agent": USER_AGENT, "Accept": "application/json"}
+        headers = {
+            "Authorization": self._auth,
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+        }
         if data is not None:
             headers["Content-Type"] = content_type
         rate_retries = 0
@@ -535,7 +692,9 @@ class ZulipClient:
         while True:
             request = urllib.request.Request(url, data=data, method=method, headers=headers)
             try:
-                with self._opener.open(request, timeout=timeout if timeout is not None else self.timeout) as response:
+                with self._opener.open(
+                    request, timeout=timeout if timeout is not None else self.timeout
+                ) as response:
                     body = response.read()
                     status = response.status
             except urllib.error.HTTPError as exc:
@@ -550,7 +709,11 @@ class ZulipClient:
                     rate_retries += 1
                     self.sleep(self._retry_after(exc.headers, body))
                     continue
-                if method == "GET" and status in GATEWAY_STATUSES and net_retries < len(GET_RETRY_BACKOFF):
+                if (
+                    method == "GET"
+                    and status in GATEWAY_STATUSES
+                    and net_retries < len(GET_RETRY_BACKOFF)
+                ):
                     self.sleep(GET_RETRY_BACKOFF[net_retries])
                     net_retries += 1
                     continue
@@ -558,18 +721,32 @@ class ZulipClient:
             except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
                 reason = getattr(exc, "reason", exc)
                 is_timeout = isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError)
-                retryable = (method == "GET" and net_retries < len(GET_RETRY_BACKOFF)
-                             and not (long_poll and is_timeout))
+                retryable = (
+                    method == "GET"
+                    and net_retries < len(GET_RETRY_BACKOFF)
+                    and not (long_poll and is_timeout)
+                )
                 if retryable:
                     self.sleep(GET_RETRY_BACKOFF[net_retries])
                     net_retries += 1
                     continue
                 refused = isinstance(reason, ConnectionRefusedError)
-                detail = "timed out" if is_timeout else self.scrub(str(reason) or type(reason).__name__)
+                detail = (
+                    "timed out" if is_timeout else self.scrub(str(reason) or type(reason).__name__)
+                )
                 raise NetworkError(
-                    "%s %s failed: %s%s" % (method, path, detail,
-                                            "; Zulip may or may not have received it" if method != "GET" and not refused else ""),
-                    timeout=is_timeout, maybe_sent=(method != "GET" and not refused)) from None
+                    "%s %s failed: %s%s"
+                    % (
+                        method,
+                        path,
+                        detail,
+                        "; Zulip may or may not have received it"
+                        if method != "GET" and not refused
+                        else "",
+                    ),
+                    timeout=is_timeout,
+                    maybe_sent=(method != "GET" and not refused),
+                ) from None
             return self._parse(status, body)
 
     def get(self, path: str, params: Mapping[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
@@ -578,13 +755,19 @@ class ZulipClient:
     def post(self, path: str, params: Mapping[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
         return self.request("POST", path, params, **kw)
 
-    def patch(self, path: str, params: Mapping[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
+    def patch(
+        self, path: str, params: Mapping[str, Any] | None = None, **kw: Any
+    ) -> dict[str, Any]:
         return self.request("PATCH", path, params, **kw)
 
-    def delete(self, path: str, params: Mapping[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
+    def delete(
+        self, path: str, params: Mapping[str, Any] | None = None, **kw: Any
+    ) -> dict[str, Any]:
         return self.request("DELETE", path, params, **kw)
 
-    def upload(self, filename: str, data: bytes, content_type: str = "application/octet-stream") -> dict[str, Any]:
+    def upload(
+        self, filename: str, data: bytes, content_type: str = "application/octet-stream"
+    ) -> dict[str, Any]:
         """POST user_uploads with one file.  Returns Zulip's answer ({uri, url, filename}).  Never
         retried on a network failure, like every other non-GET request."""
         return self.request("POST", "user_uploads", None, upload=(filename, data, content_type))
@@ -626,9 +809,13 @@ class ZulipClient:
         try:
             parsed = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
-            raise ApiError("Zulip returned a response that is not JSON (HTTP %d)" % status, status=status) from None
+            raise ApiError(
+                "Zulip returned a response that is not JSON (HTTP %d)" % status, status=status
+            ) from None
         if not isinstance(parsed, dict):
-            raise ApiError("Zulip returned an unexpected response shape (HTTP %d)" % status, status=status)
+            raise ApiError(
+                "Zulip returned an unexpected response shape (HTTP %d)" % status, status=status
+            )
         if parsed.get("result") == "error":
             raise self._api_error(status, body)
         return parsed
@@ -638,13 +825,16 @@ class ZulipClient:
 # Messages and event queues
 # --------------------------------------------------------------------------------------------
 
+
 def message_channel(message: Mapping[str, Any]) -> str:
     recipient = message.get("display_recipient")
     return recipient if isinstance(recipient, str) else "DM"
 
 
 def message_topic(message: Mapping[str, Any]) -> str:
-    return str(message.get("subject") if message.get("subject") is not None else message.get("topic") or "")
+    return str(
+        message.get("subject") if message.get("subject") is not None else message.get("topic") or ""
+    )
 
 
 class EventQueue:
@@ -657,8 +847,14 @@ class EventQueue:
     register response (initial user and topic state, the long-poll timeout), and `last_event_at`
     is the monotonic time of the last event of any kind, heartbeats included."""
 
-    def __init__(self, client: ZulipClient, narrow: list[list[str]] | None,
-                 event_types: list[str] | None = None, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        client: ZulipClient,
+        narrow: list[list[str]] | None,
+        event_types: list[str] | None = None,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.client = client
         self.narrow = narrow
         self.event_types = list(event_types or ["message"])
@@ -682,7 +878,11 @@ class EventQueue:
     def longpoll_timeout(self) -> float | None:
         """The server's long-poll timeout from the register response, when it gave one."""
         value = self.register_state.get("event_queue_longpoll_timeout_seconds")
-        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else None
+        return (
+            float(value)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+            else None
+        )
 
     def poll_events(self, timeout: float) -> list[dict[str, Any]]:
         """Block up to `timeout` seconds; return every event except heartbeats, as received.
@@ -690,8 +890,12 @@ class EventQueue:
         if self.queue_id is None:
             raise QueueExpired()
         try:
-            result = self.client.get("events", {"queue_id": self.queue_id, "last_event_id": self.last_event_id},
-                                     timeout=max(0.05, timeout), long_poll=True)
+            result = self.client.get(
+                "events",
+                {"queue_id": self.queue_id, "last_event_id": self.last_event_id},
+                timeout=max(0.05, timeout),
+                long_poll=True,
+            )
         except ApiError as exc:
             if exc.code == "BAD_EVENT_QUEUE_ID":
                 self.queue_id = None
@@ -721,8 +925,11 @@ class EventQueue:
     def poll(self, timeout: float) -> list[dict[str, Any]]:
         """Block up to `timeout` seconds for events.  Returns the message events (possibly none).
         Raises QueueExpired when the server has dropped the queue."""
-        return [event["message"] for event in self.poll_events(timeout)
-                if event.get("type") == "message" and isinstance(event.get("message"), dict)]
+        return [
+            event["message"]
+            for event in self.poll_events(timeout)
+            if event.get("type") == "message" and isinstance(event.get("message"), dict)
+        ]
 
     def close(self) -> str | None:
         """Best-effort DELETE of the queue; never raises.  Returns a one-line problem (never the

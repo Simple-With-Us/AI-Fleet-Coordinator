@@ -221,13 +221,18 @@ class InfisicalFallbackTests(Harness):
         (self.home / ".agent-sync").mkdir()
         (self.home / ".agent-sync" / "fleet-ops-project-id").write_text(other_id + "\n")
         self.assertEqual(Z.infisical_project_id({}, self.home), other_id)
-        self.assertEqual(Z.infisical_project_id({"INFISICAL_FLEET_OPS_PROJECT_ID": fake_id}, self.home), fake_id)
+        self.assertEqual(
+            Z.infisical_project_id({"INFISICAL_FLEET_OPS_PROJECT_ID": fake_id}, self.home), fake_id
+        )
         with self.assertRaises(Z.CredentialError) as ctx:
-            Z.infisical_project_id({"INFISICAL_FLEET_OPS_PROJECT_ID": "not-a-uuid-secret-looking"}, self.home)
+            Z.infisical_project_id(
+                {"INFISICAL_FLEET_OPS_PROJECT_ID": "not-a-uuid-secret-looking"}, self.home
+            )
         self.assertNotIn("secret-looking", str(ctx.exception))
 
     def test_default_fetch_passes_the_resolved_project_id_and_only_this_seats_names(self) -> None:
         from fleet_knobs import source
+
         fake_id = "11111111-2222-3333-4444-555555555555"
         seen: dict = {}
 
@@ -235,10 +240,13 @@ class InfisicalFallbackTests(Harness):
             seen.update(names=tuple(names), project_id=project_id, path=path)
             return {}
 
-        with mock.patch.object(source, "fetch_named", fetch_named), \
-                mock.patch.object(source, "environment_refusal", lambda: None):
-            got = Z._fetch_from_infisical_cli(("A", "B", "C"), {"INFISICAL_FLEET_OPS_PROJECT_ID": fake_id},
-                                                         self.home)
+        with (
+            mock.patch.object(source, "fetch_named", fetch_named),
+            mock.patch.object(source, "environment_refusal", lambda: None),
+        ):
+            got = Z._fetch_from_infisical_cli(
+                ("A", "B", "C"), {"INFISICAL_FLEET_OPS_PROJECT_ID": fake_id}, self.home
+            )
         self.assertEqual(got, {})
         self.assertEqual(seen, {"names": ("A", "B", "C"), "project_id": fake_id, "path": "/zulip"})
 
