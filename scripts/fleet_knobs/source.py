@@ -15,15 +15,16 @@ package, and the Mac's LaunchAgents already rely on the CLI's login (see
 scripts/infisical-secrets-sync.sh).  ``fleet_rag/infisical_settings.py`` is the reference for
 the contract (prod only, load once, keep the last-known-good, names only in logs).
 """
+
 from __future__ import annotations
 
 import json
 import os
 import shutil
 import subprocess
-from typing import Dict, Iterable, Optional
+from collections.abc import Iterable
 
-PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"       # AI Fleet Coordinator
+PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator
 ENVIRONMENT = "prod"
 CLI_NAME = "infisical"
 # A LaunchAgent's PATH is minimal, so look in the usual install places after PATH.
@@ -41,18 +42,20 @@ class FetchFailed(Exception):
         self.reason = reason
 
 
-def environment_refusal() -> Optional[str]:
+def environment_refusal() -> str | None:
     """Why Infisical may not be read (a non-prod slug in the environment), or None."""
     for var in ENV_NAMES:
         slug = (os.environ.get(var) or "").strip().lower()
         if slug and slug != ENVIRONMENT:
-            return (f"refusing Infisical environment {slug!r} from {var}:  prod is the only "
-                    "environment (dev and staging are retired);  unset it or set it to prod;  "
-                    "see INFISICAL.md")
+            return (
+                f"refusing Infisical environment {slug!r} from {var}:  prod is the only "
+                "environment (dev and staging are retired);  unset it or set it to prod;  "
+                "see INFISICAL.md"
+            )
     return None
 
 
-def find_cli() -> Optional[str]:
+def find_cli() -> str | None:
     found = shutil.which(CLI_NAME)
     if found:
         return found
@@ -64,12 +67,20 @@ def find_cli() -> Optional[str]:
 
 
 def argv_for(cli: str) -> list:
-    return [cli, "export", f"--env={ENVIRONMENT}", f"--projectId={PROJECT_ID}",
-            "--format=json", "--path=/", "--silent", "--expand=false",
-            "--include-imports=false"]
+    return [
+        cli,
+        "export",
+        f"--env={ENVIRONMENT}",
+        f"--projectId={PROJECT_ID}",
+        "--format=json",
+        "--path=/",
+        "--silent",
+        "--expand=false",
+        "--include-imports=false",
+    ]
 
 
-def fetch(names: Iterable[str]) -> Dict[str, str]:
+def fetch(names: Iterable[str]) -> dict[str, str]:
     """The raw string value of each of `names` that Infisical holds (absent names are left out).
 
     Raises FetchFailed with a reason token.  Never logs or returns anything but the
@@ -82,12 +93,22 @@ def fetch(names: Iterable[str]) -> Dict[str, str]:
 
 
 def argv_named(cli: str, names: Iterable[str], project_id: str, path: str) -> list:
-    return [cli, "secrets", "get", *sorted(set(names)), f"--env={ENVIRONMENT}",
-            f"--projectId={project_id}", f"--path={path}", "--output=json", "--silent",
-            "--expand=false", "--include-imports=false"]
+    return [
+        cli,
+        "secrets",
+        "get",
+        *sorted(set(names)),
+        f"--env={ENVIRONMENT}",
+        f"--projectId={project_id}",
+        f"--path={path}",
+        "--output=json",
+        "--silent",
+        "--expand=false",
+        "--include-imports=false",
+    ]
 
 
-def fetch_named(names: Iterable[str], *, project_id: str, path: str) -> Dict[str, str]:
+def fetch_named(names: Iterable[str], *, project_id: str, path: str) -> dict[str, str]:
     """Only the named secrets of one folder of another project (``infisical secrets get``).
 
     Unlike ``fetch`` the CLI itself is asked for just these names, so no other secret in the
@@ -103,9 +124,15 @@ def fetch_named(names: Iterable[str], *, project_id: str, path: str) -> Dict[str
 def _run(argv: list):
     """Run the CLI and parse its JSON.  Raises FetchFailed with a reason token."""
     try:
-        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
-                              timeout=TIMEOUT_SECONDS, cwd="/", env=dict(os.environ),
-                              check=False)
+        proc = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=TIMEOUT_SECONDS,
+            cwd="/",
+            env=dict(os.environ),
+            check=False,
+        )
     except subprocess.TimeoutExpired:
         raise FetchFailed("timeout") from None
     except OSError:
@@ -123,12 +150,12 @@ def _run(argv: list):
         out = b""
 
 
-def _pick(payload, wanted) -> Dict[str, str]:
+def _pick(payload, wanted) -> dict[str, str]:
     """Accept the shapes ``export --format=json`` has used:  {KEY: value}, a list of
     {key, value} or {secretKey, secretValue} objects, or an API-style {"secrets": [...]}."""
     if isinstance(payload, dict) and isinstance(payload.get("secrets"), list):
         payload = payload["secrets"]
-    found: Dict[str, str] = {}
+    found: dict[str, str] = {}
     if isinstance(payload, dict):
         pairs = payload.items()
     elif isinstance(payload, list):

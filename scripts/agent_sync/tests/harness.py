@@ -6,6 +6,7 @@ CLAUDE_CODE_SESSION_ID, AGENT_SEAT and HOME never leak in, and no test can touch
 the source holds no key-looking literal (the gitleaks job runs on this repo).  Every byte any
 command prints is collected, and tearDown fails the test if the key or its base64 form appears.
 """
+
 from __future__ import annotations
 
 import base64
@@ -17,10 +18,10 @@ import shutil
 import tempfile
 import threading
 import unittest
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
-
+from typing import Any
 from unittest import mock
 
 from agent_sync import cli
@@ -60,8 +61,15 @@ class Harness(unittest.TestCase):
         # The Notes relay consumer comes from the NOTES_RELAY_CONSUMER fleet knob (Infisical):  never reached from a test.
         # A test sets self.notes_knob to change what the knob answers.
         self.notes_knob = "CLAUDE"
-        resolver = mock.patch.object(NOTES, "KNOB_RESOLVER", lambda local, refresh: (
-            self.notes_knob, "test knob", local is not None and local != self.notes_knob))
+        resolver = mock.patch.object(
+            NOTES,
+            "KNOB_RESOLVER",
+            lambda local, refresh: (
+                self.notes_knob,
+                "test knob",
+                local is not None and local != self.notes_knob,
+            ),
+        )
         resolver.start()
         self.addCleanup(resolver.stop)
         # The Infisical credential fallback (OPS-818) is faked:  a test fills self.infisical_values (name -> value) or sets
@@ -74,7 +82,9 @@ class Harness(unittest.TestCase):
             self.infisical_calls.append(tuple(names))
             if self.infisical_error is not None:
                 raise self.infisical_error
-            return {name: self.infisical_values[name] for name in names if name in self.infisical_values}
+            return {
+                name: self.infisical_values[name] for name in names if name in self.infisical_values
+            }
 
         infisical = mock.patch.object(Z, "_default_infisical_fetch", fake_infisical)
         infisical.start()
@@ -88,7 +98,9 @@ class Harness(unittest.TestCase):
         self.home.mkdir()
         self.secrets_dir = self.tmp / "secrets"
         self.state_dir = self.tmp / "state"
-        self.rc_path = write_rc(self.secrets_dir / "Claude-zuliprc", email=BOT_EMAIL, key=self.key, site=self.fake.url)
+        self.rc_path = write_rc(
+            self.secrets_dir / "Claude-zuliprc", email=BOT_EMAIL, key=self.key, site=self.fake.url
+        )
         self.sleeps: list[float] = []
         self.transcript: list[str] = []
         self._transcript_lock = threading.Lock()
@@ -119,18 +131,34 @@ class Harness(unittest.TestCase):
         return self.state_dir / seat / (tag or "nosession") / "state.json"
 
     # ---- running ----------------------------------------------------------------------------
-    def run_cli(self, *argv: str, env: dict[str, str] | None = None, stdin: str = "",
-                sleep: Callable[[float], None] | None = None, timeout: float = 5.0,
-                events_timeout: float = 3.0, stop: threading.Event | None = None) -> Result:
+    def run_cli(
+        self,
+        *argv: str,
+        env: dict[str, str] | None = None,
+        stdin: str = "",
+        sleep: Callable[[float], None] | None = None,
+        timeout: float = 5.0,
+        events_timeout: float = 3.0,
+        stop: threading.Event | None = None,
+    ) -> Result:
         out, err = io.StringIO(), io.StringIO()
-        code = cli.main(list(argv), env=self.env() if env is None else env, stdin=io.StringIO(stdin),
-                        stdout=out, stderr=err, home=self.home, sleep=sleep or self.sleeps.append,
-                        timeout=timeout, events_timeout=events_timeout, stop=stop)
+        code = cli.main(
+            list(argv),
+            env=self.env() if env is None else env,
+            stdin=io.StringIO(stdin),
+            stdout=out,
+            stderr=err,
+            home=self.home,
+            sleep=sleep or self.sleeps.append,
+            timeout=timeout,
+            events_timeout=events_timeout,
+            stop=stop,
+        )
         with self._transcript_lock:
             self.transcript.extend([out.getvalue(), err.getvalue()])
         return Result(code, out.getvalue(), err.getvalue())
 
-    def run_in_thread(self, *argv: str, **kw: Any) -> "ThreadedRun":
+    def run_in_thread(self, *argv: str, **kw: Any) -> ThreadedRun:
         return ThreadedRun(self, argv, kw)
 
 
