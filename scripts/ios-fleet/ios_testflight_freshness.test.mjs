@@ -61,6 +61,11 @@ function fakeDeps({ repos = {}, builds = {}, window = "normal", lastShip = {}, s
         const n = (repo.natives || {})[decodeURIComponent(mm[1])];
         return n ? [{ sha: n.sha, commit: { committer: { date: n.date }, message: `${n.subject || "native change"}\n\nbody` } }] : [];
       }
+      if ((mm = /^actions\/variables\/([A-Z_]+)$/.exec(rest))) {
+        const v = (repo.vars || {})[mm[1]];
+        if (v === undefined) { const e = new Error("gh: Not Found (HTTP 404)"); e.notFound = true; throw e; }
+        return { name: mm[1], value: v };
+      }
       if ((mm = /^actions\/workflows\/([^/?]+)$/.exec(rest))) {
         if (repo.wfMissing) { const e = new Error("gh: Not Found (HTTP 404)"); e.notFound = true; throw e; }
         return { state: repo.wfState || "active", html_url: `https://github.com/Org/${m[1]}/actions/workflows/${mm[1]}` };
@@ -535,6 +540,25 @@ test("two stuck runs:  the reason and the alert quote the oldest run's age with 
   const state = { apps: { x: { behindSince: "2026-10-17T10:00:00Z" } } };
   const plan = planAlerts([{ ...r, key: "x" }], state, registry({ x: app() }), { now: NOW, exitCode: 1 });
   assert.match(plan.body, /in flight for 6\.3h and looks stuck \(https:\/\/github\.com\/run\/older\)/);
+});
+
+test("a ship gated on a repo variable is not dispatched while the variable is unset or not true", async () => {
+  const shipCfg = { workflow: "ios-testflight.yml", inputs: { upload: "true" }, enabledVar: "CL_IOS_TESTFLIGHT_ENABLED" };
+  const base = botfleetLike({ natives: { ios: { sha: "nat2", date: "2026-10-17T14:15:00Z" } }, createdRuns: [] });
+  const builds = { 111: [ascBuild(1, "202610100000", "1.0.5", "2026-10-10T00:05:00Z")] };
+  for (const [vars, action, re] of [
+    [{}, "blocked", /CL_IOS_TESTFLIGHT_ENABLED is not set, so ios-testflight\.yml skips its upload/],
+    [{ CL_IOS_TESTFLIGHT_ENABLED: "false" }, "blocked", /is "false"/],
+    [{ CL_IOS_TESTFLIGHT_ENABLED: "true" }, "would-dispatch", /-f upload=true/],
+  ]) {
+    const reg = registry({ cl: app({ ship: shipCfg, sourceWorkflows: ["ios-testflight.yml"] }) });
+    const { deps } = fakeDeps({ repos: { Demo: { ...base, vars } }, builds });
+    const out = sink();
+    await main(["--ship-behind", "--dry-run", "--json", "--registry", writeRegistry(reg)], deps, out);
+    const r = JSON.parse(out.text).apps[0];
+    assert.equal(r.remedy.action, action, r.remedy.reason);
+    assert.match(r.remedy.reason, re);
+  }
 });
 
 test("an app with autoRemedy on must name a compile check:  the registry fails loudly", async () => {

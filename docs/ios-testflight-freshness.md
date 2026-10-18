@@ -85,14 +85,14 @@ named under the table, so a new app cannot go unchecked.
 
 For each app that is behind, oldest gap first, the check runs the app's **own** ship workflow
 with `gh workflow run <workflow> --repo Simple-With-Us/<Repo> --ref main` (plus the registry's
-inputs, for example `-f upload=true` for ContactLogo and Hog Hunter).  It never runs
+inputs, for example `-f upload=true` for Hog Hunter).  It never runs
 `xcodebuild` here, never passes `--force-ship`, never sets `IOS_TF_MIN_INTERVAL_SEC`, and never
 runs an App Store GM workflow.  Every one of these must hold, or the app is reported
 `blocked` or `deferred` with the reason:
 
 1. `autoRemedy` is on for the app (the registry refuses to load when an app with `autoRemedy` on names no `compileCheck`), and its ship workflow exists and is `active` (a
    `disabled_manually` workflow is the owner's switch;  it is reported, never re-enabled).
-2. The compile check on main is green.
+2. The compile check on main is green.  A ship job gated on a repo variable (`ship.enabledVar`, Hog Hunter's `HH_IOS_TESTFLIGHT_ENABLED`) is only dispatched while that variable is `true`;  otherwise the dispatch would be a skipped job that uploads nothing.
 3. 2.5 hours have passed since the app's last upload.  The check enforces the documented fleet
    gate itself, because ContactLogo and Hog Hunter do not ship through `ship-testflight.sh`.
 4. The app has not already been dispatched for this main HEAD.  A ship that keeps failing is
