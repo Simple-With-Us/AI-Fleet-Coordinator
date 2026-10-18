@@ -120,10 +120,24 @@ class RoleRefused(Z.AgentSyncError):
     exit_code = 3
 
 
-def role_refused(person: Mapping[str, Any]) -> bool:
-    """True for an admin or owner bot (or an unknown role):  the listener refuses those keys."""
+def role_refused(person: Mapping[str, Any], admin_ok: bool = False) -> bool:
+    """True for an admin or owner bot (or an unknown role):  the listener refuses those keys.  With
+    admin_ok (see admin_allowed) an administrator (200) is accepted, never an owner."""
+    if admin_ok and person.get("role") == 200 and not person.get("is_owner"):
+        return False
     return bool(
         person.get("is_admin") or person.get("is_owner") or person.get("role") not in FLEET_ROLES
+    )
+
+
+def admin_allowed(config: Any, seat_cfg: Any) -> bool:
+    """Only the [notes_relay] seat, and only while it is inbox-only, may hold an administrator key (AFC-331,
+    owner 2026-10-18).  That seat runs deterministic code (the notes relay) and never wakes a model;  every
+    other seat keeps the member-only rule.  A fixed rule, not a setting, so nothing can be misconfigured."""
+    return bool(
+        getattr(config, "notes_relay_enabled", False)
+        and seat_cfg.seat == getattr(config, "notes_relay_seat", None)
+        and seat_cfg.wake == "inbox"
     )
 
 
@@ -282,7 +296,7 @@ class SeatRunner:
             raise RoleRefused(
                 "users/me for seat %s answered as a different user; refusing it" % self.seat
             )
-        if role_refused(me):
+        if role_refused(me, admin_allowed(self.daemon.config, self.cfg)):
             raise RoleRefused(role_refusal(self.seat, role))
         bot_type = me.get("bot_type", R.GENERIC_BOT)
         if bot_type != R.GENERIC_BOT and not (
@@ -1563,7 +1577,7 @@ class Daemon:
                             runner.me is not None
                             and uid == runner.me.user_id
                             and event.get("op") != "remove"
-                            and role_refused(runner.users[uid])
+                            and role_refused(runner.users[uid], admin_allowed(self.config, runner.cfg))
                         ):
                             # The seat's own bot was promoted to admin or owner:  drop the queue now,
                             # not when it next expires (owner decision 2026-10-07).

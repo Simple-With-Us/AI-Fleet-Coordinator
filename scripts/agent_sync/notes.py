@@ -31,6 +31,7 @@ Python 3.11+, standard library only.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -39,6 +40,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -487,6 +489,27 @@ def child_env(env: Mapping[str, str], extra: Mapping[str, str]) -> dict[str, str
 def _note_id(stdout: str) -> str | None:
     match = re.search(r"\bid=(\S+)", stdout)
     return match.group(1)[:200] if match else None
+
+
+PROVENANCE_SITE = "https://simplewithus.zulipchat.com"
+
+
+def with_provenance(envelope: dict, identity: str, message_id: int, site: str = PROVENANCE_SITE) -> dict:
+    """The envelope with a footer saying who asked for the note and where (AFC-331, owner 2026-10-18).
+
+    Apple Notes has no authorship, so a title like `[APP, Agent]` is only text.  The relay stamps every note it
+    creates or updates with the requesting bot and a permalink to its #notes-relay message, so any relayed note can
+    be checked against Zulip, and a note without the footer is visibly unverified.  Pin and unpin carry no body."""
+    if envelope.get("action") not in ("create", "update"):
+        return envelope
+    url = "%s/#narrow/id/%d" % (site.rstrip("/"), int(message_id))
+    when = time.strftime("%a, %b %-d, %Y")
+    if (envelope.get("flags") or {}).get("html"):
+        footer = '<hr><p><i>Relayed for %s by the notes relay on %s:  <a href="%s">request message</a>.</i></p>' % (
+            html.escape(identity), when, url)
+    else:
+        footer = "\n\n---\n\n*Relayed for %s by the notes relay on %s:  [request message](%s).*" % (identity, when, url)
+    return dict(envelope, markdown=str(envelope.get("markdown") or "") + footer)
 
 
 def run_direct(envelope: Mapping[str, Any], script: Path, *, env: Mapping[str, str],

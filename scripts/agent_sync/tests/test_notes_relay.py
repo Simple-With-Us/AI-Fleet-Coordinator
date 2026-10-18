@@ -140,10 +140,20 @@ class SenderTests(RelayHarness):
         message = self.request()
         self.assertEqual(self.process(message), "done")
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.calls[0]["input"], b"hello body")
+        body = self.calls[0]["input"].decode()
+        self.assertTrue(body.startswith("hello body\n\n---\n\n*Relayed for CURSOR by the notes relay on "), body)
+        self.assertIn("[request message](https://simplewithus.zulipchat.com/#narrow/id/%d)" % message["id"], body)
         self.assertEqual(self.calls[0]["argv"][-2:], ["--title", "[AFC, Cursor] relay check"])
         self.assertIn((message["id"], "check"), self.client.reactions)
         self.assertEqual(self.client.replies, [])
+
+    def test_pin_carries_no_footer_and_html_gets_an_html_one(self):
+        self.assertEqual(self.process(self.request(rid="pin-request-001", action="pin", markdown="")), "done")
+        self.assertFalse(self.calls[-1]["input"], "pin sends no body, so no footer")
+        env = N.with_provenance(N.make_envelope("create", "[AFC, Cursor] t", "<p>x</p>", {"html": True}, "html-request-01", "CURSOR"),
+                                "CURSOR", 42)
+        self.assertIn('<a href="https://simplewithus.zulipchat.com/#narrow/id/42">request message</a>', env["markdown"])
+        self.assertTrue(env["markdown"].startswith("<p>x</p><hr>"))
 
     def test_every_kind_of_agent_bot_may_send(self):
         titles = {"CURSOR": "[AFC, Cursor] t", "GROK-WEB": "[AFC, Grok Web] t", "BF-DEPLOYER": "[BF, BF-Deployer] t",
@@ -246,7 +256,7 @@ class AttachmentTests(RelayHarness):
         self.consumer._download = lambda runner, path: fetched.append(path) or data
         self.assertEqual(self.process(message), "done")
         self.assertEqual(fetched, ["/user_uploads/2/ab/9/note.md"])
-        self.assertEqual(self.calls[0]["input"], data)
+        self.assertTrue(self.calls[0]["input"].startswith(data + b"\n\n---\n\n*Relayed for "), "body then footer")
 
     def test_the_consumer_scans_an_inline_and_an_uploaded_body_and_refuses_a_secret_without_quoting_it(self):
         token = "ghp_" + "EXAMPLE0" * 5
@@ -593,7 +603,7 @@ class SelfSentTests(RelayHarness):
         message = self.own_request()
         self.assertTrue(self.consumer.wants(self.runner, message))
         self.assertEqual(self.process(message), "done")
-        self.assertEqual(self.calls[0]["input"], b"from the server")
+        self.assertTrue(self.calls[0]["input"].startswith(b"from the server\n\n---\n\n*Relayed for CLAUDE "))
         self.assertIn((message["id"], "check"), self.client.reactions)
 
     def test_its_own_refusals_acks_and_chatter_are_never_taken(self):
