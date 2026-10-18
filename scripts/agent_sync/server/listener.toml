@@ -61,6 +61,10 @@ enabled = false
 bind = "0.0.0.0"
 port = 8787
 
+# AFC-326 is a separate, explicit cutover.  This sample and existing live volumes stay off.
+[muse_bridge]
+enabled = false
+
 # The signed read API (AFC-330, scripts/agent_sync/listener_api.py):  GET /listener/v1/<SEAT>/<record> for
 # the hosted Worker's listener_* tools.  Each seat's key is its hmac routine key (JET_ROUTINE_KEY) or
 # <CODE>_ROUTINE_KEY, the same value as the Worker's WAKE_HMAC_KEY_<SEAT>;  a seat without one gets 404.
@@ -107,6 +111,7 @@ wake = "inbox"
 instance = "server"
 creds = "env"                     # ZULIP_ECHO_EMAIL, ZULIP_ECHO_API_KEY (instinct-bat-bot@)
 wake = "inbox"
+muse_bridge = false               # enable only after the Mac pull, Muse pin and receipt gate pass
 
 # Grok Bot (GB) personas (Sat, Oct 10):  each is woken on an @-mention or a DM through its Grok Bot routine webhook,
 # POST agent-sync-wake/1 with Authorization: Bearer <ZULIP_ALERT_GB_<ROLE>_KEY>.  The routine replies in Zulip with the

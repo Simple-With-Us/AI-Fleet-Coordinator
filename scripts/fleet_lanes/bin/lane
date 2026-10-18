@@ -5,6 +5,8 @@
 #   lane new <app> --review --pr N     a read-only PR checkout
 #   lane path <app> <slug>             print the path a lane would get
 #   lane ls | lane doctor [options]    every checkout on this Mac, with status
+#   lane retire <path-or-slug>         remove one of your merged lanes (run it from outside the lane)
+#   lane prune [--seat S] [--apply]    a table of a seat's lanes; --apply removes the removable ones
 #
 # The shim finds its own real location (following symlinks, so a link to it from a bin folder of
 # your own works) and runs fleet_lanes.lane from that checkout's scripts/ directory with

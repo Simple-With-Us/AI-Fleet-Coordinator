@@ -213,6 +213,12 @@ jobs:
     # network:  the tests import the script, which runs main() only as an entry point.
     - name: Fleet Reference Sheet registry sync tests
       run: node --test scripts/fleet-apps-sheet-sync.format.test.mjs scripts/fleet-apps-sheet-sync.tabs.test.mjs
+    # The TestFlight freshness deploy check (AFC-341).  App Store Connect, gh, build-window.sh,
+    # the state file and Zulip are stubbed;  the last test validates testflight-apps.json.
+    - name: TestFlight freshness check tests
+      run: |
+        node --test scripts/ios-fleet/ios_testflight_freshness.test.mjs
+        bash -n scripts/ios-fleet/install-testflight-freshness.sh
     - name: Mac ledger mirror tests
       run: bash scripts/test-mac-ledger-mirror.sh
     # The LaunchAgent script that copies a Cloudflare token from Infisical prod into the handoff

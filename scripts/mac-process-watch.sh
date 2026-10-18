@@ -157,6 +157,7 @@ expect_scheduled=(
   "com.jay.sim-idle-reaper com.jay.sim-idle-reaper.plist"
   "com.jay.needs-owner-notify com.jay.needs-owner-notify.plist"
   "com.jay.mac-facts-publish com.jay.mac-facts-publish.plist"
+  "com.jay.ios-testflight-freshness com.jay.ios-testflight-freshness.plist"
 )
 
 # Program paths that must exist for a trigger to succeed.
@@ -183,6 +184,7 @@ expect_files=(
   "${HOME}/apps/botfleet-server-start.sh"
   "${HOME}/apps/needs-owner/needs-owner"
   "${HOME}/apps/fleet-facts/mac-facts-publish"
+  "${HOME}/apps/ios-fleet/ios_testflight_freshness.mjs"
 )
 
 log() {

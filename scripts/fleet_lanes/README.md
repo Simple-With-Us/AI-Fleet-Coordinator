@@ -4,7 +4,7 @@ The tools behind the Lane Map (`docs/protocols/lane-map.md`): where every git ch
 
 | Tool | Command | What it does | What it writes |
 |---|---|---|---|
-| `lane` | `lane new`, `lane path`, `lane ls` | Creates a lane or a review checkout and prints its path. | A git worktree under `~/apps/lanes/<Repo>/` and a manifest inside the integration tree's `.git` folder.  Fetches the base branch (and probes origin for the new branch name) into the integration tree. |
+| `lane` | `lane new`, `lane path`, `lane ls`, `lane retire`, `lane prune` | Creates a lane or a review checkout and prints its path; retires a seat's merged lanes. | A git worktree under `~/apps/lanes/<Repo>/` and a manifest inside the integration tree's `.git` folder.  Fetches the base branch (and probes origin for the new branch name) into the integration tree. |
 | doctor | `lane ls`, `lane doctor`, `python3 -m fleet_lanes.doctor` | Finds every checkout on the Mac, says where it lives and whether removing it could lose work. | Nothing.  `--write PATH` saves the JSON report to that one file. |
 | temp guard hook | `lane-guard-hook` (`lane_guard_hook.py`, `guard.py`) | Denies a checkout of a fleet repo in a temp directory and prints the lane path to use. | Nothing. |
 | tools and hook installer | `python3 -m fleet_lanes.install_tools` | Installs a stable copy of the tools, wires the hook into each platform, and writes the Muse Code plugin bundle and seat shim. | The stable dir (with the hook shim, `muse-seat` and `muse-plugin/`), the `lane` shim, and one hook entry per platform config (backup first).  Nothing is written for Muse's own config. |
@@ -23,6 +23,8 @@ Creates the lane for one task and prints its path, or a read-only checkout of so
 ~/apps/lane path <app> --review --pr N # the review checkout path this seat would get
 ~/apps/lane ls [doctor options]        # every checkout on the Mac (the doctor report)
 ~/apps/lane doctor [doctor options]    # same as ls
+~/apps/lane retire <path-or-slug> [--repo APP] [--dry-run] [--json]
+~/apps/lane prune [--seat NAME] [--all-seats] [--repo APP] [--apply] [--json]
 
 d=$(~/apps/lane new DealDex fix-login) && cd "$d"   # never cd "$(...)" alone: a refusal prints nothing and cd "" stays put
 ```
@@ -67,6 +69,14 @@ Manifest: `lane.json` lives in the new worktree's private git dir, `<tree>/.git/
 Process rules: every process starts in one runner that checks an allowlist first (`git fetch --no-tags origin <ref>`, `git worktree list --porcelain`, `git worktree add` in exactly three shapes with an absolute path strictly inside the lanes root, `git rev-parse`, `git show-ref --verify`, `git for-each-ref`, `git config --get remote.origin.url`, and `gh pr view` for four JSON fields).  Anything else raises before a process exists.  Credentials in git and gh error text are redacted.  Concurrent fetches into the same `~/Code` tree can fail on a ref lock (exit 69); rerun.  Repo hooks such as `post-checkout` run during `git worktree add`, as they would by hand.
 
 Environment read: `AGENT_SEAT`, `HOME`, `FLEET_LAYOUT` (`nested` default or `flat`), `FLEET_LANES_ROOT`, `FLEET_LANES_EXTERNAL_ROOT` (where lanes may physically live when `~/apps/lanes/<Repo>` is a symlink onto the external disk; unset means `/Volumes/External/Lanes`, empty means off; see External Lanes in `docs/protocols/lane-map.md`), `FLEET_APPS_JSON` (the registry; the installed shim pins it to `~/apps/lane-tools/fleet-apps.json`).  A brand-new app or seat is refused until its row is in the registry the shim reads, so the first lane for a new app comes from a checkout of this repo: `cd scripts && FLEET_APPS_JSON=../fleet-apps.json python3 -m fleet_lanes.lane new <app> <slug>`.  After the row merges, `install_tools apply tools` refreshes the stable copy.
+
+### lane retire and lane prune
+
+`retire.py`.  `lane retire <slug-or-path>` removes one lane of your own seat (`AGENT_SEAT`) once its work is safe on GitHub; run it from outside the lane (`cd ~ && lane retire fix-login`), because a shell parked inside counts as a process using it.  `lane prune` walks every registered repo's `git worktree list`, takes the lanes of one seat (yours by default; `--seat NAME` accepts `CLAUDE` or `claude`; another seat needs `--all-seats`, and `--all-seats` alone means every seat), and prints one row per lane with a decision (`remove`, `keep`, `skip`) and the reason.  It is a dry run unless `--apply` is given.  `--json` prints the same rows plus `notes` and `errors`.
+
+The removal rules, the two extra `prune` guards (activity in the last 15 minutes; an unused lane held until idle 24 hours) and the order of the checks are in the `retire.py` docstring and in `docs/protocols/lane-map.md` (Retiring A Lane).  In short: a registered linked worktree under the lanes root, the chosen seat's by name and manifest, not locked, no process cwd inside, no git operation or `index.lock`, no `.janitor-keep`, clean (including no git-ignored local state that is not build output, by `doctor.split_ignored`), nothing unpushed unless a merged or closed PR holds HEAD (a deleted upstream's stale local ref does not count), and done (a MERGED or CLOSED PR for the branch, the upstream name or HEAD whose head holds HEAD, with none open; HEAD in `origin/<default>`; or the upstream branch gone from origin).
+
+Its runner has its own allowlist (`retire.check_allowed`); `lane new`'s still refuses every remove.  Writes: `git worktree remove <path>` (never `--force`), `git branch -d` (never `-D`; "not fully merged" after a squash merge is reported as a kept branch, not an error) and, only for stale entries that are the chosen seat's lanes and never while a `lanes/<Repo>` symlink is dangling, `git worktree prune`.  Reads: `git status --ignored`, `rev-list`, `merge-base --is-ancestor`, `config --get branch.<b>.merge`, `symbolic-ref`, `ls-remote --heads origin` (one per repo), one bulk `gh pr list --state all --limit 1000` per repo (plus `--head <name>` for a lane the bulk list could not place) and one `lsof -d cwd -Fpcn`.  Removals in a repo hold the same lock as `lane new`.  Exit codes: 0 ok, 64 usage or refusal (a `retire` of a lane that is not removable), 69 git, gh or lsof failed, or a removal failed; the table is still printed, and a lane whose facts could not be read is kept.
 
 ## doctor
 
@@ -418,6 +428,7 @@ python3 -m unittest fleet_lanes.tests.test_layout -v
 python3 -m unittest fleet_lanes.tests.test_guard -v
 python3 -m unittest fleet_lanes.tests.test_doctor -v
 python3 -m unittest fleet_lanes.tests.test_lane -v
+python3 -m unittest fleet_lanes.tests.test_retire -v
 python3 -m unittest fleet_lanes.tests.test_install_rules -v
 python3 -m unittest fleet_lanes.tests.test_install_tools -v
 python3 -m unittest fleet_lanes.tests.test_install_mcp -v
