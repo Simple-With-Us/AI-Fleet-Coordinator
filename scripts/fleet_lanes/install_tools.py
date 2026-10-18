@@ -18,8 +18,12 @@ non-zero, times out, or prints nothing is a FAIL.
     python3 -m fleet_lanes.install_tools verify [--home H] [tools | PLATFORM ... | all]
     python3 -m fleet_lanes.install_tools --self-test
 
-PLATFORM is claude, codex, grok, antigravity, cursor, muse, clutch or kimi.  The first five get a hook entry in
-their config file.  muse is different: Muse Code takes hooks from a PLUGIN, so `apply tools` writes a plugin
+PLATFORM is claude, codex, grok, antigravity, cursor, minimax (alias mm), muse, clutch or kimi.  The first five get
+a hook entry in their config file.  minimax is a plugin DIRECTORY that this tool owns: MiniMax Code reads no settings
+file for hooks, it loads them from a real directory under ~/.minimax/plugins/<name>/ (a symlink is skipped), so `apply
+minimax` writes ~/.minimax/plugins/fleet-guard/ (.claude-plugin/plugin.json and hooks/hooks.json: PreToolUse, matcher
+Bash, the fleet hook with --format claude), refuses a directory it did not write, and `verify minimax` runs the command
+it reads back out of that hooks.json.  muse is different: Muse Code takes hooks from a PLUGIN, so `apply tools` writes a plugin
 bundle into the stable dir (with everything else, atomically), `plan muse` shows it and the OWNER ACTIONS
 that finish the job, `apply muse` is `apply tools` (the bundle is part of the stable copy, and an unchanged
 copy is left alone) followed by those actions, and `verify muse` runs the hook the way Muse does.  This tool
@@ -28,7 +32,7 @@ never edits Muse's config, and the only muse it runs is `muse plugins validate` 
 found on PATH, with HOME, the XDG dirs, TMPDIR and Muse's credential path inside a throwaway dir, none of the
 caller's XDG_ or MUSE_ variables except the plugin switch, and MUSE_NO_AUTO_UPDATE=1 and MUSE_LOGIN=0 (see
 muse_validate_env).  That is confined, not proven read-only: the launcher still runs from its own install dir.
-`all` is `tools` plus the five config platforms.  `apply` needs a target; `plan` defaults to all plus muse, clutch
+`all` is `tools` plus the five config platforms plus minimax (an own directory, no owner step afterwards).  `apply` needs a target; `plan` defaults to all plus muse, clutch
 and kimi, and `verify` the same.
 
 The fleet hook.  `fleet-guard-hook` (fleet_lanes/fleet_guard_hook.py) is the lane guard AND the secret guard in one
@@ -36,7 +40,7 @@ command:  the lane guard, then the secret guard (scripts/hooks/secret-guard-pret
 as fleet_lanes/secret_guard.py: any `ps`, a dump of a secret-bearing file, an authorization value in arguments, a
 byte-dump of a key variable), and the first deny wins.  Its shell prefilter is the lane guard's trigger words plus the
 words without which no secret-guard rule can fire (SECRET_WORDS, and a `ps` followed by white space), so an ordinary
-shell call is answered in `sh` without starting Python.  The harnesses that were added after the first five use it: Muse Code (its plugin wrapper runs it), and
+shell call is answered in `sh` without starting Python.  The harnesses that were added after the first five use it: MiniMax Code (its plugin's hooks.json runs it), Muse Code (its plugin wrapper runs it), and
 clutch and kimi, which are marked blocks in a file this tool does not own.  Claude Code and Codex already run the
 secret guard as a hook of their own, so they keep `lane-guard-hook` alone.
 
@@ -208,7 +212,7 @@ from . import marked_block as MB
 from . import toml_hooks as TH
 
 __all__ = [
-    "EXIT_OK", "EXIT_FAIL", "EXIT_USAGE", "HOOK_NAME", "PLATFORMS", "SUPPORTED_KEYS",
+    "EXIT_OK", "EXIT_FAIL", "EXIT_USAGE", "HOOK_NAME", "PLATFORMS", "SUPPORTED_KEYS", "ALL_KEYS",
     "DENY_COMMAND", "ALLOW_COMMAND", "Paths", "Source", "Platform", "Check", "Refused",
     "make_paths", "resolve_source", "render_hook_shim", "render_lane_shim", "hook_command",
     "build_files", "plan_tools", "apply_tools", "verify_tools", "plan_platform", "apply_platform",
@@ -227,6 +231,14 @@ SECRET_GUARD_SOURCE = ("hooks", "secret-guard-pretooluse.py")     # under the so
 CLUTCH_HOOKS_FILE = "clutch/hooks.json"       # the fleet-only hooks.json Clutch's bridge plugin reads
 CLUTCH_PATCH_REL = ".clutch/dsh/cordis.patch.yml"
 KIMI_CONFIG_REL = ".kimi-code/config.toml"
+# MiniMax Code reads no settings file for hooks.  It loads them from a local plugin, a REAL directory (a symlink is
+# skipped) under ~/.minimax/plugins/<name>/.  This tool owns that one directory outright.
+MINIMAX_PLUGIN_ID = "fleet-guard"
+MINIMAX_PLUGIN_REL = ".minimax/plugins/" + MINIMAX_PLUGIN_ID
+MINIMAX_MANIFEST_FILE = ".claude-plugin/plugin.json"       # the Claude-compatible flavour: matchers see Claude tool names
+MINIMAX_HOOKS_FILE = "hooks/hooks.json"                    # the default hooks path of that flavour
+MINIMAX_HOOK_TIMEOUT_S = 10   # seconds, 1 to 10 (MiniMax's range).  A timeout fails OPEN, so the top of the range
+PLATFORM_ALIASES = {"mm": "minimax"}                       # the seat tag works as a target
 BLOCK_NAME = "hooks-fleet-guards"
 BLOCK_TOOL = "fleet_lanes.install_tools"
 LANE_NAME = "lane"
@@ -345,6 +357,18 @@ class Paths:
     @property
     def kimi_config(self) -> str:
         return os.path.join(self.home, *KIMI_CONFIG_REL.split("/"))
+
+    @property
+    def minimax_bundle(self) -> str:
+        return os.path.join(self.home, *MINIMAX_PLUGIN_REL.split("/"))
+
+    @property
+    def minimax_manifest(self) -> str:
+        return os.path.join(self.minimax_bundle, *MINIMAX_MANIFEST_FILE.split("/"))
+
+    @property
+    def minimax_hooks(self) -> str:
+        return os.path.join(self.minimax_bundle, *MINIMAX_HOOKS_FILE.split("/"))
 
     @property
     def package_dir(self) -> str:
@@ -1459,7 +1483,10 @@ class Platform:
     platform_dir: str                 # must exist, relative to home
     config_rel: str                   # config file, relative to home
     supported: bool = True            # a hook entry in a config file that this tool writes
-    kind: str = "config"              # "plugin": no config file is edited (Muse Code takes hooks from a plugin)
+    kind: str = "config"              # "plugin": no config file is edited (Muse Code takes hooks from a plugin);
+                                      # "block": a marked block in a file we do not own; "bundle": a plugin directory
+                                      # this tool owns outright, outside the stable dir (MiniMax Code)
+    in_all: bool = False              # reached by `all` although it is not a config-file platform (kind "bundle")
     new_mode: int = 0o644
     hook_extra: tuple = ()            # extra keys of the hook object, as (key, value) pairs
     notes: tuple = ()
@@ -1585,6 +1612,28 @@ PLATFORMS: dict[str, Platform] = {p.key: p for p in (
                     "regex on the tool name).",
                     "That a running session picks up the new block: start a new session."),
     ),
+    Platform(
+        "minimax", "MiniMax Code (local plugin bundle)", "claude", "claude", "claude", "PreToolUse", "Bash",
+        ".minimax", MINIMAX_PLUGIN_REL + "/" + MINIMAX_HOOKS_FILE, supported=False, kind="bundle", in_all=True,
+        notes=(f"MiniMax Code reads no settings.json for hooks.  It loads them from a LOCAL PLUGIN: this tool writes the "
+               f"directory ~/{MINIMAX_PLUGIN_REL}/ (a real directory, copied in, never a symlink: MiniMax skips symlinks) "
+               f"with {MINIMAX_MANIFEST_FILE} and {MINIMAX_HOOKS_FILE}, in the Claude-compatible plugin flavour, so the "
+               "matcher is the Claude tool name `Bash`.  Local plugins are enabled by default: there is no install or "
+               "approve step.  Nothing else under ~/.minimax is touched.",
+               "The hook is the fleet hook (lane guard, then secret guard) with `--format claude`, by absolute path into "
+               "the stable dir.  Deny is the Claude shape; MiniMax honours it, and a timeout, a crash or invalid output "
+               "FAILS OPEN, so only `verify` proves it works.  Hook stdin is Claude-shaped JSON; MiniMax gives a hook only "
+               "a small allowlist of environment variables, so no seat or switch reaches it and none is passed.",
+               "It is part of `all` (the owner runs MiniMax Code), and a missing ~/.minimax makes it a skip.  An existing "
+               "directory that holds anything but our two files, or is a symlink, is refused and left alone.",
+               "No SessionStart seat hook is wired: the only one that exists is ~/.claude/monet-sync/session-hook.sh, a "
+               "home-local file with no source in this repo, and this tool installs nothing it cannot copy from the repo."),
+        unverified=("That MiniMax Code fires the hook for its shell tool (verify runs the exact command, not MiniMax): the "
+                    "live proof is a new MiniMax session asked to run `ps`, which must be refused.",
+                    "Whether MiniMax runs the command through a shell (the path is written unquoted when it has no special "
+                    "characters, as it does for the other platforms).",
+                    "Whether an already-running MiniMax session picks up a newly written plugin: start a new session."),
+    ),
 )}
 # What the owner still has to do after a platform was written.  Printed by `apply`.
 NEXT_STEPS: dict[str, str] = {
@@ -1593,9 +1642,14 @@ NEXT_STEPS: dict[str, str] = {
     "clutch": "no restart for a `patchReload: live` profile (clutch-web's web: it watches the file);  a `startup` "
               "profile reads it at its next start.  Ask a new Clutch session to run `ps` and expect a refusal",
     "kimi": "start a new Kimi Code session, ask it to run `ps`, and expect a refusal",
+    "minimax": "start a new MiniMax Code session, ask it to run `ps`, and expect a refusal (a local plugin is enabled by "
+               "default: nothing to install or approve)",
 }
 PLATFORM_ORDER: tuple[str, ...] = tuple(PLATFORMS)
 SUPPORTED_KEYS: tuple[str, ...] = tuple(k for k in PLATFORM_ORDER if PLATFORMS[k].supported)
+# What `all` reaches: the config-file platforms, then the ones that are not config files but belong to a tool the owner
+# runs and need no owner step afterwards (muse needs an install and an approval, clutch and kimi edit a file we do not own).
+ALL_KEYS: tuple[str, ...] = SUPPORTED_KEYS + tuple(k for k in PLATFORM_ORDER if PLATFORMS[k].in_all and k not in SUPPORTED_KEYS)
 
 
 def config_path(paths: Paths, plat: Platform) -> str:
@@ -2119,6 +2173,10 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
         return PlatformPlan(plat, paths.muse_bundle, "unsupported", cmd,
                             "takes hooks from a plugin bundle, not from a config file; `plan muse` shows it and "
                             "`apply tools` writes it.  No config file is edited")
+    if plat.kind == "bundle":
+        mp = plan_minimax(paths, follow_symlinks=follow_symlinks)
+        act = {"new": "add", "stale": "update", "current": "unchanged", "skip": "skip", "refuse": "refuse"}[mp.state]
+        return PlatformPlan(plat, mp.bundle, act, mp.command, mp.reason, notes=list(mp.notes))
     if not plat.supported:
         return PlatformPlan(plat, path, "unsupported", cmd, "no verified hook surface; nothing is written")
     if not os.path.isdir(os.path.join(paths.home, *plat.platform_dir.split("/"))):
@@ -2218,7 +2276,7 @@ def probe_formats() -> list[tuple[str, str]]:
     them, so a copy whose output is broken for ANY platform is never swapped in."""
     out: list[tuple[str, str]] = []
     for plat in PLATFORMS.values():
-        if (plat.supported or plat.kind in ("plugin", "block")) and (plat.fmt, plat.shape) not in out:
+        if (plat.supported or plat.kind in ("plugin", "block", "bundle")) and (plat.fmt, plat.shape) not in out:
             out.append((plat.fmt, plat.shape))
     return out
 
@@ -2227,7 +2285,7 @@ def fleet_probe_formats() -> list[tuple[str, str]]:
     """(--format, payload shape) of every harness that runs fleet-guard-hook."""
     out: list[tuple[str, str]] = []
     for plat in PLATFORMS.values():
-        if plat.kind in ("plugin", "block") and (plat.fmt, plat.shape) not in out:
+        if plat.kind in ("plugin", "block", "bundle") and (plat.fmt, plat.shape) not in out:
             out.append((plat.fmt, plat.shape))
     return out
 
@@ -2348,6 +2406,9 @@ def apply_platform(plat: Platform, paths: Paths, *, now: Callable[[], float] = t
     if plat.kind == "block":
         return apply_block(plat, paths, now=now, timeout=timeout, minimal_path=minimal_path, dsh_bin=dsh_bin,
                            check_dsh=check_dsh, check_kimi=check_kimi)
+    if plat.kind == "bundle":
+        return apply_minimax(paths, timeout=timeout, minimal_path=minimal_path, shim_proven=shim_proven,
+                             follow_symlinks=follow_symlinks)
     plan = plan_platform(plat, paths, follow_symlinks=follow_symlinks)
     if plan.action == "unsupported":
         return Result(plat.key, "unsupported", plan.reason)
@@ -2581,6 +2642,8 @@ def verify_platform(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIME
         return verify_muse(paths, timeout=timeout, minimal_path=minimal_path)
     if plat.kind == "block":
         return verify_block(plat, paths, timeout=timeout, minimal_path=minimal_path)
+    if plat.kind == "bundle":
+        return verify_minimax(paths, timeout=timeout, minimal_path=minimal_path)
     if not plat.supported:
         return [Check(t, "platform", "FAIL", "UNSUPPORTED: no verified hook surface, so there is nothing to verify")]
     path = config_path(paths, plat)
@@ -3181,6 +3244,251 @@ def verify_block(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIMEOUT
     return out
 
 
+# --------------------------------------------------------------------------- MiniMax Code: a plugin bundle in ~/.minimax/plugins
+
+def render_minimax_manifest() -> str:
+    """.claude-plugin/plugin.json.  MiniMax needs at least a name; the other two keys are the Claude plugin manifest's."""
+    doc = {"name": MINIMAX_PLUGIN_ID, "version": "1.0.0",
+           "description": "Fleet lane guard and secret guard for shell calls (written by fleet_lanes.install_tools)"}
+    return json.dumps(doc, indent=2) + "\n"
+
+
+def minimax_hook_command(paths: Paths) -> str:
+    """The command the plugin runs: the fleet hook (lane guard, then secret guard), Claude deny shape, absolute path."""
+    return fleet_hook_command(paths, "claude")
+
+
+def render_minimax_hooks(paths: Paths) -> str:
+    """hooks/hooks.json.  Only `type: command` exists; `timeout` is whole seconds, 1 to 10."""
+    doc = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+        {"type": "command", "command": minimax_hook_command(paths), "timeout": MINIMAX_HOOK_TIMEOUT_S}]}]}}
+    return json.dumps(doc, indent=2) + "\n"
+
+
+def minimax_expected(paths: Paths) -> dict[str, str]:
+    """Relative path (under the bundle) to text."""
+    return {MINIMAX_MANIFEST_FILE: render_minimax_manifest(), MINIMAX_HOOKS_FILE: render_minimax_hooks(paths)}
+
+
+@dataclass
+class MinimaxPlan:
+    bundle: str
+    state: str                       # new, stale, current, skip, refuse
+    reason: str
+    command: str
+    files: list[FileStatus]
+    manifest_text: str
+    hooks_text: str
+    notes: list[str]
+
+
+def _minimax_foreign(bundle: str) -> str | None:
+    """None when `bundle` is a directory this tool could have written (only our two files, no symlink, a manifest that
+    names our plugin when there is one), else why it is not."""
+    if os.path.islink(bundle):
+        return f"{bundle} is a symlink; MiniMax Code skips a symlinked plugin and this tool will not write through one"
+    if not os.path.isdir(bundle):
+        return f"{bundle} exists and is not a directory"
+    allowed_files = {MINIMAX_MANIFEST_FILE, MINIMAX_HOOKS_FILE}
+    allowed_dirs = {rel.split("/")[0] for rel in allowed_files}
+    for dirpath, dirnames, filenames in os.walk(bundle):
+        here = os.path.relpath(dirpath, bundle)
+        for d in dirnames:
+            rel = d if here == "." else here + "/" + d
+            if os.path.islink(os.path.join(dirpath, d)):
+                return f"{bundle} holds a symlink ({rel}); it is not a directory this tool wrote"
+            if rel not in allowed_dirs:
+                return f"{bundle} holds {rel}/, which this tool never writes"
+        for f in filenames:
+            rel = f if here == "." else here + "/" + f
+            if rel not in allowed_files or os.path.islink(os.path.join(dirpath, f)):
+                return f"{bundle} holds {rel}, which this tool never writes"
+    manifest = _read_regular(os.path.join(bundle, *MINIMAX_MANIFEST_FILE.split("/")))
+    if manifest is not None:
+        try:
+            doc = json.loads(manifest.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return f"{bundle}/{MINIMAX_MANIFEST_FILE} is not JSON"
+        if not isinstance(doc, dict) or doc.get("name") != MINIMAX_PLUGIN_ID:
+            return f"{bundle}/{MINIMAX_MANIFEST_FILE} does not name the plugin {MINIMAX_PLUGIN_ID!r}"
+    return None
+
+
+def plan_minimax(paths: Paths, *, follow_symlinks: bool = False) -> MinimaxPlan:
+    """Read-only: what `apply minimax` writes into ~/.minimax/plugins/fleet-guard, compared with what is there."""
+    bundle = paths.minimax_bundle
+    want = minimax_expected(paths)
+    cmd = minimax_hook_command(paths)
+    files = [FileStatus(rel, "new") for rel in want]
+
+    def plan(state: str, reason: str = "", notes: Sequence[str] = ()) -> MinimaxPlan:
+        return MinimaxPlan(bundle, state, reason, cmd, files, want[MINIMAX_MANIFEST_FILE], want[MINIMAX_HOOKS_FILE], list(notes))
+
+    if not os.path.isdir(os.path.join(paths.home, MINIMAX_PLUGIN_REL.split("/")[0])):
+        return plan("skip", "~/.minimax does not exist (platform not installed)")
+    refusal, outside, link = _link_check(bundle, paths.home, MINIMAX_PLUGIN_REL, follow_symlinks)
+    if refusal:
+        return plan("refuse", refusal)
+    notes = [link] if link else []
+    if os.path.lexists(bundle):
+        foreign = _minimax_foreign(bundle)
+        if foreign:
+            return plan("refuse", foreign)
+        files = []
+        for rel, text in want.items():
+            have = _read_regular(os.path.join(bundle, *rel.split("/")))
+            files.append(FileStatus(rel, "same" if have == text.encode("utf-8") else ("new" if have is None else "changed")))
+        state = "current" if all(f.status == "same" for f in files) else "stale"
+    else:
+        state = "new"
+    if state != "current" and outside:
+        return plan("refuse", outside, notes)
+    return plan(state, "", notes)
+
+
+def apply_minimax(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True,
+                  shim_proven: bool = False, follow_symlinks: bool = False) -> Result:
+    """Write the plugin directory.  It is built in a stage directory beside `plugins/` (so MiniMax never scans a half-written
+    plugin) and renamed into place; an existing directory is replaced only when this tool wrote it.  Like every platform,
+    it is wired in only if the installed fleet hook passes its own probes right now."""
+    mp = plan_minimax(paths, follow_symlinks=follow_symlinks)
+    if mp.state == "skip":
+        return Result("minimax", "skipped", mp.reason)
+    if mp.state == "refuse":
+        return Result("minimax", "refused", mp.reason)
+    if not shim_proven:
+        if not (os.path.isfile(paths.fleet_shim) and os.access(paths.fleet_shim, os.X_OK)):
+            return Result("minimax", "refused", f"the fleet hook {paths.fleet_shim} is missing or not executable; run `apply tools` first")
+        bad = [c for c in probe_command(mp.command, target="minimax", fmt="claude", shape="claude", home=paths.home,
+                                        timeout=timeout, minimal_path=minimal_path, secret=True) if c.status == "FAIL"]
+        if bad:
+            return Result("minimax", "refused", "the installed fleet hook fails its probes, so it will not be wired in: " + bad[0].detail)
+    if mp.state == "current":
+        return Result("minimax", "unchanged", f"{mp.bundle} already holds the plugin")
+    want = minimax_expected(paths)
+    minimax_home = os.path.dirname(os.path.dirname(mp.bundle))
+    stage: str | None = None
+    try:
+        os.makedirs(os.path.dirname(mp.bundle), exist_ok=True)
+        stage = tempfile.mkdtemp(prefix=".fleet-guard-stage-", dir=minimax_home)
+        _write_tree(stage, {rel: text.encode("utf-8") for rel, text in want.items()})
+        _swap_dir(stage, mp.bundle)
+        stage = None
+    except OSError as exc:
+        if stage:
+            shutil.rmtree(stage, ignore_errors=True)
+        return Result("minimax", "failed", f"{mp.bundle} not written: {type(exc).__name__}: {exc}")
+    for rel, text in want.items():
+        if _read_regular(os.path.join(mp.bundle, *rel.split("/"))) != text.encode("utf-8") or os.path.islink(mp.bundle):
+            return Result("minimax", "failed", f"{mp.bundle}/{rel} is not what was written; check it and re-run `apply minimax`")
+    return Result("minimax", "added" if mp.state == "new" else "updated",
+                  f"{mp.bundle} (a real directory: {MINIMAX_MANIFEST_FILE}, {MINIMAX_HOOKS_FILE})")
+
+
+# What MiniMax gives a hook process: a small allowlist, and nothing of the caller's shell (so no AGENT_SEAT and no kill switch).
+_MINIMAX_HOOK_ENV_KEYS = ("HOME", "LANG", "TERM", "SHELL", "USER", "TMPDIR")
+
+
+def _minimax_hook_from_file(path: str, paths: Paths) -> tuple[str | None, list[Check]]:
+    """(the hook command, checks) read back out of the written hooks.json, with every shape rule MiniMax applies."""
+    t = "minimax"
+    raw = _read_regular(path)
+    if raw is None:
+        return None, [Check(t, "hooks.json", "FAIL", f"{path} is missing or not a regular file; run `apply minimax`")]
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+        groups = doc["hooks"]["PreToolUse"]
+        if not isinstance(groups, list) or len(groups) != 1:
+            raise ValueError(f"expected exactly 1 PreToolUse group, found {len(groups) if isinstance(groups, list) else type(groups).__name__}")
+        group = groups[0]
+        if group.get("matcher") != "Bash":
+            raise ValueError(f"matcher is {group.get('matcher')!r}, expected 'Bash'")
+        hooks = group.get("hooks")
+        if not isinstance(hooks, list) or len(hooks) != 1:
+            raise ValueError("expected exactly 1 hook in the group")
+        hook = hooks[0]
+        if hook.get("type") != "command":
+            raise ValueError(f"hook type is {hook.get('type')!r}; MiniMax only runs 'command'")
+        timeout = hook.get("timeout")
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 10:
+            raise ValueError(f"timeout is {timeout!r}; MiniMax wants whole seconds, 1 to 10")
+        cmd = hook.get("command")
+        if not isinstance(cmd, str) or not is_ours(cmd):
+            raise ValueError("the hook command is not the fleet hook")
+    except (ValueError, KeyError, TypeError, AttributeError, UnicodeDecodeError) as exc:
+        return None, [Check(t, "hooks.json", "FAIL", f"{path}: {exc}")]
+    out = [Check(t, "hooks.json", "PASS", f"PreToolUse, matcher Bash, type command, timeout {timeout}s")]
+    if raw != render_minimax_hooks(paths).encode("utf-8"):
+        out.append(Check(t, "hooks.json current", "FAIL", f"{path} differs from what this install_tools writes; re-run `apply minimax`"))
+        return None, out
+    return cmd, out
+
+
+def verify_minimax(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True) -> list[Check]:
+    """Prove the plugin denies, without MiniMax.  The bundle must be a REAL directory (MiniMax skips symlinks) whose plugin.json
+    has a name; the hook command is taken back out of the written hooks.json and run the way a shell runs it, with a lane
+    deny, a secret deny and an allow, and once more in the small environment MiniMax gives a hook.  What this cannot see
+    is whether MiniMax Code fires the hook."""
+    t = "minimax"
+    if not os.path.isdir(os.path.join(paths.home, ".minimax")):
+        return [Check(t, "platform", "SKIP", "~/.minimax does not exist (platform not installed)")]
+    bundle = paths.minimax_bundle
+    if not os.path.lexists(bundle):
+        return [Check(t, "bundle", "SKIP", f"not wired: {bundle} does not exist; run `apply minimax`")]
+    if os.path.islink(bundle) or not os.path.isdir(bundle):
+        return [Check(t, "bundle", "FAIL", f"{bundle} is not a real directory (MiniMax Code skips a symlinked plugin); "
+                                          "move it aside and run `apply minimax`")]
+    out: list[Check] = [Check(t, "bundle", "PASS", f"{bundle} is a real directory")]
+    raw = _read_regular(paths.minimax_manifest)
+    if raw is None:
+        out.append(Check(t, "plugin.json", "FAIL", f"{paths.minimax_manifest} is missing or not a regular file; run `apply minimax`"))
+    else:
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+            name = doc.get("name") if isinstance(doc, dict) else None
+        except (ValueError, UnicodeDecodeError):
+            name = None
+        if not isinstance(name, str) or not name:
+            out.append(Check(t, "plugin.json", "FAIL", f"{paths.minimax_manifest} has no `name`; MiniMax cannot load the plugin"))
+        elif raw != render_minimax_manifest().encode("utf-8"):
+            out.append(Check(t, "plugin.json", "FAIL", f"{paths.minimax_manifest} differs from what this install_tools writes; re-run `apply minimax`"))
+        else:
+            out.append(Check(t, "plugin.json", "PASS", f"name={name!r}"))
+    out.append(_check_shim(t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim(read_guard_facts(paths.stable))))
+    cmd, got = _minimax_hook_from_file(paths.minimax_hooks, paths)
+    out.extend(got)
+    if cmd is None:
+        out.append(Check(t, "hook-env probes", "FAIL", "not run: no usable hook command in hooks.json"))
+        return out
+    out.append(Check(t, "hook command", "PASS", cmd))
+    out.extend(probe_command(cmd, target=t, fmt="claude", shape="claude", home=paths.home, timeout=timeout,
+                             minimal_path=minimal_path, secret=True))
+    env = {k: os.environ[k] for k in _MINIMAX_HOOK_ENV_KEYS if k in os.environ and k != "HOME"}
+    env["HOME"] = paths.home
+    env["PATH"] = MINIMAL_PATH if minimal_path else os.environ.get("PATH", "")
+    for name, command, marker in (("deny/hook-env", DENY_COMMAND, DENY_MARKER),
+                                  ("secret/hook-env", SECRET_DENY_COMMAND, SECRET_DENY_MARKER)):
+        res = run_shell(cmd, json.dumps(probe_payload("claude", command, paths.home)).encode("utf-8"), env, timeout)
+        if res.error:
+            problem: str | None = res.error
+        elif res.timed_out:
+            problem = f"timed out after {timeout:g}s"
+        elif res.returncode != 0:
+            problem = f"exit {res.returncode}, expected 0"
+        else:
+            problem = check_deny_output("claude", res.stdout, marker)
+        out.append(Check(t, name, "FAIL" if problem else "PASS",
+                         (f"{problem}; " if problem else "") + f"exit={res.returncode} stdout={_brief(res.stdout)}"))
+    switch, _off = guard_switch()
+    if _is_off(os.environ.get(switch, "")):
+        out.append(Check(t, "guard-switch-env", "WARN",
+                         f"{switch}={os.environ.get(switch)!r} is set in the environment this command runs in: the probes scrub it, "
+                         "and MiniMax gives a hook no such variable"))
+    out.append(Check(t, "fires", "SKIP", "whether MiniMax Code fires the hook is not visible from here; ask a new session to "
+                                          "run a process listing and expect a refusal"))
+    return out
+
+
 # --------------------------------------------------------------------------- command line
 
 class _Parser(argparse.ArgumentParser):
@@ -3245,21 +3553,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _expand(raw: Sequence[str], default: Sequence[str]) -> tuple[list[str], set[str]]:
-    """(ordered targets, explicitly named targets).  `all` is tools plus every supported platform."""
-    valid = {"tools", "all"} | set(PLATFORM_ORDER)
+    """(ordered targets, explicitly named targets).  `all` is tools plus every supported platform plus the ones marked
+    `in_all` (MiniMax Code).  `mm` is `minimax`."""
+    valid = {"tools", "all"} | set(PLATFORM_ORDER) | set(PLATFORM_ALIASES)
     for n in raw:
         if n not in valid:
-            raise SystemExit(_usage_error(f"unknown target {n!r}; choose from tools, all, {', '.join(PLATFORM_ORDER)}"))
-    names = list(raw) or list(default)
+            raise SystemExit(_usage_error(f"unknown target {n!r}; choose from tools, all, {', '.join(PLATFORM_ORDER)} "
+                                          f"(or {', '.join(PLATFORM_ALIASES)})"))
+    names = [PLATFORM_ALIASES.get(n, n) for n in (list(raw) or list(default))]
     explicit = {n for n in names if n != "all"} if raw else set()
     want: set[str] = set()
     for n in names:
         if n == "all":
-            want.update(("tools",) + SUPPORTED_KEYS)
+            want.update(("tools",) + ALL_KEYS)
         else:
             want.add(n)
     order = [k for k in ("tools",) + PLATFORM_ORDER if k in want]
-    return order, explicit
+    return order, {PLATFORM_ALIASES.get(n, n) for n in explicit}
 
 
 def _usage_error(message: str) -> int:
@@ -3362,6 +3672,33 @@ def _emit_muse_plan(plat: Platform, mp: MusePlan, paths: Paths, emit: Callable[[
         emit(f"   UNVERIFIED: {u}")
 
 
+def _emit_minimax_plan(plat: Platform, mp: MinimaxPlan, paths: Paths, emit: Callable[[str], None], *, explicit: bool) -> bool:
+    """Print the plan of the MiniMax Code plugin.  True when it is a failure (a refusal, or a skip of a named target)."""
+    emit(f"== {plat.key}  {plat.label}  {mp.bundle}  [{mp.state}]")
+    if mp.state in ("skip", "refuse"):
+        emit(f"   {mp.state.upper()}: {mp.reason}")
+        return mp.state == "refuse" or (explicit and mp.state == "skip")
+    emit("   MiniMax Code takes hooks from a local plugin: a REAL directory under ~/.minimax/plugins (a symlink is skipped), "
+         "enabled by default.  `apply minimax` runs `apply tools` first (the fleet hook lives in the stable dir), then "
+         "builds the directory in a stage beside plugins/ and renames it into place.  Nothing else under ~/.minimax is touched.")
+    emit(f"   command: {mp.command}")
+    for fs in mp.files:
+        emit(f"   {fs.status:<8} {fs.rel}")
+    for n in mp.notes:
+        emit(f"   {n}")
+    emit(f"   {MINIMAX_MANIFEST_FILE}:")
+    for ln in mp.manifest_text.splitlines():
+        emit(f"     | {ln}")
+    emit(f"   {MINIMAX_HOOKS_FILE}:")
+    for ln in mp.hooks_text.splitlines():
+        emit(f"     | {ln}")
+    for n in plat.notes:
+        emit(f"   note: {n}")
+    for u in plat.unverified:
+        emit(f"   UNVERIFIED: {u}")
+    return False
+
+
 def _emit_block_plan(plat: Platform, paths: Paths, emit: Callable[[str], None], *, explicit: bool) -> bool:
     """Print the plan of a block platform.  True when it is a failure (a refusal, or a skip of a named target)."""
     bp = plan_block(plat, paths)
@@ -3457,6 +3794,11 @@ def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
             if _emit_block_plan(plat, paths, emit, explicit=tgt in explicit):
                 rc = EXIT_FAIL
             continue
+        if plat.kind == "bundle":
+            if _emit_minimax_plan(plat, plan_minimax(paths, follow_symlinks=args.follow_symlinks), paths, emit,
+                                  explicit=tgt in explicit):
+                rc = EXIT_FAIL
+            continue
         pp = plan_platform(plat, paths, follow_symlinks=args.follow_symlinks)
         emit(f"== {plat.key}  {plat.label}  {pp.path}  [{pp.action}]")
         if pp.link:
@@ -3486,11 +3828,12 @@ def _cmd_apply(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
     home = _resolve_home(args)
     paths = make_paths(home, _resolve_stable(args))
     targets, explicit = _expand(args.targets, ())
-    wired = [t for t in targets if PLATFORMS.get(t) is not None and PLATFORMS[t].kind in ("plugin", "block")]
+    wired = [t for t in targets if PLATFORMS.get(t) is not None and PLATFORMS[t].kind in ("plugin", "block", "bundle")]
     if wired and "tools" not in targets:
         # The Muse bundle, the fleet hook shim and Clutch's hooks.json are part of the stable copy, so `apply muse`,
         # `apply clutch` and `apply kimi` write them the only way they are written: with the rest of the stable
-        # copy, through the same stage, probe and swap.  An unchanged copy stays untouched.
+        # copy, through the same stage, probe and swap.  An unchanged copy stays untouched.  `apply minimax` needs the
+        # stable fleet hook the same way: its plugin directory only points at it.
         targets.insert(targets.index(wired[0]), "tools")
     minimal = not args.no_minimal_path
     results: list[Result] = []
@@ -3561,6 +3904,7 @@ def _seed_fake_home(home: str) -> None:
     put(".cursor/hooks.json", {"version": 1, "hooks": {"sessionStart": [{"command": "/bin/true", "timeout": 8, "failClosed": False}]}})
     put(".gemini/config/hooks.json", {"other-hook": {"Stop": [dict(other)], "enabled": True}})
     put(".grok/hooks/imported-from-claude.json", {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [dict(other)]}]}})
+    os.makedirs(os.path.join(home, ".minimax", "plugins"), exist_ok=True)       # MiniMax Code: an empty plugins dir
 
 
 def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True,
@@ -3585,7 +3929,11 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
             emit(r.line())
             if not r.ok:
                 failures.append(f"apply {key}: {r.detail}")
-        targets = ["tools"] + list(SUPPORTED_KEYS) + ["muse"]
+        r = apply_platform(PLATFORMS["minimax"], paths, timeout=timeout, minimal_path=minimal_path, shim_proven=True)
+        emit(r.line())
+        if not r.ok:
+            failures.append(f"apply minimax: {r.detail}")
+        targets = ["tools"] + list(SUPPORTED_KEYS) + ["minimax", "muse"]
 
         def run_verify(label: str, show: tuple) -> tuple[int, list[Check]]:
             checks: list[Check] = []
@@ -3605,7 +3953,7 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
         os.rename(guard, hidden)
         try:
             _fails, checks = run_verify("with guard.py renamed, expect FAIL on every platform", ("FAIL",))
-            for key in SUPPORTED_KEYS + ("muse",):
+            for key in SUPPORTED_KEYS + ("minimax", "muse"):
                 if not any(c.target == key and c.name.startswith("deny/") and c.status == "FAIL" for c in checks):
                     failures.append(f"verify did NOT fail {key} with the guard module renamed: a broken install would read as healthy")
             if not any(c.target == "tools" and c.status == "FAIL" for c in checks):
@@ -3644,8 +3992,9 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
             fh.write(b"#!/bin/sh\nexit 0\n")
         try:
             _fails, checks = run_verify("with the fleet hook shim allowing everything, expect FAIL on muse", ("FAIL",))
-            if not any(c.target == "muse" and c.name.startswith("deny/") and c.status == "FAIL" for c in checks):
-                failures.append("verify did NOT fail muse with an allow-everything fleet hook: a broken plugin path would read as healthy")
+            for key in ("muse", "minimax"):
+                if not any(c.target == key and c.name.startswith("deny/") and c.status == "FAIL" for c in checks):
+                    failures.append(f"verify did NOT fail {key} with an allow-everything fleet hook: a broken plugin path would read as healthy")
             if not any(c.target == "tools" and c.status == "FAIL" for c in checks):
                 failures.append("verify tools did not notice the edited fleet hook shim")
         finally:
@@ -3660,9 +4009,10 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
                 fh.write(emptied.encode("utf-8"))
             try:
                 _fails, checks = run_verify("with the fleet hook prefilter emptied, expect FAIL on muse", ("FAIL",))
-                if not any(c.target == "muse" and c.name.startswith("deny/") and c.status == "FAIL" for c in checks):
-                    failures.append("verify did NOT fail muse with the fleet hook prefilter emptied: a shim that allows "
-                                    "everything would read as healthy")
+                for key in ("muse", "minimax"):
+                    if not any(c.target == key and c.name.startswith("deny/") and c.status == "FAIL" for c in checks):
+                        failures.append(f"verify did NOT fail {key} with the fleet hook prefilter emptied: a shim that allows "
+                                        "everything would read as healthy")
             finally:
                 with open(paths.fleet_shim, "wb") as fh:
                     fh.write(fleet_bytes)
@@ -3670,8 +4020,9 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
         os.rename(secret, secret + ".disabled")
         try:
             _fails, checks = run_verify("with the secret guard module renamed, expect FAIL on muse", ("FAIL",))
-            if not any(c.target == "muse" and c.name.startswith("secret/") and c.status == "FAIL" for c in checks):
-                failures.append("verify did NOT fail muse with the secret guard missing: the fleet hook would be the lane guard alone")
+            for key in ("muse", "minimax"):
+                if not any(c.target == key and c.name.startswith("secret/") and c.status == "FAIL" for c in checks):
+                    failures.append(f"verify did NOT fail {key} with the secret guard missing: the fleet hook would be the lane guard alone")
         finally:
             os.rename(secret + ".disabled", secret)
         fails, _ = run_verify("after the third repair, expect no FAIL", ("FAIL",))

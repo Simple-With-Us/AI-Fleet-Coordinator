@@ -1884,7 +1884,7 @@ class ApplyAllProbeTests(World):
         with mock.patch.object(T, "apply_platform", side_effect=spy):
             rc, out, _ = run_main("apply", *self.base(self.source), "--no-verify", "all")
         self.assertEqual(rc, 0, out)
-        self.assertEqual(len(calls), len(T.SUPPORTED_KEYS))
+        self.assertEqual(len(calls), len(T.ALL_KEYS))
         self.assertFalse(any(calls), calls)
         with mock.patch.object(T, "apply_platform", side_effect=spy):
             calls.clear()
@@ -4254,6 +4254,316 @@ class KimiBlockTests(World):
         rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path")
         self.assertRegex(out, r"SKIP\s+clutch\s+platform")
         self.assertRegex(out, r"SKIP\s+kimi\s+platform")
+
+
+# --------------------------------------------------------------------------- minimax: a plugin bundle under ~/.minimax/plugins
+
+class MinimaxBundleTests(World):
+    """MiniMax Code takes hooks from a local plugin: a real directory with .claude-plugin/plugin.json and hooks/hooks.json."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.home / ".minimax" / "plugins").mkdir(parents=True)
+        self.plat = T.PLATFORMS["minimax"]
+        self.install(())
+
+    @property
+    def bundle(self) -> Path:
+        return self.home / ".minimax" / "plugins" / "fleet-guard"
+
+    def apply(self, **kw):
+        return T.apply_platform(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False, **kw)
+
+    def base(self) -> list:
+        return ["--home", str(self.home), "--source", self.source.scripts_dir, "--registry", self.source.registry,
+                "--sha", SHA, "--timeout", str(TIMEOUT), "--no-minimal-path"]
+
+    def hooks(self) -> dict:
+        return json.loads((self.bundle / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+
+    def verify_mm(self) -> list:
+        return T.verify_minimax(self.paths, timeout=TIMEOUT, minimal_path=False)
+
+    # -- where it sits in the platform table
+
+    def test_it_is_in_all_but_not_a_config_file_platform(self) -> None:
+        self.assertEqual(self.plat.kind, "bundle")
+        self.assertNotIn("minimax", T.SUPPORTED_KEYS)
+        self.assertIn("minimax", T.ALL_KEYS)
+        self.assertEqual(T.ALL_KEYS[:len(T.SUPPORTED_KEYS)], T.SUPPORTED_KEYS)
+        self.assertIn(("claude", "claude"), T.fleet_probe_formats())
+        self.assertEqual(T._expand(["mm"], ())[0], ["minimax"])                  # the seat tag is an alias
+        self.assertIn("minimax", T._expand(["all"], ())[0])
+        self.assertEqual(T._expand(["mm"], ())[1], {"minimax"})
+
+    # -- plan
+
+    def test_plan_is_read_only_and_shows_both_files(self) -> None:
+        before = snapshot(self.tmp)
+        rc, out, err = run_main("plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA, "minimax")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertEqual(snapshot(self.tmp), before)
+        self.assertFalse(self.bundle.exists())
+        for needle in ("[new]", ".claude-plugin/plugin.json", "hooks/hooks.json", '"matcher": "Bash"', "--format claude",
+                       '"timeout": 10', "UNVERIFIED", "No SessionStart seat hook"):
+            self.assertIn(needle, out)
+        self.assertTrue(all(ord(c) < 128 for c in out))
+
+    def test_default_plan_and_verify_list_it_without_failing_when_the_tool_is_absent(self) -> None:
+        shutil.rmtree(self.home / ".minimax")
+        rc, out, _ = run_main("plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("== minimax", out)
+        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path")
+        self.assertRegex(out, r"SKIP\s+minimax\s+platform")
+
+    # -- apply
+
+    def test_apply_writes_a_real_directory_with_the_hook_and_is_idempotent(self) -> None:
+        r = self.apply()
+        self.assertEqual(r.status, "added", r)
+        self.assertTrue(self.bundle.is_dir() and not self.bundle.is_symlink())
+        manifest = json.loads((self.bundle / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["name"], "fleet-guard")
+        doc = self.hooks()
+        self.assertEqual(set(doc), {"hooks"})
+        self.assertEqual(set(doc["hooks"]), {"PreToolUse"})
+        (group,) = doc["hooks"]["PreToolUse"]
+        self.assertEqual(group["matcher"], "Bash")
+        (hook,) = group["hooks"]
+        self.assertEqual(hook["type"], "command")
+        self.assertEqual(hook["command"], T.fleet_hook_command(self.paths, "claude"))
+        self.assertTrue(hook["command"].endswith("fleet-guard-hook --format claude"))
+        self.assertTrue(os.path.isabs(hook["command"].split()[0]))
+        self.assertIs(type(hook["timeout"]), int)
+        self.assertTrue(1 <= hook["timeout"] <= 10, hook)
+        # nothing else is written: no stage directory is left behind, and plugins/ holds only our plugin
+        self.assertEqual(sorted(p.name for p in (self.home / ".minimax").iterdir()), ["plugins"])
+        self.assertEqual(sorted(p.name for p in (self.home / ".minimax" / "plugins").iterdir()), ["fleet-guard"])
+        after = snapshot(self.tmp)
+        r = self.apply()
+        self.assertEqual(r.status, "unchanged", r)
+        self.assertEqual(snapshot(self.tmp), after)
+
+    def test_apply_through_the_cli_with_the_seat_alias_runs_apply_tools_first_and_verifies(self) -> None:
+        shutil.rmtree(self.paths.stable)
+        rc, out, err = run_main("apply", *self.base(), "mm")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertRegex(out, r"INSTALLED\s+tools")
+        self.assertRegex(out, r"ADDED\s+minimax")
+        self.assertIn("NEXT       minimax", out)
+        self.assertRegex(out, r"PASS\s+minimax\s+deny/login-PATH")
+        self.assertRegex(out, r"PASS\s+minimax\s+secret/login-PATH")
+        self.assertIn("-> healthy", out)
+
+    def test_apply_all_reaches_it_and_skips_it_when_the_tool_is_absent(self) -> None:
+        self.seed_platforms()
+        rc, out, err = run_main("apply", *self.base(), "--no-verify", "all")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertRegex(out, r"ADDED\s+minimax")
+        shutil.rmtree(self.home / ".minimax")
+        rc, out, _ = run_main("apply", *self.base(), "--no-verify", "all")
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r"SKIPPED\s+minimax")
+        self.assertFalse((self.home / ".minimax").exists())                       # skipping never creates the tool's home
+        rc, out, _ = run_main("apply", *self.base(), "--no-verify", "minimax")     # named: not installed is a failure
+        self.assertEqual(rc, 1, out)
+
+    def test_a_stale_bundle_of_ours_is_replaced(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        hooks = self.bundle / "hooks" / "hooks.json"
+        hooks.write_text(hooks.read_text(encoding="utf-8").replace('"timeout": 10', '"timeout": 3'), encoding="utf-8")
+        self.assertEqual(self.apply().status, "updated")
+        self.assertEqual(self.hooks()["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 10)
+        self.assertEqual(sorted(p.name for p in (self.home / ".minimax").iterdir()), ["plugins"])
+        self.assertEqual(sorted(p.name for p in (self.home / ".minimax" / "plugins").iterdir()), ["fleet-guard"])
+
+    def test_a_symlinked_bundle_is_refused_and_left_alone(self) -> None:
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        self.bundle.symlink_to(elsewhere)
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("symlink", r.detail)
+        self.assertTrue(self.bundle.is_symlink())
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_a_directory_with_foreign_files_is_refused_and_left_alone(self) -> None:
+        for rel in ("README.md", "skills/x/SKILL.md", ".mcp.json"):
+            with self.subTest(rel):
+                shutil.rmtree(self.bundle, ignore_errors=True)
+                f = self.bundle / rel
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text("mine\n")
+                before = snapshot(self.home)
+                r = self.apply()
+                self.assertEqual(r.status, "refused", r)
+                self.assertIn("never writes", r.detail)
+                self.assertEqual(snapshot(self.home), before)
+
+    def test_a_directory_with_another_plugin_name_is_refused(self) -> None:
+        (self.bundle / ".claude-plugin").mkdir(parents=True)
+        (self.bundle / ".claude-plugin" / "plugin.json").write_text('{"name": "someone-elses"}\n')
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("does not name", r.detail)
+
+    def test_a_dangling_plugins_symlink_is_refused(self) -> None:
+        shutil.rmtree(self.home / ".minimax" / "plugins")
+        (self.home / ".minimax" / "plugins").symlink_to(self.tmp / "nowhere")
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("dangling", r.detail)
+
+    def test_it_is_never_wired_in_when_the_fleet_hook_cannot_deny(self) -> None:
+        shim = Path(self.paths.fleet_shim)
+        shim.write_text("#!/bin/sh\nexit 0\n")
+        os.chmod(shim, 0o755)
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("fails its probes", r.detail)
+        self.assertFalse(self.bundle.exists())
+
+    def test_it_is_not_wired_in_without_the_stable_copy(self) -> None:
+        shutil.rmtree(self.paths.stable)
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("apply tools", r.detail)
+        self.assertFalse(self.bundle.exists())
+
+    # -- verify
+
+    def test_verify_proves_the_deny_through_the_command_in_the_written_file(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        checks = self.verify_mm()
+        self.assertAllPass([c for c in checks if c.status != "SKIP"])
+        by = {c.name: c for c in checks}
+        for n in ("bundle", "plugin.json", "hooks.json", "hook command", "deny/login-PATH", "allow/login-PATH",
+                  "secret/login-PATH", "deny/hook-env", "secret/hook-env"):
+            self.assertIn(n, by)
+            self.assertEqual(by[n].status, "PASS", by[n].line())
+        self.assertIn("permissionDecision", by["deny/login-PATH"].detail)
+        self.assertIn("deny", by["secret/hook-env"].detail)
+        self.assertEqual(by["hook command"].detail, T.fleet_hook_command(self.paths, "claude"))
+        self.assertEqual(by["fires"].status, "SKIP")
+        self.assertAllPass([c for c in T.verify_platform(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False) if c.status != "SKIP"])
+
+    def test_verify_runs_the_command_that_is_in_the_file_not_the_one_it_expects(self) -> None:
+        self.apply()
+        hooks = self.bundle / "hooks" / "hooks.json"
+        doc = self.hooks()
+        doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"] = "/bin/true " + T.fleet_hook_command(self.paths, "claude")
+        hooks.write_text(json.dumps(doc, indent=2) + "\n")
+        checks = self.verify_mm()
+        self.assertFails(checks, "differs")                      # the file is no longer what is written
+        self.assertFalse(any(c.name == "deny/login-PATH" and c.status == "PASS" for c in checks))
+
+    def test_verify_fails_when_the_fleet_hook_allows_everything(self) -> None:
+        self.apply()
+        shim = Path(self.paths.fleet_shim)
+        shim.write_text("#!/bin/sh\nexit 0\n")
+        os.chmod(shim, 0o755)
+        checks = self.verify_mm()
+        self.assertFails(checks, "no output")
+        for n in ("deny/login-PATH", "secret/login-PATH", "deny/hook-env", "secret/hook-env"):
+            self.assertTrue(any(c.name == n and c.status == "FAIL" for c in checks), n)
+
+    def test_verify_fails_when_the_secret_guard_is_missing(self) -> None:
+        self.apply()
+        os.rename(Path(self.paths.package_dir) / T.SECRET_GUARD_MODULE, Path(self.paths.package_dir) / (T.SECRET_GUARD_MODULE + ".off"))
+        checks = self.verify_mm()
+        self.assertTrue(any(c.name == "secret/login-PATH" and c.status == "FAIL" for c in checks))
+        self.assertTrue(any(c.name == "secret/hook-env" and c.status == "FAIL" for c in checks))
+
+    def test_verify_fails_when_the_guard_module_is_gone(self) -> None:
+        self.apply()
+        guard = Path(self.paths.package_dir) / "guard.py"
+        os.rename(guard, guard.with_suffix(".off"))
+        checks = self.verify_mm()
+        self.assertTrue(any(c.name == "deny/login-PATH" and c.status == "FAIL" for c in checks))
+
+    def test_verify_fails_on_a_symlinked_or_non_directory_bundle(self) -> None:
+        self.apply()
+        real = self.tmp / "moved"
+        os.rename(self.bundle, real)
+        self.bundle.symlink_to(real)
+        checks = self.verify_mm()
+        self.assertFails(checks, "not a real directory")
+        self.assertEqual([c.name for c in checks], ["bundle"])
+        self.bundle.unlink()
+        self.bundle.write_text("a file")
+        self.assertFails(self.verify_mm(), "not a real directory")
+
+    def test_verify_fails_when_plugin_json_has_no_name(self) -> None:
+        self.apply()
+        manifest = self.bundle / ".claude-plugin" / "plugin.json"
+        manifest.write_text('{"version": "1"}\n')
+        self.assertFails(self.verify_mm(), "no `name`")
+        manifest.write_text("not json\n")
+        self.assertFails(self.verify_mm(), "no `name`")
+        manifest.unlink()
+        self.assertFails(self.verify_mm(), "plugin.json")
+
+    def test_verify_fails_on_a_hooks_file_minimax_would_reject(self) -> None:
+        self.apply()
+        hooks = self.bundle / "hooks" / "hooks.json"
+        good = self.hooks()
+        cases = {
+            "matcher": lambda d: d["hooks"]["PreToolUse"][0].update(matcher="Read"),
+            "timeout 30": lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(timeout=30),
+            "timeout 0": lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(timeout=0),
+            "timeout float": lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(timeout=5.5),
+            "timeout bool": lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(timeout=True),
+            "type": lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(type="http"),
+            "not ours": lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(command="/bin/true"),
+            "two groups": lambda d: d["hooks"]["PreToolUse"].append(dict(d["hooks"]["PreToolUse"][0])),
+            "no event": lambda d: d["hooks"].pop("PreToolUse"),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name):
+                doc = copy.deepcopy(good)
+                mutate(doc)
+                hooks.write_text(json.dumps(doc, indent=2) + "\n")
+                checks = self.verify_mm()
+                self.assertFails(checks)
+                self.assertFalse(any(c.name == "deny/login-PATH" and c.status == "PASS" for c in checks), name)
+        hooks.unlink()
+        self.assertFails(self.verify_mm(), "hooks.json")
+
+    def test_an_unwired_bundle_is_a_skip_unless_the_platform_is_named(self) -> None:
+        checks = self.verify_mm()
+        self.assertEqual([(c.name, c.status) for c in checks], [("bundle", "SKIP")])
+        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path")
+        self.assertRegex(out, r"SKIP\s+minimax\s+bundle")
+        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "minimax")
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r"FAIL\s+minimax\s+bundle.*named explicitly")
+
+    def test_the_kill_switch_in_the_callers_environment_is_a_warning_not_a_pass_through(self) -> None:
+        self.apply()
+        with mock.patch.dict(os.environ, {T.guard_switch()[0]: "off"}):
+            checks = self.verify_mm()
+        self.assertTrue(any(c.name == "guard-switch-env" and c.status == "WARN" for c in checks))
+        self.assertAllPass([c for c in checks if c.status not in ("SKIP", "WARN")])        # the probes scrub the switch
+
+    def test_the_hook_command_runs_with_the_small_environment_minimax_gives_a_hook(self) -> None:
+        self.apply()
+        cmd = self.hooks()["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        env = {"HOME": str(self.home), "PATH": T.MINIMAL_PATH, "LANG": "C", "TERM": "xterm", "SHELL": "/bin/sh", "USER": "x"}
+        payload = json.dumps(T.probe_payload("claude", T.DENY_COMMAND, str(self.home))).encode()
+        res = T.run_shell(cmd, payload, env, TIMEOUT)
+        self.assertEqual(res.returncode, 0, res)
+        self.assertIsNone(T.check_deny_output("claude", res.stdout))
+        res = T.run_shell(cmd, json.dumps(T.probe_payload("claude", T.ALLOW_COMMAND, str(self.home))).encode(), env, TIMEOUT)
+        self.assertEqual((res.returncode, res.stdout), (0, b""))
+
+    def test_verify_all_with_the_bundle_installed_has_no_failure(self) -> None:
+        self.seed_platforms()
+        self.install()
+        self.assertEqual(self.apply().status, "added")
+        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path")
+        self.assertRegex(out, r"PASS\s+minimax\s+hook command")
+        self.assertNotRegex(out, r"FAIL\s+minimax")
 
 
 if __name__ == "__main__":
