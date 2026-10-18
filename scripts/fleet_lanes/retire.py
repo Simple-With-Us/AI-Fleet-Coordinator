@@ -18,12 +18,15 @@ A lane is removable only when ALL of these hold (each is a reason in the table w
   * it is not locked, no process has its cwd inside it (`lsof -d cwd`; if lsof fails nothing is removed), no git
     operation is in progress (MERGE_HEAD, rebase, cherry-pick, revert, bisect, sequencer, index.lock) and it has
     no `.janitor-keep` marker;
-  * `git status` shows no tracked edit and no untracked, non-ignored file;
+  * `git status` shows no tracked edit, no untracked file and no git-ignored local state (a .env, a database:
+    anything ignored that is not build output, by the doctor's own list, `doctor.split_ignored`);
   * nothing is unpushed: HEAD is reachable from a remote ref, or a merged or closed PR holds HEAD (its head is
     HEAD or contains it), because a squash-merged branch whose remote ref was pruned is safe on GitHub but on no
-    remote ref here;
+    remote ref here.  When the upstream branch is gone from origin, its stale local remote-tracking ref does not
+    count (the next `git fetch --prune` deletes it);
   * the work is done: the PR for its branch (the local name or the upstream name, since a sweep lane pushes
-    `HEAD:<pr head>`) or for HEAD is MERGED or CLOSED with none still OPEN, or HEAD is merged into
+    `HEAD:<pr head>`) or for HEAD is MERGED or CLOSED with none still OPEN and its head is HEAD or contains it (a
+    PR that only used the same branch name is no evidence), or HEAD is merged into
     origin/<default>, or its upstream branch no longer exists on origin (`git ls-remote --heads origin`).
     A review checkout (review-pr-<n>) is done when PR <n> is MERGED or CLOSED; prune keeps one of an OPEN PR,
     and an explicit `lane retire` may remove it (it is read-only by design).
@@ -109,10 +112,14 @@ def _git_key(args: Sequence[str], write_root: str | None, fold: Callable[[str], 
         return "remove" if K._dest_ok(a[2], write_root, fold) else None
     if len(a) == 3 and a[:2] == ["branch", "-d"]:
         return "git" if K.valid_ref_name(a[2]) else None
-    if a == ["status", "--porcelain", "--untracked-files=normal"]:
+    if a == ["status", "--porcelain", "--ignored", "--untracked-files=normal"]:
         return "git"
     if len(a) == 5 and a[:4] == ["rev-list", "--count", "HEAD", "--not"]:
         return "git" if (a[4] == "--remotes" or _SHA.match(a[4])) else None
+    if len(a) == 6 and a[:4] == ["rev-list", "--count", "HEAD", "--not"] and a[5] == "--remotes":
+        # --exclude before --remotes takes the name without refs/remotes/ (git rev-list --help)
+        ref = a[4][len("--exclude=") :] if a[4].startswith("--exclude=") else ""
+        return "git" if (ref.startswith("origin/") and K.valid_ref_name(ref)) else None
     if len(a) == 2 and a[0] == "rev-parse" and a[1] in _REVPARSE_SOLO:
         return "git"
     if len(a) == 4 and a[:3] == ["rev-parse", "--verify", "-q"]:
@@ -228,6 +235,9 @@ class PrView:
     done_state: str = ""
     covers_head: bool = False  # that PR's head is HEAD or contains it
     review_state: str = ""  # review checkouts: the state of PR <n>
+    # a MERGED or CLOSED PR that used this branch name but whose head does not hold HEAD (a reused slug, or new
+    # commits after the merge): it is not evidence that this lane's work is done
+    stale_number: int | None = None
 
 
 @dataclass
@@ -243,6 +253,9 @@ class Facts:
     git_ops: list[str] = field(default_factory=list)
     keep_marker: bool = False
     dirty: int | None = None
+    ignored_local: list[str] = field(
+        default_factory=list
+    )  # git-ignored files that are not build output
     unpushed: int | None = None
     merged_default: bool | None = None
     default_branch: str = "main"
@@ -278,6 +291,10 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
         return "keep", "git status failed"
     if f.dirty:
         return "keep", f"{f.dirty} uncommitted or untracked file{'s' if f.dirty != 1 else ''}"
+    if f.ignored_local:
+        shown = ", ".join(f.ignored_local[:3])
+        more = len(f.ignored_local) - 3
+        return "keep", "ignored local state: " + shown + (f" (+{more} more)" if more > 0 else "")
     if not f.pr.found:
         return "keep", "PR lookup failed (gh)"
     if f.kind == "review":
@@ -291,8 +308,13 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
     if not (f.pr.covers_head or f.unpushed == 0):
         if f.unpushed is None:
             return "keep", "could not count unpushed commits"
+        where = (
+            "on no remote ref but the deleted upstream's stale local copy"
+            if f.upstream_gone
+            else "on no remote ref"
+        )
         return "keep", (
-            f"{f.unpushed} commit{'s' if f.unpushed != 1 else ''} on no remote ref, and no merged or "
+            f"{f.unpushed} commit{'s' if f.unpushed != 1 else ''} {where}, and no merged or "
             "closed PR holds HEAD"
         )
     done = []
@@ -306,6 +328,10 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
         if f.merged_default:
             done.append(f"merged into origin/{f.default_branch}")
     if not done:
+        if f.pr.stale_number is not None:
+            return "keep", (
+                f"not done: PR #{f.pr.stale_number} used this branch name, but its head does not hold HEAD"
+            )
         return (
             "keep",
             "not done: no merged or closed PR, not in origin/"
@@ -437,7 +463,7 @@ def _epoch_iso(text: object) -> float | None:
     except ValueError:
         return None
     if when.tzinfo is None:
-        when = when.replace(tzinfo=_dt.UTC)
+        when = when.replace(tzinfo=_dt.timezone.utc)  # noqa: UP017 (3.9 has no datetime.UTC)
     return when.timestamp()
 
 
@@ -505,11 +531,11 @@ def _inspect(
     f.processes = _processes_inside(ctx, lsof_rows, rec.path)
     f.git_ops = D.git_ops_in_progress(gitdir) if gitdir else ["unreadable git dir"]
     f.keep_marker = os.path.lexists(os.path.join(rec.path, D.KEEP_MARKER))
-    st = run(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=rec.path)
-    f.dirty = len([ln for ln in st.out.splitlines() if ln.strip()]) if st.ok else None
-    f.unpushed = _int(
-        run(["git", "rev-list", "--count", "HEAD", "--not", "--remotes"], cwd=rec.path)
+    st = run(
+        ["git", "status", "--porcelain", "--ignored", "--untracked-files=normal"], cwd=rec.path
     )
+    f.dirty = _dirty_count(st.out) if st.ok else None
+    f.ignored_local = D.split_ignored(st.out)[0] if st.ok else []
     mb = run(
         ["git", "merge-base", "--is-ancestor", "HEAD", f"refs/remotes/origin/{default_branch}"],
         cwd=rec.path,
@@ -527,6 +553,23 @@ def _inspect(
             f.upstream = up[len("refs/heads/") :]
             if remote_heads is not None:
                 f.upstream_gone = f.upstream not in remote_heads
+    # Reachability from the deleted upstream's own remote-tracking ref does not count: that ref is a stale local
+    # copy (the branch is gone from origin), and the next `git fetch --prune` deletes it.
+    stale = f"--exclude=origin/{f.upstream}" if (f.upstream_gone and f.upstream) else None
+    f.unpushed = _int(
+        run(
+            [
+                "git",
+                "rev-list",
+                "--count",
+                "HEAD",
+                "--not",
+                *([stale] if stale else []),
+                "--remotes",
+            ],
+            cwd=rec.path,
+        )
+    )
     times = [
         t
         for t in (
@@ -543,6 +586,11 @@ def _inspect(
         times.append(created)
     f.idle_minutes = max(0.0, (now - max(times)) / 60.0) if times else None
     return f
+
+
+def _dirty_count(porcelain: str) -> int:
+    """Tracked edits and untracked files in `git status --porcelain --ignored` (the `!!` ignored lines excluded)."""
+    return len([ln for ln in porcelain.splitlines() if ln.strip() and not ln.startswith("!! ")])
 
 
 def _contains(run: Runner, path: str, oid: str) -> bool:
@@ -618,16 +666,19 @@ def _pr_view(
     done = [p for p in cands if p.get("state") in ("MERGED", "CLOSED")]
     if not done:
         return view
-    exact = [p for p in done if head and p.get("headRefOid") == head]
-    pick = max(exact or done, key=lambda p: (p.get("state") == "MERGED", int(p.get("number") or 0)))
+    # Only a PR whose head IS HEAD or contains it says this lane's work is done.  A PR that merely used the same
+    # branch name (a reused slug, or commits added after the merge) is no evidence, so a lane opened under an old
+    # name keeps the 24-hour hold for an unused lane.
+    covering = [p for p in done if head and p.get("headRefOid") == head] or [
+        p for p in done if _contains(run, rec.path, str(p.get("headRefOid") or ""))
+    ]
+    if not covering:
+        view.stale_number = max(int(p.get("number") or 0) for p in done) or None
+        return view
+    pick = max(covering, key=lambda p: (p.get("state") == "MERGED", int(p.get("number") or 0)))
     view.done_number = int(pick.get("number") or 0) or None
     view.done_state = str(pick.get("state") or "")
-    if exact:
-        view.covers_head = True
-    else:
-        view.covers_head = any(
-            _contains(run, rec.path, str(p.get("headRefOid") or "")) for p in done
-        )
+    view.covers_head = True
     return view
 
 
@@ -863,9 +914,10 @@ def _apply(ctx: K.Ctx, run: Runner, plan: _Plan, seats: set | None) -> None:
         with K._repo_lock(ctx, run, tree):
             for row, ln in items:
                 st = run(
-                    ["git", "status", "--porcelain", "--untracked-files=normal"], cwd=ln.rec.path
+                    ["git", "status", "--porcelain", "--ignored", "--untracked-files=normal"],
+                    cwd=ln.rec.path,
                 )
-                if not st.ok or any(x.strip() for x in st.out.splitlines()):
+                if not st.ok or _dirty_count(st.out) or D.split_ignored(st.out)[0]:
                     row.action, row.reason = "keep", "changed since it was inspected (git status)"
                     continue
                 res = run(["git", "worktree", "remove", ln.rec.path], cwd=tree)
@@ -1200,10 +1252,10 @@ def main(
                 if isinstance(exc.code, int)
                 else (K.EXIT_OK if exc.code is None else K.EXIT_USAGE)
             )
-    stamp = clock or (lambda: _dt.datetime.now(_dt.UTC))
+    stamp = clock or (lambda: _dt.datetime.now(_dt.timezone.utc))  # noqa: UP017 (3.9 has no datetime.UTC)
     now = stamp()
     if now.tzinfo is None:
-        now = now.replace(tzinfo=_dt.UTC)
+        now = now.replace(tzinfo=_dt.timezone.utc)  # noqa: UP017 (3.9 has no datetime.UTC)
     try:
         try:
             registry = L.load_registry(env=env)

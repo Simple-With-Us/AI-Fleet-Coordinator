@@ -56,7 +56,7 @@ _TEMPLATE: tempfile.TemporaryDirectory | None = None
 TEMPLATE_WORLD = ""
 TEMPLATE_URIS: dict[str, str] = {}
 SHAS: dict[str, str] = {}
-REAL_NOW = dt.datetime.now(dt.UTC)
+REAL_NOW = dt.datetime.now(dt.timezone.utc)  # noqa: UP017 (3.9 has no datetime.UTC)
 LATER = REAL_NOW + dt.timedelta(
     hours=1
 )  # past the 15-minute guard, inside the 24-hour empty-lane hold
@@ -297,8 +297,17 @@ class AllowlistTests(unittest.TestCase):
             ["git", "worktree", "remove", lane],
             ["git", "worktree", "prune"],
             ["git", "branch", "-d", "claude/x"],
-            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            ["git", "status", "--porcelain", "--ignored", "--untracked-files=normal"],
             ["git", "rev-list", "--count", "HEAD", "--not", "--remotes"],
+            [
+                "git",
+                "rev-list",
+                "--count",
+                "HEAD",
+                "--not",
+                "--exclude=origin/claude/x",
+                "--remotes",
+            ],
             ["git", "rev-list", "--count", "HEAD", "--not", self.SHA],
             ["git", "rev-parse", "--absolute-git-dir"],
             ["git", "rev-parse", "--git-common-dir"],
@@ -364,7 +373,18 @@ class AllowlistTests(unittest.TestCase):
             ["git", "clean", "-fdx"],
             ["git", "status"],
             ["git", "status", "--porcelain", "--ignored"],
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
             ["git", "rev-list", "--count", "HEAD", "--not", "--all"],
+            [
+                "git",
+                "rev-list",
+                "--count",
+                "HEAD",
+                "--not",
+                "--exclude=refs/remotes/origin/x",
+                "--remotes",
+            ],
+            ["git", "rev-list", "--count", "HEAD", "--not", "--exclude=*", "--remotes"],
             ["git", "config", "--get", "core.sshCommand"],
             ["git", "config", "branch.x.merge", "y"],
             ["git", "merge-base", "--is-ancestor", "HEAD", "main"],
@@ -429,6 +449,8 @@ class DecideTests(unittest.TestCase):
             "open pr": facts(pr=R.PrView(open_number=9)),
             "unpushed": facts(unpushed=3, pr=R.PrView()),
             "not done": facts(pr=R.PrView()),
+            "stale pr": facts(pr=R.PrView(stale_number=4)),
+            "ignored local": facts(ignored_local=["local.db"]),
         }
         for name, f in cases.items():
             with self.subTest(name):
@@ -535,17 +557,25 @@ class PruneTests(WorldCase):
             self.assertTrue(p.exists())
         self.assertFalse(res.has("worktree", "remove"))
 
-    def test_ignored_files_do_not_keep_a_lane(self) -> None:
+    def test_ignored_build_output_does_not_keep_a_lane_but_ignored_local_state_does(self) -> None:
         exclude = self.w.trees["DealDex"] / ".git" / "info" / "exclude"
         exclude.parent.mkdir(parents=True, exist_ok=True)
-        exclude.write_text("*.log\n", encoding="utf-8")
-        lane = self.w.new_lane("ignored")
-        self.w.commit(lane)
-        self.w.push(lane, "claude/ignored")
-        self.w.merged_pr(lane, "claude/ignored", number=23)
-        (lane / "build.log").write_text("noise\n", encoding="utf-8")
+        exclude.write_text("node_modules/\n.env\n", encoding="utf-8")
+        built = self.w.new_lane("built")
+        self.w.commit(built)
+        self.w.push(built, "claude/built")
+        self.w.merged_pr(built, "claude/built", number=23)
+        (built / "node_modules" / "pkg").mkdir(parents=True)
+        (built / "node_modules" / "pkg" / "index.js").write_text("x\n", encoding="utf-8")
+        local = self.w.new_lane("local-state")
+        self.w.commit(local)
+        self.w.push(local, "claude/local-state")
+        self.w.merged_pr(local, "claude/local-state", number=24)
+        (local / ".env").write_text("NAME=value\n", encoding="utf-8")
         res = self.w.run("prune", "--apply", "--json")
-        self.assertTrue(res.row("claude-ignored")["removed"], res.out)
+        self.assertTrue(res.row("claude-built")["removed"], res.out)
+        self.assertEqual(res.row("claude-local-state")["reason"], "ignored local state: .env")
+        self.assertTrue(local.exists())
 
     def test_squash_merged_with_the_remote_branch_deleted_is_covered_by_the_pr_head(self) -> None:
         lane = self.w.new_lane("squashed")
@@ -572,9 +602,12 @@ class PruneTests(WorldCase):
             self.w.run("prune", "--json").row("claude-open")["reason"], "PR #41 is open"
         )
 
-    def test_upstream_deleted_on_origin_is_done(self) -> None:
+    def test_upstream_deleted_on_origin_is_done_when_head_is_on_a_live_ref(self) -> None:
         lane = self.w.new_lane("gone")
         self.w.commit(lane)
+        self.w.git(
+            ["push", "-q", "origin", "HEAD:claude/gone-copy"], lane
+        )  # the same commit on a live branch
         self.w.push(lane, "claude/gone")
         self.w.git(
             [
@@ -589,6 +622,39 @@ class PruneTests(WorldCase):
         row = self.w.run("prune", "--json").row("claude-gone")
         self.assertEqual(row["action"], "remove", row)
         self.assertIn("upstream claude/gone deleted on origin", row["reason"])
+
+    def test_work_only_on_the_deleted_upstreams_stale_local_ref_is_kept(self) -> None:
+        lane = self.w.new_lane("stale-ref")
+        self.w.commit(lane)
+        self.w.push(lane, "claude/stale-ref")
+        self.w.git(
+            [
+                "--git-dir",
+                str(self.w.origins["DealDex"]),
+                "update-ref",
+                "-d",
+                "refs/heads/claude/stale-ref",
+            ],
+            self.w.root,
+        )  # gone on origin; refs/remotes/origin/... still local
+        row = self.w.run("prune", "--apply", "--json").row("claude-stale-ref")
+        self.assertEqual(row["action"], "keep", row)
+        self.assertIn("stale local copy", row["reason"])
+        self.assertTrue(lane.exists())
+
+    def test_a_reused_slug_does_not_inherit_an_old_merged_pr(self) -> None:
+        self.w.new_lane("reused")
+        self.w.prs["Simple-With-Us/DealDex"].append(
+            {
+                "number": 55,
+                "state": "MERGED",
+                "headRefName": "claude/reused",
+                "headRefOid": "c" * 40,
+            }
+        )
+        row = self.w.run("prune", "--json").row("claude-reused")
+        self.assertEqual(row["action"], "keep", row)
+        self.assertIn("never pushed", row["reason"])
 
     def test_closed_pr_counts_as_done(self) -> None:
         lane = self.w.new_lane("closed")

@@ -595,8 +595,8 @@ class Ctx:
 
 def _iso(moment: _dt.datetime) -> str:
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=_dt.UTC)
-    return moment.astimezone(_dt.UTC).replace(microsecond=0).isoformat()
+        moment = moment.replace(tzinfo=_dt.timezone.utc)  # noqa: UP017 (3.9 has no datetime.UTC)
+    return moment.astimezone(_dt.timezone.utc).replace(microsecond=0).isoformat()  # noqa: UP017 (3.9 has no datetime.UTC)
 
 
 def _why(res: D.CmdResult) -> str:
@@ -1552,7 +1552,7 @@ def _positive_int(text: str) -> int:
 
 
 def _utc_now() -> _dt.datetime:
-    return _dt.datetime.now(_dt.UTC)
+    return _dt.datetime.now(_dt.timezone.utc)  # noqa: UP017 (3.9 has no datetime.UTC)
 
 
 def main(
