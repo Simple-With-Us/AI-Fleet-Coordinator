@@ -103,10 +103,10 @@ Do not revert raised `tcp_mem` sysctl just because a deploy succeeded.
 Health URLs say nothing about a native app.  After a merge that touches an app's native iOS tree, the deploy is **not verified** until the TestFlight freshness check reports that app current.  A merged PR, a green `ios-build.yml` compile check, and a healthy API do not count.
 
 ```bash
-ios_testflight_freshness
+node ~/apps/ios-fleet/ios_testflight_freshness.mjs --app <key>    # or --repo <Repo>;  --json for the report
 ```
 
-`ios_testflight_freshness` is the placeholder name for the freshness script (AFC).  Its arguments and verdicts are in `~/apps/ios-fleet/README.md`; read that, do not guess a flag.  Quote the verdict in the closeout.
+Exit 0 means current, so the deploy is verified.  Exit 1 means not yet:  `SHIPPING` or `PROCESSING` is a ship already in flight, so re-run it later;  `BEHIND` names the missing commit and says why the automatic catch-up did not run.  Exit 2 means the check itself failed.  App keys and native paths live in AFC `scripts/ios-fleet/testflight-apps.json`, and the full guide is AFC `docs/ios-testflight-freshness.md`.  This post-merge check is report-only, so never pass `--ship-behind` here.  The LaunchAgent `com.jay.ios-testflight-freshness` runs the catch-up ships every two hours under the fleet gates.  Quote the verdict in the closeout.
 
 "Touches the native iOS tree" means what the app's own ship workflow lists under `paths:`.  A merge that matches none of those paths leaves TestFlight where it was, which is current; say so in the closeout instead of shipping.
 
@@ -121,7 +121,7 @@ Per-app quirks (read the workflow on main before trusting this list):
 
 - **ST, CT, UM, BotFleet, Clutch** ship from `ios-ship.yml`.  UM ships two apps, Usage Client Monitor and Usage Local Monitor, so check both.  Most have a cron backstop; Clutch does not.
 - **DealDex** `ios-ship.yml` was disabled by hand for a signing hold (last scheduled success 2026-09-27).  `ios-ship-cron-park.yml` only sends a Sentry heartbeat and never uploads, so its green runs prove nothing.  Re-enabling is the owner's call.
-- **Autorotate** `testflight.yml` is dispatch-only with a build number and a signing-ready attestation.  It is behind until someone dispatches it; do not attest signing you have not verified.
+- **Autorotate** was retired from TestFlight on 2026-10-10 and the freshness check does not list it.  Its `testflight.yml` is dispatch-only with a signing-ready attestation;  do not attest signing you have not verified.
 - **ContactLogo** `ios-testflight.yml` ships only while the repo variable `CL_IOS_TESTFLIGHT_ENABLED` is `true`.
 
 **Rules that matter** (AGENT-SYNC § Releases, Versioning, and Brand Assets):
