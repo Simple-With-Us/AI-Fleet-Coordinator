@@ -342,7 +342,7 @@ jobs:
           stream="$RUNNER_TEMP/claude-stream.ndjson"
           out="$RUNNER_TEMP/claude-execution-output.json"
           echo "::group::Claude Code output"
-          claude --print --dangerously-skip-permissions \
+          claude --print --verbose --dangerously-skip-permissions \
             --max-turns "$MAX_TURNS" \
             --allowed-tools "Edit,Write,Read,Bash,Grep,Glob" \
             --output-format stream-json \
