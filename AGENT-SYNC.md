@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:0a4cae6fb2d5a7b78b4029fd46d4f3a3d4c4f498301e4571b83a1398203d17fc -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:55178a122dc88352d8746d4343feac9dba8b694b05882800af07813741017d31 -->
 # AGENT-SYNC — Fleet Coordination Protocol
 
 This is the protocol every AI agent seat follows when it works on the owner's apps:  who each seat is, how work is claimed, landed, and closed out in Linear, how seats talk in Zulip, and the standing rules for secrets, delegation, owner-facing writing, and the Mac.  It exists so parallel seats never collide on, duplicate, or silently drop the same work.
@@ -409,7 +409,7 @@ Linear is the system of record for fleet work, for every agent, seat, and app (o
 
 ### What Linear Is
 
-- Workspace Simple With Us (`https://linear.app/simple-with-us`), one public team per app, team key = the app acronym:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK, SWU ([App Acronyms and Repos](#app-acronyms-and-repos)).  Issue ids carry the app (`BF-123`) and are the id everywhere:  topics, branches, PRs, Notes.
+- Workspace Simple With Us (`https://linear.app/simple-with-us`), one public team per app, team key = the app acronym:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CLUTCH, FL, CC, SWU ([App Acronyms and Repos](#app-acronyms-and-repos)).  Issue ids carry the app (`BF-123`) and are the id everywhere:  topics, branches, PRs, Notes.
 - Everything the old board held is in Linear:  review findings, every app's effort-board rows, and every repo's GitHub issues, with their original dates.  An imported row keeps its old board id as its Linear UUID, so a full old id or its first 8 hex characters still resolves in `board`.
 - Linear is the system of record and the only write surface.  Nothing is mirrored to or from the effort logs or GitHub Issues.
 - Humans use Linear in the browser.  Agents use `board`, which acts as the shared `Fleet` Linear app and puts the seat tag on the first line of every issue and comment it writes.  Never write to Linear as Jay, through the claude.ai Linear connector, through Composio, or with a personal API key.
@@ -1369,7 +1369,7 @@ Four fleet pieces share the substring `agent-sync`.  The binding disambiguation 
 | `AR` | Autorotate (archived) | `autorotate` |
 | `CL` | ContactLogo | `contactlogo` |
 | `BF` | BotFleet | `botfleet` |
-| `CK` | Clutch | `clutch` |
+| `CLUTCH` | Clutch | `clutch` |
 | `HH` | HogHunter | `hoghunter` |
 | `OPS` | fleet-ops | `fleet-ops` |
 | `CC` | CodeCaps | `codecaps` |
@@ -1384,7 +1384,7 @@ Name drift, verified Wed, Oct 7, 2026:
 - The registry's `fleet-ops` is GitHub `Fleet-OPS`.  GitHub names are case-insensitive, so both resolve.
 - `SWU` is the Simple With Us website (`https://simplewithus.com`), repository `Simple-With-Us/Simple-With-Us`.  Its Linear team key is registered and its lane prefix is `swu` (AFC-297).
 - Autorotate is archived on GitHub.
-- Clutch (`CK`) is missing from the old canonical list; it belongs.
+- Clutch (`CLUTCH`) is missing from the old canonical list; it belongs.
 - FleetLink (`FL`) and fleetlink-legacy (`FLL`) were added to `fleet-apps.json` on Sun, Oct 11, 2026 (AFC-252).  Neither has a Linear team yet:  Jay creates the FL team, and FLL is only a registry key for the legacy worker repo.  Neither has a Zulip linkifier, so write `FleetLink#n` and `fleetlink-legacy#n`, never `FL#n` or `FLL#n`.
 
 ### Branch Protection
