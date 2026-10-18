@@ -568,9 +568,11 @@ class RunBase(unittest.TestCase):
         fs_stub = self.stubdir / "fleet-secrets"        # `run [--only X] -- CMD`:  CMD with the fake creds as env
         fs_stub.write_text(
             "#!/bin/bash\n"
-            '[ "$1" = run ] || exit 2\n'
-            'shift; [ "$1" = -- ] && shift\n'
             f'set -a; . "{self.creds_file}"; set +a\n'
+            'if [ "$1" = get ]; then [ -n "${!2:-}" ] || exit 3; printf %s "${!2}"; exit 0; fi\n'
+            '[ "$1" = run ] || exit 2\n'
+            'shift; [ "$1" = --only ] && shift 2\n'
+            '[ "$1" = -- ] && shift\n'
             'exec "$@"\n')
         fs_stub.chmod(0o755)
         self.cfg.fleet_secrets_bin = str(fs_stub)
@@ -2660,7 +2662,7 @@ class MiscCase(unittest.TestCase):
 
     def test_read_credentials_asks_fleet_secrets_once_and_tolerates_absence(self):
         names = {n: "" for n in fwb.CRED_NAMES.values()}
-        head = '#!/bin/bash\n[ "$1" = run ] || exit 2\nshift; [ "$1" = -- ] && shift\n'
+        head = '#!/bin/bash\n[ "$1" = run ] || exit 2\nshift; [ "$1" = --only ] && shift 2\n[ "$1" = -- ] && shift\n'
         with tempfile.TemporaryDirectory() as d:
             stub = Path(d) / "fleet-secrets"
             stub.write_text(head + "A=x exec \"$@\"\n")
@@ -2672,6 +2674,9 @@ class MiscCase(unittest.TestCase):
             with mock.patch.dict(os.environ, names):
                 self.assertEqual(fwb.read_credentials(cfg),
                                  {"B2_FLEET_WORK_KEY_ID": "kid", "RESTIC_FLEET_WORK_PASSWORD": "pw"})
+            stub.write_text('#!/bin/bash\nif [ "$1" = get ]; then [ "$2" = B2_FLEET_WORK_KEY_ID ] && printf kid && exit 0; exit 3; fi\nexit 3\n')
+            with mock.patch.dict(os.environ, names):                      # --only exits 3 on an absent name:  per-name get
+                self.assertEqual(fwb.read_credentials(cfg), {"B2_FLEET_WORK_KEY_ID": "kid"})
             stub.write_text("#!/bin/bash\nexit 4\n")                      # an Infisical or auth failure
             with mock.patch.dict(os.environ, names):
                 self.assertEqual(fwb.read_credentials(cfg), {})
