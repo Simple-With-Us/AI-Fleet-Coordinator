@@ -86,6 +86,7 @@ Python 3.9 safe (macOS /usr/bin/python3): no match statements, no runtime `X | Y
 
 Tests: fleet_lanes/tests/test_lane.py (real git, a local bare repo as origin, a fake home).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -100,24 +101,42 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator, Mapping, Sequence
 
 from . import doctor as D
 from . import guard as G
 from . import layout as L
 
 __all__ = [
-    "EXIT_OK", "EXIT_USAGE", "EXIT_TOOL", "EXIT_INTERNAL", "SCHEMA", "MANIFEST_NAME", "REVIEW_DAYS",
-    "ENV_SEAT", "LOCK_NAME", "LOCK_WAIT", "Refusal", "ToolFailure", "CommandRefused", "valid_ref_name",
-    "check_allowed", "Runner", "resolve_app", "resolve_seat", "branch_for", "parse_base", "main",
+    "ENV_SEAT",
+    "EXIT_INTERNAL",
+    "EXIT_OK",
+    "EXIT_TOOL",
+    "EXIT_USAGE",
+    "LOCK_NAME",
+    "LOCK_WAIT",
+    "MANIFEST_NAME",
+    "REVIEW_DAYS",
+    "SCHEMA",
+    "CommandRefused",
+    "Refusal",
+    "Runner",
+    "ToolFailure",
+    "branch_for",
+    "check_allowed",
+    "main",
+    "parse_base",
+    "resolve_app",
+    "resolve_seat",
+    "valid_ref_name",
 ]
 
 EXIT_OK = 0
-EXIT_USAGE = 64      # usage error or a refusal (EX_USAGE)
-EXIT_TOOL = 69       # git or gh failed (EX_UNAVAILABLE)
-EXIT_INTERNAL = 70   # a bug in lane itself (EX_SOFTWARE)
+EXIT_USAGE = 64  # usage error or a refusal (EX_USAGE)
+EXIT_TOOL = 69  # git or gh failed (EX_UNAVAILABLE)
+EXIT_INTERNAL = 70  # a bug in lane itself (EX_SOFTWARE)
 
 SCHEMA = 1
 MANIFEST_NAME = "lane.json"
@@ -157,12 +176,23 @@ _CAPS = {"fetch": 300.0, "worktree-add": 900.0, "git": 30.0, "gh": 60.0}
 
 # Variables that would point git at some other repository, index or object store.
 _STRIP_ENV = (
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
 )
 _FORCED_ENV = {
-    "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C", "GIT_PAGER": "cat", "GH_PROMPT_DISABLED": "1",
-    "GH_PAGER": "cat", "NO_COLOR": "1", "GH_NO_UPDATE_NOTIFIER": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+    "LC_ALL": "C",
+    "GIT_PAGER": "cat",
+    "GH_PROMPT_DISABLED": "1",
+    "GH_PAGER": "cat",
+    "NO_COLOR": "1",
+    "GH_NO_UPDATE_NOTIFIER": "1",
     "GH_NO_EXTENSION_UPDATE_NOTIFIER": "1",
 }
 
@@ -171,7 +201,9 @@ _SHA = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _REV = re.compile(r"^(?:[0-9a-f]{40}|[A-Za-z0-9][A-Za-z0-9._/-]*)(?:\^\{commit\})?$")
 _GH_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _GH_FIELDS = frozenset({"headRefOid", "headRefName", "state", "isCrossRepository"})
-_REVPARSE_SOLO = frozenset({"--git-dir", "--absolute-git-dir", "--git-common-dir", "--show-toplevel"})
+_REVPARSE_SOLO = frozenset(
+    {"--git-dir", "--absolute-git-dir", "--git-common-dir", "--show-toplevel"}
+)
 
 
 def valid_ref_name(ref: object) -> bool:
@@ -190,14 +222,20 @@ def _under_dir(path: str, root: str, fold: Callable[[str], str]) -> bool:
     return p != r and p.startswith(r.rstrip(os.sep) + os.sep)
 
 
-def _dest_ok(path: str, write_root: "str | None", fold: Callable[[str], str]) -> bool:
+def _dest_ok(path: str, write_root: str | None, fold: Callable[[str], str]) -> bool:
     """A worktree destination: absolute, not an option, inside the write root (and not the root)."""
-    if not path or path.startswith("-") or "\x00" in path or "\n" in path or not os.path.isabs(path):
+    if (
+        not path
+        or path.startswith("-")
+        or "\x00" in path
+        or "\n" in path
+        or not os.path.isabs(path)
+    ):
         return False
     return write_root is not None and _under_dir(path, write_root, fold)
 
 
-def _worktree_add_ok(a: Sequence[str], write_root: "str | None", fold: Callable[[str], str]) -> bool:
+def _worktree_add_ok(a: Sequence[str], write_root: str | None, fold: Callable[[str], str]) -> bool:
     """Exactly three shapes:  -b BRANCH PATH SHA | PATH BRANCH | --detach PATH SHA."""
     if len(a) == 4 and a[0] == "-b":
         return valid_ref_name(a[1]) and _dest_ok(a[2], write_root, fold) and bool(_SHA.match(a[3]))
@@ -209,16 +247,25 @@ def _worktree_add_ok(a: Sequence[str], write_root: "str | None", fold: Callable[
 
 
 def _under_origin_refs(name: str) -> bool:
-    return (name.startswith("refs/heads/") or name.startswith("refs/remotes/origin/")) and valid_ref_name(name)
+    return (
+        name.startswith("refs/heads/") or name.startswith("refs/remotes/origin/")
+    ) and valid_ref_name(name)
 
 
-def _git_allowed(args: Sequence[str], write_root: "str | None", fold: Callable[[str], str]) -> "str | None":
+def _git_allowed(
+    args: Sequence[str], write_root: str | None, fold: Callable[[str], str]
+) -> str | None:
     """The timeout key for an allowed git command, else None."""
     if not args:
         return None
     sub, rest = args[0], list(args[1:])
     if sub == "fetch":
-        ok = len(rest) == 3 and rest[0] == "--no-tags" and rest[1] == "origin" and valid_ref_name(rest[2])
+        ok = (
+            len(rest) == 3
+            and rest[0] == "--no-tags"
+            and rest[1] == "origin"
+            and valid_ref_name(rest[2])
+        )
         return "fetch" if ok else None
     if sub == "worktree":
         if rest == ["list", "--porcelain"]:
@@ -233,15 +280,23 @@ def _git_allowed(args: Sequence[str], write_root: "str | None", fold: Callable[[
             tail = rest[1:]
             if tail[:1] in (["-q"], ["--quiet"]):
                 tail = tail[1:]
-            if len(tail) == 1 and _REV.match(tail[0]) and ".." not in tail[0] and "//" not in tail[0]:
+            if (
+                len(tail) == 1
+                and _REV.match(tail[0])
+                and ".." not in tail[0]
+                and "//" not in tail[0]
+            ):
                 return "git"
         return None
     if sub == "show-ref":
         ok = len(rest) == 3 and rest[:2] == ["--verify", "--quiet"] and _under_origin_refs(rest[2])
         return "git" if ok else None
     if sub == "for-each-ref":
-        ok = (len(rest) >= 2 and rest[0] == "--format=%(refname)"
-              and all(_under_origin_refs(p) for p in rest[1:]))
+        ok = (
+            len(rest) >= 2
+            and rest[0] == "--format=%(refname)"
+            and all(_under_origin_refs(p) for p in rest[1:])
+        )
         return "git" if ok else None
     if sub == "config":
         return "git" if rest == ["--get", "remote.origin.url"] else None
@@ -252,17 +307,27 @@ def _gh_allowed(args: Sequence[str]) -> bool:
     """gh pr view N --repo OWNER/REPO --json FIELD[,FIELD...]  (the two flags in either order)."""
     if len(args) != 7 or list(args[:2]) != ["pr", "view"]:
         return False
-    if not (args[2].isdigit() and args[2].isascii() and 1 <= len(args[2]) <= 9 and int(args[2]) > 0):
+    if not (
+        args[2].isdigit() and args[2].isascii() and 1 <= len(args[2]) <= 9 and int(args[2]) > 0
+    ):
         return False
     pairs = {args[3]: args[4], args[5]: args[6]}
     if set(pairs) != {"--repo", "--json"}:
         return False
     fields = pairs["--json"].split(",")
-    return bool(_GH_REPO.match(pairs["--repo"])) and all(f in _GH_FIELDS for f in fields) and len(set(fields)) == len(fields)
+    return (
+        bool(_GH_REPO.match(pairs["--repo"]))
+        and all(f in _GH_FIELDS for f in fields)
+        and len(set(fields)) == len(fields)
+    )
 
 
-def check_allowed(argv: Sequence[str], *, write_root: "str | os.PathLike[str] | None" = None,
-                  fold: "Callable[[str], str] | None" = None) -> float:
+def check_allowed(
+    argv: Sequence[str],
+    *,
+    write_root: str | os.PathLike[str] | None = None,
+    fold: Callable[[str], str] | None = None,
+) -> float:
     """Return the timeout cap (seconds) when `argv` is an allowlisted command, else raise
     CommandRefused.  `argv[0]` must be the bare name `git` or `gh`.  A `worktree add` is allowed
     only with a destination strictly inside `write_root`, and is refused when no root is given."""
@@ -270,7 +335,7 @@ def check_allowed(argv: Sequence[str], *, write_root: "str | os.PathLike[str] | 
         raise CommandRefused("empty, non-string or NUL-bearing command")
     fold = fold or (lambda s: s)
     root = os.fspath(write_root) if write_root is not None else None
-    key: "str | None" = None
+    key: str | None = None
     if argv[0] == "git":
         key = _git_allowed(argv[1:], root, fold)
     elif argv[0] == "gh":
@@ -286,7 +351,7 @@ def _child_env(base: Mapping[str, str]) -> dict:
     return env
 
 
-def _kill_group(proc: "subprocess.Popen") -> None:
+def _kill_group(proc: subprocess.Popen) -> None:
     try:
         os.killpg(proc.pid, signal.SIGKILL)  # start_new_session makes the pgid equal the pid
     except OSError:
@@ -296,12 +361,20 @@ def _kill_group(proc: "subprocess.Popen") -> None:
             pass
 
 
-def default_exec(argv: Sequence[str], cwd: "str | None", env: Mapping[str, str], timeout: float) -> D.CmdResult:
+def default_exec(
+    argv: Sequence[str], cwd: str | None, env: Mapping[str, str], timeout: float
+) -> D.CmdResult:
     """Start the process.  Only `Runner` calls this, and only after `check_allowed`."""
     try:
         proc = subprocess.Popen(
-            list(argv), cwd=cwd, env=dict(env), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, start_new_session=True)
+            list(argv),
+            cwd=cwd,
+            env=dict(env),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
     except OSError as exc:
         return D.CmdResult(None, error=f"{type(exc).__name__}: {exc}")
     try:
@@ -313,7 +386,9 @@ def default_exec(argv: Sequence[str], cwd: "str | None", env: Mapping[str, str],
         except Exception:  # noqa: BLE001 - already dead; reaping is best effort
             pass
         return D.CmdResult(None, timed_out=True)
-    return D.CmdResult(proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace"))
+    return D.CmdResult(
+        proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+    )
 
 
 class Runner:
@@ -325,14 +400,22 @@ class Runner:
     removed, so an inherited variable cannot redirect a command at another repository.
     """
 
-    def __init__(self, env: Mapping[str, str], *, write_root: "str | os.PathLike[str] | None" = None,
-                 fold: "Callable[[str], str] | None" = None, exec_fn: "ExecFn | None" = None) -> None:
+    def __init__(
+        self,
+        env: Mapping[str, str],
+        *,
+        write_root: str | os.PathLike[str] | None = None,
+        fold: Callable[[str], str] | None = None,
+        exec_fn: ExecFn | None = None,
+    ) -> None:
         self._env = _child_env(env)
         self._write_root = os.fspath(write_root) if write_root is not None else None
         self._fold = fold or (lambda s: s)
         self._exec = exec_fn or default_exec
 
-    def __call__(self, argv: Sequence[str], cwd: "str | os.PathLike[str] | None" = None) -> D.CmdResult:
+    def __call__(
+        self, argv: Sequence[str], cwd: str | os.PathLike[str] | None = None
+    ) -> D.CmdResult:
         cap = check_allowed(argv, write_root=self._write_root, fold=self._fold)
         full = list(argv)
         if full[0] == "git":
@@ -342,12 +425,17 @@ class Runner:
 
 # --------------------------------------------------------------------------- resolving inputs
 
+
 def _loose(text: str) -> str:
     return re.sub(r"[.\-]", "", text.lower())
 
 
-def _app_keys(app: L.App) -> "set[str]":
-    return {k.lower() for k in (app.name, app.integration_dir_name, app.lane_dir, app.prefix, app.acronym) if k}
+def _app_keys(app: L.App) -> set[str]:
+    return {
+        k.lower()
+        for k in (app.name, app.integration_dir_name, app.lane_dir, app.prefix, app.acronym)
+        if k
+    }
 
 
 def _app_line(app: L.App) -> str:
@@ -371,14 +459,16 @@ def resolve_app(registry: L.Registry, query: str) -> L.App:
     if not hits:
         loose = _loose(q)
         hits = [a for a in registry.apps if loose in {_loose(k) for k in _app_keys(a)}]
-    unique: "list[L.App]" = []
+    unique: list[L.App] = []
     for a in hits:
         if a not in unique:
             unique.append(a)
     if len(unique) == 1:
         return unique[0]
     if unique:
-        raise Refusal(f"app {q!r} is ambiguous; it matches:\n" + "\n".join(_app_line(a) for a in unique))
+        raise Refusal(
+            f"app {q!r} is ambiguous; it matches:\n" + "\n".join(_app_line(a) for a in unique)
+        )
     near = [a for a in registry.apps if any(ql in k or k in ql for k in _app_keys(a))]
     pool = near or list(registry.registered_apps) or list(registry.apps)
     raise Refusal(f"unknown app {q!r}; candidates:\n" + "\n".join(_app_line(a) for a in pool))
@@ -390,24 +480,34 @@ def resolve_seat(env: Mapping[str, str], registry: L.Registry) -> L.Seat:
     live = ", ".join(s.name for s in registry.seats if not s.retired)
     raw = (env.get(ENV_SEAT) or "").strip()
     if not raw:
-        raise Refusal(f"{ENV_SEAT} is not set.  Set it to your seat tag ({live}) and run lane again; "
-                      "lane never guesses a seat from a login, a path or a branch.")
+        raise Refusal(
+            f"{ENV_SEAT} is not set.  Set it to your seat tag ({live}) and run lane again; "
+            "lane never guesses a seat from a login, a path or a branch."
+        )
     seat = registry.seat_by_name(raw)
     if seat is None:
         shown = raw if len(raw) <= 40 else raw[:40] + "..."
-        raise Refusal(f"{ENV_SEAT}={shown!r} is not a seat tag in fleet-apps.json.  Known tags: {live}.")
+        raise Refusal(
+            f"{ENV_SEAT}={shown!r} is not a seat tag in fleet-apps.json.  Known tags: {live}."
+        )
     if seat.retired:
-        raise Refusal(f"seat {seat.name} is retired in fleet-apps.json, and lane never creates lanes for a "
-                      f"retired seat.  Set {ENV_SEAT} to your own seat tag ({live}).")
+        raise Refusal(
+            f"seat {seat.name} is retired in fleet-apps.json, and lane never creates lanes for a "
+            f"retired seat.  Set {ENV_SEAT} to your own seat tag ({live})."
+        )
     if not L.is_valid_slug(seat.suffix):
-        raise Refusal(f"seat {seat.name} has no usable folder name in fleet-apps.json (worktreeSuffix "
-                      f"{seat.suffix!r}).")
+        raise Refusal(
+            f"seat {seat.name} has no usable folder name in fleet-apps.json (worktreeSuffix "
+            f"{seat.suffix!r})."
+        )
     if not G.seat_owns_folder(seat, registry):
         owner = registry.seat_by_suffix(seat.suffix)
         owner_name = owner.name if owner is not None else "another seat"
-        raise Refusal(f"seat {seat.name} shares the folder name {seat.suffix!r} with {owner_name} in fleet-apps.json, "
-                      f"and that name belongs to {owner_name}, so a lane for {seat.name} would be {owner_name}'s "
-                      f"lane.  A seat gets lanes only under a worktreeSuffix of its own.")
+        raise Refusal(
+            f"seat {seat.name} shares the folder name {seat.suffix!r} with {owner_name} in fleet-apps.json, "
+            f"and that name belongs to {owner_name}, so a lane for {seat.name} would be {owner_name}'s "
+            f"lane.  A seat gets lanes only under a worktreeSuffix of its own."
+        )
     return seat
 
 
@@ -415,7 +515,9 @@ def branch_for(seat: L.Seat, slug: str) -> str:
     """<first branch prefix of the seat in the registry>/<slug>.  No prefix is a refusal."""
     prefix = seat.primary_branch_prefix()
     if not prefix or not valid_ref_name(prefix):
-        raise Refusal(f"seat {seat.name} has no branch prefix in fleet-apps.json, so lane cannot name a branch.")
+        raise Refusal(
+            f"seat {seat.name} has no branch prefix in fleet-apps.json, so lane cannot name a branch."
+        )
     try:
         L.validate_slug(slug)
     except L.LayoutError as exc:
@@ -423,23 +525,25 @@ def branch_for(seat: L.Seat, slug: str) -> str:
     return f"{prefix}/{slug}"
 
 
-def parse_base(text: "str | None") -> "tuple[str, str]":
+def parse_base(text: str | None) -> tuple[str, str]:
     """(branch, ref) for --base.  `origin/<branch>` and a bare `<branch>` both mean the branch on
     origin; the default is origin/main."""
     t = (text or "").strip() or f"origin/{DEFAULT_BASE_BRANCH}"
     for lead in ("refs/remotes/origin/", "origin/"):
         if t.startswith(lead):
-            t = t[len(lead):]
+            t = t[len(lead) :]
             break
     if not valid_ref_name(t):
-        raise Refusal(f"--base must be origin/<branch> or <branch> (a plain branch name on origin), got {text!r}")
+        raise Refusal(
+            f"--base must be origin/<branch> or <branch> (a plain branch name on origin), got {text!r}"
+        )
     return t, f"origin/{t}"
 
 
 _BOARD_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._#:/-]{0,63}$")
 
 
-def _clean_purpose(text: "str | None") -> "str | None":
+def _clean_purpose(text: str | None) -> str | None:
     if text is None:
         return None
     t = text.strip()
@@ -450,18 +554,21 @@ def _clean_purpose(text: "str | None") -> "str | None":
     return t
 
 
-def _clean_board(text: "str | None") -> "str | None":
+def _clean_board(text: str | None) -> str | None:
     if text is None:
         return None
     t = text.strip()
     if not t:
         return None
     if not _BOARD_RE.match(t):
-        raise Refusal(f"--board must look like an issue id such as AFC-123 (letters, digits, . _ # : / -, at most 64): {text!r}")
+        raise Refusal(
+            f"--board must look like an issue id such as AFC-123 (letters, digits, . _ # : / -, at most 64): {text!r}"
+        )
     return t
 
 
 # --------------------------------------------------------------------------- context and output
+
 
 @dataclass
 class Ctx:
@@ -469,7 +576,7 @@ class Ctx:
     registry: L.Registry
     roots: L.Roots
     clock: Callable[[], _dt.datetime]
-    exec_fn: "ExecFn | None"
+    exec_fn: ExecFn | None
     out: object
     err: object
 
@@ -482,14 +589,14 @@ class Ctx:
         # under the lanes root, so the runner's "inside the write root" test holds for a lane stored there.
         return L.logical_fold(self.roots)
 
-    def key(self, path: "str | os.PathLike[str]") -> str:
+    def key(self, path: str | os.PathLike[str]) -> str:
         return L.real_key(path, self.roots)
 
 
 def _iso(moment: _dt.datetime) -> str:
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=_dt.timezone.utc)
-    return moment.astimezone(_dt.timezone.utc).replace(microsecond=0).isoformat()
+        moment = moment.replace(tzinfo=_dt.UTC)
+    return moment.astimezone(_dt.UTC).replace(microsecond=0).isoformat()
 
 
 def _why(res: D.CmdResult) -> str:
@@ -499,11 +606,16 @@ def _why(res: D.CmdResult) -> str:
     if res.error:
         return D.redact_text(res.error)[:200]
     lines = [ln.strip() for ln in res.err.splitlines() if ln.strip()]
-    pick = next((ln for ln in reversed(lines) if ln.startswith(("fatal:", "error:", "ERROR"))), lines[-1] if lines else "")
+    pick = next(
+        (ln for ln in reversed(lines) if ln.startswith(("fatal:", "error:", "ERROR"))),
+        lines[-1] if lines else "",
+    )
     return D.redact_text(pick)[:200] or f"exit {res.rc}"
 
 
-def _emit(ctx: Ctx, as_json: bool, path: Path, manifest: Mapping[str, object], **flags: object) -> None:
+def _emit(
+    ctx: Ctx, as_json: bool, path: Path, manifest: Mapping[str, object], **flags: object
+) -> None:
     if as_json:
         body = dict(manifest)
         body["path"] = str(path)
@@ -515,17 +627,20 @@ def _emit(ctx: Ctx, as_json: bool, path: Path, manifest: Mapping[str, object], *
 
 # --------------------------------------------------------------------------- shared checks
 
-def _in_tree(ctx: Ctx, path: "str | os.PathLike[str]", root: "str | os.PathLike[str]") -> bool:
+
+def _in_tree(ctx: Ctx, path: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
     a, b = ctx.key(path), ctx.key(root)
     return a == b or a.startswith(b.rstrip(os.sep) + os.sep)
 
 
 def _external_note(ctx: Ctx) -> str:
     roots = ctx.roots.external_lanes_roots
-    return ", ".join(str(r) for r in roots) if roots else "nowhere (FLEET_LANES_EXTERNAL_ROOT is off)"
+    return (
+        ", ".join(str(r) for r in roots) if roots else "nowhere (FLEET_LANES_EXTERNAL_ROOT is off)"
+    )
 
 
-def _link_between(path: "str | os.PathLike[str]", write_root: "str | os.PathLike[str]") -> "list[str]":
+def _link_between(path: str | os.PathLike[str], write_root: str | os.PathLike[str]) -> list[str]:
     """The symlinks among the folders between `write_root` and `path` (the lane itself is not one), outermost first.
     Lexical, so it names the spelling the caller used."""
     root = os.fspath(write_root)
@@ -543,32 +658,40 @@ def _link_between(path: "str | os.PathLike[str]", write_root: "str | os.PathLike
     return found
 
 
-def _link_hint(ctx: Ctx, path: "str | os.PathLike[str]", write_root: "str | os.PathLike[str]") -> str:
+def _link_hint(ctx: Ctx, path: str | os.PathLike[str], write_root: str | os.PathLike[str]) -> str:
     """One extra sentence when a symlinked folder is why a path is outside the map; empty otherwise."""
     for link in _link_between(path, write_root):
         real = os.path.realpath(link)
-        return (f"  {link} is a symlink to {real}; a lanes folder may be a symlink only onto the external lanes "
-                f"disk ({_external_note(ctx)}).")
+        return (
+            f"  {link} is a symlink to {real}; a lanes folder may be a symlink only onto the external lanes "
+            f"disk ({_external_note(ctx)})."
+        )
     return ""
 
 
-def _check_links(ctx: Ctx, path: "str | os.PathLike[str]", write_root: "str | os.PathLike[str]") -> None:
+def _check_links(
+    ctx: Ctx, path: str | os.PathLike[str], write_root: str | os.PathLike[str]
+) -> None:
     """Refuse, in words, when a folder between the write root and the lane is a symlink that cannot hold a
     lane: dangling (the external disk is not mounted, or the folder is gone: lane would create folders on the
     wrong disk or fail halfway) or pointing anywhere but the external lanes disk."""
     for link in _link_between(path, write_root):
         real = os.path.realpath(link)
         if not os.path.exists(real):
-            raise Refusal(f"{link} is a symlink to {os.readlink(link)}, which does not exist.  Is the external disk "
-                          f"mounted?  Lane does not create folders through a broken link; mount the disk (or fix "
-                          f"the link) and run lane again.")
+            raise Refusal(
+                f"{link} is a symlink to {os.readlink(link)}, which does not exist.  Is the external disk "
+                f"mounted?  Lane does not create folders through a broken link; mount the disk (or fix "
+                f"the link) and run lane again."
+            )
         key, root = ctx.key(real), ctx.key(write_root)
         if not (key == root or key.startswith(root + os.sep)):
-            raise Refusal(f"{link} is a symlink to {real}, which is not under the lanes root or the external lanes "
-                          f"disk ({_external_note(ctx)}).")
+            raise Refusal(
+                f"{link} is a symlink to {real}, which is not under the lanes root or the external lanes "
+                f"disk ({_external_note(ctx)})."
+            )
 
 
-def _plan_path(ctx: Ctx, app: L.App, seat: L.Seat, slug: str, branch: str) -> "tuple[Path, Path]":
+def _plan_path(ctx: Ctx, app: L.App, seat: L.Seat, slug: str, branch: str) -> tuple[Path, Path]:
     """(lane path, write root).  Refuses a path that is not a conforming spot in the map."""
     roots, registry = ctx.roots, ctx.registry
     try:
@@ -580,27 +703,40 @@ def _plan_path(ctx: Ctx, app: L.App, seat: L.Seat, slug: str, branch: str) -> "t
     got = L.classify_location(path, roots)
     write_root = roots.apps_root if flat else roots.lanes_root
     if got is not want:
-        raise Refusal(f"{path} is outside the lane map (it classifies as {got}, a new lane must be {want}); "
-                      "check FLEET_LANES_ROOT and FLEET_LAYOUT." + _link_hint(ctx, path, write_root))
+        raise Refusal(
+            f"{path} is outside the lane map (it classifies as {got}, a new lane must be {want}); "
+            "check FLEET_LANES_ROOT and FLEET_LAYOUT." + _link_hint(ctx, path, write_root)
+        )
     if _in_tree(ctx, write_root, roots.code_root):
-        raise Refusal(f"the lanes folder {write_root} is inside {roots.code_root}; nothing new may be added "
-                      "under ~/Code, so check FLEET_LANES_ROOT.")
+        raise Refusal(
+            f"the lanes folder {write_root} is inside {roots.code_root}; nothing new may be added "
+            "under ~/Code, so check FLEET_LANES_ROOT."
+        )
     # The name rule is shared with the temp-checkout guard (guard.lane_name_reads_back), so the lane
     # a deny reason names is always one this accepts.  The path check after it also catches a
     # prefix folder that resolves somewhere else.
     res = L.explain_lane_name(path, registry, roots)
-    if (not G.lane_name_reads_back(app.prefix, seat.suffix, slug, registry, flat=flat)
-            or res.verdict is not L.NameVerdict.CONFORMING or res.app is None or res.app.prefix != app.prefix
-            or res.seat != seat.suffix or res.slug != slug):
-        raise Refusal(f"slug {slug!r} would make the lane name {path.name!r} read as seat {res.seat!r} and "
-                      f"slug {res.slug!r}, not seat {seat.suffix!r}.  Pick a slug that does not start with "
-                      "a seat name.")
+    if (
+        not G.lane_name_reads_back(app.prefix, seat.suffix, slug, registry, flat=flat)
+        or res.verdict is not L.NameVerdict.CONFORMING
+        or res.app is None
+        or res.app.prefix != app.prefix
+        or res.seat != seat.suffix
+        or res.slug != slug
+    ):
+        raise Refusal(
+            f"slug {slug!r} would make the lane name {path.name!r} read as seat {res.seat!r} and "
+            f"slug {res.slug!r}, not seat {seat.suffix!r}.  Pick a slug that does not start with "
+            "a seat name."
+        )
     if L.check_branch_name(branch, registry) is not L.BranchVerdict.CONFORMING:
         raise Refusal(f"branch {branch!r} does not conform to the registry branch prefixes.")
     return path, Path(write_root)
 
 
-def _plan_review_path(ctx: Ctx, app: L.App, seat: L.Seat, pr: int, *, own: bool = False) -> "tuple[Path, Path]":
+def _plan_review_path(
+    ctx: Ctx, app: L.App, seat: L.Seat, pr: int, *, own: bool = False
+) -> tuple[Path, Path]:
     """(review path, lanes root).  The plain form is lanes/<Repo>/review-pr-<n>; `own` asks for the
     review-pr-<n>-<seat> form a second seat gets.  The destination must classify as a review checkout,
     and folders may be created anywhere at or below the lanes root."""
@@ -611,14 +747,20 @@ def _plan_review_path(ctx: Ctx, app: L.App, seat: L.Seat, pr: int, *, own: bool 
         raise Refusal(str(exc))
     got = L.classify_location(path, roots)
     if got is not L.LocationClass.REVIEW:
-        raise Refusal(f"{path} is outside the lanes root (it classifies as {got}); check FLEET_LANES_ROOT."
-                      + _link_hint(ctx, path, roots.lanes_root))
+        raise Refusal(
+            f"{path} is outside the lanes root (it classifies as {got}); check FLEET_LANES_ROOT."
+            + _link_hint(ctx, path, roots.lanes_root)
+        )
     if _in_tree(ctx, roots.lanes_root, roots.code_root):
-        raise Refusal(f"the lanes folder {roots.lanes_root} is inside {roots.code_root}; check FLEET_LANES_ROOT.")
+        raise Refusal(
+            f"the lanes folder {roots.lanes_root} is inside {roots.code_root}; check FLEET_LANES_ROOT."
+        )
     return path, Path(roots.lanes_root)
 
 
-def _choose_review_path(ctx: Ctx, run: Runner, app: L.App, seat: L.Seat, pr: int) -> "tuple[Path, Path]":
+def _choose_review_path(
+    ctx: Ctx, run: Runner, app: L.App, seat: L.Seat, pr: int
+) -> tuple[Path, Path]:
     """Which review folder this seat uses for PR `pr`: the plain review-pr-<n>, unless another seat's
     manifest is on it, in which case review-pr-<n>-<seat>.  A rerun finds its own folder first, so
     the answer does not change once a seat has one.  Reads only; nothing is written."""
@@ -656,8 +798,10 @@ def _guard_destination(ctx: Ctx, tree: Path, path: Path, write_root: Path) -> No
         raise Refusal(f"{path} is inside the integration tree {tree}.")
     _check_links(ctx, path, write_root)
     if not write_root.is_dir() and not write_root.parent.is_dir():
-        raise Refusal(f"{write_root.parent} does not exist.  Lane creates folders only at or below {write_root}, "
-                      "so create the parent first.")
+        raise Refusal(
+            f"{write_root.parent} does not exist.  Lane creates folders only at or below {write_root}, "
+            "so create the parent first."
+        )
     key, root = ctx.key(path), ctx.key(write_root)
     parent = Path(os.path.realpath(path)).parent
     while ctx.key(parent) != root and ctx.key(parent).startswith(root + os.sep):
@@ -668,53 +812,68 @@ def _guard_destination(ctx: Ctx, tree: Path, path: Path, write_root: Path) -> No
         raise Refusal(f"{path} is not inside {write_root}.")
 
 
-def _worktrees(run: Runner, tree: Path) -> "list[D.WorktreeRecord]":
+def _worktrees(run: Runner, tree: Path) -> list[D.WorktreeRecord]:
     res = run(["git", "worktree", "list", "--porcelain"], cwd=tree)
     if not res.ok:
         raise ToolFailure(f"git worktree list failed in {tree}: {_why(res)}")
     return D.parse_worktree_porcelain(res.out)
 
 
-def _path_state(ctx: Ctx, run: Runner, tree: Path, path: Path, branch: "str | None") -> str:
+def _path_state(ctx: Ctx, run: Runner, tree: Path, path: Path, branch: str | None) -> str:
     """'new' when nothing is at `path`, 'same' when it is already the worktree asked for (on
     `branch`, or detached when `branch` is None).  Anything else is a Refusal; nothing is touched."""
     want = ctx.key(path)
     rec = next((r for r in _worktrees(run, tree) if ctx.key(r.path) == want), None)
     if rec is None:
         if os.path.lexists(path):
-            raise Refusal(f"{path} already exists and is not a worktree of {tree}; lane does not touch it.")
+            raise Refusal(
+                f"{path} already exists and is not a worktree of {tree}; lane does not touch it."
+            )
         return "new"
     if rec.prunable is not None or not os.path.isdir(path):
-        raise Refusal(f"{tree} lists a worktree at {path} whose folder is missing.  Run `git worktree prune` "
-                      "there yourself; lane never prunes or forces.")
+        raise Refusal(
+            f"{tree} lists a worktree at {path} whose folder is missing.  Run `git worktree prune` "
+            "there yourself; lane never prunes or forces."
+        )
     on = "detached HEAD" if rec.detached else f"branch {rec.branch}"
     same = rec.detached if branch is None else (not rec.detached and rec.branch == branch)
     if not same:
-        raise Refusal(f"{path} is already a worktree of {tree} on {on}, not on "
-                      f"{'a detached HEAD' if branch is None else 'branch ' + branch}; lane does not touch it.")
+        raise Refusal(
+            f"{path} is already a worktree of {tree} on {on}, not on "
+            f"{'a detached HEAD' if branch is None else 'branch ' + branch}; lane does not touch it."
+        )
     return "same"
 
 
-def _legacy_lane(ctx: Ctx, run: Runner, tree: Path, path: Path, branch: str) -> "Path | None":
+def _legacy_lane(ctx: Ctx, run: Runner, tree: Path, path: Path, branch: str) -> Path | None:
     """A checkout of `branch` that sits in an old folder and would migrate to exactly `path`."""
     want = ctx.key(path)
     for rec in _worktrees(run, tree):
-        if rec.detached or rec.branch != branch or rec.prunable is not None or not os.path.isdir(rec.path):
+        if (
+            rec.detached
+            or rec.branch != branch
+            or rec.prunable is not None
+            or not os.path.isdir(rec.path)
+        ):
             continue
         if ctx.key(rec.path) == want:
             continue
         res = L.explain_layout(rec.path, ctx.registry, ctx.roots)
-        if res.status is L.LayoutStatus.LEGACY_MIGRATE and res.target is not None and ctx.key(res.target) == want:
+        if (
+            res.status is L.LayoutStatus.LEGACY_MIGRATE
+            and res.target is not None
+            and ctx.key(res.target) == want
+        ):
             return Path(rec.path)
     return None
 
 
-def _git_dir_of(run: Runner, path: Path) -> "Path | None":
+def _git_dir_of(run: Runner, path: Path) -> Path | None:
     res = run(["git", "rev-parse", "--absolute-git-dir"], cwd=path)
     return Path(res.out.strip()) if res.ok and res.out.strip() else None
 
 
-def _read_manifest(run: Runner, path: Path) -> "dict | None":
+def _read_manifest(run: Runner, path: Path) -> dict | None:
     gd = _git_dir_of(run, path)
     if gd is None:
         return None
@@ -726,7 +885,7 @@ def _read_manifest(run: Runner, path: Path) -> "dict | None":
     return data if isinstance(data, dict) else None
 
 
-def _common_dir(run: Runner, tree: Path) -> "Path | None":
+def _common_dir(run: Runner, tree: Path) -> Path | None:
     """The integration tree's git common dir (its .git), resolved; None if git cannot say."""
     res = run(["git", "rev-parse", "--git-common-dir"], cwd=tree)
     out = res.out.strip()
@@ -750,7 +909,9 @@ def _repo_lock(ctx: Ctx, run: Runner, tree: Path) -> Iterator[None]:
     told = False
     while True:
         try:
-            fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o644)
+            fd = os.open(
+                str(lock_path), os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o644
+            )
         except OSError as exc:
             raise ToolFailure(f"cannot open the lane lock {lock_path}: {exc}")
         locked = False
@@ -767,8 +928,10 @@ def _repo_lock(ctx: Ctx, run: Runner, tree: Path) -> Iterator[None]:
                     ctx.say(f"waiting for another lane new in {tree} to finish")
                     told = True
                 if time.monotonic() >= deadline:
-                    raise ToolFailure(f"another lane new held the lock on {tree} for over {int(LOCK_WAIT)} "
-                                      f"seconds ({lock_path}).  Run lane again when it is done.")
+                    raise ToolFailure(
+                        f"another lane new held the lock on {tree} for over {int(LOCK_WAIT)} "
+                        f"seconds ({lock_path}).  Run lane again when it is done."
+                    )
                 time.sleep(_LOCK_POLL)
             try:
                 current = os.path.samestat(os.fstat(fd), os.stat(str(lock_path)))
@@ -779,14 +942,16 @@ def _repo_lock(ctx: Ctx, run: Runner, tree: Path) -> Iterator[None]:
             raise
         if locked and current:
             break
-        os.close(fd)        # someone replaced or removed the file while we waited: lock the new one
+        os.close(fd)  # someone replaced or removed the file while we waited: lock the new one
     try:
         yield
     finally:
         os.close(fd)
 
 
-def _confirm_added(ctx: Ctx, run: Runner, tree: Path, path: Path, branch: "str | None", sha: "str | None") -> None:
+def _confirm_added(
+    ctx: Ctx, run: Runner, tree: Path, path: Path, branch: str | None, sha: str | None
+) -> None:
     """After `git worktree add` said yes, check that the lane really is there before printing it:
     registered, not prunable, a folder on disk, on `branch` (detached when None) and at `sha` when
     one is given.  Anything else is exit 69, and nothing is removed."""
@@ -806,11 +971,13 @@ def _confirm_added(ctx: Ctx, run: Runner, tree: Path, path: Path, branch: "str |
     elif sha is not None and rec.head != sha:
         problem = f"its HEAD is {str(rec.head)[:9]}, not {sha[:9]}"
     if problem:
-        raise ToolFailure(f"git worktree add reported success, but {path} is not the checkout that was asked for "
-                          f"({problem}).  Lane removes nothing; look at `git -C {tree} worktree list` and run lane again.")
+        raise ToolFailure(
+            f"git worktree add reported success, but {path} is not the checkout that was asked for "
+            f"({problem}).  Lane removes nothing; look at `git -C {tree} worktree list` and run lane again."
+        )
 
 
-def _owner_mismatch(manifest: Mapping[str, object], seat: L.Seat) -> "str | None":
+def _owner_mismatch(manifest: Mapping[str, object], seat: L.Seat) -> str | None:
     """The other seat's name when the manifest says the checkout is not `seat`'s, else None."""
     tag, suffix = manifest.get("tag"), manifest.get("seat")
     if isinstance(tag, str) and tag.strip():
@@ -822,19 +989,23 @@ def _owner_mismatch(manifest: Mapping[str, object], seat: L.Seat) -> "str | None
     return shown[:40] if mine != theirs else None
 
 
-def _refuse_other_owner(run: Runner, path: Path, seat: L.Seat) -> "dict | None":
+def _refuse_other_owner(run: Runner, path: Path, seat: L.Seat) -> dict | None:
     """The manifest of an existing checkout, after making sure it is not another seat's."""
     manifest = _read_manifest(run, path)
     if manifest is None:
         return None
     other = _owner_mismatch(manifest, seat)
     if other is not None:
-        raise Refusal(f"{path} already exists, and its {MANIFEST_NAME} says it belongs to {other}, not {seat.name}.  "
-                      "Lane never hands one seat's checkout to another.")
+        raise Refusal(
+            f"{path} already exists, and its {MANIFEST_NAME} says it belongs to {other}, not {seat.name}.  "
+            "Lane never hands one seat's checkout to another."
+        )
     return manifest
 
 
-def _write_manifest(ctx: Ctx, run: Runner, tree: Path, path: Path, manifest: Mapping[str, object]) -> None:
+def _write_manifest(
+    ctx: Ctx, run: Runner, tree: Path, path: Path, manifest: Mapping[str, object]
+) -> None:
     """Write lane.json atomically into the new worktree's private git dir, and only there.  A
     problem becomes a warning: the lane itself exists and is usable."""
     try:
@@ -871,7 +1042,7 @@ def _make_parent(ctx: Ctx, parent: Path, write_root: Path) -> None:
         raise ToolFailure(f"cannot create {parent}: {exc}")
 
 
-def _branch_state(run: Runner, tree: Path, branch: str) -> "tuple[bool, bool]":
+def _branch_state(run: Runner, tree: Path, branch: str) -> tuple[bool, bool]:
     """(exists locally, exists as a remote-tracking ref).  Raises Refusal if the name collides with
     another branch (a parent `claude` or children `claude/x/y`)."""
     pieces = branch.split("/")
@@ -879,26 +1050,42 @@ def _branch_state(run: Runner, tree: Path, branch: str) -> "tuple[bool, bool]":
         parent = "/".join(pieces[:i])
         res = run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{parent}"], cwd=tree)
         if res.ok:
-            raise Refusal(f"a branch named {parent!r} exists, which blocks {branch!r}; pick another slug.")
+            raise Refusal(
+                f"a branch named {parent!r} exists, which blocks {branch!r}; pick another slug."
+            )
         if res.rc != 1 or res.timed_out or res.error:
             raise ToolFailure(f"git show-ref failed in {tree}: {_why(res)}")
-    res = run(["git", "for-each-ref", "--format=%(refname)", f"refs/heads/{branch}",
-               f"refs/remotes/origin/{branch}"], cwd=tree)
+    res = run(
+        [
+            "git",
+            "for-each-ref",
+            "--format=%(refname)",
+            f"refs/heads/{branch}",
+            f"refs/remotes/origin/{branch}",
+        ],
+        cwd=tree,
+    )
     if not res.ok:
         raise ToolFailure(f"git for-each-ref failed in {tree}: {_why(res)}")
     names = [ln.strip() for ln in res.out.splitlines() if ln.strip()]
     local, tracking = f"refs/heads/{branch}" in names, f"refs/remotes/origin/{branch}" in names
-    children = [n for n in names if n not in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}")]
+    children = [
+        n for n in names if n not in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}")
+    ]
     if children:
-        raise Refusal(f"branches under {branch!r} exist (for example {children[0]}), which blocks it; pick another slug.")
+        raise Refusal(
+            f"branches under {branch!r} exist (for example {children[0]}), which blocks it; pick another slug."
+        )
     return local, tracking
 
 
 def _refuse_if_checked_out(run: Runner, tree: Path, branch: str) -> None:
     for rec in _worktrees(run, tree):
         if not rec.detached and rec.branch == branch:
-            raise Refusal(f"branch {branch} is already checked out at {rec.path}; a branch can live in one "
-                          "worktree at a time.")
+            raise Refusal(
+                f"branch {branch} is already checked out at {rec.path}; a branch can live in one "
+                "worktree at a time."
+            )
 
 
 def _fetch(run: Runner, tree: Path, ref: str) -> D.CmdResult:
@@ -909,7 +1096,7 @@ def _missing_remote_ref(res: D.CmdResult) -> bool:
     return res.rc not in (0, None) and "couldn't find remote ref" in res.err.lower()
 
 
-def _head_sha(run: Runner, cwd: Path, rev: str) -> "str | None":
+def _head_sha(run: Runner, cwd: Path, rev: str) -> str | None:
     res = run(["git", "rev-parse", "--verify", "-q", rev], cwd=cwd)
     sha = res.out.strip()
     return sha if res.ok and _SHA.match(sha) else None
@@ -917,11 +1104,14 @@ def _head_sha(run: Runner, cwd: Path, rev: str) -> "str | None":
 
 # --------------------------------------------------------------------------- lane new
 
+
 def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> int:
     slug = args.slug
     branch = branch_for(seat, slug)
     if args.reuse_branch and args.base:
-        raise Refusal("--base has no effect with --reuse-branch; the existing branch is used as it is.")
+        raise Refusal(
+            "--base has no effect with --reuse-branch; the existing branch is used as it is."
+        )
     base_branch, base_ref = parse_base(args.base)
     purpose, board = _clean_purpose(args.purpose), _clean_board(args.board)
     path, write_root = _plan_path(ctx, app, seat, slug, branch)
@@ -932,8 +1122,17 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
 
     def existing() -> int:
         manifest = _refuse_other_owner(run, path, seat) or {
-            "schema": SCHEMA, "tool": TOOL_NAME, "kind": "lane", "seat": seat.suffix, "tag": seat.name,
-            "app": app.name, "prefix": app.prefix, "lane_dir": app.lane_dir, "slug": slug, "branch": branch}
+            "schema": SCHEMA,
+            "tool": TOOL_NAME,
+            "kind": "lane",
+            "seat": seat.suffix,
+            "tag": seat.name,
+            "app": app.name,
+            "prefix": app.prefix,
+            "lane_dir": app.lane_dir,
+            "slug": slug,
+            "branch": branch,
+        }
         ctx.say(f"already exists, nothing changed: {path} (branch {branch})")
         _emit(ctx, args.json, path, manifest, existing=True)
         return EXIT_OK
@@ -951,12 +1150,26 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
     old = _legacy_lane(ctx, run, tree, path, branch) if (local or tracking) else None
     if old is not None:
         manifest = _refuse_other_owner(run, old, seat) or {
-            "schema": SCHEMA, "tool": TOOL_NAME, "kind": "lane", "seat": seat.suffix, "tag": seat.name,
-            "app": app.name, "prefix": app.prefix, "lane_dir": app.lane_dir, "slug": slug, "branch": branch}
+            "schema": SCHEMA,
+            "tool": TOOL_NAME,
+            "kind": "lane",
+            "seat": seat.suffix,
+            "tag": seat.name,
+            "app": app.name,
+            "prefix": app.prefix,
+            "lane_dir": app.lane_dir,
+            "slug": slug,
+            "branch": branch,
+        }
         moves = _in_tree(ctx, old, ctx.roots.lanes_root)
-        ctx.say(f"already exists in an old folder, nothing changed: {old} (branch {branch}).  "
-                + (f"The layout migration moves it to {path}." if moves
-                   else f"It stays there until it retires; a lane made today would be {path}."))
+        ctx.say(
+            f"already exists in an old folder, nothing changed: {old} (branch {branch}).  "
+            + (
+                f"The layout migration moves it to {path}."
+                if moves
+                else f"It stays there until it retires; a lane made today would be {path}."
+            )
+        )
         _emit(ctx, args.json, old, manifest, existing=True, legacy_location=True)
         return EXIT_OK
     if args.reuse_branch:
@@ -964,15 +1177,28 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
             _refuse_if_checked_out(run, tree, branch)
     elif local or tracking:
         where = "locally" if local else "on origin (as last fetched)"
-        raise Refusal(f"branch {branch} already exists {where}.  Pick another slug, or pass --reuse-branch to "
-                      "check that branch out in a new lane.")
+        raise Refusal(
+            f"branch {branch} already exists {where}.  Pick another slug, or pass --reuse-branch to "
+            "check that branch out in a new lane."
+        )
 
     created = _iso(ctx.clock())
-    manifest: "dict[str, object]" = {
-        "schema": SCHEMA, "tool": TOOL_NAME, "kind": "lane", "seat": seat.suffix, "tag": seat.name,
-        "app": app.name, "prefix": app.prefix, "lane_dir": app.lane_dir, "slug": slug, "branch": branch,
-        "base": None if args.reuse_branch else base_ref, "base_sha": None,
-        "purpose": purpose, "board": board, "created_at": created,
+    manifest: dict[str, object] = {
+        "schema": SCHEMA,
+        "tool": TOOL_NAME,
+        "kind": "lane",
+        "seat": seat.suffix,
+        "tag": seat.name,
+        "app": app.name,
+        "prefix": app.prefix,
+        "lane_dir": app.lane_dir,
+        "slug": slug,
+        "branch": branch,
+        "base": None if args.reuse_branch else base_ref,
+        "base_sha": None,
+        "purpose": purpose,
+        "board": board,
+        "created_at": created,
     }
 
     # The full remote-tracking ref, never the DWIM name origin/<branch>: a local branch or a tag
@@ -983,11 +1209,19 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
         manifest["base_sha"] = known
         ctx.say(f"dry run, nothing changed.  Would create {path}")
         if args.reuse_branch:
-            ctx.say(f"  branch {branch} (existing, --reuse-branch)" + ("" if local or tracking else
-                    "; not on disk, so a real run would fetch it from origin and refuse if it is not there"))
+            ctx.say(
+                f"  branch {branch} (existing, --reuse-branch)"
+                + (
+                    ""
+                    if local or tracking
+                    else "; not on disk, so a real run would fetch it from origin and refuse if it is not there"
+                )
+            )
         else:
-            ctx.say(f"  branch {branch} from {base_ref} "
-                    f"({known[:9] if known else 'not fetched yet; a real run fetches it first'})")
+            ctx.say(
+                f"  branch {branch} from {base_ref} "
+                f"({known[:9] if known else 'not fetched yet; a real run fetches it first'})"
+            )
         ctx.say(f"  repo {tree}")
         _emit(ctx, args.json, path, manifest, dry_run=True)
         return EXIT_OK
@@ -1001,7 +1235,9 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
             res = _fetch(run, tree, branch)
             if _missing_remote_ref(res):
                 if not local:
-                    raise Refusal(f"branch {branch} is not on origin and not local; drop --reuse-branch to create it.")
+                    raise Refusal(
+                        f"branch {branch} is not on origin and not local; drop --reuse-branch to create it."
+                    )
             elif not res.ok:
                 raise ToolFailure(f"git fetch of {branch} failed: {_why(res)}")
             local, tracking = _branch_state(run, tree, branch)
@@ -1015,17 +1251,24 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
                 raise ToolFailure(f"git fetch of {base_ref} failed: {_why(res)}")
             start = _head_sha(run, tree, base_rev)
             if start is None:
-                raise ToolFailure(f"{base_ref} did not resolve after the fetch; is {base_branch!r} a branch on origin?")
+                raise ToolFailure(
+                    f"{base_ref} did not resolve after the fetch; is {base_branch!r} a branch on origin?"
+                )
             probe = _fetch(run, tree, branch)
             if probe.ok:
-                raise Refusal(f"branch {branch} already exists on origin.  Pick another slug, or pass --reuse-branch.")
+                raise Refusal(
+                    f"branch {branch} already exists on origin.  Pick another slug, or pass --reuse-branch."
+                )
             if not _missing_remote_ref(probe):
                 raise ToolFailure(f"could not check origin for branch {branch}: {_why(probe)}")
             manifest["base_sha"] = start
 
         _make_parent(ctx, path.parent, write_root)
-        argv = (["git", "worktree", "add", str(path), branch] if args.reuse_branch
-                else ["git", "worktree", "add", "-b", branch, str(path), start])
+        argv = (
+            ["git", "worktree", "add", str(path), branch]
+            if args.reuse_branch
+            else ["git", "worktree", "add", "-b", branch, str(path), start]
+        )
         added = run(argv, cwd=tree)
         if not added.ok:
             raise ToolFailure(f"git worktree add failed: {_why(added)}")
@@ -1034,19 +1277,25 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
             manifest["base_sha"] = _head_sha(run, path, "HEAD")
         _write_manifest(ctx, run, tree, path, manifest)
     ctx.say(f"created {path}")
-    ctx.say(f"  branch {branch}" + ("" if args.reuse_branch else f" from {base_ref} at {str(start)[:9]}")
-            + f"; repo {tree}")
+    ctx.say(
+        f"  branch {branch}"
+        + ("" if args.reuse_branch else f" from {base_ref} at {str(start)[:9]}")
+        + f"; repo {tree}"
+    )
     _emit(ctx, args.json, path, manifest)
     return EXIT_OK
 
 
 # --------------------------------------------------------------------------- lane new --review
 
+
 def _new_review(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> int:
     pr = args.pr
     purpose, board = _clean_purpose(args.purpose), _clean_board(args.board)
     if not app.owner_repo or not _GH_REPO.match(app.owner_repo):
-        raise Refusal(f"{app.name} has no GitHub repo in the registry, so lane cannot look up PR {pr}.")
+        raise Refusal(
+            f"{app.name} has no GitHub repo in the registry, so lane cannot look up PR {pr}."
+        )
     _plain, lanes_root = _plan_review_path(ctx, app, seat, pr)
     tree = _integration_tree(ctx, app)
     run = Runner(ctx.env, write_root=lanes_root, fold=ctx.fold(), exec_fn=ctx.exec_fn)
@@ -1056,9 +1305,19 @@ def _new_review(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) ->
 
     def existing() -> int:
         manifest = _refuse_other_owner(run, path, seat) or {
-            "schema": SCHEMA, "tool": TOOL_NAME, "kind": "review", "seat": seat.suffix, "tag": seat.name,
-            "app": app.name, "prefix": app.prefix, "lane_dir": app.lane_dir, "pr": pr}
-        ctx.say(f"review checkout already exists, nothing changed (not updated to the PR's newest head): {path}")
+            "schema": SCHEMA,
+            "tool": TOOL_NAME,
+            "kind": "review",
+            "seat": seat.suffix,
+            "tag": seat.name,
+            "app": app.name,
+            "prefix": app.prefix,
+            "lane_dir": app.lane_dir,
+            "pr": pr,
+        }
+        ctx.say(
+            f"review checkout already exists, nothing changed (not updated to the PR's newest head): {path}"
+        )
         _emit(ctx, args.json, path, manifest, existing=True)
         return EXIT_OK
 
@@ -1066,24 +1325,49 @@ def _new_review(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) ->
         return existing()
 
     created_dt = ctx.clock()
-    manifest: "dict[str, object]" = {
-        "schema": SCHEMA, "tool": TOOL_NAME, "kind": "review", "seat": seat.suffix, "tag": seat.name,
-        "app": app.name, "prefix": app.prefix, "lane_dir": app.lane_dir, "pr": pr, "head_sha": None, "head_ref": None,
-        "pr_state": None, "cross_repo": None, "purpose": purpose, "board": board,
+    manifest: dict[str, object] = {
+        "schema": SCHEMA,
+        "tool": TOOL_NAME,
+        "kind": "review",
+        "seat": seat.suffix,
+        "tag": seat.name,
+        "app": app.name,
+        "prefix": app.prefix,
+        "lane_dir": app.lane_dir,
+        "pr": pr,
+        "head_sha": None,
+        "head_ref": None,
+        "pr_state": None,
+        "cross_repo": None,
+        "purpose": purpose,
+        "board": board,
         "created_at": _iso(created_dt),
         "expires_at": _iso(created_dt + _dt.timedelta(days=REVIEW_DAYS)),
     }
     if args.dry_run:
-        ctx.say(f"dry run, nothing changed.  Would look up PR {pr} of {app.owner_repo} with gh, fetch pull/{pr}/head "
-                f"and create a detached checkout at {path}")
+        ctx.say(
+            f"dry run, nothing changed.  Would look up PR {pr} of {app.owner_repo} with gh, fetch pull/{pr}/head "
+            f"and create a detached checkout at {path}"
+        )
         _emit(ctx, args.json, path, manifest, dry_run=True)
         return EXIT_OK
 
     with _repo_lock(ctx, run, tree):
         if _path_state(ctx, run, tree, path, None) == "same":
             return existing()
-        view = run(["gh", "pr", "view", str(pr), "--repo", app.owner_repo, "--json",
-                    "headRefOid,headRefName,state,isCrossRepository"], cwd=tree)
+        view = run(
+            [
+                "gh",
+                "pr",
+                "view",
+                str(pr),
+                "--repo",
+                app.owner_repo,
+                "--json",
+                "headRefOid,headRefName,state,isCrossRepository",
+            ],
+            cwd=tree,
+        )
         if not view.ok:
             if "could not resolve to a pullrequest" in view.err.lower():
                 raise Refusal(f"PR {pr} was not found in {app.owner_repo}.")
@@ -1096,8 +1380,12 @@ def _new_review(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) ->
         except (ValueError, KeyError, TypeError) as exc:
             raise ToolFailure(f"gh pr view {pr} gave an unusable answer: {exc}")
         state = str(info.get("state") or "")
-        manifest.update(head_sha=sha, head_ref=info.get("headRefName"), pr_state=state or None,
-                        cross_repo=bool(info.get("isCrossRepository")))
+        manifest.update(
+            head_sha=sha,
+            head_ref=info.get("headRefName"),
+            pr_state=state or None,
+            cross_repo=bool(info.get("isCrossRepository")),
+        )
         if state and state != "OPEN":
             ctx.say(f"note: PR {pr} is {state}.")
 
@@ -1105,8 +1393,10 @@ def _new_review(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) ->
         if not res.ok:
             raise ToolFailure(f"git fetch of pull/{pr}/head failed: {_why(res)}")
         if _head_sha(run, tree, f"{sha}^{{commit}}") is None:
-            raise ToolFailure(f"PR {pr}'s head {sha[:9]} is not what pull/{pr}/head holds now; the PR was probably "
-                              "updated.  Run lane again.")
+            raise ToolFailure(
+                f"PR {pr}'s head {sha[:9]} is not what pull/{pr}/head holds now; the PR was probably "
+                "updated.  Run lane again."
+            )
         _make_parent(ctx, path.parent, lanes_root)
         added = run(["git", "worktree", "add", "--detach", str(path), sha], cwd=tree)
         if not added.ok:
@@ -1114,22 +1404,29 @@ def _new_review(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) ->
         _confirm_added(ctx, run, tree, path, None, sha)
         _write_manifest(ctx, run, tree, path, manifest)
     ctx.say(f"created review checkout {path}")
-    ctx.say(f"  PR {pr} head {sha[:9]} (detached); read-only, expires {manifest['expires_at']}; repo {tree}")
+    ctx.say(
+        f"  PR {pr} head {sha[:9]} (detached); read-only, expires {manifest['expires_at']}; repo {tree}"
+    )
     _emit(ctx, args.json, path, manifest)
     return EXIT_OK
 
 
 # --------------------------------------------------------------------------- command handlers
 
+
 def _require_lane_app(app: L.App) -> None:
     """An app gets lanes only if it has an integration tree to hang worktrees on and a row in
     fleet-apps.json (docs/protocols/lane-map.md: an app without a row is added before it gets lanes)."""
     if not app.integration_dir_name:
-        raise Refusal(f"{app.name} has no integration tree under ~/Code (its clone lives elsewhere), so lane "
-                      "cannot create a worktree for it.")
+        raise Refusal(
+            f"{app.name} has no integration tree under ~/Code (its clone lives elsewhere), so lane "
+            "cannot create a worktree for it."
+        )
     if not app.registered:
-        raise Refusal(f"{app.name} has no row in fleet-apps.json.  Add one first (docs/protocols/lane-map.md); "
-                      "a lane is only created for a registered app.")
+        raise Refusal(
+            f"{app.name} has no row in fleet-apps.json.  Add one first (docs/protocols/lane-map.md); "
+            "a lane is only created for a registered app."
+        )
 
 
 def _cmd_new(ctx: Ctx, args: argparse.Namespace) -> int:
@@ -1140,7 +1437,9 @@ def _cmd_new(ctx: Ctx, args: argparse.Namespace) -> int:
         if args.pr is None:
             raise Refusal("--review needs --pr N.")
         if args.slug or args.base or args.reuse_branch:
-            raise Refusal("--review takes only the app and --pr N (no slug, --base or --reuse-branch).")
+            raise Refusal(
+                "--review takes only the app and --pr N (no slug, --base or --reuse-branch)."
+            )
         return _new_review(ctx, args, app, seat)
     if args.pr is not None:
         raise Refusal("--pr belongs with --review.")
@@ -1179,32 +1478,70 @@ class _Parser(argparse.ArgumentParser):
 
 
 def _build_parser() -> _Parser:
-    p = _Parser(prog="lane", description="Create lanes and review checkouts in the right place.  Seat comes "
-                f"only from {ENV_SEAT}.  Exit 0 ok, 64 usage or refusal, 69 git or gh failed.")
+    p = _Parser(
+        prog="lane",
+        description="Create lanes and review checkouts in the right place.  Seat comes "
+        f"only from {ENV_SEAT}.  Exit 0 ok, 64 usage or refusal, 69 git or gh failed.",
+    )
     sub = p.add_subparsers(dest="command", metavar="{new,path,ls,doctor,retire,prune}")
-    new = sub.add_parser("new", help="create a lane (or a review checkout with --review --pr N)",
-                         description="Create a lane worktree off origin/main and print its path.")
+    new = sub.add_parser(
+        "new",
+        help="create a lane (or a review checkout with --review --pr N)",
+        description="Create a lane worktree off origin/main and print its path.",
+    )
     new.add_argument("app", help="repo name, code dir, worktree prefix or acronym (any case)")
     new.add_argument("slug", nargs="?", help="lowercase kebab, 1 to 40 characters")
-    new.add_argument("--base", metavar="REF", help="origin/<branch> or <branch> to start from (default origin/main)")
+    new.add_argument(
+        "--base",
+        metavar="REF",
+        help="origin/<branch> or <branch> to start from (default origin/main)",
+    )
     new.add_argument("--purpose", metavar="TEXT", help="one line saved in the manifest")
-    new.add_argument("--board", metavar="ID", help="Linear issue id (such as AFC-123) saved in the manifest")
-    new.add_argument("--reuse-branch", action="store_true", help="check out an existing branch instead of creating one")
-    new.add_argument("--review", action="store_true", help="read-only checkout of a PR head (needs --pr)")
-    new.add_argument("--pr", metavar="N", type=_positive_int, help="pull request number for --review")
-    new.add_argument("--dry-run", action="store_true", help="show what would happen; change nothing")
-    new.add_argument("--json", action="store_true", help="print the manifest plus the path as JSON on stdout")
-    path = sub.add_parser("path", help="print the path a lane (or, with --review --pr N, a review checkout) would get; "
-                          "no side effects")
+    new.add_argument(
+        "--board", metavar="ID", help="Linear issue id (such as AFC-123) saved in the manifest"
+    )
+    new.add_argument(
+        "--reuse-branch",
+        action="store_true",
+        help="check out an existing branch instead of creating one",
+    )
+    new.add_argument(
+        "--review", action="store_true", help="read-only checkout of a PR head (needs --pr)"
+    )
+    new.add_argument(
+        "--pr", metavar="N", type=_positive_int, help="pull request number for --review"
+    )
+    new.add_argument(
+        "--dry-run", action="store_true", help="show what would happen; change nothing"
+    )
+    new.add_argument(
+        "--json", action="store_true", help="print the manifest plus the path as JSON on stdout"
+    )
+    path = sub.add_parser(
+        "path",
+        help="print the path a lane (or, with --review --pr N, a review checkout) would get; "
+        "no side effects",
+    )
     path.add_argument("app", help="repo name, code dir, worktree prefix or acronym (any case)")
     path.add_argument("slug", nargs="?", help="lowercase kebab, 1 to 40 characters")
-    path.add_argument("--review", action="store_true", help="the review checkout of a PR (needs --pr)")
-    path.add_argument("--pr", metavar="N", type=_positive_int, help="pull request number for --review")
-    sub.add_parser("ls", help="every checkout on this Mac (the doctor report; takes doctor options)")
+    path.add_argument(
+        "--review", action="store_true", help="the review checkout of a PR (needs --pr)"
+    )
+    path.add_argument(
+        "--pr", metavar="N", type=_positive_int, help="pull request number for --review"
+    )
+    sub.add_parser(
+        "ls", help="every checkout on this Mac (the doctor report; takes doctor options)"
+    )
     sub.add_parser("doctor", help="same as ls")
-    sub.add_parser("retire", help="remove one of your lanes once its work is safe on GitHub (lane retire -h)")
-    sub.add_parser("prune", help="list a seat's lanes with a decision each; --apply removes the removable ones "
-                   "(lane prune -h)")
+    sub.add_parser(
+        "retire", help="remove one of your lanes once its work is safe on GitHub (lane retire -h)"
+    )
+    sub.add_parser(
+        "prune",
+        help="list a seat's lanes with a decision each; --apply removes the removable ones "
+        "(lane prune -h)",
+    )
     return p
 
 
@@ -1215,12 +1552,18 @@ def _positive_int(text: str) -> int:
 
 
 def _utc_now() -> _dt.datetime:
-    return _dt.datetime.now(_dt.timezone.utc)
+    return _dt.datetime.now(_dt.UTC)
 
 
-def main(argv: "Sequence[str] | None" = None, *, env: "Mapping[str, str] | None" = None,
-         clock: "Callable[[], _dt.datetime] | None" = None, exec_fn: "ExecFn | None" = None,
-         stdout=None, stderr=None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    clock: Callable[[], _dt.datetime] | None = None,
+    exec_fn: ExecFn | None = None,
+    stdout=None,
+    stderr=None,
+) -> int:
     """CLI entry.  `env` carries AGENT_SEAT, HOME, FLEET_LAYOUT, FLEET_LANES_ROOT, FLEET_LANES_EXTERNAL_ROOT, FLEET_APPS_JSON
     and the base environment for git and gh; nothing is read from os.environ when it is given.
     `exec_fn(argv, cwd, env, timeout)` replaces the process starter (tests fake gh with it); it is
@@ -1234,21 +1577,30 @@ def main(argv: "Sequence[str] | None" = None, *, env: "Mapping[str, str] | None"
         try:
             return int(D.main(args_in[1:], env=env, stdout=out))
         except SystemExit as exc:
-            return exc.code if isinstance(exc.code, int) else (EXIT_OK if exc.code is None else EXIT_USAGE)
+            return (
+                exc.code
+                if isinstance(exc.code, int)
+                else (EXIT_OK if exc.code is None else EXIT_USAGE)
+            )
     if args_in and args_in[0] in ("retire", "prune"):
         # retire.py owns these two, with an allowlist of its own (this module's still refuses every remove).
         from . import retire as R
+
         return R.main(args_in, env=env, clock=clock, exec_fn=exec_fn, stdout=out, stderr=err)
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
             args = _build_parser().parse_args(args_in)
         except SystemExit as exc:
-            return exc.code if isinstance(exc.code, int) else (EXIT_OK if exc.code is None else EXIT_USAGE)
+            return (
+                exc.code
+                if isinstance(exc.code, int)
+                else (EXIT_OK if exc.code is None else EXIT_USAGE)
+            )
         if not args.command:
             _build_parser().print_usage(err)
             return EXIT_USAGE
     stamp = clock or _utc_now
-    ctx: "Ctx | None" = None
+    ctx: Ctx | None = None
     try:
         try:
             registry = L.load_registry(env=env)
