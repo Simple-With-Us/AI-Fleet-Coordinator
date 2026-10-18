@@ -128,7 +128,7 @@ Per-app quirks (read the workflow on main before trusting this list):
 - **ST, CT, UM, BotFleet, Clutch** ship from `ios-ship.yml`.  UM ships two apps, Usage Client Monitor and Usage Local Monitor, so check both.  Most have a cron backstop; Clutch does not.
 - **DealDex** `ios-ship.yml` was disabled by hand for a signing hold (last scheduled success 2026-09-27).  `ios-ship-cron-park.yml` only sends a Sentry heartbeat and never uploads, so its green runs prove nothing.  Re-enabling is the owner's call.
 - **Autorotate** was retired from TestFlight on 2026-10-10 and the freshness check does not list it.  Its `testflight.yml` is dispatch-only with a signing-ready attestation;  do not attest signing you have not verified.
-- **ContactLogo** `ios-testflight.yml` ships only while the repo variable `CL_IOS_TESTFLIGHT_ENABLED` is `true`.
+- **ContactLogo** `ios-testflight.yml` is the fleet pipeline (CL-204, 2026-10-17):  push to `main` on `Apps/ContactLogoiOS/**`, `Sources/ContactLogoKit/**` or `project.yml`, a path-gated twice-hourly catch-up, and `workflow_dispatch`.  It needs no repository variable (`CL_IOS_TESTFLIGHT_ENABLED` and `CL_APPLE_ID` are retired) and takes no required dispatch input.
 
 **Rules that matter** (AGENT-SYNC § Releases, Versioning, and Brand Assets):
 
