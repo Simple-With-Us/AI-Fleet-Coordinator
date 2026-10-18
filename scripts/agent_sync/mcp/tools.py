@@ -571,9 +571,14 @@ class Tools:
         rt = self.agent.rt
         out = io.StringIO()
         rt.stdout, rt.stderr, rt.stdin = out, io.StringIO(), io.StringIO("")
+        # The command's output is parsed as JSON (_posted_id), so it must print JSON whatever the outer agent
+        # was built with:  `agent-sync notes ... --relay` without --json reuses these tools on a plain CLI
+        # agent, and a human "posted id N" line made a successful relay post report an error.
+        was_json, self.agent.json = self.agent.json, True
         try:
             code = func(self.agent, ns)
         finally:
+            self.agent.json = was_json
             rt.stdout, rt.stderr, rt.stdin = io.StringIO(), io.StringIO(), io.StringIO("")
         if code:
             raise ToolError("internal", "the command ended with exit code %d" % code)

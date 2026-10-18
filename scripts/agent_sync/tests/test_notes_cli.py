@@ -222,6 +222,17 @@ class NotesCliTests(Harness):
         self.assertEqual(result.code, 5)
         self.assertIn("no note with that title", result.err)
 
+    def test_relay_without_json_succeeds_and_names_the_message(self):
+        # Without --json the relay reuses the MCP tools on a plain CLI agent;  the internal post must still
+        # print JSON, or a successful post reported "the post command printed no message id" (AFC-331).
+        a, b = self.direct(FakeRun())
+        with a, b:
+            sent = self.run_cli("notes", "create", TITLE, "--relay", "--request-id", "cli-plain-0001", stdin="relayed body")
+        self.assertEqual(sent.code, 0, sent.err)
+        self.assertNotIn("printed no message id", sent.err)
+        self.assertEqual(sum(m["display_recipient"] == N.RELAY_CHANNEL for m in self.fake.messages), 1)
+        self.assertIn("cli-plain-0001", sent.out)
+
     def test_relay_posts_the_envelope_as_the_identity_and_status_reads_it_back(self):
         a, b = self.direct(FakeRun())
         with a, b:
