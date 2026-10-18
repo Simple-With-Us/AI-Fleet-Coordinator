@@ -79,3 +79,22 @@ test('step if expressions never reference secrets so startup validation passes',
     }
   }
 });
+
+test('usage metering is best-effort, secret-free in conditions, and runs before the push gate', () => {
+  const report = steps.find((step) => step.includes('name: Report Usage To Usage Monitor'));
+  assert(report);
+  assert.match(report, /continue-on-error: true/);
+  assert.match(report, /if: \$\{\{ always\(\) && steps\.guard\.outputs\.should_fix == 'true' \}\}/);
+  assert.match(report, /uses: Simple-With-Us\/congress-trading-shared\/\.github\/actions\/ci-usage-report@[a-f0-9]{40}\n/);
+  assert.match(report, /token: \$\{\{ secrets\.USAGE_INGEST_TOKEN \}\}/);
+  assert.match(report, /harness: claude-code-ci/);
+  assert.match(report, /input-file: \$\{\{ runner\.temp \}\}\/claude-stream\.ndjson/);
+  assert.match(report, /input-kind: claude/);
+  // The transcript exists as soon as Claude Code starts, even when the run later fails.
+  assert.match(runFix, /tee "\$stream"/);
+  assert(steps.indexOf(runFix) < steps.indexOf(report));
+  assert(steps.indexOf(report) < steps.indexOf(validate));
+  // The ingest credential is optional, and no earlier step can see it.
+  assert.match(workflow, /USAGE_INGEST_TOKEN:\n        required: false/);
+  assert.equal((workflow.match(/secrets\.USAGE_INGEST_TOKEN/g) ?? []).length, 1);
+});

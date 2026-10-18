@@ -64,6 +64,11 @@ on:
         description: >-
           GitHub App private key whose installation pushes re-trigger CI.  Pair with the org/repo
           variable SWU_AUTOFIX_GITHUB_APP_ID.
+      USAGE_INGEST_TOKEN:
+        required: false
+        description: >-
+          Usage Monitor ingest token scoped to the ci-autofix producer.  Optional:  when it is absent
+          the usage report is skipped and the run is unchanged.
 
 jobs:
   autofix:
@@ -356,6 +361,22 @@ jobs:
           path: ${{ steps.diagnostics.outputs.summary-path }}
           if-no-files-found: error
           retention-days: 7
+
+      - name: Report Usage To Usage Monitor
+        # Best-effort metering (UM-1593).  Reads the stream-json transcript Claude Code wrote, posts one
+        # usage event, and never fails the run:  an absent USAGE_INGEST_TOKEN makes it a quiet no-op.
+        # It runs before the push gate so a failed or refused run is still metered.
+        if: ${{ always() && steps.guard.outputs.should_fix == 'true' }}
+        continue-on-error: true
+        uses: Simple-With-Us/congress-trading-shared/.github/actions/ci-usage-report@d06ac2d47bc3b9182ea43deee9f0a91ffdf33ab0
+        with:
+          token: ${{ secrets.USAGE_INGEST_TOKEN }}
+          harness: claude-code-ci
+          input-file: ${{ runner.temp }}/claude-stream.ndjson
+          input-kind: claude
+          model: ${{ steps.trusted.outputs.model }}
+          pr-number: ${{ github.event.issue.number || github.event.pull_request.number }}
+          workflow: pr-autofix-reusable
 
       - name: Validate Outcome Before Push
         id: validate
