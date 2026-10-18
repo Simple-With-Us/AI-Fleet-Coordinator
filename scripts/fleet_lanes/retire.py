@@ -18,17 +18,18 @@ A lane is removable only when ALL of these hold (each is a reason in the table w
   * it is not locked, no process has its cwd inside it (`lsof -d cwd`; if lsof fails nothing is removed), no git
     operation is in progress (MERGE_HEAD, rebase, cherry-pick, revert, bisect, sequencer, index.lock) and it has
     no `.janitor-keep` marker;
-  * `git status --ignored` shows no tracked edit, no untracked file and no ignored path other than build
-    output a build puts back (node_modules, dist, __pycache__ and the rest of `doctor.split_ignored`'s list),
-    because `git worktree remove` deletes ignored files without asking: a .env or a local database keeps it;
+  * `git status` shows no tracked edit, no untracked file and no git-ignored local state (a .env, a database:
+    anything ignored that is not build output, by the doctor's own list, `doctor.split_ignored`);
   * nothing is unpushed: HEAD is reachable from a branch that exists on origin right now (the shas `git
-    ls-remote --heads origin` reports, never a local remote-tracking ref, which a branch deleted on origin
-    without a `fetch --prune` leaves behind), or a merged or closed PR holds HEAD (its head is HEAD or contains
-    it), because a squash-merged branch whose remote ref was pruned is safe on GitHub but on no branch;
-  * the work is done: a PR for its branch (the local name or the upstream name, since a sweep lane pushes
-    `HEAD:<pr head>`) or for HEAD is MERGED or CLOSED and holds HEAD (its head is HEAD, or contains HEAD and
-    the lane has commits of its own, so an old PR of a reused slug does not count), with none still OPEN; or
-    HEAD is merged into origin/<default>; or its upstream branch no longer exists on origin.
+    ls-remote --heads origin` reports; a local remote-tracking ref never counts, since a branch deleted on
+    origin without a `fetch --prune` leaves a stale one, and another remote never vouches), or a merged or
+    closed PR holds HEAD (its head is HEAD or contains it), because a squash-merged branch whose remote ref was
+    pruned is safe on GitHub but on no branch;
+  * the work is done: the PR for its branch (the local name or the upstream name, since a sweep lane pushes
+    `HEAD:<pr head>`) or for HEAD is MERGED or CLOSED with none still OPEN and its head is HEAD, or contains HEAD
+    while the lane has commits of its own (a PR that only used the same branch name, or whose head merely sits
+    on today's origin/<default>, is no evidence), or HEAD is merged into origin/<default>, or its upstream
+    branch no longer exists on origin.
     A review checkout (review-pr-<n>) is done when PR <n> is MERGED or CLOSED; prune keeps one of an OPEN PR,
     and an explicit `lane retire` may remove it (it is read-only by design).
 
@@ -38,7 +39,7 @@ folder itself and the manifest's created_at), and a lane whose only "done" evide
 origin/<default> with no upstream and no PR (a lane that was made and never used) is kept until it has been idle
 EMPTY_LANE_HOURS (24) hours, so a prune never takes the lane a parallel session of the same seat just opened.
 
-How it removes, under the same per-repo lock as `lane new` (`lane._repo_lock`): `git status --ignored` once more, then
+How it removes, under the same per-repo lock as `lane new` (`lane._repo_lock`): `git status` once more, then
 `git worktree remove <path>` WITHOUT --force (git itself refuses a dirty or locked worktree, a second guard),
 then `git branch -d <branch>` (never -D; after a squash merge git usually says "not fully merged" and the branch
 is reported as kept, which is not an error).  `git worktree prune` runs only when a prunable entry is left that
@@ -99,9 +100,6 @@ _GH_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _REVIEW = re.compile(r"^review-pr-([0-9]{1,9})(?:-([a-z0-9]+(?:-[a-z0-9]+)*))?$")
 _BRANCH_KEY = re.compile(r"^branch\.(.+)\.(merge|remote)$")
 _REVPARSE_SOLO = frozenset({"--absolute-git-dir", "--git-common-dir", "--show-toplevel"})
-# `--ignored` adds a `!! <path>` line for each ignored path (a wholly ignored folder is one line), because
-# `git worktree remove` deletes ignored files without asking.
-_STATUS = ("git", "status", "--porcelain", "--untracked-files=normal", "--ignored")
 
 
 # --------------------------------------------------------------------------- the allowlist and the runner
@@ -116,7 +114,7 @@ def _git_key(args: Sequence[str], write_root: str | None, fold: Callable[[str], 
         return "remove" if K._dest_ok(a[2], write_root, fold) else None
     if len(a) == 3 and a[:2] == ["branch", "-d"]:
         return "git" if K.valid_ref_name(a[2]) else None
-    if a == list(_STATUS[1:]):
+    if a == ["status", "--porcelain", "--ignored", "--untracked-files=normal"]:
         return "git"
     if len(a) == 5 and a[:4] == ["rev-list", "--count", "HEAD", "--not"]:
         return "git" if _SHA.match(a[4]) else None
@@ -173,7 +171,7 @@ def check_allowed(
     """The timeout cap for an allowlisted command, else CommandRefused (no process is started).
 
     git: worktree list --porcelain | worktree remove <path inside the lanes root> (never --force) | worktree prune |
-    branch -d <ref> (never -D) | status --porcelain --untracked-files=normal --ignored | rev-list --count HEAD
+    branch -d <ref> (never -D) | status --porcelain --ignored --untracked-files=normal | rev-list --count HEAD
     --not <sha> | rev-list --count --ignore-missing HEAD --not <sha>... | rev-parse (--absolute-git-dir | --git-common-dir | --show-toplevel | --verify -q
     HEAD-or-sha) | config --get (remote.origin.url | branch.<ref>.merge | branch.<ref>.remote) | merge-base
     --is-ancestor HEAD refs/remotes/origin/<ref> | symbolic-ref -q --short refs/remotes/origin/HEAD | ls-remote
@@ -233,14 +231,13 @@ class PrView:
 
     found: bool = True
     open_number: int | None = None
-    done_number: int | None = (
-        None  # a MERGED or CLOSED PR for the branch name or HEAD that holds HEAD
-    )
+    done_number: int | None = None  # a MERGED or CLOSED PR for the branch name or HEAD
     done_state: str = ""
-    covers_head: bool = (
-        False  # that PR's head is HEAD, or contains it and the lane has commits of its own
-    )
+    covers_head: bool = False  # that PR's head is HEAD or contains it
     review_state: str = ""  # review checkouts: the state of PR <n>
+    # a MERGED or CLOSED PR that used this branch name but whose head does not hold HEAD (a reused slug, or new
+    # commits after the merge): it is not evidence that this lane's work is done
+    stale_number: int | None = None
 
 
 @dataclass
@@ -258,8 +255,8 @@ class Facts:
     dirty: int | None = None
     ignored_local: list[str] = field(
         default_factory=list
-    )  # ignored paths that are not build output
-    unpushed: int | None = None  # HEAD's commits on no LIVE origin branch (None: ls-remote failed)
+    )  # git-ignored files that are not build output
+    unpushed: int | None = None
     merged_default: bool | None = None
     default_branch: str = "main"
     upstream: str | None = None  # the short branch name on origin this lane tracks
@@ -295,13 +292,9 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
     if f.dirty:
         return "keep", f"{f.dirty} uncommitted or untracked file{'s' if f.dirty != 1 else ''}"
     if f.ignored_local:
-        shown = f.ignored_local[:3]
-        more = len(f.ignored_local) - len(shown)
-        return "keep", (
-            "ignored local state git worktree remove would delete: "
-            + ", ".join(shown)
-            + (f" (+{more} more)" if more > 0 else "")
-        )
+        shown = ", ".join(f.ignored_local[:3])
+        more = len(f.ignored_local) - 3
+        return "keep", "ignored local state: " + shown + (f" (+{more} more)" if more > 0 else "")
     if not f.pr.found:
         return "keep", "PR lookup failed (gh)"
     if f.kind == "review":
@@ -315,8 +308,11 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
     if not (f.pr.covers_head or f.unpushed == 0):
         if f.unpushed is None:
             return "keep", "could not count unpushed commits"
+        where = "on no remote ref" + (
+            " (the deleted upstream's stale local copy does not count)" if f.upstream_gone else ""
+        )
         return "keep", (
-            f"{f.unpushed} commit{'s' if f.unpushed != 1 else ''} on no remote ref, and no merged or "
+            f"{f.unpushed} commit{'s' if f.unpushed != 1 else ''} {where}, and no merged or "
             "closed PR holds HEAD"
         )
     done = []
@@ -330,6 +326,10 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
         if f.merged_default:
             done.append(f"merged into origin/{f.default_branch}")
     if not done:
+        if f.pr.stale_number is not None:
+            return "keep", (
+                f"not done: PR #{f.pr.stale_number} used this branch name, but its head does not hold HEAD"
+            )
         return (
             "keep",
             "not done: no merged or closed PR, not in origin/"
@@ -461,7 +461,7 @@ def _epoch_iso(text: object) -> float | None:
     except ValueError:
         return None
     if when.tzinfo is None:
-        when = when.replace(tzinfo=_dt.timezone.utc)  # noqa: UP017
+        when = when.replace(tzinfo=_dt.timezone.utc)  # noqa: UP017 (3.9 has no datetime.UTC)
     return when.timestamp()
 
 
@@ -476,15 +476,6 @@ def _processes_inside(
         if pid != me and K._in_tree(ctx, cwd, path):
             out.append((pid, comm))
     return out
-
-
-def _cleanliness(porcelain: str) -> tuple[int, list[str]]:
-    """(tracked edits plus untracked files, ignored local-state paths) from `_STATUS` output.  Ignored build
-    output that a build puts back (node_modules, dist, __pycache__ and the rest of `doctor.split_ignored`'s
-    list, the one `lane doctor` uses) does not count; any other ignored path (a .env, a local database) does."""
-    dirty = len([ln for ln in porcelain.splitlines() if ln.strip() and not ln.startswith("!! ")])
-    local, _regenerable = D.split_ignored(porcelain)
-    return dirty, local
 
 
 def _manifest_seat(manifest: Mapping[str, object] | None, registry: L.Registry) -> str | None:
@@ -538,30 +529,11 @@ def _inspect(
     f.processes = _processes_inside(ctx, lsof_rows, rec.path)
     f.git_ops = D.git_ops_in_progress(gitdir) if gitdir else ["unreadable git dir"]
     f.keep_marker = os.path.lexists(os.path.join(rec.path, D.KEEP_MARKER))
-    st = run(list(_STATUS), cwd=rec.path)
-    if st.ok:
-        f.dirty, f.ignored_local = _cleanliness(st.out)
-    else:
-        f.dirty = None
-    # Unpushed means "on no LIVE origin branch".  Local remote-tracking refs can be stale (a branch deleted on
-    # origin without a `fetch --prune`, or force-pushed), so they never vouch for a push, and this tool never
-    # fetches.  --ignore-missing drops a live sha that was never fetched here, which can only overcount (the
-    # safe side).  Without ls-remote nothing vouches (None), and only a PR that holds HEAD can.
-    if remote_heads is not None:
-        f.unpushed = _int(
-            run(
-                [
-                    "git",
-                    "rev-list",
-                    "--count",
-                    "--ignore-missing",
-                    "HEAD",
-                    "--not",
-                    *sorted(set(remote_heads.values())),
-                ],
-                cwd=rec.path,
-            )
-        )
+    st = run(
+        ["git", "status", "--porcelain", "--ignored", "--untracked-files=normal"], cwd=rec.path
+    )
+    f.dirty = _dirty_count(st.out) if st.ok else None
+    f.ignored_local = D.split_ignored(st.out)[0] if st.ok else []
     mb = run(
         ["git", "merge-base", "--is-ancestor", "HEAD", f"refs/remotes/origin/{default_branch}"],
         cwd=rec.path,
@@ -579,6 +551,27 @@ def _inspect(
             f.upstream = up[len("refs/heads/") :]
             if remote_heads is not None:
                 f.upstream_gone = f.upstream not in remote_heads
+    # Unpushed means "on no LIVE origin branch": the shas `git ls-remote --heads origin` reported, never a local
+    # remote-tracking ref.  Those can be stale (a branch deleted on origin without a `fetch --prune`, the
+    # deleted upstream's or any other; a force-pushed branch), and another remote (a peer lane, a scratch bare
+    # repo) never vouches for a push.  This tool never fetches.  --ignore-missing drops a live sha that was
+    # never fetched here, which can only overcount (the safe side).  Without ls-remote nothing vouches (None),
+    # and only a PR that holds HEAD can.
+    if remote_heads is not None:
+        f.unpushed = _int(
+            run(
+                [
+                    "git",
+                    "rev-list",
+                    "--count",
+                    "--ignore-missing",
+                    "HEAD",
+                    "--not",
+                    *sorted(set(remote_heads.values())),
+                ],
+                cwd=rec.path,
+            )
+        )
     times = [
         t
         for t in (
@@ -595,6 +588,11 @@ def _inspect(
         times.append(created)
     f.idle_minutes = max(0.0, (now - max(times)) / 60.0) if times else None
     return f
+
+
+def _dirty_count(porcelain: str) -> int:
+    """Tracked edits and untracked files in `git status --porcelain --ignored` (the `!!` ignored lines excluded)."""
+    return len([ln for ln in porcelain.splitlines() if ln.strip() and not ln.startswith("!! ")])
 
 
 def _contains(run: Runner, path: str, oid: str) -> bool:
@@ -670,17 +668,19 @@ def _pr_view(
     done = [p for p in cands if p.get("state") in ("MERGED", "CLOSED")]
     if not done:
         return view
-    # A done PR is evidence for this lane only when it holds HEAD: its head IS HEAD, or its head contains HEAD
-    # and the lane has commits of its own (HEAD is not in origin/<default>).  A PR matched only by its head
-    # name (an old PR of a reused slug), or one whose head merely contains today's origin/<default>, holds
-    # none of this lane's work; counting it would call a fresh lane done and skip the 24-hour hold.
-    held = [p for p in done if head and p.get("headRefOid") == head]
+    # Only a PR whose head IS HEAD or contains it says this lane's work is done.  A PR that merely used the same
+    # branch name (a reused slug, or commits added after the merge) is no evidence, so a lane opened under an old
+    # name keeps the 24-hour hold for an unused lane.  Containment counts only when the lane has commits of its
+    # own (HEAD not in origin/<default>): an old PR whose head sits on top of today's origin/<default> contains
+    # every fresh lane's HEAD and holds none of its work.
+    covering = [p for p in done if head and p.get("headRefOid") == head]
     own_work = lane.facts is not None and lane.facts.merged_default is False
-    if not held and own_work:
-        held = [p for p in done if _contains(run, rec.path, str(p.get("headRefOid") or ""))]
-    if not held:
+    if not covering and own_work:
+        covering = [p for p in done if _contains(run, rec.path, str(p.get("headRefOid") or ""))]
+    if not covering:
+        view.stale_number = max(int(p.get("number") or 0) for p in done) or None
         return view
-    pick = max(held, key=lambda p: (p.get("state") == "MERGED", int(p.get("number") or 0)))
+    pick = max(covering, key=lambda p: (p.get("state") == "MERGED", int(p.get("number") or 0)))
     view.done_number = int(pick.get("number") or 0) or None
     view.done_state = str(pick.get("state") or "")
     view.covers_head = True
@@ -921,9 +921,11 @@ def _apply(ctx: K.Ctx, run: Runner, plan: _Plan, seats: set | None) -> None:
         tree, app = Path(tree_s), items[0][1].app
         with K._repo_lock(ctx, run, tree):
             for row, ln in items:
-                st = run(list(_STATUS), cwd=ln.rec.path)
-                dirty, ignored_local = _cleanliness(st.out) if st.ok else (None, [])
-                if dirty is None or dirty or ignored_local:
+                st = run(
+                    ["git", "status", "--porcelain", "--ignored", "--untracked-files=normal"],
+                    cwd=ln.rec.path,
+                )
+                if not st.ok or _dirty_count(st.out) or D.split_ignored(st.out)[0]:
                     row.action, row.reason = "keep", "changed since it was inspected (git status)"
                     continue
                 res = run(["git", "worktree", "remove", ln.rec.path], cwd=tree)
@@ -1258,11 +1260,10 @@ def main(
                 if isinstance(exc.code, int)
                 else (K.EXIT_OK if exc.code is None else K.EXIT_USAGE)
             )
-    # timezone.utc, not datetime.UTC (3.11+): the shim may run on /usr/bin/python3 (3.9).
-    stamp = clock or (lambda: _dt.datetime.now(_dt.timezone.utc))  # noqa: UP017
+    stamp = clock or (lambda: _dt.datetime.now(_dt.timezone.utc))  # noqa: UP017 (3.9 has no datetime.UTC)
     now = stamp()
     if now.tzinfo is None:
-        now = now.replace(tzinfo=_dt.timezone.utc)  # noqa: UP017
+        now = now.replace(tzinfo=_dt.timezone.utc)  # noqa: UP017 (3.9 has no datetime.UTC)
     try:
         try:
             registry = L.load_registry(env=env)
