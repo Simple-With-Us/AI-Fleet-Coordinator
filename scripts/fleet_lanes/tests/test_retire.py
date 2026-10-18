@@ -780,11 +780,15 @@ class PruneTests(WorldCase):
         self.assertTrue(lane.exists())
 
     def test_a_failed_ls_remote_never_vouches_for_a_push(self) -> None:
-        # Without the live origin heads nothing proves HEAD is pushed, so only a PR holding HEAD can.
+        # Without the live origin heads no branch proves HEAD is pushed (its local tracking ref may be
+        # stale), so only origin/main or a PR holding HEAD can.
         lane = self.w.new_lane("blind")
         self.w.commit(lane)
         self.w.push(lane, "claude/blind")
-        self.w.git(["push", "-q", "origin", "HEAD:main"], lane)
+        landed = self.w.new_lane("blind-main")
+        self.w.commit(landed)
+        self.w.push(landed, "claude/blind-main")
+        self.w.git(["push", "-q", "origin", "HEAD:main"], landed)
         covered = self.w.new_lane("blind-pr")
         self.w.commit(covered)
         self.w.push(covered, "claude/blind-pr")
@@ -797,6 +801,7 @@ class PruneTests(WorldCase):
         res = self.w.run("prune", "--json", override=fail)
         self.assertEqual(res.rc, 69)
         self.assertEqual(res.row("claude-blind")["reason"], "could not count unpushed commits")
+        self.assertEqual(res.row("claude-blind-main")["action"], "remove")
         self.assertEqual(res.row("claude-blind-pr")["action"], "remove")
         self.assertTrue(any("ls-remote" in e for e in res.json()["errors"]))
 
@@ -823,6 +828,29 @@ class PruneTests(WorldCase):
         self.assertEqual(
             self.w.run("prune", "--json", clock=MUCH_LATER).row("claude-unused")["action"], "remove"
         )
+
+    def test_main_moving_on_origin_does_not_make_a_fresh_lane_look_unpushed(self) -> None:
+        # Main advances on origin from another clone, so its new tip is not an object here yet (no fetch).
+        # The live-sha count drops that missing sha, but HEAD is in origin/main, which is never deleted or
+        # rewound, so the unused lane is still pushed and goes after its 24-hour hold.
+        lane = self.w.new_lane("idle")
+        other = self.w.root / "other-clone"
+        self.w.git(["clone", "-q", self.w.origins["DealDex"].as_uri(), str(other)], self.w.root)
+        (other / "later.txt").write_text("later\n", encoding="utf-8")
+        self.w.git(["add", "later.txt"], other)
+        self.w.git(["commit", "-q", "-m", "later"], other)
+        self.w.git(["push", "-q", "origin", "HEAD:main"], other)
+        new_tip = self.w.git(["rev-parse", "HEAD"], other)
+        tree = self.w.trees["DealDex"]
+        self.assertEqual(
+            self.w.git(["rev-parse", "--verify", "-q", new_tip + "^{commit}"], tree, check=False),
+            "",
+            "the new tip is an object here",
+        )
+        self.assertNotEqual(self.w.git(["rev-parse", "refs/remotes/origin/main"], tree), new_tip)
+        row = self.w.run("prune", "--json", clock=MUCH_LATER).row("claude-idle")
+        self.assertEqual(row["action"], "remove", row)
+        self.assertTrue(lane.exists())
 
     def test_a_process_in_the_lane_or_a_failed_lsof_keeps_it(self) -> None:
         lane = self.w.new_lane("busy")

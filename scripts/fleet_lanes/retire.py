@@ -21,10 +21,10 @@ A lane is removable only when ALL of these hold (each is a reason in the table w
   * `git status` shows no tracked edit, no untracked file and no git-ignored local state (a .env, a database:
     anything ignored that is not build output, by the doctor's own list, `doctor.split_ignored`);
   * nothing is unpushed: HEAD is reachable from a branch that exists on origin right now (the shas `git
-    ls-remote --heads origin` reports; a local remote-tracking ref never counts, since a branch deleted on
-    origin without a `fetch --prune` leaves a stale one, and another remote never vouches), or a merged or
-    closed PR holds HEAD (its head is HEAD or contains it), because a squash-merged branch whose remote ref was
-    pruned is safe on GitHub but on no branch;
+    ls-remote --heads origin` reports; no other local remote-tracking ref counts, since a branch deleted on
+    origin without a `fetch --prune` leaves a stale one, and another remote never vouches), or HEAD is in
+    origin/<default> (never deleted or rewound), or a merged or closed PR holds HEAD (its head is HEAD or
+    contains it), because a squash-merged branch whose remote ref was pruned is safe on GitHub but on no branch;
   * the work is done: the PR for its branch (the local name or the upstream name, since a sweep lane pushes
     `HEAD:<pr head>`) or for HEAD is MERGED or CLOSED with none still OPEN and its head is HEAD, or contains HEAD
     while the lane has commits of its own (a PR that only used the same branch name, or whose head merely sits
@@ -305,7 +305,9 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
             return "keep", f"review checkout; PR state {state or 'unknown'}"
     elif f.pr.open_number is not None:
         return "keep", f"PR #{f.pr.open_number} is open"
-    if not (f.pr.covers_head or f.unpushed == 0):
+    # origin/<default> is never deleted or rewound, so HEAD in it is pushed even when its new tip was not
+    # fetched here (the live-sha count drops a sha that is not an object here).
+    if not (f.pr.covers_head or f.unpushed == 0 or f.merged_default):
         if f.unpushed is None:
             return "keep", "could not count unpushed commits"
         where = "on no remote ref" + (
