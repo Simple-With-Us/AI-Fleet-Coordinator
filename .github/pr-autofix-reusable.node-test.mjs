@@ -30,7 +30,7 @@ test('model run fails closed and validation precedes push', () => {
 test('sanitized diagnostics are retained without raw transcripts', () => {
   assert(diagnostics && upload);
   assert.match(diagnostics, /if: \$\{\{ always\(\)/);
-  assert.match(diagnostics, /uses: Simple-With-Us\/congress-trading-shared\/\.github\/actions\/autofix-diagnostics@[a-f0-9]{40}/);
+  assert.match(diagnostics, /uses: Simple-With-Us\/AI-Fleet-Coordinator\/\.github\/actions\/autofix-diagnostics@[a-f0-9]{40}/);
   assert(steps.indexOf(runFix) < steps.indexOf(diagnostics));
   assert(steps.indexOf(diagnostics) < steps.indexOf(upload));
   assert.match(upload, /steps\.diagnostics\.outputs\.summary-path != ''/);
