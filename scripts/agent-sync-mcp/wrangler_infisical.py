@@ -24,13 +24,15 @@ _spec = importlib.util.spec_from_file_location("install_seat_key", HERE / "insta
 seatkey = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(seatkey)
 
-# Projects by name.  afc and shared ids are already public (install_seat_key.py, scripts/fleet_rag/core.py);
-# fleet-ops is looked up by slug at run time, because its id is private inventory (ATTACK-MAP.md).
-PUBLIC_IDS = {"afc": seatkey.INFISICAL_PROJECT, "shared": "18f563a3-9c88-454c-96eb-28fc9678f3ba"}
+# Projects by short name.  Only afc's id was already in this repo (install_seat_key.py);  the others are
+# looked up by slug at run time, so no other Infisical project id lives in public source (Kody Rule 26).
+PROJECT_SLUGS = {"fleet-ops": "fleet-ops", "shared": "shared-at-ct-tg-v7"}
 
 
 def project_id(name: str) -> str:
-    return PUBLIC_IDS.get(name) or seatkey.infisical_project_id(name)
+    if name == "afc":
+        return seatkey.INFISICAL_PROJECT
+    return seatkey.infisical_project_id(PROJECT_SLUGS.get(name, name))
 
 
 def infisical_value(ref: str) -> str:
