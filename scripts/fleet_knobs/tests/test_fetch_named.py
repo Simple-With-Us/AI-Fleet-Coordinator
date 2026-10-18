@@ -67,5 +67,6 @@ class FetchNamedTests(KnobTestCase):
     def test_a_value_that_merely_contains_a_reference_is_not_flagged(self):
         self.fake.set(shape="api", secrets={"A": "prefix-${prod.a.B}"})
         self.assertEqual(
-            source.fetch_named(("A",), project_id=PROJECT, path="/zulip"), {"A": "prefix-${prod.a.B}"}
+            source.fetch_named(("A",), project_id=PROJECT, path="/zulip"),
+            {"A": "prefix-${prod.a.B}"},
         )
