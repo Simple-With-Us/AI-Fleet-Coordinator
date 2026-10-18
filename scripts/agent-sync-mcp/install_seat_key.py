@@ -67,7 +67,7 @@ SEATS = {
 TAG_OVERRIDES = {"openai-dot": "JET", "instinct-bat": "ECHO", "instinct-owl": "WISE"}
 
 
-def fail(message: str) -> "NoReturn":  # type: ignore[name-defined]
+def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
     raise SystemExit(f"install_seat_key: {message}")
 
 
@@ -185,8 +185,7 @@ def cloudflare_credentials() -> tuple[str, str]:
 
 def seat_tag(user: dict) -> str:
     local = str(user.get("email") or "").split("@", 1)[0].lower()
-    if local.endswith("-bot"):
-        local = local[: -len("-bot")]
+    local = local.removesuffix("-bot")
     return TAG_OVERRIDES.get(local, local.upper())
 
 
