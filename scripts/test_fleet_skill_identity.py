@@ -1418,7 +1418,9 @@ class LinearTeamListTests(unittest.TestCase):
         # Parse just the assignment:  importing the board would pull in its
         # credential setup, and a test must not need a Linear login to run.
         path = Path(ROOT, "scripts", "linear-board", "board")
-        match = re.search(r"(?m)^TEAM_KEYS = (\(.*?\))\s*$", path.read_text(encoding="utf-8"), re.DOTALL)
+        match = re.search(
+            r"(?m)^TEAM_KEYS = (\(.*?\))\s*$", path.read_text(encoding="utf-8"), re.DOTALL
+        )
         self.assertIsNotNone(match, "TEAM_KEYS not found in scripts/linear-board/board")
         return tuple(ast.literal_eval(match.group(1)))
 
