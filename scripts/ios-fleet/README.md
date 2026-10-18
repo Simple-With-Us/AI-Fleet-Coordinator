@@ -20,6 +20,9 @@ hand-maintained sheet is exactly why it never converged.
 | `fleet-icon-audit.mjs` | The standing icon check.  Exits non-zero on errors. |
 | `fleet_icon_fix_alpha.py` | Stages an opaque version of any iOS 1024 icon that is genuinely transparent. |
 | `icon-lock.json` | Approved icon hash per app.  Change an icon on purpose, then re-run `--approve`. |
+| `ios_testflight_freshness.mjs` | The TestFlight freshness deploy check:  is each app's newest processed build behind its native tree on main?  `--ship-behind` dispatches the app's own ship workflow under the fleet guards;  `--alert` posts to Zulip.  Runs every two hours as the LaunchAgent `com.jay.ios-testflight-freshness`.  See `docs/ios-testflight-freshness.md`. |
+| `testflight-apps.json` | The freshness check's registry (appleId, repo, native paths, ship workflow, compile check).  Edit it when an app or its pipeline changes. |
+| `install-testflight-freshness.sh` | Installs the check and registry into `~/apps/ios-fleet` and loads the LaunchAgent. |
 
 ## The Google Sheet
 
