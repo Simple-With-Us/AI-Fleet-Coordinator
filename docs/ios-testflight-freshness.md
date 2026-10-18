@@ -94,7 +94,7 @@ runs an App Store GM workflow.  Every one of these must hold, or the app is repo
    `disabled_manually` workflow is the owner's switch;  it is reported, never re-enabled).
 2. The compile check on main is green.  A ship job gated on a repo variable (`ship.enabledVar`, Hog Hunter's `HH_IOS_TESTFLIGHT_ENABLED`) is only dispatched while that variable is `true`;  otherwise the dispatch would be a skipped job that uploads nothing.
 3. 2.5 hours have passed since the app's last upload.  The check enforces the documented fleet
-   gate itself, because ContactLogo and Hog Hunter do not ship through `ship-testflight.sh`.
+   gate itself, because ContactLogo does not ship through `ship-testflight.sh`.  Hog Hunter does (HH-157), and its `paths` here are the same exact files as its workflow's push filter.
 4. The app has not already been dispatched for this main HEAD.  A ship that keeps failing is
    tried once per HEAD, not every two hours;  a new main commit re-arms it.  (The same-HEAD skip
    inside `ship-testflight.sh` still applies on the runner.)

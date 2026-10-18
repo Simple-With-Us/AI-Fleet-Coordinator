@@ -153,7 +153,15 @@
       "bundleId": "com.simplewithus.hoghunter.ios",
       "platform": "IOS",
       "repo": "HogHunter",
-      "paths": ["ios", "project.yml", "Assets.xcassets"],
+      "paths": [
+        "ios",
+        "project.yml",
+        "Sources/Companion/CompanionSnapshot.swift",
+        "Sources/Companion/CompanionHTTP.swift",
+        "Sources/Companion/CompanionPeer.swift",
+        "Sources/UI/CpuSparklineView.swift",
+        "Sources/Telemetry/SentryTelemetry.swift"
+      ],
       "ship": { "workflow": "ios-testflight.yml", "inputs": { "upload": "true" }, "enabledVar": "HH_IOS_TESTFLIGHT_ENABLED" },
       "sourceWorkflows": ["ios-testflight.yml"],
       "compileCheck": "test",
