@@ -79,6 +79,12 @@ jobs:
     - name: fleet_knobs tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t . -v
+    # fleet-secrets (OPS-818):  fake infisical and Keychain at subprocess.run;  get, run, --only, exit 3, the
+    # unresolved-reference guard, auth selection, and no secret in argv or error text.
+    - name: fleet_secrets tests
+      run: |
+        cd scripts && python3 -m unittest discover -s fleet_secrets/tests -t . -v
+        bash -n install-fleet-secrets.sh
     # needs-owner (open-loops C6-1 and C6-2):  a fake `board` and `agent-sync` on PATH, built on the real parsers, a fixed
     # clock and fake K1 knobs for the fallback notifier;  the stable copy installed into a temp HOME must run under
     # `python3 -I`, and the LaunchAgent plist must parse.

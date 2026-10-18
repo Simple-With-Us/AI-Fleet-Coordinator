@@ -2,9 +2,9 @@
 """Fetch named secrets from Infisical using a machine identity found in the ENVIRONMENT.
 
 Built for cloud sandboxes (Claude Code Cloud, Codespaces, Cursor cloud, any throwaway
-clone), where there is no ~/.secrets handoff file but the platform can inject environment
+clone), where there is no `fleet-secrets` but the platform can inject environment
 variables.  On the Mac, scripts/fleet_rag/core.py reads the same universal-auth identity
-out of the chmod-600 handoff file instead; this helper reuses core.py's login endpoint,
+out of the environment or `fleet-secrets` instead; this helper reuses core.py's login endpoint,
 project, environment and HTTP client so both paths behave identically.
 
 Identity env names use the fleet's existing prefix convention (see core.py `_identity`):
@@ -21,6 +21,7 @@ booleans reach stdout.  The env file is created under umask 077.
 
 Exit codes: 0 ok  ·  2 usage  ·  3 no identity in the environment  ·  4 fetch failed.
 """
+
 from __future__ import annotations
 
 import os
@@ -31,7 +32,7 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from fleet_rag.core import (  # noqa: E402
+from fleet_rag.core import (
     FleetRagError,
     http_json,
     infisical_api,
@@ -54,15 +55,20 @@ def env_identity() -> tuple[str | None, str | None, str | None]:
 
 
 def login(cid: str, csec: str) -> str:
-    return http_json(f"{infisical_api()}/v1/auth/universal-auth/login",
-                     {"clientId": cid, "clientSecret": csec}, retries=1)["accessToken"]
+    return http_json(
+        f"{infisical_api()}/v1/auth/universal-auth/login",
+        {"clientId": cid, "clientSecret": csec},
+        retries=1,
+    )["accessToken"]
 
 
 def fetch(token: str, wanted: list[str]) -> dict[str, str]:
     got = http_json(
         f"{infisical_api()}/v3/secrets/raw?workspaceId={infisical_project()}"
         f"&environment={infisical_env()}&secretPath=%2F",
-        headers={"Authorization": f"Bearer {token}"}, retries=1)
+        headers={"Authorization": f"Bearer {token}"},
+        retries=1,
+    )
     out: dict[str, str] = {}
     for s in got.get("secrets", []):
         if s.get("secretKey") in wanted and s.get("secretValue"):
@@ -94,8 +100,10 @@ def read_env_file(path: pathlib.Path) -> dict[str, str]:
 def write_env_file(path: pathlib.Path, values: dict[str, str]) -> None:
     """Write KEY='value' lines to a 0600 file via temp-file + rename.  Never echoes a value."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = ("# Fleet recall credentials -- written by scripts/cloud-setup.sh from Infisical.\n"
-            "# Load with:  set -a; . " + str(path) + "; set +a\n")
+    body = (
+        "# Fleet recall credentials -- written by scripts/cloud-setup.sh from Infisical.\n"
+        "# Load with:  set -a; . " + str(path) + "; set +a\n"
+    )
     for k in sorted(values):
         body += f"{k}={shlex.quote(values[k])}\n"
     old = os.umask(0o077)
@@ -112,8 +120,7 @@ def write_env_file(path: pathlib.Path, values: dict[str, str]) -> None:
 def main(argv: list[str]) -> int:
     if len(argv) >= 1 and argv[0] == "--identity":
         prefix, _, _ = env_identity()
-        print(f"identity: {'true' if prefix else 'false'}"
-              + (f" ({prefix})" if prefix else ""))
+        print(f"identity: {'true' if prefix else 'false'}" + (f" ({prefix})" if prefix else ""))
         return 0 if prefix else 3
     if len(argv) < 3 or argv[0] != "--env-file":
         print("usage: fleet-infisical-fetch.py --env-file PATH KEY [KEY ...]", file=sys.stderr)

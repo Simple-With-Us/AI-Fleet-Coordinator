@@ -8,12 +8,7 @@
 The key never touches a file, a command line, a log or this process's output.
 It is read from Infisical (project "AI Fleet Coordinator", environment prod,
 folder /zulip, through the INFISICAL_AUTOMATION identity), checked against
-Zulip, and written to `wrangler secret put` on stdin.  Infisical is the only
-source (owner 2026-10-18, AFC-347):  nothing is read from ~/.secrets.  The
-identity itself comes from the environment (INFISICAL_AUTOMATION_CLIENT_ID and
-INFISICAL_AUTOMATION_CLIENT_SECRET), and wrangler's Cloudflare credentials
-(CLOUDFLARE_JAY_ACCOUNT_EMAIL, CLOUDFLARE_JAY_API_KEY) come from Infisical's
-Fleet-OPS project, prod, folder /global-api-keys, through the same identity.  Spec 3.6 says the
+Zulip, and written to `wrangler secret put` on stdin.  Spec 3.6 says the
 Worker gets its copy from Infisical's Cloudflare sync;  until Jay sets that up
 (owner item A4), this script is that sync, run by hand.  Rerun it after a
 rotation.
@@ -23,6 +18,9 @@ checks the Worker repeats every 10 minutes:  the seat is in HOSTED_SEATS, the
 Infisical email matches the seat's configured Worker email binding, and
 Zulip's users/me for the key is that bot, a bot, and a member (role 400), never
 an administrator or owner.  So an admin key (openai-dot-bot until Fri, Oct 9) is refused and never installed.
+
+Seat keys come only from Infisical:  `--zuliprc` is gone, so nothing is read from
+~/.secrets/Zulip (owner 2026-10-18, AFC-347).
 
 Standard library only.  Python 3.11+.  Run from scripts/agent-sync-mcp/.
 """
@@ -35,6 +33,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -47,8 +46,6 @@ INFISICAL_API = "https://app.infisical.com"
 INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator (INFISICAL.md)
 INFISICAL_ENV = "prod"
 INFISICAL_PATH = "/zulip"
-GLOBAL_KEYS_SLUG = "fleet-ops"  # Infisical project slug;  its id is private inventory (ATTACK-MAP.md), looked up at run time
-GLOBAL_KEYS_PATH = "/global-api-keys"
 REALM = "https://simplewithus.zulipchat.com"
 ACCOUNT_ID = "3a9368057468d0909cafaa85df12d1b7"  # Usage.Jays.Services (decision D1)
 MEMBER_ROLE = 400
@@ -71,12 +68,22 @@ def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
     raise SystemExit(f"install_seat_key: {message}")
 
 
-def identity(name: str) -> str:
-    """One half of the INFISICAL_AUTOMATION identity, from the environment only."""
+def handoff(name: str) -> str:
+    """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The flat
+    file ~/.secrets/global-api-keys is retired.  Only the name is ever reported."""
     value = os.environ.get(name, "").strip()
-    if not value:
-        fail(f"{name} is not set in the environment (name only; no value printed)")
-    return value
+    if value:
+        return value
+    binary = shutil.which("fleet-secrets") or str(
+        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
+    )
+    try:
+        proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    fail(f"{name} is not in the environment or fleet-secrets (name only; no value printed)")
 
 
 def wrangler_vars() -> dict:
@@ -126,73 +133,35 @@ def http_json(
         )
 
 
-_TOKEN: list[str] = []
-
-
-def infisical_token() -> str:
-    if not _TOKEN:
-        login = http_json(
-            "POST",
-            f"{INFISICAL_API}/api/v1/auth/universal-auth/login",
-            body={
-                "clientId": identity("INFISICAL_AUTOMATION_CLIENT_ID"),
-                "clientSecret": identity("INFISICAL_AUTOMATION_CLIENT_SECRET"),
-            },
-        )
-        _TOKEN.append(login.get("accessToken") or fail("Infisical login returned no access token"))
-    return _TOKEN[0]
-
-
-def infisical_project_id(slug: str) -> str:
-    """A project's id from its slug, so no private project id has to live in this public repo."""
-    data = http_json(
-        "GET",
-        f"{INFISICAL_API}/api/v1/projects/slug/{urllib.parse.quote(slug)}",
-        headers={"Authorization": "Bearer " + infisical_token()},
-    )
-    return (data.get("project") or data).get("id") or fail(
-        f"Infisical has no project with slug {slug}"
-    )
-
-
-def infisical_secrets(project: str, path: str) -> dict[str, str]:
-    """Every secret in one Infisical folder, name to value.  No value is printed."""
-    query = urllib.parse.urlencode(
-        {"workspaceId": project, "environment": INFISICAL_ENV, "secretPath": path}
-    )
-    data = http_json(
-        "GET",
-        f"{INFISICAL_API}/api/v3/secrets/raw?{query}",
-        headers={"Authorization": "Bearer " + infisical_token()},
-    )
-    return {
-        s.get("secretKey"): (s.get("secretValue") or "").strip() for s in data.get("secrets", [])
-    }
-
-
 def infisical_pair(prefix: str) -> tuple[str, str]:
     """(email, key) for a seat from Infisical.  Neither is printed."""
-    found = infisical_secrets(INFISICAL_PROJECT, INFISICAL_PATH)
+    login = http_json(
+        "POST",
+        f"{INFISICAL_API}/api/v1/auth/universal-auth/login",
+        body={
+            "clientId": handoff("INFISICAL_AUTOMATION_CLIENT_ID"),
+            "clientSecret": handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
+        },
+    )
+    token = login.get("accessToken") or fail("Infisical login returned no access token")
+    query = urllib.parse.urlencode(
+        {
+            "workspaceId": INFISICAL_PROJECT,
+            "environment": INFISICAL_ENV,
+            "secretPath": INFISICAL_PATH,
+        }
+    )
+    auth_header = "Bearer " + token
+    data = http_json(
+        "GET", f"{INFISICAL_API}/api/v3/secrets/raw?{query}", headers={"Authorization": auth_header}
+    )
+    found = {s.get("secretKey"): s.get("secretValue") or "" for s in data.get("secrets", [])}
     email, key = found.get(f"{prefix}_EMAIL", ""), found.get(f"{prefix}_API_KEY", "")
     if not email or not key:
         fail(
             f"{prefix}_EMAIL or {prefix}_API_KEY is missing or empty in Infisical {INFISICAL_ENV}{INFISICAL_PATH}"
         )
-    return email, key
-
-
-def cloudflare_credentials() -> tuple[str, str]:
-    """wrangler's Cloudflare email and global key, from Fleet-OPS prod /global-api-keys."""
-    found = infisical_secrets(infisical_project_id(GLOBAL_KEYS_SLUG), GLOBAL_KEYS_PATH)
-    email, key = (
-        found.get("CLOUDFLARE_JAY_ACCOUNT_EMAIL", ""),
-        found.get("CLOUDFLARE_JAY_API_KEY", ""),
-    )
-    if not email or not key:
-        fail(
-            f"CLOUDFLARE_JAY_ACCOUNT_EMAIL or CLOUDFLARE_JAY_API_KEY is missing in Infisical Fleet-OPS {INFISICAL_ENV}{GLOBAL_KEYS_PATH}"
-        )
-    return email, key
+    return email.strip(), key.strip()
 
 
 def seat_tag(user: dict) -> str:
@@ -207,13 +176,12 @@ def zulip_me(email: str, key: str) -> dict:
 
 
 def wrangler(args: list[str], stdin: str | None, key_for_scrub: str) -> int:
-    cf_email, cf_key = cloudflare_credentials()
     env = dict(os.environ)
     env.update(
         {
             "CLOUDFLARE_ACCOUNT_ID": ACCOUNT_ID,
-            "CLOUDFLARE_EMAIL": cf_email,
-            "CLOUDFLARE_API_KEY": cf_key,
+            "CLOUDFLARE_EMAIL": handoff("CLOUDFLARE_JAY_ACCOUNT_EMAIL"),
+            "CLOUDFLARE_API_KEY": handoff("CLOUDFLARE_JAY_API_KEY"),
             "WRANGLER_SEND_METRICS": "false",
         }
     )

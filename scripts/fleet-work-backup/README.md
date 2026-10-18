@@ -162,7 +162,7 @@ bucket has a **lifecycle rule** with `daysFromHidingToDeleting` of 7 to 30 (whic
 window).  The dedicated bucket's rule is the whole-bucket one,
 `{fileNamePrefix: "", daysFromHidingToDeleting: 14, daysFromUploadingToHiding: null}`, and the check accepts it
 (a rule on `fleet-work-backup/` alone is accepted too).  A key that can delete lets any process on the Mac that
-can read it erase the history, so keep the key in the handoff file only (mode 600) and consider Object Lock.
+can read it erase the history, so keep the key in Infisical only (read through `fleet-secrets`) and consider Object Lock.
 
 The staging folder is fixed at `~/Library/Caches/fleet-work-backup/stage` (restic picks the parent
 snapshot by path, so a timestamped folder would break deduplication and retention).  Files are
@@ -173,7 +173,7 @@ runs with `--ignore-inode --ignore-ctime`, because a rebuilt folder has new inod
 
 ## Credentials
 
-Read by the job from `~/.secrets/global-api-keys` (or the environment) into the restic
+Read by the job from `~/.secrets/global-api-keys` (or the environment) today, moving to the environment or `fleet-secrets` under OPS-818, into the restic
 subprocess environment only.  Names, never values:
 
 | Name | Use |

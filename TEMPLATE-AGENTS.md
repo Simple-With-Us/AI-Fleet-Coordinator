@@ -497,11 +497,12 @@ and platform.  Product UI stays the viewer's timezone.  Canonical:
   This repository and all public fleet repositories MUST NOT contain real host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, or secret values.
   - **Canonical private infrastructure inventory:** [`Simple-With-Us/fleet-ops:ATTACK-MAP.md`](https://github.com/Simple-With-Us/fleet-ops/blob/main/ATTACK-MAP.md) (local clone at `/Users/jay/Code/fleet-ops/ATTACK-MAP.md`).
   - **Cloud agents without repo access:** Fetch securely via `GET https://mac.jays.services/files/ATTACK-MAP.md` using `MAC_COLLAB_TOKEN`.
-  - **Secret handoff:** Read secrets from `~/.secrets/global-api-keys` or Infisical. Never log, grep, or print raw `KEY=value` lines. Never commit or refer to cloud storage / Google Drive backups of secrets.
+  - **Secret reads:** On the Mac read a fleet key with `fleet-secrets get NAME`, or run a command with only the keys it needs via `fleet-secrets run --only A,B -- CMD` (both come from Infisical Fleet-OPS; cookbook in `INFISICAL.md` § `fleet-secrets`). Never log, grep, or print raw `KEY=value` lines. Never commit or refer to cloud storage / Google Drive backups of secrets.
 - **App runtime secrets** live in **Infisical** (the app's own project, prod).  
-  `~/.secrets/global-api-keys` is agent handoff / operator convenience only — never
-  the value a deployed app depends on. Cross-app keys needed at runtime must be
-  **copied into the consuming app's Infisical project** (store-to-store, never printed).
+  The flat file `~/.secrets/global-api-keys` is retired in favor of Infisical Fleet-OPS via
+  `fleet-secrets`; nothing may read it, and no deployed app depends on it. Cross-app keys
+  needed at runtime must be **copied into the consuming app's Infisical project**
+  (store-to-store, never printed).
 - **Coolify tokens — do not mix:**
   - `COOLIFY_SERVER_STATS` = **read-only** → app server-stats / product metrics only.
   - `COOLIFY_AGENTS` = **full deploy/admin** → agent ops and deploy workflows only.
@@ -509,9 +510,10 @@ and platform.  Product UI stays the viewer's timezone.  Canonical:
 - **Infisical CLI:** never bare `infisical secrets` (prints values into the transcript).
   Use `scripts/infisical-secrets-safe.sh` (set/has/names) or set with `--silent` and
   verify by key **length** only. Load the `secret-safety` skill before secret tools.
-- **Handoff-file grep trap (2026-08-14):** `grep '^[A-Z0-9_]+=' ~/.secrets/global-api-keys`
+- **Secrets-file grep trap (2026-08-14):** `grep '^[A-Z0-9_]+=' <any ~/.secrets file or .env>`
   (or `rg KEY file` without `-o`) prints **values** into the transcript.  Names only:
-  `grep -oE '^[A-Z][A-Z0-9_]*' ~/.secrets/global-api-keys`.  Never `cat` / Read that file.
+  `fleet-secrets names`.  One value: `fleet-secrets get NAME`.  Never `cat` / Read a
+  secrets file, and never add `2>&1` to a command that touches a secret.
 - **Loaded-key byte dumps (2026-09-17):** never `od` / `xxd` / `hexdump` / `hd` /
   `strings` / `base64` / `cut -c` / last-command `printf %s` of `$NAME` when NAME
   looks like KEY / TOKEN / SECRET / PASSWORD / DSN.  That prints the live value.
@@ -761,7 +763,7 @@ paternalism that keeps creeping back in from every agent (Claude, Codex, others)
   - If a key is missing, wrong, exhausted, or rejected: STOP and tell the owner
     what you observed and which key you believe is in play (identify it by its
     masked first-8/last-4 preview — see below — never by pasting a value). The
-    owner supplies keys via the `chmod 600` handoff in `~/.secrets/`.
+    owner supplies keys through Infisical (read with `fleet-secrets get NAME`) or as a `chmod 600` file path.
     Waiting is always cheaper than a second key.
   - To see WHICH key is serving without ever revealing one: the Connections page
     (`/console/connections#api-keys`) shows the masked preview of the key that
