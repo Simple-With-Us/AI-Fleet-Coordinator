@@ -643,6 +643,32 @@ class CoordinatorSelfIdTests(unittest.TestCase):
                     self.assertIn("AFC", out, f"{key}/{name}")
                     self.assertNotRegex(out, r"GB-COMPILE(?!R)", msg=f"{key}/{name}")
 
+    # AFC and OPS are repo acronyms (owner 2026-10-16), never a sender or a signature:
+    # no canonical skill and no seat render may call either one the coordinator's self-id.
+    AFC_SIGNATURE_PHRASES = (
+        "self-id is `AFC`",
+        "self-id is `{COORDINATOR_SELF_ID}`",
+        "signs as `AFC`",
+        "Sign Zulip as `[AFC]`",
+        "posts as `[AFC]`",
+        "Sibling infra identity",
+        "Coordinator/ops self-id",
+    )
+
+    def test_afc_is_a_repo_acronym_never_a_signature(self) -> None:
+        for name in catalog_skill_names(DOCS):
+            src = _load_skill(name)
+            for phrase in self.AFC_SIGNATURE_PHRASES:
+                self.assertNotIn(phrase, src, f"canonical {name}: {phrase}")
+            for key, seat in SEATS.items():
+                if not skill_allowed_for_seat(name, seat):
+                    continue
+                out = specialize_from_monet(src, seat, skill_name=name)
+                for phrase in self.AFC_SIGNATURE_PHRASES:
+                    self.assertNotIn(phrase, out, f"{key}/{name}: {phrase}")
+        stop = specialize_from_monet(_load_skill("session-start"), SEATS["kimi"], skill_name="session-start")
+        self.assertIn("`AFC` is a repo acronym, never a sender or a signature", stop)
+
     def test_by_seat_catalog_matches_specialization(self) -> None:
         kimi_ss = Path(DOCS, "by-seat", "kimi", "session-start", "SKILL.md").read_text(
             encoding="utf-8"

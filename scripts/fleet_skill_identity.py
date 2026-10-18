@@ -209,7 +209,9 @@ def _banner(tag: str, notes: str, prefix: str, suffix: str, zulip: str = "") -> 
     )
 
 
-# Coordinator / ops self-id for this repo (Simple-With-Us/AI-Fleet-Coordinator).
+# Repo acronyms for Simple-With-Us/AI-Fleet-Coordinator (AFC) and Fleet-OPS (OPS):
+# Linear teams, topic ids and links only, never a seat, bot, sender or signature
+# (owner 2026-10-16;  the coordinator is CLAUDE and agent-sync writes the tag).
 # FLEET is a recipient word for the fleet-wide wake in Zulip (`@**all**` in
 # #agent-sync topic `fleet`), not this system's name.
 COORDINATOR_SELF_ID = "AFC"
@@ -1306,7 +1308,7 @@ def _apply_retired(text: str, seat: Seat, skill_name: str) -> str:
             "work.  If you are reading this after a mistaken spawn, say so in "
             "your own chat with the owner and stop.  "
             + f"Do not export `AGENT_SEAT={seat.tag}` to take work.  Do not claim work "
-            f"or pick a {seat.notes} lane.  Coordinator self-id is `{COORDINATOR_SELF_ID}`.  "
+            f"or pick a {seat.notes} lane.  `{COORDINATOR_SELF_ID}` is a repo acronym, never a sender or a signature.  "
             "A fleet-wide wake is `@**all**` in #agent-sync topic `fleet`.\n"
         )
     return text
