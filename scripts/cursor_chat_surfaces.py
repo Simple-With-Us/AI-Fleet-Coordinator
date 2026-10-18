@@ -8,6 +8,7 @@ override that turns new Shellular Cursor chats into Cloud Agents.
 
 Never print API keys or secret-file contents.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -38,7 +39,9 @@ SECRET_FILES = (
     Path.home() / ".secrets" / "cursor-api-key",
     Path.home() / ".secrets" / "cursor-api.env",
 )
-FLEET_SECRETS_BIN = Path.home() / ".local" / "bin" / "fleet-secrets"  # OPS-818:  replaces the flat global-api-keys file
+FLEET_SECRETS_BIN = (
+    Path.home() / ".local" / "bin" / "fleet-secrets"
+)  # OPS-818:  replaces the flat global-api-keys file
 REPO_SCRIPTS = Path(__file__).resolve().parent
 LIVE_FILES = (
     "cursor_chat_surfaces.py",
@@ -89,7 +92,9 @@ def _named_keys_from_text(text: str) -> str | None:
 
 def _fleet_secrets_key() -> str | None:
     """CURSOR_SYNC_API_KEY (or CURSOR_API_KEY) from `fleet-secrets get`, or None.  Never logged."""
-    binary = shutil.which("fleet-secrets") or (str(FLEET_SECRETS_BIN) if FLEET_SECRETS_BIN.is_file() else None)
+    binary = shutil.which("fleet-secrets") or (
+        str(FLEET_SECRETS_BIN) if FLEET_SECRETS_BIN.is_file() else None
+    )
     if not binary:
         return None
     for name in API_KEY_NAMES:
@@ -128,18 +133,15 @@ def github_https_url(remote: str) -> str | None:
         return None
     if remote.startswith("git@github.com:"):
         path = remote[len("git@github.com:") :]
-        if path.endswith(".git"):
-            path = path[:-4]
+        path = path.removesuffix(".git")
         return f"https://github.com/{path}"
     if remote.startswith("ssh://git@github.com/"):
         path = remote[len("ssh://git@github.com/") :]
-        if path.endswith(".git"):
-            path = path[:-4]
+        path = path.removesuffix(".git")
         return f"https://github.com/{path}"
     if remote.startswith("https://github.com/"):
         url = remote
-        if url.endswith(".git"):
-            url = url[:-4]
+        url = url.removesuffix(".git")
         return url
     return None
 
@@ -207,7 +209,7 @@ def agent_web_url(agent_id: str) -> str:
 
 
 def _basic_auth_header(api_key: str) -> str:
-    token = base64.b64encode(f"{api_key}:".encode("utf-8")).decode("ascii")
+    token = base64.b64encode(f"{api_key}:".encode()).decode("ascii")
     return f"Basic {token}"
 
 
@@ -434,9 +436,7 @@ def merge_shellular_agents(existing: JsonDict) -> JsonDict:
     data = dict(existing) if isinstance(existing, dict) else {}
     custom = list(data.get("custom") or [])
     by_id = {
-        row.get("id"): i
-        for i, row in enumerate(custom)
-        if isinstance(row, dict) and row.get("id")
+        row.get("id"): i for i, row in enumerate(custom) if isinstance(row, dict) and row.get("id")
     }
     for entry in shellular_cursor_entries():
         idx = by_id.get(entry["id"])
@@ -477,7 +477,9 @@ def cmd_status() -> int:
         )
     )
     print(f"  My Machines worker: {'up' if worker_running() else 'down'}")
-    print(f"  Live install: {LIVE_DIR} {'yes' if (LIVE_DIR / 'cursor_acp_cloud_bridge.py').is_file() else 'no'}")
+    print(
+        f"  Live install: {LIVE_DIR} {'yes' if (LIVE_DIR / 'cursor_acp_cloud_bridge.py').is_file() else 'no'}"
+    )
     agents_file = load_json(SHELLULAR_AGENTS, {})
     custom = agents_file.get("custom") if isinstance(agents_file, dict) else []
     cursor_row = next(
@@ -533,7 +535,9 @@ def cmd_list_cloud() -> int:
         return 0
     for agent in agents:
         ident = agent.get("id", "?")
-        print(f"{ident}\t{agent.get('name') or '(unnamed)'}\t{agent.get('url') or agent_web_url(str(ident))}")
+        print(
+            f"{ident}\t{agent.get('name') or '(unnamed)'}\t{agent.get('url') or agent_web_url(str(ident))}"
+        )
     return 0
 
 
@@ -684,7 +688,9 @@ def build_parser() -> argparse.ArgumentParser:
     watch_p.add_argument("--once", action="store_true")
     handoff = sub.add_parser("handoff-acp", help="Create a Cloud Agent from a local ACP session")
     handoff.add_argument("session_id", nargs="?")
-    handoff.add_argument("--on-mac", action="store_true", help="Route to My Machines worker jay-mac")
+    handoff.add_argument(
+        "--on-mac", action="store_true", help="Route to My Machines worker jay-mac"
+    )
     inst = sub.add_parser("install", help="Copy helpers to ~/apps and optionally patch Shellular")
     inst.add_argument("--shellular", action="store_true")
     return parser

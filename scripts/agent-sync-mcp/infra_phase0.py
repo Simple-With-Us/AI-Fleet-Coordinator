@@ -61,14 +61,18 @@ def _load(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if value:
         return value
-    binary = shutil.which("fleet-secrets") or str(pathlib.Path.home() / ".local" / "bin" / "fleet-secrets")
+    binary = shutil.which("fleet-secrets") or str(
+        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
+    )
     try:
         proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
         if proc.returncode == 0 and proc.stdout.strip():
             return proc.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         pass
-    raise SystemExit(f"error: {name} is not in the environment or fleet-secrets (name only; no value printed)")
+    raise SystemExit(
+        f"error: {name} is not in the environment or fleet-secrets (name only; no value printed)"
+    )
 
 
 class Cloudflare:
@@ -126,33 +130,44 @@ def dns_records(cf: Cloudflare, zid: str) -> list[dict]:
 
 
 def tunnel(cf: Cloudflare) -> dict | None:
-    for t in cf.ok("GET", f"/accounts/{ACCOUNT_ID}/cfd_tunnel", is_deleted="false").get("result") or []:
+    for t in (
+        cf.ok("GET", f"/accounts/{ACCOUNT_ID}/cfd_tunnel", is_deleted="false").get("result") or []
+    ):
         if t.get("name") == TUNNEL_NAME:
             return t
     return None
 
 
 def tunnel_config(cf: Cloudflare, tid: str) -> dict:
-    return (cf.ok("GET", f"/accounts/{ACCOUNT_ID}/cfd_tunnel/{tid}/configurations").get("result") or {}).get("config") or {}
+    return (
+        cf.ok("GET", f"/accounts/{ACCOUNT_ID}/cfd_tunnel/{tid}/configurations").get("result") or {}
+    ).get("config") or {}
 
 
 def access_app(cf: Cloudflare) -> dict | None:
     for app in cf.ok("GET", f"/accounts/{ACCOUNT_ID}/access/apps").get("result") or []:
-        uris = [d.get("uri") for d in app.get("destinations") or [] if isinstance(d, dict)] + [app.get("domain")]
+        uris = [d.get("uri") for d in app.get("destinations") or [] if isinstance(d, dict)] + [
+            app.get("domain")
+        ]
         if app.get("name") == ACCESS_APP_NAME or any(u and u.startswith(HOST) for u in uris):
             return app
     return None
 
 
 def kv_namespace(cf: Cloudflare) -> dict | None:
-    for ns in cf.ok("GET", f"/accounts/{ACCOUNT_ID}/storage/kv/namespaces", per_page=100).get("result") or []:
+    for ns in (
+        cf.ok("GET", f"/accounts/{ACCOUNT_ID}/storage/kv/namespaces", per_page=100).get("result")
+        or []
+    ):
         if ns.get("title") == KV_TITLE:
             return ns
     return None
 
 
 def custom_domains(cf: Cloudflare) -> list[dict]:
-    return cf.ok("GET", f"/accounts/{ACCOUNT_ID}/workers/domains", hostname=HOST).get("result") or []
+    return (
+        cf.ok("GET", f"/accounts/{ACCOUNT_ID}/workers/domains", hostname=HOST).get("result") or []
+    )
 
 
 # ---------------------------------------------------------------- steps
@@ -161,16 +176,28 @@ def custom_domains(cf: Cloudflare) -> list[dict]:
 def local_listener(port: str) -> str:
     """Process name, pid and working directory of whatever listens on 127.0.0.1:<port>."""
     try:
-        out = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fpc"], capture_output=True, text=True, timeout=10).stdout
+        out = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fpc"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
     except (OSError, subprocess.SubprocessError):
         return "lsof unavailable"
-    pids = re.findall(r"^p(\d+)$", out, re.M)
-    names = re.findall(r"^c(.+)$", out, re.M)
+    pids = re.findall(r"^p(\d+)$", out, re.MULTILINE)
+    names = re.findall(r"^c(.+)$", out, re.MULTILINE)
     if not pids:
         return "nothing listening"
     try:
-        cwd_out = subprocess.run(["lsof", "-a", "-p", pids[0], "-d", "cwd", "-Fn"], capture_output=True, text=True, timeout=10).stdout
-        cwd = next((line[1:] for line in cwd_out.splitlines() if line.startswith("n")), "unknown cwd")
+        cwd_out = subprocess.run(
+            ["lsof", "-a", "-p", pids[0], "-d", "cwd", "-Fn"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        cwd = next(
+            (line[1:] for line in cwd_out.splitlines() if line.startswith("n")), "unknown cwd"
+        )
     except (OSError, subprocess.SubprocessError):
         cwd = "unknown cwd"
     return f"{names[0] if names else 'process'} pid {pids[0]} in {cwd}"
@@ -180,20 +207,34 @@ def cmd_status(cf: Cloudflare, _apply: bool) -> None:
     zid = zone_id(cf)
     say(f"zone {ZONE_NAME}: {zid}")
     for r in dns_records(cf, zid):
-        say(f"dns: {r['type']} {r['name']} -> {r['content']} proxied={r.get('proxied')} id={r['id']}")
+        say(
+            f"dns: {r['type']} {r['name']} -> {r['content']} proxied={r.get('proxied')} id={r['id']}"
+        )
     t = tunnel(cf)
     if t:
-        rules = [r for r in tunnel_config(cf, t["id"]).get("ingress") or [] if r.get("hostname") == HOST]
-        say(f"tunnel {TUNNEL_NAME} ({t['id']}, {t.get('status')}): {len(rules)} ingress rule(s) for {HOST}")
+        rules = [
+            r for r in tunnel_config(cf, t["id"]).get("ingress") or [] if r.get("hostname") == HOST
+        ]
+        say(
+            f"tunnel {TUNNEL_NAME} ({t['id']}, {t.get('status')}): {len(rules)} ingress rule(s) for {HOST}"
+        )
         for r in rules:
             say(f"  ingress: {r.get('hostname')} -> {r.get('service')}")
             port = re.search(r"localhost:(\d+)$", str(r.get("service") or ""))
             if port:
-                say(f"  local listener on port {port.group(1)} (read-only lsof):  {local_listener(port.group(1))}")
+                say(
+                    f"  local listener on port {port.group(1)} (read-only lsof):  {local_listener(port.group(1))}"
+                )
     for d in custom_domains(cf):
-        say(f"worker custom domain: {d.get('hostname')} -> {d.get('service')} ({d.get('environment')})")
+        say(
+            f"worker custom domain: {d.get('hostname')} -> {d.get('service')} ({d.get('environment')})"
+        )
     app = access_app(cf)
-    say(f"access app: {app['name']} aud={app.get('aud')} session={app.get('session_duration')}" if app else "access app: none")
+    say(
+        f"access app: {app['name']} aud={app.get('aud')} session={app.get('session_duration')}"
+        if app
+        else "access app: none"
+    )
     ns = kv_namespace(cf)
     say(f"kv: {ns['title']} id={ns['id']}" if ns else "kv: none")
 
@@ -204,7 +245,9 @@ def cmd_access(cf: Cloudflare, apply: bool) -> None:
         say(f"exists: {existing['name']} ({existing['id']}) aud={existing.get('aud')}")
         say(f"destinations: {json.dumps(existing.get('destinations'))}")
         return
-    mirror = cf.ok("GET", f"/accounts/{ACCOUNT_ID}/access/apps/{MIRROR_APP_UUID}").get("result") or {}
+    mirror = (
+        cf.ok("GET", f"/accounts/{ACCOUNT_ID}/access/apps/{MIRROR_APP_UUID}").get("result") or {}
+    )
     body = {
         "name": ACCESS_APP_NAME,
         "type": "self_hosted",
@@ -230,9 +273,14 @@ def cmd_access(cf: Cloudflare, apply: bool) -> None:
         return
     res = cf.ok("POST", f"/accounts/{ACCOUNT_ID}/access/apps", body).get("result") or {}
     say(f"created {res.get('id')} aud={res.get('aud')}")
-    pols = cf.call("GET", f"/accounts/{ACCOUNT_ID}/access/apps/{res.get('id')}/policies").get("result") or []
+    pols = (
+        cf.call("GET", f"/accounts/{ACCOUNT_ID}/access/apps/{res.get('id')}/policies").get("result")
+        or []
+    )
     if not any(p.get("decision") == "allow" for p in pols):
-        say("WARNING: the app has no allow policy.  Nobody can pass it, which fails closed.  Add 'Jay emails only' in the dashboard.")
+        say(
+            "WARNING: the app has no allow policy.  Nobody can pass it, which fails closed.  Add 'Jay emails only' in the dashboard."
+        )
 
 
 def cmd_kv(cf: Cloudflare, apply: bool) -> None:
@@ -241,7 +289,12 @@ def cmd_kv(cf: Cloudflare, apply: bool) -> None:
         say(f"exists: {ns['title']} id={ns['id']}")
         return
     if plan(apply, f"create KV namespace {KV_TITLE}"):
-        res = cf.ok("POST", f"/accounts/{ACCOUNT_ID}/storage/kv/namespaces", {"title": KV_TITLE}).get("result") or {}
+        res = (
+            cf.ok("POST", f"/accounts/{ACCOUNT_ID}/storage/kv/namespaces", {"title": KV_TITLE}).get(
+                "result"
+            )
+            or {}
+        )
         say(f"created {KV_TITLE} id={res.get('id')}")
 
 
@@ -251,7 +304,9 @@ def cmd_write_config(cf: Cloudflare, apply: bool) -> None:
     app = access_app(cf)
     if not ns or not app:
         raise SystemExit("error: run 'kv --apply' and 'access --apply' first")
-    new = text.replace("REPLACE_WITH_OAUTH_KV_ID", ns["id"]).replace("REPLACE_WITH_ACCESS_AUD", app["aud"])
+    new = text.replace("REPLACE_WITH_OAUTH_KV_ID", ns["id"]).replace(
+        "REPLACE_WITH_ACCESS_AUD", app["aud"]
+    )
     if new == text:
         say("wrangler.jsonc already has both ids")
         return
@@ -277,17 +332,30 @@ def cmd_dns(cf: Cloudflare, apply: bool) -> None:
         return
     for r in recs:
         if r["type"] != "CNAME" or not r["content"].endswith(".cfargotunnel.com"):
-            raise SystemExit(f"error: unexpected record {r['type']} -> {r['content']}; not touching it")
+            raise SystemExit(
+                f"error: unexpected record {r['type']} -> {r['content']}; not touching it"
+            )
     for r in recs:
-        say(f"record: {r['type']} {r['name']} -> {r['content']} proxied={r.get('proxied')} id={r['id']}")
-        if plan(apply, f"back up and delete DNS record {r['id']} (a Worker custom domain cannot bind while it exists)"):
+        say(
+            f"record: {r['type']} {r['name']} -> {r['content']} proxied={r.get('proxied')} id={r['id']}"
+        )
+        if plan(
+            apply,
+            f"back up and delete DNS record {r['id']} (a Worker custom domain cannot bind while it exists)",
+        ):
             path = _backup(f"dns-{r['id']}.json", r)
             say(f"backup: {path}")
             cf.ok("DELETE", f"/zones/{zid}/dns_records/{r['id']}")
             say("deleted")
-            say("The backup is a record of what existed, NOT a rollback:  recreating this CNAME would publish")
-            say("the Mac's local port again with no Access.  To undo a bad deploy, roll back the Worker version.")
-            say("Next:  deploy (step 5), then 'check', then 'tunnel --apply' (step 6) to drop the dead ingress rule.")
+            say(
+                "The backup is a record of what existed, NOT a rollback:  recreating this CNAME would publish"
+            )
+            say(
+                "the Mac's local port again with no Access.  To undo a bad deploy, roll back the Worker version."
+            )
+            say(
+                "Next:  deploy (step 5), then 'check', then 'tunnel --apply' (step 6) to drop the dead ingress rule."
+            )
 
 
 def cmd_tunnel(cf: Cloudflare, apply: bool) -> None:
@@ -302,15 +370,26 @@ def cmd_tunnel(cf: Cloudflare, apply: bool) -> None:
         say("no ingress rule for this host; nothing to do")
         return
     if len(removed) != 1 or not keep or keep[-1].get("hostname"):
-        raise SystemExit("error: unexpected ingress shape (want exactly one rule removed and a catch-all last); not touching it")
+        raise SystemExit(
+            "error: unexpected ingress shape (want exactly one rule removed and a catch-all last); not touching it"
+        )
     say(f"tunnel {TUNNEL_NAME} ({t['id']}): {len(ingress)} rules -> {len(keep)}")
     say(f"remove: {removed[0].get('hostname')} -> {removed[0].get('service')}")
-    say("Do this right after the custom domain is verified:  a dead rule that points at a local dev port")
+    say(
+        "Do this right after the custom domain is verified:  a dead rule that points at a local dev port"
+    )
     say("comes back to life the moment anyone re-adds a CNAME for this host.")
-    if plan(apply, "PUT the tunnel configuration without that rule (whole-config write on a live tunnel)"):
+    if plan(
+        apply,
+        "PUT the tunnel configuration without that rule (whole-config write on a live tunnel)",
+    ):
         path = _backup(f"tunnel-{t['id']}-config.json", config)
         say(f"backup: {path}")
-        cf.ok("PUT", f"/accounts/{ACCOUNT_ID}/cfd_tunnel/{t['id']}/configurations", {"config": {**config, "ingress": keep}})
+        cf.ok(
+            "PUT",
+            f"/accounts/{ACCOUNT_ID}/cfd_tunnel/{t['id']}/configurations",
+            {"config": {**config, "ingress": keep}},
+        )
         say("updated")
 
 
@@ -318,13 +397,18 @@ def cmd_tunnel(cf: Cloudflare, apply: bool) -> None:
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):  # noqa: D401
+    def redirect_request(self, *args, **kwargs):
         return None
 
 
 def _http(method: str, url: str, body: bytes | None = None, headers: dict | None = None):
     opener = urllib.request.build_opener(_NoRedirect)
-    req = urllib.request.Request(url, data=body, method=method, headers={"User-Agent": "agent-sync-phase0-check", **(headers or {})})
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers={"User-Agent": "agent-sync-phase0-check", **(headers or {})},
+    )
     try:
         with opener.open(req, timeout=20) as resp:
             return resp.status, dict(resp.headers), resp.read()
@@ -345,42 +429,94 @@ def cmd_check(cf: Cloudflare | None, _apply: bool) -> None:
     status, _, body = _http("GET", f"{ISSUER}/.well-known/oauth-authorization-server")
     asm = json.loads(body) if status == 200 else {}
     expect("authorization server metadata is 200", status == 200, str(status))
-    expect("issuer is the hostname, no trailing slash", asm.get("issuer") == ISSUER, str(asm.get("issuer")))
+    expect(
+        "issuer is the hostname, no trailing slash",
+        asm.get("issuer") == ISSUER,
+        str(asm.get("issuer")),
+    )
     expect("authorization_endpoint", asm.get("authorization_endpoint") == f"{ISSUER}/authorize")
     expect("token_endpoint", asm.get("token_endpoint") == f"{ISSUER}/oauth/token")
     expect("PKCE is S256 only", asm.get("code_challenge_methods_supported") == ["S256"])
-    expect("iss on authorization responses", asm.get("authorization_response_iss_parameter_supported") is True)
+    expect(
+        "iss on authorization responses",
+        asm.get("authorization_response_iss_parameter_supported") is True,
+    )
     expect("CIMD advertised", asm.get("client_id_metadata_document_supported") is True)
-    expect("DCR is off (no registration_endpoint)", "registration_endpoint" not in asm or asm.get("registration_endpoint") is None)
+    expect(
+        "DCR is off (no registration_endpoint)",
+        "registration_endpoint" not in asm or asm.get("registration_endpoint") is None,
+    )
 
     status, _, body = _http("GET", f"{ISSUER}/.well-known/oauth-protected-resource/mcp")
     prm = json.loads(body) if status == 200 else {}
     expect("protected resource metadata is 200", status == 200, str(status))
     expect("resource is /mcp", prm.get("resource") == RESOURCE)
     servers = prm.get("authorization_servers") or []
-    expect("authorization_servers[0] equals issuer byte for byte", bool(servers) and servers[0] == asm.get("issuer"), f"{servers[:1]} vs {asm.get('issuer')}")
+    expect(
+        "authorization_servers[0] equals issuer byte for byte",
+        bool(servers) and servers[0] == asm.get("issuer"),
+        f"{servers[:1]} vs {asm.get('issuer')}",
+    )
 
-    init = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "phase0-check", "version": "0"}}}).encode()
-    status, headers, _ = _http("POST", RESOURCE, init, {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
+    init = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "phase0-check", "version": "0"},
+            },
+        }
+    ).encode()
+    status, headers, _ = _http(
+        "POST",
+        RESOURCE,
+        init,
+        {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+    )
     challenge = next((v for k, v in headers.items() if k.lower() == "www-authenticate"), "")
     expect("unauthenticated initialize is 401", status == 401, str(status))
-    expect("401 names the resource metadata", f'resource_metadata="{ISSUER}/.well-known/oauth-protected-resource/mcp"' in challenge, challenge[:160])
+    expect(
+        "401 names the resource metadata",
+        f'resource_metadata="{ISSUER}/.well-known/oauth-protected-resource/mcp"' in challenge,
+        challenge[:160],
+    )
     status, _, _ = _http("GET", RESOURCE)
     expect("GET /mcp without a token is 401", status == 401, str(status))
 
     for path in ("/authorize", "/admin"):
         status, headers, _ = _http("GET", f"{ISSUER}{path}")
         location = next((v for k, v in headers.items() if k.lower() == "location"), "")
-        expect(f"{path} redirects to Access", status in (302, 303) and TEAM_DOMAIN in location, f"{status} {location[:80]}")
+        expect(
+            f"{path} redirects to Access",
+            status in (302, 303) and TEAM_DOMAIN in location,
+            f"{status} {location[:80]}",
+        )
 
     # Access covers subpaths of /admin too:  a POST to /admin/action must stop at
     # Access, never reach the Worker (whose own 403 says "Sign-In Required").
-    status, headers, body = _http("POST", f"{ISSUER}/admin/action", b"action=arm&seat=JET", {"Content-Type": "application/x-www-form-urlencoded"})
+    status, headers, body = _http(
+        "POST",
+        f"{ISSUER}/admin/action",
+        b"action=arm&seat=JET",
+        {"Content-Type": "application/x-www-form-urlencoded"},
+    )
     location = next((v for k, v in headers.items() if k.lower() == "location"), "")
-    expect("/admin/action is stopped by Access", (status in (302, 303) and TEAM_DOMAIN in location) or (status in (401, 403) and b"Sign-In Required" not in body), f"{status} {location[:80]}")
+    expect(
+        "/admin/action is stopped by Access",
+        (status in (302, 303) and TEAM_DOMAIN in location)
+        or (status in (401, 403) and b"Sign-In Required" not in body),
+        f"{status} {location[:80]}",
+    )
 
     status, _, body = _http("GET", f"{ISSUER}/health")
-    expect("/health is the static 200 the fleet admin panel probes", status == 200 and body.strip() == b'{"ok":true}', str(status))
+    expect(
+        "/health is the static 200 the fleet admin panel probes",
+        status == 200 and body.strip() == b'{"ok":true}',
+        str(status),
+    )
 
     for path in ("/", "/oauth/register", "/post", "/internal/wake/NOPE"):
         status, _, _ = _http("GET", f"{ISSUER}{path}")
@@ -388,21 +524,59 @@ def cmd_check(cf: Cloudflare | None, _apply: bool) -> None:
 
     # The listener's wake (spec 3.12) is outside Access:  an unsigned POST is the
     # Worker's own 401 once WAKE_HMAC_KEY_JET is set (404 before), never Access.
-    status, headers, _ = _http("POST", f"{ISSUER}/internal/wake/JET", b"{}", {"Content-Type": "application/json"})
+    status, headers, _ = _http(
+        "POST", f"{ISSUER}/internal/wake/JET", b"{}", {"Content-Type": "application/json"}
+    )
     location = next((v for k, v in headers.items() if k.lower() == "location"), "")
-    expect("/internal/wake/JET refuses an unsigned POST itself (401), outside Access", status == 401 and TEAM_DOMAIN not in location, str(status))
+    expect(
+        "/internal/wake/JET refuses an unsigned POST itself (401), outside Access",
+        status == 401 and TEAM_DOMAIN not in location,
+        str(status),
+    )
 
     if cf is not None:
-        sub = (cf.call("GET", f"/accounts/{ACCOUNT_ID}/workers/subdomain").get("result") or {}).get("subdomain")
+        sub = (cf.call("GET", f"/accounts/{ACCOUNT_ID}/workers/subdomain").get("result") or {}).get(
+            "subdomain"
+        )
         if sub:
-            status, _, body = _http("GET", f"https://{WORKER_NAME}.{sub}.workers.dev/.well-known/oauth-authorization-server")
-            expect("workers.dev does not serve this Worker", status != 200 or b'"issuer"' not in body, str(status))
+            status, _, body = _http(
+                "GET",
+                f"https://{WORKER_NAME}.{sub}.workers.dev/.well-known/oauth-authorization-server",
+            )
+            expect(
+                "workers.dev does not serve this Worker",
+                status != 200 or b'"issuer"' not in body,
+                str(status),
+            )
         domains = custom_domains(cf)
-        expect("custom domain bound to the Worker", any(d.get("service") == WORKER_NAME for d in domains), json.dumps([d.get("service") for d in domains]))
+        expect(
+            "custom domain bound to the Worker",
+            any(d.get("service") == WORKER_NAME for d in domains),
+            json.dumps([d.get("service") for d in domains]),
+        )
         t = tunnel(cf)
-        stale = [r.get("service") for r in (tunnel_config(cf, t["id"]).get("ingress") or []) if r.get("hostname") == HOST] if t else []
-        expect("no stale tunnel ingress rule for this host (run 'tunnel --apply')", not stale, json.dumps(stale))
-        expect("no leftover tunnel DNS record", not [r for r in dns_records(cf, zone_id(cf)) if r["type"] == "CNAME" and r["content"].endswith(".cfargotunnel.com")])
+        stale = (
+            [
+                r.get("service")
+                for r in (tunnel_config(cf, t["id"]).get("ingress") or [])
+                if r.get("hostname") == HOST
+            ]
+            if t
+            else []
+        )
+        expect(
+            "no stale tunnel ingress rule for this host (run 'tunnel --apply')",
+            not stale,
+            json.dumps(stale),
+        )
+        expect(
+            "no leftover tunnel DNS record",
+            not [
+                r
+                for r in dns_records(cf, zone_id(cf))
+                if r["type"] == "CNAME" and r["content"].endswith(".cfargotunnel.com")
+            ],
+        )
 
     say(f"{failures} failure(s)")
     if failures:
@@ -421,10 +595,16 @@ COMMANDS = {
 
 
 def main(argv: list[str]) -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("command", choices=sorted(COMMANDS))
     ap.add_argument("--apply", action="store_true", help="make the change (default is a dry run)")
-    ap.add_argument("--no-key", action="store_true", help="check only:  skip the steps that need the Cloudflare key")
+    ap.add_argument(
+        "--no-key",
+        action="store_true",
+        help="check only:  skip the steps that need the Cloudflare key",
+    )
     args = ap.parse_args(argv)
     cf = None if (args.command == "check" and args.no_key) else Cloudflare()
     COMMANDS[args.command](cf, args.apply)

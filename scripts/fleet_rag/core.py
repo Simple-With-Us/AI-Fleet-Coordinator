@@ -16,6 +16,7 @@ Read vs write: if QDRANT_READONLY_API_KEY is available it is used for every read
 (search / scroll / count / stats); QDRANT_API_KEY is used only for upsert / delete.  Callers
 that only read may pass need_write=False so a machine without the write key still works.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -31,7 +32,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 # Infisical defaults.  Every one of these is a *default*, overridable from the
 # environment so a third party can point the same code at their own Infisical (or self-hosted
@@ -44,14 +46,19 @@ NAMESPACE = uuid.UUID("00000000-0000-0000-0000-00000000fee7")
 
 READ_KEYS = ("TEI_URL", "TEI_API_KEY", "QDRANT_URL", "QDRANT_FLEET_COLLECTION")
 WRITE_KEYS = ("QDRANT_API_KEY",)
-OPTIONAL_KEYS = ("QDRANT_READONLY_API_KEY", "TEI_EMBED_MODEL", "TEI_RERANK_URL", "TEI_RERANK_API_KEY")
+OPTIONAL_KEYS = (
+    "QDRANT_READONLY_API_KEY",
+    "TEI_EMBED_MODEL",
+    "TEI_RERANK_URL",
+    "TEI_RERANK_API_KEY",
+)
 ALL_KEYS = READ_KEYS + WRITE_KEYS + OPTIONAL_KEYS
 
 EMBED_MODEL_TAG = "BAAI/bge-m3-selfhosted"
-EMBED_BATCH = 8          # the ONNX backend caps a batch at 8 requests
+EMBED_BATCH = 8  # the ONNX backend caps a batch at 8 requests
 DEFAULT_TIMEOUT = 120
 RETRIES = 4
-BACKOFF_MAX = 10         # seconds, the exponential-backoff cap between retries
+BACKOFF_MAX = 10  # seconds, the exponential-backoff cap between retries
 
 # Overridable at call time (env is read inside http_json(), never baked in at import), so a
 # caller behind a slower hop -- the SSH tunnel to the private Qdrant/TEI host, see
@@ -67,12 +74,12 @@ BACKOFF_MAX_ENV = "RECALL_HTTP_BACKOFF_MAX"
 # are now floored at 0 (falling back to the default, same as a non-numeric value) and an
 # unreasonably large value is clamped rather than honored outright.
 MAX_RETRIES = 20
-MAX_BACKOFF_MAX = 300     # seconds
+MAX_BACKOFF_MAX = 300  # seconds
 
 # Cross-encoder rerank (TEI /rerank, BAAI/bge-reranker-v2-m3).  Optional: only used when both
 # TEI_RERANK_URL and TEI_RERANK_API_KEY are configured, and every failure falls back silently.
 RERANK_BATCH = 32
-RERANK_TIMEOUT = 8       # TOTAL seconds for one rerank() call, across every batch
+RERANK_TIMEOUT = 8  # TOTAL seconds for one rerank() call, across every batch
 
 # "Lesson" prefetch: agent contributions in these categories get their own prefetch so a matching
 # lesson always enters the fusion near the top instead of drowning under doc chunks.
@@ -90,6 +97,7 @@ class FleetRagError(RuntimeError):
 
 
 # --------------------------------------------------------------------------- HTTP
+
 
 def _env_int(name: str, default: int, *, min_value: int = 0, max_value: int | None = None) -> int:
     """int(os.environ[name]) when set, parseable, and >= min_value, else `default`; a value
@@ -115,8 +123,14 @@ def _env_int(name: str, default: int, *, min_value: int = 0, max_value: int | No
     return n
 
 
-def http_json(url: str, body: Any = None, headers: dict | None = None, method: str | None = None,
-              timeout: float = DEFAULT_TIMEOUT, retries: "int | None" = None) -> Any:
+def http_json(
+    url: str,
+    body: Any = None,
+    headers: dict | None = None,
+    method: str | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+    retries: int | None = None,
+) -> Any:
     """JSON request with bounded retries on 408 / 429 / 5xx / connection errors.  Never logs
     bodies.
 
@@ -139,8 +153,12 @@ def http_json(url: str, body: Any = None, headers: dict | None = None, method: s
     method = method or ("POST" if body is not None else "GET")
     last: Exception | None = None
     for attempt in range(retries + 1):
-        req = urllib.request.Request(url, data=data, method=method,
-                                     headers={"Content-Type": "application/json", **(headers or {})})
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method=method,
+            headers={"Content-Type": "application/json", **(headers or {})},
+        )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 raw = r.read()
@@ -148,18 +166,20 @@ def http_json(url: str, body: Any = None, headers: dict | None = None, method: s
         except urllib.error.HTTPError as e:
             last = e
             if e.code in (408, 429, 500, 502, 503, 504) and attempt < retries:
-                time.sleep(min(2 ** attempt, backoff_max))
+                time.sleep(min(2**attempt, backoff_max))
                 continue
             detail = ""
             try:
                 detail = e.read(400).decode(errors="replace")
             except Exception:  # noqa: BLE001
                 pass
-            raise FleetRagError(f"HTTP {e.code} from {_host(url)}{urllib.parse.urlparse(url).path}: {detail}") from None
+            raise FleetRagError(
+                f"HTTP {e.code} from {_host(url)}{urllib.parse.urlparse(url).path}: {detail}"
+            ) from None
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             last = e
             if attempt < retries:
-                time.sleep(min(2 ** attempt, backoff_max))
+                time.sleep(min(2**attempt, backoff_max))
                 continue
             raise FleetRagError(f"{type(e).__name__} reaching {_host(url)}") from None
     raise FleetRagError(f"request failed: {type(last).__name__}")
@@ -170,6 +190,7 @@ def _host(url: str) -> str:
 
 
 # --------------------------------------------------------------------------- credentials
+
 
 def infisical_api() -> str:
     """Infisical API base.  FLEET_RAG_INFISICAL_API overrides it (self-hosted Infisical)."""
@@ -186,7 +207,7 @@ def infisical_env() -> str:
     return os.environ.get("FLEET_RAG_INFISICAL_ENV") or SHARED_ENV
 
 
-def handoff_file() -> "pathlib.Path | None":
+def handoff_file() -> pathlib.Path | None:
     """An explicit credentials file of the caller's own, or None.
 
     FLEET_RAG_HANDOFF_FILE names it.  There is no default file:  the flat file
@@ -228,7 +249,7 @@ _FLEET_SECRETS_PICK = (
 )
 
 
-def _fleet_secrets_bin() -> "str | None":
+def _fleet_secrets_bin() -> str | None:
     """The `fleet-secrets` command (OPS-818) on PATH or in ~/.local/bin, or None."""
     found = shutil.which("fleet-secrets")
     if found:
@@ -249,8 +270,12 @@ def fleet_secrets_many(names: Iterable[str]) -> dict[str, str]:
     if not wanted or not binary:
         return {}
     try:
-        proc = subprocess.run([binary, "run", "--", sys.executable, "-c", _FLEET_SECRETS_PICK, *wanted],
-                              capture_output=True, text=True, timeout=FLEET_SECRETS_TIMEOUT)
+        proc = subprocess.run(
+            [binary, "run", "--", sys.executable, "-c", _FLEET_SECRETS_PICK, *wanted],
+            capture_output=True,
+            text=True,
+            timeout=FLEET_SECRETS_TIMEOUT,
+        )
         if proc.returncode != 0:
             return {}
         got = json.loads(proc.stdout)
@@ -259,7 +284,7 @@ def fleet_secrets_many(names: Iterable[str]) -> dict[str, str]:
     return {k: v for k, v in got.items() if k in wanted and isinstance(v, str) and v}
 
 
-def fleet_secret(name: str) -> "str | None":
+def fleet_secret(name: str) -> str | None:
     """One value via `fleet-secrets`, or None."""
     return fleet_secrets_many([name]).get(name)
 
@@ -271,8 +296,11 @@ def infisical_login() -> str | None:
         if not cid or not csec:
             continue
         try:
-            return http_json(f"{infisical_api()}/v1/auth/universal-auth/login",
-                             {"clientId": cid, "clientSecret": csec}, retries=1)["accessToken"]
+            return http_json(
+                f"{infisical_api()}/v1/auth/universal-auth/login",
+                {"clientId": cid, "clientSecret": csec},
+                retries=1,
+            )["accessToken"]
         except (FleetRagError, KeyError):
             continue
     return None
@@ -298,9 +326,12 @@ def load_config(need_write: bool = False, extra: Iterable[str] = ()) -> dict[str
     tok = infisical_login()
     if tok:
         try:
-            got = http_json(f"{infisical_api()}/v3/secrets/raw?workspaceId={infisical_project()}"
-                            f"&environment={infisical_env()}&secretPath=%2F",
-                            headers={"Authorization": f"Bearer {tok}"}, retries=1)
+            got = http_json(
+                f"{infisical_api()}/v3/secrets/raw?workspaceId={infisical_project()}"
+                f"&environment={infisical_env()}&secretPath=%2F",
+                headers={"Authorization": f"Bearer {tok}"},
+                retries=1,
+            )
             for s in got.get("secrets", []):
                 if s["secretKey"] in wanted:
                     cfg.setdefault(s["secretKey"], s["secretValue"])
@@ -312,13 +343,17 @@ def load_config(need_write: bool = False, extra: Iterable[str] = ()) -> dict[str
             cfg.setdefault(k, v)
     missing = [k for k in required if k not in cfg]
     if missing:
-        raise FleetRagError("missing credentials: " + ", ".join(missing)
-                            + " (set them in the environment, or in the configured Infisical"
-                            + " project; see docs/RAG-FLEET-INFRA.md \"Run your own\")")
+        raise FleetRagError(
+            "missing credentials: "
+            + ", ".join(missing)
+            + " (set them in the environment, or in the configured Infisical"
+            + ' project; see docs/RAG-FLEET-INFRA.md "Run your own")'
+        )
     return cfg
 
 
 # --------------------------------------------------------------------------- embeddings
+
 
 def embed(cfg: dict[str, str], texts: list[str]) -> list[list[float]]:
     """Embed texts with the self-hosted bge-m3 endpoint.  Over-length inputs are truncated."""
@@ -326,7 +361,9 @@ def embed(cfg: dict[str, str], texts: list[str]) -> list[list[float]]:
     base = cfg["TEI_URL"].rstrip("/")
     hdr = {"Authorization": f"Bearer {cfg['TEI_API_KEY']}"}
     for i in range(0, len(texts), EMBED_BATCH):
-        out += http_json(f"{base}/embed", {"inputs": texts[i:i + EMBED_BATCH], "truncate": True}, hdr)
+        out += http_json(
+            f"{base}/embed", {"inputs": texts[i : i + EMBED_BATCH], "truncate": True}, hdr
+        )
     return out
 
 
@@ -339,6 +376,7 @@ def embedder_healthy(cfg: dict[str, str]) -> bool:
 
 
 # --------------------------------------------------------------------------- rerank
+
 
 def rerank_configured(cfg: dict[str, str]) -> bool:
     return bool(cfg.get("TEI_RERANK_URL") and cfg.get("TEI_RERANK_API_KEY"))
@@ -353,8 +391,9 @@ def rerank_healthy(cfg: dict[str, str]) -> bool:
         return False
 
 
-def rerank(cfg: dict[str, str], query: str, texts: list[str],
-           timeout: int | None = None) -> list[float]:
+def rerank(
+    cfg: dict[str, str], query: str, texts: list[str], timeout: int | None = None
+) -> list[float]:
     """Cross-encoder relevance of each text to the query via TEI's /rerank.
 
     Returns one score per input text, aligned to `texts`, batched RERANK_BATCH at a time.
@@ -374,13 +413,20 @@ def rerank(cfg: dict[str, str], query: str, texts: list[str],
     deadline = time.monotonic() + budget
     scores: list[float] = []
     for i in range(0, len(texts), RERANK_BATCH):
-        batch = texts[i:i + RERANK_BATCH]
+        batch = texts[i : i + RERANK_BATCH]
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise FleetRagError(f"rerank budget of {budget}s exhausted after {i} of {len(texts)} texts")
+            raise FleetRagError(
+                f"rerank budget of {budget}s exhausted after {i} of {len(texts)} texts"
+            )
         try:
-            res = http_json(f"{base}/rerank", {"query": query, "texts": batch, "truncate": True},
-                            hdr, timeout=remaining, retries=0)
+            res = http_json(
+                f"{base}/rerank",
+                {"query": query, "texts": batch, "truncate": True},
+                hdr,
+                timeout=remaining,
+                retries=0,
+            )
         except FleetRagError:
             raise
         except Exception as e:  # noqa: BLE001 - malformed JSON etc.: same fallback path
@@ -403,6 +449,7 @@ def rerank(cfg: dict[str, str], query: str, texts: list[str],
 
 # --------------------------------------------------------------------------- ids / text
 
+
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -415,9 +462,9 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-_STOP = set("""a an and are as at be but by for from has have how i if in into is it its of on or
-that the their there these this to was what when where which who why will with you your our we
-do does did not no yes can could should would may might must me my""".split())
+_STOP = set(
+    ["a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "has", "have", "how", "i", "if", "in", "into", "is", "it", "its", "of", "on", "or", "that", "the", "their", "there", "these", "this", "to", "was", "what", "when", "where", "which", "who", "why", "will", "with", "you", "your", "our", "we", "do", "does", "did", "not", "no", "yes", "can", "could", "should", "would", "may", "might", "must", "me", "my"]
+)
 
 
 def query_terms(query: str, max_terms: int = 8) -> list[str]:
@@ -435,6 +482,7 @@ def query_terms(query: str, max_terms: int = 8) -> list[str]:
 
 # --------------------------------------------------------------------------- Qdrant
 
+
 class Qdrant:
     """Minimal REST client scoped to one collection.  Reads use the read-only key when present."""
 
@@ -447,8 +495,14 @@ class Qdrant:
             raise FleetRagError("no Qdrant key available for reads")
 
     # -- plumbing
-    def _call(self, path: str, body: Any = None, method: str | None = None, write: bool = False,
-              timeout: int = DEFAULT_TIMEOUT) -> Any:
+    def _call(
+        self,
+        path: str,
+        body: Any = None,
+        method: str | None = None,
+        write: bool = False,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> Any:
         key = self._write_key if write else self._read_key
         if write and not key:
             raise FleetRagError("QDRANT_API_KEY (write key) not available on this machine")
@@ -457,11 +511,20 @@ class Qdrant:
         except FleetRagError as e:
             # A staged read-only key that the server has not loaded yet answers 401/403.
             # Fall back to the write key for the rest of this process instead of failing reads.
-            if (not write and self._write_key and key != self._write_key
-                    and ("HTTP 401" in str(e) or "HTTP 403" in str(e))):
+            if (
+                not write
+                and self._write_key
+                and key != self._write_key
+                and ("HTTP 401" in str(e) or "HTTP 403" in str(e))
+            ):
                 self._read_key = self._write_key
-                return http_json(f"{self.base}{path}", body, {"api-key": self._write_key}, method,
-                                 timeout=timeout)
+                return http_json(
+                    f"{self.base}{path}",
+                    body,
+                    {"api-key": self._write_key},
+                    method,
+                    timeout=timeout,
+                )
             raise
 
     def _cpath(self, suffix: str = "") -> str:
@@ -484,12 +547,21 @@ class Qdrant:
             body["filter"] = flt
         return self._call(self._cpath("/points/count"), body)["result"]["count"]
 
-    def scroll(self, flt: dict | None = None, limit: int = 256, with_payload: Any = True,
-               with_vector: bool = False):
+    def scroll(
+        self,
+        flt: dict | None = None,
+        limit: int = 256,
+        with_payload: Any = True,
+        with_vector: bool = False,
+    ):
         """Yield points matching the filter, paging through the collection."""
         offset = None
         while True:
-            body: dict[str, Any] = {"limit": limit, "with_payload": with_payload, "with_vector": with_vector}
+            body: dict[str, Any] = {
+                "limit": limit,
+                "with_payload": with_payload,
+                "with_vector": with_vector,
+            }
             if flt:
                 body["filter"] = flt
             if offset is not None:
@@ -501,14 +573,17 @@ class Qdrant:
             if offset is None:
                 break
 
-    def search_dense(self, vector: list[float], limit: int = 5, flt: dict | None = None) -> list[dict]:
+    def search_dense(
+        self, vector: list[float], limit: int = 5, flt: dict | None = None
+    ) -> list[dict]:
         body: dict[str, Any] = {"vector": vector, "limit": limit, "with_payload": True}
         if flt:
             body["filter"] = flt
         return self._call(self._cpath("/points/search"), body)["result"]
 
-    def _prefetch(self, vector: list[float], terms: list[str], flt: dict | None, pl: int,
-                  prefer_lessons: bool) -> list[dict]:
+    def _prefetch(
+        self, vector: list[float], terms: list[str], flt: dict | None, pl: int, prefer_lessons: bool
+    ) -> list[dict]:
         """Prefetch list shared by query_hybrid and query_groups.
 
         1. plain dense; 2. dense restricted to points whose full-text index matches any keyword
@@ -518,18 +593,32 @@ class Qdrant:
         """
         prefetch: list[dict] = [{"query": vector, "limit": pl, **({"filter": flt} if flt else {})}]
         if terms:
-            kw_filter: dict[str, Any] = {"should": [{"key": "text", "match": {"text": t}} for t in terms]}
+            kw_filter: dict[str, Any] = {
+                "should": [{"key": "text", "match": {"text": t}} for t in terms]
+            }
             if flt:
                 kw_filter = {"must": [flt, kw_filter]}
             prefetch.append({"query": vector, "limit": pl, "filter": kw_filter})
         if prefer_lessons:
-            prefetch.append({"query": vector, "limit": pl, "filter": lesson_filter(flt),
-                             "score_threshold": LESSON_SCORE_THRESHOLD})
+            prefetch.append(
+                {
+                    "query": vector,
+                    "limit": pl,
+                    "filter": lesson_filter(flt),
+                    "score_threshold": LESSON_SCORE_THRESHOLD,
+                }
+            )
         return prefetch
 
-    def query_hybrid(self, vector: list[float], terms: list[str], limit: int = 5,
-                     flt: dict | None = None, prefetch_limit: int | None = None,
-                     prefer_lessons: bool = True) -> list[dict]:
+    def query_hybrid(
+        self,
+        vector: list[float],
+        terms: list[str],
+        limit: int = 5,
+        flt: dict | None = None,
+        prefetch_limit: int | None = None,
+        prefer_lessons: bool = True,
+    ) -> list[dict]:
         """Dense + keyword (+ lesson) fusion via the Query API.
 
         Prefetches (see _prefetch) fused with reciprocal rank fusion.  Falls back to plain
@@ -538,13 +627,25 @@ class Qdrant:
         if not terms and not prefer_lessons:
             return self.search_dense(vector, limit, flt)
         pl = prefetch_limit or max(limit * 4, 20)
-        body = {"prefetch": self._prefetch(vector, terms, flt, pl, prefer_lessons),
-                "query": {"fusion": "rrf"}, "limit": limit, "with_payload": True}
+        body = {
+            "prefetch": self._prefetch(vector, terms, flt, pl, prefer_lessons),
+            "query": {"fusion": "rrf"},
+            "limit": limit,
+            "with_payload": True,
+        }
         return self._call(self._cpath("/points/query"), body)["result"]["points"]
 
-    def query_groups(self, vector: list[float], terms: list[str], limit: int = 5,
-                     flt: dict | None = None, group_by: str = "doc_id", group_size: int = 1,
-                     prefetch_limit: int | None = None, prefer_lessons: bool = True) -> list[dict]:
+    def query_groups(
+        self,
+        vector: list[float],
+        terms: list[str],
+        limit: int = 5,
+        flt: dict | None = None,
+        group_by: str = "doc_id",
+        group_size: int = 1,
+        prefetch_limit: int | None = None,
+        prefer_lessons: bool = True,
+    ) -> list[dict]:
         """Same fusion as query_hybrid, but one group per `group_by` value (Qdrant >= 1.19).
 
         Returns up to `limit` groups as dicts {"id": <group value>, "hits": [points...]} in
@@ -552,9 +653,14 @@ class Qdrant:
         first.  Uses POST /collections/{c}/points/query/groups.
         """
         pl = prefetch_limit or max(limit * 4, 20)
-        body = {"prefetch": self._prefetch(vector, terms, flt, pl, prefer_lessons),
-                "query": {"fusion": "rrf"}, "limit": limit, "group_by": group_by,
-                "group_size": max(1, group_size), "with_payload": True}
+        body = {
+            "prefetch": self._prefetch(vector, terms, flt, pl, prefer_lessons),
+            "query": {"fusion": "rrf"},
+            "limit": limit,
+            "group_by": group_by,
+            "group_size": max(1, group_size),
+            "with_payload": True,
+        }
         res = self._call(self._cpath("/points/query/groups"), body)["result"]
         return [{"id": g.get("id"), "hits": list(g.get("hits", []))} for g in res.get("groups", [])]
 
@@ -562,32 +668,54 @@ class Qdrant:
     def upsert(self, points: list[dict], wait: bool = True) -> str:
         if not points:
             return "ok"
-        res = self._call(self._cpath(f"/points?wait={'true' if wait else 'false'}"),
-                         {"points": points}, method="PUT", write=True, timeout=300)
+        res = self._call(
+            self._cpath(f"/points?wait={'true' if wait else 'false'}"),
+            {"points": points},
+            method="PUT",
+            write=True,
+            timeout=300,
+        )
         return res.get("status", "?")
 
     def delete_by_filter(self, flt: dict, wait: bool = True) -> str:
-        res = self._call(self._cpath(f"/points/delete?wait={'true' if wait else 'false'}"),
-                         {"filter": flt}, method="POST", write=True, timeout=300)
+        res = self._call(
+            self._cpath(f"/points/delete?wait={'true' if wait else 'false'}"),
+            {"filter": flt},
+            method="POST",
+            write=True,
+            timeout=300,
+        )
         return res.get("status", "?")
 
     def delete_ids(self, ids: list[str], wait: bool = True) -> str:
         if not ids:
             return "ok"
-        res = self._call(self._cpath(f"/points/delete?wait={'true' if wait else 'false'}"),
-                         {"points": ids}, method="POST", write=True, timeout=300)
+        res = self._call(
+            self._cpath(f"/points/delete?wait={'true' if wait else 'false'}"),
+            {"points": ids},
+            method="POST",
+            write=True,
+            timeout=300,
+        )
         return res.get("status", "?")
 
     def set_payload(self, ids: list[str], payload: dict, wait: bool = True) -> str:
-        res = self._call(self._cpath(f"/points/payload?wait={'true' if wait else 'false'}"),
-                         {"points": ids, "payload": payload}, method="POST", write=True)
+        res = self._call(
+            self._cpath(f"/points/payload?wait={'true' if wait else 'false'}"),
+            {"points": ids, "payload": payload},
+            method="POST",
+            write=True,
+        )
         return res.get("status", "?")
 
     def snapshot(self) -> dict:
-        return self._call(self._cpath("/snapshots"), {}, method="POST", write=True, timeout=600)["result"]
+        return self._call(self._cpath("/snapshots"), {}, method="POST", write=True, timeout=600)[
+            "result"
+        ]
 
 
 # --------------------------------------------------------------------------- filters
+
 
 def match_filter(**fields: str | None) -> dict | None:
     """Exact-match filter on payload fields; None values are skipped."""
@@ -598,8 +726,10 @@ def match_filter(**fields: str | None) -> dict | None:
 def lesson_filter(flt: dict | None = None) -> dict:
     """Filter for the lesson prefetch: agent contributions in LESSON_CATEGORIES, AND the caller's
     filter when there is one (so category/app/seat/since_days restrictions still apply)."""
-    must: list[dict] = [{"key": "source", "match": {"value": LESSON_SOURCE}},
-                        {"key": "category", "match": {"any": list(LESSON_CATEGORIES)}}]
+    must: list[dict] = [
+        {"key": "source", "match": {"value": LESSON_SOURCE}},
+        {"key": "category", "match": {"any": list(LESSON_CATEGORIES)}},
+    ]
     if flt:
         must.append(flt)
     return {"must": must}
@@ -608,8 +738,15 @@ def lesson_filter(flt: dict | None = None) -> dict:
 def build_point(text: str, payload: dict) -> dict:
     """Payload plus deterministic id; the caller supplies the vector afterwards."""
     digest = content_hash(text)
-    return {"id": point_id(digest), "payload": {**payload, "text": text, "content_hash": digest,
-                                                 "embed_model": EMBED_MODEL_TAG}}
+    return {
+        "id": point_id(digest),
+        "payload": {
+            **payload,
+            "text": text,
+            "content_hash": digest,
+            "embed_model": EMBED_MODEL_TAG,
+        },
+    }
 
 
 def eprint(*a: Any) -> None:

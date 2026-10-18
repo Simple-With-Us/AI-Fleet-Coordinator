@@ -32,6 +32,7 @@ A key that is not limited to the bucket and prefix (or holds admin capabilities,
 that would hide live packs) is refused even with --force.  The bucket is dedicated to this job
 (B2_FLEET_WORK_BUCKET_NAME);  the prefix keeps a leaked key off everything else.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -92,7 +93,9 @@ def plist_with_interpreter(interpreter: str) -> str:
     if interpreter != DEFAULT_INTERPRETER:
         marker = f"<string>{DEFAULT_INTERPRETER}</string>"
         if text.count(marker) != 1:
-            raise SystemExit("the plist no longer has exactly one interpreter line;  edit it by hand")
+            raise SystemExit(
+                "the plist no longer has exactly one interpreter line;  edit it by hand"
+            )
         text = text.replace(marker, f"<string>{interpreter}</string>")
     tmp = os.path.join(tempfile.mkdtemp(prefix="fwb-plist-"), f"{LABEL}.plist")
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -104,7 +107,9 @@ def interpreter_image(interpreter: str, script: str) -> tuple[str, str]:
     """Ask the interpreter itself for the executable macOS privacy settings see (and its .app bundle):
     this installer's own interpreter is not necessarily the plist's."""
     try:
-        p = subprocess.run([interpreter, script, "image"], capture_output=True, text=True, timeout=60)
+        p = subprocess.run(
+            [interpreter, script, "image"], capture_output=True, text=True, timeout=60
+        )
     except (OSError, subprocess.TimeoutExpired):
         return "", ""
     lines = p.stdout.splitlines() if p.returncode == 0 else []
@@ -113,7 +118,9 @@ def interpreter_image(interpreter: str, script: str) -> tuple[str, str]:
     return image, app
 
 
-def prerequisites(fwb, interpreter: str, install_restic: bool, dry: bool, hard: list[str] | None = None) -> list[str]:
+def prerequisites(
+    fwb, interpreter: str, install_restic: bool, dry: bool, hard: list[str] | None = None
+) -> list[str]:
     """What is missing, as text.  Problems --force must not override are also appended to ``hard``."""
     cfg = fwb.config_from_env()
     missing: list[str] = []
@@ -129,8 +136,14 @@ def prerequisites(fwb, interpreter: str, install_restic: bool, dry: bool, hard: 
     else:
         missing.append("restic (brew install restic, or pass --install-restic)")
     try:
-        ok = subprocess.run([interpreter, "-c", "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)"],
-                            capture_output=True, timeout=60).returncode == 0
+        ok = (
+            subprocess.run(
+                [interpreter, "-c", "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)"],
+                capture_output=True,
+                timeout=60,
+            ).returncode
+            == 0
+        )
     except (OSError, subprocess.TimeoutExpired):
         ok = False
     if ok:
@@ -148,17 +161,22 @@ def prerequisites(fwb, interpreter: str, install_restic: bool, dry: bool, hard: 
             if is_hard:
                 hard.append(text)
         if not probs:
-            say("B2: the key is limited to the bucket and the fleet-work-backup/ prefix;  a lifecycle rule deletes hidden versions")
+            say(
+                "B2: the key is limited to the bucket and the fleet-work-backup/ prefix;  a lifecycle rule deletes hidden versions"
+            )
     gl = shutil.which(cfg.gitleaks_bin) if cfg.gitleaks_bin else None
-    say(f"gitleaks: {gl or 'not installed (the regex scan still runs, and the run line says warn=gitleaks-missing)'}")
+    say(
+        f"gitleaks: {gl or 'not installed (the regex scan still runs, and the run line says warn=gitleaks-missing)'}"
+    )
     return missing
 
 
 def run_launchctl(*args: str) -> int:
     """launchctl with a time limit;  127 when it cannot run, 124 when it hangs."""
     try:
-        return subprocess.run(["launchctl", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              timeout=60).returncode
+        return subprocess.run(
+            ["launchctl", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60
+        ).returncode
     except subprocess.TimeoutExpired:
         return 124
     except OSError:
@@ -202,8 +220,12 @@ def record_plist_hash(fwb, dry: bool) -> None:
             state["plist_installed_at"] = cfg.now()
         state["plist_sha256"] = digest
         fwb.write_state(cfg, state)
-    except OSError as exc:      # the install goes on;  without a hash, repair --reload refuses (it fails safe)
-        say(f"could not record the installed plist's sha256 ({exc.__class__.__name__}):  repair --reload will refuse until install.py is run again")
+    except (
+        OSError
+    ) as exc:  # the install goes on;  without a hash, repair --reload refuses (it fails safe)
+        say(
+            f"could not record the installed plist's sha256 ({exc.__class__.__name__}):  repair --reload will refuse until install.py is run again"
+        )
         return
     say(f"recorded the installed plist's sha256 ({digest[:12]}...) for repair --reload")
 
@@ -212,12 +234,21 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Install fleet-work-backup.")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--skip-launchd", action="store_true")
-    ap.add_argument("--install-restic", action="store_true", help="run 'brew install restic' when it is missing")
-    ap.add_argument("--check-repo", action="store_true", help="ask restic for the repository config (read-only)")
-    ap.add_argument("--force", action="store_true", help="load the LaunchAgent even with a prerequisite missing")
-    ap.add_argument("--interpreter", default=DEFAULT_INTERPRETER,
-                    help="python3 the LaunchAgent runs (default Apple's /usr/bin/python3, whose signature keeps a "
-                         "privacy grant across updates;  Homebrew's loses it on every upgrade)")
+    ap.add_argument(
+        "--install-restic", action="store_true", help="run 'brew install restic' when it is missing"
+    )
+    ap.add_argument(
+        "--check-repo", action="store_true", help="ask restic for the repository config (read-only)"
+    )
+    ap.add_argument(
+        "--force", action="store_true", help="load the LaunchAgent even with a prerequisite missing"
+    )
+    ap.add_argument(
+        "--interpreter",
+        default=DEFAULT_INTERPRETER,
+        help="python3 the LaunchAgent runs (default Apple's /usr/bin/python3, whose signature keeps a "
+        "privacy grant across updates;  Homebrew's loses it on every upgrade)",
+    )
     a = ap.parse_args()
     if sys.platform != "darwin":
         say("macOS only")
@@ -233,20 +264,31 @@ def main() -> int:
             missing.append("--check-repo needs restic and credentials")
         else:
             rc = fwb.run_restic(cfg, env, "cat", "config", timeout=120).returncode
-            say("repository: " + ("initialised" if rc == 0 else "NOT initialised or unreachable: run fleet_work_backup.py init"))
+            say(
+                "repository: "
+                + (
+                    "initialised"
+                    if rc == 0
+                    else "NOT initialised or unreachable: run fleet_work_backup.py init"
+                )
+            )
             if rc != 0:
                 missing.append("restic repository (fleet_work_backup.py init)")
             else:
                 keys = fwb.restic_key_count(cfg, env)
                 say(f"repository keys: {keys if keys is not None else 'unknown'}")
                 if keys is not None and keys < 2:
-                    missing.append("the recovery key kept outside Infisical (README, Credentials:  restic -- key add)")
+                    missing.append(
+                        "the recovery key kept outside Infisical (README, Credentials:  restic -- key add)"
+                    )
     for m in missing:
         say(f"MISSING {m}")
     status = 0
     if not a.skip_launchd:
         if hard:
-            say("not loading the LaunchAgent:  the B2 key or bucket is unsafe for this job, and --force does not override that")
+            say(
+                "not loading the LaunchAgent:  the B2 key or bucket is unsafe for this job, and --force does not override that"
+            )
             status = 1
         elif missing and not a.force:
             say("not loading the LaunchAgent until the above is fixed (or pass --force)")
@@ -255,7 +297,9 @@ def main() -> int:
             try:
                 changed = copy(plist, PLIST_DST, 0o644, a.dry_run)
             finally:
-                shutil.rmtree(os.path.dirname(plist), ignore_errors=True)    # the temp copy with the chosen interpreter
+                shutil.rmtree(
+                    os.path.dirname(plist), ignore_errors=True
+                )  # the temp copy with the chosen interpreter
             record_plist_hash(fwb, a.dry_run)
             status = launchd(changed, a.dry_run)
             if status:
@@ -263,10 +307,16 @@ def main() -> int:
     image, app = interpreter_image(a.interpreter, SCRIPT_SRC)
     if image:
         say(f"macOS privacy settings see this executable for {a.interpreter}: {image}")
-        say(f"grant Removable Volumes (or Full Disk Access) in System Settings > Privacy & Security to: {app or image}")
+        say(
+            f"grant Removable Volumes (or Full Disk Access) in System Settings > Privacy & Security to: {app or image}"
+        )
     else:
-        say(f"could not ask {a.interpreter} for its executable;  run 'python3 {SCRIPT_DST} image' with it")
-    say(f"then verify it under launchd, not Terminal:  {a.interpreter} {SCRIPT_DST} check-access --launchd")
+        say(
+            f"could not ask {a.interpreter} for its executable;  run 'python3 {SCRIPT_DST} image' with it"
+        )
+    say(
+        f"then verify it under launchd, not Terminal:  {a.interpreter} {SCRIPT_DST} check-access --launchd"
+    )
     return 1 if status else 0
 
 

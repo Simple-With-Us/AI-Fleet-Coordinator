@@ -20,6 +20,7 @@ HermeticCredentialsMixin into an existing base class and call self.make_hermetic
 
     cd scripts && python3 -m unittest fleet_rag.tests._hermetic -v
 """
+
 from __future__ import annotations
 
 import os
@@ -47,10 +48,13 @@ class HermeticCredentialsMixin:
         absent_handoff = home / ".secrets" / "no-such-handoff"
         absent_cf_access = home / ".secrets" / "no-such-cf-access"
 
-        env_patch = mock.patch.dict(os.environ, {
-            "HOME": str(home),
-            "FLEET_RAG_HANDOFF_FILE": str(absent_handoff),
-        })
+        env_patch = mock.patch.dict(
+            os.environ,
+            {
+                "HOME": str(home),
+                "FLEET_RAG_HANDOFF_FILE": str(absent_handoff),
+            },
+        )
         env_patch.start()
         self.addCleanup(env_patch.stop)
 
@@ -61,10 +65,14 @@ class HermeticCredentialsMixin:
         # attributes, and the `fleet-secrets` fallback is switched off so no test shells out.
         for patcher in (
             mock.patch.object(public_fallback, "CF_ACCESS_FILE", absent_cf_access),
-            mock.patch.object(public_fallback, "PUBLIC_ENV_FILES", {
-                "CF_ACCESS_CLIENT_ID": absent_cf_access,
-                "CF_ACCESS_CLIENT_SECRET": absent_cf_access,
-            }),
+            mock.patch.object(
+                public_fallback,
+                "PUBLIC_ENV_FILES",
+                {
+                    "CF_ACCESS_CLIENT_ID": absent_cf_access,
+                    "CF_ACCESS_CLIENT_SECRET": absent_cf_access,
+                },
+            ),
             mock.patch.object(core, "_fleet_secrets_bin", lambda: None),
         ):
             patcher.start()

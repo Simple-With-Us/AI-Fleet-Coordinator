@@ -58,6 +58,7 @@ Tracked copy: AI-Fleet-Coordinator `scripts/hooks/secret-guard-pretooluse.py`.
 Live Claude Code copy: `~/.claude/hooks/secret-guard-pretooluse.py` (registered
 in `~/.claude/settings.json` PreToolUse matcher Bash).
 """
+
 from __future__ import annotations
 
 import json
@@ -90,7 +91,9 @@ _INVOKE = (
 )
 
 # Byte-dump tools belong here too: `xxd ~/.secrets/global-api-keys` is cat for this purpose.
-DUMP_COMMANDS = _CMD_START + _INVOKE + r"(cat|head|tail|less|more|bat|od|xxd|hexdump|hd|strings|base64)\s"
+DUMP_COMMANDS = (
+    _CMD_START + _INVOKE + r"(cat|head|tail|less|more|bat|od|xxd|hexdump|hd|strings|base64)\s"
+)
 
 PS_PATTERN = _CMD_START + _INVOKE + r"ps\s"
 
@@ -99,20 +102,14 @@ PS_PATTERN = _CMD_START + _INVOKE + r"ps\s"
 # stay allowed -- only the listing flags are caught.
 PGREP_LIST_PATTERN = _CMD_START + _INVOKE + r"pgrep\s+(?:-[a-zA-Z]*l[a-zA-Z]*)(?:\s|$)"
 
-BYTE_DUMP_TOOLS = re.compile(
-    _CMD_START + _INVOKE + r"(?:od|xxd|hexdump|hd|strings|base64)\b"
-)
-CUT_CHARS = re.compile(
-    _CMD_START + _INVOKE + r"cut\s+(?:-[^\s]*c[^\s]*|--characters(?:=|\s))"
-)
+BYTE_DUMP_TOOLS = re.compile(_CMD_START + _INVOKE + r"(?:od|xxd|hexdump|hd|strings|base64)\b")
+CUT_CHARS = re.compile(_CMD_START + _INVOKE + r"cut\s+(?:-[^\s]*c[^\s]*|--characters(?:=|\s))")
 PRINTF_FORMAT = re.compile(
     _CMD_START + _INVOKE + r"printf\s+(?:--\s+)?"
     r"(?:(['\"]).*?%[-+#0-9.]*[sqb].*?\1|%[-+#0-9.]*[sqb])"
 )
 # $NAME or ${NAME...} but not ${#NAME} (length, safe).
-VAR_REF = re.compile(
-    r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{(?!#)([A-Za-z_][A-Za-z0-9_]*)[^}]*\})"
-)
+VAR_REF = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{(?!#)([A-Za-z_][A-Za-z0-9_]*)[^}]*\})")
 _SECRET_PARTS = frozenset(
     {
         "KEY",
@@ -249,7 +246,7 @@ def check_command(command: str) -> str | None:
             "This command references a secrets-bearing path and merges stderr "
             "into visible output (2>&1) in the same breath. Error messages can "
             "echo back fragments of whatever failed in a shape you can't predict "
-            "-- this is exactly how a shell's own \"command not found: <fragment>\" "
+            '-- this is exactly how a shell\'s own "command not found: <fragment>" '
             "leaked a secret earlier. Redirect stderr to /dev/null or a file "
             "instead and check the exit code ($?) alone; if you need to know why "
             "something failed, diagnose structurally (line counts, regex-shape "
@@ -272,7 +269,7 @@ def check_command(command: str) -> str | None:
                 f"credential ({shown}).  `od`/`xxd`/`hexdump`/`hd`/`strings`/"
                 "`base64` print every byte, which is how SILICONFLOW_API_KEY "
                 "landed in a transcript on 2026-09-17.  Do not inspect a loaded "
-                "key's bytes.  Safe shape checks: `[ -n \"$VAR\" ]`, `${#VAR}`, "
+                'key\'s bytes.  Safe shape checks: `[ -n "$VAR" ]`, `${#VAR}`, '
                 "`[[ $VAR == *'\"'* ]]`.  Need length only: `printf '%s' \"$VAR\" "
                 "| wc -c`."
             )

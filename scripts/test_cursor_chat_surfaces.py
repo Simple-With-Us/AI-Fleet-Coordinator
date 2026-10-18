@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for cursor chat surface helpers.  No network, no secrets."""
+
 from __future__ import annotations
 
 import os
@@ -13,7 +14,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import cursor_chat_surfaces as ccs  # noqa: E402
+import cursor_chat_surfaces as ccs
 
 
 class GithubUrlTests(unittest.TestCase):
@@ -110,7 +111,6 @@ class ShellularMergeTests(unittest.TestCase):
         cursor_rows = [row for row in merged["custom"] if row["id"] == "cursor"]
         self.assertEqual(len(cursor_rows), 1)
         self.assertNotEqual(cursor_rows[0]["command"], "cursor-agent")
-
 
     def test_strips_embedded_deepseek_key(self) -> None:
         existing = {

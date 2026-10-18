@@ -6,6 +6,7 @@ The point of these tests is portability: somebody who is not the owner of this r
 able to run the recall CLI with five environment variables and nothing else -- no Infisical
 account, no handoff file, no edit to core.py.
 """
+
 from __future__ import annotations
 
 import os
@@ -137,9 +138,11 @@ class FleetSecretsFallbackTests(unittest.TestCase):
 
     def test_load_config_fills_gaps_from_fleet_secrets(self) -> None:
         env = {"QDRANT_API_KEY": "k", "TEI_API_KEY": "from-env"}
-        with mock.patch.dict(os.environ, env, clear=True), \
-                mock.patch.object(core, "_fleet_secrets_bin", lambda: str(self.bin)), \
-                mock.patch.object(core, "http_json", ExplodingHttp()):
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(core, "_fleet_secrets_bin", lambda: str(self.bin)),
+            mock.patch.object(core, "http_json", ExplodingHttp()),
+        ):
             cfg = core.load_config()
         self.assertEqual(cfg["TEI_URL"], "https://tei.example.invalid")
         self.assertEqual(cfg["TEI_API_KEY"], "from-env", "the environment always wins")
@@ -171,12 +174,17 @@ class OverrideTests(unittest.TestCase):
             self.assertEqual(core.infisical_api(), "https://infisical.example.invalid/api")
             self.assertEqual(core.infisical_project(), "proj-1234")
             self.assertEqual(core.infisical_env(), "staging")
-            self.assertEqual(core.handoff_file(),
-                             pathlib.Path(os.path.expanduser("~/elsewhere/creds")))
+            self.assertEqual(
+                core.handoff_file(), pathlib.Path(os.path.expanduser("~/elsewhere/creds"))
+            )
 
     def test_empty_override_falls_back_to_default(self) -> None:
-        env = {"FLEET_RAG_INFISICAL_PROJECT": "", "FLEET_RAG_INFISICAL_ENV": "",
-               "FLEET_RAG_INFISICAL_API": "", "FLEET_RAG_HANDOFF_FILE": ""}
+        env = {
+            "FLEET_RAG_INFISICAL_PROJECT": "",
+            "FLEET_RAG_INFISICAL_ENV": "",
+            "FLEET_RAG_INFISICAL_API": "",
+            "FLEET_RAG_HANDOFF_FILE": "",
+        }
         with mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(core.infisical_project(), core.SHARED_PROJECT)
             self.assertEqual(core.infisical_env(), core.SHARED_ENV)
@@ -186,8 +194,10 @@ class OverrideTests(unittest.TestCase):
     def test_identity_read_from_overridden_handoff_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "creds"
-            path.write_text('INFISICAL_SHARED_CLIENT_ID="cid-1"\n'
-                            "INFISICAL_SHARED_CLIENT_SECRET='placeholder-1'\n")
+            path.write_text(
+                'INFISICAL_SHARED_CLIENT_ID="cid-1"\n'
+                "INFISICAL_SHARED_CLIENT_SECRET='placeholder-1'\n"
+            )
             with mock.patch.dict(os.environ, {"FLEET_RAG_HANDOFF_FILE": str(path)}, clear=True):
                 self.assertEqual(core._identity("INFISICAL_SHARED"), ("cid-1", "placeholder-1"))
 
@@ -202,19 +212,25 @@ class OverrideTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "creds"
-            path.write_text("INFISICAL_SHARED_CLIENT_ID=cid\n"
-                            "INFISICAL_SHARED_CLIENT_SECRET=placeholder\n")
-            env = {**BYO,
-                   "FLEET_RAG_HANDOFF_FILE": str(path),
-                   "FLEET_RAG_INFISICAL_API": "https://infisical.example.invalid/api",
-                   "FLEET_RAG_INFISICAL_PROJECT": "proj-1234",
-                   "FLEET_RAG_INFISICAL_ENV": "staging"}
-            with mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(core, "http_json", fake_http):
+            path.write_text(
+                "INFISICAL_SHARED_CLIENT_ID=cid\nINFISICAL_SHARED_CLIENT_SECRET=placeholder\n"
+            )
+            env = {
+                **BYO,
+                "FLEET_RAG_HANDOFF_FILE": str(path),
+                "FLEET_RAG_INFISICAL_API": "https://infisical.example.invalid/api",
+                "FLEET_RAG_INFISICAL_PROJECT": "proj-1234",
+                "FLEET_RAG_INFISICAL_ENV": "staging",
+            }
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(core, "http_json", fake_http),
+            ):
                 cfg = core.load_config()
         self.assertEqual(cfg["TEI_RERANK_URL"], "https://rr")
-        self.assertEqual(seen[0],
-                         "https://infisical.example.invalid/api/v1/auth/universal-auth/login")
+        self.assertEqual(
+            seen[0], "https://infisical.example.invalid/api/v1/auth/universal-auth/login"
+        )
         self.assertIn("https://infisical.example.invalid/api/v3/secrets/raw", seen[1])
         self.assertIn("workspaceId=proj-1234", seen[1])
         self.assertIn("environment=staging", seen[1])
