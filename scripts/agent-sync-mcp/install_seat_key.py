@@ -221,7 +221,7 @@ def main() -> int:
         print(f"{'Removing' if args.apply else 'Would remove'} Worker secret {secret_name}.")
         if not args.apply:
             return 0
-        return wrangler(["secret", "delete", secret_name, "--force"], None, "")
+        return wrangler(["secret", "delete", secret_name], "y\n", "")
 
     if args.seat not in hosted:
         fail(
