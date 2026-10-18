@@ -39,6 +39,7 @@ Having explicit fleet skills installed significantly improves agent compliance w
 | **`land-lane`** | App-specific verification gates, PR creation, auto-merge arming, and production deploy triggers. |
 | **`unstick-pr`** | Diagnosing and unblocking stuck PRs (phantom vs real conflicts with 2-arg `git merge-tree`, bot review threads, flakes). |
 | **`codex-triage`** | Triaging and resolving automated review bot comments (Codex, Bugbot, Copilot, human reviewers). |
+| **`pr-sweep`** | Sweeping and landing the open PRs across the fleet from any platform (`scripts/pr-sweep`: inventory, plan, status computed in code, one worker per PR, audit, deploy checks, lane retire).  Rules live only in `scripts/pr_sweep/rules.md`.  Canonical: `docs/PR-SWEEP.md`. |
 | **`pickup-seat`** | Picking up capped or abandoned peer lanes safely with full attribution. |
 | **`fleet-infra`** | Accessing the private infrastructure hub (`fleet-ops:ATTACK-MAP.md`) for host IPs, Tailscale mesh, Coolify UUIDs, and Infisical IDs without committing secrets. |
 | **`dns-and-registrars`** | Cloudflare is DNS for every fleet domain.  Create each new app's own zone on account Usage.Jays.Services — not on hostname `usage.jays.services`.  Canonical: `docs/DNS-AND-REGISTRARS.md`. |

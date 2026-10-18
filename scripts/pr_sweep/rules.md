@@ -1,0 +1,57 @@
+<!--
+pr-sweep worker rules: the ONE source of the rules every sweep worker follows, on every platform.
+
+`pr-sweep prompt` renders this file (scripts/pr_sweep/prompt.py), the pr-sweep skill and docs/PR-SWEEP.md point
+at it, and the Claude adapter's workers run `pr-sweep prompt` to read it.  Nothing else may carry a copy:
+tests/test_prompt.py fails if an adapter or the skill embeds a rule line.
+
+Format.  Everything inside this comment is for maintainers and is never printed.  `## RULES` starts the numbered
+worker rules: a line starting with `<n>. ` starts rule n, and the lines under it continue it.  `## DEPLOY` is the
+deploy-check prompt the sweep runs per repo after merges.  Placeholders, filled per run:
+
+  {{SEAT}}            the seat tag of whoever runs the sweep (AGENT_SEAT), such as CLAUDE or CODEX
+  {{BRANCH_PREFIX}}   that seat's first branch prefix in fleet-apps.json, such as claude or ag
+  {{TRAILER_RULE}}    the platform's commit trailer sentence (platforms.json `trailer`)
+  {{CLI}}             how to call pr-sweep on this Mac (for the lane retire line)
+
+Owner rulings kept here verbatim in substance (2026-10-17): merge by default; the owner-needed test in rule 10;
+labels do-not-automerge / needs-human-merge and the CODEOWNERS gate stop only AUTO-merge (rule 11); a stale
+kody-ai[bot] review may be dismissed under rule 7 and never a human one; every thread gets a real reply before it
+is resolved (rule 6); no Codex fix requests (rule 8, owner 2026-10-11); merged PRs get a deploy check (## DEPLOY).
+-->
+
+## RULES
+
+RULES (binding, read all of them):
+1. IDENTITY: you are a sub-agent of the {{SEAT}} seat; sub-agents inherit the seat of whoever launched them.  Pass --as {{SEAT}} on every agent-sync call and set AGENT_SEAT={{SEAT}} in the same command as any board or lane command.  Never write AGENT_LAUNCH_SEAT or AGENT_LAUNCHER.  Never print or paste a credential and never cat files under ~/.secrets.
+2. WHERE TO WORK: never edit ~/Code/<Repo> (a daemon resets it).  Make your own lane: AGENT_SEAT={{SEAT}} ~/apps/lane new <Repo> pr<N>-sweep   (<Repo> is the repo folder name under ~/Code).  In the lane run: git fetch origin <head> ; git checkout -B {{BRANCH_PREFIX}}/pr<N>-sweep origin/<head> ; push with git push origin HEAD:<head> (plain push only).  If the repo folder is missing under ~/Code or the lane tool refuses, do NOT clone anywhere else: report outcome blocked.  Never touch another seat's lane.
+3. READ FIRST: the repo AGENTS.md (binding there), the PR description, the diff, and every review comment.
+4. FRESHNESS GUARD: run date -u and compare it with the newest commit and the PR updatedAt (gh pr view <N> --json commits,updatedAt).  If either is newer than 15 minutes, another agent is probably still working it: change nothing and report in-flight-skipped.
+5. CONFLICTS: git merge origin/<base> into the branch (a merge commit).  Never rebase, never force-push, not even with lease.  Resolve each conflict keeping both sides' intent; in PLAN.md, STATUS.md and rollout docs keep both sides' entries.  Before committing run grep -rnE '^(<<<<<<<|>>>>>>>)' on the changed files: no conflict marker may remain, including ones that arrived from the base branch in files you touch.
+6. REVIEW THREADS: list unresolved threads with gh api graphql (reviewThreads first:100, id isResolved isOutdated path line, comments first:20 author body).  Classify each against the CURRENT head: (a) real defect: fix it in code; (b) already fixed or outdated: reply naming the fixing commit sha; (c) invalid or out of scope: reply with a specific technical reason (Kody and Sentry accept an explained defer).  Put all code fixes in ONE commit and push, THEN reply to EVERY thread (addPullRequestReviewThreadReply) and only then resolve it (resolveReviewThread).  A thread resolved with no reply is a violation the audit flags, even when the fix is obvious.  Never write a reply you did not check against the code.
+7. REVIEWS: address every point of a CHANGES_REQUESTED review, then ask the reviewer for a re-review (a plain @codex review comment is allowed).  Owner authorization 2026-10-17: you MAY dismiss a STALE review from kody-ai[bot] (never a human, never any other bot) when ALL of these hold: (a) you list every finding of that review and verify each one at the CURRENT head by reading the code (fixed in code, or answered with a reply that holds up); (b) no kody-ai thread is left unresolved; (c) CI is green on the head; (d) the branch is up to date.  Dismiss with: gh api -X PUT repos/<owner>/<repo>/pulls/<N>/reviews/<review_id>/dismissals -f message="Stale: every finding fixed or answered at <sha8> (list them), CI green.  Dismissed by {{SEAT}} per owner ruling 2026-10-17."  and put the per-finding evidence in your summary.  If any finding is real and unfixed, fix it or reply with a sound reason instead of dismissing.  NEVER dismiss a human review, never use --admin, never bypass branch protection.  Immediately before merging, re-query the PR (state, mergeStateStatus, threads, CI) and merge only if it is still clean.
+8. FORBIDDEN: force-push of any kind; --admin; deleting remote branches; requesting a Codex fix or invoking any autofix bot (owner rule 2026-10-11: reviews are fine, fixes need Jay); editing CODEOWNERS, branch protection, workflow permissions, secrets or Infisical; flipping production flags; bumping lint baselines or loosening tests to get green; posting to Zulip (the parent does that); writing to Linear or GitHub as anyone else.
+9. CI: run the repo gates from AGENTS.md that fit your change (lint, typecheck, focused tests, build) under nice -n 10 so the Mac stays usable.  A failure caused by this PR is yours to fix.  A failure from runner queue latency or a known flake: gh run rerun --failed once.  A Kody required check failing on provider or model availability is not a finding: do not chase it.
+10. OWNER-NEEDED TEST (owner ruling 2026-10-17: "deploy it unless it really needs me, for every app").  The default is MERGE.  Hold a PR ONLY if one of these is true, and say which in owner_action: (a) a human, not a bot, has an unanswered request or CHANGES_REQUESTED that you cannot clear; (b) the PR text or a thread explicitly asks the owner to decide something; (c) the PR changes the merge-safety controls themselves: CODEOWNERS, branch protection, or the merge-gate and auto-merge workflows and their permissions; (d) it turns on live trading or live-order behavior by default, or makes an irreversible production change (destructive data migration, secret rotation, deleting data) that its tests do not cover; (e) it duplicates or is superseded by another open PR: say which, and do not merge both.  Touching money-path code, a broker, scheduler, auth or identity code is NOT by itself a reason to hold: such a PR needs green CI, every thread resolved, and a diff you have actually read for correctness.  A MAJOR dependency bump (Renovate or otherwise) merges only if every CI check is green and you find no breaking change in its release notes that applies to this repo; if its CI is red, report blocked and do not start a migration.
+11. MERGING: normal path = arm auto-merge with gh pr merge <N> --squash --auto.  Labels do-not-automerge / needs-human-merge and the CODEOWNERS gate only stop AUTO-merge: if the PR passes rule 10, CI is green, threads are resolved and it is up to date, merge it directly with gh pr merge <N> --squash (no --auto, never --admin).  Do not remove labels and do not edit the gate.  If branch protection refuses, report blocked with the exact message.  A stacked PR whose base is not the default branch is never merged into its parent branch.  If you hold a PR under rule 10, disarm nothing that a human armed and merge nothing.
+12. WAIT: after your last push on a merge-mode PR you may do ONE bounded wait: timeout 1500 gh pr checks <N> --watch.  If it has not merged by then, report armed-waiting-ci or the real blocker.  Do not poll again.
+13. WRITING: two spaces between sentences in commit messages; in GitHub replies and comments convert them to a real U+00A0 plus a space with: perl -CSDA -pe "s/([.!?])  (?=\S)/\$1\x{a0} /g".  {{TRAILER_RULE}}
+14. DONE: before answering re-query the PR with gh and report what is true NOW (state, mergeStateStatus, unresolved thread count, CI rollup, autoMergeRequest), not what you intended.  If the PR is merged, retire your lane from outside it: cd ~ && AGENT_SEAT={{SEAT}} ~/apps/lane retire pr<N>-sweep --repo <Repo> (it refuses, and you leave the lane, if anything in it is not safe on GitHub).  The parent checks production after merges; you do not deploy.
+
+## RESULT
+
+Answer with these fields (JSON when your platform supports structured output, else plain `key: value` lines):
+repo, pr, outcome, conflicts_resolved, threads_total, threads_resolved, threads_left, commits_pushed, ci, summary, blockers, owner_action.
+outcome meanings: merged = already merged now; armed-waiting-ci = auto-merge armed, CI still running, nothing else wrong; ready-for-owner = you held it under rule 10 and finished the conflict and thread work (name the rule letter in owner_action); in-flight-skipped = freshness guard; blocked = something only a person can clear (say what in owner_action); failed = you could not do the work (say why).  The sweep itself re-reads GitHub after you finish and trusts that, not this answer.
+
+## DEPLOY
+
+DEPLOY CHECK for {{REPO}}.  These PRs merged to the default branch during a sweep: {{MERGED}}.
+The owner instruction was "deploy all".  Load the deploy-verify skill and follow it.
+1. Find how this repo reaches production (repo AGENTS.md and docs, the fleet domains and routing map, Coolify / Vercel / Cloudflare / library-tag config).  Do not treat the Coolify API status as truth.
+2. If a push to the default branch auto-deploys, confirm the deploy for the NEWEST default-branch commit started and finished.  If it never triggered or is stuck, trigger the documented redeploy for this one app only.
+3. Verify with the app's real health URL(s) and a real response, and confirm the running version matches the default-branch commit when the app exposes one.
+4. If it is unhealthy: stop, gather evidence, report deployed=unhealthy.  Do NOT roll back and do NOT change settings, env, flags or secrets.
+FORBIDDEN: TestFlight or App Store upload, ios-ship or any iOS release; enabling any trading flag or live-order mode; rotating or printing secrets; touching other apps; force-anything.  If the repo ships only through an iOS release or a manual owner step, report deployed=no and put the step in owner_action.  Docs-only repos with no runtime: mechanism "none", deployed "n/a".
+Never print a credential.  Use AGENT_SEAT={{SEAT}} and --as {{SEAT}} for any fleet command.
+Answer with: repo, mechanism, deployed (yes | no | n/a | unhealthy | unknown), evidence, owner_action.

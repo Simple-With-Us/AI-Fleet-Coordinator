@@ -40,7 +40,7 @@ Active coding seats in that file: `CLAUDE`, `CODEX`, `AG`, `CURSOR`, `GROK`, `CL
 7. **Secrets:** Infisical is the sole source of truth for **app runtime** secrets.  `~/.secrets/global-api-keys` is handoff-only (names-only inspectable via `GET https://mac.jays.services/files/key-names` with Bearer `$MAC_COLLAB_TOKEN`).  Never mix `COOLIFY_AGENTS` into app Infisical as `COOLIFY_API_TOKEN`.  Never bare `infisical secrets`.
 8. **Fleet UI copy:** Title Case headings/buttons; sentence-case values; lowercase compact money; inline iOS nav titles; nothing truncated without a full-value hover.  See `FLEET-UI-COPY.md`.
 9. **App versioning & TestFlight:** `1.0.N` patch versions.  TestFlight notes use Central Time and **no** internal agent names.
-10. **Fleet Skills:** Per-seat catalog in `skills/` and `docs/fleet-skills/` (`fleet-coordination`, `session-start`, `board-ops`, `secret-handoff`, `sentence-gap`, `apple-notes`, `unstick-pr`, `land-lane`, `closeout`, `deploy-verify`, `codex-triage`, `pickup-seat`, `owner-copy`, `fleet-infra`, `dns-and-registrars`, `mac-cleanup`).  `ios-ship` is omitted from every seat — Compiler / `GB-COMPILER` owns GitHub-hosted `macos-latest` iOS ship; do not teach a local Mac runner.  DealDex's hosted Actions ship stays — do not disable it.  Kimi is not installed to `~/.kimi`.  Renoir is not installed to `~/.renoir/skills` until the seat is active.  Sync via `python3 scripts/install-fleet-skills.py`.
+10. **Fleet Skills:** Per-seat catalog in `skills/` and `docs/fleet-skills/` (`fleet-coordination`, `session-start`, `board-ops`, `secret-handoff`, `sentence-gap`, `apple-notes`, `unstick-pr`, `land-lane`, `closeout`, `deploy-verify`, `codex-triage`, `pickup-seat`, `owner-copy`, `fleet-infra`, `dns-and-registrars`, `mac-cleanup`, `pr-sweep`).  `ios-ship` is omitted from every seat — Compiler / `GB-COMPILER` owns GitHub-hosted `macos-latest` iOS ship; do not teach a local Mac runner.  DealDex's hosted Actions ship stays — do not disable it.  Kimi is not installed to `~/.kimi`.  Renoir is not installed to `~/.renoir/skills` until the seat is active.  Sync via `python3 scripts/install-fleet-skills.py`.
 
 ## Setup
 
@@ -71,6 +71,7 @@ Standing procedure (policy + checklist + scripts).  Do not invent a one-off join
 | Binding protocol (Linear + Zulip + model economics) | [`AGENT-SYNC.md`](AGENT-SYNC.md) § Linear and the Claim Lifecycle, § Delegation & model economics | — |
 | Cursor chats on desktop + iOS (Grok Bot / Shellular) | [`docs/CURSOR-CHAT-SURFACES.md`](docs/CURSOR-CHAT-SURFACES.md) | `scripts/cursor_chat_surfaces.py` |
 | Universal fleet-ops skills catalog | [`docs/fleet-skills/README-add-in-app.md`](docs/fleet-skills/README-add-in-app.md) | `scripts/install-fleet-skills.py` |
+| Sweep and land the open PRs from any platform (Claude, Codex, Cursor, Grok, ...) | [`docs/PR-SWEEP.md`](docs/PR-SWEEP.md) | `scripts/pr-sweep` |
 | **Fresh cloud sandbox / lost CLI toolchain** | [`docs/CLOUD-AGENT-BOOTSTRAP.md`](docs/CLOUD-AGENT-BOOTSTRAP.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/CLOUD-AGENT-BOOTSTRAP.md)) | `bash /workspace/.bootstrap.sh` |
 
 ## Fleet daily digest (HTML + Markdown + ICS)
