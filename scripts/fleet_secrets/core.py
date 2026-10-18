@@ -49,6 +49,9 @@ ENV_TOKEN = "INFISICAL_TOKEN"
 ENV_CLIENT_ID = "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"
 ENV_CLIENT_SECRET = "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"
 
+# Auth variables of this tool:  never handed on to the command `run` starts.
+AUTH_ENV_VARS = frozenset({ENV_TOKEN, ENV_CLIENT_ID, ENV_CLIENT_SECRET})
+
 REF_RE = re.compile(r"^\$\{[^}]+\}$")
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,254}$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]*$")

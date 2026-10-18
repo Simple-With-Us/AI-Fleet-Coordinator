@@ -100,6 +100,13 @@ def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
     if not command or not command[0]:
         raise UsageError("run needs a command after `--`")
     only = _only_names(opts["only"])
+    if only is not None:
+        reserved = [n for n in only if not core.injectable(n)]
+        if reserved:
+            raise UsageError(
+                "--only cannot inject reserved name %s (PATH, HOME, SHELL, interpreter, LD_* and DYLD_* "
+                "variables are never injected);  read it with `get` if you really need the value" % reserved[0]
+            )
     secrets = core.fetch_all(core.check_path(str(opts["path"])), env)
     if only is not None:
         for name in only:
@@ -109,7 +116,7 @@ def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
     else:
         chosen = {n: v for n, v in secrets.items() if core.injectable(n)}
     core.reject_unresolved(chosen)
-    child_env = dict(env)
+    child_env = {k: v for k, v in env.items() if k not in core.AUTH_ENV_VARS}
     child_env.update(chosen)
     chosen = secrets = {}
     try:

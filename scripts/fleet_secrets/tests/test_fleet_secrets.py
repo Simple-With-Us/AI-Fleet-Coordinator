@@ -233,6 +233,29 @@ class RunTests(Base):
         self.assertNotIn("LD_PRELOAD", env)
         self.assertNotIn("DYLD_INSERT_LIBRARIES", env)
 
+    def test_only_refuses_reserved_names_with_a_usage_error(self):
+        w = self.use(World(secrets={"ALPHA": VAL_A, "LD_PRELOAD": "x", "DYLD_INSERT_LIBRARIES": "y",
+                                    "PATH": "/evil", "NODE_OPTIONS": "z", "BASH_ENV": "q"}))
+        for name in ("LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "PATH", "NODE_OPTIONS", "BASH_ENV"):
+            code, _, err = self.call("run", "--only", "ALPHA," + name, "--", "mycmd")
+            self.assertEqual(code, 2, name)
+            self.assertIn(name, err)
+        self.assertEqual(self.exec_calls, [])
+        self.assertEqual(w.calls, [])
+
+    def test_the_parents_auth_variables_never_reach_the_child(self):
+        self.use(World())
+        self.env[core.ENV_TOKEN] = "PARENT_TOKEN_SENTINEL"
+        self.env[core.ENV_CLIENT_ID] = "PARENT_ID_SENTINEL"
+        self.env[core.ENV_CLIENT_SECRET] = "PARENT_SECRET_SENTINEL"
+        self.call("run", "--", "mycmd")
+        self.call("run", "--only", "ALPHA", "--", "mycmd")
+        self.assertEqual(len(self.exec_calls), 2)
+        for _, _, env in self.exec_calls:
+            for var in (core.ENV_TOKEN, core.ENV_CLIENT_ID, core.ENV_CLIENT_SECRET):
+                self.assertNotIn(var, env)
+            self.assertEqual(env["ALPHA"], VAL_A)
+
     def test_names_that_are_not_env_names_are_dropped(self):
         self.use(World(secrets={"ALPHA": VAL_A, "bad-name": "x", "9LIVES": "y"}))
         self.call("run", "--", "mycmd")
