@@ -48,7 +48,7 @@ Canonical design doc: [`docs/RAG-FLEET-INFRA.md`](RAG-FLEET-INFRA.md).
   behind the same Access application, so one service token covers them.
 
 **Cloud seat without these?  Run the setup script — it provisions them.**  A fresh sandbox has
-no `~/.secrets` files or `fleet-secrets`, so the old answer ("ask a Mac seat") left every cloud seat blocked
+no `~/.secrets` files, so the old answer ("ask a Mac seat") left every cloud seat blocked
 at the Cloudflare Access login page.  It no longer applies:
 
 ```bash

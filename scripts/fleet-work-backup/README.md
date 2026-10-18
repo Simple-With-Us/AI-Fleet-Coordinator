@@ -173,7 +173,7 @@ runs with `--ignore-inode --ignore-ctime`, because a rebuilt folder has new inod
 
 ## Credentials
 
-Read by the job from the environment (or `fleet-secrets get`, never the retired flat file) into the restic
+Read by the job from `~/.secrets/global-api-keys` (or the environment) today, moving to the environment or `fleet-secrets` under OPS-818, into the restic
 subprocess environment only.  Names, never values:
 
 | Name | Use |
@@ -198,7 +198,7 @@ check rejects anything else, and its `awk -v` mangles backslashes).  Generate it
 which writes a 43-character urlsafe token to Infisical through the logged-in CLI and never prints it:  the
 value reaches the CLI as a file path (`RESTIC_FLEET_WORK_PASSWORD=@<0600 file>`, removed afterwards), never in
 argv, the CLI's output is discarded, and the value is read back and compared in memory (it reports
-`matched` and the length).  It refuses when the environment or Infisical already has a
+`matched` and the length).  It refuses when the handoff file, the environment or Infisical already has a
 password, and a read it cannot make is a refusal, never "absent".
 
 **The password is the only key to every snapshot, so it is never rotated in Infisical.**  The sync
@@ -326,7 +326,7 @@ Neither changes the backup run path.
 
 **`health --json`** is read-only.  It reads `state.json`, the newest line of the run log, the installed files and
 `launchctl print gui/<uid>/com.jay.fleet-work-backup` (the one launchctl verb it uses), and it writes nothing, not
-even a directory.  It never reads the credential names or values, restic or B2.  It always exits 0:
+even a directory.  It never reads the credential names or values, the handoff file, restic or B2.  It always exits 0:
 the verdict is in the output.  Without `--json` it prints the same facts as a few lines.
 
 | Field | What it holds |

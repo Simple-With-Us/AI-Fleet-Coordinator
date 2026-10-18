@@ -225,8 +225,9 @@ surfaces now route every call through `public_fallback.call_with_fallback`, whic
    `POST /recall/search`, `POST /recall/contribute` -- see *From any other device* below).
 3. The public retry needs `RECALL_API_TOKEN` and `CF_ACCESS_CLIENT_ID` /
    `CF_ACCESS_CLIENT_SECRET` (the Cloudflare Access service token).  A value already in the
-   environment wins; otherwise `RECALL_API_TOKEN` comes from `fleet-secrets get RECALL_API_TOKEN`
-   (Infisical Fleet-OPS;  the flat `global-api-keys` file is retired), and the Access pair from
+   environment wins; otherwise `RECALL_API_TOKEN` is read from `~/.secrets/global-api-keys` today (the flat
+   file is being removed under OPS-818;  new setups should supply it through the environment or
+   `fleet-secrets run`), and the Access pair from
    `~/.secrets/agents-jays-services-access-service-token.env` -- so the fallback works from the
    stock `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper and no MCP config
    changes on any platform.  See *Credentials* and `docs/RECALL-ACCESS-CHECK.md`.  The request
@@ -350,7 +351,7 @@ the source of truth per the standing rule.
   `contribute` use the write key.  Until the service has restarted with the new key, the client
   falls back to the write key on a 401/403 so reads never break.
 - Every client loads credentials from the environment first, then from Infisical via the machine
-  identity that `fleet-secrets` holds (Keychain), or from `INFISICAL_TOKEN` in the environment.  Values are never printed.
+  identity in `~/.secrets/global-api-keys` today (being removed under OPS-818;  new setups should use the environment or `fleet-secrets run`).  Values are never printed.
 
 ST keeps its own `QDRANT_URL` / `QDRANT_API_KEY` in the ST project for the app runtime.  Rotating
 the Qdrant write key means updating both places.

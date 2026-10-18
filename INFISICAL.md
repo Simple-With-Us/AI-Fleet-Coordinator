@@ -208,7 +208,7 @@ Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or p
 ## Mac `global-api-keys` sync (`scripts/infisical-secrets-sync.sh`)
 
 The LaunchAgent `com.jay.infisical-secrets-sync` copies selected secrets from Infisical
-into `~/.secrets/global-api-keys`.  Nothing may read that file any more (OPS-818);  Mac-local jobs read through `fleet-secrets`, and this sync retires at an owner-gated cutover.
+into `~/.secrets/global-api-keys`.  Nothing may read that file any more (OPS-818);  the remaining Mac-local readers are moving to `fleet-secrets`, and this sync retires at an owner-gated cutover.
 Infisical remains the source of truth;  the file is derived and write-once rules apply where
 noted in the sync map.
 

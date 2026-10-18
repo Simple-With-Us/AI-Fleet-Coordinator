@@ -52,8 +52,8 @@ python3 ~/apps/cursor-chat-surfaces/cursor_chat_surfaces.py list-cloud
 ### One-time API key
 
 Cloud Agents API is **not** the CLI login cookie.  Prefer **`CURSOR_SYNC_API_KEY`**
-from Infisical Fleet-OPS (`fleet-secrets get CURSOR_SYNC_API_KEY`;  the flat
-`global-api-keys` file is retired).  Also accepted:
+in `~/.secrets/global-api-keys` today (being removed under OPS-818;  the CLI is moving to the
+environment or `fleet-secrets`).  Also accepted:
 `CURSOR_API_KEY` in the environment, or a chmod-600 `~/.secrets/cursor-api-key`.
 
 Never `cat` or `grep` those files in a transcript.  Names only.
@@ -66,8 +66,8 @@ Until one of those exists, `status` exits 2 and Shellular Cursor stays local ACP
 
 **Shellular DeepSeek:** pick **DeepSeek** (id `deepseek`).  That spawn is
 `~/apps/dsh-runtime/dsh-acp.sh` (pinned Harness ACP, not `npx` and not `dsh acp`).
-Auth comes from `~/.dsh/.credentials.yaml` or `DEEPSEEK_API_KEY` from
-`fleet-secrets get DEEPSEEK_API_KEY` — never from `agents.json`.
+Auth comes from `~/.dsh/.credentials.yaml` or `DEEPSEEK_API_KEY` in the
+environment (`fleet-secrets get DEEPSEEK_API_KEY` to read it) — never from `agents.json`.
 
 **Shellular Cursor:** pick **Cursor** / **Cursor Cloud** (id `cursor`).  That spawn is the bridge.  The first message creates a Cloud Agent, prints its `https://cursor.com/agents/bc-…` URL into the Shellular thread, and opens that URL on the Mac.  Desktop Agents Window and iOS can follow and send follow-ups on the **same** agent.  **Cursor local** (id `cursor-local`) is stock `cursor-agent acp` for when you explicitly want a phone-only CLI session.
 
@@ -96,7 +96,7 @@ CURSOR_ACP_LOCAL=1
 
 ## Remaining manual steps
 
-1. Confirm `CURSOR_SYNC_API_KEY` is in `fleet-secrets names` if `status` says MISSING.
+1. Confirm `CURSOR_SYNC_API_KEY` is in Infisical Fleet-OPS (`fleet-secrets names`) if `status` says MISSING.
 2. Run `install --shellular` once per machine, then `pm2 restart shellular`.
 3. On desktop, use **Agents Window** for cloud threads.  The classic per-workspace chat history will not list CLI/ACP chats.
 4. On iOS, install Cursor, sign in as `mail@jaywedgeworth.com` (same account as CLI/`agent status`).
