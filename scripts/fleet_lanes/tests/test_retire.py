@@ -244,7 +244,10 @@ class World:
         return Path(res.out.strip())
 
     def commit(self, lane: Path, name: str = "work.txt") -> str:
-        (lane / name).write_text(name + "\n", encoding="utf-8")
+        # The content names the lane.  Two lanes that commit the same file in the same second would
+        # otherwise make the very same commit (same tree, parent, author, date and message), and one
+        # lane's push would then put the other's HEAD on a remote ref.
+        (lane / name).write_text(f"{lane.name} {name}\n", encoding="utf-8")
         self.git(["add", name], lane)
         self.git(["commit", "-q", "-m", name], lane)
         return self.git(["rev-parse", "HEAD"], lane)
@@ -256,6 +259,12 @@ class World:
         self, lane: Path, head: str, number: int = 11, repo: str = "DealDex", state: str = "MERGED"
     ) -> None:
         sha = self.git(["rev-parse", "HEAD"], lane)
+        self.old_pr(head, sha, number=number, repo=repo, state=state)
+
+    def old_pr(
+        self, head: str, sha: str, number: int, repo: str = "DealDex", state: str = "MERGED"
+    ) -> None:
+        """A PR for the branch name `head` whose head commit is `sha` (any sha, local or not)."""
         self.prs[f"Simple-With-Us/{repo}"].append(
             {
                 "number": number,
@@ -294,8 +303,10 @@ class AllowlistTests(unittest.TestCase):
             ["git", "worktree", "remove", lane],
             ["git", "worktree", "prune"],
             ["git", "branch", "-d", "claude/x"],
-            ["git", "status", "--porcelain", "--untracked-files=normal"],
-            ["git", "rev-list", "--count", "HEAD", "--not", "--remotes"],
+            ["git", "status", "--porcelain", "--untracked-files=normal", "--ignored"],
+            ["git", "rev-list", "--count", "--ignore-missing", "HEAD", "--not", self.SHA],
+            ["git", "rev-list", "--count", "--ignore-missing", "HEAD", "--not", self.SHA, "c" * 40],
+            ["git", "rev-list", "--count", "--ignore-missing", "HEAD", "--not"],
             ["git", "rev-list", "--count", "HEAD", "--not", self.SHA],
             ["git", "rev-parse", "--absolute-git-dir"],
             ["git", "rev-parse", "--git-common-dir"],
@@ -361,7 +372,13 @@ class AllowlistTests(unittest.TestCase):
             ["git", "clean", "-fdx"],
             ["git", "status"],
             ["git", "status", "--porcelain", "--ignored"],
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            ["git", "status", "--porcelain", "--untracked-files=normal", "--ignored=matching"],
             ["git", "rev-list", "--count", "HEAD", "--not", "--all"],
+            ["git", "rev-list", "--count", "HEAD", "--not", "--remotes"],
+            ["git", "rev-list", "--count", "--ignore-missing", "HEAD", "--not", "--remotes"],
+            ["git", "rev-list", "--count", "--ignore-missing", "HEAD", "--not", "main"],
+            ["git", "rev-list", "--count", "--ignore-missing", "HEAD", "--not", self.SHA, "--all"],
             ["git", "config", "--get", "core.sshCommand"],
             ["git", "config", "branch.x.merge", "y"],
             ["git", "merge-base", "--is-ancestor", "HEAD", "main"],
@@ -422,6 +439,7 @@ class DecideTests(unittest.TestCase):
             "keep marker": facts(keep_marker=True),
             "status failed": facts(dirty=None),
             "dirty": facts(dirty=2),
+            "ignored local state": facts(ignored_local=[".env"]),
             "gh failed": facts(pr=R.PrView(found=False)),
             "open pr": facts(pr=R.PrView(open_number=9)),
             "unpushed": facts(unpushed=3, pr=R.PrView()),
@@ -532,17 +550,73 @@ class PruneTests(WorldCase):
             self.assertTrue(p.exists())
         self.assertFalse(res.has("worktree", "remove"))
 
-    def test_ignored_files_do_not_keep_a_lane(self) -> None:
+    def exclude(self, *patterns: str) -> None:
         exclude = self.w.trees["DealDex"] / ".git" / "info" / "exclude"
         exclude.parent.mkdir(parents=True, exist_ok=True)
-        exclude.write_text("*.log\n", encoding="utf-8")
+        exclude.write_text("".join(p + "\n" for p in patterns), encoding="utf-8")
+
+    def test_regenerable_ignored_files_do_not_keep_a_lane(self) -> None:
+        self.exclude("node_modules/", "__pycache__/", "*.pyc")
         lane = self.w.new_lane("ignored")
         self.w.commit(lane)
         self.w.push(lane, "claude/ignored")
         self.w.merged_pr(lane, "claude/ignored", number=23)
-        (lane / "build.log").write_text("noise\n", encoding="utf-8")
+        (lane / "node_modules" / "pkg").mkdir(parents=True)
+        (lane / "node_modules" / "pkg" / "index.js").write_text("x\n", encoding="utf-8")
+        (lane / "__pycache__").mkdir()
+        (lane / "__pycache__" / "m.cpython-313.pyc").write_bytes(b"\0")
         res = self.w.run("prune", "--apply", "--json")
         self.assertTrue(res.row("claude-ignored")["removed"], res.out)
+
+    def test_ignored_local_state_keeps_a_lane(self) -> None:
+        # git worktree remove (without --force) deletes ignored files without asking, so a .env or a
+        # local database that git ignores would be lost: it keeps the lane and the reason names it.
+        self.exclude(".env", "*.sqlite", "node_modules/")
+        lane = self.w.new_lane("envfile")
+        self.w.commit(lane)
+        self.w.push(lane, "claude/envfile")
+        self.w.merged_pr(lane, "claude/envfile", number=24)
+        (lane / ".env").write_text("LOCAL=1\n", encoding="utf-8")
+        (lane / "data.sqlite").write_bytes(b"\0")
+        (lane / "node_modules").mkdir()
+        (lane / "node_modules" / "x.js").write_text("x\n", encoding="utf-8")
+        res = self.w.run("prune", "--apply", "--json")
+        row = res.row("claude-envfile")
+        self.assertEqual(row["action"], "keep", row)
+        self.assertIn("ignored local state", row["reason"])
+        self.assertIn(".env", row["reason"])
+        self.assertIn("data.sqlite", row["reason"])
+        self.assertNotIn("node_modules", row["reason"])
+        self.assertTrue((lane / ".env").exists())
+        self.assertFalse(res.has("worktree", "remove"))
+        retire = self.w.run("retire", "envfile")
+        self.assertEqual(retire.rc, 64, retire.err)
+        self.assertIn(".env", retire.err)
+        self.assertTrue(lane.exists())
+
+    def test_apply_rechecks_ignored_state_under_the_lock(self) -> None:
+        lane = self.w.new_lane("late-env")
+        self.w.commit(lane)
+        self.w.push(lane, "claude/late-env")
+        self.w.merged_pr(lane, "claude/late-env", number=25)
+        seen: list[int] = []
+
+        def late_env(a: list[str]) -> D.CmdResult | None:
+            # the inspection's git status is clean; a .env appears before the re-check under the lock
+            # (git prints `!!` lines only when it is asked to, with --ignored)
+            if a[4:6] == ["status", "--porcelain"]:
+                seen.append(1)
+                if len(seen) == 2 and "--ignored" in a:
+                    return D.CmdResult(0, "!! .env\n", "")
+            return None
+
+        res = self.w.run("prune", "--apply", "--json", override=late_env)
+        row = res.row("claude-late-env")
+        self.assertEqual(len(seen), 2, res.verbs)
+        self.assertEqual(row["action"], "keep", row)
+        self.assertIn("changed since it was inspected", row["reason"])
+        self.assertFalse(res.has("worktree", "remove"))
+        self.assertTrue(lane.exists())
 
     def test_squash_merged_with_the_remote_branch_deleted_is_covered_by_the_pr_head(self) -> None:
         lane = self.w.new_lane("squashed")
@@ -569,23 +643,103 @@ class PruneTests(WorldCase):
             self.w.run("prune", "--json").row("claude-open")["reason"], "PR #41 is open"
         )
 
-    def test_upstream_deleted_on_origin_is_done(self) -> None:
-        lane = self.w.new_lane("gone")
-        self.w.commit(lane)
-        self.w.push(lane, "claude/gone")
+    def delete_on_origin(self, branch: str) -> None:
+        """Delete a branch on the bare origin only: the lane's remote-tracking ref stays, stale."""
         self.w.git(
             [
                 "--git-dir",
                 str(self.w.origins["DealDex"]),
                 "update-ref",
                 "-d",
-                "refs/heads/claude/gone",
+                f"refs/heads/{branch}",
             ],
             self.w.root,
         )
-        row = self.w.run("prune", "--json").row("claude-gone")
+
+    def test_upstream_deleted_unmerged_with_a_stale_tracking_ref_is_kept(self) -> None:
+        # The branch was deleted on origin without being merged, and nobody fetched with --prune, so
+        # refs/remotes/origin/claude/gone still holds HEAD here.  The commit exists on no live origin
+        # branch and in no PR: removing the lane and `git branch -d` would lose it.
+        lane = self.w.new_lane("gone")
+        self.w.commit(lane)
+        self.w.push(lane, "claude/gone")
+        self.delete_on_origin("claude/gone")
+        tree = self.w.trees["DealDex"]
+        self.assertTrue(
+            self.w.git(["rev-parse", "--verify", "-q", "refs/remotes/origin/claude/gone"], tree)
+        )
+        res = self.w.run("prune", "--apply", "--json")
+        row = res.row("claude-gone")
+        self.assertEqual(row["action"], "keep", row)
+        self.assertIn("1 commit on no remote ref", row["reason"])
+        self.assertTrue(lane.exists())
+        self.assertFalse(res.has("worktree", "remove"))
+        self.assertFalse(res.has("branch", "-d"))
+        self.assertTrue(self.w.git(["rev-parse", "--verify", "-q", "refs/heads/claude/gone"], tree))
+
+    def test_upstream_deleted_after_its_commits_reached_a_live_branch_is_done(self) -> None:
+        lane = self.w.new_lane("landed")
+        self.w.commit(lane)
+        self.w.push(lane, "claude/landed")
+        self.w.git(["push", "-q", "origin", "HEAD:main"], lane)  # a fast-forward merge
+        self.delete_on_origin("claude/landed")
+        row = self.w.run("prune", "--json").row("claude-landed")
         self.assertEqual(row["action"], "remove", row)
-        self.assertIn("upstream claude/gone deleted on origin", row["reason"])
+        self.assertIn("upstream claude/landed deleted on origin", row["reason"])
+
+    def test_a_failed_ls_remote_never_vouches_for_a_push(self) -> None:
+        # Without the live origin heads nothing proves HEAD is pushed, so only a PR holding HEAD can.
+        lane = self.w.new_lane("blind")
+        self.w.commit(lane)
+        self.w.push(lane, "claude/blind")
+        self.w.git(["push", "-q", "origin", "HEAD:main"], lane)
+        covered = self.w.new_lane("blind-pr")
+        self.w.commit(covered)
+        self.w.push(covered, "claude/blind-pr")
+        self.w.merged_pr(covered, "claude/blind-pr", number=26)
+        fail = lambda a: (
+            D.CmdResult(128, "", "fatal: unable to access origin")
+            if a[4:6] == ["ls-remote", "--heads"]
+            else None
+        )
+        res = self.w.run("prune", "--json", override=fail)
+        self.assertEqual(res.rc, 69)
+        self.assertEqual(res.row("claude-blind")["reason"], "could not count unpushed commits")
+        self.assertEqual(res.row("claude-blind-pr")["action"], "remove")
+        self.assertTrue(any("ls-remote" in e for e in res.json()["errors"]))
+
+    def test_an_old_pr_that_reused_the_branch_name_is_not_done_evidence(self) -> None:
+        # A new lane reuses the slug of a lane whose PR merged long ago.  The bulk PR list matches the
+        # old PR by its head name, but it holds none of this lane's commits.
+        fresh = self.w.new_lane("reused")
+        self.w.old_pr("claude/reused", "c" * 40, number=5)  # its head is not even here
+        row = self.w.run("prune", "--json").row("claude-reused")
+        self.assertEqual(row["action"], "keep", row)
+        self.assertIn("never pushed", row["reason"])  # the 24-hour hold for an unused lane
+        self.assertIsNone(row["pr"])
+        self.assertTrue(fresh.exists())
+        # work pushed under a reused name, with no PR of its own yet, is not done either
+        work = self.w.new_lane("reused-work")
+        self.w.commit(work)
+        self.w.push(work, "claude/reused-work")
+        self.w.old_pr("claude/reused-work", self.w.git(["rev-parse", "HEAD~1"], work), number=6)
+        row = self.w.run("prune", "--apply", "--json").row("claude-reused-work")
+        self.assertEqual(row["action"], "keep", row)
+        self.assertIn("not done", row["reason"])
+        self.assertTrue(work.exists())
+
+    def test_an_old_pr_whose_head_only_contains_main_is_not_done_evidence(self) -> None:
+        # The old PR's head is a local commit on top of today's origin/main, so it "contains" a fresh
+        # lane's HEAD.  But that lane has no commits of its own: the PR holds none of its work.
+        first = self.w.new_lane("first")
+        old_head = self.w.commit(first)
+        self.w.push(first, "claude/first")
+        again = self.w.new_lane("again")
+        self.w.old_pr("claude/again", old_head, number=8, state="CLOSED")
+        row = self.w.run("prune", "--json").row("claude-again")
+        self.assertEqual(row["action"], "keep", row)
+        self.assertIn("never pushed", row["reason"])
+        self.assertTrue(again.exists())
 
     def test_closed_pr_counts_as_done(self) -> None:
         lane = self.w.new_lane("closed")
