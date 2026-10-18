@@ -130,9 +130,12 @@ jobs:
           fi
 
           # Changed files via the compare API (three-dot = merge-base..head)
-          mapfile -t changed_files < <(
-            gh api "repos/$REPO/compare/${BASE}...${HEAD}" --paginate -q '.files[].filename'
-          ) || skip "compare API failed - fail closed"
+          cmp_out="$RUNNER_TEMP/compare.txt"
+          if ! gh api "repos/$REPO/compare/${BASE}...${HEAD}" --paginate -q '.files[].filename' > "$cmp_out" 2>"$RUNNER_TEMP/compare.err"; then
+            cat "$RUNNER_TEMP/compare.err" >&2
+            skip "compare API failed - fail closed"
+          fi
+          mapfile -t changed_files < "$cmp_out"
           [ ${#changed_files[@]} -gt 0 ] || skip "compare API returned no files - fail closed"
 
           # Self-guard: PR edits the gate itself
@@ -148,13 +151,23 @@ jobs:
           # CODEOWNERS money-path gate (gate script comes from the base branch checkout)
           if [ "$REQUIRE_GATE" = "true" ]; then
             [ -n "$GATE_SCRIPT" ] || skip "require_codeowners_gate without gate_script - fail closed"
+            [ -f "$GATE_SCRIPT" ] || skip "gate script $GATE_SCRIPT missing on base branch - fail closed"
             co="$RUNNER_TEMP/codeowners-base"
-            if gh api "repos/$REPO/contents/.github/CODEOWNERS?ref=$BASE" --jq '.content // empty' 2>/dev/null | base64 -d > "$co" && [ -s "$co" ]; then
-              if CODEOWNERS_FILE="$co" bash "$GATE_SCRIPT" --files "${changed_files[@]}"; then
-                skip "touches CODEOWNERS protected paths - human merge required"
-              fi
+            co_err="$RUNNER_TEMP/codeowners.err"
+            if gh api "repos/$REPO/contents/.github/CODEOWNERS?ref=$BASE" --jq '.content // empty' > "$RUNNER_TEMP/co.b64" 2>"$co_err"; then
+              base64 -d < "$RUNNER_TEMP/co.b64" > "$co" || skip "CODEOWNERS decode failed - fail closed"
+            elif grep -qiE '404|Not Found' "$co_err"; then
+              : > "$co" # no CODEOWNERS on base: nothing protected
             else
-              : # no CODEOWNERS on base: nothing protected
+              cat "$co_err" >&2
+              skip "CODEOWNERS fetch failed - fail closed"
+            fi
+            gate_rc=0
+            CODEOWNERS_FILE="$co" bash "$GATE_SCRIPT" --files "${changed_files[@]}" || gate_rc=$?
+            if [ "$gate_rc" -eq 0 ]; then
+              skip "touches CODEOWNERS protected paths - human merge required"
+            elif [ "$gate_rc" -ne 1 ]; then
+              skip "gate script crashed (exit $gate_rc, not a verdict) - fail closed"
             fi
           fi
 
@@ -213,8 +226,15 @@ jobs:
           echo "Enabling auto-merge (${args[*]}) for $PR_URL"
           out="$(gh pr merge "${args[@]}" "$PR_URL" 2>&1)" && { echo "$out"; exit 0; }
           echo "$out"
-          if echo "$out" | grep -qiE 'already enabled|Pull request is in clean status|Auto merge is already'; then
+          if echo "$out" | grep -qiE 'already enabled|Auto merge is already'; then
             echo "Auto-merge already armed."; exit 0
+          fi
+          if echo "$out" | grep -qiE 'Pull request is in clean status'; then
+            if gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest' | grep -vq null; then
+              echo "Auto-merge armed (clean status)."; exit 0
+            fi
+            echo "::error::PR reports clean status but auto-merge is not armed - not treating as armed."
+            exit 1
           fi
           if echo "$out" | grep -qiE 'is not mergeable|not mergeable|merge conflict|required status check|Review required'; then
             if gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest' | grep -vq null; then
@@ -242,10 +262,19 @@ jobs:
         run: |
           set -euo pipefail
           echo "PR ineligible ($REASON); ensuring auto-merge is off for $PR_URL"
+          read_state() { GH_TOKEN="$1" gh pr view "$PR_URL" --json autoMergeRequest --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || true; }
+          check_state() {
+            local s t
+            for t in "$primary" "$fallback"; do
+              [ -n "$t" ] || continue
+              s="$(read_state "$t")"
+              [ -n "$s" ] && { echo "$s"; return; }
+            done
+            echo unreadable
+          }
           primary="${MERGE_TOKEN:-}"; fallback="${FALLBACK_TOKEN:-}"
           [ -n "$primary" ] || { primary="$fallback"; fallback=""; }
-          [ -n "$primary" ] && [ -n "$fallback" ] || fallback=""
-          state="$(GH_TOKEN="$primary" gh pr view "$PR_URL" --json autoMergeRequest --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || echo unreadable)"
+          state="$(check_state)"
           if [ "$state" = "off" ]; then echo "auto-merge already off."; exit 0; fi
           for token in "$primary" "$fallback"; do
             [ -n "$token" ] || continue
@@ -253,9 +282,9 @@ jobs:
               echo "auto-merge disabled."; exit 0
             fi
           done
-          state="$(GH_TOKEN="$primary" gh pr view "$PR_URL" --json autoMergeRequest --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || echo unreadable)"
-          if [ "$state" = "armed" ]; then
-            echo "::error::auto-merge still armed for $PR_URL and every credential was rejected"
-            exit 1
-          fi
-          echo "auto-merge not armed (or unreadable with it confirmed off)."
+          state="$(check_state)"
+          case "$state" in
+            off) echo "auto-merge disabled."; exit 0;;
+            armed) echo "::error::auto-merge still armed for $PR_URL and every credential was rejected"; exit 1;;
+            *) echo "::error::disable attempts failed and auto-merge state is unreadable for $PR_URL - failing closed"; exit 1;;
+          esac
