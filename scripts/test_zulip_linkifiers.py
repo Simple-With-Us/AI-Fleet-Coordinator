@@ -82,6 +82,34 @@ class TeamDriftTest(unittest.TestCase):
         self.assertEqual(L.team_drift(keys), (["NEW"], ["AR"]))
 
 
+class LinearTeamKeysTest(unittest.TestCase):
+    def run_with(self, **run):
+        with (
+            mock.patch.object(L.shutil, "which", return_value="/usr/bin/board"),
+            mock.patch.object(L.subprocess, "run", **run),
+        ):
+            return L.linear_team_keys()
+
+    def test_keys_are_read_from_the_board_output(self):
+        out = json.dumps({"teams": {"nodes": [{"key": "AFC"}, {"key": "C"}]}})
+        proc = mock.Mock(stdout=out)
+        self.assertEqual(self.run_with(return_value=proc), ["AFC", "C"])
+
+    def test_timeout_means_unavailable_not_a_crash(self):
+        timeout = L.subprocess.TimeoutExpired(cmd="board", timeout=60)
+        self.assertIsNone(self.run_with(side_effect=timeout))
+
+    def test_unrunnable_board_means_unavailable(self):
+        self.assertIsNone(self.run_with(side_effect=PermissionError("board")))
+
+    def test_unparseable_output_means_unavailable(self):
+        self.assertIsNone(self.run_with(return_value=mock.Mock(stdout="not json")))
+
+    def test_missing_board_means_unavailable(self):
+        with mock.patch.object(L.shutil, "which", return_value=None):
+            self.assertIsNone(L.linear_team_keys())
+
+
 class PlanTest(unittest.TestCase):
     def live(self, **overrides):
         rules = [

@@ -995,7 +995,7 @@ Get the seat's own `email` and key path from `agent-sync whoami`.  Never print a
 
 ```bash
 python3 scripts/zulip_linkifiers.py            # any member key:  diff live rules against TARGET
-python3 scripts/zulip_linkifiers.py --check    # any member key:  render every CHECKS string, and (with AGENT_SEAT set) diff Linear's team keys against 5119
+python3 scripts/zulip_linkifiers.py --check    # any member key:  render every CHECKS string, and diff Linear's team keys against 5119 (skipped when the board CLI is missing)
 python3 scripts/zulip_linkifiers.py --apply --owner-rc PATH   # admin key:  edit, add, keep the generic rule last, then check
 ```
 

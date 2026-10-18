@@ -262,12 +262,15 @@ def linear_team_keys() -> list[str] | None:
     """Every Linear team key, read with the board CLI (its own seat credentials), or None when unavailable."""
     if not shutil.which("board"):
         return None
-    proc = subprocess.run(
-        ["board", "api", "query", "{ teams(first: 250) { nodes { key } } }"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    try:
+        proc = subprocess.run(
+            ["board", "api", "query", "{ teams(first: 250) { nodes { key } } }"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
     try:
         return [team["key"] for team in json.loads(proc.stdout)["teams"]["nodes"]]
     except (ValueError, KeyError, TypeError):
@@ -277,9 +280,7 @@ def linear_team_keys() -> list[str] | None:
 def check_linear() -> int:
     keys = linear_team_keys()
     if keys is None:
-        print(
-            "skip  Linear team drift:  the board CLI is missing or could not read Linear (set AGENT_SEAT)"
-        )
+        print("skip  Linear team drift:  the board CLI is missing or could not read Linear")
         return 0
     missing, extra = team_drift(keys)
     for key in missing:
