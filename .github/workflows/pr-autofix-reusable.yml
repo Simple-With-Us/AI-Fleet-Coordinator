@@ -78,9 +78,11 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    concurrency:
-      group: pr-autofix-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
-      cancel-in-progress: false
+    # No job-level concurrency here.  Every caller holds pr-autofix-<repo>-<pr> at workflow level,
+    # and a job that asks for the group its own run already holds is cancelled before any step:
+    # "Canceling since a deadlock was detected for concurrency group ... between a top level
+    # workflow and 'autofix / autofix'" (BotFleet run 39054950194).  That stopped every run from
+    # 2e671004 (#520) on.  The caller's group is what serializes the fleet's autofix writers.
     permissions:
       contents: write
       pull-requests: read
