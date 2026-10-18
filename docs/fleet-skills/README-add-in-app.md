@@ -42,7 +42,7 @@ Having explicit fleet skills installed significantly improves agent compliance w
 | **`pickup-seat`** | Picking up capped or abandoned peer lanes safely with full attribution. |
 | **`fleet-infra`** | Accessing the private infrastructure hub (`fleet-ops:ATTACK-MAP.md`) for host IPs, Tailscale mesh, Coolify UUIDs, and Infisical IDs without committing secrets. |
 | **`dns-and-registrars`** | Cloudflare is DNS for every fleet domain.  Create each new app's own zone on account Usage.Jays.Services — not on hostname `usage.jays.services`.  Canonical: `docs/DNS-AND-REGISTRARS.md`. |
-| **`deploy-verify`** | Post-merge verification across Coolify, Vercel, and public `/api/health` endpoints. |
+| **`deploy-verify`** | Post-merge verification across Coolify, Vercel, and public `/api/health` endpoints, plus TestFlight freshness for iOS apps. |
 | **`mac-cleanup`** | Mac / Hetzner disk cleanup (worktrees, Xcode caches, package caches).  Not an iOS ship loop.  Omitted from cloud Grok Bot. |
 | **`housekeeper`** | Disk/RAM/CPU housekeeping playbook, CleanMyMac, resource-threshold wakes for BotFleet Housekeeper and `GB-HOUSEKEEPER`.  Installed on Grok Bot (cloud hop via `drive-grok-tui`). |
 | **`drive-grok-tui`** | Any seat: list live Mac Grok TUI chats and inject a follow-up via `grok-drive.py` or seat-mcp.  Cloud seats use `https://agents.jays.services/mcp`.  Installed on `[GROK]` too (self-inject is refused unless `--self`). |

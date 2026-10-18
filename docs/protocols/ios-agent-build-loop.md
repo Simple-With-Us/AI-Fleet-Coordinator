@@ -19,6 +19,8 @@ Architecture unless the file you are editing already differs:
 
 Signing / TestFlight last-mile stays `scripts/ios-ship-testflight.sh` + `/Users/jay/apps/ios-fleet/README.md`.  Do not debug code-signing by guessing.
 
+**After a merge that touches an app's native iOS tree (owner 2026-10-17 — ALL seats).**  The deploy is not verified until the TestFlight freshness check (`ios_testflight_freshness`; arguments and verdicts in `~/apps/ios-fleet/README.md`) reports that app current.  A merged PR or a green compile check does not count.  Where to look when it reports behind (ship workflow run, runner, rate gate, compile check) and the rules that matter (What to Test with no seat or agent names, patch version `1.0.N` on every upload, TestFlight uploads authorized but App Store submission not) are in the `deploy-verify` skill, section 5.  The `ios-ship` skill (a claude.ai account skill, not part of the fleet pack) names this document as its canon, so this paragraph is where that skill's cross-reference lands.
+
 Per-app iOS onboarding (annotated file tree + scheme): `ios/CLAUDE.md`, `clients/ios/CLAUDE.md`, or `native/ios/CLAUDE.md`.
 
 **iOS Debug vs TestFlight (owner 2026-08-21 — ALL seats).**  Do the Xcode-console kind of debug **as autonomously as possible**.  Ask the owner only when the phone, signing, or a gesture is actually blocking.  Helper (on-demand, not a daemon): `bash /Users/jay/apps/ios-fleet/ios-debug.sh <app>`.  Tracked copy: `AI-Fleet-Coordinator/scripts/ios-debug.sh`.
