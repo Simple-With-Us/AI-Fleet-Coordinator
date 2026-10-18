@@ -8,9 +8,13 @@ only a member key, so any seat can run them:
     python3 scripts/zulip_linkifiers.py                 # plan:  diff live rules against TARGET
     python3 scripts/zulip_linkifiers.py --check         # render CHECKS, and diff Linear's teams with rule 5119
     python3 scripts/zulip_linkifiers.py --apply --owner-rc PATH   # owner:  apply the plan, then check
+    python3 scripts/zulip_linkifiers.py --apply --infisical       # the realm-admin bot, from Infisical
 
-Credentials, first hit wins:  --owner-rc PATH (or --rc PATH for a read-only run), then env
-ZULIP_EMAIL + ZULIP_API_KEY, then ~/.secrets/Zulip/Claude-zuliprc.  Keys are never printed.
+Credentials, first hit wins:  --infisical (the realm-admin bot's ZULIP_ADMIN_EMAIL and
+ZULIP_ADMIN_API_KEY from AI Fleet Coordinator prod /zulip, read with the fleet automation
+machine identity INFISICAL_AUTOMATION_CLIENT_ID / _SECRET), --owner-rc PATH (or --rc PATH for a
+read-only run), then env ZULIP_EMAIL + ZULIP_API_KEY, then ~/.secrets/Zulip/Claude-zuliprc.
+Keys are never printed.
 
 Rules are matched to live ones by id, then by identical pattern, because Zulip numbers a rule it
 creates itself (a deleted and re-added rule, a restored backup, a fresh realm) and the pin in
@@ -159,6 +163,51 @@ CHECKS: list[tuple[str, str | None]] = [
     ("PagerDuty#384", "https://jays-services.pagerduty.com/incidents/384"),
     ("PagerDuty#Q1ABC23", "https://jays-services.pagerduty.com/incidents/Q1ABC23"),
 ]
+
+
+AFC_INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # "AI Fleet Coordinator"
+INFISICAL_API = "https://app.infisical.com/api"
+
+
+def infisical_admin() -> tuple[str, str, str]:
+    """The realm-admin bot's pair from AFC prod /zulip, read once with the automation identity."""
+    client_id = os.environ.get("INFISICAL_AUTOMATION_CLIENT_ID", "")
+    client_secret = os.environ.get("INFISICAL_AUTOMATION_CLIENT_SECRET", "")
+    if not (client_id and client_secret):
+        sys.exit(
+            "--infisical needs INFISICAL_AUTOMATION_CLIENT_ID and INFISICAL_AUTOMATION_CLIENT_SECRET"
+        )
+
+    def call(url: str, body: dict | None = None, token: str = "") -> dict:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode() if body is not None else None,
+            method="POST" if body is not None else "GET",
+            headers={
+                "Content-Type": "application/json",
+                **({"Authorization": f"Bearer {token}"} if token else {}),
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as exc:
+            sys.exit(
+                f"Infisical answered HTTP {exc.code} for {url.split('?')[0].replace(INFISICAL_API, '')}"
+            )
+
+    token = call(
+        f"{INFISICAL_API}/v1/auth/universal-auth/login",
+        {"clientId": client_id, "clientSecret": client_secret},
+    )["accessToken"]
+    where = urllib.parse.urlencode(
+        {"workspaceId": AFC_INFISICAL_PROJECT, "environment": "prod", "secretPath": "/zulip"}
+    )
+    email, key = (
+        call(f"{INFISICAL_API}/v3/secrets/raw/{name}?{where}", token=token)["secret"]["secretValue"]
+        for name in ("ZULIP_ADMIN_EMAIL", "ZULIP_ADMIN_API_KEY")
+    )
+    return email, key, REALM
 
 
 def credentials(rc_path: str | None) -> tuple[str, str, str]:
@@ -346,6 +395,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rc", help="zuliprc for a read-only plan or check")
     parser.add_argument("--owner-rc", help="the owner's zuliprc (needed for --apply)")
     parser.add_argument(
+        "--infisical", action="store_true", help="use the realm-admin bot's pair from Infisical"
+    )
+    parser.add_argument(
         "--apply", action="store_true", help="apply the plan (realm administrator only)"
     )
     parser.add_argument("--check", action="store_true", help="render CHECKS and report")
@@ -356,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    zulip = Zulip(*credentials(args.owner_rc or args.rc))
+    zulip = Zulip(*(infisical_admin() if args.infisical else credentials(args.owner_rc or args.rc)))
     if args.check and not args.apply:
         return 1 if check(zulip) + check_linear() else 0
 

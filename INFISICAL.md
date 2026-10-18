@@ -94,7 +94,7 @@ Store current values in prod `/zulip`, and verify each bot identity before provi
 
 | Key | Kind | Used by |
 |---|---|---|
-| `ZULIP_ADMIN_EMAIL` / `ZULIP_ADMIN_API_KEY` | env config / secret | prod `/zulip`.  `zulip_linkifiers.py --apply` (with `--owner-rc`, or the pair exported as `ZULIP_EMAIL` / `ZULIP_API_KEY`) |
+| `ZULIP_ADMIN_EMAIL` / `ZULIP_ADMIN_API_KEY` | env config / secret | prod `/zulip`, set Sun, Oct 18, 2026.  `zulip_linkifiers.py --apply --infisical` reads them with the fleet automation machine identity (`INFISICAL_AUTOMATION_CLIENT_ID` / `_SECRET`, which reads and writes this folder, checked the same day).  `--owner-rc` with the Mac's `~/.secrets/ZulipAdmin/realm-admin.zuliprc` still works. |
 
 ## Zulip incoming-webhook bots
 
