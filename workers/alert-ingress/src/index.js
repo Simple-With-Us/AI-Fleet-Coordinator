@@ -34,6 +34,10 @@ const DEFAULT_CHANNEL = "alerts";
 const stateKey = (k) => `state:${k}`;
 const statusKey = (c, t) => `status:${c}:${t}`;
 const svcKey = (k) => `svc:${k}`;
+// Topic membership is its own key.  Deriving the topic by splitting the `idx:`
+// key on ":" would mis-parse any service name containing a colon, so the topic
+// list is tracked explicitly instead of inferred.
+const topicKey = (c, t) => `topic:${c}:${t}`;
 
 /** Constant-time-ish compare so signature checks do not leak by timing. */
 function safeEqual(a, b) {
@@ -80,25 +84,84 @@ async function verify(request, raw, env, source) {
   return !!env.INGRESS_SHARED_TOKEN && safeEqual(token, env.INGRESS_SHARED_TOKEN);
 }
 
-/** Rewrite the standing status block for a topic from all its states. */
-async function refreshStatus(env, channel, topic) {
-  const now = new Date();
-  const stamp = now.toLocaleString("en-US", {
+/** All tracked states for one topic, with their service labels resolved. */
+async function collectStates(env, channel, topic) {
+  const prefix = `idx:${channel}:${topic}:`;
+  const keys = await env.ALERT_STATE.list({ prefix });
+  const states = [];
+  for (const { name } of keys.keys) {
+    const key = name.slice(prefix.length);
+    const raw = await env.ALERT_STATE.get(stateKey(key), "json");
+    if (!raw) continue;
+    states.push({ key, ...raw, service: (await env.ALERT_STATE.get(svcKey(key), "json")) || key });
+  }
+  return states;
+}
+
+/** Every topic that has at least one tracked signal. */
+async function collectTopics(env) {
+  const prefix = `topic:${DEFAULT_CHANNEL}:`;
+  const seen = new Set();
+  const keys = await env.ALERT_STATE.list({ prefix });
+  for (const { name } of keys.keys) {
+    const topic = name.slice(prefix.length);
+    if (topic) seen.add(topic);
+  }
+  const topics = {};
+  let firing = 0;
+  let total = 0;
+  for (const topic of [...seen].sort()) {
+    const states = await collectStates(env, DEFAULT_CHANNEL, topic);
+    // A topic whose states have all been cleared is dropped rather than
+    // rendered as an empty card, so the view self-cleans as incidents resolve.
+    if (states.length === 0) continue;
+    const tf = states.filter((s) => s.phase === "alerting").length;
+    firing += tf;
+    total += states.length;
+    topics[topic] = {
+      firing: tf,
+      total: states.length,
+      alerts: states
+        .map((s) => ({
+          key: s.key,
+          service: s.service,
+          phase: s.phase,
+          severity: s.phase === "alerting" ? s.severity : "INFO",
+          text: s.text,
+          link: s.link,
+          since: s.since,
+          updated: s.updated,
+          prodDown: s.prodDown === true,
+        }))
+        .sort((a, b) => {
+          const rank = { alerting: 0, pending: 1, ok: 2 };
+          return rank[a.phase] - rank[b.phase] || a.service.localeCompare(b.service);
+        }),
+    };
+  }
+  return { topics, firing, total };
+}
+
+/**
+ * Central Time stamp in the fleet's house style: 12-hour, lowercase meridiem,
+ * no space before it (`Oct 18, 5:39pm`).  `toLocaleString` emits `5:39 PM`, so
+ * normalize it -- zulip-fleet-guide.md requires `3:15pm`, never `3:15 PM`.
+ */
+function ctStamp() {
+  const s = new Date().toLocaleString("en-US", {
     timeZone: "America/Chicago",
     month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
   });
-  const keys = (await env.ALERT_STATE.list({ prefix: `idx:${channel}:${topic}:` })).keys;
-  const states = [];
-  for (const { name } of keys) {
-    const key = name.slice(`idx:${channel}:${topic}:`.length);
-    const raw = await env.ALERT_STATE.get(stateKey(key), "json");
-    if (!raw) continue;
-    states.push({ ...raw, service: (await env.ALERT_STATE.get(svcKey(key), "json")) || key });
-  }
-  const content = renderStatus({ topic, states, updatedAt: stamp });
+  return s.replace(/\s*(AM|PM)$/, (_, m) => m.toLowerCase());
+}
+
+/** Rewrite the standing status block for a topic from all its states. */
+async function refreshStatus(env, channel, topic) {
+  const states = await collectStates(env, channel, topic);
+  const content = renderStatus({ topic, states, updatedAt: ctStamp() });
   const id = await writeStatus({
     email: env.ZULIP_BOT_EMAIL,
     apiKey: env.ZULIP_BOT_API_KEY,
@@ -123,6 +186,7 @@ async function handleEvent(source, payload, env) {
   await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
   await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
   await env.ALERT_STATE.put(`idx:${channel}:${topic}:${event.key}`, "1");
+  await env.ALERT_STATE.put(topicKey(channel, topic), "1");
 
   let posted = null;
   const sev = result.state.phase === "alerting" ? result.state.severity : "INFO";
@@ -206,6 +270,23 @@ export default {
       return json(await runSweep(env));
     }
 
+    // Machine-readable status for consumers that render it themselves --
+    // today the Usage Monitor /ops page.  One writer, many readers, so the
+    // dashboard and the Zulip channel cannot drift apart.
+    if (url.pathname === "/status") {
+      const collected = await collectTopics(env);
+      return json({
+        generatedAt: new Date().toISOString(),
+        channel: DEFAULT_CHANNEL,
+        summary: {
+          topics: Object.keys(collected.topics).length,
+          alerts: collected.total,
+          firing: collected.firing,
+        },
+        ...collected,
+      });
+    }
+
     const statusMatch = url.pathname.match(/^\/status\/([^/]+)\/([^/]+)$/);
     if (statusMatch) {
       const [, channel, topic] = statusMatch;
@@ -241,4 +322,16 @@ export default {
   },
 };
 
-export const __testing = { refreshStatus, runSweep, safeEqual, stateKey, statusKey, svcKey, indexPrefix: (c, t) => `idx:${c}:${t}:` };
+export const __testing = {
+  refreshStatus,
+  runSweep,
+  collectStates,
+  collectTopics,
+  safeEqual,
+  stateKey,
+  statusKey,
+  svcKey,
+  topicKey,
+  ctStamp,
+  indexPrefix: (c, t) => `idx:${c}:${t}:`,
+};

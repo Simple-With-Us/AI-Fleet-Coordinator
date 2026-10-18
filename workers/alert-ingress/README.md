@@ -36,11 +36,53 @@ A message is only warranted when **state** changes.  The channel ends up as:
 | Route | Purpose |
 |---|---|
 | `POST /webhook/:source` | vendor event; signature verified, replies immediately |
-| `GET  /status/:channel/:topic` | current standing status, rebuilt and returned |
+| `GET  /status` | **machine-readable** status for any consumer that renders it |
+| `GET  /status/:channel/:topic` | the rendered standing status, as Markdown |
 | `GET  /sweep?token=…` | run the promotion sweep by hand |
 | `GET  /health` | liveness |
 
 Sources with a bespoke parser: `datadog`, `betterstack`.  Anything else falls back to a conventional-key reader.  The route's source name is authoritative, so a payload cannot claim to be another integration.
+
+## One writer, many readers
+
+The ingress is the **only writer** of alert state.  `GET /status` publishes it, so any surface can render the same truth rather than re-deriving health independently and drifting:
+
+```
+GET /status
+{
+  "generatedAt": "2026-10-18T22:40:00.000Z",
+  "channel": "alerts",
+  "summary": { "topics": 2, "alerts": 3, "firing": 1 },
+  "topics": {
+    "Mac.Jays.Services": {
+      "firing": 1,
+      "total": 2,
+      "alerts": [
+        {
+          "key": "datadog:22024797",
+          "service": "Mac.Jays.Services",
+          "phase": "alerting",
+          "severity": "MODERATE",
+          "text": "System load is high",
+          "link": "https://us5.datadoghq.com/monitors/22024797",
+          "since": 1792358697000,
+          "updated": 1792360437000,
+          "prodDown": false
+        }
+      ]
+    }
+  }
+}
+```
+
+Contract rules, enforced by `status.test.js`:
+
+- only `phase: "alerting"` may surface a non-`INFO` severity, so a held incident never reads as alarming;
+- alerts sort firing → pending → ok;
+- a topic whose states have all cleared is **dropped**, so the view self-cleans as incidents resolve;
+- the payload carries no credential, ever.
+
+**Live consumer:** the Usage Monitor `/ops` page (`usage.jays.services/ops`) renders this as its Fleet Alerts card, so the dashboard and the Zulip channel cannot disagree.
 
 ## Signature verification
 
@@ -60,6 +102,7 @@ An incident is held, not posted, until it is still open after `MIN_OPEN_MS` (def
 |---|---|
 | `state:<key>` | `AlertState` — phase (`ok`/`pending`/`alerting`), severity, since, text, link |
 | `svc:<key>` | service name, so a topic stays stable |
+| `topic:<channel>:<topic>` | topic membership; tracked explicitly rather than parsed out of `idx:` |
 | `idx:<channel>:<topic>:<key>` | membership marker, so a status rebuild knows its rows |
 | `status:<channel>:<topic>` | message id of the standing status, for the PATCH |
 
