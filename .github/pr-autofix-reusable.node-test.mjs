@@ -43,10 +43,14 @@ test('trusted policy is loaded from the default branch, not the PR checkout', ()
   assert(!workflow.includes('configured=$(awk \'/^max_iterations:/\' .autofix.yml'));
 });
 
-test('job concurrency serializes autofix writers per pull request', () => {
-  assert.match(job, /concurrency:/);
-  assert.match(job, /group: pr-autofix-\$\{\{ github\.repository \}\}-\$\{\{ github\.event\.issue\.number \|\| github\.event\.pull_request\.number \}\}/);
-  assert.match(job, /cancel-in-progress: false/);
+test('the caller, not the reusable job, holds the per-PR concurrency group', () => {
+  // A job-level copy of the caller's group deadlocks:  GitHub cancels the job before any step
+  // ("Canceling since a deadlock was detected ... between a top level workflow and
+  // 'autofix / autofix'", BotFleet run 39054950194).  Serialization lives in the caller.
+  assert.doesNotMatch(job, /^\s+concurrency:/m);
+  const caller = readFileSync(new URL('./workflows/autofix.yml', import.meta.url), 'utf8');
+  const top = caller.slice(0, caller.indexOf('jobs:'));
+  assert.match(top, /^concurrency:\n  group: pr-autofix-\$\{\{ github\.repository \}\}-\$\{\{ github\.event\.issue\.number \|\| github\.event\.pull_request\.number \}\}\n  cancel-in-progress: false$/m);
 });
 
 test('push prefers the GitHub App installation token when configured', () => {
