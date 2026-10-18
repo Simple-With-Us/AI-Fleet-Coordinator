@@ -8,7 +8,7 @@ After each finished unit:  commit, push the branch, open a PR, arm auto-merge (`
 
 ### Secrets
 
-The owner hands you a secret as the path to a `chmod 600` file, never as chat text.  Never print, echo or paste a credential, never `cat`, read or open a handoff file, and never run `grep` on one without `-o`.  Never run `ps`, `pgrep -l` or a bare `infisical secrets`, and never dump the bytes of a variable that holds a key.  Infisical is the runtime source of truth for deployed apps.
+The owner hands you a new secret as the path to a `chmod 600` file, never as chat text.  Fleet keys come from Infisical Fleet-OPS:  `fleet-secrets get NAME` for one value, `fleet-secrets run --only A,B -- CMD` to run with keys, `fleet-secrets names` for names;  the flat `~/.secrets/global-api-keys` is retired.  Never print, echo or paste a credential, never `cat`, read or open a secrets file, never run `grep` on one without `-o`, and never add `2>&1` to a command that touches a secret.  Never run `ps`, `pgrep -l` or a bare `infisical secrets`, and never dump the bytes of a variable that holds a key.  Infisical is the runtime source of truth for deployed apps.
 
 ### Writing Anything a Human Reads
 

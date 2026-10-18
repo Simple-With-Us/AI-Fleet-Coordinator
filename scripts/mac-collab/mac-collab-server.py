@@ -16,6 +16,7 @@ opens its own short-lived connection (safe under ThreadingHTTPServer's
 one-thread-per-request model); WAL mode is set once at startup for
 read/write concurrency.
 """
+
 from __future__ import annotations
 
 import base64
@@ -34,7 +35,7 @@ import sys
 import time
 import urllib.request
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -148,7 +149,9 @@ def app_filter_variants(app: str) -> list[str]:
     return sorted(variants)
 
 
-HANDOFF_NAMES_FILE = HOME / ".secrets" / "global-api-keys"
+FLEET_SECRETS_BIN = (
+    HOME / ".local" / "bin" / "fleet-secrets"
+)  # OPS-818:  replaces the flat global-api-keys file
 AUDIT_LOG = Path(__file__).resolve().parent / "audit.log"
 AUTH_FAIL_WINDOW_S = 60.0
 AUTH_FAIL_MAX = 20
@@ -162,9 +165,7 @@ OPEN_STATUSES = ("open", "in_progress")
 # GitHub Issues are only open/closed.  Board refinements in the same GH state
 # must survive inbound sync (a claim is in_progress; GH still reports OPEN).
 GH_OPEN_STATUSES = frozenset(("open", "in_progress"))
-GH_CLOSED_STATUSES = frozenset(
-    ("completed", "deployed", "addressed", "wontfix", "duplicate")
-)
+GH_CLOSED_STATUSES = frozenset(("completed", "deployed", "addressed", "wontfix", "duplicate"))
 SOURCE_KINDS = ("review-finding", "effort-row", "github-issue", "agent-report")
 ID_RE = re.compile(r"^[a-f0-9]{8,32}$")
 FINDING_ID_ROUTE = r"^/findings/([a-f0-9]{8,32})$"
@@ -189,35 +190,67 @@ LOGO_DIR = HOME / "Code" / "AI-Fleet-Coordinator" / "agent-logos"
 # "env" here is the seat's DEFAULT environment, used only when an item does not
 # carry an explicit one -- an explicit --env always wins.
 AGENT_SEATS = {
-    "GROK":        {"slug": "grok",   "label": "Grok", "env": "Mac",
-                    "note": "Grok — the Grok mark, not xAI's; runs on the Mac "
-                            "(Grok Bot is the separate cloud seat)"},
-    "GROK BOT":    {"slug": "grok-bot", "label": "Grok Bot", "env": "cloud",
-                    "note": "Grok Bot — cloud app, always cloud; coordinates/implements "
-                            "via Cursor cloud agents (a distinct seat from Grok's own "
-                            "Mac chats)"},
-    "GROK-BOT":    {"slug": "grok-bot", "label": "Grok Bot", "env": "cloud",
-                    "note": "Grok Bot — cloud app, always cloud; coordinates/implements "
-                            "via Cursor cloud agents (a distinct seat from Grok's own "
-                            "Mac chats)"},
-    "GROKBOT":     {"slug": "grok-bot", "label": "Grok Bot", "env": "cloud",
-                    "note": "Grok Bot — cloud app, always cloud; coordinates/implements "
-                            "via Cursor cloud agents (a distinct seat from Grok's own "
-                            "Mac chats)"},
-    "CODEX":       {"slug": "codex",  "label": "Codex"},
-    "CLAUDE":      {"slug": "claude", "label": "Claude", "env": "Mac"},
-    "CURSOR":      {"slug": "cursor", "label": "Cursor", "env": "cloud",
-                    "note": "Cursor cloud agents — driven by Grok Bot",
-                    "with": ["GROK BOT"]},
-    "AG":          {"slug": "ag",     "label": "Antigravity", "env": "Mac"},
-    "ANTIGRAVITY": {"slug": "ag",     "label": "Antigravity", "env": "Mac"},
-    "GEMINI":      {"slug": "gemini", "label": "Gemini"},
-    "MONET":       {"slug": "claude", "label": "Monet",  "env": "Mac",
-                    "note": "Monet — a Claude instance, on the Mac"},
-    "RENOIR":      {"slug": "claude", "label": "Renoir", "env": "Mac",
-                    "note": "Renoir — a Claude instance, on the Mac"},
-    "FABLE":       {"slug": "claude", "label": "Fable",  "env": "Mac",
-                    "note": "Fable — a Claude instance, on the Mac"},
+    "GROK": {
+        "slug": "grok",
+        "label": "Grok",
+        "env": "Mac",
+        "note": "Grok — the Grok mark, not xAI's; runs on the Mac "
+        "(Grok Bot is the separate cloud seat)",
+    },
+    "GROK BOT": {
+        "slug": "grok-bot",
+        "label": "Grok Bot",
+        "env": "cloud",
+        "note": "Grok Bot — cloud app, always cloud; coordinates/implements "
+        "via Cursor cloud agents (a distinct seat from Grok's own "
+        "Mac chats)",
+    },
+    "GROK-BOT": {
+        "slug": "grok-bot",
+        "label": "Grok Bot",
+        "env": "cloud",
+        "note": "Grok Bot — cloud app, always cloud; coordinates/implements "
+        "via Cursor cloud agents (a distinct seat from Grok's own "
+        "Mac chats)",
+    },
+    "GROKBOT": {
+        "slug": "grok-bot",
+        "label": "Grok Bot",
+        "env": "cloud",
+        "note": "Grok Bot — cloud app, always cloud; coordinates/implements "
+        "via Cursor cloud agents (a distinct seat from Grok's own "
+        "Mac chats)",
+    },
+    "CODEX": {"slug": "codex", "label": "Codex"},
+    "CLAUDE": {"slug": "claude", "label": "Claude", "env": "Mac"},
+    "CURSOR": {
+        "slug": "cursor",
+        "label": "Cursor",
+        "env": "cloud",
+        "note": "Cursor cloud agents — driven by Grok Bot",
+        "with": ["GROK BOT"],
+    },
+    "AG": {"slug": "ag", "label": "Antigravity", "env": "Mac"},
+    "ANTIGRAVITY": {"slug": "ag", "label": "Antigravity", "env": "Mac"},
+    "GEMINI": {"slug": "gemini", "label": "Gemini"},
+    "MONET": {
+        "slug": "claude",
+        "label": "Monet",
+        "env": "Mac",
+        "note": "Monet — a Claude instance, on the Mac",
+    },
+    "RENOIR": {
+        "slug": "claude",
+        "label": "Renoir",
+        "env": "Mac",
+        "note": "Renoir — a Claude instance, on the Mac",
+    },
+    "FABLE": {
+        "slug": "claude",
+        "label": "Fable",
+        "env": "Mac",
+        "note": "Fable — a Claude instance, on the Mac",
+    },
 }
 
 # Where the agent is running. Deliberately just two values (owner, 2026-08-19):
@@ -253,15 +286,14 @@ def _parse_token_assignments(lines) -> dict:
     tokens = {}
     for line in lines:
         s = line.strip()
-        if s.startswith("export "):
-            s = s[7:]
+        s = s.removeprefix("export ")
         if s.startswith("MAC_COLLAB_TOKEN"):
             parts = s.split("=", 1)
             if len(parts) == 2:
                 k = parts[0].strip()
                 v = parts[1].strip().strip('"').strip("'")
                 if v:
-                    identity = k[len("MAC_COLLAB_TOKEN_"):] if k != "MAC_COLLAB_TOKEN" else None
+                    identity = k[len("MAC_COLLAB_TOKEN_") :] if k != "MAC_COLLAB_TOKEN" else None
                     tokens[v] = identity
     return tokens
 
@@ -270,7 +302,7 @@ def _env_tokens() -> dict:
     tokens = {}
     for k, v in os.environ.items():
         if k.startswith("MAC_COLLAB_TOKEN") and v.strip():
-            identity = k[len("MAC_COLLAB_TOKEN_"):] if k != "MAC_COLLAB_TOKEN" else None
+            identity = k[len("MAC_COLLAB_TOKEN_") :] if k != "MAC_COLLAB_TOKEN" else None
             tokens[v.strip()] = identity
     return tokens
 
@@ -320,8 +352,7 @@ def load_tokens() -> dict:
                 "mac-collab: ~/.secrets/mac-collab.env is canonical; "
                 "ignoring process-env MAC_COLLAB_TOKEN* "
                 "(unset the env var or restart after rotation).  "
-                "mtime=%s pid=%d"
-                % (mtime, os.getpid()),
+                "mtime=%s pid=%d" % (mtime, os.getpid()),
                 flush=True,
             )
         return file_tokens
@@ -373,7 +404,6 @@ def get_session_key() -> bytes:
     return hashlib.sha256(b"mac-collab-session-v1-empty").digest()
 
 
-
 def token_matches(got: str, want: str) -> bool:
     if not got or not want:
         return False
@@ -422,32 +452,36 @@ def audit(handler: BaseHTTPRequestHandler, action: str, name: str = "", ok: bool
 
 
 def key_names_only() -> list[str]:
-    """Secret names from the Mac handoff file. Never returns values."""
-    if not HANDOFF_NAMES_FILE.is_file():
+    """Secret names from `fleet-secrets names` (Fleet-OPS in Infisical). Never returns values."""
+    if not FLEET_SECRETS_BIN.is_file():
         return []
-    names: list[str] = []
-    for raw in HANDOFF_NAMES_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
-        s = raw.strip()
-        if s.startswith("export "):
-            s = s[7:].strip()
-        m = re.match(r"^([A-Z][A-Z0-9_]*)=", s)
-        if m:
-            names.append(m.group(1))
-    return names
+    try:
+        proc = subprocess.run(
+            [str(FLEET_SECRETS_BIN), "names"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [
+        s
+        for s in (line.strip() for line in proc.stdout.splitlines())
+        if re.match(r"^[A-Z][A-Z0-9_]*$", s)
+    ]
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def within_writeback_grace(writeback_at: str | None, now: datetime | None = None) -> bool:
     if not writeback_at:
         return False
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     try:
         wb_dt = datetime.fromisoformat(writeback_at)
         if wb_dt.tzinfo is None:
-            wb_dt = wb_dt.replace(tzinfo=timezone.utc)
+            wb_dt = wb_dt.replace(tzinfo=UTC)
         return now - wb_dt < timedelta(seconds=WRITEBACK_GRACE_S)
     except (ValueError, TypeError):
         return False
@@ -481,9 +515,7 @@ def resolve_upsert_status(
         return existing_status
     if within_writeback_grace(writeback_at, now):
         return existing_status
-    if source_kind == "github-issue" and same_github_state(
-        existing_status, incoming_status
-    ):
+    if source_kind == "github-issue" and same_github_state(existing_status, incoming_status):
         return existing_status
     return incoming_status
 
@@ -508,9 +540,7 @@ def resolve_finding_id(conn: sqlite3.Connection, ident: str) -> tuple[str | None
     if len(ident) == 32:
         row = conn.execute("SELECT id FROM findings WHERE id = ?", (ident,)).fetchone()
         return (ident, None) if row else (None, "not_found")
-    rows = conn.execute(
-        "SELECT id FROM findings WHERE id LIKE ?", (ident + "%",)
-    ).fetchall()
+    rows = conn.execute("SELECT id FROM findings WHERE id LIKE ?", (ident + "%",)).fetchall()
     if len(rows) == 1:
         return rows[0]["id"], None
     if not rows:
@@ -558,7 +588,9 @@ def init_db() -> None:
         # Migrate older DBs (pre source_kind/source_url/repo columns) in place.
         existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(findings)")}
         if "source_kind" not in existing_cols:
-            conn.execute("ALTER TABLE findings ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'review-finding'")
+            conn.execute(
+                "ALTER TABLE findings ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'review-finding'"
+            )
         if "source_url" not in existing_cols:
             conn.execute("ALTER TABLE findings ADD COLUMN source_url TEXT")
         if "repo" not in existing_cols:
@@ -602,7 +634,7 @@ def file_meta(name: str, path: Path) -> dict:
         return {
             "name": name,
             "bytes": st.st_size,
-            "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+            "mtime": datetime.fromtimestamp(st.st_mtime, tz=UTC).isoformat(),
             "exists": True,
         }
     except OSError:
@@ -625,12 +657,12 @@ def findings_open_by_app() -> dict:
 
 
 def authorized(handler: BaseHTTPRequestHandler, tokens: dict | None = None):
-    '''Returns the identity (str) if authorized, else None.
+    """Returns the identity (str) if authorized, else None.
 
     Pass a tokens snapshot to keep one request on a single load_tokens()
     result.  Cookie HMAC still uses live tokens via get_session_key --
     rotating the file is supposed to invalidate cookies.
-    '''
+    """
     if tokens is None:
         tokens = load_tokens()
     if not tokens:
@@ -753,7 +785,9 @@ class Handler(BaseHTTPRequestHandler):
         # Keep pm2 logs short; never log tokens or paths beyond the request line.
         sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
 
-    def _send(self, code: int, body, content_type="application/json; charset=utf-8", extra_headers=None):
+    def _send(
+        self, code: int, body, content_type="application/json; charset=utf-8", extra_headers=None
+    ):
         if isinstance(body, (dict, list)):
             raw = json.dumps(body, indent=2).encode("utf-8")
         elif isinstance(body, str):
@@ -792,7 +826,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_login_page(429, "Too many failed attempts.  Try again in a minute.")
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype != "application/x-www-form-urlencoded":
-            return self._handle_login_page(415, "Submit the form as application/x-www-form-urlencoded.")
+            return self._handle_login_page(
+                415, "Submit the form as application/x-www-form-urlencoded."
+            )
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
@@ -941,13 +977,15 @@ class Handler(BaseHTTPRequestHandler):
         # Filenames and finding counts are reconnaissance — don't hand them
         # out for free.
         if authorized(self, tokens=tokens):
-            body.update({
-                "token_configured": bool(token),
-                "allowlist": sorted(ALLOW),
-                "files_present": files_ok,
-                "findings_open_by_app": findings_open_by_app(),
-                "auth": "Authorization: Bearer <MAC_COLLAB_TOKEN>",
-            })
+            body.update(
+                {
+                    "token_configured": bool(token),
+                    "allowlist": sorted(ALLOW),
+                    "files_present": files_ok,
+                    "findings_open_by_app": findings_open_by_app(),
+                    "auth": "Authorization: Bearer <MAC_COLLAB_TOKEN>",
+                }
+            )
             body.update(token_auth_meta())
         return self._send(200, body)
 
@@ -961,9 +999,12 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_files_list(self):
         if not authorized(self):
             return self._deny_auth()
-        return self._send(200, {
-            "files": [file_meta(n, p) for n, p in sorted(ALLOW.items())],
-        })
+        return self._send(
+            200,
+            {
+                "files": [file_meta(n, p) for n, p in sorted(ALLOW.items())],
+            },
+        )
 
     def _handle_key_names(self):
         if not authorized(self):
@@ -978,7 +1019,9 @@ class Handler(BaseHTTPRequestHandler):
         name = path.split("/", 2)[2]
         if name in ("global-api-keys", "key-names"):
             audit(self, "file-denied-secret", name, ok=False)
-            return self._send(404, {"error": "not_on_allowlist", "hint": "use GET /files/key-names"})
+            return self._send(
+                404, {"error": "not_on_allowlist", "hint": "use GET /files/key-names"}
+            )
         if name not in ALLOW or "/" in name or ".." in name:
             audit(self, "file-miss", name, ok=False)
             return self._send(404, {"error": "not_on_allowlist"})
@@ -1037,14 +1080,19 @@ class Handler(BaseHTTPRequestHandler):
         conn = get_conn()
         try:
             rows = conn.execute(sql, [*params, limit]).fetchall()
-            total = conn.execute(f"SELECT COUNT(*) AS n FROM findings {where}", params).fetchone()["n"]
+            total = conn.execute(f"SELECT COUNT(*) AS n FROM findings {where}", params).fetchone()[
+                "n"
+            ]
         finally:
             conn.close()
-        return self._send(200, {
-            "findings": [finding_row_to_dict(r) for r in rows],
-            "count": len(rows),
-            "total_matching": total,
-        })
+        return self._send(
+            200,
+            {
+                "findings": [finding_row_to_dict(r) for r in rows],
+                "count": len(rows),
+                "total_matching": total,
+            },
+        )
 
     def _handle_findings_stats(self):
         if not authorized(self):
@@ -1064,19 +1112,26 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchone()["n"]
             by_kind = {
                 r["source_kind"]: r["n"]
-                for r in conn.execute("SELECT source_kind, COUNT(*) AS n FROM findings GROUP BY source_kind")
+                for r in conn.execute(
+                    "SELECT source_kind, COUNT(*) AS n FROM findings GROUP BY source_kind"
+                )
             }
-            apps = [r["app"] for r in conn.execute("SELECT DISTINCT app FROM findings ORDER BY app")]
+            apps = [
+                r["app"] for r in conn.execute("SELECT DISTINCT app FROM findings ORDER BY app")
+            ]
         finally:
             conn.close()
-        return self._send(200, {
-            "total": total,
-            "open": open_n,
-            "p0p1_open": p0p1_open,
-            "done": done,
-            "by_kind": by_kind,
-            "apps": apps,
-        })
+        return self._send(
+            200,
+            {
+                "total": total,
+                "open": open_n,
+                "p0p1_open": p0p1_open,
+                "done": done,
+                "by_kind": by_kind,
+                "apps": apps,
+            },
+        )
 
     def _resolved_finding_id(self, ident: str, conn: sqlite3.Connection) -> str | None:
         fid, err = resolve_finding_id(conn, ident)
@@ -1188,10 +1243,24 @@ class Handler(BaseHTTPRequestHandler):
                         WHERE id = ?
                         """,
                         (
-                            new_source, title, new_severity, new_category, new_surface,
-                            new_description, new_fix, new_status, source_kind,
-                            source_url, repo, reported_by, location, env, addressed_by,
-                            resolution, ts, finding_id,
+                            new_source,
+                            title,
+                            new_severity,
+                            new_category,
+                            new_surface,
+                            new_description,
+                            new_fix,
+                            new_status,
+                            source_kind,
+                            source_url,
+                            repo,
+                            reported_by,
+                            location,
+                            env,
+                            addressed_by,
+                            resolution,
+                            ts,
+                            finding_id,
                         ),
                     )
                     code = 200
@@ -1207,10 +1276,27 @@ class Handler(BaseHTTPRequestHandler):
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        finding_id, app, external_uid, data.get("source"), title, severity,
-                        data.get("category"), data.get("surface"), data.get("description"),
-                        data.get("recommended_fix"), incoming_status, source_kind, source_url, repo,
-                        reported_by, location, env, addressed_by, resolution, ts, ts,
+                        finding_id,
+                        app,
+                        external_uid,
+                        data.get("source"),
+                        title,
+                        severity,
+                        data.get("category"),
+                        data.get("surface"),
+                        data.get("description"),
+                        data.get("recommended_fix"),
+                        incoming_status,
+                        source_kind,
+                        source_url,
+                        repo,
+                        reported_by,
+                        location,
+                        env,
+                        addressed_by,
+                        resolution,
+                        ts,
+                        ts,
                     ),
                 )
                 code = 201
@@ -1234,11 +1320,15 @@ class Handler(BaseHTTPRequestHandler):
             fields["status"] = data["status"]
         if "addressed_by" in data:
             if ident != "OWNER" and data["addressed_by"] and data["addressed_by"] != ident:
-                return self._send(403, {"error": "forbidden", "message": f"Token is scoped to '{ident}'"})
+                return self._send(
+                    403, {"error": "forbidden", "message": f"Token is scoped to '{ident}'"}
+                )
             fields["addressed_by"] = data["addressed_by"]
         if "reported_by" in data:
             if ident != "OWNER" and data["reported_by"] and data["reported_by"] != ident:
-                return self._send(403, {"error": "forbidden", "message": f"Token is scoped to '{ident}'"})
+                return self._send(
+                    403, {"error": "forbidden", "message": f"Token is scoped to '{ident}'"}
+                )
             fields["reported_by"] = data["reported_by"]
         if "location" in data:
             fields["location"] = data["location"]
@@ -1264,21 +1354,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(404, {"error": "not_found"})
 
             if data.get("status") == "in_progress":
-                from datetime import datetime, timezone
-                now_dt = datetime.now(timezone.utc)
+                from datetime import datetime
+
+                now_dt = datetime.now(UTC)
                 if row["status"] == "in_progress" and row["claimed_at"]:
                     claimed_dt = datetime.fromisoformat(row["claimed_at"].replace("Z", "+00:00"))
                     if (now_dt - claimed_dt).total_seconds() < 20 * 60:
                         existing_agent = row["addressed_by"]
                         incoming_agent = data.get("addressed_by")
                         if existing_agent and incoming_agent and existing_agent != incoming_agent:
-                            mins_left = str(int(20 - (now_dt - claimed_dt).total_seconds()/60))
-                            msg = "Finding is already claimed by " + str(existing_agent) + ". Lease expires in " + mins_left + " minutes."
+                            mins_left = str(int(20 - (now_dt - claimed_dt).total_seconds() / 60))
+                            msg = (
+                                "Finding is already claimed by "
+                                + str(existing_agent)
+                                + ". Lease expires in "
+                                + mins_left
+                                + " minutes."
+                            )
                             return self._send(409, {"error": "conflict", "message": msg})
                 fields["claimed_at"] = now_iso()
 
             set_clause = ", ".join(f"{k} = ?" for k in fields)
-            conn.execute(f"UPDATE findings SET {set_clause} WHERE id = ?", (*fields.values(), finding_id))
+            conn.execute(
+                f"UPDATE findings SET {set_clause} WHERE id = ?", (*fields.values(), finding_id)
+            )
             conn.commit()
             row = conn.execute("SELECT * FROM findings WHERE id = ?", (finding_id,)).fetchone()
         finally:
@@ -1309,7 +1408,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": err})
         author = str(data.get("author", "")).strip()
         if ident != "OWNER" and author and author != ident:
-            return self._send(403, {"error": "forbidden", "message": f"Token is scoped to '{ident}'"})
+            return self._send(
+                403, {"error": "forbidden", "message": f"Token is scoped to '{ident}'"}
+            )
         text = str(data.get("text", "")).strip()
         if not author or not text:
             return self._send(400, {"error": "author_and_text_required"})
@@ -1962,7 +2063,9 @@ def _port_holder_pids():
     try:
         out = subprocess.run(
             ["/usr/sbin/lsof", "-nP", "-iTCP:%d" % BIND[1], "-sTCP:LISTEN", "-t"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         ).stdout
     except Exception:
         return None
@@ -1982,7 +2085,9 @@ def _all_board_server_pids() -> list[int]:
     try:
         out = subprocess.run(
             ["/bin/ps", "-A", "-o", "pid,command"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         ).stdout
     except Exception:
         return []
@@ -2003,7 +2108,9 @@ def _is_board_server(pid: int) -> bool:
     try:
         argv = subprocess.run(
             ["/bin/ps", "-o", "command=", "-p", str(pid)],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         ).stdout
     except Exception:
         return False
@@ -2046,7 +2153,11 @@ def _bind_or_reclaim():
             raise
     holders = _port_holder_pids()
     if holders is None:
-        print("mac-collab: lsof failed (likely timeout under load), falling back to ps scanning", file=sys.stderr, flush=True)
+        print(
+            "mac-collab: lsof failed (likely timeout under load), falling back to ps scanning",
+            file=sys.stderr,
+            flush=True,
+        )
         holders = _all_board_server_pids()
     stale = [pid for pid in holders if _is_stale_board_server(pid)]
     if not stale:
@@ -2059,12 +2170,15 @@ def _bind_or_reclaim():
         print(
             "mac-collab: %s:%s is held by %s.  Run: lsof -nP -iTCP:%s -sTCP:LISTEN"
             % (BIND[0], BIND[1], why, BIND[1]),
-            file=sys.stderr, flush=True,
+            file=sys.stderr,
+            flush=True,
         )
         raise SystemExit(3)
     for pid in stale:
-        print("mac-collab: reclaiming %s:%s from stale server pid %d"
-              % (BIND[0], BIND[1], pid), flush=True)
+        print(
+            "mac-collab: reclaiming %s:%s from stale server pid %d" % (BIND[0], BIND[1], pid),
+            flush=True,
+        )
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError:

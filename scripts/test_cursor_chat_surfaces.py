@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for cursor chat surface helpers.  No network, no secrets."""
+
 from __future__ import annotations
 
 import os
@@ -7,12 +8,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import cursor_chat_surfaces as ccs  # noqa: E402
+import cursor_chat_surfaces as ccs
 
 
 class GithubUrlTests(unittest.TestCase):
@@ -110,7 +112,6 @@ class ShellularMergeTests(unittest.TestCase):
         self.assertEqual(len(cursor_rows), 1)
         self.assertNotEqual(cursor_rows[0]["command"], "cursor-agent")
 
-
     def test_strips_embedded_deepseek_key(self) -> None:
         existing = {
             "custom": [
@@ -132,13 +133,13 @@ class LoadApiKeyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.old_api = os.environ.pop("CURSOR_API_KEY", None)
         self.old_sync = os.environ.pop("CURSOR_SYNC_API_KEY", None)
-        self.old_global = ccs.GLOBAL_KEYS_FILE
+        self.old_fleet_secrets = ccs._fleet_secrets_key
         self.old_secrets = ccs.SECRET_FILES
-        ccs.GLOBAL_KEYS_FILE = Path("/tmp/cursor-chat-surfaces-no-global-keys")
+        ccs._fleet_secrets_key = lambda: None  # never shell out to a real fleet-secrets
         ccs.SECRET_FILES = ()
 
     def tearDown(self) -> None:
-        ccs.GLOBAL_KEYS_FILE = self.old_global
+        ccs._fleet_secrets_key = self.old_fleet_secrets
         ccs.SECRET_FILES = self.old_secrets
         for name, old in (
             ("CURSOR_API_KEY", self.old_api),
@@ -164,12 +165,34 @@ class LoadApiKeyTests(unittest.TestCase):
             ccs.SECRET_FILES = (path,)
             self.assertEqual(ccs.load_api_key(), "cursor_from_file")
 
-    def test_global_keys_sync_name(self) -> None:
+    def test_fleet_secrets_fallback(self) -> None:
+        ccs._fleet_secrets_key = lambda: "from_fleet_secrets"
+        self.assertEqual(ccs.load_api_key(), "from_fleet_secrets")
+
+    def test_fleet_secrets_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "global-api-keys"
-            path.write_text('CURSOR_SYNC_API_KEY="from_global"\n', encoding="utf-8")
-            ccs.GLOBAL_KEYS_FILE = path
-            self.assertEqual(ccs.load_api_key(), "from_global")
+            fake = Path(tmp) / "fleet-secrets"
+            fake.write_text(
+                '#!/bin/sh\n[ "$1" = get ] && [ "$2" = CURSOR_SYNC_API_KEY ] && printf from_command && exit 0\nexit 3\n',
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            old_bin = ccs.FLEET_SECRETS_BIN
+            ccs.FLEET_SECRETS_BIN = fake
+            try:
+                with mock.patch.object(ccs.shutil, "which", return_value=None):
+                    self.assertEqual(self.old_fleet_secrets(), "from_command")
+            finally:
+                ccs.FLEET_SECRETS_BIN = old_bin
+
+    def test_fleet_secrets_missing_command(self) -> None:
+        old_bin = ccs.FLEET_SECRETS_BIN
+        ccs.FLEET_SECRETS_BIN = Path("/nonexistent/fleet-secrets")
+        try:
+            with mock.patch.object(ccs.shutil, "which", return_value=None):
+                self.assertIsNone(self.old_fleet_secrets())
+        finally:
+            ccs.FLEET_SECRETS_BIN = old_bin
 
 
 class SaveJsonTests(unittest.TestCase):

@@ -48,7 +48,7 @@ Canonical design doc: [`docs/RAG-FLEET-INFRA.md`](RAG-FLEET-INFRA.md).
   behind the same Access application, so one service token covers them.
 
 **Cloud seat without these?  Run the setup script — it provisions them.**  A fresh sandbox has
-no `~/.secrets` handoff file, so the old answer ("ask a Mac seat") left every cloud seat blocked
+no `~/.secrets` files, so the old answer ("ask a Mac seat") left every cloud seat blocked
 at the Cloudflare Access login page.  It no longer applies:
 
 ```bash
@@ -85,7 +85,7 @@ file — do not ask for them in Zulip or in a comment.
 ```bash
 recall doctor --platforms        # every CLI config, skill, hook, seat-mcp, routine, ingest — expect 0 FAIL
 recall stats                     # points, by source, by app
-recall "how do I avoid leaking credentials from the handoff file" --limit 3
+recall "how do I avoid leaking credentials from a secrets file" --limit 3
 ```
 
 Then prove the write path with a real lesson you actually learned (not a test string — the

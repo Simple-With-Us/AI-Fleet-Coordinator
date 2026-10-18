@@ -68,15 +68,15 @@ for integration trees only"* (owner ruling 2026-09-25).
    fleet-wide (Cursor cloud), not a lane in `fleet-apps.json`.
 4. **Do not wait for the owner to say commit.** Feature branch → PR → merge
    when CI is green.
-5. **Never paste secrets.** Handoff files live in `~/.secrets/` (`chmod 600`).
+5. **Never paste secrets.** A secret the owner hands over is a `chmod 600` file path;  fleet keys already in Infisical Fleet-OPS are read with `fleet-secrets get NAME`.
    Runtime secrets go to Infisical (the app's own project, prod env).  **`prod` is the
    only Infisical environment** (owner decision 2026-10-10):  a new project is created with
    dev and staging, so delete both right away (Project Settings, Environments), and never set
    `INFISICAL_ENV` or `INFISICAL_ENVIRONMENT` to anything but `prod`, in a repo file or a script
    fallback.  `python3 scripts/check-infisical-env.py` flags the common mistakes and CI runs it.
-   Never `grep` / `rg` a handoff file without `-o` — `grep '^[A-Z0-9_]+='`
-   prints **values**.  Names only: `grep -oE '^[A-Z][A-Z0-9_]*'`.  Never
-   `cat` or Read `~/.secrets/global-api-keys`.  Never `od` / `xxd` /
+   Never `grep` / `rg` a secrets file without `-o` — `grep '^[A-Z0-9_]+='`
+   prints **values**.  Names only: `fleet-secrets names`.  Never
+   `cat` or Read a secrets file (the flat `~/.secrets/global-api-keys` is retired).  Never `od` / `xxd` /
    `hexdump` a loaded `$KEY` / `$TOKEN` / `$SECRET` variable.
 6. **Light theme is the product default.** Dark is opt-in.
 7. **Two spaces between sentences** in every human-facing string, including
