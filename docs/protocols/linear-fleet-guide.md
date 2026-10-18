@@ -168,11 +168,11 @@ One team per app.  `--app` takes a team key (`AFC`, `FL`) or a board slug (`socr
 
 ## Credentials
 
-Each seat has its own Linear app, named for the seat bot's display name.  Its credentials are in `~/.secrets/Linear/<SEAT>.env`, mode 600, holding `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` — never a personal or admin API key, from any file or variable.
+Each seat has its own Linear app, named for the seat bot's display name.  Its credentials live in Infisical (AI Fleet Coordinator, `prod`, `/linear`) as `LINEAR_<SEAT>_CLIENT_ID` and `LINEAR_<SEAT>_CLIENT_SECRET`, hyphens as underscores, and the shared app's as `LINEAR_FLEET_CLIENT_*` (owner 2026-10-18, AFC-348).  `~/.secrets/Linear/<SEAT>.env`, mode 600, is only a fallback for a host without the Infisical identity.  Never a personal or admin API key, from any file or variable.
 
-Lookup order:  the `LINEAR_CLIENT_ID`/`LINEAR_CLIENT_SECRET` environment pair (a cloud runtime), then `<SEAT>.env` beside `Fleet.env`, then `LINEAR_<SEAT>_CLIENT_*` in the environment with hyphens as underscores, then the shared `Fleet.env` for a seat that has no app yet.
+Lookup order:  the `LINEAR_CLIENT_ID`/`LINEAR_CLIENT_SECRET` environment pair (a cloud runtime), then the seat's pair from Infisical, then `<SEAT>.env` beside `Fleet.env`, then `LINEAR_<SEAT>_CLIENT_*` in the environment, then the shared app's pair from Infisical, then `Fleet.env` for a seat that has no app yet.  Infisical is read through the `INFISICAL_AUTOMATION` machine identity:  from the environment (`INFISICAL_AUTOMATION_CLIENT_ID` / `_SECRET`), else an `INFISICAL_TOKEN` in the environment, else `fleet-secrets get` (OPS-818).  Without any of them, or when Infisical is unreachable, the CLI says so once and uses the local files.  A session where `fleet-secrets` cannot sign in falls back the same way unless the identity is exported.
 
-Tokens are cached per app in `~/.secrets/Linear/cache/<SEAT>.token`, mode 600, each under its own lock, so switching seats on one Mac never re-mints or shares.
+Each app has one minted token, shared through Infisical `/linear` as `LINEAR_<SEAT>_CACHE_TOKEN` (`LINEAR_FLEET_CACHE_TOKEN` for the shared app), so every host that runs `board` uses the same token instead of minting their own against Linear's one-mint-a-day limit.  The local copy stays in `~/.secrets/Linear/cache/<SEAT>.token`, mode 600, each under its own lock:  a normal run reads only that, Infisical is asked only when the local token is missing, refused, near expiry or due for its day-28 re-mint, and a new mint is written to both.  `board whoami` prints both places.  The hosted Agent-Sync Worker still keeps its own token per seat in that seat's Durable Object.
 
 `board whoami` prints the identity line, the viewer, the workspace, and the credentials path.  Check it before your first write:
 

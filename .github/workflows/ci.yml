@@ -176,6 +176,10 @@ jobs:
     # needs-owner notifier checks the owner's Linear reply by.
     - name: Board CLI input files and flat labels
       run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests
+    # Infisical for the board CLI (AFC-348):  client pairs from /linear before local files, the shared
+    # LINEAR_<SEAT>_CACHE_TOKEN adopted and published, and the fallback when Infisical is down.  Mock servers only.
+    - name: Board CLI Infisical tests
+      run: python3 scripts/linear-board/test_board_infisical.py
     # Agent-Sync parity (AFC-329):  `board commands|run|api|mcp` serve the hosted server's Linear catalogs from
     # scripts/linear-board/catalog/ (pinned to the server's export by the agent-sync-mcp node test
     # linear-catalog-parity).  This replays the server's documents and guard verdicts against board's Python
