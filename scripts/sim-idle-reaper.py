@@ -54,7 +54,7 @@ DEFAULT_MIN_AGE_MIN = 60
 WATCHED_FRESH_SEC = 12 * 3600
 SESSION_MAX_AGE_SEC = 24 * 3600
 PRE_MAX_AGE_SEC = 3600
-BUSY_EXACT = ("xcodebuild", "xctest", "simctl")
+BUSY_EXACT = ("xcodebuild", "xctest", "simctl", "bitrig")
 BUSY_PATTERN = "xctestrun"
 LOG_STREAM_PATTERN = r"simctl spawn [^ ]+ log stream"   # passive streamer, not use
 
@@ -328,8 +328,8 @@ def main(argv: list | None = None) -> int:
     if targets:
         busy = busy_processes()
         sim_app = pgrep_exact("Simulator")
-        bitrig_app = pgrep_exact("Bitrig")
-        exempt_udid = bitrig_exempt_udid(targets, seen, bitrig_app)
+        bitrig_app = max(pgrep_exact("Bitrig"), pgrep_exact("bitrig"), 0)
+        exempt_udid = bitrig_exempt_udid(booted, seen, bitrig_app)
         bitrig_exempt = {exempt_udid} if exempt_udid else set()
         watched = watched_udids(now)
         for d in targets:

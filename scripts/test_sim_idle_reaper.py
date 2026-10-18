@@ -75,6 +75,9 @@ class Base(unittest.TestCase):
             os.makedirs(os.path.join(ROOT, sub))
         set_state(A, 1)
         set_state(B, 1, "iPad")
+        p = patch.object(hook, "is_bitrig_running", lambda: False)
+        p.start()
+        self.addCleanup(p.stop)
 
 
 class HookAttribution(Base):
@@ -225,6 +228,45 @@ class HookStop(Base):
             hook.run_worker("Stop", SID, "main")
         self.assertEqual(shut, [])
 
+    def test_worker_skips_bitrig_exempt_simulator(self):
+        self.own(A, "main")
+        shut = []
+        with patch.object(hook, "running", lambda *n: []), \
+                patch.object(hook, "is_bitrig_running", lambda: True), \
+                patch.object(hook, "shutdown", lambda u: shut.append(u) or 0):
+            hook.run_worker("Stop", SID, "main")
+        self.assertEqual(shut, [])
+
+    def test_worker_shuts_down_extra_simulator_even_when_bitrig_running(self):
+        self.own(A, "main")
+        self.own(B, "main")
+        shut = []
+        # A is newer than B, so A is Bitrig exempt and B is shut down
+        with patch.object(hook, "running", lambda *n: []), \
+                patch.object(hook, "is_bitrig_running", lambda: True), \
+                patch.object(hook, "shutdown", lambda u: shut.append(u) or 0):
+            hook.run_worker("Stop", SID, "main")
+        self.assertEqual(shut, [A if A < B else B])
+
+    def test_session_end_preserves_bitrig_exempt_simulator(self):
+        self.own(A, "main")
+        shut = []
+        with patch.object(hook, "running", lambda *n: []), \
+                patch.object(hook, "is_bitrig_running", lambda: True), \
+                patch.object(hook, "shutdown", lambda u: shut.append(u) or 0):
+            hook.run_worker("SessionEnd", SID, "*")
+        self.assertEqual(shut, [])
+        self.assertFalse(os.path.exists(hook.session_path(SID)))
+
+    def test_worker_defers_while_bitrig_cli_runs(self):
+        self.own(A, "main")
+        shut = []
+        with patch.object(hook, "running", lambda *n: ["bitrig"] if "bitrig" in n else []), \
+                patch.object(hook, "shutdown", lambda u: shut.append(u) or 0):
+            hook.run_worker("Stop", SID, "main")
+        self.assertEqual(shut, [])
+        self.assertIn(A, session_doc()["udids"])
+
 
 class HookMain(Base):
     def run_main(self, stdin: str) -> str:
@@ -318,7 +360,7 @@ class Reaper(Base):
         buf = io.StringIO()
         with patch.object(reaper, "list_booted", lambda: booted), \
                 patch.object(reaper, "busy_processes", lambda: []), \
-                patch.object(reaper, "pgrep_exact", lambda n: bitrig_app if n == "Bitrig" else 0), \
+                patch.object(reaper, "pgrep_exact", lambda n: bitrig_app if n in ("Bitrig", "bitrig") else 0), \
                 patch.object(reaper, "user_app_running", lambda u: (False, "0 user app(s) installed, none running")), \
                 patch.object(reaper, "run", fake_run), redirect_stdout(buf):
             reaper.main(args + ["--state", state_path])
@@ -350,6 +392,21 @@ class Reaper(Base):
         log_multi, shut_multi = self.run_reaper([], [self.DEV, other], old, bitrig_app=1)
         self.assertEqual(shut_multi, [A])
         self.assertIn("Bitrig is running (1 simulator exempt)", log_multi)
+
+    def test_bitrig_app_matches_lowercase(self):
+        now = time.time()
+        def fake_pgrep(n):
+            return 1 if n == "bitrig" else 0
+        state_path = os.path.join(ROOT, "state", "state.json")
+        hook.write_json(state_path, {A: now - 7200})
+        buf = io.StringIO()
+        with patch.object(reaper, "list_booted", lambda: [self.DEV]), \
+                patch.object(reaper, "busy_processes", lambda: []), \
+                patch.object(reaper, "pgrep_exact", fake_pgrep), \
+                patch.object(reaper, "user_app_running", lambda u: (False, "none running")), \
+                redirect_stdout(buf):
+            reaper.main(["--state", state_path])
+        self.assertIn("Bitrig is running (1 simulator exempt)", buf.getvalue())
 
     def test_udid_filter_never_touches_other_devices(self):
         other = {"udid": B, "name": "iPad", "runtime": "iOS-27-0"}

@@ -319,6 +319,42 @@ def running(*names: str) -> list:
     return out
 
 
+def is_bitrig_running() -> bool:
+    """True when Bitrig desktop app or CLI is running, or session runs inside Bitrig."""
+    if os.environ.get("BITRIG_COMMAND_PIPE") or os.environ.get("BITRIG_MCP_SOCKET"):
+        return True
+    for name in ("Bitrig", "bitrig"):
+        try:
+            if subprocess.run([PGREP, "-x", name], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=5).returncode == 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def bitrig_exempt_udid(booted: dict[str, str], targets: dict) -> str | None:
+    """When Bitrig is running, exempt up to 1 booted simulator (most recently claimed/seen)."""
+    if not booted or not is_bitrig_running():
+        return None
+    state = load_json(os.path.join(STATE_DIR, "state.json"), {})
+
+    def score(u: str) -> tuple[float, str]:
+        t = 0.0
+        if u in targets and isinstance(targets[u], dict):
+            try:
+                t = float(targets[u].get("t") or 0.0)
+            except (TypeError, ValueError):
+                pass
+        try:
+            t = max(t, float(state.get(u, 0.0)))
+        except (TypeError, ValueError):
+            pass
+        return (t, u)
+
+    return max(booted.keys(), key=score)
+
+
 def shutdown(udid: str) -> int:
     try:
         return subprocess.run([XCRUN, "simctl", "shutdown", udid], stdin=subprocess.DEVNULL,
@@ -338,16 +374,20 @@ def run_worker(event: str, sid: str, agent: str) -> None:
     if event != "SessionEnd":
         if doc.get("watched") or not targets:
             return
-        busy = running("xcodebuild", "xctest", "Simulator")
+        busy = running("xcodebuild", "xctest", "Simulator", "bitrig")
         if busy:
             log(f"defer {tag} {len(targets)} device(s): {'/'.join(busy)} running")
             return
     booted = booted_devices()
+    exempt_udid = bitrig_exempt_udid(booted, targets)
     done = []
     for u, e in sorted(targets.items()):
         if u not in booted:
             done.append(u)
             log(f"gone {u} {tag}: already shut down")
+            continue
+        if exempt_udid and u == exempt_udid:
+            log(f"skip {u} {tag}: Bitrig is running (1 simulator exempt)")
             continue
         other = newest_other_claim(u, sid)
         try:
