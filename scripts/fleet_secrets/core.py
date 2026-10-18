@@ -397,4 +397,12 @@ def reject_unresolved(secrets: Mapping[str, str], names: Iterable[str] | None = 
 
 
 def injectable(name: str) -> bool:
-    return name not in NOT_INJECTED_EXACT and not name.startswith(NOT_INJECTED_PREFIXES)
+    """False for a name `run` must never put in a child's environment:  loader and interpreter
+    variables, and every INFISICAL_* name (the root path mirrors the old bootstrap layer, which held
+    INFISICAL_TOKEN and client id and secret keys, and those must not reach the command)."""
+    return (
+        name not in NOT_INJECTED_EXACT
+        and name not in AUTH_ENV_VARS
+        and not name.startswith(NOT_INJECTED_PREFIXES)
+        and not name.upper().startswith("INFISICAL_")
+    )
