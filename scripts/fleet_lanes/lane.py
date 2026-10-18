@@ -6,6 +6,13 @@
     cd scripts && python3 -m fleet_lanes.lane path <app> <slug>
     cd scripts && python3 -m fleet_lanes.lane path <app> --review --pr N
     cd scripts && python3 -m fleet_lanes.lane ls|doctor [doctor options]
+    cd scripts && python3 -m fleet_lanes.lane retire <path-or-slug> [--repo APP] [--dry-run] [--json]
+    cd scripts && python3 -m fleet_lanes.lane prune [--seat NAME] [--all-seats] [--repo APP] [--apply] [--json]
+
+`retire` and `prune` live in retire.py with an allowlist of their own (git worktree remove without --force,
+git worktree prune under guard, git branch -d, read-only probes, one bulk gh pr list per repo, lsof -d cwd); see
+its docstring for the removal rules.  Everything below is about `lane new` and `lane path`, whose allowlist is
+unchanged and still refuses every remove.
 
 Layout v2 (owner decision 2026-10-09).  A lane is ~/apps/lanes/<Repo>/<seat>-<slug> and a read-only PR
 check is ~/apps/lanes/<Repo>/review-pr-<n>, where <Repo> is the repo's folder name under ~/Code exactly
@@ -72,7 +79,8 @@ same integration tree at that moment (exit 69; run lane again).  `--dry-run` for
 skips the gh lookup, so it shows no head.
 
 Exit codes: 0 ok, 64 usage or refusal, 69 an external tool (git or gh) failed, 70 an internal
-error.  `ls` and `doctor` return the doctor's own codes (0, 2 for --strict hits, 64).
+error.  `ls` and `doctor` return the doctor's own codes (0, 2 for --strict hits, 64).  `retire` and `prune`
+use 0, 64 and 69 the same way (see retire.py).
 
 Python 3.9 safe (macOS /usr/bin/python3): no match statements, no runtime `X | Y`.
 
@@ -1173,7 +1181,7 @@ class _Parser(argparse.ArgumentParser):
 def _build_parser() -> _Parser:
     p = _Parser(prog="lane", description="Create lanes and review checkouts in the right place.  Seat comes "
                 f"only from {ENV_SEAT}.  Exit 0 ok, 64 usage or refusal, 69 git or gh failed.")
-    sub = p.add_subparsers(dest="command", metavar="{new,path,ls,doctor}")
+    sub = p.add_subparsers(dest="command", metavar="{new,path,ls,doctor,retire,prune}")
     new = sub.add_parser("new", help="create a lane (or a review checkout with --review --pr N)",
                          description="Create a lane worktree off origin/main and print its path.")
     new.add_argument("app", help="repo name, code dir, worktree prefix or acronym (any case)")
@@ -1194,6 +1202,9 @@ def _build_parser() -> _Parser:
     path.add_argument("--pr", metavar="N", type=_positive_int, help="pull request number for --review")
     sub.add_parser("ls", help="every checkout on this Mac (the doctor report; takes doctor options)")
     sub.add_parser("doctor", help="same as ls")
+    sub.add_parser("retire", help="remove one of your lanes once its work is safe on GitHub (lane retire -h)")
+    sub.add_parser("prune", help="list a seat's lanes with a decision each; --apply removes the removable ones "
+                   "(lane prune -h)")
     return p
 
 
@@ -1224,6 +1235,10 @@ def main(argv: "Sequence[str] | None" = None, *, env: "Mapping[str, str] | None"
             return int(D.main(args_in[1:], env=env, stdout=out))
         except SystemExit as exc:
             return exc.code if isinstance(exc.code, int) else (EXIT_OK if exc.code is None else EXIT_USAGE)
+    if args_in and args_in[0] in ("retire", "prune"):
+        # retire.py owns these two, with an allowlist of its own (this module's still refuses every remove).
+        from . import retire as R
+        return R.main(args_in, env=env, clock=clock, exec_fn=exec_fn, stdout=out, stderr=err)
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
             args = _build_parser().parse_args(args_in)
