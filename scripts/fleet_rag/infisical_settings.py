@@ -52,12 +52,12 @@ HTTP_TIMEOUT = 10.0
 REFRESH_INTERVAL_KEY = "SETTINGS_REFRESH_SECONDS"
 
 # Identity env names, in priority order.  The fleet's shared automation machine
-# identity ("global api keys" holds these on the Mac) is injected into the container
-# environment on hosted services; local dev may also use the JSON handoff file.
+# identity is injected into the container environment on hosted services; local dev may
+# also use the JSON identity file below.
 IDENTITY_PREFIXES = ("INFISICAL_AUTOMATION", "INFISICAL_SHARED")
 IDENTITY_FILE_ENV = "INFISICAL_MACHINE_IDENTITY"
 # Fleet convention (see the Infisical SOT rollout brief): the machine identity JSON lives
-# under ~/workspace/.secrets on agent machines; the Mac uses ~/.secrets/global-api-keys.
+# under ~/workspace/.secrets on agent machines; the Mac runs under `fleet-secrets run`.
 IDENTITY_FILE_DEFAULT = pathlib.Path("~/workspace/.secrets/infisical-machine-identity.json")
 
 

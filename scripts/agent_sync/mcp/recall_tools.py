@@ -3,7 +3,7 @@
 Same names and input schemas as the hosted Worker (scripts/agent_sync/mcp/recall-tools.json is generated
 from scripts/agent-sync-mcp/src/recall.js, and a hosted test fails when the two differ).  Execution is the
 fleet's own CLI, `scripts/recall`, run as a child with `--json`:  it reads its credentials from the
-environment and the handoff file by itself, so no Qdrant or embedding key ever passes through this
+environment (or `fleet-secrets` on the Mac) by itself, so no Qdrant or embedding key ever passes through this
 process.  Text for `recall_contribute` goes in on standard input, never on the command line.
 
 Hits come back inside the recall untrusted fence, exactly as on the hosted server.

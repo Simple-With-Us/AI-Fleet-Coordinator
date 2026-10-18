@@ -2,9 +2,9 @@
 """Fetch named secrets from Infisical using a machine identity found in the ENVIRONMENT.
 
 Built for cloud sandboxes (Claude Code Cloud, Codespaces, Cursor cloud, any throwaway
-clone), where there is no ~/.secrets handoff file but the platform can inject environment
+clone), where there is no `fleet-secrets` but the platform can inject environment
 variables.  On the Mac, scripts/fleet_rag/core.py reads the same universal-auth identity
-out of the chmod-600 handoff file instead; this helper reuses core.py's login endpoint,
+out of the environment or `fleet-secrets` instead; this helper reuses core.py's login endpoint,
 project, environment and HTTP client so both paths behave identically.
 
 Identity env names use the fleet's existing prefix convention (see core.py `_identity`):

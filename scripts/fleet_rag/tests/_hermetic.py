@@ -1,13 +1,12 @@
 """Shared hermeticity helper: isolate a test from this machine's real ~/.secrets and Infisical.
 
-fleet_rag.core.HANDOFF (~/.secrets/global-api-keys) and fleet_rag.public_fallback's
-PUBLIC_ENV_FILES / CF_ACCESS_FILE are all resolved from pathlib.Path.home() at IMPORT time (see
-core.py and public_fallback.py), *before* any test's setUp runs.  Patching os.environ["HOME"]
-from inside a test therefore does nothing to them -- the real path was already captured.  On a
-machine that actually has a populated ~/.secrets/global-api-keys (an owner's Mac, unlike a CI
-runner), a test that reaches any of these unpatched attributes will read real credentials and,
-if fleet_rag.core.infisical_login() then succeeds, make a real network call to Infisical -- slow,
-and a genuine credential leak into the test process.
+fleet_rag.public_fallback's PUBLIC_ENV_FILES / CF_ACCESS_FILE are resolved from
+pathlib.Path.home() at IMPORT time (see public_fallback.py), *before* any test's setUp runs.
+Patching os.environ["HOME"] from inside a test therefore does nothing to them -- the real path
+was already captured.  And an owner's Mac has `fleet-secrets` installed (OPS-818), which
+fleet_rag.core falls back to for missing credentials.  A test that reaches any of these unpatched
+seams will read real credentials and, if fleet_rag.core.infisical_login() then succeeds, make a
+real network call to Infisical -- slow, and a genuine credential leak into the test process.
 
 Use HermeticTestCase as a drop-in base (it cooperates with your own setUp via super()), or mix
 HermeticCredentialsMixin into an existing base class and call self.make_hermetic() yourself:
@@ -55,19 +54,18 @@ class HermeticCredentialsMixin:
         env_patch.start()
         self.addCleanup(env_patch.stop)
 
-        # core.HANDOFF and public_fallback's PUBLIC_ENV_FILES / CF_ACCESS_FILE were all computed
-        # from the REAL home directory when their module was first imported -- the HOME patch
-        # above cannot reach them.  FLEET_RAG_HANDOFF_FILE covers core.handoff_file() callers
-        # (core._identity, via infisical_login); these three patches cover direct readers of the
-        # already-captured attributes.
+        # public_fallback's PUBLIC_ENV_FILES / CF_ACCESS_FILE were computed from the REAL home
+        # directory when their module was first imported -- the HOME patch above cannot reach
+        # them.  FLEET_RAG_HANDOFF_FILE covers core.handoff_file() callers (core._identity, via
+        # infisical_login); these patches cover direct readers of the already-captured
+        # attributes, and the `fleet-secrets` fallback is switched off so no test shells out.
         for patcher in (
-            mock.patch.object(core, "HANDOFF", absent_handoff),
             mock.patch.object(public_fallback, "CF_ACCESS_FILE", absent_cf_access),
             mock.patch.object(public_fallback, "PUBLIC_ENV_FILES", {
-                "RECALL_API_TOKEN": absent_handoff,
                 "CF_ACCESS_CLIENT_ID": absent_cf_access,
                 "CF_ACCESS_CLIENT_SECRET": absent_cf_access,
             }),
+            mock.patch.object(core, "_fleet_secrets_bin", lambda: None),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -94,10 +92,9 @@ class _SelfTest(HermeticTestCase):
     """Proves the mixin actually redirects every seam away from the real machine."""
 
     def test_handoff_paths_are_redirected_and_absent(self) -> None:
-        real_home = pathlib.Path(os.path.expanduser("~"))
-        self.assertNotEqual(core.HANDOFF, real_home / ".secrets" / "global-api-keys")
-        self.assertFalse(core.HANDOFF.exists())
         self.assertFalse(core.handoff_file().exists())
+        self.assertIsNone(core._fleet_secrets_bin())
+        self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
         self.assertFalse(public_fallback.CF_ACCESS_FILE.exists())
         for path in public_fallback.PUBLIC_ENV_FILES.values():
             self.assertFalse(path.exists())

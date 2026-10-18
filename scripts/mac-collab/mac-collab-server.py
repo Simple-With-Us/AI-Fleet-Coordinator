@@ -148,7 +148,7 @@ def app_filter_variants(app: str) -> list[str]:
     return sorted(variants)
 
 
-HANDOFF_NAMES_FILE = HOME / ".secrets" / "global-api-keys"
+FLEET_SECRETS_BIN = HOME / ".local" / "bin" / "fleet-secrets"  # OPS-818:  replaces the flat global-api-keys file
 AUDIT_LOG = Path(__file__).resolve().parent / "audit.log"
 AUTH_FAIL_WINDOW_S = 60.0
 AUTH_FAIL_MAX = 20
@@ -422,18 +422,16 @@ def audit(handler: BaseHTTPRequestHandler, action: str, name: str = "", ok: bool
 
 
 def key_names_only() -> list[str]:
-    """Secret names from the Mac handoff file. Never returns values."""
-    if not HANDOFF_NAMES_FILE.is_file():
+    """Secret names from `fleet-secrets names` (Fleet-OPS in Infisical). Never returns values."""
+    if not FLEET_SECRETS_BIN.is_file():
         return []
-    names: list[str] = []
-    for raw in HANDOFF_NAMES_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
-        s = raw.strip()
-        if s.startswith("export "):
-            s = s[7:].strip()
-        m = re.match(r"^([A-Z][A-Z0-9_]*)=", s)
-        if m:
-            names.append(m.group(1))
-    return names
+    try:
+        proc = subprocess.run([str(FLEET_SECRETS_BIN), "names"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [s for s in (line.strip() for line in proc.stdout.splitlines()) if re.match(r"^[A-Z][A-Z0-9_]*$", s)]
 
 
 def now_iso() -> str:

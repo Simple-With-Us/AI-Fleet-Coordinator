@@ -735,7 +735,7 @@ def env_report() -> tuple[list[str], list[str]]:
 def main(argv: list[str] | None = None) -> int:
     # Infisical is the source of truth for every managed key (INFISICAL.md).  The settings
     # module needs the project + environment before anything else; the machine identity
-    # (INFISICAL_AUTOMATION_CLIENT_ID/SECRET in the environment, or the handoff file)
+    # (INFISICAL_AUTOMATION_CLIENT_ID/SECRET in the environment)
     # authorizes the fetch.  With no identity, managed keys fall back to the process
     # environment and the old env-only behavior is preserved.
     # The environment is prod.  An unset or empty INFISICAL_ENVIRONMENT means prod and any

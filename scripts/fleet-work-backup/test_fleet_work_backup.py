@@ -565,6 +565,15 @@ class RunBase(unittest.TestCase):
         os.environ["STUB_DIR"] = str(self.stubdir)
         os.environ.pop("STUB_FAIL", None)
         self.cfg.restic_bin = str(stub)
+        fs_stub = self.stubdir / "fleet-secrets"        # `run [--only X] -- CMD`:  CMD with the fake creds as env
+        fs_stub.write_text(
+            "#!/bin/bash\n"
+            '[ "$1" = run ] || exit 2\n'
+            'shift; [ "$1" = -- ] && shift\n'
+            f'set -a; . "{self.creds_file}"; set +a\n'
+            'exec "$@"\n')
+        fs_stub.chmod(0o755)
+        self.cfg.fleet_secrets_bin = str(fs_stub)
         self.set_creds()
         self.cfg.b2_http = self.fake_b2()                          # never the real B2 API
         self.cfg.infisical_bin = str(self.tmp / "no-infisical")    # never the real Infisical CLI (it is logged in to prod)
@@ -601,10 +610,15 @@ class RunBase(unittest.TestCase):
                                "RESTIC_FLEET_WORK_PASSWORD")):
         vals = {"B2_FLEET_WORK_BUCKET_NAME": '"test-bucket"', "B2_FLEET_WORK_KEY_ID": f'"{KEYID}"',
                 "B2_FLEET_WORK_APPLICATION_KEY": f'"{APPKEY}"', "RESTIC_FLEET_WORK_PASSWORD": f'"{PW}"'}
-        handoff = self.home / ".secrets" / "global-api-keys"
+        handoff = self.creds_file
         handoff.parent.mkdir(parents=True, exist_ok=True)
         handoff.write_text("OTHER=1\n" + "".join(f"{n}={vals[n]}\n" for n in names))
         handoff.chmod(0o600)
+
+    @property
+    def creds_file(self) -> Path:
+        """What the fake ``fleet-secrets`` serves (a test double for Infisical Fleet-OPS)."""
+        return self.tmp / "fake-fleet-secrets.env"
 
     def log(self) -> str:
         p = self.cfg.log_path
@@ -718,9 +732,9 @@ class RunCase(RunBase):
         self.assertEqual(self.argv(), [])
 
     def test_the_bucket_name_has_no_fallback_to_the_shared_fleet_bucket(self):
-        """The shared name in the handoff file or the environment must never point the backup at the shared bucket."""
+        """The shared name in fleet-secrets or the environment must never point the backup at the shared bucket."""
         self.set_creds(names=("B2_FLEET_WORK_KEY_ID", "B2_FLEET_WORK_APPLICATION_KEY", "RESTIC_FLEET_WORK_PASSWORD"))
-        handoff = self.home / ".secrets" / "global-api-keys"
+        handoff = self.creds_file
         with handoff.open("a") as fh:
             fh.write("B2_FLEET_BUCKET_NAME=jays-fleet-shared-eu\n")
         with mock.patch.dict(os.environ, {"B2_FLEET_BUCKET_NAME": "jays-fleet-shared-eu"}):
@@ -738,7 +752,7 @@ class RunCase(RunBase):
         self.assertEqual(fwb.CRED_NAMES["bucket"], "B2_FLEET_WORK_BUCKET_NAME")
 
     def test_master_key_is_only_a_fallback_when_asked(self):
-        handoff = self.home / ".secrets" / "global-api-keys"
+        handoff = self.creds_file
         handoff.write_text(f"B2_FLEET_WORK_BUCKET_NAME=b\nRESTIC_FLEET_WORK_PASSWORD={PW}\n"
                            f"BACKBLAZE_MASTER_KEY_ID={KEYID}\nBACKBLAZE_MASTER_APPLICATION_KEY={APPKEY}\n")
         env, missing = fwb.restic_env(self.cfg)
@@ -2343,7 +2357,7 @@ class B2SetupCase(RunBase):
         self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)                  # checked once a day per key
         self.assertEqual(len(self.cfg.b2_http.calls), 2)
         backups = sum(1 for a in self.argv() if a.startswith("backup"))
-        handoff = self.home / ".secrets" / "global-api-keys"                   # the sync brings a different key
+        handoff = self.creds_file                   # the sync brings a different key
         handoff.write_text(handoff.read_text().replace(KEYID, KEYID[::-1]))
         self.cfg.b2_http = self.fake_b2(prefix=None)
         self.assertEqual(fwb.cmd_run(self.cfg, self.args), 2)
@@ -2380,7 +2394,7 @@ class B2SetupCase(RunBase):
         self.assertIn("daysFromHidingToDeleting", self.problems()[0][1])   # a rule on another prefix does not count
 
     def test_the_master_key_is_never_used_to_back_up_or_init_only_to_restore(self):
-        handoff = self.home / ".secrets" / "global-api-keys"
+        handoff = self.creds_file
         handoff.write_text(f"B2_FLEET_WORK_BUCKET_NAME=b\nRESTIC_FLEET_WORK_PASSWORD={PW}\n"
                            f"BACKBLAZE_MASTER_KEY_ID={KEYID}\nBACKBLAZE_MASTER_APPLICATION_KEY={APPKEY}\n")
         with mock.patch.dict(os.environ, {"FLEET_WORK_BACKUP_ALLOW_MASTER": "1"}):
@@ -2644,11 +2658,30 @@ class MiscCase(unittest.TestCase):
         ts = _t.mktime((2026, 10, 10, 0, 7, 0, 0, 0, -1))
         self.assertEqual(fwb.stamp(ts), "2026-10-10 12:07am")
 
-    def test_read_handoff_strips_quotes_and_comments(self):
+    def test_read_credentials_asks_fleet_secrets_once_and_tolerates_absence(self):
+        names = {n: "" for n in fwb.CRED_NAMES.values()}
+        head = '#!/bin/bash\n[ "$1" = run ] || exit 2\nshift; [ "$1" = -- ] && shift\n'
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "k"
-            p.write_text('# c\nA="x y"\nexport B=\'z\'\nbad line\nC=1\n')
-            self.assertEqual(fwb.read_handoff(p), {"A": "x y", "B": "z", "C": "1"})
+            stub = Path(d) / "fleet-secrets"
+            stub.write_text(head + "A=x exec \"$@\"\n")
+            stub.chmod(0o755)
+            cfg = fwb.Config(home=Path(d), fleet_secrets_bin=str(stub))
+            with mock.patch.dict(os.environ, names):
+                self.assertEqual(fwb.read_credentials(cfg), {})        # none of the job's names is held
+            stub.write_text(head + 'B2_FLEET_WORK_KEY_ID=kid RESTIC_FLEET_WORK_PASSWORD=pw OTHER=1 exec "$@"\n')
+            with mock.patch.dict(os.environ, names):
+                self.assertEqual(fwb.read_credentials(cfg),
+                                 {"B2_FLEET_WORK_KEY_ID": "kid", "RESTIC_FLEET_WORK_PASSWORD": "pw"})
+            stub.write_text("#!/bin/bash\nexit 4\n")                      # an Infisical or auth failure
+            with mock.patch.dict(os.environ, names):
+                self.assertEqual(fwb.read_credentials(cfg), {})
+            cfg.fleet_secrets_bin = str(Path(d) / "absent")               # not installed
+            with mock.patch.dict(os.environ, names):
+                self.assertEqual(fwb.read_credentials(cfg), {})
+            stub.write_text("#!/bin/bash\nexit 9\n")
+            cfg.fleet_secrets_bin = str(stub)
+            with mock.patch.dict(os.environ, {n: "v" for n in fwb.CRED_NAMES.values()}):
+                self.assertEqual(fwb.read_credentials(cfg), {})        # the environment has all four:  no fetch
 
     def test_plist_and_installer_agree_with_the_module(self):
         plist = (HERE.parent / "launchd" / "com.jay.fleet-work-backup.plist").read_text()
@@ -2935,14 +2968,14 @@ class HealthCase(HealthBase):
         self.last_complete(1.0)
         fakes = {"B2_FLEET_WORK_BUCKET_NAME": "fwb-bucket-" + "q7zp3km9tx2w", "B2_FLEET_WORK_KEY_ID": KEYID,
                  "B2_FLEET_WORK_APPLICATION_KEY": APPKEY, "RESTIC_FLEET_WORK_PASSWORD": PW}
-        handoff = self.home / ".secrets" / "global-api-keys"
+        handoff = self.home / "fake-fleet-secrets.env"
         write(handoff, "".join(f'{k}="{v}"\n' for k, v in fakes.items()), 0o600)
         leaked = "".join(["ghp_", "aB3dE5gH7jK9", "mN1pQ3sT5v7x", "Zq2R4tY6uW8e"])
         self.put_log("2026-10-11 1:00am status=error reason=missing-credentials names=B2_FLEET_WORK_KEY_ID,RESTIC_FLEET_WORK_PASSWORD",
                      f"2026-10-11 2:00am status=error reason=restic-backup-failed detail=denied for {leaked} warn=b2-unchecked")
         trap = AssertionError("health touched a credential, restic, B2 or Infisical")
         with mock.patch.dict(os.environ, fakes), \
-                mock.patch.object(fwb, "read_handoff", side_effect=trap), mock.patch.object(fwb, "restic_env", side_effect=trap), \
+                mock.patch.object(fwb, "read_credentials", side_effect=trap), mock.patch.object(fwb, "restic_env", side_effect=trap), \
                 mock.patch.object(fwb, "run_restic", side_effect=trap), mock.patch.object(fwb, "b2_call", side_effect=trap), \
                 mock.patch.object(fwb, "infisical_get", side_effect=trap):
             buf = io.StringIO()
@@ -3091,7 +3124,7 @@ class RepairCase(HealthBase):
 
     def test_it_runs_launchctl_and_nothing_else_and_reads_no_credential(self):
         self.full_install(loaded=False)
-        write(self.home / ".secrets" / "global-api-keys", f'RESTIC_FLEET_WORK_PASSWORD="{PW}"\n', 0o600)
+        write(self.home / "fake-fleet-secrets.env", f'RESTIC_FLEET_WORK_PASSWORD="{PW}"\n', 0o600)
         trap = AssertionError("repair touched a credential, restic, B2, Infisical or the installer")
         real_run = subprocess.run
         ran = []
@@ -3105,7 +3138,7 @@ class RepairCase(HealthBase):
         def spy_open(file, *a, **kw):
             opened.append(str(file))
             return real_open(file, *a, **kw)
-        with mock.patch.object(fwb, "read_handoff", side_effect=trap), mock.patch.object(fwb, "restic_env", side_effect=trap), \
+        with mock.patch.object(fwb, "read_credentials", side_effect=trap), mock.patch.object(fwb, "restic_env", side_effect=trap), \
                 mock.patch.object(fwb, "run_restic", side_effect=trap), mock.patch.object(fwb, "b2_call", side_effect=trap), \
                 mock.patch.object(fwb, "infisical_get", side_effect=trap), mock.patch.object(fwb.subprocess, "run", spy), \
                 mock.patch("builtins.open", spy_open):
@@ -3114,7 +3147,7 @@ class RepairCase(HealthBase):
                 self.assertEqual(fwb.cmd_repair(self.cfg, argparse.Namespace(reload=True)), 0)
         self.assertEqual({argv[0] for argv in ran}, {str(self.launchctl)})
         self.assertEqual([argv[1] for argv in ran], ["print", "bootstrap", "print"])
-        self.assertFalse([f for f in opened if ".secrets" in f or "global-api-keys" in f], opened)
+        self.assertFalse([f for f in opened if ".secrets" in f or "fake-fleet-secrets" in f], opened)
         self.assertIn("fleet-work-backup: repair --reload: bootstrapped", buf.getvalue())
         self.assertNotIn(PW, buf.getvalue())
 

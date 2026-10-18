@@ -35,8 +35,8 @@
 //   agent-sync post --as CLAUDE --channel agent-sync --topic "fleet-mode digest" "<message>"
 //
 // SECRETS: USAGE_READ_TOKEN and SENTRY_AUTH_TOKEN_FULLSCOPE are loaded
-// value-blind from environment first, then ~/.secrets/global-api-keys
-// (same pattern as Usage-Monitor's resolveCollectorToken).  Neither value is
+// value-blind from environment first, then `fleet-secrets get NAME` (OPS-818;
+// the flat file ~/.secrets/global-api-keys is retired).  Neither value is
 // ever printed, logged, or included in the composed message.
 //
 // Install the LaunchAgent (every Monday 8:00 AM Central, matches system tz):
@@ -45,7 +45,7 @@
 // Uninstall:
 //   launchctl bootout gui/$(id -u)/com.jays.weekly-fleet-mode-digest
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -109,25 +109,31 @@ function log(message) {
 
 // ------------------------------------------------------------- secrets ---
 
-/** Value-blind secret load: env var first, then ~/.secrets/global-api-keys.
+/** The `fleet-secrets` command:  the LaunchAgent's PATH is minimal, so ~/.local/bin is tried
+ *  explicitly before the bare name. */
+const FLEET_SECRETS_BINS = [join(homedir(), ".local", "bin", "fleet-secrets"), "fleet-secrets"];
+
+/** Value-blind secret load: env var first, then `fleet-secrets get NAME`.
  *  Never printed, logged, or returned in any user-facing string. */
 function resolveSecret(envVarNames) {
   for (const name of envVarNames) {
     const val = process.env[name]?.trim();
     if (val) return val;
   }
-  try {
-    const secretsPath = join(homedir(), ".secrets", "global-api-keys");
-    const content = readFileSync(secretsPath, "utf8");
+  for (const bin of FLEET_SECRETS_BINS) {
+    if (bin.includes("/") && !existsSync(bin)) continue;
     for (const name of envVarNames) {
-      const match = new RegExp(
-        `^(?:export\\s+)?${name}=["']?([^"'\\r\\n]+)["']?`,
-        "m",
-      ).exec(content);
-      if (match && match[1]?.trim()) return match[1].trim();
+      // stdout is captured, never echoed;  stderr is discarded.
+      const run = spawnSync(bin, ["get", name], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 60_000,
+      });
+      if (!run.error && run.status === 0 && run.stdout?.trim()) {
+        return run.stdout.trim();
+      }
     }
-  } catch {
-    // Missing/unreadable handoff file -- treated as "no secret available".
+    // A missing/failed command -- treated as "no secret available".
   }
   return null;
 }

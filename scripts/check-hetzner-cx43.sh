@@ -10,21 +10,19 @@
 
 set -uo pipefail
 
-SECRETS="/Users/jay/.secrets/global-api-keys"
+# Cron's PATH is minimal, so the absolute path;  override with FLEET_SECRETS_BIN.
+FLEET_SECRETS="${FLEET_SECRETS_BIN:-/Users/jay/.local/bin/fleet-secrets}"
 LOG="/Users/jay/apps/hetzner-upgrade-watch.log"
 SERVER_ID="${HETZNER_SERVER_ID:-hetzner-box}"
 DC="nbg1-dc3"
 CURRENT_TYPE="cx43"
 STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
 
-if [ ! -r "$SECRETS" ]; then
-  echo "$STAMP  ERROR: cannot read $SECRETS" >> "$LOG"
-  exit 1
+# Environment first, then `fleet-secrets get` (OPS-818;  the flat file ~/.secrets/global-api-keys is retired).
+TOKEN="${HCLOUD_TOKEN:-}"
+if [ -z "$TOKEN" ] && [ -x "$FLEET_SECRETS" ]; then
+  TOKEN="$("$FLEET_SECRETS" get HCLOUD_TOKEN 2>/dev/null || true)"
 fi
-
-TOKEN="$(grep -m1 '^HCLOUD_TOKEN=' "$SECRETS" | cut -d= -f2-)"
-TOKEN="${TOKEN#\"}"; TOKEN="${TOKEN%\"}"
-TOKEN="${TOKEN#\'}"; TOKEN="${TOKEN%\'}"   # tolerate the recurring double-then-single quote bug
 if [ -z "$TOKEN" ]; then
   echo "$STAMP  ERROR: HCLOUD_TOKEN missing/empty" >> "$LOG"
   exit 1

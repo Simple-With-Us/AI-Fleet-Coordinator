@@ -8,7 +8,7 @@
 # Use the fleet locator in docs/CLAUDE-CODE-CLOUD-ENVIRONMENTS.md
 # or: cd AI-Fleet-Coordinator && bash scripts/cloud-setup.sh
 #
-# What it does beyond the registry check: a cloud seat has no ~/.secrets handoff file,
+# What it does beyond the registry check: a cloud seat has no `fleet-secrets` (the Mac's credential source),
 # so without help it hits the Cloudflare Access login page on recall.jays.services and
 # concludes the fleet corpus is unreachable.  When the sandbox injects an Infisical
 # machine identity into the ENVIRONMENT, this script provisions the three recall
