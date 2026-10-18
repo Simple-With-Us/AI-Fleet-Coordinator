@@ -91,6 +91,7 @@ If the box is gating several lanes, announce the full gate in #builds topic `gat
 - Linear issue: **Completed** (Done) means merged to `main`, not "PR opened."  A `Fixes <ID>` PR moves it on merge once Linear's GitHub automation is on;  otherwise run `board status <id> completed`.
 - **Deployed** only after the app's production target is verified (`deploy-verify`).
 - Merge to `main` auto-deploys ST / CT / UM on Coolify and DealDex on Vercel.  Do not double-trigger.  Personal-Site live origin is Vercel behind Cloudflare and is **not** "merge = live" — do not mint a second Vercel project.
+- Retire the lane once the PR is merged:  `cd ~ && ~/apps/lane retire <slug>` (from outside the lane; it refuses a dirty, unpushed, open-PR or in-use lane and says why).  `~/apps/lane prune` lists all your lanes and `--apply` removes the merged ones.
 - Closeout: `closeout` skill.
 
 ## Do not
