@@ -220,25 +220,29 @@ def handoff_file() -> pathlib.Path | None:
 
 
 def _identity(prefix: str) -> tuple[str | None, str | None]:
-    """The machine-identity client id and secret:  environment first, then the explicit file."""
+    """The machine-identity client id and secret:  environment, then the explicit file, then
+    `fleet-secrets get` (the Mac).  `run` refuses INFISICAL_* names, so the identity is fetched
+    with `get`, one name at a time, only when the earlier sources left a half missing."""
     cid = (os.environ.get(f"{prefix}_CLIENT_ID") or "").strip() or None
     csec = (os.environ.get(f"{prefix}_CLIENT_SECRET") or "").strip() or None
     if cid and csec:
         return cid, csec
     path = handoff_file()
-    if path is None or not path.exists():
-        return cid, csec
-    try:
-        lines = path.read_text().splitlines()
-    except OSError:
-        return cid, csec
-    for line in lines:
-        m = re.match(rf"^{prefix}_CLIENT_ID=(.*)$", line)
-        if m and not cid:
-            cid = m.group(1).strip().strip('"').strip("'")
-        m = re.match(rf"^{prefix}_CLIENT_SECRET=(.*)$", line)
-        if m and not csec:
-            csec = m.group(1).strip().strip('"').strip("'")
+    if path is not None and path.exists():
+        try:
+            lines = path.read_text().splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            m = re.match(rf"^{prefix}_CLIENT_ID=(.*)$", line)
+            if m and not cid:
+                cid = m.group(1).strip().strip('"').strip("'")
+            m = re.match(rf"^{prefix}_CLIENT_SECRET=(.*)$", line)
+            if m and not csec:
+                csec = m.group(1).strip().strip('"').strip("'")
+    if not (cid and csec):
+        cid = cid or fleet_secret_get(f"{prefix}_CLIENT_ID")
+        csec = csec or fleet_secret_get(f"{prefix}_CLIENT_SECRET")
     return cid, csec
 
 
@@ -287,6 +291,22 @@ def fleet_secrets_many(names: Iterable[str]) -> dict[str, str]:
 def fleet_secret(name: str) -> str | None:
     """One value via `fleet-secrets`, or None."""
     return fleet_secrets_many([name]).get(name)
+
+
+def fleet_secret_get(name: str) -> str | None:
+    """One value via `fleet-secrets get NAME` (works for INFISICAL_* names that `run` refuses),
+    or None for a missing command, a failure or an absent name.  The value is never logged."""
+    binary = _fleet_secrets_bin()
+    if not name or not binary:
+        return None
+    try:
+        proc = subprocess.run(
+            [binary, "get", name], capture_output=True, text=True, timeout=FLEET_SECRETS_TIMEOUT
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = proc.stdout.strip() if proc.returncode == 0 else ""
+    return value or None
 
 
 def infisical_login() -> str | None:
