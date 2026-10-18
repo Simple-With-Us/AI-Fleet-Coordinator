@@ -83,6 +83,8 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      model: ${{ steps.trusted.outputs.model }}
     # No job-level concurrency here.  Every caller holds pr-autofix-<repo>-<pr> at workflow level,
     # and a job that asks for the group its own run already holds is cancelled before any step:
     # "Canceling since a deadlock was detected for concurrency group ... between a top level
@@ -362,21 +364,29 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Report Usage To Usage Monitor
-        # Best-effort metering (UM-1593).  Reads the stream-json transcript Claude Code wrote, posts one
-        # usage event, and never fails the run:  an absent USAGE_INGEST_TOKEN makes it a quiet no-op.
-        # It runs before the push gate so a failed or refused run is still metered.
+      - name: Extract Usage Counts
+        id: usage
+        # Only the counters of Claude Code's final result message leave this job (UM-1593):  no prompt,
+        # diff, or tool output.  The ingest credential is never present here, because this job runs the
+        # model with Bash and could rewrite any file on the runner.
         if: ${{ always() && steps.guard.outputs.should_fix == 'true' }}
         continue-on-error: true
-        uses: Simple-With-Us/congress-trading-shared/.github/actions/ci-usage-report@d06ac2d47bc3b9182ea43deee9f0a91ffdf33ab0
+        run: |
+          out="$RUNNER_TEMP/usage-result.json"
+          if [ -s "$RUNNER_TEMP/claude-stream.ndjson" ]; then
+            jq -c 'select(.type == "result") | {type, subtype, is_error, duration_ms, num_turns, total_cost_usd, usage, modelUsage}' \
+              "$RUNNER_TEMP/claude-stream.ndjson" 2> /dev/null | tail -n 1 > "$out" || true
+          fi
+          if [ -s "$out" ]; then echo "have=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Retain Usage Counts For The Meter Job
+        if: ${{ always() && steps.usage.outputs.have == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          token: ${{ secrets.USAGE_INGEST_TOKEN }}
-          harness: claude-code-ci
-          input-file: ${{ runner.temp }}/claude-stream.ndjson
-          input-kind: claude
-          model: ${{ steps.trusted.outputs.model }}
-          pr-number: ${{ github.event.issue.number || github.event.pull_request.number }}
-          workflow: pr-autofix-reusable
+          name: autofix-usage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/usage-result.json
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Validate Outcome Before Push
         id: validate
@@ -441,3 +451,31 @@ jobs:
           if [ "${{ steps.push_token.outputs.token }}" = "" ]; then
             echo "::warning::Pushed with GITHUB_TOKEN; CI will not re-run until SWU_AUTOFIX GitHub App credentials are configured"
           fi
+
+  # Best-effort metering (UM-1593).  It holds the optional ingest credential, so it runs apart from
+  # the job that executes the model.  With no token, or no usage file, it does nothing and cannot
+  # fail the run.
+  meter:
+    needs: autofix
+    if: ${{ always() && needs.autofix.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      actions: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        continue-on-error: true
+        with:
+          name: autofix-usage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/autofix-usage
+      - name: Report Usage To Usage Monitor
+        continue-on-error: true
+        uses: Simple-With-Us/congress-trading-shared/.github/actions/ci-usage-report@d06ac2d47bc3b9182ea43deee9f0a91ffdf33ab0
+        with:
+          token: ${{ secrets.USAGE_INGEST_TOKEN }}
+          harness: claude-code-ci
+          input-file: ${{ runner.temp }}/autofix-usage/usage-result.json
+          input-kind: claude
+          model: ${{ needs.autofix.outputs.model }}
+          pr-number: ${{ github.event.issue.number || github.event.pull_request.number }}
+          workflow: pr-autofix-reusable

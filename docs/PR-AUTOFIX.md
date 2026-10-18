@@ -111,9 +111,9 @@ Pushes made with the workflow `GITHUB_TOKEN` do not trigger other workflows.  Wh
 
 ## Usage Metering
 
-Each attempted fix reports its token usage to Usage Monitor (UM-1593), so the fleet can see what autofix spends.  A step after the model run reads the Claude Code stream-json transcript and posts one v2 usage event (`producerId: ci-autofix`, `harness: claude-code-ci`, tokens, duration, repo, PR number, run id) through the pinned `ci-usage-report` action in congress-trading-shared.  The step is `continue-on-error`, exits 0 on every failure, and runs before the push gate, so a refused or failed run is still metered.
+Each attempted fix reports its token usage to Usage Monitor (UM-1593), so the fleet can see what autofix spends.  The model job keeps only the counters of Claude Code's final result message (tokens, model, duration, turns) and hands them to a separate `meter` job as a one-day artifact.  The `meter` job posts one v2 usage event (`producerId: ci-autofix`, `harness: claude-code-ci`, repo, PR number, run id) through the pinned fleet reporting action.  The ingest credential exists only in that job, because the model job runs Claude Code with Bash and could rewrite any file on its runner.  Reporting is `continue-on-error`, exits 0 on every failure, and also covers runs whose push the gate then refuses.
 
-The reusable declares an optional secret, `USAGE_INGEST_TOKEN`, which callers forward like `MINIMAX_API_KEY`:  `USAGE_INGEST_TOKEN: ${{ secrets.USAGE_INGEST_TOKEN }}`.  Without it the step is a quiet no-op.  A caller must pin a SHA that declares the secret before it forwards it, because GitHub rejects a secret the called workflow does not declare.
+The reusable declares an optional secret, `USAGE_INGEST_TOKEN`, which callers forward like `MINIMAX_API_KEY`:  `USAGE_INGEST_TOKEN: ${{ secrets.USAGE_INGEST_TOKEN }}`.  Without it the `meter` job does nothing.  A caller must pin a SHA that declares the secret before it forwards it, because GitHub rejects a secret the called workflow does not declare.
 
 ## What It Skips
 
