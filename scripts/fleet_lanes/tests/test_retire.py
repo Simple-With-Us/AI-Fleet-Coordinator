@@ -205,7 +205,10 @@ class World:
         assert res.rc == 0, res.err
         return Path(res.out.strip())
 
-    def commit(self, lane: Path, name: str = "work.txt") -> str:
+    def commit(self, lane: Path, name: str = "") -> str:
+        # A file named after the lane, so two lanes committed in the same second never make the same commit object
+        # (identical tree, parent, author and time give an identical sha, and then one lane's push covers the other).
+        name = name or f"{lane.name}.txt"
         (lane / name).write_text(name + "\n", encoding="utf-8")
         self.git(["add", name], lane)
         self.git(["commit", "-q", "-m", name], lane)
