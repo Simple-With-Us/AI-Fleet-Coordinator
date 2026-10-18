@@ -64,9 +64,8 @@
       "paths": ["native/ios"],
       "ship": { "workflow": "ios-ship.yml", "inputs": {} },
       "sourceWorkflows": ["ios-ship.yml"],
-      "compileCheck": null,
-      "autoRemedy": false,
-      "manualReason": "no iOS compile check runs on DealDex main (ci.yml builds the web app only), and a catch-up needs a green one;  add an iOS compile job, name it here, and set autoRemedy true"
+      "compileCheck": "ios / xcodebuild (unsigned)",
+      "autoRemedy": true
     },
     "contactlogo": {
       "displayName": "ContactLogo",
