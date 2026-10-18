@@ -79,6 +79,11 @@ const DEFAULT_INFLIGHT_MAX_HOURS = 3;
 // may say it did not land.  Registry key:  remedyLandHours.
 const DEFAULT_REMEDY_LAND_HOURS = 3;
 
+/** The longest-running entry, so a message quotes one run's age and link together. */
+export function oldestRun(runs) {
+  return (runs || []).reduce((a, b) => (b.ageHours > a.ageHours ? b : a));
+}
+
 /** Split a workflow's queued or running runs into live ones and stuck ones. */
 export function splitInflight(runs, nowMs, maxHours = DEFAULT_INFLIGHT_MAX_HOURS) {
   const live = [];
@@ -606,7 +611,8 @@ export async function evaluateApp(ctx, key, app, now) {
       }
       const stuck = r.pipeline.staleRuns || [];
       if (stuck.length && r.status !== "shipping") {
-        r.reason += `;  a ship run in flight for ${Math.max(...stuck.map((x) => x.ageHours))}h looks stuck (${stuck[0].url})`;
+        const oldest = oldestRun(stuck);
+        r.reason += `;  a ship run in flight for ${oldest.ageHours}h looks stuck (${oldest.url})`;
       }
     }
   } catch (err) {
@@ -688,7 +694,8 @@ function alertLine(r, s) {
   let why;
   const stuck = r.pipeline?.staleRuns || [];
   if (stuck.length) {
-    why = `A ship run has been in flight for ${Math.max(...stuck.map((x) => x.ageHours))}h and looks stuck (${stuck[0].url})`;
+    const oldest = oldestRun(stuck);
+    why = `A ship run has been in flight for ${oldest.ageHours}h and looks stuck (${oldest.url})`;
   } else if (s.remedy && s.remedy.targetSha) {
     why = `A catch-up ship was dispatched ${ownerTime(s.remedy.at)} and has not landed`;
   } else if (r.remedy?.reason) {

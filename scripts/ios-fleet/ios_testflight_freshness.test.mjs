@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   EXIT_BEHIND, EXIT_CURRENT, EXIT_FAILED, SENTENCE_GAP,
-  acquireLockDir, buildCutTime, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
+  acquireLockDir, buildCutTime, oldestRun, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
   main, makeContext, matchCheckName, ownerTime, parseArgs, planAlerts, runRemedies, sentences,
 } from "./ios_testflight_freshness.mjs";
 
@@ -523,6 +523,18 @@ test("an in-flight ship run older than the cap is stale:  not shipping, not bloc
   await main(["--app", "b", "--ship-behind", "--dry-run", "--json", "--registry", writeRegistry(reg)], deps, out);
   assert.equal(JSON.parse(out.text).apps[0].remedy.action, "would-dispatch", "another app's stuck run does not block the fleet");
   assert.equal(calls.dispatch.length, 0);
+});
+
+test("two stuck runs:  the reason and the alert quote the oldest run's age with that run's link", async () => {
+  const newer = run("head1", "2026-10-17T20:00:00Z", "2026-10-17T20:01:00Z", { status: "in_progress", conclusion: null, html_url: "https://github.com/run/newer" });
+  const older = run("head0", "2026-10-17T18:00:00Z", "2026-10-17T18:01:00Z", { status: "queued", conclusion: null, html_url: "https://github.com/run/older" });
+  const w = botfleetLike({ natives: { ios: { sha: "nat2", date: "2026-10-17T14:15:00Z" } }, recentRuns: [newer, older] });
+  const { r } = await evalOne(w, BOTFLEET_BUILDS);
+  assert.equal(oldestRun(r.pipeline.staleRuns).url, "https://github.com/run/older");
+  assert.match(r.reason, /in flight for 6\.3h looks stuck \(https:\/\/github\.com\/run\/older\)/);
+  const state = { apps: { x: { behindSince: "2026-10-17T10:00:00Z" } } };
+  const plan = planAlerts([{ ...r, key: "x" }], state, registry({ x: app() }), { now: NOW, exitCode: 1 });
+  assert.match(plan.body, /in flight for 6\.3h and looks stuck \(https:\/\/github\.com\/run\/older\)/);
 });
 
 test("an app with autoRemedy on must name a compile check:  the registry fails loudly", async () => {
