@@ -2,7 +2,7 @@
 
 Ordered steps to put the Phase 0 stub on `https://agent-sync.jays.services`.  The stub holds no Zulip key, so spec 3.2 allows today's credential (the Global key) for it.  Every Cloudflare change below is Jay-approved work for the parent session, run by hand, never from CI and never on merge.
 
-Everything runs from `scripts/agent-sync-mcp/` in a checkout of the merged commit (a fresh worktree off `origin/main`, never `~/Code/AI-Fleet-Coordinator`).  `infra_phase0.py` loads the Global key inside its own process from `~/.secrets/global-api-keys` today (moving to the environment or `fleet-secrets` under OPS-818) and never prints it.  Every step is a dry run until `--apply`.  Do not merge stderr into output (`2>&1`) on any command that touches a secret.
+Everything runs from `scripts/agent-sync-mcp/` in a checkout of the merged commit (a fresh worktree off `origin/main`, never `~/Code/AI-Fleet-Coordinator`).  `infra_phase0.py` loads the Global key inside its own process from the environment, else `fleet-secrets get` (OPS-818;  the flat file is no longer read) and never prints it.  Every step is a dry run until `--apply`.  Do not merge stderr into output (`2>&1`) on any command that touches a secret.
 
 ## What holds the hostname today (read-only probe, Fri, Oct 9)
 

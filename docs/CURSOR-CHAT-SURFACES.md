@@ -52,8 +52,8 @@ python3 ~/apps/cursor-chat-surfaces/cursor_chat_surfaces.py list-cloud
 ### One-time API key
 
 Cloud Agents API is **not** the CLI login cookie.  Prefer **`CURSOR_SYNC_API_KEY`**
-in `~/.secrets/global-api-keys` today (being removed under OPS-818;  the CLI is moving to the
-environment or `fleet-secrets`).  Also accepted:
+from Infisical Fleet-OPS (`fleet-secrets get CURSOR_SYNC_API_KEY`;  the CLI no longer reads the
+flat `global-api-keys` file, OPS-818).  Also accepted:
 `CURSOR_API_KEY` in the environment, or a chmod-600 `~/.secrets/cursor-api-key`.
 
 Never `cat` or `grep` those files in a transcript.  Names only.
