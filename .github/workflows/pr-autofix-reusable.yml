@@ -418,7 +418,7 @@ jobs:
             exit 1
           fi
           if [ "$HAS_VERIFY" = "true" ]; then
-            bash "$RUNNER_TEMP/verify.sh"
+            bash -euo pipefail "$RUNNER_TEMP/verify.sh"
           fi
 
       - name: Commit And Push
