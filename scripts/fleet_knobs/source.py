@@ -15,15 +15,16 @@ package, and the Mac's LaunchAgents already rely on the CLI's login (see
 scripts/infisical-secrets-sync.sh).  ``fleet_rag/infisical_settings.py`` is the reference for
 the contract (prod only, load once, keep the last-known-good, names only in logs).
 """
+
 from __future__ import annotations
 
 import json
 import os
 import shutil
 import subprocess
-from typing import Dict, Iterable, Optional
+from collections.abc import Iterable
 
-PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"       # AI Fleet Coordinator
+PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator
 ENVIRONMENT = "prod"
 CLI_NAME = "infisical"
 # A LaunchAgent's PATH is minimal, so look in the usual install places after PATH.
@@ -31,6 +32,9 @@ FALLBACK_DIRS = ("~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin")
 TIMEOUT_SECONDS = 20.0
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 ENV_NAMES = ("INFISICAL_ENVIRONMENT", "INFISICAL_ENV")
+# ``infisical secrets get NAME`` exits 0 and answers a name it does not hold with this value
+# (verified against the real CLI, OPS-818), so it means "absent", never a secret's value.
+NOT_FOUND_PLACEHOLDERS = frozenset({"*not found*"})
 
 
 class FetchFailed(Exception):
@@ -41,18 +45,20 @@ class FetchFailed(Exception):
         self.reason = reason
 
 
-def environment_refusal() -> Optional[str]:
+def environment_refusal() -> str | None:
     """Why Infisical may not be read (a non-prod slug in the environment), or None."""
     for var in ENV_NAMES:
         slug = (os.environ.get(var) or "").strip().lower()
         if slug and slug != ENVIRONMENT:
-            return (f"refusing Infisical environment {slug!r} from {var}:  prod is the only "
-                    "environment (dev and staging are retired);  unset it or set it to prod;  "
-                    "see INFISICAL.md")
+            return (
+                f"refusing Infisical environment {slug!r} from {var}:  prod is the only "
+                "environment (dev and staging are retired);  unset it or set it to prod;  "
+                "see INFISICAL.md"
+            )
     return None
 
 
-def find_cli() -> Optional[str]:
+def find_cli() -> str | None:
     found = shutil.which(CLI_NAME)
     if found:
         return found
@@ -64,12 +70,20 @@ def find_cli() -> Optional[str]:
 
 
 def argv_for(cli: str) -> list:
-    return [cli, "export", f"--env={ENVIRONMENT}", f"--projectId={PROJECT_ID}",
-            "--format=json", "--path=/", "--silent", "--expand=false",
-            "--include-imports=false"]
+    return [
+        cli,
+        "export",
+        f"--env={ENVIRONMENT}",
+        f"--projectId={PROJECT_ID}",
+        "--format=json",
+        "--path=/",
+        "--silent",
+        "--expand=false",
+        "--include-imports=false",
+    ]
 
 
-def fetch(names: Iterable[str]) -> Dict[str, str]:
+def fetch(names: Iterable[str]) -> dict[str, str]:
     """The raw string value of each of `names` that Infisical holds (absent names are left out).
 
     Raises FetchFailed with a reason token.  Never logs or returns anything but the
@@ -78,10 +92,50 @@ def fetch(names: Iterable[str]) -> Dict[str, str]:
     cli = find_cli()
     if not cli:
         raise FetchFailed("cli-missing")
+    return _pick(_run(argv_for(cli)), wanted)
+
+
+def argv_named(cli: str, names: Iterable[str], project_id: str, path: str) -> list:
+    return [
+        cli,
+        "secrets",
+        "get",
+        *sorted(set(names)),
+        f"--env={ENVIRONMENT}",
+        f"--projectId={project_id}",
+        f"--path={path}",
+        "--output=json",
+        "--silent",
+        "--expand=false",
+        "--include-imports=false",
+    ]
+
+
+def fetch_named(names: Iterable[str], *, project_id: str, path: str) -> dict[str, str]:
+    """Only the named secrets of one folder of another project (``infisical secrets get``).
+
+    Unlike ``fetch`` the CLI itself is asked for just these names, so no other secret in the
+    folder reaches this process.  Absent names are left out.  Same contract otherwise:  prod only,
+    the CLI's output and stderr never printed, a failure reduced to a reason token."""
+    wanted = set(names)
+    cli = find_cli()
+    if not cli:
+        raise FetchFailed("cli-missing")
+    return _pick(_run(argv_named(cli, wanted, project_id, path)), wanted)
+
+
+def _run(argv: list):
+    """Run the CLI and parse its JSON.  Raises FetchFailed with a reason token."""
     try:
-        proc = subprocess.run(argv_for(cli), stdin=subprocess.DEVNULL, capture_output=True,
-                              timeout=TIMEOUT_SECONDS, cwd="/", env=dict(os.environ),
-                              check=False)
+        proc = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=TIMEOUT_SECONDS,
+            cwd="/",
+            env=dict(os.environ),
+            check=False,
+        )
     except subprocess.TimeoutExpired:
         raise FetchFailed("timeout") from None
     except OSError:
@@ -92,20 +146,19 @@ def fetch(names: Iterable[str]) -> Dict[str, str]:
     if len(out) > MAX_OUTPUT_BYTES:
         raise FetchFailed("bad-output")
     try:
-        payload = json.loads(out.decode("utf-8"))
+        return json.loads(out.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         raise FetchFailed("bad-output") from None
     finally:
         out = b""
-    return _pick(payload, wanted)
 
 
-def _pick(payload, wanted) -> Dict[str, str]:
+def _pick(payload, wanted) -> dict[str, str]:
     """Accept the shapes ``export --format=json`` has used:  {KEY: value}, a list of
     {key, value} or {secretKey, secretValue} objects, or an API-style {"secrets": [...]}."""
     if isinstance(payload, dict) and isinstance(payload.get("secrets"), list):
         payload = payload["secrets"]
-    found: Dict[str, str] = {}
+    found: dict[str, str] = {}
     if isinstance(payload, dict):
         pairs = payload.items()
     elif isinstance(payload, list):
@@ -120,6 +173,8 @@ def _pick(payload, wanted) -> Dict[str, str]:
         raise FetchFailed("bad-output")
     for key, val in pairs:
         if key in wanted and isinstance(val, (str, int, float, bool)):
+            if isinstance(val, str) and val.strip().lower() in NOT_FOUND_PLACEHOLDERS:
+                continue
             text = str(val)
             if isinstance(val, bool):
                 text = "true" if val else "false"
