@@ -14,8 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass, field
-
+from dataclasses import dataclass
 
 IDENTITY_TOKEN = "@@SEAT_IDENTITY_PARAGRAPH@@"
 YOU_ARE_TOKEN = "@@SEAT_YOU_ARE@@"
@@ -90,19 +89,19 @@ def _seat_block(default_arm: str, ordinary: str, extra: str = "") -> str:
         "Stop if `whoami` shows another seat's bot or the credential is missing "
         "(the CLI also refuses on its own).  Never use another seat's credential or "
         "Jay's account.  Your shell may not keep exports between commands, so pass "
-        "`--as <SEAT>` on every agent-sync call, and read `\"$AGENT_SEAT\"` in the "
+        '`--as <SEAT>` on every agent-sync call, and read `"$AGENT_SEAT"` in the '
         f"commands below as the seat you verified.{extra}  {LAUNCHER_CLAUSE}"
     )
 
 
-def _bot_address(seat: "Seat") -> str:
+def _bot_address(seat: Seat) -> str:
     local = seat.zulip_bot
     if local and not local.endswith("-bot"):
         local = f"{local}-bot"
     return f"{local}@" if local else ""
 
 
-def seat_pin_block(seat: "Seat") -> str:
+def seat_pin_block(seat: Seat) -> str:
     """Identity block for one seat:  its platform default arm, never an overwrite."""
     prefix_line = (
         f"  `{BRANCH_PREFIX}` below is your seat's branch prefix:  `{seat.prefix}` "
@@ -218,14 +217,21 @@ COORDINATOR_SELF_ID = "AFC"
 OPS_SELF_ID = "OPS"
 FLEET_WAKE = "FLEET"
 
+
 def _load_gb_role_tags() -> tuple[str, ...]:
     """The enabled Grok Bot personas, from the one list the MCP servers use (scripts/agent_sync/mcp/gb-identities.json,
     which the hosted Worker imports as GB_IDENTITIES).  Never a list of its own here, so a skill cannot name a
     persona the connectors refuse or miss one they accept."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_sync", "mcp", "gb-identities.json")
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "agent_sync", "mcp", "gb-identities.json"
+    )
     with open(path, encoding="utf-8") as fh:
         enabled = json.load(fh).get("enabled")
-    if not isinstance(enabled, list) or not enabled or not all(isinstance(t, str) and t.startswith("GB-") for t in enabled):
+    if (
+        not isinstance(enabled, list)
+        or not enabled
+        or not all(isinstance(t, str) and t.startswith("GB-") for t in enabled)
+    ):
         raise ValueError("%s: `enabled` must be a non-empty list of GB-* names" % path)
     return tuple(enabled)
 
@@ -433,8 +439,12 @@ MUSE_ASSIST_BANNER = (
 
 SEATS: dict[str, Seat] = {
     "cursor": Seat(
-        "CURSOR", "Cursor", "cursor", "cursor",
-        "~/.cursor/skills", "exclusive",
+        "CURSOR",
+        "Cursor",
+        "cursor",
+        "cursor",
+        "~/.cursor/skills",
+        "exclusive",
         "This pack is for the **CURSOR** seat (Cursor IDE and Auto on this Mac).  "
         "Zulip session tag `[CURSOR·session8]`.  Notes name `Cursor`.  Branches "
         "`cursor/<slug>` only.  Lanes `~/apps/lanes/<Repo>/cursor-<slug>`.  Never post as `[MONET]`, "
@@ -447,8 +457,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="Cursor",
     ),
     "ag": Seat(
-        "AG", "Antigravity", "ag", "antigravity",
-        "~/.gemini/skills", "exclusive",
+        "AG",
+        "Antigravity",
+        "ag",
+        "antigravity",
+        "~/.gemini/skills",
+        "exclusive",
         "This pack is for **AG** (Antigravity / Gemini).  Session tag `[AG·session8]`.  Notes name "
         "`Antigravity`.  Branches `ag/<slug>` (keep `agent/antigravity` only if the lane "
         "already uses it).  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Never sign "
@@ -458,8 +472,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="AG",
     ),
     "codex": Seat(
-        "CODEX", "Codex", "codex", "codex",
-        "~/.codex/skills", "exclusive",
+        "CODEX",
+        "Codex",
+        "codex",
+        "codex",
+        "~/.codex/skills",
+        "exclusive",
         "This pack is for **CODEX**.  Session tag `[CODEX·session8]`.  Notes name `Codex`.  "
         "Branches `codex/<slug>` only.  Lanes `~/apps/lanes/<Repo>/codex-<slug>`.  "
         "Never sign as Monet.  Pin `AGENT_SEAT=CODEX`.",
@@ -468,8 +486,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="Codex",
     ),
     "grok": Seat(
-        "GROK", "Grok", "grok", "grok",
-        "~/.grok/skills", "exclusive",
+        "GROK",
+        "Grok",
+        "grok",
+        "grok",
+        "~/.grok/skills",
+        "exclusive",
         "This pack is for the **GROK** Mac TUI / CLI seat.  Session tag `[GROK·session8]`.  "
         "Notes name `Grok`.  Branches `grok/<slug>` only.  Lanes "
         "`~/apps/lanes/<Repo>/grok-<slug>`.  Never sign as Monet or Grok Bot.  Pin "
@@ -483,8 +505,12 @@ SEATS: dict[str, Seat] = {
     # (owner 2026-10-10).  This pack is the copy its home (~/.grok-build/skills) reads, and it signs GROK like
     # the Grok TUI pack:  chat tag `[GROK·session8]`, Notes `Grok`, branches `grok/`, lanes `grok-<slug>`.
     "grok-build": Seat(
-        "GROK", "Grok", "grok", "grok",
-        "~/.grok-build/skills", "exclusive",
+        "GROK",
+        "Grok",
+        "grok",
+        "grok",
+        "~/.grok-build/skills",
+        "exclusive",
         "This pack is for the **GROK** seat in its Grok Build TUI / App Builder runtime:  Grok Build and the "
         "Mac Grok TUI / CLI are ONE seat, and GROK-BUILD (in any spelling) is only an alias for it.  Session "
         "tag `[GROK·session8]`.  Notes name `Grok`.  Branches `grok/<slug>` only.  Lanes "
@@ -496,8 +522,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="Grok-Build",
     ),
     "fx": Seat(
-        "FX", "Fx", "fx", "fx",
-        "~/.fx/skills", "exclusive",
+        "FX",
+        "Fx",
+        "fx",
+        "fx",
+        "~/.fx/skills",
+        "exclusive",
         "This pack is for the **FX** terminal agent (`fx` / `fx.sh`).  Session tag "
         "`[FX·session8]`.  Notes name `Fx`.  Branches `fx/<slug>` only.  Lanes "
         "`~/apps/lanes/<Repo>/fx-<slug>`.  This is not Cursor, not Codex, and not Monet.  "
@@ -513,8 +543,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="FX",
     ),
     "grok-bot": Seat(
-        "GB-<NAME>", "Grok Bot", "cursor", "cursor",
-        "docs/fleet-skills/by-seat/grok-bot", "grok_bot",
+        "GB-<NAME>",
+        "Grok Bot",
+        "cursor",
+        "cursor",
+        "docs/fleet-skills/by-seat/grok-bot",
+        "grok_bot",
         GROK_BOT_IDENTITY,
         extra_banner=GROK_BOT_BANNER,
         write_home=False,
@@ -523,8 +557,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="",
     ),
     "claude": Seat(
-        "CLAUDE", "Claude", "claude", "claude",
-        "docs/fleet-skills/by-seat/claude", "exclusive",
+        "CLAUDE",
+        "Claude",
+        "claude",
+        "claude",
+        "docs/fleet-skills/by-seat/claude",
+        "exclusive",
         CLAUDE_IDENTITY,
         write_home=False,
         seat_key="claude",
@@ -532,8 +570,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="Claude",
     ),
     "monet": Seat(
-        "MONET", "Monet", "monet", "monet",
-        "~/Desktop/fleet-skills", "exclusive",
+        "MONET",
+        "Monet",
+        "monet",
+        "monet",
+        "~/Desktop/fleet-skills",
+        "exclusive",
         MONET_IDENTITY,
         extra_banner=MONET_RETIRED_BANNER,
         write_home=False,
@@ -543,8 +585,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="",
     ),
     "renoir": Seat(
-        "RENOIR", "Renoir", "renoir", "renoir",
-        "~/.renoir/skills", "exclusive",
+        "RENOIR",
+        "Renoir",
+        "renoir",
+        "renoir",
+        "~/.renoir/skills",
+        "exclusive",
         RENOIR_IDENTITY,
         extra_banner=RENOIR_RETIRED_BANNER,
         write_home=False,
@@ -554,8 +600,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="",
     ),
     "deepseek": Seat(
-        "DSH", "DeepSeek Harness", "deepseek", "deepseek",
-        "~/.deepseek/skills", "exclusive",
+        "DSH",
+        "DeepSeek Harness",
+        "deepseek",
+        "deepseek",
+        "~/.deepseek/skills",
+        "exclusive",
         DSH_IDENTITY,
         extra_banner=DSH_RETIRED_BANNER,
         write_home=False,
@@ -565,8 +615,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="",
     ),
     "clutch": Seat(
-        "CLUTCH", "Clutch", "clutch", "clutch",
-        "~/.clutch/dsh/skills", "exclusive",
+        "CLUTCH",
+        "Clutch",
+        "clutch",
+        "clutch",
+        "~/.clutch/dsh/skills",
+        "exclusive",
         CLUTCH_IDENTITY,
         extra_banner=CLUTCH_EXTRA,
         seat_key="clutch",
@@ -574,8 +628,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="Clutch",
     ),
     "minimax": Seat(
-        "MM", "MiniMax", "minimax", "minimax",
-        "~/.minimax/skills", "exclusive",
+        "MM",
+        "MiniMax",
+        "minimax",
+        "minimax",
+        "~/.minimax/skills",
+        "exclusive",
         "This pack is for **MM** (MiniMax Code on the Mavis local runtime).  "
         "Session tag `[MM·session8]`.  Notes name `MiniMax`.  Branches `minimax/<slug>` only.  "
         "Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Running a MiniMax *model* inside "
@@ -589,8 +647,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="MM",
     ),
     "kimi": Seat(
-        "KIMI", "Kimi", "kimi", "kimi",
-        "~/.kimi/skills", "exclusive",
+        "KIMI",
+        "Kimi",
+        "kimi",
+        "kimi",
+        "~/.kimi/skills",
+        "exclusive",
         KIMI_IDENTITY,
         extra_banner=KIMI_RETIRED_BANNER,
         write_home=False,
@@ -600,8 +662,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="",
     ),
     "muse-code": Seat(
-        "MC", "Muse Code", "muse-code", "muse-code",
-        "~/.config/muse/skills", "exclusive",
+        "MC",
+        "Muse Code",
+        "muse-code",
+        "muse-code",
+        "~/.config/muse/skills",
+        "exclusive",
         "This pack is for **MC** (Muse Code interactive terminal coding agent).  "
         "Session tag `[MC·session8]`.  Notes name `Muse Code`.  Branches `muse-code/<slug>` only.  "
         "Lanes `~/apps/lanes/<Repo>/muse-code-<slug>` (make one with "
@@ -614,8 +680,12 @@ SEATS: dict[str, Seat] = {
         zulip_rc="MC",
     ),
     "muse-assist": Seat(
-        "MA", "Muse Assist", "muse-assist", "muse-assist",
-        "docs/fleet-skills/by-seat/muse-assist", "exclusive",
+        "MA",
+        "Muse Assist",
+        "muse-assist",
+        "muse-assist",
+        "docs/fleet-skills/by-seat/muse-assist",
+        "exclusive",
         "This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  "
         "Session tag `[MA·session8]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` "
         "(historical `muse/<slug>`).  No lane on the Mac (cloud VM).  "
@@ -631,8 +701,12 @@ SEATS: dict[str, Seat] = {
     # renders as CLAUDE.  It is a second home for the `claude` pack, not a
     # separate seat, so it gets no by-seat catalog copy (see catalog_seats).
     "claude_shared": Seat(
-        "CLAUDE", "Claude", "claude", "claude",
-        "~/.claude/skills", "exclusive",
+        "CLAUDE",
+        "Claude",
+        "claude",
+        "claude",
+        "~/.claude/skills",
+        "exclusive",
         CLAUDE_IDENTITY,
         extra_banner=CLAUDE_SHARED_BANNER,
         seat_key="claude_shared",
@@ -697,23 +771,25 @@ NEVER_INSTALL = frozenset({"ios-ship"})
 # the body is GitHub review-thread triage for every seat that lands PRs.
 # `mac-cleanup` is Mac disk cleanup; omit from cloud Grok Bot.
 SKILL_SEAT_ALLOWLIST: dict[str, frozenset[str]] = {
-    "mac-cleanup": frozenset({
-        "cursor",
-        "ag",
-        "codex",
-        "grok",
-        "grok-build",
-        "fx",
-        "claude",
-        "monet",
-        "renoir",
-        "deepseek",
-        "clutch",
-        "kimi",
-        "minimax",
-        "muse-code",
-        "claude_shared",
-    }),
+    "mac-cleanup": frozenset(
+        {
+            "cursor",
+            "ag",
+            "codex",
+            "grok",
+            "grok-build",
+            "fx",
+            "claude",
+            "monet",
+            "renoir",
+            "deepseek",
+            "clutch",
+            "kimi",
+            "minimax",
+            "muse-code",
+            "claude_shared",
+        }
+    ),
 }
 
 CLAUDE_FAMILY_TAGS = frozenset({"MONET", "CLAUDE", "RENOIR"})
@@ -739,8 +815,14 @@ _PROTECT = [
     ("Monet: `[MONET]`", "@@SEAT_MONET_TAG_ROW@@"),
     ("(Antigravity/Gemini, Monet, Claude, Cursor, Grok, Codex, DeepSeek)", "@@SEAT_ALL_LIST@@"),
     ("Antigravity/Gemini, Monet, Claude, Cursor, Grok, Codex, DeepSeek", "@@SEAT_ALL_LIST2@@"),
-    ("Release notes **must not** contain agent names (`Monet`, `Claude`, `Grok`, …).", "@@IOS_SHIP_NO_NAMES@@"),
-    ("Release notes **must not** contain agent names (`Monet`, `Claude`, `Grok`, …)", "@@IOS_SHIP_NO_NAMES2@@"),
+    (
+        "Release notes **must not** contain agent names (`Monet`, `Claude`, `Grok`, …).",
+        "@@IOS_SHIP_NO_NAMES@@",
+    ),
+    (
+        "Release notes **must not** contain agent names (`Monet`, `Claude`, `Grok`, …)",
+        "@@IOS_SHIP_NO_NAMES2@@",
+    ),
     ("Release notes **must not** contain agent names", "@@IOS_SHIP_NO_NAMES3@@"),
     ("Monet and Claude Code both use", "@@CLAUDE_COMMIT_TRAILER@@"),
     ("Monet and Claude Code", "@@MONET_CLAUDE_CODE@@"),
@@ -758,11 +840,13 @@ _PROTECT = [
     ("Monet, Grok, Claude", "@@SEAT_MONET_GROK_CLAUDE@@"),
     ("Monet, Cursor, or Claude", "@@SEAT_MONET_CURSOR_CLAUDE@@"),
     ("Monet or Claude", "@@SEAT_MONET_OR_CLAUDE@@"),
-        ("Monet, Cursor, or Grok", "@@SEAT_MONET_CURSOR_GROK@@"),
-        ("`~/Desktop/fleet-skills/sentence-gap/SKILL.md` — Monet portable paste", "@@SEAT_MONET_DESKTOP_GAP@@"),
-        ("Grok Bot: `[GB-<NAME>]`", "@@SEAT_GROK_BOT_ROW@@"),
-    ]
-
+    ("Monet, Cursor, or Grok", "@@SEAT_MONET_CURSOR_GROK@@"),
+    (
+        "`~/Desktop/fleet-skills/sentence-gap/SKILL.md` — Monet portable paste",
+        "@@SEAT_MONET_DESKTOP_GAP@@",
+    ),
+    ("Grok Bot: `[GB-<NAME>]`", "@@SEAT_GROK_BOT_ROW@@"),
+]
 
 
 def _protect(text: str) -> str:
@@ -898,9 +982,7 @@ def _rewrite_universal_voice(text: str) -> str:
 
 
 def _specialize_grok_bot(text: str, seat: Seat, skill_name: str) -> str:
-    pin = (
-        f'AGENT_TAG="${{AGENT_TAG:?set {gb_role_pin_list()}}}"'
-    )
+    pin = f'AGENT_TAG="${{AGENT_TAG:?set {gb_role_pin_list()}}}"'
     text = _stash_identity_source(text)
     text = _protect(text)
     ordered = [
@@ -1076,16 +1158,12 @@ def fold_yaml_description(text: str) -> str:
             continue
         raw = line[len("description:") :].strip()
         collected: list[str] = []
-        if raw in {">", ">-", "|", "|-", ">|"} or (
-            raw.startswith(">") or raw.startswith("|")
-        ):
+        if raw in {">", ">-", "|", "|-", ">|"} or (raw.startswith(">") or raw.startswith("|")):
             extra = raw.lstrip(">-|").strip()
             if extra:
                 collected.append(extra)
             i += 1
-            while i < len(lines) and (
-                lines[i].startswith(" ") or lines[i].startswith("\t")
-            ):
+            while i < len(lines) and (lines[i].startswith(" ") or lines[i].startswith("\t")):
                 collected.append(lines[i].strip())
                 i += 1
             value = " ".join(p for p in collected if p)
@@ -1132,7 +1210,9 @@ def _launcher_aware_prose(text: str) -> str:
     """Seat paragraphs said "Pin `AGENT_SEAT=X`."  Under the owner's seat-precedence
     rule X is only the ordinary session's default, so say that instead."""
     return _PIN_PROSE.sub(
-        lambda m: f"`{m.group(1)}` is the default seat of an ordinary session; a launcher's seat wins (Identity).",
+        lambda m: (
+            f"`{m.group(1)}` is the default seat of an ordinary session; a launcher's seat wins (Identity)."
+        ),
         text,
     )
 
@@ -1149,8 +1229,10 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
         ("AGENT_TAG=MONET", f"AGENT_TAG={seat.tag}"),
         ("--by MONET", f"--by {BY_SEAT}"),
         ("--mine MONET", f"--mine {BY_SEAT}"),
-        ("`--by` for this seat is `MONET`",
-         f"`--by` for this seat is your verified seat (`{seat.tag}` in an ordinary {seat.notes} session)"),
+        (
+            "`--by` for this seat is `MONET`",
+            f"`--by` for this seat is your verified seat (`{seat.tag}` in an ordinary {seat.notes} session)",
+        ),
         ("claude/afc-123-zulip-cutover", f"{seat.prefix}/afc-123-zulip-cutover"),
         (
             f"{BRANCH_PREFIX}/{BRANCH_EXAMPLE_SLUG}",
@@ -1226,7 +1308,9 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
     banners = ""
     if skill_name in IDENTITY_SKILL_NAMES and not seat.retired:
         zulip = zulip_identity_sentence(seat)
-        banners += _banner(seat.tag, seat.notes, seat.prefix, seat.suffix, f"  {zulip}" if zulip else "")
+        banners += _banner(
+            seat.tag, seat.notes, seat.prefix, seat.suffix, f"  {zulip}" if zulip else ""
+        )
     banners += seat.extra_banner
     if banners:
         text = _insert_after_first_heading(text, banners)
@@ -1268,9 +1352,7 @@ def set_yaml_description(text: str, value: str) -> str:
         line = lines[i]
         if line.startswith("description:") and not replaced:
             i += 1
-            while i < len(lines) and (
-                lines[i].startswith(" ") or lines[i].startswith("\t")
-            ):
+            while i < len(lines) and (lines[i].startswith(" ") or lines[i].startswith("\t")):
                 i += 1
             out.append("description: >-")
             out.append("  " + value)
@@ -1405,7 +1487,10 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         ("Land a Monet", "Land a"),
         ("whenever Monet", "whenever an agent"),
         ("Use whenever Monet", "Use whenever an agent"),
-        ("Notes name `Monet`", "Notes name in Title Case (e.g. `Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`)"),
+        (
+            "Notes name `Monet`",
+            "Notes name in Title Case (e.g. `Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`)",
+        ),
         ("then `Monet` (Title Case", "then `<Agent>` (Title Case"),
         ("then `Monet`", "then `<Agent>`"),
         ("[APP, Monet]", "[APP, Agent]"),
@@ -1415,7 +1500,10 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         ("Monet — never skip", "your seat — never skip"),
         ("Monet's job on these", "the agent's job on these"),
         ("parallel Monet lanes", "parallel agent lanes"),
-        ("Acronyms first, then `Monet` (Title Case, not all-caps seat tags).", "Acronyms first, then agent name in Title Case (e.g. `Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`, `DeepSeek`, `Fx`), not all-caps seat tags."),
+        (
+            "Acronyms first, then `Monet` (Title Case, not all-caps seat tags).",
+            "Acronyms first, then agent name in Title Case (e.g. `Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`, `DeepSeek`, `Fx`), not all-caps seat tags.",
+        ),
         ("Acronyms first, then `Monet`", "Acronyms first, then agent name in Title Case"),
         ("Monet/peer", "peer"),
         ("`FLEET`, `MONET`", "`FLEET`, `<YOUR_TAG>`"),
@@ -1428,7 +1516,6 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
     text = _unprotect(text)
     text = _rewrite_universal_voice(text)
     return fold_yaml_description(text)
-
 
 
 def platform_installs() -> list[tuple[str, Seat]]:
@@ -1448,11 +1535,7 @@ def catalog_seats() -> list[Seat]:
 
     `claude_shared` is the `claude` pack's second home, not a seat of its own.
     """
-    return [
-        s
-        for key, s in SEATS.items()
-        if key != "claude_shared"
-    ]
+    return [s for key, s in SEATS.items() if key != "claude_shared"]
 
 
 # Seats with no repo tree of their own, and why.  This is the only hand-maintained
