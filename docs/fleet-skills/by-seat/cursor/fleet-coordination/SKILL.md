@@ -121,24 +121,29 @@ Before starting substantial work, reserve your lane on two durable surfaces:
 
 ---
 
-## 4. Secret Safety & The Handoff-File Grep Trap
+## 4. Secret Safety & The Secrets-File Grep Trap
 
-**Handoff File:** `/Users/jay/.secrets/global-api-keys` (no `.env` extension).  
+**Fleet keys:** read with `fleet-secrets` (Infisical Fleet-OPS).  The flat file `/Users/jay/.secrets/global-api-keys` is retired in favor of `fleet-secrets` and nothing may read it.
 **Sole Runtime Truth:** **Infisical** is the source of truth for all deployed app runtime secrets.
 
 ### Strict Grep Trap Ban (2026-08-14):
-NEVER print, `cat`, `grep`, `rg`, or `view_file` lines matching `KEY=value` from `~/.secrets/global-api-keys`.  Doing so dumps raw secrets into transcript logs.
+NEVER print, `cat`, `grep`, `rg`, or `view_file` lines matching `KEY=value` from any file under `~/.secrets/` or any `.env`.  Doing so dumps raw secrets into transcript logs.
 
 - **Inspection (Names only):**
   ```bash
-  grep -oE '^[A-Z][A-Z0-9_]*' ~/.secrets/global-api-keys | sort -u
+  fleet-secrets names
   ```
   *(Or via cloud API: `GET https://mac.jays.services/files/key-names` with Bearer auth).*
 - **Extraction into single variable (Never echo):**
   ```bash
-  SECRET_VAL="$(grep -m1 '^TARGET_KEY=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
+  SECRET_VAL="$(fleet-secrets get TARGET_KEY)" || exit $?
   # Use $SECRET_VAL directly without echoing or printing
   ```
+- **Run a command with only the keys it needs:**
+  ```bash
+  fleet-secrets run --only TARGET_KEY -- some-command
+  ```
+- Never add `2>&1` to a command that touches a secret.
 - **Infisical CLI:** Never run bare `infisical secrets` or `--output json`.  Use `bash scripts/infisical-secrets-safe.sh {set|has|names}`.
 
 ---

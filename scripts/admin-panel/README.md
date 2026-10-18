@@ -125,8 +125,8 @@ wrangler secret put DD_APP_KEY
 wrangler secret put MAC_COLLAB_TOKEN
 ```
 
-Values in `~/.secrets/global-api-keys` are quote-wrapped.  Strip the quotes before
-pasting, or the service answers 401 as if the token were revoked.
+Read each value with `fleet-secrets get NAME` (Infisical Fleet-OPS;  it returns the bare value with no quote-wrapping).  Do not paste a
+quote-wrapped value, or the service answers 401 as if the token were revoked.
 
 Two of those values had drifted and were repaired on 2026-09-29, because the
 GitHub and Sentry cards were red for credential reasons rather than product
@@ -134,10 +134,10 @@ reasons:
 
 | Worker secret | Was | Now | Symptom |
 |---|---|---|---|
-| `GITHUB_TOKEN` | the handoff `GITHUB_TOKEN` (HTTP 401) | handoff `GITHUB_ADMIN_PAT` | GitHub card `ok: false`, "PR search: HTTP 401 — Bad credentials" |
-| `SENTRY_AUTH_TOKEN` | the handoff `SENTRY_AUTH_TOKEN` (HTTP 403, no org scope) | handoff `SENTRY_AUTH_TOKEN_FULLSCOPE` | Sentry card `ok: false`, "You do not have permission to perform this action" |
+| `GITHUB_TOKEN` | the Fleet-OPS `GITHUB_TOKEN` (HTTP 401) | Fleet-OPS `GITHUB_ADMIN_PAT` | GitHub card `ok: false`, "PR search: HTTP 401 — Bad credentials" |
+| `SENTRY_AUTH_TOKEN` | the Fleet-OPS `SENTRY_AUTH_TOKEN` (HTTP 403, no org scope) | Fleet-OPS `SENTRY_AUTH_TOKEN_FULLSCOPE` | Sentry card `ok: false`, "You do not have permission to perform this action" |
 
-The handoff file's own `GITHUB_TOKEN` and `GITHUB_MCP_TOKEN` are both dead
+Fleet-OPS's own `GITHUB_TOKEN` and `GITHUB_MCP_TOKEN` are both dead
 (`401`) as of this writing, and its `SENTRY_AUTH_TOKEN` lacks the `simple-with-us`
 org scope.  Do not re-paste those three into any app.  A credential that a card
 reports as 401/403 is a *credential* problem — fix the token, not the card.

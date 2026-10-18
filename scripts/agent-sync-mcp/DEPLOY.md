@@ -22,8 +22,8 @@ perl -e 'alarm 900; exec @ARGV' npm run test:workerd
 (
   set +x
   export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
-  CLOUDFLARE_EMAIL="$(grep -m1 '^CLOUDFLARE_JAY_ACCOUNT_EMAIL=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
-  CLOUDFLARE_API_KEY="$(grep -m1 '^CLOUDFLARE_JAY_API_KEY=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
+  CLOUDFLARE_EMAIL="$(fleet-secrets get CLOUDFLARE_JAY_ACCOUNT_EMAIL)"
+  CLOUDFLARE_API_KEY="$(fleet-secrets get CLOUDFLARE_JAY_API_KEY)"
   export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
   WRANGLER_SEND_METRICS=false perl -e 'alarm 600; exec @ARGV' npx --no-install wrangler deploy
 )
@@ -56,11 +56,11 @@ The recall tools (spec 1.1) need three Worker secrets.  Without them they answer
 (
   set +x
   export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
-  CLOUDFLARE_EMAIL="$(grep -m1 '^CLOUDFLARE_JAY_ACCOUNT_EMAIL=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
-  CLOUDFLARE_API_KEY="$(grep -m1 '^CLOUDFLARE_JAY_API_KEY=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
+  CLOUDFLARE_EMAIL="$(fleet-secrets get CLOUDFLARE_JAY_ACCOUNT_EMAIL)"
+  CLOUDFLARE_API_KEY="$(fleet-secrets get CLOUDFLARE_JAY_API_KEY)"
   export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
   put() { [ -n "$2" ] || { echo "missing $1" >&2; return 1; }; printf %s "$2" | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put "$1" >/dev/null && echo "set $1"; }
-  put RECALL_API_TOKEN "$(grep -m1 '^RECALL_API_TOKEN=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
+  put RECALL_API_TOKEN "$(fleet-secrets get RECALL_API_TOKEN)"
   ACCESS=~/.secrets/agents-jays-services-access-service-token.env
   put RECALL_ACCESS_CLIENT_ID "$(grep -m1 '^CF_ACCESS_CLIENT_ID=' "$ACCESS" | cut -d= -f2- | tr -d '"')"
   put RECALL_ACCESS_CLIENT_SECRET "$(grep -m1 '^CF_ACCESS_CLIENT_SECRET=' "$ACCESS" | cut -d= -f2- | tr -d '"')"
@@ -79,8 +79,8 @@ Run from this directory, in the same subshell shape as Step 2b.  Never print a v
 (
   set +x
   export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
-  CLOUDFLARE_EMAIL="$(grep -m1 '^CLOUDFLARE_JAY_ACCOUNT_EMAIL=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
-  CLOUDFLARE_API_KEY="$(grep -m1 '^CLOUDFLARE_JAY_API_KEY=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
+  CLOUDFLARE_EMAIL="$(fleet-secrets get CLOUDFLARE_JAY_ACCOUNT_EMAIL)"
+  CLOUDFLARE_API_KEY="$(fleet-secrets get CLOUDFLARE_JAY_API_KEY)"
   export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
   put() { [ -n "$2" ] || { echo "missing $1" >&2; return 1; }; printf %s "$2" | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put "$1" >/dev/null && echo "set $1"; }
   # Read the pair from wherever the owner keeps seat credentials (see below), then:
