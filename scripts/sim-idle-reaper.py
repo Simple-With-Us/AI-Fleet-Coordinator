@@ -34,6 +34,7 @@ session entries for devices that are no longer booted.
 State:  ~/Library/Application Support/sim-idle-reaper/ (state.json, sessions/, pre/).
 Tracked copy:  AI-Fleet-Coordinator/scripts/sim-idle-reaper.py.  Live:  ~/apps/sim-idle-reaper.py.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -46,7 +47,8 @@ import time
 
 HOME = os.path.expanduser("~")
 STATE_DIR = os.environ.get("SIM_REAPER_STATE_DIR") or os.path.join(
-    HOME, "Library", "Application Support", "sim-idle-reaper")
+    HOME, "Library", "Application Support", "sim-idle-reaper"
+)
 XCRUN = os.environ.get("SIM_REAPER_XCRUN") or "/usr/bin/xcrun"
 PGREP = "/usr/bin/pgrep"
 PLUTIL = "/usr/bin/plutil"
@@ -56,7 +58,7 @@ SESSION_MAX_AGE_SEC = 24 * 3600
 PRE_MAX_AGE_SEC = 3600
 BUSY_EXACT = ("xcodebuild", "xctest", "simctl", "bitrig")
 BUSY_PATTERN = "xctestrun"
-LOG_STREAM_PATTERN = r"simctl spawn [^ ]+ log stream"   # passive streamer, not use
+LOG_STREAM_PATTERN = r"simctl spawn [^ ]+ log stream"  # passive streamer, not use
 
 
 def stamp() -> str:
@@ -141,8 +143,11 @@ def user_bundles(udid: str) -> set[str] | None:
         apps = json.loads(js)
     except ValueError:
         return None
-    return {bid for bid, info in apps.items()
-            if isinstance(info, dict) and info.get("ApplicationType") == "User"}
+    return {
+        bid
+        for bid, info in apps.items()
+        if isinstance(info, dict) and info.get("ApplicationType") == "User"
+    }
 
 
 def running_ui_apps(launchctl_text: str) -> set[str]:
@@ -154,7 +159,7 @@ def running_ui_apps(launchctl_text: str) -> set[str]:
             continue
         pid, label = parts[0].strip(), parts[2].strip()
         if label.startswith("UIKitApplication:") and pid.isdigit():
-            running.add(label[len("UIKitApplication:"):].split("[", 1)[0])
+            running.add(label[len("UIKitApplication:") :].split("[", 1)[0])
     return running
 
 
@@ -213,7 +218,7 @@ def watched_udids(now: float) -> set[str]:
 def tidy_hook_state(booted: set[str], now: float, dry: bool, verbose: bool) -> None:
     """Prune stale hook files.  Takes the hook's sessions.lock; skips quietly if it is busy."""
     pre = os.path.join(STATE_DIR, "pre")
-    for fn in (os.listdir(pre) if os.path.isdir(pre) else []):
+    for fn in os.listdir(pre) if os.path.isdir(pre) else []:
         p = os.path.join(pre, fn)
         try:
             if now - os.path.getmtime(p) > PRE_MAX_AGE_SEC:
@@ -266,9 +271,17 @@ def bitrig_exempt_udid(booted: list[dict], seen: dict[str, float], bitrig_app: i
     return chosen["udid"]
 
 
-def decide(dev: dict, first_seen: float, now: float, busy: list[str], sim_app: int,
-           watched: set[str], min_age_sec: float, check_apps=None,
-           bitrig_exempt: set[str] | None = None) -> tuple[str, str]:
+def decide(
+    dev: dict,
+    first_seen: float,
+    now: float,
+    busy: list[str],
+    sim_app: int,
+    watched: set[str],
+    min_age_sec: float,
+    check_apps=None,
+    bitrig_exempt: set[str] | None = None,
+) -> tuple[str, str]:
     """('skip' | 'shutdown', reason) for one booted device, cheapest check first."""
     if busy:
         return "skip", "busy: " + ",".join(busy)
@@ -289,13 +302,23 @@ def decide(dev: dict, first_seen: float, now: float, busy: list[str], sim_app: i
 
 def main(argv: list | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    ap.add_argument("--dry-run", action="store_true", help="decide and log, shut nothing down, write no state")
+    ap.add_argument(
+        "--dry-run", action="store_true", help="decide and log, shut nothing down, write no state"
+    )
     ap.add_argument("--verbose", action="store_true", help="also log guard detail and housekeeping")
-    ap.add_argument("--udid", action="append", default=[], help="only consider this device (repeatable)")
-    ap.add_argument("--min-age-minutes", type=float,
-                    default=float(os.environ.get("SIM_IDLE_REAPER_MIN_AGE_MIN") or DEFAULT_MIN_AGE_MIN))
-    ap.add_argument("--state", default=os.path.join(STATE_DIR, "state.json"),
-                    help="first-seen state file (udid -> epoch)")
+    ap.add_argument(
+        "--udid", action="append", default=[], help="only consider this device (repeatable)"
+    )
+    ap.add_argument(
+        "--min-age-minutes",
+        type=float,
+        default=float(os.environ.get("SIM_IDLE_REAPER_MIN_AGE_MIN") or DEFAULT_MIN_AGE_MIN),
+    )
+    ap.add_argument(
+        "--state",
+        default=os.path.join(STATE_DIR, "state.json"),
+        help="first-seen state file (udid -> epoch)",
+    )
     args = ap.parse_args(argv)
     mode = "dry-run" if args.dry_run else "live"
 
@@ -320,7 +343,7 @@ def main(argv: list | None = None) -> int:
         except (TypeError, ValueError):
             seen[d["udid"]] = now
     if not args.dry_run:
-        write_json(args.state, seen)               # drops devices that are no longer booted
+        write_json(args.state, seen)  # drops devices that are no longer booted
 
     targets = [d for d in booted if not args.udid or d["udid"] in args.udid]
     if args.verbose:
@@ -333,9 +356,17 @@ def main(argv: list | None = None) -> int:
         bitrig_exempt = {exempt_udid} if exempt_udid else set()
         watched = watched_udids(now)
         for d in targets:
-            action, reason = decide(d, seen[d["udid"]], now, busy, sim_app, watched,
-                                    args.min_age_minutes * 60, bitrig_exempt=bitrig_exempt)
-            label = f"{d['udid']} \"{d['name']}\""
+            action, reason = decide(
+                d,
+                seen[d["udid"]],
+                now,
+                busy,
+                sim_app,
+                watched,
+                args.min_age_minutes * 60,
+                bitrig_exempt=bitrig_exempt,
+            )
+            label = f'{d["udid"]} "{d["name"]}"'
             if action == "skip":
                 out(f"reaper SKIP {label}: {reason}")
                 continue
