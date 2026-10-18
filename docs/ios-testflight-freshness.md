@@ -85,7 +85,7 @@ named under the table, so a new app cannot go unchecked.
 
 For each app that is behind, oldest gap first, the check runs the app's **own** ship workflow
 with `gh workflow run <workflow> --repo Simple-With-Us/<Repo> --ref main` (plus the registry's
-inputs, for example `-f upload=true` for ContactLogo and Hog Hunter).  It never runs
+inputs, for example `-f upload=true` for Hog Hunter;  ContactLogo's workflow takes no required input since CL-204).  It never runs
 `xcodebuild` here, never passes `--force-ship`, never sets `IOS_TF_MIN_INTERVAL_SEC`, and never
 runs an App Store GM workflow.  Every one of these must hold, or the app is reported
 `blocked` or `deferred` with the reason:

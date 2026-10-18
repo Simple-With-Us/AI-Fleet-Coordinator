@@ -74,8 +74,8 @@
       "bundleId": "com.contactlogo",
       "platform": "IOS",
       "repo": "ContactLogo",
-      "paths": ["Apps/ContactLogoiOS", "Sources", "project.yml"],
-      "ship": { "workflow": "ios-testflight.yml", "inputs": { "upload": "true" } },
+      "paths": ["Apps/ContactLogoiOS", "Sources/ContactLogoKit", "project.yml"],
+      "ship": { "workflow": "ios-testflight.yml", "inputs": {} },
       "sourceWorkflows": ["ios-testflight.yml"],
       "compileCheck": "apple (ContactLogoiOS*",
       "autoRemedy": true
