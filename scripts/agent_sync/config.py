@@ -21,11 +21,13 @@ as underscores), and the site from ZULIP_SITE.  The realm host is still enforced
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import os
 import re
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from . import live as L
 from . import zulip as Z
@@ -43,18 +45,27 @@ WORKER_WAKES = ("claude", "http", "muse")  # adapters that run on a per-seat wak
 KNOWN_FALLBACKS = ("mcode",)
 INSTANCES = ("mac", "server")
 PARTITION_VALUES = ("mac", "server", "none")
-ENV_INSTANCE = "AGENT_SYNC_INSTANCE"  # set by the LaunchAgent (mac) and the container image (server)
+ENV_INSTANCE = (
+    "AGENT_SYNC_INSTANCE"  # set by the LaunchAgent (mac) and the container image (server)
+)
 ENV_PARTITION = "AGENT_SYNC_PARTITION"  # tests point it elsewhere; production uses the repo copy
 PARTITION_RELPATH = os.path.join("docs", "protocols", "agent-sync-partition.toml")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_OWNER_CLIENTS = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]
 BUDGET_DEFAULTS: dict[str, float] = {
-    "wakes_per_hour": 6, "wakes_per_day": 40, "per_topic_per_hour": 2, "owner_per_day": 20,
-    "owner_per_topic_per_hour": 6, "usd_per_day": 2.0, "board_per_day": 0,
+    "wakes_per_hour": 6,
+    "wakes_per_day": 40,
+    "per_topic_per_hour": 2,
+    "owner_per_day": 20,
+    "owner_per_topic_per_hour": 6,
+    "usd_per_day": 2.0,
+    "board_per_day": 0,
     # Route suggestions (owner 2026-10-10):  what one routing seat (today only CLAUDE, the one claude
     # wake) may page on the owner's behalf, counted from that seat's own ledger.  A route also needs
     # route_topic_minutes since the last route posted in the same topic.
-    "routes_per_hour": 3, "routes_per_day": 10, "route_topic_minutes": 30,
+    "routes_per_hour": 3,
+    "routes_per_day": 10,
+    "route_topic_minutes": 30,
 }
 WAKE_MAX_BUDGET_USD = 0.25
 # The muse seat's default model (AFC-291).  The catalog carries three muse-spark-1.3 variants and
@@ -70,11 +81,19 @@ MUSE_DEFAULT_MODEL = "muse-spark-1.3-contributor"
 # adapter runs a turn (`claude` or `http`) and defaults to `[daemon] held_back_catch_up` (true);  an
 # `inbox` seat never wakes, so it has nothing to hold back or catch up.  owner_digest_minutes = 0 turns
 # the owner digest off.  None of these changes a budget:  every wake, a catch-up included, passes them.
-HELD_BACK_DEFAULTS: dict[str, float] = {"max": 200, "overflow_max": 1000, "ttl_hours": 24, "items_in_wake": 20,
-                                       "owner_digest_minutes": 60}
+HELD_BACK_DEFAULTS: dict[str, float] = {
+    "max": 200,
+    "overflow_max": 1000,
+    "ttl_hours": 24,
+    "items_in_wake": 20,
+    "owner_digest_minutes": 60,
+}
 # (minimum, maximum, whole numbers only).  items_in_wake stops at 20, the hosted Worker's cap.
 HELD_BACK_LIMITS: dict[str, tuple[float, float, bool]] = {
-    "max": (1, 1000, True), "overflow_max": (0, 5000, True), "ttl_hours": (1, 168, False), "items_in_wake": (0, 20, True),
+    "max": (1, 1000, True),
+    "overflow_max": (0, 5000, True),
+    "ttl_hours": (1, 168, False),
+    "items_in_wake": (0, 20, True),
     "owner_digest_minutes": (0, 1440, False),
 }
 HELD_BACK_MIN_DIGEST_MINUTES = 15
@@ -86,15 +105,42 @@ HELD_ALERT_LIMITS: dict[str, tuple[float, float]] = {"held_alert_minutes": (0, 1
 # Seat tags whose bots are always eligible senders, on top of every tag the seat partition lists
 # (fleet_tags).  Owner 2026-10-09:  "everyone should be able to DM to wake anyone else or tag to wake
 # anyone else", so every fleet bot (Mac and cloud seats, GB personas, BF role bots) is eligible.
-FLEET_SEATS = ("CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "MA", "JET", "OPENCODE")
+FLEET_SEATS = (
+    "CLAUDE",
+    "CODEX",
+    "AG",
+    "CURSOR",
+    "GROK",
+    "CLUTCH",
+    "FX",
+    "MM",
+    "MC",
+    "MA",
+    "JET",
+    "OPENCODE",
+)
 DEFAULT_SITE_ENV = "ZULIP_SITE"
 # The CLI's single-seat triple.  A listener seat never reads it, so two seats cannot alias one bot.
 GENERIC_ENV = frozenset({"ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_RC"})
 ROUTINE_AUTH = ("header", "bearer", "hmac-sha256")
 ROUTINE_METHODS = ("POST", "PUT", "PATCH")
-ROUTINE_DEFAULT_HEADER = {"header": "X-Routine-Key", "bearer": "Authorization", "hmac-sha256": "X-Agent-Sync-Signature"}
-ROUTINE_RESERVED_HEADERS = frozenset({"host", "content-length", "content-type", "transfer-encoding", "connection",
-                                      "user-agent", "idempotency-key", "cookie"})
+ROUTINE_DEFAULT_HEADER = {
+    "header": "X-Routine-Key",
+    "bearer": "Authorization",
+    "hmac-sha256": "X-Agent-Sync-Signature",
+}
+ROUTINE_RESERVED_HEADERS = frozenset(
+    {
+        "host",
+        "content-length",
+        "content-type",
+        "transfer-encoding",
+        "connection",
+        "user-agent",
+        "idempotency-key",
+        "cookie",
+    }
+)
 ROUTINE_TIMEOUT_DEFAULT = 15.0
 OUTGOING_WEBHOOK_DEFAULT_PORT = 8787
 LISTENER_API_DEFAULT_PORT = 8788
@@ -114,8 +160,18 @@ class RoutineConfig:
     """Where a remote `http` wake goes:  the names of the environment variables that hold the
     routine URL and its sender key (never the values), the method, the header and auth mode."""
 
-    def __init__(self, *, url_env: str, key_env: str, method: str, header: str, auth: str, timeout: float,
-                 cost_usd: float, signature_prefix: str) -> None:
+    def __init__(
+        self,
+        *,
+        url_env: str,
+        key_env: str,
+        method: str,
+        header: str,
+        auth: str,
+        timeout: float,
+        cost_usd: float,
+        signature_prefix: str,
+    ) -> None:
         self.url_env = url_env
         self.key_env = key_env
         self.method = method
@@ -126,26 +182,53 @@ class RoutineConfig:
         self.signature_prefix = signature_prefix
 
     def describe(self) -> dict[str, Any]:
-        return {"url_env": self.url_env, "key_env": self.key_env, "method": self.method, "header": self.header,
-                "auth": self.auth, "timeout": self.timeout, "cost_usd": self.cost_usd}
+        return {
+            "url_env": self.url_env,
+            "key_env": self.key_env,
+            "method": self.method,
+            "header": self.header,
+            "auth": self.auth,
+            "timeout": self.timeout,
+            "cost_usd": self.cost_usd,
+        }
 
 
 class SeatConfig:
-    def __init__(self, seat: str, bot: str, wake: str, model: str, budget: dict[str, float],
-                 live: dict[str, int], claude: str | None, *, instance: str = "mac", enabled: bool = True,
-                 creds: str = "file", email_env: str | None = None, key_env: str | None = None,
-                 site_env: str = DEFAULT_SITE_ENV, routine: RoutineConfig | None = None,
-                 route_enabled: bool = True, held_back: dict[str, Any] | None = None,
-                 muse: str | None = None, provider: str | None = None,
-                 mcode: str | None = None, fallback: str | None = None,
-                 fallback_uncontained_ok: bool = False) -> None:
+    def __init__(
+        self,
+        seat: str,
+        bot: str,
+        wake: str,
+        model: str,
+        budget: dict[str, float],
+        live: dict[str, int],
+        claude: str | None,
+        *,
+        instance: str = "mac",
+        enabled: bool = True,
+        creds: str = "file",
+        email_env: str | None = None,
+        key_env: str | None = None,
+        site_env: str = DEFAULT_SITE_ENV,
+        routine: RoutineConfig | None = None,
+        route_enabled: bool = True,
+        held_back: dict[str, Any] | None = None,
+        muse: str | None = None,
+        provider: str | None = None,
+        mcode: str | None = None,
+        fallback: str | None = None,
+        fallback_uncontained_ok: bool = False,
+        muse_bridge: bool = False,
+    ) -> None:
         self.seat = seat
         self.bot = bot
         self.wake = wake
         self.model = model
         self.budget = budget
         self.live = live
-        self.claude = claude  # an absolute path to the claude binary, else resolved on the wake PATH
+        self.claude = (
+            claude  # an absolute path to the claude binary, else resolved on the wake PATH
+        )
         self.muse = muse  # an absolute path to the muse binary, else resolved on the wake PATH
         self.mcode = mcode  # an absolute path to the mcode binary, else resolved on the wake PATH
         # The fallback runtime, tried only when the primary could not produce a usable answer.  It is
@@ -163,8 +246,13 @@ class SeatConfig:
         self.key_env = key_env
         self.site_env = site_env
         self.routine = routine
+        self.muse_bridge = (
+            muse_bridge  # default-off central decision path; original adapter stays configured
+        )
         self.route_enabled = route_enabled  # the per-seat kill switch for wake route suggestions
-        self.held_back: dict[str, Any] = held_back if held_back is not None else held_back_defaults(wake)
+        self.held_back: dict[str, Any] = (
+            held_back if held_back is not None else held_back_defaults(wake)
+        )
 
     @property
     def wake_max_usd(self) -> float:
@@ -202,12 +290,19 @@ class SeatConfig:
         return 0.0
 
     def __repr__(self) -> str:
-        return "SeatConfig(%s, bot=%s, wake=%s, creds=%s)" % (self.seat, self.bot, self.wake, self.creds)
+        return "SeatConfig(%s, bot=%s, wake=%s, creds=%s)" % (
+            self.seat,
+            self.bot,
+            self.wake,
+            self.creds,
+        )
 
 
 class Config:
     def __init__(self) -> None:
         self.raw: dict[str, Any] = {}
+        self.muse_bridge_enabled = False
+        self.muse_bridge_remote_seats: tuple[str, ...] = ()
         self.errors: list[str] = []
         self.instance = "mac"
         self.owner_user_id = 0
@@ -221,18 +316,28 @@ class Config:
         self.claude_seat: str | None = None
         self.rewake_verified = False
         self.seats: dict[str, SeatConfig] = {}
-        self.disabled: dict[str, SeatConfig] = {}  # parsed and checked, but no queue (enabled = false)
-        self.seat_instances: dict[str, str | None] = {}  # every [seat.X] section:  its own instance key, if any
+        self.disabled: dict[
+            str, SeatConfig
+        ] = {}  # parsed and checked, but no queue (enabled = false)
+        self.seat_instances: dict[
+            str, str | None
+        ] = {}  # every [seat.X] section:  its own instance key, if any
         self.notify_banners = True
-        self.route_enabled = True  # daemon.route_enabled:  the listener-wide kill switch for route suggestions
-        self.held_back_catch_up = True  # the default for every seat's held_back.catch_up (heldback.py)
+        self.route_enabled = (
+            True  # daemon.route_enabled:  the listener-wide kill switch for route suggestions
+        )
+        self.held_back_catch_up = (
+            True  # the default for every seat's held_back.catch_up (heldback.py)
+        )
         # The `#alerts` held-back digest (AFC-257, heldalert.py).  `held_alert_minutes` is the
         # instance-wide window:  at most one post for EVERY seat, so the volume is bounded by the
         # window rather than the fleet size.  0 turns it off.  `held_alert_seat` names the seat whose
         # bot carries the post;  it defaults to the claude seat, then to the first enabled seat.
         self.held_alert_minutes = float(HELD_ALERT_DEFAULT_MINUTES)
         self.held_alert_seat: str | None = None
-        self.auto_subscribe = True  # daemon.auto_subscribe:  held seats join every public channel (owner 2026-10-10)
+        self.auto_subscribe = (
+            True  # daemon.auto_subscribe:  held seats join every public channel (owner 2026-10-10)
+        )
         self.outgoing_webhook_seats: frozenset[str] = frozenset()
         self.outgoing_webhook_enabled = False
         self.outgoing_webhook_bind = "127.0.0.1"
@@ -266,12 +371,16 @@ def _number(value: Any, name: str, errors: list[str], *, minimum: float = 0) -> 
 
 
 def held_back_defaults(wake: str, catch_up: bool = True) -> dict[str, Any]:
-    held: dict[str, Any] = {k: (int(v) if HELD_BACK_LIMITS[k][2] else float(v)) for k, v in HELD_BACK_DEFAULTS.items()}
+    held: dict[str, Any] = {
+        k: (int(v) if HELD_BACK_LIMITS[k][2] else float(v)) for k, v in HELD_BACK_DEFAULTS.items()
+    }
     held["catch_up"] = bool(catch_up) and wake in WORKER_WAKES
     return held
 
 
-def _held_back(seat: str, wake: str, given: Any, problems: list[str], *, catch_up: bool = True) -> dict[str, Any]:
+def _held_back(
+    seat: str, wake: str, given: Any, problems: list[str], *, catch_up: bool = True
+) -> dict[str, Any]:
     """The seat's `held_back` table over the defaults (catch_up from `[daemon] held_back_catch_up`).  A
     bad value is an error like a bad budget."""
     held = held_back_defaults(wake, catch_up)
@@ -284,7 +393,10 @@ def _held_back(seat: str, wake: str, given: Any, problems: list[str], *, catch_u
             if not isinstance(value, bool):
                 problems.append("%s must be true or false" % name)
             elif value and wake not in WORKER_WAKES:
-                problems.append("%s applies only to wake = \"claude\" or \"http\" (an inbox seat never wakes)" % name)
+                problems.append(
+                    '%s applies only to wake = "claude" or "http" (an inbox seat never wakes)'
+                    % name
+                )
             else:
                 held["catch_up"] = value
             continue
@@ -296,10 +408,14 @@ def _held_back(seat: str, wake: str, given: Any, problems: list[str], *, catch_u
         if number is None:
             continue
         if number > high or (whole and number != int(number)):
-            problems.append("%s must be a%s number from %g to %g" % (name, " whole" if whole else "", low, high))
+            problems.append(
+                "%s must be a%s number from %g to %g" % (name, " whole" if whole else "", low, high)
+            )
             continue
         if key == "owner_digest_minutes" and 0 < number < HELD_BACK_MIN_DIGEST_MINUTES:
-            problems.append("%s must be 0 (off) or at least %d" % (name, HELD_BACK_MIN_DIGEST_MINUTES))
+            problems.append(
+                "%s must be 0 (off) or at least %d" % (name, HELD_BACK_MIN_DIGEST_MINUTES)
+            )
             continue
         held[key] = int(number) if whole else number
     return held
@@ -307,45 +423,80 @@ def _held_back(seat: str, wake: str, given: Any, problems: list[str], *, catch_u
 
 def _env_name(value: Any, name: str, problems: list[str]) -> str | None:
     if not isinstance(value, str) or not _ENV_NAME_RE.match(value):
-        problems.append("%s must be an environment variable name (upper case letters, digits and _)" % name)
+        problems.append(
+            "%s must be an environment variable name (upper case letters, digits and _)" % name
+        )
         return None
     if value in GENERIC_ENV:
-        problems.append("%s may not be %s: that is the CLI's single-seat variable, and two seats reading it would "
-                        "alias one bot" % (name, value))
+        problems.append(
+            "%s may not be %s: that is the CLI's single-seat variable, and two seats reading it would "
+            "alias one bot" % (name, value)
+        )
         return None
     return value
 
 
 def _routine(seat: str, given: Any, problems: list[str]) -> RoutineConfig | None:
     if not isinstance(given, dict):
-        problems.append("seat.%s.routine must be a table (url_env, key_env, method, header, auth) when wake = \"http\""
-                        % seat)
+        problems.append(
+            'seat.%s.routine must be a table (url_env, key_env, method, header, auth) when wake = "http"'
+            % seat
+        )
         return None
-    known = {"url_env", "key_env", "method", "header", "auth", "timeout_seconds", "cost_usd", "signature_prefix"}
+    known = {
+        "url_env",
+        "key_env",
+        "method",
+        "header",
+        "auth",
+        "timeout_seconds",
+        "cost_usd",
+        "signature_prefix",
+    }
     for key in sorted(set(given) - known):
         problems.append("seat.%s.routine.%s is not a known routine setting" % (seat, key))
     code = env_code(seat)
-    url_env = _env_name(given.get("url_env", code + "_ROUTINE_URL"), "seat.%s.routine.url_env" % seat, problems)
-    key_env = _env_name(given.get("key_env", code + "_ROUTINE_KEY"), "seat.%s.routine.key_env" % seat, problems)
+    url_env = _env_name(
+        given.get("url_env", code + "_ROUTINE_URL"), "seat.%s.routine.url_env" % seat, problems
+    )
+    key_env = _env_name(
+        given.get("key_env", code + "_ROUTINE_KEY"), "seat.%s.routine.key_env" % seat, problems
+    )
     method = str(given.get("method", "POST")).upper()
     if method not in ROUTINE_METHODS:
-        problems.append("seat.%s.routine.method must be one of %s" % (seat, ", ".join(ROUTINE_METHODS)))
+        problems.append(
+            "seat.%s.routine.method must be one of %s" % (seat, ", ".join(ROUTINE_METHODS))
+        )
     auth = given.get("auth", "bearer")
     if auth not in ROUTINE_AUTH:
         problems.append("seat.%s.routine.auth must be one of %s" % (seat, ", ".join(ROUTINE_AUTH)))
         auth = "bearer"
     header = given.get("header", ROUTINE_DEFAULT_HEADER[auth])
-    if not isinstance(header, str) or not _HEADER_RE.match(header) or header.casefold() in ROUTINE_RESERVED_HEADERS:
-        problems.append("seat.%s.routine.header must be an HTTP header name (letters, digits and -) other than %s"
-                        % (seat, ", ".join(sorted(ROUTINE_RESERVED_HEADERS))))
+    if (
+        not isinstance(header, str)
+        or not _HEADER_RE.match(header)
+        or header.casefold() in ROUTINE_RESERVED_HEADERS
+    ):
+        problems.append(
+            "seat.%s.routine.header must be an HTTP header name (letters, digits and -) other than %s"
+            % (seat, ", ".join(sorted(ROUTINE_RESERVED_HEADERS)))
+        )
     prefix = given.get("signature_prefix", "")
     if not isinstance(prefix, str) or not _PREFIX_RE.match(prefix):
-        problems.append("seat.%s.routine.signature_prefix must be up to 32 letters, digits or =:_.-" % seat)
+        problems.append(
+            "seat.%s.routine.signature_prefix must be up to 32 letters, digits or =:_.-" % seat
+        )
         prefix = ""
     elif prefix and auth != "hmac-sha256":
-        problems.append("seat.%s.routine.signature_prefix applies only to auth = \"hmac-sha256\"" % seat)
-    timeout = _number(given.get("timeout_seconds", ROUTINE_TIMEOUT_DEFAULT), "seat.%s.routine.timeout_seconds" % seat,
-                      problems, minimum=1)
+        problems.append(
+            'seat.%s.routine.signature_prefix applies only to auth = "hmac-sha256"' % seat
+        )
+    timeout = _number(
+        given.get("timeout_seconds", ROUTINE_TIMEOUT_DEFAULT),
+        "seat.%s.routine.timeout_seconds" % seat,
+        problems,
+        minimum=1,
+    )
     if timeout is not None and timeout > 60:
         problems.append("seat.%s.routine.timeout_seconds must be 60 or less" % seat)
     cost = _number(given.get("cost_usd", 0.0), "seat.%s.routine.cost_usd" % seat, problems)
@@ -353,14 +504,40 @@ def _routine(seat: str, given: Any, problems: list[str]) -> RoutineConfig | None
         problems.append("seat.%s.routine.url_env and key_env must be different variables" % seat)
     if not (url_env and key_env and timeout is not None and cost is not None):
         return None
-    return RoutineConfig(url_env=url_env, key_env=key_env, method=method, header=str(header), auth=str(auth),
-                         timeout=timeout, cost_usd=cost, signature_prefix=prefix)
+    return RoutineConfig(
+        url_env=url_env,
+        key_env=key_env,
+        method=method,
+        header=str(header),
+        auth=str(auth),
+        timeout=timeout,
+        cost_usd=cost,
+        signature_prefix=prefix,
+    )
 
 
 def from_dict(raw: Mapping[str, Any]) -> Config:
     cfg = Config()
     cfg.raw = dict(raw)
     errors = cfg.errors
+    bridge = raw.get("muse_bridge") or {}
+    if not isinstance(bridge, dict):
+        errors.append("[muse_bridge] must be a table")
+        bridge = {}
+    bridge_enabled = bridge.get("enabled", False)
+    if not isinstance(bridge_enabled, bool):
+        errors.append("muse_bridge.enabled must be true or false")
+    else:
+        cfg.muse_bridge_enabled = bridge_enabled
+    remote_seats = bridge.get("remote_seats", [])
+    if (
+        not isinstance(remote_seats, list)
+        or not all(isinstance(s, str) and _SEAT_RE.fullmatch(s) for s in remote_seats)
+        or len(set(remote_seats)) != len(remote_seats)
+    ):
+        errors.append("muse_bridge.remote_seats must be unique canonical seat names")
+    else:
+        cfg.muse_bridge_remote_seats = tuple(remote_seats)
     daemon = raw.get("daemon") or {}
     if not isinstance(daemon, dict):
         errors.append("[daemon] must be a table")
@@ -370,13 +547,17 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.instance must be one of %s" % ", ".join(INSTANCES))
     else:
         cfg.instance = instance
+    if cfg.instance == "server" and cfg.muse_bridge_remote_seats:
+        errors.append("muse_bridge.remote_seats is for the Mac bridge only")
     owner = daemon.get("owner_user_id", 0)
     if isinstance(owner, bool) or not isinstance(owner, int) or owner < 0:
         errors.append("daemon.owner_user_id must be a user id (0 means not pinned yet)")
     else:
         cfg.owner_user_id = owner
     eligible = daemon.get("eligible_user_ids", [])
-    if not isinstance(eligible, list) or not all(isinstance(i, int) and not isinstance(i, bool) for i in eligible):
+    if not isinstance(eligible, list) or not all(
+        isinstance(i, int) and not isinstance(i, bool) for i in eligible
+    ):
         errors.append("daemon.eligible_user_ids must be a list of user ids")
     else:
         cfg.eligible_user_ids = set(eligible)
@@ -385,15 +566,20 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.owner_clients must be a list of client names")
     else:
         cfg.owner_clients = set(clients)
-    for name, attr, scale in (("stale_after_minutes", "stale_after", 60.0), ("coalesce_seconds", "coalesce_seconds", 1.0),
-                              ("coalesce_max_seconds", "coalesce_max_seconds", 1.0),
-                              ("owner_coalesce_seconds", "owner_coalesce_seconds", 1.0)):
+    for name, attr, scale in (
+        ("stale_after_minutes", "stale_after", 60.0),
+        ("coalesce_seconds", "coalesce_seconds", 1.0),
+        ("coalesce_max_seconds", "coalesce_max_seconds", 1.0),
+        ("owner_coalesce_seconds", "owner_coalesce_seconds", 1.0),
+    ):
         if name in daemon:
             value = _number(daemon[name], "daemon." + name, errors)
             if value is not None:
                 setattr(cfg, attr, value * scale)
     # macOS banners on the Mac; the server has no display, so it keeps only the owner queue.
-    cfg.notify_banners = daemon["notify_banners"] is True if "notify_banners" in daemon else cfg.instance == "mac"
+    cfg.notify_banners = (
+        daemon["notify_banners"] is True if "notify_banners" in daemon else cfg.instance == "mac"
+    )
     route_on = daemon.get("route_enabled", True)
     if not isinstance(route_on, bool):
         errors.append("daemon.route_enabled must be true or false")
@@ -435,15 +621,21 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
     else:
         cfg.host_wake_defer = host_defer
     if "host_wake_load_per_core" in daemon:
-        value = _number(daemon["host_wake_load_per_core"], "daemon.host_wake_load_per_core", errors, minimum=0)
+        value = _number(
+            daemon["host_wake_load_per_core"], "daemon.host_wake_load_per_core", errors, minimum=0
+        )
         if value is not None:
             if value > 100:
                 errors.append("daemon.host_wake_load_per_core must be at most 100")
             else:
                 cfg.host_wake_load_per_core = value
     if "host_wake_defer_max_minutes" in daemon:
-        value = _number(daemon["host_wake_defer_max_minutes"], "daemon.host_wake_defer_max_minutes", errors,
-                        minimum=0)
+        value = _number(
+            daemon["host_wake_defer_max_minutes"],
+            "daemon.host_wake_defer_max_minutes",
+            errors,
+            minimum=0,
+        )
         if value is not None:
             if value > 720:
                 errors.append("daemon.host_wake_defer_max_minutes must be at most 720")
@@ -452,13 +644,17 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
     if "host_wake_max_running" in daemon:
         value = daemon["host_wake_max_running"]
         if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 32:
-            errors.append("daemon.host_wake_max_running must be a whole number from 0 to 32 (0 means no cap)")
+            errors.append(
+                "daemon.host_wake_max_running must be a whole number from 0 to 32 (0 means no cap)"
+            )
         else:
             cfg.host_wake_max_running = value
     elif cfg.host_wake_defer:
         cfg.host_wake_max_running = 2
     webhook_seats = daemon.get("outgoing_webhook_seats", [])
-    if not isinstance(webhook_seats, list) or not all(isinstance(value, str) for value in webhook_seats):
+    if not isinstance(webhook_seats, list) or not all(
+        isinstance(value, str) for value in webhook_seats
+    ):
         errors.append("daemon.outgoing_webhook_seats must be a list of seat names")
     else:
         normalized = [value.upper() for value in webhook_seats]
@@ -475,7 +671,9 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         webhook = {}
     unknown_webhook = set(webhook) - {"enabled", "bind", "port"}
     if unknown_webhook:
-        errors.append("[outgoing_webhook] has unknown setting(s): %s" % ", ".join(sorted(unknown_webhook)))
+        errors.append(
+            "[outgoing_webhook] has unknown setting(s): %s" % ", ".join(sorted(unknown_webhook))
+        )
     webhook_enabled = webhook.get("enabled", False)
     if not isinstance(webhook_enabled, bool):
         errors.append("outgoing_webhook.enabled must be true or false")
@@ -487,7 +685,11 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
     else:
         cfg.outgoing_webhook_bind = webhook_bind
     webhook_port = webhook.get("port", OUTGOING_WEBHOOK_DEFAULT_PORT)
-    if isinstance(webhook_port, bool) or not isinstance(webhook_port, int) or not 1 <= webhook_port <= 65535:
+    if (
+        isinstance(webhook_port, bool)
+        or not isinstance(webhook_port, int)
+        or not 1 <= webhook_port <= 65535
+    ):
         errors.append("outgoing_webhook.port must be an integer from 1 to 65535")
     else:
         cfg.outgoing_webhook_port = webhook_port
@@ -510,7 +712,11 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
     api_port = api.get("port", LISTENER_API_DEFAULT_PORT)
     if isinstance(api_port, bool) or not isinstance(api_port, int) or not 1 <= api_port <= 65535:
         errors.append("listener_api.port must be an integer from 1 to 65535")
-    elif cfg.outgoing_webhook_enabled and cfg.listener_api_enabled is True and api_port == cfg.outgoing_webhook_port:
+    elif (
+        cfg.outgoing_webhook_enabled
+        and cfg.listener_api_enabled is True
+        and api_port == cfg.outgoing_webhook_port
+    ):
         errors.append("listener_api.port must differ from outgoing_webhook.port")
     else:
         cfg.listener_api_port = api_port
@@ -534,10 +740,16 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
     if len(errors) > relay_errors_before:
         cfg.notes_relay_enabled = False  # a section with a problem never turns the consumer on
     if cfg.notes_relay_enabled and cfg.instance != "mac":
-        errors.append("notes_relay.enabled applies to the mac instance only:  the notes script needs Notes.app")
+        errors.append(
+            "notes_relay.enabled applies to the mac instance only:  the notes script needs Notes.app"
+        )
         cfg.notes_relay_enabled = False
     cfg.presence = L.presence_topics(raw)
-    platform = ((raw.get("platform") or {}).get("claude-code") or {}) if isinstance(raw.get("platform"), dict) else {}
+    platform = (
+        ((raw.get("platform") or {}).get("claude-code") or {})
+        if isinstance(raw.get("platform"), dict)
+        else {}
+    )
     seat = platform.get("seat") if isinstance(platform, dict) else None
     if seat is not None:
         if isinstance(seat, str) and _SEAT_RE.match(seat.upper()):
@@ -557,7 +769,9 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         problems: list[str] = []
         seat_instance = section.get("instance")
         if seat_instance is not None and seat_instance not in INSTANCES:
-            problems.append("seat.%s.instance must be one of %s" % (seat_name, ", ".join(INSTANCES)))
+            problems.append(
+                "seat.%s.instance must be one of %s" % (seat_name, ", ".join(INSTANCES))
+            )
             seat_instance = None
         cfg.seat_instances[seat_name] = seat_instance
         enabled = section.get("enabled", True)
@@ -568,28 +782,47 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if not isinstance(route_enabled, bool):
             problems.append("seat.%s.route_enabled must be true or false" % seat_name)
             route_enabled = True
+        muse_bridge = section.get("muse_bridge", False)
+        if not isinstance(muse_bridge, bool):
+            problems.append("seat.%s.muse_bridge must be true or false" % seat_name)
+            muse_bridge = False
         creds = section.get("creds", "file")
         if creds not in ("file", "env"):
-            problems.append("seat.%s.creds must be \"file\" (a zuliprc) or \"env\" (environment variables)" % seat_name)
+            problems.append(
+                'seat.%s.creds must be "file" (a zuliprc) or "env" (environment variables)'
+                % seat_name
+            )
             creds = "file"
         if creds == "env" and cfg.instance != "server":
-            problems.append("seat.%s.creds = \"env\" is for the server instance only; the Mac instance reads one "
-                            "credential file per seat" % seat_name)
+            problems.append(
+                'seat.%s.creds = "env" is for the server instance only; the Mac instance reads one '
+                "credential file per seat" % seat_name
+            )
         bot = section.get("bot")
         if creds == "file" or bot is not None:
             if not isinstance(bot, str) or not _BOT_RE.match(bot):
-                problems.append("seat.%s.bot must be the credential file code (e.g. Claude for Claude-zuliprc)"
-                                % seat_name)
+                problems.append(
+                    "seat.%s.bot must be the credential file code (e.g. Claude for Claude-zuliprc)"
+                    % seat_name
+                )
         else:
-            bot = Z.credential_file_name(seat_name)[: -len("-zuliprc")]  # a display name only:  no file is read
+            bot = Z.credential_file_name(seat_name)[
+                : -len("-zuliprc")
+            ]  # a display name only:  no file is read
         email_env = key_env = None
         site_env = DEFAULT_SITE_ENV
         if creds == "env":
             code = env_code(seat_name)
-            email_env = _env_name(section.get("email_env", "ZULIP_%s_EMAIL" % code), "seat.%s.email_env" % seat_name,
-                                  problems)
-            key_env = _env_name(section.get("key_env", "ZULIP_%s_API_KEY" % code), "seat.%s.key_env" % seat_name,
-                                problems)
+            email_env = _env_name(
+                section.get("email_env", "ZULIP_%s_EMAIL" % code),
+                "seat.%s.email_env" % seat_name,
+                problems,
+            )
+            key_env = _env_name(
+                section.get("key_env", "ZULIP_%s_API_KEY" % code),
+                "seat.%s.key_env" % seat_name,
+                problems,
+            )
             site_given = section.get("site_env", DEFAULT_SITE_ENV)
             if not isinstance(site_given, str) or not _ENV_NAME_RE.match(site_given):
                 problems.append("seat.%s.site_env must be an environment variable name" % seat_name)
@@ -598,7 +831,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         else:
             for key in ("email_env", "key_env", "site_env"):
                 if key in section:
-                    problems.append("seat.%s.%s applies only to creds = \"env\"" % (seat_name, key))
+                    problems.append('seat.%s.%s applies only to creds = "env"' % (seat_name, key))
         wake = section.get("wake", "inbox")
         if wake not in KNOWN_WAKES:
             problems.append("seat.%s.wake must be one of %s" % (seat_name, ", ".join(KNOWN_WAKES)))
@@ -606,7 +839,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if wake == "http":
             routine = _routine(seat_name, section.get("routine"), problems)
         elif "routine" in section:
-            problems.append("seat.%s.routine applies only to wake = \"http\"" % seat_name)
+            problems.append('seat.%s.routine applies only to wake = "http"' % seat_name)
         model = section.get("model") or (MUSE_DEFAULT_MODEL if wake == "muse" else "sonnet")
         if not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
             problems.append("seat.%s.model must be a model alias such as sonnet" % seat_name)
@@ -617,17 +850,19 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if muse is not None and (not isinstance(muse, str) or not os.path.isabs(muse)):
             problems.append("seat.%s.muse must be an absolute path" % seat_name)
         if wake != "muse" and "muse" in section:
-            problems.append("seat.%s.muse applies only to wake = \"muse\"" % seat_name)
+            problems.append('seat.%s.muse applies only to wake = "muse"' % seat_name)
         mcode = section.get("mcode")
         if mcode is not None and (not isinstance(mcode, str) or not os.path.isabs(mcode)):
             problems.append("seat.%s.mcode must be an absolute path" % seat_name)
         if "mcode" in section and wake not in ("claude", "muse"):
-            problems.append("seat.%s.mcode applies only to wake = \"claude\" or \"muse\"" % seat_name)
+            problems.append('seat.%s.mcode applies only to wake = "claude" or "muse"' % seat_name)
         # The fallback runtime, tried only when the primary could not produce a usable answer.  It
         # is never consulted for a quota refusal:  a capped provider stays capped whatever runs.
         fallback = section.get("fallback")
         if fallback is not None and fallback not in KNOWN_FALLBACKS:
-            problems.append("seat.%s.fallback must be one of %s" % (seat_name, ", ".join(KNOWN_FALLBACKS)))
+            problems.append(
+                "seat.%s.fallback must be one of %s" % (seat_name, ", ".join(KNOWN_FALLBACKS))
+            )
         if fallback is not None and wake not in WORKER_WAKES:
             problems.append("seat.%s.fallback applies only to a wake that runs a turn" % seat_name)
         if fallback is not None and fallback == wake:
@@ -638,17 +873,25 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         # a file under the wake argv, it wrote one).  A seat must say so explicitly in the config
         # before the fallback is ever trusted, on top of pinning the binary.
         if "fallback_uncontained_ok" in section and fallback is None:
-            problems.append("seat.%s.fallback_uncontained_ok applies only with a fallback" % seat_name)
+            problems.append(
+                "seat.%s.fallback_uncontained_ok applies only with a fallback" % seat_name
+            )
         uncontained = section.get("fallback_uncontained_ok", False)
         if not isinstance(uncontained, bool):
             problems.append("seat.%s.fallback_uncontained_ok must be true or false" % seat_name)
         provider = section.get("provider")
         if provider is not None:
-            if not isinstance(provider, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,60}", provider):
-                problems.append("seat.%s.provider must be a provider name such as \"Claude Code\" or \"MiniMax\""
-                                % seat_name)
+            if not isinstance(provider, str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,60}", provider
+            ):
+                problems.append(
+                    'seat.%s.provider must be a provider name such as "Claude Code" or "MiniMax"'
+                    % seat_name
+                )
             elif wake not in ("claude", "muse"):
-                problems.append("seat.%s.provider applies only to wake = \"claude\" or \"muse\"" % seat_name)
+                problems.append(
+                    'seat.%s.provider applies only to wake = "claude" or "muse"' % seat_name
+                )
         budget = dict(BUDGET_DEFAULTS)
         given = section.get("budget", {})
         if not isinstance(given, dict):
@@ -661,32 +904,74 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             number = _number(value, "seat.%s.budget.%s" % (seat_name, key), problems)
             if number is not None:
                 budget[key] = number
-        held_back = _held_back(seat_name, str(wake), section.get("held_back", {}), problems,
-                               catch_up=cfg.held_back_catch_up)
+        held_back = _held_back(
+            seat_name,
+            str(wake),
+            section.get("held_back", {}),
+            problems,
+            catch_up=cfg.held_back_catch_up,
+        )
         if "allow_admin" in section:
-            problems.append("seat.%s.allow_admin is not supported: admin and owner bot keys are always refused, "
-                            "moderator and member keys are accepted (owner decision 2026-10-07)" % seat_name)
-        used = [name for name in (email_env, key_env, site_env if creds == "env" else None,
-                                  routine.url_env if routine else None, routine.key_env if routine else None) if name]
+            problems.append(
+                "seat.%s.allow_admin is not supported: admin and owner bot keys are always refused, "
+                "moderator and member keys are accepted (owner decision 2026-10-07)" % seat_name
+            )
+        used = [
+            name
+            for name in (
+                email_env,
+                key_env,
+                site_env if creds == "env" else None,
+                routine.url_env if routine else None,
+                routine.key_env if routine else None,
+            )
+            if name
+        ]
         for name in sorted({n for n in used if used.count(n) > 1}):
-            problems.append("seat.%s uses %s for more than one setting; its Zulip email, key and site and its routine "
-                            "URL and key must be separate variables (a shared one could send the bot key to the "
-                            "routine)" % (seat_name, name))
+            problems.append(
+                "seat.%s uses %s for more than one setting; its Zulip email, key and site and its routine "
+                "URL and key must be separate variables (a shared one could send the bot key to the "
+                "routine)" % (seat_name, name)
+            )
         if routine is not None and DEFAULT_SITE_ENV in (routine.url_env, routine.key_env):
-            problems.append("seat.%s.routine may not read %s, the Zulip site variable" % (seat_name, DEFAULT_SITE_ENV))
+            problems.append(
+                "seat.%s.routine may not read %s, the Zulip site variable"
+                % (seat_name, DEFAULT_SITE_ENV)
+            )
         if problems:
             errors.extend(problems)
             continue
-        seat_cfg = SeatConfig(seat_name, bot, wake, model, budget, L.live_limits(raw, seat_name), claude,
-                              instance=seat_instance or cfg.instance, enabled=enabled, creds=creds,
-                              email_env=email_env, key_env=key_env, site_env=site_env, routine=routine,
-                              route_enabled=route_enabled, held_back=held_back, muse=muse, provider=provider,
-                              mcode=mcode, fallback=fallback, fallback_uncontained_ok=uncontained)
+        seat_cfg = SeatConfig(
+            seat_name,
+            bot,
+            wake,
+            model,
+            budget,
+            L.live_limits(raw, seat_name),
+            claude,
+            instance=seat_instance or cfg.instance,
+            enabled=enabled,
+            creds=creds,
+            email_env=email_env,
+            key_env=key_env,
+            site_env=site_env,
+            routine=routine,
+            route_enabled=route_enabled,
+            held_back=held_back,
+            muse=muse,
+            provider=provider,
+            mcode=mcode,
+            fallback=fallback,
+            fallback_uncontained_ok=uncontained,
+            muse_bridge=muse_bridge,
+        )
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg
     _refuse_shared_env(cfg)
     if cfg.notes_relay_enabled and cfg.notes_relay_seat not in cfg.seats:
-        errors.append("notes_relay.seat %s is not an enabled [seat.X] section, so nothing reads #notes-relay"
-                      % cfg.notes_relay_seat)
+        errors.append(
+            "notes_relay.seat %s is not an enabled [seat.X] section, so nothing reads #notes-relay"
+            % cfg.notes_relay_seat
+        )
         cfg.notes_relay_enabled = False
     return cfg
 
@@ -704,8 +989,10 @@ def _refuse_shared_env(cfg: Config) -> None:
                 users.setdefault(name, set()).add(seat_cfg.seat)
     for name, seats in sorted(users.items()):
         if len(seats) > 1:
-            cfg.errors.append("environment variable %s is named by more than one seat (%s); a seat's variables must be "
-                              "its own, so none of them gets a queue" % (name, ", ".join(sorted(seats))))
+            cfg.errors.append(
+                "environment variable %s is named by more than one seat (%s); a seat's variables must be "
+                "its own, so none of them gets a queue" % (name, ", ".join(sorted(seats)))
+            )
             for seat in seats:
                 cfg.seats.pop(seat, None)
                 cfg.disabled.pop(seat, None)
@@ -720,8 +1007,10 @@ def load(root: str, path: str | None = None) -> Config:
     elif not raw:
         cfg.errors.insert(0, "no %s; run agent-sync daemon install (it writes a sample)" % path)
     if cfg.owner_user_id == 0 and raw:
-        cfg.errors.append("daemon.owner_user_id is 0 (not pinned): nothing is treated as the owner and nothing wakes; "
-                          "run agent-sync daemon init")
+        cfg.errors.append(
+            "daemon.owner_user_id is 0 (not pinned): nothing is treated as the owner and nothing wakes; "
+            "run agent-sync daemon init"
+        )
     return cfg
 
 
@@ -729,19 +1018,28 @@ def load(root: str, path: str | None = None) -> Config:
 # Credentials
 # --------------------------------------------------------------------------------------------
 
-def seat_credentials(seat_cfg: SeatConfig, env: Mapping[str, str], secrets_dir: str) -> Z.Credentials:
+
+def seat_credentials(
+    seat_cfg: SeatConfig, env: Mapping[str, str], secrets_dir: str
+) -> Z.Credentials:
     """The one place a listener seat's credentials are read:  its own zuliprc file, or (creds =
     "env") the environment variables its config names.  Never ZULIP_RC or the CLI's triple."""
     if seat_cfg.creds == "env":
         assert seat_cfg.email_env and seat_cfg.key_env
-        return Z.env_credentials(env, email_env=seat_cfg.email_env, key_env=seat_cfg.key_env,
-                                 site_env=seat_cfg.site_env, label=seat_cfg.seat)
+        return Z.env_credentials(
+            env,
+            email_env=seat_cfg.email_env,
+            key_env=seat_cfg.key_env,
+            site_env=seat_cfg.site_env,
+            label=seat_cfg.seat,
+        )
     return Z.read_zuliprc(os.path.join(secrets_dir, seat_cfg.bot + "-zuliprc"))
 
 
 # --------------------------------------------------------------------------------------------
 # Seat partition (mac or server)
 # --------------------------------------------------------------------------------------------
+
 
 def partition_path(env: Mapping[str, str], repo_root: str = REPO_ROOT) -> str:
     return os.path.expanduser(env.get(ENV_PARTITION) or os.path.join(repo_root, PARTITION_RELPATH))
@@ -757,8 +1055,10 @@ def load_partition(path: str) -> tuple[dict[str, str] | None, str | None]:
         with open(path, "rb") as fh:
             data = tomllib.load(fh)
     except FileNotFoundError:
-        return None, ("the seat partition %s is missing (it ships with the package; %s may point at another copy)"
-                      % (path, ENV_PARTITION))
+        return None, (
+            "the seat partition %s is missing (it ships with the package; %s may point at another copy)"
+            % (path, ENV_PARTITION)
+        )
     except (OSError, ValueError) as exc:
         return None, "cannot read the seat partition %s: %s" % (path, exc)
     seats = data.get("seats")
@@ -769,7 +1069,10 @@ def load_partition(path: str) -> tuple[dict[str, str] | None, str | None]:
         seat = str(name).upper()
         if not _SEAT_RE.match(seat) or value not in PARTITION_VALUES:
             return None, "the seat partition %s has a bad entry for %s (instances: %s)" % (
-                path, name, ", ".join(PARTITION_VALUES))
+                path,
+                name,
+                ", ".join(PARTITION_VALUES),
+            )
         found[seat] = value
     return found, None
 
@@ -804,8 +1107,13 @@ def credential_aliases(seat_cfg: SeatConfig, known: set[str]) -> list[tuple[str,
     return found
 
 
-def partition_errors(cfg: Config, partition: Mapping[str, str] | None, *, partition_file: str = "",
-                     env_instance: str | None = None) -> list[str]:
+def partition_errors(
+    cfg: Config,
+    partition: Mapping[str, str] | None,
+    *,
+    partition_file: str = "",
+    env_instance: str | None = None,
+) -> list[str]:
     """Why this config must not run on this instance, or [].  Every [seat.X] section counts,
     enabled or not.  It fails closed:  a seat the partition does not give to this instance (one
     of the other instance, a `none` seat, or one it does not list) is refused, and so is a
@@ -814,27 +1122,42 @@ def partition_errors(cfg: Config, partition: Mapping[str, str] | None, *, partit
     problems: list[str] = []
     where_file = partition_file or "the partition"
     if env_instance and env_instance != cfg.instance:
-        problems.append("this listener runs as the %r instance (%s) but its config says daemon.instance = %r"
-                        % (env_instance, ENV_INSTANCE, cfg.instance))
+        problems.append(
+            "this listener runs as the %r instance (%s) but its config says daemon.instance = %r"
+            % (env_instance, ENV_INSTANCE, cfg.instance)
+        )
     assigned_all = dict(partition or {})
     for seat, declared in sorted(cfg.seat_instances.items()):
         if declared and declared != cfg.instance:
-            problems.append("seat %s is marked instance = %r, but this is the %r listener; a seat must never be "
-                            "configured in both instances" % (seat, declared, cfg.instance))
+            problems.append(
+                "seat %s is marked instance = %r, but this is the %r listener; a seat must never be "
+                "configured in both instances" % (seat, declared, cfg.instance)
+            )
             continue
         assigned = assigned_all.get(seat)
         if assigned is None:
-            problems.append("seat %s is configured here (the %r listener), but %s does not list it; a seat that "
-                            "is not listed is held by no instance (assign it in a PR, with the owner's OK)"
-                            % (seat, cfg.instance, where_file))
+            problems.append(
+                "seat %s is configured here (the %r listener), but %s does not list it; a seat that "
+                "is not listed is held by no instance (assign it in a PR, with the owner's OK)"
+                % (seat, cfg.instance, where_file)
+            )
         elif assigned != cfg.instance:
-            where = ("no listener instance holds it" if assigned == "none"
-                     else "it belongs to the %r instance" % assigned)
-            problems.append("seat %s is configured here (the %r listener), but %s per %s; a seat must never be "
-                            "configured in both instances" % (seat, cfg.instance, where, where_file))
+            where = (
+                "no listener instance holds it"
+                if assigned == "none"
+                else "it belongs to the %r instance" % assigned
+            )
+            problems.append(
+                "seat %s is configured here (the %r listener), but %s per %s; a seat must never be "
+                "configured in both instances" % (seat, cfg.instance, where, where_file)
+            )
     known = set(assigned_all) | set(cfg.seat_instances)
-    for seat_cfg in sorted(list(cfg.seats.values()) + list(cfg.disabled.values()), key=lambda c: c.seat):
+    for seat_cfg in sorted(
+        list(cfg.seats.values()) + list(cfg.disabled.values()), key=lambda c: c.seat
+    ):
         for what, other in credential_aliases(seat_cfg, known):
-            problems.append("seat %s reads %s, which is the credential of seat %s; a seat holds only its own bot, "
-                            "so one bot is never held twice" % (seat_cfg.seat, what, other))
+            problems.append(
+                "seat %s reads %s, which is the credential of seat %s; a seat holds only its own bot, "
+                "so one bot is never held twice" % (seat_cfg.seat, what, other)
+            )
     return problems

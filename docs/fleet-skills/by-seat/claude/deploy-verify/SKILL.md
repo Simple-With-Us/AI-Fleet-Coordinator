@@ -1,6 +1,7 @@
 ---
 name: deploy-verify
-description: Verify production after a merge or deploy — per-app health URLs, Coolify vs Vercel vs library-tag, backup continuity, and known failure classes. Use after merging to main, after a Coolify/Vercel deploy, when health looks stale, or when the owner asks if prod is up. Do not treat Coolify API status as truth.
+description: >-
+  Verify production after a merge or deploy — per-app health URLs, Coolify vs Vercel vs library-tag, TestFlight freshness for iOS apps, backup continuity, and known failure classes. Use after merging to main, after a Coolify/Vercel deploy, after a merge that touches an app's native iOS tree, when health looks stale, or when the owner asks if prod is up. Do not treat Coolify API status as truth.
 ---
 
 # Deploy verification (CLAUDE)
@@ -42,6 +43,8 @@ Prefer live `GET /api/v1/applications` (via a helper that reads the token itself
 AGENT-SYNC's "sanctioned deploy path" table still names ST uuid `<OLD_ST_COOLIFY_APP_UUID>`, CT Worker `deploy.yml`, and UM Render — **stale**.  Prefer this table + `~/apps/COOLIFY.md` (top Hetzner section only; the Oracle body below the cut is historical).
 
 Steady state: ST/CT/UM auto-deploy via Coolify webhook; DealDex via Vercel; AFC digest via Pages; CTS via tag.  Announce-then-deploy (~10 min, one deployer) only for a **manual** Coolify/API click.  Do not double-trigger: Coolify cancel is unreliable.
+
+Native iOS apps do not deploy through Coolify or Vercel.  Their production is TestFlight, verified in [section 5](#5-ios-apps-and-testflight-freshness).
 
 ## 1. App health (always start here)
 
@@ -99,14 +102,47 @@ Disk hygiene timer already prunes above high watermarks.  Sustained pressure or 
 
 Do not revert raised `tcp_mem` sysctl just because a deploy succeeded.
 
-## 5. After verify
+## 5. iOS apps and TestFlight freshness
 
-Move the Linear issue to **Deployed** (`board status <id> deployed --resolution "..."`) only when you say how you verified.  `closeout` skill.  Rollback: Coolify previous deployment / Vercel rollback — not Mac pm2, not `trading-publish.sh` (retired).
+Health URLs say nothing about a native app.  After a merge that touches an app's native iOS tree, the deploy is **not verified** until the TestFlight freshness check reports that app current.  A merged PR, a green `ios-build.yml` compile check, and a healthy API do not count.
+
+```bash
+node ~/apps/ios-fleet/ios_testflight_freshness.mjs --app <key>    # or --repo <Repo>;  --json for the report
+```
+
+Exit 0 means current, so the deploy is verified.  Exit 1 means not yet:  `SHIPPING` or `PROCESSING` is a ship already in flight, so re-run it later;  `BEHIND` names the missing commit and says why the automatic catch-up did not run.  Exit 2 means the check itself failed.  App keys and native paths live in AFC `scripts/ios-fleet/testflight-apps.json`, and the full guide is AFC `docs/ios-testflight-freshness.md`.  This post-merge check is report-only, so never pass `--ship-behind` here.  The LaunchAgent `com.jay.ios-testflight-freshness` runs the catch-up ships every two hours under the fleet gates.  Quote the verdict in the closeout.
+
+"Touches the native iOS tree" means what the app's own ship workflow lists under `paths:`.  A merge that matches none of those paths leaves TestFlight where it was, which is current; say so in the closeout instead of shipping.
+
+**When the check says behind**, look before you change anything:
+
+1. **Ship workflow run.**  `gh run list --repo Simple-With-Us/<repo> --workflow <file> --limit 5`.  A run for the merge SHA that failed: read the failing step (archive, signing, upload, ensure-tf-ready).  No run at all: a merge made by `github-actions[bot]` with `GITHUB_TOKEN` fires no `push` workflows, so only the cron backstop or a `workflow_dispatch` ships it.
+2. **Runner.**  A run stuck queued has no runner.  Read the job's `runs-on`: most ship jobs use hosted `macos-latest`, Clutch and BotFleet use `xcode-27`.  Do not turn on a Mac PR-check runner (banned in AGENT-SYNC § CI Runners) and do not run a local archive or `ship-testflight.sh` from a seat to catch up.  Re-ship through the repo's workflow.
+3. **Rate gate.**  A skip for the per-app minimum interval or for an unchanged git HEAD exits 0 and looks green, so it is not a failure and not a reason to force anything.  Read the live interval from `DEFAULT_MIN_INTERVAL_SEC` in `~/apps/ios-fleet/ship-testflight.sh`, because the README table has disagreed with the script.  Never set `IOS_TF_MIN_INTERVAL_SEC` as a standing workflow value.  Never force a ship past the gate (AGENT-SYNC); a per-run override is for when the owner says so for that run, preferably as a one-off `workflow_dispatch`.
+4. **Compile check.**  A red `ios-build.yml` on main usually means the archive fails too.  That is a code fix on main, not a ship fix.
+
+Per-app quirks (read the workflow on main before trusting this list):
+
+- **ST, CT, UM, BotFleet, Clutch** ship from `ios-ship.yml`.  UM ships two apps, Usage Client Monitor and Usage Local Monitor, so check both.  Most have a cron backstop; Clutch does not.
+- **DealDex** `ios-ship.yml` was disabled by hand for a signing hold (last scheduled success 2026-09-27).  `ios-ship-cron-park.yml` only sends a Sentry heartbeat and never uploads, so its green runs prove nothing.  Re-enabling is the owner's call.
+- **Autorotate** was retired from TestFlight on 2026-10-10 and the freshness check does not list it.  Its `testflight.yml` is dispatch-only with a signing-ready attestation;  do not attest signing you have not verified.
+- **ContactLogo** `ios-testflight.yml` ships only while the repo variable `CL_IOS_TESTFLIGHT_ENABLED` is `true`.
+
+**Rules that matter** (AGENT-SYNC § Releases, Versioning, and Brand Assets):
+
+- What to Test is mandatory on every upload and is published to App Store Connect, never dry-logged.  Use the AGENT-SYNC Appendix C template, two ASCII spaces between sentences, and the owner's 12-hour clock with am or pm and no zone abbreviation.  No seat, agent, or tool names, ever.
+- Patch-increment the marketing version (`1.0.N`) on every upload and never reuse a version string.  Build numbers are unique (default `YYYYMMDDHHmm`).
+- The owner authorized TestFlight uploads.  App Store review submission and public release are not authorized; they stay an owner action.  Do not change external TestFlight groups or testers.
+
+## 6. After verify
+
+Move the Linear issue to **Deployed** (`board status <id> deployed --resolution "..."`) only when you say how you verified; for an iOS app that includes the freshness verdict from section 5.  `closeout` skill.  Rollback: Coolify previous deployment / Vercel rollback — not Mac pm2, not `trading-publish.sh` (retired).
 
 ## Canon
 
 - `/Users/jay/apps/COOLIFY.md`
-- `/Users/jay/apps/AGENT-SYNC.md` — Production deploys; Coolify tokens
+- `~/apps/ios-fleet/README.md` — TestFlight ship, the rate gate, and the freshness script
+- `/Users/jay/apps/AGENT-SYNC.md` — Production deploys; Coolify tokens; Releases, Versioning, and Brand Assets
 - ST `docs/rollouts/2026-08-07-hetzner-fleet-cutover.md`
 - ST `docs/rollouts/2026-07-10-auto-deploy-on.md` (mechanism; UUIDs/IPs in that note may be pre-cutover)
 - Skills: `secret-handoff`, `closeout`, `land-lane`

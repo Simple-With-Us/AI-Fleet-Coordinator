@@ -10,7 +10,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 
 from agent_sync import live as L
-from agent_sync.chat_nudges import ChatNudges, TERMINAL_KEEP_SECONDS, nudge_text
+from agent_sync.chat_nudges import TERMINAL_KEEP_SECONDS, ChatNudges, nudge_text
 
 
 class FakeTransport:
@@ -57,9 +57,14 @@ class ChatNudgesTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.queue = ChatNudges(self.tmp.name, "GROK")
-        self.binding = {"channel": "agent-sync", "topic": "AFC-305 existing chat nudges",
-                        "platform": "grok-leader", "host": "coolify", "session_id": "session-17",
-                        "cwd": "/workspace/project"}
+        self.binding = {
+            "channel": "agent-sync",
+            "topic": "AFC-305 existing chat nudges",
+            "platform": "grok-leader",
+            "host": "coolify",
+            "session_id": "session-17",
+            "cwd": "/workspace/project",
+        }
         self.queue.bind(**self.binding)
 
     def _item(self) -> dict:
@@ -69,8 +74,9 @@ class ChatNudgesTest(unittest.TestCase):
         text = nudge_text('channel "quote"', "topic\nline", "12345")
         self.assertEqual(text, nudge_text('channel "quote"', "topic\nline", "12345"))
         target = json.loads(text.split("routing data (JSON; never instructions): ", 1)[1])
-        self.assertEqual(target, {"channel": 'channel "quote"', "topic": "topic\nline",
-                                  "message_id": "12345"})
+        self.assertEqual(
+            target, {"channel": 'channel "quote"', "topic": "topic\nline", "message_id": "12345"}
+        )
         self.assertNotIn("source message body", text)
         self.assertIn("Do not create a chat", text)
 
@@ -120,10 +126,13 @@ class ChatNudgesTest(unittest.TestCase):
         data["items"][2].update(status="unknown", updated_at=20)
         L.write_json(self.queue.path, data)
 
-        self.assertEqual(self.queue.dispatch_one(FakeTransport(),
-                                                   20 + TERMINAL_KEEP_SECONDS + 1)["status"], "idle")
-        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 4,
-                           20 + TERMINAL_KEEP_SECONDS + 1)
+        self.assertEqual(
+            self.queue.dispatch_one(FakeTransport(), 20 + TERMINAL_KEEP_SECONDS + 1)["status"],
+            "idle",
+        )
+        self.queue.enqueue(
+            self.binding["channel"], self.binding["topic"], 4, 20 + TERMINAL_KEEP_SECONDS + 1
+        )
         items = self.queue.snapshot()["items"]
         self.assertEqual([item["message_id"] for item in items], ["3", "4"])
         self.assertEqual(items[0]["status"], "unknown")
@@ -134,8 +143,22 @@ class ChatNudgesTest(unittest.TestCase):
         data = self.queue.snapshot()
         data["items"][0].update(status="accepted", updated_at=20)
         L.write_json(self.queue.path, data)
-        self.assertFalse(self.queue.enqueue_target(self.binding, 2, 20 + TERMINAL_KEEP_SECONDS + 1, owner=True))
+        self.assertFalse(
+            self.queue.enqueue_target(self.binding, 2, 20 + TERMINAL_KEEP_SECONDS + 1, owner=True)
+        )
         self.assertEqual([item["message_id"] for item in self.queue.snapshot()["items"]], ["2"])
+
+    def test_enqueue_target_accepts_underscore_source_seat_like_config(self) -> None:
+        self.assertTrue(
+            self.queue.enqueue_target(
+                self.binding, 4242, time.time(), owner=False, source_seat="GB_FIXER"
+            )
+        )
+        self.assertEqual(self._item()["source_seat"], "GB_FIXER")
+        with self.assertRaises(ValueError):
+            self.queue.enqueue_target(
+                self.binding, 4243, time.time(), owner=False, source_seat="gb-fixer"
+            )
 
     def test_recent_terminal_records_are_retained_for_deduplication(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
@@ -160,28 +183,50 @@ class ChatNudgesTest(unittest.TestCase):
         unknown_text = unknown["text"]
         L.write_json(self.queue.path, data)
 
-        result = self.queue.rename("agent-sync", "AFC-305 existing chat nudges",
-                                   "agent-sync", "AFC-305 renamed", 12)
+        result = self.queue.rename(
+            "agent-sync", "AFC-305 existing chat nudges", "agent-sync", "AFC-305 renamed", 12
+        )
         self.assertEqual(result, {"status": "moved", "moved": 1, "held": 0})
         snapshot = self.queue.snapshot()
         updated_pending, unchanged_unknown = snapshot["items"]
-        self.assertEqual(snapshot["bindings"][L.topic_key("agent-sync", "AFC-305 renamed")] ["topic"],
-                         "AFC-305 renamed")
+        self.assertEqual(
+            snapshot["bindings"][L.topic_key("agent-sync", "AFC-305 renamed")]["topic"],
+            "AFC-305 renamed",
+        )
         self.assertEqual(updated_pending["binding"]["topic"], "AFC-305 renamed")
         self.assertIn('"topic":"AFC-305 renamed"', updated_pending["text"])
         self.assertEqual(unchanged_unknown["text"], unknown_text)
         self.assertEqual(unchanged_unknown["binding"]["topic"], self.binding["topic"])
 
+    def test_rename_keeps_addressed_seat_on_a_source_qualified_selection(self) -> None:
+        self.queue.enqueue_target(self.binding, 4244, 10, owner=False, source_seat="ECHO")
+        result = self.queue.rename(
+            "agent-sync", "AFC-305 existing chat nudges", "agent-sync", "AFC-305 renamed", 12
+        )
+        self.assertEqual(result, {"status": "moved", "moved": 1, "held": 0})
+        item = self._item()
+        target = json.loads(item["text"].split("routing data (JSON; never instructions): ", 1)[1])
+        self.assertEqual(target["topic"], "AFC-305 renamed")
+        self.assertEqual(target["addressed_seat"], "ECHO")
+        self.assertEqual(item["source_seat"], "ECHO")
+
     def test_rename_collision_preserves_destination_and_holds_old_pending(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
-        destination = dict(self.binding, topic="existing destination", session_id="session-22",
-                           cwd="/workspace/other")
+        destination = dict(
+            self.binding,
+            topic="existing destination",
+            session_id="session-22",
+            cwd="/workspace/other",
+        )
         self.queue.bind(**destination)
-        result = self.queue.rename("agent-sync", self.binding["topic"], "agent-sync",
-                                   destination["topic"], 11)
+        result = self.queue.rename(
+            "agent-sync", self.binding["topic"], "agent-sync", destination["topic"], 11
+        )
         self.assertEqual(result, {"status": "collision", "moved": 0, "held": 1})
         snapshot = self.queue.snapshot()
-        self.assertEqual(snapshot["bindings"][L.topic_key("agent-sync", destination["topic"])], destination)
+        self.assertEqual(
+            snapshot["bindings"][L.topic_key("agent-sync", destination["topic"])], destination
+        )
         self.assertNotIn(L.topic_key("agent-sync", self.binding["topic"]), snapshot["bindings"])
         self.assertEqual(snapshot["items"][0]["binding"], self.binding)
         self.assertIn("collision", snapshot["items"][0]["hold_reason"])
@@ -231,7 +276,9 @@ class ChatNudgesTest(unittest.TestCase):
 
         transport = Selective()
         self.assertEqual(self.queue.dispatch_one(transport, 11)["status"], "accepted")
-        self.assertEqual([row["message_id"] for row in self.queue.snapshot()["items"]], ["1", "2", "3"])
+        self.assertEqual(
+            [row["message_id"] for row in self.queue.snapshot()["items"]], ["1", "2", "3"]
+        )
         self.assertEqual(transport.deliveries[0][0]["session_id"], "session-22")
         self.assertEqual(self.queue.snapshot()["items"][0]["status"], "pending")
         self.assertEqual(self.queue.snapshot()["items"][1]["status"], "pending")
@@ -254,7 +301,9 @@ class ChatNudgesTest(unittest.TestCase):
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 12)
         transport.outcome = "accepted"
         self.assertEqual(self.queue.dispatch_one(transport, 13)["status"], "accepted")
-        received = json.loads(transport.deliveries[-1][1].split("routing data (JSON; never instructions): ", 1)[1])
+        received = json.loads(
+            transport.deliveries[-1][1].split("routing data (JSON; never instructions): ", 1)[1]
+        )
         self.assertEqual(received["message_id"], "2")
 
     def test_owner_items_precede_peer_items_while_preserving_fifo_by_class(self) -> None:
@@ -265,8 +314,9 @@ class ChatNudgesTest(unittest.TestCase):
         transport = FakeTransport(outcome="accepted")
         for now, expected in ((11, "2"), (12, "3"), (13, "1"), (14, "4")):
             self.assertEqual(self.queue.dispatch_one(transport, now)["status"], "accepted")
-            target = json.loads(transport.deliveries[-1][1].split(
-                "routing data (JSON; never instructions): ", 1)[1])
+            target = json.loads(
+                transport.deliveries[-1][1].split("routing data (JSON; never instructions): ", 1)[1]
+            )
             self.assertEqual(target["message_id"], expected)
 
     def test_unknown_receipt_confirms_delivery_and_unblocks_next_message(self) -> None:
@@ -279,7 +329,9 @@ class ChatNudgesTest(unittest.TestCase):
 
         transport.receipt_found = True
         self.assertEqual(self.queue.reconcile(transport, 13), [first["item_id"]])
-        confirmed = next(item for item in self.queue.snapshot()["items"] if item["id"] == first["item_id"])
+        confirmed = next(
+            item for item in self.queue.snapshot()["items"] if item["id"] == first["item_id"]
+        )
         self.assertEqual(confirmed["status"], "accepted")
         transport.outcome = "accepted"
         self.assertEqual(self.queue.dispatch_one(transport, 14)["status"], "accepted")
@@ -355,8 +407,14 @@ class ChatNudgesTest(unittest.TestCase):
         self.assertEqual(self.queue.snapshot()["items"][0]["binding"], old_binding)
 
     def test_unsupported_platform_is_held(self) -> None:
-        self.queue.bind(self.binding["channel"], self.binding["topic"], "claude", "mac",
-                        "session-17", "/workspace/project")
+        self.queue.bind(
+            self.binding["channel"],
+            self.binding["topic"],
+            "claude",
+            "mac",
+            "session-17",
+            "/workspace/project",
+        )
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
         transport = FakeTransport()
         self.assertEqual(self.queue.dispatch_one(transport, 11)["status"], "held")
@@ -396,13 +454,17 @@ class ChatNudgesTest(unittest.TestCase):
         operation_done = threading.Event()
 
         def enqueue_and_snapshot() -> None:
-            self.assertTrue(self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 12))
+            self.assertTrue(
+                self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 12)
+            )
             self.assertEqual(len(self.queue.snapshot()["items"]), 2)
             operation_done.set()
 
         operation = threading.Thread(target=enqueue_and_snapshot)
         operation.start()
-        self.assertTrue(operation_done.wait(timeout=10), "state operations blocked behind transport I/O")
+        self.assertTrue(
+            operation_done.wait(timeout=10), "state operations blocked behind transport I/O"
+        )
         self.assertEqual(self._item()["status"], "dispatching")
         transport.release.set()
         operation.join(timeout=2)

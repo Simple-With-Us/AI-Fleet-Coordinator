@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-18T00:50:05Z",
+  "updatedAt": "2026-10-18T01:16:56Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -31,6 +31,12 @@
       "build": "202608311131",
       "appleId": 6804248235,
       "displayName": "ContactLogo for Mac"
+    },
+    "com.simplewithus.usage.client.ios": {
+      "marketingVersion": "1.0.2",
+      "build": "202610180034",
+      "appleId": 6820881005,
+      "displayName": "Usage Monitor Client"
     },
     "com.simplewithus.usage.local.ios": {
       "marketingVersion": "1.0.3",
@@ -63,9 +69,9 @@
     },
     "trade.congress.ios": {
       "displayName": "Congress.Trade",
-      "marketingVersion": "1.0.162",
+      "marketingVersion": "1.0.236",
       "appleId": 6798076688,
-      "build": "202608252110"
+      "build": "202610180036"
     },
     "trade.socratic.app": {
       "displayName": "Socratic.Trade",
