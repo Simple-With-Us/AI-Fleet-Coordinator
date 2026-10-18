@@ -1577,7 +1577,9 @@ class Daemon:
                             runner.me is not None
                             and uid == runner.me.user_id
                             and event.get("op") != "remove"
-                            and role_refused(runner.users[uid], admin_allowed(self.config, runner.cfg))
+                            and role_refused(
+                                runner.users[uid], admin_allowed(self.config, runner.cfg)
+                            )
                         ):
                             # The seat's own bot was promoted to admin or owner:  drop the queue now,
                             # not when it next expires (owner decision 2026-10-07).
