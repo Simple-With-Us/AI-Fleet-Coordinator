@@ -20,14 +20,16 @@ A lane is removable only when ALL of these hold (each is a reason in the table w
     no `.janitor-keep` marker;
   * `git status` shows no tracked edit, no untracked file and no git-ignored local state (a .env, a database:
     anything ignored that is not build output, by the doctor's own list, `doctor.split_ignored`);
-  * nothing is unpushed: HEAD is reachable from a remote ref, or a merged or closed PR holds HEAD (its head is
-    HEAD or contains it), because a squash-merged branch whose remote ref was pruned is safe on GitHub but on no
-    remote ref here.  When the upstream branch is gone from origin, its stale local remote-tracking ref does not
-    count (the next `git fetch --prune` deletes it);
+  * nothing is unpushed: HEAD is reachable from a branch that exists on origin right now (the shas `git
+    ls-remote --heads origin` reports; no other local remote-tracking ref counts, since a branch deleted on
+    origin without a `fetch --prune` leaves a stale one, and another remote never vouches), or HEAD is in
+    origin/<default> (never deleted or rewound), or a merged or closed PR holds HEAD (its head is HEAD or
+    contains it), because a squash-merged branch whose remote ref was pruned is safe on GitHub but on no branch;
   * the work is done: the PR for its branch (the local name or the upstream name, since a sweep lane pushes
-    `HEAD:<pr head>`) or for HEAD is MERGED or CLOSED with none still OPEN and its head is HEAD or contains it (a
-    PR that only used the same branch name is no evidence), or HEAD is merged into
-    origin/<default>, or its upstream branch no longer exists on origin (`git ls-remote --heads origin`).
+    `HEAD:<pr head>`) or for HEAD is MERGED or CLOSED with none still OPEN and its head is HEAD, or contains HEAD
+    while the lane has commits of its own (a PR that only used the same branch name, or whose head merely sits
+    on today's origin/<default>, is no evidence), or HEAD is merged into origin/<default>, or its upstream
+    branch no longer exists on origin.
     A review checkout (review-pr-<n>) is done when PR <n> is MERGED or CLOSED; prune keeps one of an OPEN PR,
     and an explicit `lane retire` may remove it (it is read-only by design).
 
@@ -115,11 +117,9 @@ def _git_key(args: Sequence[str], write_root: str | None, fold: Callable[[str], 
     if a == ["status", "--porcelain", "--ignored", "--untracked-files=normal"]:
         return "git"
     if len(a) == 5 and a[:4] == ["rev-list", "--count", "HEAD", "--not"]:
-        return "git" if (a[4] == "--remotes" or _SHA.match(a[4])) else None
-    if len(a) == 6 and a[:4] == ["rev-list", "--count", "HEAD", "--not"] and a[5] == "--remotes":
-        # --exclude before --remotes takes the name without refs/remotes/ (git rev-list --help)
-        ref = a[4][len("--exclude=") :] if a[4].startswith("--exclude=") else ""
-        return "git" if (ref.startswith("origin/") and K.valid_ref_name(ref)) else None
+        return "git" if _SHA.match(a[4]) else None
+    if len(a) >= 5 and a[:5] == ["rev-list", "--count", "--ignore-missing", "HEAD", "--not"]:
+        return "git" if all(_SHA.match(x) for x in a[5:]) else None
     if len(a) == 2 and a[0] == "rev-parse" and a[1] in _REVPARSE_SOLO:
         return "git"
     if len(a) == 4 and a[:3] == ["rev-parse", "--verify", "-q"]:
@@ -171,8 +171,8 @@ def check_allowed(
     """The timeout cap for an allowlisted command, else CommandRefused (no process is started).
 
     git: worktree list --porcelain | worktree remove <path inside the lanes root> (never --force) | worktree prune |
-    branch -d <ref> (never -D) | status --porcelain --untracked-files=normal | rev-list --count HEAD --not
-    (--remotes | <sha>) | rev-parse (--absolute-git-dir | --git-common-dir | --show-toplevel | --verify -q
+    branch -d <ref> (never -D) | status --porcelain --ignored --untracked-files=normal | rev-list --count HEAD
+    --not <sha> | rev-list --count --ignore-missing HEAD --not <sha>... | rev-parse (--absolute-git-dir | --git-common-dir | --show-toplevel | --verify -q
     HEAD-or-sha) | config --get (remote.origin.url | branch.<ref>.merge | branch.<ref>.remote) | merge-base
     --is-ancestor HEAD refs/remotes/origin/<ref> | symbolic-ref -q --short refs/remotes/origin/HEAD | ls-remote
     --heads origin.  gh: pr list --repo O/R --state all (--limit 1000 | --head <ref> --limit 20) --json <fields>.
@@ -305,13 +305,13 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
             return "keep", f"review checkout; PR state {state or 'unknown'}"
     elif f.pr.open_number is not None:
         return "keep", f"PR #{f.pr.open_number} is open"
-    if not (f.pr.covers_head or f.unpushed == 0):
+    # origin/<default> is never deleted or rewound, so HEAD in it is pushed even when its new tip was not
+    # fetched here (the live-sha count drops a sha that is not an object here).
+    if not (f.pr.covers_head or f.unpushed == 0 or f.merged_default):
         if f.unpushed is None:
             return "keep", "could not count unpushed commits"
-        where = (
-            "on no remote ref but the deleted upstream's stale local copy"
-            if f.upstream_gone
-            else "on no remote ref"
+        where = "on no remote ref" + (
+            " (the deleted upstream's stale local copy does not count)" if f.upstream_gone else ""
         )
         return "keep", (
             f"{f.unpushed} commit{'s' if f.unpushed != 1 else ''} {where}, and no merged or "
@@ -501,7 +501,7 @@ def _inspect(
     now: float,
     lsof_rows,
     default_branch: str,
-    remote_heads: set | None,
+    remote_heads: dict[str, str] | None,
 ) -> Facts:
     """Read every fact about one lane (local git and files only; the PR view is added later)."""
     rec = lane.rec
@@ -553,23 +553,27 @@ def _inspect(
             f.upstream = up[len("refs/heads/") :]
             if remote_heads is not None:
                 f.upstream_gone = f.upstream not in remote_heads
-    # Reachability from the deleted upstream's own remote-tracking ref does not count: that ref is a stale local
-    # copy (the branch is gone from origin), and the next `git fetch --prune` deletes it.
-    stale = f"--exclude=origin/{f.upstream}" if (f.upstream_gone and f.upstream) else None
-    f.unpushed = _int(
-        run(
-            [
-                "git",
-                "rev-list",
-                "--count",
-                "HEAD",
-                "--not",
-                *([stale] if stale else []),
-                "--remotes",
-            ],
-            cwd=rec.path,
+    # Unpushed means "on no LIVE origin branch": the shas `git ls-remote --heads origin` reported, never a local
+    # remote-tracking ref.  Those can be stale (a branch deleted on origin without a `fetch --prune`, the
+    # deleted upstream's or any other; a force-pushed branch), and another remote (a peer lane, a scratch bare
+    # repo) never vouches for a push.  This tool never fetches.  --ignore-missing drops a live sha that was
+    # never fetched here, which can only overcount (the safe side).  Without ls-remote nothing vouches (None),
+    # and only a PR that holds HEAD can.
+    if remote_heads is not None:
+        f.unpushed = _int(
+            run(
+                [
+                    "git",
+                    "rev-list",
+                    "--count",
+                    "--ignore-missing",
+                    "HEAD",
+                    "--not",
+                    *sorted(set(remote_heads.values())),
+                ],
+                cwd=rec.path,
+            )
         )
-    )
     times = [
         t
         for t in (
@@ -668,10 +672,13 @@ def _pr_view(
         return view
     # Only a PR whose head IS HEAD or contains it says this lane's work is done.  A PR that merely used the same
     # branch name (a reused slug, or commits added after the merge) is no evidence, so a lane opened under an old
-    # name keeps the 24-hour hold for an unused lane.
-    covering = [p for p in done if head and p.get("headRefOid") == head] or [
-        p for p in done if _contains(run, rec.path, str(p.get("headRefOid") or ""))
-    ]
+    # name keeps the 24-hour hold for an unused lane.  Containment counts only when the lane has commits of its
+    # own (HEAD not in origin/<default>): an old PR whose head sits on top of today's origin/<default> contains
+    # every fresh lane's HEAD and holds none of its work.
+    covering = [p for p in done if head and p.get("headRefOid") == head]
+    own_work = lane.facts is not None and lane.facts.merged_default is False
+    if not covering and own_work:
+        covering = [p for p in done if _contains(run, rec.path, str(p.get("headRefOid") or ""))]
     if not covering:
         view.stale_number = max(int(p.get("number") or 0) for p in done) or None
         return view
@@ -748,15 +755,16 @@ def _default_branch(run: Runner, tree: Path) -> str:
     return "main"
 
 
-def _remote_heads(run: Runner, tree: Path) -> set | None:
+def _remote_heads(run: Runner, tree: Path) -> dict[str, str] | None:
+    """{branch: sha} of every branch that exists on origin right now, or None when ls-remote failed."""
     res = run(["git", "ls-remote", "--heads", "origin"], cwd=tree)
     if not res.ok:
         return None
-    heads = set()
+    heads: dict[str, str] = {}
     for line in res.out.splitlines():
         parts = line.split()
-        if len(parts) == 2 and parts[1].startswith("refs/heads/"):
-            heads.add(parts[1][len("refs/heads/") :])
+        if len(parts) == 2 and parts[1].startswith("refs/heads/") and _SHA.match(parts[0]):
+            heads[parts[1][len("refs/heads/") :]] = parts[0]
     return heads
 
 
@@ -842,7 +850,9 @@ def _gather(
         heads = _remote_heads(run, tree)
         if heads is None:
             errors.append(
-                f"{app.lane_dir}: git ls-remote --heads origin failed; upstream-gone evidence unavailable"
+                f"{app.lane_dir}: git ls-remote --heads origin failed; no live origin branch can vouch "
+                "for a push or a deleted upstream, so only a lane whose HEAD a merged or closed PR "
+                "holds can be removed"
             )
         repo = _owner_repo(run, app, tree)
         prs, truncated = _bulk_prs(run, repo, tree) if repo else (None, False)
@@ -854,7 +864,7 @@ def _gather(
         def work(
             ln: _Lane,
             default: str = default,
-            heads: set | None = heads,
+            heads: dict[str, str] | None = heads,
             prs: list[dict] | None = prs,
             repo: str | None = repo,
             tree: Path = tree,
