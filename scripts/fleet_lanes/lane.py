@@ -235,9 +235,7 @@ def _dest_ok(path: str, write_root: str | None, fold: Callable[[str], str]) -> b
     return write_root is not None and _under_dir(path, write_root, fold)
 
 
-def _worktree_add_ok(
-    a: Sequence[str], write_root: str | None, fold: Callable[[str], str]
-) -> bool:
+def _worktree_add_ok(a: Sequence[str], write_root: str | None, fold: Callable[[str], str]) -> bool:
     """Exactly three shapes:  -b BRANCH PATH SHA | PATH BRANCH | --detach PATH SHA."""
     if len(a) == 4 and a[0] == "-b":
         return valid_ref_name(a[1]) and _dest_ok(a[2], write_root, fold) and bool(_SHA.match(a[3]))
@@ -642,9 +640,7 @@ def _external_note(ctx: Ctx) -> str:
     )
 
 
-def _link_between(
-    path: str | os.PathLike[str], write_root: str | os.PathLike[str]
-) -> list[str]:
+def _link_between(path: str | os.PathLike[str], write_root: str | os.PathLike[str]) -> list[str]:
     """The symlinks among the folders between `write_root` and `path` (the lane itself is not one), outermost first.
     Lexical, so it names the spelling the caller used."""
     root = os.fspath(write_root)
@@ -662,9 +658,7 @@ def _link_between(
     return found
 
 
-def _link_hint(
-    ctx: Ctx, path: str | os.PathLike[str], write_root: str | os.PathLike[str]
-) -> str:
+def _link_hint(ctx: Ctx, path: str | os.PathLike[str], write_root: str | os.PathLike[str]) -> str:
     """One extra sentence when a symlinked folder is why a path is outside the map; empty otherwise."""
     for link in _link_between(path, write_root):
         real = os.path.realpath(link)

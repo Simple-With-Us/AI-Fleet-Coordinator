@@ -100,9 +100,7 @@ _REVPARSE_SOLO = frozenset({"--absolute-git-dir", "--git-common-dir", "--show-to
 # --------------------------------------------------------------------------- the allowlist and the runner
 
 
-def _git_key(
-    args: Sequence[str], write_root: str | None, fold: Callable[[str], str]
-) -> str | None:
+def _git_key(args: Sequence[str], write_root: str | None, fold: Callable[[str], str]) -> str | None:
     """The timeout key for an allowed git command, else None.  Exact shapes only."""
     a = list(args)
     if a == ["worktree", "list", "--porcelain"] or a == ["worktree", "prune"]:
