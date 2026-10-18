@@ -32,8 +32,9 @@
  * `gh workflow run`, never a local xcodebuild, and only when every guard holds:
  * autoRemedy is on and the workflow is active;  the iOS compile check on main
  * is green;  2.5 hours have passed since the app's last upload (the documented
- * fleet gate, enforced here because ContactLogo and Hog Hunter do not use
- * ship-testflight.sh);  this app has not already been dispatched for this main
+ * fleet gate, enforced here because ContactLogo does not use ship-testflight.sh;
+ * Hog Hunter does (HH-157), and its registry paths are the exact files its
+ * workflow ships on);  this app has not already been dispatched for this main
  * HEAD (so a ship that keeps failing is tried once, not every two hours);
  * build-window.sh does not say "background";  no fleet ship run is in flight;
  * and at most --max-ships (default 1) per run.  It never passes --force-ship
