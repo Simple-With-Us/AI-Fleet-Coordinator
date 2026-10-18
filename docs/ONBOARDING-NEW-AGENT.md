@@ -105,9 +105,10 @@ with the top-level `apps` (the acronyms) and `--app`.
    clearly redirects.
 6. **Secrets:** read from `~/.secrets/` (chmod 600). Never print them.
    Infisical is the runtime source of truth. Never `infisical secrets` bare.
-   Never `grep` / `rg` a handoff file without `-o` — `grep '^[A-Z0-9_]+='`
-   prints **values**.  Names only: `grep -oE '^[A-Z][A-Z0-9_]*'`.  Never
-   `cat` or open `~/.secrets/global-api-keys` with a Read tool.  Never
+   Never `grep` / `rg` a secrets file without `-o` — `grep '^[A-Z0-9_]+='`
+   prints **values**.  Fleet keys: `fleet-secrets get NAME` (one value) or
+   `fleet-secrets names` (names only);  the flat `~/.secrets/global-api-keys` is retired and
+   nothing may read it.  Never `cat` or open a secrets file with a Read tool.  Never
    `od` / `xxd` / `hexdump` a loaded `$KEY` / `$TOKEN` / `$SECRET` variable.
 7. **Light theme default.  Two spaces between sentences everywhere**,
    including App Store listing and review notes.  See `AGENT-SYNC.md`

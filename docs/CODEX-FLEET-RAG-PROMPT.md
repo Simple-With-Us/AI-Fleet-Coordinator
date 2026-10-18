@@ -27,7 +27,7 @@ Then prove the tools work from your surface, in this order, and report each resu
 
 a. Call recall_stats.  Report collection status and the point count.
 b. Call recall_search with the query "how do I avoid leaking credentials when I look at the
-   global-api-keys handoff file", limit 3.  Report the top hit's title, source, and score.
+   a secrets file", limit 3.  Report the top hit's title, source, and score.
 c. Call recall_search with a question about the task you are about to start.  Say whether a hit
    changed your plan.
 d. If step a or b failed, run `recall doctor --platforms` in a shell and paste the FAIL rows.

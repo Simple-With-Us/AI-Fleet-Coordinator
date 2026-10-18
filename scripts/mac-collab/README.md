@@ -7,7 +7,7 @@ Live process: `~/apps/mac-collab/` under pm2 `mac-collab` (HTTP), `mac-collab-sy
 + GitHub Issues).  This directory is the git copy.  Edit live, then copy here
 before landing.
 
-Do not serve `global-api-keys`. Names-only: `GET /files/key-names`.
+Do not serve any secret store. Names-only: `GET /files/key-names`.
 
 THE BOARD (`/board`) sets an HttpOnly `mac_collab_session` cookie after a successful
 Basic (or returning cookie) login so the owner is not asked for `MAC_COLLAB_TOKEN`
