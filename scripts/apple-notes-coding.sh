@@ -476,15 +476,24 @@ if printf '%s' "$TITLE" | grep -Eiq 'session'; then
   echo "warning: do not put 'session' in Apple Note titles" >&2
 fi
 
-_send_pushover_notification() {
-  local user_key token secrets_file
-  secrets_file="${HOME}/.secrets/global-api-keys"
-  if [[ -f "$secrets_file" ]]; then
-    user_key=$(grep "^PUSHOVER_USER_KEY=" "$secrets_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'" || true)
-    token=$(grep "^PUSHOVER_USAGE_API_TOKEN=" "$secrets_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'" || true)
-    [[ -z "$token" ]] && token=$(grep "^PUSHOVER_ST_API_TOKEN=" "$secrets_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'" || true)
-    [[ -z "$token" ]] && token=$(grep "^PUSHOVER_CT_API_TOKEN=" "$secrets_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'" || true)
+# One secret on stdout:  the environment value, else `fleet-secrets get NAME`, else nothing.
+_pushover_secret() {
+  local name="$1" value="${!1:-}" bin
+  if [[ -z "$value" ]]; then
+    bin="$(command -v fleet-secrets 2>/dev/null || true)"
+    [[ -z "$bin" && -x "${HOME}/.local/bin/fleet-secrets" ]] && bin="${HOME}/.local/bin/fleet-secrets"
+    [[ -n "$bin" ]] && value="$("$bin" get "$name" 2>/dev/null || true)"
   fi
+  printf '%s' "$value"
+}
+
+_send_pushover_notification() {
+  local user_key token
+  # Environment first, then `fleet-secrets get` (OPS-818;  the flat file ~/.secrets/global-api-keys is retired).
+  user_key=$(_pushover_secret PUSHOVER_USER_KEY)
+  token=$(_pushover_secret PUSHOVER_USAGE_API_TOKEN)
+  [[ -z "$token" ]] && token=$(_pushover_secret PUSHOVER_ST_API_TOKEN)
+  [[ -z "$token" ]] && token=$(_pushover_secret PUSHOVER_CT_API_TOKEN)
 
   local msg="${SUMMARY_TEXT:-Apple Note updated in Coding folder}"
   if [[ "$NEEDS_OWNER" == "1" ]]; then

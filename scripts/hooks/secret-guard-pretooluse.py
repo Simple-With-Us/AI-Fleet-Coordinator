@@ -39,7 +39,7 @@ safe pattern is to redirect stderr to /dev/null or a file and check the exit
 code alone, never to capture-and-filter it in the same command.
 
 E exists because of 2026-09-17: a subagent loaded SILICONFLOW_API_KEY from the
-handoff file correctly (quote-stripped, never echoed), then ran `od -c` on the
+handoff file (since retired, OPS-818) correctly (quote-stripped, never echoed), then ran `od -c` on the
 variable to look for stray quote characters.  `od -c` prints every byte, so the
 full key landed in the transcript.  The hook receives the command TEMPLATE
 before expansion, so it cannot see the runtime value -- it pattern-matches

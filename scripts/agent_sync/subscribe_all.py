@@ -18,7 +18,7 @@ only:  never an email, a key or a message.
 Credentials, deduplicated by bot email:
   mac        every ~/.secrets/Zulip/*-zuliprc (mode 600)
   infisical  every ZULIP_<CODE>_EMAIL / ZULIP_<CODE>_API_KEY pair in Infisical prod /zulip,
-             through the automation identity in ~/.secrets/global-api-keys
+             through the automation identity from `fleet-secrets get`
 Only bots are touched:  a key whose users/me is a human, or an admin or owner, is skipped.
 Private channels are never joined, and nobody else's subscriptions are read or changed.
 """
@@ -27,6 +27,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -41,7 +43,6 @@ INFISICAL_API = "https://app.infisical.com"
 INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator
 INFISICAL_ENV = "prod"
 INFISICAL_PATH = "/zulip"
-HANDOFF = Path.home() / ".secrets" / "global-api-keys"
 ZULIP_DIR = Path.home() / ".secrets" / "Zulip"
 BOT_ROLES = (300, 400)  # moderator, member:  the roles the listener accepts
 # Bots never need a notification;  set every new subscription quiet so nothing reaches a phone.
@@ -103,16 +104,19 @@ def mac_credentials() -> list[Z.Credentials]:
 
 
 def _handoff(name: str) -> str:
+    """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The flat
+    file ~/.secrets/global-api-keys is retired.  Only the name is ever reported."""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    binary = shutil.which("fleet-secrets") or str(Path.home() / ".local" / "bin" / "fleet-secrets")
     try:
-        with HANDOFF.open(encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith(name + "="):
-                    value = line.split("=", 1)[1].strip().strip('"')
-                    if value:
-                        return value
-    except OSError:
+        proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
         pass
-    raise Failure("%s is not in the handoff file (name only)" % name)
+    raise Failure("%s is not in the environment or fleet-secrets (name only)" % name)
 
 
 def _http_json(method: str, url: str, *, body: dict | None = None, headers: dict | None = None) -> dict:

@@ -36,6 +36,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -44,7 +45,6 @@ import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 WRANGLER_JSONC = HERE / "wrangler.jsonc"
-HANDOFF = pathlib.Path.home() / ".secrets" / "global-api-keys"
 INFISICAL_API = "https://app.infisical.com"
 INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator (INFISICAL.md)
 INFISICAL_ENV = "prod"
@@ -72,16 +72,19 @@ def fail(message: str) -> "NoReturn":  # type: ignore[name-defined]
 
 
 def handoff(name: str) -> str:
+    """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The flat
+    file ~/.secrets/global-api-keys is retired.  Only the name is ever reported."""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    binary = shutil.which("fleet-secrets") or str(pathlib.Path.home() / ".local" / "bin" / "fleet-secrets")
     try:
-        with HANDOFF.open(encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith(name + "="):
-                    value = line.split("=", 1)[1].strip().strip('"')
-                    if value:
-                        return value
-    except OSError:
+        proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
         pass
-    fail(f"{name} is not in the handoff file (name only; no value printed)")
+    fail(f"{name} is not in the environment or fleet-secrets (name only; no value printed)")
 
 
 def wrangler_vars() -> dict:

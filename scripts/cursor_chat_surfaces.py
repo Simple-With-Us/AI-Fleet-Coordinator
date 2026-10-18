@@ -38,7 +38,7 @@ SECRET_FILES = (
     Path.home() / ".secrets" / "cursor-api-key",
     Path.home() / ".secrets" / "cursor-api.env",
 )
-GLOBAL_KEYS_FILE = Path.home() / ".secrets" / "global-api-keys"
+FLEET_SECRETS_BIN = Path.home() / ".local" / "bin" / "fleet-secrets"  # OPS-818:  replaces the flat global-api-keys file
 REPO_SCRIPTS = Path(__file__).resolve().parent
 LIVE_FILES = (
     "cursor_chat_surfaces.py",
@@ -87,6 +87,22 @@ def _named_keys_from_text(text: str) -> str | None:
     return None
 
 
+def _fleet_secrets_key() -> str | None:
+    """CURSOR_SYNC_API_KEY (or CURSOR_API_KEY) from `fleet-secrets get`, or None.  Never logged."""
+    binary = shutil.which("fleet-secrets") or (str(FLEET_SECRETS_BIN) if FLEET_SECRETS_BIN.is_file() else None)
+    if not binary:
+        return None
+    for name in API_KEY_NAMES:
+        try:
+            proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        value = proc.stdout.strip() if proc.returncode == 0 else ""
+        if value:
+            return value
+    return None
+
+
 def load_api_key() -> str | None:
     env = _env_api_key()
     if env:
@@ -103,9 +119,7 @@ def load_api_key() -> str | None:
             if not stripped or stripped.startswith("#") or "=" in stripped:
                 continue
             return stripped
-    if GLOBAL_KEYS_FILE.is_file():
-        return _named_keys_from_text(GLOBAL_KEYS_FILE.read_text(encoding="utf-8"))
-    return None
+    return _fleet_secrets_key()
 
 
 def github_https_url(remote: str) -> str | None:
@@ -458,7 +472,7 @@ def cmd_status() -> int:
         + (
             "present"
             if key
-            else "MISSING (CURSOR_SYNC_API_KEY in ~/.secrets/global-api-keys, "
+            else "MISSING (CURSOR_SYNC_API_KEY via `fleet-secrets get`, "
             "or ~/.secrets/cursor-api-key / CURSOR_API_KEY)"
         )
     )
@@ -509,7 +523,7 @@ def cmd_list_cloud() -> int:
     key = load_api_key()
     if not key:
         print(
-            "No Cursor API key.  Use CURSOR_SYNC_API_KEY in ~/.secrets/global-api-keys.",
+            "No Cursor API key.  Use CURSOR_SYNC_API_KEY (`fleet-secrets get CURSOR_SYNC_API_KEY`).",
             file=sys.stderr,
         )
         return 2
@@ -648,7 +662,7 @@ def cmd_install(shellular: bool) -> int:
         print("restart Shellular to pick up the spawn: pm2 restart shellular")
     if not load_api_key():
         print(
-            "Still need CURSOR_SYNC_API_KEY in ~/.secrets/global-api-keys "
+            "Still need CURSOR_SYNC_API_KEY (`fleet-secrets get CURSOR_SYNC_API_KEY`) "
             "(or ~/.secrets/cursor-api-key).  "
             "Without it the Cursor bridge execs local cursor-agent acp and iOS cannot see those chats."
         )

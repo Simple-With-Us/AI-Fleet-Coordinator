@@ -2,7 +2,7 @@
 """Cloudflare setup and checks for the agent-sync MCP Worker, Phase 0.
 
 Every step is a dry run unless --apply is given.  The Cloudflare Global key is
-read inside this process from the handoff file and never printed, logged or
+read inside this process from the environment or `fleet-secrets get` and never printed, logged or
 put on a command line.  Run from scripts/agent-sync-mcp/ (see DEPLOY-PHASE0.md).
 
     python3 -I infra_phase0.py status            # read-only inventory
@@ -23,6 +23,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -44,7 +45,6 @@ ACCESS_PATHS = [f"{HOST}/authorize", f"{HOST}/admin"]
 OWNER_EMAILS = ["mail@jays.services"]
 KV_TITLE = "agent-sync-mcp-OAUTH_KV"
 WORKER_NAME = "agent-sync-mcp"
-HANDOFF = pathlib.Path.home() / ".secrets" / "global-api-keys"
 HERE = pathlib.Path(__file__).resolve().parent
 WRANGLER = HERE / "wrangler.jsonc"
 BACKUP_DIR = pathlib.Path.home() / ".agent-sync-mcp-phase0"
@@ -56,16 +56,19 @@ API = "https://api.cloudflare.com/client/v4"
 
 
 def _load(name: str) -> str:
+    """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The flat
+    file ~/.secrets/global-api-keys is retired.  Only the name is ever reported."""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    binary = shutil.which("fleet-secrets") or str(pathlib.Path.home() / ".local" / "bin" / "fleet-secrets")
     try:
-        with HANDOFF.open(encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith(name + "="):
-                    value = line.split("=", 1)[1].strip().strip('"')
-                    if value:
-                        return value
-    except OSError:
+        proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
         pass
-    raise SystemExit(f"error: {name} is not in the handoff file (name only; no value printed)")
+    raise SystemExit(f"error: {name} is not in the environment or fleet-secrets (name only; no value printed)")
 
 
 class Cloudflare:

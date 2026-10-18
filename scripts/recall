@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """recall -- search and grow the fleet-agents knowledge corpus.
 
-Credentials are read from the environment, then Infisical via the machine identity in the
-handoff file.  Values are never printed.  Reads use the read-only Qdrant key when it is
+Credentials are read from the environment, then Infisical via a machine identity in the
+environment, then `fleet-secrets` when it is installed.  Values are never printed.  Reads use the read-only Qdrant key when it is
 available; only `contribute` needs the write key.
 
 Run your own corpus: set QDRANT_URL, QDRANT_API_KEY, TEI_URL, TEI_API_KEY and
-QDRANT_FLEET_COLLECTION in the environment and no Infisical account or handoff file is
-needed.  See docs/RAG-FLEET-INFRA.md "Run your own".
+QDRANT_FLEET_COLLECTION in the environment and no Infisical account or credentials file
+is needed.  See docs/RAG-FLEET-INFRA.md "Run your own".
 
 Usage:
   recall "query text" [--limit 5] [--category X] [--app X] [--source X] [--seat X]
@@ -292,7 +292,7 @@ def cmd_doctor(a: argparse.Namespace) -> int:
         raise FleetRagError("--box only applies with --platforms")
     public_fallback.require_direct_path("doctor")
     rep: dict = {"version": __version__, "env_keys": [k for k in core.ALL_KEYS if os.environ.get(k)],
-                 "handoff_file": core.HANDOFF.exists(), "gitleaks": bool(shutil.which("gitleaks"))}
+                 "fleet_secrets": core._fleet_secrets_bin() is not None, "gitleaks": bool(shutil.which("gitleaks"))}
     ok = True
     try:
         cfg = recall_api.load_config(need_write=False)
@@ -324,7 +324,7 @@ def cmd_doctor(a: argparse.Namespace) -> int:
         return "yes" if v else "NO"
     print(f"recall {rep['version']}")
     print(f"env keys        : {', '.join(rep['env_keys']) or '(none)'}")
-    print(f"handoff file    : {yn(rep['handoff_file'])}  (~/.secrets/global-api-keys)")
+    print(f"fleet-secrets   : {yn(rep['fleet_secrets'])}  (Mac credential source)")
     if "credentials_error" in rep:
         print(f"credentials     : ERROR {rep['credentials_error']}")
     else:

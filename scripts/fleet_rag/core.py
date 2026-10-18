@@ -1,13 +1,16 @@
 """Credentials, HTTP, embeddings, and a small Qdrant client for the fleet-agents corpus.
 
-Credentials come from the environment when set, otherwise from Infisical via the machine
-identity in the handoff file.  Values are never printed or logged.
+Credentials come from the environment when set, otherwise from Infisical via a machine
+identity in the environment, otherwise from `fleet-secrets` when that command is installed
+(the Mac).  Nothing reads the flat file ~/.secrets/global-api-keys any more (OPS-818).
+Values are never printed or logged.
 
 Run your own: set QDRANT_URL, QDRANT_API_KEY, TEI_URL, TEI_API_KEY and
 QDRANT_FLEET_COLLECTION in the environment and nothing else is needed -- no Infisical, no
-handoff file, no code edits.  Everything Infisical-shaped is a default that the environment
-overrides: FLEET_RAG_INFISICAL_API, FLEET_RAG_INFISICAL_PROJECT, FLEET_RAG_INFISICAL_ENV and
-FLEET_RAG_HANDOFF_FILE.
+credentials file, no code edits.  Everything Infisical-shaped is a default that the
+environment overrides: FLEET_RAG_INFISICAL_API, FLEET_RAG_INFISICAL_PROJECT,
+FLEET_RAG_INFISICAL_ENV and FLEET_RAG_HANDOFF_FILE (an explicit KEY=value file of your own;
+there is no default file).
 
 Read vs write: if QDRANT_READONLY_API_KEY is available it is used for every read path
 (search / scroll / count / stats); QDRANT_API_KEY is used only for upsert / delete.  Callers
@@ -20,6 +23,8 @@ import json
 import os
 import pathlib
 import re
+import shutil
+import subprocess
 import sys
 import time
 import urllib.error
@@ -28,14 +33,13 @@ import urllib.request
 import uuid
 from typing import Any, Iterable
 
-# Infisical / handoff-file defaults.  Every one of these is a *default*, overridable from the
+# Infisical defaults.  Every one of these is a *default*, overridable from the
 # environment so a third party can point the same code at their own Infisical (or self-hosted
-# Infisical) and their own handoff file without editing this module.  See infisical_api(),
+# Infisical) and their own credentials file without editing this module.  See infisical_api(),
 # infisical_project(), infisical_env() and handoff_file() below for the override names.
 INFISICAL_API = "https://app.infisical.com/api"
 SHARED_PROJECT = "18f563a3-9c88-454c-96eb-28fc9678f3ba"
 SHARED_ENV = "prod"
-HANDOFF = pathlib.Path.home() / ".secrets" / "global-api-keys"
 NAMESPACE = uuid.UUID("00000000-0000-0000-0000-00000000fee7")
 
 READ_KEYS = ("TEI_URL", "TEI_API_KEY", "QDRANT_URL", "QDRANT_FLEET_COLLECTION")
@@ -182,29 +186,82 @@ def infisical_env() -> str:
     return os.environ.get("FLEET_RAG_INFISICAL_ENV") or SHARED_ENV
 
 
-def handoff_file() -> pathlib.Path:
-    """The chmod-600 file holding the machine-identity credentials.
+def handoff_file() -> "pathlib.Path | None":
+    """An explicit credentials file of the caller's own, or None.
 
-    FLEET_RAG_HANDOFF_FILE overrides the default (~/.secrets/global-api-keys).  Only the
-    client id / secret lines are ever read, and no value is printed or logged.
+    FLEET_RAG_HANDOFF_FILE names it.  There is no default file:  the flat file
+    ~/.secrets/global-api-keys is retired (OPS-818), and the Mac reads Infisical through
+    `fleet-secrets` instead (see fleet_secrets_many()).  Only the client id / secret lines are
+    ever read, and no value is printed or logged.
     """
     override = os.environ.get("FLEET_RAG_HANDOFF_FILE")
-    return pathlib.Path(override).expanduser() if override else HANDOFF
+    return pathlib.Path(override).expanduser() if override else None
 
 
 def _identity(prefix: str) -> tuple[str | None, str | None]:
+    """The machine-identity client id and secret:  environment first, then the explicit file."""
+    cid = (os.environ.get(f"{prefix}_CLIENT_ID") or "").strip() or None
+    csec = (os.environ.get(f"{prefix}_CLIENT_SECRET") or "").strip() or None
+    if cid and csec:
+        return cid, csec
     path = handoff_file()
-    if not path.exists():
-        return None, None
-    cid = csec = None
-    for line in path.read_text().splitlines():
+    if path is None or not path.exists():
+        return cid, csec
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return cid, csec
+    for line in lines:
         m = re.match(rf"^{prefix}_CLIENT_ID=(.*)$", line)
-        if m:
+        if m and not cid:
             cid = m.group(1).strip().strip('"').strip("'")
         m = re.match(rf"^{prefix}_CLIENT_SECRET=(.*)$", line)
-        if m:
+        if m and not csec:
             csec = m.group(1).strip().strip('"').strip("'")
     return cid, csec
+
+
+FLEET_SECRETS_TIMEOUT = 60
+_FLEET_SECRETS_PICK = (
+    "import json,os,sys;"
+    "print(json.dumps({n:os.environ[n] for n in sys.argv[1:] if os.environ.get(n)}))"
+)
+
+
+def _fleet_secrets_bin() -> "str | None":
+    """The `fleet-secrets` command (OPS-818) on PATH or in ~/.local/bin, or None."""
+    found = shutil.which("fleet-secrets")
+    if found:
+        return found
+    local = pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
+    return str(local) if local.is_file() and os.access(local, os.X_OK) else None
+
+
+def fleet_secrets_many(names: Iterable[str]) -> dict[str, str]:
+    """Values of `names` that `fleet-secrets` can supply, from one fetch.  Missing command,
+    a failure or an absent name just leaves that name out;  values are never logged.
+
+    One `fleet-secrets run` fetches Fleet-OPS once and starts a tiny child that prints only the
+    wanted names as JSON on a pipe, so N names cost one fetch rather than N `get` calls.
+    """
+    wanted = [n for n in names if n]
+    binary = _fleet_secrets_bin()
+    if not wanted or not binary:
+        return {}
+    try:
+        proc = subprocess.run([binary, "run", "--", sys.executable, "-c", _FLEET_SECRETS_PICK, *wanted],
+                              capture_output=True, text=True, timeout=FLEET_SECRETS_TIMEOUT)
+        if proc.returncode != 0:
+            return {}
+        got = json.loads(proc.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+    return {k: v for k, v in got.items() if k in wanted and isinstance(v, str) and v}
+
+
+def fleet_secret(name: str) -> "str | None":
+    """One value via `fleet-secrets`, or None."""
+    return fleet_secrets_many([name]).get(name)
 
 
 def infisical_login() -> str | None:
@@ -226,9 +283,10 @@ def load_config(need_write: bool = False, extra: Iterable[str] = ()) -> dict[str
 
     Environment-only operation is fully supported: when QDRANT_URL, QDRANT_API_KEY, TEI_URL,
     TEI_API_KEY and QDRANT_FLEET_COLLECTION are all set (plus any `extra`), the Infisical
-    fallback is still consulted only for the OPTIONAL_KEYS, and with no handoff file present
-    that consultation makes no network call at all -- so a third party needs neither Infisical
-    nor a handoff file.
+    fallback is still consulted only for the OPTIONAL_KEYS, and with no machine identity in the
+    environment that consultation makes no network call at all -- so a third party needs
+    neither Infisical nor a credentials file.  If a required key is still missing, it is then
+    asked of `fleet-secrets` when that is installed (the Mac), in one call.
 
     Raises FleetRagError listing the missing required keys (never their values).
     """
@@ -248,6 +306,10 @@ def load_config(need_write: bool = False, extra: Iterable[str] = ()) -> dict[str
                     cfg.setdefault(s["secretKey"], s["secretValue"])
         except FleetRagError:
             pass
+    if any(k not in cfg for k in required):
+        # A required key is still missing:  ask `fleet-secrets` (one fetch) for every gap.
+        for k, v in fleet_secrets_many([k for k in wanted if k not in cfg]).items():
+            cfg.setdefault(k, v)
     missing = [k for k in required if k not in cfg]
     if missing:
         raise FleetRagError("missing credentials: " + ", ".join(missing)

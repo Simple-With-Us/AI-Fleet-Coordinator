@@ -47,7 +47,7 @@ EXIT_CODES = {2: ("invalid_argument", False), 3: ("claim_held", False), 4: ("not
 CHILD_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "USER", "LOGNAME", "SHELL",
                   "AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "BOARD_CHECKOUT")
 # The variables board itself reads (LINEAR_BOARD_*, and the LINEAR_<SEAT>_CLIENT_ID / _SECRET pairs a cloud
-# host keeps in its environment instead of the handoff file).  Nothing else passes through.
+# host keeps in its environment).  Nothing else passes through.
 PASS_PREFIXES = ("LINEAR_",)
 
 

@@ -426,32 +426,44 @@ class RequireDirectPathTests(unittest.TestCase):
 # --------------------------------------------------------------------------- credential resolution
 
 class PublicCredentialsFileFallbackTests(unittest.TestCase):
-    """public_credentials() reads a name from its handoff file when the environment has none --
-    the stock `python3 fleet-recall-mcp.py` MCP registration never sources these into
-    os.environ, so the file path is what makes the fallback work in practice."""
+    """public_credentials() reads a name from its file (the Access pair) or from `fleet-secrets`
+    (RECALL_API_TOKEN) when the environment has none -- the stock `python3 fleet-recall-mcp.py`
+    MCP registration never sources these into os.environ, so this is what makes the fallback
+    work in practice."""
 
     def setUp(self):
         self.env = mock.patch.dict(os.environ, {k: "" for k in public_fallback.PUBLIC_ENV_KEYS})
         self.env.start()
+        # Never shell out to a real `fleet-secrets` from a test.
+        self.fs = mock.patch.object(core, "fleet_secret", return_value=None)
+        self.fleet_secret = self.fs.start()
 
     def tearDown(self):
+        self.fs.stop()
         self.env.stop()
 
     def test_env_value_wins_over_file(self):
         with mock.patch.object(public_fallback, "_read_named_line", return_value="from-file"):
-            with mock.patch.dict(os.environ, {"RECALL_API_TOKEN": "from-env"}):
-                self.assertEqual(public_fallback._resolve_public_env()["RECALL_API_TOKEN"], "from-env")
+            with mock.patch.dict(os.environ, {"RECALL_API_TOKEN": "from-env",
+                                              "CF_ACCESS_CLIENT_ID": "id-env"}):
+                resolved = public_fallback._resolve_public_env()
+        self.assertEqual(resolved["RECALL_API_TOKEN"], "from-env")
+        self.assertEqual(resolved["CF_ACCESS_CLIENT_ID"], "id-env")
+        self.fleet_secret.assert_not_called()
 
-    def test_falls_back_to_file_when_env_is_blank(self):
+    def test_falls_back_to_file_and_fleet_secrets_when_env_is_blank(self):
         def fake_read(path, name):
-            return {"RECALL_API_TOKEN": "tok-from-file", "CF_ACCESS_CLIENT_ID": "id-from-file",
+            return {"CF_ACCESS_CLIENT_ID": "id-from-file",
                     "CF_ACCESS_CLIENT_SECRET": "secret-from-file"}[name]
+        self.fleet_secret.return_value = "tok-from-fleet-secrets"
         with mock.patch.object(public_fallback, "_read_named_line", side_effect=fake_read):
             creds = public_fallback.public_credentials()
-        self.assertEqual(creds, {"RECALL_API_TOKEN": "tok-from-file", "CF_ACCESS_CLIENT_ID": "id-from-file",
+        self.assertEqual(creds, {"RECALL_API_TOKEN": "tok-from-fleet-secrets",
+                                 "CF_ACCESS_CLIENT_ID": "id-from-file",
                                  "CF_ACCESS_CLIENT_SECRET": "secret-from-file"})
+        self.fleet_secret.assert_called_once_with("RECALL_API_TOKEN")
 
-    def test_none_when_the_file_is_also_missing(self):
+    def test_none_when_the_file_and_fleet_secrets_are_also_missing(self):
         with mock.patch.object(public_fallback, "_read_named_line", return_value=None):
             self.assertIsNone(public_fallback.public_credentials())
 
@@ -472,8 +484,11 @@ class CallPublicTests(unittest.TestCase):
         # suite -- these tests control credentials via os.environ only.
         self.no_files = mock.patch.object(public_fallback, "_read_named_line", return_value=None)
         self.no_files.start()
+        self.no_fs = mock.patch.object(core, "fleet_secret", return_value=None)
+        self.no_fs.start()
 
     def tearDown(self):
+        self.no_fs.stop()
         self.no_files.stop()
         self.env.stop()
 

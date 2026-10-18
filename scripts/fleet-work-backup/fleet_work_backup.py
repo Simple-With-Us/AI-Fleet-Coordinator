@@ -215,6 +215,7 @@ class Config:
     launchctl_bin: str = "launchctl"
     check_wait_s: int = 90
     agent_sync_bin: str = ""        # '' is <home>/.local/bin/agent-sync (launchd's PATH does not have it)
+    fleet_secrets_bin: str = ""     # '' is <home>/.local/bin/fleet-secrets (launchd's PATH does not have it)
     alert_seat: str = "CLAUDE"
     alert_topic: str = ALERT_TOPIC
     alert_to: tuple = ()            # seats or people to @-mention;  none means the post wakes nobody
@@ -280,10 +281,6 @@ class Config:
     def check_result_path(self) -> Path:
         return self.state_dir / "check-access.json"
 
-    @property
-    def handoff(self) -> Path:
-        return self.home / ".secrets" / "global-api-keys"
-
     def now(self) -> float:
         return self.now_fn() if self.now_fn else time.time()
 
@@ -300,6 +297,7 @@ def config_from_env() -> Config:
     cfg.repository = os.environ.get("FLEET_WORK_BACKUP_REPOSITORY", cfg.repository)
     cfg.launchctl_bin = os.environ.get("FLEET_WORK_BACKUP_LAUNCHCTL", cfg.launchctl_bin)
     cfg.agent_sync_bin = os.environ.get("FLEET_WORK_BACKUP_AGENT_SYNC", cfg.agent_sync_bin)
+    cfg.fleet_secrets_bin = os.environ.get("FLEET_WORK_BACKUP_FLEET_SECRETS", cfg.fleet_secrets_bin)
     cfg.infisical_bin = os.environ.get("FLEET_WORK_BACKUP_INFISICAL", cfg.infisical_bin)
     cfg.alert_seat = os.environ.get("FLEET_WORK_BACKUP_ALERT_SEAT", cfg.alert_seat)
     cfg.alert_topic = os.environ.get("FLEET_WORK_BACKUP_ALERT_TOPIC", cfg.alert_topic)
@@ -2131,22 +2129,37 @@ CRED_NAMES = {"bucket": "B2_FLEET_WORK_BUCKET_NAME", "key_id": "B2_FLEET_WORK_KE
 MASTER_NAMES = {"key_id": "BACKBLAZE_MASTER_KEY_ID", "app_key": "BACKBLAZE_MASTER_APPLICATION_KEY"}
 
 
-def read_handoff(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
+# Child run by `fleet-secrets run`:  prints only the wanted names, as JSON, on the pipe back to this process.
+_PICK_CREDENTIALS = (
+    "import json,os,sys;"
+    "print(json.dumps({n:os.environ[n] for n in sys.argv[1:] if os.environ.get(n)}))"
+)
+
+
+def fleet_secrets_path(cfg: Config) -> str:
+    return cfg.fleet_secrets_bin or str(cfg.home / ".local" / "bin" / "fleet-secrets")
+
+
+def read_credentials(cfg: Config) -> dict[str, str]:
+    """The credentials this job uses that ``fleet-secrets`` can supply (OPS-818;  the flat file
+    ~/.secrets/global-api-keys is retired), from one Infisical fetch.  Callers overlay the environment
+    on top.  A missing command or any failure is an empty dict, so the caller reports the missing NAMES.
+    Skipped when the environment already holds all four job credentials.  Values stay in this process."""
+    if all(os.environ.get(n) for n in CRED_NAMES.values()):
+        return {}
+    binary = fleet_secrets_path(cfg)
+    if not os.access(binary, os.X_OK):
+        return {}
+    wanted = list(CRED_NAMES.values()) + list(MASTER_NAMES.values())
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return values
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].lstrip()
-        k, sep, v = line.partition("=")
-        if sep and re.fullmatch(r"[A-Z][A-Z0-9_]*", k.strip()):
-            values[k.strip()] = v.strip().strip('"').strip("'")
-    return values
+        p = subprocess.run([binary, "run", "--", sys.executable, "-c", _PICK_CREDENTIALS, *wanted],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=120)
+        if p.returncode != 0:
+            return {}
+        got = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+    return {k: v for k, v in got.items() if k in wanted and isinstance(v, str) and v}
 
 
 def restic_env(cfg: Config, allow_master: bool = False) -> tuple[Optional[dict], list[str]]:
@@ -2160,7 +2173,7 @@ def restic_env(cfg: Config, allow_master: bool = False) -> tuple[Optional[dict],
 
     The bucket name is B2_FLEET_WORK_BUCKET_NAME only:  there is no fallback to the fleet's shared bucket name, because
     a fallback could point this backup at a bucket it does not own."""
-    src = dict(read_handoff(cfg.handoff))
+    src = dict(read_credentials(cfg))
     for name in list(CRED_NAMES.values()) + list(MASTER_NAMES.values()):
         if os.environ.get(name):
             src[name] = os.environ[name]
@@ -2278,7 +2291,7 @@ def check_b2_setup(cfg: Config) -> list[tuple[bool, str]]:
     """b2_key_problems for the key this job would use (never the master key).  A local repository needs none."""
     if cfg.repository:
         return []
-    src = dict(read_handoff(cfg.handoff))
+    src = dict(read_credentials(cfg))
     for name in CRED_NAMES.values():
         if os.environ.get(name):
             src[name] = os.environ[name]
@@ -2298,7 +2311,7 @@ def b2_gate(cfg: Config, state: dict) -> tuple[list[str], list[str]]:
     id in state.json), so a steady run costs two read-only B2 calls a day and a new key is checked on its first run."""
     if cfg.repository:
         return [], []
-    src = dict(read_handoff(cfg.handoff))
+    src = dict(read_credentials(cfg))
     for name in CRED_NAMES.values():
         if os.environ.get(name):
             src[name] = os.environ[name]
@@ -2337,13 +2350,13 @@ def infisical_get(cfg: Config, name: str) -> tuple[int, str]:
 
 def cmd_new_password(cfg: Config, args) -> int:
     """Generate the repository password and write it to Infisical, never printing it.  Write-once:  it refuses when
-    the handoff file, the environment or Infisical already has one (a replaced password locks every snapshot), and
+    fleet-secrets, the environment or Infisical already has one (a replaced password locks every snapshot), and
     any read it cannot make is a refusal, never 'absent'.  The value reaches the CLI as a file path (``NAME=@file``,
     a 0600 file in a 0700 folder, removed afterwards), never in argv;  the CLI's output is discarded;  the value is
     read back and compared in memory, and only 'matched' and its length are reported."""
     name = CRED_NAMES["password"]
-    if read_handoff(cfg.handoff).get(name) or os.environ.get(name):
-        say(f"{name} is already in {cfg.handoff} or the environment:  the repository has its password;  "
+    if read_credentials(cfg).get(name) or os.environ.get(name):
+        say(f"{name} is already in fleet-secrets or the environment:  the repository has its password;  "
             f"it is never replaced (README, Credentials).  Nothing written.")
         return 1
     if not os.access(cfg.infisical_bin, os.X_OK):
@@ -2963,7 +2976,7 @@ def _run(cfg: Config, args, held: list[int]) -> int:
 # Two verbs for the Plumbers (BF-Plumber and the F7 publisher run them).  Neither touches the run path.
 # ``health`` reads the state file, the newest run line, the installed files and ``launchctl print``;  it writes
 # nothing.  ``repair --reload`` is the one repair that needs no secret:  it loads the installed LaunchAgent when it
-# is not loaded.  Neither reads the credential names, the handoff file, restic or B2.
+# is not loaded.  Neither reads the credential names, fleet-secrets, restic or B2.
 HEALTH_SCHEMA = 1
 HEALTH_WARN_AFTER_S = 12 * 3600           # no complete backup for longer than this:  verdict warn
 HEALTH_UNHEALTHY_AFTER_S = 24 * 3600      # ... for longer than this:  verdict unhealthy
@@ -3225,7 +3238,7 @@ def cmd_init(cfg: Config, args) -> int:
         return 2
     env, missing = restic_env(cfg)
     if env is None:
-        say(f"missing credentials in {cfg.handoff} or the environment: {', '.join(missing)}")
+        say(f"missing credentials in fleet-secrets or the environment: {', '.join(missing)}")
         return 2
     probs = check_b2_setup(cfg)
     for hard, text in probs:

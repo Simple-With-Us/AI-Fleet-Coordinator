@@ -36,8 +36,7 @@ This module gives those two surfaces a fast, actionable alternative:
   3. The public retry needs three names: `RECALL_API_TOKEN` and `CF_ACCESS_CLIENT_ID` /
      `CF_ACCESS_CLIENT_SECRET` (the Cloudflare Access service token) -- see
      docs/RECALL-ACCESS-CHECK.md.  A value already in the environment wins; otherwise each is
-     read straight from its handoff file (PUBLIC_ENV_FILES: RECALL_API_TOKEN from
-     ~/.secrets/global-api-keys, the Access pair from
+     read from where it lives (RECALL_API_TOKEN from `fleet-secrets get`, the Access pair from
      ~/.secrets/agents-jays-services-access-service-token.env) so this works from the stock
      `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper.  The request also
      carries a real `User-Agent` (core.http_json sends none, and urllib's default trips
@@ -103,22 +102,21 @@ USER_AGENT = f"fleet-recall-fallback/{__version__} (+https://github.com/Simple-W
 
 # Every MCP client on this Mac registers `fleet-recall` as a plain `python3 fleet-recall-mcp.py`
 # (no shell wrapper, no env sourcing -- see install-fleet-rag.sh), so these three names are
-# rarely already in os.environ.  Mirror core.py's own env-then-handoff-file pattern instead of
+# rarely already in os.environ.  Mirror core.py's own env-then-fallback pattern instead of
 # requiring every MCP config to be rewritten as a `sh -c 'set -a; . ...; exec ...'` wrapper:
-# RECALL_API_TOKEN lives in the same handoff file as TEI_URL / QDRANT_URL (~/.secrets/global-
-# api-keys); the Cloudflare Access service token is a separate file per docs/RECALL-ACCESS-
+# RECALL_API_TOKEN comes from `fleet-secrets get` (OPS-818;  the flat file
+# ~/.secrets/global-api-keys is retired);  the Cloudflare Access service token is a separate file per docs/RECALL-ACCESS-
 # CHECK.md (~/.secrets/agents-jays-services-access-service-token.env, shared with agents.jays.
 # services).  A value already in the environment always wins.
 CF_ACCESS_FILE = pathlib.Path.home() / ".secrets" / "agents-jays-services-access-service-token.env"
 PUBLIC_ENV_FILES = {
-    "RECALL_API_TOKEN": core.HANDOFF,
     "CF_ACCESS_CLIENT_ID": CF_ACCESS_FILE,
     "CF_ACCESS_CLIENT_SECRET": CF_ACCESS_FILE,
 }
 
 
 def _read_named_line(path: pathlib.Path, name: str) -> "str | None":
-    """The value of one `NAME=value` line in a chmod-600 handoff file, or None.  Same quote-
+    """The value of one `NAME=value` line in a chmod-600 credentials file, or None.  Same quote-
     stripping as core._identity(); never logs the path's other contents."""
     try:
         if not path.exists():
@@ -357,7 +355,7 @@ def public_credentials() -> "dict[str, str] | None":
     """The three names the public REST twin needs, or None if any is missing/blank.
 
     Environment first (a value there always wins, and is all the unit tests ever set); when a
-    name is not in the environment, read it from its handoff file (PUBLIC_ENV_FILES) the same
+    name is not in the environment, read it from its file (PUBLIC_ENV_FILES) or `fleet-secrets` the same
     way core.load_config() falls back to Infisical for TEI_URL / QDRANT_URL -- so the fallback
     works from the stock `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper
     and no change to any client's MCP config.
@@ -372,8 +370,10 @@ def _resolve_public_env() -> dict[str, str]:
     vals = {}
     for k in PUBLIC_ENV_KEYS:
         v = (os.environ.get(k) or "").strip()
-        if not v:
+        if not v and k in PUBLIC_ENV_FILES:
             v = _read_named_line(PUBLIC_ENV_FILES[k], k) or ""
+        if not v and k not in PUBLIC_ENV_FILES:
+            v = (core.fleet_secret(k) or "").strip()
         vals[k] = v
     return vals
 
@@ -400,7 +400,7 @@ def call_public(name: str, kwargs: dict) -> dict:
         raise FleetRagError(
             "public fallback (recall.jays.services) needs " + ", ".join(missing)
             + " -- set them in the environment, or see docs/RECALL-ACCESS-CHECK.md for the"
-            " handoff files that normally supply them")
+            " credential sources that normally supply them")
     url = PUBLIC_BASE + REST_PATH[name]
     method = REST_METHOD[name]
     body = dict(kwargs) if method == "POST" else None
