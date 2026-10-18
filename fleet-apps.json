@@ -183,7 +183,7 @@
       "hasAppIcon": true,
       "iconFile": "agent-logos/app-cc.png",
       "kind": "product",
-      "notes": "No digestColor:  the daily digest's --cc colour (#0d9488) is already congress-trading-shared's, and check-fleet-registry.py rejects a reused colour.  The acronym CC and the repo-cc badge come from REPO_BADGE in scripts/build-fleet-daily-digest.py.  Do not use CC#n for CodeCaps in Zulip topics:  the live CC# linkifier points at Clutch (zulip-fleet-guide.md, Current Linkifiers, decision 17 pending the owner), so use CodeCaps#n, which the generic repo pattern resolves correctly."
+      "notes": "No digestColor:  the daily digest's --cc colour (#0d9488) is already congress-trading-shared's, and check-fleet-registry.py rejects a reused colour.  The acronym CC and the repo-cc badge come from REPO_BADGE in scripts/build-fleet-daily-digest.py.  CC is also CodeCaps's Linear team key, and the CC# Zulip linkifier points at CodeCaps (owner 2026-10-16, AFC-336;  CAPS# is an alias)."
     },
     {
       "repo": "FleetLink",
@@ -194,7 +194,7 @@
       "badgeClass": "repo-fl",
       "hasAppIcon": false,
       "kind": "product",
-      "notes": "Expiring artifact sharing and static hosting (fleetlink.online, fleetlink.app) with an iOS App Clip.  Public repo.  No digestColor and no digest badge:  FleetLink is not on the public-activity allowlist (scripts/public_activity_repos.py), so the daily digest and the calendar do not list it.  The acronym FL was chosen on 2026-10-11 (AFC-252):  no other registry row, Linear team key or Zulip linkifier uses it, and Jay creates the Linear team FL.  Do not use FL#n in Zulip topics:  there is no FL# linkifier, so FL#n falls through to the generic repo#id pattern and links to a repo named FL that does not exist.  Use FleetLink#n, which the generic pattern resolves correctly.  The live fleetlink.online worker (fleet-share-api) is still built from fleetlink-legacy until cutover, so a fix to production today lands there."
+      "notes": "Expiring artifact sharing and static hosting (fleetlink.online, fleetlink.app) with an iOS App Clip.  Public repo.  No digestColor and no digest badge:  FleetLink is not on the public-activity allowlist (scripts/public_activity_repos.py), so the daily digest and the calendar do not list it.  The acronym FL was chosen on 2026-10-11 (AFC-252):  no other registry row, Linear team key or Zulip linkifier uses it, and Jay creates the Linear team FL.  FL#n links to FleetLink issues and FL-n to its Linear team (zulip-fleet-guide.md, Current Linkifiers).  The live fleetlink.online worker (fleet-share-api) is still built from fleetlink-legacy until cutover, so a fix to production today lands there."
     },
     {
       "repo": "fleetlink-legacy",
