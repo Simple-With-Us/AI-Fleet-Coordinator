@@ -115,7 +115,7 @@ with the top-level `apps` (the acronyms) and `--app`.
    § Two spaces and `FLEET-UI-COPY.md`.
 8. **Say every time on the owner's clock, 12-hour, with am or pm.**  That
    clock is Central.  Do not type CDT, CST, or CT (`3:15am`, not `08:15Z`).
-   Name a zone only when citing UTC, after the local time.  `00:00 UTC` is
+   Give only the Central time:  convert UTC first, with no stamp beside it.  `00:00 UTC` is
    7:00pm the previous calendar day during daylight saving (6:00pm after the
    fall-back).  Binding for every agent, bot, and platform.  Canonical:
    `AGENT-SYNC.md` § Timestamps.

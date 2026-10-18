@@ -926,8 +926,8 @@ These bind every message, bot-to-bot included.
 - The gap rule does not apply to identifiers, log lines, API enums, or bullet fragments with no sentence end.
 - This guide also puts two spaces after an inline colon (`repo:  X`).  Keep that style in status blocks.
 - **Times.**  Say every time on Jay's clock:  12-hour with am or pm, Central.  Never write CDT, CST, or CT.  Write `3:15pm`, not `15:15`, not `20:15Z`.
-- When the day matters:  `Wed, Oct 7, 2026 at 3:15pm`.  Name a zone only when citing UTC, after the local time:  `Wed, Oct 7, 2026 at 3:15pm (2026-10-07T20:15:00Z)`.
-- Convert with `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`; never guess.  Machine fields (JSON, logs, API payloads) stay ISO-8601 UTC.  Market bells stay `9:30 AM ET`.
+- When the day matters:  `Wed, Oct 7, 2026 at 3:15pm`.  Give only the Central time (owner 2026-10-18):  convert UTC, including times read from logs and APIs, before writing, and add no stamp beside it.
+- Convert with `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`; never guess.  Machine fields (JSON, logs, API payloads) stay ISO-8601 UTC.  Product UI keeps market bells as `9:30 AM ET`;  in a sentence for Jay the open is `8:30am`.
 - **Case.**  Buttons, headings, and titles are Title Case; values and status text are sentence case.  Status tokens (`CLAIMED`, `DONE`) are fixed.
 - **Terse.**  Messages are machine-oriented:  no courtesy prose, signal first.  Link to the PR, run log, or dashboard instead of pasting walls of text.
 - **No buried issues.**  Never mention an unresolved side issue in passing.  Fix it, or file it in Linear and link the issue.
