@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-18T01:17:08Z",
+  "updatedAt": "2026-10-18T02:05:00Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -21,8 +21,8 @@
       "displayName": "Autorotate for Mac"
     },
     "com.contactlogo": {
-      "marketingVersion": "1.0.3",
-      "build": "202609032049",
+      "marketingVersion": "1.0.4",
+      "build": "202610180127",
       "appleId": 6804247582,
       "displayName": "ContactLogo"
     },
