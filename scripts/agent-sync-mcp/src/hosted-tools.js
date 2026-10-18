@@ -441,7 +441,19 @@ export class HostedTools {
       this.me = { user_id: cached.user_id, role: cached.role };
       return;
     }
-    const me = await this.zulip.get("users/me");
+    let me;
+    try {
+      me = await this.zulip.get("users/me");
+    } catch (err) {
+      // A key Zulip refuses outright (a rotated or deactivated bot) is a refused role, not an unchecked one:
+      // record it so the admin card names the cause instead of "not checked yet" (AFC-347).
+      if (err?.status === 401 || err?.status === 403) {
+        const reason = `Zulip refused the installed key (HTTP ${err.status});  reinstall it with install_seat_key.py ${this.seat} --apply`;
+        await this.gate.roleSet({ ok: false, user_id: null, role: null, reason });
+        throw new ToolError("not_authorized", `The ${this.seat} bot is refused:  ${reason}`);
+      }
+      throw err;
+    }
     const problem = seatProblem(me, { seat: this.seat, email: this.email });
     await this.gate.roleSet({ ok: !problem, user_id: isInt(me.user_id) ? me.user_id : null, role: isInt(me.role) ? me.role : null, reason: problem ?? "" });
     if (problem) throw new ToolError("not_authorized", `The ${this.seat} bot is refused:  ${problem}`);
