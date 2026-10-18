@@ -143,11 +143,10 @@ class FleetSecretsFallbackTests(unittest.TestCase):
 
     def test_identity_environment_beats_fleet_secrets(self) -> None:
         env = {"INFISICAL_SHARED_CLIENT_ID": "cid-env", "INFISICAL_SHARED_CLIENT_SECRET": "sec-env"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            with mock.patch.object(
-                core, "_fleet_secrets_bin", lambda: "/nonexistent/fleet-secrets"
-            ):
-                self.assertEqual(core._identity("INFISICAL_SHARED"), ("cid-env", "sec-env"))
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(
+            core, "_fleet_secrets_bin", lambda: "/nonexistent/fleet-secrets"
+        ):
+            self.assertEqual(core._identity("INFISICAL_SHARED"), ("cid-env", "sec-env"))
 
     def test_missing_binary_is_just_absent(self) -> None:
         with mock.patch.object(core, "_fleet_secrets_bin", lambda: None):
