@@ -242,13 +242,15 @@ class Sweep:
         self.say(f"{o.pr} r{o.round}: {o.action}" + (f" ({o.why})" if o.why else ""))
 
     def _logdir(self) -> Path:
-        if self.log_root is None:
-            stamp = self.clock().strftime("%Y%m%dT%H%M%SZ")
-            self.log_root = Path(
-                os.path.expanduser(f"~/apps/scratch/{self.seat.folder}/pr-sweep/{stamp}")
-            )
-        self.log_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        return self.log_root
+        # Chains run in threads: one lock, so every worker of a run logs into the same stamped folder.
+        with self._lock:
+            if self.log_root is None:
+                stamp = self.clock().strftime("%Y%m%dT%H%M%SZ")
+                self.log_root = Path(
+                    os.path.expanduser(f"~/apps/scratch/{self.seat.folder}/pr-sweep/{stamp}")
+                )
+            self.log_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            return self.log_root
 
     def _status(self, key: str) -> dict[str, Any]:
         return S.status_many(self.gh, [key], self.clock())[key]

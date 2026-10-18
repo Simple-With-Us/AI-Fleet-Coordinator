@@ -98,8 +98,8 @@ def check_pr(
                     {
                         "rule": "V2",
                         "evidence": f"{actor or '?'} dismissed a review by {author or '?'} "
-                        f"({ev.get('previousReviewState')}) at {ev.get('createdAt')}; only stale kody-ai[bot] "
-                        "reviews may be dismissed",
+                        f"({ev.get('previousReviewState')}) at {ev.get('createdAt')}; only stale Kody reviews "
+                        "(kody-ai or kody-ai[bot]) may be dismissed",
                     }
                 )
             elif actor.lower() not in allowed:
