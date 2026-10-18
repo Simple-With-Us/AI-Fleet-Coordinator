@@ -8,7 +8,7 @@ the root path.
 One ``export`` call returns the whole path.  This module keeps only the names it was asked
 for and drops the rest at once, so no other secret outlives the call.  The CLI's output is
 never printed or logged, and neither is its stderr:  a failure is reduced to a short reason
-token (``cli-missing``, ``timeout``, ``exit-1``, ``bad-output``).
+token (``cli-missing``, ``timeout``, ``exit-1``, ``bad-output``, ``unresolved-reference``).
 
 Why the CLI and not HTTP:  a stable copy run with ``python3 -I`` then needs no sibling
 package, and the Mac's LaunchAgents already rely on the CLI's login (see
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Iterable
@@ -35,6 +36,10 @@ ENV_NAMES = ("INFISICAL_ENVIRONMENT", "INFISICAL_ENV")
 # ``infisical secrets get NAME`` exits 0 and answers a name it does not hold with this value
 # (verified against the real CLI, OPS-818), so it means "absent", never a secret's value.
 NOT_FOUND_PLACEHOLDERS = frozenset({"*not found*"})
+# A value that is still a whole bare Infisical reference such as ${prod.some-folder.NAME}: the
+# Fleet-OPS root is stored that way (OPS-818), and every read passes --expand=true so the server
+# resolves it.  One that survives is an unresolved reference, never a credential.
+UNRESOLVED_REFERENCE = re.compile(r"^\$\{[^}]+\}$")
 
 
 class FetchFailed(Exception):
@@ -78,7 +83,7 @@ def argv_for(cli: str) -> list:
         "--format=json",
         "--path=/",
         "--silent",
-        "--expand=false",
+        "--expand=true",
         "--include-imports=false",
     ]
 
@@ -106,7 +111,7 @@ def argv_named(cli: str, names: Iterable[str], project_id: str, path: str) -> li
         f"--path={path}",
         "--output=json",
         "--silent",
-        "--expand=false",
+        "--expand=true",
         "--include-imports=false",
     ]
 
@@ -178,5 +183,10 @@ def _pick(payload, wanted) -> dict[str, str]:
             text = str(val)
             if isinstance(val, bool):
                 text = "true" if val else "false"
+            if UNRESOLVED_REFERENCE.match(text.strip()):
+                # A bare ${prod.folder.NAME} that expansion left alone (target missing, or the
+                # identity cannot read the referenced folder).  Fail closed on a reason token;
+                # the key and the reference text are never carried (OPS-818).
+                raise FetchFailed("unresolved-reference")
             found[key] = text
     return found
