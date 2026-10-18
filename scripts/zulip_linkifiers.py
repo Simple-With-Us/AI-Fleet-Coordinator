@@ -130,6 +130,13 @@ TARGET: list[tuple[int | None, str, str]] = [
     # Spelled out (owner 2026-10-16) so it never reads as an app acronym.  Numeric ids also match the
     # generic rule, which is why `order` keeps the generic rule last.
     (5143, "PagerDuty#(?P<id>[A-Z0-9]+)", "https://jays-services.pagerduty.com/incidents/{id}"),
+    # The short FleetLink form (owner 2026-10-18), lowercase on purpose so it never reads as the FL
+    # app acronym (`FL#12`, `FL-12`):  `fl/zulip` links, `FL/zulip` does not.  Same path rules as 5118.
+    (
+        5151,
+        "fl/(?P<path>[A-Za-z0-9_-]+(?:[./][A-Za-z0-9_-]+)*)",
+        "https://fleetlink.online/{+path}",
+    ),
 ]
 GENERIC_ID = (
     5139  # the `repo#id` fallback;  it must stay last or it claims every `X#n` before its own rule
@@ -162,6 +169,9 @@ CHECKS: list[tuple[str, str | None]] = [
     ("bc-a1b2c3d4-e5f6", "https://cursor.com/agents/bc-a1b2c3d4-e5f6"),
     ("PagerDuty#384", "https://jays-services.pagerduty.com/incidents/384"),
     ("PagerDuty#Q1ABC23", "https://jays-services.pagerduty.com/incidents/Q1ABC23"),
+    ("fl/zulip", "https://fleetlink.online/zulip"),
+    ("fl/zulip/zulip-fleet-guide.md.", "https://fleetlink.online/zulip/zulip-fleet-guide.md"),
+    ("FL/zulip", None),
 ]
 
 
