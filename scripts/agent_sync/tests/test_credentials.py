@@ -76,6 +76,117 @@ class CredentialOrderTests(Harness):
         self.assertEqual(self.credential_used("--rc", str(rc)), str(rc))
 
 
+class InfisicalFallbackTests(Harness):
+    """OPS-818:  with no zuliprc and no env triple, the seat's own three Fleet-OPS /zulip keys are the last source."""
+
+    def seed(self, prefix: str = "CLAUDE") -> None:
+        self.infisical_values = {"%s_ZULIP_EMAIL" % prefix: BOT_EMAIL, "%s_ZULIP_KEY" % prefix: self.key,
+                                 "%s_ZULIP_SITE" % prefix: self.fake.url,
+                                 # Another seat's keys in the same folder:  never asked for, never used.
+                                 "CODEX_ZULIP_KEY": "other-seat-key-should-never-be-requested"}
+
+    def test_file_present_wins_and_infisical_is_not_asked(self) -> None:
+        self.seed()
+        result = self.run_cli("whoami", "--json")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(json.loads(result.out)["credential"], str(self.rc_path))
+        self.assertEqual(self.infisical_calls, [])
+
+    def test_file_absent_uses_infisical_for_this_seat_only(self) -> None:
+        self.rc_path.unlink()
+        self.seed()
+        result = self.run_cli("whoami", "--json")
+        self.assertEqual(result.code, 0, result.err)
+        info = json.loads(result.out)
+        self.assertEqual(info["seat"], "CLAUDE")
+        self.assertEqual(info["credential"], "infisical Fleet-OPS /zulip CLAUDE_ZULIP_KEY")
+        self.assertEqual(self.infisical_calls, [("CLAUDE_ZULIP_EMAIL", "CLAUDE_ZULIP_KEY", "CLAUDE_ZULIP_SITE")])
+        self.assertNotIn(self.key, result.out + result.err)
+
+    def test_env_triple_beats_infisical(self) -> None:
+        self.rc_path.unlink()
+        self.seed()
+        env = self.env(ZULIP_EMAIL=BOT_EMAIL, ZULIP_API_KEY=self.key, ZULIP_SITE=self.fake.url)
+        result = self.run_cli("whoami", "--json", env=env)
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(json.loads(result.out)["credential"], "env")
+        self.assertEqual(self.infisical_calls, [])
+
+    def test_explicit_rc_that_is_missing_never_reaches_infisical(self) -> None:
+        self.seed()
+        result = self.run_cli("whoami", "--rc", str(self.tmp / "nope-rc"))
+        self.assertEqual(result.code, 3)
+        self.assertEqual(self.infisical_calls, [])
+
+    def test_opt_out_knob(self) -> None:
+        self.rc_path.unlink()
+        self.seed()
+        result = self.run_cli("whoami", env=self.env(AGENT_SYNC_INFISICAL="0"))
+        self.assertEqual(result.code, 3)
+        self.assertIn("Claude-zuliprc", result.err)
+        self.assertEqual(self.infisical_calls, [])
+
+    def test_infisical_failure_fails_closed_naming_folder_and_keys_never_a_value(self) -> None:
+        self.rc_path.unlink()
+        self.seed()
+        self.infisical_error = Z.CredentialError("infisical exit-1")
+        result = self.run_cli("whoami")
+        self.assertEqual(result.code, 3)
+        for expected in ("Fleet-OPS", "/zulip", "CLAUDE_ZULIP_EMAIL", "CLAUDE_ZULIP_KEY", "CLAUDE_ZULIP_SITE",
+                         "Claude-zuliprc", "infisical exit-1"):
+            self.assertIn(expected, result.err)
+        self.assertNotIn(self.key, result.err)
+        self.assertNotIn("other-seat-key", result.err)
+        self.assertEqual(self.fake.requests, [])
+
+    def test_unexpected_fetch_exception_is_reduced_to_its_type(self) -> None:
+        self.rc_path.unlink()
+        self.infisical_error = RuntimeError("boom " + self.key)
+        result = self.run_cli("whoami")
+        self.assertEqual(result.code, 3)
+        self.assertIn("RuntimeError", result.err)
+        self.assertNotIn(self.key, result.err)
+
+    def test_a_missing_key_is_named_and_values_are_not(self) -> None:
+        self.rc_path.unlink()
+        self.seed()
+        del self.infisical_values["CLAUDE_ZULIP_SITE"]
+        result = self.run_cli("whoami")
+        self.assertEqual(result.code, 3)
+        self.assertIn("CLAUDE_ZULIP_SITE", result.err)
+        self.assertNotIn(self.key, result.err)
+
+    def test_a_key_with_a_control_character_is_refused_without_echoing_it(self) -> None:
+        self.rc_path.unlink()
+        self.seed()
+        self.infisical_values["CLAUDE_ZULIP_KEY"] = self.key + "\nextra"
+        result = self.run_cli("whoami")
+        self.assertEqual(result.code, 3)
+        self.assertNotIn(self.key, result.err)
+
+    def test_the_bot_check_still_applies_to_infisical_credentials(self) -> None:
+        self.rc_path.unlink()
+        self.seed()
+        self.infisical_values["CLAUDE_ZULIP_EMAIL"] = "someone-else-bot@zulip.test"
+        result = self.run_cli("whoami")
+        self.assertNotEqual(result.code, 0)  # the server rejects the pair, or the seat/bot check does
+        self.assertNotIn(self.key, result.out + result.err)
+
+    def test_key_names_follow_the_credential_file_stem(self) -> None:
+        for seat, prefix in (("CLAUDE", "CLAUDE"), ("claude", "CLAUDE"), ("GROK", "GROK_BUILD"),
+                             ("GROK-BUILD", "GROK_BUILD"), ("GROK-WEB", "GROK_WEB"), ("BF-BUILDER", "BF_BUILDER"),
+                             ("GB-COMPILER", "GB_COMPILER"), ("MM", "MM"), ("AG", "AG"), ("OPENCODE", "OPENCODE")):
+            with self.subTest(seat=seat):
+                self.assertEqual(Z.infisical_key_names(Z.normalise_seat(seat)),
+                                 tuple("%s_ZULIP_%s" % (prefix, part) for part in ("EMAIL", "KEY", "SITE")))
+
+    def test_infisical_credentials_hold_no_value_in_repr_or_source(self) -> None:
+        self.seed()
+        creds = Z.infisical_credentials("CLAUDE", fetch=lambda names: self.infisical_values)
+        self.assertNotIn(self.key, repr(creds))
+        self.assertNotIn(self.key, creds.source)
+
+
 class SeatTests(Harness):
     def test_no_seat_and_no_rc_exits_3_with_the_instruction(self) -> None:
         result = self.run_cli("whoami", env=self.env(AGENT_SEAT=None))

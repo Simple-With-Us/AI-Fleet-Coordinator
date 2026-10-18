@@ -5,6 +5,8 @@ Credential order (first hit wins, nothing is merged):
   2. env ZULIP_RC=PATH
   3. <secrets dir>/<Title>-zuliprc  (default ~/.secrets/Zulip, override with AGENT_SYNC_SECRETS_DIR)
   4. env ZULIP_EMAIL + ZULIP_API_KEY + ZULIP_SITE  (cloud seats with no file)
+  5. Infisical Fleet-OPS /zulip  (prod), the resolved seat's own three keys only, when no file exists
+     (off with AGENT_SYNC_INFISICAL=0;  OPS-818)
 A .env file, ./zuliprc and ~/.zuliprc are never read.
 
 The API key lives only in `Credentials.key` (hidden from repr) and in the Authorization header.
@@ -27,7 +29,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -38,13 +40,16 @@ __all__ = [
     "REALM", "DEFAULT_CHANNEL", "MAX_TOPIC_LENGTH", "USER_AGENT",
     "AgentSyncError", "UsageError", "CredentialError", "ApiError", "NetworkError", "QueueExpired",
     "Credentials", "normalise_seat", "credential_file_name", "seat_from_rc_path", "session_tag",
-    "realm_url", "default_rc_path", "resolve_credentials", "read_zuliprc", "env_credentials", "verify_realm",
+    "realm_url", "default_rc_path", "infisical_key_names", "infisical_credentials", "resolve_credentials", "read_zuliprc", "env_credentials", "verify_realm",
     "ZulipClient", "EventQueue", "message_channel", "message_topic", "outbound_params",
 ]
 
 REALM = "https://simplewithus.zulipchat.com"
 ENV_REALM = "AGENT_SYNC_REALM"
 ENV_SECRETS_DIR = "AGENT_SYNC_SECRETS_DIR"
+ENV_INFISICAL = "AGENT_SYNC_INFISICAL"  # 0, false, off or no turns the Infisical fallback off
+INFISICAL_PROJECT_ID = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"  # Fleet-OPS
+INFISICAL_PATH = "/zulip"
 DEFAULT_CHANNEL = "agent-sync"
 MAX_TOPIC_LENGTH = 60
 USER_AGENT = "agent-sync/1 (fleet)"
@@ -262,10 +267,63 @@ def default_rc_path(seat: str, env: Mapping[str, str], home: Path) -> Path:
     return secrets_dir / credential_file_name(seat)
 
 
+def infisical_enabled(env: Mapping[str, str]) -> bool:
+    return (env.get(ENV_INFISICAL) or "").strip().lower() not in ("0", "false", "off", "no")
+
+
+def infisical_key_names(seat: str) -> tuple[str, str, str]:
+    """The seat's three Fleet-OPS /zulip secret names (EMAIL, KEY, SITE):  the credential file stem
+    in upper case with hyphens as underscores, so CLAUDE -> CLAUDE_ZULIP_EMAIL, GROK -> GROK_BUILD_ZULIP_KEY
+    (the GROK bot's file is Grok-Build), BF-BUILDER -> BF_BUILDER_ZULIP_SITE."""
+    stem = credential_file_name(seat)[: -len("-zuliprc")]
+    prefix = stem.upper().replace("-", "_")
+    return tuple("%s_ZULIP_%s" % (prefix, part) for part in ("EMAIL", "KEY", "SITE"))  # type: ignore[return-value]
+
+
+def _default_infisical_fetch(names: tuple[str, ...]) -> Mapping[str, str]:
+    """Ask the infisical CLI (scripts/fleet_knobs, prod only) for just these names.  Raises
+    CredentialError with a reason token, never output."""
+    try:
+        from fleet_knobs import source as knob_source
+    except ImportError:
+        raise CredentialError("fleet_knobs is not on this host") from None
+    refusal = knob_source.environment_refusal()
+    if refusal:
+        raise CredentialError(refusal)
+    try:
+        return knob_source.fetch_named(names, project_id=INFISICAL_PROJECT_ID, path=INFISICAL_PATH)
+    except knob_source.FetchFailed as exc:
+        raise CredentialError("infisical %s" % exc.reason) from None
+
+
+def infisical_credentials(seat: str, *,
+                          fetch: Callable[[tuple[str, ...]], Mapping[str, str]] | None = None) -> Credentials:
+    """One seat's credentials from Infisical Fleet-OPS /zulip, held in memory only.  Only this seat's
+    three names are requested.  Every failure names the folder and the key names, never a value."""
+    names = infisical_key_names(seat)
+    where = "Infisical Fleet-OPS %s (prod) keys %s" % (INFISICAL_PATH, ", ".join(names))
+    try:
+        got = (fetch or _default_infisical_fetch)(names)
+    except CredentialError as exc:
+        raise CredentialError("cannot read %s: %s" % (where, exc)) from None
+    except Exception as exc:  # a fetch must not leak anything through its own message
+        raise CredentialError("cannot read %s: %s" % (where, type(exc).__name__)) from None
+    email_name, key_name, site_name = names
+    absent = [name for name in names if not (got.get(name) or "").strip()]
+    if absent:
+        raise CredentialError("%s: not set: %s" % (where, ", ".join(absent)))
+    # Same validation as the listener's env credentials (control characters, site shape).
+    creds = env_credentials({name: got[name] for name in names}, email_env=email_name, key_env=key_name,
+                            site_env=site_name, label=seat)
+    return replace(creds, source="infisical Fleet-OPS %s %s" % (INFISICAL_PATH, key_name))
+
+
 def resolve_credentials(env: Mapping[str, str], *, rc_arg: str | None, seat: str | None,
-                        home: Path | None = None) -> Credentials:
+                        home: Path | None = None,
+                        infisical_fetch: Callable[[tuple[str, ...]], Mapping[str, str]] | None = None) -> Credentials:
     """Apply the credential order.  An explicit --rc or ZULIP_RC that cannot be read is an error;
-    it never falls through to the next source."""
+    it never falls through to the next source.  Infisical is the last resort, only for a seat with no
+    file and no env triple, and its failure is an error naming the folder and key names (OPS-818)."""
     home = home if home is not None else Path(env.get("HOME") or os.path.expanduser("~"))
     if rc_arg:
         return read_zuliprc(Path(rc_arg).expanduser())
@@ -283,8 +341,14 @@ def resolve_credentials(env: Mapping[str, str], *, rc_arg: str | None, seat: str
                            site=_normalise_site(triple["ZULIP_SITE"]), source="env")
     missing = [name for name, value in triple.items() if not value]
     where = ("; looked for %s" % ", ".join(tried)) if tried else ""
-    raise CredentialError("no Zulip credentials found%s; or set ZULIP_EMAIL, ZULIP_API_KEY and ZULIP_SITE "
-                          "(missing: %s), or pass --rc PATH" % (where, ", ".join(missing)))
+    fallback = ""
+    if seat and infisical_enabled(env):
+        try:
+            return infisical_credentials(seat, fetch=infisical_fetch)
+        except CredentialError as exc:
+            fallback = "; %s" % exc
+    raise CredentialError("no Zulip credentials found%s%s; or set ZULIP_EMAIL, ZULIP_API_KEY and ZULIP_SITE "
+                          "(missing: %s), or pass --rc PATH" % (where, fallback, ", ".join(missing)))
 
 
 def _host_key(url: str) -> tuple[str, int | None, str]:

@@ -25,6 +25,7 @@ from unittest import mock
 
 from agent_sync import cli
 from agent_sync import notes as NOTES
+from agent_sync import zulip as Z
 from agent_sync.tests.fake_zulip import BOT_EMAIL, FakeZulip
 
 SESSION = "11112222-3333-4444-5555-666677778888"
@@ -63,6 +64,21 @@ class Harness(unittest.TestCase):
             self.notes_knob, "test knob", local is not None and local != self.notes_knob))
         resolver.start()
         self.addCleanup(resolver.stop)
+        # The Infisical credential fallback (OPS-818) is faked:  a test fills self.infisical_values (name -> value) or sets
+        # self.infisical_error, and reads self.infisical_calls (the names each call asked for).  Never the real CLI.
+        self.infisical_values: dict[str, str] = {}
+        self.infisical_error: Exception | None = None
+        self.infisical_calls: list[tuple[str, ...]] = []
+
+        def fake_infisical(names: tuple[str, ...]) -> dict[str, str]:
+            self.infisical_calls.append(tuple(names))
+            if self.infisical_error is not None:
+                raise self.infisical_error
+            return {name: self.infisical_values[name] for name in names if name in self.infisical_values}
+
+        infisical = mock.patch.object(Z, "_default_infisical_fetch", fake_infisical)
+        infisical.start()
+        self.addCleanup(infisical.stop)
         self.fake = FakeZulip(self.key, heartbeat=self.heartbeat)
         self.fake.start()
         self.addCleanup(self.fake.stop)

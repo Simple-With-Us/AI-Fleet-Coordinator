@@ -78,8 +78,32 @@ def fetch(names: Iterable[str]) -> Dict[str, str]:
     cli = find_cli()
     if not cli:
         raise FetchFailed("cli-missing")
+    return _pick(_run(argv_for(cli)), wanted)
+
+
+def argv_named(cli: str, names: Iterable[str], project_id: str, path: str) -> list:
+    return [cli, "secrets", "get", *sorted(set(names)), f"--env={ENVIRONMENT}",
+            f"--projectId={project_id}", f"--path={path}", "--output=json", "--silent",
+            "--expand=false", "--include-imports=false"]
+
+
+def fetch_named(names: Iterable[str], *, project_id: str, path: str) -> Dict[str, str]:
+    """Only the named secrets of one folder of another project (``infisical secrets get``).
+
+    Unlike ``fetch`` the CLI itself is asked for just these names, so no other secret in the
+    folder reaches this process.  Absent names are left out.  Same contract otherwise:  prod only,
+    the CLI's output and stderr never printed, a failure reduced to a reason token."""
+    wanted = set(names)
+    cli = find_cli()
+    if not cli:
+        raise FetchFailed("cli-missing")
+    return _pick(_run(argv_named(cli, wanted, project_id, path)), wanted)
+
+
+def _run(argv: list):
+    """Run the CLI and parse its JSON.  Raises FetchFailed with a reason token."""
     try:
-        proc = subprocess.run(argv_for(cli), stdin=subprocess.DEVNULL, capture_output=True,
+        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
                               timeout=TIMEOUT_SECONDS, cwd="/", env=dict(os.environ),
                               check=False)
     except subprocess.TimeoutExpired:
@@ -92,12 +116,11 @@ def fetch(names: Iterable[str]) -> Dict[str, str]:
     if len(out) > MAX_OUTPUT_BYTES:
         raise FetchFailed("bad-output")
     try:
-        payload = json.loads(out.decode("utf-8"))
+        return json.loads(out.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         raise FetchFailed("bad-output") from None
     finally:
         out = b""
-    return _pick(payload, wanted)
 
 
 def _pick(payload, wanted) -> Dict[str, str]:
