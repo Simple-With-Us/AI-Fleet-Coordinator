@@ -205,6 +205,66 @@ Set a new value in the Infisical UI/API, or `POST /admin/settings` (write-throug
 
 Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or point `INFISICAL_MACHINE_IDENTITY` at your handoff file and leave `INFISICAL_ENVIRONMENT` unset (it is `prod`).  Local runs read prod, so treat the secrets there as live.  Any other slug is refused:  `init()`, `set()` and every fetch raise `SettingsError` before the network, `refresh()` logs the refusal and keeps the last-known-good cache, and `configure()` leaves the previous settings in place.  Never commit real values.
 
+## fleet-secrets
+
+`fleet-secrets` (`scripts/fleet_secrets/`, Linear OPS-818) is the one way a Mac script, LaunchAgent or pm2 start script reads Fleet-OPS secrets now that nothing may read the flat file `~/.secrets/global-api-keys`.  Install it with `bash scripts/install-fleet-secrets.sh`;  that copies the package to `~/.local/share/fleet-secrets/` and links `~/.local/bin/fleet-secrets` to the copy (a symlink into a lane would break when the lane is retired), so re-run the installer after the package changes.  Python stdlib only.  Run `fleet-secrets doctor` to check it.
+
+| Command | What it does |
+|---|---|
+| `fleet-secrets run [--path /] [--only A,B] -- CMD [ARG...]` | Fetches once, then `exec`s `CMD` with the secrets as environment variables (a variable of the same name is replaced).  `--only` injects just those keys and exits 3 if one is absent.  PATH, HOME, USER, SHELL, TMPDIR, `LD_*`, `DYLD_*` and a few interpreter variables are never injected by `run`, and `--only` naming one of them is a usage error (exit 2).  Every `INFISICAL_*` key is in that list too, so a stored `INFISICAL_TOKEN` or client secret never reaches the command.  The fleet-secrets auth variables (`INFISICAL_TOKEN` and the universal-auth client id and secret) are removed from the started command's environment. |
+| `fleet-secrets get NAME [--path /]` | Prints exactly one value to stdout with no trailing newline.  Exit 3 and a message naming the key if it is absent. |
+| `fleet-secrets names [--path /]` | Key names only, one per line. |
+| `fleet-secrets doctor [--json]` | Booleans, the CLI version and counts only:  CLI present, project id resolvable, auth mode, session valid, a test fetch, key count, unresolved-reference count.  Exit 1 when something is wrong. |
+
+Exit codes:  0 ok, 2 usage or a refused setting, 3 key absent, 4 fetch or auth failure, 5 unresolved reference, 126 or 127 the command could not start.
+
+**Where the values come from.**  Project Fleet-OPS, environment `prod` (the only one;  a non-prod `INFISICAL_ENVIRONMENT` or `INFISICAL_ENV` is refused).  Root `/` holds every key as an Infisical reference that expands to the real value, under the names the flat file used.  Folder `/global-api-keys` holds the same values as plain secrets, so `--path /global-api-keys` is the fallback for a key that is missing at root (checked Sun, Oct 18, 2026:  eleven names present in the flat file were not at root;  `AGENT_SYNC_TOKEN`, `AGENT_SYNC_POST_TOKEN`, `ANTIGRAVITY_INGEST_TOKEN`, `B2_CT_BUCKET_NAME`, `B2_FLEET_BUCKET_NAME`, `B2_ST_BUCKET_NAME`, `B2_UM_BUCKET_NAME`, `PAGERDUTY_API_KEY`, `USAGE_INGEST_TOKEN`, `USAGE_INGEST_PRODUCER_TOKENS` and `USAGE_READ_TOKEN`).  The repo is public, so the project id is never committed:  it comes from `INFISICAL_FLEET_OPS_PROJECT_ID`, then the first line of `~/.agent-sync/fleet-ops-project-id` (the same two sources and error text as `scripts/agent_sync/zulip.py`), and the command fails closed when neither holds a UUID.
+
+**Auth, first match wins.**  (1) `INFISICAL_TOKEN` already in the environment (mode `token`, for a cloud worker).  (2) A universal-auth machine identity in the login Keychain (mode `keychain`):  generic passwords with service `fleet-secrets` and accounts `infisical-client-id` and `infisical-client-secret`.  The command reads them with `security find-generic-password -w`, captures them, runs `infisical login --method=universal-auth --plain` with the client id and secret in the child's environment (`INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` and `_CLIENT_SECRET`), and hands the access token to the export call as `INFISICAL_TOKEN`.  Neither the secret nor the token is ever in an argument list, and neither reaches the command `run` starts.  Only one of the two Keychain items is an error (`keychain-incomplete`), not a quiet fallback.  (3) The Infisical CLI's own login session (mode `session`), which is how it works today.  A LaunchAgent should use mode 2 once the machine identity exists, because a user session expires.
+
+**Safety.**  One fetch per process, values only in memory, never written to disk, a log or stderr.  The CLI's stdout and stderr are captured, never echoed, so a failure is a reason token (`cli-missing`, `timeout`, `exit-1`, `bad-output`, `login-failed`).  A value that is still `${...}` after expansion stops the command and names the key (exit 5).  `get` and `run --only` check only the keys they use;  `names`, `doctor` and a plain `run` check all of them.
+
+### Migration cookbook
+
+**(a) A shell script that greps one key.**
+
+```bash
+# before
+KEY="$(grep -m1 '^KEY=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
+# after
+KEY="$(fleet-secrets get KEY)" || exit $?
+```
+
+`get` already strips nothing and adds nothing, so drop the `tr`.  Add `--path /global-api-keys` for one of the eleven names above.  Never `echo` the variable.
+
+**(b) A start script that sources the whole file.**
+
+```bash
+# before
+set -a; . ~/.secrets/global-api-keys; set +a
+exec ./server --port 8080
+# after
+exec fleet-secrets run -- ./server --port 8080
+# or, when the process needs only a few keys
+exec fleet-secrets run --only KEY_A,KEY_B -- ./server --port 8080
+```
+
+In a LaunchAgent plist or a pm2 ecosystem file, make `fleet-secrets` the program and put the old command after `run --`.  Use the absolute path `/Users/jay/.local/bin/fleet-secrets`, because a LaunchAgent's PATH is minimal.
+
+**(c) Python or Node that opens and parses the file.**
+
+```python
+# before
+for line in open(os.path.expanduser("~/.secrets/global-api-keys")):
+    k, _, v = line.partition("="); env[k] = v.strip().strip('"')
+# after
+token = os.environ["KEY"]          # launched as:  fleet-secrets run --only KEY -- python3 job.py
+```
+
+Delete the file reader, read `os.environ` (`process.env` in Node) and launch the program under `fleet-secrets run`.  A job that must fetch inside the process can call `subprocess.run(["fleet-secrets", "get", "KEY"], capture_output=True, check=True).stdout.decode()`.  Do not put the value in argv or a log.
+
+**One-time setup for a machine identity** (owner action, not done by the tool):  create a universal-auth machine identity in Infisical with read access to Fleet-OPS `prod`, then store its two values in the Keychain without printing them, for example `security add-generic-password -U -s fleet-secrets -a infisical-client-id -w` and the same for `infisical-client-secret`, answering the prompts.  `fleet-secrets doctor` then reports `auth_mode: keychain`.
+
 ## Mac `global-api-keys` sync (`scripts/infisical-secrets-sync.sh`)
 
 The LaunchAgent `com.jay.infisical-secrets-sync` copies selected secrets from Infisical
