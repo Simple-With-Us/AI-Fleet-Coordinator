@@ -234,8 +234,18 @@ class RunTests(Base):
         self.assertNotIn("DYLD_INSERT_LIBRARIES", env)
 
     def test_only_refuses_reserved_names_with_a_usage_error(self):
-        w = self.use(World(secrets={"ALPHA": VAL_A, "LD_PRELOAD": "x", "DYLD_INSERT_LIBRARIES": "y",
-                                    "PATH": "/evil", "NODE_OPTIONS": "z", "BASH_ENV": "q"}))
+        w = self.use(
+            World(
+                secrets={
+                    "ALPHA": VAL_A,
+                    "LD_PRELOAD": "x",
+                    "DYLD_INSERT_LIBRARIES": "y",
+                    "PATH": "/evil",
+                    "NODE_OPTIONS": "z",
+                    "BASH_ENV": "q",
+                }
+            )
+        )
         for name in ("LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "PATH", "NODE_OPTIONS", "BASH_ENV"):
             code, _, err = self.call("run", "--only", "ALPHA," + name, "--", "mycmd")
             self.assertEqual(code, 2, name)

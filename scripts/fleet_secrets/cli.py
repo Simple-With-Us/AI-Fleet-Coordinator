@@ -105,7 +105,8 @@ def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
         if reserved:
             raise UsageError(
                 "--only cannot inject reserved name %s (PATH, HOME, SHELL, interpreter, LD_* and DYLD_* "
-                "variables are never injected);  read it with `get` if you really need the value" % reserved[0]
+                "variables are never injected);  read it with `get` if you really need the value"
+                % reserved[0]
             )
     secrets = core.fetch_all(core.check_path(str(opts["path"])), env)
     if only is not None:
