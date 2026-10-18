@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-18T00:43:40Z",
+  "updatedAt": "2026-10-18T00:58:58Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -31,6 +31,12 @@
       "build": "202608311131",
       "appleId": 6804248235,
       "displayName": "ContactLogo for Mac"
+    },
+    "com.simplewithus.usage.client.ios": {
+      "marketingVersion": "1.0.2",
+      "build": "202610180034",
+      "appleId": 6820881005,
+      "displayName": "Usage Monitor Client"
     },
     "net.dealdex": {
       "marketingVersion": "1.0.25",
