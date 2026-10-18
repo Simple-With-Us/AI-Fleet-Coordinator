@@ -254,19 +254,27 @@ class RunTests(Base):
         self.assertEqual(w.calls, [])
 
     def test_infisical_auth_keys_held_in_infisical_are_never_injected(self):
-        secrets = {"ALPHA": VAL_A, "INFISICAL_TOKEN": "STORED_TOKEN_SENTINEL",
-                   "INFISICAL_CLIENT_ID": "STORED_ID_SENTINEL", "INFISICAL_CLIENT_SECRET": "STORED_SECRET_SENTINEL",
-                   core.ENV_CLIENT_SECRET: "STORED_UA_SENTINEL"}
+        secrets = {
+            "ALPHA": VAL_A,
+            "INFISICAL_TOKEN": "STORED_TOKEN_SENTINEL",
+            "INFISICAL_CLIENT_ID": "STORED_ID_SENTINEL",
+            "INFISICAL_CLIENT_SECRET": "STORED_SECRET_SENTINEL",
+            core.ENV_CLIENT_SECRET: "STORED_UA_SENTINEL",
+        }
         w = self.use(World(secrets=secrets))
         self.call("run", "--", "mycmd")
         env = self.exec_calls[0][2]
         self.assertEqual(env["ALPHA"], VAL_A)
-        self.assertEqual({k for k in env if k.startswith("INFISICAL_")}, {core.ENV_PROJECT})   # only the parent's own
+        self.assertEqual(
+            {k for k in env if k.startswith("INFISICAL_")}, {core.ENV_PROJECT}
+        )  # only the parent's own
         for var in ("INFISICAL_TOKEN", "INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET"):
             code, _, err = self.call("run", "--only", "ALPHA," + var, "--", "mycmd")
             self.assertEqual(code, 2, var)
         self.assertEqual(len(self.exec_calls), 1)
-        self.assertEqual(self.call("get", "INFISICAL_TOKEN")[:2], (0, "STORED_TOKEN_SENTINEL"))   # get still reads it
+        self.assertEqual(
+            self.call("get", "INFISICAL_TOKEN")[:2], (0, "STORED_TOKEN_SENTINEL")
+        )  # get still reads it
 
     def test_the_parents_auth_variables_never_reach_the_child(self):
         self.use(World())
