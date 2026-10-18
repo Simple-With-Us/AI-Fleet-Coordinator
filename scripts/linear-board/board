@@ -522,7 +522,8 @@ class Infisical:
             self.sec = self._fleet_secrets("INFISICAL_AUTOMATION_CLIENT_SECRET") if self.cid else ""
         return bool(self._token or (self.cid and self.sec))
 
-    def _ready(self) -> bool:
+    def _ready(self, need_project: bool = False) -> bool:
+        """Logged in, and (for a write) the project id resolved.  Reads name the project by slug."""
         if not self.enabled:
             return False
         if not self._identity():
@@ -535,7 +536,7 @@ class Infisical:
             if not self._token:
                 self._off("login returned no token")
                 return False
-        if not self._project:
+        if need_project and not self._project:
             js = self._call("GET", f"/api/v1/projects/slug/{INFISICAL_PROJECT_SLUG}")
             self._project = ((js or {}).get("project") or js or {}).get("id") or ""
             if not self._project:
@@ -551,7 +552,8 @@ class Infisical:
         if self._secrets is None:
             self._secrets = {}
             if self._ready():
-                js = self._call("GET", "/api/v3/secrets/raw?" + urllib.parse.urlencode(self._where()))
+                query = {"workspaceSlug": INFISICAL_PROJECT_SLUG, "environment": "prod", "secretPath": INFISICAL_LINEAR_PATH}
+                js = self._call("GET", "/api/v3/secrets/raw?" + urllib.parse.urlencode(query))
                 for item in (js or {}).get("secrets") or []:
                     if item.get("secretKey"):
                         self._secrets[item["secretKey"]] = str(item.get("secretValue") or "").strip()
@@ -559,7 +561,7 @@ class Infisical:
 
     def put(self, name: str, value: str) -> bool:
         """Create or update one /linear secret.  False (with a warning) when it could not be written."""
-        if not self._ready():
+        if not self._ready(need_project=True):
             return False
         body = dict(self._where(), secretValue=value, type="shared")
         js = self._call("PATCH", f"/api/v3/secrets/raw/{urllib.parse.quote(name)}", body)
@@ -890,6 +892,7 @@ class Auth:
         self.token: str | None = None
         self.info: dict = {}
         self.where = ""
+        self._pending: tuple | None = None  # a fresh mint to share once the cache lock is released
 
     def identity(self) -> Identity:
         if self.ident is None:
@@ -957,6 +960,9 @@ class Auth:
             return self._store(fd, cache, ident, fp, now)
         finally:
             self._close(fd)
+            pending, self._pending = self._pending, None
+            if pending:
+                self._publish(*pending)
 
     @staticmethod
     def _fresh(cache: dict, fp: str, failed: str | None, now: float) -> bool:
@@ -1015,7 +1021,7 @@ class Auth:
             "cred_fp": fp,
         }
         _write_cache(fd, cache)
-        self._publish(ident, cache)
+        self._pending = (ident, cache)  # shared after the lock is released (get's finally)
         self.token, self.info = cache["access_token"], cache
         return self.token
 
