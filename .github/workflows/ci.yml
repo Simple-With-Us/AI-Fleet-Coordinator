@@ -60,6 +60,11 @@ jobs:
     - name: Lane doctor and tmp guard tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_lanes/tests -t . -v
+    # pr-sweep (docs/PR-SWEEP.md):  a fake gh, fake agents and a fake lane tool, so nothing reaches GitHub or runs
+    # an agent;  includes the check that no adapter, skill or doc carries a copy of a rule from rules.md.
+    - name: pr-sweep tests
+      run: |
+        cd scripts && python3 -m unittest discover -s pr_sweep/tests -t . -v
     - name: Code-only Coolify fleet CLI sync tests
       run: |
         python3 scripts/test_fleet_cli_release.py

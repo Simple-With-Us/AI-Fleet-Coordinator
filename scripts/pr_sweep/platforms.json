@@ -1,0 +1,85 @@
+{
+  "_comment": "Agent command templates for `pr-sweep run --platform NAME`.  argv is the command; `{prompt}` becomes the whole worker prompt as one argument, `{prompt_file}` a 0600 temp file holding it, and `stdin: true` pipes it on standard input.  `auto_flags` are added only with `--auto-approve` (the operator's explicit choice; without them a headless CLI may stop at its first permission prompt).  `model_flag` plus `models` map the plan's tier (small, mid, frontier) to a model; omit them to use the CLI's default model.  `trailer` is the commit trailer sentence rule 13 gets.  The seat is never set here: workers inherit the AGENT_SEAT of whoever runs the sweep.  `checked` says what was verified on this Mac (Sat, Oct 17, 2026) from the CLI's own --help.",
+  "platforms": {
+    "claude": {
+      "argv": ["claude", "-p", "--output-format", "text"],
+      "stdin": true,
+      "auto_flags": ["--dangerously-skip-permissions"],
+      "model_flag": "--model",
+      "models": {"small": "haiku", "mid": "sonnet", "frontier": "opus"},
+      "trailer": "End every commit message with the trailer: Co-Authored-By: Claude <noreply@anthropic.com>",
+      "checked": "claude --help: -p/--print reads the prompt from stdin, --model, --dangerously-skip-permissions"
+    },
+    "codex": {
+      "argv": ["codex", "exec"],
+      "stdin": true,
+      "auto_flags": ["--dangerously-bypass-approvals-and-sandbox"],
+      "model_flag": "-m",
+      "models": {},
+      "trailer": "End every commit message with your platform's usual co-author trailer, if it has one.",
+      "checked": "codex exec --help: with no PROMPT the instructions are read from stdin; -m MODEL; --dangerously-bypass-approvals-and-sandbox"
+    },
+    "cursor": {
+      "argv": ["cursor-agent", "-p", "--output-format", "text", "{prompt}"],
+      "stdin": false,
+      "auto_flags": ["--force"],
+      "model_flag": "--model",
+      "models": {},
+      "trailer": "End every commit message with your platform's usual co-author trailer, if it has one.",
+      "checked": "cursor-agent --help: -p/--print, --output-format text, prompt as an argument, -f/--force"
+    },
+    "grok": {
+      "argv": ["grok", "--prompt-file", "{prompt_file}"],
+      "stdin": false,
+      "auto_flags": ["--always-approve"],
+      "models": {},
+      "trailer": "End every commit message with your platform's usual co-author trailer, if it has one.",
+      "checked": "grok --help: -p/--single PROMPT, --prompt-file PATH, --always-approve"
+    },
+    "antigravity": {
+      "argv": ["agy", "-p", "{prompt}"],
+      "stdin": false,
+      "auto_flags": ["--dangerously-skip-permissions"],
+      "models": {},
+      "trailer": "End every commit message with your platform's usual co-author trailer, if it has one.",
+      "checked": "agy --help: -p/--print runs one prompt non-interactively, --dangerously-skip-permissions"
+    },
+    "minimax": {
+      "argv": ["mcode", "exec", "--input", "-"],
+      "stdin": true,
+      "auto_flags": ["--permission", "full"],
+      "models": {},
+      "trailer": "End every commit message with your platform's usual co-author trailer, if it has one.",
+      "checked": "mcode exec --help: --input - reads the prompt from stdin, --permission smart|full|off"
+    },
+    "muse": {
+      "argv": ["muse", "exec", "{prompt}"],
+      "stdin": false,
+      "auto_flags": ["--yolo"],
+      "models": {},
+      "trailer": "End every commit message with your platform's usual co-author trailer, if it has one.",
+      "checked": "muse --help: exec runs one prompt non-interactively, --yolo (exec's own flags not listed in the top-level help: UNVERIFIED)"
+    },
+    "fx": {
+      "argv": ["fx", "ask", "{prompt}"],
+      "stdin": false,
+      "auto_flags": [],
+      "models": {},
+      "trailer": "End every commit message with your platform's usual co-author trailer, if it has one.",
+      "checked": "fx --help: ask <prompt> runs one noninteractive request (approval flags UNVERIFIED)"
+    },
+    "opencode": {
+      "argv": ["opencode", "run", "{prompt}"],
+      "stdin": false,
+      "auto_flags": [],
+      "models": {},
+      "trailer": "End every commit message with your platform's usual co-author trailer, if it has one.",
+      "checked": "opencode --help: run runs OpenCode with a message (approval flags for run UNVERIFIED)"
+    }
+  },
+  "chat_only": {
+    "clutch": "No headless mode (dsh boots a profile).  Paste the output of `pr-sweep prompt <owner/repo#n>` into a session.",
+    "grok-web": "Chat only.  Paste the output of `pr-sweep prompt <owner/repo#n>` into a chat that has a terminal tool; without one it cannot do the git work.",
+    "jet": "Chat only (ChatGPT).  Same as grok-web."
+  }
+}
