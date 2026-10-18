@@ -29,6 +29,8 @@ class FetchNamedTests(KnobTestCase):
         for flag in ("--env=prod", f"--projectId={PROJECT}", "--path=/zulip", "--output=json"):
             self.assertIn(flag, argv)
         self.assertNotIn("export", argv)
+        self.assertIn("--expand=true", argv)  # OPS-818: Fleet-OPS values may be bare references
+        self.assertNotIn("--expand=false", argv)
 
     def test_failure_is_a_reason_token_never_output(self):
         self.fake.set(mode="fail", leak="sentinel-leak")
@@ -54,3 +56,16 @@ class FetchNamedTests(KnobTestCase):
         self.fake.set(shape="api", secrets={"A": "real", "B": "*not found*"})
         got = source.fetch_named(("A", "B"), project_id=PROJECT, path="/zulip")
         self.assertEqual(got, {"A": "real"})
+
+    def test_a_bare_reference_that_survived_expansion_fails_closed_without_echoing_it(self):
+        self.fake.set(shape="api", secrets={"A": "${prod.global-api-keys.SENTINEL_REF_7c1e}"})
+        with self.assertRaises(source.FetchFailed) as ctx:
+            source.fetch_named(("A",), project_id=PROJECT, path="/zulip")
+        self.assertEqual(ctx.exception.reason, "unresolved-reference")
+        self.assertNotIn("SENTINEL_REF_7c1e", str(ctx.exception))
+
+    def test_a_value_that_merely_contains_a_reference_is_not_flagged(self):
+        self.fake.set(shape="api", secrets={"A": "prefix-${prod.a.B}"})
+        self.assertEqual(
+            source.fetch_named(("A",), project_id=PROJECT, path="/zulip"), {"A": "prefix-${prod.a.B}"}
+        )
