@@ -45,6 +45,7 @@ The service exists so cloud seats and phones reach recall even while the Mac is 
 on the Coolify box next to Qdrant and TEI (both reachable over the host's Tailscale address).
 Set RECALL_FAKE=1 to serve recall_api's in-process fake corpus (tests, smoke checks).
 """
+
 from __future__ import annotations
 
 import hmac
@@ -65,11 +66,13 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from fleet_rag import __version__ as _RAG_VERSION  # noqa: E402
-from fleet_rag import recall_api  # noqa: E402
-from fleet_rag import infisical_settings  # noqa: E402
-from fleet_rag.infisical_settings import SettingsError as _SettingsError  # noqa: E402
-from fleet_rag.core import FleetRagError  # noqa: E402
+from fleet_rag import __version__ as _RAG_VERSION
+from fleet_rag import (
+    infisical_settings,
+    recall_api,
+)
+from fleet_rag.core import FleetRagError
+from fleet_rag.infisical_settings import SettingsError as _SettingsError
 
 SERVICE_VERSION = "1.0.0"
 SERVER_NAME = "fleet-recall-service"
@@ -88,15 +91,28 @@ OPTIONAL_ENV = ("QDRANT_READONLY_API_KEY", "TEI_EMBED_MODEL")
 
 # Every key the service owns.  Values live in Infisical (project below); the process
 # environment is only the bootstrap fallback when no Infisical identity is configured.
-MANAGED_KEYS = REQUIRED_ENV + OPTIONAL_ENV + (
-    "RECALL_API_TOKEN", "RECALL_ADMIN_TOKEN", "RECALL_SOCKET_TIMEOUT",
-    "SETTINGS_REFRESH_SECONDS", "HOST", "PORT",
+MANAGED_KEYS = (
+    REQUIRED_ENV
+    + OPTIONAL_ENV
+    + (
+        "RECALL_API_TOKEN",
+        "RECALL_ADMIN_TOKEN",
+        "RECALL_SOCKET_TIMEOUT",
+        "SETTINGS_REFRESH_SECONDS",
+        "HOST",
+        "PORT",
+    )
 )
 # Secret keys are never returned by value from the admin surface (INFISICAL.md).
-SECRET_KEYS = frozenset({
-    "QDRANT_API_KEY", "QDRANT_READONLY_API_KEY", "TEI_API_KEY",
-    "RECALL_API_TOKEN", "RECALL_ADMIN_TOKEN",
-})
+SECRET_KEYS = frozenset(
+    {
+        "QDRANT_API_KEY",
+        "QDRANT_READONLY_API_KEY",
+        "TEI_API_KEY",
+        "RECALL_API_TOKEN",
+        "RECALL_ADMIN_TOKEN",
+    }
+)
 # Backend keys the fleet_rag library reads from the environment; server.py mirrors the
 # Infisical cache into os.environ for them at startup and on every refresh.
 BACKEND_ENV_KEYS = REQUIRED_ENV + OPTIONAL_ENV
@@ -117,26 +133,55 @@ TOOLS: list[JsonDict] = [
             "facts, decisions, runbooks, board findings, effort logs, Apple Notes, fleet docs).  Use it "
             "BEFORE re-deriving a lesson, guessing an owner preference, or debugging infrastructure "
             "another seat has already documented.  Hybrid dense + keyword search; filter by category, "
-            "app, source, seat, or recency.  Read-only."),
+            "app, source, seat, or recency.  Read-only."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Natural-language question or keywords."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": recall_api.MAX_LIMIT, "default": 5},
-                "category": {"type": "string", "enum": list(recall_api.CATEGORIES),
-                             "description": "Restrict to one category."},
-                "app": {"type": "string", "description": "Lowercase app slug, e.g. fleet, socratic-trade."},
+                "query": {
+                    "type": "string",
+                    "description": "Natural-language question or keywords.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": recall_api.MAX_LIMIT,
+                    "default": 5,
+                },
+                "category": {
+                    "type": "string",
+                    "enum": list(recall_api.CATEGORIES),
+                    "description": "Restrict to one category.",
+                },
+                "app": {
+                    "type": "string",
+                    "description": "Lowercase app slug, e.g. fleet, socratic-trade.",
+                },
                 "source": {"type": "string", "enum": list(recall_api.SOURCES)},
                 "seat": {"type": "string", "description": "Uppercase seat tag, e.g. CLAUDE, GROK."},
-                "since_days": {"type": "integer", "minimum": 1,
-                               "description": "Only content created in the last N days."},
-                "per_doc": {"type": "integer", "minimum": 1, "maximum": recall_api.PER_DOC_MAX,
-                            "default": 1, "description": "Chunks to keep per matching document."},
-                "rerank": {"type": "boolean", "default": True,
-                           "description": "Cross-encoder rerank of the fused candidates."},
-                "prefer_lessons": {"type": "boolean", "default": True,
-                                   "description": "Boost a matching agent-contribution lesson into "
-                                                  "the fused results."},
+                "since_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Only content created in the last N days.",
+                },
+                "per_doc": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": recall_api.PER_DOC_MAX,
+                    "default": 1,
+                    "description": "Chunks to keep per matching document.",
+                },
+                "rerank": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Cross-encoder rerank of the fused candidates.",
+                },
+                "prefer_lessons": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Boost a matching agent-contribution lesson into "
+                    "the fused results.",
+                },
             },
             "required": ["query"],
         },
@@ -145,7 +190,8 @@ TOOLS: list[JsonDict] = [
         "name": "recall_stats",
         "description": (
             "Collection health and point counts by source and app.  Use it to check the corpus is "
-            "reachable before relying on recall_search, or to see which sources have been ingested."),
+            "reachable before relying on recall_search, or to see which sources have been ingested."
+        ),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -155,17 +201,24 @@ TOOLS: list[JsonDict] = [
             "preference, an infrastructure fact, a decision, or a runbook step.  Use it AFTER you learn "
             "something reusable that is not already in the corpus (search first).  40..4000 chars, "
             "secrets are scrubbed and the scrub kinds returned; text that still looks like a secret is "
-            "refused.  seat is REQUIRED on this surface (a cloud caller has no AGENT_SEAT)."),
+            "refused.  seat is REQUIRED on this surface (a cloud caller has no AGENT_SEAT)."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "text": {"type": "string", "minLength": recall_api.CONTRIB_MIN,
-                         "maxLength": recall_api.CONTRIB_MAX},
+                "text": {
+                    "type": "string",
+                    "minLength": recall_api.CONTRIB_MIN,
+                    "maxLength": recall_api.CONTRIB_MAX,
+                },
                 "category": {"type": "string", "enum": list(recall_api.CONTRIB_CATEGORIES)},
                 "app": {"type": "string", "default": "fleet"},
                 "seat": {"type": "string", "description": "Your uppercase seat tag (required)."},
                 "title": {"type": "string"},
-                "url": {"type": "string", "description": "Source link (PR, board item, doc), optional."},
+                "url": {
+                    "type": "string",
+                    "description": "Source link (PR, board item, doc), optional.",
+                },
             },
             "required": ["text", "category", "seat"],
         },
@@ -228,8 +281,10 @@ def call_tool(name: str, args: JsonDict) -> JsonDict:
     seat = args.get("seat")
     if not isinstance(seat, str) or not seat.strip():
         # Never fall back to the service process's own AGENT_SEAT for a remote caller.
-        raise FleetRagError("seat is required on this surface (cloud callers have no AGENT_SEAT); "
-                            "pass your uppercase seat tag, e.g. GROK, CURSOR, CLAUDE")
+        raise FleetRagError(
+            "seat is required on this surface (cloud callers have no AGENT_SEAT); "
+            "pass your uppercase seat tag, e.g. GROK, CURSOR, CLAUDE"
+        )
     return recall_api.recall_contribute(**args)
 
 
@@ -245,13 +300,20 @@ def _backend_snapshot() -> JsonDict:
     with _health_lock:
         if _health_cache["value"] is not None and now - _health_cache["at"] < HEALTH_CACHE_S:
             return dict(_health_cache["value"])
-    snap: JsonDict = {"collection": infisical_settings.get("QDRANT_FLEET_COLLECTION") or None,
-                      "points": None, "backend_ok": False}
+    snap: JsonDict = {
+        "collection": infisical_settings.get("QDRANT_FLEET_COLLECTION") or None,
+        "points": None,
+        "backend_ok": False,
+    }
     try:
         cfg = recall_api.get_config(need_write=False)
         q = recall_api.Qdrant(cfg)
         info = q.info()
-        snap = {"collection": q.collection, "points": int(info.get("points_count", 0)), "backend_ok": True}
+        snap = {
+            "collection": q.collection,
+            "points": int(info.get("points_count", 0)),
+            "backend_ok": True,
+        }
     except Exception as e:  # noqa: BLE001 - class only, never the message (it may name hosts)
         snap["error"] = type(e).__name__
     with _health_lock:
@@ -265,11 +327,19 @@ def reset_health_cache() -> None:
 
 
 def health_payload() -> JsonDict:
-    return {"ok": True, "name": SERVER_NAME, "version": SERVICE_VERSION, "fleet_rag": _RAG_VERSION,
-            **_backend_snapshot(), "mcp": MCP_PATH, "recall": list(RECALL_PATHS)}
+    return {
+        "ok": True,
+        "name": SERVER_NAME,
+        "version": SERVICE_VERSION,
+        "fleet_rag": _RAG_VERSION,
+        **_backend_snapshot(),
+        "mcp": MCP_PATH,
+        "recall": list(RECALL_PATHS),
+    }
 
 
 # --------------------------------------------------------------------------- MCP
+
 
 def _json_bytes(payload: Any) -> bytes:
     return (json.dumps(payload, ensure_ascii=True) + "\n").encode("utf-8")
@@ -305,22 +375,33 @@ def _dispatch_rpc(msg: JsonDict, rid: Any) -> JsonDict | None:
 
     if method == "initialize":
         requested = params.get("protocolVersion")
-        version = requested if isinstance(requested, str) and requested in PROTOCOL_VERSIONS else DEFAULT_PROTOCOL
-        return ok({
-            "protocolVersion": version,
-            "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": SERVER_NAME, "version": SERVICE_VERSION},
-            "instructions": (
-                "Fleet RAG over the fleet-agents corpus.  Search before re-deriving a lesson; "
-                "contribute after you learn something reusable.  Tools: recall_search, "
-                "recall_stats, recall_contribute (seat required).  REST twins: GET /recall/stats, "
-                "POST /recall/search, POST /recall/contribute with the same bearer."),
-        })
+        version = (
+            requested
+            if isinstance(requested, str) and requested in PROTOCOL_VERSIONS
+            else DEFAULT_PROTOCOL
+        )
+        return ok(
+            {
+                "protocolVersion": version,
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": SERVER_NAME, "version": SERVICE_VERSION},
+                "instructions": (
+                    "Fleet RAG over the fleet-agents corpus.  Search before re-deriving a lesson; "
+                    "contribute after you learn something reusable.  Tools: recall_search, "
+                    "recall_stats, recall_contribute (seat required).  REST twins: GET /recall/stats, "
+                    "POST /recall/search, POST /recall/contribute with the same bearer."
+                ),
+            }
+        )
     if method == "server/discover":
-        return ok({"protocolVersions": list(PROTOCOL_VERSIONS),
-                   "capabilities": {"tools": {"listChanged": False}},
-                   "serverInfo": {"name": SERVER_NAME, "version": SERVICE_VERSION},
-                   "tools": TOOLS})
+        return ok(
+            {
+                "protocolVersions": list(PROTOCOL_VERSIONS),
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": SERVER_NAME, "version": SERVICE_VERSION},
+                "tools": TOOLS,
+            }
+        )
     if method == "ping":
         return ok({})
     if method == "tools/list":
@@ -340,16 +421,26 @@ def _dispatch_rpc(msg: JsonDict, rid: Any) -> JsonDict | None:
             return ok({"content": [{"type": "text", "text": str(e)}], "isError": True})
         except Exception as e:  # noqa: BLE001 - keep serving; report the class only
             log(f"tools/call {name} failed: {type(e).__name__}")
-            return ok({"content": [{"type": "text", "text": f"{name} failed: {type(e).__name__}"}],
-                       "isError": True})
-        return ok({"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=True)}],
-                   "structuredContent": data, "isError": False})
+            return ok(
+                {
+                    "content": [{"type": "text", "text": f"{name} failed: {type(e).__name__}"}],
+                    "isError": True,
+                }
+            )
+        return ok(
+            {
+                "content": [{"type": "text", "text": json.dumps(data, ensure_ascii=True)}],
+                "structuredContent": data,
+                "isError": False,
+            }
+        )
     if method.startswith("notifications/"):
-        return ok({})                      # a notification with an id gets an empty result
+        return ok({})  # a notification with an id gets an empty result
     return _rpc_error(rid, -32601, f"method not found: {method}")
 
 
 # --------------------------------------------------------------------------- auth / logging
+
 
 def bearer_ok(header: str | None, token: str) -> bool:
     """Constant-time check of `Authorization: Bearer <token>`.
@@ -390,7 +481,9 @@ def socket_timeout(env: dict[str, str] | None = None) -> float:
     if env is not None:
         raw = env.get("RECALL_SOCKET_TIMEOUT", "")
     else:
-        raw = infisical_settings.get("RECALL_SOCKET_TIMEOUT") or os.environ.get("RECALL_SOCKET_TIMEOUT", "")
+        raw = infisical_settings.get("RECALL_SOCKET_TIMEOUT") or os.environ.get(
+            "RECALL_SOCKET_TIMEOUT", ""
+        )
     try:
         val = float(raw)
     except (TypeError, ValueError):
@@ -399,6 +492,7 @@ def socket_timeout(env: dict[str, str] | None = None) -> float:
 
 
 # --------------------------------------------------------------------------- handler
+
 
 class RecallHandler(BaseHTTPRequestHandler):
     server_version = f"{SERVER_NAME}/{SERVICE_VERSION}"
@@ -411,7 +505,7 @@ class RecallHandler(BaseHTTPRequestHandler):
     _body_drained = False
 
     # -- plumbing
-    def log_message(self, fmt: str, *args: Any) -> None:  # noqa: D401 - BaseHTTPRequestHandler hook
+    def log_message(self, fmt: str, *args: Any) -> None:
         # Path only (no query string), no headers, no bodies.
         pass
 
@@ -421,8 +515,13 @@ class RecallHandler(BaseHTTPRequestHandler):
         self._body_drained = False
         super().handle_one_request()
 
-    def _send(self, code: int, body: bytes, ctype: str = "application/json",
-              extra: list[tuple[str, str]] | None = None) -> None:
+    def _send(
+        self,
+        code: int,
+        body: bytes,
+        ctype: str = "application/json",
+        extra: list[tuple[str, str]] | None = None,
+    ) -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -461,8 +560,8 @@ class RecallHandler(BaseHTTPRequestHandler):
         self._body_drained = True
         chunked = bool(self.headers.get("Transfer-Encoding"))
         if self.headers.get("Content-Length") is None and not chunked:
-            return                                  # no body on the wire
-        length = self._content_length()             # None here means unparsable: close
+            return  # no body on the wire
+        length = self._content_length()  # None here means unparsable: close
         if length == 0 and not chunked:
             return
         self.close_connection = True
@@ -481,9 +580,12 @@ class RecallHandler(BaseHTTPRequestHandler):
 
     def _unauthorized(self) -> None:
         self._discard_unread_body()
-        self.close_connection = True       # never keep an unauthenticated connection open
-        self._send(401, _json_bytes({"ok": False, "error": "unauthorized"}),
-                   extra=[("WWW-Authenticate", "Bearer")])
+        self.close_connection = True  # never keep an unauthenticated connection open
+        self._send(
+            401,
+            _json_bytes({"ok": False, "error": "unauthorized"}),
+            extra=[("WWW-Authenticate", "Bearer")],
+        )
 
     def _auth_ok(self) -> bool:
         return bearer_ok(self.headers.get("Authorization"), self.token)
@@ -498,9 +600,16 @@ class RecallHandler(BaseHTTPRequestHandler):
         if not infisical_settings.present("RECALL_ADMIN_TOKEN"):
             self._discard_unread_body()
             self.close_connection = True
-            self._send(403, _json_bytes({"ok": False,
-                                         "error": "admin token not configured; set RECALL_ADMIN_TOKEN "
-                                                  "in Infisical (see INFISICAL.md)"}))
+            self._send(
+                403,
+                _json_bytes(
+                    {
+                        "ok": False,
+                        "error": "admin token not configured; set RECALL_ADMIN_TOKEN "
+                        "in Infisical (see INFISICAL.md)",
+                    }
+                ),
+            )
             return False
         if not self._admin_auth_ok():
             self._unauthorized()
@@ -555,7 +664,7 @@ class RecallHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             self._send(413, _json_bytes({"ok": False, "error": "payload too large"}))
             return None
-        self._body_drained = True                   # consumed (or given up on) below
+        self._body_drained = True  # consumed (or given up on) below
         if not length:
             return b""
         try:
@@ -605,7 +714,9 @@ class RecallHandler(BaseHTTPRequestHandler):
             return
         except Exception as e:  # noqa: BLE001
             log(f"{name} failed: {type(e).__name__}")
-            self._send(502, _json_bytes({"ok": False, "error": f"{name} failed: {type(e).__name__}"}))
+            self._send(
+                502, _json_bytes({"ok": False, "error": f"{name} failed: {type(e).__name__}"})
+            )
             return
         self._send(200, _json_bytes({"ok": True, **data}))
 
@@ -694,7 +805,10 @@ class RecallHandler(BaseHTTPRequestHandler):
             return
         proto = self.headers.get("MCP-Protocol-Version") or self.headers.get("Mcp-Protocol-Version")
         if proto and proto not in PROTOCOL_VERSIONS:
-            self._send(400, _json_bytes(_rpc_error(msg.get("id"), -32600, "unsupported MCP-Protocol-Version")))
+            self._send(
+                400,
+                _json_bytes(_rpc_error(msg.get("id"), -32600, "unsupported MCP-Protocol-Version")),
+            )
             return
         result = handle_rpc(msg)
         extra: list[tuple[str, str]] = []
@@ -708,8 +822,10 @@ class RecallHandler(BaseHTTPRequestHandler):
 
 # --------------------------------------------------------------------------- lifecycle
 
-def make_server(host: str, port: int, token: str,
-                timeout: float | None = None) -> ThreadingHTTPServer:
+
+def make_server(
+    host: str, port: int, token: str, timeout: float | None = None
+) -> ThreadingHTTPServer:
     """Build (but do not run) the server.  Tests bind 127.0.0.1:0 and serve in a thread.
 
     `timeout` overrides the per-connection socket timeout (RECALL_SOCKET_TIMEOUT / 15 s).
@@ -735,19 +851,22 @@ def env_report() -> tuple[list[str], list[str]]:
 def main(argv: list[str] | None = None) -> int:
     # Infisical is the source of truth for every managed key (INFISICAL.md).  The settings
     # module needs the project + environment before anything else; the machine identity
-    # (INFISICAL_AUTOMATION_CLIENT_ID/SECRET in the environment, or the handoff file)
+    # (INFISICAL_AUTOMATION_CLIENT_ID/SECRET in the environment)
     # authorizes the fetch.  With no identity, managed keys fall back to the process
     # environment and the old env-only behavior is preserved.
     # The environment is prod.  An unset or empty INFISICAL_ENVIRONMENT means prod and any
     # other slug is refused, so a stale dev/staging override exits 2 with a clear log line.
-    environment = ((os.environ.get("INFISICAL_ENVIRONMENT") or "").strip()
-                   or infisical_settings.PROD_ENVIRONMENT)
+    environment = (
+        os.environ.get("INFISICAL_ENVIRONMENT") or ""
+    ).strip() or infisical_settings.PROD_ENVIRONMENT
     try:
         infisical_settings.configure(
             project_id=os.environ.get("FLEET_RAG_INFISICAL_PROJECT") or AFC_INFISICAL_PROJECT,
             environment=environment,
-            managed_keys=MANAGED_KEYS, required_keys=("RECALL_API_TOKEN",),
-            secret_keys=tuple(SECRET_KEYS))
+            managed_keys=MANAGED_KEYS,
+            required_keys=("RECALL_API_TOKEN",),
+            secret_keys=tuple(SECRET_KEYS),
+        )
         infisical_settings.init_settings()
     except _SettingsError as e:
         log(f"settings init failed: {e}")
@@ -755,16 +874,20 @@ def main(argv: list[str] | None = None) -> int:
     # The fleet_rag backend reads its QDRANT_*/TEI_* config from the environment; mirror
     # the cache into os.environ now and again on every refresh so the two never diverge.
     infisical_settings.export_env(BACKEND_ENV_KEYS)
-    infisical_settings.add_refresh_listener(
-        lambda: infisical_settings.export_env(BACKEND_ENV_KEYS))
+    infisical_settings.add_refresh_listener(lambda: infisical_settings.export_env(BACKEND_ENV_KEYS))
     infisical_settings.start_refresh()
     try:
         import signal as _signal
-        _signal.signal(_signal.SIGHUP,
-                       lambda _s, _f: (log("SIGHUP: reloading settings from Infisical"),
-                                      infisical_settings.refresh_now()))
+
+        _signal.signal(
+            _signal.SIGHUP,
+            lambda _s, _f: (
+                log("SIGHUP: reloading settings from Infisical"),
+                infisical_settings.refresh_now(),
+            ),
+        )
     except (AttributeError, OSError, ValueError):
-        pass                                       # no SIGHUP on this platform; admin reload only
+        pass  # no SIGHUP on this platform; admin reload only
 
     token = (infisical_settings.get("RECALL_API_TOKEN") or "").strip()
     if not token:
@@ -785,8 +908,10 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError:
         port = 8080
     httpd = make_server(host, port, token, timeout=socket_timeout())
-    log(f"listening on {host}:{port}  mcp={MCP_PATH}  recall={','.join(RECALL_PATHS)}  "
-        f"service={SERVICE_VERSION} fleet_rag={_RAG_VERSION} socket_timeout={httpd.RequestHandlerClass.timeout}s")
+    log(
+        f"listening on {host}:{port}  mcp={MCP_PATH}  recall={','.join(RECALL_PATHS)}  "
+        f"service={SERVICE_VERSION} fleet_rag={_RAG_VERSION} socket_timeout={httpd.RequestHandlerClass.timeout}s"
+    )
     try:
         httpd.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:

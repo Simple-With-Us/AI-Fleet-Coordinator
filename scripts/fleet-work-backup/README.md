@@ -162,7 +162,7 @@ bucket has a **lifecycle rule** with `daysFromHidingToDeleting` of 7 to 30 (whic
 window).  The dedicated bucket's rule is the whole-bucket one,
 `{fileNamePrefix: "", daysFromHidingToDeleting: 14, daysFromUploadingToHiding: null}`, and the check accepts it
 (a rule on `fleet-work-backup/` alone is accepted too).  A key that can delete lets any process on the Mac that
-can read it erase the history, so keep the key in the handoff file only (mode 600) and consider Object Lock.
+can read it erase the history, so keep the key in Infisical only (read through `fleet-secrets`) and consider Object Lock.
 
 The staging folder is fixed at `~/Library/Caches/fleet-work-backup/stage` (restic picks the parent
 snapshot by path, so a timestamped folder would break deduplication and retention).  Files are
@@ -173,7 +173,7 @@ runs with `--ignore-inode --ignore-ctime`, because a rebuilt folder has new inod
 
 ## Credentials
 
-Read by the job from `~/.secrets/global-api-keys` (or the environment) into the restic
+Read by the job from the environment, else one `fleet-secrets` fetch (OPS-818;  the flat file `global-api-keys` is no longer read), into the restic
 subprocess environment only.  Names, never values:
 
 | Name | Use |
@@ -198,7 +198,7 @@ check rejects anything else, and its `awk -v` mangles backslashes).  Generate it
 which writes a 43-character urlsafe token to Infisical through the logged-in CLI and never prints it:  the
 value reaches the CLI as a file path (`RESTIC_FLEET_WORK_PASSWORD=@<0600 file>`, removed afterwards), never in
 argv, the CLI's output is discarded, and the value is read back and compared in memory (it reports
-`matched` and the length).  It refuses when the handoff file, the environment or Infisical already has a
+`matched` and the length).  It refuses when `fleet-secrets`, the environment or Infisical already has a
 password, and a read it cannot make is a refusal, never "absent".
 
 **The password is the only key to every snapshot, so it is never rotated in Infisical.**  The sync
@@ -326,7 +326,7 @@ Neither changes the backup run path.
 
 **`health --json`** is read-only.  It reads `state.json`, the newest line of the run log, the installed files and
 `launchctl print gui/<uid>/com.jay.fleet-work-backup` (the one launchctl verb it uses), and it writes nothing, not
-even a directory.  It never reads the credential names or values, the handoff file, restic or B2.  It always exits 0:
+even a directory.  It never reads the credential names or values, `fleet-secrets`, restic or B2.  It always exits 0:
 the verdict is in the output.  Without `--json` it prints the same facts as a few lines.
 
 | Field | What it holds |

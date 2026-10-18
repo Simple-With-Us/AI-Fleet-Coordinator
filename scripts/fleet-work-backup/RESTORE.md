@@ -155,7 +155,7 @@ same way (`git fetch head.bundle HEAD:refs/restored/detached-head`).
 ## 4. What is not in the backup
 
 Secrets, by design:  anything with a strict secret name (`.env`, keys, `zuliprc`, `auth.json`, `.dev.vars`,
-`*.tfstate`), any file the content scan matched, and the handoff file.  Re-create those from Infisical.
+`*.tfstate`), any file the content scan matched, and any secrets file.  Re-create those from Infisical.
 Git-ignored files (`node_modules`, build output) are rebuilt from the checkout.  Runtime session stores
 (`acp-home/sessions`, `acp-home/memtrace`, `fleet-rag/mined/chat`) are skipped by default, but the repo plist
 turns that off and skips `memtrace` by name, so on this install `acp-home/sessions` and `fleet-rag/mined/chat`

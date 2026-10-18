@@ -31,6 +31,7 @@ Implements the fleet-wide canonical pattern (see repo-root INFISICAL.md):
 
 Stdlib only (urllib).  No secret VALUES are ever logged; only key names.
 """
+
 from __future__ import annotations
 
 import json
@@ -52,12 +53,12 @@ HTTP_TIMEOUT = 10.0
 REFRESH_INTERVAL_KEY = "SETTINGS_REFRESH_SECONDS"
 
 # Identity env names, in priority order.  The fleet's shared automation machine
-# identity ("global api keys" holds these on the Mac) is injected into the container
-# environment on hosted services; local dev may also use the JSON handoff file.
+# identity is injected into the container environment on hosted services; local dev may
+# also use the JSON identity file below.
 IDENTITY_PREFIXES = ("INFISICAL_AUTOMATION", "INFISICAL_SHARED")
 IDENTITY_FILE_ENV = "INFISICAL_MACHINE_IDENTITY"
 # Fleet convention (see the Infisical SOT rollout brief): the machine identity JSON lives
-# under ~/workspace/.secrets on agent machines; the Mac uses ~/.secrets/global-api-keys.
+# under ~/workspace/.secrets on agent machines; the Mac runs under `fleet-secrets run`.
 IDENTITY_FILE_DEFAULT = pathlib.Path("~/workspace/.secrets/infisical-machine-identity.json")
 
 
@@ -68,10 +69,17 @@ class SettingsError(Exception):
 class InfisicalSettings:
     """One app's settings set, cached in memory and backed by Infisical."""
 
-    def __init__(self, *, project_id: str, environment: str = PROD_ENVIRONMENT,
-                 managed_keys: tuple[str, ...] = (), required_keys: tuple[str, ...] = (),
-                 secret_keys: tuple[str, ...] = (), api_base: str | None = None,
-                 identity_prefixes: tuple[str, ...] = IDENTITY_PREFIXES) -> None:
+    def __init__(
+        self,
+        *,
+        project_id: str,
+        environment: str = PROD_ENVIRONMENT,
+        managed_keys: tuple[str, ...] = (),
+        required_keys: tuple[str, ...] = (),
+        secret_keys: tuple[str, ...] = (),
+        api_base: str | None = None,
+        identity_prefixes: tuple[str, ...] = IDENTITY_PREFIXES,
+    ) -> None:
         self.project_id = project_id
         # Empty means "unset" (an INFISICAL_ENVIRONMENT= line), so it is prod; any other
         # slug is kept as given and refused at first use by _require_prod().
@@ -79,8 +87,9 @@ class InfisicalSettings:
         self.managed_keys = tuple(managed_keys)
         self.required_keys = tuple(required_keys)
         self.secret_keys = frozenset(secret_keys)
-        self.api_base = (api_base or os.environ.get("INFISICAL_API_BASE")
-                         or INFISICAL_API_DEFAULT).rstrip("/")
+        self.api_base = (
+            api_base or os.environ.get("INFISICAL_API_BASE") or INFISICAL_API_DEFAULT
+        ).rstrip("/")
         self.identity_prefixes = identity_prefixes
         self._lock = threading.Lock()
         self._cache: dict[str, str] = {}
@@ -97,9 +106,11 @@ class InfisicalSettings:
         The slug is not a secret, so it is safe to name."""
         if self.environment == PROD_ENVIRONMENT:
             return None
-        return (f"refusing Infisical environment {self.environment!r}: prod is the only "
-                "environment (dev and staging are retired); unset INFISICAL_ENVIRONMENT "
-                "or set it to prod; see INFISICAL.md")
+        return (
+            f"refusing Infisical environment {self.environment!r}: prod is the only "
+            "environment (dev and staging are retired); unset INFISICAL_ENVIRONMENT "
+            "or set it to prod; see INFISICAL.md"
+        )
 
     def _require_prod(self) -> None:
         refusal = self._environment_refusal()
@@ -117,7 +128,9 @@ class InfisicalSettings:
         return None, None
 
     def _identity_from_file(self) -> tuple[str | None, str | None]:
-        path = pathlib.Path(os.environ.get(IDENTITY_FILE_ENV, "") or IDENTITY_FILE_DEFAULT).expanduser()
+        path = pathlib.Path(
+            os.environ.get(IDENTITY_FILE_ENV, "") or IDENTITY_FILE_DEFAULT
+        ).expanduser()
         if not path.is_file():
             return None, None
         try:
@@ -142,12 +155,16 @@ class InfisicalSettings:
 
     # -- HTTP ---------------------------------------------------------------
 
-    def _request(self, method: str, path: str, body: dict | None = None,
-                 token: str | None = None) -> tuple[int, dict]:
+    def _request(
+        self, method: str, path: str, body: dict | None = None, token: str | None = None
+    ) -> tuple[int, dict]:
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(
-            self.api_base + path, data=data, method=method,
-            headers={"Content-Type": "application/json", "Accept": "application/json"})
+            self.api_base + path,
+            data=data,
+            method=method,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
         if token:
             req.add_header("Authorization", "Bearer " + token)
         try:
@@ -166,22 +183,28 @@ class InfisicalSettings:
             raise SettingsError(
                 "no Infisical identity configured (checked "
                 + ", ".join(f"{p}_CLIENT_ID" for p in self.identity_prefixes)
-                + " in the environment and the machine-identity file); see INFISICAL.md")
+                + " in the environment and the machine-identity file); see INFISICAL.md"
+            )
         status, payload = self._request(
-            "POST", "/api/v1/auth/universal-auth/login",
-            {"clientId": cid, "clientSecret": csec})
+            "POST", "/api/v1/auth/universal-auth/login", {"clientId": cid, "clientSecret": csec}
+        )
         token = payload.get("accessToken") if status == 200 else None
         if not token:
             raise SettingsError(
                 f"Infisical universal-auth login failed (status {status}); "
-                "check the machine identity in INFISICAL.md")
+                "check the machine identity in INFISICAL.md"
+            )
         self._access_token = token
         return token
 
     def _fetch_all(self, token: str) -> dict[str, str]:
         self._require_prod()
-        path = ("/api/v3/secrets/raw?workspaceId=" + urllib.parse.quote(self.project_id)
-                + "&environment=" + urllib.parse.quote(self.environment))
+        path = (
+            "/api/v3/secrets/raw?workspaceId="
+            + urllib.parse.quote(self.project_id)
+            + "&environment="
+            + urllib.parse.quote(self.environment)
+        )
         status, payload = self._request("GET", path, token=token)
         if status == 401:
             # Token expired or rotated: one re-login, then retry once.
@@ -190,7 +213,8 @@ class InfisicalSettings:
         if status != 200:
             raise SettingsError(
                 f"Infisical secrets fetch failed (status {status}) for project "
-                f"{self.project_id} environment {self.environment}; see INFISICAL.md")
+                f"{self.project_id} environment {self.environment}; see INFISICAL.md"
+            )
         out: dict[str, str] = {}
         for secret in payload.get("secrets", []):
             key = secret.get("secretKey")
@@ -220,26 +244,34 @@ class InfisicalSettings:
             token = self._login()
             fetched = self._fetch_all(token)
         else:
-            logger.warning("infisical-settings: no machine identity; "
-                           "populating managed keys from the process environment")
+            logger.warning(
+                "infisical-settings: no machine identity; "
+                "populating managed keys from the process environment"
+            )
             fetched = {}
-        backfilled = [k for k in self.managed_keys
-                      if k not in fetched and os.environ.get(k)]
+        backfilled = [k for k in self.managed_keys if k not in fetched and os.environ.get(k)]
         for k in backfilled:
             fetched[k] = os.environ[k]
         if backfilled:
-            logger.warning("infisical-settings: backfilled from environment (not in Infisical): "
-                           + ", ".join(backfilled))
+            logger.warning(
+                "infisical-settings: backfilled from environment (not in Infisical): "
+                + ", ".join(backfilled)
+            )
         with self._lock:
             self._cache = dict(fetched)
         missing = [k for k in self.required_keys if not self._cache.get(k)]
         if missing:
             raise SettingsError(
-                "missing required setting(s): " + ", ".join(missing)
+                "missing required setting(s): "
+                + ", ".join(missing)
                 + " -- add them to the Infisical project (see INFISICAL.md, "
-                "key inventory) and restart")
-        logger.info("infisical-settings: loaded %d managed key(s) from %s",
-                    len(self._cache), "Infisical" if cid else "environment")
+                "key inventory) and restart"
+            )
+        logger.info(
+            "infisical-settings: loaded %d managed key(s) from %s",
+            len(self._cache),
+            "Infisical" if cid else "environment",
+        )
 
     def get(self, key: str, default: str | None = None) -> str | None:
         """Memory-only read.  Never touches the network."""
@@ -254,18 +286,26 @@ class InfisicalSettings:
         """Re-fetch from Infisical.  On failure the last-known-good cache is kept."""
         refusal = self._environment_refusal()
         if refusal:
-            logger.error("infisical-settings: refresh refused (%s); keeping last-known-good "
-                         "cache of %d key(s)", refusal, len(self._cache))
+            logger.error(
+                "infisical-settings: refresh refused (%s); keeping last-known-good "
+                "cache of %d key(s)",
+                refusal,
+                len(self._cache),
+            )
             return False
         cid, _csec = self.identity()
         if not cid:
-            return False                      # env-backed: nothing to refresh
+            return False  # env-backed: nothing to refresh
         try:
             token = self._access_token or self._login()
             fetched = self._fetch_all(token)
-        except Exception as e:                # noqa: BLE001 - staleness beats an outage
-            logger.error("infisical-settings: refresh failed (%s); keeping last-known-good "
-                         "cache of %d key(s)", type(e).__name__, len(self._cache))
+        except Exception as e:  # noqa: BLE001 - staleness beats an outage
+            logger.error(
+                "infisical-settings: refresh failed (%s); keeping last-known-good "
+                "cache of %d key(s)",
+                type(e).__name__,
+                len(self._cache),
+            )
             return False
         with self._lock:
             self._cache = dict(fetched)
@@ -273,7 +313,7 @@ class InfisicalSettings:
         for listener in list(self._listeners):
             try:
                 listener()
-            except Exception:                 # noqa: BLE001 - a listener must not break refresh
+            except Exception:
                 logger.exception("infisical-settings: refresh listener failed")
         return True
 
@@ -291,22 +331,32 @@ class InfisicalSettings:
         SettingsError when the Infisical write fails; the cache is left untouched
         so the two can never diverge silently.
         """
-        self._require_prod()                  # never write through to a non-prod environment
+        self._require_prod()  # never write through to a non-prod environment
         if key not in self.managed_keys:
-            raise SettingsError(f"refusing to write unmanaged key {key!r}; "
-                                "see INFISICAL.md for the managed key inventory")
+            raise SettingsError(
+                f"refusing to write unmanaged key {key!r}; "
+                "see INFISICAL.md for the managed key inventory"
+            )
         cid, _csec = self.identity()
         if not cid:
             raise SettingsError(
                 "no Infisical identity configured; cannot write through to the "
-                "source of truth (see INFISICAL.md)")
+                "source of truth (see INFISICAL.md)"
+            )
 
         def _write(method: str) -> int:
             status, _payload = self._request(
-                method, "/api/v3/secrets/raw/" + urllib.parse.quote(key, safe=""),
-                {"workspaceId": self.project_id, "environment": self.environment,
-                 "secretPath": "/", "secretValue": value, "type": "shared"},
-                token=self._access_token or self._login())
+                method,
+                "/api/v3/secrets/raw/" + urllib.parse.quote(key, safe=""),
+                {
+                    "workspaceId": self.project_id,
+                    "environment": self.environment,
+                    "secretPath": "/",
+                    "secretValue": value,
+                    "type": "shared",
+                },
+                token=self._access_token or self._login(),
+            )
             return status
 
         try:
@@ -319,14 +369,16 @@ class InfisicalSettings:
                 status = _write("POST")
         except SettingsError:
             raise
-        except Exception as e:                # noqa: BLE001 - network down: reject the save
+        except Exception as e:
             raise SettingsError(
                 f"Infisical write for {key!r} failed ({type(e).__name__}); "
-                "the save was rejected and the local cache was NOT updated") from e
+                "the save was rejected and the local cache was NOT updated"
+            ) from e
         if status not in (200, 201):
             raise SettingsError(
                 f"Infisical write for {key!r} failed (status {status}); "
-                "the save was rejected and the local cache was NOT updated")
+                "the save was rejected and the local cache was NOT updated"
+            )
         # Infisical accepted the write: only now does the cache change.
         with self._lock:
             self._cache[key] = value
@@ -352,11 +404,14 @@ class InfisicalSettings:
         self._stop.clear()
 
         def _loop() -> None:
-            while not self._stop.wait(interval if interval is not None else self.refresh_interval()):
+            while not self._stop.wait(
+                interval if interval is not None else self.refresh_interval()
+            ):
                 self.refresh()
 
-        self._refresh_thread = threading.Thread(target=_loop, name="infisical-settings-refresh",
-                                                daemon=True)
+        self._refresh_thread = threading.Thread(
+            target=_loop, name="infisical-settings-refresh", daemon=True
+        )
         self._refresh_thread.start()
 
     def stop_refresh(self) -> None:
@@ -428,7 +483,7 @@ def present(key: str) -> bool:
     return _default is not None and _default.present(key)
 
 
-def set(key: str, value: str) -> None:  # noqa: A001 - write-through setter, shadows builtin deliberately
+def set(key: str, value: str) -> None:
     _require().set(key, value)
 
 

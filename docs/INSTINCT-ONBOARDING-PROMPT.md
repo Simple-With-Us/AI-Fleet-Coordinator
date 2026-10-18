@@ -203,7 +203,7 @@ SECRETS
 - The owner hands off credentials as chmod 600 files under your own ~/.secrets/
   (Linear/Fleet.env, seat-mcp.env, fleet-recall.env, Zulip/Instinct-zuliprc).  Never ask for a
   value in iMessage; ask for the file.  Inspect names only: grep -oE '^[A-Z][A-Z0-9_]*' <file> | sort -u.
-  Never cat, read, or print a handoff file, and never grep one without -o.  Infisical is the
+  Fleet keys: fleet-secrets get NAME, or fleet-secrets names for names only.  Never cat, read, or print a secrets file, and never grep one without -o.  Infisical is the
   runtime source of truth; never run bare infisical secrets.  Inside BotFleet use the
   request_credential card, never the chat.
 

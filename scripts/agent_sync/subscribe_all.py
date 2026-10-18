@@ -18,21 +18,24 @@ only:  never an email, a key or a message.
 Credentials, deduplicated by bot email:
   mac        every ~/.secrets/Zulip/*-zuliprc (mode 600)
   infisical  every ZULIP_<CODE>_EMAIL / ZULIP_<CODE>_API_KEY pair in Infisical prod /zulip,
-             through the automation identity in ~/.secrets/global-api-keys
+             through the automation identity from `fleet-secrets get`
 Only bots are touched:  a key whose users/me is a human, or an admin or owner, is skipped.
 Private channels are never joined, and nobody else's subscriptions are read or changed.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
 
 from . import zulip as Z
 from .identity import seat_tag_for
@@ -41,12 +44,16 @@ INFISICAL_API = "https://app.infisical.com"
 INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator
 INFISICAL_ENV = "prod"
 INFISICAL_PATH = "/zulip"
-HANDOFF = Path.home() / ".secrets" / "global-api-keys"
 ZULIP_DIR = Path.home() / ".secrets" / "Zulip"
 BOT_ROLES = (300, 400)  # moderator, member:  the roles the listener accepts
 # Bots never need a notification;  set every new subscription quiet so nothing reaches a phone.
-QUIET = {"desktop_notifications": False, "audible_notifications": False, "push_notifications": False,
-         "email_notifications": False, "wildcard_mentions_notify": False}
+QUIET = {
+    "desktop_notifications": False,
+    "audible_notifications": False,
+    "push_notifications": False,
+    "email_notifications": False,
+    "wildcard_mentions_notify": False,
+}
 
 
 class Failure(Exception):
@@ -65,8 +72,11 @@ def public_channels(client: Z.ZulipClient) -> dict[int, str]:
 
 
 def subscribed_ids(client: Z.ZulipClient) -> set[int]:
-    return {s["stream_id"] for s in client.get("users/me/subscriptions").get("subscriptions") or []
-            if isinstance(s.get("stream_id"), int)}
+    return {
+        s["stream_id"]
+        for s in client.get("users/me/subscriptions").get("subscriptions") or []
+        if isinstance(s.get("stream_id"), int)
+    }
 
 
 def ensure_public(client: Z.ZulipClient, *, apply: bool) -> tuple[list[str], list[str]]:
@@ -78,15 +88,20 @@ def ensure_public(client: Z.ZulipClient, *, apply: bool) -> tuple[list[str], lis
     missing = {sid: name for sid, name in public.items() if sid not in have and name}
     if not apply or not missing:
         return sorted(missing.values()), []
-    result = client.post("users/me/subscriptions",
-                         {"subscriptions": [{"name": n} for n in sorted(missing.values())]})
+    result = client.post(
+        "users/me/subscriptions", {"subscriptions": [{"name": n} for n in sorted(missing.values())]}
+    )
     joined = sorted({n for names in (result.get("subscribed") or {}).values() for n in names})
     quiet(client, [sid for sid, name in missing.items() if name in joined])
     return sorted(missing.values()), joined
 
 
 def quiet(client: Z.ZulipClient, stream_ids: Iterable[int]) -> None:
-    data = [{"stream_id": sid, "property": prop, "value": value} for sid in stream_ids for prop, value in QUIET.items()]
+    data = [
+        {"stream_id": sid, "property": prop, "value": value}
+        for sid in stream_ids
+        for prop, value in QUIET.items()
+    ]
     if data:
         client.post("users/me/subscriptions/properties", {"subscription_data": data})
 
@@ -103,20 +118,27 @@ def mac_credentials() -> list[Z.Credentials]:
 
 
 def _handoff(name: str) -> str:
+    """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The flat
+    file ~/.secrets/global-api-keys is retired.  Only the name is ever reported."""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    binary = shutil.which("fleet-secrets") or str(Path.home() / ".local" / "bin" / "fleet-secrets")
     try:
-        with HANDOFF.open(encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith(name + "="):
-                    value = line.split("=", 1)[1].strip().strip('"')
-                    if value:
-                        return value
-    except OSError:
+        proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
         pass
-    raise Failure("%s is not in the handoff file (name only)" % name)
+    raise Failure("%s is not in the environment or fleet-secrets (name only)" % name)
 
 
-def _http_json(method: str, url: str, *, body: dict | None = None, headers: dict | None = None) -> dict:
-    req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(), method=method)
+def _http_json(
+    method: str, url: str, *, body: dict | None = None, headers: dict | None = None
+) -> dict:
+    req = urllib.request.Request(
+        url, data=None if body is None else json.dumps(body).encode(), method=method
+    )
     req.add_header("Content-Type", "application/json")
     req.add_header("User-Agent", "agent-sync subscribe_all")
     for k, v in (headers or {}).items():
@@ -125,20 +147,38 @@ def _http_json(method: str, url: str, *, body: dict | None = None, headers: dict
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as exc:
-        raise Failure("%s %s answered HTTP %d" % (method, urllib.parse.urlsplit(url).path, exc.code)) from None
+        raise Failure(
+            "%s %s answered HTTP %d" % (method, urllib.parse.urlsplit(url).path, exc.code)
+        ) from None
 
 
 def infisical_credentials(realm: str) -> list[Z.Credentials]:
-    login = _http_json("POST", INFISICAL_API + "/api/v1/auth/universal-auth/login", body={
-        "clientId": _handoff("INFISICAL_AUTOMATION_CLIENT_ID"),
-        "clientSecret": _handoff("INFISICAL_AUTOMATION_CLIENT_SECRET")})
+    login = _http_json(
+        "POST",
+        INFISICAL_API + "/api/v1/auth/universal-auth/login",
+        body={
+            "clientId": _handoff("INFISICAL_AUTOMATION_CLIENT_ID"),
+            "clientSecret": _handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
+        },
+    )
     token = login.get("accessToken")
     if not token:
         raise Failure("Infisical login returned no access token")
-    query = urllib.parse.urlencode({"workspaceId": INFISICAL_PROJECT, "environment": INFISICAL_ENV,
-                                    "secretPath": INFISICAL_PATH})
-    data = _http_json("GET", INFISICAL_API + "/api/v3/secrets/raw?" + query, headers={"Authorization": "Bearer " + token})
-    found = {s.get("secretKey"): (s.get("secretValue") or "").strip() for s in data.get("secrets") or []}
+    query = urllib.parse.urlencode(
+        {
+            "workspaceId": INFISICAL_PROJECT,
+            "environment": INFISICAL_ENV,
+            "secretPath": INFISICAL_PATH,
+        }
+    )
+    data = _http_json(
+        "GET",
+        INFISICAL_API + "/api/v3/secrets/raw?" + query,
+        headers={"Authorization": "Bearer " + token},
+    )
+    found = {
+        s.get("secretKey"): (s.get("secretValue") or "").strip() for s in data.get("secrets") or []
+    }
     out = []
     for name in sorted(found):
         if not (name.startswith("ZULIP_") and name.endswith("_EMAIL")):
@@ -146,7 +186,9 @@ def infisical_credentials(realm: str) -> list[Z.Credentials]:
         prefix = name[: -len("_EMAIL")]
         email, key = found.get(name, ""), found.get(prefix + "_API_KEY", "")
         if email and key:
-            out.append(Z.Credentials(email=email, key=key, site=realm, source="infisical:" + prefix))
+            out.append(
+                Z.Credentials(email=email, key=key, site=realm, source="infisical:" + prefix)
+            )
     return out
 
 
@@ -185,12 +227,25 @@ def run(creds: list[Z.Credentials], realm: str, *, apply: bool, out=sys.stdout) 
             rows.append((tag, before, after))
             verb = "joined" if apply else "would join"
             names = joined if apply else missing
-            print("%-16s before %2d  after %2d  %s %s" % (tag, before, after if apply else before + len(missing), verb,
-                                                         ", ".join("#" + n for n in names) or "nothing"), file=out)
+            print(
+                "%-16s before %2d  after %2d  %s %s"
+                % (
+                    tag,
+                    before,
+                    after if apply else before + len(missing),
+                    verb,
+                    ", ".join("#" + n for n in names) or "nothing",
+                ),
+                file=out,
+            )
         except (Z.AgentSyncError, Failure) as exc:
             failures += 1
             print("%-16s error:  %s" % (c.source.rsplit("/", 1)[-1], exc), file=out)
-    print("%d bots checked, %d errors%s" % (len(rows), failures, "" if apply else " (dry run;  --apply to subscribe)"), file=out)
+    print(
+        "%d bots checked, %d errors%s"
+        % (len(rows), failures, "" if apply else " (dry run;  --apply to subscribe)"),
+        file=out,
+    )
     return 1 if failures else 0
 
 

@@ -153,7 +153,7 @@ Infisical (project "AI Fleet Coordinator", environment `prod`, folder `/zulip`) 
 
 - `ZULIP_SITE`, a plain value:  `https://simplewithus.zulipchat.com`
 - `JET_ROUTINE_URL` (`https://agent-sync.jays.services/internal/wake/JET`) and `JET_ROUTINE_KEY` (the shared HMAC key, kept in `~/.secrets/jet-wake-hmac.env` on Jay's Mac and installed as the Worker secret `WAKE_HMAC_KEY_JET`).  Until both are set, each JET wake is logged as `routine-unready` and dropped, and capture is unchanged
-- `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` and `INFISICAL_PROJECT_ID` (`9bf7417a-fbbb-42ca-870c-2b45207233f5`).  Since Sat, Oct 10 the id and secret are the fleet automation identity's (`INFISICAL_AUTOMATION_CLIENT_ID` and `_SECRET` in the handoff file), by owner choice
+- `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` and `INFISICAL_PROJECT_ID` (`9bf7417a-fbbb-42ca-870c-2b45207233f5`).  Since Sat, Oct 10 the id and secret are the fleet automation identity's (`INFISICAL_AUTOMATION_CLIENT_ID` and `_SECRET` from Infisical Fleet-OPS;  read them on the Mac with `fleet-secrets get`), by owner choice
 
 The seat variables (from Infisical, or Coolify copies without the identity):
 
