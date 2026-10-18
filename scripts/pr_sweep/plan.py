@@ -115,7 +115,7 @@ def build_chains(
 def stack_parent(
     p: Mapping[str, Any], allprs: Sequence[Mapping[str, Any]], default_branch: str = "main"
 ) -> Mapping[str, Any] | None:
-    if p.get("base") in (default_branch, "master", ""):
+    if p.get("base") in (p.get("default_branch") or default_branch, ""):
         return None
     for q in allprs:
         if q["full"] == p["full"] and q["head"] == p["base"] and q["n"] != p["n"]:

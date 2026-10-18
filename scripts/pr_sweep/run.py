@@ -97,6 +97,12 @@ def build_command(
         extra += list(cfg.get("auto_flags") or [])
     # options go right after the subcommand words, before any {prompt} or {prompt_file} argument
     tail_at = next((i for i, a in enumerate(argv) if "{prompt" in a), len(argv))
+    if (
+        0 < tail_at < len(argv)
+        and argv[tail_at - 1].startswith("-")
+        and argv[tail_at].startswith("{prompt")
+    ):
+        tail_at -= 1  # `--prompt-file {prompt_file}`: keep the option and its value together
     argv = argv[:tail_at] + extra + argv[tail_at:]
     uses_stdin = bool(cfg.get("stdin")) and not any("{prompt" in a for a in argv)
     out: list[str] = []
@@ -299,6 +305,7 @@ class Sweep:
             {
                 k: s.get(k)
                 for k in (
+                    "default_branch",
                     "mstate",
                     "review",
                     "unresolved",

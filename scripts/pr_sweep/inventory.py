@@ -23,7 +23,7 @@ MAX_PAGES = 25  # GitHub search stops at 1,000 results anyway
 PR_FIELDS = """
   number title url isDraft createdAt updatedAt headRefName baseRefName headRefOid isCrossRepository
   mergeStateStatus reviewDecision
-  repository { name owner { login } isArchived }
+  repository { name owner { login } isArchived defaultBranchRef { name } }
   author { login }
   labels(first: 30) { nodes { name } }
   autoMergeRequest { enabledAt }
@@ -94,6 +94,7 @@ def record(node: dict[str, Any], fleet_repos: Sequence[str] = ()) -> dict[str, A
         "auto": node.get("autoMergeRequest") is not None,
         "cross_repo": bool(node.get("isCrossRepository")),
         "archived": bool(repo.get("isArchived")),
+        "default_branch": ((repo.get("defaultBranchRef") or {}).get("name")) or "main",
         "fleet": full.lower() in {r.lower() for r in fleet_repos},
     }
 

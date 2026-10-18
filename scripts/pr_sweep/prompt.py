@@ -148,7 +148,7 @@ def worker_prompt(
             else ""
         ),
     ]
-    note = stack_note(pr, parent, default_branch)
+    note = stack_note(pr, parent, pr.get("default_branch") or default_branch)
     if note:
         lines.append(note)
     sections = load_sections()

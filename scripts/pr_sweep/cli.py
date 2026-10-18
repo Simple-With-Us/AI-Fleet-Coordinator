@@ -264,6 +264,7 @@ def _records_for(gh: Gh, keys: Sequence[str], fleet: F.Fleet) -> list[dict[str, 
                     "author",
                     "head",
                     "base",
+                    "default_branch",
                     "head_oid",
                     "draft",
                     "labels",
@@ -337,8 +338,27 @@ def main(
     env = os.environ if env is None else env
     out = stdout or sys.stdout
     err = stderr or sys.stderr
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if "lanes" in raw[:2] and all(
+        a in ("lanes", "--compact") for a in raw[: raw.index("lanes") + 1]
+    ):
+        # argparse REMAINDER cannot take leading options such as --apply, so `lanes` skips the parser: every
+        # word after it goes to `~/apps/lane prune` as it is.
+        rest = raw[raw.index("lanes") + 1 :]
+        if rest[:1] in (["-h"], ["--help"]):
+            out.write("usage: pr-sweep lanes [lane prune options]   (see ~/apps/lane prune -h)\n")
+            return EXIT_OK
+        try:
+            F.seat(F.load(env), env)
+        except F.FleetError as exc:
+            err.write(f"pr-sweep: refused: {exc}\n")
+            return EXIT_USAGE
+        rc, msg = (lane or _lane_passthrough)(["prune", *[a for a in rest if a != "--"]])
+        if msg:
+            out.write(msg + "\n")
+        return rc
     try:
-        args = _build().parse_args(list(sys.argv[1:] if argv is None else argv))
+        args = _build().parse_args(raw)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else EXIT_USAGE
     if not args.cmd:

@@ -313,6 +313,22 @@ class NeedsWorkTests(unittest.TestCase):
                 self.assertEqual(S.needs_work("merge", s)[0], want)
         self.assertFalse(S.needs_work("skip", self.s(unresolved=3))[0])
 
+    def test_the_repos_own_default_branch_is_not_a_stack(self) -> None:
+        on_master = self.s(
+            base="master", default_branch="master", mstate="CLEAN", ci="SUCCESS", auto=True
+        )
+        self.assertEqual(S.needs_work("merge", on_master), (False, "auto-merge armed"))
+        f = S.facts(
+            pr_node(
+                1, baseRefName="master", baseRepository={"defaultBranchRef": {"name": "master"}}
+            ),
+            NOW,
+        )
+        self.assertEqual(f["default_branch"], "master")
+        self.assertIsNone(
+            P.stack_parent(rec(1, base="master", default_branch="master"), [rec(2, head="master")])
+        )
+
     def test_stacks_wait_for_an_open_parent_and_retarget_after_it(self) -> None:
         child = self.s(base="feat/1", mstate="CLEAN", ci="SUCCESS", auto=False)
         self.assertEqual(
@@ -465,7 +481,7 @@ class CommandTests(unittest.TestCase):
             "PROMPT",
             auto_approve=True,
         )
-        self.assertEqual((argv, stdin), (["agent", "-p", "--force", "PROMPT"], None))
+        self.assertEqual((argv, stdin), (["agent", "--force", "-p", "PROMPT"], None))
         argv, _ = R.build_command(
             {"argv": ["grok", "--prompt-file", "{prompt_file}"]}, "P", prompt_file=Path("/x/p.txt")
         )
@@ -473,6 +489,17 @@ class CommandTests(unittest.TestCase):
         with self.assertRaises(R.RunError):
             R.build_command({"argv": ["tool"]}, "P")
         self.assertIn("<prompt: 6 chars>", R.preview(["agent", "PROMPT"], "PROMPT", None))
+
+    def test_flags_never_split_an_option_from_its_prompt_value(self) -> None:
+        grok = R.platform("grok")
+        argv, _ = R.build_command(grok, "P", prompt_file=Path("/x/p.txt"), auto_approve=True)
+        self.assertEqual(argv, ["grok", "--always-approve", "--prompt-file", "/x/p.txt"])
+        argv, _ = R.build_command(
+            {"argv": ["tool", "--message", "{prompt}"], "auto_flags": ["--yes"]},
+            "P",
+            auto_approve=True,
+        )
+        self.assertEqual(argv, ["tool", "--yes", "--message", "P"])
 
     def test_every_shipped_platform_builds(self) -> None:
         for name, cfg in R.load_platforms()["platforms"].items():
@@ -778,6 +805,29 @@ class CliTests(unittest.TestCase):
         self.assertEqual(check, f"#fnv1a={C.fnv1a(body):08x} len={len(body)}")
         self.assertTrue(body.isascii())
         json.loads(body)
+
+    def test_lanes_passes_every_option_to_lane_prune(self) -> None:
+        seen = []
+        e = {"FLEET_APPS_JSON": fleet().registry.source, "AGENT_SEAT": "CODEX"}
+        out, err = io.StringIO(), io.StringIO()
+        rc = C.main(
+            ["lanes", "--apply", "--repo", "DealDex"],
+            env=e,
+            gh=FakeGh().gh(),
+            stdout=out,
+            stderr=err,
+            lane=lambda argv: seen.append(list(argv)) or (0, "table"),
+        )
+        self.assertEqual((rc, seen), (0, [["prune", "--apply", "--repo", "DealDex"]]))
+        rc = C.main(
+            ["lanes"],
+            env={"FLEET_APPS_JSON": e["FLEET_APPS_JSON"]},
+            gh=FakeGh().gh(),
+            stdout=out,
+            stderr=err,
+            lane=lambda argv: (0, ""),
+        )
+        self.assertEqual(rc, 64)
 
     def test_status_missing_is_exit_69(self) -> None:
         rc, out, err = self.run_cli("status", "Simple-With-Us/DealDex#4")

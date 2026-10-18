@@ -25,6 +25,7 @@ FRESH_MINUTES = 15
 
 PR_STATUS = """
   number state isDraft mergeStateStatus mergeable reviewDecision baseRefName headRefName headRefOid updatedAt
+  baseRepository { defaultBranchRef { name } }
   mergedAt url title
   author { login }
   autoMergeRequest { enabledAt }
@@ -100,6 +101,10 @@ def facts(node: Mapping[str, Any], now: _dt.datetime) -> dict[str, Any]:
         "mergeable": node.get("mergeable") or "UNKNOWN",
         "review": node.get("reviewDecision") or "",
         "base": node.get("baseRefName") or "",
+        "default_branch": (
+            ((node.get("baseRepository") or {}).get("defaultBranchRef") or {}).get("name")
+        )
+        or "main",
         "head": node.get("headRefName") or "",
         "head_oid": node.get("headRefOid") or commit.get("oid") or "",
         "unresolved": sum(1 for t in tnodes if isinstance(t, dict) and not t.get("isResolved")),
@@ -193,6 +198,7 @@ def needs_work(
         raise StatusMissing(str((s or {}).get("error") or "no status"))
     if s.get("state") != "OPEN":
         return False, f"{str(s.get('state')).lower()}"
+    default_branch = s.get("default_branch") or default_branch
     if mode == "skip":
         return False, "skipped by plan (draft or deferred)"
     base = s.get("base") or default_branch
