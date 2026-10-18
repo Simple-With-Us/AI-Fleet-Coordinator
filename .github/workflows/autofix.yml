@@ -31,6 +31,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+      actions: read
     uses: ./.github/workflows/pr-autofix-reusable.yml
     secrets:
       MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
