@@ -166,7 +166,7 @@ jobs:
       - name: Summarize Autofix Diagnostics
         if: ${{ always() }}
         id: diagnostics
-        uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-diagnostics@2c24edc61eeaeaf4df3fba01dd2d65076cfbb42c
+        uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-diagnostics@070fdbfacadbd9e90cbb54098123df7d3fef737f
 
       - name: Extract Usage Counts
         id: usage
