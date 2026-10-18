@@ -112,7 +112,7 @@ Health URLs say nothing about a native app.  After a merge that touches an app's
 ios_testflight_freshness
 ```
 
-`ios_testflight_freshness` is the placeholder name for the freshness script (AFC).  Its arguments and verdicts are in `/Users/jay/apps/ios-fleet/README.md`; read that, do not guess a flag.  Quote the verdict in the closeout.
+`ios_testflight_freshness` is the placeholder name for the freshness script (AFC).  Its arguments and verdicts are in `~/apps/ios-fleet/README.md`; read that, do not guess a flag.  Quote the verdict in the closeout.
 
 "Touches the native iOS tree" means what the app's own ship workflow lists under `paths:`.  A merge that matches none of those paths leaves TestFlight where it was, which is current; say so in the closeout instead of shipping.
 
@@ -120,7 +120,7 @@ ios_testflight_freshness
 
 1. **Ship workflow run.**  `gh run list --repo Simple-With-Us/<repo> --workflow <file> --limit 5`.  A run for the merge SHA that failed: read the failing step (archive, signing, upload, ensure-tf-ready).  No run at all: a merge made by `github-actions[bot]` with `GITHUB_TOKEN` fires no `push` workflows, so only the cron backstop or a `workflow_dispatch` ships it.
 2. **Runner.**  A run stuck queued has no runner.  Read the job's `runs-on`: most ship jobs use hosted `macos-latest`, Clutch and BotFleet use `xcode-27`.  Do not turn on a Mac PR-check runner (banned in AGENT-SYNC § CI Runners) and do not run a local archive or `ship-testflight.sh` from a seat to catch up.  Re-ship through the repo's workflow.
-3. **Rate gate.**  A skip for the per-app minimum interval or for an unchanged git HEAD exits 0 and looks green, so it is not a failure and not a reason to force anything.  Read the live interval from `DEFAULT_MIN_INTERVAL_SEC` in `/Users/jay/apps/ios-fleet/ship-testflight.sh`, because the README table has disagreed with the script.  Never set `IOS_TF_MIN_INTERVAL_SEC` as a standing workflow value.  Never force a ship past the gate (AGENT-SYNC); a per-run override is for when the owner says so for that run, preferably as a one-off `workflow_dispatch`.
+3. **Rate gate.**  A skip for the per-app minimum interval or for an unchanged git HEAD exits 0 and looks green, so it is not a failure and not a reason to force anything.  Read the live interval from `DEFAULT_MIN_INTERVAL_SEC` in `~/apps/ios-fleet/ship-testflight.sh`, because the README table has disagreed with the script.  Never set `IOS_TF_MIN_INTERVAL_SEC` as a standing workflow value.  Never force a ship past the gate (AGENT-SYNC); a per-run override is for when the owner says so for that run, preferably as a one-off `workflow_dispatch`.
 4. **Compile check.**  A red `ios-build.yml` on main usually means the archive fails too.  That is a code fix on main, not a ship fix.
 
 Per-app quirks (read the workflow on main before trusting this list):
@@ -143,7 +143,7 @@ Move the Linear issue to **Deployed** (`board status <id> deployed --resolution 
 ## Canon
 
 - `/Users/jay/apps/COOLIFY.md`
-- `/Users/jay/apps/ios-fleet/README.md` — TestFlight ship, the rate gate, and the freshness script
+- `~/apps/ios-fleet/README.md` — TestFlight ship, the rate gate, and the freshness script
 - `/Users/jay/apps/AGENT-SYNC.md` — Production deploys; Coolify tokens; Releases, Versioning, and Brand Assets
 - ST `docs/rollouts/2026-08-07-hetzner-fleet-cutover.md`
 - ST `docs/rollouts/2026-07-10-auto-deploy-on.md` (mechanism; UUIDs/IPs in that note may be pre-cutover)
