@@ -3,7 +3,7 @@
 from agent_sync import zulip as _zulip
 
 
-def _no_live_infisical(names):  # pragma: no cover - a guard
+def _no_live_infisical(names, *_args):  # pragma: no cover - a guard
     """The Infisical credential fallback (OPS-818) must never reach the real CLI from a test.  A test that
     exercises it patches `zulip._default_infisical_fetch` (see Harness.infisical_values)."""
     raise _zulip.CredentialError("infisical disabled in tests")

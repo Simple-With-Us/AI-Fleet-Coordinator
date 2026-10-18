@@ -78,7 +78,7 @@ class Harness(unittest.TestCase):
         self.infisical_error: Exception | None = None
         self.infisical_calls: list[tuple[str, ...]] = []
 
-        def fake_infisical(names: tuple[str, ...]) -> dict[str, str]:
+        def fake_infisical(names: tuple[str, ...], *_args: Any) -> dict[str, str]:
             self.infisical_calls.append(tuple(names))
             if self.infisical_error is not None:
                 raise self.infisical_error

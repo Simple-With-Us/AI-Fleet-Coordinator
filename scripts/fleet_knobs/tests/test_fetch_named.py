@@ -48,3 +48,9 @@ class FetchNamedTests(KnobTestCase):
         with self.assertRaises(source.FetchFailed) as ctx:
             source.fetch_named(("A",), project_id=PROJECT, path="/zulip")
         self.assertEqual(ctx.exception.reason, "bad-output")
+
+    def test_the_cli_not_found_placeholder_means_absent(self):
+        # `infisical secrets get` exits 0 and answers an unknown name with "*not found*".
+        self.fake.set(shape="api", secrets={"A": "real", "B": "*not found*"})
+        got = source.fetch_named(("A", "B"), project_id=PROJECT, path="/zulip")
+        self.assertEqual(got, {"A": "real"})

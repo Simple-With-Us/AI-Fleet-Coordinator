@@ -32,6 +32,9 @@ FALLBACK_DIRS = ("~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin")
 TIMEOUT_SECONDS = 20.0
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 ENV_NAMES = ("INFISICAL_ENVIRONMENT", "INFISICAL_ENV")
+# ``infisical secrets get NAME`` exits 0 and answers a name it does not hold with this value
+# (verified against the real CLI, OPS-818), so it means "absent", never a secret's value.
+NOT_FOUND_PLACEHOLDERS = frozenset({"*not found*"})
 
 
 class FetchFailed(Exception):
@@ -170,6 +173,8 @@ def _pick(payload, wanted) -> dict[str, str]:
         raise FetchFailed("bad-output")
     for key, val in pairs:
         if key in wanted and isinstance(val, (str, int, float, bool)):
+            if isinstance(val, str) and val.strip().lower() in NOT_FOUND_PLACEHOLDERS:
+                continue
             text = str(val)
             if isinstance(val, bool):
                 text = "true" if val else "false"

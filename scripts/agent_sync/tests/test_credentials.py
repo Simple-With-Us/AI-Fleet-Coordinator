@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import unittest
+from unittest import mock
 
 from agent_sync import zulip as Z
 from agent_sync.tests.fake_zulip import BOT_EMAIL
@@ -181,12 +182,23 @@ class InfisicalFallbackTests(Harness):
         self.assertIn("CLAUDE_ZULIP_SITE", result.err)
         self.assertNotIn(self.key, result.err)
 
+    def test_the_cli_not_found_placeholder_is_a_missing_key(self) -> None:
+        # The real fetch drops "*not found*" (fleet_knobs.source); a fetch that lets it through is still refused here.
+        self.rc_path.unlink()
+        self.seed()
+        self.infisical_values["CLAUDE_ZULIP_SITE"] = "*not found*"
+        result = self.run_cli("whoami")
+        self.assertEqual(result.code, 3)
+        self.assertIn("not set: CLAUDE_ZULIP_SITE", result.err)
+
     def test_a_key_with_a_control_character_is_refused_without_echoing_it(self) -> None:
         self.rc_path.unlink()
         self.seed()
         self.infisical_values["CLAUDE_ZULIP_KEY"] = self.key + "\nextra"
         result = self.run_cli("whoami")
         self.assertEqual(result.code, 3)
+        self.assertIn("Infisical Fleet-OPS /zulip (prod) keys CLAUDE_ZULIP_EMAIL", result.err)
+        self.assertIn("CLAUDE_ZULIP_KEY holds a control character", result.err)
         self.assertNotIn(self.key, result.err)
 
     def test_the_bot_check_still_applies_to_infisical_credentials(self) -> None:
@@ -198,6 +210,37 @@ class InfisicalFallbackTests(Harness):
             result.code, 0
         )  # the server rejects the pair, or the seat/bot check does
         self.assertNotIn(self.key, result.out + result.err)
+
+    def test_project_id_comes_from_env_then_the_home_file_and_fails_closed(self) -> None:
+        fake_id = "11111111-2222-3333-4444-555555555555"
+        other_id = "66666666-7777-8888-9999-000000000000"
+        with self.assertRaises(Z.CredentialError) as ctx:
+            Z.infisical_project_id({}, self.home)
+        self.assertIn("INFISICAL_FLEET_OPS_PROJECT_ID", str(ctx.exception))
+        self.assertIn("fleet-ops-project-id", str(ctx.exception))
+        (self.home / ".agent-sync").mkdir()
+        (self.home / ".agent-sync" / "fleet-ops-project-id").write_text(other_id + "\n")
+        self.assertEqual(Z.infisical_project_id({}, self.home), other_id)
+        self.assertEqual(Z.infisical_project_id({"INFISICAL_FLEET_OPS_PROJECT_ID": fake_id}, self.home), fake_id)
+        with self.assertRaises(Z.CredentialError) as ctx:
+            Z.infisical_project_id({"INFISICAL_FLEET_OPS_PROJECT_ID": "not-a-uuid-secret-looking"}, self.home)
+        self.assertNotIn("secret-looking", str(ctx.exception))
+
+    def test_default_fetch_passes_the_resolved_project_id_and_only_this_seats_names(self) -> None:
+        from fleet_knobs import source
+        fake_id = "11111111-2222-3333-4444-555555555555"
+        seen: dict = {}
+
+        def fetch_named(names, *, project_id, path):
+            seen.update(names=tuple(names), project_id=project_id, path=path)
+            return {}
+
+        with mock.patch.object(source, "fetch_named", fetch_named), \
+                mock.patch.object(source, "environment_refusal", lambda: None):
+            got = Z._fetch_from_infisical_cli(("A", "B", "C"), {"INFISICAL_FLEET_OPS_PROJECT_ID": fake_id},
+                                                         self.home)
+        self.assertEqual(got, {})
+        self.assertEqual(seen, {"names": ("A", "B", "C"), "project_id": fake_id, "path": "/zulip"})
 
     def test_key_names_follow_the_credential_file_stem(self) -> None:
         for seat, prefix in (
