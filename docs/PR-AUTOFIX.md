@@ -109,6 +109,12 @@ Sanitized diagnostics (no raw transcripts) are uploaded as a short-lived artifac
 
 Pushes made with the workflow `GITHUB_TOKEN` do not trigger other workflows.  When `SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY` and `SWU_AUTOFIX_GITHUB_APP_ID` are configured, the reusable workflow mints a GitHub App installation token and pushes with that instead so required checks run on the new head.  The mint step is gated on the org variable `SWU_AUTOFIX_GITHUB_APP_ID`, not on the secret, because GitHub rejects workflow startup when a step `if` references `secrets`.  A preceding shell step reads the private key from the environment and skips mint when the variable is set but the secret is empty, so the run falls back to `GITHUB_TOKEN` push with a notice.  Without the App, the push still lands but logs a warning that CI must be re-triggered manually.
 
+## Usage Metering
+
+Each attempted fix reports its token usage to Usage Monitor (UM-1593), so the fleet can see what autofix spends.  The model job keeps only the counters of Claude Code's final result message (tokens, model, duration, turns) and hands them to a separate `meter` job as a one-day artifact.  The `meter` job posts one v2 usage event (`producerId: ci-autofix`, `harness: claude-code-ci`, repo, PR number, run id) through the pinned fleet reporting action.  The ingest credential exists only in that job, because the model job runs Claude Code with Bash and could rewrite any file on its runner.  Reporting is `continue-on-error`, exits 0 on every failure, and also covers runs whose push the gate then refuses.
+
+The reusable declares an optional secret, `USAGE_INGEST_TOKEN`, which callers forward like `MINIMAX_API_KEY`:  `USAGE_INGEST_TOKEN: ${{ secrets.USAGE_INGEST_TOKEN }}`.  Without it the `meter` job does nothing.  A caller must pin a SHA that declares the secret before it forwards it, because GitHub rejects a secret the called workflow does not declare.
+
 ## What It Skips
 
 - PRs that are closed, merged, or from a fork (`isCrossRepository`), since there is no branch to push to.

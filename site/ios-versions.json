@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-18T00:58:58Z",
+  "updatedAt": "2026-10-18T01:17:08Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -37,6 +37,12 @@
       "build": "202610180034",
       "appleId": 6820881005,
       "displayName": "Usage Monitor Client"
+    },
+    "com.simplewithus.usage.local.ios": {
+      "marketingVersion": "1.0.3",
+      "build": "202610180042",
+      "appleId": 6820885210,
+      "displayName": "Usage Monitor Local"
     },
     "net.dealdex": {
       "marketingVersion": "1.0.25",
