@@ -1,0 +1,261 @@
+name: Auto-merge reusable (fleet)
+
+# The fleet's shared auto-merge armer.  Callers live in each repo as a thin
+# workflow on pull_request events that calls this file with `uses:`;  see
+# docs/AUTO-MERGE.md for the caller template and input reference.
+#
+# Origin: Socratic-Trade's .github/workflows/auto-merge-prs.yml, cloned
+# per-repo in the jaywedgeworth22 personal-account days when there was no org
+# layer for a shared credential or workflow.  The copies drifted (ST grew a
+# CODEOWNERS money-path gate; CT/UM arm on everything), and each needed its
+# own token.  One reusable ends the drift; repo policy moves into caller
+# inputs.
+#
+# Why arming requires an elevated token (secrets.merge_token):  GitHub raises
+# no workflow events for anything done with the repository's GITHUB_TOKEN.
+# A merge attributed to github-actions[bot] dispatches nothing -- no CI, no
+# ship workflows on main.  So the merge token must be a PAT or a GitHub App
+# installation token.  Without one this workflow no-ops LOUDLY (notice + arm
+# skipped); it never falls back to GITHUB_TOKEN for arming.  Disarming may
+# fall back, because disabling never merges.
+#
+# The presence guard is not enough on its own:  a revoked or expired token is
+# present and then 401s mid-step (Socratic-Trade ST-4393, 2026-10-08).  The
+# arm job therefore probes the credential with an authenticated API call
+# before use and fails with "token present but rejected" when it is dead.
+#
+# The event context in a reusable workflow is the caller's, so
+# github.event.pull_request below is the caller's PR.
+
+on:
+  workflow_call:
+    inputs:
+      require_codeowners_gate:
+        description: >-
+          When true, PRs touching paths in the base branch's .github/CODEOWNERS
+          are not armed (human merge required) and any armed merge is disabled.
+        type: boolean
+        default: false
+      gate_script:
+        description: >-
+          Caller-repo script, read from the BASE branch (never the PR head), that
+          exit-0s when given `--files <path>...` touch protected paths and exit-1s
+          otherwise.  Required when require_codeowners_gate is true.  Reads the
+          CODEOWNERS_FILE env for the CODEOWNERS copy to match against.
+        type: string
+        default: ""
+      self_guard_paths:
+        description: >-
+          Comma-separated repo-relative paths.  A PR touching any of them edits
+          the gate itself, so it is never armed.
+        type: string
+        default: ""
+      restrict_to_pattern:
+        description: >-
+          Extended regex.  When set, only PRs whose head branch or title matches
+          are armed (dependency-bump lanes).
+        type: string
+        default: ""
+      hold_labels:
+        description: >-
+          Comma-separated label names that block arming and disable any armed
+          merge.
+        type: string
+        default: "do-not-automerge,needs-human-merge"
+      delete_branch:
+        description: Delete the head branch after merge.
+        type: boolean
+        default: true
+    secrets:
+      merge_token:
+        description: >-
+          PAT or GitHub App installation token with contents + pull-requests
+          write.  Probed before use; absent means a loud no-op.
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    if: >
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+      reason: ${{ steps.check.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v7
+        if: inputs.require_codeowners_gate
+        with:
+          # The gate script and CODEOWNERS come from the base branch, never the
+          # PR head: an old or hostile branch cannot weaken the gate.
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 1
+      - name: Classify PR for auto-merge eligibility
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+          REPO: ${{ github.repository }}
+          RESTRICT: ${{ inputs.restrict_to_pattern }}
+          SELF_GUARD: ${{ inputs.self_guard_paths }}
+          HOLD_LABELS: ${{ inputs.hold_labels }}
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          REQUIRE_GATE: ${{ inputs.require_codeowners_gate }}
+          GATE_SCRIPT: ${{ inputs.gate_script }}
+        run: |
+          set -euo pipefail
+          skip() { echo "skip=true" >> "$GITHUB_OUTPUT"; echo "reason=$1" >> "$GITHUB_OUTPUT"; echo "::notice::not arming auto-merge: $1"; exit 0; }
+          trap 'skip "classifier failed - fail closed"' ERR
+
+          # Hold labels
+          IFS=',' read -ra holds <<< "$HOLD_LABELS"
+          for h in "${holds[@]}"; do
+            if printf '%s' "$LABELS_JSON" | jq -e --arg h "$h" 'index($h) != null' >/dev/null; then
+              skip "hold label '$h' present"
+            fi
+          done
+
+          # Lane restriction (dependency-bump callers)
+          if [ -n "$RESTRICT" ]; then
+            if ! [[ "$HEAD_REF" =~ $RESTRICT ]] && ! [[ "$TITLE" =~ $RESTRICT ]]; then
+              skip "outside restricted lane /$RESTRICT/"
+            fi
+          fi
+
+          # Changed files via the compare API (three-dot = merge-base..head)
+          mapfile -t changed_files < <(
+            gh api "repos/$REPO/compare/${BASE}...${HEAD}" --paginate -q '.files[].filename'
+          ) || skip "compare API failed - fail closed"
+          [ ${#changed_files[@]} -gt 0 ] || skip "compare API returned no files - fail closed"
+
+          # Self-guard: PR edits the gate itself
+          if [ -n "$SELF_GUARD" ]; then
+            IFS=',' read -ra guards <<< "$SELF_GUARD"
+            for f in "${changed_files[@]}"; do
+              for g in "${guards[@]}"; do
+                [ "$f" = "$g" ] && skip "PR edits the auto-merge gate ($f)"
+              done
+            done
+          fi
+
+          # CODEOWNERS money-path gate (gate script comes from the base branch checkout)
+          if [ "$REQUIRE_GATE" = "true" ]; then
+            [ -n "$GATE_SCRIPT" ] || skip "require_codeowners_gate without gate_script - fail closed"
+            co="$RUNNER_TEMP/codeowners-base"
+            if gh api "repos/$REPO/contents/.github/CODEOWNERS?ref=$BASE" --jq '.content // empty' 2>/dev/null | base64 -d > "$co" && [ -s "$co" ]; then
+              if CODEOWNERS_FILE="$co" bash "$GATE_SCRIPT" --files "${changed_files[@]}"; then
+                skip "touches CODEOWNERS protected paths - human merge required"
+              fi
+            else
+              : # no CODEOWNERS on base: nothing protected
+            fi
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "reason=eligible" >> "$GITHUB_OUTPUT"
+
+  arm:
+    runs-on: ubuntu-latest
+    needs: classify
+    if: needs.classify.outputs.skip == 'false'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Require an elevated token before arming auto-merge
+        id: token-gate
+        env:
+          MERGE_TOKEN: ${{ secrets.merge_token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MERGE_TOKEN" ]; then
+            echo "No merge_token secret. Arming with GITHUB_TOKEN would make"
+            echo "github-actions[bot] the merging identity, and GitHub raises no"
+            echo "workflow events for GITHUB_TOKEN actions -- the merge commit on"
+            echo "main would run neither CI nor ship workflows. Skipping (loud no-op)."
+            echo "::notice::auto-merge not armed: no merge_token secret (see workflow header)"
+            echo "armed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "armed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Probe the merge token (presence is not validity - ST-4393)
+        if: steps.token-gate.outputs.armed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.merge_token }}
+        run: |
+          set -euo pipefail
+          out="$(gh api rate_limit 2>&1)" && { echo "merge token accepted."; exit 0; }
+          if printf '%s' "$out" | grep -qiE '401|Bad credentials|403'; then
+            echo "::error::merge token present but rejected by the API. Rotate it; auto-merge cannot arm."
+            exit 1
+          fi
+          echo "::error::merge token probe failed unexpectedly: $(printf '%s' "$out" | head -1)"
+          exit 1
+
+      - name: Enable auto-merge (squash + delete branch)
+        if: steps.token-gate.outputs.armed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.merge_token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          DELETE_BRANCH: ${{ inputs.delete_branch }}
+        run: |
+          set -euo pipefail
+          args=(--auto --squash)
+          [ "$DELETE_BRANCH" = "true" ] && args+=(--delete-branch)
+          echo "Enabling auto-merge (${args[*]}) for $PR_URL"
+          out="$(gh pr merge "${args[@]}" "$PR_URL" 2>&1)" && { echo "$out"; exit 0; }
+          echo "$out"
+          if echo "$out" | grep -qiE 'already enabled|Pull request is in clean status|Auto merge is already'; then
+            echo "Auto-merge already armed."; exit 0
+          fi
+          if echo "$out" | grep -qiE 'is not mergeable|not mergeable|merge conflict|required status check|Review required'; then
+            if gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest' | grep -vq null; then
+              echo "Auto-merge armed despite pending checks."; exit 0
+            fi
+            echo "::notice::Auto-merge not armed ($(echo "$out" | head -1))"; exit 0
+          fi
+          echo "::error::Failed to enable auto-merge for $PR_URL"
+          exit 1
+
+  disarm:
+    runs-on: ubuntu-latest
+    needs: classify
+    if: needs.classify.outputs.skip == 'true'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Disable any armed auto-merge (inline port of disable-pr-automerge.sh)
+        env:
+          MERGE_TOKEN: ${{ secrets.merge_token }}
+          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          REASON: ${{ needs.classify.outputs.reason }}
+        run: |
+          set -euo pipefail
+          echo "PR ineligible ($REASON); ensuring auto-merge is off for $PR_URL"
+          primary="${MERGE_TOKEN:-}"; fallback="${FALLBACK_TOKEN:-}"
+          [ -n "$primary" ] || { primary="$fallback"; fallback=""; }
+          [ -n "$primary" ] && [ -n "$fallback" ] || fallback=""
+          state="$(GH_TOKEN="$primary" gh pr view "$PR_URL" --json autoMergeRequest --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || echo unreadable)"
+          if [ "$state" = "off" ]; then echo "auto-merge already off."; exit 0; fi
+          for token in "$primary" "$fallback"; do
+            [ -n "$token" ] || continue
+            if GH_TOKEN="$token" gh pr merge --disable-auto "$PR_URL"; then
+              echo "auto-merge disabled."; exit 0
+            fi
+          done
+          state="$(GH_TOKEN="$primary" gh pr view "$PR_URL" --json autoMergeRequest --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || echo unreadable)"
+          if [ "$state" = "armed" ]; then
+            echo "::error::auto-merge still armed for $PR_URL and every credential was rejected"
+            exit 1
+          fi
+          echo "auto-merge not armed (or unreadable with it confirmed off)."
