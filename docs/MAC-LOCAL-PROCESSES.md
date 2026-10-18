@@ -290,6 +290,7 @@ Always-on or scheduled, but agents did not install them.  Do not kill or
 |---|---|---|
 | Wallspace, GeminiAppLauncher, Devly, Kimi, Google Drive, Dockspace | Login item | Aqua apps. |
 | `io.tailscale.ipn.macsys.login-item-helper` | Always-on | Tailscale. |
+| Remote Login (sshd), key `claude@fleet-hetzner-nbg1 to jay-macbook` | Always-on (macOS) | **Added Sun, Oct 18, 2026 (CLAUDE, owner request, AFC-339).**  One line in `~/.ssh/authorized_keys` restricted with `from="100.69.77.26"` (fleet-hetzner-nbg1's tailnet address) lets that server's root, and so any agent session there, open a shell as `jay` over Tailscale (`ssh jay-macbook`, key `~/.ssh/fleet_hetzner_to_mac_ed25519` on the server).  The login keychain is locked over SSH, so keychain-backed CLIs (`infisical` with a user login) fail there.  Revoke:  delete that line. |
 | `com.macpaw.CleanMyMac5.{Menu,HealthMonitor,Updater}` | Always-on / scheduled | CleanMyMac. |
 | `com.microsoft.update.agent` | Scheduled | Microsoft updater. |
 | `com.anthropic.claudefordesktop.ShipIt` | Scheduled | Claude Desktop updater. |
@@ -484,6 +485,8 @@ are created.
 
 
 ## Inventory Changelog & Historical Updates
+
+Last inventory: Sun, Oct 18, 2026 (CLAUDE, AFC-339).  Added the Remote Login row:  an SSH key from fleet-hetzner-nbg1, restricted to its tailnet address, authorized by Jay.  Moved the realm-admin bot's zuliprc from `~/.secrets/Zulip/Admin-zuliprc` (it was mode 644) to `~/.secrets/ZulipAdmin/realm-admin.zuliprc` (0600), out of `subscribe_all.py`'s glob.  Nothing else was installed or loaded.
 
 Last inventory: Sun, Oct 11, 2026 (CLAUDE, AFC-285).  Doc-only:  added the scheduled `com.jay.mac-facts-publish` row (fleet open-loops unit F7) and widened the on-demand `fleet-facts` and `mac-facts-publish` row.  `mac-process-watch.sh` now expects the label (`expect_scheduled`) and `~/apps/fleet-facts/mac-facts-publish` (`expect_files`) in the tracked copy.  Nothing was installed, loaded or changed on this Mac;  the load is live step L16c (after L4, L5 and L15), which also copies the updated watch script and adds the same rows to the live list.
 
