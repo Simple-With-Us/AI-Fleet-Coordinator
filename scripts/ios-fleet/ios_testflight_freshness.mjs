@@ -294,17 +294,7 @@ export function makeDeps(env = process.env) {
     },
     lock() {
       fs.mkdirSync(sdir, { recursive: true, mode: 0o700 });
-      const dir = path.join(sdir, "freshness.lockdir");
-      try {
-        fs.mkdirSync(dir);
-      } catch {
-        let age = 0;
-        try { age = Date.now() - fs.statSync(dir).mtimeMs; } catch { /* gone */ }
-        if (age < 30 * MINUTE) return null;
-        fs.rmSync(dir, { recursive: true, force: true });
-        fs.mkdirSync(dir);
-      }
-      return () => fs.rmSync(dir, { recursive: true, force: true });
+      return acquireLockDir(path.join(sdir, "freshness.lockdir"));
     },
     async post(body) {
       fs.mkdirSync(sdir, { recursive: true, mode: 0o700 });
@@ -320,6 +310,30 @@ export function makeDeps(env = process.env) {
     },
   };
   return deps;
+}
+
+/**
+ * Take the run lock (an atomic mkdir).  Returns a release function, or null when
+ * another run holds it.  A lock older than 30 minutes is reclaimed;  when two runs
+ * race to reclaim it, the loser sees EEXIST and gets null, never an exception.
+ */
+export function acquireLockDir(dir, { fsx = fs, nowMs = Date.now() } = {}) {
+  const take = () => {
+    try {
+      fsx.mkdirSync(dir);
+      return true;
+    } catch (err) {
+      if (err && err.code === "EEXIST") return false;
+      throw err;
+    }
+  };
+  const release = () => fsx.rmSync(dir, { recursive: true, force: true });
+  if (take()) return release;
+  let age = 0;
+  try { age = nowMs - fsx.statSync(dir).mtimeMs; } catch { /* released meanwhile */ }
+  if (age < 30 * MINUTE) return take() ? release : null;
+  fsx.rmSync(dir, { recursive: true, force: true });
+  return take() ? release : null;
 }
 
 function writeFileAtomic(file, text) {

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   EXIT_BEHIND, EXIT_CURRENT, EXIT_FAILED, SENTENCE_GAP,
-  buildCutTime, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
+  acquireLockDir, buildCutTime, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
   main, makeContext, matchCheckName, ownerTime, parseArgs, planAlerts, runRemedies, sentences,
 } from "./ios_testflight_freshness.mjs";
 
@@ -532,6 +532,26 @@ test("an app with autoRemedy on must name a compile check:  the registry fails l
   const out = sink();
   assert.equal(await main(["--registry", writeRegistry(registry({ x: app({ compileCheck: null }) }))], fakeDeps().deps, out), EXIT_FAILED);
   assert.match(out.text, /compileCheck is empty/);
+});
+
+test("the run lock:  held, reclaimed when stale, and a lost reclaim race returns null instead of throwing", () => {
+  const dir = path.join(fs.mkdtempSync(path.join(process.env.TMPDIR || "/tmp", "tf-lock-")), "freshness.lockdir");
+  const release = acquireLockDir(dir);
+  assert.equal(typeof release, "function");
+  assert.equal(acquireLockDir(dir), null, "a fresh lock is held");
+  assert.equal(typeof acquireLockDir(dir, { nowMs: Date.now() + 31 * 60e3 }), "function", "a 31 minute old lock is reclaimed");
+  release();
+
+  // Another run re-creates the lock between our rmSync and our mkdirSync.
+  const eexist = () => Object.assign(new Error("EEXIST: file already exists"), { code: "EEXIST" });
+  const racing = {
+    mkdirSync() { throw eexist(); },
+    statSync: () => ({ mtimeMs: 0 }),
+    rmSync() {},
+  };
+  assert.equal(acquireLockDir("/x/freshness.lockdir", { fsx: racing, nowMs: 3600e3 }), null);
+  const denied = { ...racing, mkdirSync() { throw Object.assign(new Error("EACCES"), { code: "EACCES" }); } };
+  assert.throws(() => acquireLockDir("/x/freshness.lockdir", { fsx: denied }), /EACCES/, "a real error is not mistaken for a held lock");
 });
 
 // ---------------------------------------------------------------------------
