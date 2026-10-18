@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
-from fleet_skill_identity import (  # noqa: E402
+from fleet_skill_identity import (
     _SEAT_PIN_SOURCE,
     BRANCH_EXAMPLE_CANONICAL,
     BRANCH_EXAMPLE_SLUG,
@@ -164,14 +164,18 @@ class SpecializeTests(unittest.TestCase):
         for key, tag in mapping.items():
             out = specialize_from_monet(src, SEATS[key], skill_name="session-start")
             if SEATS[key].retired:  # never anyone's default:  the arm fails
-                self.assertIn(f'else SEAT="${{AGENT_SEAT:?{tag} is retired; take no work as {tag}}}"; fi', out, key)
+                self.assertIn(
+                    f'else SEAT="${{AGENT_SEAT:?{tag} is retired; take no work as {tag}}}"; fi',
+                    out,
+                    key,
+                )
             else:
                 self.assertIn(_arm(tag), out, key)
             self.assertNotIn("AGENT_SEAT=MONET", out, key)
-        grok_bot = specialize_from_monet(
-            src, SEATS["grok-bot"], skill_name="session-start"
-        )
-        for tag in GB_ROLE_TAGS:  # the list is the MCP servers' own (gb-identities.json), whatever it holds
+        grok_bot = specialize_from_monet(src, SEATS["grok-bot"], skill_name="session-start")
+        for tag in (
+            GB_ROLE_TAGS
+        ):  # the list is the MCP servers' own (gb-identities.json), whatever it holds
             self.assertIn(tag, grok_bot)
         self.assertNotIn("GB-CONDUCTOR", grok_bot)
         self.assertNotRegex(grok_bot, r"GB-COMPILE(?!R)")
@@ -196,16 +200,16 @@ class SpecializeTests(unittest.TestCase):
         self.assertFalse(SEATS["renoir"].write_home)
         dests = [dest for dest, _seat in platform_installs()]
         self.assertFalse(any("/.kimi/" in dest or dest.endswith("/.kimi/skills") for dest in dests))
-        self.assertFalse(any("/.renoir/" in dest or dest.endswith("/.renoir/skills") for dest in dests))
+        self.assertFalse(
+            any("/.renoir/" in dest or dest.endswith("/.renoir/skills") for dest in dests)
+        )
         out = specialize_from_monet(_session(), SEATS["renoir"], skill_name="session-start")
         self.assertIn("Retired seat", out)
         self.assertNotIn("not yet active", out)
         self.assertIn("Do not install to `~/.renoir/skills`", out)
 
     def test_claude_shared_pin(self) -> None:
-        out = specialize_from_monet(
-            _session(), SEATS["claude_shared"], skill_name="session-start"
-        )
+        out = specialize_from_monet(_session(), SEATS["claude_shared"], skill_name="session-start")
         #  No "other tools scan this too" banner (owner 2026-10-11):  every platform now has its
         #  own repo tree, so the warning was both obsolete and a confusing apology in a file the
         #  other seats were reading anyway.  The identity assertions are what must hold.
@@ -225,19 +229,15 @@ class SpecializeTests(unittest.TestCase):
         )
 
     def test_quoted_description_folds_for_fx(self) -> None:
-        out = specialize_from_monet(
-            _session(), SEATS["codex"], skill_name="session-start"
-        )
+        out = specialize_from_monet(_session(), SEATS["codex"], skill_name="session-start")
         self.assertIn("description: >-", out.split("---")[1])
-        self.assertNotIn('description: Start', out.split("---")[1])
+        self.assertNotIn("description: Start", out.split("---")[1])
         self.assertIn("just a small fix.", out)
 
     def test_fx_seat_is_not_cursor(self) -> None:
         self.assertEqual(SEATS["fx"].tag, "FX")
         self.assertTrue(SEATS["fx"].dest.endswith("/.fx/skills") or "fx/skills" in SEATS["fx"].dest)
-        out = specialize_from_monet(
-            _session(), SEATS["fx"], skill_name="session-start"
-        )
+        out = specialize_from_monet(_session(), SEATS["fx"], skill_name="session-start")
         self.assertIn(_arm("FX"), out)
         self.assertIn(_ordinary("Fx", "FX"), out)
         self.assertNotIn("AGENT_SEAT=CURSOR", out)
@@ -248,7 +248,7 @@ class SpecializeTests(unittest.TestCase):
 
         src = (
             "---\n"
-            'name: cloudflare-one\n'
+            "name: cloudflare-one\n"
             'description: "Guides Cloudflare One \\"Zero Trust\\" work."\n'
             "---\n\n"
             "# Cloudflare One\n"
@@ -260,6 +260,7 @@ class SpecializeTests(unittest.TestCase):
 
 
 DOCS = os.path.join(ROOT, "docs", "fleet-skills")
+
 
 def _load_skill(name: str) -> str:
     path = os.path.join(DOCS, name, "SKILL.md")
@@ -300,9 +301,7 @@ class CatalogAndShipBanTests(unittest.TestCase):
             for name in names:
                 if not skill_allowed_for_seat(name, seat):
                     continue
-                out = specialize_from_monet(
-                    _load_skill(name), seat, skill_name=name
-                )
+                out = specialize_from_monet(_load_skill(name), seat, skill_name=name)
                 for fragment in FORBIDDEN_LOCAL_IOS_SHIP:
                     self.assertNotIn(
                         fragment,
@@ -345,36 +344,27 @@ class CatalogAndShipBanTests(unittest.TestCase):
             for name in names:
                 if not skill_allowed_for_seat(name, seat):
                     continue
-                out = specialize_from_monet(
-                    _load_skill(name), seat, skill_name=name
-                ).lower()
+                out = specialize_from_monet(_load_skill(name), seat, skill_name=name).lower()
                 for fragment in banned:
                     if fragment in out:
                         hits.append(f"{key}/{name}:{fragment}")
         self.assertEqual(
             hits,
             [],
-            "rendered skills must not ban DealDex GitHub-hosted macos-latest:\n"
-            + "\n".join(hits),
+            "rendered skills must not ban DealDex GitHub-hosted macos-latest:\n" + "\n".join(hits),
         )
 
 
 class PerSeatVoiceTests(unittest.TestCase):
     def test_each_named_seat_is_not_another_seat(self) -> None:
         names = catalog_skill_names(DOCS)
-        named = [
-            key
-            for key, seat in SEATS.items()
-            if seat.mode in {"exclusive", "grok_bot"}
-        ]
+        named = [key for key, seat in SEATS.items() if seat.mode in {"exclusive", "grok_bot"}]
         for key in named:
             seat = SEATS[key]
             for name in names:
                 if not skill_allowed_for_seat(name, seat):
                     continue
-                out = specialize_from_monet(
-                    _load_skill(name), seat, skill_name=name
-                )
+                out = specialize_from_monet(_load_skill(name), seat, skill_name=name)
                 if seat.tag != "MONET":
                     self.assertNotIn(
                         "shared Monet template",
@@ -430,9 +420,7 @@ class PerSeatVoiceTests(unittest.TestCase):
             "~/Desktop/fleet-skills",
         )
         for name in catalog_skill_names(DOCS):
-            out = specialize_from_monet(
-                _load_skill(name), SEATS["ag"], skill_name=name
-            )
+            out = specialize_from_monet(_load_skill(name), SEATS["ag"], skill_name=name)
             for phrase in forbidden:
                 self.assertNotIn(phrase, out, f"ag/{name}: {phrase}")
 
@@ -448,26 +436,20 @@ class PerSeatVoiceTests(unittest.TestCase):
             "~/Desktop/fleet-skills",
         )
         for name in catalog_skill_names(DOCS):
-            out = specialize_from_monet(
-                _load_skill(name), SEATS["codex"], skill_name=name
-            )
+            out = specialize_from_monet(_load_skill(name), SEATS["codex"], skill_name=name)
             for phrase in forbidden:
                 self.assertNotIn(phrase, out, f"codex/{name}: {phrase}")
 
     def test_cursor_skills_do_not_address_reader_as_monet(self) -> None:
         for name in catalog_skill_names(DOCS):
-            out = specialize_from_monet(
-                _load_skill(name), SEATS["cursor"], skill_name=name
-            )
+            out = specialize_from_monet(_load_skill(name), SEATS["cursor"], skill_name=name)
             self.assertNotIn("You are **MONET**", out, name)
             self.assertNotIn("AGENT_SEAT=MONET", out, name)
             self.assertNotIn("This install is for `MONET`", out, name)
             self.assertNotIn("This pack is for the **MONET** Claude account", out, name)
 
     def test_kimi_is_kimi_voiced(self) -> None:
-        out = specialize_from_monet(
-            _session(), SEATS["kimi"], skill_name="session-start"
-        )
+        out = specialize_from_monet(_session(), SEATS["kimi"], skill_name="session-start")
         self.assertIn("[KIMI]", out)
         self.assertIn("Retired", out)
         self.assertNotIn("Start every Kimi", out)
@@ -487,9 +469,7 @@ class PerSeatVoiceTests(unittest.TestCase):
         for name in catalog_skill_names(DOCS):
             if not skill_allowed_for_seat(name, SEATS["claude_shared"]):
                 continue
-            out = specialize_from_monet(
-                _load_skill(name), SEATS["claude_shared"], skill_name=name
-            )
+            out = specialize_from_monet(_load_skill(name), SEATS["claude_shared"], skill_name=name)
             self.assertNotIn("You are **MONET**", out, name)
             self.assertNotIn("AGENT_SEAT=MONET", out, name)
             self.assertNotIn("This install is for `MONET`", out, name)
@@ -517,7 +497,11 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertIn("GB-COMPILER", GB_ROLE_TAGS)
         self.assertIn("GB-ORACLE", GB_ROLE_TAGS)
         self.assertNotIn("GB-COMPILE", GB_ROLE_TAGS)
-        gb = json.loads((Path(__file__).resolve().parent / "agent_sync" / "mcp" / "gb-identities.json").read_text())
+        gb = json.loads(
+            (
+                Path(__file__).resolve().parent / "agent_sync" / "mcp" / "gb-identities.json"
+            ).read_text()
+        )
         self.assertEqual(list(GB_ROLE_TAGS), gb["enabled"], "one list:  the MCP servers' GB table")
         for stale in ("GB-CONDUCTOR", "GB-NURSE", "GB-ACCOUNTANT"):
             self.assertNotIn(stale, GB_ROLE_TAGS)
@@ -526,7 +510,10 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertFalse(is_grok_bot_tag("AFC"))
         self.assertTrue(head_has_fleet_wake("[MONET->FLEET] sync-1"))
         self.assertTrue(head_has_fleet_wake("[CLAUDE·1a2b3c4d] @**all** HALT"))
-        self.assertTrue(head_has_fleet_wake("[CLAUDE·1a2b3c4d] @*fleet* HALT"), "the retired group form is still read")
+        self.assertTrue(
+            head_has_fleet_wake("[CLAUDE·1a2b3c4d] @*fleet* HALT"),
+            "the retired group form is still read",
+        )
         self.assertFalse(head_has_fleet_wake("[CLAUDE·1a2b3c4d] @**Codex** HALT"))
         self.assertFalse(head_has_fleet_wake("[FLEET] sync-1"))
         self.assertFalse(head_has_fleet_wake("[AFC] sync-1"))
@@ -534,9 +521,7 @@ class CoordinatorSelfIdTests(unittest.TestCase):
     def test_fleet_apps_acronym_is_afc(self) -> None:
         import json
 
-        data = json.loads(
-            Path(os.path.join(ROOT, "fleet-apps.json")).read_text(encoding="utf-8")
-        )
+        data = json.loads(Path(os.path.join(ROOT, "fleet-apps.json")).read_text(encoding="utf-8"))
         rows = [a for a in data["apps"] if a["repo"] == "AI-Fleet-Coordinator"]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["acronym"], "AFC")
@@ -549,9 +534,7 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertEqual(SEATS["minimax"].notes, "MiniMax")
         self.assertEqual(SEATS["deepseek"].tag, "DSH")
         self.assertEqual(SEATS["deepseek"].notes, "DeepSeek Harness")
-        data = json.loads(
-            Path(os.path.join(ROOT, "fleet-apps.json")).read_text(encoding="utf-8")
-        )
+        data = json.loads(Path(os.path.join(ROOT, "fleet-apps.json")).read_text(encoding="utf-8"))
         tags = {s["tag"]: s for s in data["seats"]}
         self.assertEqual(tags["MM"]["notesName"], "MiniMax")
         self.assertEqual(tags["DSH"]["notesName"], "DeepSeek Harness")
@@ -643,6 +626,34 @@ class CoordinatorSelfIdTests(unittest.TestCase):
                     self.assertIn("AFC", out, f"{key}/{name}")
                     self.assertNotRegex(out, r"GB-COMPILE(?!R)", msg=f"{key}/{name}")
 
+    # AFC and OPS are repo acronyms (owner 2026-10-16), never a sender or a signature:
+    # no canonical skill and no seat render may call either one the coordinator's self-id.
+    AFC_SIGNATURE_PHRASES = (
+        "self-id is `AFC`",
+        "self-id is `{COORDINATOR_SELF_ID}`",
+        "signs as `AFC`",
+        "Sign Zulip as `[AFC]`",
+        "posts as `[AFC]`",
+        "Sibling infra identity",
+        "Coordinator/ops self-id",
+    )
+
+    def test_afc_is_a_repo_acronym_never_a_signature(self) -> None:
+        for name in catalog_skill_names(DOCS):
+            src = _load_skill(name)
+            for phrase in self.AFC_SIGNATURE_PHRASES:
+                self.assertNotIn(phrase, src, f"canonical {name}: {phrase}")
+            for key, seat in SEATS.items():
+                if not skill_allowed_for_seat(name, seat):
+                    continue
+                out = specialize_from_monet(src, seat, skill_name=name)
+                for phrase in self.AFC_SIGNATURE_PHRASES:
+                    self.assertNotIn(phrase, out, f"{key}/{name}: {phrase}")
+        stop = specialize_from_monet(
+            _load_skill("session-start"), SEATS["kimi"], skill_name="session-start"
+        )
+        self.assertIn("`AFC` is a repo acronym, never a sender or a signature", stop)
+
     def test_by_seat_catalog_matches_specialization(self) -> None:
         kimi_ss = Path(DOCS, "by-seat", "kimi", "session-start", "SKILL.md").read_text(
             encoding="utf-8"
@@ -655,9 +666,9 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertIn("GB-COMPILER", gb)
         self.assertIn("GB-ORACLE", gb)
         self.assertNotRegex(gb, r"GB-COMPILE(?!R)")
-        cursor_ss = Path(
-            DOCS, "by-seat", "cursor", "session-start", "SKILL.md"
-        ).read_text(encoding="utf-8")
+        cursor_ss = Path(DOCS, "by-seat", "cursor", "session-start", "SKILL.md").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("| AFC |", cursor_ss)
         self.assertNotIn("This install is for `FLEET`", cursor_ss)
 
@@ -689,14 +700,25 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
     """The identity writer speaks Zulip, drops retired homes, and knows CLUTCH."""
 
     ACTIVE_CATALOG_TAGS = {
-        "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "MA",
+        "CLAUDE",
+        "CODEX",
+        "AG",
+        "CURSOR",
+        "GROK",
+        "CLUTCH",
+        "FX",
+        "MM",
+        "MC",
+        "MA",
     }
 
     def test_grok_roster_mention_is_grok_build_not_grok_build_tag(self) -> None:
         text = Path(GUIDE).read_text(encoding="utf-8")
         start = text.index("### Agent Seats")
         end = text.index("### BotFleet (BF) Bots")
-        markdown_rows = [line for line in text[start:end].splitlines() if line.strip().startswith("|")]
+        markdown_rows = [
+            line for line in text[start:end].splitlines() if line.strip().startswith("|")
+        ]
         self.assertNotIn(
             "@**GROK-BUILD**",
             "\n".join(markdown_rows),
@@ -715,14 +737,10 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
                 continue
             if seat.tag not in roster:
                 # GROK-BUILD is an alias row that posts through GROK's bot.
-                self.assertEqual(
-                    (_bot_local(seat), seat.zulip_rc), roster["GROK"], key
-                )
+                self.assertEqual((_bot_local(seat), seat.zulip_rc), roster["GROK"], key)
                 continue
             seen.add(seat.tag)
-            self.assertEqual(
-                (_bot_local(seat), seat.zulip_rc), roster[seat.tag], key
-            )
+            self.assertEqual((_bot_local(seat), seat.zulip_rc), roster[seat.tag], key)
         self.assertTrue(self.ACTIVE_CATALOG_TAGS <= seen, self.ACTIVE_CATALOG_TAGS - seen)
 
     def test_retired_seats_have_no_bot_home_or_install_banner(self) -> None:
@@ -791,10 +809,14 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
 
     def test_clutch_has_the_dsh_skill_home_and_its_own_identity(self) -> None:
         seat = SEATS["clutch"]
-        self.assertEqual((seat.tag, seat.notes, seat.prefix, seat.suffix),
-                         ("CLUTCH", "Clutch", "clutch", "clutch"))
+        self.assertEqual(
+            (seat.tag, seat.notes, seat.prefix, seat.suffix),
+            ("CLUTCH", "Clutch", "clutch", "clutch"),
+        )
         self.assertTrue(seat.write_home)
-        self.assertEqual(seat.dest, "~/.clutch/dsh/skills")      # the engine's $DSH_HOME/skills, rank 400
+        self.assertEqual(
+            seat.dest, "~/.clutch/dsh/skills"
+        )  # the engine's $DSH_HOME/skills, rank 400
         self.assertIn((os.path.expanduser("~/.clutch/dsh/skills"), seat), platform_installs())
         self.assertFalse(seat.retired)
         self.assertIn(seat, catalog_seats())
@@ -818,12 +840,14 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
             if seat.retired or seat.mode == "grok_bot":
                 continue
             ss = specialize_from_monet(_session(), seat, skill_name="session-start")
-            board = specialize_from_monet(
-                _load_skill("board-ops"), seat, skill_name="board-ops"
-            )
+            board = specialize_from_monet(_load_skill("board-ops"), seat, skill_name="board-ops")
             self.assertIn(f"`[{seat.tag}·session8]` tag", ss, key)
             self.assertNotIn("[MONET·session8", ss, key)
-            self.assertIn(f"`--by` for this seat is your verified seat (`{seat.tag}` in an ordinary", board, key)
+            self.assertIn(
+                f"`--by` for this seat is your verified seat (`{seat.tag}` in an ordinary",
+                board,
+                key,
+            )
             self.assertIn('--by "$AGENT_SEAT"', board, key)
             self.assertNotIn(f"--by {seat.tag}", board, key)
         gb = specialize_from_monet(_session(), SEATS["grok-bot"], skill_name="session-start")
@@ -840,14 +864,17 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
 
         def scan(label: str, text: str) -> None:
             for n, line in enumerate(text.splitlines(), 1):
-                if re.search(r"slack", line, re.I) and "retired" not in line.lower():
+                if re.search(r"slack", line, re.IGNORECASE) and "retired" not in line.lower():
                     offenders.append(f"{label}:{n}: {line.strip()[:100]}")
 
         names = catalog_skill_names(DOCS)
         for key, seat in SEATS.items():
             for name in names:
                 if skill_allowed_for_seat(name, seat):
-                    scan(f"{key}/{name}", specialize_from_monet(_load_skill(name), seat, skill_name=name))
+                    scan(
+                        f"{key}/{name}",
+                        specialize_from_monet(_load_skill(name), seat, skill_name=name),
+                    )
         for name in names:
             scan(f"universal/{name}", specialize_universal(_load_skill(name), skill_name=name))
             scan(f"source/{name}", _load_skill(name))
@@ -879,7 +906,10 @@ class AgentSeatPinTests(unittest.TestCase):
     @staticmethod
     def _block(text: str) -> str:
         """The rendered seat block, from its `if` line through the whoami line."""
-        match = re.search(r'(?ms)^if \[ -n "\$\{AGENT_LAUNCH_SEAT:-\}" \].*?^agent-sync whoami --as "\$SEAT"$', text)
+        match = re.search(
+            r'(?ms)^if \[ -n "\$\{AGENT_LAUNCH_SEAT:-\}" \].*?^agent-sync whoami --as "\$SEAT"$',
+            text,
+        )
         return match.group(0) if match else ""
 
     def _renders(self) -> list[tuple[str, str]]:
@@ -922,7 +952,9 @@ class AgentSeatPinTests(unittest.TestCase):
                 continue
             self.assertIn(_arm(seat.tag), self._block(out).splitlines(), key)
             self.assertIn(_ordinary(seat.notes, seat.tag), out, key)
-            self.assertIn(f"`<branch-prefix>` below is your seat's branch prefix:  `{seat.prefix}`", out, key)
+            self.assertIn(
+                f"`<branch-prefix>` below is your seat's branch prefix:  `{seat.prefix}`", out, key
+            )
 
     def test_t15_every_render_carries_the_launcher_clause(self) -> None:
         for key, out in self._renders():
@@ -970,8 +1002,12 @@ class AgentSeatPinTests(unittest.TestCase):
         base["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
 
         def run(block: str, **env: str) -> tuple[int, str, str]:
-            script = block.replace('agent-sync whoami --as "$SEAT"', 'printf "%s|%s" "$SEAT" "$AGENT_SEAT"')
-            done = subprocess.run(["bash", "-c", script], env={**base, **env}, capture_output=True, text=True)
+            script = block.replace(
+                'agent-sync whoami --as "$SEAT"', 'printf "%s|%s" "$SEAT" "$AGENT_SEAT"'
+            )
+            done = subprocess.run(
+                ["bash", "-c", script], env={**base, **env}, capture_output=True, text=True
+            )
             return done.returncode, done.stdout, done.stderr
 
         for key, out in self._renders():
@@ -982,16 +1018,29 @@ class AgentSeatPinTests(unittest.TestCase):
             self.assertEqual(check.returncode, 0, f"{key}: {check.stderr}")
             # A launcher's seat wins, and the AGENT_SEAT an engine's rules exported is left alone
             # (the CLI then refuses the mismatch).
-            self.assertEqual(run(block, AGENT_LAUNCHER="botfleet", AGENT_LAUNCH_SEAT="BF-PLUMBER", AGENT_SEAT="CODEX"),
-                             (0, "BF-PLUMBER|CODEX", ""), key)
-            self.assertEqual(run(block, AGENT_LAUNCHER="botfleet", AGENT_LAUNCH_SEAT="BF-PLUMBER")[:2],
-                             (0, "BF-PLUMBER|BF-PLUMBER"), key)
+            self.assertEqual(
+                run(
+                    block,
+                    AGENT_LAUNCHER="botfleet",
+                    AGENT_LAUNCH_SEAT="BF-PLUMBER",
+                    AGENT_SEAT="CODEX",
+                ),
+                (0, "BF-PLUMBER|CODEX", ""),
+                key,
+            )
+            self.assertEqual(
+                run(block, AGENT_LAUNCHER="botfleet", AGENT_LAUNCH_SEAT="BF-PLUMBER")[:2],
+                (0, "BF-PLUMBER|BF-PLUMBER"),
+                key,
+            )
             # A launcher with no seat fails closed, before any default is read.
             code, stdout, stderr = run(block, AGENT_LAUNCHER="botfleet", AGENT_SEAT="CLAUDE")
             self.assertEqual((code, stdout), (3, ""), key)
             self.assertIn("no seat assigned by botfleet", stderr, key)
             # A seat already set is kept.
-            self.assertEqual(run(block, AGENT_SEAT="BF-LAUNCHED")[:2], (0, "BF-LAUNCHED|BF-LAUNCHED"), key)
+            self.assertEqual(
+                run(block, AGENT_SEAT="BF-LAUNCHED")[:2], (0, "BF-LAUNCHED|BF-LAUNCHED"), key
+            )
             # Nothing set:  the platform default, or a loud failure where there is none.
             code, stdout, stderr = run(block)
             seat = SEATS.get(key)
@@ -1001,7 +1050,9 @@ class AgentSeatPinTests(unittest.TestCase):
                 self.assertNotEqual(code, 0, key)
                 self.assertEqual(stdout, "", key)
             if key == "grok-bot":
-                self.assertEqual(run(block, AGENT_TAG="GB-ORACLE")[:2], (0, "GB-ORACLE|GB-ORACLE"), key)
+                self.assertEqual(
+                    run(block, AGENT_TAG="GB-ORACLE")[:2], (0, "GB-ORACLE|GB-ORACLE"), key
+                )
 
 
 # Skills whose tracked renders are held at their origin/main text.  The
@@ -1083,9 +1134,7 @@ class RepoPlatformCopiesTests(unittest.TestCase):
         for key, seat in SEATS.items():
             if not seat.retired:
                 continue
-            self.assertNotIn(
-                os.path.join(ROOT, *seat.dest[2:].split("/")), dests, key
-            )
+            self.assertNotIn(os.path.join(ROOT, *seat.dest[2:].split("/")), dests, key)
 
     def test_the_three_original_trees_keep_their_seats(self) -> None:
         by_dest = {dest: seat for dest, seat in repo_platform_copies(ROOT)}
@@ -1124,8 +1173,12 @@ class RepoPlatformCopiesTests(unittest.TestCase):
         self.assertTrue(path.is_file(), f"{path} missing; re-render with: {self.FIX}")
         text = path.read_text(encoding="utf-8")
         self.assertIn("# Board CLI on Linear (MM)", text)
-        for wanted in ("`[MM·session8]`", "minimax/", "mm-bot@simplewithus.zulipchat.com",
-                       "MM-zuliprc"):
+        for wanted in (
+            "`[MM·session8]`",
+            "minimax/",
+            "mm-bot@simplewithus.zulipchat.com",
+            "MM-zuliprc",
+        ):
             self.assertIn(wanted, text, wanted)
         for foreign in ("CLAUDE", "CURSOR", "Claude-zuliprc", "`[CLAUDE·session8]`"):
             self.assertNotIn(foreign, text, foreign)
@@ -1139,32 +1192,22 @@ class RepoPlatformCopiesTests(unittest.TestCase):
                 if name in FROZEN_RENDERS or not skill_allowed_for_seat(name, seat):
                     continue
                 path = Path(dest, name, "SKILL.md")
-                want = specialize_from_monet(
-                    _load_skill(name), seat, skill_name=name
-                )
+                want = specialize_from_monet(_load_skill(name), seat, skill_name=name)
                 have = path.read_text(encoding="utf-8") if path.is_file() else None
                 if have != want:
                     stale.append(os.path.relpath(str(path), ROOT))
-        self.assertEqual(
-            stale, [], f"stale platform copies; re-render with: {self.FIX}"
-        )
+        self.assertEqual(stale, [], f"stale platform copies; re-render with: {self.FIX}")
 
     def test_platform_copies_carry_no_never_install_skill(self) -> None:
         for dest, _seat in repo_platform_copies(ROOT):
             for name in NEVER_INSTALL:
-                self.assertFalse(
-                    Path(dest, name).exists(), f"{dest}/{name} must not exist"
-                )
+                self.assertFalse(Path(dest, name).exists(), f"{dest}/{name} must not exist")
 
     def test_platform_copies_do_not_teach_retired_seat_flat_lane(self) -> None:
         """The old session-start text told readers to add a flat monet lane."""
         for dest, _seat in repo_platform_copies(ROOT):
-            text = Path(dest, "session-start", "SKILL.md").read_text(
-                encoding="utf-8"
-            )
-            self.assertNotRegex(
-                text, r"worktree add -b \S+ ~/apps/<prefix>-monet", dest
-            )
+            text = Path(dest, "session-start", "SKILL.md").read_text(encoding="utf-8")
+            self.assertNotRegex(text, r"worktree add -b \S+ ~/apps/<prefix>-monet", dest)
             self.assertIn("lane new", text, dest)
 
 
@@ -1238,9 +1281,7 @@ class InstallerRepoOnlyTests(unittest.TestCase):
         self._run(["--repo-only"])
         for dest, seat in repo_platform_copies(str(self.repo)):
             for name in ("session-start", "board-ops"):
-                want = specialize_from_monet(
-                    _load_skill(name), seat, skill_name=name
-                )
+                want = specialize_from_monet(_load_skill(name), seat, skill_name=name)
                 got = Path(dest, name, "SKILL.md").read_text(encoding="utf-8")
                 self.assertEqual(got, want, f"{dest}/{name}")
 
@@ -1264,13 +1305,12 @@ class InstallerRepoOnlyTests(unittest.TestCase):
             (self.home / parent).mkdir(parents=True)
         self._run([])
         wrote = [
-            f for f in self._home_files()
+            f
+            for f in self._home_files()
             if f.startswith((".deepseek/", ".kimi/", ".renoir/", "Desktop/", ".clutch/"))
         ]
         self.assertEqual(wrote, [])
-        self.assertTrue(
-            (self.home / ".claude" / "skills" / "session-start" / "SKILL.md").is_file()
-        )
+        self.assertTrue((self.home / ".claude" / "skills" / "session-start" / "SKILL.md").is_file())
         shared = (self.home / ".claude" / "skills" / "session-start" / "SKILL.md").read_text(
             encoding="utf-8"
         )
@@ -1286,7 +1326,9 @@ class InstallerRepoOnlyTests(unittest.TestCase):
         (self.home / ".clutch" / "dsh").mkdir(parents=True)
         out = self._run([])
         self.assertIn(".clutch/dsh/skills", out)
-        got = (self.home / ".clutch" / "dsh" / "skills" / "session-start" / "SKILL.md").read_text(encoding="utf-8")
+        got = (self.home / ".clutch" / "dsh" / "skills" / "session-start" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
         self.assertIn(_arm("CLUTCH"), got)
         self.assertIn("Runtime (Clutch)", got)
         self.assertTrue(got.startswith("---\nname: session-start\n"))
@@ -1323,9 +1365,7 @@ class BranchPrefixMatchesLaneNewTests(unittest.TestCase):
     def _registry_first_prefix(self, tag: str) -> str:
         import json
 
-        data = json.loads(
-            Path(os.path.join(ROOT, "fleet-apps.json")).read_text(encoding="utf-8")
-        )
+        data = json.loads(Path(os.path.join(ROOT, "fleet-apps.json")).read_text(encoding="utf-8"))
         row = next(r for r in data["seats"] if r["tag"] == tag)
         return row["branchPrefixes"][0]
 
@@ -1333,9 +1373,7 @@ class BranchPrefixMatchesLaneNewTests(unittest.TestCase):
         prefix = self._registry_first_prefix("AG")
         self.assertEqual(prefix, "ag/")
         text = _load_skill("fleet-coordination")
-        line = next(
-            l for l in text.splitlines() if l.strip().startswith("- Antigravity / Gemini:")
-        )
+        line = next(l for l in text.splitlines() if l.strip().startswith("- Antigravity / Gemini:"))
         self.assertIn(f"prefix `{prefix}`", line)
         # The bare "`agent/` or `ag/`" pairing offered two valid prefixes.
         self.assertNotIn("`agent/` or `ag/`", line)
@@ -1381,7 +1419,7 @@ class LinearTeamListTests(unittest.TestCase):
         # credential setup, and a test must not need a Linear login to run.
         path = Path(ROOT, "scripts", "linear-board", "board")
         match = re.search(
-            r"(?m)^TEAM_KEYS = (\(.*?\))\s*$", path.read_text(encoding="utf-8"), re.S
+            r"(?m)^TEAM_KEYS = (\(.*?\))\s*$", path.read_text(encoding="utf-8"), re.DOTALL
         )
         self.assertIsNotNone(match, "TEAM_KEYS not found in scripts/linear-board/board")
         return tuple(ast.literal_eval(match.group(1)))
@@ -1400,7 +1438,8 @@ class LinearTeamListTests(unittest.TestCase):
         text = path.read_text(encoding="utf-8")
         lists = {m.group(0) for m in self.LIST.finditer(text)}
         self.assertIn(
-            want, lists,
+            want,
+            lists,
             f"{path} has no team list matching the board's TEAM_KEYS;  found {sorted(lists)[:4]}",
         )
 
@@ -1432,9 +1471,7 @@ class AgentSyncRosterTests(unittest.TestCase):
     def _registry(self) -> list[dict]:
         import json
 
-        data = json.loads(
-            Path(os.path.join(ROOT, "fleet-apps.json")).read_text(encoding="utf-8")
-        )
+        data = json.loads(Path(os.path.join(ROOT, "fleet-apps.json")).read_text(encoding="utf-8"))
         return data["seats"]
 
     def _text(self) -> str:
@@ -1450,10 +1487,7 @@ class AgentSyncRosterTests(unittest.TestCase):
 
     def _active_table_tags(self) -> set[str]:
         table = self._section("\n### Active Seats\n", "\n- **Tags.**")
-        return {
-            m.group(1)
-            for m in re.finditer(r"(?m)^\| ([A-Z][A-Z-]*) \|", table)
-        }
+        return {m.group(1) for m in re.finditer(r"(?m)^\| ([A-Z][A-Z-]*) \|", table)}
 
     def _available_paragraph(self) -> str:
         roster = self._roster()
@@ -1503,5 +1537,3 @@ class AgentSyncRosterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
