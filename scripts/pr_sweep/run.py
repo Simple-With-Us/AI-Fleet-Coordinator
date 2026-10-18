@@ -365,7 +365,12 @@ class Sweep:
             lrc, lmsg = self.lane(
                 ["retire", f"pr{item['n']}-sweep", "--repo", self.fleet.code_dir(item["full"])]
             )
-            o.lane = "retired" if lrc == 0 else f"kept ({lmsg or 'exit ' + str(lrc)})"
+            if lrc == 0:
+                o.lane = "retired"
+            elif "no lane " in (lmsg or ""):
+                o.lane = "already retired by its worker (or never made)"
+            else:
+                o.lane = f"kept ({lmsg or 'exit ' + str(lrc)})"
         self._record(o)
         return o
 

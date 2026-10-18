@@ -10,7 +10,7 @@
 | Claude adapter | `scripts/pr_sweep/adapters/claude/pr-sweep.workflow.js` (a Workflow script) |
 | Other platforms | `scripts/pr_sweep/adapters/generic/` (recipes, and a copy-paste prompt for chat-only seats) |
 | Fleet skill | `pr-sweep` (`docs/fleet-skills/pr-sweep/SKILL.md`, rendered to every seat) |
-| Tests | `cd scripts && python3 -m unittest discover -s pr_sweep/tests -t . -v` (no network, no agent CLI) |
+| Tests | `cd scripts && python3 -m unittest discover -s pr_sweep/tests -t . -v` (no network, no agent CLI) and `node --test scripts/pr_sweep/tests/claude_adapter.test.mjs` (the Claude adapter against stubbed workflow hooks) |
 
 ## Running It
 
@@ -98,4 +98,4 @@ Owner rulings they carry (2026-10-17 unless noted): merge by default ("deploy it
 ## Not Done Yet
 
 - Platform templates whose approval flags are UNVERIFIED (`muse exec`, `fx ask`, `opencode run`) were read from the top-level help only.
-- The Claude adapter needs `args.cli`: a Workflow script cannot run commands itself, so a cheap agent runs each `pr-sweep` command and the script parses its one-line JSON, checking that it answers exactly the PRs it asked about.
+- The Claude adapter needs `args.cli`: a Workflow script cannot run commands itself, so a cheap agent runs each `pr-sweep --compact` command and copies the output back.  The script checks the copy against the check line `--compact` prints (`#fnv1a=<hex> len=<n>`), then that the answer covers exactly the PRs it asked about, and stops on either mismatch.  It is tested against stubbed workflow hooks (`scripts/pr_sweep/tests/claude_adapter.test.mjs`, in CI), not yet in a live Workflow run.

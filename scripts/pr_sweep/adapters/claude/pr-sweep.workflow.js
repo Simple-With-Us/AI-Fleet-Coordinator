@@ -65,16 +65,31 @@ const DEPLOY = {
   required: ['repo', 'mechanism', 'deployed', 'evidence'],
 }
 
+function fnv1a(text) {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
+
 // Run one pr-sweep command through a cheap agent and parse its JSON in code.
 async function cli(argsText, label, phaseName) {
   const r = await agent([
     'Run exactly this one shell command and change nothing else:',
     `  ${RUN} --compact ${argsText}`,
-    'Return its exit code, its COMPLETE standard output copied byte for byte (one line of JSON; do not summarize, reformat, shorten or fix it), and the last lines of standard error.',
+    'Return its exit code, its COMPLETE standard output copied byte for byte (one line of JSON and one #fnv1a check line; do not summarize, reformat, shorten or fix anything), and the last lines of standard error.',
   ].join('\n'), { label, phase: phaseName, schema: CMD_RESULT, model: 'haiku', effort: 'low' })
   if (!r) throw new Error(`${label}: the command agent returned nothing`)
+  // --compact prints one ASCII line of JSON and a check line (#fnv1a=<hex> len=<n>): a copy that was shortened or
+  // altered on the way back fails here instead of steering the sweep.
+  const lines = String(r.stdout || '').split('\n').map(s => s.trim()).filter(Boolean)
+  const body = lines.find(s => s.startsWith('{')) || ''
+  const check = lines.find(s => s.startsWith('#fnv1a=')) || ''
+  const m = check.match(/^#fnv1a=([0-9a-f]{8}) len=(\d+)$/)
+  if (!m || Number(m[2]) !== body.length || fnv1a(body) !== m[1]) {
+    throw new Error(`${label}: the copied output fails its check line (exit ${r.exit_code}): ${(r.stderr_tail || r.stdout || '').slice(0, 300)}`)
+  }
   let data = null
-  try { data = JSON.parse(r.stdout) } catch (e) { throw new Error(`${label}: output is not JSON (exit ${r.exit_code}): ${(r.stderr_tail || r.stdout || '').slice(0, 300)}`) }
+  try { data = JSON.parse(body) } catch (e) { throw new Error(`${label}: output is not JSON (exit ${r.exit_code})`) }
   return { code: r.exit_code, data }
 }
 

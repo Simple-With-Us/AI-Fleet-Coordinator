@@ -50,9 +50,21 @@ def _now() -> _dt.datetime:
 _COMPACT = {"on": False}
 
 
+def fnv1a(text: str) -> int:
+    """32-bit FNV-1a over an ASCII string (the adapter computes the same over charCodeAt)."""
+    h = 0x811C9DC5
+    for b in text.encode("ascii"):
+        h ^= b
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
 def _dump(obj: Any, out) -> None:
     if _COMPACT["on"]:
-        out.write(json.dumps(obj, separators=(",", ":"), default=str) + "\n")
+        # One ASCII line of JSON, then a check line, so a caller that has the output copied by an agent (the
+        # Claude adapter) can tell a faithful copy from a shortened or altered one.
+        text = json.dumps(obj, separators=(",", ":"), default=str, ensure_ascii=True)
+        out.write(text + "\n" + f"#fnv1a={fnv1a(text):08x} len={len(text)}\n")
     else:
         out.write(json.dumps(obj, indent=2, sort_keys=False, default=str) + "\n")
 

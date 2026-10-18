@@ -771,6 +771,14 @@ class CliTests(unittest.TestCase):
             64,
         )
 
+    def test_compact_output_carries_a_check_line(self) -> None:
+        rc, out, _ = self.run_cli("--compact", "platforms")
+        self.assertEqual(rc, 0)
+        body, check = out.rstrip("\n").split("\n")
+        self.assertEqual(check, f"#fnv1a={C.fnv1a(body):08x} len={len(body)}")
+        self.assertTrue(body.isascii())
+        json.loads(body)
+
     def test_status_missing_is_exit_69(self) -> None:
         rc, out, err = self.run_cli("status", "Simple-With-Us/DealDex#4")
         self.assertEqual(rc, 69)

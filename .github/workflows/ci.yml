@@ -212,6 +212,10 @@ jobs:
       run: node --test tests/quota-display.test.mjs
     - name: Kody defer and deferred sweep tests
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
+    # The pr-sweep Claude adapter (a Workflow script) against stubbed workflow hooks:  a mismatched or missing status,
+    # or a copy that fails its check line, stops it before any worker;  repairs and deploys go only where they belong.
+    - name: pr-sweep Claude adapter test
+      run: node --test scripts/pr_sweep/tests/claude_adapter.test.mjs
     - name: PR Autofix reusable workflow contract
       run: node --test .github/pr-autofix-reusable.node-test.mjs
     # Pure builders and readers of the Fleet Reference Sheet registry sync.  No
