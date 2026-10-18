@@ -52,6 +52,7 @@ not removable is a refusal), 69 git, gh or lsof failed, or a removal failed.
 
 Python 3.9 safe.  Tests: fleet_lanes/tests/test_retire.py (real git, a local bare origin, gh and lsof faked).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -62,16 +63,25 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Mapping, Sequence, Tuple
 
 from . import doctor as D
 from . import lane as K
 from . import layout as L
 
-__all__ = ["RECENT_MINUTES", "EMPTY_LANE_HOURS", "GH_BULK_LIMIT", "check_allowed", "Runner", "Facts", "PrView",
-           "decide", "main"]
+__all__ = [
+    "EMPTY_LANE_HOURS",
+    "GH_BULK_LIMIT",
+    "RECENT_MINUTES",
+    "Facts",
+    "PrView",
+    "Runner",
+    "check_allowed",
+    "decide",
+    "main",
+]
 
 RECENT_MINUTES = 15
 EMPTY_LANE_HOURS = 24
@@ -89,7 +99,10 @@ _REVPARSE_SOLO = frozenset({"--absolute-git-dir", "--git-common-dir", "--show-to
 
 # --------------------------------------------------------------------------- the allowlist and the runner
 
-def _git_key(args: Sequence[str], write_root: "str | None", fold: Callable[[str], str]) -> "str | None":
+
+def _git_key(
+    args: Sequence[str], write_root: str | None, fold: Callable[[str], str]
+) -> str | None:
     """The timeout key for an allowed git command, else None.  Exact shapes only."""
     a = list(args)
     if a == ["worktree", "list", "--porcelain"] or a == ["worktree", "prune"]:
@@ -105,7 +118,7 @@ def _git_key(args: Sequence[str], write_root: "str | None", fold: Callable[[str]
     if len(a) == 2 and a[0] == "rev-parse" and a[1] in _REVPARSE_SOLO:
         return "git"
     if len(a) == 4 and a[:3] == ["rev-parse", "--verify", "-q"]:
-        rev = a[3][:-len("^{commit}")] if a[3].endswith("^{commit}") else a[3]
+        rev = a[3].removesuffix("^{commit}")
         return "git" if (rev == "HEAD" or _SHA.match(rev)) else None
     if len(a) == 3 and a[:2] == ["config", "--get"]:
         if a[2] == "remote.origin.url":
@@ -124,17 +137,32 @@ def _git_key(args: Sequence[str], write_root: "str | None", fold: Callable[[str]
 
 def _gh_ok(args: Sequence[str]) -> bool:
     a = list(args)
-    if len(a) == 10 and a[:2] == ["pr", "list"] and a[2] == "--repo" and a[4:7] == ["--state", "all", "--limit"] \
-            and a[8] == "--json":
+    if (
+        len(a) == 10
+        and a[:2] == ["pr", "list"]
+        and a[2] == "--repo"
+        and a[4:7] == ["--state", "all", "--limit"]
+        and a[8] == "--json"
+    ):
         return bool(_GH_REPO.match(a[3])) and a[7] == str(GH_BULK_LIMIT) and a[9] == GH_FIELDS
-    if len(a) == 12 and a[:2] == ["pr", "list"] and a[2] == "--repo" and a[4:7] == ["--state", "all", "--head"] \
-            and a[8:10] == ["--limit", "20"] and a[10] == "--json":
+    if (
+        len(a) == 12
+        and a[:2] == ["pr", "list"]
+        and a[2] == "--repo"
+        and a[4:7] == ["--state", "all", "--head"]
+        and a[8:10] == ["--limit", "20"]
+        and a[10] == "--json"
+    ):
         return bool(_GH_REPO.match(a[3])) and K.valid_ref_name(a[7]) and a[11] == GH_FIELDS
     return False
 
 
-def check_allowed(argv: Sequence[str], *, write_root: "str | os.PathLike[str] | None" = None,
-                  fold: "Callable[[str], str] | None" = None) -> float:
+def check_allowed(
+    argv: Sequence[str],
+    *,
+    write_root: str | os.PathLike[str] | None = None,
+    fold: Callable[[str], str] | None = None,
+) -> float:
     """The timeout cap for an allowlisted command, else CommandRefused (no process is started).
 
     git: worktree list --porcelain | worktree remove <path inside the lanes root> (never --force) | worktree prune |
@@ -148,7 +176,7 @@ def check_allowed(argv: Sequence[str], *, write_root: "str | os.PathLike[str] | 
         raise K.CommandRefused("empty, non-string or NUL-bearing command")
     fold = fold or (lambda s: s)
     root = os.fspath(write_root) if write_root is not None else None
-    key: "str | None" = None
+    key: str | None = None
     if argv[0] == "git":
         key = _git_key(argv[1:], root, fold)
     elif argv[0] == "gh":
@@ -165,15 +193,23 @@ class Runner:
     `exec_fn`).  git gets `--no-optional-locks -c core.fsmonitor=false`, so `git status` never rewrites a lane's
     index, and the GIT_DIR family is stripped from the environment."""
 
-    def __init__(self, env: Mapping[str, str], *, write_root: "str | os.PathLike[str] | None" = None,
-                 fold: "Callable[[str], str] | None" = None, exec_fn: "K.ExecFn | None" = None) -> None:
+    def __init__(
+        self,
+        env: Mapping[str, str],
+        *,
+        write_root: str | os.PathLike[str] | None = None,
+        fold: Callable[[str], str] | None = None,
+        exec_fn: K.ExecFn | None = None,
+    ) -> None:
         self._env = K._child_env(env)
         self._env["GIT_OPTIONAL_LOCKS"] = "0"
         self._write_root = os.fspath(write_root) if write_root is not None else None
         self._fold = fold or (lambda s: s)
         self._exec = exec_fn or K.default_exec
 
-    def __call__(self, argv: Sequence[str], cwd: "str | os.PathLike[str] | None" = None) -> D.CmdResult:
+    def __call__(
+        self, argv: Sequence[str], cwd: str | os.PathLike[str] | None = None
+    ) -> D.CmdResult:
         cap = check_allowed(argv, write_root=self._write_root, fold=self._fold)
         full = list(argv)
         if full[0] == "git":
@@ -183,41 +219,42 @@ class Runner:
 
 # --------------------------------------------------------------------------- facts and the decision
 
+
 @dataclass
 class PrView:
     """What GitHub says about the PR(s) that match a lane.  `found` is False when no lookup worked (unknown)."""
 
     found: bool = True
-    open_number: "int | None" = None
-    done_number: "int | None" = None      # a MERGED or CLOSED PR for the branch name or HEAD
+    open_number: int | None = None
+    done_number: int | None = None  # a MERGED or CLOSED PR for the branch name or HEAD
     done_state: str = ""
-    covers_head: bool = False             # that PR's head is HEAD or contains it
-    review_state: str = ""                # review checkouts: the state of PR <n>
+    covers_head: bool = False  # that PR's head is HEAD or contains it
+    review_state: str = ""  # review checkouts: the state of PR <n>
 
 
 @dataclass
 class Facts:
     """Everything `decide` needs about one lane.  None means "could not be read", which never permits removal."""
 
-    kind: str                              # lane | review | managed | other
-    seat: "str | None"
-    owner_conflict: "str | None" = None    # lane.json names this other seat
+    kind: str  # lane | review | managed | other
+    seat: str | None
+    owner_conflict: str | None = None  # lane.json names this other seat
     prunable: bool = False
     locked: bool = False
-    processes: "List[Tuple[int, str]] | None" = None
-    git_ops: List[str] = field(default_factory=list)
+    processes: list[tuple[int, str]] | None = None
+    git_ops: list[str] = field(default_factory=list)
     keep_marker: bool = False
-    dirty: "int | None" = None
-    unpushed: "int | None" = None
-    merged_default: "bool | None" = None
+    dirty: int | None = None
+    unpushed: int | None = None
+    merged_default: bool | None = None
     default_branch: str = "main"
-    upstream: "str | None" = None          # the short branch name on origin this lane tracks
-    upstream_gone: "bool | None" = None
-    idle_minutes: "float | None" = None
+    upstream: str | None = None  # the short branch name on origin this lane tracks
+    upstream_gone: bool | None = None
+    idle_minutes: float | None = None
     pr: PrView = field(default_factory=PrView)
 
 
-def decide(f: Facts, *, prune: bool) -> Tuple[str, str]:
+def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
     """(action, reason).  action is remove, keep or skip.  Pure; the order is the order of the docstring."""
     if f.kind == "managed":
         return "skip", "harness-managed worktree (its app cleans it up)"
@@ -256,8 +293,10 @@ def decide(f: Facts, *, prune: bool) -> Tuple[str, str]:
     if not (f.pr.covers_head or f.unpushed == 0):
         if f.unpushed is None:
             return "keep", "could not count unpushed commits"
-        return "keep", (f"{f.unpushed} commit{'s' if f.unpushed != 1 else ''} on no remote ref, and no merged or "
-                        "closed PR holds HEAD")
+        return "keep", (
+            f"{f.unpushed} commit{'s' if f.unpushed != 1 else ''} on no remote ref, and no merged or "
+            "closed PR holds HEAD"
+        )
     done = []
     if f.kind == "review":
         done.append(f"review checkout, PR {(f.pr.review_state or 'unknown').lower()}")
@@ -269,35 +308,48 @@ def decide(f: Facts, *, prune: bool) -> Tuple[str, str]:
         if f.merged_default:
             done.append(f"merged into origin/{f.default_branch}")
     if not done:
-        return "keep", "not done: no merged or closed PR, not in origin/" + f.default_branch + ", upstream still on origin"
+        return (
+            "keep",
+            "not done: no merged or closed PR, not in origin/"
+            + f.default_branch
+            + ", upstream still on origin",
+        )
     if prune:
         if f.idle_minutes is None:
             return "keep", "last activity unknown"
         if f.idle_minutes < RECENT_MINUTES:
             return "keep", f"active in the last {RECENT_MINUTES} minutes"
-        only_ancestry = (f.kind == "lane" and f.pr.done_number is None and not f.upstream_gone
-                         and f.upstream is None)
+        only_ancestry = (
+            f.kind == "lane"
+            and f.pr.done_number is None
+            and not f.upstream_gone
+            and f.upstream is None
+        )
         if only_ancestry and f.idle_minutes < EMPTY_LANE_HOURS * 60:
-            return "keep", f"no commits of its own and never pushed; kept until idle {EMPTY_LANE_HOURS}h"
+            return (
+                "keep",
+                f"no commits of its own and never pushed; kept until idle {EMPTY_LANE_HOURS}h",
+            )
     safe = "HEAD is the PR head" if f.pr.covers_head and f.unpushed != 0 else "HEAD on a remote ref"
     return "remove", "; ".join(done) + "; " + safe
 
 
 # --------------------------------------------------------------------------- gathering facts
 
+
 @dataclass
 class Row:
     repo: str
     path: str
     kind: str
-    seat: "str | None"
-    branch: "str | None"
-    head: "str | None"
+    seat: str | None
+    branch: str | None
+    head: str | None
     action: str = "keep"
     reason: str = ""
-    pr: "int | None" = None
+    pr: int | None = None
     removed: bool = False
-    branch_deleted: "bool | None" = None
+    branch_deleted: bool | None = None
     note: str = ""
 
 
@@ -307,9 +359,9 @@ class _Lane:
     tree: Path
     rec: D.WorktreeRecord
     kind: str
-    seat: "str | None"
-    review_pr: "int | None"
-    facts: "Facts | None" = None
+    seat: str | None
+    review_pr: int | None
+    facts: Facts | None = None
 
 
 def _say(stream, message: str) -> None:
@@ -319,7 +371,7 @@ def _say(stream, message: str) -> None:
         stream.write(f"{line}\n")
 
 
-def _lookup_seat(registry: L.Registry, text: str) -> "L.Seat | None":
+def _lookup_seat(registry: L.Registry, text: str) -> L.Seat | None:
     t = (text or "").strip()
     if not t:
         return None
@@ -329,7 +381,7 @@ def _lookup_seat(registry: L.Registry, text: str) -> "L.Seat | None":
     return seat
 
 
-def _norm_seat(token: "str | None", registry: L.Registry) -> "str | None":
+def _norm_seat(token: str | None, registry: L.Registry) -> str | None:
     if not token:
         return None
     try:
@@ -338,10 +390,14 @@ def _norm_seat(token: "str | None", registry: L.Registry) -> "str | None":
         return token.lower()
 
 
-def _classify(ctx: K.Ctx, run: Runner, app: L.App, tree: Path, rec: D.WorktreeRecord) -> "_Lane | None":
+def _classify(
+    ctx: K.Ctx, run: Runner, app: L.App, tree: Path, rec: D.WorktreeRecord
+) -> _Lane | None:
     """The lane a worktree record is, or None when it is not under the lanes root (or is under ~/Code)."""
     roots, registry = ctx.roots, ctx.registry
-    if K._in_tree(ctx, rec.path, roots.code_root) or not K._in_tree(ctx, rec.path, roots.lanes_root):
+    if K._in_tree(ctx, rec.path, roots.code_root) or not K._in_tree(
+        ctx, rec.path, roots.lanes_root
+    ):
         return None
     cls = L.classify_location(rec.path, roots)
     name = os.path.basename(rec.path.rstrip(os.sep))
@@ -359,33 +415,37 @@ def _classify(ctx: K.Ctx, run: Runner, app: L.App, tree: Path, rec: D.WorktreeRe
     return _Lane(app, tree, rec, "other", None, None)
 
 
-def _int(res: D.CmdResult) -> "int | None":
+def _int(res: D.CmdResult) -> int | None:
     try:
         return int(res.out.strip()) if res.ok else None
     except ValueError:
         return None
 
 
-def _mtime(path: "str | os.PathLike[str]") -> "float | None":
+def _mtime(path: str | os.PathLike[str]) -> float | None:
     try:
         return os.lstat(path).st_mtime
     except OSError:
         return None
 
 
-def _epoch_iso(text: object) -> "float | None":
+def _epoch_iso(text: object) -> float | None:
     if not isinstance(text, str) or not text:
         return None
     try:
-        when = _dt.datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text)
+        when = _dt.datetime.fromisoformat(
+            text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+        )
     except ValueError:
         return None
     if when.tzinfo is None:
-        when = when.replace(tzinfo=_dt.timezone.utc)
+        when = when.replace(tzinfo=_dt.UTC)
     return when.timestamp()
 
 
-def _processes_inside(ctx: K.Ctx, rows: "List[Tuple[int, str, str]] | None", path: str) -> "List[Tuple[int, str]] | None":
+def _processes_inside(
+    ctx: K.Ctx, rows: list[tuple[int, str, str]] | None, path: str
+) -> list[tuple[int, str]] | None:
     if rows is None:
         return None
     me = os.getpid()
@@ -396,7 +456,7 @@ def _processes_inside(ctx: K.Ctx, rows: "List[Tuple[int, str, str]] | None", pat
     return out
 
 
-def _manifest_seat(manifest: "Mapping[str, object] | None", registry: L.Registry) -> "str | None":
+def _manifest_seat(manifest: Mapping[str, object] | None, registry: L.Registry) -> str | None:
     """The seat folder name a lane.json names (its `seat` field, else the folder name of its `tag`), or None."""
     if not manifest:
         return None
@@ -409,8 +469,16 @@ def _manifest_seat(manifest: "Mapping[str, object] | None", registry: L.Registry
     return None
 
 
-def _inspect(ctx: K.Ctx, run: Runner, lane: _Lane, *, now: float, lsof_rows, default_branch: str,
-             remote_heads: "set | None") -> Facts:
+def _inspect(
+    ctx: K.Ctx,
+    run: Runner,
+    lane: _Lane,
+    *,
+    now: float,
+    lsof_rows,
+    default_branch: str,
+    remote_heads: set | None,
+) -> Facts:
     """Read every fact about one lane (local git and files only; the PR view is added later)."""
     rec = lane.rec
     f = Facts(kind=lane.kind, seat=lane.seat, default_branch=default_branch)
@@ -422,7 +490,7 @@ def _inspect(ctx: K.Ctx, run: Runner, lane: _Lane, *, now: float, lsof_rows, def
         return f
     gd_res = run(["git", "rev-parse", "--absolute-git-dir"], cwd=rec.path)
     gitdir = gd_res.out.strip() if gd_res.ok else ""
-    manifest: "dict | None" = None
+    manifest: dict | None = None
     if gitdir:
         try:
             with open(os.path.join(gitdir, K.MANIFEST_NAME), encoding="utf-8") as fh:
@@ -433,7 +501,7 @@ def _inspect(ctx: K.Ctx, run: Runner, lane: _Lane, *, now: float, lsof_rows, def
     owner = _manifest_seat(manifest, ctx.registry)
     if owner is not None:
         if lane.seat is None and lane.kind == "review":
-            lane.seat = f.seat = owner          # plain review-pr-<n>: the manifest is the only owner record
+            lane.seat = f.seat = owner  # plain review-pr-<n>: the manifest is the only owner record
         elif lane.seat is not None and owner != lane.seat:
             f.owner_conflict = owner
     f.processes = _processes_inside(ctx, lsof_rows, rec.path)
@@ -441,9 +509,16 @@ def _inspect(ctx: K.Ctx, run: Runner, lane: _Lane, *, now: float, lsof_rows, def
     f.keep_marker = os.path.lexists(os.path.join(rec.path, D.KEEP_MARKER))
     st = run(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=rec.path)
     f.dirty = len([ln for ln in st.out.splitlines() if ln.strip()]) if st.ok else None
-    f.unpushed = _int(run(["git", "rev-list", "--count", "HEAD", "--not", "--remotes"], cwd=rec.path))
-    mb = run(["git", "merge-base", "--is-ancestor", "HEAD", f"refs/remotes/origin/{default_branch}"], cwd=rec.path)
-    f.merged_default = True if mb.ok else (False if (mb.rc == 1 and not mb.timed_out and not mb.error) else None)
+    f.unpushed = _int(
+        run(["git", "rev-list", "--count", "HEAD", "--not", "--remotes"], cwd=rec.path)
+    )
+    mb = run(
+        ["git", "merge-base", "--is-ancestor", "HEAD", f"refs/remotes/origin/{default_branch}"],
+        cwd=rec.path,
+    )
+    f.merged_default = (
+        True if mb.ok else (False if (mb.rc == 1 and not mb.timed_out and not mb.error) else None)
+    )
     branch = rec.branch if not rec.detached else None
     if branch:
         merge = run(["git", "config", "--get", f"branch.{branch}.merge"], cwd=rec.path)
@@ -451,11 +526,17 @@ def _inspect(ctx: K.Ctx, run: Runner, lane: _Lane, *, now: float, lsof_rows, def
         up = merge.out.strip() if merge.ok else ""
         rname = remote.out.strip() if remote.ok else "origin"
         if up.startswith("refs/heads/") and rname == "origin":
-            f.upstream = up[len("refs/heads/"):]
+            f.upstream = up[len("refs/heads/") :]
             if remote_heads is not None:
                 f.upstream_gone = f.upstream not in remote_heads
-    times = [t for t in (_mtime(os.path.join(gitdir, n)) if gitdir else None for n in ("HEAD", "index", "logs/HEAD"))
-             if t is not None]
+    times = [
+        t
+        for t in (
+            _mtime(os.path.join(gitdir, n)) if gitdir else None
+            for n in ("HEAD", "index", "logs/HEAD")
+        )
+        if t is not None
+    ]
     folder = _mtime(rec.path)
     if folder is not None:
         times.append(folder)
@@ -475,8 +556,13 @@ def _contains(run: Runner, path: str, oid: str) -> bool:
     return _int(run(["git", "rev-list", "--count", "HEAD", "--not", oid], cwd=path)) == 0
 
 
-def _pr_view(run: Runner, lane: _Lane, prs: "List[dict] | None", fallback: Callable[[str], "List[dict] | None"],
-             truncated: bool) -> PrView:
+def _pr_view(
+    run: Runner,
+    lane: _Lane,
+    prs: list[dict] | None,
+    fallback: Callable[[str], list[dict] | None],
+    truncated: bool,
+) -> PrView:
     rec = lane.rec
     head = rec.head or ""
     if lane.kind == "review":
@@ -488,16 +574,34 @@ def _pr_view(run: Runner, lane: _Lane, prs: "List[dict] | None", fallback: Calla
             return PrView(found=True, review_state="UNKNOWN")
         p = hit[0]
         state = str(p.get("state") or "")
-        covers = (p.get("headRefOid") == head) or _contains(run, rec.path, str(p.get("headRefOid") or ""))
-        return PrView(found=True, review_state=state, covers_head=covers,
-                      done_number=lane.review_pr if state in ("MERGED", "CLOSED") else None, done_state=state)
-    names = [n for n in ((rec.branch if not rec.detached else None), lane.facts.upstream if lane.facts else None) if n]
+        covers = (p.get("headRefOid") == head) or _contains(
+            run, rec.path, str(p.get("headRefOid") or "")
+        )
+        return PrView(
+            found=True,
+            review_state=state,
+            covers_head=covers,
+            done_number=lane.review_pr if state in ("MERGED", "CLOSED") else None,
+            done_state=state,
+        )
+    names = [
+        n
+        for n in (
+            (rec.branch if not rec.detached else None),
+            lane.facts.upstream if lane.facts else None,
+        )
+        if n
+    ]
     names = list(dict.fromkeys(names))
 
-    def matches(pool: List[dict]) -> List[dict]:
-        return [p for p in pool if p.get("headRefName") in names or (head and p.get("headRefOid") == head)]
+    def matches(pool: list[dict]) -> list[dict]:
+        return [
+            p
+            for p in pool
+            if p.get("headRefName") in names or (head and p.get("headRefOid") == head)
+        ]
 
-    cands: List[dict] = matches(prs) if prs is not None else []
+    cands: list[dict] = matches(prs) if prs is not None else []
     if not cands and (prs is None or truncated):
         found_any = prs is not None
         for n in names:
@@ -523,13 +627,29 @@ def _pr_view(run: Runner, lane: _Lane, prs: "List[dict] | None", fallback: Calla
     if exact:
         view.covers_head = True
     else:
-        view.covers_head = any(_contains(run, rec.path, str(p.get("headRefOid") or "")) for p in done)
+        view.covers_head = any(
+            _contains(run, rec.path, str(p.get("headRefOid") or "")) for p in done
+        )
     return view
 
 
-def _bulk_prs(run: Runner, repo: str, tree: Path) -> "Tuple[List[dict] | None, bool]":
-    res = run(["gh", "pr", "list", "--repo", repo, "--state", "all", "--limit", str(GH_BULK_LIMIT), "--json",
-               GH_FIELDS], cwd=tree)
+def _bulk_prs(run: Runner, repo: str, tree: Path) -> tuple[list[dict] | None, bool]:
+    res = run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "all",
+            "--limit",
+            str(GH_BULK_LIMIT),
+            "--json",
+            GH_FIELDS,
+        ],
+        cwd=tree,
+    )
     if not res.ok:
         return None, False
     try:
@@ -541,11 +661,27 @@ def _bulk_prs(run: Runner, repo: str, tree: Path) -> "Tuple[List[dict] | None, b
     return data, len(data) >= GH_BULK_LIMIT
 
 
-def _head_prs(run: Runner, repo: str, tree: Path, name: str) -> "List[dict] | None":
+def _head_prs(run: Runner, repo: str, tree: Path, name: str) -> list[dict] | None:
     if not K.valid_ref_name(name):
         return None
-    res = run(["gh", "pr", "list", "--repo", repo, "--state", "all", "--head", name, "--limit", "20", "--json",
-               GH_FIELDS], cwd=tree)
+    res = run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "all",
+            "--head",
+            name,
+            "--limit",
+            "20",
+            "--json",
+            GH_FIELDS,
+        ],
+        cwd=tree,
+    )
     if not res.ok:
         return None
     try:
@@ -558,12 +694,12 @@ def _head_prs(run: Runner, repo: str, tree: Path, name: str) -> "List[dict] | No
 def _default_branch(run: Runner, tree: Path) -> str:
     res = run(["git", "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"], cwd=tree)
     out = res.out.strip()
-    if res.ok and out.startswith("origin/") and K.valid_ref_name(out[len("origin/"):]):
-        return out[len("origin/"):]
+    if res.ok and out.startswith("origin/") and K.valid_ref_name(out[len("origin/") :]):
+        return out[len("origin/") :]
     return "main"
 
 
-def _remote_heads(run: Runner, tree: Path) -> "set | None":
+def _remote_heads(run: Runner, tree: Path) -> set | None:
     res = run(["git", "ls-remote", "--heads", "origin"], cwd=tree)
     if not res.ok:
         return None
@@ -571,51 +707,65 @@ def _remote_heads(run: Runner, tree: Path) -> "set | None":
     for line in res.out.splitlines():
         parts = line.split()
         if len(parts) == 2 and parts[1].startswith("refs/heads/"):
-            heads.add(parts[1][len("refs/heads/"):])
+            heads.add(parts[1][len("refs/heads/") :])
     return heads
 
 
-def _owner_repo(run: Runner, app: L.App, tree: Path) -> "str | None":
+def _owner_repo(run: Runner, app: L.App, tree: Path) -> str | None:
     res = run(["git", "config", "--get", "remote.origin.url"], cwd=tree)
     found = D.parse_owner_repo(res.out.strip()) if res.ok else None
     return found or (app.owner_repo or None)
 
 
-def _lane_apps(ctx: K.Ctx, repo_filter: "str | None") -> List[L.App]:
+def _lane_apps(ctx: K.Ctx, repo_filter: str | None) -> list[L.App]:
     if repo_filter:
         app = K.resolve_app(ctx.registry, repo_filter)
         K._require_lane_app(app)
         return [app]
     out = []
     for app in ctx.registry.apps:
-        if app.registered and app.integration_dir_name and (Path(ctx.roots.code_root) / app.integration_dir_name).is_dir():
+        if (
+            app.registered
+            and app.integration_dir_name
+            and (Path(ctx.roots.code_root) / app.integration_dir_name).is_dir()
+        ):
             out.append(app)
     return out
 
 
 # --------------------------------------------------------------------------- the run
 
+
 @dataclass
 class _Plan:
-    rows: List[Row]
-    lanes: List[_Lane]
-    errors: List[str]
+    rows: list[Row]
+    lanes: list[_Lane]
+    errors: list[str]
     others: int
-    notes: List[str]
+    notes: list[str]
 
 
-def _gather(ctx: K.Ctx, *, apps: List[L.App], seats: "set | None", now: float, prune: bool,
-            only_path: "str | None" = None) -> Tuple[_Plan, Runner]:
+def _gather(
+    ctx: K.Ctx,
+    *,
+    apps: list[L.App],
+    seats: set | None,
+    now: float,
+    prune: bool,
+    only_path: str | None = None,
+) -> tuple[_Plan, Runner]:
     run = Runner(ctx.env, write_root=ctx.roots.lanes_root, fold=ctx.fold(), exec_fn=ctx.exec_fn)
-    errors: List[str] = []
-    notes: List[str] = []
+    errors: list[str] = []
+    notes: list[str] = []
     lsof = run(["lsof", "-d", "cwd", "-Fpcn"])
     # lsof exits 1 when some process could not be read but still prints the rest; only no output at all is a failure.
     lsof_rows = D.parse_lsof(lsof.out) if (lsof.ok or (lsof.rc == 1 and lsof.out.strip())) else None
     if lsof_rows is None:
-        errors.append(f"lsof failed ({K._why(lsof)}); nothing is removed while it cannot be checked")
-    rows: List[Row] = []
-    lanes_out: List[_Lane] = []
+        errors.append(
+            f"lsof failed ({K._why(lsof)}); nothing is removed while it cannot be checked"
+        )
+    rows: list[Row] = []
+    lanes_out: list[_Lane] = []
     others = 0
     for app in apps:
         tree = Path(os.path.realpath(Path(ctx.roots.code_root) / app.integration_dir_name))
@@ -624,7 +774,7 @@ def _gather(ctx: K.Ctx, *, apps: List[L.App], seats: "set | None", now: float, p
         except K.ToolFailure as exc:
             errors.append(f"{app.lane_dir}: {exc}")
             continue
-        lanes: List[_Lane] = []
+        lanes: list[_Lane] = []
         for rec in recs[1:]:
             if only_path is not None and ctx.key(rec.path) != ctx.key(only_path):
                 continue
@@ -642,19 +792,39 @@ def _gather(ctx: K.Ctx, *, apps: List[L.App], seats: "set | None", now: float, p
         default = _default_branch(run, tree)
         heads = _remote_heads(run, tree)
         if heads is None:
-            errors.append(f"{app.lane_dir}: git ls-remote --heads origin failed; upstream-gone evidence unavailable")
+            errors.append(
+                f"{app.lane_dir}: git ls-remote --heads origin failed; upstream-gone evidence unavailable"
+            )
         repo = _owner_repo(run, app, tree)
-        prs, truncated = (_bulk_prs(run, repo, tree) if repo else (None, False))
+        prs, truncated = _bulk_prs(run, repo, tree) if repo else (None, False)
         if prs is None:
-            errors.append(f"{app.lane_dir}: gh pr list failed for {repo or 'an unknown GitHub repo'}")
+            errors.append(
+                f"{app.lane_dir}: gh pr list failed for {repo or 'an unknown GitHub repo'}"
+            )
 
-        def work(ln: _Lane, default: str = default, heads: "set | None" = heads, prs: "List[dict] | None" = prs,
-                 repo: "str | None" = repo, tree: Path = tree, truncated: bool = truncated) -> _Lane:
-            ln.facts = _inspect(ctx, run, ln, now=now, lsof_rows=lsof_rows, default_branch=default,
-                                remote_heads=heads)
+        def work(
+            ln: _Lane,
+            default: str = default,
+            heads: set | None = heads,
+            prs: list[dict] | None = prs,
+            repo: str | None = repo,
+            tree: Path = tree,
+            truncated: bool = truncated,
+        ) -> _Lane:
+            ln.facts = _inspect(
+                ctx,
+                run,
+                ln,
+                now=now,
+                lsof_rows=lsof_rows,
+                default_branch=default,
+                remote_heads=heads,
+            )
             if ln.kind in ("lane", "review") and not ln.facts.prunable:
-                def fallback(name: str) -> "List[dict] | None":
+
+                def fallback(name: str) -> list[dict] | None:
                     return _head_prs(run, repo, tree, name) if repo else None
+
                 ln.facts.pr = _pr_view(run, ln, prs, fallback, truncated)
             return ln
 
@@ -666,14 +836,25 @@ def _gather(ctx: K.Ctx, *, apps: List[L.App], seats: "set | None", now: float, p
                 continue
             action, reason = decide(ln.facts, prune=prune) if ln.facts else ("keep", "no facts")
             pr = ln.facts.pr.open_number or ln.facts.pr.done_number if ln.facts else None
-            rows.append(Row(app.lane_dir, ln.rec.path, ln.kind, ln.seat, ln.rec.branch, ln.rec.head, action, reason,
-                            pr))
+            rows.append(
+                Row(
+                    app.lane_dir,
+                    ln.rec.path,
+                    ln.kind,
+                    ln.seat,
+                    ln.rec.branch,
+                    ln.rec.head,
+                    action,
+                    reason,
+                    pr,
+                )
+            )
             lanes_out.append(ln)
     return _Plan(rows, lanes_out, errors, others, notes), run
 
 
-def _apply(ctx: K.Ctx, run: Runner, plan: _Plan, seats: "set | None") -> None:
-    by_tree: Dict[str, List[Tuple[Row, _Lane]]] = {}
+def _apply(ctx: K.Ctx, run: Runner, plan: _Plan, seats: set | None) -> None:
+    by_tree: dict[str, list[tuple[Row, _Lane]]] = {}
     for row, ln in zip(plan.rows, plan.lanes):
         if row.action == "remove":
             by_tree.setdefault(str(ln.tree), []).append((row, ln))
@@ -683,7 +864,9 @@ def _apply(ctx: K.Ctx, run: Runner, plan: _Plan, seats: "set | None") -> None:
         tree, app = Path(tree_s), items[0][1].app
         with K._repo_lock(ctx, run, tree):
             for row, ln in items:
-                st = run(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=ln.rec.path)
+                st = run(
+                    ["git", "status", "--porcelain", "--untracked-files=normal"], cwd=ln.rec.path
+                )
                 if not st.ok or any(x.strip() for x in st.out.splitlines()):
                     row.action, row.reason = "keep", "changed since it was inspected (git status)"
                     continue
@@ -701,8 +884,9 @@ def _apply(ctx: K.Ctx, run: Runner, plan: _Plan, seats: "set | None") -> None:
             _maybe_prune(ctx, run, app, tree, seats, dangling, plan)
 
 
-def _maybe_prune(ctx: K.Ctx, run: Runner, app: L.App, tree: Path, seats: "set | None", dangling,
-                 plan: _Plan) -> None:
+def _maybe_prune(
+    ctx: K.Ctx, run: Runner, app: L.App, tree: Path, seats: set | None, dangling, plan: _Plan
+) -> None:
     """`git worktree prune` only for stale entries that are lanes of the chosen seat, and never while a lanes
     symlink is dangling (the external disk is not mounted)."""
     try:
@@ -714,17 +898,27 @@ def _maybe_prune(ctx: K.Ctx, run: Runner, app: L.App, tree: Path, seats: "set | 
     if not stale:
         return
     if dangling:
-        plan.notes.append(f"PRUNE-SKIPPED in {tree.name}: {dangling[0].path} is a dangling symlink (is the external "
-                          "disk mounted?); git worktree prune would drop the entries of every lane on it")
+        plan.notes.append(
+            f"PRUNE-SKIPPED in {tree.name}: {dangling[0].path} is a dangling symlink (is the external "
+            "disk mounted?); git worktree prune would drop the entries of every lane on it"
+        )
         return
     for r in stale:
         lane = _classify(ctx, run, app, tree, r)
-        if lane is None or lane.kind != "lane" or (seats is not None and (lane.seat or "") not in seats):
-            plan.notes.append(f"PRUNE-SKIPPED in {tree.name}: stale entry {r.path} is not a lane of the chosen seat")
+        if (
+            lane is None
+            or lane.kind != "lane"
+            or (seats is not None and (lane.seat or "") not in seats)
+        ):
+            plan.notes.append(
+                f"PRUNE-SKIPPED in {tree.name}: stale entry {r.path} is not a lane of the chosen seat"
+            )
             return
     res = run(["git", "worktree", "prune"], cwd=tree)
     if res.ok:
-        plan.notes.append(f"git worktree prune in {tree.name}: {len(stale)} stale entr{'y' if len(stale) == 1 else 'ies'}")
+        plan.notes.append(
+            f"git worktree prune in {tree.name}: {len(stale)} stale entr{'y' if len(stale) == 1 else 'ies'}"
+        )
     else:
         plan.errors.append(f"git worktree prune failed in {tree}: {K._why(res)}")
 
@@ -739,18 +933,22 @@ def _render(ctx: K.Ctx, plan: _Plan, *, apply: bool, title: str) -> str:
             action = "removed" if r.removed else "remove"
         reason = r.reason + (f"  [{r.note}]" if r.note else "")
         table.append((action, r.repo, os.path.basename(r.path), r.branch or "(detached)", reason))
-    widths = [max(len(head[i]), *(len(t[i]) for t in table)) if table else len(head[i]) for i in range(4)]
+    widths = [
+        max(len(head[i]), *(len(t[i]) for t in table)) if table else len(head[i]) for i in range(4)
+    ]
     fmt = "  ".join("{:<%d}" % w for w in widths) + "  {}"
     lines.append(fmt.format(*head))
     for t in table:
         lines.append(fmt.format(*t))
-    counts: Dict[str, int] = {}
+    counts: dict[str, int] = {}
     for r in plan.rows:
         counts[r.action] = counts.get(r.action, 0) + 1
     removed = sum(1 for r in plan.rows if r.removed)
     lines.append("")
-    summary = (f"{len(plan.rows)} lane(s): {counts.get('remove', 0)} removable, {counts.get('keep', 0)} kept, "
-               f"{counts.get('skip', 0)} skipped")
+    summary = (
+        f"{len(plan.rows)} lane(s): {counts.get('remove', 0)} removable, {counts.get('keep', 0)} kept, "
+        f"{counts.get('skip', 0)} skipped"
+    )
     if apply:
         summary += f"; {removed} removed, {counts.get('error', 0)} failed"
     else:
@@ -765,12 +963,21 @@ def _render(ctx: K.Ctx, plan: _Plan, *, apply: bool, title: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _json(plan: _Plan, *, apply: bool, seats: "set | None", command: str) -> str:
+def _json(plan: _Plan, *, apply: bool, seats: set | None, command: str) -> str:
     body = {
-        "schema": 1, "command": command, "apply": apply, "seats": sorted(seats) if seats is not None else "all",
-        "lanes": [asdict(r) for r in plan.rows], "others_not_considered": plan.others,
-        "summary": {a: sum(1 for r in plan.rows if r.action == a) for a in ("remove", "keep", "skip", "error")},
-        "removed": sum(1 for r in plan.rows if r.removed), "notes": plan.notes, "errors": plan.errors,
+        "schema": 1,
+        "command": command,
+        "apply": apply,
+        "seats": sorted(seats) if seats is not None else "all",
+        "lanes": [asdict(r) for r in plan.rows],
+        "others_not_considered": plan.others,
+        "summary": {
+            a: sum(1 for r in plan.rows if r.action == a)
+            for a in ("remove", "keep", "skip", "error")
+        },
+        "removed": sum(1 for r in plan.rows if r.removed),
+        "notes": plan.notes,
+        "errors": plan.errors,
     }
     return json.dumps(body, indent=2) + "\n"
 
@@ -783,30 +990,46 @@ class _Parser(argparse.ArgumentParser):
 
 def _parser(command: str) -> _Parser:
     if command == "retire":
-        p = _Parser(prog="lane retire", description="Remove one lane of your seat once its work is safe on GitHub.  "
-                    "Run it from outside the lane.  Exit 0 removed (or would be, with --dry-run), 64 refused or kept, "
-                    "69 git, gh or lsof failed.")
+        p = _Parser(
+            prog="lane retire",
+            description="Remove one lane of your seat once its work is safe on GitHub.  "
+            "Run it from outside the lane.  Exit 0 removed (or would be, with --dry-run), 64 refused or kept, "
+            "69 git, gh or lsof failed.",
+        )
         p.add_argument("target", help="the lane path, or its slug (the part after <seat>-)")
         p.add_argument("--repo", metavar="APP", help="the repo when a slug alone is ambiguous")
-        p.add_argument("--dry-run", action="store_true", help="say what would happen; change nothing")
+        p.add_argument(
+            "--dry-run", action="store_true", help="say what would happen; change nothing"
+        )
         p.add_argument("--json", action="store_true", help="print the decision as JSON")
         return p
-    p = _Parser(prog="lane prune", description="List a seat's lanes with a decision and a reason for each; remove the "
-                "removable ones with --apply.  Exit 0 ok, 64 usage or refusal, 69 git, gh or lsof failed.")
+    p = _Parser(
+        prog="lane prune",
+        description="List a seat's lanes with a decision and a reason for each; remove the "
+        "removable ones with --apply.  Exit 0 ok, 64 usage or refusal, 69 git, gh or lsof failed.",
+    )
     p.add_argument("--seat", metavar="NAME", help="seat tag or folder name (default: AGENT_SEAT)")
-    p.add_argument("--all-seats", action="store_true", help="allow a --seat other than yours; alone, every seat")
+    p.add_argument(
+        "--all-seats",
+        action="store_true",
+        help="allow a --seat other than yours; alone, every seat",
+    )
     p.add_argument("--repo", metavar="APP", help="only this repo (name, folder, prefix or acronym)")
-    p.add_argument("--apply", action="store_true", help="remove the removable lanes (the default is a dry run)")
+    p.add_argument(
+        "--apply", action="store_true", help="remove the removable lanes (the default is a dry run)"
+    )
     p.add_argument("--json", action="store_true", help="print the table as JSON")
     return p
 
 
-def _find_by_slug(ctx: K.Ctx, run: Runner, seat: L.Seat, slug: str, repo: "str | None") -> Tuple[L.App, str]:
+def _find_by_slug(
+    ctx: K.Ctx, run: Runner, seat: L.Seat, slug: str, repo: str | None
+) -> tuple[L.App, str]:
     try:
         L.validate_slug(slug)
     except L.LayoutError as exc:
         raise K.Refusal(str(exc))
-    hits: List[Tuple[L.App, str]] = []
+    hits: list[tuple[L.App, str]] = []
     for app in _lane_apps(ctx, repo):
         try:
             path = L.expected_lane_path(app, seat.suffix, slug, ctx.roots, ctx.registry)
@@ -815,19 +1038,26 @@ def _find_by_slug(ctx: K.Ctx, run: Runner, seat: L.Seat, slug: str, repo: "str |
         if os.path.lexists(path):
             hits.append((app, str(path)))
     if not hits:
-        raise K.Refusal(f"no lane {seat.suffix}-{slug} of seat {seat.name} under {ctx.roots.lanes_root}"
-                        + (f"/{repo}" if repo else "") + ".  Give its path, or check the slug and --repo.")
+        raise K.Refusal(
+            f"no lane {seat.suffix}-{slug} of seat {seat.name} under {ctx.roots.lanes_root}"
+            + (f"/{repo}" if repo else "")
+            + ".  Give its path, or check the slug and --repo."
+        )
     if len(hits) > 1:
-        raise K.Refusal(f"slug {slug!r} matches more than one lane; pass --repo or the path:\n"
-                        + "\n".join(f"  {p}" for _, p in hits))
+        raise K.Refusal(
+            f"slug {slug!r} matches more than one lane; pass --repo or the path:\n"
+            + "\n".join(f"  {p}" for _, p in hits)
+        )
     return hits[0]
 
 
-def _find_by_path(ctx: K.Ctx, target: str) -> Tuple[L.App, str]:
+def _find_by_path(ctx: K.Ctx, target: str) -> tuple[L.App, str]:
     path = L.resolve_path(target, ctx.roots)
     root = L.lane_root(path, ctx.roots)
     if root is None or not K._in_tree(ctx, str(root), ctx.roots.lanes_root):
-        raise K.Refusal(f"{target} is not a lane under {ctx.roots.lanes_root}; lane retire removes nothing else.")
+        raise K.Refusal(
+            f"{target} is not a lane under {ctx.roots.lanes_root}; lane retire removes nothing else."
+        )
     if ctx.key(str(root)) != ctx.key(path):
         raise K.Refusal(f"{target} is inside the lane {root}; give the lane folder itself.")
     folder = root.parent.name
@@ -856,12 +1086,16 @@ def _retire(ctx: K.Ctx, args: argparse.Namespace, now: float) -> int:
     seats = {seat.suffix.lower()}
     plan, run = _gather(ctx, apps=[app], seats=None, now=now, prune=False, only_path=path)
     if not plan.rows:
-        raise K.Refusal(f"{path} is not a worktree that git lists in {Path(ctx.roots.code_root) / app.integration_dir_name}; "
-                        "lane retire removes only registered lanes.")
+        raise K.Refusal(
+            f"{path} is not a worktree that git lists in {Path(ctx.roots.code_root) / app.integration_dir_name}; "
+            "lane retire removes only registered lanes."
+        )
     row = plan.rows[0]
     if (row.seat or "") not in seats:
-        raise K.Refusal(f"{path} belongs to seat {row.seat or 'unknown'}, not {seat.name}; lane retire removes only "
-                        "your own lanes.")
+        raise K.Refusal(
+            f"{path} belongs to seat {row.seat or 'unknown'}, not {seat.name}; lane retire removes only "
+            "your own lanes."
+        )
     if row.action == "remove" and not args.dry_run:
         _apply(ctx, run, plan, seats)
     if args.json:
@@ -873,14 +1107,22 @@ def _retire(ctx: K.Ctx, args: argparse.Namespace, now: float) -> int:
         _say(ctx.err, f"refused: kept {path}: {row.reason}")
         for e in plan.errors:
             _say(ctx.err, "error: " + e)
-        return K.EXIT_TOOL if (plan.errors and row.reason.startswith(("PR lookup failed", "could not check"))) else K.EXIT_USAGE
+        return (
+            K.EXIT_TOOL
+            if (plan.errors and row.reason.startswith(("PR lookup failed", "could not check")))
+            else K.EXIT_USAGE
+        )
     if args.dry_run:
         _say(ctx.err, f"dry run, nothing changed.  Would remove {path} ({row.reason})")
         if not args.json:
             ctx.out.write(f"{path}\n")
         return K.EXIT_OK
-    _say(ctx.err, f"removed {path} ({row.reason})" + (f"; {row.note}" if row.note else "")
-         + ("; deleted branch " + str(row.branch) if row.branch_deleted else ""))
+    _say(
+        ctx.err,
+        f"removed {path} ({row.reason})"
+        + (f"; {row.note}" if row.note else "")
+        + ("; deleted branch " + str(row.branch) if row.branch_deleted else ""),
+    )
     for n in plan.notes:
         _say(ctx.err, "note: " + n)
     if not args.json:
@@ -890,43 +1132,63 @@ def _retire(ctx: K.Ctx, args: argparse.Namespace, now: float) -> int:
 
 def _prune(ctx: K.Ctx, args: argparse.Namespace, now: float) -> int:
     registry = ctx.registry
-    own: "L.Seat | None" = None
+    own: L.Seat | None = None
     raw_own = (ctx.env.get(K.ENV_SEAT) or "").strip()
     if raw_own:
         own = K.resolve_seat(ctx.env, registry)
-    seats: "set | None"
+    seats: set | None
     if args.seat:
         target = _lookup_seat(registry, args.seat)
         if target is None:
             live = ", ".join(s.name for s in registry.seats if not s.retired)
-            raise K.Refusal(f"--seat {args.seat!r} is not a seat tag or folder name in fleet-apps.json ({live}).")
+            raise K.Refusal(
+                f"--seat {args.seat!r} is not a seat tag or folder name in fleet-apps.json ({live})."
+            )
         if own is None and not args.all_seats:
-            raise K.Refusal(f"{K.ENV_SEAT} is not set, so lane cannot tell whether {target.name} is your seat.  Set it, "
-                            "or add --all-seats to look at another seat's lanes on purpose.")
+            raise K.Refusal(
+                f"{K.ENV_SEAT} is not set, so lane cannot tell whether {target.name} is your seat.  Set it, "
+                "or add --all-seats to look at another seat's lanes on purpose."
+            )
         if own is not None and target.suffix.lower() != own.suffix.lower() and not args.all_seats:
-            raise K.Refusal(f"--seat {target.name} is not your seat ({own.name}).  Add --all-seats to look at another "
-                            "seat's lanes on purpose; never remove a peer's lane without the owner's word.")
+            raise K.Refusal(
+                f"--seat {target.name} is not your seat ({own.name}).  Add --all-seats to look at another "
+                "seat's lanes on purpose; never remove a peer's lane without the owner's word."
+            )
         seats = {target.suffix.lower()}
     elif args.all_seats:
         seats = None
     else:
         if own is None:
-            raise K.Refusal(f"{K.ENV_SEAT} is not set.  Set it to your seat tag, or pass --seat NAME.")
+            raise K.Refusal(
+                f"{K.ENV_SEAT} is not set.  Set it to your seat tag, or pass --seat NAME."
+            )
         seats = {own.suffix.lower()}
     apps = _lane_apps(ctx, args.repo)
     plan, run = _gather(ctx, apps=apps, seats=seats, now=now, prune=True)
     if args.apply:
         _apply(ctx, run, plan, seats)
     who = "every seat" if seats is None else "seat " + ", ".join(sorted(seats))
-    title = (f"lane prune ({who}; {'APPLY' if args.apply else 'dry run'}; "
-             f"{'repo ' + apps[0].lane_dir if args.repo else str(len(apps)) + ' repos'})")
-    ctx.out.write(_json(plan, apply=args.apply, seats=seats, command="prune") if args.json
-                  else _render(ctx, plan, apply=args.apply, title=title))
+    title = (
+        f"lane prune ({who}; {'APPLY' if args.apply else 'dry run'}; "
+        f"{'repo ' + apps[0].lane_dir if args.repo else str(len(apps)) + ' repos'})"
+    )
+    ctx.out.write(
+        _json(plan, apply=args.apply, seats=seats, command="prune")
+        if args.json
+        else _render(ctx, plan, apply=args.apply, title=title)
+    )
     return K.EXIT_TOOL if plan.errors else K.EXIT_OK
 
 
-def main(argv: Sequence[str], *, env: Mapping[str, str], clock: "Callable[[], _dt.datetime] | None" = None,
-         exec_fn: "K.ExecFn | None" = None, stdout=None, stderr=None) -> int:
+def main(
+    argv: Sequence[str],
+    *,
+    env: Mapping[str, str],
+    clock: Callable[[], _dt.datetime] | None = None,
+    exec_fn: K.ExecFn | None = None,
+    stdout=None,
+    stderr=None,
+) -> int:
     """`argv` starts with `retire` or `prune`.  Called from `lane.main`."""
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
@@ -935,11 +1197,15 @@ def main(argv: Sequence[str], *, env: Mapping[str, str], clock: "Callable[[], _d
         try:
             args = _parser(command).parse_args(rest)
         except SystemExit as exc:
-            return exc.code if isinstance(exc.code, int) else (K.EXIT_OK if exc.code is None else K.EXIT_USAGE)
-    stamp = clock or (lambda: _dt.datetime.now(_dt.timezone.utc))
+            return (
+                exc.code
+                if isinstance(exc.code, int)
+                else (K.EXIT_OK if exc.code is None else K.EXIT_USAGE)
+            )
+    stamp = clock or (lambda: _dt.datetime.now(_dt.UTC))
     now = stamp()
     if now.tzinfo is None:
-        now = now.replace(tzinfo=_dt.timezone.utc)
+        now = now.replace(tzinfo=_dt.UTC)
     try:
         try:
             registry = L.load_registry(env=env)
