@@ -471,9 +471,12 @@ class RequireDirectPathTests(unittest.TestCase):
             os.environ["FLEET_RECALL_FAKE"] = self._saved_env
 
     def test_raises_one_actionable_line_when_tailscale_down_and_no_override(self):
-        with mock.patch.object(
-            public_fallback, "tailscale_status_text", return_value="Logged out.\n"
-        ), self.assertRaises(FleetRagError) as ctx:
+        with (
+            mock.patch.object(
+                public_fallback, "tailscale_status_text", return_value="Logged out.\n"
+            ),
+            self.assertRaises(FleetRagError) as ctx,
+        ):
             public_fallback.require_direct_path("eval")
         msg = str(ctx.exception)
         self.assertNotIn("\n", msg)
@@ -487,11 +490,14 @@ class RequireDirectPathTests(unittest.TestCase):
             public_fallback.require_direct_path("ingest")  # must not raise
 
     def test_clierror_3_fail_fasts_without_the_private_path(self):
-        with mock.patch.object(
-            public_fallback,
-            "tailscale_status_text",
-            return_value="The Tailscale GUI failed to start: (Tailscale.CLIError error 3.)",
-        ), self.assertRaises(FleetRagError) as ctx:
+        with (
+            mock.patch.object(
+                public_fallback,
+                "tailscale_status_text",
+                return_value="The Tailscale GUI failed to start: (Tailscale.CLIError error 3.)",
+            ),
+            self.assertRaises(FleetRagError) as ctx,
+        ):
             public_fallback.require_direct_path("ingest")
         self.assertIn("recall ingest", str(ctx.exception))
 
@@ -613,9 +619,12 @@ class CallPublicTests(unittest.TestCase):
         self.assertEqual(res, {"points": 37047})
 
     def test_ok_false_becomes_fleetragerror(self):
-        with mock.patch.object(
-            core, "http_json", return_value={"ok": False, "error": "unauthorized"}
-        ), self.assertRaisesRegex(FleetRagError, "unauthorized"):
+        with (
+            mock.patch.object(
+                core, "http_json", return_value={"ok": False, "error": "unauthorized"}
+            ),
+            self.assertRaisesRegex(FleetRagError, "unauthorized"),
+        ):
             public_fallback.call_public("recall_stats", {})
 
     def test_sends_bearer_and_access_headers_and_the_right_route(self):
@@ -746,11 +755,12 @@ class CallWithFallbackTests(unittest.TestCase):
         # the direct path would just hang until core.DEFAULT_TIMEOUT, so this goes straight to
         # the public twin instead of trying the 120s local path first.
         local = mock.Mock(side_effect=AssertionError("must not run the 120s private path"))
-        with mock.patch.object(
-            public_fallback, "private_route_bypasses_tailscale", return_value=True
-        ), mock.patch.object(
-            public_fallback, "call_public", return_value={"points": 11}
-        ) as pub:
+        with (
+            mock.patch.object(
+                public_fallback, "private_route_bypasses_tailscale", return_value=True
+            ),
+            mock.patch.object(public_fallback, "call_public", return_value={"points": 11}) as pub,
+        ):
             res = public_fallback.call_with_fallback(
                 "recall_stats", {}, local, status_probe=lambda: None
             )
@@ -798,9 +808,10 @@ class CallWithFallbackTests(unittest.TestCase):
 
     def test_actionable_message_when_tailscale_down_and_credentials_missing(self):
         local = mock.Mock(side_effect=AssertionError("must not run"))
-        with mock.patch.dict(
-            os.environ, {"CF_ACCESS_CLIENT_ID": "", "CF_ACCESS_CLIENT_SECRET": ""}
-        ), self.assertRaises(FleetRagError) as ctx:
+        with (
+            mock.patch.dict(os.environ, {"CF_ACCESS_CLIENT_ID": "", "CF_ACCESS_CLIENT_SECRET": ""}),
+            self.assertRaises(FleetRagError) as ctx,
+        ):
             public_fallback.call_with_fallback(
                 "recall_stats", {}, local, status_probe=lambda: "Logged out.\n"
             )
@@ -903,14 +914,17 @@ class CallWithFallbackTests(unittest.TestCase):
     def test_fake_backend_bypasses_everything(self):
         recall_api.Qdrant = recall_api.FakeQdrant
         local = mock.Mock(return_value={"points": 3})
-        with mock.patch.object(
-            public_fallback,
-            "tailscale_status_text",
-            side_effect=AssertionError("must not probe Tailscale for a fake backend"),
-        ), mock.patch.object(
-            public_fallback,
-            "call_public",
-            side_effect=AssertionError("must not call the public service"),
+        with (
+            mock.patch.object(
+                public_fallback,
+                "tailscale_status_text",
+                side_effect=AssertionError("must not probe Tailscale for a fake backend"),
+            ),
+            mock.patch.object(
+                public_fallback,
+                "call_public",
+                side_effect=AssertionError("must not call the public service"),
+            ),
         ):
             res = public_fallback.call_with_fallback("recall_stats", {}, local)
         self.assertEqual(res, {"points": 3})
