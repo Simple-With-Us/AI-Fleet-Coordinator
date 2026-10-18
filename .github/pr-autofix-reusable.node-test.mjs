@@ -79,3 +79,37 @@ test('step if expressions never reference secrets so startup validation passes',
     }
   }
 });
+
+test('usage metering runs in a separate job that holds the ingest credential, never beside the model', () => {
+  const extract = steps.find((step) => step.includes('name: Extract Usage Counts'));
+  const retain = steps.find((step) => step.includes('name: Retain Usage Counts'));
+  const report = steps.find((step) => step.includes('name: Report Usage To Usage Monitor'));
+  assert(extract && retain && report);
+  // The model job extracts counters only, with no secret, and hands them over as a one-day artifact.
+  assert.match(extract, /select\(\.type == "result"\)/);
+  assert.match(extract, /claude-stream\.ndjson/);
+  assert.match(extract, /continue-on-error: true/);
+  assert(!extract.includes('USAGE_INGEST_TOKEN'));
+  assert.match(retain, /retention-days: 1/);
+  assert.match(retain, /if-no-files-found: ignore/);
+  assert(steps.indexOf(runFix) < steps.indexOf(extract));
+  assert(steps.indexOf(extract) < steps.indexOf(retain));
+  assert(steps.indexOf(retain) < steps.indexOf(validate));
+  // The reporter lives in the `meter` job, which cannot run the model or push.
+  const meter = workflow.slice(workflow.indexOf('\n  meter:'));
+  assert(meter.includes(report.slice(0, 80)));
+  assert.match(meter, /needs: autofix/);
+  assert.match(meter, /if: \$\{\{ always\(\) && needs\.autofix\.result != 'skipped' \}\}/);
+  assert.match(meter, /permissions:\n      actions: read\n/);
+  assert(!meter.includes('contents: write'));
+  assert(!meter.includes('MINIMAX_API_KEY'));
+  assert.match(report, /continue-on-error: true/);
+  assert.match(report, /uses: Simple-With-Us\/congress-trading-shared\/\.github\/actions\/ci-usage-report@[a-f0-9]{40}\n/);
+  assert.match(report, /token: \$\{\{ secrets\.USAGE_INGEST_TOKEN \}\}/);
+  assert.match(report, /harness: claude-code-ci/);
+  assert.match(report, /input-kind: claude/);
+  // The credential is optional, and the only place it is read is the meter job.
+  assert.match(workflow, /USAGE_INGEST_TOKEN:\n        required: false/);
+  assert.equal((workflow.match(/secrets\.USAGE_INGEST_TOKEN/g) ?? []).length, 1);
+  assert.equal(workflow.indexOf('secrets.USAGE_INGEST_TOKEN') > workflow.indexOf('\n  meter:'), true);
+});
