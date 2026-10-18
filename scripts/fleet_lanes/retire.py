@@ -461,7 +461,7 @@ def _epoch_iso(text: object) -> float | None:
     except ValueError:
         return None
     if when.tzinfo is None:
-        when = when.replace(tzinfo=_dt.UTC)
+        when = when.replace(tzinfo=_dt.timezone.utc)  # noqa: UP017
     return when.timestamp()
 
 
@@ -1258,10 +1258,11 @@ def main(
                 if isinstance(exc.code, int)
                 else (K.EXIT_OK if exc.code is None else K.EXIT_USAGE)
             )
-    stamp = clock or (lambda: _dt.datetime.now(_dt.UTC))
+    # timezone.utc, not datetime.UTC (3.11+): the shim may run on /usr/bin/python3 (3.9).
+    stamp = clock or (lambda: _dt.datetime.now(_dt.timezone.utc))  # noqa: UP017
     now = stamp()
     if now.tzinfo is None:
-        now = now.replace(tzinfo=_dt.UTC)
+        now = now.replace(tzinfo=_dt.timezone.utc)  # noqa: UP017
     try:
         try:
             registry = L.load_registry(env=env)

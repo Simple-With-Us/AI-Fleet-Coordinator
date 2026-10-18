@@ -595,8 +595,8 @@ class Ctx:
 
 def _iso(moment: _dt.datetime) -> str:
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=_dt.UTC)
-    return moment.astimezone(_dt.UTC).replace(microsecond=0).isoformat()
+        moment = moment.replace(tzinfo=_dt.timezone.utc)  # noqa: UP017
+    return moment.astimezone(_dt.timezone.utc).replace(microsecond=0).isoformat()  # noqa: UP017
 
 
 def _why(res: D.CmdResult) -> str:
@@ -1551,8 +1551,9 @@ def _positive_int(text: str) -> int:
     return int(text)
 
 
+# timezone.utc, not datetime.UTC (3.11+): the shim may run on /usr/bin/python3 (3.9).
 def _utc_now() -> _dt.datetime:
-    return _dt.datetime.now(_dt.UTC)
+    return _dt.datetime.now(_dt.timezone.utc)  # noqa: UP017
 
 
 def main(
