@@ -70,6 +70,28 @@ const NOT_CURRENT = new Set(["behind", "no-build", "expired", "shipping", "proce
 const REMEDIABLE = new Set(["behind", "no-build", "expired"]);
 const ALERTABLE = new Set(["behind", "no-build", "expired"]);
 const IN_FLIGHT = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
+// A ship job times out at 90 minutes (the longest timeout-minutes among the fleet's ship
+// workflows), so a run still queued or running after 3 hours is stuck:  it stops counting
+// as "shipping" and stops holding back every other app's catch-up.  Registry key:
+// inflightMaxHours.
+const DEFAULT_INFLIGHT_MAX_HOURS = 3;
+// A dispatched catch-up gets this long to archive, upload and process before an alert
+// may say it did not land.  Registry key:  remedyLandHours.
+const DEFAULT_REMEDY_LAND_HOURS = 3;
+
+/** Split a workflow's queued or running runs into live ones and stuck ones. */
+export function splitInflight(runs, nowMs, maxHours = DEFAULT_INFLIGHT_MAX_HOURS) {
+  const live = [];
+  const stale = [];
+  for (const x of runs || []) {
+    if (!IN_FLIGHT.has(x.status)) continue;
+    const since = Date.parse(x.created_at || x.run_started_at);
+    const ageHours = Number.isNaN(since) ? 0 : round1(Math.max(0, nowMs - since) / HOUR);
+    const row = { id: x.id, sha: x.head_sha, status: x.status, event: x.event, url: x.html_url, ageHours };
+    (ageHours >= maxHours ? stale : live).push(row);
+  }
+  return { live, stale };
+}
 
 // ---------------------------------------------------------------------------
 // Small pure helpers (exported for tests)
@@ -499,7 +521,7 @@ export async function evaluateApp(ctx, key, app, now) {
         ? await ctx.gh(`repos/${full}/actions/workflows/${app.ship.workflow}/runs?branch=${encodeURIComponent(branch)}&per_page=20`)
         : { workflow_runs: [] };
       const runs = runsJson.workflow_runs || [];
-      const inflight = runs.filter((x) => IN_FLIGHT.has(x.status)).map((x) => ({ id: x.id, sha: x.head_sha, status: x.status, event: x.event, url: x.html_url }));
+      const { live: inflight, stale: staleRuns } = splitInflight(runs, nowMs, Number(reg.inflightMaxHours ?? DEFAULT_INFLIGHT_MAX_HOURS));
       const onHead = runs.find((x) => x.head_sha === head.sha && x.status === "completed") || null;
       r.pipeline = {
         workflow: app.ship.workflow,
@@ -509,10 +531,11 @@ export async function evaluateApp(ctx, key, app, now) {
         manualReason: app.manualReason || null,
         inputs: app.ship.inputs || {},
         inflight,
+        staleRuns,
         lastRunOnHead: onHead ? { conclusion: onHead.conclusion, event: onHead.event, url: onHead.html_url } : null,
       };
     } else {
-      r.pipeline = { workflow: null, state: "none", autoRemedy: false, inflight: [], manualReason: app.manualReason || "no ship workflow" };
+      r.pipeline = { workflow: null, state: "none", autoRemedy: false, inflight: [], staleRuns: [], manualReason: app.manualReason || "no ship workflow" };
     }
 
     // Shipped source and containment.
@@ -566,6 +589,10 @@ export async function evaluateApp(ctx, key, app, now) {
       } else {
         r.status = "behind";
         r.reason = `TestFlight ${valid.marketingVersion || valid.build} does not contain ${short(native.sha)} (${native.path})`;
+      }
+      const stuck = r.pipeline.staleRuns || [];
+      if (stuck.length && r.status !== "shipping") {
+        r.reason += `;  a ship run in flight for ${Math.max(...stuck.map((x) => x.ageHours))}h looks stuck (${stuck[0].url})`;
       }
     }
   } catch (err) {
@@ -645,7 +672,10 @@ function alertLine(r, s) {
     : "There is no usable TestFlight build";
   const native = `the newest native commit ${short(r.native?.sha)} landed ${ownerTime(r.native?.date)}, ${r.gapHours}h ago`;
   let why;
-  if (s.remedy && s.remedy.targetSha) {
+  const stuck = r.pipeline?.staleRuns || [];
+  if (stuck.length) {
+    why = `A ship run has been in flight for ${Math.max(...stuck.map((x) => x.ageHours))}h and looks stuck (${stuck[0].url})`;
+  } else if (s.remedy && s.remedy.targetSha) {
     why = `A catch-up ship was dispatched ${ownerTime(s.remedy.at)} and has not landed`;
   } else if (r.remedy?.reason) {
     why = `Catch-up ${r.remedy.action}:  ${r.remedy.reason}`;
@@ -662,6 +692,7 @@ function alertLine(r, s) {
 export function planAlerts(results, state, registry, { now, exitCode, errors = [] }) {
   const nowMs = now.getTime();
   const staleH = Number(registry.staleAlertHours ?? 6);
+  const landH = Number(registry.remedyLandHours ?? DEFAULT_REMEDY_LAND_HOURS);
   state.apps = state.apps || {};
   const due = [];
   for (const r of results) {
@@ -677,6 +708,9 @@ export function planAlerts(results, state, registry, { now, exitCode, errors = [
     if (!ALERTABLE.has(r.status)) continue;
     const behindH = (nowMs - Date.parse(s.behindSince)) / HOUR;
     if (behindH < staleH) continue;
+    // A catch-up dispatched this run, or still inside its landing window, has not failed
+    // yet:  say nothing (and store no alert key) until the window has passed.
+    if (s.remedy?.at && nowMs - Date.parse(s.remedy.at) < landH * HOUR) continue;
     const kind = s.remedy ? "remedy-did-not-land" : `remedy-${r.remedy?.action || "none"}:${r.remedy?.reason?.split(":")[0] || ""}`;
     const key = `${r.native?.sha || ""}|${kind}`;
     if (s.alert?.key === key) continue;
@@ -791,6 +825,13 @@ export function parseArgs(argv) {
 export function loadRegistry(file) {
   const reg = JSON.parse(fs.readFileSync(file, "utf8"));
   if (!reg || typeof reg.apps !== "object" || !reg.owner) throw new Error(`${file}: missing owner or apps`);
+  // A catch-up ship needs a green compile check on main (the remedy's first guard), so an
+  // app that may be remedied automatically must name one.  An app with no iOS compile
+  // check on main sets autoRemedy false with a manualReason instead of failing silently.
+  const bad = Object.entries(reg.apps)
+    .filter(([, a]) => !a.skip && a.autoRemedy !== false && !a.compileCheck)
+    .map(([k]) => `${k}: autoRemedy is on but compileCheck is empty`);
+  if (bad.length) throw new Error(`${file}: ${bad.join(";  ")}`);
   return reg;
 }
 
@@ -829,7 +870,7 @@ export async function runCheck(opts, deps, registry) {
     if (opts.shipBehind || opts.alert) state = deps.readState();
     if (opts.shipBehind && (!mutating || unlock)) {
       // One ship at a time across the fleet, even when --app narrowed the check.
-      const extraInflight = fullRun ? [] : await otherAppsInFlight(ctx, registry, keys);
+      const extraInflight = fullRun ? [] : await otherAppsInFlight(ctx, registry, keys, now);
       await runRemedies(results, state, deps, registry, { dryRun: opts.dryRun, maxShips: opts.maxShips, now, extraInflight });
     }
     const exitCode = exitCodeFor(results, errors);
@@ -874,13 +915,13 @@ export async function runCheck(opts, deps, registry) {
   }
 }
 
-async function otherAppsInFlight(ctx, registry, checkedKeys) {
+async function otherAppsInFlight(ctx, registry, checkedKeys, now) {
   const others = Object.keys(registry.apps).filter((k) => !checkedKeys.includes(k) && !registry.apps[k].skip && registry.apps[k].ship?.workflow);
   const hits = await pool(others, 4, async (k) => {
     const a = registry.apps[k];
     try {
       const j = await ctx.gh(`repos/${registry.owner}/${a.repo}/actions/workflows/${a.ship.workflow}/runs?branch=${encodeURIComponent(a.branch || "main")}&per_page=20`);
-      return (j.workflow_runs || []).some((x) => IN_FLIGHT.has(x.status)) ? k : null;
+      return splitInflight(j.workflow_runs, now.getTime(), Number(registry.inflightMaxHours ?? DEFAULT_INFLIGHT_MAX_HOURS)).live.length ? k : null;
     } catch {
       return null;
     }

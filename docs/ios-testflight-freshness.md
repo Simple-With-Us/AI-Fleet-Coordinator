@@ -68,7 +68,7 @@ shipped sha means current.  The table's SHIPPED column says which source was use
 |---|---|
 | `current` | The newest processed build contains the newest native commit. |
 | `BEHIND` | It does not.  The NOTE column says which commit is missing and what the remedy decided. |
-| `SHIPPING` | A ship run that contains the commit is queued or running. |
+| `SHIPPING` | A ship run that contains the commit is queued or running, and started under 3 hours ago (`inflightMaxHours`).  An older run counts as stuck:  the app shows `BEHIND`, the NOTE links the stuck run, and it no longer holds back other apps. |
 | `PROCESSING` | An upload after the commit is still processing in App Store Connect. |
 | `NO-BUILD` | The App Store Connect record has no TestFlight build at all. |
 | `EXPIRED` | Every build has expired. |
@@ -90,7 +90,7 @@ inputs, for example `-f upload=true` for ContactLogo and Hog Hunter).  It never 
 runs an App Store GM workflow.  Every one of these must hold, or the app is reported
 `blocked` or `deferred` with the reason:
 
-1. `autoRemedy` is on for the app, and its ship workflow exists and is `active` (a
+1. `autoRemedy` is on for the app (the registry refuses to load when an app with `autoRemedy` on names no `compileCheck`), and its ship workflow exists and is `active` (a
    `disabled_manually` workflow is the owner's switch;  it is reported, never re-enabled).
 2. The compile check on main is green.
 3. 2.5 hours have passed since the app's last upload.  The check enforces the documented fleet
@@ -100,7 +100,7 @@ runs an App Store GM workflow.  Every one of these must hold, or the app is repo
    inside `ship-testflight.sh` still applies on the runner.)
 5. `build-window.sh <app>` does not say `background`.  The LaunchAgent fires at :20, inside
    Socratic Trade's X:15-X:45 window.
-6. No ship run of any registry app is queued or running, even when `--app` narrowed the check.
+6. No ship run of any registry app is queued or running, even when `--app` narrowed the check.  A run older than 3 hours is stuck and does not count.
 7. At most `--max-ships` (default 1) dispatches per run.
 
 `--dry-run` prints the plan (`would-dispatch` and the exact command) and writes nothing.
@@ -112,7 +112,7 @@ The check posts to Zulip `#agent-sync`, topic `AFC testflight-freshness`, with
 
 - an app the check has seen behind, without a break, for **more than 6 hours**:  by then the
   catch-up ship has had its chance, or the line says why it could not run (pipeline disabled,
-  compile red, manual only, or a catch-up that was dispatched and never landed);
+  compile red, manual only, a ship run that looks stuck, or a catch-up that was dispatched and never landed).  A catch-up gets 3 hours (`remedyLandHours`) to archive, upload and process before an alert may call it a failure, so the run that dispatches it never alerts about it;
 - the check itself failing (exit 2).
 
 Never spam:  one digest post per run, at most one post per app per 6 hours, and never twice for
@@ -169,6 +169,7 @@ run deferred every catch-up because the Usage Monitor ship was in flight:  one s
 
 - `ios-ship.yml` is `disabled_manually` in Congress.Trade and DealDex.  Re-enabling is the
   owner's call;  until then those apps alert once per new native commit.
+- DealDex has no iOS compile check on main (its `ci.yml` builds the web app only), so `autoRemedy` is off for it:  a catch-up needs a green compile check.  Add an iOS compile job, name it in the registry, and turn `autoRemedy` on.
 - CodeCaps for Mac ships only by hand (`macos-ship.yml` has no push trigger).  Set
   `autoRemedy: true` in the registry if it should catch up automatically.
 - The live `ship-testflight.sh` sets `DEFAULT_MIN_INTERVAL_SEC=3600` (1 hour, owner

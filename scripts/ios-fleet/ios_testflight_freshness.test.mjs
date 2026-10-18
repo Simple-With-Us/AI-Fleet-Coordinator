@@ -434,25 +434,33 @@ test("main table, --repo filter, and an unknown --app fails the check", async ()
   assert.equal(await main(["--app", "nope", "--registry", writeRegistry(reg)], deps, sink()), EXIT_FAILED);
 });
 
-test("main --ship-behind --alert:  dispatches, records state, and a failed post keeps the exit code and retries next run", async () => {
+test("main --ship-behind --alert:  dispatches without alerting, then a later run's failed post keeps the exit code and retries", async () => {
   const reg = registry({ b: app({ repo: "B" }) });
-  const { deps, calls } = fakeDeps({
-    repos: { B: botfleetLike({ natives: { ios: { sha: "nat2", date: "2026-10-17T14:15:00Z" } }, createdRuns: [], checks: { head1: [{ id: 1, name: "xcodebuild (unsigned)", status: "completed", conclusion: "success" }] } }) },
-    builds: { 111: [ascBuild(1, "202610100000", "1.0.5", "2026-10-10T00:05:00Z")] },
-    state: { apps: { b: { behindSince: "2026-10-17T00:00:00Z" } } },
-    failPost: true,
-  });
+  const world = { B: botfleetLike({ natives: { ios: { sha: "nat2", date: "2026-10-17T14:15:00Z" } }, createdRuns: [], checks: { head1: [{ id: 1, name: "xcodebuild (unsigned)", status: "completed", conclusion: "success" }] } }) };
+  const builds = { 111: [ascBuild(1, "202610100000", "1.0.5", "2026-10-10T00:05:00Z")] };
+  const first = fakeDeps({ repos: world, builds, state: { apps: { b: { behindSince: "2026-10-17T00:00:00Z" } } }, failPost: true });
   const out = sink();
-  const code = await main(["--ship-behind", "--alert", "--json", "--registry", writeRegistry(reg)], deps, out);
+  const code = await main(["--ship-behind", "--alert", "--json", "--registry", writeRegistry(reg)], first.deps, out);
   assert.equal(code, EXIT_BEHIND);
   const rep = JSON.parse(out.text);
   assert.equal(rep.apps[0].remedy.action, "dispatched");
-  assert.equal(calls.dispatch.length, 1);
-  assert.equal(rep.alert.posted, false);
-  assert.match(rep.alert.error, /agent-sync/);
-  const saved = calls.states.at(-1);
+  assert.equal(first.calls.dispatch.length, 1);
+  assert.equal(rep.alert, undefined, "no did-not-land alert in the run that dispatched");
+  const saved = first.calls.states.at(-1);
   assert.equal(saved.apps.b.remedy.headSha, "head1");
-  assert.equal(saved.apps.b.alert, undefined, "alert stamp rolled back so the next run retries");
+
+  // Four hours later the catch-up has not landed:  the alert is due, the post fails.
+  const later = fakeDeps({ repos: world, builds, state: saved, failPost: true });
+  later.deps.now = () => new Date(NOW.getTime() + 4 * 3600e3);
+  const out2 = sink();
+  assert.equal(await main(["--ship-behind", "--alert", "--json", "--registry", writeRegistry(reg)], later.deps, out2), EXIT_BEHIND);
+  const rep2 = JSON.parse(out2.text);
+  assert.equal(rep2.apps[0].remedy.action, "blocked", "one dispatch per main HEAD");
+  assert.equal(later.calls.dispatch.length, 0);
+  assert.equal(rep2.alert.posted, false);
+  assert.match(rep2.alert.error, /agent-sync/);
+  assert.match(rep2.alert.body, /has not landed/);
+  assert.equal(later.calls.states.at(-1).apps.b.alert, undefined, "alert stamp rolled back so the next run retries");
 });
 
 test("main --app --ship-behind still sees another app's ship in flight", async () => {
@@ -473,6 +481,60 @@ test("main --app --ship-behind still sees another app's ship in flight", async (
 });
 
 // ---------------------------------------------------------------------------
+// Review fixes (PR 617)
+// ---------------------------------------------------------------------------
+
+test("a catch-up dispatched this run, or inside the landing window, is not called a failure", () => {
+  const reg = registry({ x: app() });
+  const state = { apps: { x: { behindSince: "2026-10-17T10:00:00Z", remedy: { at: NOW.toISOString(), headSha: "head1", targetSha: "nat2" } } } };
+  const r = behindResult("x", { remedy: { action: "dispatched", reason: "gh workflow run ios-ship.yml --repo Org/Demo --ref main" } });
+  assert.equal(planAlerts([r], state, reg, { now: NOW, exitCode: 1 }), null, "dispatched seconds ago");
+  assert.equal(state.apps.x.alert, undefined, "no alert key is stored, so a later real failure still alerts");
+  const in2h = new Date(NOW.getTime() + 2 * 3600e3);
+  assert.equal(planAlerts([behindResult("x")], state, reg, { now: in2h, exitCode: 1 }), null, "still inside the 3 hour landing window");
+  const in4h = new Date(NOW.getTime() + 4 * 3600e3);
+  const plan = planAlerts([behindResult("x")], state, reg, { now: in4h, exitCode: 1 });
+  assert.deepEqual(plan.apps, ["x"]);
+  assert.match(plan.body, /has not landed/);
+});
+
+test("an in-flight ship run older than the cap is stale:  not shipping, not blocking, and it alerts", async () => {
+  const stuck = run("head1", "2026-10-17T19:00:00Z", "2026-10-17T19:01:00Z", { status: "in_progress", conclusion: null });
+  const w = botfleetLike({ natives: { ios: { sha: "nat2", date: "2026-10-17T14:15:00Z" } }, recentRuns: [stuck] });
+  const { r } = await evalOne(w, BOTFLEET_BUILDS);
+  assert.equal(r.status, "behind", "a run in progress for 5h15m no longer counts as shipping");
+  assert.equal(r.pipeline.inflight.length, 0);
+  assert.equal(r.pipeline.staleRuns.length, 1);
+  assert.match(r.reason, /ship run in flight for 5\.3h/);
+  const fresh = run("head1", "2026-10-18T00:00:00Z", "2026-10-18T00:01:00Z", { status: "queued", conclusion: null });
+  assert.equal((await evalOne({ ...w, recentRuns: [fresh] }, BOTFLEET_BUILDS)).r.status, "shipping");
+
+  const state = { apps: { x: { behindSince: "2026-10-17T10:00:00Z" } } };
+  const plan = planAlerts([{ ...r, key: "x" }], state, registry({ x: app() }), { now: NOW, exitCode: 1 });
+  assert.deepEqual(plan.apps, ["x"]);
+  assert.match(plan.body, /5\.3h/);
+
+  const reg = registry({ b: app({ repo: "B" }), other: app({ repo: "O", appleId: "999" }) });
+  const { deps, calls } = fakeDeps({
+    repos: { B: botfleetLike({ natives: { ios: { sha: "nat2", date: "2026-10-17T14:15:00Z" } }, createdRuns: [] }), O: { recentRuns: [stuck] } },
+    builds: { 111: [ascBuild(1, "202610100000", "1.0.5", "2026-10-10T00:05:00Z")] },
+  });
+  const out = sink();
+  await main(["--app", "b", "--ship-behind", "--dry-run", "--json", "--registry", writeRegistry(reg)], deps, out);
+  assert.equal(JSON.parse(out.text).apps[0].remedy.action, "would-dispatch", "another app's stuck run does not block the fleet");
+  assert.equal(calls.dispatch.length, 0);
+});
+
+test("an app with autoRemedy on must name a compile check:  the registry fails loudly", async () => {
+  assert.throws(() => loadRegistry(writeRegistry(registry({ x: app({ compileCheck: null }) }))), /x: autoRemedy is on but compileCheck is empty/);
+  loadRegistry(writeRegistry(registry({ x: app({ compileCheck: null, autoRemedy: false, manualReason: "none" }) })));
+  loadRegistry(writeRegistry(registry({ x: app({ compileCheck: null, skip: "Sparkle" }) })));
+  const out = sink();
+  assert.equal(await main(["--registry", writeRegistry(registry({ x: app({ compileCheck: null }) }))], fakeDeps().deps, out), EXIT_FAILED);
+  assert.match(out.text, /compileCheck is empty/);
+});
+
+// ---------------------------------------------------------------------------
 // The tracked registry
 // ---------------------------------------------------------------------------
 
@@ -490,6 +552,7 @@ test("testflight-apps.json is complete and carries no gate override", () => {
     assert.ok(a.ship && /\.ya?ml$/.test(a.ship.workflow), `${key}: ship workflow`);
     assert.ok(!/appstore-gm/.test(a.ship.workflow), `${key}: never the App Store GM workflow`);
     for (const k of Object.keys(a.ship.inputs || {})) assert.doesNotMatch(k, /force|interval|gate/i, `${key}: no gate override input`);
+    if (a.autoRemedy !== false) assert.ok(a.compileCheck, `${key}: autoRemedy needs a compile check`);
     assert.ok(["IOS", "MAC_OS"].includes(a.platform), `${key}: platform`);
   }
 });
