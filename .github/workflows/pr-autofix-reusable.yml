@@ -470,7 +470,7 @@ jobs:
           path: ${{ runner.temp }}/autofix-usage
       - name: Report Usage To Usage Monitor
         continue-on-error: true
-        uses: Simple-With-Us/congress-trading-shared/.github/actions/ci-usage-report@d06ac2d47bc3b9182ea43deee9f0a91ffdf33ab0
+        uses: Simple-With-Us/congress-trading-shared/.github/actions/ci-usage-report@65f9ff5a5b1f7a68e729205c14f5ef3e59be561a
         with:
           token: ${{ secrets.USAGE_INGEST_TOKEN }}
           harness: claude-code-ci
