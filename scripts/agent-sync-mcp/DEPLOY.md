@@ -19,15 +19,10 @@ perl -e 'alarm 900; exec @ARGV' npm run test:workerd
 ## Step 1:  Deploy the code
 
 ```bash
-(
-  set +x
-  export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
-  CLOUDFLARE_EMAIL="$(grep -m1 '^CLOUDFLARE_JAY_ACCOUNT_EMAIL=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
-  CLOUDFLARE_API_KEY="$(grep -m1 '^CLOUDFLARE_JAY_API_KEY=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
-  export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
-  WRANGLER_SEND_METRICS=false perl -e 'alarm 600; exec @ARGV' npx --no-install wrangler deploy
-)
+python3 -I wrangler_infisical.py deploy
 ```
+
+Every credential comes from Infisical, never from `~/.secrets` (owner 2026-10-18, AFC-347):  `wrangler_infisical.py` logs in as the INFISICAL_AUTOMATION identity from the environment (`INFISICAL_AUTOMATION_CLIENT_ID` / `_SECRET`) and reads wrangler's Cloudflare pair, `CLOUDFLARE_JAY_ACCOUNT_EMAIL` and `CLOUDFLARE_JAY_API_KEY`, from the Fleet-OPS project, `prod`, `/global-api-keys`.  wrangler times out after 600 seconds.
 
 The same Worker, KV namespace, `SeatGate` class (migration `v1`, no new migration) and custom domain as Phase 0.  From this deploy on, every Phase 0 grant is dead:  its props carry no `phase: 2`, so `/mcp` answers 401 and a refresh gets `invalid_grant`.
 
@@ -38,11 +33,11 @@ python3 -I install_seat_key.py GROK-WEB            # checks only
 python3 -I install_seat_key.py GROK-WEB --apply    # wrangler secret put ZULIP_KEY_GROK_WEB, value on stdin
 python3 -I install_seat_key.py JET                 # checks only
 python3 -I install_seat_key.py JET --apply         # wrangler secret put ZULIP_KEY_JET, value on stdin
-python3 -I install_seat_key.py ECHO --zuliprc ~/.secrets/Zulip/Echo-zuliprc --apply
-python3 -I install_seat_key.py WISE --zuliprc ~/.secrets/Zulip/Wise-zuliprc --apply
+python3 -I install_seat_key.py ECHO --apply        # ZULIP_KEY_ECHO
+python3 -I install_seat_key.py WISE --apply        # ZULIP_KEY_WISE, from Infisical's ZULIP_WISE pair
 ```
 
-ECHO's and WISE's keys are not in Infisical, so `--zuliprc` reads the email and key from the seat's mode-600 zuliprc instead (its `site` must be this realm).  The same checks run, and no field of the file is printed.
+Every seat's key comes from Infisical;  `--zuliprc` is gone (AFC-347).  WISE's Worker names are `ZULIP_KEY_WISE` and `ZULIP_EMAIL_WISE` since AFC-347.  Before that the Worker read `ZULIP_KEY_INSTINCT`, installed from Infisical's old `ZULIP_INSTINCT` pair, which Zulip now refuses, so every WISE call answered `not_authorized`.  Delete the old secret once WISE is verified:  `python3 -I wrangler_infisical.py secret delete ZULIP_KEY_INSTINCT --force`.
 
 For each seat the script reads `ZULIP_<SEAT>_EMAIL` and `ZULIP_<SEAT>_API_KEY` (`ZULIP_GROK_WEB_*`, `ZULIP_JET_*`, `ZULIP_CLAUDE_*`) from Infisical (project "AI Fleet Coordinator", `prod`, `/zulip`) through the INFISICAL_AUTOMATION identity, and refuses unless the seat is in `HOSTED_SEATS`, the email equals the seat's configured Worker email binding (`ZULIP_EMAIL_<SEAT>` for every seat except CLAUDE, which uses the canonical `ZULIP_CLAUDE_EMAIL`), and Zulip's `users/me` for the key is that bot, a bot, and a member (role 400).  The value goes to wrangler on stdin and is never printed, logged or written to a file.  `wrangler secret put` deploys a new version at once.
 
@@ -50,43 +45,25 @@ Spec 3.6 wants Infisical's Cloudflare Workers sync to push the key, from a locat
 
 ## Step 2b:  Fleet recall secrets (once)
 
-The recall tools (spec 1.1) need three Worker secrets.  Without them they answer `not_configured` and everything else works.  Run from this directory, with the Step 1 credentials exported in the same subshell.  Each value goes to wrangler on stdin and is never printed:
+The recall tools (spec 1.1) need three Worker secrets.  Without them they answer `not_configured` and everything else works.  Run from this directory.  Each value goes from Infisical to wrangler on stdin and is never printed:
 
 ```bash
-(
-  set +x
-  export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
-  CLOUDFLARE_EMAIL="$(grep -m1 '^CLOUDFLARE_JAY_ACCOUNT_EMAIL=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
-  CLOUDFLARE_API_KEY="$(grep -m1 '^CLOUDFLARE_JAY_API_KEY=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
-  export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
-  put() { [ -n "$2" ] || { echo "missing $1" >&2; return 1; }; printf %s "$2" | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put "$1" >/dev/null && echo "set $1"; }
-  put RECALL_API_TOKEN "$(grep -m1 '^RECALL_API_TOKEN=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
-  ACCESS=~/.secrets/agents-jays-services-access-service-token.env
-  put RECALL_ACCESS_CLIENT_ID "$(grep -m1 '^CF_ACCESS_CLIENT_ID=' "$ACCESS" | cut -d= -f2- | tr -d '"')"
-  put RECALL_ACCESS_CLIENT_SECRET "$(grep -m1 '^CF_ACCESS_CLIENT_SECRET=' "$ACCESS" | cut -d= -f2- | tr -d '"')"
-)
+python3 -I wrangler_infisical.py put RECALL_API_TOKEN shared:/:RECALL_API_TOKEN
+python3 -I wrangler_infisical.py put RECALL_ACCESS_CLIENT_ID shared:/:CF_ACCESS_CLIENT_ID
+python3 -I wrangler_infisical.py put RECALL_ACCESS_CLIENT_SECRET shared:/:CF_ACCESS_CLIENT_SECRET
 ```
 
-`RECALL_API_TOKEN` is the recall service's bearer (Infisical shared/prod).  The Access service token is the one on the `agents.jays.services` Access app, which also covers `recall.jays.services`.  Rotating either means running the matching `put` line again.  Check with a `recall_search` call from Grok or Jet (ARMING-JAY.md, "Fleet recall"), or look for `"tool":"recall_search"` lines in the Worker log:  `outcome` `ok` means the Worker reached recall, `not_authorized` means a credential is wrong, and `not_configured` means a secret is missing.
+`RECALL_API_TOKEN` is the recall service's bearer (Infisical shared/prod).  The Access service token (Infisical shared `prod` `/`, `CF_ACCESS_CLIENT_ID` and `_SECRET`, the same values as the Mac's old `agents-jays-services-access-service-token.env`, checked Sun, Oct 18, 2026) is the one on the `agents.jays.services` Access app, which also covers `recall.jays.services`.  Rotating either means running the matching `put` line again.  Check with a `recall_search` call from Grok or Jet (ARMING-JAY.md, "Fleet recall"), or look for `"tool":"recall_search"` lines in the Worker log:  `outcome` `ok` means the Worker reached recall, `not_authorized` means a credential is wrong, and `not_configured` means a secret is missing.
 
 ## Step 2c:  Linear secrets for a seat (once per seat)
 
 The Linear tools (AFC-289) need two Worker secrets per seat:  the seat's own Linear app client credentials.  Without them that seat's Linear tools answer `not_configured` and everything else works, so this step is independent of every other one.  The names hold the seat with hyphens as underscores, because an env var name cannot hold one — `GROK-WEB` becomes `LINEAR_GROK_WEB_CLIENT_ID` and `LINEAR_GROK_WEB_CLIENT_SECRET`.  That matches how the owner renamed the pair in Infisical.
 
-Run from this directory, in the same subshell shape as Step 2b.  Never print a value:
+Run from this directory.  Never print a value:
 
 ```bash
-(
-  set +x
-  export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
-  CLOUDFLARE_EMAIL="$(grep -m1 '^CLOUDFLARE_JAY_ACCOUNT_EMAIL=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
-  CLOUDFLARE_API_KEY="$(grep -m1 '^CLOUDFLARE_JAY_API_KEY=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
-  export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
-  put() { [ -n "$2" ] || { echo "missing $1" >&2; return 1; }; printf %s "$2" | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put "$1" >/dev/null && echo "set $1"; }
-  # Read the pair from wherever the owner keeps seat credentials (see below), then:
-  # put LINEAR_GROK_WEB_CLIENT_ID     "<the client id>"
-  # put LINEAR_GROK_WEB_CLIENT_SECRET "<the client secret>"
-)
+python3 -I wrangler_infisical.py put LINEAR_GROK_WEB_CLIENT_ID afc:/linear:LINEAR_GROK_WEB_CLIENT_ID
+python3 -I wrangler_infisical.py put LINEAR_GROK_WEB_CLIENT_SECRET afc:/linear:LINEAR_GROK_WEB_CLIENT_SECRET
 ```
 
 **Which Infisical project holds the pair.**  AI Fleet Coordinator, `prod`, `/linear`:  as of Thu, Oct 16, 2026 every hosted seat's pair is there (Infisical names `LINEAR_<SEAT>_CLIENT_ID` and `_SECRET`, hyphens as underscores), and the installs below read them from it.  The Worker secret names come from `LINEAR_SECRETS` in `src/linear.js` and match the Infisical names, except WISE:  its Infisical pair `LINEAR_WISE_CLIENT_ID`/`_SECRET` is installed on the Worker as `LINEAR_INSTINCT_CLIENT_ID`/`_SECRET`.  `docs/protocols/linear-migration.md` section 2 planned a separate **Fleet Linear Seats** project;  it is not where the hosted seats' pairs live.  Before a `put`, run `board whoami` as the seat with that pair and check the viewer is the seat's own app.
