@@ -128,7 +128,17 @@
       "bundleId": "com.simplewithus.codecaps.ios",
       "platform": "IOS",
       "repo": "CodeCaps",
-      "paths": ["ios/CodeCapsCompanion"],
+      "paths": [
+        "ios/CodeCapsCompanion",
+        "Sources/QuotaCore/CompanionReadTokenStore.swift",
+        "Sources/QuotaCore/FleetSourceDisagreement.swift",
+        "Sources/QuotaCore/QuotaWindowVocabulary.swift",
+        "Sources/QuotaCore/ResetAlarmCadence.swift",
+        "Sources/QuotaCore/ResetAlarmMessage.swift",
+        "Sources/QuotaCore/ResetAlarmTracker.swift",
+        "Sources/QuotaCore/WidgetPlatformDisplay.swift",
+        "Sources/QuotaCore/WidgetSnapshotFetcher.swift"
+      ],
       "ship": { "workflow": "ios-ship.yml", "inputs": {} },
       "sourceWorkflows": ["ios-ship.yml"],
       "compileCheck": "iOS companion compile",
@@ -140,12 +150,21 @@
       "bundleId": "com.simplewithus.codecaps.macos",
       "platform": "MAC_OS",
       "repo": "CodeCaps",
-      "paths": ["ios/CodeCapsCompanion"],
+      "paths": [
+        "ios/CodeCapsCompanion",
+        "Sources/QuotaCore/CompanionReadTokenStore.swift",
+        "Sources/QuotaCore/FleetSourceDisagreement.swift",
+        "Sources/QuotaCore/QuotaWindowVocabulary.swift",
+        "Sources/QuotaCore/ResetAlarmCadence.swift",
+        "Sources/QuotaCore/ResetAlarmMessage.swift",
+        "Sources/QuotaCore/ResetAlarmTracker.swift",
+        "Sources/QuotaCore/WidgetPlatformDisplay.swift",
+        "Sources/QuotaCore/WidgetSnapshotFetcher.swift"
+      ],
       "ship": { "workflow": "macos-ship.yml", "inputs": {} },
       "sourceWorkflows": ["macos-ship.yml"],
-      "compileCheck": null,
-      "autoRemedy": false,
-      "manualReason": "macos-ship.yml is manual only by design (workflow_dispatch, no push trigger)"
+      "compileCheck": "iOS companion compile",
+      "autoRemedy": true
     },
     "hoghunter": {
       "displayName": "Hog Hunter",
