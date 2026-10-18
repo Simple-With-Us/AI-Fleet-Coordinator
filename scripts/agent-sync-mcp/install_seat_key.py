@@ -36,6 +36,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -44,7 +45,6 @@ import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 WRANGLER_JSONC = HERE / "wrangler.jsonc"
-HANDOFF = pathlib.Path.home() / ".secrets" / "global-api-keys"
 INFISICAL_API = "https://app.infisical.com"
 INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator (INFISICAL.md)
 INFISICAL_ENV = "prod"
@@ -67,21 +67,26 @@ SEATS = {
 TAG_OVERRIDES = {"openai-dot": "JET", "instinct-bat": "ECHO", "instinct-owl": "WISE"}
 
 
-def fail(message: str) -> "NoReturn":  # type: ignore[name-defined]
+def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
     raise SystemExit(f"install_seat_key: {message}")
 
 
 def handoff(name: str) -> str:
+    """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The flat
+    file ~/.secrets/global-api-keys is retired.  Only the name is ever reported."""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    binary = shutil.which("fleet-secrets") or str(
+        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
+    )
     try:
-        with HANDOFF.open(encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith(name + "="):
-                    value = line.split("=", 1)[1].strip().strip('"')
-                    if value:
-                        return value
-    except OSError:
+        proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
         pass
-    fail(f"{name} is not in the handoff file (name only; no value printed)")
+    fail(f"{name} is not in the environment or fleet-secrets (name only; no value printed)")
 
 
 def wrangler_vars() -> dict:
@@ -113,7 +118,9 @@ def wrangler_vars() -> dict:
     return json.loads("".join(out))["vars"]
 
 
-def http_json(method: str, url: str, *, body: dict | None = None, headers: dict | None = None) -> dict:
+def http_json(
+    method: str, url: str, *, body: dict | None = None, headers: dict | None = None
+) -> dict:
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
@@ -124,23 +131,39 @@ def http_json(method: str, url: str, *, body: dict | None = None, headers: dict 
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as exc:
-        fail(f"{method} {urllib.parse.urlsplit(url).netloc}{urllib.parse.urlsplit(url).path} answered HTTP {exc.code}")
+        fail(
+            f"{method} {urllib.parse.urlsplit(url).netloc}{urllib.parse.urlsplit(url).path} answered HTTP {exc.code}"
+        )
 
 
 def infisical_pair(prefix: str) -> tuple[str, str]:
     """(email, key) for a seat from Infisical.  Neither is printed."""
-    login = http_json("POST", f"{INFISICAL_API}/api/v1/auth/universal-auth/login", body={
-        "clientId": handoff("INFISICAL_AUTOMATION_CLIENT_ID"),
-        "clientSecret": handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
-    })
+    login = http_json(
+        "POST",
+        f"{INFISICAL_API}/api/v1/auth/universal-auth/login",
+        body={
+            "clientId": handoff("INFISICAL_AUTOMATION_CLIENT_ID"),
+            "clientSecret": handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
+        },
+    )
     token = login.get("accessToken") or fail("Infisical login returned no access token")
-    query = urllib.parse.urlencode({"workspaceId": INFISICAL_PROJECT, "environment": INFISICAL_ENV, "secretPath": INFISICAL_PATH})
+    query = urllib.parse.urlencode(
+        {
+            "workspaceId": INFISICAL_PROJECT,
+            "environment": INFISICAL_ENV,
+            "secretPath": INFISICAL_PATH,
+        }
+    )
     auth_header = "Bearer " + token
-    data = http_json("GET", f"{INFISICAL_API}/api/v3/secrets/raw?{query}", headers={"Authorization": auth_header})
+    data = http_json(
+        "GET", f"{INFISICAL_API}/api/v3/secrets/raw?{query}", headers={"Authorization": auth_header}
+    )
     found = {s.get("secretKey"): s.get("secretValue") or "" for s in data.get("secrets", [])}
     email, key = found.get(f"{prefix}_EMAIL", ""), found.get(f"{prefix}_API_KEY", "")
     if not email or not key:
-        fail(f"{prefix}_EMAIL or {prefix}_API_KEY is missing or empty in Infisical {INFISICAL_ENV}{INFISICAL_PATH}")
+        fail(
+            f"{prefix}_EMAIL or {prefix}_API_KEY is missing or empty in Infisical {INFISICAL_ENV}{INFISICAL_PATH}"
+        )
     return email.strip(), key.strip()
 
 
@@ -148,6 +171,7 @@ def zuliprc_pair(path: str) -> tuple[str, str]:
     """(email, key) from a zuliprc file.  Neither is printed, nor any other field."""
     import configparser
     import stat
+
     rc = pathlib.Path(path).expanduser()
     try:
         mode = stat.S_IMODE(rc.stat().st_mode)
@@ -163,7 +187,11 @@ def zuliprc_pair(path: str) -> tuple[str, str]:
     if not parser.has_section("api"):
         fail("the zuliprc file has no [api] section")
     api = parser["api"]
-    email, key, site = api.get("email", "").strip(), api.get("key", "").strip(), api.get("site", "").strip().rstrip("/")
+    email, key, site = (
+        api.get("email", "").strip(),
+        api.get("key", "").strip(),
+        api.get("site", "").strip().rstrip("/"),
+    )
     if not email or not key:
         fail("the zuliprc file has no email or key in [api]")
     if site != REALM:
@@ -173,8 +201,7 @@ def zuliprc_pair(path: str) -> tuple[str, str]:
 
 def seat_tag(user: dict) -> str:
     local = str(user.get("email") or "").split("@", 1)[0].lower()
-    if local.endswith("-bot"):
-        local = local[: -len("-bot")]
+    local = local.removesuffix("-bot")
     return TAG_OVERRIDES.get(local, local.upper())
 
 
@@ -185,14 +212,23 @@ def zulip_me(email: str, key: str) -> dict:
 
 def wrangler(args: list[str], stdin: str | None, key_for_scrub: str) -> int:
     env = dict(os.environ)
-    env.update({
-        "CLOUDFLARE_ACCOUNT_ID": ACCOUNT_ID,
-        "CLOUDFLARE_EMAIL": handoff("CLOUDFLARE_JAY_ACCOUNT_EMAIL"),
-        "CLOUDFLARE_API_KEY": handoff("CLOUDFLARE_JAY_API_KEY"),
-        "WRANGLER_SEND_METRICS": "false",
-    })
-    proc = subprocess.run(["npx", "--no-install", "wrangler", *args], cwd=HERE, env=env, input=stdin,
-                          capture_output=True, text=True, timeout=600)
+    env.update(
+        {
+            "CLOUDFLARE_ACCOUNT_ID": ACCOUNT_ID,
+            "CLOUDFLARE_EMAIL": handoff("CLOUDFLARE_JAY_ACCOUNT_EMAIL"),
+            "CLOUDFLARE_API_KEY": handoff("CLOUDFLARE_JAY_API_KEY"),
+            "WRANGLER_SEND_METRICS": "false",
+        }
+    )
+    proc = subprocess.run(
+        ["npx", "--no-install", "wrangler", *args],
+        cwd=HERE,
+        env=env,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
     for stream in (proc.stdout, proc.stderr):
         for line in stream.splitlines():
             if key_for_scrub and key_for_scrub in line:
@@ -204,9 +240,17 @@ def wrangler(args: list[str], stdin: str | None, key_for_scrub: str) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("seat", choices=sorted(SEATS))
-    parser.add_argument("--apply", action="store_true", help="write the Worker secret (default:  checks only)")
-    parser.add_argument("--delete", action="store_true", help="remove the Worker secret instead (with --apply)")
-    parser.add_argument("--zuliprc", metavar="PATH", help="read the email and key from this zuliprc file instead of Infisical")
+    parser.add_argument(
+        "--apply", action="store_true", help="write the Worker secret (default:  checks only)"
+    )
+    parser.add_argument(
+        "--delete", action="store_true", help="remove the Worker secret instead (with --apply)"
+    )
+    parser.add_argument(
+        "--zuliprc",
+        metavar="PATH",
+        help="read the email and key from this zuliprc file instead of Infisical",
+    )
     args = parser.parse_args()
 
     prefix, secret_name, email_var = SEATS[args.seat]
@@ -220,7 +264,9 @@ def main() -> int:
         return wrangler(["secret", "delete", secret_name, "--force"], None, "")
 
     if args.seat not in hosted:
-        fail(f"{args.seat} is not in HOSTED_SEATS ({', '.join(hosted) or 'none'}) in wrangler.jsonc;  add it there first (DEPLOY.md)")
+        fail(
+            f"{args.seat} is not in HOSTED_SEATS ({', '.join(hosted) or 'none'}) in wrangler.jsonc;  add it there first (DEPLOY.md)"
+        )
     expected_email = str(vars_.get(email_var, "")).strip().lower()
     source = "zuliprc" if args.zuliprc else "Infisical"
     email, key = zuliprc_pair(args.zuliprc) if args.zuliprc else infisical_pair(prefix)
@@ -230,9 +276,16 @@ def main() -> int:
     me = zulip_me(email, key)
     role = me.get("role")
     checks.append(("users/me is a bot", me.get("is_bot") is True))
-    checks.append(("users/me email is the seat's bot", str(me.get("email") or "").lower() == expected_email))
+    checks.append(
+        ("users/me email is the seat's bot", str(me.get("email") or "").lower() == expected_email)
+    )
     checks.append((f"users/me signs as {args.seat}", seat_tag(me) == args.seat))
-    checks.append((f"role is member (400), live role {role}", role == MEMBER_ROLE and not me.get("is_admin") and not me.get("is_owner")))
+    checks.append(
+        (
+            f"role is member (400), live role {role}",
+            role == MEMBER_ROLE and not me.get("is_admin") and not me.get("is_owner"),
+        )
+    )
     for label, ok in checks:
         print(f"{'PASS' if ok else 'FAIL'}  {label}")
     if not all(ok for _, ok in checks):

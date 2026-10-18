@@ -36,8 +36,7 @@ This module gives those two surfaces a fast, actionable alternative:
   3. The public retry needs three names: `RECALL_API_TOKEN` and `CF_ACCESS_CLIENT_ID` /
      `CF_ACCESS_CLIENT_SECRET` (the Cloudflare Access service token) -- see
      docs/RECALL-ACCESS-CHECK.md.  A value already in the environment wins; otherwise each is
-     read straight from its handoff file (PUBLIC_ENV_FILES: RECALL_API_TOKEN from
-     ~/.secrets/global-api-keys, the Access pair from
+     read from where it lives (RECALL_API_TOKEN from `fleet-secrets get`, the Access pair from
      ~/.secrets/agents-jays-services-access-service-token.env) so this works from the stock
      `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper.  The request also
      carries a real `User-Agent` (core.http_json sends none, and urllib's default trips
@@ -59,6 +58,7 @@ this module: it already runs on the box next to Qdrant/TEI and has no Tailscale 
 Callers must never engage the network path while a test has swapped `recall_api.Qdrant` for
 `FakeQdrant` (`recall_api.install_fake_backend()`) -- see `using_fake_backend`.
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -68,7 +68,8 @@ import re
 import subprocess
 import sys
 import urllib.parse
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from . import __version__, core, recall_api
 from .core import FleetRagError
@@ -99,26 +100,27 @@ PUBLIC_RETRIES = 1
 # in front of recall.jays.services (403, "error code: 1010" -- documented in
 # docs/RECALL-ACCESS-CHECK.md's troubleshooting table).  curl and browsers are unaffected
 # because they send their own real UA; core.http_json sends none, so this module must.
-USER_AGENT = f"fleet-recall-fallback/{__version__} (+https://github.com/Simple-With-Us/AI-Fleet-Coordinator)"
+USER_AGENT = (
+    f"fleet-recall-fallback/{__version__} (+https://github.com/Simple-With-Us/AI-Fleet-Coordinator)"
+)
 
 # Every MCP client on this Mac registers `fleet-recall` as a plain `python3 fleet-recall-mcp.py`
 # (no shell wrapper, no env sourcing -- see install-fleet-rag.sh), so these three names are
-# rarely already in os.environ.  Mirror core.py's own env-then-handoff-file pattern instead of
+# rarely already in os.environ.  Mirror core.py's own env-then-fallback pattern instead of
 # requiring every MCP config to be rewritten as a `sh -c 'set -a; . ...; exec ...'` wrapper:
-# RECALL_API_TOKEN lives in the same handoff file as TEI_URL / QDRANT_URL (~/.secrets/global-
-# api-keys); the Cloudflare Access service token is a separate file per docs/RECALL-ACCESS-
+# RECALL_API_TOKEN comes from `fleet-secrets get` (OPS-818;  the flat file
+# ~/.secrets/global-api-keys is retired);  the Cloudflare Access service token is a separate file per docs/RECALL-ACCESS-
 # CHECK.md (~/.secrets/agents-jays-services-access-service-token.env, shared with agents.jays.
 # services).  A value already in the environment always wins.
 CF_ACCESS_FILE = pathlib.Path.home() / ".secrets" / "agents-jays-services-access-service-token.env"
 PUBLIC_ENV_FILES = {
-    "RECALL_API_TOKEN": core.HANDOFF,
     "CF_ACCESS_CLIENT_ID": CF_ACCESS_FILE,
     "CF_ACCESS_CLIENT_SECRET": CF_ACCESS_FILE,
 }
 
 
-def _read_named_line(path: pathlib.Path, name: str) -> "str | None":
-    """The value of one `NAME=value` line in a chmod-600 handoff file, or None.  Same quote-
+def _read_named_line(path: pathlib.Path, name: str) -> str | None:
+    """The value of one `NAME=value` line in a chmod-600 credentials file, or None.  Same quote-
     stripping as core._identity(); never logs the path's other contents."""
     try:
         if not path.exists():
@@ -132,8 +134,12 @@ def _read_named_line(path: pathlib.Path, name: str) -> "str | None":
         return None
     return m.group(1).strip().strip('"').strip("'")
 
-REST_PATH = {"recall_search": "/recall/search", "recall_stats": "/recall/stats",
-             "recall_contribute": "/recall/contribute"}
+
+REST_PATH = {
+    "recall_search": "/recall/search",
+    "recall_stats": "/recall/stats",
+    "recall_contribute": "/recall/contribute",
+}
 REST_METHOD = {"recall_search": "POST", "recall_stats": "GET", "recall_contribute": "POST"}
 # The public tool contract mirrors the local one (scripts/fleet-recall-service/server.py TOOLS)
 # for recall_search -- every recall_search() keyword argument has a public route.  recall_
@@ -141,8 +147,18 @@ REST_METHOD = {"recall_search": "POST", "recall_stats": "GET", "recall_contribut
 # module docstring).  The public service accepts and ignores it, but a fallback still drops
 # the key so an older service cannot 400 on "unknown argument(s): force".
 PUBLIC_ALLOWED_ARGS = {
-    "recall_search": {"query", "limit", "category", "app", "source", "seat", "since_days",
-                      "per_doc", "rerank", "prefer_lessons"},
+    "recall_search": {
+        "query",
+        "limit",
+        "category",
+        "app",
+        "source",
+        "seat",
+        "since_days",
+        "per_doc",
+        "rerank",
+        "prefer_lessons",
+    },
     "recall_stats": set(),
     "recall_contribute": {"text", "category", "app", "seat", "title", "url"},
 }
@@ -153,14 +169,16 @@ StatusProbe = Callable[[], "str | None"]
 
 # --------------------------------------------------------------------------- Tailscale status
 
+
 def skip_private_requested() -> bool:
     """True when the caller asked to skip Tailscale.app and the private Qdrant/TEI path."""
     v = (os.environ.get(SKIP_PRIVATE_ENV) or "").strip().lower()
     return v in {"1", "true", "yes", "on"}
 
 
-def tailscale_status_text(run: Callable[..., Any] | None = None,
-                          timeout: float = TAILSCALE_STATUS_TIMEOUT) -> "str | None":
+def tailscale_status_text(
+    run: Callable[..., Any] | None = None, timeout: float = TAILSCALE_STATUS_TIMEOUT
+) -> str | None:
     """`tailscale status` output (stdout+stderr), or None when it could not be determined.
 
     None covers a missing/relocated binary, a timeout, or any other OSError -- callers must
@@ -179,14 +197,15 @@ def tailscale_status_text(run: Callable[..., Any] | None = None,
     ts_env["TAILSCALE_BE_CLI"] = "1"
     ts_env.setdefault("TERM", "dumb")
     try:
-        proc = runner([TAILSCALE_BIN, "status"], capture_output=True, text=True,
-                      timeout=timeout, env=ts_env)
+        proc = runner(
+            [TAILSCALE_BIN, "status"], capture_output=True, text=True, timeout=timeout, env=ts_env
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     return (proc.stdout or "") + (proc.stderr or "")
 
 
-def tailscale_believed_down(status_text: "str | None") -> bool:
+def tailscale_believed_down(status_text: str | None) -> bool:
     """True on positive evidence Tailscale cannot carry the private Qdrant path.
 
     None / empty (unknown) is never "down" -- Linux and CI have no Tailscale.app and still
@@ -214,8 +233,9 @@ def _qdrant_url_for_route_check() -> str:
     return os.environ.get("QDRANT_URL", "").strip() or DEFAULT_QDRANT_URL
 
 
-def private_route_bypasses_tailscale(url: "str | None" = None,
-                                     run: Callable[..., Any] | None = None) -> bool:
+def private_route_bypasses_tailscale(
+    url: str | None = None, run: Callable[..., Any] | None = None
+) -> bool:
     """True on positive evidence from the macOS routing table that the private Qdrant host is
     NOT reachable through a Tailscale (utun) interface.
 
@@ -257,8 +277,12 @@ def private_route_bypasses_tailscale(url: "str | None" = None,
         return False
     runner = run or subprocess.run
     try:
-        proc = runner([ROUTE_BIN, "-n", "get", str(addr)], capture_output=True, text=True,
-                      timeout=ROUTE_TIMEOUT)
+        proc = runner(
+            [ROUTE_BIN, "-n", "get", str(addr)],
+            capture_output=True,
+            text=True,
+            timeout=ROUTE_TIMEOUT,
+        )
     except (OSError, subprocess.TimeoutExpired):
         return False
     m = re.search(r"^\s*interface:\s*(\S+)", proc.stdout or "", re.MULTILINE)
@@ -267,7 +291,7 @@ def private_route_bypasses_tailscale(url: "str | None" = None,
     return not m.group(1).startswith("utun")
 
 
-def direct_path_blocked(status_text: "str | None") -> bool:
+def direct_path_blocked(status_text: str | None) -> bool:
     """The one shared verdict `call_with_fallback` and `recall doctor --platforms` both use to
     decide the direct Qdrant/TEI path is not worth attempting: positive Tailscale evidence
     (`tailscale_believed_down`), OR -- only when `status_text` is unknown (None), i.e. there was
@@ -285,6 +309,7 @@ def direct_path_blocked(status_text: "str | None") -> bool:
 
 
 # --------------------------------------------------------------------------- connection errors
+
 
 def is_connection_error(err: FleetRagError) -> bool:
     """True for the two message shapes `core.http_json` raises on a connection-level failure
@@ -317,7 +342,9 @@ def local_override_active() -> bool:
     the override is a deliberate operator choice, not a guess, so it always wins over Tailscale
     evidence.  A connection-level failure from that local path still falls back exactly as it
     always has."""
-    return bool(os.environ.get("QDRANT_URL", "").strip()) and bool(os.environ.get("TEI_URL", "").strip())
+    return bool(os.environ.get("QDRANT_URL", "").strip()) and bool(
+        os.environ.get("TEI_URL", "").strip()
+    )
 
 
 def require_direct_path(what: str) -> None:
@@ -336,7 +363,8 @@ def require_direct_path(what: str) -> None:
         raise FleetRagError(
             f"Tailscale is logged out on this Mac and `recall {what}` needs the direct Qdrant/TEI "
             "path (no public fallback for it).  Either run `tailscale login`, or open the SSH "
-            'tunnel with `recall-tunnel up` and rerun with `eval "$(recall-tunnel env)"`.')
+            'tunnel with `recall-tunnel up` and rerun with `eval "$(recall-tunnel env)"`.'
+        )
 
 
 def using_fake_backend() -> bool:
@@ -353,11 +381,12 @@ def using_fake_backend() -> bool:
 
 # --------------------------------------------------------------------------- public REST call
 
-def public_credentials() -> "dict[str, str] | None":
+
+def public_credentials() -> dict[str, str] | None:
     """The three names the public REST twin needs, or None if any is missing/blank.
 
     Environment first (a value there always wins, and is all the unit tests ever set); when a
-    name is not in the environment, read it from its handoff file (PUBLIC_ENV_FILES) the same
+    name is not in the environment, read it from its file (PUBLIC_ENV_FILES) or `fleet-secrets` the same
     way core.load_config() falls back to Infisical for TEI_URL / QDRANT_URL -- so the fallback
     works from the stock `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper
     and no change to any client's MCP config.
@@ -372,8 +401,10 @@ def _resolve_public_env() -> dict[str, str]:
     vals = {}
     for k in PUBLIC_ENV_KEYS:
         v = (os.environ.get(k) or "").strip()
-        if not v:
+        if not v and k in PUBLIC_ENV_FILES:
             v = _read_named_line(PUBLIC_ENV_FILES[k], k) or ""
+        if not v and k not in PUBLIC_ENV_FILES:
+            v = (core.fleet_secret(k) or "").strip()
         vals[k] = v
     return vals
 
@@ -398,22 +429,33 @@ def call_public(name: str, kwargs: dict) -> dict:
         resolved = _resolve_public_env()
         missing = [k for k in PUBLIC_ENV_KEYS if not resolved[k]]
         raise FleetRagError(
-            "public fallback (recall.jays.services) needs " + ", ".join(missing)
+            "public fallback (recall.jays.services) needs "
+            + ", ".join(missing)
             + " -- set them in the environment, or see docs/RECALL-ACCESS-CHECK.md for the"
-            " handoff files that normally supply them")
+            " credential sources that normally supply them"
+        )
     url = PUBLIC_BASE + REST_PATH[name]
     method = REST_METHOD[name]
     body = dict(kwargs) if method == "POST" else None
-    res = core.http_json(url, body, _public_headers(creds), method=method,
-                         timeout=PUBLIC_TIMEOUT, retries=PUBLIC_RETRIES)
+    res = core.http_json(
+        url,
+        body,
+        _public_headers(creds),
+        method=method,
+        timeout=PUBLIC_TIMEOUT,
+        retries=PUBLIC_RETRIES,
+    )
     if isinstance(res, dict) and res.get("ok") is False:
-        raise FleetRagError(f"public fallback ({url}) rejected the request: {res.get('error', '?')}")
+        raise FleetRagError(
+            f"public fallback ({url}) rejected the request: {res.get('error', '?')}"
+        )
     if isinstance(res, dict):
         res = {k: v for k, v in res.items() if k != "ok"}
     return res
 
 
 # --------------------------------------------------------------------------- orchestration
+
 
 def _fallback(name: str, kwargs: dict, why: str) -> dict:
     allowed = PUBLIC_ALLOWED_ARGS.get(name, set())
@@ -428,8 +470,9 @@ def _fallback(name: str, kwargs: dict, why: str) -> dict:
         ) from None
 
 
-def call_with_fallback(name: str, kwargs: dict, run_local: RunLocal,
-                       status_probe: "StatusProbe | None" = None) -> dict:
+def call_with_fallback(
+    name: str, kwargs: dict, run_local: RunLocal, status_probe: StatusProbe | None = None
+) -> dict:
     """Run `run_local()`; fall back to the public REST twin on a Tailscale-shaped failure.
 
     `name` is one of recall_search / recall_stats / recall_contribute (used to pick the public
@@ -447,14 +490,19 @@ def call_with_fallback(name: str, kwargs: dict, run_local: RunLocal,
         return run_local()
     if skip_private_requested():
         return _fallback(
-            name, kwargs,
-            "RECALL_SKIP_PRIVATE is set; skipping Tailscale and the private Qdrant path")
+            name,
+            kwargs,
+            "RECALL_SKIP_PRIVATE is set; skipping Tailscale and the private Qdrant path",
+        )
     if not local_override_active():
         probe = status_probe or tailscale_status_text
         status_text = probe()
         if direct_path_blocked(status_text):
-            why = ("Tailscale is logged out on this Mac" if tailscale_believed_down(status_text)
-                   else "the routing table shows no Tailscale interface for the private Qdrant host")
+            why = (
+                "Tailscale is logged out on this Mac"
+                if tailscale_believed_down(status_text)
+                else "the routing table shows no Tailscale interface for the private Qdrant host"
+            )
             return _fallback(name, kwargs, why)
     try:
         return run_local()
