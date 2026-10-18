@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-18T01:17:08Z",
+  "updatedAt": "2026-10-18T02:20:00Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -45,9 +45,9 @@
       "displayName": "Usage Monitor Local"
     },
     "net.dealdex": {
-      "marketingVersion": "1.0.25",
-      "build": "202608251750",
-      "appleId": 6802474288,
+      "marketingVersion": "1.0.317",
+      "build": "202610180141",
+      "appleId": 6804249232,
       "displayName": "DealDex"
     },
     "online.dealdex": {
