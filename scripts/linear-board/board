@@ -81,7 +81,9 @@ import http.client
 import json
 import os
 import re
+import shutil
 import stat
+import subprocess
 import sys
 import time
 import urllib.error
@@ -449,11 +451,14 @@ INFISICAL_LINEAR_PATH = "/linear"
 
 
 class Infisical:
-    """AI Fleet Coordinator prod /linear through the INFISICAL_AUTOMATION identity in the environment.
+    """AI Fleet Coordinator prod /linear through the INFISICAL_AUTOMATION machine identity.
 
-    Off (every read answers "", every write False) without that identity, with LINEAR_BOARD_INFISICAL=0,
-    or after the first failed call, so a host with no identity, or an Infisical outage, falls back to the
-    local files instead of failing.  Values are never printed;  messages name keys only."""
+    The identity comes from the environment (INFISICAL_AUTOMATION_CLIENT_ID / _SECRET), else an
+    INFISICAL_TOKEN already in the environment, else `fleet-secrets get` (OPS-818), which on the Mac
+    reads Fleet-OPS through its Keychain login.  Off (every read answers "", every write False) without
+    any of them, with LINEAR_BOARD_INFISICAL=0, or after the first failed call, so a host with no
+    identity, or an Infisical outage, falls back to the local files instead of failing.  Values are
+    never printed;  messages name keys only."""
 
     _instance: "Infisical | None" = None
 
@@ -461,8 +466,9 @@ class Infisical:
         self.api = (env("LINEAR_BOARD_INFISICAL_API") or "https://app.infisical.com").rstrip("/")
         self.cid = env("INFISICAL_AUTOMATION_CLIENT_ID") or ""
         self.sec = env("INFISICAL_AUTOMATION_CLIENT_SECRET") or ""
-        self.enabled = bool(self.cid and self.sec) and env("LINEAR_BOARD_INFISICAL", "1") != "0"
-        self._token = ""
+        self._token = env("INFISICAL_TOKEN") or ""
+        self.enabled = env("LINEAR_BOARD_INFISICAL", "1") != "0"
+        self._looked = bool(self._token or (self.cid and self.sec))
         self._project = ""
         self._secrets: dict[str, str] | None = None
 
@@ -496,8 +502,31 @@ class Infisical:
             warn(f"Infisical is unavailable ({why});  using local Linear files for this run")
         self.enabled = False
 
+    def _fleet_secrets(self, name: str) -> str:
+        """One Fleet-OPS secret through `fleet-secrets get` (OPS-818), or "" when it is not installed or fails."""
+        binary = env("LINEAR_BOARD_FLEET_SECRETS") or shutil.which("fleet-secrets") or str(
+            Path.home() / ".local" / "bin" / "fleet-secrets")
+        if not os.access(binary, os.X_OK):
+            return ""
+        try:
+            proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+
+    def _identity(self) -> bool:
+        """Whether an identity (or a token) is available, looking it up through fleet-secrets once."""
+        if not self._looked:
+            self._looked = True
+            self.cid = self._fleet_secrets("INFISICAL_AUTOMATION_CLIENT_ID")
+            self.sec = self._fleet_secrets("INFISICAL_AUTOMATION_CLIENT_SECRET") if self.cid else ""
+        return bool(self._token or (self.cid and self.sec))
+
     def _ready(self) -> bool:
         if not self.enabled:
+            return False
+        if not self._identity():
+            self.enabled = False
             return False
         if not self._token:
             js = self._call("POST", "/api/v1/auth/universal-auth/login",
@@ -969,7 +998,8 @@ class Auth:
             return
         row = {k: cache[k] for k in ("access_token", "token_type", "scope", "minted_at", "expires_at", "cred_fp")}
         row["minted_by"] = os.uname().nodename
-        if not Infisical.get().put(ident.shared, json.dumps(row)) and Infisical.get().cid:
+        vault = Infisical.get()
+        if not vault.put(ident.shared, json.dumps(row)) and vault.enabled:
             warn(f"could not share the new {ident.label} token in Infisical ({ident.shared});  it is cached locally only")
 
     def _store(self, fd: int, cache: dict, ident: Identity, fp: str, now: float) -> str:

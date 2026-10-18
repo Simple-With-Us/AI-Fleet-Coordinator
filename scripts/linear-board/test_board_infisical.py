@@ -193,12 +193,37 @@ class InfisicalTests(T.BoardTest):
         self.assertIn(f"credentials: {self.creds.parent / 'CLAUDE.env'}", p.stdout)
         self.assertIn("viewer:      Claude (app user)", p.stdout)
 
+    def test_identity_from_fleet_secrets_when_not_in_the_environment(self):
+        cid, secret = self.seat_app("CLAUDE", "Claude", file=False)
+        self.vault.secrets.update(
+            {"LINEAR_CLAUDE_CLIENT_ID": cid, "LINEAR_CLAUDE_CLIENT_SECRET": secret}
+        )
+        stub = self.tmp / "fleet-secrets"
+        stub.write_text(
+            "#!/bin/sh\n"
+            '[ "$1" = get ] || exit 2\n'
+            'case "$2" in INFISICAL_AUTOMATION_CLIENT_ID) echo inf-id;; INFISICAL_AUTOMATION_CLIENT_SECRET) echo inf-secret;; *) exit 3;; esac\n'
+        )
+        stub.chmod(0o700)
+        p = self.as_seat(
+            "CLAUDE",
+            "whoami",
+            drop=("INFISICAL_AUTOMATION_CLIENT_ID", "INFISICAL_AUTOMATION_CLIENT_SECRET"),
+            extra={"LINEAR_BOARD_FLEET_SECRETS": str(stub)},
+        )
+        self.assertIn(
+            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID",
+            p.stdout,
+        )
+        self.assertIn("LINEAR_CLAUDE_CACHE_TOKEN", self.vault.secrets)
+
     def test_no_identity_means_no_infisical_calls(self):
         self.seat_app("CLAUDE", "Claude")
         self.as_seat(
             "CLAUDE",
             "whoami",
             drop=("INFISICAL_AUTOMATION_CLIENT_ID", "INFISICAL_AUTOMATION_CLIENT_SECRET"),
+            extra={"LINEAR_BOARD_FLEET_SECRETS": str(self.tmp / "no-such-fleet-secrets")},
         )
         self.assertEqual(self.vault.requests, [])
 
