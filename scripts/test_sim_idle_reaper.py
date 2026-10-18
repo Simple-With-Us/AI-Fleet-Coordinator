@@ -7,6 +7,7 @@ simulator is booted or shut down.  Runs on macOS and Linux.
 
   python3 scripts/test_sim_idle_reaper.py
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -55,9 +56,16 @@ def set_state(udid: str, state: int, name: str = "iPhone 17") -> None:
         plistlib.dump({"UDID": udid, "name": name, "state": state, "isDeleted": False}, fh)
 
 
-def bash(event: str, command: str, tuid: str = "toolu_1", sid: str = SID, agent: str | None = None) -> dict:
-    p = {"hook_event_name": event, "session_id": sid, "tool_name": "Bash", "tool_use_id": tuid,
-         "tool_input": {"command": command}}
+def bash(
+    event: str, command: str, tuid: str = "toolu_1", sid: str = SID, agent: str | None = None
+) -> dict:
+    p = {
+        "hook_event_name": event,
+        "session_id": sid,
+        "tool_name": "Bash",
+        "tool_use_id": tuid,
+        "tool_input": {"command": command},
+    }
     if agent:
         p["agent_id"] = agent
     return p
@@ -75,6 +83,9 @@ class Base(unittest.TestCase):
             os.makedirs(os.path.join(ROOT, sub))
         set_state(A, 1)
         set_state(B, 1, "iPad")
+        p = patch.object(hook, "is_bitrig_running", lambda: False)
+        p.start()
+        self.addCleanup(p.stop)
 
 
 class HookAttribution(Base):
@@ -107,7 +118,12 @@ class HookAttribution(Base):
         self.assertEqual(session_doc()["udids"][A]["agent"], "agent-7")
 
     def test_unrelated_and_readonly_commands_take_no_snapshot(self):
-        for cmd in ("ls -la", "xcrun simctl list devices", "git status", "xcrun simctl io booted screenshot x.png"):
+        for cmd in (
+            "ls -la",
+            "xcrun simctl list devices",
+            "git status",
+            "xcrun simctl io booted screenshot x.png",
+        ):
             hook.on_pre(bash("PreToolUse", cmd))
         self.assertFalse(os.path.isdir(os.path.join(ROOT, "state", "pre")))
 
@@ -132,7 +148,9 @@ class HookAttribution(Base):
         self.assertFalse(os.path.exists(hook.session_path(SID)))
 
     def test_stale_claim_from_an_earlier_boot_is_replaced(self):
-        hook.write_json(hook.session_path(OTHER), {"udids": {A: {"agent": "main", "t": time.time() - 7200}}})
+        hook.write_json(
+            hook.session_path(OTHER), {"udids": {A: {"agent": "main", "t": time.time() - 7200}}}
+        )
         hook.on_pre(bash("PreToolUse", f"xcrun simctl boot {A}"))
         set_state(A, 3)
         hook.on_post(bash("PostToolUse", f"xcrun simctl boot {A}"))
@@ -140,8 +158,13 @@ class HookAttribution(Base):
 
     def test_mcp_attach_marks_watched(self):
         set_state(A, 3)
-        p = {"hook_event_name": "PreToolUse", "session_id": SID, "tool_use_id": "m1",
-             "tool_name": "mcp__Claude_Code_iOS_Simulator__control", "tool_input": {"action": "attach"}}
+        p = {
+            "hook_event_name": "PreToolUse",
+            "session_id": SID,
+            "tool_use_id": "m1",
+            "tool_name": "mcp__Claude_Code_iOS_Simulator__control",
+            "tool_input": {"action": "attach"},
+        }
         hook.on_pre(p)
         hook.on_post(dict(p, hook_event_name="PostToolUse"))
         self.assertIn(A, session_doc()["watched"])
@@ -190,8 +213,10 @@ class HookStop(Base):
         self.own(A, "main")
         self.own(B, "agent-7")
         shut = []
-        with patch.object(hook, "running", lambda *n: []), \
-                patch.object(hook, "shutdown", lambda u: shut.append(u) or 0):
+        with (
+            patch.object(hook, "running", lambda *n: []),
+            patch.object(hook, "shutdown", lambda u: shut.append(u) or 0),
+        ):
             hook.run_worker("Stop", SID, "main")
         self.assertEqual(shut, [A])
         self.assertEqual(set(session_doc()["udids"]), {B})
@@ -199,8 +224,10 @@ class HookStop(Base):
     def test_worker_defers_while_xcodebuild_runs(self):
         self.own(A, "main")
         shut = []
-        with patch.object(hook, "running", lambda *n: ["xcodebuild"]), \
-                patch.object(hook, "shutdown", lambda u: shut.append(u) or 0):
+        with (
+            patch.object(hook, "running", lambda *n: ["xcodebuild"]),
+            patch.object(hook, "shutdown", lambda u: shut.append(u) or 0),
+        ):
             hook.run_worker("Stop", SID, "main")
         self.assertEqual(shut, [])
         self.assertIn(A, session_doc()["udids"])
@@ -209,8 +236,10 @@ class HookStop(Base):
         self.own(A, "main", watched=True)
         self.own(B, "agent-7")
         shut = []
-        with patch.object(hook, "running", lambda *n: ["xcodebuild"]), \
-                patch.object(hook, "shutdown", lambda u: shut.append(u) or 0):
+        with (
+            patch.object(hook, "running", lambda *n: ["xcodebuild"]),
+            patch.object(hook, "shutdown", lambda u: shut.append(u) or 0),
+        ):
             hook.run_worker("SessionEnd", SID, "*")
         self.assertEqual(sorted(shut), sorted([A, B]))
         self.assertFalse(os.path.exists(hook.session_path(SID)))
@@ -220,10 +249,59 @@ class HookStop(Base):
         later = {"udids": {A: {"agent": "main", "t": time.time() + 60}}}
         hook.write_json(hook.session_path(OTHER), later)
         shut = []
-        with patch.object(hook, "running", lambda *n: []), \
-                patch.object(hook, "shutdown", lambda u: shut.append(u) or 0):
+        with (
+            patch.object(hook, "running", lambda *n: []),
+            patch.object(hook, "shutdown", lambda u: shut.append(u) or 0),
+        ):
             hook.run_worker("Stop", SID, "main")
         self.assertEqual(shut, [])
+
+    def test_worker_skips_bitrig_exempt_simulator(self):
+        self.own(A, "main")
+        shut = []
+        with (
+            patch.object(hook, "running", lambda *n: []),
+            patch.object(hook, "is_bitrig_running", lambda: True),
+            patch.object(hook, "shutdown", lambda u: shut.append(u) or 0),
+        ):
+            hook.run_worker("Stop", SID, "main")
+        self.assertEqual(shut, [])
+
+    def test_worker_shuts_down_extra_simulator_even_when_bitrig_running(self):
+        self.own(A, "main")
+        self.own(B, "main")
+        shut = []
+        # A is newer than B, so A is Bitrig exempt and B is shut down
+        with (
+            patch.object(hook, "running", lambda *n: []),
+            patch.object(hook, "is_bitrig_running", lambda: True),
+            patch.object(hook, "shutdown", lambda u: shut.append(u) or 0),
+        ):
+            hook.run_worker("Stop", SID, "main")
+        self.assertEqual(shut, [min(B, A)])
+
+    def test_session_end_preserves_bitrig_exempt_simulator(self):
+        self.own(A, "main")
+        shut = []
+        with (
+            patch.object(hook, "running", lambda *n: []),
+            patch.object(hook, "is_bitrig_running", lambda: True),
+            patch.object(hook, "shutdown", lambda u: shut.append(u) or 0),
+        ):
+            hook.run_worker("SessionEnd", SID, "*")
+        self.assertEqual(shut, [])
+        self.assertFalse(os.path.exists(hook.session_path(SID)))
+
+    def test_worker_defers_while_bitrig_cli_runs(self):
+        self.own(A, "main")
+        shut = []
+        with (
+            patch.object(hook, "running", lambda *n: ["bitrig"] if "bitrig" in n else []),
+            patch.object(hook, "shutdown", lambda u: shut.append(u) or 0),
+        ):
+            hook.run_worker("Stop", SID, "main")
+        self.assertEqual(shut, [])
+        self.assertIn(A, session_doc()["udids"])
 
 
 class HookMain(Base):
@@ -235,20 +313,30 @@ class HookMain(Base):
         return buf.getvalue()
 
     def test_garbage_input_is_silent(self):
-        for raw in ("", "not json", "[1,2]", "{\"hook_event_name\": \"PostToolUse\"}"):
+        for raw in ("", "not json", "[1,2]", '{"hook_event_name": "PostToolUse"}'):
             self.assertEqual(self.run_main(raw), "")
 
     def test_disabled_by_env(self):
         with patch.dict(os.environ, {"SIM_REAPER_HOOKS": "0"}):
-            self.assertEqual(self.run_main(json.dumps(bash("PreToolUse", "xcrun simctl boot x"))), "")
+            self.assertEqual(
+                self.run_main(json.dumps(bash("PreToolUse", "xcrun simctl boot x"))), ""
+            )
         self.assertFalse(os.path.isdir(os.path.join(ROOT, "state", "pre")))
 
     def test_shell_prefilter_exits_zero_and_quiet(self):
         sh = REPO / "scripts" / "hooks" / "sim-session-hook.sh"
-        for payload in (bash("PreToolUse", "ls"), bash("PreToolUse", f"xcrun simctl boot {A}"),
-                        {"hook_event_name": "Stop", "session_id": SID}):
-            p = subprocess.run(["/bin/sh", str(sh)], input=json.dumps(payload), capture_output=True,
-                               text=True, timeout=30)
+        for payload in (
+            bash("PreToolUse", "ls"),
+            bash("PreToolUse", f"xcrun simctl boot {A}"),
+            {"hook_event_name": "Stop", "session_id": SID},
+        ):
+            p = subprocess.run(
+                ["/bin/sh", str(sh)],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
             self.assertEqual((p.returncode, p.stdout), (0, ""))
 
 
@@ -267,31 +355,55 @@ class Reaper(Base):
         def fake(args):
             table = {("-x", "simctl"): {"100", "200"}, ("-f", reaper.LOG_STREAM_PATTERN): {"100"}}
             return set(table.get(tuple(args), set()))
+
         with patch.object(reaper, "pgrep_pids", fake):
-            self.assertEqual(reaper.busy_processes(), ["simctlx1"])     # 200 is real work
-        with patch.object(reaper, "pgrep_pids", lambda a: {"100"} if a[0] == "-x" and a[1] == "simctl"
-                          else ({"100"} if a[1] == reaper.LOG_STREAM_PATTERN else set())):
-            self.assertEqual(reaper.busy_processes(), [])                # only the streamer
+            self.assertEqual(reaper.busy_processes(), ["simctlx1"])  # 200 is real work
+        with patch.object(
+            reaper,
+            "pgrep_pids",
+            lambda a: (
+                {"100"}
+                if a[0] == "-x" and a[1] == "simctl"
+                else ({"100"} if a[1] == reaper.LOG_STREAM_PATTERN else set())
+            ),
+        ):
+            self.assertEqual(reaper.busy_processes(), [])  # only the streamer
         with patch.object(reaper, "pgrep_pids", lambda a: None):
-            self.assertIn("xcodebuild?", reaper.busy_processes())         # cannot tell: busy
+            self.assertIn("xcodebuild?", reaper.busy_processes())  # cannot tell: busy
 
     def test_running_ui_apps_parses_launchctl(self):
-        self.assertEqual(reaper.running_ui_apps(LAUNCHCTL), {"codes.clutch.ios", "com.apple.mobilesafari"})
+        self.assertEqual(
+            reaper.running_ui_apps(LAUNCHCTL), {"codes.clutch.ios", "com.apple.mobilesafari"}
+        )
 
     def test_user_app_check_uses_user_bundles_only(self):
-        with patch.object(reaper, "user_bundles", lambda u: {"codes.clutch.ios"}), \
-                patch.object(reaper, "run", lambda *a, **k: (0, LAUNCHCTL)):
-            self.assertEqual(reaper.user_app_running(A), (True, "user app running: codes.clutch.ios"))
-        with patch.object(reaper, "user_bundles", lambda u: {"com.example.stopped"}), \
-                patch.object(reaper, "run", lambda *a, **k: (0, LAUNCHCTL)):
+        with (
+            patch.object(reaper, "user_bundles", lambda u: {"codes.clutch.ios"}),
+            patch.object(reaper, "run", lambda *a, **k: (0, LAUNCHCTL)),
+        ):
+            self.assertEqual(
+                reaper.user_app_running(A), (True, "user app running: codes.clutch.ios")
+            )
+        with (
+            patch.object(reaper, "user_bundles", lambda u: {"com.example.stopped"}),
+            patch.object(reaper, "run", lambda *a, **k: (0, LAUNCHCTL)),
+        ):
             self.assertFalse(reaper.user_app_running(A)[0])
         with patch.object(reaper, "user_bundles", lambda u: None):
             self.assertTrue(reaper.user_app_running(A)[0])
 
     def decide(self, age_min: float, busy=(), sim_app=0, watched=(), app=(False, "none running")):
         now = time.time()
-        return reaper.decide(self.DEV, now - age_min * 60, now, list(busy), sim_app, set(watched), 3600,
-                             check_apps=lambda u: app)
+        return reaper.decide(
+            self.DEV,
+            now - age_min * 60,
+            now,
+            list(busy),
+            sim_app,
+            set(watched),
+            3600,
+            check_apps=lambda u: app,
+        )
 
     def test_decisions(self):
         self.assertEqual(self.decide(5)[0], "skip")
@@ -302,8 +414,9 @@ class Reaper(Base):
         self.assertEqual(self.decide(90, watched=[A])[0], "skip")
         self.assertEqual(self.decide(90, app=(True, "user app running: x"))[0], "skip")
 
-    def run_reaper(self, args: list, booted: list, state: dict | None = None,
-                   bitrig_app: int = 0) -> tuple[str, list]:
+    def run_reaper(
+        self, args: list, booted: list, state: dict | None = None, bitrig_app: int = 0
+    ) -> tuple[str, list]:
         state_path = os.path.join(ROOT, "state", "state.json")
         if state is not None:
             hook.write_json(state_path, state)
@@ -316,11 +429,20 @@ class Reaper(Base):
             raise AssertionError(f"unexpected command {cmd[:3]}")
 
         buf = io.StringIO()
-        with patch.object(reaper, "list_booted", lambda: booted), \
-                patch.object(reaper, "busy_processes", lambda: []), \
-                patch.object(reaper, "pgrep_exact", lambda n: bitrig_app if n == "Bitrig" else 0), \
-                patch.object(reaper, "user_app_running", lambda u: (False, "0 user app(s) installed, none running")), \
-                patch.object(reaper, "run", fake_run), redirect_stdout(buf):
+        with (
+            patch.object(reaper, "list_booted", lambda: booted),
+            patch.object(reaper, "busy_processes", list),
+            patch.object(
+                reaper, "pgrep_exact", lambda n: bitrig_app if n in ("Bitrig", "bitrig") else 0
+            ),
+            patch.object(
+                reaper,
+                "user_app_running",
+                lambda u: (False, "0 user app(s) installed, none running"),
+            ),
+            patch.object(reaper, "run", fake_run),
+            redirect_stdout(buf),
+        ):
             reaper.main(args + ["--state", state_path])
         return buf.getvalue(), shut
 
@@ -351,6 +473,25 @@ class Reaper(Base):
         self.assertEqual(shut_multi, [A])
         self.assertIn("Bitrig is running (1 simulator exempt)", log_multi)
 
+    def test_bitrig_app_matches_lowercase(self):
+        now = time.time()
+
+        def fake_pgrep(n):
+            return 1 if n == "bitrig" else 0
+
+        state_path = os.path.join(ROOT, "state", "state.json")
+        hook.write_json(state_path, {A: now - 7200})
+        buf = io.StringIO()
+        with (
+            patch.object(reaper, "list_booted", lambda: [self.DEV]),
+            patch.object(reaper, "busy_processes", list),
+            patch.object(reaper, "pgrep_exact", fake_pgrep),
+            patch.object(reaper, "user_app_running", lambda u: (False, "none running")),
+            redirect_stdout(buf),
+        ):
+            reaper.main(["--state", state_path])
+        self.assertIn("Bitrig is running (1 simulator exempt)", buf.getvalue())
+
     def test_udid_filter_never_touches_other_devices(self):
         other = {"udid": B, "name": "iPad", "runtime": "iOS-27-0"}
         old = {A: time.time() - 7200, B: time.time() - 7200}
@@ -359,7 +500,10 @@ class Reaper(Base):
         self.assertNotIn(A, log)
 
     def test_tidy_drops_entries_for_devices_no_longer_booted(self):
-        hook.write_json(hook.session_path(SID), {"udids": {A: {"agent": "main", "t": 1}, B: {"agent": "main", "t": 1}}})
+        hook.write_json(
+            hook.session_path(SID),
+            {"udids": {A: {"agent": "main", "t": 1}, B: {"agent": "main", "t": 1}}},
+        )
         reaper.tidy_hook_state({B}, time.time(), False, False)
         self.assertEqual(set(session_doc()["udids"]), {B})
         reaper.tidy_hook_state(set(), time.time(), False, False)
