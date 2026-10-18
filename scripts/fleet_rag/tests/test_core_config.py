@@ -126,6 +126,29 @@ class FleetSecretsFallbackTests(unittest.TestCase):
             got = core.fleet_secrets_many(["TEI_URL", "NOT_THERE"])
         self.assertEqual(got, {"TEI_URL": "https://tei.example.invalid"})
 
+    def test_identity_falls_back_to_fleet_secrets_get(self) -> None:
+        self.bin.write_text(
+            "#!/bin/sh\n"
+            '[ "$1" = get ] || exit 2\n'
+            'case "$2" in\n'
+            "  INFISICAL_SHARED_CLIENT_ID) printf cid-fs ;;\n"
+            "  INFISICAL_SHARED_CLIENT_SECRET) printf placeholder-fs ;;\n"
+            "  *) exit 3 ;;\n"
+            "esac\n"
+        )
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch.object(core, "_fleet_secrets_bin", lambda: str(self.bin)):
+                self.assertEqual(core._identity("INFISICAL_SHARED"), ("cid-fs", "placeholder-fs"))
+                self.assertEqual(core._identity("INFISICAL_OTHER"), (None, None))
+
+    def test_identity_environment_beats_fleet_secrets(self) -> None:
+        env = {"INFISICAL_SHARED_CLIENT_ID": "cid-env", "INFISICAL_SHARED_CLIENT_SECRET": "sec-env"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(core, "_fleet_secrets_bin", lambda: "/nonexistent/fleet-secrets"),
+        ):
+            self.assertEqual(core._identity("INFISICAL_SHARED"), ("cid-env", "sec-env"))
+
     def test_missing_binary_is_just_absent(self) -> None:
         with mock.patch.object(core, "_fleet_secrets_bin", lambda: None):
             self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
