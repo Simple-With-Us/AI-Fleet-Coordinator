@@ -1,5 +1,6 @@
 """fleet-secrets tests.  The Infisical CLI and the Keychain are faked at subprocess.run, so no
 test touches the network, the real CLI, the real Keychain, the real HOME or any secrets file."""
+
 from __future__ import annotations
 
 import io
@@ -14,7 +15,7 @@ from unittest import mock
 from fleet_secrets import cli, core
 
 FAKE_CLI = "/fake/bin/infisical"
-PROJECT = "00000000-0000-4000-8000-000000000001"      # a placeholder, not the real project id
+PROJECT = "00000000-0000-4000-8000-000000000001"  # a placeholder, not the real project id
 VAL_A = "SENTINEL_VALUE_A_9f3c"
 VAL_B = "SENTINEL_VALUE_B_77d1"
 CLIENT_ID = "SENTINEL_CLIENT_ID_c0de"
@@ -42,23 +43,33 @@ class World:
         if argv[0] == core.SECURITY_BIN:
             acct = argv[argv.index("-a") + 1]
             if acct in self.keychain:
-                return subprocess.CompletedProcess(argv, 0, (self.keychain[acct] + "\n").encode(), b"")
+                return subprocess.CompletedProcess(
+                    argv, 0, (self.keychain[acct] + "\n").encode(), b""
+                )
             return subprocess.CompletedProcess(argv, 44, b"", b"not found")
         if argv[0] != FAKE_CLI:
             raise AssertionError("unexpected program %r" % argv[0])
         if argv[1] == "--version":
             return subprocess.CompletedProcess(argv, 0, b"infisical version 0.43.141\n", b"")
         if argv[1] == "login" and len(argv) > 2 and argv[2] == "status":
-            return subprocess.CompletedProcess(argv, 0, b"Authenticated as someone@example.com\n", b"")
+            return subprocess.CompletedProcess(
+                argv, 0, b"Authenticated as someone@example.com\n", b""
+            )
         if argv[1] == "login":
             if self.login_rc:
-                return subprocess.CompletedProcess(argv, self.login_rc, b"", ("bad " + CLIENT_SECRET).encode())
+                return subprocess.CompletedProcess(
+                    argv, self.login_rc, b"", ("bad " + CLIENT_SECRET).encode()
+                )
             return subprocess.CompletedProcess(argv, 0, (ACCESS_TOKEN + "\n").encode(), b"")
         if argv[1] == "export":
             if self.export_rc:
                 leak = ("denied " + VAL_A).encode()
                 return subprocess.CompletedProcess(argv, self.export_rc, leak, leak)
-            body = self.export_stdout if self.export_stdout is not None else json.dumps(self.secrets).encode()
+            body = (
+                self.export_stdout
+                if self.export_stdout is not None
+                else json.dumps(self.secrets).encode()
+            )
             return subprocess.CompletedProcess(argv, 0, body, b"")
         raise AssertionError("unexpected argv %r" % (argv[:2],))
 
@@ -66,7 +77,11 @@ class World:
         return [(a, e) for a, e in self.calls if len(a) > 1 and a[1] == "export"]
 
     def logins(self):
-        return [(a, e) for a, e in self.calls if a[0] == FAKE_CLI and a[1] == "login" and a[2:3] != ["status"]]
+        return [
+            (a, e)
+            for a, e in self.calls
+            if a[0] == FAKE_CLI and a[1] == "login" and a[2:3] != ["status"]
+        ]
 
 
 class Base(unittest.TestCase):
@@ -78,8 +93,10 @@ class Base(unittest.TestCase):
         self.exec_calls = []
         patches = [
             mock.patch.object(core, "find_cli", lambda env: FAKE_CLI),
-            mock.patch.object(core, "SECURITY_BIN", sys.executable),    # exists on every platform
-            mock.patch.object(cli.os, "execvpe", lambda f, a, e: self.exec_calls.append((f, list(a), dict(e)))),
+            mock.patch.object(core, "SECURITY_BIN", sys.executable),  # exists on every platform
+            mock.patch.object(
+                cli.os, "execvpe", lambda f, a, e: self.exec_calls.append((f, list(a), dict(e)))
+            ),
         ]
         for p in patches:
             p.start()
@@ -168,7 +185,7 @@ class RunTests(Base):
         self.env["KEEP"] = "kept"
         code, _, err = self.call("run", "--", "mycmd", "--flag", "x")
         self.assertEqual(err, "")
-        (prog, argv, env), = self.exec_calls
+        ((prog, argv, env),) = self.exec_calls
         self.assertEqual((prog, argv), ("mycmd", ["mycmd", "--flag", "x"]))
         self.assertEqual((env["ALPHA"], env["BETA"], env["KEEP"]), (VAL_A, VAL_B, "kept"))
 
@@ -198,8 +215,17 @@ class RunTests(Base):
         self.assertEqual(self.exec_calls[0][2]["ALPHA"], VAL_A)
 
     def test_loader_and_path_names_are_never_injected(self):
-        self.use(World(secrets={"ALPHA": VAL_A, "PATH": "/evil", "LD_PRELOAD": "x",
-                                "DYLD_INSERT_LIBRARIES": "y", "HOME": "/evil"}))
+        self.use(
+            World(
+                secrets={
+                    "ALPHA": VAL_A,
+                    "PATH": "/evil",
+                    "LD_PRELOAD": "x",
+                    "DYLD_INSERT_LIBRARIES": "y",
+                    "HOME": "/evil",
+                }
+            )
+        )
         self.call("run", "--", "mycmd")
         env = self.exec_calls[0][2]
         self.assertEqual(env["PATH"], self.env["PATH"])
@@ -248,7 +274,7 @@ class AuthSelectionTests(Base):
         w = self.use(World(keychain=KEYCHAIN_FULL))
         code, out, _ = self.call("get", "ALPHA")
         self.assertEqual((code, out), (0, VAL_A))
-        (largv, lenv), = w.logins()
+        ((largv, lenv),) = w.logins()
         self.assertIn("--method=universal-auth", largv)
         self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
         eargv, eenv = w.exports()[0]
@@ -317,6 +343,7 @@ class NoValueInErrorsTests(Base):
             if argv[0] == core.SECURITY_BIN:
                 return subprocess.CompletedProcess(argv, 44, b"", b"")
             raise subprocess.TimeoutExpired(argv, 1)
+
         with mock.patch.object(core.subprocess, "run", boom):
             code, _, err = self.call("get", "ALPHA")
         self.assertEqual((code, err.strip()), (4, "fleet-secrets: timeout"))
@@ -326,7 +353,9 @@ class NoValueInErrorsTests(Base):
         self.assertIn("cli-missing", err)
 
     def test_list_shaped_export_is_accepted(self):
-        body = json.dumps([{"key": "ALPHA", "value": VAL_A}, {"secretKey": "BETA", "secretValue": VAL_B}])
+        body = json.dumps(
+            [{"key": "ALPHA", "value": VAL_A}, {"secretKey": "BETA", "secretValue": VAL_B}]
+        )
         self.use(World(export_stdout=body.encode()))
         self.assertEqual(self.call("get", "BETA")[:2], (0, VAL_B))
 
@@ -344,9 +373,12 @@ class ConfigTests(Base):
         w = self.use(World())
         code, out, err = self.call("get", "ALPHA")
         self.assertEqual((code, out), (4, ""))
-        self.assertIn("the Fleet-OPS Infisical project id is not set:  set INFISICAL_FLEET_OPS_PROJECT_ID "
-                      "or put it in ~/.agent-sync/fleet-ops-project-id "
-                      "(it lives in the private fleet-ops inventory)", err)
+        self.assertIn(
+            "the Fleet-OPS Infisical project id is not set:  set INFISICAL_FLEET_OPS_PROJECT_ID "
+            "or put it in ~/.agent-sync/fleet-ops-project-id "
+            "(it lives in the private fleet-ops inventory)",
+            err,
+        )
         self.assertEqual(w.calls, [])
 
     def test_malformed_project_id_is_not_echoed(self):
@@ -374,8 +406,15 @@ class DoctorTests(Base):
         code, out, err = self.call("doctor", "--json")
         rep = json.loads(out)
         self.assertEqual(code, 0)
-        self.assertTrue(rep["ok"] and rep["cli_present"] and rep["project_id_resolvable"] and rep["fetch_names_ok"])
-        self.assertEqual((rep["auth_mode"], rep["names_count"], rep["cli_version"]), ("keychain", 2, "0.43.141"))
+        self.assertTrue(
+            rep["ok"]
+            and rep["cli_present"]
+            and rep["project_id_resolvable"]
+            and rep["fetch_names_ok"]
+        )
+        self.assertEqual(
+            (rep["auth_mode"], rep["names_count"], rep["cli_version"]), ("keychain", 2, "0.43.141")
+        )
         for v in rep.values():
             self.assertIsInstance(v, (bool, int, str, type(None)))
         self.assertNoSentinel(out, err)

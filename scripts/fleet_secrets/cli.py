@@ -14,25 +14,29 @@ Exit codes:  0 ok, 2 usage or refused configuration, 3 key absent, 4 fetch or au
 5 a value came back as an unresolved Infisical reference, 126/127 the command in `run` could
 not be started.  Error text names keys and reason tokens, never values.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import sys
-from typing import Dict, List, Mapping, Optional, Sequence, TextIO
+from collections.abc import Mapping, Sequence
+from typing import TextIO
 
 from . import core
 from .core import SecretsError, UsageError
 
-USAGE = ("usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
-         "       fleet-secrets get NAME [--path /]\n"
-         "       fleet-secrets names [--path /]\n"
-         "       fleet-secrets doctor [--json]\n")
+USAGE = (
+    "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
+    "       fleet-secrets get NAME [--path /]\n"
+    "       fleet-secrets names [--path /]\n"
+    "       fleet-secrets doctor [--json]\n"
+)
 
 
-def _parse(args: Sequence[str], allow_only: bool, positional: int) -> Dict[str, object]:
+def _parse(args: Sequence[str], allow_only: bool, positional: int) -> dict[str, object]:
     """Tiny parser:  --path P, --only A,B, and `positional` bare arguments.  Raises SecretsError(code 2)."""
-    opts: Dict[str, object] = {"path": "/", "only": None, "args": []}
+    opts: dict[str, object] = {"path": "/", "only": None, "args": []}
     i = 0
     while i < len(args):
         a = args[i]
@@ -50,14 +54,14 @@ def _parse(args: Sequence[str], allow_only: bool, positional: int) -> Dict[str, 
         elif a.startswith("-") and a != "-":
             raise UsageError("unknown option %s" % a)
         else:
-            opts["args"].append(a)           # type: ignore[union-attr]
+            opts["args"].append(a)  # type: ignore[union-attr]
             i += 1
-    if len(opts["args"]) != positional:      # type: ignore[arg-type]
+    if len(opts["args"]) != positional:  # type: ignore[arg-type]
         raise UsageError("wrong number of arguments")
     return opts
 
 
-def _only_names(raw: Optional[object]) -> Optional[List[str]]:
+def _only_names(raw: object | None) -> list[str] | None:
     if raw is None:
         return None
     names = [core.check_name(n.strip()) for n in str(raw).split(",") if n.strip()]
@@ -68,7 +72,7 @@ def _only_names(raw: Optional[object]) -> Optional[List[str]]:
 
 def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     opts = _parse(args, False, 1)
-    name = core.check_name(str(opts["args"][0]))          # type: ignore[index]
+    name = core.check_name(str(opts["args"][0]))  # type: ignore[index]
     secrets = core.fetch_all(core.check_path(str(opts["path"])), env)
     if name not in secrets:
         raise SecretsError("key %s is not in Infisical at %s" % (name, opts["path"]), 3)
@@ -92,7 +96,7 @@ def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
         raise UsageError("run needs `--` before the command:  fleet-secrets run -- CMD [ARG...]")
     split = list(args).index("--")
     opts = _parse(args[:split], True, 0)
-    command = list(args[split + 1:])
+    command = list(args[split + 1 :])
     if not command or not command[0]:
         raise UsageError("run needs a command after `--`")
     only = _only_names(opts["only"])
@@ -116,12 +120,12 @@ def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
         raise SecretsError("command not executable: %s" % command[0], 126) from None
     except OSError:
         raise SecretsError("could not start: %s" % command[0], 126) from None
-    return 0     # unreachable after a real exec
+    return 0  # unreachable after a real exec
 
 
-def doctor_report(env: Mapping[str, str]) -> Dict[str, object]:
+def doctor_report(env: Mapping[str, str]) -> dict[str, object]:
     """Booleans, a version and counts.  Never a value, a client id or a token."""
-    rep: Dict[str, object] = {}
+    rep: dict[str, object] = {}
     rep["environment_ok"] = core.environment_refusal(env) is None
     cli = core.find_cli(env)
     rep["cli_present"] = cli is not None
@@ -132,7 +136,9 @@ def doctor_report(env: Mapping[str, str]) -> Dict[str, object]:
     except SecretsError:
         rep["project_id_resolvable"] = False
     rep["keychain_client_id_present"] = core.keychain_item(core.KEYCHAIN_CLIENT_ID) is not None
-    rep["keychain_client_secret_present"] = core.keychain_item(core.KEYCHAIN_CLIENT_SECRET) is not None
+    rep["keychain_client_secret_present"] = (
+        core.keychain_item(core.KEYCHAIN_CLIENT_SECRET) is not None
+    )
     try:
         rep["auth_mode"] = core.auth_mode(env)
     except SecretsError:
@@ -149,8 +155,13 @@ def doctor_report(env: Mapping[str, str]) -> Dict[str, object]:
         rep["unresolved_reference_count"] = sum(1 for v in secrets.values() if core.REF_RE.match(v))
     except SecretsError as exc:
         rep["failure_reason"] = exc.message.split(":")[0][:60]
-    ok = (rep["environment_ok"] and rep["cli_present"] and rep["project_id_resolvable"]
-          and rep["fetch_names_ok"] and rep["unresolved_reference_count"] == 0)
+    ok = (
+        rep["environment_ok"]
+        and rep["cli_present"]
+        and rep["project_id_resolvable"]
+        and rep["fetch_names_ok"]
+        and rep["unresolved_reference_count"] == 0
+    )
     rep["ok"] = bool(ok)
     return rep
 
@@ -168,14 +179,22 @@ def cmd_doctor(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     else:
         for key in rep:
             val = rep[key]
-            shown = ("true" if val else "false") if isinstance(val, bool) else ("none" if val is None else str(val))
+            shown = (
+                ("true" if val else "false")
+                if isinstance(val, bool)
+                else ("none" if val is None else str(val))
+            )
             out.write("%s: %s\n" % (key, shown))
     out.flush()
     return 0 if rep["ok"] else 1
 
 
-def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] = None,
-         out: Optional[TextIO] = None, err: Optional[TextIO] = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    out: TextIO | None = None,
+    err: TextIO | None = None,
+) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     env = os.environ if env is None else env
     out = sys.stdout if out is None else out

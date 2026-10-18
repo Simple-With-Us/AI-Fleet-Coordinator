@@ -17,6 +17,7 @@ Contract (same family as ``fleet_knobs/source.py`` and ``fleet_rag/infisical_set
 
 Stdlib only, so a stable copy run with ``python3 -I`` needs nothing beside this package.
 """
+
 from __future__ import annotations
 
 import json
@@ -24,8 +25,8 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Dict, Iterable, Mapping, Optional
 
 ENVIRONMENT = "prod"
 CLI_NAME = "infisical"
@@ -51,14 +52,30 @@ ENV_CLIENT_SECRET = "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"
 REF_RE = re.compile(r"^\$\{[^}]+\}$")
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,254}$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]*$")
-_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 # `run` never injects these, so a stray key in Infisical cannot redirect the loader, the
 # interpreter search path or the shell of the command it starts.  `get` still returns them.
-NOT_INJECTED_EXACT = frozenset({
-    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "PWD", "OLDPWD", "IFS",
-    "PYTHONPATH", "PYTHONHOME", "NODE_OPTIONS", "BASH_ENV", "ENV",
-})
+NOT_INJECTED_EXACT = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "PWD",
+        "OLDPWD",
+        "IFS",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "NODE_OPTIONS",
+        "BASH_ENV",
+        "ENV",
+    }
+)
 NOT_INJECTED_PREFIXES = ("LD_", "DYLD_")
 
 
@@ -80,14 +97,17 @@ class UsageError(SecretsError):
 
 # --------------------------------------------------------------------------- configuration
 
-def environment_refusal(env: Mapping[str, str]) -> Optional[str]:
+
+def environment_refusal(env: Mapping[str, str]) -> str | None:
     """Why Infisical may not be read (a non-prod slug in the environment), or None."""
     for var in ENV_NAMES:
         slug = (env.get(var) or "").strip().lower()
         if slug and slug != ENVIRONMENT:
-            return ("refusing Infisical environment %r from %s:  prod is the only environment "
-                    "(dev and staging are retired);  unset it or set it to prod;  see INFISICAL.md"
-                    % (slug, var))
+            return (
+                "refusing Infisical environment %r from %s:  prod is the only environment "
+                "(dev and staging are retired);  unset it or set it to prod;  see INFISICAL.md"
+                % (slug, var)
+            )
     return None
 
 
@@ -101,16 +121,21 @@ def infisical_project_id(env: Mapping[str, str], home: Path) -> str:
     value = (env.get(ENV_PROJECT) or "").strip()
     if not value:
         try:
-            value = ((home / PROJECT_FILE).read_text(encoding="utf-8").strip().splitlines()[0].strip())
+            value = (
+                (home / PROJECT_FILE).read_text(encoding="utf-8").strip().splitlines()[0].strip()
+            )
         except (OSError, UnicodeDecodeError, IndexError):
             value = ""
     if not value:
         raise SecretsError(
             "the Fleet-OPS Infisical project id is not set:  set %s or put it in ~/%s "
-            "(it lives in the private fleet-ops inventory)" % (ENV_PROJECT, PROJECT_FILE))
+            "(it lives in the private fleet-ops inventory)" % (ENV_PROJECT, PROJECT_FILE)
+        )
     if not _UUID_RE.match(value):
         raise SecretsError(
-            "the Fleet-OPS Infisical project id (%s or ~/%s) is not a UUID" % (ENV_PROJECT, PROJECT_FILE))
+            "the Fleet-OPS Infisical project id (%s or ~/%s) is not a UUID"
+            % (ENV_PROJECT, PROJECT_FILE)
+        )
     return value
 
 
@@ -118,7 +143,7 @@ def home_dir(env: Mapping[str, str]) -> Path:
     return Path(env.get("HOME") or os.path.expanduser("~"))
 
 
-def find_cli(env: Mapping[str, str]) -> Optional[str]:
+def find_cli(env: Mapping[str, str]) -> str | None:
     found = shutil.which(CLI_NAME, path=env.get("PATH") or os.defpath)
     if found:
         return found
@@ -141,7 +166,7 @@ def check_name(name: str) -> str:
     return name
 
 
-def _base_env(env: Mapping[str, str]) -> Dict[str, str]:
+def _base_env(env: Mapping[str, str]) -> dict[str, str]:
     out = dict(env)
     out["INFISICAL_DISABLE_UPDATE_CHECK"] = "true"
     return out
@@ -149,14 +174,19 @@ def _base_env(env: Mapping[str, str]) -> Dict[str, str]:
 
 # --------------------------------------------------------------------------- authentication
 
-def keychain_item(account: str) -> Optional[str]:
+
+def keychain_item(account: str) -> str | None:
     """The generic-password value for service fleet-secrets, or None when absent.  Captured, never echoed."""
     if not os.path.exists(SECURITY_BIN):
         return None
     try:
-        proc = subprocess.run([SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE,
-                               "-a", account, "-w"], stdin=subprocess.DEVNULL, capture_output=True,
-                              timeout=KEYCHAIN_TIMEOUT, check=False)
+        proc = subprocess.run(
+            [SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account, "-w"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=KEYCHAIN_TIMEOUT,
+            check=False,
+        )
     except (subprocess.TimeoutExpired, OSError):
         return None
     if proc.returncode != 0:
@@ -169,7 +199,7 @@ def keychain_item(account: str) -> Optional[str]:
 
 
 def auth_mode(env: Mapping[str, str]) -> str:
-    """"token", "keychain" or "session".  Raises on a half-filled Keychain rather than downgrade."""
+    """ "token", "keychain" or "session".  Raises on a half-filled Keychain rather than downgrade."""
     if (env.get(ENV_TOKEN) or "").strip():
         return "token"
     have_id = keychain_item(KEYCHAIN_CLIENT_ID) is not None
@@ -177,8 +207,10 @@ def auth_mode(env: Mapping[str, str]) -> str:
     if have_id and have_secret:
         return "keychain"
     if have_id or have_secret:
-        raise SecretsError("keychain-incomplete:  service %s needs both accounts %s and %s, or neither"
-                           % (KEYCHAIN_SERVICE, KEYCHAIN_CLIENT_ID, KEYCHAIN_CLIENT_SECRET))
+        raise SecretsError(
+            "keychain-incomplete:  service %s needs both accounts %s and %s, or neither"
+            % (KEYCHAIN_SERVICE, KEYCHAIN_CLIENT_ID, KEYCHAIN_CLIENT_SECRET)
+        )
     return "session"
 
 
@@ -194,8 +226,15 @@ def machine_token(cli: str, env: Mapping[str, str]) -> str:
     child.pop(ENV_TOKEN, None)
     argv = [cli, "login", "--method=universal-auth", "--plain", "--silent"]
     try:
-        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
-                              timeout=LOGIN_TIMEOUT, cwd="/", env=child, check=False)
+        proc = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=LOGIN_TIMEOUT,
+            cwd="/",
+            env=child,
+            check=False,
+        )
     except subprocess.TimeoutExpired:
         raise SecretsError("login-timeout") from None
     except OSError:
@@ -220,17 +259,31 @@ def session_valid(cli: str, env: Mapping[str, str]) -> bool:
     for var in (ENV_TOKEN, ENV_CLIENT_ID, ENV_CLIENT_SECRET):
         child.pop(var, None)
     try:
-        proc = subprocess.run([cli, "login", "status", "--silent"], stdin=subprocess.DEVNULL,
-                              capture_output=True, timeout=LOGIN_TIMEOUT, cwd="/", env=child, check=False)
+        proc = subprocess.run(
+            [cli, "login", "status", "--silent"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=LOGIN_TIMEOUT,
+            cwd="/",
+            env=child,
+            check=False,
+        )
     except (subprocess.TimeoutExpired, OSError):
         return False
     return proc.returncode == 0
 
 
-def cli_version(cli: str, env: Mapping[str, str]) -> Optional[str]:
+def cli_version(cli: str, env: Mapping[str, str]) -> str | None:
     try:
-        proc = subprocess.run([cli, "--version"], stdin=subprocess.DEVNULL, capture_output=True,
-                              timeout=KEYCHAIN_TIMEOUT, cwd="/", env=_base_env(env), check=False)
+        proc = subprocess.run(
+            [cli, "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=KEYCHAIN_TIMEOUT,
+            cwd="/",
+            env=_base_env(env),
+            check=False,
+        )
         text = proc.stdout.decode("utf-8", "replace")
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -240,7 +293,8 @@ def cli_version(cli: str, env: Mapping[str, str]) -> Optional[str]:
 
 # --------------------------------------------------------------------------- fetch
 
-def fetch_all(path: str, env: Mapping[str, str]) -> Dict[str, str]:
+
+def fetch_all(path: str, env: Mapping[str, str]) -> dict[str, str]:
     """Every secret at `path` in Fleet-OPS prod, references expanded.  Raises SecretsError.
 
     No value is validated here beyond its type;  callers apply `reject_unresolved` to the
@@ -260,11 +314,25 @@ def fetch_all(path: str, env: Mapping[str, str]) -> Dict[str, str]:
     if mode != "token":
         for var in (ENV_CLIENT_ID, ENV_CLIENT_SECRET):
             child.pop(var, None)
-    argv = [cli, "export", "--env=%s" % ENVIRONMENT, "--projectId=%s" % project,
-            "--path=%s" % path, "--format=json", "--silent"]
+    argv = [
+        cli,
+        "export",
+        "--env=%s" % ENVIRONMENT,
+        "--projectId=%s" % project,
+        "--path=%s" % path,
+        "--format=json",
+        "--silent",
+    ]
     try:
-        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
-                              timeout=EXPORT_TIMEOUT, cwd="/", env=child, check=False)
+        proc = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=EXPORT_TIMEOUT,
+            cwd="/",
+            env=child,
+            check=False,
+        )
     except subprocess.TimeoutExpired:
         raise SecretsError("timeout") from None
     except OSError:
@@ -285,7 +353,7 @@ def fetch_all(path: str, env: Mapping[str, str]) -> Dict[str, str]:
     return _pairs(payload)
 
 
-def _pairs(payload) -> Dict[str, str]:
+def _pairs(payload) -> dict[str, str]:
     """Accept the shapes ``export --format=json`` has used:  {KEY: value}, a list of
     {key, value} or {secretKey, secretValue} objects, or an API-style {"secrets": [...]}."""
     if isinstance(payload, dict) and isinstance(payload.get("secrets"), list):
@@ -297,13 +365,15 @@ def _pairs(payload) -> Dict[str, str]:
         for item in payload:
             if not isinstance(item, dict):
                 raise SecretsError("fetch-failed:  bad-output")
-            pairs.append((item.get("key", item.get("secretKey")), item.get("value", item.get("secretValue"))))
+            pairs.append(
+                (item.get("key", item.get("secretKey")), item.get("value", item.get("secretValue")))
+            )
     else:
         raise SecretsError("fetch-failed:  bad-output")
-    found: Dict[str, str] = {}
+    found: dict[str, str] = {}
     for key, val in pairs:
         if not isinstance(key, str) or not NAME_RE.match(key):
-            continue          # not usable as an environment variable name
+            continue  # not usable as an environment variable name
         if isinstance(val, bool):
             val = "true" if val else "false"
         if isinstance(val, (int, float)):
@@ -313,12 +383,14 @@ def _pairs(payload) -> Dict[str, str]:
     return found
 
 
-def reject_unresolved(secrets: Mapping[str, str], names: Optional[Iterable[str]] = None) -> None:
+def reject_unresolved(secrets: Mapping[str, str], names: Iterable[str] | None = None) -> None:
     """Fail closed when a value is still an unresolved reference.  Names the key, never the value."""
     for key in sorted(names if names is not None else secrets):
         val = secrets.get(key)
         if val is not None and REF_RE.match(val):
-            raise SecretsError("unresolved-reference:  %s came back as an unexpanded Infisical reference" % key, 5)
+            raise SecretsError(
+                "unresolved-reference:  %s came back as an unexpanded Infisical reference" % key, 5
+            )
 
 
 def injectable(name: str) -> bool:
