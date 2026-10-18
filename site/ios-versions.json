@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-09-04T03:58:13Z",
+  "updatedAt": "2026-10-18T00:43:40Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -57,9 +57,9 @@
     },
     "trade.congress.ios": {
       "displayName": "Congress.Trade",
-      "marketingVersion": "1.0.162",
+      "marketingVersion": "1.0.236",
       "appleId": 6798076688,
-      "build": "202608252110"
+      "build": "202610180036"
     },
     "trade.socratic.app": {
       "displayName": "Socratic.Trade",
