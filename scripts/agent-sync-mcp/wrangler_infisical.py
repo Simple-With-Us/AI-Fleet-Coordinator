@@ -8,7 +8,7 @@
 wrangler's Cloudflare pair (CLOUDFLARE_JAY_ACCOUNT_EMAIL, CLOUDFLARE_JAY_API_KEY) comes from Infisical's
 Fleet-OPS project, prod, /global-api-keys, through the INFISICAL_AUTOMATION identity in the environment,
 exactly as install_seat_key.py reads it.  `put NAME PROJECT:PATH:KEY` reads one Infisical secret and
-hands it to `wrangler secret put NAME` on stdin;  PROJECT is afc, fleet-ops or shared (or a project id).
+hands it to `wrangler secret put NAME` on stdin;  PROJECT is afc, fleet-ops or shared (or another project's slug).
 No value is printed, logged or written to a file, and any wrangler output line that contains one is
 redacted.  Run from scripts/agent-sync-mcp/.
 """
@@ -24,11 +24,13 @@ _spec = importlib.util.spec_from_file_location("install_seat_key", HERE / "insta
 seatkey = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(seatkey)
 
-PROJECTS = {
-    "afc": seatkey.INFISICAL_PROJECT,
-    "fleet-ops": seatkey.GLOBAL_KEYS_PROJECT,
-    "shared": "18f563a3-9c88-454c-96eb-28fc9678f3ba",
-}
+# Projects by name.  afc and shared ids are already public (install_seat_key.py, scripts/fleet_rag/core.py);
+# fleet-ops is looked up by slug at run time, because its id is private inventory (ATTACK-MAP.md).
+PUBLIC_IDS = {"afc": seatkey.INFISICAL_PROJECT, "shared": "18f563a3-9c88-454c-96eb-28fc9678f3ba"}
+
+
+def project_id(name: str) -> str:
+    return PUBLIC_IDS.get(name) or seatkey.infisical_project_id(name)
 
 
 def infisical_value(ref: str) -> str:
@@ -38,7 +40,7 @@ def infisical_value(ref: str) -> str:
         seatkey.fail(
             "the source must be PROJECT:PATH:KEY, for example afc:/linear:LINEAR_WISE_CLIENT_ID"
         )
-    value = seatkey.infisical_secrets(PROJECTS.get(project, project), path).get(key, "")
+    value = seatkey.infisical_secrets(project_id(project), path).get(key, "")
     if not value:
         seatkey.fail(
             f"{key} is missing or empty in Infisical {project} {seatkey.INFISICAL_ENV}{path}"

@@ -47,7 +47,7 @@ INFISICAL_API = "https://app.infisical.com"
 INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator (INFISICAL.md)
 INFISICAL_ENV = "prod"
 INFISICAL_PATH = "/zulip"
-GLOBAL_KEYS_PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"  # Fleet-OPS (ATTACK-MAP.md)
+GLOBAL_KEYS_SLUG = "fleet-ops"  # Infisical project slug;  its id is private inventory (ATTACK-MAP.md), looked up at run time
 GLOBAL_KEYS_PATH = "/global-api-keys"
 REALM = "https://simplewithus.zulipchat.com"
 ACCOUNT_ID = "3a9368057468d0909cafaa85df12d1b7"  # Usage.Jays.Services (decision D1)
@@ -143,6 +143,18 @@ def infisical_token() -> str:
     return _TOKEN[0]
 
 
+def infisical_project_id(slug: str) -> str:
+    """A project's id from its slug, so no private project id has to live in this public repo."""
+    data = http_json(
+        "GET",
+        f"{INFISICAL_API}/api/v1/projects/slug/{urllib.parse.quote(slug)}",
+        headers={"Authorization": "Bearer " + infisical_token()},
+    )
+    return (data.get("project") or data).get("id") or fail(
+        f"Infisical has no project with slug {slug}"
+    )
+
+
 def infisical_secrets(project: str, path: str) -> dict[str, str]:
     """Every secret in one Infisical folder, name to value.  No value is printed."""
     query = urllib.parse.urlencode(
@@ -171,7 +183,7 @@ def infisical_pair(prefix: str) -> tuple[str, str]:
 
 def cloudflare_credentials() -> tuple[str, str]:
     """wrangler's Cloudflare email and global key, from Fleet-OPS prod /global-api-keys."""
-    found = infisical_secrets(GLOBAL_KEYS_PROJECT, GLOBAL_KEYS_PATH)
+    found = infisical_secrets(infisical_project_id(GLOBAL_KEYS_SLUG), GLOBAL_KEYS_PATH)
     email, key = (
         found.get("CLOUDFLARE_JAY_ACCOUNT_EMAIL", ""),
         found.get("CLOUDFLARE_JAY_API_KEY", ""),
