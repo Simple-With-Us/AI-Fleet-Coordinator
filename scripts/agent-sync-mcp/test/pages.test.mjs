@@ -284,3 +284,34 @@ test("legacy seat controls also show unknown when diagnostic state reads fail", 
   assert.match(table, /Unknown/);
   assert.match(table, /diagnostic read failed/);
 });
+
+test("a role never checked reads not checked yet, not a setup gap (AFC-347)", async () => {
+  const html = await adminPage({
+    ...adminFacts,
+    seats: [{ seat: "WISE", paused: false, keyInstalled: true, role: null, grants: [{ client: "Client", scope: [], createdAt: 0 }] }],
+    statusCalls: [], generatedAt: Date.parse("2026-10-18T12:00:00Z"),
+  }).text();
+  assert.doesNotMatch(html, /Needs setup: role/);
+  assert.match(html, /Configured; role not checked yet/);
+  assert.match(html, /<dt>Member Role<\/dt><dd>Not checked yet/);
+  const refused = await adminPage({
+    ...adminFacts,
+    seats: [{ seat: "WISE", paused: false, keyInstalled: true, role: { ok: false, reason: "the key belongs to another bot" }, grants: [{ client: "Client", scope: [], createdAt: 0 }] }],
+    statusCalls: [], generatedAt: Date.parse("2026-10-18T12:00:00Z"),
+  }).text();
+  assert.match(refused, /Needs setup: role/);
+  assert.match(refused, /<dt>Member Role<\/dt><dd>Refused: the key belongs to another bot/);
+});
+
+test("admin page puts the owner's controls first and folds the long sections (AFC-347)", async () => {
+  const calls = Array.from({ length: 40 }, (_, i) => ({ ts: Date.parse("2026-10-18T12:00:00Z") - i * 1000, seat: "JET", tool: "zulip_read", error_code: "ok" }));
+  const html = await adminPage({ ...adminFacts, calls, statusCalls: calls, generatedAt: Date.parse("2026-10-18T12:00:00Z") }).text();
+  const at = (s) => html.indexOf(s);
+  assert.ok(at("<h2>Seats</h2>") > 0 && at("<h2>Seats</h2>") < at("Hand-Registered Clients"));
+  assert.ok(at("Hand-Registered Clients") < at('id="status-overview"'));
+  assert.ok(at('id="status-overview"') < at("<h2>Tool Calls</h2>"));
+  assert.match(html, /<details id="status-overview" class="status-overview fold"><summary><h2>Status Overview<\/h2>/);
+  assert.match(html, /<details class="fold"><summary><h2>Tool Calls<\/h2> <span class="count">40 calls<\/span><\/summary>/);
+  for (const title of ["Refused Authorize Requests", "Audit"]) assert.match(html, new RegExp(`<details class="fold"><summary><h2>${title}`));
+  assert.doesNotMatch(html, /<details[^>]* open/, "folded by default");
+});

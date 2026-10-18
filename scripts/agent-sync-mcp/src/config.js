@@ -52,7 +52,7 @@ export const SEAT_SECRETS = Object.freeze({
   JET: Object.freeze({ key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" }),
   "GROK-WEB": Object.freeze({ key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" }),
   ECHO: Object.freeze({ key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" }),
-  WISE: Object.freeze({ key: "ZULIP_KEY_INSTINCT", email: "ZULIP_EMAIL_INSTINCT" }),
+  WISE: Object.freeze({ key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE" }),
 });
 
 // The shared HMAC key the server listener signs each seat's wake with

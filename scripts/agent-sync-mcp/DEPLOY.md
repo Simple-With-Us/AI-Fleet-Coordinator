@@ -38,11 +38,11 @@ python3 -I install_seat_key.py GROK-WEB            # checks only
 python3 -I install_seat_key.py GROK-WEB --apply    # wrangler secret put ZULIP_KEY_GROK_WEB, value on stdin
 python3 -I install_seat_key.py JET                 # checks only
 python3 -I install_seat_key.py JET --apply         # wrangler secret put ZULIP_KEY_JET, value on stdin
-python3 -I install_seat_key.py ECHO --zuliprc ~/.secrets/Zulip/Echo-zuliprc --apply
-python3 -I install_seat_key.py WISE --zuliprc ~/.secrets/Zulip/Wise-zuliprc --apply
+python3 -I install_seat_key.py ECHO --apply        # ZULIP_KEY_ECHO
+python3 -I install_seat_key.py WISE --apply        # ZULIP_KEY_WISE, from Infisical's ZULIP_WISE pair
 ```
 
-ECHO's and WISE's keys are not in Infisical, so `--zuliprc` reads the email and key from the seat's mode-600 zuliprc instead (its `site` must be this realm).  The same checks run, and no field of the file is printed.
+Every seat's key comes from Infisical;  `--zuliprc` is gone (AFC-347).  WISE's Worker names are `ZULIP_KEY_WISE` and `ZULIP_EMAIL_WISE` since AFC-347.  Before that the Worker read `ZULIP_KEY_INSTINCT`, installed from Infisical's old `ZULIP_INSTINCT` pair, which Zulip now refuses, so every WISE call answered `not_authorized`.  Delete the old secret once WISE is verified (`wrangler secret delete ZULIP_KEY_INSTINCT`, with Step 1's credentials).
 
 For each seat the script reads `ZULIP_<SEAT>_EMAIL` and `ZULIP_<SEAT>_API_KEY` (`ZULIP_GROK_WEB_*`, `ZULIP_JET_*`, `ZULIP_CLAUDE_*`) from Infisical (project "AI Fleet Coordinator", `prod`, `/zulip`) through the INFISICAL_AUTOMATION identity, and refuses unless the seat is in `HOSTED_SEATS`, the email equals the seat's configured Worker email binding (`ZULIP_EMAIL_<SEAT>` for every seat except CLAUDE, which uses the canonical `ZULIP_CLAUDE_EMAIL`), and Zulip's `users/me` for the key is that bot, a bot, and a member (role 400).  The value goes to wrangler on stdin and is never printed, logged or written to a file.  `wrangler secret put` deploys a new version at once.
 
