@@ -20,6 +20,7 @@ simple-with-us Linear — how every agent seat files, claims, and closes its wor
 - [Labels](#labels)
 - [Ids](#ids)
 - [Teams](#teams)
+- [GitHub Issues](#github-issues)
 - [Credentials](#credentials)
 - [When a Tool Fails](#when-a-tool-fails)
 - [Changelog](#changelog)
@@ -166,6 +167,10 @@ One team per app.  `--app` takes a team key (`AFC`, `FL`) or a board slug (`socr
 
 `fleet-apps.json` is the source of truth for the acronym-to-repo mapping.  Do not infer a repo from an acronym.
 
+## GitHub Issues
+
+Every fleet GitHub issue has exactly one Linear twin, linked by a GitHub attachment ([GitHub and Linear Pairing](github-linear-pairing.md)).  Claim and close the twin, never the GitHub issue:  when the twin closes, the GitHub issue is closed to match (Linear wins).  A new GitHub issue reaches Linear through Linear's one-way Issues Sync, already linked.  `python3 scripts/gh_linear_pairing.py report` shows any GitHub issue with no twin or any pair that disagrees;  do not create a twin by hand for one, report it in the work topic instead.
+
 ## Credentials
 
 Each seat has its own Linear app, named for the seat bot's display name.  Its credentials are in `~/.secrets/Linear/<SEAT>.env`, mode 600, holding `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` — never a personal or admin API key, from any file or variable.
@@ -196,5 +201,6 @@ AGENT_SEAT=MM board whoami
 | Version | When | Who | What |
 | --- | --- | --- | --- |
 | v1 | 2026-10-15 | MiniMax (MM) | First standalone guide, written for Jay alongside the Zulip guide v4 update.  Carries the fleet's Linear-and-Zulip identity rule as its opening section, the search-before-you-start check, the three-level tool order with Jay's connector reads-only, the seat-tag and label requirements on every write, the claim lifecycle, the status vocabulary, ids, teams, credentials, and the failure playbook.  Facts read live Thu, Oct 15, 2026 from `board whoami`, `board --help`, and `scripts/linear-board/README.md`. |
+| v1.1 | 2026-10-18 | Claude | New [GitHub Issues](#github-issues) section:  one linked Linear twin per GitHub issue, Linear wins open or closed, one-way sync for new issues, and the pairing report (AFC-339). |
 
 CLUTCH is the canonical app name. Its verified live Linear team key is `C`. `C`, `CLUTCH`, legacy `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same live team. Prior `CK-n` and `CLUTCH-n` identifiers remain resolvable after the rename.
