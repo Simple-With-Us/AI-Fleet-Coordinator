@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "about": "Registry for ios_testflight_freshness.mjs.  One row per App Store Connect record that ships through TestFlight.  appleId is the key that never goes stale (bundle ids were renamed for Socratic Trade, BotFleet and Usage Monitor).  paths is the native tree: a main commit touching any of them should reach TestFlight.  ship.workflow is the app's own ship workflow; ship.inputs are the workflow_dispatch inputs a catch-up ship needs; autoRemedy false means the check reports the gap but never dispatches;  an app with autoRemedy on must name a compileCheck.  inflightMaxHours is when a queued or running ship run counts as stuck;  remedyLandHours is how long a catch-up gets before an alert may say it did not land.  compileCheck is the exact check-run name of the iOS compile on main (a trailing * is a prefix match).  skip is a reason the app is listed but not checked.",
+  "about": "Registry for ios_testflight_freshness.mjs.  One row per App Store Connect record that ships through TestFlight.  appleId is the key that never goes stale (bundle ids were renamed for Socratic Trade, BotFleet and Usage Monitor).  paths is the native tree: a main commit touching any of them should reach TestFlight.  ship.workflow is the app's own ship workflow; ship.inputs are the workflow_dispatch inputs a catch-up ship needs;  ship.enabledVar names a repo variable that must be \"true\" for the ship job to upload; autoRemedy false means the check reports the gap but never dispatches;  an app with autoRemedy on must name a compileCheck.  inflightMaxHours is when a queued or running ship run counts as stuck;  remedyLandHours is how long a catch-up gets before an alert may say it did not land.  compileCheck is the exact check-run name of the iOS compile on main (a trailing * is a prefix match).  skip is a reason the app is listed but not checked.",
   "owner": "Simple-With-Us",
   "rateGateHours": 2.5,
   "staleAlertHours": 6,
@@ -74,8 +74,8 @@
       "bundleId": "com.contactlogo",
       "platform": "IOS",
       "repo": "ContactLogo",
-      "paths": ["Apps/ContactLogoiOS", "Sources", "project.yml"],
-      "ship": { "workflow": "ios-testflight.yml", "inputs": { "upload": "true" } },
+      "paths": ["Apps/ContactLogoiOS", "Sources/ContactLogoKit", "project.yml"],
+      "ship": { "workflow": "ios-testflight.yml", "inputs": {} },
       "sourceWorkflows": ["ios-testflight.yml"],
       "compileCheck": "apple (ContactLogoiOS*",
       "autoRemedy": true
@@ -154,7 +154,7 @@
       "platform": "IOS",
       "repo": "HogHunter",
       "paths": ["ios", "project.yml", "Assets.xcassets"],
-      "ship": { "workflow": "ios-testflight.yml", "inputs": { "upload": "true" } },
+      "ship": { "workflow": "ios-testflight.yml", "inputs": { "upload": "true" }, "enabledVar": "HH_IOS_TESTFLIGHT_ENABLED" },
       "sourceWorkflows": ["ios-testflight.yml"],
       "compileCheck": "test",
       "autoRemedy": true

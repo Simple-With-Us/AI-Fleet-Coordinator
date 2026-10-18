@@ -542,6 +542,18 @@ export async function evaluateApp(ctx, key, app, now) {
       const runs = runsJson.workflow_runs || [];
       const { live: inflight, stale: staleRuns } = splitInflight(runs, nowMs, Number(reg.inflightMaxHours ?? DEFAULT_INFLIGHT_MAX_HOURS));
       const onHead = runs.find((x) => x.head_sha === head.sha && x.status === "completed") || null;
+      // Some ship jobs only upload while a repo variable is "true" (ContactLogo, Hog Hunter);
+      // with it off, a dispatch is a skipped job that uploads nothing.
+      let enabledVar = null;
+      if (app.ship.enabledVar) {
+        let value = null;
+        try {
+          value = (await ctx.gh(`repos/${full}/actions/variables/${app.ship.enabledVar}`)).value ?? null;
+        } catch (err) {
+          if (!err.notFound) throw err;
+        }
+        enabledVar = { name: app.ship.enabledVar, value };
+      }
       r.pipeline = {
         workflow: app.ship.workflow,
         state: wf ? wf.state : "missing",
@@ -549,6 +561,7 @@ export async function evaluateApp(ctx, key, app, now) {
         autoRemedy: app.autoRemedy !== false,
         manualReason: app.manualReason || null,
         inputs: app.ship.inputs || {},
+        enabledVar,
         inflight,
         staleRuns,
         lastRunOnHead: onHead ? { conclusion: onHead.conclusion, event: onHead.event, url: onHead.html_url } : null,
@@ -652,6 +665,10 @@ export async function runRemedies(results, state, deps, registry, { dryRun = fal
     if (app.autoRemedy === false) { decide("blocked", app.manualReason || "autoRemedy is off for this app"); continue; }
     if (!r.pipeline?.workflow) { decide("blocked", "no ship workflow in the registry"); continue; }
     if (r.pipeline.state !== "active") { decide("blocked", `ship workflow ${r.pipeline.workflow} is ${r.pipeline.state}`); continue; }
+    if (r.pipeline.enabledVar && r.pipeline.enabledVar.value !== "true") {
+      decide("blocked", `repo variable ${r.pipeline.enabledVar.name} is ${r.pipeline.enabledVar.value == null ? "not set" : `"${r.pipeline.enabledVar.value}"`}, so ${r.pipeline.workflow} skips its upload`);
+      continue;
+    }
     if (r.compile?.state === "pending") { decide("deferred", "compile check on main is still running"); continue; }
     if (r.compile?.state !== "green") { decide("blocked", `compile check on main is ${r.compile?.state || "unknown"}`); continue; }
     if (!r.rateGate.open) { decide("deferred", `rate gate:  last upload ${r.rateGate.hoursSinceUpload}h ago, ${r.rateGate.minutesLeft}m left of ${r.rateGate.hours}h`); continue; }
