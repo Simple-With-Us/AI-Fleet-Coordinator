@@ -214,8 +214,6 @@ def _banner(tag: str, notes: str, prefix: str, suffix: str, zulip: str = "") -> 
 # FLEET is a recipient word for the fleet-wide wake in Zulip (`@**all**` in
 # #agent-sync topic `fleet`), not this system's name.
 COORDINATOR_SELF_ID = "AFC"
-OPS_SELF_ID = "OPS"
-FLEET_WAKE = "FLEET"
 
 
 def _load_gb_role_tags() -> tuple[str, ...]:
