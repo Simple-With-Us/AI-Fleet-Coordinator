@@ -35,6 +35,8 @@ import os
 import re
 import shutil
 import subprocess
+import threading
+import time
 from collections.abc import Callable, Iterable
 from types import ModuleType
 
@@ -45,6 +47,8 @@ CLI_NAME = "infisical"
 FALLBACK_DIRS = ("~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin")
 # Short on purpose:  a hung CLI (a locked keychain under launchd) must not stall a job or an MCP
 # start for long, and lkg.py's negative cache spares sibling processes the wait (fail fast).
+# It is ONE budget for the whole fetch:  the keychain lookups, the machine-identity login and the
+# export all share it (see _Deadline), so no step can run past it.
 TIMEOUT_SECONDS = 8.0
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 ENV_NAMES = ("INFISICAL_ENVIRONMENT", "INFISICAL_ENV")
@@ -154,6 +158,33 @@ def fetch_named(names: Iterable[str], *, project_id: str, path: str) -> dict[str
     return _pick(_run(argv_named(cli, wanted, project_id, path)), wanted)
 
 
+_DEADLINE = threading.local()
+
+
+def _remaining() -> float | None:
+    """Seconds left in this thread's fetch budget, or None outside a fetch."""
+    deadline = getattr(_DEADLINE, "at", None)
+    return None if deadline is None else deadline - time.monotonic()
+
+
+class _ClampedSubprocess:
+    """Stands in for ``subprocess`` inside the loaded helper:  every ``run`` gets at most the time
+    left in the current fetch's budget, so a hung ``security`` or ``infisical login`` is killed at
+    the deadline instead of at the helper's own (longer) timeout."""
+
+    def __getattr__(self, name):
+        return getattr(subprocess, name)
+
+    def run(self, *args, **kwargs):
+        left = _remaining()
+        if left is not None:
+            if left <= 0:
+                raise subprocess.TimeoutExpired(args[0] if args else kwargs.get("args"), 0)
+            given = kwargs.get("timeout")
+            kwargs["timeout"] = left if given is None else min(float(given), left)
+        return subprocess.run(*args, **kwargs)
+
+
 def _helper_candidates() -> list:
     """Where fleet-secrets' ``core.py`` may be, in order.  Paths only;  nothing is imported."""
     out = []
@@ -183,6 +214,8 @@ def _load_helper() -> ModuleType | None:
         except Exception:  # noqa: BLE001 - optional helper
             continue
         if all(hasattr(module, n) for n in ("auth_mode", "machine_token", "find_cli")):
+            if hasattr(module, "subprocess"):
+                module.subprocess = _ClampedSubprocess()  # this private copy only
             _HELPER_CACHE["core"] = module
             return module
     return None
@@ -217,7 +250,10 @@ def child_env() -> dict[str, str]:
     try:
         mode = helper.auth_mode(env)
     except Exception:  # noqa: BLE001 - half-filled keychain
+        _raise_if_out_of_time()
         raise FetchFailed("keychain-incomplete") from None
+    # A lookup the budget cut short answers "absent", which would look like mode "session".
+    _raise_if_out_of_time()
     if mode not in ("keychain", "system-keychain"):
         return env
     cli = find_cli()
@@ -226,22 +262,39 @@ def child_env() -> dict[str, str]:
     try:
         token = helper.machine_token(cli, env, mode)
     except Exception:  # noqa: BLE001 - never carry its text
+        _raise_if_out_of_time()
         raise FetchFailed("login-failed") from None
+    _raise_if_out_of_time()
     if not isinstance(token, str) or not token.strip():
         raise FetchFailed("login-failed")
     env[ENV_TOKEN] = token
     return env
 
 
+def _raise_if_out_of_time() -> None:
+    left = _remaining()
+    if left is not None and left <= 0:
+        raise FetchFailed("timeout")
+
+
 def _run(argv: list):
-    """Run the CLI and parse its JSON.  Raises FetchFailed with a reason token."""
-    env = child_env()
+    """Run the CLI and parse its JSON.  Raises FetchFailed with a reason token.
+
+    TIMEOUT_SECONDS bounds the whole call:  auth (keychain lookups and the machine-identity
+    login, through the helper's clamped subprocess) and the export share one deadline, and
+    running out anywhere is reason ``timeout``."""
+    _DEADLINE.at = time.monotonic() + TIMEOUT_SECONDS
+    env: dict = {}
     try:
+        env = child_env()
+        left = _remaining()
+        if left is None or left <= 0:
+            raise FetchFailed("timeout")
         proc = subprocess.run(
             argv,
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            timeout=TIMEOUT_SECONDS,
+            timeout=left,
             cwd="/",
             env=env,
             check=False,
@@ -252,6 +305,7 @@ def _run(argv: list):
         raise FetchFailed("cli-missing") from None
     finally:
         env = {}
+        _DEADLINE.at = None
     if proc.returncode != 0:
         raise FetchFailed(f"exit-{proc.returncode}")
     out = proc.stdout

@@ -24,7 +24,8 @@ key = knobs.get("FLEET_FACTS_SIGNING_KEY")         # raises SecretUnavailable:  
 - **Auth like fleet-secrets.**  `INFISICAL_TOKEN` if set, else the keychain machine identity
   (login, then System keychain) through fleet-secrets' helper when it can be found, else the
   CLI session.  Needed under pm2 (a system LaunchDaemon, no login Keychain).  The token is
-  only ever in the CLI child's environment.  Each CLI call times out after 8 seconds.
+  only ever in the CLI child's environment.  The whole fetch (keychain
+  lookups, login and export) shares one 8 second budget;  running out is `timeout`.
 - **Negative cache.**  A failed fetch writes `fetch-failed.json` (0600, timestamp and reason
   token) beside the copy;  for 60 seconds other processes skip the fetch and read the copy
   (`fetch_reason` `recent-<token>`).  A good fetch clears it;  `refresh()` ignores it.

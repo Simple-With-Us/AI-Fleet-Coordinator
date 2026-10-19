@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 import time
 import types
 from unittest import mock
@@ -160,6 +161,77 @@ class AuthTests(KnobTestCase):
         self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE"), "snapshot")
         self.assertEqual(helper.logins, [])
         self.assertEqual(self.fake.tokens(), [None])
+
+    STUB_CORE = (
+        "import subprocess, sys\n"
+        "HANG = [sys.executable, '-c', 'import time; time.sleep(30)']\n"
+        "def _hang(timeout):\n"
+        "    try:\n"
+        "        subprocess.run(HANG, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)\n"
+        "    except (subprocess.TimeoutExpired, OSError):\n"
+        "        return None\n"
+        "    return 'x'\n"
+        "def auth_mode(env):\n"
+        "    if {hang_lookup}:\n"
+        "        _hang(10.0)  # a locked keychain:  the real helper allows 10 s and answers absent\n"
+        "        return 'session'\n"
+        "    return 'system-keychain'\n"
+        "def machine_token(cli, env, mode):\n"
+        "    if _hang(30.0) is None:  # a hung login:  the real helper allows 30 s\n"
+        "        raise RuntimeError('login-timeout')\n"
+        "    return 'never'\n"
+        "def find_cli(env):\n"
+        "    return None\n"
+    )
+
+    def use_stub_core(self, hang_lookup):
+        pkg = self.root / "stub-home" / "fleet_secrets"
+        pkg.mkdir(parents=True)
+        (pkg / "core.py").write_text(self.STUB_CORE.format(hang_lookup=hang_lookup))
+        for patcher in (
+            mock.patch.object(source, "HELPER_LOADER", source._load_helper),
+            mock.patch.object(source, "_helper_candidates", lambda: [str(pkg / "core.py")]),
+            mock.patch.dict(source._HELPER_CACHE, clear=True),
+            mock.patch.object(source, "TIMEOUT_SECONDS", 0.5),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def assert_timed_out_fast(self):
+        self.fake.set(secrets=GOOD)
+        started = time.monotonic()
+        knob = knobs.resolve("FLEET_AUTOPUSH_MODE")
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 3.0, "the whole fetch is bounded by TIMEOUT_SECONDS")
+        self.assertEqual((knob.source, knob.stale), ("default", True))
+        self.assertEqual(knobs.report()["fetch_reason"], "timeout")
+        self.assertEqual(self.fake.calls(), [], "no export once the budget is spent")
+        self.assertEqual(lkg.recent_failure(), "timeout", "the negative cache engages")
+
+    def test_a_hung_keychain_lookup_is_cut_at_the_fetch_deadline(self):
+        self.use_stub_core(hang_lookup=True)
+        self.assert_timed_out_fast()
+
+    def test_a_hung_machine_identity_login_is_cut_at_the_fetch_deadline(self):
+        self.use_stub_core(hang_lookup=False)
+        self.assert_timed_out_fast()
+
+    def test_a_helper_that_overruns_without_a_subprocess_is_still_a_timeout(self):
+        class Slow(FakeHelper):
+            def machine_token(self, cli, env, mode):
+                time.sleep(0.7)
+                return FAKE_TOKEN
+
+        self.use_helper(Slow())
+        with mock.patch.object(source, "TIMEOUT_SECONDS", 0.5):
+            self.fake.set(secrets=GOOD)
+            knobs.get("FLEET_AUTOPUSH_MODE")
+        self.assertEqual(knobs.report()["fetch_reason"], "timeout")
+        self.assertEqual(self.fake.calls(), [])
+
+    def test_the_clamp_touches_only_the_private_helper_copy(self):
+        self.assertIs(sys.modules["subprocess"].run, __import__("subprocess").run)
+        self.assertIsNone(source._remaining(), "no budget outside a fetch")
 
     def test_the_per_fetch_timeout_is_short(self):
         self.assertLessEqual(source.TIMEOUT_SECONDS, 10.0)
