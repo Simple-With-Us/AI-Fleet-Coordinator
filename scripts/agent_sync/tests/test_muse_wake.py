@@ -514,6 +514,39 @@ class McodeFallbackTest(unittest.TestCase):
                 fh.write("#!/bin/sh\n")
             self.assertEqual(A.mcode_pin_state(paths, moved)["why"], "pin_stale")
 
+    def test_a_fallback_pin_goes_stale_when_the_model_changes(self) -> None:
+        # The pin records the model, and the model is on the command line:  a pin made under one
+        # model must not read as verified after the seat moves to another.
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = L.SeatPaths(tmp, "MM")
+            os.makedirs(paths.seat_dir, exist_ok=True)
+            exe = os.path.join(tmp, "mcode")
+            with open(exe, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            A.record_mcode_pin(paths, exe, time.time(), model="minimax/MiniMax-M3")
+            self.assertTrue(A.mcode_pinned(paths, exe, "minimax/MiniMax-M3"))
+            self.assertEqual(
+                A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3.1-Flash")["why"], "pin_stale"
+            )
+            # A pin recorded before the fingerprint existed cannot stand in for one.
+            L.write_json(paths.wake_pin_mcode, {"mcode": A.binary_pin(exe), "at": time.time()})
+            self.assertEqual(A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3")["why"], "pin_stale")
+
+    def test_a_fallback_candidate_from_another_model_is_not_pinned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = L.SeatPaths(tmp, "MM")
+            os.makedirs(paths.seat_dir, exist_ok=True)
+            exe = os.path.join(tmp, "mcode")
+            with open(exe, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            A.record_mcode_candidate(paths, exe, time.time(), model="minimax/MiniMax-M3")
+            self.assertIsNotNone(
+                A.mcode_pin_candidate(paths, exe, time.time(), model="minimax/Other-Model")
+            )
+            self.assertIsNone(
+                A.mcode_pin_candidate(paths, exe, time.time(), model="minimax/MiniMax-M3")
+            )
+
     def test_the_fallback_is_optional_and_may_not_be_the_wake_itself(self) -> None:
         ok = C.from_dict(
             {

@@ -1172,6 +1172,9 @@ MCODE_MAX_STEPS = 8
 MCODE_TIMEOUT = "4m"
 MCODE_PROMPT_MODE = "work"
 MCODE_PERMISSION = "off"
+# Bump when the fallback command's behaviour changes in a way argv does not show, so an existing
+# pin is re-verified by a person rather than trusted under the old policy.
+MCODE_WAKE_POLICY_VERSION = "mcode-fallback-model-v1"
 MCODE_PROMPT_SLOT = "<prompt-file>"
 MCODE_SCHEMA_SLOT = "<output-schema>"
 MCODE_CWD_SLOT = "<cwd>"
@@ -1412,41 +1415,85 @@ class McodeRunner:
         return out
 
 
-def mcode_pin_state(paths: L.SeatPaths, mcode: str | None) -> dict[str, Any]:
-    """Why the fallback pin does or does not match the binary.  Same never-self-heal rule as the
+def mcode_wake_fingerprint(mcode: str, model: str = MCODE_DEFAULT_MODEL) -> str:
+    """Fingerprint the whole fallback command, not just the binary.
+
+    Same discipline as `muse_wake_fingerprint`:  the argv is built with a placeholder for the
+    binary path, so a flag or policy change invalidates a person-verified pin.  The model is
+    carried separately because it is a per-seat value that lands on the command line, and a pin
+    made under one model must not read as verified under another.
+    """
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "policy_version": MCODE_WAKE_POLICY_VERSION,
+                "argv": mcode_argv("<mcode>", "<model>"),
+                "model": model,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def mcode_pin_state(
+    paths: L.SeatPaths, mcode: str | None, model: str = MCODE_DEFAULT_MODEL
+) -> dict[str, Any]:
+    """Why the fallback pin does or does not match the command.  Same never-self-heal rule as the
     other two, on its own file, so a fallback is only trusted once a person verified it."""
     if not mcode:
         return {"pinned": False, "why": "no_mcode", "pinned_mcode": None, "mcode": None}
     current = binary_pin(mcode)
-    recorded = L.read_json(paths.wake_pin_mcode).get("mcode")
+    pin = L.read_json(paths.wake_pin_mcode)
+    recorded = pin.get("mcode")
     if not isinstance(recorded, str) or not recorded:
         return {"pinned": False, "why": "not_pinned", "pinned_mcode": None, "mcode": current}
     if recorded != current:
         return {"pinned": False, "why": "pin_stale", "pinned_mcode": recorded, "mcode": current}
+    # A pin made before the model was named on the command, or under a different model, verified a
+    # command this seat no longer runs:  report it stale so a person re-pins.
+    if pin.get("fingerprint") != mcode_wake_fingerprint(mcode, model):
+        return {"pinned": False, "why": "pin_stale", "pinned_mcode": recorded, "mcode": current}
     return {"pinned": True, "why": None, "pinned_mcode": recorded, "mcode": current}
 
 
-def mcode_pinned(paths: L.SeatPaths, mcode: str | None) -> bool:
+def mcode_pinned(paths: L.SeatPaths, mcode: str | None, model: str = MCODE_DEFAULT_MODEL) -> bool:
     if not mcode:
         return False
-    return L.read_json(paths.wake_pin_mcode).get("mcode") == binary_pin(mcode)
+    return bool(mcode_pin_state(paths, mcode, model)["pinned"])
 
 
 def record_mcode_pin(
     paths: L.SeatPaths, mcode: str, now: float, *, model: str | None = None
 ) -> None:
-    L.write_json(paths.wake_pin_mcode, {"mcode": binary_pin(mcode), "at": now, "model": model})
+    L.write_json(
+        paths.wake_pin_mcode,
+        {
+            "mcode": binary_pin(mcode),
+            "at": now,
+            "model": model,
+            "fingerprint": mcode_wake_fingerprint(mcode, model or MCODE_DEFAULT_MODEL),
+        },
+    )
 
 
 def record_mcode_candidate(
     paths: L.SeatPaths, mcode: str, now: float, *, model: str | None = None
 ) -> None:
     L.write_json(
-        paths.wake_pin_candidate_mcode, {"mcode": binary_pin(mcode), "at": now, "model": model}
+        paths.wake_pin_candidate_mcode,
+        {
+            "mcode": binary_pin(mcode),
+            "at": now,
+            "model": model,
+            "fingerprint": mcode_wake_fingerprint(mcode, model or MCODE_DEFAULT_MODEL),
+        },
     )
 
 
-def mcode_pin_candidate(paths: L.SeatPaths, mcode: str, now: float) -> str | None:
+def mcode_pin_candidate(
+    paths: L.SeatPaths, mcode: str, now: float, *, model: str = MCODE_DEFAULT_MODEL
+) -> str | None:
     cand = L.read_json(paths.wake_pin_candidate_mcode)
     if not cand:
         return "no passing test-wake --run to pin; run that first"
@@ -1457,6 +1504,10 @@ def mcode_pin_candidate(paths: L.SeatPaths, mcode: str, now: float) -> str | Non
         return (
             "the mcode binary changed since the test (%s, tested %s); run test-wake --run again"
             % (binary_pin(mcode), cand.get("mcode"))
+        )
+    if cand.get("fingerprint") != mcode_wake_fingerprint(mcode, model):
+        return (
+            "the mcode command changed since the test (model or flags); run test-wake --run again"
         )
     record_mcode_pin(
         paths, mcode, now, model=cand.get("model") if isinstance(cand.get("model"), str) else None

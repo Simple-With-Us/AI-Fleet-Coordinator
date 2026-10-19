@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -279,6 +280,50 @@ class SessionIdTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("the Session: old-id-0001 logs", p.stdout)
         self.assertIn("Session: new-id-0002 -", p.stdout)
+
+    def test_a_trailing_paragraph_starting_with_session_is_not_deleted(self):
+        # A final paragraph that merely OPENS with "Session:" is prose, not the stamped row:  the
+        # --html path adds no trailing spacer, so an end-anchored strip on any "Session:" text
+        # would silently drop the sentence.
+        old = "<p>Mon, Oct 19, 9:40pm</p><p>Session: the ABC run produced 12 findings</p>"
+        with tempfile.TemporaryDirectory() as tmp:
+            html_path = os.path.join(tmp, "body.html")
+            with open(html_path, "w", encoding="utf-8") as fh:
+                fh.write(old)
+            for extra in ([], ["--html", html_path]):
+                p = self.run_script(
+                    "--update",
+                    "--session",
+                    "new-id-0002",
+                    *extra,
+                    "[AFC, Claude] topic",
+                    env={"AGENT_SEAT": "CLAUDE"},
+                    body=old,
+                )
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertIn("Session: the ABC run produced 12 findings", p.stdout)
+                self.assertIn("Session: new-id-0002 -", p.stdout)
+
+    def test_a_markdown_update_leaves_one_divider_and_one_session_row(self):
+        # The markdown converter puts a spacer after the LAST paragraph, so an end-anchored strip
+        # never matched and the echoed row survived beside the fresh one.
+        old = (
+            "Mon, Oct 19, 9:40pm\n\nBody paragraph here.\n\n"
+            "Session: old-id-0001 - Mon, Oct 19, 9:40pm\n"
+        )
+        p = self.run_script(
+            "--update",
+            "--session",
+            "new-id-0002",
+            "[AFC, Claude] topic",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=old,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
+        self.assertNotIn("old-id-0001", p.stdout)
+        # The timestamp block writes its own divider, so the echoed one must not double it.
+        self.assertNotIn("<div><br></div><div><br></div>", p.stdout)
 
     def test_the_body_never_reaches_the_refusal(self):
         p = self.run_script(

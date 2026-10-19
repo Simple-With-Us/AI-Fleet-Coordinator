@@ -770,7 +770,11 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
             if is_mcode
             else (A.muse_pin_candidate if is_muse else A.pin_candidate)
         )
-        problem = pin_fn(paths, binary, time.time())
+        problem = (
+            A.mcode_pin_candidate(paths, binary, time.time(), model=seat_cfg.mcode_model)
+            if is_mcode
+            else pin_fn(paths, binary, time.time())
+        )
         if problem:
             rt.out("NOT PINNED: %s\n" % problem)
             return 1

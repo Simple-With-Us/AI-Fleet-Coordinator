@@ -540,8 +540,8 @@ PY
   # The scratch file and its directory go when they can:  a cleanup the runtime refuses must not
   # fail the note, and the next call gets a fresh directory either way.  Its output goes nowhere:
   # this runs inside the body capture, so a word on stdout would land in the note.
-  rm -f "${_md_py}" >/dev/null 2>&1
-  rmdir "${_md_dir}" >/dev/null 2>&1
+  rm -f "${_md_py}" >/dev/null 2>&1 || true
+  rmdir "${_md_dir}" >/dev/null 2>&1 || true
   return ${_rc}
 }
 
@@ -693,6 +693,9 @@ if pr_numbers:
 if m:
     matched_text = m.group(0)
     inner = inner[m.end():]
+    # The timestamp block below writes its own divider, so a divider the echoed old body carried at
+    # its head must go, or every update leaves two blank lines under the stamp.
+    inner = re.sub(r'^\s*(?:<div><br\s*/?></div>)\s*', '', inner, count=1)
     if not pr_suffix:
         # Preserve existing PR divider if found in existing timestamp line
         pr_match = re.search(r'[·|—|-]\s*(PR\s*#?\s*[\d\s,#]+)', matched_text, re.I)
@@ -703,8 +706,18 @@ if m:
 # reads first and the id is the final thing in it.  An update rewrites the whole body, so a Session
 # row the caller echoed back from the old body is dropped (wherever it sat:  the old note had it
 # under the timestamp, the new one has it at the end) and the current one is stamped.
-inner = re.sub(r'^(?:<p>)?\s*Session:\s*[^<\n]*(?:</p>)?\s*(?:<div><br\s*/?></div>)?\s*', '', inner, flags=re.I)
-inner = re.sub(r'(?:^|\n|(?<=>))[>\s]*(?:<div><br\s*/?></div>)?\s*(?:<p>)?\s*Session:\s*[^<\n]*(?:</p>)?\s*$', '', inner, flags=re.I)
+#
+# Only the row shape this writer stamps is removed -- an id, a dash, and a stamp -- so body prose
+# that merely starts with the word Session (a sentence, not metadata) keeps its text.
+_ROW = (
+    r'Session:\s*[^\s<]+ - [^\n<]+'
+    r'(?:\s*(?:</p>|<div><br\s*/?></div>))*'
+)
+# The markdown converter leaves a spacer after the LAST paragraph, so the row is not literally last:
+# drop trailing spacers, then take the row off the end.
+inner = re.sub(r'(?:\s|<div><br\s*/?></div>)+$', '', inner)
+inner = re.sub(r'^(?:<p>)?\s*' + _ROW + r'\s*', '', inner, flags=re.I)
+inner = re.sub(r'(?:^|\n|(?<=>))[>\s]*(?:<div><br\s*/?></div>)?\s*(?:<p>)?\s*' + _ROW + r'\s*$', '', inner, flags=re.I)
 session_p = ''
 if note_session:
     session_p = '<p>' + html.escape('Session: ' + note_session + ' - ' + stamp) + '</p>'

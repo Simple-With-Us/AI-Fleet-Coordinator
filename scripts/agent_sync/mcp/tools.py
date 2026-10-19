@@ -777,7 +777,15 @@ class Tools:
         key = state_key or tag
         if tag != self.agent.tag or self.agent.state.tag != key:
             self.agent.tag = tag
-            self.agent.state = State(self.root, self.seat, key, retain_posted=bool(state_key))
+            self.agent.state = State(
+                self.root,
+                self.seat,
+                key,
+                retain_posted=bool(state_key),
+                # The rebuilt state must keep the full session id, or a post written under the new
+                # tag records only the 8-character tag and the id is unrecoverable.
+                session_id=self.agent.session_id,
+            )
 
     def _prefix(self) -> str:
         return self.agent.tag_prefix + "]"
