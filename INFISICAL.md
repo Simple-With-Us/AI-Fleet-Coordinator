@@ -73,7 +73,7 @@ Other seats retain their existing limits.  Upstream rate limits still apply.
 
 The existing server listener loads `ZULIP_OUTGOING_<CODE>_TOKEN` from prod `/zulip` at startup for each server seat.  `<CODE>` replaces hyphens in the seat tag with underscores.  These separate Zulip service tokens authenticate outgoing webhook requests; they are neither `ZULIP_<CODE>_API_KEY` nor the routine's bearer/HMAC key.  Missing tokens deny requests for that seat.
 
-The on-demand `scripts/zulip_migrate_outgoing.py publish` helper readback-verifies the replacement email, API key, and service token in Infisical before atomically installing the local zuliprc.  Refresh every additional credential consumer before retiring the old identity.  See [the migration runbook](docs/protocols/zulip-outgoing-migration.md).
+`scripts/zulip_migrate_outgoing.py` was retired 2026-10-19 because it needed the owner key;  bots are now provisioned through `scripts/zulip_provision_bots.py` with the realm-admin bot.  See [the outgoing-webhook runbook](docs/protocols/zulip-outgoing-migration.md).
 
 ## Hosted Echo and Wise Zulip identities
 
