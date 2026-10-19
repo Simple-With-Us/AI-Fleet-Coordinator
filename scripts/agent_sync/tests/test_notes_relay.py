@@ -214,6 +214,22 @@ class SenderTests(RelayHarness):
         )
         self.assertTrue(env["markdown"].startswith("<p>x</p><hr>"))
 
+    def test_the_footer_escapes_markdown_dates_portably_and_keeps_the_newline_recovery(self):
+        def footer_of(markdown, identity="CURSOR"):
+            env = N.make_envelope(
+                "create", "[AFC, Cursor] t", markdown, {}, "footer-request-1", "CURSOR"
+            )
+            return N.with_provenance(env, identity, 7)["markdown"]
+
+        self.assertIn("Relayed for GB\\_FIXER\\*", footer_of("x", "GB_FIXER*"))
+        self.assertNotIn("%", footer_of("x").split("notes relay on ")[1].split(":")[0])
+        self.assertTrue(
+            footer_of(r"# Plan\n- one\n- two").startswith("# Plan\n- one\n- two\n\n---")
+        )
+        self.assertTrue(
+            footer_of("Intro ## Steps - one - two").startswith("Intro\n\n## Steps\n- one\n- two")
+        )
+
     def test_every_kind_of_agent_bot_may_send(self):
         titles = {
             "CURSOR": "[AFC, Cursor] t",

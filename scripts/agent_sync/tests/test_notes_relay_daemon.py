@@ -131,6 +131,21 @@ class DaemonRelayTests(DaemonHarness):
         )
         return self.fake.add_message("Codex", "notes-relay", title, N.render_message(env))
 
+    def test_a_reload_that_ends_the_admin_exception_drops_the_admin_key(self):
+        self.write_config(wake="inbox")
+        path = self.state_dir / "listener.toml"
+        path.write_text(path.read_text() + "\n" + RELAY_SECTION)
+        self.fake.set_role(self.fake.me["user_id"], 200)
+        self.addCleanup(self.fake.me.update, role=400, is_admin=False, is_owner=False)
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        self.assertTrue(runner.connected, "the inbox-only relay seat may hold an administrator key")
+        self.write_config(wake="inbox")  # the [notes_relay] section is gone
+        daemon.reload()
+        self.assertTrue(runner.fatal)
+        self.assertFalse(runner.connected)
+        self.assertIn("refuses admin and owner keys", runner.error)
+
     def wait(self, predicate, seconds=10.0):
         end = time.time() + seconds
         while time.time() < end:

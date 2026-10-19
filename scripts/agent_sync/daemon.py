@@ -222,6 +222,7 @@ class SeatRunner:
         self.creds: Z.Credentials | None = None
         self.client: Z.ZulipClient | None = None
         self.me: R.SeatIdentity | None = None
+        self.me_person: dict[str, Any] = {}  # users/me at connect:  the role a reload re-checks
         self.queue: Z.EventQueue | None = None
         cursor = L.read_json(self.paths.cursor).get("last_id")
         self.cursor: int | None = cursor if isinstance(cursor, int) else None
@@ -298,6 +299,7 @@ class SeatRunner:
             )
         if role_refused(me, admin_allowed(self.daemon.config, self.cfg)):
             raise RoleRefused(role_refusal(self.seat, role))
+        self.me_person = dict(me)
         bot_type = me.get("bot_type", R.GENERIC_BOT)
         if bot_type != R.GENERIC_BOT and not (
             bot_type == 3 and self.seat in self.daemon.config.outgoing_webhook_seats
@@ -811,6 +813,14 @@ class Daemon:
             gone = self.seats.pop(seat)
             gone.stop.set()  # its poller and wake worker exit instead of reconnecting
             gone.disconnect()
+        for runner in self.seats.values():
+            # A reload can take the admin exception away (the relay turned off or moved, or the seat's wake changed):
+            # an administrator key then loses its queue at once, the same as a promotion (AFC-331).
+            person = (
+                runner.users.get(runner.me.user_id) if runner.me else None
+            ) or runner.me_person
+            if runner.connected and person and role_refused(person, admin_allowed(cfg, runner.cfg)):
+                self._refuse(runner, role_refusal(runner.seat, person.get("role")))
 
     def _configure_outgoing_webhook(self) -> None:
         """Start the optional receiver using only tokens for explicitly allowlisted seats."""

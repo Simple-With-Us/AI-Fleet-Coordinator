@@ -44,8 +44,10 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import identity as I
 
@@ -618,7 +620,8 @@ def with_provenance(
     if envelope.get("action") not in ("create", "update"):
         return envelope
     url = "%s/#narrow/id/%d" % (site.rstrip("/"), int(message_id))
-    when = time.strftime("%a, %b %-d, %Y")
+    now = datetime.now(ZoneInfo("America/Chicago"))
+    when = "%s %d, %d" % (now.strftime("%a, %b"), now.day, now.year)  # no %-d:  not portable
     if (envelope.get("flags") or {}).get("html"):
         footer = (
             '<hr><p><i>Relayed for %s by the notes relay on %s:  <a href="%s">request message</a>.</i></p>'
@@ -626,11 +629,28 @@ def with_provenance(
         )
     else:
         footer = "\n\n---\n\n*Relayed for %s by the notes relay on %s:  [request message](%s).*" % (
-            identity,
+            re.sub(r"([\\*_\[\]`])", r"\\\1", identity),
             when,
             url,
         )
+        return dict(
+            envelope, markdown=recover_newlines(str(envelope.get("markdown") or "")) + footer
+        )
     return dict(envelope, markdown=str(envelope.get("markdown") or "") + footer)
+
+
+def recover_newlines(text: str) -> str:
+    """The Markdown recovery apple-notes-coding.sh applies to a body with few newlines, done here first.
+
+    The script restores a body that arrived with literal `\\n` escapes, and splits a collapsed one-line body
+    at its headings and bullets, but only while the body has (almost) no newlines.  The provenance footer adds
+    newlines, which would switch that recovery off, so the relay applies it before appending the footer."""
+    if "\n" not in text and r"\n" in text:
+        text = text.replace(r"\n", "\n")
+    if text.count("\n") < 3:
+        text = re.sub(r"(?<=\S)\s+(#{1,4}\s+)", r"\n\n\1", text)
+        text = re.sub(r"(?<=\S)\s+([-\*]\s+)", r"\n\1", text)
+    return text
 
 
 def run_direct(
