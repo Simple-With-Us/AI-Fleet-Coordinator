@@ -55,7 +55,7 @@ Each phase is additive until Phase 5.  Nothing is deleted, booted out or rotated
 
 ### Phase 3:  Daemons onto machine identities
 
-`start_litestream.sh` (B2), `grok-acp-runtime/start.sh`, `seat-mcp/start.sh`, `provider-knob-sync-start.sh`, `fleet-apps-sheet-sync.mjs`, `rotate.py`, `gb_monitor_pull.py`, and anything Phase 0 adds.  `slack-sync.sh` is retired with Slack (Oct 7) and goes rather than migrates.  Each one switches to `infisical run --projectId … --env prod --path <folder> -- <cmd>` and gets its row updated in `MAC-LOCAL-PROCESSES.md`.
+`start_litestream.sh` (B2), `grok-acp-runtime/start.sh`, `seat-mcp/start.sh`, `provider-knob-sync-start.sh`, `fleet-apps-sheet-sync.mjs`, the rotation helper, `gb_monitor_pull.py`, and anything Phase 0 adds.  `slack-sync.sh` is retired with Slack (Oct 7) and goes rather than migrates.  Each one switches to `infisical run --projectId … --env prod --path <folder> -- <cmd>` and gets its row updated in `MAC-LOCAL-PROCESSES.md`.
 
 ### Phase 4:  Instructions
 
