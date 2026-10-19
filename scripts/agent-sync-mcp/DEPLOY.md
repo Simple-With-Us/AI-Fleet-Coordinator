@@ -4,7 +4,7 @@ The runbook for `https://agent-sync.jays.services` from Phase 2 on:  the seven t
 
 A merge is never a deploy (spec 3.2):  agents auto-merge to `main`, so every deploy is run by hand from a checkout of the merged commit, never from CI.  Decision D8 (Thu, Oct 8) accepts deploying with the Cloudflare Global key pair from the handoff file until Jay mints a per-Worker deploy token (owner item A5).  Anyone who can deploy this Worker can act as every hosted seat;  that is the accepted residual.
 
-Run everything from `scripts/agent-sync-mcp/` in a fresh worktree off `origin/main` (never `~/Code/AI-Fleet-Coordinator`).  Never merge stderr into output (`2>&1`) on a command that touches `~/.secrets`.
+Run everything from `scripts/agent-sync-mcp/` in a fresh worktree off `origin/main` (never `~/Code/AI-Fleet-Coordinator`).  Never merge stderr into output (`2>&1`) on a command that touches a credential.
 
 ## Step 0:  Preflight
 
@@ -121,7 +121,7 @@ What only Jay can verify, because it needs his Access sign-in and consent:  the 
 
 ## Wake Jet (MCP Events, once)
 
-The Worker answers `POST /internal/wake/<SEAT>` from the server listener and fans each wake out as an MCP event (spec section 3.12).  A seat's wake works only once its shared HMAC key is a Worker secret.  The key lives in Infisical Fleet-OPS as `JET_ROUTINE_KEY` (64 hex characters, made with `openssl rand -hex 32`;  Jay stores a new one there himself, AFC-359 retired `~/.secrets/jet-wake-hmac.env`).  It is installed without printing it (same environment as Step 1):
+The Worker answers `POST /internal/wake/<SEAT>` from the server listener and fans each wake out as an MCP event (spec section 3.12).  A seat's wake works only once its shared HMAC key is a Worker secret.  The key lives in Infisical Fleet-OPS as `JET_ROUTINE_KEY` (64 hex characters, made with `openssl rand -hex 32`;  Jay stores a new one there himself).  It is installed without printing it (same environment as Step 1):
 
 ```bash
 fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
