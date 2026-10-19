@@ -18,6 +18,7 @@ import {
   READ_TOOLS,
   BODY_LIMIT,
   NAME_LIMIT,
+  MAX_CONTENT_LENGTH,
   RESOLVED_PREFIX,
   ToolError,
   ApiError,
@@ -119,7 +120,7 @@ import {
   CLOSING_STATUSES,
   STATUS_WORDS,
 } from "./linear.js";
-import { sentenceGap } from "./textfmt.js";
+import { fixOutbound } from "./textfmt.js";
 import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_FULL_NAMES, ZULIP_LEGACY_NAMES } from "./zulip-tool-specs.js";
 import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { LISTENER_TOOLS, LISTENER_READ_TOOLS, LISTENER_METHODS } from "./listener.js";
@@ -814,7 +815,7 @@ export class HostedTools {
   async compose(text, to, session) {
     const { mentions, labels } = await this.resolveTo(to);
     try {
-      return sentenceGap(composeBody(tagPrefix(this.seat, sessionTag(session)), text, { labels, mentions }));
+      return fixOutbound(composeBody(tagPrefix(this.seat, sessionTag(session)), text, { labels, mentions }), { limit: MAX_CONTENT_LENGTH })[0];
     } catch (error) {
       if (error instanceof UsageError) throw new ToolError("invalid_argument", error.message);
       throw error;
@@ -1020,7 +1021,7 @@ export class HostedTools {
     if (prior) return this.dmResult({ id: prior.id, userIds, duplicate: true });
     let content;
     try {
-      content = sentenceGap(composeBody(tagPrefix(this.seat, tag), text, { labels: users.map(seatTagFor) }));
+      content = fixOutbound(composeBody(tagPrefix(this.seat, tag), text, { labels: users.map(seatTagFor) }), { limit: MAX_CONTENT_LENGTH })[0];
     } catch (error) {
       if (error instanceof UsageError) throw new ToolError("invalid_argument", error.message);
       throw error;
@@ -1230,7 +1231,7 @@ export class HostedTools {
 
   /** The seat tag line that opens every body it writes, as the Zulip tools do. */
   linearBody(text, session) {
-    return neutralizeLinearMentions(sentenceGap(`${tagPrefix(this.seat, sessionTag(session))}] ${text}`));
+    return neutralizeLinearMentions(fixOutbound(`${tagPrefix(this.seat, sessionTag(session))}] ${text}`, { limit: MAX_CONTENT_LENGTH })[0]);
   }
 
   /** The secret scan on everything the caller wrote, before any request. */
