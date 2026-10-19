@@ -56,6 +56,10 @@ DEFAULT_ENVIRONMENT = (
     "production"  # the fleet's one Sentry environment tag (sentry-fleet-integration plan)
 )
 INFISICAL_DSN_PATH = "/agent-sync"  # Fleet-OPS folder that holds SENTRY_FLEET_DSN (AFC-359)
+DSN_FETCH_TIMEOUT = 15.0
+DSN_RETRY_SECONDS = (
+    600.0  # after a failed Infisical read, the heartbeat stays off this long before asking again
+)
 MONITOR_PREFIX = "agent-sync-listener-"
 REASON_LIMIT = 120
 REASONS_SHOWN = 4
@@ -137,7 +141,7 @@ def _fleet_secrets_dsn(env: Mapping[str, str], home: str) -> str:
             [binary, "get", "SENTRY_FLEET_DSN", "--path", INFISICAL_DSN_PATH],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            timeout=60,
+            timeout=DSN_FETCH_TIMEOUT,
             cwd="/",
             env=child,
             check=False,
@@ -156,9 +160,12 @@ def _fleet_secrets_dsn(env: Mapping[str, str], home: str) -> str:
 _default_dsn_fetch = _fleet_secrets_dsn
 
 
-def resolve_dsn(env: Mapping[str, str], home: str) -> str:
+def resolve_dsn(
+    env: Mapping[str, str], home: str, fetch: Callable[[Mapping[str, str], str], str] | None = None
+) -> str:
     """The DSN text, or ''.  Environment first, then the explicit AGENT_SYNC_SENTRY_ENV_FILE, then
-    Infisical Fleet-OPS /agent-sync SENTRY_FLEET_DSN (unless AGENT_SYNC_INFISICAL turns Infisical off)."""
+    Infisical Fleet-OPS /agent-sync SENTRY_FLEET_DSN (unless AGENT_SYNC_INFISICAL turns Infisical off),
+    through `fetch` (the Heartbeat passes its cached one) or the default fetch."""
     for name in ENV_DSN_NAMES:
         if (env.get(name) or "").strip():
             return env[name].strip()
@@ -170,7 +177,7 @@ def resolve_dsn(env: Mapping[str, str], home: str) -> str:
         return ""
     if not Z.infisical_enabled(env):
         return ""
-    return _default_dsn_fetch(env, home) or ""
+    return (fetch or _default_dsn_fetch)(env, home) or ""
 
 
 def monitor_slug(instance: str) -> str:
@@ -333,16 +340,33 @@ class SentryHeartbeat:
         self.ever_ok = False
         self.last_ok_at: float | None = None
         self.hidden_dsn = ""
+        # The Infisical DSN, read once and kept for the process's life (a DSN does not rotate);  a failed read
+        # is retried only after DSN_RETRY_SECONDS, so a tick never waits on Infisical twice in a row.
+        self.infisical_dsn = ""
+        self.infisical_retry_at: float | None = None
 
     # ---- configuration ---------------------------------------------------------------------
     def enabled(self) -> bool:
         return (self.env.get(ENV_OFF) or "").strip().casefold() not in ("0", "off", "false", "no")
 
+    def _cached_infisical_dsn(self, env: Mapping[str, str], home: str) -> str:
+        if self.infisical_dsn:
+            return self.infisical_dsn
+        now = self.now()
+        if self.infisical_retry_at is not None and now < self.infisical_retry_at:
+            return ""
+        text = _default_dsn_fetch(env, home) or ""
+        if text:
+            self.infisical_dsn, self.infisical_retry_at = text, None
+        else:
+            self.infisical_retry_at = now + DSN_RETRY_SECONDS
+        return text
+
     def _dsn(self) -> Dsn | None:
         if not self.enabled():
             self._announce("off", "sentry-heartbeat-off", why="disabled by %s" % ENV_OFF)
             return None
-        text = resolve_dsn(self.env, self.home)
+        text = resolve_dsn(self.env, self.home, self._cached_infisical_dsn)
         if not text:
             self._announce(
                 "off", "sentry-heartbeat-off", why="no DSN (%s)" % " or ".join(ENV_DSN_NAMES)

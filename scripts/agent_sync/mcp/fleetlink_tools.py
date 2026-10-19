@@ -192,7 +192,7 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
                 [binary, "get", name, "--path", INFISICAL_PATH],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
-                timeout=60,
+                timeout=15,
                 cwd="/",
                 env=child,
                 check=False,

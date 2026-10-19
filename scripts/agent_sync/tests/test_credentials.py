@@ -237,10 +237,9 @@ class InfisicalFallbackTests(Harness):
         """An env whose FLEET_SECRETS_BIN is the fixture fake, serving `folder` as /zulip."""
         data = self.tmp / "fake-fleet-secrets.json"
         data.write_text(json.dumps({"/zulip": folder}), encoding="utf-8")
-        Z._value_cache.clear()
-        Z._names_cache.clear()
-        self.addCleanup(Z._value_cache.clear)
-        self.addCleanup(Z._names_cache.clear)
+        for cache in (Z._value_cache, Z._names_cache, Z._failures):
+            cache.clear()
+            self.addCleanup(cache.clear)
         return {
             "HOME": str(self.home),
             "PATH": os.environ.get("PATH", ""),
@@ -308,6 +307,31 @@ class InfisicalFallbackTests(Harness):
                 sorted(Z.infisical_seats(env, self.home)), ["BF-PLUMBER", "CLAUDE", "GROK"]
             )
             self.assertFalse(Z.infisical_has("JAY", env, self.home))
+
+    def test_an_infisical_outage_costs_one_names_fetch_for_every_identity_candidate(self) -> None:
+        from agent_sync import identities as X
+
+        log = self.tmp / "calls.log"
+        wrapper = self.tmp / "counting-fleet-secrets"
+        wrapper.write_text(
+            '#!/bin/sh\necho "$1" >> "%s"\nexit 4\n' % log
+        )  # every call fails like an outage
+        wrapper.chmod(0o755)
+        env = self.fake_fleet_secrets({}, binary=wrapper)
+        with mock.patch.object(Z, "_default_infisical_names", Z._list_from_fleet_secrets):
+            found = X.allowed_identities(env, self.home)
+            self.assertEqual(found, {})
+            X.allowed_identities(env, self.home)  # again, inside the backoff:  still no new fetch
+        self.assertEqual(log.read_text().split(), ["names"])
+        with self.assertRaises(Z.CredentialError) as ctx:
+            Z._fetch_from_fleet_secrets(("A",), env, self.home)
+        self.assertIn("fetch-or-auth-failure", str(ctx.exception))
+        with self.assertRaises(
+            Z.CredentialError
+        ) as ctx:  # the same values inside the backoff:  no new call
+            Z._fetch_from_fleet_secrets(("A",), env, self.home)
+        self.assertIn("not retried", str(ctx.exception))
+        self.assertEqual(log.read_text().split(), ["names", "run"])
 
     def test_the_old_default_file_under_home_is_never_read(self) -> None:
         # AFC-359:  ~/.secrets/Zulip is retired.  A file there, with no override and nothing in Infisical, is ignored.

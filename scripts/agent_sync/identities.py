@@ -201,9 +201,13 @@ def allowed_identities(
         names = candidates(env, home, registry=registry, cred_env=cred_env, extra=env_seats)
     except (I.SeatRegistryError, OSError, ValueError):
         return {}
+    # One Infisical name listing for the whole set, never one per candidate (AFC-359).
+    in_infisical = Z.infisical_seats(env, home)
     found: dict[str, CredentialSource] = {}
     for name in names:
-        found_source = source_for(name, env, home, cred_env=cred_env, env_seats=env_seats)
+        found_source = source_for(
+            name, env, home, cred_env=cred_env, env_seats=env_seats, infisical_seats=in_infisical
+        )
         if found_source is not None:
             found[name] = found_source
     return found
@@ -216,6 +220,7 @@ def source_for(
     *,
     cred_env: Mapping[str, str],
     env_seats: Mapping[str, CredentialSource] | None = None,
+    infisical_seats: frozenset[str] | None = None,
 ) -> CredentialSource | None:
     """Where `name`'s key is (the override file first, then Infisical /zulip, then its environment
     variables), or None."""
@@ -223,7 +228,8 @@ def source_for(
     if path is not None and path.is_file():
         return CredentialSource(path=path)
     infisical = CredentialSource(infisical=name.upper())
-    if infisical.present(env, home):
+    seats = infisical_seats if infisical_seats is not None else Z.infisical_seats(env, home)
+    if name.upper() in seats:
         return infisical
     for candidate in ((env_seats or {}).get(name), default_env_source(name)):
         if candidate is not None and candidate.present(cred_env):

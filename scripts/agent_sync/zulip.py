@@ -11,7 +11,8 @@ Credential order (first hit wins, nothing is merged):
 Nothing under ~/.secrets is read (AFC-359:  the folder is retired).  A .env file, ./zuliprc and
 ~/.zuliprc are never read either.  Values fetched from Infisical stay in this process's memory only
 (never on disk), are fetched once per process and reused for INFISICAL_CACHE_TTL seconds, and a
-failed refresh falls back to the values this process already holds.
+failed refresh falls back to the values this process already holds.  A failure with nothing held is
+remembered for INFISICAL_FAILURE_BACKOFF seconds, so an outage costs one timeout, not one per seat.
 
 The API key lives only in `Credentials.key` (hidden from repr) and in the Authorization header.
 Every error message that leaves this module is scrubbed of the key and of the base64 token, so
@@ -98,8 +99,13 @@ INFISICAL_PATH = "/zulip"
 # The fleet's Infisical reader (scripts/fleet_secrets, installed as ~/.local/bin/fleet-secrets).  Tests point
 # FLEET_SECRETS_BIN at a fake.  Its auth chain (System keychain machine identity) works under launchd and pm2.
 ENV_FLEET_SECRETS_BIN = "FLEET_SECRETS_BIN"
-FLEET_SECRETS_TIMEOUT = 60.0
+FLEET_SECRETS_TIMEOUT = (
+    15.0  # interactive commands wait at most this long for one fleet-secrets call
+)
 INFISICAL_CACHE_TTL = 600.0
+# After a failed fetch with nothing held, the same request fails at once for this long instead of paying the
+# timeout again (an Infisical outage must not cost every seat or every identity candidate its own timeout).
+INFISICAL_FAILURE_BACKOFF = 120.0
 # Key-name prefixes in /zulip that are never a seat:  the owner's own account and the integration bots.
 NOT_SEAT_PREFIXES = frozenset(
     {
@@ -480,6 +486,16 @@ _PRINT_NAMED_ENV = (
 _cache_lock = threading.Lock()
 _value_cache: dict[tuple[str, str], tuple[float, str]] = {}  # (bin, name) -> (fetched at, value)
 _names_cache: dict[str, tuple[float, frozenset[str]]] = {}  # bin -> (fetched at, names)
+_failures: dict[
+    tuple[str, ...], tuple[float, str]
+] = {}  # (bin, what...) -> (failed at, reason), memory only
+
+
+def _recent_failure(key: tuple[str, ...], now: float) -> str | None:
+    held = _failures.get(key)
+    if held is not None and now - held[0] < INFISICAL_FAILURE_BACKOFF:
+        return held[1]
+    return None
 
 
 def _child_env(env: Mapping[str, str]) -> dict[str, str]:
@@ -527,6 +543,12 @@ def _fetch_from_fleet_secrets(
         held = {n: _value_cache.get((binary, n)) for n in wanted}
         if all(v is not None and now - v[0] < INFISICAL_CACHE_TTL for v in held.values()):
             return {n: v[1] for n, v in held.items() if v is not None}
+        failure_key = (binary, "values", *wanted)
+        recent = _recent_failure(failure_key, now)
+        if recent is not None and not all(v is not None for v in held.values()):
+            raise CredentialError(
+                "%s (not retried for %d seconds)" % (recent, INFISICAL_FAILURE_BACKOFF)
+            )
         argv = [
             binary,
             "run",
@@ -552,12 +574,14 @@ def _fetch_from_fleet_secrets(
             if not isinstance(payload, dict):
                 raise CredentialError("fleet-secrets bad-output")
             got = {n: payload[n] for n in wanted if isinstance(payload.get(n), str)}
-        except CredentialError:
+        except CredentialError as exc:
+            _failures[failure_key] = (now, str(exc))
             if all(v is not None for v in held.values()):
                 return {
                     n: v[1] for n, v in held.items() if v is not None
                 }  # last known good, memory only
             raise
+        _failures.pop(failure_key, None)
         for n, v in got.items():
             _value_cache[(binary, n)] = (now, v)
         return got
@@ -573,12 +597,20 @@ def _list_from_fleet_secrets(env: Mapping[str, str], home: Path) -> frozenset[st
         held = _names_cache.get(binary)
         if held is not None and now - held[0] < INFISICAL_CACHE_TTL:
             return held[1]
+        failure_key = (binary, "names")
+        recent = _recent_failure(failure_key, now)
+        if recent is not None and held is None:
+            raise CredentialError(
+                "%s (not retried for %d seconds)" % (recent, INFISICAL_FAILURE_BACKOFF)
+            )
         try:
             out = _run_fleet_secrets([binary, "names", "--path", INFISICAL_PATH], env)
-        except CredentialError:
+        except CredentialError as exc:
+            _failures[failure_key] = (now, str(exc))
             if held is not None:
                 return held[1]
             raise
+        _failures.pop(failure_key, None)
         try:
             text = out.decode("utf-8")
         except UnicodeDecodeError:

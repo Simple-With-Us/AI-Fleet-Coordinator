@@ -231,6 +231,40 @@ class BeatTests(unittest.TestCase):
     def beat(self, hb: HB.SentryHeartbeat) -> bool:
         return hb.tick(lambda: self.status)
 
+    def test_the_infisical_dsn_is_read_once_and_a_failure_backs_off(self) -> None:
+        calls: list[str] = []
+        answer = {"dsn": ""}
+
+        def fetch(env, home):
+            calls.append(home)
+            return answer["dsn"]
+
+        with mock.patch.object(HB, "_default_dsn_fetch", fetch):
+            hb = HB.SentryHeartbeat(
+                env={},
+                home="/nonexistent",
+                clock=self.clock.time,
+                log=lambda event, **f: self.logs.append((event, f)),
+                background=False,
+            )
+            self.assertFalse(
+                self.beat(hb)
+            )  # Infisical failed:  off, and not asked again on every tick
+            for _ in range(3):
+                self.clock.advance(150)  # 450 seconds in all, inside the backoff
+                self.beat(hb)
+            self.assertEqual(len(calls), 1)
+            answer["dsn"] = self.sentry.dsn
+            self.clock.advance(HB.DSN_RETRY_SECONDS)
+            self.assertTrue(
+                self.beat(hb)
+            )  # retried after the backoff, then kept for the process's life
+            for _ in range(3):
+                self.clock.advance(300)
+                self.assertTrue(self.beat(hb))
+            self.assertEqual(len(calls), 2)
+        self.assertEqual(len(self.sentry.requests), 4)
+
     def test_checkin_payload_and_interval(self) -> None:
         hb = self.heartbeat()
         self.assertTrue(self.beat(hb))
