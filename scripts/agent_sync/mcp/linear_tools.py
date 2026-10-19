@@ -210,7 +210,9 @@ def plan_for(spec: Spec, args: Mapping[str, Any], identity: str, uid: str | None
     session = args.get("session")
     extra: dict[str, str] = {}
     if session:
-        extra["AGENT_SESSION"] = str(session)  # board takes AGENT_SESSION from any seat;  the --session flag below wins
+        extra["AGENT_SESSION"] = str(
+            session
+        )  # board takes AGENT_SESSION from any seat;  the --session flag below wins
     if spec.family == "named":
         body = {k: v for k, v in args.items() if k not in ("idempotency_key", "session")}
         argv = ["run", name, "--args-json", "-", "--json"]

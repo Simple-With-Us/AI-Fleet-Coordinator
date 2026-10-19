@@ -4,6 +4,7 @@ The board CLI, apple-notes-coding.sh, agent_sync/session_ids.py and agent-sync-m
 copy, because three of them ship without a package.  This test fails when a copy drifts.
 Run:  cd scripts && python3 -m unittest test_session_ids_parity
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -37,9 +38,13 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(seat, seat.upper())
         for seat, names in REGISTRY["envBySeat"].items():
             for name in names:
-                self.assertIn(name, REGISTRY["fallbackEnv"], f"{seat}'s {name} is missing from fallbackEnv")
-        self.assertFalse(set(REGISTRY["envBySeat"]) & set(REGISTRY["exemptSeats"]),
-                         "an exempt seat needs no platform variable entry")
+                self.assertIn(
+                    name, REGISTRY["fallbackEnv"], f"{seat}'s {name} is missing from fallbackEnv"
+                )
+        self.assertFalse(
+            set(REGISTRY["envBySeat"]) & set(REGISTRY["exemptSeats"]),
+            "an exempt seat needs no platform variable entry",
+        )
 
     def test_exempt_seats_are_known_seats(self):
         data = json.loads((REPO / "fleet-apps.json").read_text(encoding="utf-8"))
@@ -76,16 +81,18 @@ class NotesScriptParity(unittest.TestCase):
         self.assertIn(f'SESSION_FALLBACK_ENV="{" ".join(REGISTRY["fallbackEnv"])}"', self.text)
 
     def test_exempt_case(self):
-        m = re.search(r"_session_exempt\(\) \{.*?case \"\$1\" in ([^)]*)\) return 0", self.text, re.S)
+        m = re.search(
+            r"_session_exempt\(\) \{.*?case \"\$1\" in ([^)]*)\) return 0", self.text, re.DOTALL
+        )
         self.assertIsNotNone(m)
         got = sorted(m.group(1).split("|"))
         self.assertEqual(got, sorted(REGISTRY["exemptSeats"] + REGISTRY["exemptPatterns"]))
 
     def test_env_by_seat(self):
-        m = re.search(r"_session_envs\(\) \{.*?esac\n\}", self.text, re.S)
+        m = re.search(r"_session_envs\(\) \{.*?esac\n\}", self.text, re.DOTALL)
         self.assertIsNotNone(m)
         got = {}
-        for seat, names in re.findall(r"^\s*([A-Z]+)\) echo ([A-Z_ ]+) ;;", m.group(0), re.M):
+        for seat, names in re.findall(r"^\s*([A-Z]+)\) echo ([A-Z_ ]+) ;;", m.group(0), re.MULTILINE):
             got[seat] = tuple(names.split())
         self.assertEqual(got, _tuples(REGISTRY["envBySeat"]))
 
@@ -108,9 +115,17 @@ class PythonParity(unittest.TestCase):
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class JavaScriptParity(unittest.TestCase):
     def test_constants(self):
-        code = ("import(process.argv[1]).then(m => console.log(JSON.stringify({p: m.ID_PATTERN, g: m.GENERIC_ENV, "
-                "s: m.EXEMPT_SEATS, x: m.EXEMPT_PATTERNS, e: m.ENV_BY_SEAT, f: m.FALLBACK_ENV})))")
-        out = subprocess.run(["node", "-e", code, JS.as_uri()], capture_output=True, text=True, timeout=60, check=True)
+        code = (
+            "import(process.argv[1]).then(m => console.log(JSON.stringify({p: m.ID_PATTERN, g: m.GENERIC_ENV, "
+            "s: m.EXEMPT_SEATS, x: m.EXEMPT_PATTERNS, e: m.ENV_BY_SEAT, f: m.FALLBACK_ENV})))"
+        )
+        out = subprocess.run(
+            ["node", "-e", code, JS.as_uri()],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+        )
         got = json.loads(out.stdout)
         self.assertEqual(got["p"], REGISTRY["idPattern"])
         self.assertEqual(got["g"], REGISTRY["genericEnv"])

@@ -97,9 +97,14 @@ def hy(h: str) -> str:
 
 # Board ids used by the seed data (32 hex, as on the board).
 BASE_SESSION = "5e55105a-aaaa-4000-8000-00000000b00d"
-SEAT_SESSION_VARS = {"CLAUDE": "CLAUDE_CODE_SESSION_ID", "CODEX": "CODEX_THREAD_ID", "GROK": "GROK_SESSION_ID",
-                     "OPENCODE": "OPENCODE_SESSION_ID", "CURSOR": "CURSOR_CONVERSATION_ID",
-                     "MM": "__MAVIS_RUNTIME_SESSION_ID"}
+SEAT_SESSION_VARS = {
+    "CLAUDE": "CLAUDE_CODE_SESSION_ID",
+    "CODEX": "CODEX_THREAD_ID",
+    "GROK": "GROK_SESSION_ID",
+    "OPENCODE": "OPENCODE_SESSION_ID",
+    "CURSOR": "CURSOR_CONVERSATION_ID",
+    "MM": "__MAVIS_RUNTIME_SESSION_ID",
+}
 TAIL = f"  (sessions: {BASE_SESSION})"
 B_A = "236a2fa7e2ab4d24be03b0414750e0d8"  # OPS-10, Todo, P1, three comments
 B_B = "9f3afe1a801747d6933486954c70347d"  # OPS-11, In Progress, claimed by CODEX
@@ -1385,7 +1390,10 @@ class WriteTests(BoardTest):
             "--url",
             "https://github.com/o/r/issues/1",
         )
-        m = re.match(r"filed ([0-9a-f-]{36})  \(P1 CT\)  \(sessions: " + BASE_SESSION + r"\)  CT-9$", p.stdout.strip())
+        m = re.match(
+            r"filed ([0-9a-f-]{36})  \(P1 CT\)  \(sessions: " + BASE_SESSION + r"\)  CT-9$",
+            p.stdout.strip(),
+        )
         self.assertTrue(m, p.stdout)
         iss = self.mock.issues[m.group(1)]
         self.assertEqual((iss["state"], iss["priority"], iss["team"]), ("Todo", 2, "CT"))
@@ -1661,7 +1669,8 @@ class WriteTests(BoardTest):
             "sess-2",
         )
         self.assertEqual(
-            p.stdout.strip(), f"commented on {B_A[:8]} as CLAUDE  (sessions: sess-1, sess-2)  OPS-10"
+            p.stdout.strip(),
+            f"commented on {B_A[:8]} as CLAUDE  (sessions: sess-1, sess-2)  OPS-10",
         )
         body = self.comments_of(self.mock.issues[hy(B_A)])[-1]
         self.assertEqual(
@@ -1825,8 +1834,16 @@ class SessionIdTests(BoardTest):
     """AFC-361:  file, claim, status and comment need a session id unless the seat has one thread with the
     owner.  The exemption comes from AGENT_SEAT, never from a flag, and a refusal writes nothing."""
 
-    PLATFORM_VARS = ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "CURSOR_CONVERSATION_ID", "CURSOR_AGENT_CHAT_ID",
-                     "GROK_SESSION_ID", "OPENCODE_SESSION_ID", "__MAVIS_RUNTIME_SESSION_ID", "AGENT_SESSION")
+    PLATFORM_VARS = (
+        "CLAUDE_CODE_SESSION_ID",
+        "CODEX_THREAD_ID",
+        "CURSOR_CONVERSATION_ID",
+        "CURSOR_AGENT_CHAT_ID",
+        "GROK_SESSION_ID",
+        "OPENCODE_SESSION_ID",
+        "__MAVIS_RUNTIME_SESSION_ID",
+        "AGENT_SESSION",
+    )
     WRITES = (
         ("comment", "OPS-10", "--by", "{seat}", "--text", "hello"),
         ("claim", "OPS-10", "--by", "{seat}"),
@@ -1858,47 +1875,102 @@ class SessionIdTests(BoardTest):
             self.assertEqual(
                 comments, [list(i.get("comments", [])) for i in self.mock.issues.values()], write[0]
             )
-            self.assertEqual(self.mock.calls[n:], [], f"{write[0]} reached Linear before it refused")
+            self.assertEqual(
+                self.mock.calls[n:], [], f"{write[0]} reached Linear before it refused"
+            )
 
     def test_exempt_seats_write_without_a_session(self):
-        for seat in ("GROK-BOT", "GB-FIXER", "GB-DIRECTOR", "MA", "ROB", "JET", "WISE", "INSTINCT", "ECHO"):
+        for seat in (
+            "GROK-BOT",
+            "GB-FIXER",
+            "GB-DIRECTOR",
+            "MA",
+            "ROB",
+            "JET",
+            "WISE",
+            "INSTINCT",
+            "ECHO",
+        ):
             p = self.bare(seat, "comment", "OPS-10", "--by", seat, "--text", f"exempt {seat}")
             self.assertNotIn("sessions:", p.stdout, seat)
             self.assertIn("commented on", p.stdout, seat)
 
     def test_exemption_is_not_a_flag(self):
         for flag in (("--exempt",), ("--no-session",), ("--session", "")):
-            p = self.bare("CLAUDE", "comment", "OPS-10", "--by", "CLAUDE", "--text", "x", *flag, code=2)
+            p = self.bare(
+                "CLAUDE", "comment", "OPS-10", "--by", "CLAUDE", "--text", "x", *flag, code=2
+            )
             self.assertNotIn("commented on", p.stdout)
         # --by does not make a non-exempt seat exempt either:  it must equal AGENT_SEAT.
         p = self.bare("CLAUDE", "comment", "OPS-10", "--by", "WISE", "--text", "x", code=2)
         self.assertIn("does not match AGENT_SEAT=CLAUDE", p.stderr)
 
     def test_an_exempt_seat_that_has_an_id_still_records_it(self):
-        p = self.bare("WISE", "comment", "OPS-10", "--by", "WISE", "--text", "with id", extra={"AGENT_SESSION": "wise-thread-1"})
+        p = self.bare(
+            "WISE",
+            "comment",
+            "OPS-10",
+            "--by",
+            "WISE",
+            "--text",
+            "with id",
+            extra={"AGENT_SESSION": "wise-thread-1"},
+        )
         self.assertIn("(sessions: wise-thread-1)", p.stdout)
 
     def test_platform_variables_are_found_for_each_seat(self):
-        cases = {"CLAUDE": "CLAUDE_CODE_SESSION_ID", "CODEX": "CODEX_THREAD_ID", "GROK": "GROK_SESSION_ID",
-                 "OPENCODE": "OPENCODE_SESSION_ID", "CURSOR": "CURSOR_CONVERSATION_ID",
-                 "MM": "__MAVIS_RUNTIME_SESSION_ID"}
+        cases = {
+            "CLAUDE": "CLAUDE_CODE_SESSION_ID",
+            "CODEX": "CODEX_THREAD_ID",
+            "GROK": "GROK_SESSION_ID",
+            "OPENCODE": "OPENCODE_SESSION_ID",
+            "CURSOR": "CURSOR_CONVERSATION_ID",
+            "MM": "__MAVIS_RUNTIME_SESSION_ID",
+        }
         for seat, var in cases.items():
             sid = f"{seat.lower()}-sess-0001"
-            p = self.bare(seat, "comment", "OPS-10", "--by", seat, "--text", f"auto {seat}", extra={var: sid})
+            p = self.bare(
+                seat, "comment", "OPS-10", "--by", seat, "--text", f"auto {seat}", extra={var: sid}
+            )
             self.assertIn(f"(sessions: {sid})", p.stdout, seat)
-        p = self.bare("CURSOR", "comment", "OPS-10", "--by", "CURSOR", "--text", "chat id",
-                      extra={"CURSOR_AGENT_CHAT_ID": "cursor-chat-0002"})
+        p = self.bare(
+            "CURSOR",
+            "comment",
+            "OPS-10",
+            "--by",
+            "CURSOR",
+            "--text",
+            "chat id",
+            extra={"CURSOR_AGENT_CHAT_ID": "cursor-chat-0002"},
+        )
         self.assertIn("(sessions: cursor-chat-0002)", p.stdout)
 
     def test_a_seat_with_its_own_variable_ignores_other_platforms(self):
         """A CLAUDE session started from inside Codex must not sign with Codex's thread id."""
-        p = self.bare("CLAUDE", "comment", "OPS-10", "--by", "CLAUDE", "--text", "x",
-                      extra={"CODEX_THREAD_ID": "codex-thread-0003"}, code=2)
+        p = self.bare(
+            "CLAUDE",
+            "comment",
+            "OPS-10",
+            "--by",
+            "CLAUDE",
+            "--text",
+            "x",
+            extra={"CODEX_THREAD_ID": "codex-thread-0003"},
+            code=2,
+        )
         self.assertIn("no session id", p.stderr)
 
     def test_a_seat_with_no_variable_of_its_own_tries_every_platform_variable(self):
-        p = self.bare("BF-FIXER", "comment", "OPS-10", "--by", "BF-FIXER", "--text", "bot",
-                      extra={"CODEX_THREAD_ID": "codex-thread-0004"})
+        p = self.bare(
+            "BF-FIXER",
+            "comment",
+            "OPS-10",
+            "--by",
+            "BF-FIXER",
+            "--text",
+            "bot",
+            extra={"CODEX_THREAD_ID": "codex-thread-0004"},
+        )
         self.assertIn("(sessions: codex-thread-0004)", p.stdout)
         p = self.bare("FX", "comment", "OPS-10", "--by", "FX", "--text", "x", code=2)
         self.assertIn("FX has no session variable of its own", p.stderr)
@@ -1907,29 +1979,69 @@ class SessionIdTests(BoardTest):
         env = {"AGENT_SESSION": "generic-0005", "CLAUDE_CODE_SESSION_ID": "platform-0006"}
         p = self.bare("CLAUDE", "comment", "OPS-10", "--by", "CLAUDE", "--text", "a", extra=env)
         self.assertIn("(sessions: generic-0005)", p.stdout)
-        p = self.bare("CLAUDE", "comment", "OPS-10", "--by", "CLAUDE", "--text", "b", "--session", "flag-0007",
-                      extra=env)
+        p = self.bare(
+            "CLAUDE",
+            "comment",
+            "OPS-10",
+            "--by",
+            "CLAUDE",
+            "--text",
+            "b",
+            "--session",
+            "flag-0007",
+            extra=env,
+        )
         self.assertIn("(sessions: flag-0007)", p.stdout)
-        p = self.bare("CLAUDE", "comment", "OPS-10", "--by", "CLAUDE", "--text", "c",
-                      extra={"CLAUDE_CODE_SESSION_ID": "platform-0006"})
+        p = self.bare(
+            "CLAUDE",
+            "comment",
+            "OPS-10",
+            "--by",
+            "CLAUDE",
+            "--text",
+            "c",
+            extra={"CLAUDE_CODE_SESSION_ID": "platform-0006"},
+        )
         self.assertIn("(sessions: platform-0006)", p.stdout)
 
     def test_a_malformed_id_is_refused(self):
         for bad in ("a b c d", "x", "-leading", "semi;colon", "q" * 129):
-            p = self.bare("CLAUDE", "comment", "OPS-10", "--by", "CLAUDE", "--text", "x", f"--session={bad}", code=2)
+            p = self.bare(
+                "CLAUDE",
+                "comment",
+                "OPS-10",
+                "--by",
+                "CLAUDE",
+                "--text",
+                "x",
+                f"--session={bad}",
+                code=2,
+            )
             self.assertIn("is not valid", p.stderr)
 
     def test_file_and_claim_record_the_id_on_the_issue(self):
         sid = "file-claim-0008"
-        p = self.bare("CLAUDE", "file", "--title", "records session", "--app", "OPS", "--by", "CLAUDE",
-                      "--session", sid)
+        p = self.bare(
+            "CLAUDE",
+            "file",
+            "--title",
+            "records session",
+            "--app",
+            "OPS",
+            "--by",
+            "CLAUDE",
+            "--session",
+            sid,
+        )
         self.assertIn(f"(sessions: {sid})", p.stdout)
         ident = re.search(r"(OPS-\d+)\s*$", p.stdout.strip()).group(1)
         issue = self.issue_by_ident(ident)
         self.assertIn(f"* Sessions: {sid}", issue["description"])  # Linear stores the bullet as *
         p = self.bare("CLAUDE", "claim", "OPS-10", "--by", "CLAUDE", "--session", sid)
         self.assertIn(f"(sessions: {sid})", p.stdout)
-        self.assertTrue(any(f"Sessions: {sid}" in c for c in self.comments_of(self.issue_by_ident("OPS-10"))))
+        self.assertTrue(
+            any(f"Sessions: {sid}" in c for c in self.comments_of(self.issue_by_ident("OPS-10")))
+        )
 
 
 class PartialWriteTests(BoardTest):
@@ -1998,7 +2110,12 @@ class PartialWriteTests(BoardTest):
             extra=self.stop("BoardAttach"),
             code=5,
         )
-        m = re.match(r"filed ([0-9a-f-]{36})  \(-- OPS\)  \(sessions: " + self.SESSION["CLAUDE_CODE_SESSION_ID"] + r"\)  (OPS-\d+)$", p.stdout.strip())
+        m = re.match(
+            r"filed ([0-9a-f-]{36})  \(-- OPS\)  \(sessions: "
+            + self.SESSION["CLAUDE_CODE_SESSION_ID"]
+            + r"\)  (OPS-\d+)$",
+            p.stdout.strip(),
+        )
         self.assertTrue(m, p.stdout)
         self.assertEqual(len(self.mock.issues), n + 1)
         self.assertIn(f"filed {m.group(2)} ({m.group(1)})", p.stderr)

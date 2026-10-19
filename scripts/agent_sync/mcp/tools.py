@@ -2092,7 +2092,11 @@ class Tools:
         try:
             return SESSION_IDS.require(self.seat, args.get("session"), self.agent.rt.env, "tool")
         except ValueError as exc:  # SessionRequired is a ValueError
-            code = "session_required" if isinstance(exc, SESSION_IDS.SessionRequired) else "invalid_argument"
+            code = (
+                "session_required"
+                if isinstance(exc, SESSION_IDS.SessionRequired)
+                else "invalid_argument"
+            )
             raise ToolError(code, str(exc)) from None
 
     def _notes_envelope(self, action: str, args: Mapping[str, Any]) -> dict[str, Any]:

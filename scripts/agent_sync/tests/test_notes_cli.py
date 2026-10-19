@@ -75,7 +75,18 @@ class NotesCliTests(Harness):
         self.assertEqual(run.calls[0]["input"], b"# From a file")
         self.assertEqual(
             run.calls[0]["argv"][1:],
-            ["--update", "--notify", "--summary", "short", "--pr", "46", "--session", SESSION, "--title", TITLE],
+            [
+                "--update",
+                "--notify",
+                "--summary",
+                "short",
+                "--pr",
+                "46",
+                "--session",
+                SESSION,
+                "--title",
+                TITLE,
+            ],
         )
         self.assertEqual(run.calls[0]["env"]["APPLE_NOTES_PIN"], "0")
         self.assertIn("--html", run.calls[1]["argv"])
