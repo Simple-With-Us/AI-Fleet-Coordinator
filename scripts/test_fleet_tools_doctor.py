@@ -40,7 +40,9 @@ class SeatAndMcpTests(unittest.TestCase):
             "/linear": frozenset(),
             "/fleetlink": None,
         }
-        with mock.patch.object(doctor, "infisical_names", lambda folder, env, project="fleet-ops": names[folder]):
+        with mock.patch.object(
+            doctor, "infisical_names", lambda folder, env, project="fleet-ops": names[folder]
+        ):
             report = doctor.Report()
             doctor.check_seat(report, "GROK-WEB", {})
             self.assertEqual(report.rows[0]["status"], "FAIL")

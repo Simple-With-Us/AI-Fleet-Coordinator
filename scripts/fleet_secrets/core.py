@@ -170,11 +170,13 @@ def infisical_project_id(env: Mapping[str, str], home: Path, project: str = DEFA
     if not value:
         raise SecretsError(
             "the %s Infisical project id is not set:  set %s or put it in ~/%s "
-            "(it lives in the private fleet-ops inventory)" % (_LABELS[project], env_name, project_file)
+            "(it lives in the private fleet-ops inventory)"
+            % (_LABELS[project], env_name, project_file)
         )
     if not _UUID_RE.match(value):
         raise SecretsError(
-            "the %s Infisical project id (%s or ~/%s) is not a UUID" % (_LABELS[project], env_name, project_file)
+            "the %s Infisical project id (%s or ~/%s) is not a UUID"
+            % (_LABELS[project], env_name, project_file)
         )
     return value
 
