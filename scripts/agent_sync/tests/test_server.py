@@ -182,7 +182,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(sorted(cfg.disabled), ["GB-FIXER"])
         self.assertEqual(cfg.disabled["GB-FIXER"].key_env, "FIXER_KEY")
 
-    def test_bad_seat_settings_are_errors_and_the_seat_gets_no_queue(self) -> None:
+    def test_bad_seat_settings_are_errors_and_the_seat_gets_no_queue_or_loses_its_wake(self) -> None:
         cases = {
             'creds = "env"\nemail_env = "ZULIP_EMAIL"': "single-seat variable",
             'creds = "env"\nkey_env = "zulip-key"': "environment variable name",
@@ -208,7 +208,15 @@ class ConfigTests(unittest.TestCase):
             with self.subTest(body=body):
                 cfg = self.parse('[daemon]\ninstance = "server"\n[seat.GB-COMPILER]\n' + body + "\n")
                 self.assertIn(expected, " ".join(cfg.errors))
-                self.assertEqual(cfg.seats, {})
+                if 'wake = "http"' in body or "routine = {}" in body:
+                    # AFC-358:  a routine or wake problem downgrades the wake to inbox and keeps the queue.
+                    self.assertEqual(sorted(cfg.seats), ["GB-COMPILER"], body)
+                    seat = cfg.seats["GB-COMPILER"]
+                    self.assertEqual((seat.wake, seat.routine), ("inbox", None), body)
+                    self.assertTrue(seat.config_problems, body)
+                else:
+                    self.assertEqual(cfg.seats, {})
+                    self.assertIn("GB-COMPILER", cfg.skipped_seats)
 
     def test_env_credentials_are_for_the_server_instance_only(self) -> None:
         cfg = self.parse('[seat.GB-COMPILER]\ncreds = "env"\n')

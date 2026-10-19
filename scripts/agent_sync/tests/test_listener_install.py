@@ -96,7 +96,10 @@ class InstallTests(ListenerHarness):
         daemon.write_status()
         status = L.read_json(os.path.join(self.root, "listener", "status.json"))
         self.assertTrue(status["config_errors"])
-        self.assertEqual(len(self.banners), 1, "one notify-owner for a bad config")
+        # One banner for the config as a whole, and one naming the seat it kept out (AFC-358).
+        self.assertEqual(len(self.banners), 2, self.banners)
+        self.assertTrue(any("is NOT loaded" in b[8] for b in self.banners), self.banners)
+        self.assertIn("CLAUDE", status["skipped_seats"])
 
 
     def test_status_displays_per_seat_nudge_counts_and_legacy_snapshot(self):

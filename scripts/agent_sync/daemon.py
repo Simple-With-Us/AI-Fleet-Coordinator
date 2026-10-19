@@ -785,6 +785,7 @@ class Daemon:
                     % (len(cfg.errors), "" if len(cfg.errors) == 1 else "s"),
                     kind="config",
                 )
+        self._notify_seat_config(cfg)
         self.coalescer.window = cfg.coalesce_seconds
         self.coalescer.max_window = cfg.coalesce_max_seconds
         self.coalescer.owner_window = cfg.owner_coalesce_seconds
@@ -797,6 +798,35 @@ class Daemon:
             gone = self.seats.pop(seat)
             gone.stop.set()  # its poller and wake worker exit instead of reconnecting
             gone.disconnect()
+
+    def _notify_seat_config(self, cfg: C.Config) -> None:
+        """A seat whose wake config is wrong keeps capturing (AFC-358), so nothing about the seat looks
+        broken from outside:  its mentions queue and nothing wakes.  Say so once a day per seat,
+        naming the first problem, the way a stale pin is said.  A seat the config could not load at
+        all (a bad instance, credential or environment name) gets the sharper message."""
+        for seat, seat_cfg in sorted(cfg.seats.items()):
+            if not seat_cfg.config_problems:
+                continue
+            self.notifier.notify(
+                seat,
+                "agent-sync %s" % seat,
+                "%s wake config problem, so %s wakes are inbox-only (messages still queue): %s"
+                % (seat, seat, self.scrub(seat_cfg.config_problems[0])),
+                kind="config-wake",
+                key="config-wake:%s" % seat,
+                note="%d problem%s in listener.toml for this seat; agent-sync status lists them"
+                % (len(seat_cfg.config_problems), "" if len(seat_cfg.config_problems) == 1 else "s"),
+            )
+        for seat, problems in sorted(cfg.skipped_seats.items()):
+            self.notifier.notify(
+                seat,
+                "agent-sync %s" % seat,
+                "%s is NOT loaded, so nothing is captured for it: %s"
+                % (seat, self.scrub(problems[0] if problems else "config problem")),
+                kind="config-seat",
+                key="config-seat:%s" % seat,
+                note="fix listener.toml, then agent-sync daemon reload",
+            )
 
     def _configure_outgoing_webhook(self) -> None:
         """Start the optional receiver using only tokens for explicitly allowlisted seats."""
@@ -2265,6 +2295,22 @@ class Daemon:
                 "then `--pin`.  It is never re-pinned automatically:  the pin records "
                 "that a person checked this build's wake contract."
                 % (recorded, current, runner.seat),
+                trigger_ids=pending.trigger_ids,
+            )
+            return
+        if reason in ("no_claude", "no_muse"):
+            # The binary the seat's wake needs is not there:  a typo'd path, a missing install or a PATH
+            # that lost it.  Every wake drops until it is fixed, so the notice names the setting.
+            tool = "claude" if reason == "no_claude" else "muse"
+            self.notifier.notify(
+                runner.seat,
+                "agent-sync %s" % runner.seat,
+                "no %s binary found, so %s wakes are inbox-only until it is installed or "
+                "seat.%s.%s names it" % (tool, runner.seat, runner.seat, tool),
+                kind="wake-" + reason,
+                key="wake:%s:%s" % (runner.seat, reason),
+                note="messages still queue in the seat inbox; fix listener.toml or the install, then "
+                "agent-sync daemon reload",
                 trigger_ids=pending.trigger_ids,
             )
             return
@@ -4729,6 +4775,11 @@ class Daemon:
                     "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
                     % (muse_pin["muse"], muse_pin["pinned_muse"], seat)
                 )
+            for problem in runner.cfg.config_problems:
+                red.append(
+                    "config problem, so wakes are inbox-only (mentions still queue): %s"
+                    % self.scrub(problem)
+                )
             quota = None
             if runner.cfg.wake in ("claude", "muse"):
                 quota = A.provider_quota(runner.cfg.provider or "", now)
@@ -4790,6 +4841,10 @@ class Daemon:
                     if self.config.instance == "mac" and self.config.muse_bridge_enabled
                     else "inactive"
                 ),
+            },
+            "skipped_seats": {
+                seat: [self.scrub(p) for p in problems]
+                for seat, problems in sorted(self.config.skipped_seats.items())
             },
             "config_errors": [
                 self.scrub(e) for e in self.config.errors + self.refusal + self.reload_refused

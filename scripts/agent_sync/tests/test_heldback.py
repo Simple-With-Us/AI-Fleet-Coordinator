@@ -353,13 +353,15 @@ class ConfigTests(unittest.TestCase):
                                                          "items_in_wake": 5,
                                                          "owner_digest_minutes": 0.0, "catch_up": False})
 
-    def test_a_bad_value_is_an_error_and_the_seat_gets_no_queue(self) -> None:
+    def test_a_bad_value_is_an_error_and_the_seat_keeps_its_queue_but_loses_its_wake(self) -> None:
         for setting, key in (("max = 0", "max"), ("max = 1001", "max"), ("max = 2.5", "max"), ("ttl_hours = 0.5", "ttl_hours"),
                              ("ttl_hours = 200", "ttl_hours"), ("items_in_wake = 21", "items_in_wake"),
                              ("owner_digest_minutes = 5", "owner_digest_minutes"), ('catch_up = "yes"', "catch_up"),
                              ("surprise = 1", "surprise")):
             cfg = self.cfg('[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\nheld_back = { %s }\n' % setting)
-            self.assertNotIn("CLAUDE", cfg.seats, setting)
+            # AFC-358:  a held-back setting concerns the wake, so the seat still captures and only its wake drops.
+            self.assertEqual(cfg.seats["CLAUDE"].wake, "inbox", setting)
+            self.assertTrue(cfg.seats["CLAUDE"].config_problems, setting)
             self.assertTrue(any("seat.CLAUDE.held_back.%s" % key in e for e in cfg.errors), (setting, cfg.errors))
         cfg = self.cfg('[seat.MA]\nbot = "MA"\nwake = "inbox"\nheld_back = { catch_up = true }\n')
         self.assertTrue(any("an inbox seat never wakes" in e for e in cfg.errors), cfg.errors)
