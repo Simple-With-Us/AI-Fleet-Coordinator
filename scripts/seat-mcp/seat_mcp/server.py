@@ -41,7 +41,11 @@ def handle_rpc(msg: JsonDict) -> JsonDict | None:
         # Notification.  No response body.
         return None
     if not method:
-        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32600, "message": "invalid request"}}
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32600, "message": "invalid request"},
+        }
     try:
         result = _dispatch(str(method), params)
     except FileNotFoundError as exc:
@@ -127,7 +131,9 @@ class SeatHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-    def _send(self, code: int, body: bytes, content_type: str, extra: list[tuple[str, str]] | None = None) -> None:
+    def _send(
+        self, code: int, body: bytes, content_type: str, extra: list[tuple[str, str]] | None = None
+    ) -> None:
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -142,12 +148,16 @@ class SeatHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin", "")
         if origin_ok(origin, access_ok=access_authenticated(self.headers)):
             return False
-        payload = _json_bytes({"jsonrpc": "2.0", "error": {"code": -32002, "message": "invalid origin"}})
+        payload = _json_bytes(
+            {"jsonrpc": "2.0", "error": {"code": -32002, "message": "invalid origin"}}
+        )
         self._send(403, payload, "application/json")
         return True
 
     def _unauthorized(self) -> None:
-        payload = _json_bytes({"jsonrpc": "2.0", "error": {"code": -32001, "message": "unauthorized"}})
+        payload = _json_bytes(
+            {"jsonrpc": "2.0", "error": {"code": -32001, "message": "unauthorized"}}
+        )
         self._send(401, payload, "application/json", [("WWW-Authenticate", "Bearer")])
 
     def _auth_ok(self) -> bool:
@@ -219,7 +229,9 @@ class SeatHandler(BaseHTTPRequestHandler):
             self._send(400, _json_bytes({"ok": False, "error": "parse error"}), "application/json")
             return None
         if not isinstance(msg, dict):
-            self._send(400, _json_bytes({"ok": False, "error": "invalid request"}), "application/json")
+            self._send(
+                400, _json_bytes({"ok": False, "error": "invalid request"}), "application/json"
+            )
             return None
         return msg
 
@@ -246,6 +258,7 @@ class SeatHandler(BaseHTTPRequestHandler):
     def _proxy_to_webhook_ingress(self) -> None:
         import urllib.error
         import urllib.request
+
         length_s = self.headers.get("Content-Length", "0")
         try:
             length = int(length_s)
@@ -268,7 +281,11 @@ class SeatHandler(BaseHTTPRequestHandler):
             content_type = exc.headers.get("Content-Type", "application/json")
             self._send(exc.code, err_body, content_type)
         except Exception as exc:
-            self._send(502, _json_bytes({"ok": False, "error": f"Webhook proxy failed: {exc}"}), "application/json")
+            self._send(
+                502,
+                _json_bytes({"ok": False, "error": f"Webhook proxy failed: {exc}"}),
+                "application/json",
+            )
 
     def do_POST(self) -> None:
         if self._forbidden_origin():
@@ -305,18 +322,45 @@ class SeatHandler(BaseHTTPRequestHandler):
         try:
             msg = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            self._send(400, _json_bytes({"jsonrpc": "2.0", "error": {"code": -32700, "message": "parse error"}}), "application/json")
+            self._send(
+                400,
+                _json_bytes(
+                    {"jsonrpc": "2.0", "error": {"code": -32700, "message": "parse error"}}
+                ),
+                "application/json",
+            )
             return
         if not isinstance(msg, dict):
-            self._send(400, _json_bytes({"jsonrpc": "2.0", "error": {"code": -32600, "message": "invalid request"}}), "application/json")
+            self._send(
+                400,
+                _json_bytes(
+                    {"jsonrpc": "2.0", "error": {"code": -32600, "message": "invalid request"}}
+                ),
+                "application/json",
+            )
             return
         header_method = self.headers.get("Mcp-Method") or self.headers.get("MCP-Method")
         if header_method and msg.get("method") and header_method != msg.get("method"):
-            self._send(400, _json_bytes({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Mcp-Method mismatch"}}), "application/json")
+            self._send(
+                400,
+                _json_bytes(
+                    {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Mcp-Method mismatch"}}
+                ),
+                "application/json",
+            )
             return
         proto = self.headers.get("MCP-Protocol-Version") or self.headers.get("Mcp-Protocol-Version")
         if proto and proto not in PROTOCOL_VERSIONS:
-            self._send(400, _json_bytes({"jsonrpc": "2.0", "error": {"code": -32600, "message": "unsupported MCP-Protocol-Version"}}), "application/json")
+            self._send(
+                400,
+                _json_bytes(
+                    {
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32600, "message": "unsupported MCP-Protocol-Version"},
+                    }
+                ),
+                "application/json",
+            )
             return
         result = handle_rpc(msg)
         extra: list[tuple[str, str]] = []
