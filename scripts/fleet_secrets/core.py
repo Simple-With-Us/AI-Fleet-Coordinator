@@ -201,7 +201,16 @@ def keychain_item(account: str, keychain: str | None) -> str | None:
     (`keychain` None means there is no such keychain).  Captured, never echoed."""
     if not keychain or not os.path.exists(SECURITY_BIN):
         return None
-    argv = [SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account, "-w", keychain]
+    argv = [
+        SECURITY_BIN,
+        "find-generic-password",
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-a",
+        account,
+        "-w",
+        keychain,
+    ]
     try:
         proc = subprocess.run(
             argv,
