@@ -80,7 +80,7 @@ identities = re.findall(
 )
 requested = os.environ.get("MUSTER_SIGNING_IDENTITY")
 if requested:
-    identities = [item for item in identities if requested in (item[0], item[1])]
+    identities = [item for item in identities if requested == item[0] or requested == item[1]]
 if len(identities) != 1:
     sys.exit("Expected exactly one matching valid Developer ID Application identity; "
              "select one with MUSTER_SIGNING_IDENTITY.")
@@ -138,6 +138,53 @@ if [ -L "$INSTALLED_APP" ]; then
     echo "Refusing to replace a symlink at $INSTALLED_APP." >&2
     exit 1
 fi
+python3 - "$STAGED_APP" "$INSTALLED_APP" "$CONFIGURATION" <<'PY'
+import os
+from pathlib import Path
+import plistlib
+import subprocess
+import sys
+
+staged, installed = map(Path, sys.argv[1:3])
+expected_id = {
+    "Release": "services.jays.Muster",
+    "Debug": "services.jays.Muster.dev",
+}[sys.argv[3]]
+allowed_ids = {"services.jays.Muster", "services.jays.Muster.dev"}
+
+def bundle_id(path):
+    if path.is_symlink() or not path.is_dir():
+        sys.exit(f"Refusing a non-app directory or symlink at {path}.")
+    try:
+        with (path / "Contents/Info.plist").open("rb") as stream:
+            info = plistlib.load(stream)
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        sys.exit(f"Refusing a bundle without valid app metadata at {path}.")
+    if (not isinstance(info, dict)
+            or info.get("CFBundlePackageType") != "APPL"
+            or info.get("CFBundleExecutable") != "Muster"
+            or not (path / "Contents/MacOS/Muster").is_file()):
+        sys.exit(f"Refusing a non-Muster app bundle at {path}.")
+    return info.get("CFBundleIdentifier")
+
+if bundle_id(staged) != expected_id:
+    sys.exit("The staged app bundle identifier does not match the selected configuration.")
+entitlements = subprocess.run(
+    ["/usr/bin/codesign", "-d", "--entitlements", "-", str(staged)],
+    check=True, capture_output=True,
+).stdout
+try:
+    signed = plistlib.loads(entitlements) if entitlements.strip() else {}
+except (plistlib.InvalidFileException, ValueError):
+    sys.exit("Cannot read the staged app's signed entitlements.")
+if not isinstance(signed, dict):
+    sys.exit("The staged app's signed entitlements are invalid.")
+sandbox = signed.get("com.apple.security.app-sandbox")
+if sandbox is not None and sandbox is not False:
+    sys.exit("The staged app must have App Sandbox absent or false.")
+if os.path.lexists(installed) and bundle_id(installed) not in allowed_ids:
+    sys.exit("Refusing to replace an existing app with a different bundle identifier.")
+PY
 rm -rf "$INSTALLED_APP"
 mv "$STAGED_APP" "$INSTALLED_APP"
 /usr/bin/codesign --verify --strict --deep "$INSTALLED_APP"
