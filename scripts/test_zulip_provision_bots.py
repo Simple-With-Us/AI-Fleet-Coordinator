@@ -4,6 +4,7 @@ Runs the script against a fake Zulip server on 127.0.0.1 and a fake fleet-secret
 Every key below is a made-up test value.  Nothing here touches the real realm,
 Infisical or ~/.secrets.
 """
+
 from __future__ import annotations
 
 import base64
@@ -93,13 +94,16 @@ class FakeZulip:
                     new_email = f"{short}-bot@127.0.0.1"
                     new_key = f"test-new-key-{fake.counter}-CCCC3333"
                     fake.keys[new_key] = new_email
-                    fake.users.append(
-                        self._mk(fake.counter, form["full_name"][0], new_email)
-                    )
+                    fake.users.append(self._mk(fake.counter, form["full_name"][0], new_email))
                     return self._send(
                         200,
-                        {"result": "success", "user_id": fake.counter, "api_key": new_key,
-                         "full_name": form["full_name"][0], "owner_id": caller["user_id"]},
+                        {
+                            "result": "success",
+                            "user_id": fake.counter,
+                            "api_key": new_key,
+                            "full_name": form["full_name"][0],
+                            "owner_id": caller["user_id"],
+                        },
                     )
                 m = re.fullmatch(r"bots/(\d+)/api_key/regenerate", path)
                 if method == "POST" and m:
@@ -116,7 +120,9 @@ class FakeZulip:
                     return self._send(200, {"result": "success"})
                 return self._send(404, {"result": "error", "msg": "no route"})
 
-            _mk = staticmethod(lambda uid, name, email: FakeZulip._user(uid, name, email, True, 400))
+            _mk = staticmethod(
+                lambda uid, name, email: FakeZulip._user(uid, name, email, True, 400)
+            )
 
             def do_GET(self):
                 self._handle("GET")
@@ -126,7 +132,9 @@ class FakeZulip:
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
-        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
         self.thread.start()
 
     @staticmethod
@@ -173,13 +181,18 @@ class ProvisionTests(unittest.TestCase):
         fs = self.root / "fleet-secrets"
         fs.write_text(
             FAKE_SECRETS.format(
-                python=sys.executable, log=str(self.fs_log), email=ADMIN_EMAIL, key=ADMIN_KEY,
+                python=sys.executable,
+                log=str(self.fs_log),
+                email=ADMIN_EMAIL,
+                key=ADMIN_KEY,
                 site=self.fake.url,
             )
         )
         fs.chmod(0o755)
         self.fs = fs
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("REALM_ADMIN_", "JAY_ZULIP"))}
+        env = {
+            k: v for k, v in os.environ.items() if not k.startswith(("REALM_ADMIN_", "JAY_ZULIP"))
+        }
         env.update({"HOME": str(self.home), "FLEET_SECRETS_BIN": str(fs)})
         self.env = mock.patch.dict(os.environ, env, clear=True)
         self.env.start()
@@ -187,7 +200,9 @@ class ProvisionTests(unittest.TestCase):
         self.realm.start()
         self.no_input = mock.patch("builtins.input", side_effect=AssertionError("prompted"))
         self.no_input.start()
-        self.no_getpass = mock.patch("getpass.getpass", side_effect=AssertionError("prompted"), create=True)
+        self.no_getpass = mock.patch(
+            "getpass.getpass", side_effect=AssertionError("prompted"), create=True
+        )
         self.no_getpass.start()
 
     def tearDown(self):
@@ -264,8 +279,12 @@ class ProvisionTests(unittest.TestCase):
     def test_jay_zulip_is_never_read_or_used(self):
         with mock.patch.dict(
             os.environ,
-            {"JAY_ZULIP_EMAIL": "jay@example.invalid", "JAY_ZULIP_KEY": "x", "ZULIP_OWNER_EMAIL": "o@x",
-             "ZULIP_OWNER_API_KEY": "y"},
+            {
+                "JAY_ZULIP_EMAIL": "jay@example.invalid",
+                "JAY_ZULIP_KEY": "x",
+                "ZULIP_OWNER_EMAIL": "o@x",
+                "ZULIP_OWNER_API_KEY": "y",
+            },
         ):
             code, out, err = self.run_main("--dry-run", "--only", "Clutch")
         self.assertEqual(code, 0, err)
@@ -287,7 +306,9 @@ class ProvisionTests(unittest.TestCase):
         self.assertIn("--owner-rc", out)
 
     def test_credential_for_another_realm_is_refused(self):
-        with mock.patch.dict(os.environ, {**ADMIN_ENV, "REALM_ADMIN_ZULIP_SITE": "https://evil.example"}):
+        with mock.patch.dict(
+            os.environ, {**ADMIN_ENV, "REALM_ADMIN_ZULIP_SITE": "https://evil.example"}
+        ):
             code, out, err = self.run_main("--dry-run")
         self.assertIsInstance(code, SystemExit)
         self.assertIn("expected", str(code.code))
@@ -313,24 +334,40 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(self.fake.posts(), [])
         self.assertFalse(self.out.exists())
         self.assertIn("create clutch-bot@", out)
-        self.assertIn("exists:  key not recoverable here;  rerun with --regenerate to rotate it", out)
+        self.assertIn(
+            "exists:  key not recoverable here;  rerun with --regenerate to rotate it", out
+        )
         self.assertIn("SKIP: name taken by a non-bot user", out)
 
     def test_missing_bot_is_created_with_rc_file_and_infisical_names(self):
-        code, out, err = self.run_main("--yes", "--only", "Grok", "--only", "OpenCode", "--only", "BF-Builder")
+        code, out, err = self.run_main(
+            "--yes", "--only", "Grok", "--only", "OpenCode", "--only", "BF-Builder"
+        )
         self.assertEqual(code, 0, err)
         self.assertIn(("POST", "bots"), self.fake.requests)
         self.assertTrue(stat.S_IMODE(self.out.stat().st_mode) == 0o700)
-        for stem, short in (("Grok-Build", "grok-build"), ("OpenCode", "opencode"), ("BF-Builder", "bf-builder")):
+        for stem, short in (
+            ("Grok-Build", "grok-build"),
+            ("OpenCode", "opencode"),
+            ("BF-Builder", "bf-builder"),
+        ):
             rc = self.out / f"{stem}-zuliprc"
             self.assertEqual(stat.S_IMODE(rc.stat().st_mode), 0o600)
             text = rc.read_text()
             self.assertIn(f"email={short}-bot@127.0.0.1", text)
             self.assertIn(f"site={self.fake.url}", text)
             self.assertRegex(text, r"key=test-new-key-\d+-CCCC3333")
-        self.assertIn("Infisical /zulip: GROK_BUILD_ZULIP_EMAIL, GROK_BUILD_ZULIP_KEY, GROK_BUILD_ZULIP_SITE", out)
-        self.assertIn("Infisical /zulip: OPENCODE_ZULIP_EMAIL, OPENCODE_ZULIP_KEY, OPENCODE_ZULIP_SITE", out)
-        self.assertIn("Infisical /zulip: BF_BUILDER_ZULIP_EMAIL, BF_BUILDER_ZULIP_KEY, BF_BUILDER_ZULIP_SITE", out)
+        self.assertIn(
+            "Infisical /zulip: GROK_BUILD_ZULIP_EMAIL, GROK_BUILD_ZULIP_KEY, GROK_BUILD_ZULIP_SITE",
+            out,
+        )
+        self.assertIn(
+            "Infisical /zulip: OPENCODE_ZULIP_EMAIL, OPENCODE_ZULIP_KEY, OPENCODE_ZULIP_SITE", out
+        )
+        self.assertIn(
+            "Infisical /zulip: BF_BUILDER_ZULIP_EMAIL, BF_BUILDER_ZULIP_KEY, BF_BUILDER_ZULIP_SITE",
+            out,
+        )
         self.assertEqual(len(self.fake.subscribed), 3)
         self.assertEqual(self.fake.subscribed[0][1], prov.CHANNELS)
         self.assert_no_keys(out, err)

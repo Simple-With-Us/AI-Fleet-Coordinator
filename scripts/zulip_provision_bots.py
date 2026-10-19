@@ -349,11 +349,15 @@ def main(argv=None):
                 bot_email = made.get("email")
                 if not bot_email and bot_id is not None:
                     fresh = call(email, key, "GET", "users").get("members", [])
-                    bot_email = next((u.get("email") for u in fresh if u.get("user_id") == bot_id), None)
+                    bot_email = next(
+                        (u.get("email") for u in fresh if u.get("user_id") == bot_id), None
+                    )
                 bot_email = bot_email or expected_email(short_name)
             else:
                 bot_id, bot_email = member["user_id"], member["email"]
-                bot_key = call(email, key, "POST", f"bots/{bot_id}/api_key/regenerate").get("api_key")
+                bot_key = call(email, key, "POST", f"bots/{bot_id}/api_key/regenerate").get(
+                    "api_key"
+                )
             if not bot_key:
                 raise ZulipError("Zulip did not return an API key for this bot")
             write_rc(path, bot_email, bot_key)
