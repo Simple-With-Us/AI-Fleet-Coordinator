@@ -224,6 +224,10 @@ if [[ "$MODE" == "create" || "$MODE" == "update" ]]; then
       echo "session id is not valid:  use 4 to 128 letters, digits, . _ : - starting with a letter or digit" >&2
       exit 2
     fi
+    if printf '%s' "$NOTE_SESSION" | grep -Eiq '^session[0-9]*$'; then
+      echo "session id is not valid:  \"$NOTE_SESSION\" is a chat tag (the [SEAT·session] label), not your platform's session id.  Pass the id your platform sets (${_seat:-your seat}:  $(_session_own_var "$_seat"))." >&2
+      exit 2
+    fi
   elif ! _session_exempt "$_seat"; then
     _own="$(_session_own_var "$_seat")"
     echo "no session id.  Notes record the session they come from, so a headless resume can find this seat's session for the topic.  Pass --session <id>, or export AGENT_SESSION=<id>${_own:+ ($_seat sets $_own;  it is empty here)}.  Grok bots, MA, JET, WISE and ECHO have one thread with the owner and need none.  (seat: ${_seat:-unknown})" >&2
@@ -277,8 +281,18 @@ fi
 # - Formats code blocks with SF Mono font and light styling.
 # - Formats tables with clean border-collapse.
 _convert_body_to_html() {
-  local _md_py
-  _md_py=$(mktemp /tmp/apple-notes-md.XXXXXX.py)
+  local _md_py _md_dir
+  # A private temp DIRECTORY with the converter inside it.  macOS mktemp does not substitute an X
+  # template that does not end the name, so `mktemp /tmp/apple-notes-md.XXXXXX.py` returns a FIXED
+  # path:  two seats writing at once collide, and a stale file (a crash, or a cleanup the runtime's
+  # recoverable-deletion wrapper refused) makes every LATER call fail with "File exists" and an
+  # empty interpreter path.  A directory whose name ends in X's is substituted, so the file inside
+  # it is unique per call and a stale one can never break the next call.
+  if ! _md_dir=$(mktemp -d /tmp/apple-notes-md.XXXXXX); then
+    echo "notes: cannot create a temp dir for the markdown converter" >&2
+    return 1
+  fi
+  _md_py="${_md_dir}/convert.py"
   cat >"${_md_py}" <<'PY'
 import html, os, re, sys
 
@@ -527,7 +541,11 @@ sys.stdout.write("<div>" + "".join(out) + "</div>")
 PY
   /usr/bin/python3 "${_md_py}"
   local _rc=$?
-  rm -f "${_md_py}"
+  # The scratch file and its directory go when they can:  a cleanup the runtime refuses must not
+  # fail the note, and the next call gets a fresh directory either way.  Its output goes nowhere:
+  # this runs inside the body capture, so a word on stdout would land in the note.
+  rm -f "${_md_py}" >/dev/null 2>&1
+  rmdir "${_md_dir}" >/dev/null 2>&1
   return ${_rc}
 }
 
@@ -685,14 +703,70 @@ if m:
         if pr_match:
             pr_suffix = ' · ' + pr_match.group(1).strip()
 
-# AFC-361:  the writer's session id, as the row under the timestamp.  An update rewrites the whole body, so a
-# Session row the caller echoed back from the old body is dropped and the current one is stamped.
-inner = re.sub(r'^(?:<p>)?\s*Session:\s*[^<\n]*(?:</p>)?\s*(?:<div><br\s*/?></div>)?\s*', '', inner, flags=re.I)
+# AFC-361, owner 2026-10-19:  the writer's session id is the small row under the timestamp, with no second date.
+# An update rewrites the whole body, so a Session row the caller echoed back from the old body is dropped
+# wherever it sat (under the timestamp, or at the end, where a version of 2026-10-19 put it) and the current one is
+# stamped.
+_SESSION_ROW = r'(?:<p>)?\s*(?:<span[^>]*>)?\s*Session:\s*[^<\n]*(?:</span>)?\s*(?:</p>)?'
+inner = re.sub(r'^' + _SESSION_ROW + r'\s*(?:<div><br\s*/?></div>)?\s*', '', inner, flags=re.I)
+inner = re.sub(r'(?:^|\n|(?<=>))[>\s]*(?:<div><br\s*/?></div>)?\s*' + _SESSION_ROW + r'\s*$', '', inner, flags=re.I)
 session_p = ''
 if note_session:
-    session_p = '<p>' + html.escape('Session: ' + note_session + ' - ' + stamp) + '</p>'
+    session_p = '<p><span style=\"font-size: 11px;\">' + html.escape('Session: ' + note_session) + '</span></p>'
 stamp += pr_suffix
 stamp_p = '<p>' + html.escape(stamp) + '</p>' + session_p + '<div><br></div>'
+
+# Fleet dates (owner 2026-10-19):  an ISO date in the prose (2026-10-19, or 2026-10-20T02:03:00Z) becomes the fleet
+# form, Mon, Oct 19 (or Mon, Oct 19, 9:03pm), in Central, with the year only when it is not this year.  Code, link
+# targets and names that merely contain a date (backup-2026-10-19.tar) keep theirs.
+from zoneinfo import ZoneInfo
+_CENTRAL = ZoneInfo('America/Chicago')
+_ISO = re.compile(
+    r'(?<![\w/.:-])(\d{4})-(\d{2})-(\d{2})'
+    # A +HH:MM / -HH:MM offset is only an offset on the ISO T form.  On the space form (2026-10-19 10:30) a bare
+    # -11:00 after the minutes is the end of a time range, not a UTC offset, and taking it as one moves the hour
+    # and drops the range end.
+    r'(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?'
+    r'| (\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z))?'
+    r'(?![\w/-])'
+)
+
+def _fleet_day(d):
+    out = d.strftime('%a, %b ') + str(d.day)
+    return out + (', ' + str(d.year) if d.year != now.year else '')
+
+def _fleet_date(m):
+    y, mo, d, t_hh, t_mm, t_zone, hh, mm, zone = m.groups()
+    if t_hh is not None:
+        hh, mm, zone = t_hh, t_mm, t_zone
+    try:
+        if hh is None:
+            return _fleet_day(datetime(int(y), int(mo), int(d)))
+        when = datetime(int(y), int(mo), int(d), int(hh), int(mm))
+        if zone:
+            offset = '+00:00' if zone == 'Z' else (zone if ':' in zone else zone[:3] + ':' + zone[3:])
+            when = datetime.fromisoformat(when.isoformat() + offset).astimezone(_CENTRAL)
+        h12 = when.hour % 12 or 12
+        return _fleet_day(when) + ', ' + str(h12) + when.strftime(':%M') + when.strftime('%p').lower()
+    except ValueError:
+        return m.group(0)
+
+def fleet_dates(markup):
+    parts = re.split(r'(<[^>]+>)', markup)
+    depth = 0
+    for i, part in enumerate(parts):
+        if part.startswith('<'):
+            tag = re.match(r'</?\s*(pre|code)\b', part, re.I)
+            if tag:
+                depth += -1 if part.startswith('</') else 1
+                depth = max(depth, 0)
+        elif depth == 0:
+            parts[i] = _ISO.sub(_fleet_date, part)
+    return ''.join(parts)
+
+inner = fleet_dates(inner)
+if summary_text:
+    summary_text = fleet_dates(summary_text)
 
 extra_blocks = ''
 if needs_owner:
