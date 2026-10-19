@@ -359,7 +359,9 @@ def _refresh_vault() -> None:
     with _VAULT_LOCK:
         now = time.time()
         if fresh is None:
-            _VAULT["next_try"] = now + VAULT_RETRY_S  # back off;  keep the old tokens and refreshed_at
+            _VAULT["next_try"] = (
+                now + VAULT_RETRY_S
+            )  # back off;  keep the old tokens and refreshed_at
         else:
             _VAULT["tokens"] = fresh
             _VAULT["refreshed_at"] = now
@@ -378,9 +380,13 @@ def _vault_tokens() -> dict:
         if due:
             _VAULT["attempted"] = True
             if first:
-                _VAULT["thread"] = threading.current_thread()  # in flight:  no other caller starts a fetch
+                _VAULT["thread"] = (
+                    threading.current_thread()
+                )  # in flight:  no other caller starts a fetch
             else:
-                t = threading.Thread(target=_refresh_vault, name="mac-collab-vault-refresh", daemon=True)
+                t = threading.Thread(
+                    target=_refresh_vault, name="mac-collab-vault-refresh", daemon=True
+                )
                 _VAULT["thread"] = t
         tokens = _VAULT["tokens"]
     if first:

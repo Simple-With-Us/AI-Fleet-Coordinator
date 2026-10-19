@@ -110,7 +110,9 @@ class TestTokenStaleness(unittest.TestCase):
                 w.start()
             for w in workers:
                 w.join(5)
-            self.assertFalse(any(w.is_alive() for w in workers), "a request was stalled by the hung fetch")
+            self.assertFalse(
+                any(w.is_alive() for w in workers), "a request was stalled by the hung fetch"
+            )
             self.assertLess(time.time() - t0, 5)
             self.assertTrue(all("file-token-aaa" in r for r in results[0::2]))
             self.assertEqual(results[1]["token_source"], "infisical")
@@ -139,7 +141,7 @@ class TestTokenStaleness(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 fake = Path(tmp) / "fleet-secrets"
                 # Runs the real command after `--` with the environment it was given, as fleet-secrets does.
-                fake.write_text("#!/bin/sh\nshift 4\nMAC_COLLAB_TOKEN=vault-tok exec \"$@\"\n")
+                fake.write_text('#!/bin/sh\nshift 4\nMAC_COLLAB_TOKEN=vault-tok exec "$@"\n')
                 fake.chmod(stat.S_IRWXU)
                 with patch.object(server, "FLEET_SECRETS_BIN", fake):
                     got = server._fetch_vault_tokens()
