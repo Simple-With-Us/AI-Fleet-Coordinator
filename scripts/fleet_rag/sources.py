@@ -44,12 +44,16 @@ APPS_DIR = HOME / "apps"
 CODE_DIR = HOME / "Code"
 # THE BOARD was retired 2026-10-19 (AFC-363);  the database is frozen here and still ingested so the
 # resolved findings stay searchable.  FLEET_RAG_BOARD_DB overrides the path.
-BOARD_DB = pathlib.Path(os.environ.get("FLEET_RAG_BOARD_DB")
-                        or APPS_DIR / "_retired" / "mac-collab-20261019" / "findings.db")
+BOARD_DB = pathlib.Path(
+    os.environ.get("FLEET_RAG_BOARD_DB")
+    or APPS_DIR / "_retired" / "mac-collab-20261019" / "findings.db"
+)
 # Every board row was imported into Linear;  the migration left board_id -> Linear URL in this TSV
 # (columns board_id, source_key, team, linear_identifier, linear_url, linear_id).  FLEET_RAG_BOARD_MAP overrides.
-BOARD_MAP = pathlib.Path(os.environ.get("FLEET_RAG_BOARD_MAP")
-                         or HOME / ".local" / "share" / "linear-migration" / "data" / "board-to-linear.tsv")
+BOARD_MAP = pathlib.Path(
+    os.environ.get("FLEET_RAG_BOARD_MAP")
+    or HOME / ".local" / "share" / "linear-migration" / "data" / "board-to-linear.tsv"
+)
 FLEET_REPO = CODE_DIR / "AI-Fleet-Coordinator"
 FLEET_OPS_REPO = CODE_DIR / "fleet-ops"
 GROK_HOME = HOME / ".grok"
@@ -496,8 +500,11 @@ def load_board_url_map(path: pathlib.Path | str | None = None) -> dict[str, str]
     return out
 
 
-def iter_board(db_path: pathlib.Path | str = BOARD_DB, limit: int | None = None,
-               url_map: dict[str, str] | None = None) -> Iterator[Doc]:
+def iter_board(
+    db_path: pathlib.Path | str = BOARD_DB,
+    limit: int | None = None,
+    url_map: dict[str, str] | None = None,
+) -> Iterator[Doc]:
     db_path = pathlib.Path(db_path)
     if url_map is None:
         url_map = load_board_url_map()
