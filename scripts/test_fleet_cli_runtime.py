@@ -303,8 +303,12 @@ class ActualRuntime(unittest.TestCase):
         )
         self.assert_exit(result, 3)
         self.assertFalse(result.stdout, "unauthenticated MCP emitted protocol output")
+        # AFC-359:  no zuliprc default;  with no fleet-secrets on PATH it fails fast naming the Infisical keys.
         self.assertTrue(
-            b"credential file not found" in result.stderr, "missing-credential diagnostic absent"
+            b"cannot read Infisical Fleet-OPS /zulip" in result.stderr
+            and b"CODEX_ZULIP_KEY" in result.stderr
+            and b"fleet-secrets is not installed" in result.stderr,
+            "missing-credential diagnostic absent",
         )
 
     @staticmethod

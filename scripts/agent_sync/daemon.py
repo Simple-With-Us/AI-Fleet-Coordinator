@@ -250,7 +250,8 @@ class SeatRunner:
 
     # ---- connection -------------------------------------------------------------------------
     def load_credentials(self) -> None:
-        # One file per seat, or (creds = "env", server instance) the variables the seat names:
+        # Each seat's own bot in Infisical /zulip (or its file in the explicit override directory), or
+        # (creds = "env", server instance) the variables the seat names:
         # never ZULIP_RC or the CLI's triple, so seats cannot alias one bot.  The realm is never
         # taken from the credential:  its site must match AGENT_SYNC_REALM (or the default).
         try:
@@ -558,9 +559,8 @@ class Daemon:
         self.root = root or L.state_root(self.env)
         self.clock = clock or Clock()
         self.realm = Z.realm_url(self.env)
-        self.secrets_dir = os.path.expanduser(
-            self.env.get(Z.ENV_SECRETS_DIR) or os.path.join(self.home, ".secrets", "Zulip")
-        )
+        # Only the explicit AGENT_SYNC_SECRETS_DIR override;  seats read Infisical /zulip (AFC-359).
+        self.secrets_dir = Z.override_secrets_dir(self.env)
         self.hidden: list[str] = []
         self.hidden_lock = threading.Lock()
         self.stdout = stdout or sys.stdout
@@ -5225,6 +5225,19 @@ class Daemon:
         os.ftruncate(lock_fd, 0)
         os.write(lock_fd, str(os.getpid()).encode())
         self.install_excepthooks()
+        # One Infisical fetch for every seat's /zulip names (AFC-359), so the seat threads below read
+        # this process's in-memory copy instead of each starting its own fetch.  Never raises.
+        Z.prefetch_infisical(
+            (),
+            self.env,
+            Path(self.home),
+            stems=[
+                runner.cfg.bot
+                for runner in self.seats.values()
+                if runner.cfg.creds == "infisical"
+                or (runner.cfg.creds == "file" and not self.secrets_dir)
+            ],
+        )
         self.log.write(
             "started",
             pid=os.getpid(),

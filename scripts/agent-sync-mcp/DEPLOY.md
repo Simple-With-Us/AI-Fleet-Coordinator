@@ -61,9 +61,8 @@ The recall tools (spec 1.1) need three Worker secrets.  Without them they answer
   export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
   put() { [ -n "$2" ] || { echo "missing $1" >&2; return 1; }; printf %s "$2" | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put "$1" >/dev/null && echo "set $1"; }
   put RECALL_API_TOKEN "$(fleet-secrets get RECALL_API_TOKEN)"
-  ACCESS=~/.secrets/agents-jays-services-access-service-token.env
-  put RECALL_ACCESS_CLIENT_ID "$(grep -m1 '^CF_ACCESS_CLIENT_ID=' "$ACCESS" | cut -d= -f2- | tr -d '"')"
-  put RECALL_ACCESS_CLIENT_SECRET "$(grep -m1 '^CF_ACCESS_CLIENT_SECRET=' "$ACCESS" | cut -d= -f2- | tr -d '"')"
+  put RECALL_ACCESS_CLIENT_ID "$(fleet-secrets get AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_CF_ACCESS_CLIENT_ID)"
+  put RECALL_ACCESS_CLIENT_SECRET "$(fleet-secrets get AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_CF_ACCESS_CLIENT_SECRET)"
 )
 ```
 
@@ -122,11 +121,10 @@ What only Jay can verify, because it needs his Access sign-in and consent:  the 
 
 ## Wake Jet (MCP Events, once)
 
-The Worker answers `POST /internal/wake/<SEAT>` from the server listener and fans each wake out as an MCP event (spec section 3.12).  A seat's wake works only once its shared HMAC key is a Worker secret.  The key lives in `~/.secrets/jet-wake-hmac.env` (chmod 600, one line `JET_ROUTINE_KEY=<64 hex>`), made with `openssl rand -hex 32`.  It is installed without printing it (same environment as Step 1):
+The Worker answers `POST /internal/wake/<SEAT>` from the server listener and fans each wake out as an MCP event (spec section 3.12).  A seat's wake works only once its shared HMAC key is a Worker secret.  The key lives in Infisical Fleet-OPS as `JET_ROUTINE_KEY` (64 hex characters, made with `openssl rand -hex 32`;  Jay stores a new one there himself, AFC-359 retired `~/.secrets/jet-wake-hmac.env`).  It is installed without printing it (same environment as Step 1):
 
 ```bash
-umask 077; [ -s ~/.secrets/jet-wake-hmac.env ] || printf 'JET_ROUTINE_KEY=%s\n' "$(openssl rand -hex 32)" > ~/.secrets/jet-wake-hmac.env
-grep -m1 '^JET_ROUTINE_KEY=' ~/.secrets/jet-wake-hmac.env | cut -d= -f2- | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
+fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
 ```
 
 The listener half is Jay's step (ARMING-JAY.md, "Wake Jet", step 1):  two Coolify variables (`JET_ROUTINE_URL=https://agent-sync.jays.services/internal/wake/JET`, and `JET_ROUTINE_KEY` set to the same key), a scoped edit of the **live** `/data/listener.toml` (the volume keeps the copy seeded on first start, so the repo sample's new JET section never reaches it), and a restart.  Rotating the key means rerunning both.  Check:  `POST /internal/wake/JET` with no signature answers 401 (not 404, which would mean the secret is missing), and `infra_phase0.py check` probes it.  `EVENT_CALLBACK_HOSTS` in `wrangler.jsonc` lists the hosts ChatGPT may give as a callback.  A refused one shows on `/admin` as `callback_host_not_allowed`, and adding it is a var change and a deploy.
@@ -178,7 +176,7 @@ The `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes
 2. Set the var in `wrangler.jsonc`:  `"LISTENER_API_URL": "https://listener.jays.services"` (an https origin with no path;  anything else reads as unset).  Open a PR and merge it.
 3. Make sure each seat that should read its records has `WAKE_HMAC_KEY_<SEAT>` (JET already does;  the others only if Jay chose to add them in the server doc's step 2):
    ```bash
-   grep -m1 '^JET_ROUTINE_KEY=' ~/.secrets/jet-wake-hmac.env | cut -d= -f2- | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
+   fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
    ```
 4. Deploy (step 1).  From a connected JET chat, `listener_status` answers counts;  a 401 there means the two keys differ or the clocks are more than five minutes apart, a 404 that the listener has no key for the seat.  **Not deployed yet.**
 

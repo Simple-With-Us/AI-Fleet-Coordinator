@@ -14,8 +14,9 @@ in order:
      names this same seat, so one connection acting as several bots never lends one bot's token to another;  the
      server sets AGENT_SEAT to the seat it resolved from --as or --default-seat when the environment named none, so
      a seat that came from a flag is as binding as one from the environment;
-  3. the file ~/.secrets/FleetLink/<SEAT>.env (hyphens as underscores):  a regular file owned by this user, mode
-     0600 or 0400, handed to the child as FLEETLINK_AUTH_FILE.  This process never reads it.
+  3. FLEETLINK_TOKEN_<SEAT> in Infisical Fleet-OPS /fleetlink, read through `fleet-secrets get` (AFC-359:  the old
+     ~/.secrets/FleetLink/<SEAT>.env file is retired and never read), held in memory and handed to the child as
+     FLEETLINK_TOKEN.
 
 The child always gets FLEETLINK_SEAT, a minimal environment (no FLEET_ADMIN_SECRET or any other variable of this
 process), and FLEETLINK_CREDENTIALS pointing at a file that does not exist, so a saved `fleet-share login` of
@@ -37,7 +38,6 @@ import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import tempfile
 import unicodedata
@@ -54,13 +54,15 @@ ENV_CLI = "AGENT_SYNC_FLEETLINK_CLI"
 CLI_NAME = "fleet-share"
 ENV_TOKEN = "FLEETLINK_TOKEN"
 TOKEN_PREFIX = "FLEETLINK_TOKEN_"
-SECRETS_SUBDIR = (".secrets", "FleetLink")
+INFISICAL_PATH = (
+    "/fleetlink"  # Fleet-OPS folder of the per-seat FLEETLINK_TOKEN_<SEAT> names (AFC-359)
+)
+TOKEN_CACHE_TTL = 600.0
 TIMEOUT_S = 120.0
 OUTPUT_LIMIT = (
     8_000_000  # bytes of CLI output;  read_file returns up to 1 MB of text, pretty-printed
 )
 MESSAGE_LIMIT = 300
-FILE_MODES = (0o600, 0o400)
 MARKER_BEGIN = "BEGIN_UNTRUSTED_FLEETLINK"
 MARKER_END = "END_UNTRUSTED_FLEETLINK"
 UNTRUSTED_NOTE = (
@@ -165,13 +167,51 @@ def generic_token_allowed(seat: str, env: Mapping[str, str]) -> bool:
     return not named or named == _canonical(seat)
 
 
-def secrets_file(seat: str, home: Path) -> Path:
-    return home.joinpath(*SECRETS_SUBDIR, env_code(seat) + ".env")
+_token_cache: dict[str, tuple[float, str | None]] = {}
+
+
+def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str | None:
+    """`fleet-secrets get NAME --path /fleetlink`, or None when absent or unreadable.  Cached in memory per
+    process (a miss too, so a seat with no token does not pay the Infisical round trip on every call).  Its
+    output is never logged and its stderr never read."""
+    import time
+
+    from .. import zulip as Z
+
+    now = time.monotonic()
+    held = _token_cache.get(name)
+    if held is not None and now - held[0] < TOKEN_CACHE_TTL:
+        return held[1]
+    value: str | None = None
+    binary = Z.fleet_secrets_bin(env, home) if Z.infisical_enabled(env) else None
+    if binary:
+        child = dict(env)
+        child.setdefault("PATH", os.environ.get("PATH") or os.defpath)
+        try:
+            proc = subprocess.run(
+                [binary, "get", name, "--path", INFISICAL_PATH],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=15,
+                cwd="/",
+                env=child,
+                check=False,
+            )
+            if proc.returncode == 0:
+                value = proc.stdout.decode("utf-8").strip() or None
+        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+            value = None
+    _token_cache[name] = (now, value)
+    return value
+
+
+# The name tests replace (agent_sync/tests/__init__.py), so none can reach the real fleet-secrets.
+_default_token_fetch = _fleet_secrets_token
 
 
 def resolve_credential(seat: str, env: Mapping[str, str], home: Path) -> tuple[str, str, str]:
-    """(kind, name, value) for the seat's own FleetLink bot:  ("env", variable name, token) or ("file", shown path,
-    absolute path).  Raises FleetLinkFailure(not_configured) naming what to set."""
+    """(kind, name, value) for the seat's own FleetLink bot:  ("env", variable name, token), or ("infisical",
+    the Infisical key name, token).  Raises FleetLinkFailure(not_configured) naming what to set."""
     code = env_code(seat)
     own = TOKEN_PREFIX + code
     token = _clean_env(env, own)
@@ -180,33 +220,14 @@ def resolve_credential(seat: str, env: Mapping[str, str], home: Path) -> tuple[s
     token = _clean_env(env, ENV_TOKEN)
     if token and generic_token_allowed(seat, env):
         return "env", ENV_TOKEN, token
-    path = secrets_file(seat, home)
-    shown = "~/%s/%s.env" % ("/".join(SECRETS_SUBDIR), code)
-    try:
-        info = os.lstat(path)
-    except FileNotFoundError:
-        raise FleetLinkFailure(
-            "not_configured",
-            "FleetLink has no credential for %s here:  set %s, or write %s (FLEETLINK_TOKEN=..., mode 0600) from "
-            "Infisical /fleetlink %s.  Every other tool still works." % (seat, own, shown, own),
-        ) from None
-    except OSError:
-        raise FleetLinkFailure("not_configured", "%s could not be checked." % shown) from None
-    if not stat.S_ISREG(info.st_mode):
-        raise FleetLinkFailure(
-            "not_configured", "%s is not a regular file (a link or a folder):  refusing it." % shown
-        )
-    if info.st_uid != os.getuid():
-        raise FleetLinkFailure(
-            "not_configured", "%s is not owned by this user:  refusing it." % shown
-        )
-    if stat.S_IMODE(info.st_mode) not in FILE_MODES:
-        raise FleetLinkFailure(
-            "not_configured",
-            "%s is mode %03o:  run chmod 600 on it (0600 or 0400 only)."
-            % (shown, stat.S_IMODE(info.st_mode)),
-        )
-    return "file", shown, str(path)
+    token = _default_token_fetch(own, env, home)
+    if token and not any(ch in token for ch in "\r\n\x00"):
+        return "infisical", "Infisical Fleet-OPS %s %s" % (INFISICAL_PATH, own), token
+    raise FleetLinkFailure(
+        "not_configured",
+        "FleetLink has no credential for %s here:  set %s, or store %s in Infisical Fleet-OPS %s.  "
+        "Every other tool still works." % (seat, own, own, INFISICAL_PATH),
+    )
 
 
 def child_env(
@@ -217,7 +238,7 @@ def child_env(
     # A saved `fleet-share login` of whoever runs this server is never a fallback for the seat's own bot.
     out["FLEETLINK_CREDENTIALS"] = os.path.join(private, "no-saved-login")
     kind, _, value = credential
-    out[ENV_TOKEN if kind == "env" else "FLEETLINK_AUTH_FILE"] = value
+    out[ENV_TOKEN] = value
     return out
 
 

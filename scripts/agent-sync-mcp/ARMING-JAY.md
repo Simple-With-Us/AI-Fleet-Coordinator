@@ -213,7 +213,7 @@ a.  In the agent-sync listener app on Coolify, under Environment Variables (runt
 | Variable | Value |
 |---|---|
 | `JET_ROUTINE_URL` | `https://agent-sync.jays.services/internal/wake/JET` |
-| `JET_ROUTINE_KEY` | the `JET_ROUTINE_KEY=` value in `~/.secrets/jet-wake-hmac.env` on the Mac (chmod 600).  It is the same value as the Worker secret `WAKE_HMAC_KEY_JET`, which is already installed.  Paste it without quotes. |
+| `JET_ROUTINE_KEY` | the value of `JET_ROUTINE_KEY` in Infisical Fleet-OPS (`fleet-secrets get JET_ROUTINE_KEY`).  It is the same value as the Worker secret `WAKE_HMAC_KEY_JET`, which is already installed.  Paste it without quotes. |
 
 b.  Switch JET's section of the **live** config to the http wake.  The container copied the sample onto its volume on first start and never re-reads the repo's copy, so merging this change did not reach it.  In the app's Coolify terminal (or `docker exec -i <container> sh` on the host), paste:
 

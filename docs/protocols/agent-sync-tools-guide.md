@@ -38,7 +38,7 @@ Allowed sets, as the code builds them:
 | Hosted CURSOR grant | `CURSOR`, `GROK-WEB`, and every enabled Grok Bot persona:  `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE`, `GB-TRADER` |
 | Hosted GROK-WEB grant | The same set, with default `GROK-WEB` |
 | Any other hosted grant (such as JET, ECHO or WISE) | Its own seat only |
-| Stdio or CLI on the Mac | Every agent bot whose `<FileCode>-zuliprc` is on the Mac:  the live seats, `BF-*` and the enabled `GB-*` personas |
+| Stdio or CLI on the Mac | Every agent bot whose `<PREFIX>_ZULIP_*` keys are in Infisical Fleet-OPS `/zulip`:  the live seats, `BF-*` and the enabled `GB-*` personas |
 | Stdio or CLI on the server | Every agent bot whose credential the server holds |
 | Any stdio or CLI session under a launcher (`AGENT_LAUNCHER`) | The launcher's seat alone |
 
@@ -177,7 +177,7 @@ From a shell, `board run NAME` is the tool `linear_NAME` (`board run list_issues
 
 ### fleetlink
 
-Same names and arguments on both servers, as the identity's own FleetLink bot.  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted (`BEGIN_UNTRUSTED_FLEETLINK` and `END_UNTRUSTED_FLEETLINK`), and text that would land on a link is refused when it looks like a secret.  Hosted needs the server's FleetLink secrets.  Stdio runs FleetLink's own CLI (`fleet-share`, or `AGENT_SYNC_FLEETLINK_CLI`) with the seat's token:  `FLEETLINK_TOKEN_<SEAT>`, else `FLEETLINK_TOKEN` (no launcher, and `AGENT_SEAT` unset or the same seat;  a seat from `--as` or `--default-seat` counts as `AGENT_SEAT`), else `~/.secrets/FleetLink/<SEAT>.env` (hyphens as underscores, mode 0600);  without one it answers `not_configured`.
+Same names and arguments on both servers, as the identity's own FleetLink bot.  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted (`BEGIN_UNTRUSTED_FLEETLINK` and `END_UNTRUSTED_FLEETLINK`), and text that would land on a link is refused when it looks like a secret.  Hosted needs the server's FleetLink secrets.  Stdio runs FleetLink's own CLI (`fleet-share`, or `AGENT_SYNC_FLEETLINK_CLI`) with the seat's token:  `FLEETLINK_TOKEN_<SEAT>`, else `FLEETLINK_TOKEN` (no launcher, and `AGENT_SEAT` unset or the same seat;  a seat from `--as` or `--default-seat` counts as `AGENT_SEAT`), else `FLEETLINK_TOKEN_<SEAT>` in Infisical Fleet-OPS `/fleetlink` (hyphens as underscores);  without one it answers `not_configured`.
 
 | Tool | R/W | Purpose |
 |---|---|---|
