@@ -5252,7 +5252,9 @@ class Daemon:
         os.write(lock_fd, str(os.getpid()).encode())
         self.install_excepthooks()
         # One Infisical fetch for every seat's /zulip names (AFC-359), so the seat threads below read
-        # this process's in-memory copy instead of each starting its own fetch.  Never raises.
+        # this process's in-memory copy instead of each starting its own fetch.  Never raises.  The daemon
+        # is not interactive, so it waits longer for fleet-secrets than a CLI command does.
+        Z.FLEET_SECRETS_TIMEOUT = max(Z.FLEET_SECRETS_TIMEOUT, Z.DAEMON_FLEET_SECRETS_TIMEOUT)
         Z.prefetch_infisical(
             (),
             self.env,
