@@ -111,9 +111,13 @@ class SeatHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:
         # Do not log Authorization or query strings that might carry a token.
-        path = urlparse(self.path).path
+        raw_path = urlparse(self.path).path
+        # A /hooks/<id>/<secret> path IS the credential:  never log it (AFC-359).
+        path = "/hooks/<redacted>" if raw_path.startswith("/hooks/") else raw_path
         try:
             msg = fmt % args
+            if path != raw_path:
+                msg = msg.replace(self.path, path).replace(raw_path, path)
         except Exception:
             msg = "log"
         if "Bearer" in msg or "SEAT_MCP" in msg:
@@ -179,6 +183,9 @@ class SeatHandler(BaseHTTPRequestHandler):
             # No standalone SSE in v1.  Spec allows 405.
             self._send(405, b"sse not offered\n", "text/plain; charset=utf-8")
             return
+        if path.startswith("/hooks/"):
+            self._proxy_to_webhook_ingress()
+            return
         self._send(404, b"not found\n", "text/plain; charset=utf-8")
 
     def do_HEAD(self) -> None:
@@ -236,10 +243,40 @@ class SeatHandler(BaseHTTPRequestHandler):
             return
         self._send(200, _json_bytes({"ok": True, **data}), "application/json")
 
+    def _proxy_to_webhook_ingress(self) -> None:
+        import urllib.error
+        import urllib.request
+        length_s = self.headers.get("Content-Length", "0")
+        try:
+            length = int(length_s)
+        except ValueError:
+            length = 0
+        body = self.rfile.read(length) if length > 0 else None
+        target_url = f"http://127.0.0.1:8800{self.path}"
+        headers = {}
+        for key, val in self.headers.items():
+            if key.lower() not in {"host", "connection"}:
+                headers[key] = val
+        req = urllib.request.Request(target_url, data=body, headers=headers, method=self.command)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                resp_body = resp.read()
+                content_type = resp.headers.get("Content-Type", "application/json")
+                self._send(resp.status, resp_body, content_type)
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read()
+            content_type = exc.headers.get("Content-Type", "application/json")
+            self._send(exc.code, err_body, content_type)
+        except Exception as exc:
+            self._send(502, _json_bytes({"ok": False, "error": f"Webhook proxy failed: {exc}"}), "application/json")
+
     def do_POST(self) -> None:
         if self._forbidden_origin():
             return
         path = urlparse(self.path).path
+        if path.startswith("/hooks/"):
+            self._proxy_to_webhook_ingress()
+            return
         if path in {"/recall/search", "/recall/contribute", "/recall/stats"}:
             if not self._auth_ok():
                 self._unauthorized()

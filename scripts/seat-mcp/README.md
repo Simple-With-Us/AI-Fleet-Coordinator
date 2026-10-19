@@ -180,3 +180,11 @@ pm2 restart seat-mcp
 ```
 
 Tests:  `cd scripts && python3 -m unittest fleet_rag.tests.test_seat_mcp_recall -v`.
+
+## Webhook proxy (`/hooks/`)
+
+`POST` (and `GET`) `/hooks/<endpoint>/<secret>` is passed through, unauthenticated, to BotFleet's webhook-only ingress on `127.0.0.1:8800`, with the body and headers (minus `Host` and `Connection`) intact.  The ingress checks the capability secret and answers;  seat-mcp relays its status and body unchanged, or answers `502` when the ingress is down.  This is how GitHub, Sentry, PagerDuty and Congress.Trade reach BotFleet webhook triggers through the public seat-mcp route.
+
+The path IS the credential, so the request log writes `/hooks/<redacted>` and never the endpoint id or the secret (AFC-359).  The capability URLs are recorded in Infisical Fleet-OPS (`/botfleet-github-webhooks`, `/botfleet-firefighter-webhooks`, `/global-api-keys`);  rotate one with BotFleet's `POST /api/webhooks/<id>/rotate` and then move every sender to the new URL.
+
+Tests:  `cd scripts/seat-mcp && python3 -m unittest test_hooks_proxy test_recall_http test_main_token -v`.
