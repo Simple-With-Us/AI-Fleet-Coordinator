@@ -150,7 +150,34 @@ def sentence_gap(text: str) -> str:
 # so the CLI can tell the agent and it learns to write it that way.
 
 _ABBREVIATIONS = frozenset(
-    ["mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "etc", "e.g", "i.e", "eg", "ie", "cf", "al", "approx", "dept", "est", "fig", "no", "nos", "vol", "ca", "mt", "ft", "sq"]
+    [
+        "mr",
+        "mrs",
+        "ms",
+        "dr",
+        "st",
+        "jr",
+        "sr",
+        "vs",
+        "etc",
+        "e.g",
+        "i.e",
+        "eg",
+        "ie",
+        "cf",
+        "al",
+        "approx",
+        "dept",
+        "est",
+        "fig",
+        "no",
+        "nos",
+        "vol",
+        "ca",
+        "mt",
+        "ft",
+        "sq",
+    ]
 )
 _SINGLE_GAP_RE = re.compile(r"(?P<end>[.!?][\"'”’)\]*_]*)(?P<space>[ ])(?=[A-Z0-9\"“(*#])")
 _WORD_BEFORE_RE = re.compile(r"([A-Za-z][A-Za-z.]*)$")
