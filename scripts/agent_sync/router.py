@@ -58,7 +58,8 @@ WILDCARD_FLAGS = ("wildcard_mentioned", "stream_wildcard_mentioned", "topic_wild
 FLEET_WAKE_CHANNEL = "agent-sync"
 FLEET_WAKE_TOPIC = "fleet"
 FLEET_WAKE_KEY = topic_key(FLEET_WAKE_CHANNEL, FLEET_WAKE_TOPIC)
-_FLEET_WAKE_RE = re.compile(r"(?<![\\\w])@\*\*all\*\*")
+_PLAIN_ALL_RE = re.compile(r"(?<![\w*])@(?:all|everyone)\b", re.IGNORECASE)
+_FLEET_WAKE_RE = re.compile(r"(?<![\\\w])@\*\*(?:all|everyone|channel|stream)\*\*")
 _WAKE_TAG_RE = re.compile(r"^\s*\[[A-Za-z0-9_-]+·wake\b")
 # A route post (`[CLAUDE·route→CODEX] re=N`):  a wake seat paged another seat on the owner's behalf.  It
 # counts on the loop guard like a wake reply, but it never blocks the wake of the seat it mentions.
@@ -210,6 +211,7 @@ class LeaseView:
 class Classes:
     def __init__(self) -> None:
         self.own = self.owner = self.owner_api = self.eligible = self.direct = False
+        self.everyone = False
         self.fleet = self.wildcard = self.dm = self.wake_tag = self.stale = self.sender_is_bot = False
         self.route_tag = False
         self.owner_topic = self.owner_topic_peer = self.owner_note = False
@@ -257,6 +259,8 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     visible = outside_code(content)
     names = ("@**%s**" % me.full_name, "@**%s|%d**" % (me.full_name, me.user_id))
     c.direct = "mentioned" in flags and any(n in visible for n in names)
+    # Channel-wide, in any topic;  a typed `@ALL` counts too (chat_fanout, owner 2026-10-19).
+    c.everyone = fleet_wake_mention(visible, flags) or _PLAIN_ALL_RE.search(visible) is not None
     c.fleet = c.key == FLEET_WAKE_KEY and fleet_wake_mention(visible, flags)
     c.wildcard = any(f in flags for f in WILDCARD_FLAGS)
     c.wake_tag = bool(_WAKE_TAG_RE.match(content))

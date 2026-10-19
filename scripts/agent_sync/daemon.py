@@ -42,6 +42,7 @@ from typing import Any
 
 from . import __version__, secretscan
 from . import adapters as A
+from . import chat_fanout as FAN
 from . import chat_nudges as CN
 from . import chat_transport as CT
 from . import config as C
@@ -629,6 +630,8 @@ class Daemon:
         self.seats: dict[str, SeatRunner] = {}
         self.chat_nudges = CN.ChatNudges(self.root, "GROK", recover=False)
         self._chat_queues = {"GROK": self.chat_nudges}
+        self._fanout_lock = threading.Lock()
+        self._fanout_seen: set[int] = set()
         self.coalescer = W.Coalescer(
             window=self.config.coalesce_seconds,
             max_window=self.config.coalesce_max_seconds,
@@ -1913,6 +1916,8 @@ class Daemon:
             classes=c.labels(),
             decision=d.describe(),
         )
+        if c.owner and c.everyone and not c.dm and not c.stale:
+            self.start_fanout(message, c)
         if (
             c.owner
             and c.dm
@@ -3169,6 +3174,73 @@ class Daemon:
                 )
             return
         self._surface(runner, pending, listed, lost, finished)
+
+    def start_fanout(self, message: Mapping[str, Any], c: R.Classes) -> None:
+        """The owner's channel-wide mention reaches the recently active chats (chat_fanout), once per message
+        whichever seat saw it first.  The catalog walk can take seconds, so it runs off the event thread."""
+        message_id = message.get("id")
+        if not isinstance(message_id, int):
+            return
+        with self._fanout_lock:
+            if message_id in self._fanout_seen:
+                return
+            self._fanout_seen.add(message_id)
+        where = FAN.scope(R.outside_code(str(message.get("content") or "")), c.topic)
+        threading.Thread(
+            target=self.fanout,
+            args=(message_id, c.channel, c.topic, where),
+            name="chat-fanout",
+            daemon=True,
+        ).start()
+
+    def fanout(
+        self, message_id: int, channel: str, topic: str, where: FAN.Scope, places: Any = None
+    ) -> dict[str, Any]:
+        """Queue a Zulip reminder for each chosen chat that has a transport;  log the rest by platform."""
+        result: dict[str, Any] = {"queued": 0, "already": 0, "no_transport": {}, "held": 0}
+        try:
+            rows = self.chat_catalog().discover(
+                force=True, wait_grok=True, grok_timeout=CT.discovery_wait_budget()
+            )
+            chosen = FAN.select(rows, self.clock.time(), where, places)
+        except Exception as exc:
+            self.log.write("fanout-error", id=message_id, error=self.scrub(str(exc))[:200])
+            return dict(result, error="catalog")
+        for row in chosen:
+            platform = str(row.get("platform") or "")
+            runner = self.seats.get(str(row.get("seat") or ""))
+            if platform not in CN.SUPPORTED_PLATFORMS or runner is None or not runner.cfg.enabled:
+                result["no_transport"][platform] = result["no_transport"].get(platform, 0) + 1
+                continue
+            if not (row.get("capabilities") or {}).get("wake"):
+                result["held"] += 1  # busy or not resumable right now
+                continue
+            binding = {key: str(row.get(key) or "") for key in ("platform", "host", "session_id", "cwd")}
+            binding.update(channel=channel, topic=topic)
+            try:
+                added = self.chat_queue(runner.seat).enqueue_target(
+                    binding, message_id, self.clock.time(), owner=True
+                )
+            except ValueError:
+                result["no_transport"][platform] = result["no_transport"].get(platform, 0) + 1
+                continue
+            result["queued" if added else "already"] += 1
+        self.log.write(
+            "fanout",
+            id=message_id,
+            repos=sorted(where.repos) if where.repos else "all",
+            issues=sorted(where.issues),
+            chosen=len(chosen),
+            **{k: v for k, v in result.items() if v},
+        )
+        return result
+
+    def chat_catalog(self) -> Any:
+        if not hasattr(self, "_chat_catalog"):
+            from .chat_catalog import ChatCatalog
+
+            self._chat_catalog = ChatCatalog(home=self.home, scrub=self.scrub, max_records=120)
+        return self._chat_catalog
 
     def chat_queue(self, seat: str) -> CN.ChatNudges:
         if seat not in self._chat_queues:
