@@ -4,17 +4,19 @@ Transcript parsing is deliberately allow-list based: only user and assistant tex
 blocks are surfaced.  Tool calls, tool results, reasoning, and arbitrary paths are
 never returned by the public projection.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 import re
-import sqlite3
 import socket
+import sqlite3
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import quote
 
 MAX_FILES_PER_SOURCE = 160
@@ -26,7 +28,12 @@ STALE_TTL = 300.0
 
 _SECRET_PATTERNS = (
     (re.compile(r"(?i)\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,})\b"), "[REDACTED]"),
-    (re.compile(r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password)\s*[:=]\s*[^\s,;]+"), r"\1=[REDACTED]"),
+    (
+        re.compile(
+            r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password)\s*[:=]\s*[^\s,;]+"
+        ),
+        r"\1=[REDACTED]",
+    ),
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*"), "Bearer [REDACTED]"),
 )
 
@@ -46,12 +53,18 @@ def _safe_text(value: Any, *, max_chars: int = MAX_EXCERPT_CHARS) -> str:
         for block in value:
             if isinstance(block, str):
                 chunks.append(block)
-            elif isinstance(block, dict) and block.get("type") in {"text", "input_text", "output_text"}:
+            elif isinstance(block, dict) and block.get("type") in {
+                "text",
+                "input_text",
+                "output_text",
+            }:
                 text = block.get("text")
                 if isinstance(text, str):
                     chunks.append(text)
     elif isinstance(value, dict):
-        if value.get("type") in {"text", "input_text", "output_text"} and isinstance(value.get("text"), str):
+        if value.get("type") in {"text", "input_text", "output_text"} and isinstance(
+            value.get("text"), str
+        ):
             chunks.append(value["text"])
     return "\n".join(part.strip() for part in chunks if part.strip())[:max_chars]
 
@@ -111,6 +124,7 @@ def _timestamp(*values: Any) -> float:
         if isinstance(value, str):
             try:
                 from datetime import datetime
+
                 return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
             except ValueError:
                 pass
@@ -141,10 +155,19 @@ def _within(path: Path, root: Path) -> bool:
 class ChatCatalog:
     """A short-lived cache of safe metadata and bounded user/assistant excerpts."""
 
-    def __init__(self, home: str | os.PathLike[str] | None = None, root: str | os.PathLike[str] | None = None,
-                 *, scrub: Callable[[str], str] | None = None, ttl: float = DEFAULT_TTL,
-                 max_records: int = 24, host: str | None = None, grok_transport: Any = None,
-                 cursor_transport: Any = None, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        home: str | os.PathLike[str] | None = None,
+        root: str | os.PathLike[str] | None = None,
+        *,
+        scrub: Callable[[str], str] | None = None,
+        ttl: float = DEFAULT_TTL,
+        max_records: int = 24,
+        host: str | None = None,
+        grok_transport: Any = None,
+        cursor_transport: Any = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
         self.home = Path(home or root or Path.home()).expanduser()
         self.root = Path(root).expanduser() if root else self.home
         self.scrub = (lambda text: scrub(_default_scrub(text))) if scrub else _default_scrub
@@ -160,54 +183,100 @@ class ChatCatalog:
         self._availability: dict[str, str] = {}
         self._missing_since: dict[str, float] = {}
 
-    def _row(self, platform: str, seat: str, session_id: str, *, cwd: str | None, title: str,
-             updated_at: float, status: str = "available", wake: bool = False,
-             source: str = "", internal_path: str | None = None,
-             excerpts: list[dict[str, str]] | None = None, host: str | None = None,
-             repo: str | None = None) -> dict[str, Any]:
-        safe_cwd = cwd if isinstance(cwd, str) and (cwd.startswith("/") or
-                                                    (platform == "cursor-cloud" and "://" in cwd)) else None
+    def _row(
+        self,
+        platform: str,
+        seat: str,
+        session_id: str,
+        *,
+        cwd: str | None,
+        title: str,
+        updated_at: float,
+        status: str = "available",
+        wake: bool = False,
+        source: str = "",
+        internal_path: str | None = None,
+        excerpts: list[dict[str, str]] | None = None,
+        host: str | None = None,
+        repo: str | None = None,
+    ) -> dict[str, Any]:
+        safe_cwd = (
+            cwd
+            if isinstance(cwd, str)
+            and (cwd.startswith("/") or (platform == "cursor-cloud" and "://" in cwd))
+            else None
+        )
         if safe_cwd and platform == "cursor-cloud":
             safe_cwd = self.scrub(safe_cwd)[:500]
         safe_title = self.scrub(title or "Untitled chat")[:180]
         stable_host = host or self.host
         readable = status not in {"unavailable", "stale", "metadata-only"}
-        return {"id": _stable_id(stable_host, platform, session_id), "platform": platform,
-                "host": stable_host, "seat": seat, "session_id": session_id,
-                "cwd": safe_cwd, "title": safe_title,
-                "repo": self.scrub(repo)[:300] if isinstance(repo, str) and "://" in repo else None,
-                "updated_at": updated_at or None, "status": status,
-                "stale": status == "stale",
-                "capabilities": {"read": readable, "wake": bool(wake),
-                                 "wake_status": "available" if wake else "unsupported"},
-                "_source": source, "_internal_path": internal_path, "_excerpts": excerpts or []}
+        return {
+            "id": _stable_id(stable_host, platform, session_id),
+            "platform": platform,
+            "host": stable_host,
+            "seat": seat,
+            "session_id": session_id,
+            "cwd": safe_cwd,
+            "title": safe_title,
+            "repo": self.scrub(repo)[:300] if isinstance(repo, str) and "://" in repo else None,
+            "updated_at": updated_at or None,
+            "status": status,
+            "stale": status == "stale",
+            "capabilities": {
+                "read": readable,
+                "wake": bool(wake),
+                "wake_status": "available" if wake else "unsupported",
+            },
+            "_source": source,
+            "_internal_path": internal_path,
+            "_excerpts": excerpts or [],
+        }
 
     def _unavailable(self, platform: str, seat: str, reason: str) -> dict[str, Any]:
         self._availability[platform] = reason
-        return self._row(platform, seat, "__unavailable__", cwd=None,
-                         title=f"{platform} chat catalog unavailable", updated_at=0,
-                         status="unavailable", source=reason)
+        return self._row(
+            platform,
+            seat,
+            "__unavailable__",
+            cwd=None,
+            title=f"{platform} chat catalog unavailable",
+            updated_at=0,
+            status="unavailable",
+            source=reason,
+        )
 
     def _list_files(self, base: Path, *, recursive: bool = False) -> list[Path]:
         if not base.is_dir() or not _within(base, self.home):
             return []
         found: list[Path] = []
+
         def modified(path: Path) -> float:
             try:
                 return path.stat(follow_symlinks=False).st_mtime
             except OSError:
                 return 0.0
+
         if recursive:
             visited_dirs = 0
             for current, dirs, files in os.walk(base, followlinks=False):
                 visited_dirs += 1
                 if visited_dirs > MAX_FILES_PER_SOURCE * 32:
                     break
-                dirs[:] = sorted((d for d in dirs if not (Path(current) / d).is_symlink()),
-                                 key=lambda d: modified(Path(current) / d), reverse=True)
-                file_paths = sorted((Path(current) / name for name in files if name.endswith(".jsonl")
-                                     and not (Path(current) / name).is_symlink()),
-                                    key=modified, reverse=True)
+                dirs[:] = sorted(
+                    (d for d in dirs if not (Path(current) / d).is_symlink()),
+                    key=lambda d: modified(Path(current) / d),
+                    reverse=True,
+                )
+                file_paths = sorted(
+                    (
+                        Path(current) / name
+                        for name in files
+                        if name.endswith(".jsonl") and not (Path(current) / name).is_symlink()
+                    ),
+                    key=modified,
+                    reverse=True,
+                )
                 for path in file_paths:
                     if _within(path, base) and path.is_file():
                         found.append(path)
@@ -215,17 +284,27 @@ class ChatCatalog:
                             return found
         else:
             try:
-                parents = sorted((p for p in base.iterdir() if p.is_dir() and not p.is_symlink()),
-                                 key=modified, reverse=True)[:MAX_FILES_PER_SOURCE]
+                parents = sorted(
+                    (p for p in base.iterdir() if p.is_dir() and not p.is_symlink()),
+                    key=modified,
+                    reverse=True,
+                )[:MAX_FILES_PER_SOURCE]
             except OSError:
                 return []
             for parent in parents:
                 try:
-                    files = sorted((p for p in parent.iterdir() if p.suffix == ".jsonl" and p.is_file()
-                                    and not p.is_symlink()), key=modified, reverse=True)
+                    files = sorted(
+                        (
+                            p
+                            for p in parent.iterdir()
+                            if p.suffix == ".jsonl" and p.is_file() and not p.is_symlink()
+                        ),
+                        key=modified,
+                        reverse=True,
+                    )
                 except OSError:
                     continue
-                found.extend(files[:MAX_FILES_PER_SOURCE - len(found)])
+                found.extend(files[: MAX_FILES_PER_SOURCE - len(found)])
                 if len(found) >= MAX_FILES_PER_SOURCE:
                     break
         return found
@@ -237,12 +316,23 @@ class ChatCatalog:
             value: Any = None
             if platform == "claude":
                 if row.get("type") in {"user", "assistant"}:
-                    role, value = row.get("type"), row.get("message", {}).get("content") if isinstance(row.get("message"), dict) else row.get("content")
+                    role, value = (
+                        row.get("type"),
+                        row.get("message", {}).get("content")
+                        if isinstance(row.get("message"), dict)
+                        else row.get("content"),
+                    )
             elif platform == "codex":
                 if row.get("type") == "response_item" and isinstance(row.get("payload"), dict):
                     payload = row["payload"]
-                    if (payload.get("type") == "message" and payload.get("role") in {"user", "assistant"}
-                            and not (payload.get("role") == "assistant" and payload.get("channel") == "analysis")):
+                    if (
+                        payload.get("type") == "message"
+                        and payload.get("role") in {"user", "assistant"}
+                        and not (
+                            payload.get("role") == "assistant"
+                            and payload.get("channel") == "analysis"
+                        )
+                    ):
                         role, value = payload.get("role"), payload.get("content")
                 elif row.get("type") in {"user", "assistant"}:
                     role, value = row.get("type"), row.get("content")
@@ -270,11 +360,27 @@ class ChatCatalog:
                 if isinstance(event.get("cwd"), str):
                     cwd = event["cwd"]
                 if event.get("type") in {"custom-title", "session_name"}:
-                    title = _safe_text(event.get("customTitle") or event.get("name") or event.get("title"), max_chars=180) or title
+                    title = (
+                        _safe_text(
+                            event.get("customTitle") or event.get("name") or event.get("title"),
+                            max_chars=180,
+                        )
+                        or title
+                    )
                 updated = max(updated, _timestamp(event.get("timestamp"), event.get("createdAt")))
-            rows.append(self._row("claude", "CLAUDE", sid, cwd=cwd, title=title, updated_at=updated,
-                                  source=str(path), internal_path=str(path),
-                                  excerpts=self._parse_text_events(events, "claude")))
+            rows.append(
+                self._row(
+                    "claude",
+                    "CLAUDE",
+                    sid,
+                    cwd=cwd,
+                    title=title,
+                    updated_at=updated,
+                    source=str(path),
+                    internal_path=str(path),
+                    excerpts=self._parse_text_events(events, "claude"),
+                )
+            )
         return rows or [self._unavailable("claude", "CLAUDE", "no local project transcripts")]
 
     def _scan_codex(self) -> list[dict[str, Any]]:
@@ -295,15 +401,28 @@ class ChatCatalog:
                     cwd = meta.get("cwd") if isinstance(meta.get("cwd"), str) else cwd
                     title = _safe_text(meta.get("title"), max_chars=180) or title
                 updated = max(updated, _timestamp(event.get("timestamp"), event.get("ts")))
-            rows.append(self._row("codex", "CODEX", sid, cwd=cwd, title=title, updated_at=updated,
-                                  source=str(path), internal_path=str(path), excerpts=self._parse_text_events(events, "codex")))
+            rows.append(
+                self._row(
+                    "codex",
+                    "CODEX",
+                    sid,
+                    cwd=cwd,
+                    title=title,
+                    updated_at=updated,
+                    source=str(path),
+                    internal_path=str(path),
+                    excerpts=self._parse_text_events(events, "codex"),
+                )
+            )
         return rows or [self._unavailable("codex", "CODEX", "no local rollout transcripts")]
 
-    def _scan_grok(self, *, wait: bool = False, force: bool = False,
-                   timeout: float | None = None) -> list[dict[str, Any]]:
+    def _scan_grok(
+        self, *, wait: bool = False, force: bool = False, timeout: float | None = None
+    ) -> list[dict[str, Any]]:
         if self._grok is None:
             try:
                 from .chat_transport import GrokTransport
+
                 self._grok = GrokTransport()
             except Exception:
                 return [self._unavailable("grok-leader", "GROK", "transport unavailable")]
@@ -330,23 +449,49 @@ class ChatCatalog:
             excerpts: list[dict[str, str]] = []
             if folder:
                 summary = self._read_json(folder / "summary.json")
-                title = _safe_text(summary.get("generated_title") or summary.get("session_summary"), max_chars=180) or title
+                title = (
+                    _safe_text(
+                        summary.get("generated_title") or summary.get("session_summary"),
+                        max_chars=180,
+                    )
+                    or title
+                )
                 info = summary.get("info") if isinstance(summary.get("info"), dict) else {}
                 updated = _timestamp(summary.get("updated_at") or summary.get("last_active_at"))
                 if not cwd and isinstance(info.get("cwd"), str):
                     cwd = info["cwd"]
-                excerpts = self._parse_text_events(_jsonl(folder / "chat_history.jsonl"), "grok-leader")
+                excerpts = self._parse_text_events(
+                    _jsonl(folder / "chat_history.jsonl"), "grok-leader"
+                )
             if not isinstance(cwd, str) or not cwd.startswith("/"):
                 cwd = None
-            wake = (item.get("wake") is True and state == "idle" and bool(item.get("turn_ended_at")) and bool(cwd)
-                    and not item.get("pending_permission") and not item.get("self"))
-            rows.append(self._row("grok-leader", "GROK", sid, cwd=cwd, title=title,
-                                  updated_at=updated,
-                                  status="stale" if item.get("stale") else
-                                  (state or "unknown") if folder else "metadata-only",
-                                  wake=wake,
-                                  source="grok-live", internal_path=str(folder) if folder else None,
-                                  excerpts=excerpts))
+            wake = (
+                item.get("wake") is True
+                and state == "idle"
+                and bool(item.get("turn_ended_at"))
+                and bool(cwd)
+                and not item.get("pending_permission")
+                and not item.get("self")
+            )
+            rows.append(
+                self._row(
+                    "grok-leader",
+                    "GROK",
+                    sid,
+                    cwd=cwd,
+                    title=title,
+                    updated_at=updated,
+                    status="stale"
+                    if item.get("stale")
+                    else (state or "unknown")
+                    if folder
+                    else "metadata-only",
+                    wake=wake,
+                    source="grok-live",
+                    internal_path=str(folder) if folder else None,
+                    excerpts=excerpts,
+                )
+            )
         if not rows:
             self._availability["grok-leader"] = "no live existing leader chats"
             return [self._unavailable("grok-leader", "GROK", "no live existing leader chats")]
@@ -383,6 +528,7 @@ class ChatCatalog:
         if self._cursor is None:
             try:
                 from .cursor_chat_transport import CursorCloudTransport
+
                 self._cursor = CursorCloudTransport()
             except Exception:
                 return [self._unavailable("cursor-cloud", "CURSOR", "transport unavailable")]
@@ -391,19 +537,30 @@ class ChatCatalog:
         except Exception:
             return [self._unavailable("cursor-cloud", "CURSOR", "discovery failed")]
         rows = []
-        for record in records[:self.max_records]:
+        for record in records[: self.max_records]:
             sid = record.get("session_id") or record.get("agent_id")
             if not isinstance(sid, str) or not sid:
                 continue
             state = str(record.get("state", "unknown")).lower()
-            rows.append(self._row("cursor-cloud", "CURSOR", sid,
-                                  cwd=record.get("cwd") if isinstance(record.get("cwd"), str) else None,
-                                  title=_safe_text(record.get("title"), max_chars=180) or "Cursor Cloud chat " + sid[:12],
-                                  updated_at=_timestamp(record.get("updated_at")), status=state,
-                                  wake=state in {"idle", "active", "busy"}, source="cursor-cloud",
-                                  host=record.get("host") if isinstance(record.get("host"), str) else None,
-                                  repo=record.get("repo_url")))
-        return rows or [self._unavailable("cursor-cloud", "CURSOR", "no discoverable existing chats")]
+            rows.append(
+                self._row(
+                    "cursor-cloud",
+                    "CURSOR",
+                    sid,
+                    cwd=record.get("cwd") if isinstance(record.get("cwd"), str) else None,
+                    title=_safe_text(record.get("title"), max_chars=180)
+                    or "Cursor Cloud chat " + sid[:12],
+                    updated_at=_timestamp(record.get("updated_at")),
+                    status=state,
+                    wake=state in {"idle", "active", "busy"},
+                    source="cursor-cloud",
+                    host=record.get("host") if isinstance(record.get("host"), str) else None,
+                    repo=record.get("repo_url"),
+                )
+            )
+        return rows or [
+            self._unavailable("cursor-cloud", "CURSOR", "no discoverable existing chats")
+        ]
 
     def _scan_cursor_local(self) -> list[dict[str, Any]]:
         """Cursor ACP metadata is catalogued, but no local transcript reader is enabled."""
@@ -412,8 +569,11 @@ class ChatCatalog:
             return [self._unavailable("cursor-local", "CURSOR", "no local ACP session store")]
         rows = []
         try:
-            dirs = sorted((p for p in base.iterdir() if p.is_dir() and not p.is_symlink()),
-                          key=lambda p: self._mtime(p / "meta.json"), reverse=True)[:MAX_FILES_PER_SOURCE]
+            dirs = sorted(
+                (p for p in base.iterdir() if p.is_dir() and not p.is_symlink()),
+                key=lambda p: self._mtime(p / "meta.json"),
+                reverse=True,
+            )[:MAX_FILES_PER_SOURCE]
         except OSError:
             return [self._unavailable("cursor-local", "CURSOR", "ACP metadata unavailable")]
         for directory in dirs:
@@ -427,11 +587,21 @@ class ChatCatalog:
                 updated = meta_path.stat(follow_symlinks=False).st_mtime
             except OSError:
                 updated = 0.0
-            rows.append(self._row("cursor-local", "CURSOR", directory.name,
-                                  cwd=meta.get("cwd") if isinstance(meta.get("cwd"), str) else None,
-                                  title=_safe_text(meta.get("title"), max_chars=180) or "Cursor local chat " + directory.name[:12],
-                                  updated_at=updated, status="metadata-only", wake=False,
-                                  source="cursor-acp-metadata", internal_path=None))
+            rows.append(
+                self._row(
+                    "cursor-local",
+                    "CURSOR",
+                    directory.name,
+                    cwd=meta.get("cwd") if isinstance(meta.get("cwd"), str) else None,
+                    title=_safe_text(meta.get("title"), max_chars=180)
+                    or "Cursor local chat " + directory.name[:12],
+                    updated_at=updated,
+                    status="metadata-only",
+                    wake=False,
+                    source="cursor-acp-metadata",
+                    internal_path=None,
+                )
+            )
         return rows or [self._unavailable("cursor-local", "CURSOR", "no local ACP sessions")]
 
     def _scan_muse(self) -> list[dict[str, Any]]:
@@ -442,17 +612,46 @@ class ChatCatalog:
         conn = None
         try:
             conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=0.25)
-            cols = {str(row[1]).lower(): str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)")}
-            allowed = ("session_id", "id", "workspace", "title", "created_at", "updated_at",
-                       "last_active_at", "createdatms", "updatedatms", "status")
+            cols = {
+                str(row[1]).lower(): str(row[1])
+                for row in conn.execute("PRAGMA table_info(sessions)")
+            }
+            allowed = (
+                "session_id",
+                "id",
+                "workspace",
+                "title",
+                "created_at",
+                "updated_at",
+                "last_active_at",
+                "createdatms",
+                "updatedatms",
+                "status",
+            )
             selected = [cols[name] for name in allowed if name in cols]
             lower_selected = {name.lower(): name for name in selected}
             id_column = lower_selected.get("session_id") or lower_selected.get("id")
             if id_column is None:
                 return [self._unavailable("muse", "MC", "Muse session metadata schema unavailable")]
-            ordering = next((lower_selected[name] for name in ("updated_at", "updatedatms", "last_active_at",
-                                                                "created_at", "createdatms") if name in lower_selected), None)
-            query = "SELECT " + ", ".join('"' + name.replace('"', '""') + '"' for name in selected) + ' FROM "sessions"'
+            ordering = next(
+                (
+                    lower_selected[name]
+                    for name in (
+                        "updated_at",
+                        "updatedatms",
+                        "last_active_at",
+                        "created_at",
+                        "createdatms",
+                    )
+                    if name in lower_selected
+                ),
+                None,
+            )
+            query = (
+                "SELECT "
+                + ", ".join('"' + name.replace('"', '""') + '"' for name in selected)
+                + ' FROM "sessions"'
+            )
             if ordering:
                 query += ' ORDER BY "' + ordering.replace('"', '""') + '" DESC'
             query += " LIMIT ?"
@@ -463,14 +662,38 @@ class ChatCatalog:
                 if isinstance(sid, bool) or not isinstance(sid, (str, int)) or not str(sid):
                     continue
                 session_key = str(sid)
-                workspace_key, title_key = lower_selected.get("workspace"), lower_selected.get("title")
-                rows.append(self._row("muse", "MC", session_key,
-                                      cwd=meta.get(workspace_key) if workspace_key and isinstance(meta.get(workspace_key), str) else None,
-                                      title=_safe_text(meta.get(title_key), max_chars=180) if title_key else "Muse chat " + session_key[:12],
-                                      updated_at=_timestamp(*(meta.get(lower_selected.get(name)) for name in
-                                                              ("updated_at", "last_active_at", "created_at",
-                                                               "updatedatms", "createdatms"))),
-                                      status="metadata-only", wake=False, source="muse-session-index"))
+                workspace_key, title_key = (
+                    lower_selected.get("workspace"),
+                    lower_selected.get("title"),
+                )
+                rows.append(
+                    self._row(
+                        "muse",
+                        "MC",
+                        session_key,
+                        cwd=meta.get(workspace_key)
+                        if workspace_key and isinstance(meta.get(workspace_key), str)
+                        else None,
+                        title=_safe_text(meta.get(title_key), max_chars=180)
+                        if title_key
+                        else "Muse chat " + session_key[:12],
+                        updated_at=_timestamp(
+                            *(
+                                meta.get(lower_selected.get(name))
+                                for name in (
+                                    "updated_at",
+                                    "last_active_at",
+                                    "created_at",
+                                    "updatedatms",
+                                    "createdatms",
+                                )
+                            )
+                        ),
+                        status="metadata-only",
+                        wake=False,
+                        source="muse-session-index",
+                    )
+                )
             return rows or [self._unavailable("muse", "MC", "no Muse sessions")]
         except (sqlite3.Error, OSError, ValueError):
             return [self._unavailable("muse", "MC", "Muse session index unavailable")]
@@ -489,7 +712,9 @@ class ChatCatalog:
             if visited > MAX_FILES_PER_SOURCE * 32:
                 break
             here = Path(current)
-            dirs[:] = sorted((name for name in dirs if not (here / name).is_symlink()), reverse=True)
+            dirs[:] = sorted(
+                (name for name in dirs if not (here / name).is_symlink()), reverse=True
+            )
             if "session_" in here.name and "manifest.json" in files:
                 if _within(here / "manifest.json", base):
                     found.append(here)
@@ -519,15 +744,32 @@ class ChatCatalog:
             # can contain internal store locations and is intentionally not projected.
             title = ""
             cwd = None
-            updated = _timestamp(manifest.get("updatedAtMs"), manifest.get("createdAtMs"),
-                                 manifest.get("updated_at"), manifest.get("created_at")) or self._mtime(directory / "manifest.json")
+            updated = _timestamp(
+                manifest.get("updatedAtMs"),
+                manifest.get("createdAtMs"),
+                manifest.get("updated_at"),
+                manifest.get("created_at"),
+            ) or self._mtime(directory / "manifest.json")
             messages = directory / "messages.jsonl"
-            readable = messages.is_file() and not messages.is_symlink() and _within(messages, self.home / ".minimax/v2/sessions")
-            rows.append(self._row("minimax", "MM", sid, cwd=cwd,
-                                  title=title or "MiniMax Code chat", updated_at=updated,
-                                  status="available" if readable else "metadata-only", wake=False,
-                                  source="minimax-v2-metadata",
-                                  internal_path=str(directory)))
+            readable = (
+                messages.is_file()
+                and not messages.is_symlink()
+                and _within(messages, self.home / ".minimax/v2/sessions")
+            )
+            rows.append(
+                self._row(
+                    "minimax",
+                    "MM",
+                    sid,
+                    cwd=cwd,
+                    title=title or "MiniMax Code chat",
+                    updated_at=updated,
+                    status="available" if readable else "metadata-only",
+                    wake=False,
+                    source="minimax-v2-metadata",
+                    internal_path=str(directory),
+                )
+            )
         return rows
 
     def _scan_fx(self) -> list[dict[str, Any]]:
@@ -552,20 +794,47 @@ class ChatCatalog:
             meta = self._read_json(row_path)
             # The index contains identifiers only for selection; session.json is the metadata source.
             source = meta
-            workspace = source.get("workspace_root") if isinstance(source.get("workspace_root"), str) else None
+            workspace = (
+                source.get("workspace_root")
+                if isinstance(source.get("workspace_root"), str)
+                else None
+            )
             title = _safe_text(source.get("title"), max_chars=180) or "Fx chat " + sid[:12]
-            updated = _timestamp(source.get("updated_at"), source.get("last_active_at"),
-                                 source.get("created_at")) or self._mtime(row_path)
-            rows.append(self._row("fx", "FX", sid, cwd=workspace, title=title, updated_at=updated,
-                                  status="metadata-only", wake=False, source="fx-session-metadata"))
+            updated = _timestamp(
+                source.get("updated_at"), source.get("last_active_at"), source.get("created_at")
+            ) or self._mtime(row_path)
+            rows.append(
+                self._row(
+                    "fx",
+                    "FX",
+                    sid,
+                    cwd=workspace,
+                    title=title,
+                    updated_at=updated,
+                    status="metadata-only",
+                    wake=False,
+                    source="fx-session-metadata",
+                )
+            )
         return rows or [self._unavailable("fx", "FX", "no Fx sessions")]
 
-    def _scan(self, *, wait_grok: bool = False, force_grok: bool = False,
-              grok_timeout: float | None = None) -> None:
+    def _scan(
+        self,
+        *,
+        wait_grok: bool = False,
+        force_grok: bool = False,
+        grok_timeout: float | None = None,
+    ) -> None:
         self._availability = {}
-        groups = [self._scan_claude(), self._scan_codex(),
-                  self._scan_grok(wait=wait_grok, force=force_grok, timeout=grok_timeout), self._scan_cursor(),
-                  self._scan_muse(), self._scan_minimax(), self._scan_fx()]
+        groups = [
+            self._scan_claude(),
+            self._scan_codex(),
+            self._scan_grok(wait=wait_grok, force=force_grok, timeout=grok_timeout),
+            self._scan_cursor(),
+            self._scan_muse(),
+            self._scan_minimax(),
+            self._scan_fx(),
+        ]
         # Explicit availability rows ensure unsupported/empty stores remain visible.
         groups.append(self._scan_cursor_local())
         rows = [row for group in groups for row in group]
@@ -575,16 +844,20 @@ class ChatCatalog:
         for row in rows:
             unique[row["id"]] = row
         records = list(unique.values())
-        availability = sorted((row for row in records if row["status"] == "unavailable"),
-                              key=lambda row: row["platform"])
+        availability = sorted(
+            (row for row in records if row["status"] == "unavailable"),
+            key=lambda row: row["platform"],
+        )
         sessions = [row for row in records if row["status"] != "unavailable"]
-        keep_availability = availability[:min(len(availability), self.max_records)]
+        keep_availability = availability[: min(len(availability), self.max_records)]
         session_limit = max(0, self.max_records - len(keep_availability))
         by_platform: dict[str, list[dict[str, Any]]] = {}
         for row in sessions:
             by_platform.setdefault(row["platform"], []).append(row)
         for rows_for_platform in by_platform.values():
-            rows_for_platform.sort(key=lambda row: (row.get("updated_at") or 0, row["id"]), reverse=True)
+            rows_for_platform.sort(
+                key=lambda row: (row.get("updated_at") or 0, row["id"]), reverse=True
+            )
         chosen_sessions: list[dict[str, Any]] = []
         platforms = sorted(by_platform)
         while platforms and len(chosen_sessions) < session_limit:
@@ -601,8 +874,9 @@ class ChatCatalog:
         self._last_scan = self._clock()
         self._expires = self._last_scan + self.ttl
 
-    def discover(self, force: bool = False, *, wait_grok: bool = False,
-                 grok_timeout: float | None = None) -> list[dict[str, Any]]:
+    def discover(
+        self, force: bool = False, *, wait_grok: bool = False, grok_timeout: float | None = None
+    ) -> list[dict[str, Any]]:
         now = self._clock()
         if force or now >= self._expires:
             previous = self._records
@@ -636,17 +910,34 @@ class ChatCatalog:
                             old = dict(old)
                             old["status"] = "stale"
                             old["stale"] = True
-                            old["capabilities"] = dict(old["capabilities"], read=False,
-                                                        wake=False, wake_status="stale")
+                            old["capabilities"] = dict(
+                                old["capabilities"], read=False, wake=False, wake_status="stale"
+                            )
                             self._records[ident] = old
                 if len(self._records) > self.max_records:
-                    self._records = dict(list(self._records.items())[:self.max_records])
+                    self._records = dict(list(self._records.items())[: self.max_records])
         return [self._public(row) for row in self._records.values()]
 
     @staticmethod
     def _public(row: dict[str, Any]) -> dict[str, Any]:
-        result = {key: row[key] for key in ("id", "platform", "host", "seat", "session_id", "cwd", "repo", "title",
-                                            "updated_at", "status", "stale", "capabilities") if key in row}
+        result = {
+            key: row[key]
+            for key in (
+                "id",
+                "platform",
+                "host",
+                "seat",
+                "session_id",
+                "cwd",
+                "repo",
+                "title",
+                "updated_at",
+                "status",
+                "stale",
+                "capabilities",
+            )
+            if key in row
+        }
         if row.get("status") == "unavailable" and row.get("_source"):
             result["error"] = row["_source"]
         elif row.get("status") == "stale":
@@ -708,7 +999,14 @@ class ChatCatalog:
                         safe_rows.append({"role": item["role"], "text": text})
             row["_excerpts"] = safe_rows[-count:]
             self._records[record_id]["_excerpts"] = row["_excerpts"]
-        return [{"role": item["role"], "text": item["text"]} for item in row.get("_excerpts", [])[-count:]] if count else []
+        return (
+            [
+                {"role": item["role"], "text": item["text"]}
+                for item in row.get("_excerpts", [])[-count:]
+            ]
+            if count
+            else []
+        )
 
     def projection(self, record_id: str) -> dict[str, Any] | None:
         row = self.resolve(record_id)
