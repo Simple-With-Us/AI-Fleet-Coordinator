@@ -964,9 +964,7 @@ class LiveMuseTest(unittest.TestCase):
 def _iso(when: float) -> str:
     import datetime
 
-    return datetime.datetime.fromtimestamp(when, datetime.UTC).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    return datetime.datetime.fromtimestamp(when, datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _config_with_wake(wake: str, extra: dict | None = None) -> C.Config:
