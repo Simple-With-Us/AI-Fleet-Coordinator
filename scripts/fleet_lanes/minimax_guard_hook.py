@@ -106,7 +106,8 @@ def decide(payload: dict, ctx=None, secret_guard=None):
 
     Registry read errors instead produce guard.make_context's fallback registry: extra app rows
     and no seats.  Secret and review-lane checks still run, but integration-tree coverage narrows
-    to those extra rows and the other-seat check cannot identify a seat.
+    to those extra rows and the other-seat check cannot identify a seat.  The registry's
+    source == "fallback" marker identifies this partial degradation.
     """
     if payload.get("tool_name") in ("Bash", "bash"):
         args = payload.get("tool_input")
