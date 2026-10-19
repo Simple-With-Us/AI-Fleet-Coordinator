@@ -102,7 +102,7 @@ class ScopeTests(unittest.TestCase):
 
     def test_local_chats_are_matched_by_git_origin_and_branch(self):
         git = {
-            ("/w/st", "config"): "git@github.com:jaywedgeworth22/Socratic-Trade.git",
+            ("/w/st", "config"): "git@github.com:example-user/example-trade.git",
             ("/w/st", "branch"): "claude/swu-32-thing",
             ("/w/ct", "config"): ST_URL.replace("Socratic-Trade", "Congress.Trade"),
             ("/w/ct", "branch"): "main",
@@ -114,14 +114,14 @@ class ScopeTests(unittest.TestCase):
             chat(3, 5, platform="claude", cwd="/w/ct", title="SWU-32 follow-up"),
         ]
         self.assertEqual(
-            ids(F.select(rows, NOW, F.Scope(frozenset({"socratic-trade"})), places)), ["s1"]
+            ids(F.select(rows, NOW, F.Scope(frozenset({"example-trade"})), places)), ["s1"]
         )
         on_issue = F.select(
             rows, NOW, F.Scope(frozenset({"simple-with-us"}), frozenset({"SWU-32"})), places
         )
         self.assertEqual(ids(on_issue), ["s1", "s3"], "branch or title carries the id")
         nobody = F.select(
-            rows, NOW, F.Scope(frozenset({"socratic-trade"}), frozenset({"ST-1"})), places
+            rows, NOW, F.Scope(frozenset({"example-trade"}), frozenset({"ST-1"})), places
         )
         self.assertEqual(ids(nobody), ["s1"], "no chat on the issue:  its repo instead")
 
