@@ -222,9 +222,28 @@ expect_streak_file xcode-health 0
 set_rc 8791 28
 run_watch; run_expect_log "streak=1/3"; reject_restart xcode-health
 
-# 6. (Removed 2026-10-19, AFC-363.)  This case checked that streaks are per
-#    service, with mac-collab :8792 beside xcode-health :8791.  mac-collab is
-#    retired, so only one local HTTP probe is left to count strikes for.
+# 6. Streaks are per service.  Only xcode-health is probed since mac-collab was
+#    retired (2026-10-19, AFC-363), so this drives the watch's own streak helpers
+#    (http_slow_get / http_slow_set, extracted from the script) with synthetic
+#    service names, and fails if one service's streak leaks into another.
+new_case per-service
+HTTP_SLOW_STATE="${tmp}/per-service/slow-state"
+helpers="$(awk '/^http_slow_get\(\) \{/ {f=1} f {print} f && /^}/ {n++; f=(n<2)}' "$WATCH" \
+  | awk '/^http_slow_set\(\) \{/ {f=1} /^http_slow_get\(\) \{/ {f=1} f {print} f && /^}/ {f=0}')"
+[ -n "$helpers" ] || fail "could not extract http_slow_get/http_slow_set from $WATCH"
+slow() { ( eval "$helpers"; HTTP_SLOW_STATE="$HTTP_SLOW_STATE"; "$@" ); }
+slow http_slow_set svc 3
+slow http_slow_set svc-a 2
+slow http_slow_set svc-b 1
+[ "$(slow http_slow_get svc-a)" = 2 ] || fail "per-service: svc-a streak is $(slow http_slow_get svc-a), want 2"
+[ "$(slow http_slow_get svc-b)" = 1 ] || fail "per-service: svc-b streak is $(slow http_slow_get svc-b), want 1"
+[ "$(slow http_slow_get svc)" = 3 ] || fail "per-service: svc streak is $(slow http_slow_get svc), want 3 (name prefix must not merge)"
+slow http_slow_set svc-a 0
+[ "$(slow http_slow_get svc-a)" = 0 ] || fail "per-service: clearing svc-a left $(slow http_slow_get svc-a)"
+[ "$(slow http_slow_get svc-b)" = 1 ] || fail "per-service: clearing svc-a changed svc-b to $(slow http_slow_get svc-b)"
+[ "$(slow http_slow_get svc)" = 3 ] || fail "per-service: clearing svc-a changed svc to $(slow http_slow_get svc)"
+slow http_slow_set svc-b 2
+[ "$(slow http_slow_get svc-a)" = 0 ] || fail "per-service: setting svc-b changed svc-a to $(slow http_slow_get svc-a)"
 
 # 7. MAC_PROCESS_WATCH_HTTP_SLOW_STRIKES overrides K.
 new_case strikes-override
