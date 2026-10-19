@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:39ac8a1515b20c881cc28b74d3b845950e0ef2a32a7c284e1d4784b4a01dc01e -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:47d2f6b8095f1e57a390a17aade84ff952067611d5d3b6acb29d3fc838c31b64 -->
 # AGENT-SYNC — Fleet Coordination Protocol
 
 This is the protocol every AI agent seat follows when it works on the owner's apps:  who each seat is, how work is claimed, landed, and closed out in Linear, how seats talk in Zulip, and the standing rules for secrets, delegation, owner-facing writing, and the Mac.  It exists so parallel seats never collide on, duplicate, or silently drop the same work.
@@ -82,7 +82,7 @@ Proposed to Jay with no objection.  Each is marked "(default 2026-10-07)" where 
 3. Claim and closeout cover the Linear issue (through `board`) and a status post in the work's Zulip topic, and the PR links the issue with `Fixes <ID>` or `Refs <ID>`.  There is no effort-log mirror row and no separate GitHub issue leg ([Claim](#claim); changed at the cutover, see [Retired Mechanisms](#retired-mechanisms)).
 4. `repo:` stays in claim and closeout status blocks.  Elsewhere the topic names the app ([Message Shape](#message-shape)).
 5. Force-push:  never to main.  On your own unmerged branch, only after the owner confirms ([Commit Without Being Asked](#commit-without-being-asked)).
-6. Workflow-file pushes extract only `GITHUB_TOKEN` from the handoff file.  Never `source` the whole file ([Pushing Workflow Files](#pushing-workflow-files)).
+6. Workflow-file pushes fetch only `GITHUB_TOKEN` with `fleet-secrets get`.  Never dump the whole key set ([Pushing Workflow Files](#pushing-workflow-files)).
 7. `gating now` and `gate clear` posts go to #builds › `gates` ([Serialize Full Local Gates](#serialize-full-local-gates)).
 8. The Sentry Slack alert workflow moves to Zulip #alerts ([Alert Workflows](#alert-workflows)).
 9. The GitHub outbox bridge posts to Zulip as the seat's own bot ([Chat: The Zulip Contract](#chat-the-zulip-contract)).
@@ -608,10 +608,11 @@ git diff origin/main...HEAD    # three-dot: remaining unique work vs merge-base
 ### Pushing Workflow Files
 
 - The default injected agent `GH_TOKEN` (an OAuth App token starting `gho_`) is rejected by GitHub for pushes to `.github/workflows/`, even with the `workflow` scope, because of OAuth App restrictions.
-- Push workflow changes with the Personal Access Token.  Extract only `GITHUB_TOKEN` from the handoff file and override `GH_TOKEN` inline for that one push.  Never `source` the whole file, and never echo the value (default 2026-10-07):
+- Push workflow changes with the Personal Access Token.  Fetch only `GITHUB_TOKEN` with `fleet-secrets get` and override `GH_TOKEN` inline for that one push.  Never dump the whole key set, and never echo the value (default 2026-10-07, command updated 2026-10-18):
 
 ```bash
-env GH_TOKEN="$(grep -m1 '^GITHUB_TOKEN=' /Users/jay/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')" git push
+token="$(fleet-secrets get GITHUB_TOKEN)" || exit $?
+env GH_TOKEN="$token" git push
 ```
 
 - Never use `ci-pending/` staging workarounds for workflow files.
@@ -791,13 +792,12 @@ Every deny message carries the tier guidance and tells you to delegate more, not
 - When an app needs a cross-app key at runtime (for example ST sending a peer-subject Pushover digest with CT and UM logos), copy it into the consuming app's Infisical project, store to store and never printed.  Never teach an app to read the handoff file.
 - Cloud seats that need runtime secrets use Infisical for the app they are working on.
 
-### The Handoff File
+### The Handoff File (Retired)
 
-- "Global api keys", "the global api keys file" and "the handoff file" all mean exactly one file: `/Users/jay/.secrets/global-api-keys`, no extension (owner 2026-08-19).  The Coolify tokens live there too.
-- It is the agent handoff and operator convenience copy only.  No app depends on it at runtime, and it may go stale.
-- To add a handoff copy of a key, add it to that one file.  Never recreate a `.env`-suffixed sibling.  The retired sibling is renamed `~/.secrets/global-api-keys.env.SUPERSEDED-2026-08-19-stale-do-not-use` as a recovery net; never read or restore it.
-- Local seats read the handoff file directly, with a names-only grep and one value loaded into a shell variable ([Reading Keys Safely](#reading-keys-safely)).
-- Key names only, never values, are readable by any agent at `GET https://mac.jays.services/files/key-names` with `Authorization: Bearer $MAC_COLLAB_TOKEN`.  The `X-Mac-Collab-Token` header is no longer accepted.  The handoff file itself is never served over HTTP.
+- "Global api keys", "the global api keys file" and "the handoff file" all meant one flat file: `/Users/jay/.secrets/global-api-keys`, no extension (owner 2026-08-19).  Owner 2026-10-18 (OPS-818):  nothing reads that file any more, whether code, a test, a doc or an agent by hand.  It stays on disk only until an owner-gated cutover removes it, and only the Mac sync script writes it.
+- Every key that was in it lives in Infisical, project Fleet-OPS, prod, under the same name.  The Coolify tokens are there too.  Read them with the `fleet-secrets` CLI ([Reading Keys Safely](#reading-keys-safely)).
+- To add a copy of a key for agents, put it in Infisical Fleet-OPS.  Never recreate a flat file or a `.env`-suffixed sibling.  The older retired sibling is renamed `~/.secrets/global-api-keys.env.SUPERSEDED-2026-08-19-stale-do-not-use` as a recovery net;  never read or restore it.
+- Key names only, never values, are readable by any agent at `GET https://mac.jays.services/files/key-names` with `Authorization: Bearer $MAC_COLLAB_TOKEN`, and locally with `fleet-secrets names`.  The `X-Mac-Collab-Token` header is no longer accepted.  The old flat file is never served over HTTP.
 - Zulip bot keys follow these rules too.  Where each seat's key lives and how to rotate it: [Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md#credentials-and-key-handling).
 
 ### Owner-to-Agent Handoff
@@ -809,36 +809,35 @@ Every deny message carries the tier guidance and tells you to delegate more, not
 
 ### Reading Keys Safely
 
-The handoff-file grep-trap rules (2026-08-14) and the loaded-key rules (2026-09-17) bind every agent.  `~/.secrets/global-api-keys`, any other `chmod 600` handoff file, any `.env`, and any Infisical dump is a multi-secret file.  A tool result that contains even one `KEY=value` line has already leaked into the transcript.
+The grep-trap rules (2026-08-14) and the loaded-key rules (2026-09-17) bind every agent.  `~/.secrets/global-api-keys`, any other `chmod 600` handoff file, any `.env`, and any Infisical dump is a multi-secret file.  A tool result that contains even one `KEY=value` line has already leaked into the transcript.
 
-Forbidden on the handoff file (these print values, not names):
-
-```bash
-grep '^[A-Z0-9_]+=' ~/.secrets/global-api-keys     # every line, values included
-grep '^ADMIN' ~/.secrets/global-api-keys           # matching lines include values
-rg ADMIN ~/.secrets/global-api-keys                # same
-rg -n 'TOKEN|KEY|SECRET' ~/.secrets/               # same leak, whole directory
-cat ~/.secrets/global-api-keys                     # never
-xxd ~/.secrets/global-api-keys                     # a byte-dump of the file is cat
-# any Read / open-file / less / bat on that path   # never
-```
-
-`grep PATTERN file` without `-o` extracting only the name is a leak, even when you only wanted to see which keys exist.
-
-Allowed:
+Nothing reads `~/.secrets/global-api-keys` any more (owner 2026-10-18, OPS-818).  Use `fleet-secrets`, which reads Infisical Fleet-OPS prod and never writes a value to disk or a log:
 
 ```bash
-# names only; -o is mandatory so the value never appears
-grep -oE '^[A-Z][A-Z0-9_]*' ~/.secrets/global-api-keys | sort -u
+# names only
+fleet-secrets names
 
-# one key into a variable; never echo it
-TOKEN="$(grep -m1 '^ADMIN_REINDEX_TOKEN=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
+# one key into a variable; never echo it (exit 3 when absent)
+TOKEN="$(fleet-secrets get ADMIN_REINDEX_TOKEN)" || exit $?
+
+# run a command with only the keys it needs as environment variables
+fleet-secrets run --only KEY_A,KEY_B -- ./job.sh
 
 # redact it out of any later command output
 some-command 2>&1 | sed "s/${TOKEN}/[REDACTED]/g"
 ```
 
-The file's values are quote-wrapped, so keep the `tr -d '"'`; without it the server answers 401 as if the token were revoked (owner-verified 2026-09-17).
+A key missing at the Fleet-OPS root may sit in its `/global-api-keys` folder:  add `--path /global-api-keys`.  Run `fleet-secrets doctor` to check the install.  A script reads the environment first and calls `fleet-secrets get NAME` as its fallback.  Code that also runs in the cloud keeps the environment as its only source.
+
+Forbidden (these print values, not names):
+
+```bash
+fleet-secrets run -- env                           # prints every value
+fleet-secrets run -- printenv KEY                  # prints one value
+cat ~/.secrets/global-api-keys                     # never; the flat file is retired
+rg -n 'TOKEN|KEY|SECRET' ~/.secrets/               # leaks whatever files match
+# any Read / open-file / less / bat on a handoff file   # never
+```
 
 A variable that already holds a key is still a secret.  `od`, `xxd`, `hexdump`, `hd`, `strings` and `base64` print every byte of it, and `cut -c` prints a prefix.  A last-command `printf %s`, `%q` or `%b` of it makes the tool result the live value, the same class as `cat` of the handoff file.  Forbidden on any variable whose name matches KEY, TOKEN, SECRET, PASSWORD, PASSWD or DSN:
 
@@ -1241,7 +1240,7 @@ When you add or configure MCP servers for fleet agents, place them as follows.
 - Use `CLOUDFLARE_FLEET_API_TOKEN` (properly scoped) for ordinary agent work.  The Global Keys are unscoped full-admin.  Treat them like a root password, and use one only when the fleet token's scope genuinely does not cover the need.
 - The fleet has four Cloudflare accounts: Congress.Trade, SocraticTrade.com, Usage.Jays.Services, and a legacy zero-zone "jay" account (the old billing-problem account that `CLOUDFLARE_FLEET_API_TOKEN` was created to route around).
 - Usage.Jays.Services is an account name, not the hostname `usage.jays.services`.  Create each new app's own zone on account Usage.Jays.Services.  Which account and which registrar: `docs/DNS-AND-REGISTRARS.md`.
-- The full credential map, values included, is in `~/.secrets/global-api-keys` under the section "CLOUDFLARE GLOBAL API KEYS".  Load one value at a time per [Reading Keys Safely](#reading-keys-safely); never open the file.
+- The Cloudflare global-key credentials are in Infisical Fleet-OPS under the same names the old flat file used.  Load one value at a time with `fleet-secrets get NAME` per [Reading Keys Safely](#reading-keys-safely); never open the retired flat file.
 - The private attack map (hosts, token names, Infisical project ids, Coolify UUIDs, no secret values) is the file `ATTACK-MAP.md` in the private repo `Simple-With-Us/fleet-ops`.  Never copy it into a public app repo.
 
 ### CI Runners (Strict, All Repos)
@@ -1266,7 +1265,7 @@ When you add or configure MCP servers for fleet agents, place them as follows.
 - Never create, rotate or provision OpenRouter API keys unless the owner explicitly asks in that conversation.
 - CT keys belong in the CT workspace and ST keys in the ST workspace.  Never mint into Default.  A key name like `ct-prod-…` does not select a workspace: new keys land in whichever workspace the dashboard or provisioning key is on.
 - `OPENROUTER_ADMIN_KEY` is analytics only (Usage Monitor, `/api/v1/keys`, credits and activity).  It is not for inference and not for creating keys.
-- App inference uses the app keys from Infisical or the handoff file, `CT_OPENROUTER_API_KEY` and `ST_OPENROUTER_API_KEY`, over the HTTP API.
+- App inference uses the app keys from Infisical (`fleet-secrets get NAME` for the Fleet-OPS copies), `CT_OPENROUTER_API_KEY` and `ST_OPENROUTER_API_KEY`, over the HTTP API.
 
 ## Observability: Sentry and Datadog
 
