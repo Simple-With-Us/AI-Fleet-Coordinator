@@ -18,6 +18,12 @@ SECRET_VAL = "SENTINEL_CLIENT_SECRET_5ec7"
 FAKE_SECURITY = r"""#!/bin/bash
 store="$FAKE_STORE"
 echo "$*" >> "$store/argv.log"
+# `security -i`:  the command arrives on stdin, as the real tool reads it.  Its argv holds only -i.
+if [ "$1" = "-i" ]; then
+  read -r line
+  echo "$line" >> "$store/stdin.log"
+  set -- $line
+fi
 case "$1" in
   add-generic-password)
     [ -e "$store/fail" ] && exit 1
@@ -78,8 +84,15 @@ class SeedScriptTests(unittest.TestCase):
         for v in (ID_VAL, SECRET_VAL):
             self.assertNotIn(v, out)
             self.assertNotIn(v, p.stderr.decode())
-        adds = [line for line in self.argv_log() if line.startswith("add-generic-password")]
+        # The values never reach an argument list:  every add came in through `security -i` on stdin.
+        for line in self.argv_log():
+            self.assertNotIn(ID_VAL, line)
+            self.assertNotIn(SECRET_VAL, line)
+        self.assertFalse(any(line.startswith("add-generic-password") for line in self.argv_log()))
+        self.assertEqual(self.argv_log().count("-i"), 2)
+        adds = (self.store / "stdin.log").read_text().splitlines()
         self.assertEqual(len(adds), 2)
+        self.assertTrue(all(line.startswith("add-generic-password") for line in adds))
         for line in adds:
             self.assertIn("-U", line.split())
             self.assertIn("-A", line.split())
@@ -87,6 +100,19 @@ class SeedScriptTests(unittest.TestCase):
             self.assertTrue(line.endswith("/fake/System.keychain"))
         self.assertEqual((self.store / "infisical-client-id").read_text(), ID_VAL)
         self.assertEqual((self.store / "infisical-client-secret").read_text(), SECRET_VAL)
+
+    def test_values_that_could_break_the_line_are_refused_naming_only_the_account(self):
+        for bad in ("has space", 'a"quote', "back\\slash", "semi;colon", "-leading", "tab\there"):
+            with self.subTest(bad=bad):
+                p = self.run_script(ID_VAL + "\n" + bad + "\n")
+                self.assertEqual(p.returncode, 3)
+                self.assertIn("infisical-client-secret", p.stderr.decode())
+                self.assertNotIn(bad, p.stdout.decode() + p.stderr.decode())
+                self.assertFalse((self.store / "argv.log").exists())
+
+    def test_base64_and_hex_shaped_values_are_accepted(self):
+        p = self.run_script("0123abcdEF-4567-89\nAbC+dEf/gHi=jK_l.m:n@o\n")
+        self.assertEqual(p.returncode, 0, p.stderr)
 
     def test_a_missing_second_line_writes_nothing(self):
         p = self.run_script(ID_VAL + "\n")

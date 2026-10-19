@@ -13,12 +13,15 @@
 # infisical-client-id and infisical-client-secret), clears the variables, reads the items back, and
 # prints only `match: true` or `match: false` for each.  It never prints a value.
 #
-# Known exposure:  `security add-generic-password -w VALUE` takes the value as an argument, so each
-# value is visible in the process list (`ps`) to the machine's users for a few milliseconds while
-# that one command runs.  The owner accepted this on 2026-10-18 (and `-A`, below).  `-A` lets any
-# application read the items without a prompt, which is what a boot-time daemon needs;  anyone with
-# an account on this Mac can read them with `security`.  Rotate the machine identity in Infisical to
-# revoke.  `-U` updates an existing item, so re-running is safe.
+# No value on any command line:  each item is added by feeding the `add-generic-password` command to
+# `security -i` on its standard input, so the values never reach an argument list or the process
+# list.  Because the command is one line of text, a value outside [A-Za-z0-9+/=_.:@-] (or starting
+# with "-") is refused, naming the account only;  universal-auth ids and secrets are hex or base64.
+# `security -i` exits 0 even when a command fails, so success is decided by the read-back below.
+# `-A` lets any application read the items without a prompt, which is what a boot-time daemon needs
+# (owner accepted, 2026-10-18);  anyone with an account on this Mac can read them with `security`.
+# Rotate the machine identity in Infisical to revoke.  `-U` updates an existing item, so re-running
+# is safe.
 #
 # Test hooks:  SECURITY_BIN (default /usr/bin/security) and FLEET_SECRETS_KEYCHAIN (default the
 # System keychain;  a different path skips the root check).  Used by the unit tests only.
@@ -51,8 +54,21 @@ if [ -z "$client_id" ] || [ -z "$client_secret" ]; then
   die "stdin must hold two non-empty lines:  the client id, then the client secret (a fleet-secrets get probably failed;  run fleet-secrets doctor)" 3
 fi
 
-add_item() { # account value
-  "$SECURITY" add-generic-password -U -A -s "$SERVICE" -a "$1" -w "$2" "$KEYCHAIN" >/dev/null 2>&1
+safe_value() { # value:  one token that cannot break the `security -i` line
+  [[ "$1" =~ ^[A-Za-z0-9+/=_.:@][A-Za-z0-9+/=_.:@-]*$ ]]
+}
+if ! safe_value "$client_id"; then
+  client_id="" client_secret=""
+  die "the value for $ACCT_ID has a character that is not allowed (whitespace, a quote, a backslash or another symbol);  nothing was written" 3
+fi
+if ! safe_value "$client_secret"; then
+  client_id="" client_secret=""
+  die "the value for $ACCT_SECRET has a character that is not allowed (whitespace, a quote, a backslash or another symbol);  nothing was written" 3
+fi
+
+add_item() { # account value:  the command goes to `security -i` on stdin, never on argv
+  printf 'add-generic-password -U -A -s %s -a %s -w %s %s\n' "$SERVICE" "$1" "$2" "$KEYCHAIN" \
+    | "$SECURITY" -i >/dev/null 2>&1
 }
 
 wrote=true
@@ -60,7 +76,7 @@ add_item "$ACCT_ID" "$client_id" || wrote=false
 add_item "$ACCT_SECRET" "$client_secret" || wrote=false
 if [ "$wrote" != true ]; then
   client_id="" client_secret=""
-  die "security add-generic-password failed (is the System keychain unlocked and writable?)" 4
+  die "security -i add-generic-password failed (is the System keychain unlocked and writable?)" 4
 fi
 
 read_item() { # account  -> value on stdout, empty when absent
